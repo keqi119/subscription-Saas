@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - packages/*
+onlyBuiltDependencies:
+  - "@nestjs/core"
+  - "@prisma/engines"
+  - prisma
+  - sharp
+allowBuilds:
+  '@nestjs/core': true
+  '@prisma/engines': true
+  prisma: true
+  sharp: true

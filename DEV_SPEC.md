@@ -1,7 +1,7 @@
 # 纯电汽车订阅运营中台 V1.0 开发文档
 
 > 项目名称：上海二手纯电汽车订阅运营中台  
-> 业务场景：中国大陆境内，以上海为首发城市，基于 2–3 年车龄二手纯电车型开展汽车订阅 / 以租代购业务  
+> 业务场景：中国大陆境内，以上海为首发城市，基于 2–3 年车龄二手纯电车型先开展汽车订阅业务；以租代购作为未来产品线保留扩展能力  
 > 初始车型：蔚来 ET5 / ET7 / ES6，电池买断  
 > 核心目标：支撑客户进件、风控评级、订阅方案、合同签署、车辆整备、车辆交付、账务催收、保证金池、资产运营、ROA/ROE 经营分析  
 > 文档用途：作为 Codex / 研发团队 / 产品经理 / 测试团队的需求基线文档  
@@ -34,6 +34,81 @@
 本项目服务于上海区域纯电汽车订阅业务。业务方计划采购 2–3 年车龄的二手纯电车辆，主要车型为 ET5、ET7、ES6，车辆采用电池买断形式，登记为沪牌绿牌。客户通过订阅方式获得车辆使用权，可按月支付订阅费用，同时享有里程包、补能包、换车权益、洗车权益、积分等服务权益。
 
 项目的商业本质不是单纯租车，而是“资产运营 + 资金杠杆 + 风控定价 + 残值管理”的综合业务。因此系统必须同时服务于销售获客、客户进件、风控审批、产品方案、合同管理、车辆资产、交付履约、账单催收、保证金池、权益管理、经营分析与资金方报送。
+
+### 1.1 当前开发聚焦与长期产品线预留
+
+当前开发阶段只开放 `SUBSCRIPTION` 订阅业务，优先跑通“客户 → 进件 → 风控 → 评级 → 订阅报价 → 确认报价 → 订单/交付”的主流程。`RENT_TO_OWN` 以租代购产品线保留在底层枚举、字段、权限和历史数据中，但当前阶段不展示入口、不允许创建报价、订单或合同。
+
+长期架构不应把车辆资产绑定到单一产品线。同一台车未来可能经历订阅、空置、维修、再订阅、以租代购、提前买断、出售退出等多个经营阶段。系统最终应按车辆完整生命周期评估资产运营质量，而不是只按某一个产品线或某一张订单评估收益。
+
+### 1.2 车辆生命周期资产运营模型
+
+系统长期分为两层：
+
+```text
+资产层
++
+产品/订单层
+```
+
+资产层以 `Vehicle` 为核心对象，关注车辆采购价、采购时间、车况、保险、维修、空置、经营阶段、退出残值、生命周期总收入、生命周期总成本、单车 ROA 与 IRR。产品/订单层表示车辆在某个阶段采用的经营方式，当前阶段仅实现订阅，未来可在同一资产生命周期模型下扩展以租代购。
+
+未来建议新增 `vehicle_lifecycle_event` 表，用于记录单车完整经营轨迹：
+
+```text
+id
+vehicle_id
+event_type
+business_type
+related_order_id
+related_quote_id
+start_date
+end_date
+revenue_amount
+cost_amount
+mileage_start
+mileage_end
+vehicle_status_before
+vehicle_status_after
+remark
+created_at
+updated_at
+created_by
+updated_by
+deleted_at
+```
+
+`business_type` 建议支持：
+
+```text
+SUBSCRIPTION
+RENT_TO_OWN
+IDLE
+MAINTENANCE
+DISPOSAL
+OTHER
+```
+
+`event_type` 建议支持：
+
+```text
+PURCHASE
+PREPARE
+SUBSCRIPTION_START
+SUBSCRIPTION_END
+RENT_TO_OWN_START
+RENT_TO_OWN_END
+IDLE_START
+IDLE_END
+MAINTENANCE_START
+MAINTENANCE_END
+RETURN
+DISPOSAL
+SALE
+BUYOUT
+```
+
+该表建议在资产中心阶段实现；在重新开放以租代购产品线前，应先完成车辆生命周期事件和单车资产质量分析。
 
 ---
 
@@ -477,7 +552,7 @@ Next.js + NestJS + PostgreSQL + Prisma
 | id | uuid | 是 | 产品ID |
 | product_no | varchar(64) | 是 | 产品编号 |
 | name | varchar(128) | 是 | 产品名称 |
-| product_type | enum | 是 | SUBSCRIPTION / RENT_TO_OWN |
+| product_type | enum | 是 | 当前阶段只允许 SUBSCRIPTION；RENT_TO_OWN 保留为未来扩展值，暂不开放创建 |
 | status | enum | 是 | DRAFT / ACTIVE / INACTIVE |
 | description | text | 否 | 说明 |
 

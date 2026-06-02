@@ -268,6 +268,38 @@ enum VehicleModel {
   @@map("vehicle_model")
 }
 
+enum VehicleStatus {
+  DRAFT
+  IN_PREPARATION
+  AVAILABLE
+  RESERVED
+  LEASED
+  RENTED
+  RETURNED
+  MAINTENANCE
+  RETIRED
+
+  @@map("vehicle_status")
+}
+
+enum SalePriceStatus {
+  PENDING_INITIALIZE
+  EFFECTIVE
+  REVIEW_DUE
+  EXPIRED
+
+  @@map("sale_price_status")
+}
+
+enum VehicleSalePriceReviewType {
+  INITIAL_POOL
+  QUARTERLY_REVIEW
+  RETURN_REINIT
+  MANUAL_ADJUST
+
+  @@map("vehicle_sale_price_review_type")
+}
+
 enum BenefitType {
   WASH_CAR
   CAR_SWAP
@@ -990,6 +1022,67 @@ model ProductPriceRule {
   @@index([vehicleModel])
   @@index([status])
   @@map("product_price_rule")
+}
+
+model Vehicle {
+  id                            String                    @id @default(uuid()) @db.Uuid
+  vehicleNo                     String                    @unique @map("vehicle_no") @db.VarChar(64)
+  vin                           String?                   @unique @db.VarChar(64)
+  plateNo                       String?                   @unique @map("plate_no") @db.VarChar(32)
+  brand                         String                    @db.VarChar(64)
+  series                        String?                   @db.VarChar(64)
+  model                         String?                   @db.VarChar(64)
+  modelYear                     Int?                      @map("model_year")
+  vehicleModel                  VehicleModel?             @map("vehicle_model")
+  purchasePriceAmount           BigInt                    @map("purchase_price_amount")
+  purchaseDate                  DateTime?                 @map("purchase_date") @db.Date
+  currentSalePriceAmount        BigInt?                   @map("current_sale_price_amount")
+  currentSalePriceInitializedAt DateTime?                 @map("current_sale_price_initialized_at") @db.Timestamptz(6)
+  currentSalePriceReviewedAt    DateTime?                 @map("current_sale_price_reviewed_at") @db.Timestamptz(6)
+  nextSalePriceReviewAt         DateTime?                 @map("next_sale_price_review_at") @db.Date
+  salePriceReinitRequiredAt     DateTime?                 @map("sale_price_reinit_required_at") @db.Timestamptz(6)
+  salePriceStatus               SalePriceStatus           @default(PENDING_INITIALIZE) @map("sale_price_status")
+  registrationDate              DateTime?                 @map("registration_date") @db.Date
+  insuranceStartDate            DateTime?                 @map("insurance_start_date") @db.Date
+  insuranceEndDate              DateTime?                 @map("insurance_end_date") @db.Date
+  status                        VehicleStatus             @default(DRAFT)
+  currentMileageKm              Int                       @default(0) @map("current_mileage_km")
+  assetLocation                 String?                   @map("asset_location") @db.VarChar(128)
+  remark                        String?                   @db.Text
+  salePriceHistories            VehicleSalePriceHistory[]
+  createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                     String?                   @map("created_by") @db.Uuid
+  updatedBy                     String?                   @map("updated_by") @db.Uuid
+  deletedAt                     DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleModel])
+  @@index([status])
+  @@index([salePriceStatus])
+  @@index([nextSalePriceReviewAt])
+  @@index([salePriceReinitRequiredAt])
+  @@map("vehicle")
+}
+
+model VehicleSalePriceHistory {
+  id                    String                     @id @default(uuid()) @db.Uuid
+  vehicleId             String                     @map("vehicle_id") @db.Uuid
+  vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id])
+  beforeSalePriceAmount BigInt?                    @map("before_sale_price_amount")
+  afterSalePriceAmount  BigInt                     @map("after_sale_price_amount")
+  reviewType            VehicleSalePriceReviewType @map("review_type")
+  reviewQuarter         String?                    @map("review_quarter") @db.VarChar(16)
+  effectiveFrom         DateTime                   @map("effective_from") @db.Date
+  effectiveTo           DateTime?                  @map("effective_to") @db.Date
+  reason                String                     @db.Text
+  remark                String?                    @db.Text
+  createdAt             DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy             String?                    @map("created_by") @db.Uuid
+
+  @@index([vehicleId])
+  @@index([reviewType])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("vehicle_sale_price_history")
 }
 
 model SubscriptionQuote {

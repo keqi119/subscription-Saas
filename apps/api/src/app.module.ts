@@ -11,6 +11,7 @@ import { PrismaModule } from "./prisma/prisma.module";
 import { ProductModule } from "./product/product.module";
 import { RiskModule } from "./risk/risk.module";
 import { SystemModule } from "./system/system.module";
+import { VehicleModule } from "./vehicle/vehicle.module";
 
 @Module({
   imports: [
@@ -25,7 +26,8 @@ import { SystemModule } from "./system/system.module";
     OrderModule,
     ProductModule,
     RiskModule,
-    SystemModule
+    SystemModule,
+    VehicleModule
   ],
   controllers: [AppController],
   providers: [AppService]

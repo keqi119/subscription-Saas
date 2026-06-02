@@ -90,6 +90,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
     ]
   },
   {
+    code: "vehicles",
+    icon: "car",
+    label: "车辆资产",
+    path: "/vehicles",
+    permissionCode: PermissionCode.VEHICLE_VIEW
+  },
+  {
     code: "quotes",
     icon: "quote",
     label: "订阅报价",

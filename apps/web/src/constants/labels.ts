@@ -15,25 +15,36 @@ export const STATUS_LABELS: Record<string, string> = {
   ACTIVE: "启用",
   APPROVED: "已通过",
   ARCHIVED: "已归档",
+  AVAILABLE: "可用",
   BLACKLISTED: "黑名单",
   CANCELLED: "已取消",
   CONFIRMED: "已确认",
   COMPLETED: "已完成",
   DRAFT: "草稿",
+  EFFECTIVE: "生效中",
   EXPIRED: "已过期",
   FROZEN: "冻结",
   GENERATED: "已生成",
+  IN_PREPARATION: "整备中",
   INACTIVE: "停用",
   LEAD: "线索",
+  LEASED: "租赁中",
+  MAINTENANCE: "维修 / 整备",
   NEED_MORE_INFO: "待补件",
   PENDING: "待审核",
   PENDING_APPLICATION: "待进件",
   PENDING_CONTRACT: "待生成合同",
   PENDING_DELIVERY: "待交付",
+  PENDING_INITIALIZE: "待初始化",
   PENDING_PAYMENT: "待付款",
   PENDING_SIGN: "待签署",
   PENDING_VEHICLE: "待分车",
   REJECTED: "已拒绝",
+  RENTED: "已租赁",
+  RESERVED: "已预约",
+  RETIRED: "已退役",
+  RETURNED: "已退回",
+  REVIEW_DUE: "待复核",
   SIGNED: "已签署",
   SIGNING: "签署中",
   SUBMITTED: "已提交",
@@ -80,6 +91,13 @@ export const PRODUCT_VERSION_STATUS_LABELS: Record<string, string> = {
   INACTIVE: "已停用"
 };
 
+export const SALE_PRICE_REVIEW_TYPE_LABELS: Record<string, string> = {
+  INITIAL_POOL: "新入池初始化",
+  MANUAL_ADJUST: "人工调整",
+  QUARTERLY_REVIEW: "季度复核",
+  RETURN_REINIT: "退车再入池初始化"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",
@@ -120,7 +138,8 @@ export const MODULE_LABELS: Record<string, string> = {
   product: "产品中心",
   quote: "报价中心",
   risk: "风控中心",
-  system: "系统管理"
+  system: "系统管理",
+  vehicle: "车辆资产"
 };
 
 export const PERMISSION_LABELS: Record<string, string> = {
@@ -176,7 +195,16 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "role:manage": "管理角色",
   "role:view": "查看角色",
   "user:manage": "管理用户",
-  "user:view": "查看用户"
+  "user:view": "查看用户",
+  "vehicle:create": "新建车辆资产",
+  "vehicle:delete": "删除车辆资产",
+  "vehicle:history_view": "查看车辆销售价历史",
+  "vehicle:initialize_sale_price": "初始化车辆销售价",
+  "vehicle:manage": "管理车辆资产",
+  "vehicle:review_sale_price": "复核车辆销售价",
+  "vehicle:update": "编辑车辆资产",
+  "vehicle:update_status": "更新车辆状态",
+  "vehicle:view": "查看车辆资产"
 };
 
 export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
@@ -232,7 +260,16 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "role:manage": "允许维护角色权限和菜单",
   "role:view": "允许查看角色管理",
   "user:manage": "允许维护用户",
-  "user:view": "允许查看用户管理"
+  "user:view": "允许查看用户管理",
+  "vehicle:create": "允许新建车辆资产",
+  "vehicle:delete": "允许删除车辆资产",
+  "vehicle:history_view": "允许查看车辆销售价历史",
+  "vehicle:initialize_sale_price": "允许初始化车辆当前销售价",
+  "vehicle:manage": "允许维护车辆资产、状态和销售价",
+  "vehicle:review_sale_price": "允许复核车辆当前销售价",
+  "vehicle:update": "允许编辑车辆资产",
+  "vehicle:update_status": "允许更新车辆状态",
+  "vehicle:view": "允许查看车辆资产和销售价历史"
 };
 
 export const MENU_LABELS: Record<string, string> = {
@@ -251,7 +288,8 @@ export const MENU_LABELS: Record<string, string> = {
   "system.audit_logs": "操作日志",
   "system.permissions": "权限管理",
   "system.roles": "角色管理",
-  "system.users": "用户管理"
+  "system.users": "用户管理",
+  vehicles: "车辆资产"
 };
 
 export function labelOf(labels: Record<string, string>, value?: string | null) {

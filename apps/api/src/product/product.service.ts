@@ -7,13 +7,15 @@ import {
 import {
   ApplicationStatus,
   AuditAction,
+  MonthlyFeeMode,
   Prisma,
   ProductStatus,
   ProductType,
   ProductVersionStatus,
   QuoteStatus,
   RecordStatus,
-  RiskResultDecision
+  RiskResultDecision,
+  SubscriptionPlanStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -27,6 +29,7 @@ import {
   CreateProductDto,
   CreateProductVersionDto,
   CreateQuoteDto,
+  CreateSubscriptionPlanDto,
   CreateVehiclePackageDto,
   UpdateBenefitPackageDto,
   UpdateEnergyPackageDto,
@@ -35,7 +38,8 @@ import {
   UpdateProductDto,
   UpdateProductVersionDto,
   UpdateVehiclePackageDto,
-  UpdateQuoteDto
+  UpdateQuoteDto,
+  UpdateSubscriptionPlanDto
 } from "./dto/product.dto";
 
 const packageInclude = {
@@ -77,6 +81,25 @@ const priceRuleInclude = {
   }
 } satisfies Prisma.ProductPriceRuleInclude;
 
+const subscriptionPlanInclude = {
+  benefitPackage: { include: packageInclude },
+  energyPackage: { include: packageInclude },
+  mileagePackage: { include: packageInclude },
+  product: { select: { id: true, name: true, productNo: true, productType: true, status: true, deletedAt: true } },
+  productVersion: {
+    select: {
+      deletedAt: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      id: true,
+      productId: true,
+      status: true,
+      versionNo: true
+    }
+  },
+  vehiclePackage: { include: packageInclude }
+} satisfies Prisma.SubscriptionPlanInclude;
+
 const quoteInclude = {
   application: {
     select: { applicationNo: true, id: true, salesUserId: true, status: true }
@@ -95,6 +118,7 @@ const quoteInclude = {
 type ProductWithDetails = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
 type VersionWithDetails = Prisma.ProductVersionGetPayload<{ include: typeof versionInclude }>;
 type PriceRuleWithDetails = Prisma.ProductPriceRuleGetPayload<{ include: typeof priceRuleInclude }>;
+type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ProductListVersion = ProductWithDetails["versions"][number];
 type Tx = Prisma.TransactionClient;
@@ -284,8 +308,16 @@ export class ProductService {
 
   async activateVersion(id: string, user: RequestUser, context: RequestContext) {
     const before = await this.findVersionOrThrow(id);
-    if (before.priceRules.length === 0) {
-      throw new BadRequestException("At least one price rule is required before activation.");
+    const activePlan = await this.prisma.subscriptionPlan.findFirst({
+      include: subscriptionPlanInclude,
+      where: {
+        deletedAt: null,
+        productVersionId: id,
+        status: SubscriptionPlanStatus.ACTIVE
+      }
+    });
+    if (!activePlan || !isSubscriptionPlanComponentsActive(activePlan)) {
+      throw new BadRequestException("璇峰厛閰嶇疆骞跺惎鐢ㄨ嚦灏戜竴涓闃呭椁愬悗鍐嶆縺娲讳骇鍝佺増鏈€?);
     }
 
     const version = await this.prisma.$transaction(async (tx) => {
@@ -703,6 +735,187 @@ export class ProductService {
     return toPackageView(row);
   }
 
+  async listSubscriptionPlans() {
+    const plans = await this.prisma.subscriptionPlan.findMany({
+      include: subscriptionPlanInclude,
+      orderBy: { createdAt: "desc" },
+      where: { deletedAt: null }
+    });
+    return plans.map(toSubscriptionPlanView);
+  }
+
+  async getSubscriptionPlan(id: string) {
+    const plan = await this.findSubscriptionPlanOrThrow(id);
+    return toSubscriptionPlanView(plan);
+  }
+
+  async createSubscriptionPlan(
+    dto: CreateSubscriptionPlanDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
+    const effectiveFrom = parseDateOnly(dto.effectiveFrom, "effectiveFrom");
+    const effectiveTo = dto.effectiveTo ? parseDateOnly(dto.effectiveTo, "effectiveTo") : null;
+    ensureValidDateRange(effectiveFrom, effectiveTo);
+    const packages = await this.resolveSubscriptionPlanPackages({
+      benefitPackageId: dto.benefitPackageId,
+      energyPackageId: dto.energyPackageId,
+      mileagePackageId: dto.mileagePackageId,
+      productId: dto.productId,
+      productVersionId: dto.productVersionId,
+      vehiclePackageId: dto.vehiclePackageId
+    });
+    if (dto.status === SubscriptionPlanStatus.ACTIVE) {
+      ensureSubscriptionPlanCanActivate({
+        ...packages,
+        effectiveFrom,
+        effectiveTo
+      });
+    }
+
+    const plan = await this.prisma.subscriptionPlan.create({
+      data: {
+        baseMonthlyFeeAmount:
+          dto.baseMonthlyFeeAmount === undefined || dto.baseMonthlyFeeAmount === null
+            ? null
+            : BigInt(dto.baseMonthlyFeeAmount),
+        benefitPackageId: packages.benefitPackage?.id ?? null,
+        createdBy: user.id,
+        effectiveFrom,
+        effectiveTo,
+        energyPackageId: packages.energyPackage.id,
+        maxPeriodMonths: dto.maxPeriodMonths,
+        mileagePackageId: packages.mileagePackage.id,
+        minPeriodMonths: dto.minPeriodMonths,
+        monthlyFeeCapRate:
+          dto.monthlyFeeCapRate === undefined || dto.monthlyFeeCapRate === null
+            ? null
+            : new Prisma.Decimal(dto.monthlyFeeCapRate),
+        monthlyFeeMode: dto.monthlyFeeMode ?? MonthlyFeeMode.MANUAL_QUOTE,
+        monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? packages.vehiclePackage.monthlyFeeRate),
+        planName: dto.planName,
+        planNo: await generateBusinessNo(this.prisma, "subscriptionPlan", "PLAN"),
+        productId: packages.product.id,
+        productVersionId: packages.productVersion.id,
+        remark: dto.remark,
+        status: dto.status ?? SubscriptionPlanStatus.DRAFT,
+        updatedBy: user.id,
+        vehiclePackageId: packages.vehiclePackage.id
+      },
+      include: subscriptionPlanInclude
+    });
+
+    await this.writeAudit(AuditAction.CREATE, "subscription_plan", plan.id, undefined, toSubscriptionPlanView(plan), user, context);
+    return toSubscriptionPlanView(plan);
+  }
+
+  async updateSubscriptionPlan(
+    id: string,
+    dto: UpdateSubscriptionPlanDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.findSubscriptionPlanOrThrow(id);
+    const minPeriodMonths = dto.minPeriodMonths ?? before.minPeriodMonths;
+    const maxPeriodMonths = dto.maxPeriodMonths ?? before.maxPeriodMonths;
+    ensureValidPeriod(minPeriodMonths, maxPeriodMonths);
+    const effectiveFrom = dto.effectiveFrom
+      ? parseDateOnly(dto.effectiveFrom, "effectiveFrom")
+      : before.effectiveFrom;
+    const effectiveTo = dto.effectiveTo === undefined
+      ? before.effectiveTo
+      : dto.effectiveTo
+        ? parseDateOnly(dto.effectiveTo, "effectiveTo")
+        : null;
+    ensureValidDateRange(effectiveFrom, effectiveTo);
+    const packages = await this.resolveSubscriptionPlanPackages({
+      benefitPackageId: dto.benefitPackageId === undefined ? before.benefitPackageId : dto.benefitPackageId,
+      energyPackageId: dto.energyPackageId ?? before.energyPackageId,
+      mileagePackageId: dto.mileagePackageId ?? before.mileagePackageId,
+      productId: before.productId,
+      productVersionId: before.productVersionId,
+      vehiclePackageId: dto.vehiclePackageId ?? before.vehiclePackageId
+    });
+    if (before.status === SubscriptionPlanStatus.ACTIVE) {
+      ensureSubscriptionPlanCanActivate({
+        ...packages,
+        effectiveFrom,
+        effectiveTo
+      });
+    }
+
+    const plan = await this.prisma.subscriptionPlan.update({
+      data: {
+        baseMonthlyFeeAmount:
+          dto.baseMonthlyFeeAmount === undefined
+            ? undefined
+            : dto.baseMonthlyFeeAmount === null
+              ? null
+              : BigInt(dto.baseMonthlyFeeAmount),
+        benefitPackageId: packages.benefitPackage?.id ?? null,
+        effectiveFrom,
+        effectiveTo,
+        energyPackageId: packages.energyPackage.id,
+        maxPeriodMonths,
+        mileagePackageId: packages.mileagePackage.id,
+        minPeriodMonths,
+        monthlyFeeCapRate:
+          dto.monthlyFeeCapRate === undefined
+            ? undefined
+            : dto.monthlyFeeCapRate === null
+              ? null
+              : new Prisma.Decimal(dto.monthlyFeeCapRate),
+        monthlyFeeMode: dto.monthlyFeeMode,
+        monthlyFeeRate:
+          dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
+        planName: dto.planName,
+        remark: dto.remark,
+        updatedBy: user.id,
+        vehiclePackageId: packages.vehiclePackage.id
+      },
+      include: subscriptionPlanInclude,
+      where: { id }
+    });
+
+    await this.writeAudit(AuditAction.UPDATE, "subscription_plan", id, toSubscriptionPlanView(before), toSubscriptionPlanView(plan), user, context);
+    return toSubscriptionPlanView(plan);
+  }
+
+  async setSubscriptionPlanStatus(
+    id: string,
+    status: SubscriptionPlanStatus,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.findSubscriptionPlanOrThrow(id);
+    if (status === SubscriptionPlanStatus.ACTIVE) {
+      ensureSubscriptionPlanCanActivate(before);
+    }
+    const plan = await this.prisma.subscriptionPlan.update({
+      data: { status, updatedBy: user.id },
+      include: subscriptionPlanInclude,
+      where: { id }
+    });
+    await this.writeAudit(AuditAction.UPDATE, "subscription_plan", id, toSubscriptionPlanView(before), toSubscriptionPlanView(plan), user, context);
+    return toSubscriptionPlanView(plan);
+  }
+
+  async deleteSubscriptionPlan(id: string, user: RequestUser, context: RequestContext) {
+    const before = await this.findSubscriptionPlanOrThrow(id);
+    const plan = await this.prisma.subscriptionPlan.update({
+      data: {
+        deletedAt: new Date(),
+        status: SubscriptionPlanStatus.INACTIVE,
+        updatedBy: user.id
+      },
+      include: subscriptionPlanInclude,
+      where: { id }
+    });
+    await this.writeAudit(AuditAction.DELETE, "subscription_plan", id, toSubscriptionPlanView(before), toSubscriptionPlanView(plan), user, context);
+    return toSubscriptionPlanView(plan);
+  }
+
   async listQuotes(user: RequestUser) {
     const quotes = await this.prisma.subscriptionQuote.findMany({
       include: quoteInclude,
@@ -1035,6 +1248,70 @@ export class ProductService {
     return quote;
   }
 
+  private async findSubscriptionPlanOrThrow(id: string) {
+    const plan = await this.prisma.subscriptionPlan.findUnique({
+      include: subscriptionPlanInclude,
+      where: { id }
+    });
+    if (!plan || plan.deletedAt) {
+      throw new NotFoundException("Subscription plan not found.");
+    }
+    return plan;
+  }
+
+  private async resolveSubscriptionPlanPackages(input: {
+    benefitPackageId?: string | null;
+    energyPackageId: string;
+    mileagePackageId: string;
+    productId: string;
+    productVersionId: string;
+    vehiclePackageId: string;
+  }) {
+    const [product, productVersion, vehiclePackage, mileagePackage, energyPackage, benefitPackage] = await Promise.all([
+      this.prisma.product.findUnique({ where: { id: input.productId } }),
+      this.prisma.productVersion.findUnique({ where: { id: input.productVersionId } }),
+      this.prisma.vehiclePackage.findUnique({ include: packageInclude, where: { id: input.vehiclePackageId } }),
+      this.prisma.mileagePackage.findUnique({ include: packageInclude, where: { id: input.mileagePackageId } }),
+      this.prisma.energyPackage.findUnique({ include: packageInclude, where: { id: input.energyPackageId } }),
+      input.benefitPackageId
+        ? this.prisma.benefitPackage.findUnique({ include: packageInclude, where: { id: input.benefitPackageId } })
+        : Promise.resolve(null)
+    ]);
+
+    if (!product || product.deletedAt || !productVersion || productVersion.deletedAt) {
+      throw new NotFoundException("Product or product version not found.");
+    }
+    ensureSubscriptionProductType(product.productType);
+    if (
+      !vehiclePackage ||
+      vehiclePackage.deletedAt ||
+      !mileagePackage ||
+      mileagePackage.deletedAt ||
+      !energyPackage ||
+      energyPackage.deletedAt ||
+      (input.benefitPackageId && (!benefitPackage || benefitPackage.deletedAt))
+    ) {
+      throw new BadRequestException("鎵€閫夎闃呯粍浠朵笉瀛樺湪鎴栧凡鍒犻櫎銆?);
+    }
+    if (
+      productVersion.productId !== product.id ||
+      [vehiclePackage, mileagePackage, energyPackage, benefitPackage].some(
+        (item) => item && (item.productId !== product.id || item.productVersionId !== productVersion.id)
+      )
+    ) {
+      throw new BadRequestException("鎵€閫夎闃呯粍浠朵笉灞炰簬鍚屼竴涓骇鍝佺増鏈€?);
+    }
+
+    return {
+      benefitPackage,
+      energyPackage,
+      mileagePackage,
+      product,
+      productVersion,
+      vehiclePackage
+    };
+  }
+
   private async findActivePriceRule(productVersionId: string, vehicleModel: CreateQuoteDto["vehicleModel"]) {
     const version = await this.findVersionOrThrow(productVersionId);
     ensureSubscriptionProductType(version.product.productType);
@@ -1109,13 +1386,18 @@ export class ProductService {
 }
 
 async function generateBusinessNo(
-  tx: Pick<Tx, "product" | "subscriptionQuote">,
-  table: "product" | "subscriptionQuote",
+  tx: Pick<Tx, "product" | "subscriptionPlan" | "subscriptionQuote">,
+  table: "product" | "subscriptionPlan" | "subscriptionQuote",
   prefix: string
 ) {
   const today = new Date();
   const datePart = today.toISOString().slice(0, 10).replaceAll("-", "");
-  const count = table === "product" ? await tx.product.count() : await tx.subscriptionQuote.count();
+  const count =
+    table === "product"
+      ? await tx.product.count()
+      : table === "subscriptionPlan"
+        ? await tx.subscriptionPlan.count()
+        : await tx.subscriptionQuote.count();
   return `${prefix}${datePart}${String(count + 1).padStart(5, "0")}`;
 }
 
@@ -1161,6 +1443,48 @@ export function ensurePeriodInRange(
   if (periodMonths < rule.minPeriodMonths || periodMonths > rule.maxPeriodMonths) {
     throw new BadRequestException("periodMonths is outside the product price rule range.");
   }
+}
+
+function ensureSubscriptionPlanCanActivate(plan: {
+  benefitPackage?: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus } | null;
+  effectiveFrom: Date;
+  effectiveTo: Date | null;
+  energyPackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+  mileagePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+  product: { deletedAt: Date | null; id: string; productType: ProductType; status: ProductStatus };
+  productVersion: { deletedAt: Date | null; id: string; productId: string };
+  vehiclePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+}) {
+  ensureSubscriptionProductType(plan.product.productType);
+  ensureValidDateRange(plan.effectiveFrom, plan.effectiveTo);
+  if (plan.product.deletedAt || plan.product.status === ProductStatus.INACTIVE || plan.productVersion.deletedAt) {
+    throw new BadRequestException("浜у搧鎴栦骇鍝佺増鏈姸鎬佷笉鍏佽鍚敤璁㈤槄濂楅銆?);
+  }
+  if (!isSubscriptionPlanComponentsActive(plan)) {
+    throw new BadRequestException("璇峰厛鍚敤濂楅鍏宠仈鐨勮溅杈嗕娇鐢ㄨ垂銆侀噷绋嬪寘銆佽ˉ鑳藉寘鍜屾潈鐩婂寘銆?);
+  }
+}
+
+function isSubscriptionPlanComponentsActive(plan: {
+  benefitPackage?: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus } | null;
+  energyPackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+  mileagePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+  product: { id: string };
+  productVersion: { id: string; productId: string };
+  vehiclePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+}) {
+  const packages = [plan.vehiclePackage, plan.mileagePackage, plan.energyPackage, plan.benefitPackage].filter(Boolean);
+  return (
+    plan.productVersion.productId === plan.product.id &&
+    packages.every(
+      (item) =>
+        item &&
+        !item.deletedAt &&
+        item.status === RecordStatus.ACTIVE &&
+        item.productId === plan.product.id &&
+        item.productVersionId === plan.productVersion.id
+    )
+  );
 }
 
 function ensurePackagesSameVersion(
@@ -1299,6 +1623,39 @@ function toPriceRuleView(rule: Prisma.ProductPriceRuleGetPayload<{ include?: typ
     productVersionId: rule.productVersionId,
     status: rule.status,
     vehicleModel: rule.vehicleModel
+  };
+}
+
+function toSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
+  return {
+    baseMonthlyFeeAmount: plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
+    benefitPackage: plan.benefitPackage ? toPackageView(plan.benefitPackage) : null,
+    benefitPackageId: plan.benefitPackageId,
+    createdAt: plan.createdAt,
+    deletedAt: plan.deletedAt,
+    effectiveFrom: plan.effectiveFrom.toISOString().slice(0, 10),
+    effectiveTo: plan.effectiveTo?.toISOString().slice(0, 10) ?? null,
+    energyPackage: toPackageView(plan.energyPackage),
+    energyPackageId: plan.energyPackageId,
+    id: plan.id,
+    maxPeriodMonths: plan.maxPeriodMonths,
+    mileagePackage: toPackageView(plan.mileagePackage),
+    mileagePackageId: plan.mileagePackageId,
+    minPeriodMonths: plan.minPeriodMonths,
+    monthlyFeeCapRate: plan.monthlyFeeCapRate === null ? null : Number(plan.monthlyFeeCapRate),
+    monthlyFeeMode: plan.monthlyFeeMode,
+    monthlyFeeRate: Number(plan.monthlyFeeRate),
+    planName: plan.planName,
+    planNo: plan.planNo,
+    product: plan.product,
+    productId: plan.productId,
+    productVersion: plan.productVersion,
+    productVersionId: plan.productVersionId,
+    remark: plan.remark,
+    status: plan.status,
+    updatedAt: plan.updatedAt,
+    vehiclePackage: toPackageView(plan.vehiclePackage),
+    vehiclePackageId: plan.vehiclePackageId
   };
 }
 

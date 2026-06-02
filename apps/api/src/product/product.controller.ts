@@ -12,6 +12,7 @@ import {
   CreateProductDto,
   CreateProductVersionDto,
   CreateQuoteDto,
+  CreateSubscriptionPlanDto,
   CreateVehiclePackageDto,
   UpdateBenefitPackageDto,
   UpdateEnergyPackageDto,
@@ -20,7 +21,8 @@ import {
   UpdateProductDto,
   UpdateProductVersionDto,
   UpdateVehiclePackageDto,
-  UpdateQuoteDto
+  UpdateQuoteDto,
+  UpdateSubscriptionPlanDto
 } from "./dto/product.dto";
 import { ProductService } from "./product.service";
 
@@ -310,6 +312,52 @@ export class ProductController {
   @RequirePermissions(PermissionCode.BENEFIT_PACKAGE_DELETE)
   deleteBenefitPackage(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.productService.deleteBenefitPackage(id, request.user, requestContext(request));
+  }
+
+  @Get("subscription-plans")
+  @RequirePermissions(PermissionCode.PRODUCT_VIEW)
+  listSubscriptionPlans() {
+    return this.productService.listSubscriptionPlans();
+  }
+
+  @Post("subscription-plans")
+  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  createSubscriptionPlan(@Body() dto: CreateSubscriptionPlanDto, @Req() request: AuthenticatedRequest) {
+    return this.productService.createSubscriptionPlan(dto, request.user, requestContext(request));
+  }
+
+  @Get("subscription-plans/:id")
+  @RequirePermissions(PermissionCode.PRODUCT_VIEW)
+  getSubscriptionPlan(@Param("id") id: string) {
+    return this.productService.getSubscriptionPlan(id);
+  }
+
+  @Patch("subscription-plans/:id")
+  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  updateSubscriptionPlan(
+    @Param("id") id: string,
+    @Body() dto: UpdateSubscriptionPlanDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.productService.updateSubscriptionPlan(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("subscription-plans/:id/activate")
+  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  activateSubscriptionPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.productService.setSubscriptionPlanStatus(id, "ACTIVE", request.user, requestContext(request));
+  }
+
+  @Post("subscription-plans/:id/deactivate")
+  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  deactivateSubscriptionPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.productService.setSubscriptionPlanStatus(id, "INACTIVE", request.user, requestContext(request));
+  }
+
+  @Delete("subscription-plans/:id")
+  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  deleteSubscriptionPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.productService.deleteSubscriptionPlan(id, request.user, requestContext(request));
   }
 
   @Get("quotes")

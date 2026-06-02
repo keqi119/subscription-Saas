@@ -179,6 +179,22 @@ enum QuoteStatus {
   @@map("quote_status")
 }
 
+enum SubscriptionPlanStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+
+  @@map("subscription_plan_status")
+}
+
+enum MonthlyFeeMode {
+  MANUAL_QUOTE
+  FIXED_AMOUNT
+  RATE_FORMULA
+
+  @@map("monthly_fee_mode")
+}
+
 enum OrderStatus {
   PENDING_CONTRACT
   PENDING_SIGN
@@ -741,6 +757,7 @@ model Product {
   mileagePackages MileagePackage[]
   energyPackages EnergyPackage[]
   benefitPackages BenefitPackage[]
+  subscriptionPlans SubscriptionPlan[]
   createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy   String?          @map("created_by") @db.Uuid
@@ -768,6 +785,7 @@ model ProductVersion {
   mileagePackages MileagePackage[]
   energyPackages EnergyPackage[]
   benefitPackages BenefitPackage[]
+  subscriptionPlans SubscriptionPlan[]
   quotes        SubscriptionQuote[]
   orders        SubscriptionOrder[]
   createdAt     DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -805,6 +823,7 @@ model VehiclePackage {
   status                     RecordStatus   @default(ACTIVE)
   remark                     String?        @db.Text
   quotes                     SubscriptionQuote[]
+  subscriptionPlans          SubscriptionPlan[]
   createdAt                  DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?        @map("created_by") @db.Uuid
@@ -832,6 +851,7 @@ model MileagePackage {
   status               RecordStatus   @default(ACTIVE)
   remark               String?        @db.Text
   quotes               SubscriptionQuote[]
+  subscriptionPlans    SubscriptionPlan[]
   createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy            String?        @map("created_by") @db.Uuid
@@ -860,6 +880,7 @@ model EnergyPackage {
   status               RecordStatus   @default(ACTIVE)
   remark               String?        @db.Text
   quotes               SubscriptionQuote[]
+  subscriptionPlans    SubscriptionPlan[]
   createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy            String?        @map("created_by") @db.Uuid
@@ -887,6 +908,7 @@ model BenefitPackage {
   status               RecordStatus   @default(ACTIVE)
   remark               String?        @db.Text
   quotes               SubscriptionQuote[]
+  subscriptionPlans    SubscriptionPlan[]
   createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy            String?        @map("created_by") @db.Uuid
@@ -898,6 +920,50 @@ model BenefitPackage {
   @@index([benefitType])
   @@index([status])
   @@map("benefit_package")
+}
+
+model SubscriptionPlan {
+  id                     String                 @id @default(uuid()) @db.Uuid
+  planNo                 String                 @unique @map("plan_no") @db.VarChar(64)
+  planName               String                 @map("plan_name") @db.VarChar(128)
+  productId              String                 @map("product_id") @db.Uuid
+  product                Product                @relation(fields: [productId], references: [id])
+  productVersionId       String                 @map("product_version_id") @db.Uuid
+  productVersion         ProductVersion         @relation(fields: [productVersionId], references: [id])
+  vehiclePackageId       String                 @map("vehicle_package_id") @db.Uuid
+  vehiclePackage         VehiclePackage         @relation(fields: [vehiclePackageId], references: [id])
+  mileagePackageId       String                 @map("mileage_package_id") @db.Uuid
+  mileagePackage         MileagePackage         @relation(fields: [mileagePackageId], references: [id])
+  energyPackageId        String                 @map("energy_package_id") @db.Uuid
+  energyPackage          EnergyPackage          @relation(fields: [energyPackageId], references: [id])
+  benefitPackageId       String?                @map("benefit_package_id") @db.Uuid
+  benefitPackage         BenefitPackage?        @relation(fields: [benefitPackageId], references: [id])
+  monthlyFeeMode         MonthlyFeeMode         @default(MANUAL_QUOTE) @map("monthly_fee_mode")
+  baseMonthlyFeeAmount   BigInt?                @map("base_monthly_fee_amount")
+  monthlyFeeRate         Decimal                @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
+  monthlyFeeCapRate      Decimal?               @map("monthly_fee_cap_rate") @db.Decimal(8, 6)
+  minPeriodMonths        Int                    @map("min_period_months")
+  maxPeriodMonths        Int                    @map("max_period_months")
+  status                 SubscriptionPlanStatus @default(DRAFT)
+  effectiveFrom          DateTime               @map("effective_from") @db.Date
+  effectiveTo            DateTime?              @map("effective_to") @db.Date
+  remark                 String?                @db.Text
+  quotes                 SubscriptionQuote[]
+  createdAt              DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                @map("created_by") @db.Uuid
+  updatedBy              String?                @map("updated_by") @db.Uuid
+  deletedAt              DateTime?              @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([vehiclePackageId])
+  @@index([mileagePackageId])
+  @@index([energyPackageId])
+  @@index([benefitPackageId])
+  @@index([status])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("subscription_plan")
 }
 
 model ProductPriceRule {
@@ -938,6 +1004,8 @@ model SubscriptionQuote {
   productId                  String          @map("product_id") @db.Uuid
   productVersionId           String          @map("product_version_id") @db.Uuid
   productVersion             ProductVersion  @relation(fields: [productVersionId], references: [id])
+  subscriptionPlanId         String?         @map("subscription_plan_id") @db.Uuid
+  subscriptionPlan           SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
   vehiclePackageId           String?         @map("vehicle_package_id") @db.Uuid
   vehiclePackage             VehiclePackage? @relation(fields: [vehiclePackageId], references: [id])
   mileagePackageId           String?         @map("mileage_package_id") @db.Uuid
@@ -947,6 +1015,8 @@ model SubscriptionQuote {
   benefitPackageId           String?         @map("benefit_package_id") @db.Uuid
   benefitPackage             BenefitPackage? @relation(fields: [benefitPackageId], references: [id])
   packageSnapshot            Json?           @map("package_snapshot")
+  depositRuleSnapshot        Json?           @map("deposit_rule_snapshot")
+  monthlyFeeCapAmount        BigInt?         @map("monthly_fee_cap_amount")
   vehicleModel               VehicleModel    @map("vehicle_model")
   vehiclePurchasePriceAmount BigInt          @map("vehicle_purchase_price_amount")
   monthlyFeeRate             Decimal         @map("monthly_fee_rate") @db.Decimal(8, 6)
@@ -975,6 +1045,7 @@ model SubscriptionQuote {
   @@index([riskResultId])
   @@index([productId])
   @@index([productVersionId])
+  @@index([subscriptionPlanId])
   @@index([vehiclePackageId])
   @@index([mileagePackageId])
   @@index([energyPackageId])

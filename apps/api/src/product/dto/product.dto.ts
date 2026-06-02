@@ -1,10 +1,12 @@
 import {
   BenefitType,
+  MonthlyFeeMode,
   ProductStatus,
   ProductType,
   ProductVersionStatus,
   QuoteStatus,
   RecordStatus,
+  SubscriptionPlanStatus,
   VehicleModel
 } from "@prisma/client";
 import {
@@ -241,6 +243,139 @@ export class CreateQuoteDto {
   @IsInt()
   @Min(0)
   energyLimitCount?: number | null;
+}
+
+export class CreateSubscriptionPlanDto {
+  @IsString()
+  planName!: string;
+
+  @IsUUID()
+  productId!: string;
+
+  @IsUUID()
+  productVersionId!: string;
+
+  @IsUUID()
+  vehiclePackageId!: string;
+
+  @IsUUID()
+  mileagePackageId!: string;
+
+  @IsUUID()
+  energyPackageId!: string;
+
+  @IsOptional()
+  @IsUUID()
+  benefitPackageId?: string | null;
+
+  @IsOptional()
+  @IsEnum(MonthlyFeeMode)
+  monthlyFeeMode?: MonthlyFeeMode;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  baseMonthlyFeeAmount?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  monthlyFeeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  monthlyFeeCapRate?: number | null;
+
+  @IsInt()
+  @Min(1)
+  minPeriodMonths!: number;
+
+  @IsInt()
+  @Min(1)
+  maxPeriodMonths!: number;
+
+  @IsOptional()
+  @IsEnum(SubscriptionPlanStatus)
+  status?: SubscriptionPlanStatus;
+
+  @IsString()
+  effectiveFrom!: string;
+
+  @IsOptional()
+  @IsString()
+  effectiveTo?: string | null;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class UpdateSubscriptionPlanDto {
+  @IsOptional()
+  @IsString()
+  planName?: string;
+
+  @IsOptional()
+  @IsUUID()
+  vehiclePackageId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  mileagePackageId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  energyPackageId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  benefitPackageId?: string | null;
+
+  @IsOptional()
+  @IsEnum(MonthlyFeeMode)
+  monthlyFeeMode?: MonthlyFeeMode;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  baseMonthlyFeeAmount?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  monthlyFeeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  monthlyFeeCapRate?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  minPeriodMonths?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxPeriodMonths?: number;
+
+  @IsOptional()
+  @IsString()
+  effectiveFrom?: string;
+
+  @IsOptional()
+  @IsString()
+  effectiveTo?: string | null;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
 }
 
 export class CreateVehiclePackageDto {

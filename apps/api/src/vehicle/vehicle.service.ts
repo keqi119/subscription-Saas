@@ -80,18 +80,14 @@ export class VehicleService {
   }
 
   async createVehicle(dto: CreateVehicleDto, user: RequestUser, context: RequestContext) {
+    assertRequiredString(dto.vin, "VIN 必填");
+    if (!dto.vehicleModel) {
+      throw new BadRequestException("车型代码必填");
+    }
     assertPositiveAmount(dto.purchasePriceAmount, "车辆采购价必须大于 0");
     assertCanCreateAsAvailable(dto.status ?? VehicleStatus.DRAFT);
 
-    const vehicle = await withUniqueBusinessNoRetry(() => this.prisma.vehicle.create({
-      data: {
-        ...createVehicleData(dto),
-        createdBy: user.id,
-        updatedBy: user.id,
-        vehicleNo: createBusinessNo("VEH")
-      },
-      include: vehicleInclude
-    }));
+    const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id);
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -365,6 +361,22 @@ export class VehicleService {
   }
 }
 
+async function createVehicleWithRetry(prisma: PrismaService, dto: CreateVehicleDto, operatorId: string) {
+  try {
+    return await withUniqueBusinessNoRetry(() => prisma.vehicle.create({
+      data: {
+        ...createVehicleData(dto),
+        createdBy: operatorId,
+        updatedBy: operatorId,
+        vehicleNo: createBusinessNo("VEH")
+      },
+      include: vehicleInclude
+    }));
+  } catch (error) {
+    throwVehicleUniqueError(error);
+  }
+}
+
 function createVehicleData(dto: CreateVehicleDto): Omit<Prisma.VehicleCreateInput, "vehicleNo"> {
   return {
     assetLocation: dto.assetLocation,
@@ -418,6 +430,12 @@ function updateVehicleData(dto: UpdateVehicleDto, operatorId: string): Prisma.Ve
 function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined) {
   if (value !== undefined) {
     target[key] = value;
+  }
+}
+
+function assertRequiredString(value: string | null | undefined, message: string) {
+  if (!value?.trim()) {
+    throw new BadRequestException(message);
   }
 }
 
@@ -491,6 +509,30 @@ function assertPositiveAmount(amount: number, message: string) {
 
 function isPositiveBigInt(value: bigint | null | undefined) {
   return value !== null && value !== undefined && value > 0n;
+}
+
+function throwVehicleUniqueError(error: unknown): never {
+  if (!isPrismaUniqueError(error)) {
+    throw error;
+  }
+
+  const target = Array.isArray(error.meta?.target) ? error.meta.target.join(",") : String(error.meta?.target ?? "");
+  if (target.includes("vin")) {
+    throw new BadRequestException("VIN 已存在");
+  }
+  if (target.includes("plate")) {
+    throw new BadRequestException("车牌号已存在");
+  }
+  throw new BadRequestException("车辆编号已存在，请重试");
+}
+
+function isPrismaUniqueError(error: unknown): error is { code: string; meta?: { target?: unknown } } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
 }
 
 function parseOptionalDateOnly(input: string | null | undefined, fieldName: string) {

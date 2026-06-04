@@ -4,6 +4,7 @@ import {
   CarOutlined,
   DollarOutlined,
   HistoryOutlined,
+  PlusOutlined,
   ReloadOutlined,
   SyncOutlined
 } from "@ant-design/icons";
@@ -32,6 +33,7 @@ import { SALE_PRICE_REVIEW_TYPE_LABELS, STATUS_LABELS, labelOf } from "../../con
 import { apiFetch, ApiError } from "../../lib/api";
 
 interface Vehicle {
+  assetLocation?: string | null;
   brand: string;
   currentMileageKm: number;
   currentSalePriceAmount?: number | null;
@@ -42,6 +44,9 @@ interface Vehicle {
   modelYear?: number | null;
   nextSalePriceReviewAt?: string | null;
   plateNo?: string | null;
+  purchaseDate?: string | null;
+  purchasePriceAmount: number;
+  remark?: string | null;
   salePriceHistories?: SalePriceHistory[];
   salePriceReinitRequiredAt?: string | null;
   salePriceStatus: string;
@@ -63,6 +68,21 @@ interface SalePriceHistory {
   remark?: string | null;
   reviewQuarter?: string | null;
   reviewType: string;
+}
+
+interface CreateVehicleValues {
+  assetLocation?: string | null;
+  brand: string;
+  currentMileageKm?: number;
+  model?: string | null;
+  modelYear?: number | null;
+  plateNo?: string | null;
+  purchaseDate?: Dayjs | null;
+  purchasePriceAmountYuan: number;
+  remark?: string | null;
+  series?: string | null;
+  vehicleModel: "ET5" | "ET7" | "ES6";
+  vin: string;
 }
 
 interface InitializeSalePriceValues {
@@ -117,6 +137,8 @@ const vehicleStatusOptions = [
   "RETIRED"
 ].map((value) => ({ label: labelOf(STATUS_LABELS, value), value }));
 
+const vehicleModelOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+
 const returnReinitSourceStatuses = new Set(["LEASED", "RENTED", "RESERVED", "RETURNED", "MAINTENANCE"]);
 
 function formatYuan(value?: number | null) {
@@ -149,10 +171,12 @@ function toReviewQuarter(date: Dayjs) {
 
 export default function VehiclesPage() {
   const { message } = App.useApp();
+  const [createForm] = Form.useForm<CreateVehicleValues>();
   const [initializeForm] = Form.useForm<InitializeSalePriceValues>();
   const [reviewForm] = Form.useForm<ReviewSalePriceValues>();
   const [statusForm] = Form.useForm<StatusValues>();
   const [activeTab, setActiveTab] = useState("vehicles");
+  const [createOpen, setCreateOpen] = useState(false);
   const [dueReviews, setDueReviews] = useState<Vehicle[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyRows, setHistoryRows] = useState<SalePriceHistory[]>([]);
@@ -187,6 +211,43 @@ export default function VehiclesPage() {
     () => buildVehicleColumns(openInitialize, openReview, openHistory, openStatus),
     []
   );
+
+  function openCreateVehicle() {
+    setCreateOpen(true);
+    createForm.setFieldsValue({
+      brand: "NIO",
+      currentMileageKm: 0,
+      vehicleModel: "ET5"
+    });
+  }
+
+  async function saveCreateVehicle(values: CreateVehicleValues) {
+    try {
+      await apiFetch<Vehicle>("/vehicles", {
+        body: JSON.stringify({
+          assetLocation: values.assetLocation,
+          brand: values.brand,
+          currentMileageKm: values.currentMileageKm ?? 0,
+          model: values.model,
+          modelYear: values.modelYear,
+          plateNo: values.plateNo,
+          purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
+          purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
+          remark: values.remark,
+          series: values.series,
+          vehicleModel: values.vehicleModel,
+          vin: values.vin
+        }),
+        method: "POST"
+      });
+      void message.success("车辆已创建");
+      setCreateOpen(false);
+      createForm.resetFields();
+      await loadData();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
 
   function openInitialize(vehicle: Vehicle) {
     const reviewType =
@@ -309,9 +370,14 @@ export default function VehiclesPage() {
             </Typography.Title>
             <Typography.Text type="secondary">销售价初始化、季度复核与退车再入池管理</Typography.Text>
           </div>
-          <Button icon={<ReloadOutlined />} loading={loading} onClick={loadData}>
-            刷新
-          </Button>
+          <Space>
+            <Button icon={<PlusOutlined />} onClick={openCreateVehicle} type="primary">
+              新增车辆
+            </Button>
+            <Button icon={<ReloadOutlined />} loading={loading} onClick={loadData}>
+              刷新
+            </Button>
+          </Space>
         </Space>
 
         <Tabs
@@ -342,6 +408,57 @@ export default function VehiclesPage() {
           ]}
         />
       </Space>
+
+      <Modal
+        okText="保存"
+        onCancel={() => {
+          setCreateOpen(false);
+          createForm.resetFields();
+        }}
+        onOk={() => createForm.submit()}
+        open={createOpen}
+        title="新增车辆"
+        width={720}
+      >
+        <Form<CreateVehicleValues> form={createForm} layout="vertical" onFinish={saveCreateVehicle}>
+          <Form.Item label="VIN" name="vin" rules={[{ required: true, message: "请输入 VIN" }]}>
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车牌号" name="plateNo">
+            <Input maxLength={32} />
+          </Form.Item>
+          <Form.Item label="品牌" name="brand" rules={[{ required: true, message: "请输入品牌" }]}>
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车系" name="series">
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车型" name="model">
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车型代码" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
+            <Select options={vehicleModelOptions} />
+          </Form.Item>
+          <Form.Item label="年款" name="modelYear">
+            <InputNumber min={1900} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="采购价（元）" name="purchasePriceAmountYuan" rules={[{ required: true, message: "请输入采购价" }]}>
+            <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="采购日期" name="purchaseDate">
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="当前里程" name="currentMileageKm">
+            <InputNumber min={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="资产位置" name="assetLocation">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         okText="保存"

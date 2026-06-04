@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import {
   AuditAction,
   SalePriceStatus,
@@ -24,7 +27,8 @@ describe("VehicleService sale price baseline", () => {
       {
         brand: "NIO",
         purchasePriceAmount: 16800000,
-        vehicleModel: VehicleModel.ET5
+        vehicleModel: VehicleModel.ET5,
+        vin: "TESTVINET50000002"
       },
       user,
       context
@@ -34,6 +38,7 @@ describe("VehicleService sale price baseline", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           purchasePriceAmount: 16800000n,
+          vin: "TESTVINET50000002",
           vehicleNo: expect.stringMatching(/^VEH\d{14}[A-Z0-9]{4}$/)
         })
       })
@@ -42,6 +47,25 @@ describe("VehicleService sale price baseline", () => {
     expect(auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({ action: AuditAction.CREATE, entityType: "vehicle" })
     );
+  });
+
+  it("rejects duplicate VIN when creating a vehicle", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.create.mockRejectedValue({ code: "P2002", meta: { target: ["vin"] } });
+
+    await expect(
+      service.createVehicle(
+        {
+          brand: "NIO",
+          purchasePriceAmount: 16800000,
+          vehicleModel: VehicleModel.ET5,
+          vin: "TESTVINET50000002"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("VIN 已存在");
+    expect(prisma.vehicle.create).toHaveBeenCalledTimes(3);
   });
 
   it("initializes currentSalePriceAmount and writes VehicleSalePriceHistory", async () => {
@@ -389,6 +413,26 @@ describe("VehicleService sale price baseline", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.status).toBe(VehicleStatus.AVAILABLE);
     expect(result[0]?.currentSalePriceAmount).toBe(15000000);
+  });
+
+  it("keeps demo seed vehicles eligible for available vehicle lookup", () => {
+    const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
+    const serviceSource = fs.readFileSync(
+      path.resolve(__dirname, "../src/vehicle/vehicle.service.ts"),
+      "utf8"
+    );
+
+    for (const vin of ["TESTVINET50000001", "TESTVINET70000001", "TESTVINES60000001"]) {
+      expect(seedSource).toContain(`vin: "${vin}"`);
+    }
+    for (const vehicleModel of ["ET5", "ET7", "ES6"]) {
+      expect(seedSource).toContain(`vehicleModel: "${vehicleModel}"`);
+    }
+    expect(seedSource).toContain("prisma.vehicle.upsert");
+    expect(seedSource).toContain('status: "AVAILABLE"');
+    expect(seedSource).toContain('salePriceStatus: "EFFECTIVE"');
+    expect(seedSource).toContain('reviewType: "INITIAL_POOL"');
+    expect(serviceSource).toContain("currentSalePriceAmount: { gt: 0 }");
   });
 
   it("returns sale price history for a vehicle", async () => {

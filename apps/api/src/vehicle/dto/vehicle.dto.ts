@@ -18,13 +18,11 @@ export class CreateVehicleDto {
   @Min(1900)
   modelYear?: number | null;
 
-  @IsOptional()
   @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel | null;
+  vehicleModel!: VehicleModel;
 
-  @IsOptional()
   @IsString()
-  vin?: string | null;
+  vin!: string;
 
   @IsOptional()
   @IsString()

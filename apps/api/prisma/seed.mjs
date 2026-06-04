@@ -172,6 +172,48 @@ const defaultDepositRules = [
   }
 ];
 
+const demoVehicles = [
+  {
+    brand: "NIO",
+    currentMileageKm: 3200,
+    currentSalePriceAmount: 14800000,
+    model: "ET5 75kWh",
+    modelYear: 2026,
+    plateNo: "沪AET5001",
+    purchasePriceAmount: 15000000,
+    series: "ET5",
+    vehicleModel: "ET5",
+    vehicleNo: "VEH-DEMO-ET5-001",
+    vin: "TESTVINET50000001"
+  },
+  {
+    brand: "NIO",
+    currentMileageKm: 2100,
+    currentSalePriceAmount: 20500000,
+    model: "ET7 100kWh",
+    modelYear: 2026,
+    plateNo: "沪AET7001",
+    purchasePriceAmount: 21000000,
+    series: "ET7",
+    vehicleModel: "ET7",
+    vehicleNo: "VEH-DEMO-ET7-001",
+    vin: "TESTVINET70000001"
+  },
+  {
+    brand: "NIO",
+    currentMileageKm: 2800,
+    currentSalePriceAmount: 17600000,
+    model: "ES6 75kWh",
+    modelYear: 2026,
+    plateNo: "沪AES6001",
+    purchasePriceAmount: 18000000,
+    series: "ES6",
+    vehicleModel: "ES6",
+    vehicleNo: "VEH-DEMO-ES6-001",
+    vin: "TESTVINES60000001"
+  }
+];
+
 const productManagementPermissions = [
   "product:view",
   "product:create",
@@ -482,6 +524,7 @@ async function main() {
   });
 
   await seedDefaultDepositRules(adminUser.id);
+  await seedDemoVehicles(adminUser.id);
 
   await prisma.auditLog.create({
     data: {
@@ -560,6 +603,98 @@ async function seedDefaultDepositRules(operatorId) {
         effectiveFrom,
         grade: rule.grade,
         updatedBy: operatorId
+      }
+    });
+  }
+}
+
+async function seedDemoVehicles(operatorId) {
+  const effectiveFrom = new Date("2026-06-01T00:00:00.000Z");
+  const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
+  const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
+
+  for (const vehicleSeed of demoVehicles) {
+    const vehicle = await prisma.vehicle.upsert({
+      create: {
+        assetLocation: "上海验收车库",
+        brand: vehicleSeed.brand,
+        createdBy: operatorId,
+        currentMileageKm: vehicleSeed.currentMileageKm,
+        currentSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount),
+        currentSalePriceInitializedAt: reviewedAt,
+        currentSalePriceReviewedAt: reviewedAt,
+        model: vehicleSeed.model,
+        modelYear: vehicleSeed.modelYear,
+        nextSalePriceReviewAt,
+        plateNo: vehicleSeed.plateNo,
+        purchaseDate: new Date("2026-05-20T00:00:00.000Z"),
+        purchasePriceAmount: BigInt(vehicleSeed.purchasePriceAmount),
+        remark: "PR 人工验收测试车辆",
+        salePriceStatus: "EFFECTIVE",
+        series: vehicleSeed.series,
+        status: "AVAILABLE",
+        updatedBy: operatorId,
+        vehicleModel: vehicleSeed.vehicleModel,
+        vehicleNo: vehicleSeed.vehicleNo,
+        vin: vehicleSeed.vin
+      },
+      update: {
+        assetLocation: "上海验收车库",
+        brand: vehicleSeed.brand,
+        currentMileageKm: vehicleSeed.currentMileageKm,
+        currentSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount),
+        currentSalePriceInitializedAt: reviewedAt,
+        currentSalePriceReviewedAt: reviewedAt,
+        deletedAt: null,
+        model: vehicleSeed.model,
+        modelYear: vehicleSeed.modelYear,
+        nextSalePriceReviewAt,
+        plateNo: vehicleSeed.plateNo,
+        purchaseDate: new Date("2026-05-20T00:00:00.000Z"),
+        purchasePriceAmount: BigInt(vehicleSeed.purchasePriceAmount),
+        remark: "PR 人工验收测试车辆",
+        salePriceReinitRequiredAt: null,
+        salePriceStatus: "EFFECTIVE",
+        series: vehicleSeed.series,
+        status: "AVAILABLE",
+        updatedBy: operatorId,
+        vehicleModel: vehicleSeed.vehicleModel,
+        vehicleNo: vehicleSeed.vehicleNo
+      },
+      where: { vin: vehicleSeed.vin }
+    });
+
+    const existingHistory = await prisma.vehicleSalePriceHistory.findFirst({
+      where: {
+        effectiveFrom,
+        reviewType: "INITIAL_POOL",
+        vehicleId: vehicle.id
+      }
+    });
+
+    const historyData = {
+      afterSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount),
+      beforeSalePriceAmount: null,
+      createdBy: operatorId,
+      effectiveFrom,
+      reason: "PR 人工验收测试车辆初始化",
+      remark: "seed demo vehicle",
+      reviewQuarter: "2026Q2",
+      reviewType: "INITIAL_POOL"
+    };
+
+    if (existingHistory) {
+      await prisma.vehicleSalePriceHistory.update({
+        data: historyData,
+        where: { id: existingHistory.id }
+      });
+      continue;
+    }
+
+    await prisma.vehicleSalePriceHistory.create({
+      data: {
+        ...historyData,
+        vehicleId: vehicle.id
       }
     });
   }

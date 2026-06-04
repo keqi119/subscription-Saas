@@ -15,7 +15,9 @@ import {
   QuoteStatus,
   RecordStatus,
   RiskResultDecision,
-  SubscriptionPlanStatus
+  SalePriceStatus,
+  SubscriptionPlanStatus,
+  VehicleStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -112,12 +114,13 @@ const quoteInclude = {
   mileagePackage: { include: packageInclude },
   productVersion: { include: { product: true } },
   riskResult: true,
+  subscriptionPlan: { include: subscriptionPlanInclude },
+  vehicle: true,
   vehiclePackage: { include: packageInclude }
 } satisfies Prisma.SubscriptionQuoteInclude;
 
 type ProductWithDetails = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
 type VersionWithDetails = Prisma.ProductVersionGetPayload<{ include: typeof versionInclude }>;
-type PriceRuleWithDetails = Prisma.ProductPriceRuleGetPayload<{ include: typeof priceRuleInclude }>;
 type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ProductListVersion = ProductWithDetails["versions"][number];
@@ -317,7 +320,7 @@ export class ProductService {
       }
     });
     if (!activePlan || !isSubscriptionPlanComponentsActive(activePlan)) {
-      throw new BadRequestException("璇峰厛閰嶇疆骞跺惎鐢ㄨ嚦灏戜竴涓闃呭椁愬悗鍐嶆縺娲讳骇鍝佺増鏈€?);
+      throw new BadRequestException("请先配置并启用至少一个订阅套餐后再激活产品版本。");
     }
 
     const version = await this.prisma.$transaction(async (tx) => {
@@ -916,6 +919,42 @@ export class ProductService {
     return toSubscriptionPlanView(plan);
   }
 
+  async listAvailableSubscriptionPlans(applicationId: string, user: RequestUser, vehicleId?: string) {
+    const application = await this.prisma.application.findUnique({
+      select: { deletedAt: true, id: true, salesUserId: true, status: true },
+      where: { id: applicationId }
+    });
+    if (!application || application.deletedAt) {
+      throw new NotFoundException("Application not found.");
+    }
+    if (!canViewAllQuotes(user) && application.salesUserId !== user.id) {
+      throw new ForbiddenException("Application is outside your scope.");
+    }
+    if (application.status !== ApplicationStatus.APPROVED) {
+      throw new BadRequestException("只有审批通过的进件可以获取可报价套餐。");
+    }
+
+    const vehicle = vehicleId ? await this.findAvailableVehicleForQuote(vehicleId) : null;
+    const today = new Date();
+    const plans = await this.prisma.subscriptionPlan.findMany({
+      include: subscriptionPlanInclude,
+      orderBy: { createdAt: "desc" },
+      where: {
+        deletedAt: null,
+        effectiveFrom: { lte: today },
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }],
+        product: { deletedAt: null, status: ProductStatus.ACTIVE },
+        productVersion: { deletedAt: null, status: ProductVersionStatus.ACTIVE },
+        status: SubscriptionPlanStatus.ACTIVE,
+        ...(vehicle?.vehicleModel ? { vehiclePackage: { vehicleModel: vehicle.vehicleModel } } : {})
+      }
+    });
+
+    return plans
+      .filter(isSubscriptionPlanCurrentlyAvailable)
+      .map(toAvailableSubscriptionPlanView);
+  }
+
   async listQuotes(user: RequestUser) {
     const quotes = await this.prisma.subscriptionQuote.findMany({
       include: quoteInclude,
@@ -987,25 +1026,133 @@ export class ProductService {
       throw new BadRequestException(`No active deposit rule configured for grade ${application.customer.grade}.`);
     }
 
-    const componentQuote = Boolean(dto.vehiclePackageId || dto.mileagePackageId || dto.energyPackageId || dto.benefitPackageId);
-    let quoteData:
-      | {
-          benefitPackageId?: string | null;
-          energyLimitCount?: number | null;
-          energyLimitKwh?: number | null;
-          energyPackageId?: string;
-          mileageLimitKm: number;
-          mileagePackageId?: string;
-          monthlyFeeRate: Prisma.Decimal;
-          overMileageFeeAmount: bigint;
-          packageSnapshot?: Prisma.InputJsonValue;
-          productId: string;
-          vehicleModel: CreateQuoteDto["vehicleModel"];
-          vehiclePackageId?: string;
-        }
-      | null = null;
+    const depositRuleSnapshot = toJsonValue({
+      customerGrade: application.customer.grade,
+      defaultRate: Number(depositRule.defaultRate),
+      depositAmount: Number(depositRule.depositAmount),
+      grade: depositRule.grade,
+      id: depositRule.id
+    });
+    const componentQuote = !dto.subscriptionPlanId && Boolean(dto.vehiclePackageId || dto.mileagePackageId || dto.energyPackageId || dto.benefitPackageId);
+    let quoteData: {
+      benefitPackageId?: string | null;
+      depositRuleSnapshot?: Prisma.InputJsonValue;
+      energyLimitCount?: number | null;
+      energyLimitKwh?: number | null;
+      energyPackageId?: string;
+      mileageLimitKm: number;
+      mileagePackageId?: string;
+      monthlyFeeCapAmount?: bigint;
+      monthlyFeeAmount: bigint;
+      monthlyFeeRate: Prisma.Decimal;
+      overMileageFeeAmount: bigint;
+      packageSnapshot?: Prisma.InputJsonValue;
+      productId: string;
+      productVersionId: string;
+      subscriptionPlanId?: string | null;
+      vehicleBaseFeeAmount?: bigint;
+      vehicleBaseFeeCapAmount?: bigint;
+      vehicleId?: string | null;
+      vehicleModel: NonNullable<CreateQuoteDto["vehicleModel"]>;
+      vehiclePackageId?: string;
+      vehiclePurchasePriceAmount: bigint;
+      vehicleSalePriceAmount?: bigint;
+      vehicleSnapshot?: Prisma.InputJsonValue;
+      mileagePackagePriceAmount?: bigint;
+      energyPackagePriceAmount?: bigint;
+      benefitPackagePriceAmount?: bigint;
+    };
 
-    if (componentQuote) {
+    if (dto.subscriptionPlanId) {
+      ensureNoLegacySubscriptionPlanQuoteFields(dto);
+      if (!dto.vehicleId) {
+        throw new BadRequestException("报价必须选择具体车辆");
+      }
+      const vehicleBaseFeeAmount = requirePositiveInteger(dto.vehicleBaseFeeAmount, "车辆基础费报价必须大于 0");
+      const vehicleBaseFeeAmountBigInt = BigInt(vehicleBaseFeeAmount);
+      const vehicle = await this.findAvailableVehicleForQuote(dto.vehicleId);
+      const plan = await this.findSubscriptionPlanOrThrow(dto.subscriptionPlanId);
+      ensureSubscriptionPlanAvailableForQuote(plan);
+      if (!vehicle.vehicleModel || vehicle.vehicleModel !== plan.vehiclePackage.vehicleModel) {
+        throw new BadRequestException("所选套餐不适用于该车型");
+      }
+      ensurePeriodInRange(dto.periodMonths, plan);
+      const vehicleSalePriceAmount = vehicle.currentSalePriceAmount;
+      if (!vehicleSalePriceAmount || vehicleSalePriceAmount <= 0n) {
+        throw new BadRequestException("当前车辆销售价未初始化，无法生成报价");
+      }
+      const vehicleBaseFeeCapAmount = BigInt(
+        Math.floor(Number(vehicleSalePriceAmount) * Number(plan.vehiclePackage.monthlyFeeRate))
+      );
+      assertVehicleBaseFeeWithinCap(vehicleBaseFeeAmount, vehicleBaseFeeCapAmount);
+      const mileagePackagePriceAmount = plan.mileagePackage.priceAmount;
+      const energyPackagePriceAmount = plan.energyPackage.priceAmount;
+      const benefitPackagePriceAmount = plan.benefitPackage?.priceAmount ?? 0n;
+      const monthlyFeeAmount =
+        vehicleBaseFeeAmountBigInt +
+        mileagePackagePriceAmount +
+        energyPackagePriceAmount +
+        benefitPackagePriceAmount;
+      const vehicleSnapshot = toJsonValue({
+        assetLocation: vehicle.assetLocation,
+        brand: vehicle.brand,
+        currentMileageKm: vehicle.currentMileageKm,
+        currentSalePriceAmount: Number(vehicleSalePriceAmount),
+        plateNo: vehicle.plateNo,
+        series: vehicle.series,
+        status: vehicle.status,
+        vehicleModel: vehicle.vehicleModel,
+        vehicleNo: vehicle.vehicleNo,
+        vin: vehicle.vin
+      });
+      quoteData = {
+        benefitPackageId: plan.benefitPackage?.id ?? null,
+        depositRuleSnapshot,
+        energyLimitCount: plan.energyPackage.monthlyEnergyCount,
+        energyLimitKwh: plan.energyPackage.monthlyEnergyKwh,
+        energyPackageId: plan.energyPackage.id,
+        energyPackagePriceAmount,
+        benefitPackagePriceAmount,
+        mileageLimitKm: plan.mileagePackage.monthlyMileageKm,
+        mileagePackageId: plan.mileagePackage.id,
+        mileagePackagePriceAmount,
+        monthlyFeeAmount,
+        monthlyFeeCapAmount: vehicleBaseFeeCapAmount,
+        monthlyFeeRate: plan.monthlyFeeRate,
+        overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
+        packageSnapshot: toJsonValue({
+          benefitPackage: plan.benefitPackage ? toPackageView(plan.benefitPackage) : null,
+          energyPackage: toPackageView(plan.energyPackage),
+          mileagePackage: toPackageView(plan.mileagePackage),
+          pricing: {
+            benefitPackagePriceAmount: Number(benefitPackagePriceAmount),
+            energyPackagePriceAmount: Number(energyPackagePriceAmount),
+            mileagePackagePriceAmount: Number(mileagePackagePriceAmount),
+            monthlyFeeAmount: Number(monthlyFeeAmount),
+            vehicleBaseFeeAmount: Number(vehicleBaseFeeAmount),
+            vehicleBaseFeeCapAmount: Number(vehicleBaseFeeCapAmount)
+          },
+          subscriptionPlan: toSubscriptionPlanView(plan),
+          vehiclePackage: toPackageView(plan.vehiclePackage)
+        }),
+        productId: plan.productId,
+        productVersionId: plan.productVersionId,
+        subscriptionPlanId: plan.id,
+        vehicleBaseFeeAmount: vehicleBaseFeeAmountBigInt,
+        vehicleBaseFeeCapAmount,
+        vehicleId: vehicle.id,
+        vehicleModel: vehicle.vehicleModel,
+        vehiclePackageId: plan.vehiclePackage.id,
+        vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
+        vehicleSalePriceAmount,
+        vehicleSnapshot
+      };
+    } else if (componentQuote) {
+      const vehiclePurchasePriceAmount = requirePositiveInteger(dto.vehiclePurchasePriceAmount, "车辆采购价必须大于 0");
+      const monthlyFeeAmount = requirePositiveInteger(dto.monthlyFeeAmount, "报价月费必须大于 0");
+      if (!dto.productVersionId) {
+        throw new BadRequestException("请选择产品版本。");
+      }
       if (!dto.productId || !dto.vehiclePackageId || !dto.mileagePackageId || !dto.energyPackageId) {
         throw new BadRequestException("请选择完整的订阅产品、产品版本、车型包、里程包和补能包");
       }
@@ -1030,8 +1177,8 @@ export class ProductService {
       }
       ensurePackagesSameVersion(dto.productVersionId, vehiclePackage, mileagePackage, energyPackage, benefitPackage);
       ensurePeriodInRange(dto.periodMonths, vehiclePackage);
-      assertMonthlyFeeWithinCap(dto.monthlyFeeAmount, dto.vehiclePurchasePriceAmount, vehiclePackage.monthlyFeeRate);
-      ensurePurchasePriceInRange(dto.vehiclePurchasePriceAmount, vehiclePackage);
+      assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, vehiclePackage.monthlyFeeRate);
+      ensurePurchasePriceInRange(vehiclePurchasePriceAmount, vehiclePackage);
       quoteData = {
         benefitPackageId: benefitPackage?.id ?? null,
         energyLimitCount: energyPackage.monthlyEnergyCount,
@@ -1039,6 +1186,7 @@ export class ProductService {
         energyPackageId: energyPackage.id,
         mileageLimitKm: mileagePackage.monthlyMileageKm,
         mileagePackageId: mileagePackage.id,
+        monthlyFeeAmount: BigInt(monthlyFeeAmount),
         monthlyFeeRate: vehiclePackage.monthlyFeeRate,
         overMileageFeeAmount: mileagePackage.overMileageFeeAmount,
         packageSnapshot: toJsonValue({
@@ -1051,25 +1199,35 @@ export class ProductService {
           },
           energyPackage: toPackageView(energyPackage),
           mileagePackage: toPackageView(mileagePackage),
-          monthlyFeeCapAmount: Math.floor(dto.vehiclePurchasePriceAmount * Number(vehiclePackage.monthlyFeeRate)),
+          monthlyFeeCapAmount: Math.floor(vehiclePurchasePriceAmount * Number(vehiclePackage.monthlyFeeRate)),
           vehiclePackage: toPackageView(vehiclePackage)
         }),
         productId: version.productId,
+        productVersionId: version.id,
         vehicleModel: vehiclePackage.vehicleModel,
-        vehiclePackageId: vehiclePackage.id
+        vehiclePackageId: vehiclePackage.id,
+        vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount)
       };
     } else {
+      const vehiclePurchasePriceAmount = requirePositiveInteger(dto.vehiclePurchasePriceAmount, "车辆采购价必须大于 0");
+      const monthlyFeeAmount = requirePositiveInteger(dto.monthlyFeeAmount, "报价月费必须大于 0");
+      if (!dto.productVersionId || !dto.vehicleModel) {
+        throw new BadRequestException("请选择产品版本和车辆型号。");
+      }
       const priceRule = await this.findActivePriceRule(dto.productVersionId, dto.vehicleModel);
       ensurePeriodInRange(dto.periodMonths, priceRule);
-      assertMonthlyFeeWithinCap(dto.monthlyFeeAmount, dto.vehiclePurchasePriceAmount, priceRule.monthlyFeeRate);
+      assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, priceRule.monthlyFeeRate);
       quoteData = {
         energyLimitCount: dto.energyLimitCount ?? priceRule.energyLimitCount,
         energyLimitKwh: dto.energyLimitKwh ?? priceRule.energyLimitKwh,
         mileageLimitKm: dto.mileageLimitKm ?? priceRule.baseMileageKm,
+        monthlyFeeAmount: BigInt(monthlyFeeAmount),
         monthlyFeeRate: priceRule.monthlyFeeRate,
         overMileageFeeAmount: priceRule.overMileageFeeAmount,
         productId: priceRule.productVersion.productId,
-        vehicleModel: dto.vehicleModel
+        productVersionId: dto.productVersionId,
+        vehicleModel: dto.vehicleModel,
+        vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount)
       };
     }
 
@@ -1080,24 +1238,35 @@ export class ProductService {
         customerId: application.customerId,
         depositAmount: depositRule.depositAmount,
         benefitPackageId: quoteData.benefitPackageId,
+        depositRuleSnapshot: quoteData.depositRuleSnapshot,
         energyLimitCount: quoteData.energyLimitCount,
         energyLimitKwh: quoteData.energyLimitKwh,
         energyPackageId: quoteData.energyPackageId,
+        energyPackagePriceAmount: quoteData.energyPackagePriceAmount,
+        benefitPackagePriceAmount: quoteData.benefitPackagePriceAmount,
         mileageLimitKm: quoteData.mileageLimitKm,
         mileagePackageId: quoteData.mileagePackageId,
-        monthlyFeeAmount: BigInt(dto.monthlyFeeAmount),
+        mileagePackagePriceAmount: quoteData.mileagePackagePriceAmount,
+        monthlyFeeAmount: quoteData.monthlyFeeAmount,
+        monthlyFeeCapAmount: quoteData.monthlyFeeCapAmount,
         monthlyFeeRate: quoteData.monthlyFeeRate,
         overMileageFeeAmount: quoteData.overMileageFeeAmount,
         packageSnapshot: quoteData.packageSnapshot,
         periodMonths: dto.periodMonths,
         productId: quoteData.productId,
-        productVersionId: dto.productVersionId,
+        productVersionId: quoteData.productVersionId,
         quoteNo: await generateBusinessNo(this.prisma, "subscriptionQuote", "QUO"),
         riskResultId: riskResult.id,
+        subscriptionPlanId: quoteData.subscriptionPlanId,
         updatedBy: user.id,
+        vehicleBaseFeeAmount: quoteData.vehicleBaseFeeAmount,
+        vehicleBaseFeeCapAmount: quoteData.vehicleBaseFeeCapAmount,
+        vehicleId: quoteData.vehicleId,
         vehicleModel: quoteData.vehicleModel,
         vehiclePackageId: quoteData.vehiclePackageId,
-        vehiclePurchasePriceAmount: BigInt(dto.vehiclePurchasePriceAmount)
+        vehiclePurchasePriceAmount: quoteData.vehiclePurchasePriceAmount,
+        vehicleSalePriceAmount: quoteData.vehicleSalePriceAmount,
+        vehicleSnapshot: quoteData.vehicleSnapshot
       },
       include: quoteInclude
     });
@@ -1112,14 +1281,19 @@ export class ProductService {
     if (before.status !== QuoteStatus.DRAFT) {
       throw new BadRequestException("Only draft quotes can be updated.");
     }
-    const priceRule = await this.findActivePriceRule(before.productVersionId, before.vehicleModel);
     const monthlyFeeAmount = dto.monthlyFeeAmount ?? Number(before.monthlyFeeAmount);
     const periodMonths = dto.periodMonths ?? before.periodMonths;
-    ensurePeriodInRange(periodMonths, priceRule);
+    if (before.subscriptionPlan) {
+      ensureSubscriptionPlanAvailableForQuote(before.subscriptionPlan);
+      ensurePeriodInRange(periodMonths, before.subscriptionPlan);
+    } else {
+      const priceRule = await this.findActivePriceRule(before.productVersionId, before.vehicleModel);
+      ensurePeriodInRange(periodMonths, priceRule);
+    }
     assertMonthlyFeeWithinCap(
       monthlyFeeAmount,
       Number(before.vehiclePurchasePriceAmount),
-      before.monthlyFeeRate
+      before.subscriptionPlan?.monthlyFeeCapRate ?? before.monthlyFeeRate
     );
 
     const quote = await this.prisma.subscriptionQuote.update({
@@ -1237,6 +1411,24 @@ export class ProductService {
     return row;
   }
 
+  private async findAvailableVehicleForQuote(id: string) {
+    const vehicle = await this.prisma.vehicle.findUnique({ where: { id } });
+    if (!vehicle || vehicle.deletedAt) {
+      throw new NotFoundException("车辆不存在");
+    }
+    if (vehicle.status !== VehicleStatus.AVAILABLE) {
+      throw new BadRequestException("所选车辆当前不可租用");
+    }
+    if (
+      vehicle.salePriceStatus !== SalePriceStatus.EFFECTIVE ||
+      !vehicle.currentSalePriceAmount ||
+      vehicle.currentSalePriceAmount <= 0n
+    ) {
+      throw new BadRequestException("当前车辆销售价未初始化，无法生成报价");
+    }
+    return vehicle;
+  }
+
   private async findQuoteOrThrow(id: string) {
     const quote = await this.prisma.subscriptionQuote.findUnique({
       include: quoteInclude,
@@ -1291,7 +1483,7 @@ export class ProductService {
       energyPackage.deletedAt ||
       (input.benefitPackageId && (!benefitPackage || benefitPackage.deletedAt))
     ) {
-      throw new BadRequestException("鎵€閫夎闃呯粍浠朵笉瀛樺湪鎴栧凡鍒犻櫎銆?);
+      throw new BadRequestException("所选订阅组件不存在或已删除。");
     }
     if (
       productVersion.productId !== product.id ||
@@ -1299,7 +1491,7 @@ export class ProductService {
         (item) => item && (item.productId !== product.id || item.productVersionId !== productVersion.id)
       )
     ) {
-      throw new BadRequestException("鎵€閫夎闃呯粍浠朵笉灞炰簬鍚屼竴涓骇鍝佺増鏈€?);
+      throw new BadRequestException("所选订阅组件不属于同一个产品版本。");
     }
 
     return {
@@ -1312,7 +1504,7 @@ export class ProductService {
     };
   }
 
-  private async findActivePriceRule(productVersionId: string, vehicleModel: CreateQuoteDto["vehicleModel"]) {
+  private async findActivePriceRule(productVersionId: string, vehicleModel: NonNullable<CreateQuoteDto["vehicleModel"]>) {
     const version = await this.findVersionOrThrow(productVersionId);
     ensureSubscriptionProductType(version.product.productType);
     if (version.product.status !== ProductStatus.ACTIVE || version.status !== ProductVersionStatus.ACTIVE) {
@@ -1419,6 +1611,32 @@ function optionalBigInt(value?: number | null) {
   return value === undefined || value === null ? null : BigInt(value);
 }
 
+function requirePositiveInteger(value: number | undefined, message: string): number {
+  if (value === undefined || !Number.isSafeInteger(value) || value <= 0) {
+    throw new BadRequestException(message);
+  }
+  return value;
+}
+
+function ensureNoLegacySubscriptionPlanQuoteFields(dto: CreateQuoteDto) {
+  if (
+    dto.vehiclePurchasePriceAmount !== undefined ||
+    dto.monthlyFeeAmount !== undefined ||
+    dto.vehiclePackageId !== undefined ||
+    dto.mileagePackageId !== undefined ||
+    dto.energyPackageId !== undefined ||
+    dto.benefitPackageId !== undefined
+  ) {
+    throw new BadRequestException("订阅套餐报价不再接收车辆采购价、套餐月费或底层组件字段");
+  }
+}
+
+function assertVehicleBaseFeeWithinCap(vehicleBaseFeeAmount: number, capAmount: bigint) {
+  if (BigInt(vehicleBaseFeeAmount) > capAmount) {
+    throw new BadRequestException("车辆基础费超过车型包系数允许上限");
+  }
+}
+
 function toJsonValue(value: unknown) {
   return JSON.parse(JSON.stringify(value, (_, item) => (typeof item === "bigint" ? Number(item) : item))) as Prisma.InputJsonValue;
 }
@@ -1438,10 +1656,10 @@ export function ensureValidPeriod(minPeriodMonths: number, maxPeriodMonths: numb
 
 export function ensurePeriodInRange(
   periodMonths: number,
-  rule: Pick<PriceRuleWithDetails, "maxPeriodMonths" | "minPeriodMonths">
+  rule: { maxPeriodMonths: number; minPeriodMonths: number }
 ) {
   if (periodMonths < rule.minPeriodMonths || periodMonths > rule.maxPeriodMonths) {
-    throw new BadRequestException("periodMonths is outside the product price rule range.");
+    throw new BadRequestException("订阅周期不在套餐允许范围内");
   }
 }
 
@@ -1458,11 +1676,27 @@ function ensureSubscriptionPlanCanActivate(plan: {
   ensureSubscriptionProductType(plan.product.productType);
   ensureValidDateRange(plan.effectiveFrom, plan.effectiveTo);
   if (plan.product.deletedAt || plan.product.status === ProductStatus.INACTIVE || plan.productVersion.deletedAt) {
-    throw new BadRequestException("浜у搧鎴栦骇鍝佺増鏈姸鎬佷笉鍏佽鍚敤璁㈤槄濂楅銆?);
+    throw new BadRequestException("产品或产品版本状态不允许启用订阅套餐。");
   }
   if (!isSubscriptionPlanComponentsActive(plan)) {
-    throw new BadRequestException("璇峰厛鍚敤濂楅鍏宠仈鐨勮溅杈嗕娇鐢ㄨ垂銆侀噷绋嬪寘銆佽ˉ鑳藉寘鍜屾潈鐩婂寘銆?);
+    throw new BadRequestException("请先启用套餐关联的车辆使用费、里程包、补能包和权益包。");
   }
+}
+
+function ensureSubscriptionPlanAvailableForQuote(plan: SubscriptionPlanWithDetails) {
+  if (!isSubscriptionPlanCurrentlyAvailable(plan)) {
+    throw new BadRequestException("所选订阅套餐不可报价，请确认套餐、产品版本和组件均已启用。");
+  }
+}
+
+function isSubscriptionPlanCurrentlyAvailable(plan: SubscriptionPlanWithDetails) {
+  return (
+    plan.status === SubscriptionPlanStatus.ACTIVE &&
+    plan.product.status === ProductStatus.ACTIVE &&
+    plan.productVersion.status === ProductVersionStatus.ACTIVE &&
+    isDateInRange(plan.effectiveFrom, plan.effectiveTo) &&
+    isSubscriptionPlanComponentsActive(plan)
+  );
 }
 
 function isSubscriptionPlanComponentsActive(plan: {
@@ -1485,6 +1719,15 @@ function isSubscriptionPlanComponentsActive(plan: {
         item.productVersionId === plan.productVersion.id
     )
   );
+}
+
+function isDateInRange(effectiveFrom: Date, effectiveTo: Date | null, today = new Date()) {
+  const todayTime = dateOnlyTime(today);
+  return dateOnlyTime(effectiveFrom) <= todayTime && (!effectiveTo || dateOnlyTime(effectiveTo) >= todayTime);
+}
+
+function dateOnlyTime(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
 function ensurePackagesSameVersion(
@@ -1659,6 +1902,36 @@ function toSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
   };
 }
 
+function toAvailableSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
+  return {
+    benefitDescription: plan.benefitPackage?.description ?? plan.benefitPackage?.packageName ?? null,
+    benefitPackagePriceAmount: plan.benefitPackage ? Number(plan.benefitPackage.priceAmount) : 0,
+    energyPackagePriceAmount: Number(plan.energyPackage.priceAmount),
+    maxPeriodMonths: plan.maxPeriodMonths,
+    maxPurchasePriceAmount:
+      plan.vehiclePackage.maxPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.maxPurchasePriceAmount),
+    minPeriodMonths: plan.minPeriodMonths,
+    minPurchasePriceAmount:
+      plan.vehiclePackage.minPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.minPurchasePriceAmount),
+    monthlyEnergyCount: plan.energyPackage.monthlyEnergyCount,
+    monthlyEnergyKwh: plan.energyPackage.monthlyEnergyKwh,
+    monthlyFeeCapRate: Number(plan.monthlyFeeCapRate ?? plan.monthlyFeeRate),
+    monthlyFeeRate: Number(plan.monthlyFeeRate),
+    monthlyMileageKm: plan.mileagePackage.monthlyMileageKm,
+    mileagePackagePriceAmount: Number(plan.mileagePackage.priceAmount),
+    overMileageFeeAmount: Number(plan.mileagePackage.overMileageFeeAmount),
+    planName: plan.planName,
+    planNo: plan.planNo,
+    productId: plan.productId,
+    productName: plan.product.name,
+    productVersionId: plan.productVersionId,
+    subscriptionPlanId: plan.id,
+    vehicleModel: plan.vehiclePackage.vehicleModel,
+    vehiclePackage: toPackageView(plan.vehiclePackage),
+    versionNo: plan.productVersion.versionNo
+  };
+}
+
 function toPackageView(
   row:
     | Prisma.VehiclePackageGetPayload<{ include: typeof packageInclude }>
@@ -1716,9 +1989,15 @@ function toPackageView(
 }
 
 function toQuoteView(quote: QuoteWithDetails) {
-  const monthlyFeeCapAmount = Math.floor(
+  const computedMonthlyFeeCapAmount = Math.floor(
     Number(quote.vehiclePurchasePriceAmount) * Number(quote.monthlyFeeRate)
   );
+  const monthlyFeeCapAmount =
+    quote.vehicleBaseFeeCapAmount !== null
+      ? Number(quote.vehicleBaseFeeCapAmount)
+      : quote.monthlyFeeCapAmount === null
+        ? computedMonthlyFeeCapAmount
+        : Number(quote.monthlyFeeCapAmount);
   return {
     application: quote.application,
     applicationId: quote.applicationId,
@@ -1730,10 +2009,17 @@ function toQuoteView(quote: QuoteWithDetails) {
     customer: quote.customer,
     customerId: quote.customerId,
     depositAmount: Number(quote.depositAmount),
+    depositRuleSnapshot: quote.depositRuleSnapshot,
+    benefitPackagePriceAmount:
+      quote.benefitPackagePriceAmount === null ? null : Number(quote.benefitPackagePriceAmount),
+    energyPackagePriceAmount:
+      quote.energyPackagePriceAmount === null ? null : Number(quote.energyPackagePriceAmount),
     energyLimitCount: quote.energyLimitCount,
     energyLimitKwh: quote.energyLimitKwh,
     expiredAt: quote.expiredAt,
     id: quote.id,
+    mileagePackagePriceAmount:
+      quote.mileagePackagePriceAmount === null ? null : Number(quote.mileagePackagePriceAmount),
     mileageLimitKm: quote.mileageLimitKm,
     monthlyFeeAmount: Number(quote.monthlyFeeAmount),
     monthlyFeeCapAmount,
@@ -1758,6 +2044,8 @@ function toQuoteView(quote: QuoteWithDetails) {
     quoteNo: quote.quoteNo,
     riskResultId: quote.riskResultId,
     status: quote.status,
+    subscriptionPlan: quote.subscriptionPlan ? toSubscriptionPlanView(quote.subscriptionPlan) : null,
+    subscriptionPlanId: quote.subscriptionPlanId,
     benefitPackage: quote.benefitPackage ? toPackageView(quote.benefitPackage) : null,
     benefitPackageId: quote.benefitPackageId,
     energyPackage: quote.energyPackage ? toPackageView(quote.energyPackage) : null,
@@ -1766,7 +2054,32 @@ function toQuoteView(quote: QuoteWithDetails) {
     mileagePackageId: quote.mileagePackageId,
     vehiclePackage: quote.vehiclePackage ? toPackageView(quote.vehiclePackage) : null,
     vehiclePackageId: quote.vehiclePackageId,
+    vehicle: quote.vehicle ? toQuoteVehicleView(quote.vehicle) : null,
+    vehicleBaseFeeAmount: quote.vehicleBaseFeeAmount === null ? null : Number(quote.vehicleBaseFeeAmount),
+    vehicleBaseFeeCapAmount:
+      quote.vehicleBaseFeeCapAmount === null ? null : Number(quote.vehicleBaseFeeCapAmount),
+    vehicleId: quote.vehicleId,
     vehicleModel: quote.vehicleModel,
-    vehiclePurchasePriceAmount: Number(quote.vehiclePurchasePriceAmount)
+    vehiclePurchasePriceAmount: Number(quote.vehiclePurchasePriceAmount),
+    vehicleSalePriceAmount:
+      quote.vehicleSalePriceAmount === null ? null : Number(quote.vehicleSalePriceAmount),
+    vehicleSnapshot: quote.vehicleSnapshot
+  };
+}
+
+function toQuoteVehicleView(vehicle: NonNullable<QuoteWithDetails["vehicle"]>) {
+  return {
+    assetLocation: vehicle.assetLocation,
+    brand: vehicle.brand,
+    currentMileageKm: vehicle.currentMileageKm,
+    currentSalePriceAmount:
+      vehicle.currentSalePriceAmount === null ? null : Number(vehicle.currentSalePriceAmount),
+    id: vehicle.id,
+    plateNo: vehicle.plateNo,
+    series: vehicle.series,
+    status: vehicle.status,
+    vehicleModel: vehicle.vehicleModel,
+    vehicleNo: vehicle.vehicleNo,
+    vin: vehicle.vin
   };
 }

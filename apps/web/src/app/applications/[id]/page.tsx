@@ -160,41 +160,51 @@ interface DeleteFileValues {
   reason: string;
 }
 
-interface PriceRule {
-  baseMileageKm: number;
-  energyLimitCount?: number | null;
-  energyLimitKwh?: number | null;
-  monthlyFeeRate: number;
-  vehicleModel: string;
-}
-
-interface ProductVersionOption {
-  id: string;
-  priceRules: PriceRule[];
-  product: {
-    name: string;
-    status: string;
-  };
-  status: string;
-  versionNo: string;
-}
-
-interface ProductOption {
-  id: string;
-  name: string;
-  status: string;
-  versions: ProductVersionOption[];
-}
-
 interface QuoteValues {
-  energyLimitCount?: number | null;
-  energyLimitKwh?: number | null;
-  mileageLimitKm?: number;
-  monthlyFeeAmountYuan: number;
   periodMonths: number;
+  subscriptionPlanId: string;
+  vehicleBaseFeeAmountYuan: number;
+  vehicleId: string;
+}
+
+interface AvailableVehicle {
+  assetLocation?: string | null;
+  brand: string;
+  currentMileageKm: number;
+  currentSalePriceAmount?: number | null;
+  id: string;
+  plateNo?: string | null;
+  series?: string | null;
+  status: string;
+  vehicleId?: string;
+  vehicleModel?: string | null;
+  vehicleNo: string;
+  vin?: string | null;
+}
+
+interface AvailableSubscriptionPlan {
+  benefitDescription?: string | null;
+  benefitPackagePriceAmount?: number;
+  energyPackagePriceAmount?: number;
+  maxPeriodMonths: number;
+  maxPurchasePriceAmount?: number | null;
+  minPeriodMonths: number;
+  minPurchasePriceAmount?: number | null;
+  monthlyEnergyCount?: number | null;
+  monthlyEnergyKwh?: number | null;
+  monthlyFeeCapRate?: number | null;
+  monthlyFeeRate: number;
+  monthlyMileageKm: number;
+  mileagePackagePriceAmount?: number;
+  overMileageFeeAmount: number;
+  planName: string;
+  planNo: string;
+  productId: string;
+  productName: string;
   productVersionId: string;
+  subscriptionPlanId: string;
   vehicleModel: string;
-  vehiclePurchasePriceAmountYuan: number;
+  versionNo: string;
 }
 
 const materialOptions = [
@@ -264,16 +274,17 @@ export default function ApplicationDetailPage() {
   const [materialFileList, setMaterialFileList] = useState<UploadFile[]>([]);
   const [materialReviewStatus, setMaterialReviewStatus] = useState<"APPROVED" | "NEED_MORE_INFO" | "REJECTED" | null>(null);
   const [materialReviewTarget, setMaterialReviewTarget] = useState<MaterialGroup | null>(null);
-  const [products, setProducts] = useState<ProductOption[]>([]);
+  const [availablePlans, setAvailablePlans] = useState<AvailableSubscriptionPlan[]>([]);
+  const [availableVehicles, setAvailableVehicles] = useState<AvailableVehicle[]>([]);
   const [quoteOpen, setQuoteOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
 
   const applicationId = params.id;
-  const quoteProductVersionId = Form.useWatch("productVersionId", quoteForm);
-  const quoteVehicleModel = Form.useWatch("vehicleModel", quoteForm);
-  const quotePurchaseYuan = Form.useWatch("vehiclePurchasePriceAmountYuan", quoteForm);
-  const quoteMonthlyFeeYuan = Form.useWatch("monthlyFeeAmountYuan", quoteForm);
+  const quoteVehicleId = Form.useWatch("vehicleId", quoteForm);
+  const quoteSubscriptionPlanId = Form.useWatch("subscriptionPlanId", quoteForm);
+  const quoteVehicleBaseFeeYuan = Form.useWatch("vehicleBaseFeeAmountYuan", quoteForm);
+  const quotePeriodMonths = Form.useWatch("periodMonths", quoteForm);
 
   const loadDetail = useCallback(async () => {
     setLoading(true);
@@ -291,28 +302,31 @@ export default function ApplicationDetailPage() {
   }, [loadDetail]);
 
   const availableActions = useMemo(() => new Set(detail?.availableActions ?? []), [detail]);
-  const activeVersions = useMemo(
-    () =>
-      products.flatMap((product) =>
-        product.versions
-          .filter((version) => product.status === "ACTIVE" && version.status === "ACTIVE")
-          .map((version) => ({
-            ...version,
-            product: { name: product.name, status: product.status }
-          }))
-      ),
-    [products]
-  );
-  const selectedQuoteVersion = activeVersions.find((version) => version.id === quoteProductVersionId);
-  const selectedQuoteRule = selectedQuoteVersion?.priceRules.find(
-    (rule) => rule.vehicleModel === quoteVehicleModel
-  );
-  const quotePurchaseAmount = Number(quotePurchaseYuan ?? 0) * 100;
-  const quoteMonthlyFeeAmount = Number(quoteMonthlyFeeYuan ?? 0) * 100;
-  const quoteMonthlyFeeCap =
-    selectedQuoteRule && quotePurchaseAmount > 0
-      ? Math.floor(quotePurchaseAmount * selectedQuoteRule.monthlyFeeRate)
+  const selectedQuoteVehicle = availableVehicles.find((vehicle) => (vehicle.vehicleId ?? vehicle.id) === quoteVehicleId);
+  const selectedQuotePlan = availablePlans.find((plan) => plan.subscriptionPlanId === quoteSubscriptionPlanId);
+  const quoteVehicleBaseFeeAmount = Math.round(Number(quoteVehicleBaseFeeYuan ?? 0) * 100);
+  const quoteVehicleBaseFeeCap =
+    selectedQuotePlan && selectedQuoteVehicle?.currentSalePriceAmount
+      ? Math.floor(selectedQuoteVehicle.currentSalePriceAmount * selectedQuotePlan.monthlyFeeRate)
       : null;
+  const quoteMileagePackagePriceAmount = selectedQuotePlan?.mileagePackagePriceAmount ?? 0;
+  const quoteEnergyPackagePriceAmount = selectedQuotePlan?.energyPackagePriceAmount ?? 0;
+  const quoteBenefitPackagePriceAmount = selectedQuotePlan?.benefitPackagePriceAmount ?? 0;
+  const quotePackageMonthlyFeeAmount =
+    quoteVehicleBaseFeeAmount +
+    quoteMileagePackagePriceAmount +
+    quoteEnergyPackagePriceAmount +
+    quoteBenefitPackagePriceAmount;
+  const vehicleBaseFeeOutOfRange = Boolean(
+    quoteVehicleBaseFeeCap !== null &&
+      quoteVehicleBaseFeeAmount > 0 &&
+      quoteVehicleBaseFeeAmount > quoteVehicleBaseFeeCap
+  );
+  const periodOutOfRange = Boolean(
+    selectedQuotePlan &&
+      quotePeriodMonths !== undefined &&
+      (quotePeriodMonths < selectedQuotePlan.minPeriodMonths || quotePeriodMonths > selectedQuotePlan.maxPeriodMonths)
+  );
 
   async function openPreview(file: MaterialFile) {
     if (file.isDeleted) {
@@ -524,24 +538,45 @@ export default function ApplicationDetailPage() {
     deleteFileForm.resetFields();
   }
 
+  async function loadQuotePlans(vehicleId?: string) {
+    const suffix = vehicleId ? `?vehicleId=${encodeURIComponent(vehicleId)}` : "";
+    const plans = await apiFetch<AvailableSubscriptionPlan[]>(
+      `/applications/${applicationId}/available-subscription-plans${suffix}`
+    );
+    setAvailablePlans(plans);
+    return plans;
+  }
+
   async function openQuoteModal() {
     try {
-      const productRows = await apiFetch<ProductOption[]>("/products");
-      setProducts(productRows);
-      const firstVersion = productRows
-        .flatMap((product) => product.versions)
-        .find((version) => version.status === "ACTIVE");
-      const firstRule = firstVersion?.priceRules[0];
+      const vehicles = await apiFetch<AvailableVehicle[]>("/vehicles/available");
+      setAvailableVehicles(vehicles);
+      const firstVehicle = vehicles[0];
+      const firstVehicleId = firstVehicle ? (firstVehicle.vehicleId ?? firstVehicle.id) : undefined;
+      const plans = firstVehicleId ? await loadQuotePlans(firstVehicleId) : [];
+      const firstPlan = plans[0];
       quoteForm.setFieldsValue({
-        energyLimitCount: firstRule?.energyLimitCount ?? undefined,
-        energyLimitKwh: firstRule?.energyLimitKwh ?? undefined,
-        mileageLimitKm: firstRule?.baseMileageKm ?? 1500,
-        periodMonths: detail?.intendedPeriodMonths ?? 12,
-        productVersionId: firstVersion?.id,
-        vehicleModel: firstRule?.vehicleModel ?? detail?.intendedModel ?? "ET5"
+        periodMonths: detail?.intendedPeriodMonths ?? firstPlan?.minPeriodMonths ?? 12,
+        subscriptionPlanId: firstPlan?.subscriptionPlanId,
+        vehicleId: firstVehicleId
       });
       setQuoteOpen(true);
     } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function changeQuoteVehicle(vehicleId: string) {
+    try {
+      quoteForm.setFieldsValue({ subscriptionPlanId: undefined });
+      const plans = await loadQuotePlans(vehicleId);
+      const firstPlan = plans[0];
+      quoteForm.setFieldsValue({
+        periodMonths: detail?.intendedPeriodMonths ?? firstPlan?.minPeriodMonths ?? 12,
+        subscriptionPlanId: firstPlan?.subscriptionPlanId
+      });
+    } catch (error) {
+      setAvailablePlans([]);
       void message.error(getErrorMessage(error));
     }
   }
@@ -550,29 +585,42 @@ export default function ApplicationDetailPage() {
     if (!detail) {
       return;
     }
-    const monthlyFeeAmount = Math.round(values.monthlyFeeAmountYuan * 100);
-    const vehiclePurchasePriceAmount = Math.round(values.vehiclePurchasePriceAmountYuan * 100);
-    if (quoteMonthlyFeeCap !== null && monthlyFeeAmount > quoteMonthlyFeeCap) {
-      void message.error("月费超过产品规则上限");
+    const vehicleBaseFeeAmount = Math.round(values.vehicleBaseFeeAmountYuan * 100);
+    if (!selectedQuoteVehicle) {
+      void message.error("请选择车辆");
+      return;
+    }
+    if (!selectedQuotePlan) {
+      void message.error("请选择订阅套餐");
+      return;
+    }
+    if (vehicleBaseFeeAmount <= 0) {
+      void message.error("车辆基础费报价必须大于 0");
+      return;
+    }
+    if (periodOutOfRange) {
+      void message.error("订阅周期不在套餐允许范围内");
+      return;
+    }
+    if (vehicleBaseFeeOutOfRange) {
+      void message.error("车辆基础费超过车型包系数允许上限");
       return;
     }
     setSubmitting(true);
     try {
       const quote = await apiFetch<{ id: string }>(`/applications/${detail.id}/quotes`, {
         body: JSON.stringify({
-          energyLimitCount: values.energyLimitCount,
-          energyLimitKwh: values.energyLimitKwh,
-          mileageLimitKm: values.mileageLimitKm,
-          monthlyFeeAmount,
           periodMonths: values.periodMonths,
-          productVersionId: values.productVersionId,
-          vehicleModel: values.vehicleModel,
-          vehiclePurchasePriceAmount
+          subscriptionPlanId: values.subscriptionPlanId,
+          vehicleBaseFeeAmount,
+          vehicleId: values.vehicleId
         }),
         method: "POST"
       });
       void message.success("报价已生成");
       setQuoteOpen(false);
+      setAvailablePlans([]);
+      setAvailableVehicles([]);
       quoteForm.resetFields();
       router.push(`/quotes/${quote.id}`);
     } catch (error) {
@@ -721,7 +769,7 @@ export default function ApplicationDetailPage() {
                   上传资料
                 </Button>
               ) : null}
-              {detail.status === "APPROVED" ? (
+              {availableActions.has("createQuote") ? (
                 <Button onClick={openQuoteModal} type="primary">
                   生成订阅报价
                 </Button>
@@ -934,7 +982,11 @@ export default function ApplicationDetailPage() {
       <Modal
         confirmLoading={submitting}
         okText="生成订阅报价"
-        onCancel={() => setQuoteOpen(false)}
+        onCancel={() => {
+          setQuoteOpen(false);
+          setAvailablePlans([]);
+          setAvailableVehicles([]);
+        }}
         onOk={() => quoteForm.submit()}
         open={quoteOpen}
         title="生成订阅报价"
@@ -943,49 +995,62 @@ export default function ApplicationDetailPage() {
           <Space direction="vertical" size={4} style={{ marginBottom: 12 }}>
             <Typography.Text>客户等级：{detail?.riskResult?.grade ?? "-"}</Typography.Text>
             <Typography.Text>押金：{formatYuan(detail?.riskResult?.approvedDepositAmount)}</Typography.Text>
+            <Typography.Text>违约率：{detail?.riskResult?.defaultRate === undefined ? "-" : `${(detail.riskResult.defaultRate * 100).toFixed(2)}%`}</Typography.Text>
+            <Typography.Text>车辆：{selectedQuoteVehicle ? `${selectedQuoteVehicle.vehicleNo} / ${selectedQuoteVehicle.plateNo ?? selectedQuoteVehicle.vin ?? "-"}` : "-"}</Typography.Text>
+            <Typography.Text>VIN：{selectedQuoteVehicle?.vin ?? "-"}</Typography.Text>
+            <Typography.Text>车牌号：{selectedQuoteVehicle?.plateNo ?? "-"}</Typography.Text>
+            <Typography.Text>车型：{selectedQuoteVehicle?.vehicleModel ?? selectedQuotePlan?.vehicleModel ?? "-"}</Typography.Text>
+            <Typography.Text>当前车辆销售价：{formatYuan(selectedQuoteVehicle?.currentSalePriceAmount)}</Typography.Text>
+            <Typography.Text>当前里程：{selectedQuoteVehicle ? `${selectedQuoteVehicle.currentMileageKm} km` : "-"}</Typography.Text>
+            <Typography.Text>资产位置：{selectedQuoteVehicle?.assetLocation ?? "-"}</Typography.Text>
+            <Typography.Text>状态：{selectedQuoteVehicle?.status ?? "-"}</Typography.Text>
+            <Typography.Text>产品：{selectedQuotePlan ? `${selectedQuotePlan.productName} / ${selectedQuotePlan.versionNo}` : "-"}</Typography.Text>
             <Typography.Text>
-              月费率：{selectedQuoteRule ? `${(selectedQuoteRule.monthlyFeeRate * 100).toFixed(2)}%` : "-"}
+              车型包系数：{selectedQuotePlan ? `${(selectedQuotePlan.monthlyFeeRate * 100).toFixed(2)}%` : "-"}
             </Typography.Text>
             <Typography.Text>
-              月费上限：{quoteMonthlyFeeCap === null ? "-" : formatYuan(quoteMonthlyFeeCap)}
+              车辆基础费上限：{quoteVehicleBaseFeeCap === null ? "-" : formatYuan(quoteVehicleBaseFeeCap)}
             </Typography.Text>
-            {quoteMonthlyFeeCap !== null && quoteMonthlyFeeAmount > quoteMonthlyFeeCap ? (
-              <Typography.Text type="danger">月费超过产品规则上限</Typography.Text>
+            <Typography.Text>
+              周期范围：{selectedQuotePlan ? `${selectedQuotePlan.minPeriodMonths} - ${selectedQuotePlan.maxPeriodMonths} 个月` : "-"}
+            </Typography.Text>
+            <Typography.Text>
+              里程/补能：{selectedQuotePlan ? `${selectedQuotePlan.monthlyMileageKm} km/月，${selectedQuotePlan.monthlyEnergyKwh ?? "-"} kWh，${selectedQuotePlan.monthlyEnergyCount ?? "-"} 次` : "-"}
+            </Typography.Text>
+            <Typography.Text>里程包价格：{formatYuan(quoteMileagePackagePriceAmount)}</Typography.Text>
+            <Typography.Text>补能包价格：{formatYuan(quoteEnergyPackagePriceAmount)}</Typography.Text>
+            <Typography.Text>权益包价格：{formatYuan(quoteBenefitPackagePriceAmount)}</Typography.Text>
+            <Typography.Text>套餐总价：{formatYuan(quotePackageMonthlyFeeAmount)}</Typography.Text>
+            <Typography.Text>权益：{selectedQuotePlan?.benefitDescription ?? "-"}</Typography.Text>
+            {periodOutOfRange ? (
+              <Typography.Text type="danger">订阅周期不在套餐允许范围内</Typography.Text>
+            ) : null}
+            {quoteVehicleBaseFeeCap !== null && quoteVehicleBaseFeeAmount > quoteVehicleBaseFeeCap ? (
+              <Typography.Text type="danger">车辆基础费超过车型包系数允许上限</Typography.Text>
             ) : null}
           </Space>
-          <Form.Item label="订阅产品版本" name="productVersionId" rules={[{ required: true }]}>
+          <Form.Item label="选择车辆" name="vehicleId" rules={[{ required: true, message: "请选择车辆" }]}>
             <Select
-              options={activeVersions.map((version) => ({
-                label: `${version.product.name} / ${version.versionNo}`,
-                value: version.id
+              onChange={changeQuoteVehicle}
+              options={availableVehicles.map((vehicle) => ({
+                label: `${vehicle.vehicleNo} / ${vehicle.plateNo ?? vehicle.vin ?? "-"} / ${vehicle.vehicleModel ?? "-"}`,
+                value: vehicle.vehicleId ?? vehicle.id
               }))}
             />
           </Form.Item>
-          <Form.Item label="车型包" name="vehicleModel" rules={[{ required: true }]}>
+          <Form.Item label="订阅套餐" name="subscriptionPlanId" rules={[{ required: true, message: "请选择订阅套餐" }]}>
             <Select
-              options={(selectedQuoteVersion?.priceRules ?? []).map((rule) => ({
-                label: rule.vehicleModel,
-                value: rule.vehicleModel
+              options={availablePlans.map((plan) => ({
+                label: `${plan.planNo} / ${plan.planName} / ${plan.productName} / ${plan.versionNo}`,
+                value: plan.subscriptionPlanId
               }))}
             />
           </Form.Item>
-          <Form.Item label="车辆采购价（元）" name="vehiclePurchasePriceAmountYuan" rules={[{ required: true }]}>
+          <Form.Item label="车辆基础费报价（元）" name="vehicleBaseFeeAmountYuan" rules={[{ required: true, message: "请输入车辆基础费报价" }]}>
             <InputNumber min={0} precision={2} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="订阅周期（月）" name="periodMonths" rules={[{ required: true }]}>
             <InputNumber min={1} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="月费（元）" name="monthlyFeeAmountYuan" rules={[{ required: true }]}>
-            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="月里程额度（km）" name="mileageLimitKm">
-            <InputNumber min={0} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="月补能额度（kWh）" name="energyLimitKwh">
-            <InputNumber min={0} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="月补能次数" name="energyLimitCount">
-            <InputNumber min={0} style={{ width: "100%" }} />
           </Form.Item>
         </Form>
       </Modal>

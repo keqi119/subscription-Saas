@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequirePermissions } from "../auth/auth.decorators";
@@ -392,6 +392,16 @@ export class ProductController {
   @RequirePermissions(PermissionCode.QUOTE_CANCEL)
   cancelQuote(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.productService.cancelQuote(id, request.user, requestContext(request));
+  }
+
+  @Get("applications/:applicationId/available-subscription-plans")
+  @RequirePermissions(PermissionCode.QUOTE_CREATE)
+  listAvailableSubscriptionPlans(
+    @Param("applicationId") applicationId: string,
+    @Query("vehicleId") vehicleId: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.productService.listAvailableSubscriptionPlans(applicationId, request.user, vehicleId);
   }
 
   @Post("applications/:applicationId/quotes")

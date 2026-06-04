@@ -1575,6 +1575,14 @@ export function getAvailableApplicationActions(
     actions.push("reviewMaterial", "approve", "needMoreInfo", "reject");
   }
 
+  if (
+    permissions.has(PermissionCode.QUOTE_CREATE) &&
+    (canViewAll(user) || application.salesUserId === user.id) &&
+    application.status === ApplicationStatus.APPROVED
+  ) {
+    actions.push("createQuote");
+  }
+
   return actions;
 }
 

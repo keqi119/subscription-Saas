@@ -1049,6 +1049,8 @@ model Vehicle {
   currentMileageKm              Int                       @default(0) @map("current_mileage_km")
   assetLocation                 String?                   @map("asset_location") @db.VarChar(128)
   remark                        String?                   @db.Text
+  quotes                        SubscriptionQuote[]
+  orders                        SubscriptionOrder[]
   salePriceHistories            VehicleSalePriceHistory[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1099,6 +1101,8 @@ model SubscriptionQuote {
   productVersion             ProductVersion  @relation(fields: [productVersionId], references: [id])
   subscriptionPlanId         String?         @map("subscription_plan_id") @db.Uuid
   subscriptionPlan           SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
+  vehicleId                  String?         @map("vehicle_id") @db.Uuid
+  vehicle                    Vehicle?        @relation(fields: [vehicleId], references: [id])
   vehiclePackageId           String?         @map("vehicle_package_id") @db.Uuid
   vehiclePackage             VehiclePackage? @relation(fields: [vehiclePackageId], references: [id])
   mileagePackageId           String?         @map("mileage_package_id") @db.Uuid
@@ -1109,7 +1113,14 @@ model SubscriptionQuote {
   benefitPackage             BenefitPackage? @relation(fields: [benefitPackageId], references: [id])
   packageSnapshot            Json?           @map("package_snapshot")
   depositRuleSnapshot        Json?           @map("deposit_rule_snapshot")
+  vehicleSnapshot            Json?           @map("vehicle_snapshot")
   monthlyFeeCapAmount        BigInt?         @map("monthly_fee_cap_amount")
+  vehicleSalePriceAmount     BigInt?         @map("vehicle_sale_price_amount")
+  vehicleBaseFeeCapAmount    BigInt?         @map("vehicle_base_fee_cap_amount")
+  vehicleBaseFeeAmount       BigInt?         @map("vehicle_base_fee_amount")
+  mileagePackagePriceAmount  BigInt?         @map("mileage_package_price_amount")
+  energyPackagePriceAmount   BigInt?         @map("energy_package_price_amount")
+  benefitPackagePriceAmount  BigInt?         @map("benefit_package_price_amount")
   vehicleModel               VehicleModel    @map("vehicle_model")
   vehiclePurchasePriceAmount BigInt          @map("vehicle_purchase_price_amount")
   monthlyFeeRate             Decimal         @map("monthly_fee_rate") @db.Decimal(8, 6)
@@ -1139,6 +1150,7 @@ model SubscriptionQuote {
   @@index([productId])
   @@index([productVersionId])
   @@index([subscriptionPlanId])
+  @@index([vehicleId])
   @@index([vehiclePackageId])
   @@index([mileagePackageId])
   @@index([energyPackageId])
@@ -1164,6 +1176,7 @@ model SubscriptionOrder {
   contractId                 String?            @unique @map("contract_id") @db.Uuid
   contract                   Contract?          @relation("OrderContract", fields: [contractId], references: [id])
   vehicleId                  String?            @map("vehicle_id") @db.Uuid
+  vehicle                    Vehicle?           @relation(fields: [vehicleId], references: [id])
   productId                  String             @map("product_id") @db.Uuid
   product                    Product            @relation(fields: [productId], references: [id])
   productVersionId           String             @map("product_version_id") @db.Uuid

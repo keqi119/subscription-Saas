@@ -191,8 +191,17 @@ export class CreateQuoteDto {
   @IsOptional()
   titleTransferTerms?: unknown;
 
+  @IsOptional()
   @IsUUID()
-  productVersionId!: string;
+  subscriptionPlanId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  vehicleId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  productVersionId?: string;
 
   @IsOptional()
   @IsUUID()
@@ -214,16 +223,24 @@ export class CreateQuoteDto {
   @IsUUID()
   benefitPackageId?: string | null;
 
+  @IsOptional()
   @IsEnum(VehicleModel)
-  vehicleModel!: VehicleModel;
+  vehicleModel?: VehicleModel;
 
+  @IsOptional()
   @IsInt()
   @Min(1)
-  vehiclePurchasePriceAmount!: number;
+  vehiclePurchasePriceAmount?: number;
 
+  @IsOptional()
   @IsInt()
   @Min(1)
-  monthlyFeeAmount!: number;
+  monthlyFeeAmount?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  vehicleBaseFeeAmount?: number;
 
   @IsInt()
   @Min(1)

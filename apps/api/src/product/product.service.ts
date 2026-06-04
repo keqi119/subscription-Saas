@@ -1320,17 +1320,49 @@ export class ProductService {
     if (before.status !== QuoteStatus.DRAFT) {
       throw new BadRequestException("Only draft quotes can be confirmed.");
     }
-    const quote = await this.prisma.subscriptionQuote.update({
-      data: {
-        confirmedAt: new Date(),
-        confirmedBy: user.id,
-        status: QuoteStatus.CONFIRMED,
-        updatedBy: user.id
-      },
-      include: quoteInclude,
-      where: { id }
+    const result = await this.prisma.$transaction(async (tx) => {
+      let vehicleBefore = null;
+      let vehicleAfter = null;
+
+      if (before.vehicleId) {
+        vehicleBefore = await tx.vehicle.findUnique({ where: { id: before.vehicleId } });
+        if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.AVAILABLE) {
+          throw new BadRequestException("所选车辆已不可租用，请重新选择车辆");
+        }
+        vehicleAfter = await tx.vehicle.update({
+          data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
+          where: { id: before.vehicleId }
+        });
+      }
+
+      const quote = await tx.subscriptionQuote.update({
+        data: {
+          confirmedAt: new Date(),
+          confirmedBy: user.id,
+          status: QuoteStatus.CONFIRMED,
+          updatedBy: user.id
+        },
+        include: quoteInclude,
+        where: { id }
+      });
+
+      return { quote, vehicleAfter, vehicleBefore };
     });
+    const quote = result.quote;
     await this.writeAudit(AuditAction.APPROVE, "subscription_quote", id, toQuoteView(before), toQuoteView(quote), user, context);
+    if (result.vehicleBefore && result.vehicleAfter) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toJsonValue(result.vehicleAfter),
+        before: toJsonValue(result.vehicleBefore),
+        entityId: result.vehicleAfter.id,
+        entityType: "vehicle",
+        ipAddress: context.ipAddress,
+        module: "vehicle",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
     return toQuoteView(quote);
   }
 

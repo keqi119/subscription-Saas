@@ -323,6 +323,39 @@ describe("subscription plan backend flow", () => {
     ).rejects.toThrow("所选套餐不适用于该车型");
   });
 
+  it("reserves the vehicle when confirming a vehicle based quote", async () => {
+    const quote = makeQuote({
+      vehicle: makeVehicle(),
+      vehicleId: "vehicle-asset-1",
+      vehicleSnapshot: { vehicleNo: "VEH2026060200001" }
+    });
+    const { prisma, service } = makeService({ quote });
+
+    await service.confirmQuote("quote-1", user, context);
+
+    expect(prisma.vehicle.update).toHaveBeenCalledWith({
+      data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
+      where: { id: "vehicle-asset-1" }
+    });
+  });
+
+  it("rejects confirming a vehicle based quote when the vehicle is unavailable", async () => {
+    const quote = makeQuote({
+      vehicle: makeVehicle({ status: VehicleStatus.RESERVED }),
+      vehicleId: "vehicle-asset-1",
+      vehicleSnapshot: { vehicleNo: "VEH2026060200001" }
+    });
+    const { prisma, service } = makeService({
+      quote,
+      vehicle: makeVehicle({ status: VehicleStatus.RESERVED })
+    });
+
+    await expect(service.confirmQuote("quote-1", user, context)).rejects.toThrow(
+      "所选车辆已不可租用"
+    );
+    expect(prisma.vehicle.update).not.toHaveBeenCalled();
+  });
+
   it("keeps old quotes without subscriptionPlanId readable and confirmable", async () => {
     const oldQuote = makeQuote({
       subscriptionPlan: null,

@@ -250,6 +250,7 @@ describe("quote compatibility with component fields", () => {
 function makeService(seed: Partial<MockSeed> = {}) {
   const audit = { write: vi.fn().mockResolvedValue(undefined) };
   const prisma = {
+    $transaction: vi.fn(),
     benefitPackage: makePackageDelegate(seed.benefitPackages ?? [makeBenefitPackage()], makeBenefitPackage),
     energyPackage: makePackageDelegate(seed.energyPackages ?? [makeEnergyPackage()], makeEnergyPackage),
     mileagePackage: makePackageDelegate(seed.mileagePackages ?? [makeMileagePackage()], makeMileagePackage),
@@ -270,8 +271,13 @@ function makeService(seed: Partial<MockSeed> = {}) {
       findUnique: vi.fn().mockResolvedValue(seed.quotes?.[0] ?? makeQuote()),
       update: vi.fn().mockResolvedValue(makeQuote({ status: QuoteStatus.CONFIRMED }))
     },
+    vehicle: {
+      findUnique: vi.fn(),
+      update: vi.fn()
+    },
     vehiclePackage: makePackageDelegate(seed.vehiclePackages ?? [makeVehiclePackage()], makeVehiclePackage)
   };
+  prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) => callback(prisma));
 
   return { audit, prisma, service: new ProductService(audit as never, prisma as never) };
 }

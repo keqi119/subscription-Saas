@@ -9,7 +9,8 @@ import {
   OrderChangeType,
   OrderStatus,
   Prisma,
-  QuoteStatus
+  QuoteStatus,
+  VehicleStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -40,7 +41,8 @@ const orderInclude = {
   customer: { select: { grade: true, id: true, mobile: true, name: true } },
   productVersion: { include: { product: true } },
   quote: { select: { id: true, quoteNo: true, status: true } },
-  riskResult: true
+  riskResult: true,
+  vehicle: true
 } satisfies Prisma.SubscriptionOrderInclude;
 
 const quoteInclude = {
@@ -48,7 +50,8 @@ const quoteInclude = {
   customer: { select: { grade: true, id: true, mobile: true, name: true } },
   order: true,
   productVersion: { include: { product: true } },
-  riskResult: true
+  riskResult: true,
+  vehicle: true
 } satisfies Prisma.SubscriptionQuoteInclude;
 
 const contractInclude = {
@@ -116,6 +119,13 @@ export class OrderService {
       throw new BadRequestException("该报价已生成订单，请勿重复创建。");
     }
 
+    if (!quote.vehicleId) {
+      throw new BadRequestException("已确认报价未绑定车辆，无法创建订单。");
+    }
+    if (!quote.vehicle || quote.vehicle.deletedAt || quote.vehicle.status !== VehicleStatus.RESERVED) {
+      throw new BadRequestException("已确认报价绑定车辆未锁定，请重新确认报价。");
+    }
+
     const quoteSnapshot = toJsonValue(toPlain(quote));
     const order = await this.prisma.subscriptionOrder.create({
       data: {
@@ -138,6 +148,7 @@ export class OrderService {
         quoteSnapshot,
         riskResultId: quote.riskResultId,
         updatedBy: user.id,
+        vehicleId: quote.vehicleId,
         vehicleModel: quote.vehicleModel,
         vehiclePurchasePriceAmount: quote.vehiclePurchasePriceAmount
       },
@@ -158,12 +169,40 @@ export class OrderService {
     if (!cancellableStatuses.includes(before.orderStatus)) {
       throw new BadRequestException("当前订单状态不允许取消。");
     }
-    const order = await this.prisma.subscriptionOrder.update({
-      data: { orderStatus: OrderStatus.CANCELLED, updatedBy: user.id },
-      include: orderInclude,
-      where: { id }
+    const result = await this.prisma.$transaction(async (tx) => {
+      let vehicleBefore = null;
+      let vehicleAfter = null;
+
+      if (before.vehicleId && before.vehicle?.status === VehicleStatus.RESERVED) {
+        vehicleBefore = before.vehicle;
+        vehicleAfter = await tx.vehicle.update({
+          data: { status: VehicleStatus.AVAILABLE, updatedBy: user.id },
+          where: { id: before.vehicleId }
+        });
+      }
+
+      const order = await tx.subscriptionOrder.update({
+        data: { orderStatus: OrderStatus.CANCELLED, updatedBy: user.id },
+        include: orderInclude,
+        where: { id }
+      });
+      return { order, vehicleAfter, vehicleBefore };
     });
+    const order = result.order;
     await this.writeAudit(AuditAction.UPDATE, "subscription_order", id, { ...toOrderView(before), reason: dto.reason }, toOrderView(order), user, context);
+    if (result.vehicleBefore && result.vehicleAfter) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toJsonValue(result.vehicleAfter),
+        before: toJsonValue(result.vehicleBefore),
+        entityId: result.vehicleAfter.id,
+        entityType: "vehicle",
+        ipAddress: context.ipAddress,
+        module: "vehicle",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
     return toOrderView(order);
   }
 
@@ -277,14 +316,37 @@ export class OrderService {
 
   async cancelContract(id: string, user: RequestUser, context: RequestContext) {
     const before = await this.findContractOrThrow(id);
+    if (before.order.id !== before.orderId) {
+      throw new BadRequestException("合同所属订单不一致。");
+    }
+    if (before.status === ContractStatus.ARCHIVED) {
+      throw new BadRequestException("已归档合同不能取消。");
+    }
+    if (before.status === ContractStatus.SIGNED) {
+      throw new BadRequestException("已签署合同不能取消。");
+    }
     const cancellableStatuses: ContractStatus[] = [ContractStatus.GENERATED, ContractStatus.SIGNING];
     if (!cancellableStatuses.includes(before.status)) {
       throw new BadRequestException("当前合同状态不允许取消。");
     }
-    const contract = await this.prisma.contract.update({
-      data: { status: ContractStatus.CANCELLED, updatedBy: user.id },
-      include: contractInclude,
-      where: { id }
+    if (before.order.contractId !== before.id) {
+      throw new BadRequestException("当前合同不是该订单的当前合同。");
+    }
+    const cancellableOrderStatuses: OrderStatus[] = [OrderStatus.PENDING_SIGN, OrderStatus.PENDING_CONTRACT];
+    if (!cancellableOrderStatuses.includes(before.order.orderStatus)) {
+      throw new BadRequestException("当前订单状态不允许取消合同。");
+    }
+
+    const contract = await this.prisma.$transaction(async (tx) => {
+      await tx.contract.update({
+        data: { status: ContractStatus.CANCELLED, updatedBy: user.id },
+        where: { id }
+      });
+      await tx.subscriptionOrder.update({
+        data: { contractId: null, orderStatus: OrderStatus.PENDING_CONTRACT, updatedBy: user.id },
+        where: { id: before.orderId }
+      });
+      return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id } });
     });
     await this.writeAudit(AuditAction.UPDATE, "contract", id, toContractView(before), toContractView(contract), user, context);
     return toContractView(contract);

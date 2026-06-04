@@ -415,7 +415,6 @@ function makeService(seed: Partial<MockSeed> = {}) {
       updateMany: vi.fn().mockResolvedValue({ count: 0 })
     },
     subscriptionPlan: {
-      count: vi.fn().mockResolvedValue(0),
       create: vi.fn().mockImplementation(({ data }) => Promise.resolve(makeSubscriptionPlan(data))),
       findFirst: vi.fn().mockResolvedValue(seed.activePlan === undefined ? plan : seed.activePlan),
       findMany: vi.fn().mockResolvedValue(seed.plans ?? []),
@@ -423,7 +422,6 @@ function makeService(seed: Partial<MockSeed> = {}) {
       update: vi.fn().mockImplementation(({ data }) => Promise.resolve(makeSubscriptionPlan({ ...plan, ...data })))
     },
     subscriptionQuote: {
-      count: vi.fn().mockResolvedValue(0),
       create: vi.fn().mockImplementation(({ data }) => Promise.resolve(makeQuote({ ...data, subscriptionPlan: plan }))),
       findUnique: vi.fn().mockResolvedValue(quote),
       update: vi.fn().mockResolvedValue(makeQuote({ ...quote, status: QuoteStatus.CONFIRMED }))

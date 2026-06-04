@@ -138,7 +138,7 @@ export default function RolesPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           角色管理
         </Typography.Title>

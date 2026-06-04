@@ -143,7 +143,7 @@ export default function OrdersPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           订阅订单
         </Typography.Title>

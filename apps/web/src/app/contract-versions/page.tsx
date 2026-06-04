@@ -122,7 +122,7 @@ export default function ContractVersionsPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
             合同模板
@@ -139,7 +139,7 @@ export default function ContractVersionsPage() {
         onClose={() => setDrawerOpen(false)}
         open={drawerOpen}
         title="新增合同模板"
-        width={560}
+        size={560}
       >
         <Form form={form} layout="vertical">
           <Form.Item label="模板名称" name="templateName" rules={[{ required: true, message: "请输入模板名称" }]}>

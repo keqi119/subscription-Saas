@@ -363,7 +363,7 @@ export default function ApplicationsPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
             进件管理
@@ -444,7 +444,7 @@ export default function ApplicationsPage() {
         onClose={closeUploadDrawer}
         open={Boolean(uploadTarget)}
         title={uploadTarget ? `上传资料 / ${uploadTarget.applicationNo}` : "上传资料"}
-        width={520}
+        size={520}
       >
         <Form<MaterialValues>
           form={materialForm}

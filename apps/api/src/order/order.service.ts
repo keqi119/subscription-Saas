@@ -15,6 +15,7 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   ArchiveContractDto,
@@ -127,7 +128,7 @@ export class OrderService {
     }
 
     const quoteSnapshot = toJsonValue(toPlain(quote));
-    const order = await this.prisma.subscriptionOrder.create({
+    const order = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionOrder.create({
       data: {
         applicationId: quote.applicationId,
         businessType: CURRENT_BUSINESS_TYPE,
@@ -138,7 +139,7 @@ export class OrderService {
         energyLimitKwh: quote.energyLimitKwh,
         mileageLimitKm: quote.mileageLimitKm,
         monthlyFeeAmount: quote.monthlyFeeAmount,
-        orderNo: await generateBusinessNo(this.prisma, "subscriptionOrder", "ORD"),
+        orderNo: createBusinessNo("ORD"),
         orderStatus: OrderStatus.PENDING_CONTRACT,
         overMileageFeeAmount: quote.overMileageFeeAmount,
         periodMonths: quote.periodMonths,
@@ -153,7 +154,7 @@ export class OrderService {
         vehiclePurchasePriceAmount: quote.vehiclePurchasePriceAmount
       },
       include: orderInclude
-    });
+    }));
 
     await this.writeAudit(AuditAction.CREATE, "subscription_order", order.id, undefined, toOrderView(order), user, context);
     return toOrderView(order);
@@ -238,11 +239,11 @@ export class OrderService {
       quoteSnapshot: before.quoteSnapshot
     });
 
-    const contract = await this.prisma.$transaction(async (tx) => {
+    const contract = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
       const created = await tx.contract.create({
         data: {
           businessType: BusinessType.SUBSCRIPTION,
-          contractNo: await generateBusinessNo(tx, "contract", "CON"),
+          contractNo: createBusinessNo("CON"),
           contractSnapshot,
           contractTitle: `${template.templateName} ${template.versionNo}`,
           contractVersionId: template.id,
@@ -258,7 +259,7 @@ export class OrderService {
         where: { id: before.id }
       });
       return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id: created.id } });
-    });
+    }));
 
     await this.writeAudit(AuditAction.CREATE, "contract", contract.id, toOrderView(before), toContractView(contract), user, context);
     return toContractView(contract);
@@ -518,17 +519,6 @@ export function ensureAllowedChangeType(changeType: OrderChangeType) {
   if (DISALLOWED_CHANGE_TYPES.has(changeType)) {
     throw new BadRequestException("当前阶段暂未开放以租代购订单变更类型。");
   }
-}
-
-async function generateBusinessNo(
-  tx: Pick<Prisma.TransactionClient, "subscriptionOrder" | "contract">,
-  table: "subscriptionOrder" | "contract",
-  prefix: string
-) {
-  const today = new Date();
-  const datePart = today.toISOString().slice(0, 10).replaceAll("-", "");
-  const count = table === "subscriptionOrder" ? await tx.subscriptionOrder.count() : await tx.contract.count();
-  return `${prefix}${datePart}${String(count + 1).padStart(5, "0")}`;
 }
 
 function ensureCanAccessOrder(order: OrderWithDetails, user: RequestUser) {

@@ -11,6 +11,7 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
+import { createBusinessNo, withUniqueBusinessNoRetry } from "../src/common/business-number";
 import {
   ensureAllowedChangeType,
   ensureSubscriptionBusinessType,
@@ -20,11 +21,15 @@ import {
 describe("subscription order and contract rules", () => {
   it("defaults order business type to subscription", () => {
     expect(ensureSubscriptionBusinessType()).toBe(BusinessType.SUBSCRIPTION);
-    expect(ensureSubscriptionBusinessType(BusinessType.SUBSCRIPTION)).toBe(BusinessType.SUBSCRIPTION);
+    expect(ensureSubscriptionBusinessType(BusinessType.SUBSCRIPTION)).toBe(
+      BusinessType.SUBSCRIPTION
+    );
   });
 
   it("rejects rent-to-own order creation during the current phase", () => {
-    expect(() => ensureSubscriptionBusinessType(BusinessType.RENT_TO_OWN)).toThrow("当前阶段暂未开放以租代购订单");
+    expect(() => ensureSubscriptionBusinessType(BusinessType.RENT_TO_OWN)).toThrow(
+      "当前阶段暂未开放以租代购订单"
+    );
   });
 
   it("allows current-stage subscription order change types", () => {
@@ -34,23 +39,34 @@ describe("subscription order and contract rules", () => {
   });
 
   it("rejects rent-to-own only order change types during the current phase", () => {
-    expect(() => ensureAllowedChangeType(OrderChangeType.BUYOUT)).toThrow("当前阶段暂未开放以租代购订单变更");
-    expect(() => ensureAllowedChangeType(OrderChangeType.EARLY_SETTLEMENT)).toThrow("当前阶段暂未开放以租代购订单变更");
-    expect(() => ensureAllowedChangeType(OrderChangeType.OWNERSHIP_TRANSFER)).toThrow("当前阶段暂未开放以租代购订单变更");
+    expect(() => ensureAllowedChangeType(OrderChangeType.BUYOUT)).toThrow(
+      "当前阶段暂未开放以租代购订单变更"
+    );
+    expect(() => ensureAllowedChangeType(OrderChangeType.EARLY_SETTLEMENT)).toThrow(
+      "当前阶段暂未开放以租代购订单变更"
+    );
+    expect(() => ensureAllowedChangeType(OrderChangeType.OWNERSHIP_TRANSFER)).toThrow(
+      "当前阶段暂未开放以租代购订单变更"
+    );
   });
 
   it("cancels the generated contract and rolls the order back for regeneration", async () => {
     const harness = createOrderServiceHarness();
 
-    const firstContract = (await harness.service.generateContract(harness.orderId, harness.user, harness.context)) as Record<
-      string,
-      unknown
-    >;
+    const firstContract = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as Record<string, unknown>;
 
     expect(harness.state.contractId).toBe(firstContract.id);
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
 
-    const cancelled = (await harness.service.cancelContract(firstContract.id as string, harness.user, harness.context)) as {
+    const cancelled = (await harness.service.cancelContract(
+      firstContract.id as string,
+      harness.user,
+      harness.context
+    )) as {
       order: { contractId: string | null; orderStatus: OrderStatus };
       status: ContractStatus;
     };
@@ -61,10 +77,11 @@ describe("subscription order and contract rules", () => {
     expect(harness.state.contractId).toBeNull();
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
 
-    const secondContract = (await harness.service.generateContract(harness.orderId, harness.user, harness.context)) as Record<
-      string,
-      unknown
-    >;
+    const secondContract = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as Record<string, unknown>;
 
     expect(secondContract.id).not.toBe(firstContract.id);
     expect(harness.state.contractId).toBe(secondContract.id);
@@ -73,16 +90,17 @@ describe("subscription order and contract rules", () => {
 
   it("rejects cancelling an archived contract", async () => {
     const harness = createOrderServiceHarness();
-    const contract = (await harness.service.generateContract(harness.orderId, harness.user, harness.context)) as Record<
-      string,
-      unknown
-    >;
+    const contract = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as Record<string, unknown>;
 
     harness.state.contracts[0]!.status = ContractStatus.ARCHIVED;
 
-    await expect(harness.service.cancelContract(contract.id as string, harness.user, harness.context)).rejects.toThrow(
-      "已归档合同不能取消"
-    );
+    await expect(
+      harness.service.cancelContract(contract.id as string, harness.user, harness.context)
+    ).rejects.toThrow("已归档合同不能取消");
   });
 
   it("creates an order from a confirmed quote only after the vehicle is reserved", async () => {
@@ -119,7 +137,12 @@ describe("subscription order and contract rules", () => {
     harness.state.orderStatus = OrderStatus.PENDING_CONTRACT;
     harness.state.vehicleStatus = VehicleStatus.RESERVED;
 
-    await harness.service.cancelOrder(harness.orderId, { reason: "customer withdrew" }, harness.user, harness.context);
+    await harness.service.cancelOrder(
+      harness.orderId,
+      { reason: "customer withdrew" },
+      harness.user,
+      harness.context
+    );
 
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
     expect(harness.tx.vehicle.update).toHaveBeenCalledWith({
@@ -144,6 +167,32 @@ describe("subscription order and contract rules", () => {
 
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
+  });
+
+  it("generates timestamp and random business numbers without count based suffixes", () => {
+    const now = new Date(2026, 5, 2, 15, 30, 45);
+    let sequence = 0;
+    const numbers = Array.from({ length: 100 }, () =>
+      createBusinessNo("ORD", now, () => String(sequence++).padStart(4, "0"))
+    );
+
+    expect(new Set(numbers).size).toBe(numbers.length);
+    expect(numbers[0]).toBe("ORD202606021530450000");
+    expect(numbers.at(-1)).toBe("ORD202606021530450099");
+  });
+
+  it("retries creation when a generated business number hits a unique constraint", async () => {
+    let attempts = 0;
+    const result = await withUniqueBusinessNoRetry(async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        throw { code: "P2002" };
+      }
+      return "created";
+    });
+
+    expect(result).toBe("created");
+    expect(attempts).toBe(3);
   });
 });
 
@@ -256,7 +305,8 @@ function createOrderServiceHarness() {
   }
 
   function buildOrder() {
-    const currentContract = state.contracts.find((contract) => contract.id === state.contractId) ?? null;
+    const currentContract =
+      state.contracts.find((contract) => contract.id === state.contractId) ?? null;
     return {
       actualDeliveryAt: null,
       application: {
@@ -309,7 +359,9 @@ function createOrderServiceHarness() {
     };
   }
 
-  function buildContract(contract: Record<string, unknown> & { id: string; status: ContractStatus }) {
+  function buildContract(
+    contract: Record<string, unknown> & { id: string; status: ContractStatus }
+  ) {
     return {
       ...contract,
       contractVersion: template,
@@ -328,7 +380,7 @@ function createOrderServiceHarness() {
           createdAt: now,
           deletedAt: null,
           fileId: null,
-          id: "contract-" + (state.contracts.length + 1),
+          id: `contract-${state.contracts.length + 1}`,
           signedAt: null,
           updatedAt: now
         };

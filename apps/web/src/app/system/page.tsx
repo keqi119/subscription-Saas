@@ -17,7 +17,7 @@ export default function SystemPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16}>
+      <Space orientation="vertical" size={16}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           系统管理
         </Typography.Title>

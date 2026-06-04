@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 
-import { RequirePermissions } from "../auth/auth.decorators";
+import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
@@ -31,7 +31,7 @@ export class VehicleController {
   }
 
   @Get("vehicles/available")
-  @RequirePermissions(PermissionCode.VEHICLE_VIEW)
+  @RequireAnyPermissions(PermissionCode.VEHICLE_VIEW, PermissionCode.QUOTE_CREATE)
   listAvailableVehicles() {
     return this.vehicleService.listAvailableVehicles();
   }

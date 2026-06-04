@@ -22,6 +22,7 @@ import path from "node:path";
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
 import {
@@ -202,11 +203,11 @@ export class CustomerService {
   async createCustomer(dto: CreateCustomerDto, user: RequestUser, context: RequestContext) {
     const hasFullScope = canViewAll(user);
     const ownerUserId = hasFullScope && dto.ownerUserId ? dto.ownerUserId : user.id;
-    const customer = await this.prisma.$transaction(async (tx) => {
+    const customer = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
       const created = await tx.customer.create({
         data: {
           createdBy: user.id,
-          customerNo: await generateBusinessNo(tx, "customer", "CUS"),
+          customerNo: createBusinessNo("CUS"),
           customerType: dto.customerType,
           grade: hasFullScope ? dto.grade : undefined,
           mobile: dto.mobile,
@@ -245,7 +246,7 @@ export class CustomerService {
         include: customerInclude,
         where: { id: created.id }
       });
-    });
+    }));
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -411,10 +412,10 @@ export class CustomerService {
     const customer = await this.findCustomerOrThrow(dto.customerId);
     ensureCanAccessCustomer(customer, user);
 
-    const application = await this.prisma.$transaction(async (tx) => {
+    const application = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
       const created = await tx.application.create({
         data: {
-          applicationNo: await generateBusinessNo(tx, "application", "APP"),
+          applicationNo: createBusinessNo("APP"),
           createdBy: user.id,
           customerId: dto.customerId,
           intendedModel: dto.intendedModel,
@@ -446,7 +447,7 @@ export class CustomerService {
         include: applicationInclude,
         where: { id: created.id }
       });
-    });
+    }));
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -1172,14 +1173,6 @@ export class CustomerService {
 
     return absolutePath;
   }
-}
-
-async function generateBusinessNo(tx: Tx, table: "application" | "customer", prefix: string) {
-  const today = new Date();
-  const datePart = today.toISOString().slice(0, 10).replaceAll("-", "");
-  const count = table === "customer" ? await tx.customer.count() : await tx.application.count();
-
-  return `${prefix}${datePart}${String(count + 1).padStart(5, "0")}`;
 }
 
 function canViewAll(user: RequestUser) {

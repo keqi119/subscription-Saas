@@ -103,7 +103,22 @@ permissionRows.push(
   ["benefit_package:create", "新建权益包", "product", "benefit_package_create"],
   ["benefit_package:update", "编辑权益包", "product", "benefit_package_update"],
   ["benefit_package:activate", "启用权益包", "product", "benefit_package_activate"],
-  ["benefit_package:delete", "删除权益包", "product", "benefit_package_delete"]
+  ["benefit_package:delete", "删除权益包", "product", "benefit_package_delete"],
+  ["subscription_plan:view", "查看订阅套餐", "product", "subscription_plan_view"],
+  ["subscription_plan:create", "新建订阅套餐", "product", "subscription_plan_create"],
+  ["subscription_plan:update", "编辑订阅套餐", "product", "subscription_plan_update"],
+  ["subscription_plan:activate", "启用订阅套餐", "product", "subscription_plan_activate"],
+  ["subscription_plan:deactivate", "停用订阅套餐", "product", "subscription_plan_deactivate"],
+  ["subscription_plan:delete", "删除订阅套餐", "product", "subscription_plan_delete"],
+  ["vehicle:view", "查看车辆资产", "vehicle", "view"],
+  ["vehicle:create", "新建车辆资产", "vehicle", "create"],
+  ["vehicle:update", "编辑车辆资产", "vehicle", "update"],
+  ["vehicle:delete", "删除车辆资产", "vehicle", "delete"],
+  ["vehicle:update_status", "更新车辆状态", "vehicle", "update_status"],
+  ["vehicle:initialize_sale_price", "初始化车辆销售价", "vehicle", "initialize_sale_price"],
+  ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
+  ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
+  ["vehicle:manage", "管理车辆资产", "vehicle", "manage"]
 );
 
 const menuRows = [
@@ -113,6 +128,7 @@ const menuRows = [
   ["risk", "风控中心", "/risk", "safety", 40, "risk:view", null],
   ["risk.deposit_rules", "押金规则", "/risk/deposit-rules", "money", 10, "risk:view", "risk"],
   ["products", "产品中心", "/products", "product", 50, "product:view", null],
+  ["vehicles", "车辆资产", "/vehicles", "car", 55, "vehicle:view", null],
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
@@ -131,7 +147,8 @@ menuRows.push(
   ["products.vehicle_packages", "车型包", "/products?tab=vehicle-packages", "car", 30, "vehicle_package:view", "products"],
   ["products.mileage_packages", "里程包", "/products?tab=mileage-packages", "dashboard", 40, "mileage_package:view", "products"],
   ["products.energy_packages", "补能包", "/products?tab=energy-packages", "money", 50, "energy_package:view", "products"],
-  ["products.benefit_packages", "权益包", "/products?tab=benefit-packages", "safety", 60, "benefit_package:view", "products"]
+  ["products.benefit_packages", "权益包", "/products?tab=benefit-packages", "safety", 60, "benefit_package:view", "products"],
+  ["products.subscription_plans", "订阅套餐", "/products?tab=subscription-plans", "quote", 70, "subscription_plan:view", "products"]
 );
 
 const defaultDepositRules = [
@@ -171,6 +188,15 @@ const productManagementPermissions = [
   "product_price_rule:delete"
 ];
 
+const subscriptionPlanManagementPermissions = [
+  "subscription_plan:view",
+  "subscription_plan:create",
+  "subscription_plan:update",
+  "subscription_plan:activate",
+  "subscription_plan:deactivate",
+  "subscription_plan:delete"
+];
+
 productManagementPermissions.push(
   "vehicle_package:view",
   "vehicle_package:create",
@@ -191,7 +217,8 @@ productManagementPermissions.push(
   "benefit_package:create",
   "benefit_package:update",
   "benefit_package:activate",
-  "benefit_package:delete"
+  "benefit_package:delete",
+  ...subscriptionPlanManagementPermissions
 );
 
 const quoteManagementPermissions = [
@@ -229,15 +256,31 @@ const productMenuCodes = [
   "products.vehicle_packages",
   "products.mileage_packages",
   "products.energy_packages",
-  "products.benefit_packages"
+  "products.benefit_packages",
+  "products.subscription_plans"
 ];
 
 const productPackageViewPermissions = [
   "vehicle_package:view",
   "mileage_package:view",
   "energy_package:view",
-  "benefit_package:view"
+  "benefit_package:view",
+  "subscription_plan:view"
 ];
+
+const vehicleViewPermissions = ["vehicle:view", "vehicle:history_view"];
+
+const vehicleManagementPermissions = [
+  ...vehicleViewPermissions,
+  "vehicle:create",
+  "vehicle:update",
+  "vehicle:delete",
+  "vehicle:update_status",
+  "vehicle:initialize_sale_price",
+  "vehicle:review_sale_price",
+  "vehicle:manage"
+];
+const vehicleMenuCodes = ["vehicles"];
 
 async function main() {
   for (const [code, name, description] of roleRows) {
@@ -316,6 +359,7 @@ async function main() {
       "product_version:view",
       "product_price_rule:view",
       ...productPackageViewPermissions,
+      ...vehicleViewPermissions,
       ...quoteManagementPermissions,
       "order:view",
       "order:create",
@@ -323,7 +367,7 @@ async function main() {
       "order_change:create",
       "contract:view"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
   );
 
   await assignRoleAccess(
@@ -336,10 +380,11 @@ async function main() {
       "application:material_upload",
       "application:material_delete",
       ...productManagementPermissions,
+      ...vehicleManagementPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts", "orders.contract_templates"]
   );
 
   await assignRoleAccess(
@@ -358,6 +403,7 @@ async function main() {
       "product_version:approve",
       "product_price_rule:view",
       ...productPackageViewPermissions,
+      ...vehicleViewPermissions,
       "quote:view",
       "order:view",
       "order_change:view",
@@ -365,7 +411,7 @@ async function main() {
       "order_change:reject",
       "contract:view"
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
   );
 
   for (const roleCode of ["FI", "AS"]) {
@@ -377,6 +423,7 @@ async function main() {
         "product_version:view",
         "product_price_rule:view",
         ...productPackageViewPermissions,
+        ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         "quote:view",
         "order:view",
         "order_change:view",
@@ -384,7 +431,7 @@ async function main() {
         "order_change:reject",
         "contract:view"
       ],
-      ["dashboard", ...productMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
+      ["dashboard", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
     );
   }
 
@@ -398,10 +445,11 @@ async function main() {
       "risk:view",
       "risk:manage",
       ...productManagementPermissions,
+      ...vehicleManagementPermissions,
       "quote:view",
       ...orderManagementPermissions
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts", "orders.contract_templates"]
   );
 
   const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);

@@ -634,7 +634,7 @@ export default function ApplicationDetailPage() {
     {
       dataIndex: "materialType",
       render: (value: string, record) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <Typography.Text strong>{materialLabels[value] ?? value}</Typography.Text>
           <Tag color={record.required ? "red" : "default"}>{record.required ? "必需" : "可选"}</Tag>
         </Space>
@@ -645,7 +645,7 @@ export default function ApplicationDetailPage() {
     {
       render: (_, record) =>
         record.files.length > 0 ? (
-          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={8} style={{ width: "100%" }}>
             {record.files.map((file) => (
               <Space key={file.fileRecordId} wrap>
                 <Button onClick={() => openPreview(file)} type="link">
@@ -749,7 +749,7 @@ export default function ApplicationDetailPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={20} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={20} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Space>
             <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/applications")} />
@@ -799,7 +799,7 @@ export default function ApplicationDetailPage() {
         {loading ? (
           <Spin />
         ) : detail ? (
-          <Space direction="vertical" size={24} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={24} style={{ width: "100%" }}>
             <section>
               <Typography.Title level={5}>基础信息</Typography.Title>
               <Descriptions
@@ -992,7 +992,7 @@ export default function ApplicationDetailPage() {
         title="生成订阅报价"
       >
         <Form<QuoteValues> form={quoteForm} layout="vertical" onFinish={createQuote}>
-          <Space direction="vertical" size={4} style={{ marginBottom: 12 }}>
+          <Space orientation="vertical" size={4} style={{ marginBottom: 12 }}>
             <Typography.Text>客户等级：{detail?.riskResult?.grade ?? "-"}</Typography.Text>
             <Typography.Text>押金：{formatYuan(detail?.riskResult?.approvedDepositAmount)}</Typography.Text>
             <Typography.Text>违约率：{detail?.riskResult?.defaultRate === undefined ? "-" : `${(detail.riskResult.defaultRate * 100).toFixed(2)}%`}</Typography.Text>

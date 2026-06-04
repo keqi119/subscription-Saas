@@ -22,6 +22,7 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   CreatePriceRuleDto,
@@ -124,7 +125,6 @@ type VersionWithDetails = Prisma.ProductVersionGetPayload<{ include: typeof vers
 type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ProductListVersion = ProductWithDetails["versions"][number];
-type Tx = Prisma.TransactionClient;
 const CURRENT_PRODUCT_TYPE = ProductType.SUBSCRIPTION;
 const RENT_TO_OWN_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购产品线。";
 
@@ -151,18 +151,18 @@ export class ProductService {
 
   async createProduct(dto: CreateProductDto, user: RequestUser, context: RequestContext) {
     const productType = ensureSubscriptionProductType(dto.productType);
-    const product = await this.prisma.product.create({
+    const product = await withUniqueBusinessNoRetry(() => this.prisma.product.create({
       data: {
         createdBy: user.id,
         description: dto.description,
         name: dto.name,
-        productNo: await generateBusinessNo(this.prisma, "product", "PRD"),
+        productNo: createBusinessNo("PRD"),
         productType,
         status: dto.status ?? ProductStatus.DRAFT,
         updatedBy: user.id
       },
       include: productInclude
-    });
+    }));
 
     await this.writeAudit(AuditAction.CREATE, "product", product.id, undefined, toProductView(product), user, context);
     return toProductView(product);
@@ -489,7 +489,7 @@ export class ProductService {
   async createVehiclePackage(dto: CreateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
-    const row = await this.prisma.vehiclePackage.create({
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.vehiclePackage.create({
       data: {
         brand: dto.brand,
         configName: dto.configName,
@@ -500,7 +500,7 @@ export class ProductService {
         minPurchasePriceAmount: optionalBigInt(dto.minPurchasePriceAmount),
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
         packageName: dto.packageName,
-        packageNo: await this.nextPackageNo("vehiclePackage", "VPK"),
+        packageNo: this.nextPackageNo("vehiclePackage", "VPK"),
         productId: version.productId,
         productVersionId: version.id,
         remark: dto.remark,
@@ -511,7 +511,7 @@ export class ProductService {
         vehicleModelName: dto.vehicleModelName
       },
       include: packageInclude
-    });
+    }));
     await this.writeAudit(AuditAction.CREATE, "vehicle_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
@@ -562,13 +562,13 @@ export class ProductService {
 
   async createMileagePackage(dto: CreateMileagePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
-    const row = await this.prisma.mileagePackage.create({
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.mileagePackage.create({
       data: {
         createdBy: user.id,
         monthlyMileageKm: dto.monthlyMileageKm,
         overMileageFeeAmount: BigInt(dto.overMileageFeeAmount),
         packageName: dto.packageName,
-        packageNo: await this.nextPackageNo("mileagePackage", "MPK"),
+        packageNo: this.nextPackageNo("mileagePackage", "MPK"),
         priceAmount: BigInt(dto.priceAmount ?? 0),
         productId: version.productId,
         productVersionId: version.id,
@@ -577,7 +577,7 @@ export class ProductService {
         updatedBy: user.id
       },
       include: packageInclude
-    });
+    }));
     await this.writeAudit(AuditAction.CREATE, "mileage_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
@@ -621,13 +621,13 @@ export class ProductService {
 
   async createEnergyPackage(dto: CreateEnergyPackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
-    const row = await this.prisma.energyPackage.create({
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.energyPackage.create({
       data: {
         createdBy: user.id,
         monthlyEnergyCount: dto.monthlyEnergyCount,
         monthlyEnergyKwh: dto.monthlyEnergyKwh,
         packageName: dto.packageName,
-        packageNo: await this.nextPackageNo("energyPackage", "EPK"),
+        packageNo: this.nextPackageNo("energyPackage", "EPK"),
         priceAmount: BigInt(dto.priceAmount ?? 0),
         productId: version.productId,
         productVersionId: version.id,
@@ -638,7 +638,7 @@ export class ProductService {
         updatedBy: user.id
       },
       include: packageInclude
-    });
+    }));
     await this.writeAudit(AuditAction.CREATE, "energy_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
@@ -684,14 +684,14 @@ export class ProductService {
 
   async createBenefitPackage(dto: CreateBenefitPackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
-    const row = await this.prisma.benefitPackage.create({
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.benefitPackage.create({
       data: {
         benefitCount: dto.benefitCount,
         benefitType: dto.benefitType,
         createdBy: user.id,
         description: dto.description,
         packageName: dto.packageName,
-        packageNo: await this.nextPackageNo("benefitPackage", "BPK"),
+        packageNo: this.nextPackageNo("benefitPackage", "BPK"),
         priceAmount: BigInt(dto.priceAmount ?? 0),
         productId: version.productId,
         productVersionId: version.id,
@@ -700,7 +700,7 @@ export class ProductService {
         updatedBy: user.id
       },
       include: packageInclude
-    });
+    }));
     await this.writeAudit(AuditAction.CREATE, "benefit_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
@@ -777,7 +777,7 @@ export class ProductService {
       });
     }
 
-    const plan = await this.prisma.subscriptionPlan.create({
+    const plan = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionPlan.create({
       data: {
         baseMonthlyFeeAmount:
           dto.baseMonthlyFeeAmount === undefined || dto.baseMonthlyFeeAmount === null
@@ -798,7 +798,7 @@ export class ProductService {
         monthlyFeeMode: dto.monthlyFeeMode ?? MonthlyFeeMode.MANUAL_QUOTE,
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? packages.vehiclePackage.monthlyFeeRate),
         planName: dto.planName,
-        planNo: await generateBusinessNo(this.prisma, "subscriptionPlan", "PLAN"),
+        planNo: createBusinessNo("PLAN"),
         productId: packages.product.id,
         productVersionId: packages.productVersion.id,
         remark: dto.remark,
@@ -807,7 +807,7 @@ export class ProductService {
         vehiclePackageId: packages.vehiclePackage.id
       },
       include: subscriptionPlanInclude
-    });
+    }));
 
     await this.writeAudit(AuditAction.CREATE, "subscription_plan", plan.id, undefined, toSubscriptionPlanView(plan), user, context);
     return toSubscriptionPlanView(plan);
@@ -1231,7 +1231,7 @@ export class ProductService {
       };
     }
 
-    const quote = await this.prisma.subscriptionQuote.create({
+    const quote = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionQuote.create({
       data: {
         applicationId,
         createdBy: user.id,
@@ -1255,7 +1255,7 @@ export class ProductService {
         periodMonths: dto.periodMonths,
         productId: quoteData.productId,
         productVersionId: quoteData.productVersionId,
-        quoteNo: await generateBusinessNo(this.prisma, "subscriptionQuote", "QUO"),
+        quoteNo: createBusinessNo("QUO"),
         riskResultId: riskResult.id,
         subscriptionPlanId: quoteData.subscriptionPlanId,
         updatedBy: user.id,
@@ -1269,7 +1269,7 @@ export class ProductService {
         vehicleSnapshot: quoteData.vehicleSnapshot
       },
       include: quoteInclude
-    });
+    }));
 
     await this.writeAudit(AuditAction.CREATE, "subscription_quote", quote.id, undefined, toQuoteView(quote), user, context);
     return toQuoteView(quote);
@@ -1569,21 +1569,12 @@ export class ProductService {
     return version;
   }
 
-  private async nextPackageNo(
+  private nextPackageNo(
     table: "benefitPackage" | "energyPackage" | "mileagePackage" | "vehiclePackage",
     prefix: string
   ) {
-    const today = new Date();
-    const datePart = today.toISOString().slice(0, 10).replaceAll("-", "");
-    const count =
-      table === "vehiclePackage"
-        ? await this.prisma.vehiclePackage.count()
-        : table === "mileagePackage"
-          ? await this.prisma.mileagePackage.count()
-          : table === "energyPackage"
-            ? await this.prisma.energyPackage.count()
-            : await this.prisma.benefitPackage.count();
-    return `${prefix}${datePart}${String(count + 1).padStart(5, "0")}`;
+    void table;
+    return createBusinessNo(prefix);
   }
 
   private async writeAudit(
@@ -1607,22 +1598,6 @@ export class ProductService {
       userAgent: context.userAgent
     });
   }
-}
-
-async function generateBusinessNo(
-  tx: Pick<Tx, "product" | "subscriptionPlan" | "subscriptionQuote">,
-  table: "product" | "subscriptionPlan" | "subscriptionQuote",
-  prefix: string
-) {
-  const today = new Date();
-  const datePart = today.toISOString().slice(0, 10).replaceAll("-", "");
-  const count =
-    table === "product"
-      ? await tx.product.count()
-      : table === "subscriptionPlan"
-        ? await tx.subscriptionPlan.count()
-        : await tx.subscriptionQuote.count();
-  return `${prefix}${datePart}${String(count + 1).padStart(5, "0")}`;
 }
 
 function parseDateOnly(value: string, field: string) {

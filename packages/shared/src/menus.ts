@@ -86,6 +86,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "权益包",
         path: "/products?tab=benefit-packages",
         permissionCode: PermissionCode.BENEFIT_PACKAGE_VIEW
+      },
+      {
+        code: "products.subscription_plans",
+        icon: "quote",
+        label: "订阅套餐",
+        path: "/products?tab=subscription-plans",
+        permissionCode: PermissionCode.SUBSCRIPTION_PLAN_VIEW
       }
     ]
   },

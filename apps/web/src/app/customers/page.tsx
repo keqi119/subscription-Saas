@@ -141,7 +141,7 @@ export default function CustomersPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
             客户中心
@@ -194,10 +194,10 @@ export default function CustomersPage() {
         onClose={() => setDetail(null)}
         open={Boolean(detail)}
         title={detail ? `${detail.name} / ${detail.customerNo}` : "客户详情"}
-        width={720}
+        size={720}
       >
         {detail ? (
-          <Space direction="vertical" size={18} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={18} style={{ width: "100%" }}>
             <Descriptions
               bordered
               column={2}

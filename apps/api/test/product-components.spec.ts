@@ -111,19 +111,19 @@ describe("product component packages", () => {
     );
 
     expect(vehiclePackage).toMatchObject({
-      packageNo: expect.stringMatching(/^VPK\d{8}00001$/),
+      packageNo: expect.stringMatching(/^VPK\d{14}[A-Z2-9]{4}$/),
       status: RecordStatus.ACTIVE
     });
     expect(mileagePackage).toMatchObject({
-      packageNo: expect.stringMatching(/^MPK\d{8}00001$/),
+      packageNo: expect.stringMatching(/^MPK\d{14}[A-Z2-9]{4}$/),
       status: RecordStatus.ACTIVE
     });
     expect(energyPackage).toMatchObject({
-      packageNo: expect.stringMatching(/^EPK\d{8}00001$/),
+      packageNo: expect.stringMatching(/^EPK\d{14}[A-Z2-9]{4}$/),
       status: RecordStatus.ACTIVE
     });
     expect(benefitPackage).toMatchObject({
-      packageNo: expect.stringMatching(/^BPK\d{8}00001$/),
+      packageNo: expect.stringMatching(/^BPK\d{14}[A-Z2-9]{4}$/),
       status: RecordStatus.ACTIVE
     });
     expect(prisma.productVersion.findUnique).toHaveBeenCalled();

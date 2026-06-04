@@ -315,25 +315,25 @@ export class ProductController {
   }
 
   @Get("subscription-plans")
-  @RequirePermissions(PermissionCode.PRODUCT_VIEW)
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_PLAN_VIEW)
   listSubscriptionPlans() {
     return this.productService.listSubscriptionPlans();
   }
 
   @Post("subscription-plans")
-  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_PLAN_CREATE)
   createSubscriptionPlan(@Body() dto: CreateSubscriptionPlanDto, @Req() request: AuthenticatedRequest) {
     return this.productService.createSubscriptionPlan(dto, request.user, requestContext(request));
   }
 
   @Get("subscription-plans/:id")
-  @RequirePermissions(PermissionCode.PRODUCT_VIEW)
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_PLAN_VIEW)
   getSubscriptionPlan(@Param("id") id: string) {
     return this.productService.getSubscriptionPlan(id);
   }
 
   @Patch("subscription-plans/:id")
-  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_PLAN_UPDATE)
   updateSubscriptionPlan(
     @Param("id") id: string,
     @Body() dto: UpdateSubscriptionPlanDto,
@@ -343,19 +343,19 @@ export class ProductController {
   }
 
   @Post("subscription-plans/:id/activate")
-  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_PLAN_ACTIVATE)
   activateSubscriptionPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.productService.setSubscriptionPlanStatus(id, "ACTIVE", request.user, requestContext(request));
   }
 
   @Post("subscription-plans/:id/deactivate")
-  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_PLAN_DEACTIVATE)
   deactivateSubscriptionPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.productService.setSubscriptionPlanStatus(id, "INACTIVE", request.user, requestContext(request));
   }
 
   @Delete("subscription-plans/:id")
-  @RequirePermissions(PermissionCode.PRODUCT_UPDATE)
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_PLAN_DELETE)
   deleteSubscriptionPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.productService.deleteSubscriptionPlan(id, request.user, requestContext(request));
   }

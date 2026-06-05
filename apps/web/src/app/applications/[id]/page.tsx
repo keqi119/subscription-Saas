@@ -1301,7 +1301,7 @@ export default function ApplicationDetailPage() {
                 ]}
               />
               {canReviewApplication ? (
-                <Space direction="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
+                <Space orientation="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
                   <Space wrap>
                     <Typography.Text strong>资料审核</Typography.Text>
                     <Button

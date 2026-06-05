@@ -547,7 +547,7 @@ export default function OrderReviewQueuePage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
             旧版订单审核
@@ -632,7 +632,7 @@ function ReviewDrawerContent({
   const reviewEditable = canShowReviewActions(order);
 
   return (
-    <Space direction="vertical" size={20} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={20} style={{ width: "100%" }}>
       <SectionTitle title="客户选择快照" />
       <Descriptions
         bordered

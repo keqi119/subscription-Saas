@@ -391,7 +391,7 @@ export default function ApplicationsPage() {
     {
       render: (_, record) =>
         hasOrder(record) ? (
-          <Space direction="vertical" size={2}>
+          <Space orientation="vertical" size={2}>
             <Tag color="green">已生成</Tag>
             {record.orders?.[0] ? <Link href={`/orders/${record.orders[0].id}`}>{record.orders[0].orderNo}</Link> : null}
           </Space>
@@ -432,7 +432,7 @@ export default function ApplicationsPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
             进件管理

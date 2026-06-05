@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { REQUIRED_ANY_PERMISSIONS_KEY, REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
+import { CustomerController } from "../src/customer/customer.controller";
 import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
@@ -84,6 +85,22 @@ describe("customer order review permissions", () => {
     expect(finalizePermissions).toEqual([PermissionCode.ORDER_CONFIRM_FINAL_PLAN]);
     expect(rejectPermissions).toEqual([PermissionCode.ORDER_REJECT]);
     expect(hasRequiredPermissions([PermissionCode.ORDER_VIEW], reviewPermissions)).toBe(false);
+  });
+});
+
+describe("self-service application permissions", () => {
+  it("keeps self-service application intake behind application permissions", () => {
+    const requiredAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      CustomerController.prototype.createSelfServiceApplication
+    );
+
+    expect(requiredAnyPermissions).toEqual([
+      PermissionCode.APPLICATION_MANAGE,
+      PermissionCode.APPLICATION_SUBMIT
+    ]);
+    expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_SUBMIT], requiredAnyPermissions)).toBe(true);
+    expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_REVIEW], requiredAnyPermissions)).toBe(false);
   });
 });
 

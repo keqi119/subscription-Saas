@@ -8,11 +8,23 @@ import { ConfigService } from "@nestjs/config";
 import {
   ApplicationActionType,
   ApplicationMaterialType,
+  ApplicationSource,
   ApplicationStatus,
   AuditAction,
   CustomerStatus,
+  DepositStatus,
   MaterialStatus,
-  Prisma
+  MonthlyFeeMode,
+  OrderReviewStatus,
+  PlanConfirmStatus,
+  Prisma,
+  ProductStatus,
+  ProductType,
+  ProductVersionStatus,
+  RecordStatus,
+  SalePriceStatus,
+  SubscriptionPlanStatus,
+  VehicleStatus
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 import { randomUUID } from "node:crypto";
@@ -43,6 +55,7 @@ import {
   DeleteMaterialFileDto,
   ReviewMaterialDto
 } from "./dto/create-material.dto";
+import { CreateSelfServiceApplicationDto } from "./dto/create-self-service-application.dto";
 import { UpdateApplicationDto } from "./dto/update-application.dto";
 import { UpdateCustomerDto } from "./dto/update-customer.dto";
 
@@ -98,6 +111,39 @@ const materialFileInclude = {
     select: { id: true, name: true, username: true }
   }
 } satisfies Prisma.ApplicationMaterialFileInclude;
+
+const selfServicePackageInclude = {
+  product: { select: { id: true, name: true, productNo: true, status: true } },
+  productVersion: { select: { id: true, productId: true, status: true, versionNo: true } }
+} satisfies Prisma.VehiclePackageInclude;
+
+const selfServiceSubscriptionPlanInclude = {
+  benefitPackage: { include: selfServicePackageInclude },
+  energyPackage: { include: selfServicePackageInclude },
+  mileagePackage: { include: selfServicePackageInclude },
+  product: {
+    select: {
+      deletedAt: true,
+      id: true,
+      name: true,
+      productNo: true,
+      productType: true,
+      status: true
+    }
+  },
+  productVersion: {
+    select: {
+      deletedAt: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      id: true,
+      productId: true,
+      status: true,
+      versionNo: true
+    }
+  },
+  vehiclePackage: { include: selfServicePackageInclude }
+} satisfies Prisma.SubscriptionPlanInclude;
 
 const applicationInclude = {
   customer: {
@@ -170,7 +216,22 @@ const applicationInclude = {
 
 type CustomerWithDetails = Prisma.CustomerGetPayload<{ include: typeof customerInclude }>;
 type ApplicationWithDetails = Prisma.ApplicationGetPayload<{ include: typeof applicationInclude }>;
+type SelfServiceSubscriptionPlan = Prisma.SubscriptionPlanGetPayload<{
+  include: typeof selfServiceSubscriptionPlanInclude;
+}>;
+type SelfServiceVehicle = Prisma.VehicleGetPayload<object>;
 type Tx = Prisma.TransactionClient;
+
+const SELF_SERVICE_APPLICATION_DEPOSIT_NOTICE =
+  "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。";
+const SELF_SERVICE_APPLICATION_SUCCESS_MESSAGE =
+  "自助进件已提交，押金金额将在资质审核后确认。";
+const SELF_SERVICE_APPLICATION_MATERIALS_HINT =
+  "请继续上传身份证、驾驶证等资质材料。";
+const SELF_SERVICE_MANUAL_QUOTE_MESSAGE =
+  "该套餐需后台报价确认，暂不支持客户自助提交。";
+const SELF_SERVICE_VEHICLE_UNAVAILABLE_MESSAGE =
+  "所选车辆当前不可租用，请重新选择车辆";
 
 export interface UploadedMaterialFile {
   buffer: Buffer;
@@ -466,6 +527,208 @@ export class CustomerService {
     });
 
     return toApplicationView(application);
+  }
+
+  async createSelfServiceApplication(
+    dto: CreateSelfServiceApplicationDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const [customer, vehicle, plan] = await Promise.all([
+      this.prisma.customer.findUnique({ where: { id: dto.customerId } }),
+      this.prisma.vehicle.findUnique({ where: { id: dto.vehicleId } }),
+      this.prisma.subscriptionPlan.findUnique({
+        include: selfServiceSubscriptionPlanInclude,
+        where: { id: dto.subscriptionPlanId }
+      })
+    ]);
+
+    if (!customer || customer.deletedAt) {
+      throw new NotFoundException("Customer not found.");
+    }
+    assertSelfServiceVehicleAvailable(vehicle);
+    assertSelfServiceSubscriptionPlanAvailable(plan);
+
+    if (!vehicle.vehicleModel) {
+      throw new BadRequestException("所选车辆缺少车型信息，无法提交自助进件");
+    }
+    const vehicleModel = vehicle.vehicleModel;
+    if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
+      throw new BadRequestException("所选套餐不适用于该车辆车型");
+    }
+    assertSelfServicePeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
+
+    const vehicleSalePriceAmount = requireSelfServiceCurrentSalePriceAmount(
+      vehicle.currentSalePriceAmount
+    );
+    const vehicleBaseFeePricing = calculateSelfServiceVehicleBaseFee(
+      plan,
+      vehicleSalePriceAmount
+    );
+    const mileagePackagePriceAmount = plan.mileagePackage.priceAmount;
+    const energyPackagePriceAmount = plan.energyPackage.priceAmount;
+    const benefitPackagePriceAmount = plan.benefitPackage?.priceAmount ?? 0n;
+    const monthlyFeeAmount =
+      vehicleBaseFeePricing.vehicleBaseFeeAmount +
+      mileagePackagePriceAmount +
+      energyPackagePriceAmount +
+      benefitPackagePriceAmount;
+    const now = new Date();
+    const softReservationExpiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const vehicleSnapshot = toJsonSnapshot({
+      assetLocation: vehicle.assetLocation,
+      brand: vehicle.brand,
+      currentMileageKm: vehicle.currentMileageKm,
+      currentSalePriceAmount: Number(vehicleSalePriceAmount),
+      plateNo: vehicle.plateNo,
+      series: vehicle.series,
+      status: vehicle.status,
+      vehicleModel,
+      vehicleNo: vehicle.vehicleNo,
+      vin: vehicle.vin
+    });
+    const packageSnapshot = toJsonSnapshot({
+      benefitPackage: plan.benefitPackage ? toSelfServicePackageSnapshot(plan.benefitPackage) : null,
+      energyPackage: toSelfServicePackageSnapshot(plan.energyPackage),
+      mileagePackage: toSelfServicePackageSnapshot(plan.mileagePackage),
+      pricing: {
+        benefitPackagePriceAmount: Number(benefitPackagePriceAmount),
+        currentSalePriceAmount: Number(vehicleSalePriceAmount),
+        energyPackagePriceAmount: Number(energyPackagePriceAmount),
+        fixedRate: vehicleBaseFeePricing.fixedRate,
+        mileagePackagePriceAmount: Number(mileagePackagePriceAmount),
+        monthlyFeeAmount: Number(monthlyFeeAmount),
+        vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+        vehicleBaseFeeCapAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeCapAmount),
+        vehicleBaseFeeMode: plan.monthlyFeeMode,
+        vehicleBaseFeeModeLabel: vehicleBaseFeePricing.vehicleBaseFeeModeLabel
+      },
+      subscriptionPlan: toSelfServiceSubscriptionPlanSnapshot(plan),
+      vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+      vehicleBaseFeeCapAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeCapAmount),
+      vehicleBaseFeeMode: plan.monthlyFeeMode,
+      vehicleBaseFeeModeLabel: vehicleBaseFeePricing.vehicleBaseFeeModeLabel,
+      vehiclePackage: toSelfServicePackageSnapshot(plan.vehiclePackage)
+    });
+    const intentSnapshot = toJsonSnapshot({
+      customerId: customer.id,
+      customerName: customer.name,
+      depositDescription: SELF_SERVICE_APPLICATION_DEPOSIT_NOTICE,
+      depositStatus: DepositStatus.PENDING_CONFIRM,
+      packageSnapshot,
+      periodMonths: dto.periodMonths,
+      selectedAt: now.toISOString(),
+      subscriptionPlanId: plan.id,
+      vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+      vehicleId: vehicle.id,
+      vehicleSnapshot
+    });
+    const customerSelectedSnapshot = intentSnapshot;
+
+    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
+      assertSelfServiceVehicleAvailable(vehicleBefore);
+
+      const application = await tx.application.create({
+        data: {
+          applicationNo: createBusinessNo("APP"),
+          applicationSource: ApplicationSource.SELF_SERVICE,
+          createdBy: user.id,
+          creditReviewStatus: OrderReviewStatus.PENDING,
+          customerId: customer.id,
+          customerSelectedSnapshot,
+          depositStatus: DepositStatus.PENDING_CONFIRM,
+          finalDepositAmount: null,
+          intentPeriodMonths: dto.periodMonths,
+          intentSnapshot,
+          intentSubscriptionPlanId: plan.id,
+          intentVehicleBaseFeeAmount: vehicleBaseFeePricing.vehicleBaseFeeAmount,
+          intentVehicleId: vehicle.id,
+          intendedModel: vehicleModel,
+          intendedPeriodMonths: dto.periodMonths,
+          materialReviewStatus: OrderReviewStatus.PENDING,
+          planConfirmStatus: PlanConfirmStatus.PENDING,
+          productReviewStatus: OrderReviewStatus.PENDING,
+          salesUserId: customer.ownerUserId ?? user.id,
+          softReservationExpiresAt,
+          softReservedAt: now,
+          softReservedVehicleId: vehicle.id,
+          status: ApplicationStatus.SUBMITTED,
+          submittedAt: now,
+          updatedBy: user.id,
+          vehicleReviewStatus: OrderReviewStatus.PENDING
+        },
+        include: applicationInclude
+      });
+
+      await createApplicationActionLog(tx, {
+        actionType: ApplicationActionType.CREATE,
+        applicationId: application.id,
+        comment: "客户自助进件提交",
+        operator: user,
+        toStatus: ApplicationStatus.SUBMITTED
+      });
+
+      if (customer.status === CustomerStatus.LEAD) {
+        await tx.customer.update({
+          data: {
+            status: CustomerStatus.PENDING_APPLICATION,
+            updatedBy: user.id
+          },
+          where: { id: customer.id }
+        });
+      }
+
+      const vehicleUpdate = await tx.vehicle.updateMany({
+        data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: user.id },
+        where: {
+          deletedAt: null,
+          id: vehicle.id,
+          status: VehicleStatus.AVAILABLE
+        }
+      });
+
+      if (vehicleUpdate.count !== 1) {
+        throw new BadRequestException(SELF_SERVICE_VEHICLE_UNAVAILABLE_MESSAGE);
+      }
+
+      const vehicleAfter = await tx.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+
+      return { application, vehicleAfter, vehicleBefore };
+    }));
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toAuditSnapshot(result.application),
+      entityId: result.application.id,
+      entityType: "application",
+      ipAddress: context.ipAddress,
+      module: "application",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toAuditSnapshot(result.vehicleAfter),
+      before: toAuditSnapshot(result.vehicleBefore),
+      entityId: result.vehicleAfter.id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return {
+      applicationId: result.application.id,
+      applicationNo: result.application.applicationNo,
+      applicationSource: result.application.applicationSource,
+      depositStatus: result.application.depositStatus,
+      materialsUploadHint: SELF_SERVICE_APPLICATION_MATERIALS_HINT,
+      message: SELF_SERVICE_APPLICATION_SUCCESS_MESSAGE,
+      status: result.application.status,
+      vehicleStatus: result.vehicleAfter.status
+    };
   }
 
   async getApplication(id: string, user: RequestUser) {
@@ -1440,6 +1703,218 @@ function normalizeRequiredText(value: string | undefined | null, field: string) 
   }
 
   return normalized;
+}
+
+function assertSelfServiceVehicleAvailable(
+  vehicle: SelfServiceVehicle | null
+): asserts vehicle is SelfServiceVehicle {
+  if (!vehicle || vehicle.deletedAt) {
+    throw new NotFoundException("Vehicle not found.");
+  }
+  if (vehicle.status !== VehicleStatus.AVAILABLE) {
+    throw new BadRequestException(SELF_SERVICE_VEHICLE_UNAVAILABLE_MESSAGE);
+  }
+  if (
+    vehicle.salePriceStatus !== SalePriceStatus.EFFECTIVE ||
+    !vehicle.currentSalePriceAmount ||
+    vehicle.currentSalePriceAmount <= 0n
+  ) {
+    throw new BadRequestException("当前车辆销售价未初始化，无法提交自助进件");
+  }
+}
+
+function assertSelfServiceSubscriptionPlanAvailable(
+  plan: SelfServiceSubscriptionPlan | null
+): asserts plan is SelfServiceSubscriptionPlan {
+  if (!plan || plan.deletedAt) {
+    throw new NotFoundException("Subscription plan not found.");
+  }
+  const today = new Date();
+  if (
+    plan.status !== SubscriptionPlanStatus.ACTIVE ||
+    plan.product.status !== ProductStatus.ACTIVE ||
+    plan.product.deletedAt ||
+    plan.product.productType !== ProductType.SUBSCRIPTION ||
+    plan.productVersion.status !== ProductVersionStatus.ACTIVE ||
+    plan.productVersion.deletedAt ||
+    plan.effectiveFrom > today ||
+    (plan.effectiveTo !== null && plan.effectiveTo < today)
+  ) {
+    throw new BadRequestException("所选订阅套餐当前不可用");
+  }
+  if (
+    !isSelfServicePackageActiveForPlan(plan, plan.vehiclePackage) ||
+    !isSelfServicePackageActiveForPlan(plan, plan.mileagePackage) ||
+    !isSelfServicePackageActiveForPlan(plan, plan.energyPackage) ||
+    (plan.benefitPackage !== null && !isSelfServicePackageActiveForPlan(plan, plan.benefitPackage))
+  ) {
+    throw new BadRequestException("所选订阅套餐包含未启用组件");
+  }
+  if (plan.monthlyFeeMode === MonthlyFeeMode.MANUAL_QUOTE) {
+    throw new BadRequestException(SELF_SERVICE_MANUAL_QUOTE_MESSAGE);
+  }
+}
+
+function requireSelfServiceCurrentSalePriceAmount(value: bigint | null) {
+  if (!value || value <= 0n) {
+    throw new BadRequestException("当前车辆销售价未初始化，无法提交自助进件");
+  }
+  return value;
+}
+
+function isSelfServicePackageActiveForPlan(
+  plan: SelfServiceSubscriptionPlan,
+  row: SelfServicePackage
+) {
+  return (
+    !row.deletedAt &&
+    row.status === RecordStatus.ACTIVE &&
+    row.productId === plan.productId &&
+    row.productVersionId === plan.productVersionId
+  );
+}
+
+function assertSelfServicePeriodInRange(periodMonths: number, minPeriodMonths: number, maxPeriodMonths: number) {
+  if (periodMonths < minPeriodMonths || periodMonths > maxPeriodMonths) {
+    throw new BadRequestException("订阅周期不在套餐允许范围内");
+  }
+}
+
+const SELF_SERVICE_VEHICLE_BASE_FEE_MODE_LABELS: Record<MonthlyFeeMode, string> = {
+  [MonthlyFeeMode.FIXED_AMOUNT]: "固定金额",
+  [MonthlyFeeMode.MANUAL_QUOTE]: "现场报价",
+  [MonthlyFeeMode.RATE_FORMULA]: "固定费率"
+};
+
+function calculateSelfServiceVehicleBaseFee(
+  plan: SelfServiceSubscriptionPlan,
+  vehicleSalePriceAmount: bigint
+) {
+  const vehiclePackageRate = Number(plan.vehiclePackage.monthlyFeeRate);
+  if (!Number.isFinite(vehiclePackageRate) || vehiclePackageRate <= 0) {
+    throw new BadRequestException("车型包车辆基础费上限率必须大于 0");
+  }
+  const vehicleBaseFeeCapAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate));
+  let fixedRate: number | null = null;
+  let vehicleBaseFeeAmount: bigint;
+
+  switch (plan.monthlyFeeMode) {
+    case MonthlyFeeMode.FIXED_AMOUNT:
+      if (!plan.baseMonthlyFeeAmount || plan.baseMonthlyFeeAmount <= 0n) {
+        throw new BadRequestException("固定金额套餐必须配置车辆基础月费");
+      }
+      vehicleBaseFeeAmount = plan.baseMonthlyFeeAmount;
+      break;
+    case MonthlyFeeMode.RATE_FORMULA:
+      fixedRate = Number(plan.monthlyFeeRate ?? plan.vehiclePackage.monthlyFeeRate);
+      if (!Number.isFinite(fixedRate) || fixedRate <= 0) {
+        throw new BadRequestException("固定费率套餐的车辆基础月费费率必须大于 0");
+      }
+      if (fixedRate > vehiclePackageRate) {
+        throw new BadRequestException("固定费率套餐的车辆基础月费费率不能高于车型包上限率");
+      }
+      vehicleBaseFeeAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * fixedRate));
+      break;
+    case MonthlyFeeMode.MANUAL_QUOTE:
+      throw new BadRequestException(SELF_SERVICE_MANUAL_QUOTE_MESSAGE);
+    default:
+      throw new BadRequestException("不支持的车辆基础月费模式");
+  }
+
+  assertSelfServiceVehicleBaseFeeWithinCap(vehicleBaseFeeAmount, vehicleBaseFeeCapAmount);
+
+  return {
+    fixedRate,
+    vehicleBaseFeeAmount,
+    vehicleBaseFeeCapAmount,
+    vehicleBaseFeeModeLabel: SELF_SERVICE_VEHICLE_BASE_FEE_MODE_LABELS[plan.monthlyFeeMode]
+  };
+}
+
+function assertSelfServiceVehicleBaseFeeWithinCap(vehicleBaseFeeAmount: bigint, capAmount: bigint) {
+  if (vehicleBaseFeeAmount > capAmount) {
+    throw new BadRequestException("车辆基础费超过车型包系数允许上限");
+  }
+}
+
+function toSelfServiceSubscriptionPlanSnapshot(plan: SelfServiceSubscriptionPlan) {
+  return {
+    baseMonthlyFeeAmount: plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
+    benefitPackageId: plan.benefitPackageId,
+    effectiveFrom: plan.effectiveFrom.toISOString().slice(0, 10),
+    effectiveTo: plan.effectiveTo?.toISOString().slice(0, 10) ?? null,
+    energyPackageId: plan.energyPackageId,
+    id: plan.id,
+    maxPeriodMonths: plan.maxPeriodMonths,
+    mileagePackageId: plan.mileagePackageId,
+    minPeriodMonths: plan.minPeriodMonths,
+    monthlyFeeCapRate: plan.monthlyFeeCapRate === null ? null : Number(plan.monthlyFeeCapRate),
+    monthlyFeeMode: plan.monthlyFeeMode,
+    monthlyFeeModeLabel: SELF_SERVICE_VEHICLE_BASE_FEE_MODE_LABELS[plan.monthlyFeeMode],
+    monthlyFeeRate: Number(plan.monthlyFeeRate),
+    planName: plan.planName,
+    planNo: plan.planNo,
+    productId: plan.productId,
+    productVersionId: plan.productVersionId,
+    status: plan.status,
+    vehiclePackageId: plan.vehiclePackageId
+  };
+}
+
+type SelfServicePackage =
+  | Prisma.VehiclePackageGetPayload<{ include: typeof selfServicePackageInclude }>
+  | Prisma.MileagePackageGetPayload<{ include: typeof selfServicePackageInclude }>
+  | Prisma.EnergyPackageGetPayload<{ include: typeof selfServicePackageInclude }>
+  | Prisma.BenefitPackageGetPayload<{ include: typeof selfServicePackageInclude }>;
+
+function toSelfServicePackageSnapshot(row: SelfServicePackage) {
+  const result: Record<string, unknown> = {
+    id: row.id,
+    packageName: row.packageName,
+    packageNo: row.packageNo,
+    productId: row.productId,
+    productVersionId: row.productVersionId,
+    status: row.status
+  };
+
+  if ("vehicleModel" in row) {
+    result.configName = row.configName;
+    result.maxPurchasePriceAmount =
+      row.maxPurchasePriceAmount === null ? null : Number(row.maxPurchasePriceAmount);
+    result.minPurchasePriceAmount =
+      row.minPurchasePriceAmount === null ? null : Number(row.minPurchasePriceAmount);
+    result.monthlyFeeRate = Number(row.monthlyFeeRate);
+    result.vehicleModel = row.vehicleModel;
+  }
+  if ("monthlyMileageKm" in row) {
+    result.monthlyMileageKm = row.monthlyMileageKm;
+    result.overMileageFeeAmount = Number(row.overMileageFeeAmount);
+    result.priceAmount = Number(row.priceAmount);
+  }
+  if ("monthlyEnergyCount" in row) {
+    result.monthlyEnergyCount = row.monthlyEnergyCount;
+    result.monthlyEnergyKwh = row.monthlyEnergyKwh;
+    result.priceAmount = Number(row.priceAmount);
+  }
+  if ("benefitType" in row) {
+    result.benefitType = row.benefitType;
+    result.description = row.description;
+    result.priceAmount = Number(row.priceAmount);
+  }
+
+  return result;
+}
+
+function toJsonSnapshot(value: unknown): Prisma.InputJsonValue {
+  return toAuditSnapshot(value) as Prisma.InputJsonValue;
+}
+
+function toAuditSnapshot(value: unknown) {
+  return JSON.parse(
+    JSON.stringify(value, (_key: string, item: unknown) =>
+      typeof item === "bigint" ? Number(item) : item
+    )
+  ) as unknown;
 }
 
 async function createApplicationActionLog(

@@ -18,7 +18,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
-import { RequirePermissions } from "../auth/auth.decorators";
+import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   ApproveApplicationDto,
@@ -34,6 +34,7 @@ import {
   DeleteMaterialFileDto,
   ReviewMaterialDto
 } from "./dto/create-material.dto";
+import { CreateSelfServiceApplicationDto } from "./dto/create-self-service-application.dto";
 import { UpdateApplicationDto } from "./dto/update-application.dto";
 import { UpdateCustomerDto } from "./dto/update-customer.dto";
 import { CustomerService, UploadedMaterialFile } from "./customer.service";
@@ -97,6 +98,15 @@ export class CustomerController {
   @RequirePermissions(PermissionCode.APPLICATION_MANAGE)
   createApplication(@Body() dto: CreateApplicationDto, @Req() request: AuthenticatedRequest) {
     return this.customerService.createApplication(dto, request.user, requestContext(request));
+  }
+
+  @Post("self-service-applications")
+  @RequireAnyPermissions(PermissionCode.APPLICATION_MANAGE, PermissionCode.APPLICATION_SUBMIT)
+  createSelfServiceApplication(
+    @Body() dto: CreateSelfServiceApplicationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.customerService.createSelfServiceApplication(dto, request.user, requestContext(request));
   }
 
   @Get("applications/:id")

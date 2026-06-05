@@ -1222,6 +1222,7 @@ model SubscriptionOrder {
   energyLimitCount           Int?               @map("energy_limit_count")
   quoteSnapshot              Json               @map("quote_snapshot")
   customerSelectedSnapshot   Json?              @map("customer_selected_snapshot")
+  finalPlanSnapshot          Json?              @map("final_plan_snapshot")
   orderSource                OrderSource        @default(SALES_ASSISTED) @map("order_source")
   orderStatus                OrderStatus        @default(PENDING_CONTRACT) @map("order_status")
   creditReviewStatus         OrderReviewStatus  @default(APPROVED) @map("credit_review_status")
@@ -1231,6 +1232,7 @@ model SubscriptionOrder {
   finalDepositAmount         BigInt?            @map("final_deposit_amount")
   customerConfirmedAt        DateTime?          @map("customer_confirmed_at") @db.Timestamptz(6)
   finalPlanConfirmedAt       DateTime?          @map("final_plan_confirmed_at") @db.Timestamptz(6)
+  reviewComment              String?            @map("review_comment") @db.Text
   startDate                  DateTime?          @map("start_date") @db.Date
   endDate                    DateTime?          @map("end_date") @db.Date
   actualDeliveryAt           DateTime?          @map("actual_delivery_at") @db.Timestamptz(6)

@@ -35,8 +35,13 @@ export class CreateCustomerOrderDto {
 }
 
 export class ReviewOrderDto {
+  @IsOptional()
   @IsEnum(OrderReviewStatus)
-  status!: OrderReviewStatus;
+  status?: OrderReviewStatus;
+
+  @IsOptional()
+  @IsEnum(OrderReviewStatus)
+  action?: OrderReviewStatus;
 
   @IsOptional()
   @IsEnum(CustomerGrade)
@@ -45,6 +50,10 @@ export class ReviewOrderDto {
   @IsOptional()
   @IsString()
   remark?: string;
+
+  @IsOptional()
+  @IsString()
+  comment?: string;
 }
 
 export class CancelOrderDto {

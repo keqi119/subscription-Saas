@@ -186,7 +186,7 @@ export class OrderService {
       where: {
         deletedAt: null,
         orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
-        orderStatus: OrderStatus.PENDING_REVIEW,
+        orderStatus: { in: [OrderStatus.PENDING_REVIEW, OrderStatus.PENDING_CUSTOMER_CONFIRMATION] },
         ...(canViewAllOrders(user) ? {} : { application: { salesUserId: user.id } })
       }
     });
@@ -201,21 +201,24 @@ export class OrderService {
     user: RequestUser,
     context: RequestContext
   ) {
-    assertReviewDecision(dto.status);
+    const decision = reviewDecision(dto);
+    const comment = reviewComment(dto);
+    assertReviewDecision(decision);
     const before = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(before, user);
     ensureCustomerSelfServiceOrder(before);
     assertNoActiveOrderChange(before);
 
-    if (dto.status === OrderReviewStatus.REJECTED) {
-      return this.rejectCustomerOrder(id, { ...dto, status: OrderReviewStatus.REJECTED }, user, context);
+    if (decision === OrderReviewStatus.REJECTED) {
+      return this.rejectCustomerOrder(id, { ...dto, status: OrderReviewStatus.REJECTED }, user, context, reviewType);
     }
 
-    if (dto.status === OrderReviewStatus.NEED_MORE_INFO) {
+    if (decision === OrderReviewStatus.NEED_MORE_INFO) {
       const order = await this.prisma.subscriptionOrder.update({
         data: {
           [reviewStatusField(reviewType)]: OrderReviewStatus.NEED_MORE_INFO,
           orderStatus: OrderStatus.PENDING_REVIEW,
+          reviewComment: comment,
           updatedBy: user.id
         },
         include: orderInclude,
@@ -228,6 +231,7 @@ export class OrderService {
     const result = await this.prisma.$transaction(async (tx) => {
       const data: Prisma.SubscriptionOrderUpdateInput = {
         [reviewStatusField(reviewType)]: OrderReviewStatus.APPROVED,
+        reviewComment: comment,
         updatedBy: user.id
       };
       let customerBefore = null;
@@ -278,10 +282,15 @@ export class OrderService {
           finalDepositAmount: Number(depositRule.depositAmount)
         });
       }
+      if (reviewType === "product") {
+        await assertCustomerOrderProductStillMatches(tx, before);
+      }
+      if (reviewType === "vehicle") {
+        await assertCustomerOrderVehicleStillHeld(tx, before);
+      }
 
       const nextStatuses = nextReviewStatuses(before, reviewType, OrderReviewStatus.APPROVED);
       if (allReviewsApproved(nextStatuses)) {
-        data.finalPlanConfirmedAt = new Date();
         data.orderStatus = OrderStatus.PENDING_CUSTOMER_CONFIRMATION;
       }
 
@@ -333,9 +342,13 @@ export class OrderService {
       throw new BadRequestException("三项审核全部通过后才可以确认最终方案。");
     }
 
+    if (before.depositStatus !== DepositStatus.CONFIRMED || before.finalDepositAmount === null) {
+      throw new BadRequestException("押金确认后才可以确认最终方案。");
+    }
+
     const order = await this.prisma.subscriptionOrder.update({
       data: {
-        finalPlanConfirmedAt: before.finalPlanConfirmedAt ?? new Date(),
+        finalPlanSnapshot: buildFinalPlanSnapshot(before),
         orderStatus: OrderStatus.PENDING_CUSTOMER_CONFIRMATION,
         updatedBy: user.id
       },
@@ -346,11 +359,18 @@ export class OrderService {
     return toOrderView(order);
   }
 
-  async rejectCustomerOrder(id: string, dto: Partial<ReviewOrderDto>, user: RequestUser, context: RequestContext) {
+  async rejectCustomerOrder(
+    id: string,
+    dto: Partial<ReviewOrderDto>,
+    user: RequestUser,
+    context: RequestContext,
+    reviewType?: "credit" | "product" | "vehicle"
+  ) {
     const before = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(before, user);
     ensureCustomerSelfServiceOrder(before);
     assertNoActiveOrderChange(before);
+    const comment = reviewComment(dto);
 
     const result = await this.prisma.$transaction(async (tx) => {
       let vehicleBefore = null;
@@ -363,16 +383,22 @@ export class OrderService {
         });
       }
 
+      const data: Prisma.SubscriptionOrderUpdateInput = {
+        orderStatus: OrderStatus.REJECTED,
+        reviewComment: comment,
+        updatedBy: user.id
+      };
+      if (reviewType) {
+        data[reviewStatusField(reviewType)] = OrderReviewStatus.REJECTED;
+      }
+
       const order = await tx.subscriptionOrder.update({
-        data: {
-          orderStatus: OrderStatus.REJECTED,
-          updatedBy: user.id
-        },
+        data,
         include: orderInclude,
         where: { id }
       });
 
-      return { order, reason: dto.remark, vehicleAfter, vehicleBefore };
+      return { order, reason: comment, vehicleAfter, vehicleBefore };
     });
 
     await this.writeAudit(
@@ -437,6 +463,7 @@ export class OrderService {
       const order = await tx.subscriptionOrder.update({
         data: {
           customerConfirmedAt: new Date(),
+          finalPlanConfirmedAt: new Date(),
           orderStatus: OrderStatus.PENDING_CONTRACT,
           updatedBy: user.id
         },
@@ -1488,6 +1515,96 @@ function assertNoDuplicateActiveOrderChange(order: { changes?: Array<{
 }> }) {
   if (hasActiveOrderChange(order)) {
     throw new BadRequestException(DUPLICATE_ACTIVE_ORDER_CHANGE_MESSAGE);
+  }
+}
+
+function reviewDecision(dto: Partial<ReviewOrderDto>) {
+  const decision = dto.status ?? dto.action;
+  if (!decision) {
+    throw new BadRequestException("审核动作不能为空。");
+  }
+  return decision;
+}
+
+function reviewComment(dto: Partial<ReviewOrderDto>) {
+  return dto.comment ?? dto.remark ?? null;
+}
+
+function buildFinalPlanSnapshot(order: OrderWithDetails) {
+  return toJsonValue({
+    customerId: order.customerId,
+    customerSelectedSnapshot: order.customerSelectedSnapshot ?? null,
+    depositAmount: Number(order.depositAmount),
+    depositStatus: order.depositStatus,
+    finalDepositAmount: order.finalDepositAmount === null ? null : Number(order.finalDepositAmount),
+    monthlyFeeAmount: Number(order.monthlyFeeAmount),
+    orderId: order.id,
+    orderNo: order.orderNo,
+    periodMonths: order.periodMonths,
+    productId: order.productId,
+    productVersionId: order.productVersionId,
+    quoteId: order.quoteId,
+    quoteSnapshot: order.quoteSnapshot,
+    vehicleId: order.vehicleId,
+    vehicleModel: order.vehicleModel
+  });
+}
+
+async function assertCustomerOrderProductStillMatches(
+  tx: Prisma.TransactionClient,
+  order: OrderWithDetails
+) {
+  const quote = await tx.subscriptionQuote.findUnique({
+    include: {
+      subscriptionPlan: { include: subscriptionPlanInclude },
+      vehicle: true
+    },
+    where: { id: order.quoteId }
+  });
+
+  if (!quote?.subscriptionPlan) {
+    throw new BadRequestException("订单缺少订阅套餐，无法通过产品审核。");
+  }
+
+  assertSubscriptionPlanAvailableForCustomerOrder(quote.subscriptionPlan);
+
+  const vehicleModel = order.vehicle?.vehicleModel ?? quote.vehicle?.vehicleModel ?? order.vehicleModel;
+  if (vehicleModel !== quote.subscriptionPlan.vehiclePackage.vehicleModel) {
+    throw new BadRequestException("套餐仍需匹配订单车辆车型。");
+  }
+}
+
+async function assertCustomerOrderVehicleStillHeld(
+  tx: Prisma.TransactionClient,
+  order: OrderWithDetails
+) {
+  if (!order.vehicleId) {
+    throw new BadRequestException("NEED_CHANGE_VEHICLE");
+  }
+
+  const vehicle = await tx.vehicle.findUnique({ where: { id: order.vehicleId } });
+  if (!vehicle || vehicle.deletedAt || vehicle.status !== VehicleStatus.REVIEW_RESERVED) {
+    throw new BadRequestException("NEED_CHANGE_VEHICLE");
+  }
+  if (
+    vehicle.salePriceStatus !== SalePriceStatus.EFFECTIVE ||
+    !vehicle.currentSalePriceAmount ||
+    vehicle.currentSalePriceAmount <= 0n
+  ) {
+    throw new BadRequestException("NEED_CHANGE_VEHICLE");
+  }
+
+  const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
+    where: {
+      deletedAt: null,
+      id: { not: order.id },
+      orderStatus: { notIn: VEHICLE_OCCUPYING_FINAL_STATUSES },
+      vehicleId: order.vehicleId
+    }
+  });
+
+  if (occupiedByOtherOrderCount > 0) {
+    throw new BadRequestException("NEED_CHANGE_VEHICLE");
   }
 }
 

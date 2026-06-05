@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { REQUIRED_ANY_PERMISSIONS_KEY, REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
+import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
@@ -59,6 +60,28 @@ describe("vehicle availability permissions", () => {
   });
 });
 
+describe("customer order review permissions", () => {
+  it("requires order review and final-plan permissions for A-line review APIs", () => {
+    const reviewPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.reviewCredit
+    );
+    const finalizePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.finalizePlan
+    );
+    const rejectPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.rejectCustomerOrder
+    );
+
+    expect(reviewPermissions).toEqual([PermissionCode.ORDER_REVIEW]);
+    expect(finalizePermissions).toEqual([PermissionCode.ORDER_CONFIRM_FINAL_PLAN]);
+    expect(rejectPermissions).toEqual([PermissionCode.ORDER_REJECT]);
+    expect(hasRequiredPermissions([PermissionCode.ORDER_VIEW], reviewPermissions)).toBe(false);
+  });
+});
+
 describe("seed permission calibration", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
@@ -106,6 +129,17 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("roleCode === \"AS\" ? vehicleManagementPermissions : vehicleViewPermissions");
     expect(seedSource).toContain("\"vehicle:initialize_sale_price\"");
     expect(seedSource).toContain("\"vehicle:review_sale_price\"");
+  });
+
+  it("calibrates A-line order review permissions by role", () => {
+    for (const permission of ["order:review", "order:confirm_final_plan", "order:reject"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expectRolePermissions("OP", ["order:review", "order:confirm_final_plan", "order:reject"]);
+    expectRolePermissions("RC", ["order:review", "order:reject"]);
+    expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"order:review\", \"order:reject\"] : [])");
+    expect(roleHasPermission(rolePermissionArray("SA"), "order:review")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

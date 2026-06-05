@@ -58,6 +58,31 @@ export const STATUS_LABELS: Record<string, string> = {
   UNDER_REVIEW: "审批中"
 };
 
+export const APPLICATION_SOURCE_LABELS: Record<string, string> = {
+  SALES_ASSISTED: "销售人工",
+  SELF_SERVICE: "客户自助"
+};
+
+export const REVIEW_STATUS_LABELS: Record<string, string> = {
+  APPROVED: "已通过",
+  NEED_MORE_INFO: "需补充资料",
+  PENDING: "待审核",
+  REJECTED: "已拒绝"
+};
+
+export const DEPOSIT_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "押金已确认",
+  PENDING_CONFIRM: "押金待确认",
+  REJECTED: "押金拒绝",
+  WAIVED: "押金减免"
+};
+
+export const PLAN_CONFIRM_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  PENDING: "待确认",
+  REJECTED: "已拒绝"
+};
+
 export const MATERIAL_STATUS_LABELS: Record<string, string> = {
   APPROVED: "已通过",
   NEED_MORE_INFO: "需补充资料",
@@ -310,7 +335,7 @@ export const MENU_LABELS: Record<string, string> = {
   orders: "订单中心",
   "orders.contract_templates": "合同模板",
   "orders.contracts": "合同管理",
-  "orders.review": "订单申请审核",
+  "orders.review": "旧版订单审核",
   "orders.subscription": "订阅订单",
   products: "产品中心",
   quotes: "订阅报价",

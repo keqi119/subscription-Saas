@@ -18,17 +18,22 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
+import dayjs from "dayjs";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import {
-  MATERIAL_STATUS_LABELS,
+  APPLICATION_SOURCE_LABELS,
+  DEPOSIT_STATUS_LABELS,
   MATERIAL_TYPE_LABELS,
+  PLAN_CONFIRM_STATUS_LABELS,
+  REVIEW_STATUS_LABELS,
   STATUS_LABELS,
   labelOf
 } from "../../constants/labels";
 import { apiFetch, ApiError } from "../../lib/api";
+import { joinText, snapshotValue, safeText } from "../../lib/application-snapshots";
 import type { CompatibleMaterialFile } from "../../lib/application-materials";
 import { renderMaterialFileNames } from "../../lib/application-materials";
 
@@ -50,10 +55,18 @@ interface ApplicationMaterial {
   status?: string | null;
 }
 
+interface ApplicationOrderSummary {
+  id: string;
+  orderNo: string;
+  orderStatus: string;
+}
+
 interface ApplicationRow {
   applicationNo: string;
+  applicationSource?: string | null;
   approvedAt?: string | null;
   createdAt: string;
+  creditReviewStatus?: string | null;
   customer: {
     customerNo: string;
     id: string;
@@ -61,24 +74,23 @@ interface ApplicationRow {
     name: string;
     status: string;
   };
+  customerSelectedSnapshot?: unknown;
+  depositStatus?: string | null;
+  finalPlanSnapshot?: unknown;
   id: string;
+  intentSnapshot?: unknown;
   intendedModel?: string | null;
   intendedPeriodMonths?: number | null;
+  materialReviewStatus?: string | null;
   materials: ApplicationMaterial[];
+  orders?: ApplicationOrderSummary[];
+  planConfirmStatus?: string | null;
+  productReviewStatus?: string | null;
   rejectedReason?: string | null;
-  riskResult?: RiskResult | null;
   salesUser?: { id: string; name: string; username: string } | null;
   status: string;
   submittedAt?: string | null;
-}
-
-interface RiskResult {
-  approvedDepositAmount: number;
-  defaultRate: number;
-  grade: string;
-  maxVehiclePurchasePriceAmount?: number | null;
-  result: string;
-  score?: number | null;
+  vehicleReviewStatus?: string | null;
 }
 
 interface CreateApplicationValues {
@@ -87,25 +99,33 @@ interface CreateApplicationValues {
   intendedPeriodMonths?: number;
 }
 
-interface ApproveValues {
-  grade: string;
-  maxVehiclePurchasePriceAmountYuan?: number;
-  remark?: string;
-  riskScore?: number;
-}
-
 interface MaterialValues {
   materialType: string;
   reviewRemark?: string;
 }
 
+type ReviewFilter =
+  | "all"
+  | "cancelled"
+  | "can-create-order"
+  | "credit-pending"
+  | "final-plan-pending"
+  | "material-pending"
+  | "ordered"
+  | "product-pending"
+  | "rejected"
+  | "vehicle-pending";
+
 const statusColors: Record<string, string> = {
   APPROVED: "green",
+  CANCELLED: "default",
+  CONFIRMED: "green",
   DRAFT: "blue",
   NEED_MORE_INFO: "orange",
+  PENDING: "blue",
+  PENDING_CONFIRM: "orange",
   REJECTED: "red",
-  SUBMITTED: "purple",
-  UNDER_REVIEW: "purple"
+  SUBMITTED: "purple"
 };
 
 const materialOptions = [
@@ -120,26 +140,106 @@ const materialOptions = [
 
 const uploadableStatuses = ["DRAFT", "SUBMITTED", "NEED_MORE_INFO"];
 
-function formatYuan(amount: number) {
-  return `￥${(amount / 100).toFixed(2)}`;
-}
-
 function getErrorMessage(error: unknown) {
   return error instanceof ApiError ? error.message : "操作失败，请稍后重试";
 }
 
+function formatTime(value?: string | null) {
+  return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+function StatusTag({
+  labels,
+  value
+}: {
+  labels?: Record<string, string>;
+  value?: string | null;
+}) {
+  return (
+    <Tag color={value ? statusColors[value] ?? "default" : "default"}>
+      {value ? labelOf(labels ?? STATUS_LABELS, value) : "-"}
+    </Tag>
+  );
+}
+
+function applicationVehicleLabel(row: ApplicationRow) {
+  return joinText(
+    snapshotValue(row.intentSnapshot, "vehicleSnapshot.vehicleNo"),
+    snapshotValue(row.intentSnapshot, "vehicleSnapshot.plateNo"),
+    snapshotValue(row.intentSnapshot, "vehicleSnapshot.vin"),
+    row.intendedModel
+  );
+}
+
+function applicationPlanLabel(row: ApplicationRow) {
+  return joinText(
+    snapshotValue(row.intentSnapshot, "packageSnapshot.subscriptionPlan.planNo"),
+    snapshotValue(row.intentSnapshot, "packageSnapshot.subscriptionPlan.planName"),
+    snapshotValue(row.customerSelectedSnapshot, "packageSnapshot.subscriptionPlan.planName")
+  );
+}
+
+function hasOrder(row: ApplicationRow) {
+  return Boolean(row.orders?.length);
+}
+
+function canCreateOrder(row: ApplicationRow) {
+  return row.planConfirmStatus === "CONFIRMED" && !hasOrder(row) && row.status !== "REJECTED" && row.status !== "CANCELLED";
+}
+
+function matchesReviewFilter(row: ApplicationRow, filter: ReviewFilter) {
+  if (filter === "all") {
+    return true;
+  }
+  if (filter === "material-pending") {
+    return row.materialReviewStatus === "PENDING" || row.materialReviewStatus === "NEED_MORE_INFO";
+  }
+  if (filter === "credit-pending") {
+    return row.creditReviewStatus === "PENDING" || row.creditReviewStatus === "NEED_MORE_INFO";
+  }
+  if (filter === "product-pending") {
+    return row.productReviewStatus === "PENDING";
+  }
+  if (filter === "vehicle-pending") {
+    return row.vehicleReviewStatus === "PENDING";
+  }
+  if (filter === "final-plan-pending") {
+    return (
+      row.materialReviewStatus === "APPROVED" &&
+      row.creditReviewStatus === "APPROVED" &&
+      row.productReviewStatus === "APPROVED" &&
+      row.vehicleReviewStatus === "APPROVED" &&
+      row.depositStatus === "CONFIRMED" &&
+      row.planConfirmStatus !== "CONFIRMED"
+    );
+  }
+  if (filter === "can-create-order") {
+    return canCreateOrder(row);
+  }
+  if (filter === "ordered") {
+    return hasOrder(row);
+  }
+  if (filter === "rejected") {
+    return row.status === "REJECTED";
+  }
+  if (filter === "cancelled") {
+    return row.status === "CANCELLED";
+  }
+  return true;
+}
+
 export default function ApplicationsPage() {
-  const { message, modal } = App.useApp();
-  const [approveForm] = Form.useForm<ApproveValues>();
+  const { message } = App.useApp();
   const [applicationForm] = Form.useForm<CreateApplicationValues>();
   const [materialForm] = Form.useForm<MaterialValues>();
   const [applications, setApplications] = useState<ApplicationRow[]>([]);
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
-  const [approveTarget, setApproveTarget] = useState<ApplicationRow | null>(null);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [materialFile, setMaterialFile] = useState<File | null>(null);
   const [materialFileList, setMaterialFileList] = useState<UploadFile[]>([]);
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
   const [uploadTarget, setUploadTarget] = useState<ApplicationRow | null>(null);
 
@@ -161,6 +261,15 @@ export default function ApplicationsPage() {
     void loadData();
   }, [loadData]);
 
+  const filteredApplications = useMemo(
+    () =>
+      applications.filter((row) => {
+        const sourceMatched = sourceFilter === "all" || row.applicationSource === sourceFilter;
+        return sourceMatched && matchesReviewFilter(row, reviewFilter);
+      }),
+    [applications, reviewFilter, sourceFilter]
+  );
+
   async function createApplication(values: CreateApplicationValues) {
     await apiFetch<ApplicationRow>("/applications", {
       body: JSON.stringify(values),
@@ -176,50 +285,6 @@ export default function ApplicationsPage() {
     await apiFetch<ApplicationRow>(`/applications/${record.id}/submit`, { method: "POST" });
     void message.success("进件已提交");
     await loadData();
-  }
-
-  async function approveApplication(values: ApproveValues) {
-    if (!approveTarget) {
-      return;
-    }
-
-    await apiFetch<ApplicationRow>(`/applications/${approveTarget.id}/approve`, {
-      body: JSON.stringify({
-        grade: values.grade,
-        maxVehiclePurchasePriceAmount:
-          values.maxVehiclePurchasePriceAmountYuan === undefined
-            ? undefined
-            : Math.round(values.maxVehiclePurchasePriceAmountYuan * 100),
-        remark: values.remark,
-        riskScore: values.riskScore
-      }),
-      method: "POST"
-    });
-    void message.success("进件已通过");
-    setApproveTarget(null);
-    approveForm.resetFields();
-    await loadData();
-  }
-
-  async function reviewApplication(record: ApplicationRow, action: "need-more-info" | "reject") {
-    const config =
-      action === "need-more-info"
-        ? { body: { reason: "需补充资料" }, title: "确认要求补件？" }
-        : { body: { reason: "暂不符合准入要求" }, title: "确认拒绝该进件？" };
-
-    modal.confirm({
-      okText: "确认",
-      cancelText: "取消",
-      onOk: async () => {
-        await apiFetch<ApplicationRow>(`/applications/${record.id}/${action}`, {
-          body: JSON.stringify(config.body),
-          method: "POST"
-        });
-        void message.success("状态已更新");
-        await loadData();
-      },
-      title: config.title
-    });
   }
 
   async function uploadMaterial(values: MaterialValues) {
@@ -266,55 +331,84 @@ export default function ApplicationsPage() {
   const columns: ColumnsType<ApplicationRow> = [
     {
       dataIndex: "applicationNo",
+      fixed: "left",
       render: (value: string, record) => <Link href={`/applications/${record.id}`}>{value}</Link>,
       title: "进件编号",
-      width: 180
+      width: 170
     },
     {
-      dataIndex: "customer",
-      render: (value: ApplicationRow["customer"]) => `${value.name} ${value.mobile}`,
-      title: "客户姓名",
-      width: 180
+      dataIndex: "applicationSource",
+      render: (value?: string | null) => safeText(labelOf(APPLICATION_SOURCE_LABELS, value)),
+      title: "进件来源",
+      width: 110
     },
-    { dataIndex: "intendedModel", title: "意向车型", width: 120 },
-    { dataIndex: "intendedPeriodMonths", title: "意向周期（月）", width: 120 },
+    { dataIndex: ["customer", "name"], title: "客户姓名", width: 110 },
+    { dataIndex: ["customer", "mobile"], title: "手机号", width: 130 },
+    { render: (_, record) => applicationVehicleLabel(record), title: "意向车辆", width: 230 },
+    { render: (_, record) => applicationPlanLabel(record), title: "意向套餐", width: 230 },
+    {
+      dataIndex: "materialReviewStatus",
+      render: (value?: string | null) => <StatusTag labels={REVIEW_STATUS_LABELS} value={value} />,
+      title: "资料审核状态",
+      width: 130
+    },
+    {
+      dataIndex: "creditReviewStatus",
+      render: (value?: string | null) => <StatusTag labels={REVIEW_STATUS_LABELS} value={value} />,
+      title: "资质审核状态",
+      width: 130
+    },
+    {
+      dataIndex: "depositStatus",
+      render: (value?: string | null) => <StatusTag labels={DEPOSIT_STATUS_LABELS} value={value} />,
+      title: "押金状态",
+      width: 130
+    },
+    {
+      dataIndex: "productReviewStatus",
+      render: (value?: string | null) => <StatusTag labels={REVIEW_STATUS_LABELS} value={value} />,
+      title: "产品匹配状态",
+      width: 130
+    },
+    {
+      dataIndex: "vehicleReviewStatus",
+      render: (value?: string | null) => <StatusTag labels={REVIEW_STATUS_LABELS} value={value} />,
+      title: "车辆库存状态",
+      width: 130
+    },
+    {
+      dataIndex: "planConfirmStatus",
+      render: (value?: string | null) => <StatusTag labels={PLAN_CONFIRM_STATUS_LABELS} value={value} />,
+      title: "最终方案状态",
+      width: 130
+    },
     {
       dataIndex: "status",
-      render: (value: string) => (
-        <Tag color={statusColors[value] ?? "default"}>{labelOf(STATUS_LABELS, value)}</Tag>
-      ),
-      title: "当前状态",
-      width: 150
-    },
-    {
-      dataIndex: "riskResult",
-      render: (value?: RiskResult | null) =>
-        value ? (
-          <Space size={4}>
-            <Tag color="green">{value.grade}</Tag>
-            <span>{formatYuan(value.approvedDepositAmount)}</span>
-          </Space>
-        ) : (
-          "-"
-        ),
-      title: "风控结果",
-      width: 160
-    },
-    {
-      dataIndex: "materials",
-      render: (value: ApplicationMaterial[]) => value.length,
-      title: "资料数",
-      width: 90
-    },
-    {
-      dataIndex: "salesUser",
-      render: (value?: ApplicationRow["salesUser"]) => value?.name ?? "-",
-      title: "所属销售",
+      render: (value: string) => <StatusTag value={value} />,
+      title: "进件状态",
       width: 120
     },
     {
+      render: (_, record) =>
+        hasOrder(record) ? (
+          <Space direction="vertical" size={2}>
+            <Tag color="green">已生成</Tag>
+            {record.orders?.[0] ? <Link href={`/orders/${record.orders[0].id}`}>{record.orders[0].orderNo}</Link> : null}
+          </Space>
+        ) : (
+          <Tag>未生成</Tag>
+        ),
+      title: "是否已生成订单",
+      width: 150
+    },
+    { dataIndex: "createdAt", render: formatTime, title: "创建时间", width: 160 },
+    {
+      fixed: "right",
       render: (_, record) => (
         <Space wrap>
+          <Button href={`/applications/${record.id}`} size="small" type="link">
+            查看 / 审核
+          </Button>
           <Button
             disabled={!uploadableStatuses.includes(record.status)}
             onClick={() => setUploadTarget(record)}
@@ -329,41 +423,16 @@ export default function ApplicationsPage() {
           >
             提交
           </Button>
-          <Button
-            disabled={record.status !== "SUBMITTED"}
-            onClick={() => {
-              approveForm.setFieldsValue({ grade: "A" });
-              setApproveTarget(record);
-            }}
-            size="small"
-          >
-            通过
-          </Button>
-          <Button
-            disabled={record.status !== "SUBMITTED"}
-            onClick={() => reviewApplication(record, "need-more-info")}
-            size="small"
-          >
-            补件
-          </Button>
-          <Button
-            danger
-            disabled={record.status !== "SUBMITTED"}
-            onClick={() => reviewApplication(record, "reject")}
-            size="small"
-          >
-            拒绝
-          </Button>
         </Space>
       ),
       title: "操作",
-      width: 380
+      width: 250
     }
   ];
 
   return (
     <ProtectedShell>
-      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
             进件管理
@@ -372,7 +441,47 @@ export default function ApplicationsPage() {
             新建进件
           </Button>
         </Space>
-        <Table columns={columns} dataSource={applications} loading={loading} rowKey="id" />
+
+        <Space wrap>
+          <Select
+            onChange={setSourceFilter}
+            options={[
+              { label: "全部来源", value: "all" },
+              { label: "客户自助", value: "SELF_SERVICE" },
+              { label: "销售人工", value: "SALES_ASSISTED" }
+            ]}
+            style={{ width: 160 }}
+            value={sourceFilter}
+          />
+          <Select<ReviewFilter>
+            onChange={setReviewFilter}
+            options={[
+              { label: "全部审核状态", value: "all" },
+              { label: "待资料审核", value: "material-pending" },
+              { label: "待资质审核", value: "credit-pending" },
+              { label: "待产品审核", value: "product-pending" },
+              { label: "待车辆审核", value: "vehicle-pending" },
+              { label: "待最终方案确认", value: "final-plan-pending" },
+              { label: "可生成订单", value: "can-create-order" },
+              { label: "已生成订单", value: "ordered" },
+              { label: "已拒绝", value: "rejected" },
+              { label: "已取消", value: "cancelled" }
+            ]}
+            style={{ width: 190 }}
+            value={reviewFilter}
+          />
+          <Typography.Text type="secondary">
+            共 {filteredApplications.length} 条进件
+          </Typography.Text>
+        </Space>
+
+        <Table
+          columns={columns}
+          dataSource={filteredApplications}
+          loading={loading}
+          rowKey="id"
+          scroll={{ x: 2200 }}
+        />
       </Space>
 
       <Modal
@@ -381,7 +490,7 @@ export default function ApplicationsPage() {
         onCancel={() => setModalOpen(false)}
         onOk={() => applicationForm.submit()}
         open={modalOpen}
-        title="新建进件"
+        title="新建销售人工进件"
       >
         <Form<CreateApplicationValues>
           form={applicationForm}
@@ -407,39 +516,6 @@ export default function ApplicationsPage() {
         </Form>
       </Modal>
 
-      <Modal
-        cancelText="取消"
-        okText="通过"
-        onCancel={() => {
-          setApproveTarget(null);
-          approveForm.resetFields();
-        }}
-        onOk={() => approveForm.submit()}
-        open={Boolean(approveTarget)}
-        title={approveTarget ? `风控审批 / ${approveTarget.applicationNo}` : "风控审批"}
-      >
-        <Form<ApproveValues> form={approveForm} layout="vertical" onFinish={approveApplication}>
-          <Form.Item label="客户等级" name="grade" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { label: "A", value: "A" },
-                { label: "B", value: "B" },
-                { label: "C", value: "C" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item label="风控评分" name="riskScore">
-            <InputNumber max={1000} min={0} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="最高可承租车价（元）" name="maxVehiclePurchasePriceAmountYuan">
-            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="审批意见" name="remark">
-            <Input.TextArea rows={3} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
       <Drawer
         onClose={closeUploadDrawer}
         open={Boolean(uploadTarget)}
@@ -453,7 +529,12 @@ export default function ApplicationsPage() {
           onFinish={uploadMaterial}
         >
           <Form.Item label="资料类型" name="materialType" rules={[{ required: true }]}>
-            <Select options={materialOptions} />
+            <Select
+              options={materialOptions.map((option) => ({
+                ...option,
+                label: MATERIAL_TYPE_LABELS[option.value] ?? option.label
+              }))}
+            />
           </Form.Item>
           <Form.Item label="文件" required>
             <Upload
@@ -499,7 +580,7 @@ export default function ApplicationsPage() {
               {
                 dataIndex: "status",
                 render: (value: string | null | undefined, record: ApplicationMaterial) =>
-                  labelOf(MATERIAL_STATUS_LABELS, record.reviewStatus ?? value),
+                  labelOf(REVIEW_STATUS_LABELS, record.reviewStatus ?? value),
                 title: "资料状态"
               }
             ]}

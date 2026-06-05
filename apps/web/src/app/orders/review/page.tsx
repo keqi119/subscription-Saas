@@ -7,7 +7,7 @@ import {
   ReloadOutlined,
   StopOutlined
 } from "@ant-design/icons";
-import { App, Button, Descriptions, Drawer, Form, Input, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Descriptions, Drawer, Form, Input, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -556,6 +556,12 @@ export default function OrderReviewQueuePage() {
             刷新
           </Button>
         </Space>
+
+        <Alert
+          message="旧版订单审核入口，后续将迁移至进件审核。新自助进件请在进件管理中审核。"
+          showIcon
+          type="warning"
+        />
 
         <Table columns={columns} dataSource={orders} loading={loading} rowKey="id" scroll={{ x: 1780 }} />
 

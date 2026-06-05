@@ -47,8 +47,7 @@ import {
   formatMonths,
   joinText,
   safeText,
-  snapshotValue,
-  toNumber
+  snapshotValue
 } from "../../../lib/application-snapshots";
 import type { AuthMeResponse } from "../../../lib/auth";
 
@@ -177,9 +176,12 @@ interface ApplicationDetail {
   }>;
   rejectedReason?: string | null;
   riskResult?: {
+    approvedAt?: string | null;
     approvedDepositAmount: number;
     defaultRate: number;
     grade: string;
+    maxVehiclePurchasePriceAmount?: number | null;
+    remark?: string | null;
     score?: number | null;
   } | null;
   salesUser?: UserRef | null;
@@ -218,17 +220,6 @@ interface QuoteValues {
   subscriptionPlanId: string;
   vehicleBaseFeeAmountYuan: number;
   vehicleId: string;
-}
-
-type ApplicationReviewType = "credit" | "material" | "product" | "vehicle";
-type ReviewDecision = "APPROVED" | "NEED_MORE_INFO" | "REJECTED";
-
-interface ApplicationReviewValues {
-  comment?: string;
-  customerGrade?: string;
-  finalPeriodMonths?: number;
-  finalSubscriptionPlanId?: string;
-  finalVehicleId?: string;
 }
 
 interface CreateOrderResult {
@@ -349,16 +340,11 @@ export default function ApplicationDetailPage() {
   const router = useRouter();
   const { message } = App.useApp();
   const [actionForm] = Form.useForm<ApplicationActionValues>();
-  const [applicationReviewForm] = Form.useForm<ApplicationReviewValues>();
   const [deleteFileForm] = Form.useForm<DeleteFileValues>();
   const [materialForm] = Form.useForm<MaterialValues>();
   const [materialReviewForm] = Form.useForm<MaterialReviewValues>();
   const [quoteForm] = Form.useForm<QuoteValues>();
   const [actionType, setActionType] = useState<"approve" | "need-more-info" | "reject" | "submit" | null>(null);
-  const [applicationReviewTarget, setApplicationReviewTarget] = useState<{
-    decision: ReviewDecision;
-    reviewType: ApplicationReviewType;
-  } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MaterialFile | null>(null);
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -405,20 +391,15 @@ export default function ApplicationDetailPage() {
   const canCreateOfficialOrder = permissions.has("order:create") && permissions.has("quote:create");
   const canCreateOrderChange = permissions.has("order_change:create");
   const currentOrder = detail?.orders?.[0] ?? null;
-  const applicationReviewLocked = Boolean(
-    currentOrder || detail?.status === "REJECTED" || detail?.status === "CANCELLED"
-  );
   const intentSnapshot = detail?.intentSnapshot ?? detail?.customerSelectedSnapshot;
   const finalPlanSnapshot = detail?.finalPlanSnapshot ?? detail?.finalQuoteSnapshot;
-  const allApplicationReviewsApproved = Boolean(
+  const requiredApplicationReviewsApproved = Boolean(
     detail?.materialReviewStatus === "APPROVED" &&
-      detail.creditReviewStatus === "APPROVED" &&
-      detail.productReviewStatus === "APPROVED" &&
-      detail.vehicleReviewStatus === "APPROVED"
+      detail.creditReviewStatus === "APPROVED"
   );
   const canFinalizeApplicationPlan = Boolean(
     canReviewApplication &&
-      allApplicationReviewsApproved &&
+      requiredApplicationReviewsApproved &&
       detail?.depositStatus === "CONFIRMED" &&
       detail.planConfirmStatus !== "CONFIRMED" &&
       !currentOrder &&
@@ -802,78 +783,6 @@ export default function ApplicationDetailPage() {
     }
   }
 
-  function openApplicationReviewModal(reviewType: ApplicationReviewType, decision: ReviewDecision) {
-    if (!detail) {
-      return;
-    }
-
-    const snapshotSubscriptionPlanId = safeText(snapshotValue(intentSnapshot, "subscriptionPlanId"));
-    const snapshotVehicleId = safeText(snapshotValue(intentSnapshot, "vehicleId"));
-
-    setApplicationReviewTarget({ decision, reviewType });
-    applicationReviewForm.setFieldsValue({
-      comment: undefined,
-      customerGrade: detail.customerGrade ?? detail.riskResult?.grade ?? "A",
-      finalPeriodMonths:
-        detail.finalPeriodMonths ??
-        detail.intentPeriodMonths ??
-        detail.intendedPeriodMonths ??
-        (toNumber(snapshotValue(intentSnapshot, "periodMonths")) ?? undefined),
-      finalSubscriptionPlanId:
-        detail.finalSubscriptionPlanId ??
-        detail.intentSubscriptionPlanId ??
-        (snapshotSubscriptionPlanId === "-" ? undefined : snapshotSubscriptionPlanId),
-      finalVehicleId:
-        detail.finalVehicleId ??
-        detail.intentVehicleId ??
-        detail.softReservedVehicleId ??
-        (snapshotVehicleId === "-" ? undefined : snapshotVehicleId)
-    });
-  }
-
-  function closeApplicationReviewModal() {
-    setApplicationReviewTarget(null);
-    applicationReviewForm.resetFields();
-  }
-
-  async function submitApplicationReview(values: ApplicationReviewValues) {
-    if (!detail || !applicationReviewTarget) {
-      return;
-    }
-
-    const { decision, reviewType } = applicationReviewTarget;
-    const payload: Record<string, unknown> = {
-      action: decision,
-      comment: values.comment
-    };
-
-    if (reviewType === "credit" && decision === "APPROVED") {
-      payload.customerGrade = values.customerGrade;
-    }
-    if (reviewType === "product" && decision === "APPROVED") {
-      payload.finalPeriodMonths = values.finalPeriodMonths;
-      payload.finalSubscriptionPlanId = values.finalSubscriptionPlanId;
-    }
-    if (reviewType === "vehicle" && decision === "APPROVED") {
-      payload.finalVehicleId = values.finalVehicleId;
-    }
-
-    setSubmitting(true);
-    try {
-      await apiFetch<ApplicationDetail>(`/applications/${detail.id}/reviews/${reviewType}`, {
-        body: JSON.stringify(payload),
-        method: "POST"
-      });
-      void message.success("审核状态已更新");
-      closeApplicationReviewModal();
-      await loadDetail();
-    } catch (error) {
-      void message.error(getErrorMessage(error));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   async function finalizeApplicationPlan() {
     if (!detail) {
       return;
@@ -882,7 +791,7 @@ export default function ApplicationDetailPage() {
     setSubmitting(true);
     try {
       await apiFetch<ApplicationDetail>(`/applications/${detail.id}/finalize-plan`, { method: "POST" });
-      void message.success("最终方案已确认");
+      void message.success("后台已代客户确认最终方案（临时）");
       await loadDetail();
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -1071,15 +980,15 @@ export default function ApplicationDetailPage() {
                   提交
                 </Button>
               ) : null}
-              {!isSelfServiceApplication && availableActions.has("approve") ? (
+              {availableActions.has("approve") ? (
                 <Button onClick={() => openActionModal("approve")} type="primary">
                   通过
                 </Button>
               ) : null}
-              {!isSelfServiceApplication && availableActions.has("needMoreInfo") ? (
+              {availableActions.has("needMoreInfo") ? (
                 <Button onClick={() => openActionModal("need-more-info")}>补件</Button>
               ) : null}
-              {!isSelfServiceApplication && availableActions.has("reject") ? (
+              {availableActions.has("reject") ? (
                 <Button danger onClick={() => openActionModal("reject")}>
                   拒绝
                 </Button>
@@ -1302,92 +1211,31 @@ export default function ApplicationDetailPage() {
               />
               {canReviewApplication ? (
                 <Space orientation="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
-                  <Space wrap>
-                    <Typography.Text strong>资料审核</Typography.Text>
-                    <Button
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("material", "APPROVED")}
-                      size="small"
-                    >
-                      通过
-                    </Button>
-                    <Button
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("material", "NEED_MORE_INFO")}
-                      size="small"
-                    >
-                      需补充资料
-                    </Button>
-                    <Button
-                      danger
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("material", "REJECTED")}
-                      size="small"
-                    >
-                      拒绝
-                    </Button>
-                  </Space>
-                  <Space wrap>
-                    <Typography.Text strong>客户资质 / 授信审核</Typography.Text>
-                    <Button
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("credit", "APPROVED")}
-                      size="small"
-                    >
-                      通过
-                    </Button>
-                    <Button
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("credit", "NEED_MORE_INFO")}
-                      size="small"
-                    >
-                      需补充资料
-                    </Button>
-                    <Button
-                      danger
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("credit", "REJECTED")}
-                      size="small"
-                    >
-                      拒绝
-                    </Button>
-                  </Space>
-                  <Space wrap>
-                    <Typography.Text strong>产品匹配审核</Typography.Text>
-                    <Button
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("product", "APPROVED")}
-                      size="small"
-                    >
-                      通过
-                    </Button>
-                    <Button
-                      danger
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("product", "REJECTED")}
-                      size="small"
-                    >
-                      拒绝
-                    </Button>
-                  </Space>
-                  <Space wrap>
-                    <Typography.Text strong>车辆库存审核</Typography.Text>
-                    <Button
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("vehicle", "APPROVED")}
-                      size="small"
-                    >
-                      通过
-                    </Button>
-                    <Button
-                      danger
-                      disabled={applicationReviewLocked}
-                      onClick={() => openApplicationReviewModal("vehicle", "REJECTED")}
-                      size="small"
-                    >
-                      拒绝
-                    </Button>
-                  </Space>
+                  <Alert
+                    message="自助进件审核已复用人工进件流程"
+                    description="资料请在下方资料清单逐项审核；资料不齐使用顶部补件；客户资质 / 授信使用顶部通过并填写评级、评分、车价和押金信息。"
+                    showIcon
+                    type="info"
+                  />
+                  <Descriptions
+                    bordered
+                    column={3}
+                    items={[
+                      { label: "资料审核", children: "使用资料清单逐项审核" },
+                      { label: "客户资质 / 授信", children: "使用顶部通过打开风控审核弹窗" },
+                      { label: "产品匹配", children: "生成订阅报价 / 确认最终方案时自动校验" },
+                      { label: "车辆库存", children: "生成订阅报价 / 确认最终方案时自动校验审核占用" },
+                      { label: "复购简易审核扩展", children: "保留历史评级参考，后续可在有效期内走简易审核通道" },
+                      { label: "最终方案确认", children: "正式流程由客户前端确认，当前仅用于阶段测试" }
+                    ]}
+                  />
+                  {isSelfServiceApplication ? (
+                    <Alert
+                      message="正式流程中，最终方案应由客户在小程序 / App 前端确认。当前后台按钮仅用于阶段测试和人工验收。"
+                      showIcon
+                      type="warning"
+                    />
+                  ) : null}
                   <Space wrap>
                     <Button
                       disabled={!canFinalizeApplicationPlan}
@@ -1395,7 +1243,7 @@ export default function ApplicationDetailPage() {
                       onClick={finalizeApplicationPlan}
                       type="primary"
                     >
-                      确认最终方案
+                      后台代客户确认最终方案（临时）
                     </Button>
                     <Button
                       disabled={!canCreateOrderFromApplication}
@@ -1541,6 +1389,17 @@ export default function ApplicationDetailPage() {
               <Form.Item label="最高可承租车价（元）" name="maxVehiclePurchasePriceAmountYuan">
                 <InputNumber min={0} precision={2} style={{ width: "100%" }} />
               </Form.Item>
+              {detail?.riskResult ? (
+                <Alert
+                  message="历史评级参考"
+                  description={`最近评级：${detail.riskResult.grade}；历史评分：${detail.riskResult.score ?? "-"}；历史押金：${formatYuan(detail.riskResult.approvedDepositAmount)}；通过时间：${formatTime(detail.riskResult.approvedAt)}`}
+                  showIcon
+                  type="info"
+                />
+              ) : null}
+              <Typography.Paragraph type="secondary">
+                后续可扩展复购简易审核通道：在评级有效期内参考历史评级、评分和押金结果，本轮仅展示参考，不自动覆盖本次风控结论。
+              </Typography.Paragraph>
             </>
           ) : null}
           <Form.Item
@@ -1570,58 +1429,6 @@ export default function ApplicationDetailPage() {
             label="审核意见"
             name="comment"
             rules={[{ required: materialReviewStatus !== "APPROVED" }]}
-          >
-            <Input.TextArea rows={4} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        confirmLoading={submitting}
-        okText="确认"
-        onCancel={closeApplicationReviewModal}
-        onOk={() => applicationReviewForm.submit()}
-        open={Boolean(applicationReviewTarget)}
-        title={applicationReviewTitle(applicationReviewTarget)}
-      >
-        <Form<ApplicationReviewValues>
-          form={applicationReviewForm}
-          layout="vertical"
-          onFinish={submitApplicationReview}
-        >
-          {applicationReviewTarget?.reviewType === "credit" &&
-          applicationReviewTarget.decision === "APPROVED" ? (
-            <Form.Item label="客户等级" name="customerGrade" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { label: "A", value: "A" },
-                  { label: "B", value: "B" },
-                  { label: "C", value: "C" }
-                ]}
-              />
-            </Form.Item>
-          ) : null}
-          {applicationReviewTarget?.reviewType === "product" &&
-          applicationReviewTarget.decision === "APPROVED" ? (
-            <>
-              <Form.Item label="最终套餐 ID" name="finalSubscriptionPlanId">
-                <Input placeholder="默认使用客户意向套餐" />
-              </Form.Item>
-              <Form.Item label="最终周期（月）" name="finalPeriodMonths">
-                <InputNumber min={1} style={{ width: "100%" }} />
-              </Form.Item>
-            </>
-          ) : null}
-          {applicationReviewTarget?.reviewType === "vehicle" &&
-          applicationReviewTarget.decision === "APPROVED" ? (
-            <Form.Item label="最终车辆 ID" name="finalVehicleId">
-              <Input placeholder="默认使用客户意向车辆" />
-            </Form.Item>
-          ) : null}
-          <Form.Item
-            label="审核意见"
-            name="comment"
-            rules={[{ required: applicationReviewTarget?.decision !== "APPROVED" }]}
           >
             <Input.TextArea rows={4} />
           </Form.Item>
@@ -1754,29 +1561,4 @@ function actionTitle(actionType: "approve" | "need-more-info" | "reject" | "subm
     return "审批拒绝";
   }
   return "提交进件";
-}
-
-function applicationReviewTitle(
-  target: {
-    decision: ReviewDecision;
-    reviewType: ApplicationReviewType;
-  } | null
-) {
-  if (!target) {
-    return "进件审核";
-  }
-
-  const reviewTypeLabels: Record<ApplicationReviewType, string> = {
-    credit: "客户资质 / 授信审核",
-    material: "资料审核",
-    product: "产品匹配审核",
-    vehicle: "车辆库存审核"
-  };
-  const decisionLabels: Record<ReviewDecision, string> = {
-    APPROVED: "通过",
-    NEED_MORE_INFO: "需补充资料",
-    REJECTED: "拒绝"
-  };
-
-  return `${reviewTypeLabels[target.reviewType]} - ${decisionLabels[target.decision]}`;
 }

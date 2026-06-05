@@ -751,6 +751,7 @@ export class CustomerService {
 
     const result = await this.prisma.$transaction(async (tx) => {
       const details = await loadApplicationFinalPlanDetails(tx, before);
+      await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
       const now = new Date();
       const application = await tx.application.update({
         data: {
@@ -763,9 +764,11 @@ export class CustomerService {
           finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
           finalVehicleId: details.vehicle.id,
           planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+          productReviewStatus: OrderReviewStatus.APPROVED,
           rejectedReason: null,
           status: ApplicationStatus.APPROVED,
-          updatedBy: user.id
+          updatedBy: user.id,
+          vehicleReviewStatus: OrderReviewStatus.APPROVED
         },
         include: applicationInclude,
         where: { id }
@@ -1579,6 +1582,17 @@ export class CustomerService {
         include: materialGroupInclude,
         where: { id: materialGroupId }
       });
+      const materialGroups = await tx.applicationMaterialGroup.findMany({
+        include: { files: true },
+        where: { applicationId: id, deletedAt: null }
+      });
+      await tx.application.update({
+        data: {
+          materialReviewStatus: deriveApplicationMaterialReviewStatus(materialGroups),
+          updatedBy: user.id
+        },
+        where: { id }
+      });
 
       await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.REVIEW_MATERIAL_GROUP,
@@ -1688,6 +1702,9 @@ export class CustomerService {
     const application = await this.prisma.$transaction(async (tx) => {
       await tx.application.update({
         data: {
+          ...(before.applicationSource === ApplicationSource.SELF_SERVICE
+            ? { materialReviewStatus: OrderReviewStatus.NEED_MORE_INFO }
+            : {}),
           rejectedReason: comment,
           status: ApplicationStatus.NEED_MORE_INFO,
           updatedBy: user.id
@@ -1757,6 +1774,33 @@ export class CustomerService {
         remark: comment,
         riskScore: dto.riskScore
       });
+
+      if (before.applicationSource === ApplicationSource.SELF_SERVICE) {
+        await tx.application.update({
+          data: {
+            creditReviewComment: comment,
+            creditReviewStatus: OrderReviewStatus.APPROVED,
+            customerGrade: dto.grade,
+            depositRuleSnapshot: toJsonSnapshot({
+              approvedAt: riskResult.approvedAt?.toISOString() ?? approvedAt.toISOString(),
+              defaultRate: Number(riskResult.defaultRate),
+              depositAmount: Number(riskResult.approvedDepositAmount),
+              grade: riskResult.grade,
+              maxVehiclePurchasePriceAmount:
+                riskResult.maxVehiclePurchasePriceAmount === null
+                  ? null
+                  : Number(riskResult.maxVehiclePurchasePriceAmount),
+              riskResultId: riskResult.id,
+              riskScore: riskResult.score,
+              status: DepositStatus.CONFIRMED
+            }),
+            depositStatus: DepositStatus.CONFIRMED,
+            finalDepositAmount: riskResult.approvedDepositAmount,
+            updatedBy: user.id
+          },
+          where: { id }
+        });
+      }
 
       await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.APPROVE,
@@ -2283,7 +2327,7 @@ async function assertApplicationVehicleReviewAllowed(
 
   if (application.applicationSource === ApplicationSource.SELF_SERVICE) {
     if (vehicle.status !== VehicleStatus.REVIEW_RESERVED) {
-      throw new BadRequestException("暂不支持审核中更换车辆，请取消当前进件后重新提交。");
+      throw new BadRequestException("当前车辆不再处于审核占用状态，请重新选择车辆。");
     }
   } else if (vehicle.status !== VehicleStatus.AVAILABLE) {
     throw new BadRequestException("所选车辆当前不可租用，请重新选择车辆。");
@@ -2298,19 +2342,25 @@ async function assertApplicationVehicleReviewAllowed(
     }
   });
   if (occupiedByOrderCount > 0) {
-    throw new BadRequestException("暂不支持审核中更换车辆，请取消当前进件后重新提交。");
+    throw new BadRequestException("所选车辆已不可用，请重新选择车辆。");
   }
 }
 
 function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails) {
-  if (!allApplicationReviewsApproved(applicationReviewStatuses(application))) {
-    throw new BadRequestException("资料、资质、产品和车辆审核全部通过后才可以确认最终方案。");
+  if (
+    application.materialReviewStatus !== OrderReviewStatus.APPROVED ||
+    application.creditReviewStatus !== OrderReviewStatus.APPROVED
+  ) {
+    throw new BadRequestException("资料审核和客户资质审核通过后才可以确认最终方案。");
   }
   if (application.depositStatus !== DepositStatus.CONFIRMED || application.finalDepositAmount === null) {
     throw new BadRequestException("押金确认后才可以确认最终方案。");
   }
   resolveApplicationFinalPlanInput(application);
-  if (application.finalVehicleBaseFeeAmount === null) {
+  if (
+    application.applicationSource !== ApplicationSource.SELF_SERVICE &&
+    application.finalVehicleBaseFeeAmount === null
+  ) {
     throw new BadRequestException("进件缺少最终车辆基础费，无法确认最终方案。");
   }
 }
@@ -2544,6 +2594,38 @@ const requiredMaterialTypes: ApplicationMaterialType[] = [
 
 function isRequiredMaterialType(type: ApplicationMaterialType) {
   return requiredMaterialTypes.includes(type);
+}
+
+function deriveApplicationMaterialReviewStatus(
+  groups: Array<{
+    files: Array<{ isDeleted: boolean }>;
+    materialType: ApplicationMaterialType;
+    reviewStatus: MaterialStatus;
+  }>
+) {
+  const groupsByType = new Map(groups.map((group) => [group.materialType, group]));
+  const requiredGroups = requiredMaterialTypes.map((type) => groupsByType.get(type));
+
+  if (
+    requiredGroups.every(
+      (group) =>
+        group &&
+        group.files.some((file) => !file.isDeleted) &&
+        isApprovedMaterialStatus(group.reviewStatus)
+    )
+  ) {
+    return OrderReviewStatus.APPROVED;
+  }
+
+  if (requiredGroups.some((group) => group?.reviewStatus === MaterialStatus.REJECTED)) {
+    return OrderReviewStatus.REJECTED;
+  }
+
+  if (requiredGroups.some((group) => group?.reviewStatus === MaterialStatus.NEED_MORE_INFO)) {
+    return OrderReviewStatus.NEED_MORE_INFO;
+  }
+
+  return OrderReviewStatus.PENDING;
 }
 
 export function assertCanSubmitApplication(application: ApplicationWithDetails) {

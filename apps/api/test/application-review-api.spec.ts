@@ -1,9 +1,11 @@
 import {
+  ApplicationMaterialType,
   ApplicationSource,
   ApplicationStatus,
   CustomerGrade,
   CustomerStatus,
   DepositStatus,
+  MaterialStatus,
   MonthlyFeeMode,
   OrderReviewStatus,
   OrderSource,
@@ -15,6 +17,7 @@ import {
   ProductVersionStatus,
   QuoteStatus,
   RecordStatus,
+  RiskResultDecision,
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleModel,
@@ -23,6 +26,17 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { CustomerService } from "../src/customer/customer.service";
+
+interface ApprovalRiskInput {
+  applicationId: string;
+  approvedAt: Date;
+  customerId: string;
+  grade: CustomerGrade;
+  maxVehiclePurchasePriceAmount?: number;
+  operatorId: string;
+  remark?: string;
+  riskScore?: number;
+}
 
 describe("application self-service review APIs", () => {
   it("returns self-service pending applications in the review queue", async () => {
@@ -93,6 +107,63 @@ describe("application self-service review APIs", () => {
       expect.objectContaining({
         depositAmount: 300000,
         status: DepositStatus.CONFIRMED
+      })
+    );
+  });
+
+  it("saves rating, score, vehicle price, deposit, and comments through the shared approval flow", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        materialGroups: approvedRequiredMaterialGroups(new Date("2026-06-05T10:00:00.000Z")),
+        materialReviewStatus: OrderReviewStatus.APPROVED
+      }
+    });
+
+    const application = await harness.service.approveApplication(
+      harness.application.id,
+      {
+        comment: "资质通过",
+        grade: CustomerGrade.B,
+        maxVehiclePurchasePriceAmount: 26000000,
+        riskScore: 720
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(application).toEqual(
+      expect.objectContaining({
+        creditReviewComment: "资质通过",
+        creditReviewStatus: OrderReviewStatus.APPROVED,
+        customerGrade: CustomerGrade.B,
+        depositStatus: DepositStatus.CONFIRMED,
+        finalDepositAmount: 300000
+      })
+    );
+    expect(harness.state.customer).toEqual(
+      expect.objectContaining({
+        grade: CustomerGrade.B,
+        riskScore: 720,
+        status: CustomerStatus.APPROVED
+      })
+    );
+    expect(harness.state.application.depositRuleSnapshot).toEqual(
+      expect.objectContaining({
+        defaultRate: 0.1,
+        depositAmount: 300000,
+        grade: CustomerGrade.B,
+        maxVehiclePurchasePriceAmount: 26000000,
+        riskScore: 720,
+        status: DepositStatus.CONFIRMED
+      })
+    );
+    expect(harness.riskService.createApprovalRiskResult).toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        grade: CustomerGrade.B,
+        maxVehiclePurchasePriceAmount: 26000000,
+        remark: "资质通过",
+        riskScore: 720
       })
     );
   });
@@ -196,30 +267,16 @@ describe("application self-service review APIs", () => {
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
   });
 
-  it("requires all reviews before finalizing and writes the final plan snapshot", async () => {
+  it("finalizes after material and credit approval, then auto-approves product and vehicle reviews", async () => {
     const harness = createApplicationReviewHarness({
       application: {
         creditReviewStatus: OrderReviewStatus.APPROVED,
         depositStatus: DepositStatus.CONFIRMED,
         finalDepositAmount: 300000n,
-        finalVehicleBaseFeeAmount: 700000n,
         materialReviewStatus: OrderReviewStatus.APPROVED,
-        productReviewStatus: OrderReviewStatus.APPROVED,
+        productReviewStatus: OrderReviewStatus.PENDING,
         vehicleReviewStatus: OrderReviewStatus.PENDING
       }
-    });
-
-    await expect(
-      harness.service.finalizeApplicationPlan(
-        harness.application.id,
-        harness.user,
-        harness.context
-      )
-    ).rejects.toThrow("资料、资质、产品和车辆审核全部通过后才可以确认最终方案。");
-
-    harness.state.application = makeApplication(harness.state.application.createdAt, {
-      ...harness.state.application,
-      vehicleReviewStatus: OrderReviewStatus.APPROVED
     });
 
     const application = await harness.service.finalizeApplicationPlan(
@@ -236,9 +293,47 @@ describe("application self-service review APIs", () => {
           vehicleId: harness.vehicle.id
         }),
         planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+        productReviewStatus: OrderReviewStatus.APPROVED,
         status: ApplicationStatus.APPROVED
       })
     );
+    expect(application.vehicleReviewStatus).toBe(OrderReviewStatus.APPROVED);
+  });
+
+  it("rejects finalizing when the selected plan is inactive", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication(),
+      plan: { status: SubscriptionPlanStatus.INACTIVE }
+    });
+
+    await expect(
+      harness.service.finalizeApplicationPlan(
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("所选订阅套餐当前不可用");
+
+    expect(harness.state.application.productReviewStatus).toBe(OrderReviewStatus.PENDING);
+    expect(harness.state.application.vehicleReviewStatus).toBe(OrderReviewStatus.PENDING);
+  });
+
+  it("rejects finalizing when the vehicle is no longer review-reserved by the application", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication(),
+      vehicle: { status: VehicleStatus.AVAILABLE }
+    });
+
+    await expect(
+      harness.service.finalizeApplicationPlan(
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("当前车辆不再处于审核占用状态，请重新选择车辆。");
+
+    expect(harness.state.application.productReviewStatus).toBe(OrderReviewStatus.PENDING);
+    expect(harness.state.application.vehicleReviewStatus).toBe(OrderReviewStatus.PENDING);
   });
 
   it("creates an official quote and order, then locks the vehicle as reserved", async () => {
@@ -448,7 +543,33 @@ function createApplicationReviewHarness(overrides: {
     }
   };
   const auditService = { write: vi.fn(async () => undefined) };
-  const service = new CustomerService(auditService as never, {} as never, prisma as never, {} as never);
+  const riskService = {
+    createApprovalRiskResult: vi.fn(async (_tx: typeof tx, input: ApprovalRiskInput) => ({
+      applicationId: input.applicationId,
+      approvedAt: input.approvedAt,
+      approvedBy: input.operatorId,
+      approvedDepositAmount: 300000n,
+      approver: {
+        id: user.id,
+        name: user.name,
+        username: user.username
+      },
+      createdAt: now,
+      customerId: input.customerId,
+      defaultRate: new Prisma.Decimal("0.100000"),
+      grade: input.grade,
+      id: "risk-result-1",
+      maxVehiclePurchasePriceAmount:
+        input.maxVehiclePurchasePriceAmount === undefined
+          ? null
+          : BigInt(input.maxVehiclePurchasePriceAmount),
+      remark: input.remark ?? null,
+      result: RiskResultDecision.APPROVED,
+      score: input.riskScore ?? null,
+      updatedAt: now
+    }))
+  };
+  const service = new CustomerService(auditService as never, {} as never, prisma as never, riskService as never);
 
   return {
     application: state.application,
@@ -456,12 +577,84 @@ function createApplicationReviewHarness(overrides: {
     context,
     plan,
     prisma,
+    riskService,
     service,
     state,
     tx,
     user,
     vehicle
   };
+}
+
+function readyToFinalizeApplication() {
+  return {
+    creditReviewStatus: OrderReviewStatus.APPROVED,
+    customerGrade: CustomerGrade.A,
+    depositRuleId: "deposit-rule-1",
+    depositRuleSnapshot: { depositAmount: 300000 },
+    depositStatus: DepositStatus.CONFIRMED,
+    finalDepositAmount: 300000n,
+    materialReviewStatus: OrderReviewStatus.APPROVED,
+    productReviewStatus: OrderReviewStatus.PENDING,
+    vehicleReviewStatus: OrderReviewStatus.PENDING
+  };
+}
+
+function approvedRequiredMaterialGroups(now: Date) {
+  const operator = {
+    id: "00000000-0000-4000-8000-000000000001",
+    name: "Admin",
+    username: "admin"
+  };
+
+  return [
+    ApplicationMaterialType.ID_CARD,
+    ApplicationMaterialType.DRIVER_LICENSE,
+    ApplicationMaterialType.CREDIT_AUTH
+  ].map((materialType, index) => {
+    const id = `material-group-${index + 1}`;
+
+    return {
+      applicationId: "application-1",
+      createdAt: now,
+      createdBy: operator.id,
+      deletedAt: null,
+      files: [
+        {
+          applicationId: "application-1",
+          createdAt: now,
+          createdBy: operator.id,
+          deletedAt: null,
+          deleteReason: null,
+          deleter: null,
+          fileId: `file-${index + 1}`,
+          fileName: `material-${index + 1}.png`,
+          id: `material-file-${index + 1}`,
+          isDeleted: false,
+          materialGroupId: id,
+          materialType,
+          mimeType: "image/png",
+          sizeBytes: 1024n,
+          updatedAt: now,
+          updatedBy: operator.id,
+          uploadedAt: now,
+          uploadedBy: operator.id,
+          uploader: operator
+        }
+      ],
+      id,
+      materialName: null,
+      materialType,
+      required: true,
+      reviewComment: "已通过",
+      reviewedAt: now,
+      reviewedBy: operator.id,
+      reviewer: operator,
+      reviewStatus: MaterialStatus.APPROVED,
+      updatedAt: now,
+      updatedBy: operator.id
+    };
+  });
 }
 
 function readyToCreateOrderApplication() {

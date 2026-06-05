@@ -1,0 +1,37 @@
+{
+  "name": "subscription-saas",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.4.0",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @subscription-saas/api --filter @subscription-saas/web dev",
+    "dev:api": "pnpm --filter @subscription-saas/api dev",
+    "dev:web": "pnpm --filter @subscription-saas/web dev",
+    "api:smoke": "node scripts/api-smoke.mjs",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prisma:generate": "pnpm --filter @subscription-saas/api prisma:generate",
+    "prisma:migrate": "pnpm --filter @subscription-saas/api prisma:migrate",
+    "prisma:seed": "pnpm --filter @subscription-saas/api prisma:seed",
+    "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate"
+  },
+  "devDependencies": {
+    "@next/eslint-plugin-next": "^16.2.6",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.9.1",
+    "eslint": "^10.4.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "prettier": "^3.8.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.60.0",
+    "vitest": "^4.1.7"
+  }
+}

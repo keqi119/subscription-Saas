@@ -1,183 +1,643 @@
-### Task 1 初始化项目骨架
+# CODEX_TASKS.md
 
-```text
-请基于当前仓库初始化汽车订阅运营中台项目。
+> Current baseline date: 2026-06-02  
+> Current branch: `feature/stage5-optimization`  
+> Working directory: `D:\Projects\auto-subscription-platform`
 
-要求：
-1. 阅读 DEV_SPEC.md。
-2. 建立基础项目结构。
-3. 如果仓库为空，使用 Next.js + NestJS + PostgreSQL + Prisma 的 monorepo 结构。
-4. 创建 apps/web、apps/api、packages/shared。
-5. 配置 TypeScript、ESLint、Prettier。
-6. 创建基础 README。
-7. 不要实现业务功能，只完成项目骨架。
-8. 提交代码并说明启动命令和测试命令。
-```
+This file is the executable development plan after the mainline review and
+documentation calibration. Use it together with `DEV_SPEC.md`; do not treat old
+Task 1-12 prompts as the active plan.
 
-### Task 2 用户权限与审计日志
+## Baseline Rules
 
-```text
-请实现用户、角色、权限、菜单权限和审计日志模块。
+- Work from the current local workspace, not the old OneDrive directory.
+- Do not delete `ProductPriceRule`, legacy quote fields, or `RENT_TO_OWN`.
+- Do not add Prisma migrations until Stage 0 quality and migration state are clear.
+- Do not change quote, product, vehicle, order, or contract business code during documentation-only tasks.
+- The new quote path is `vehicleId + subscriptionPlanId + vehicleBaseFeeAmount`.
+- `purchasePriceAmount` is asset cost basis; `currentSalePriceAmount` is quote pricing basis.
+- The vehicle package cap constrains only vehicle base fee, not full package total.
+- The A/B dual-line order mainline is now part of the target plan:
+  A line is customer self-service order first and review later; B line is
+  sales-assisted review first and order later.
+- Customer-facing A-line selection uses preset active `SubscriptionPlan`
+  records only, not free package composition.
+- Keep `SubscriptionQuote`; do not add `SubscriptionOrderApplication` in the
+  first version unless a later reviewed design changes this decision.
+- If seed changes permissions, users must seed again and re-login to refresh JWT permissions.
 
-参考 DEV_SPEC.md 第 4 章和第 22 章。
+## Stage 0: Baseline Handover And Quality Gates
 
-要求：
-1. 创建 user、role、permission、user_role、role_permission、audit_log 表。
-2. 实现登录态或最小可用认证。
-3. 后台提供用户管理、角色管理、权限配置页面。
-4. 所有关键操作写入 audit_log。
-5. 添加基础测试。
-6. 不要实现客户业务模块。
-```
+**Goal**
 
-### Task 3 客户与进件
+Stabilize the current uncommitted local baseline and establish reliable quality
+gates before further feature work.
 
-```text
-请实现客户中心和进件管理模块。
+**Scope**
 
-参考 DEV_SPEC.md 第 9 章、第 10 章。
+- Review uncommitted files and classify code, docs, migrations, and tests.
+- Verify schema, generated Prisma client, lint, typecheck, tests, and migration status.
+- Confirm remote PostgreSQL through SSH tunnel or local Docker PostgreSQL is usable.
+- Reconcile docs with actual code status.
 
-要求：
-1. 创建 customer、customer_identity、customer_profile、customer_followup、application、application_material 表。
-2. 实现客户列表、客户详情、客户创建、进件创建、进件提交、资料上传。
-3. 实现进件状态流转：DRAFT → SUBMITTED → NEED_MORE_INFO / APPROVED / REJECTED。
-4. 权限：销售可创建，风控可查看进件，管理员全量可见。
-5. 添加接口测试和页面最小验证。
-```
+**Do Not**
 
-### Task 4 风控评级和押金规则
+- Do not implement new business features.
+- Do not change pricing, product, vehicle, order, or contract logic unless a quality gate cannot pass without a narrowly scoped fix.
+- Do not run `prisma migrate reset`.
 
-```text
-请实现风控评级、押金规则和违约率配置。
+**Data Model**
 
-参考 DEV_SPEC.md 第 10.3、10.4、21.2。
+- Inspect existing migrations through `20260602110000_vehicle_sale_price_review_reinit`.
+- Confirm whether untracked migrations are intended and applied.
 
-要求：
-1. 创建 risk_result、deposit_rule。
-2. 支持 A/B/C 客户等级。
-3. 每个等级可配置押金金额、客户占比、违约率、生效日期。
-4. 风控审批通过后生成 risk_result，并回写 customer.grade。
-5. 后台页面支持押金规则增删改查。
-6. 添加校验：同一等级同一生效区间不能有多个 ACTIVE 规则。
-```
+**Backend APIs**
 
-### Task 5 产品与报价
+- Validate current API shape only.
+- Pay special attention to `/api/vehicles/available` and quote creation dependencies.
 
-```text
-请实现产品中心和报价方案模块。
+**Frontend Pages**
 
-参考 DEV_SPEC.md 第 11 章和第 21.1 条。
+- Validate existing pages load and do not block critical flows.
+- Note Ant Design deprecations for later fixes.
 
-要求：
-1. 创建 product、product_version、product_price_rule、subscription_quote。
-2. 支持产品版本管理。
-3. 车型支持 ET5、ET7、ES6。
-4. 月费率默认 3.5%，但可配置。
-5. 生成报价时校验：月费 <= 车辆采购价 × 月费率。
-6. 报价确认后允许进入订单创建。
-```
+**Permissions**
 
-### Task 6 订单与合同
+- Confirm `ADMIN` can access vehicles and quote creation dependencies.
+- Identify missing fine-grained `vehicle:*` and `subscription_plan:*` permissions.
 
-```text
-请实现订阅订单和合同管理模块。
+**Tests**
 
-参考 DEV_SPEC.md 第 12 章。
+- Run the full quality gate listed in `README.md`.
+- If failure occurs, capture exact command and error.
 
-要求：
-1. 创建 subscription_order、order_change、contract、contract_version。
-2. 实现订单创建、合同生成、合同签署状态、合同归档。
-3. 实现订单状态流转：PENDING_CONTRACT → PENDING_PAYMENT → PENDING_VEHICLE → PENDING_DELIVERY → ACTIVE。
-4. 订单变更必须创建 order_change 并经过审批。
-5. 合同文件先用本地或对象存储模拟。
-```
+**Acceptance**
 
-### Task 7 车辆资产
+- Current branch and dirty working tree are documented.
+- Migration state is known.
+- Quality gate pass/fail is recorded.
+- A commit boundary is recommended but not pushed to main.
 
-```text
-请实现车辆资产管理模块。
+## Stage 1: Permission System And Seed/JWT Calibration
 
-参考 DEV_SPEC.md 第 13 章。
+**Goal**
 
-要求：
-1. 创建 vehicle、vehicle_purchase、vehicle_condition、vehicle_insurance、vehicle_maintenance、vehicle_disposal。
-2. 支持车辆采购入库、检测、整备、保险、维修、退出。
-3. 车辆状态按 asset_status 枚举流转。
-4. 车辆完成整备并保险有效后才可进入 AVAILABLE。
-5. 车辆详情页展示采购价、SOH、车况、保险、维修记录。
-```
+Unify shared permission constants, seed role grants, frontend menus/buttons, and
+backend `RequirePermissions`.
 
-### Task 8 交付和退车
+**Scope**
 
-```text
-请实现车辆交付与退车模块。
+- Add fine-grained vehicle permissions:
+  `vehicle:view`, `vehicle:create`, `vehicle:update`, `vehicle:delete`,
+  `vehicle:update_status`, `vehicle:initialize_sale_price`,
+  `vehicle:review_sale_price`, `vehicle:history_view`.
+- Add subscription plan permissions:
+  `subscription_plan:view`, `subscription_plan:create`,
+  `subscription_plan:update`, `subscription_plan:activate`,
+  `subscription_plan:deactivate`, `subscription_plan:delete`.
+- Confirm package permissions:
+  `vehicle_package:*`, `mileage_package:*`, `energy_package:*`, `benefit_package:*`.
+- Confirm `quote:*` and `application:*` support quote preflight calls.
 
-参考 DEV_SPEC.md 第 14 章和第 21.3 条。
+**Do Not**
 
-要求：
-1. 创建 delivery_order、handover_record、return_order、damage_record。
-2. 创建交付单时校验订单、合同、收款、车辆状态。
-3. 完成交付后，订单状态变为 ACTIVE，车辆状态变为 IN_USE。
-4. 退车时记录里程、电量、损伤、费用。
-5. 退车完成后，车辆可流转至 AVAILABLE、MAINTENANCE 或 DISPOSAL_PENDING。
-```
+- Do not change quote formulas.
+- Do not change vehicle status business rules.
+- Do not grant broad permissions to non-admin roles without role rationale.
 
-### Task 9 账务和保证金
+**Data Model**
 
-```text
-请实现账单、收款、核销、保证金池模块。
+- No schema change expected if permissions are seeded into existing `permission`,
+  `role_permission`, `menu`, and `role_menu`.
 
-参考 DEV_SPEC.md 第 15 章和第 21.4 条。
+**Backend APIs**
 
-要求：
-1. 创建 bill、bill_item、payment、writeoff_record、deposit_account、deposit_transaction。
-2. 支持账单生成、收款登记、账单核销。
-3. 支持保证金收取、冻结、解冻、扣减、退还。
-4. 所有保证金变动必须生成 deposit_transaction。
-5. 保证金扣减必须关联账单或违约事件。
-```
+- Update `VehicleController` and `ProductController` permission decorators.
+- Ensure `/api/vehicles/available` is available to users allowed to create quotes.
 
-### Task 10 催收和违约
+**Frontend Pages**
 
-```text
-请实现逾期、催收、违约事件模块。
+- Keep menu visibility aligned with `packages/shared/src/menus.ts`.
+- Gate buttons for vehicle sale price initialization/review/status change.
 
-参考 DEV_SPEC.md 第 16 章和第 21.5 条。
+**Permissions**
 
-要求：
-1. 创建 overdue_record、collection_task、default_event。
-2. 每日任务自动计算逾期账单。
-3. 按 M1/M2/M3 分类。
-4. 支持催收任务创建、指派、跟进、关闭。
-5. 支持违约事件登记，包括失联、车辆失联、重大事故、欺诈。
-```
+- `ADMIN`: all permissions.
+- `SA`: customer/application/quote creation, read active products and available vehicles.
+- `OP`: product, subscription plan, quote, order, contract operations.
+- `AS`: vehicle asset and sale price operations.
+- `RC`, `FI`, `GM`: read/approve scopes by responsibility.
 
-### Task 11 权益和积分
+**Tests**
 
-```text
-请实现客户权益和积分模块。
+- Permission guard tests for allowed/denied users.
+- Seed/JWT refresh scenario documented.
 
-参考 DEV_SPEC.md 第 17 章。
+**Acceptance**
 
-要求：
-1. 创建 customer_benefit_account、points_account、points_transaction。
-2. 支持换车权益、洗车权益、补能权益、积分。
-3. 支持权益发放、使用、冻结、过期。
-4. 支持积分获得、使用、调整、过期。
-5. 权益变化必须有流水。
-```
+- Admin can access vehicle list and create quote.
+- User without permission receives 403 with Chinese message.
+- Seeded permissions appear in system permission page.
+- Users are told to re-login after seed updates.
 
-### Task 12 报表驾驶舱
+## Stage 2: Vehicle Asset Pool Stabilization
 
-```text
-请实现经营报表和首页驾驶舱。
+**Goal**
 
-参考 DEV_SPEC.md 第 18 章和第 24 章。
+Stabilize vehicle acquisition, preparation, availability, sale price
+initialization, quarterly review, and return-to-pool reinitialization.
 
-要求：
-1. 实现订单日报、车队运营报表、资产质量报表、保证金池报表、ROA/ROE 报表。
-2. 首页展示核心指标。
-3. 报表支持日期筛选。
-4. 报表支持导出 Excel。
-5. ROE 计算公式：ROE = ROA + (ROA - 资金成本) × D/E。
-```
+**Scope**
+
+- Harden `Vehicle`, `VehicleSalePriceHistory`, and planned `VehicleStatusLog`.
+- Decide whether current enum values remain or are migrated toward:
+  `PURCHASED`, `PREPARING`, `PLATED`, `INSURED`, `AVAILABLE`, `RESERVED`,
+  `LEASED`, `MAINTENANCE`, `RETURNED`, `DISPOSAL_PENDING`, `SOLD`.
+- Enforce available-pool rules and sale price review dates.
+
+**Do Not**
+
+- Do not create status enum migrations until the Stage 0 migration state is clean.
+- Do not remove existing `RENTED` or `RETIRED` values without migration planning.
+
+**Data Model**
+
+- Current: `Vehicle`, `VehicleSalePriceHistory`.
+- Planned: `VehicleStatusLog` or equivalent lifecycle/status log.
+- Key fields: `purchasePriceAmount`, `currentSalePriceAmount`,
+  `salePriceStatus`, `nextSalePriceReviewAt`, `salePriceReinitRequiredAt`.
+
+**Backend APIs**
+
+- `GET /api/vehicles`
+- `GET /api/vehicles/available`
+- `POST /api/vehicles`
+- `PATCH /api/vehicles/:id`
+- `POST /api/vehicles/:id/update-status`
+- `POST /api/vehicles/:id/initialize-sale-price`
+- `POST /api/vehicles/:id/review-sale-price`
+- `GET /api/vehicles/:id/sale-price-history`
+- `GET /api/vehicles/sale-price-reviews/due`
+
+**Frontend Pages**
+
+- `/vehicles`
+- Sale price history modal
+- Initialization/review/status forms
+
+**Permissions**
+
+- Fine-grained `vehicle:*` permissions from Stage 1.
+
+**Tests**
+
+- Blocks `AVAILABLE` without effective `currentSalePriceAmount`.
+- Quarterly review due list.
+- `RETURN_REINIT` required before returned vehicle re-enters `AVAILABLE`.
+- Audit/status log expectations.
+
+**Acceptance**
+
+- Available vehicle pool only returns vehicles with `AVAILABLE` and effective sale price.
+- Returned vehicles cannot re-enter the pool without reinitialization.
+- Sale price history is complete and auditable.
+
+## Stage 3: Product Center Subscription Package Stabilization
+
+**Goal**
+
+Make product center produce sellable `SubscriptionPlan` packages instead of
+requiring sales to combine raw rules manually.
+
+**Scope**
+
+- Stabilize `Product`, `ProductVersion`, `VehiclePackage`, `MileagePackage`,
+  `EnergyPackage`, `BenefitPackage`, `SubscriptionPlan`.
+- Keep `ProductPriceRule` for legacy compatibility.
+- Product version activation depends on at least one active `SubscriptionPlan`.
+
+**Do Not**
+
+- Do not delete `ProductPriceRule`.
+- Do not re-enable `RENT_TO_OWN` UI or creation paths.
+- Do not force legacy quotes into package snapshots retroactively.
+
+**Data Model**
+
+- Package tables are under product version.
+- `SubscriptionPlan` references one vehicle package, one mileage package, one
+  energy package, and optional benefit package.
+
+**Backend APIs**
+
+- Product/version CRUD and activation.
+- Package CRUD and activation.
+- `subscription-plans` CRUD and activation.
+- Available subscription plan lookup for approved applications.
+
+**Frontend Pages**
+
+- `/products` with product, version, package, and subscription plan tabs.
+
+**Permissions**
+
+- `product:*`, package permissions, and `subscription_plan:*`.
+
+**Tests**
+
+- Active plan is required for product version activation.
+- Inactive components block active/sellable plans.
+- Legacy `ProductPriceRule` quote remains readable and confirmable.
+
+**Acceptance**
+
+- Sales can select an active plan for an approved application.
+- Legacy quote records still render and can follow their supported workflow.
+
+## Stage 4: Sales-Assisted Application Quote Closed Loop
+
+**Goal**
+
+For approved sales-assisted applications, generate quotes from a concrete
+vehicle and an active subscription plan.
+
+**Scope**
+
+- Select `vehicleId`.
+- Select `subscriptionPlanId`.
+- Read `currentSalePriceAmount`.
+- Calculate vehicle base fee cap.
+- Enter vehicle base fee quote.
+- Add package prices.
+- Save `vehicleSnapshot`, `packageSnapshot`, and `depositRuleSnapshot`.
+- Preserve this path as B-line `SALES_ASSISTED`: review first, order later.
+
+**Do Not**
+
+- Do not calculate vehicle base fee from `purchasePriceAmount`.
+- Do not apply the 3.5% cap to the full package total.
+- Do not lock the vehicle when merely generating a quote.
+
+**Data Model**
+
+- `SubscriptionQuote.vehicleId`
+- `SubscriptionQuote.subscriptionPlanId`
+- `vehicleSalePriceAmount`
+- `vehicleBaseFeeAmount`
+- `vehicleBaseFeeCapAmount`
+- package price fields and snapshots
+
+**Backend APIs**
+
+- `GET /api/applications/:id/available-subscription-plans`
+- `GET /api/vehicles/available`
+- `POST /api/applications/:id/quotes`
+- `POST /api/quotes/:id/confirm`
+- `POST /api/quotes/:id/cancel`
+
+**Frontend Pages**
+
+- `/applications/[id]` quote modal
+- `/quotes`
+- `/quotes/[id]`
+
+**Permissions**
+
+- `quote:create` must include permission to read required active plans and available vehicles.
+
+**Tests**
+
+- Approved-only quote creation.
+- Vehicle sale price cap formula.
+- Package total can exceed vehicle base fee cap.
+- Snapshot persistence.
+
+**Acceptance**
+
+- Quote creation succeeds for approved application with available vehicle and active plan.
+- Quote detail shows vehicle and package snapshots.
+- Permission denied issue for `/api/vehicles/available` is resolved.
+- B-line sales-assisted quote creation remains backward compatible with the
+  existing application, risk, quote, order, and contract pages.
+
+## Stage 5: A/B Orders, Contracts, And Vehicle Status Linkage
+
+**Goal**
+
+Connect A-line customer self-service orders and B-line sales-assisted quotes
+into one order, contract, vehicle reservation, cancellation, and rollback model.
+
+**Scope**
+
+- Keep B-line confirmed quote locking: `AVAILABLE -> RESERVED`.
+- Add A-line customer self-service flow:
+  customer selects a concrete vehicle and preset active `SubscriptionPlan`,
+  submits an order application, and the system creates an intent order plus
+  quote snapshots.
+- Add back-office review for A-line customer credit, product match, and vehicle
+  inventory.
+- Add final deposit confirmation after review; customer submission keeps deposit
+  pending.
+- Create subscription order from confirmed B-line quote.
+- Generate, sign, archive, cancel contracts.
+- Order cancellation releases vehicle when applicable.
+- Contract termination starts return flow.
+- Preserve the customer second-confirmation extension point before contract
+  signing.
+
+**Do Not**
+
+- Do not implement full delivery, billing, or guarantee deposit flows here.
+- Do not alter quote formula.
+- Do not expose customer free composition of vehicle, mileage, energy, and
+  benefit packages.
+- Do not remove existing sales-assisted quote generation.
+
+**Data Model**
+
+- `SubscriptionOrder`
+- `Contract`
+- `ContractVersion`
+- `OrderChange`
+- `SubscriptionOrder.vehicleId`
+- Keep `SubscriptionQuote` as the price and plan snapshot object.
+- Do not add `SubscriptionOrderApplication` in the first version.
+- Prefer extending `SubscriptionOrder` with:
+  `orderSource`, `creditReviewStatus`, `productReviewStatus`,
+  `vehicleReviewStatus`, `depositStatus`, `finalDepositAmount`, and
+  `customerSelectedSnapshot`.
+- Suggested `orderSource` values:
+  `CUSTOMER_SELF_SERVICE`, `SALES_ASSISTED`.
+- Suggested review values:
+  `PENDING`, `APPROVED`, `REJECTED`, `NEED_MORE_INFO`.
+- Suggested A-line initial state:
+  `PENDING_REVIEW` with all review statuses `PENDING`,
+  `depositStatus = PENDING_CONFIRM`, and `finalDepositAmount = null`.
+- Add or preserve a target `PENDING_CUSTOMER_CONFIRMATION` state before
+  `PENDING_CONTRACT`.
+- Evaluate adding `VehicleStatus.REVIEW_RESERVED` as the target inventory hold
+  state for A-line review.
+
+**Backend APIs**
+
+- `POST /api/orders/from-quote/:quoteId`
+- `POST /api/orders/:id/cancel`
+- `POST /api/orders/:id/generate-contract`
+- contract sign/archive/cancel endpoints
+- order change approval endpoints
+- Proposed A-line customer API:
+  `POST /api/customer/orders` or equivalent customer-facing order application
+  endpoint.
+- Proposed back-office review APIs:
+  order review queue, credit/product/vehicle review actions, final-plan
+  confirmation, and customer-confirmation transition.
+
+**Frontend Pages**
+
+- `/orders`
+- `/orders/[id]`
+- `/contracts`
+- `/contracts/[id]`
+- `/contract-versions`
+- Back-office order review queue and order detail review panel for A-line.
+- Future customer-facing confirmation page; first version may use a back-office
+  "confirm final plan" action while preserving the status extension point.
+
+**Permissions**
+
+- `order:*`, `order_change:*`, `contract:*`, vehicle status permissions.
+- Recommended additions or splits:
+  `order:review`, `order:confirm_final_plan`, and read access to vehicles,
+  active subscription plans, and deposit rules for reviewers.
+
+**Tests**
+
+- Confirm quote locks vehicle.
+- Order cancellation releases vehicle.
+- Contract cancellation/termination paths preserve audit trail.
+- A-line submission creates intent order and snapshots with pending deposit.
+- A-line review writes final deposit from A/B/C grade, deposit rule, and risk result.
+- Changed final deposit or plan enters `PENDING_CUSTOMER_CONFIRMATION`.
+- A-line vehicle status follows `AVAILABLE -> REVIEW_RESERVED -> RESERVED`
+  when `REVIEW_RESERVED` is implemented; otherwise document and test the
+  temporary `RESERVED` fallback.
+
+**Acceptance**
+
+- Vehicle cannot be double reserved.
+- Order/contract transitions are auditable.
+- Cancelled quote/order releases reserved vehicle when business rules allow it.
+- B-line sales-assisted flow remains compatible with current quote/order pages.
+- A-line minimum first version supports customer intent order submission,
+  back-office review, final deposit confirmation, final-plan confirmation, and
+  contract entry.
+
+## Stage 6: Vehicle Delivery, Return, And Re-Pooling
+
+**Goal**
+
+Support delivery readiness, handover, return inspection, reconditioning, and
+return-to-pool sale price reinitialization.
+
+**Scope**
+
+- Delivery checklist.
+- Insurance validity.
+- Deposit and first monthly fee preconditions.
+- Return inspection and damage records.
+- `RETURN_REINIT` before re-entering available pool.
+
+**Do Not**
+
+- Do not implement accounting settlement beyond required state prerequisites.
+- Do not skip audit/status logs for handover and return.
+
+**Data Model**
+
+- Planned delivery and return tables.
+- Vehicle status/lifecycle log.
+- Sale price reinit fields on `Vehicle`.
+
+**Backend APIs**
+
+- Delivery order and handover endpoints.
+- Return order and inspection endpoints.
+- Vehicle status updates tied to delivery/return.
+
+**Frontend Pages**
+
+- Delivery center pages.
+- Return management pages.
+- Vehicle detail return/re-pool actions.
+
+**Permissions**
+
+- `delivery:*`, `return:*`, `vehicle:update_status`, `vehicle:initialize_sale_price`.
+
+**Tests**
+
+- Delivery blocks until contract, deposit, first fee, insurance, and vehicle state are valid.
+- Return requires inspection result.
+- Re-pooling requires sale price reinitialization.
+
+**Acceptance**
+
+- Delivered vehicle enters leased/in-use state.
+- Returned vehicle cannot be leased again until reconditioned and sale price is effective.
+
+## Stage 7: Billing, Deposits, Collection, And Benefits
+
+**Goal**
+
+Close the operating cash-flow loop.
+
+**Scope**
+
+- Bills and bill items.
+- Payments and write-off.
+- Deposit account and deposit transactions.
+- Deposit deductions/refunds.
+- Overdue collection.
+- Benefit grants and consumption.
+
+**Do Not**
+
+- Do not build ROA/ROE reports before reliable financial records exist.
+- Do not allow deposit changes without transaction records.
+
+**Data Model**
+
+- `bill`, `bill_item`, `payment`, `writeoff_record`
+- `deposit_account`, `deposit_transaction`
+- `overdue_record`, `collection_task`, `default_event`
+- benefit and points account tables
+
+**Backend APIs**
+
+- Billing generation and payment/write-off endpoints.
+- Deposit account/deduction/refund endpoints.
+- Collection task endpoints.
+- Benefit grant/use endpoints.
+
+**Frontend Pages**
+
+- Billing center.
+- Deposit pool.
+- Collection center.
+- Benefits center.
+
+**Permissions**
+
+- Finance, collection, and benefit permissions by role.
+
+**Tests**
+
+- Deposit movements generate transactions.
+- Write-off closes bills correctly.
+- Overdue classification works.
+- Benefit consumption leaves ledger records.
+
+**Acceptance**
+
+- Every money movement is traceable.
+- Deposit balance equals received minus refunded minus deducted/frozen amounts.
+
+## Stage 8: Asset Operations And ROA/ROE Reports
+
+**Goal**
+
+Evaluate operating quality across each vehicle lifecycle.
+
+**Scope**
+
+- Vehicle lifecycle events.
+- Purchase price, current sale price, depreciation, utilization, revenue, cost,
+  cash flow, ROA, and ROE.
+- Asset quality reports and fleet dashboards.
+
+**Do Not**
+
+- Do not calculate reports from incomplete or inconsistent finance data.
+- Do not mix quote pricing basis with asset cost basis.
+
+**Data Model**
+
+- Planned `vehicle_lifecycle_event`.
+- Report snapshot tables if realtime calculation becomes expensive.
+
+**Backend APIs**
+
+- Fleet report.
+- Asset quality report.
+- Revenue report.
+- ROA/ROE report.
+
+**Frontend Pages**
+
+- Dashboard.
+- Report center.
+
+**Permissions**
+
+- Report view/export permissions.
+
+**Tests**
+
+- ROA/ROE formulas.
+- Vehicle lifecycle revenue/cost aggregation.
+- Report date filters.
+
+**Acceptance**
+
+- Single vehicle lifecycle can be traced from purchase to operation to disposal.
+- ROA/ROE reports use purchase price for cost basis and sale price for pricing snapshots only.
+
+## Stage 9: Launch Readiness And CI/CD
+
+**Goal**
+
+Make the system stable enough for deployment, rollback, regression testing, and
+manual acceptance.
+
+**Scope**
+
+- CI quality gates.
+- Test coverage.
+- Seed strategy.
+- Environment variable templates.
+- Deployment documentation.
+- Data backup and restore plan.
+- Permission initialization.
+- Manual acceptance checklist.
+
+**Do Not**
+
+- Do not deploy with pending migrations or undocumented environment variables.
+- Do not rely on local-only seed state for production roles.
+
+**Data Model**
+
+- Confirm final migration history and production migration process.
+
+**Backend APIs**
+
+- Health checks and smoke paths.
+- Deployment observability hooks as needed.
+
+**Frontend Pages**
+
+- Manual acceptance paths documented in README.
+
+**Permissions**
+
+- Production permission matrix exported and reviewed.
+
+**Tests**
+
+- CI runs lint, Prisma validate/generate, typecheck, API tests, and smoke checks.
+
+**Acceptance**
+
+- Fresh environment can be provisioned from documented steps.
+- CI catches regressions.
+- Rollback and backup plans are documented.

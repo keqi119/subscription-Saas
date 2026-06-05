@@ -1,0 +1,17 @@
+node_modules/
+.pnpm-store/
+.next/
+dist/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+!apps/**/.env.example
+
+.codex-ssh/
+apps/api/uploads/**
+!apps/api/uploads/
+!apps/api/uploads/.gitkeep
+*.log

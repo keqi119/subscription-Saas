@@ -1,0 +1,1363 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("user_status")
+}
+
+enum RoleCode {
+  SA
+  OP
+  RC
+  FI
+  AS
+  CS
+  GM
+  ADMIN
+
+  @@map("role_code")
+}
+
+enum RecordStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("record_status")
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  APPROVE
+  REJECT
+  EXPORT
+
+  @@map("audit_action")
+}
+
+enum CustomerType {
+  PERSONAL
+  COMPANY
+
+  @@map("customer_type")
+}
+
+enum CustomerGrade {
+  A
+  B
+  C
+
+  @@map("customer_grade")
+}
+
+enum CustomerStatus {
+  LEAD
+  PENDING_APPLICATION
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  ACTIVE
+  FROZEN
+  BLACKLISTED
+
+  @@map("customer_status")
+}
+
+enum FollowupType {
+  PHONE
+  WECHAT
+  VISIT
+  OTHER
+
+  @@map("followup_type")
+}
+
+enum ApplicationStatus {
+  DRAFT
+  SUBMITTED
+  NEED_MORE_INFO
+  APPROVED
+  REJECTED
+  CANCELLED
+
+  @@map("application_status")
+}
+
+enum ApplicationMaterialType {
+  ID_CARD
+  DRIVER_LICENSE
+  BANK_FLOW
+  WORK_PROOF
+  RESIDENCE_PROOF
+  CREDIT_AUTH
+  OTHER
+
+  @@map("application_material_type")
+}
+
+enum MaterialStatus {
+  PENDING
+  APPROVED
+  NEED_MORE_INFO
+  VERIFIED
+  REJECTED
+
+  @@map("material_status")
+}
+
+enum ApplicationActionType {
+  CREATE
+  UPLOAD_MATERIAL
+  UPLOAD_MATERIAL_FILE
+  SUBMIT
+  REVIEW_MATERIAL
+  REVIEW_MATERIAL_GROUP
+  APPROVE
+  NEED_MORE_INFO
+  REJECT
+  DELETE_MATERIAL_FILE
+
+  @@map("application_action_type")
+}
+
+enum RiskResultDecision {
+  APPROVED
+  REJECTED
+  NEED_MORE_INFO
+
+  @@map("risk_result_decision")
+}
+
+enum ProductType {
+  SUBSCRIPTION
+  RENT_TO_OWN
+
+  @@map("product_type")
+}
+
+enum BusinessType {
+  SUBSCRIPTION
+  RENT_TO_OWN
+
+  @@map("business_type")
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+
+  @@map("product_status")
+}
+
+enum ProductVersionStatus {
+  DRAFT
+  APPROVED
+  ACTIVE
+  INACTIVE
+
+  @@map("product_version_status")
+}
+
+enum QuoteStatus {
+  DRAFT
+  CONFIRMED
+  EXPIRED
+  CANCELLED
+
+  @@map("quote_status")
+}
+
+enum SubscriptionPlanStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+
+  @@map("subscription_plan_status")
+}
+
+enum MonthlyFeeMode {
+  MANUAL_QUOTE
+  FIXED_AMOUNT
+  RATE_FORMULA
+
+  @@map("monthly_fee_mode")
+}
+
+enum OrderStatus {
+  PENDING_REVIEW
+  PENDING_CUSTOMER_CONFIRMATION
+  PENDING_CONTRACT
+  PENDING_SIGN
+  PENDING_PAYMENT
+  PENDING_VEHICLE
+  PENDING_DELIVERY
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+  COMPLETED
+  CANCELLED
+  REJECTED
+
+  @@map("order_status")
+}
+
+enum OrderSource {
+  CUSTOMER_SELF_SERVICE
+  SALES_ASSISTED
+
+  @@map("order_source")
+}
+
+enum OrderReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEED_MORE_INFO
+
+  @@map("order_review_status")
+}
+
+enum DepositStatus {
+  PENDING_CONFIRM
+  CONFIRMED
+  WAIVED
+  REJECTED
+
+  @@map("deposit_status")
+}
+
+enum ContractStatus {
+  DRAFT
+  GENERATED
+  SIGNING
+  SIGNED
+  ARCHIVED
+  TERMINATED
+  CANCELLED
+
+  @@map("contract_status")
+}
+
+enum ContractVersionStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+
+  @@map("contract_version_status")
+}
+
+enum ContractTemplateType {
+  SUBSCRIPTION_STANDARD
+
+  @@map("contract_template_type")
+}
+
+enum OrderChangeType {
+  PLAN_CHANGE
+  RESTRUCTURE
+  VEHICLE_SWAP
+  EXTENSION
+  TERMINATION
+  CANCEL_ORDER
+  BUYOUT
+  EARLY_SETTLEMENT
+  OWNERSHIP_TRANSFER
+
+  @@map("order_change_type")
+}
+
+enum OrderChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXECUTED
+  CANCELLED
+
+  @@map("order_change_status")
+}
+
+enum VehicleModel {
+  ET5
+  ET7
+  ES6
+
+  @@map("vehicle_model")
+}
+
+enum VehicleStatus {
+  DRAFT
+  IN_PREPARATION
+  AVAILABLE
+  REVIEW_RESERVED
+  RESERVED
+  LEASED
+  RENTED
+  RETURNED
+  MAINTENANCE
+  RETIRED
+
+  @@map("vehicle_status")
+}
+
+enum SalePriceStatus {
+  PENDING_INITIALIZE
+  EFFECTIVE
+  REVIEW_DUE
+  EXPIRED
+
+  @@map("sale_price_status")
+}
+
+enum VehicleSalePriceReviewType {
+  INITIAL_POOL
+  QUARTERLY_REVIEW
+  RETURN_REINIT
+  MANUAL_ADJUST
+
+  @@map("vehicle_sale_price_review_type")
+}
+
+enum BenefitType {
+  WASH_CAR
+  CAR_SWAP
+  POINTS
+  DRIVER_SERVICE
+  OTHER
+
+  @@map("benefit_type")
+}
+
+model User {
+  id            String             @id @default(uuid()) @db.Uuid
+  username      String             @unique @db.VarChar(64)
+  name          String             @db.VarChar(64)
+  mobile        String?            @db.VarChar(32)
+  email         String?            @unique @db.VarChar(128)
+  passwordHash  String             @map("password_hash") @db.VarChar(255)
+  status        UserStatus         @default(ACTIVE)
+  lastLoginAt   DateTime?          @map("last_login_at") @db.Timestamptz(6)
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?            @map("created_by") @db.Uuid
+  updatedBy     String?            @map("updated_by") @db.Uuid
+  deletedAt     DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  roles         UserRole[]
+  customers     Customer[]         @relation("CustomerOwner")
+  applications  Application[]      @relation("ApplicationSales")
+  uploadedFiles FileObject[]       @relation("FileUploader")
+  followups     CustomerFollowup[] @relation("FollowupUser")
+  riskResults   RiskResult[]       @relation("RiskResultApprover")
+  reviewedMaterials ApplicationMaterial[] @relation("MaterialReviewer")
+  reviewedMaterialGroups ApplicationMaterialGroup[] @relation("MaterialGroupReviewer")
+  uploadedMaterialFiles ApplicationMaterialFile[] @relation("MaterialFileUploader")
+  deletedMaterialFiles ApplicationMaterialFile[] @relation("MaterialFileDeleter")
+  applicationActionLogs ApplicationActionLog[] @relation("ApplicationActionOperator")
+  approvedProductVersions ProductVersion[] @relation("ProductVersionApprover")
+  confirmedQuotes SubscriptionQuote[] @relation("QuoteConfirmer")
+  approvedContractVersions ContractVersion[] @relation("ContractVersionApprover")
+  approvedOrderChanges OrderChange[] @relation("OrderChangeApprover")
+
+  @@index([status])
+  @@map("user")
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        RoleCode         @unique
+  name        String           @db.VarChar(64)
+  description String?          @db.Text
+  status      RecordStatus     @default(ACTIVE)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?          @map("created_by") @db.Uuid
+  updatedBy   String?          @map("updated_by") @db.Uuid
+  deletedAt   DateTime?        @map("deleted_at") @db.Timestamptz(6)
+  users       UserRole[]
+  permissions RolePermission[]
+  menus       RoleMenu[]
+
+  @@index([status])
+  @@map("role")
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique @db.VarChar(128)
+  name        String           @db.VarChar(128)
+  module      String           @db.VarChar(64)
+  action      String           @db.VarChar(64)
+  description String?          @db.Text
+  status      RecordStatus     @default(ACTIVE)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?          @map("created_by") @db.Uuid
+  updatedBy   String?          @map("updated_by") @db.Uuid
+  deletedAt   DateTime?        @map("deleted_at") @db.Timestamptz(6)
+  roles       RolePermission[]
+
+  @@index([module])
+  @@index([status])
+  @@map("permission")
+}
+
+model Menu {
+  id             String       @id @default(uuid()) @db.Uuid
+  code           String       @unique @db.VarChar(128)
+  name           String       @db.VarChar(128)
+  path           String       @db.VarChar(255)
+  icon           String?      @db.VarChar(64)
+  sortOrder      Int          @default(0) @map("sort_order")
+  permissionCode String?      @map("permission_code") @db.VarChar(128)
+  parentId       String?      @map("parent_id") @db.Uuid
+  parent         Menu?        @relation("MenuTree", fields: [parentId], references: [id])
+  children       Menu[]       @relation("MenuTree")
+  status         RecordStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy      String?      @map("created_by") @db.Uuid
+  updatedBy      String?      @map("updated_by") @db.Uuid
+  deletedAt      DateTime?    @map("deleted_at") @db.Timestamptz(6)
+  roles          RoleMenu[]
+
+  @@index([parentId])
+  @@index([status])
+  @@map("menu")
+}
+
+model UserRole {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  roleId    String    @map("role_id") @db.Uuid
+  user      User      @relation(fields: [userId], references: [id])
+  role      Role      @relation(fields: [roleId], references: [id])
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by") @db.Uuid
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+  @@map("user_role")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid()) @db.Uuid
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy    String?    @map("created_by") @db.Uuid
+  deletedAt    DateTime?  @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permission")
+}
+
+model RoleMenu {
+  id        String    @id @default(uuid()) @db.Uuid
+  roleId    String    @map("role_id") @db.Uuid
+  menuId    String    @map("menu_id") @db.Uuid
+  role      Role      @relation(fields: [roleId], references: [id])
+  menu      Menu      @relation(fields: [menuId], references: [id])
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by") @db.Uuid
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([roleId, menuId])
+  @@index([menuId])
+  @@map("role_menu")
+}
+
+model AuditLog {
+  id             String      @id @default(uuid()) @db.Uuid
+  module         String      @db.VarChar(64)
+  entityType     String      @map("entity_type") @db.VarChar(64)
+  entityId       String?     @map("entity_id") @db.Uuid
+  action         AuditAction
+  beforeSnapshot Json?       @map("before_snapshot")
+  afterSnapshot  Json?       @map("after_snapshot")
+  operatorId     String?     @map("operator_id") @db.Uuid
+  ipAddress      String?     @map("ip_address") @db.VarChar(64)
+  userAgent      String?     @map("user_agent") @db.VarChar(255)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([module])
+  @@index([entityType, entityId])
+  @@index([operatorId])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+model Customer {
+  id            String             @id @default(uuid()) @db.Uuid
+  customerNo    String             @unique @map("customer_no") @db.VarChar(64)
+  name          String             @db.VarChar(64)
+  mobile        String             @db.VarChar(32)
+  customerType  CustomerType       @default(PERSONAL) @map("customer_type")
+  sourceChannel String?            @map("source_channel") @db.VarChar(64)
+  grade         CustomerGrade?
+  riskScore     Int?               @map("risk_score")
+  status        CustomerStatus     @default(LEAD)
+  ownerUserId   String?            @map("owner_user_id") @db.Uuid
+  ownerUser     User?              @relation("CustomerOwner", fields: [ownerUserId], references: [id])
+  remark        String?            @db.Text
+  identity      CustomerIdentity?
+  profile       CustomerProfile?
+  followups     CustomerFollowup[]
+  applications  Application[]
+  riskResults   RiskResult[]
+  quotes        SubscriptionQuote[]
+  orders        SubscriptionOrder[]
+  contracts     Contract[]
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?            @map("created_by") @db.Uuid
+  updatedBy     String?            @map("updated_by") @db.Uuid
+  deletedAt     DateTime?          @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([mobile])
+  @@index([ownerUserId])
+  @@index([status])
+  @@map("customer")
+}
+
+model CustomerIdentity {
+  id                  String    @id @default(uuid()) @db.Uuid
+  customerId          String    @unique @map("customer_id") @db.Uuid
+  customer            Customer  @relation(fields: [customerId], references: [id])
+  idCardNo            String?   @map("id_card_no") @db.VarChar(32)
+  idCardFrontFileId   String?   @map("id_card_front_file_id") @db.Uuid
+  idCardBackFileId    String?   @map("id_card_back_file_id") @db.Uuid
+  driverLicenseNo     String?   @map("driver_license_no") @db.VarChar(64)
+  driverLicenseFileId String?   @map("driver_license_file_id") @db.Uuid
+  licenseValidUntil   DateTime? @map("license_valid_until") @db.Date
+  realnameVerified    Boolean   @default(false) @map("realname_verified")
+  verifiedAt          DateTime? @map("verified_at") @db.Timestamptz(6)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy           String?   @map("created_by") @db.Uuid
+  updatedBy           String?   @map("updated_by") @db.Uuid
+  deletedAt           DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@map("customer_identity")
+}
+
+model CustomerProfile {
+  id                     String    @id @default(uuid()) @db.Uuid
+  customerId             String    @unique @map("customer_id") @db.Uuid
+  customer               Customer  @relation(fields: [customerId], references: [id])
+  occupation             String?   @db.VarChar(128)
+  companyName            String?   @map("company_name") @db.VarChar(128)
+  monthlyIncomeAmount    BigInt?   @map("monthly_income_amount")
+  socialSecurityMonths   Int?      @map("social_security_months")
+  housingFundMonths      Int?      @map("housing_fund_months")
+  residenceAddress       String?   @map("residence_address") @db.VarChar(255)
+  emergencyContactName   String?   @map("emergency_contact_name") @db.VarChar(64)
+  emergencyContactMobile String?   @map("emergency_contact_mobile") @db.VarChar(32)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?   @map("created_by") @db.Uuid
+  updatedBy              String?   @map("updated_by") @db.Uuid
+  deletedAt              DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@map("customer_profile")
+}
+
+model CustomerFollowup {
+  id             String       @id @default(uuid()) @db.Uuid
+  customerId     String       @map("customer_id") @db.Uuid
+  customer       Customer     @relation(fields: [customerId], references: [id])
+  followupUserId String       @map("followup_user_id") @db.Uuid
+  followupUser   User         @relation("FollowupUser", fields: [followupUserId], references: [id])
+  followupType   FollowupType @default(PHONE) @map("followup_type")
+  content        String       @db.Text
+  nextFollowupAt DateTime?    @map("next_followup_at") @db.Timestamptz(6)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy      String?      @map("created_by") @db.Uuid
+  updatedBy      String?      @map("updated_by") @db.Uuid
+  deletedAt      DateTime?    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([followupUserId])
+  @@map("customer_followup")
+}
+
+model Application {
+  id                   String                @id @default(uuid()) @db.Uuid
+  applicationNo        String                @unique @map("application_no") @db.VarChar(64)
+  customerId           String                @map("customer_id") @db.Uuid
+  customer             Customer              @relation(fields: [customerId], references: [id])
+  salesUserId          String                @map("sales_user_id") @db.Uuid
+  salesUser            User                  @relation("ApplicationSales", fields: [salesUserId], references: [id])
+  intendedModel        String?               @map("intended_model") @db.VarChar(64)
+  intendedPeriodMonths Int?                  @map("intended_period_months")
+  status               ApplicationStatus     @default(DRAFT)
+  submittedAt          DateTime?             @map("submitted_at") @db.Timestamptz(6)
+  approvedAt           DateTime?             @map("approved_at") @db.Timestamptz(6)
+  rejectedReason       String?               @map("rejected_reason") @db.Text
+  materials            ApplicationMaterial[]
+  materialGroups       ApplicationMaterialGroup[]
+  materialFiles        ApplicationMaterialFile[]
+  riskResults          RiskResult[]
+  actionLogs           ApplicationActionLog[]
+  quotes               SubscriptionQuote[]
+  orders               SubscriptionOrder[]
+  createdAt            DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?               @map("created_by") @db.Uuid
+  updatedBy            String?               @map("updated_by") @db.Uuid
+  deletedAt            DateTime?             @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([salesUserId])
+  @@index([status])
+  @@map("application")
+}
+
+model ApplicationMaterial {
+  id            String                  @id @default(uuid()) @db.Uuid
+  applicationId String                  @map("application_id") @db.Uuid
+  application   Application             @relation(fields: [applicationId], references: [id])
+  materialType  ApplicationMaterialType @map("material_type")
+  materialName  String?                 @map("material_name") @db.VarChar(128)
+  fileId        String                  @map("file_id") @db.Uuid
+  file          FileObject              @relation(fields: [fileId], references: [id])
+  status        MaterialStatus          @default(PENDING)
+  reviewRemark  String?                 @map("review_remark") @db.Text
+  reviewComment String?                 @map("review_comment") @db.Text
+  reviewedBy    String?                 @map("reviewed_by") @db.Uuid
+  reviewer      User?                   @relation("MaterialReviewer", fields: [reviewedBy], references: [id])
+  reviewedAt    DateTime?               @map("reviewed_at") @db.Timestamptz(6)
+  actionLogs    ApplicationActionLog[]
+  createdAt     DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?                 @map("created_by") @db.Uuid
+  updatedBy     String?                 @map("updated_by") @db.Uuid
+  deletedAt     DateTime?               @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([applicationId])
+  @@index([fileId])
+  @@index([reviewedBy])
+  @@index([status])
+  @@map("application_material")
+}
+
+model ApplicationMaterialGroup {
+  id            String                    @id @default(uuid()) @db.Uuid
+  applicationId String                    @map("application_id") @db.Uuid
+  application   Application               @relation(fields: [applicationId], references: [id])
+  materialType  ApplicationMaterialType   @map("material_type")
+  materialName  String?                   @map("material_name") @db.VarChar(128)
+  required      Boolean                   @default(false)
+  reviewStatus  MaterialStatus            @default(PENDING) @map("review_status")
+  reviewComment String?                   @map("review_comment") @db.Text
+  reviewedBy    String?                   @map("reviewed_by") @db.Uuid
+  reviewer      User?                     @relation("MaterialGroupReviewer", fields: [reviewedBy], references: [id])
+  reviewedAt    DateTime?                 @map("reviewed_at") @db.Timestamptz(6)
+  files         ApplicationMaterialFile[]
+  actionLogs    ApplicationActionLog[]
+  createdAt     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?                   @map("created_by") @db.Uuid
+  updatedBy     String?                   @map("updated_by") @db.Uuid
+  deletedAt     DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([applicationId, materialType])
+  @@index([applicationId])
+  @@index([materialType])
+  @@index([reviewStatus])
+  @@index([reviewedBy])
+  @@map("application_material_group")
+}
+
+model ApplicationMaterialFile {
+  id              String                   @id @default(uuid()) @db.Uuid
+  materialGroupId String                   @map("material_group_id") @db.Uuid
+  materialGroup   ApplicationMaterialGroup @relation(fields: [materialGroupId], references: [id])
+  applicationId   String                   @map("application_id") @db.Uuid
+  application     Application              @relation(fields: [applicationId], references: [id])
+  materialType    ApplicationMaterialType  @map("material_type")
+  fileId          String                   @map("file_id") @db.Uuid
+  file            FileObject               @relation(fields: [fileId], references: [id])
+  fileName        String                   @map("file_name") @db.VarChar(255)
+  mimeType        String?                  @map("mime_type") @db.VarChar(128)
+  sizeBytes       BigInt                   @map("size_bytes")
+  uploadedBy      String?                  @map("uploaded_by") @db.Uuid
+  uploader        User?                    @relation("MaterialFileUploader", fields: [uploadedBy], references: [id])
+  uploadedAt      DateTime                 @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  isDeleted       Boolean                  @default(false) @map("is_deleted")
+  deletedBy       String?                  @map("deleted_by") @db.Uuid
+  deleter         User?                    @relation("MaterialFileDeleter", fields: [deletedBy], references: [id])
+  deletedAt       DateTime?                @map("deleted_at") @db.Timestamptz(6)
+  deleteReason    String?                  @map("delete_reason") @db.Text
+  actionLogs      ApplicationActionLog[]
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?                  @map("created_by") @db.Uuid
+  updatedBy       String?                  @map("updated_by") @db.Uuid
+
+  @@index([materialGroupId])
+  @@index([applicationId])
+  @@index([materialType])
+  @@index([fileId])
+  @@index([uploadedBy])
+  @@index([deletedBy])
+  @@index([isDeleted])
+  @@map("application_material_file")
+}
+
+model ApplicationActionLog {
+  id              String                @id @default(uuid()) @db.Uuid
+  applicationId   String                @map("application_id") @db.Uuid
+  application     Application           @relation(fields: [applicationId], references: [id])
+  materialId      String?               @map("material_id") @db.Uuid
+  material        ApplicationMaterial?  @relation(fields: [materialId], references: [id])
+  materialGroupId String?               @map("material_group_id") @db.Uuid
+  materialGroup   ApplicationMaterialGroup? @relation(fields: [materialGroupId], references: [id])
+  materialFileId  String?               @map("material_file_id") @db.Uuid
+  materialFile    ApplicationMaterialFile? @relation(fields: [materialFileId], references: [id])
+  actionType      ApplicationActionType @map("action_type")
+  fromStatus      ApplicationStatus?    @map("from_status")
+  toStatus        ApplicationStatus?    @map("to_status")
+  comment         String?               @db.Text
+  operatorId      String?               @map("operator_id") @db.Uuid
+  operator        User?                 @relation("ApplicationActionOperator", fields: [operatorId], references: [id])
+  operatorName    String?               @map("operator_name") @db.VarChar(64)
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?               @map("created_by") @db.Uuid
+  updatedBy       String?               @map("updated_by") @db.Uuid
+  deletedAt       DateTime?             @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([applicationId])
+  @@index([materialId])
+  @@index([materialGroupId])
+  @@index([materialFileId])
+  @@index([operatorId])
+  @@index([actionType])
+  @@index([createdAt])
+  @@map("application_action_log")
+}
+
+model RiskResult {
+  id                            String             @id @default(uuid()) @db.Uuid
+  applicationId                 String             @map("application_id") @db.Uuid
+  application                   Application        @relation(fields: [applicationId], references: [id])
+  customerId                    String             @map("customer_id") @db.Uuid
+  customer                      Customer           @relation(fields: [customerId], references: [id])
+  quotes                        SubscriptionQuote[]
+  orders                        SubscriptionOrder[]
+  score                         Int?
+  grade                         CustomerGrade
+  approvedDepositAmount         BigInt             @map("approved_deposit_amount")
+  defaultRate                   Decimal            @map("default_rate") @db.Decimal(8, 6)
+  maxVehiclePurchasePriceAmount BigInt?            @map("max_vehicle_purchase_price_amount")
+  result                        RiskResultDecision @default(APPROVED)
+  remark                        String?            @db.Text
+  approvedBy                    String?            @map("approved_by") @db.Uuid
+  approver                      User?              @relation("RiskResultApprover", fields: [approvedBy], references: [id])
+  approvedAt                    DateTime?          @map("approved_at") @db.Timestamptz(6)
+  createdAt                     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                     String?            @map("created_by") @db.Uuid
+  updatedBy                     String?            @map("updated_by") @db.Uuid
+  deletedAt                     DateTime?          @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([applicationId])
+  @@index([customerId])
+  @@index([approvedBy])
+  @@index([grade])
+  @@index([result])
+  @@map("risk_result")
+}
+
+model DepositRule {
+  id              String       @id @default(uuid()) @db.Uuid
+  grade           CustomerGrade
+  depositAmount   BigInt       @map("deposit_amount")
+  customerRatio   Decimal?     @map("customer_ratio") @db.Decimal(8, 6)
+  defaultRate     Decimal      @map("default_rate") @db.Decimal(8, 6)
+  effectiveFrom   DateTime     @map("effective_from") @db.Date
+  effectiveTo     DateTime?    @map("effective_to") @db.Date
+  status          RecordStatus @default(ACTIVE)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?      @map("created_by") @db.Uuid
+  updatedBy       String?      @map("updated_by") @db.Uuid
+  deletedAt       DateTime?    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([grade, status])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("deposit_rule")
+}
+
+model Product {
+  id          String           @id @default(uuid()) @db.Uuid
+  productNo   String           @unique @map("product_no") @db.VarChar(64)
+  name        String           @db.VarChar(128)
+  productType ProductType      @default(SUBSCRIPTION) @map("product_type")
+  status      ProductStatus    @default(DRAFT)
+  description String?          @db.Text
+  versions    ProductVersion[]
+  orders      SubscriptionOrder[]
+  vehiclePackages VehiclePackage[]
+  mileagePackages MileagePackage[]
+  energyPackages EnergyPackage[]
+  benefitPackages BenefitPackage[]
+  subscriptionPlans SubscriptionPlan[]
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?          @map("created_by") @db.Uuid
+  updatedBy   String?          @map("updated_by") @db.Uuid
+  deletedAt   DateTime?        @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productType])
+  @@index([status])
+  @@map("product")
+}
+
+model ProductVersion {
+  id            String               @id @default(uuid()) @db.Uuid
+  productId     String               @map("product_id") @db.Uuid
+  product       Product              @relation(fields: [productId], references: [id])
+  versionNo     String               @map("version_no") @db.VarChar(32)
+  effectiveFrom DateTime             @map("effective_from") @db.Date
+  effectiveTo   DateTime?            @map("effective_to") @db.Date
+  status        ProductVersionStatus @default(DRAFT)
+  approvedBy    String?              @map("approved_by") @db.Uuid
+  approver      User?                @relation("ProductVersionApprover", fields: [approvedBy], references: [id])
+  approvedAt    DateTime?            @map("approved_at") @db.Timestamptz(6)
+  priceRules    ProductPriceRule[]
+  vehiclePackages VehiclePackage[]
+  mileagePackages MileagePackage[]
+  energyPackages EnergyPackage[]
+  benefitPackages BenefitPackage[]
+  subscriptionPlans SubscriptionPlan[]
+  quotes        SubscriptionQuote[]
+  orders        SubscriptionOrder[]
+  createdAt     DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?              @map("created_by") @db.Uuid
+  updatedBy     String?              @map("updated_by") @db.Uuid
+  deletedAt     DateTime?            @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([productId, versionNo])
+  @@index([productId])
+  @@index([status])
+  @@index([effectiveFrom, effectiveTo])
+  @@index([approvedBy])
+  @@map("product_version")
+}
+
+model VehiclePackage {
+  id                         String         @id @default(uuid()) @db.Uuid
+  packageNo                  String         @unique @map("package_no") @db.VarChar(64)
+  packageName                String         @map("package_name") @db.VarChar(128)
+  productId                  String         @map("product_id") @db.Uuid
+  product                    Product        @relation(fields: [productId], references: [id])
+  productVersionId           String         @map("product_version_id") @db.Uuid
+  productVersion             ProductVersion @relation(fields: [productVersionId], references: [id])
+  vehicleModel               VehicleModel   @map("vehicle_model")
+  vehicleModelName           String?        @map("vehicle_model_name") @db.VarChar(128)
+  brand                      String?        @db.VarChar(64)
+  series                     String?        @db.VarChar(64)
+  configName                 String?        @map("config_name") @db.VarChar(128)
+  minPurchasePriceAmount     BigInt?        @map("min_purchase_price_amount")
+  maxPurchasePriceAmount     BigInt?        @map("max_purchase_price_amount")
+  monthlyFeeRate             Decimal        @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
+  minPeriodMonths            Int            @map("min_period_months")
+  maxPeriodMonths            Int            @map("max_period_months")
+  status                     RecordStatus   @default(ACTIVE)
+  remark                     String?        @db.Text
+  quotes                     SubscriptionQuote[]
+  subscriptionPlans          SubscriptionPlan[]
+  createdAt                  DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                  String?        @map("created_by") @db.Uuid
+  updatedBy                  String?        @map("updated_by") @db.Uuid
+  deletedAt                  DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([vehicleModel])
+  @@index([status])
+  @@map("vehicle_package")
+}
+
+model MileagePackage {
+  id                   String         @id @default(uuid()) @db.Uuid
+  packageNo            String         @unique @map("package_no") @db.VarChar(64)
+  packageName          String         @map("package_name") @db.VarChar(128)
+  productId            String         @map("product_id") @db.Uuid
+  product              Product        @relation(fields: [productId], references: [id])
+  productVersionId     String         @map("product_version_id") @db.Uuid
+  productVersion       ProductVersion @relation(fields: [productVersionId], references: [id])
+  monthlyMileageKm     Int            @map("monthly_mileage_km")
+  overMileageFeeAmount BigInt         @map("over_mileage_fee_amount")
+  priceAmount          BigInt         @default(0) @map("price_amount")
+  status               RecordStatus   @default(ACTIVE)
+  remark               String?        @db.Text
+  quotes               SubscriptionQuote[]
+  subscriptionPlans    SubscriptionPlan[]
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?        @map("created_by") @db.Uuid
+  updatedBy            String?        @map("updated_by") @db.Uuid
+  deletedAt            DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([status])
+  @@map("mileage_package")
+}
+
+model EnergyPackage {
+  id                   String         @id @default(uuid()) @db.Uuid
+  packageNo            String         @unique @map("package_no") @db.VarChar(64)
+  packageName          String         @map("package_name") @db.VarChar(128)
+  productId            String         @map("product_id") @db.Uuid
+  product              Product        @relation(fields: [productId], references: [id])
+  productVersionId     String         @map("product_version_id") @db.Uuid
+  productVersion       ProductVersion @relation(fields: [productVersionId], references: [id])
+  monthlyEnergyKwh     Int?           @map("monthly_energy_kwh")
+  monthlyEnergyCount   Int?           @map("monthly_energy_count")
+  priceAmount          BigInt         @default(0) @map("price_amount")
+  stationScope         String?        @map("station_scope") @db.Text
+  serviceDescription   String?        @map("service_description") @db.Text
+  status               RecordStatus   @default(ACTIVE)
+  remark               String?        @db.Text
+  quotes               SubscriptionQuote[]
+  subscriptionPlans    SubscriptionPlan[]
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?        @map("created_by") @db.Uuid
+  updatedBy            String?        @map("updated_by") @db.Uuid
+  deletedAt            DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([status])
+  @@map("energy_package")
+}
+
+model BenefitPackage {
+  id                   String         @id @default(uuid()) @db.Uuid
+  packageNo            String         @unique @map("package_no") @db.VarChar(64)
+  packageName          String         @map("package_name") @db.VarChar(128)
+  productId            String         @map("product_id") @db.Uuid
+  product              Product        @relation(fields: [productId], references: [id])
+  productVersionId     String         @map("product_version_id") @db.Uuid
+  productVersion       ProductVersion @relation(fields: [productVersionId], references: [id])
+  benefitType          BenefitType    @map("benefit_type")
+  benefitCount         Int?           @map("benefit_count")
+  priceAmount          BigInt         @default(0) @map("price_amount")
+  description          String?        @db.Text
+  status               RecordStatus   @default(ACTIVE)
+  remark               String?        @db.Text
+  quotes               SubscriptionQuote[]
+  subscriptionPlans    SubscriptionPlan[]
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?        @map("created_by") @db.Uuid
+  updatedBy            String?        @map("updated_by") @db.Uuid
+  deletedAt            DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([benefitType])
+  @@index([status])
+  @@map("benefit_package")
+}
+
+model SubscriptionPlan {
+  id                     String                 @id @default(uuid()) @db.Uuid
+  planNo                 String                 @unique @map("plan_no") @db.VarChar(64)
+  planName               String                 @map("plan_name") @db.VarChar(128)
+  productId              String                 @map("product_id") @db.Uuid
+  product                Product                @relation(fields: [productId], references: [id])
+  productVersionId       String                 @map("product_version_id") @db.Uuid
+  productVersion         ProductVersion         @relation(fields: [productVersionId], references: [id])
+  vehiclePackageId       String                 @map("vehicle_package_id") @db.Uuid
+  vehiclePackage         VehiclePackage         @relation(fields: [vehiclePackageId], references: [id])
+  mileagePackageId       String                 @map("mileage_package_id") @db.Uuid
+  mileagePackage         MileagePackage         @relation(fields: [mileagePackageId], references: [id])
+  energyPackageId        String                 @map("energy_package_id") @db.Uuid
+  energyPackage          EnergyPackage          @relation(fields: [energyPackageId], references: [id])
+  benefitPackageId       String?                @map("benefit_package_id") @db.Uuid
+  benefitPackage         BenefitPackage?        @relation(fields: [benefitPackageId], references: [id])
+  monthlyFeeMode         MonthlyFeeMode         @default(MANUAL_QUOTE) @map("monthly_fee_mode")
+  baseMonthlyFeeAmount   BigInt?                @map("base_monthly_fee_amount")
+  monthlyFeeRate         Decimal                @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
+  monthlyFeeCapRate      Decimal?               @map("monthly_fee_cap_rate") @db.Decimal(8, 6)
+  minPeriodMonths        Int                    @map("min_period_months")
+  maxPeriodMonths        Int                    @map("max_period_months")
+  status                 SubscriptionPlanStatus @default(DRAFT)
+  effectiveFrom          DateTime               @map("effective_from") @db.Date
+  effectiveTo            DateTime?              @map("effective_to") @db.Date
+  remark                 String?                @db.Text
+  quotes                 SubscriptionQuote[]
+  createdAt              DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                @map("created_by") @db.Uuid
+  updatedBy              String?                @map("updated_by") @db.Uuid
+  deletedAt              DateTime?              @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([vehiclePackageId])
+  @@index([mileagePackageId])
+  @@index([energyPackageId])
+  @@index([benefitPackageId])
+  @@index([status])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("subscription_plan")
+}
+
+model ProductPriceRule {
+  id                   String         @id @default(uuid()) @db.Uuid
+  productVersionId     String         @map("product_version_id") @db.Uuid
+  productVersion       ProductVersion @relation(fields: [productVersionId], references: [id])
+  vehicleModel         VehicleModel   @map("vehicle_model")
+  monthlyFeeRate       Decimal        @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
+  minPeriodMonths      Int            @map("min_period_months")
+  maxPeriodMonths      Int            @map("max_period_months")
+  baseMileageKm        Int            @map("base_mileage_km")
+  overMileageFeeAmount BigInt         @map("over_mileage_fee_amount")
+  energyLimitKwh       Int?           @map("energy_limit_kwh")
+  energyLimitCount     Int?           @map("energy_limit_count")
+  status               RecordStatus   @default(ACTIVE)
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?        @map("created_by") @db.Uuid
+  updatedBy            String?        @map("updated_by") @db.Uuid
+  deletedAt            DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([productVersionId, vehicleModel])
+  @@index([productVersionId])
+  @@index([vehicleModel])
+  @@index([status])
+  @@map("product_price_rule")
+}
+
+model Vehicle {
+  id                            String                    @id @default(uuid()) @db.Uuid
+  vehicleNo                     String                    @unique @map("vehicle_no") @db.VarChar(64)
+  vin                           String?                   @unique @db.VarChar(64)
+  plateNo                       String?                   @unique @map("plate_no") @db.VarChar(32)
+  brand                         String                    @db.VarChar(64)
+  series                        String?                   @db.VarChar(64)
+  model                         String?                   @db.VarChar(64)
+  modelYear                     Int?                      @map("model_year")
+  vehicleModel                  VehicleModel?             @map("vehicle_model")
+  purchasePriceAmount           BigInt                    @map("purchase_price_amount")
+  purchaseDate                  DateTime?                 @map("purchase_date") @db.Date
+  currentSalePriceAmount        BigInt?                   @map("current_sale_price_amount")
+  currentSalePriceInitializedAt DateTime?                 @map("current_sale_price_initialized_at") @db.Timestamptz(6)
+  currentSalePriceReviewedAt    DateTime?                 @map("current_sale_price_reviewed_at") @db.Timestamptz(6)
+  nextSalePriceReviewAt         DateTime?                 @map("next_sale_price_review_at") @db.Date
+  salePriceReinitRequiredAt     DateTime?                 @map("sale_price_reinit_required_at") @db.Timestamptz(6)
+  salePriceStatus               SalePriceStatus           @default(PENDING_INITIALIZE) @map("sale_price_status")
+  registrationDate              DateTime?                 @map("registration_date") @db.Date
+  insuranceStartDate            DateTime?                 @map("insurance_start_date") @db.Date
+  insuranceEndDate              DateTime?                 @map("insurance_end_date") @db.Date
+  status                        VehicleStatus             @default(DRAFT)
+  currentMileageKm              Int                       @default(0) @map("current_mileage_km")
+  assetLocation                 String?                   @map("asset_location") @db.VarChar(128)
+  remark                        String?                   @db.Text
+  quotes                        SubscriptionQuote[]
+  orders                        SubscriptionOrder[]
+  salePriceHistories            VehicleSalePriceHistory[]
+  createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                     String?                   @map("created_by") @db.Uuid
+  updatedBy                     String?                   @map("updated_by") @db.Uuid
+  deletedAt                     DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleModel])
+  @@index([status])
+  @@index([salePriceStatus])
+  @@index([nextSalePriceReviewAt])
+  @@index([salePriceReinitRequiredAt])
+  @@map("vehicle")
+}
+
+model VehicleSalePriceHistory {
+  id                    String                     @id @default(uuid()) @db.Uuid
+  vehicleId             String                     @map("vehicle_id") @db.Uuid
+  vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id])
+  beforeSalePriceAmount BigInt?                    @map("before_sale_price_amount")
+  afterSalePriceAmount  BigInt                     @map("after_sale_price_amount")
+  reviewType            VehicleSalePriceReviewType @map("review_type")
+  reviewQuarter         String?                    @map("review_quarter") @db.VarChar(16)
+  effectiveFrom         DateTime                   @map("effective_from") @db.Date
+  effectiveTo           DateTime?                  @map("effective_to") @db.Date
+  reason                String                     @db.Text
+  remark                String?                    @db.Text
+  createdAt             DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy             String?                    @map("created_by") @db.Uuid
+
+  @@index([vehicleId])
+  @@index([reviewType])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("vehicle_sale_price_history")
+}
+
+model SubscriptionQuote {
+  id                         String          @id @default(uuid()) @db.Uuid
+  quoteNo                    String          @unique @map("quote_no") @db.VarChar(64)
+  applicationId              String          @map("application_id") @db.Uuid
+  application                Application     @relation(fields: [applicationId], references: [id])
+  customerId                 String          @map("customer_id") @db.Uuid
+  customer                   Customer        @relation(fields: [customerId], references: [id])
+  riskResultId               String?         @map("risk_result_id") @db.Uuid
+  riskResult                 RiskResult?     @relation(fields: [riskResultId], references: [id])
+  productId                  String          @map("product_id") @db.Uuid
+  productVersionId           String          @map("product_version_id") @db.Uuid
+  productVersion             ProductVersion  @relation(fields: [productVersionId], references: [id])
+  subscriptionPlanId         String?         @map("subscription_plan_id") @db.Uuid
+  subscriptionPlan           SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
+  vehicleId                  String?         @map("vehicle_id") @db.Uuid
+  vehicle                    Vehicle?        @relation(fields: [vehicleId], references: [id])
+  vehiclePackageId           String?         @map("vehicle_package_id") @db.Uuid
+  vehiclePackage             VehiclePackage? @relation(fields: [vehiclePackageId], references: [id])
+  mileagePackageId           String?         @map("mileage_package_id") @db.Uuid
+  mileagePackage             MileagePackage? @relation(fields: [mileagePackageId], references: [id])
+  energyPackageId            String?         @map("energy_package_id") @db.Uuid
+  energyPackage              EnergyPackage?  @relation(fields: [energyPackageId], references: [id])
+  benefitPackageId           String?         @map("benefit_package_id") @db.Uuid
+  benefitPackage             BenefitPackage? @relation(fields: [benefitPackageId], references: [id])
+  packageSnapshot            Json?           @map("package_snapshot")
+  depositRuleSnapshot        Json?           @map("deposit_rule_snapshot")
+  vehicleSnapshot            Json?           @map("vehicle_snapshot")
+  customerSelectedSnapshot   Json?           @map("customer_selected_snapshot")
+  monthlyFeeCapAmount        BigInt?         @map("monthly_fee_cap_amount")
+  vehicleSalePriceAmount     BigInt?         @map("vehicle_sale_price_amount")
+  vehicleBaseFeeCapAmount    BigInt?         @map("vehicle_base_fee_cap_amount")
+  vehicleBaseFeeAmount       BigInt?         @map("vehicle_base_fee_amount")
+  mileagePackagePriceAmount  BigInt?         @map("mileage_package_price_amount")
+  energyPackagePriceAmount   BigInt?         @map("energy_package_price_amount")
+  benefitPackagePriceAmount  BigInt?         @map("benefit_package_price_amount")
+  vehicleModel               VehicleModel    @map("vehicle_model")
+  vehiclePurchasePriceAmount BigInt          @map("vehicle_purchase_price_amount")
+  monthlyFeeRate             Decimal         @map("monthly_fee_rate") @db.Decimal(8, 6)
+  monthlyFeeAmount           BigInt          @map("monthly_fee_amount")
+  depositAmount              BigInt          @map("deposit_amount")
+  periodMonths               Int             @map("period_months")
+  mileageLimitKm             Int             @map("mileage_limit_km")
+  overMileageFeeAmount       BigInt          @map("over_mileage_fee_amount")
+  energyLimitKwh             Int?            @map("energy_limit_kwh")
+  energyLimitCount           Int?            @map("energy_limit_count")
+  status                     QuoteStatus     @default(DRAFT)
+  confirmedAt                DateTime?       @map("confirmed_at") @db.Timestamptz(6)
+  confirmedBy                String?         @map("confirmed_by") @db.Uuid
+  confirmer                  User?           @relation("QuoteConfirmer", fields: [confirmedBy], references: [id])
+  order                      SubscriptionOrder?
+  cancelledAt                DateTime?       @map("cancelled_at") @db.Timestamptz(6)
+  expiredAt                  DateTime?       @map("expired_at") @db.Timestamptz(6)
+  createdAt                  DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                  String?         @map("created_by") @db.Uuid
+  updatedBy                  String?         @map("updated_by") @db.Uuid
+  deletedAt                  DateTime?       @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([applicationId])
+  @@index([customerId])
+  @@index([riskResultId])
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([subscriptionPlanId])
+  @@index([vehicleId])
+  @@index([vehiclePackageId])
+  @@index([mileagePackageId])
+  @@index([energyPackageId])
+  @@index([benefitPackageId])
+  @@index([vehicleModel])
+  @@index([status])
+  @@index([confirmedBy])
+  @@map("subscription_quote")
+}
+
+model SubscriptionOrder {
+  id                         String             @id @default(uuid()) @db.Uuid
+  orderNo                    String             @unique @map("order_no") @db.VarChar(64)
+  businessType               BusinessType       @default(SUBSCRIPTION) @map("business_type")
+  customerId                 String             @map("customer_id") @db.Uuid
+  customer                   Customer           @relation(fields: [customerId], references: [id])
+  applicationId              String             @map("application_id") @db.Uuid
+  application                Application        @relation(fields: [applicationId], references: [id])
+  quoteId                    String             @unique @map("quote_id") @db.Uuid
+  quote                      SubscriptionQuote  @relation(fields: [quoteId], references: [id])
+  riskResultId               String?            @map("risk_result_id") @db.Uuid
+  riskResult                 RiskResult?        @relation(fields: [riskResultId], references: [id])
+  contractId                 String?            @unique @map("contract_id") @db.Uuid
+  contract                   Contract?          @relation("OrderContract", fields: [contractId], references: [id])
+  vehicleId                  String?            @map("vehicle_id") @db.Uuid
+  vehicle                    Vehicle?           @relation(fields: [vehicleId], references: [id])
+  productId                  String             @map("product_id") @db.Uuid
+  product                    Product            @relation(fields: [productId], references: [id])
+  productVersionId           String             @map("product_version_id") @db.Uuid
+  productVersion             ProductVersion     @relation(fields: [productVersionId], references: [id])
+  vehicleModel               VehicleModel       @map("vehicle_model")
+  vehiclePurchasePriceAmount BigInt             @map("vehicle_purchase_price_amount")
+  monthlyFeeAmount           BigInt             @map("monthly_fee_amount")
+  depositAmount              BigInt             @map("deposit_amount")
+  periodMonths               Int                @map("period_months")
+  mileageLimitKm             Int                @map("mileage_limit_km")
+  overMileageFeeAmount       BigInt             @map("over_mileage_fee_amount")
+  energyLimitKwh             Int?               @map("energy_limit_kwh")
+  energyLimitCount           Int?               @map("energy_limit_count")
+  quoteSnapshot              Json               @map("quote_snapshot")
+  customerSelectedSnapshot   Json?              @map("customer_selected_snapshot")
+  orderSource                OrderSource        @default(SALES_ASSISTED) @map("order_source")
+  orderStatus                OrderStatus        @default(PENDING_CONTRACT) @map("order_status")
+  creditReviewStatus         OrderReviewStatus  @default(APPROVED) @map("credit_review_status")
+  productReviewStatus        OrderReviewStatus  @default(APPROVED) @map("product_review_status")
+  vehicleReviewStatus        OrderReviewStatus  @default(APPROVED) @map("vehicle_review_status")
+  depositStatus              DepositStatus      @default(CONFIRMED) @map("deposit_status")
+  finalDepositAmount         BigInt?            @map("final_deposit_amount")
+  customerConfirmedAt        DateTime?          @map("customer_confirmed_at") @db.Timestamptz(6)
+  finalPlanConfirmedAt       DateTime?          @map("final_plan_confirmed_at") @db.Timestamptz(6)
+  startDate                  DateTime?          @map("start_date") @db.Date
+  endDate                    DateTime?          @map("end_date") @db.Date
+  actualDeliveryAt           DateTime?          @map("actual_delivery_at") @db.Timestamptz(6)
+  contracts                  Contract[]         @relation("OrderContracts")
+  changes                    OrderChange[]
+  createdAt                  DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                  String?            @map("created_by") @db.Uuid
+  updatedBy                  String?            @map("updated_by") @db.Uuid
+  deletedAt                  DateTime?          @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([businessType])
+  @@index([customerId])
+  @@index([applicationId])
+  @@index([riskResultId])
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([vehicleModel])
+  @@index([orderSource])
+  @@index([orderStatus])
+  @@index([creditReviewStatus])
+  @@index([productReviewStatus])
+  @@index([vehicleReviewStatus])
+  @@index([depositStatus])
+  @@map("subscription_order")
+}
+
+model ContractVersion {
+  id              String                @id @default(uuid()) @db.Uuid
+  templateName    String                @map("template_name") @db.VarChar(128)
+  versionNo       String                @map("version_no") @db.VarChar(32)
+  businessType    BusinessType          @default(SUBSCRIPTION) @map("business_type")
+  templateType    ContractTemplateType  @default(SUBSCRIPTION_STANDARD) @map("template_type")
+  contentTemplate String                @map("content_template") @db.Text
+  fileId          String?               @map("file_id") @db.Uuid
+  effectiveFrom   DateTime              @map("effective_from") @db.Date
+  effectiveTo     DateTime?             @map("effective_to") @db.Date
+  status          ContractVersionStatus @default(DRAFT)
+  approvedBy      String?               @map("approved_by") @db.Uuid
+  approver        User?                 @relation("ContractVersionApprover", fields: [approvedBy], references: [id])
+  approvedAt      DateTime?             @map("approved_at") @db.Timestamptz(6)
+  contracts       Contract[]
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?               @map("created_by") @db.Uuid
+  updatedBy       String?               @map("updated_by") @db.Uuid
+  deletedAt       DateTime?             @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([templateName, versionNo])
+  @@index([businessType])
+  @@index([status])
+  @@index([effectiveFrom, effectiveTo])
+  @@index([approvedBy])
+  @@map("contract_version")
+}
+
+model Contract {
+  id                String              @id @default(uuid()) @db.Uuid
+  contractNo        String              @unique @map("contract_no") @db.VarChar(64)
+  orderId           String              @map("order_id") @db.Uuid
+  order             SubscriptionOrder   @relation("OrderContracts", fields: [orderId], references: [id])
+  currentForOrder   SubscriptionOrder?  @relation("OrderContract")
+  customerId        String              @map("customer_id") @db.Uuid
+  customer          Customer            @relation(fields: [customerId], references: [id])
+  businessType      BusinessType        @default(SUBSCRIPTION) @map("business_type")
+  contractVersionId String              @map("contract_version_id") @db.Uuid
+  contractVersion   ContractVersion     @relation(fields: [contractVersionId], references: [id])
+  contractTitle     String              @map("contract_title") @db.VarChar(128)
+  contractSnapshot  Json                @map("contract_snapshot")
+  status            ContractStatus      @default(GENERATED)
+  signedAt          DateTime?           @map("signed_at") @db.Timestamptz(6)
+  archivedAt        DateTime?           @map("archived_at") @db.Timestamptz(6)
+  fileId            String?             @map("file_id") @db.Uuid
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy         String?             @map("created_by") @db.Uuid
+  updatedBy         String?             @map("updated_by") @db.Uuid
+  deletedAt         DateTime?           @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([orderId])
+  @@index([customerId])
+  @@index([businessType])
+  @@index([contractVersionId])
+  @@index([status])
+  @@map("contract")
+}
+
+model OrderChange {
+  id             String              @id @default(uuid()) @db.Uuid
+  orderId        String              @map("order_id") @db.Uuid
+  order          SubscriptionOrder   @relation(fields: [orderId], references: [id])
+  changeType     OrderChangeType     @map("change_type")
+  beforeSnapshot Json?               @map("before_snapshot")
+  afterSnapshot  Json?               @map("after_snapshot")
+  reason         String              @db.Text
+  status         OrderChangeStatus   @default(PENDING)
+  approvedBy     String?             @map("approved_by") @db.Uuid
+  approver       User?               @relation("OrderChangeApprover", fields: [approvedBy], references: [id])
+  approvedAt     DateTime?           @map("approved_at") @db.Timestamptz(6)
+  executedAt     DateTime?           @map("executed_at") @db.Timestamptz(6)
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy      String?             @map("created_by") @db.Uuid
+  updatedBy      String?             @map("updated_by") @db.Uuid
+  deletedAt      DateTime?           @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([orderId])
+  @@index([changeType])
+  @@index([status])
+  @@index([approvedBy])
+  @@map("order_change")
+}
+
+model FileObject {
+  id           String                @id @default(uuid()) @db.Uuid
+  bucket       String                @db.VarChar(64)
+  objectKey    String                @map("object_key") @db.VarChar(255)
+  originalName String                @map("original_name") @db.VarChar(255)
+  mimeType     String?               @map("mime_type") @db.VarChar(128)
+  sizeBytes    BigInt                @map("size_bytes")
+  uploadedBy   String?               @map("uploaded_by") @db.Uuid
+  uploader     User?                 @relation("FileUploader", fields: [uploadedBy], references: [id])
+  materials    ApplicationMaterial[]
+  materialFiles ApplicationMaterialFile[]
+  createdAt    DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([bucket])
+  @@index([uploadedBy])
+  @@map("file_object")
+}

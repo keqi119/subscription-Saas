@@ -1180,18 +1180,18 @@ GET    /api/reports/roa-roe
 
 ## 21. 核心业务规则
 
-### 21.1 月费规则
+### 21.1 车辆基础费规则
 
-客户平均订阅月费总额不超过车辆实际采购价的 3.5%。
+车辆基础费不超过车辆实际采购价的 3.5%，3.5% 仅约束车辆基础费，不约束套餐总价。
 
 ```text
-月费上限 = 车辆采购价 × 3.5%
+车辆基础费上限 = 车辆采购价 × 3.5%
 ```
 
 系统应在生成报价时自动校验：
 
 ```text
-monthly_fee_amount <= vehicle_purchase_price_amount * monthly_fee_rate
+vehicle_base_fee_amount <= vehicle_purchase_price_amount * monthly_fee_rate
 ```
 
 ### 21.2 客户等级与押金

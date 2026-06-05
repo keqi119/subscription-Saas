@@ -1,0 +1,47 @@
+{
+  "name": "@subscription-saas/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @subscription-saas/shared build && pnpm prisma:generate && nest start --watch",
+    "build": "pnpm --filter @subscription-saas/shared build && pnpm prisma:generate && nest build",
+    "start": "node dist/src/main.js",
+    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" \"prisma.config.ts\"",
+    "typecheck": "pnpm --filter @subscription-saas/shared build && pnpm prisma:generate && tsc --noEmit -p tsconfig.json",
+    "test": "pnpm --filter @subscription-saas/shared build && pnpm prisma:generate && vitest run",
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma",
+    "prisma:seed": "node prisma/seed.mjs",
+    "prisma:validate": "prisma validate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.24",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.1.24",
+    "@nestjs/platform-express": "^11.1.24",
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "@subscription-saas/shared": "workspace:*",
+    "bcryptjs": "^3.0.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.4.2",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.21.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.21",
+    "@nestjs/testing": "^11.1.24",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^25.9.1",
+    "@types/pg": "^8.20.0",
+    "prisma": "^7.8.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
+  }
+}

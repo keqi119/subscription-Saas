@@ -1,0 +1,652 @@
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  AuditAction,
+  Prisma,
+  SalePriceStatus,
+  Vehicle,
+  VehicleSalePriceHistory,
+  VehicleSalePriceReviewType,
+  VehicleStatus
+} from "@prisma/client";
+
+import { AuditService } from "../audit/audit.service";
+import { RequestContext, RequestUser } from "../auth/auth.types";
+import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { PrismaService } from "../prisma/prisma.service";
+import {
+  CreateVehicleDto,
+  InitializeSalePriceDto,
+  ReviewSalePriceDto,
+  UpdateVehicleDto,
+  UpdateVehicleStatusDto
+} from "./dto/vehicle.dto";
+
+const vehicleInclude = {
+  salePriceHistories: {
+    orderBy: { createdAt: "desc" as const }
+  }
+} satisfies Prisma.VehicleInclude;
+
+type VehicleWithHistory = Vehicle & { salePriceHistories?: VehicleSalePriceHistory[] };
+
+const INITIALIZE_BEFORE_AVAILABLE_MESSAGE = "请先初始化当前车辆销售价后再入池";
+const RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE = "退回车辆需重新初始化当前销售价后才能入池";
+
+@Injectable()
+export class VehicleService {
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly prisma: PrismaService
+  ) {}
+
+  async listVehicles() {
+    const vehicles = await this.prisma.vehicle.findMany({
+      include: vehicleInclude,
+      orderBy: { createdAt: "desc" },
+      where: { deletedAt: null }
+    });
+
+    return vehicles.map((vehicle) => toVehicleView(vehicle));
+  }
+
+  async listAvailableVehicles() {
+    const vehicles = await this.prisma.vehicle.findMany({
+      include: vehicleInclude,
+      orderBy: { vehicleNo: "asc" },
+      where: {
+        currentSalePriceAmount: { gt: 0 },
+        deletedAt: null,
+        salePriceStatus: SalePriceStatus.EFFECTIVE,
+        status: VehicleStatus.AVAILABLE
+      }
+    });
+
+    return vehicles.map((vehicle) => toVehicleView(vehicle));
+  }
+
+  async listDueSalePriceReviews() {
+    const today = todayDateOnly();
+    const vehicles = await this.prisma.vehicle.findMany({
+      include: vehicleInclude,
+      orderBy: [{ nextSalePriceReviewAt: "asc" }, { vehicleNo: "asc" }],
+      where: {
+        deletedAt: null,
+        nextSalePriceReviewAt: { lte: today },
+        salePriceStatus: { in: [SalePriceStatus.EFFECTIVE, SalePriceStatus.REVIEW_DUE] }
+      }
+    });
+
+    return vehicles.map((vehicle) => toVehicleView(vehicle, today));
+  }
+
+  async createVehicle(dto: CreateVehicleDto, user: RequestUser, context: RequestContext) {
+    assertRequiredString(dto.vin, "VIN 必填");
+    if (!dto.vehicleModel) {
+      throw new BadRequestException("车型代码必填");
+    }
+    assertPositiveAmount(dto.purchasePriceAmount, "车辆采购价必须大于 0");
+    assertCanCreateAsAvailable(dto.status ?? VehicleStatus.DRAFT);
+
+    const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id);
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toVehicleView(vehicle),
+      entityId: vehicle.id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toVehicleView(vehicle);
+  }
+
+  async getVehicle(id: string) {
+    return toVehicleView(await this.findVehicleOrThrow(id));
+  }
+
+  async updateVehicle(
+    id: string,
+    dto: UpdateVehicleDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.findVehicleOrThrow(id);
+    const data = updateVehicleData(dto, user.id);
+
+    if (dto.status) {
+      assertCanEnterAvailable(dto.status, before);
+      markSalePriceReinitRequired(data, before.status, dto.status);
+    }
+
+    const vehicle = await this.prisma.vehicle.update({
+      data,
+      include: vehicleInclude,
+      where: { id }
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toVehicleView(vehicle),
+      before: toVehicleView(before),
+      entityId: id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toVehicleView(vehicle);
+  }
+
+  async initializeSalePrice(
+    id: string,
+    dto: InitializeSalePriceDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    assertPositiveAmount(dto.currentSalePriceAmount, "当前车辆销售价必须大于 0");
+
+    const before = await this.findVehicleOrThrow(id);
+    const reviewType = dto.reviewType ?? VehicleSalePriceReviewType.INITIAL_POOL;
+
+    if (
+      reviewType === VehicleSalePriceReviewType.INITIAL_POOL &&
+      isPositiveBigInt(before.currentSalePriceAmount)
+    ) {
+      throw new BadRequestException("当前车辆销售价已初始化");
+    }
+
+    const effectiveFrom = parseDateOnly(dto.effectiveFrom, "effectiveFrom");
+    const reviewedAt = new Date();
+    const nextSalePriceReviewAt = addMonths(effectiveFrom, 3);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const vehicle = await tx.vehicle.update({
+        data: {
+          currentSalePriceAmount: BigInt(dto.currentSalePriceAmount),
+          currentSalePriceInitializedAt: reviewedAt,
+          currentSalePriceReviewedAt: reviewedAt,
+          nextSalePriceReviewAt,
+          salePriceReinitRequiredAt:
+            reviewType === VehicleSalePriceReviewType.RETURN_REINIT ? null : before.salePriceReinitRequiredAt,
+          salePriceStatus: SalePriceStatus.EFFECTIVE,
+          updatedBy: user.id
+        },
+        where: { id }
+      });
+
+      const history = await tx.vehicleSalePriceHistory.create({
+        data: {
+          afterSalePriceAmount: BigInt(dto.currentSalePriceAmount),
+          beforeSalePriceAmount: before.currentSalePriceAmount,
+          createdBy: user.id,
+          effectiveFrom,
+          reason: dto.reason,
+          remark: dto.remark,
+          reviewQuarter: toReviewQuarter(effectiveFrom),
+          reviewType,
+          vehicleId: id
+        }
+      });
+
+      return { history, vehicle };
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toVehicleView(result.vehicle),
+      before: toVehicleView(before),
+      entityId: id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toSalePriceHistoryView(result.history),
+      entityId: result.history.id,
+      entityType: "vehicle_sale_price_history",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toVehicleView({
+      ...result.vehicle,
+      salePriceHistories: [result.history, ...(before.salePriceHistories ?? [])]
+    });
+  }
+
+  async reviewSalePrice(
+    id: string,
+    dto: ReviewSalePriceDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    assertPositiveAmount(dto.newSalePriceAmount, "新销售价必须大于 0");
+    assertReviewQuarter(dto.reviewQuarter);
+
+    const before = await this.findVehicleOrThrow(id);
+
+    if (!isPositiveBigInt(before.currentSalePriceAmount)) {
+      throw new BadRequestException("请先初始化当前车辆销售价后再复核");
+    }
+
+    const effectiveFrom = parseDateOnly(dto.effectiveFrom, "effectiveFrom");
+    const reviewedAt = new Date();
+    const nextSalePriceReviewAt = addMonths(effectiveFrom, 3);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const vehicle = await tx.vehicle.update({
+        data: {
+          currentSalePriceAmount: BigInt(dto.newSalePriceAmount),
+          currentSalePriceReviewedAt: reviewedAt,
+          nextSalePriceReviewAt,
+          salePriceStatus: SalePriceStatus.EFFECTIVE,
+          updatedBy: user.id
+        },
+        where: { id }
+      });
+
+      const history = await tx.vehicleSalePriceHistory.create({
+        data: {
+          afterSalePriceAmount: BigInt(dto.newSalePriceAmount),
+          beforeSalePriceAmount: before.currentSalePriceAmount,
+          createdBy: user.id,
+          effectiveFrom,
+          reason: dto.reason,
+          remark: dto.remark,
+          reviewQuarter: dto.reviewQuarter,
+          reviewType: VehicleSalePriceReviewType.QUARTERLY_REVIEW,
+          vehicleId: id
+        }
+      });
+
+      return { history, vehicle };
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toVehicleView(result.vehicle),
+      before: toVehicleView(before),
+      entityId: id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toSalePriceHistoryView(result.history),
+      entityId: result.history.id,
+      entityType: "vehicle_sale_price_history",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toVehicleView({
+      ...result.vehicle,
+      salePriceHistories: [result.history, ...(before.salePriceHistories ?? [])]
+    });
+  }
+
+  async updateStatus(
+    id: string,
+    dto: UpdateVehicleStatusDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.findVehicleOrThrow(id);
+    assertCanEnterAvailable(dto.status, before);
+
+    const data: Prisma.VehicleUpdateInput = {
+      remark: dto.remark ?? undefined,
+      status: dto.status,
+      updatedBy: user.id
+    };
+    markSalePriceReinitRequired(data, before.status, dto.status);
+
+    const vehicle = await this.prisma.vehicle.update({
+      data,
+      include: vehicleInclude,
+      where: { id }
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toVehicleView(vehicle),
+      before: toVehicleView(before),
+      entityId: id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toVehicleView(vehicle);
+  }
+
+  async listSalePriceHistory(id: string) {
+    await this.findVehicleOrThrow(id);
+    const histories = await this.prisma.vehicleSalePriceHistory.findMany({
+      orderBy: { createdAt: "desc" },
+      where: { vehicleId: id }
+    });
+
+    return histories.map(toSalePriceHistoryView);
+  }
+
+  private async findVehicleOrThrow(id: string) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      include: vehicleInclude,
+      where: { id }
+    });
+
+    if (!vehicle || vehicle.deletedAt) {
+      throw new NotFoundException("车辆不存在");
+    }
+
+    return vehicle;
+  }
+}
+
+async function createVehicleWithRetry(prisma: PrismaService, dto: CreateVehicleDto, operatorId: string) {
+  try {
+    return await withUniqueBusinessNoRetry(() => prisma.vehicle.create({
+      data: {
+        ...createVehicleData(dto),
+        createdBy: operatorId,
+        updatedBy: operatorId,
+        vehicleNo: createBusinessNo("VEH")
+      },
+      include: vehicleInclude
+    }));
+  } catch (error) {
+    throwVehicleUniqueError(error);
+  }
+}
+
+function createVehicleData(dto: CreateVehicleDto): Omit<Prisma.VehicleCreateInput, "vehicleNo"> {
+  return {
+    assetLocation: dto.assetLocation,
+    brand: dto.brand,
+    currentMileageKm: dto.currentMileageKm ?? 0,
+    insuranceEndDate: parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"),
+    insuranceStartDate: parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"),
+    model: dto.model,
+    modelYear: dto.modelYear,
+    plateNo: dto.plateNo,
+    purchaseDate: parseOptionalDateOnly(dto.purchaseDate, "purchaseDate"),
+    purchasePriceAmount: BigInt(dto.purchasePriceAmount),
+    registrationDate: parseOptionalDateOnly(dto.registrationDate, "registrationDate"),
+    remark: dto.remark,
+    series: dto.series,
+    status: dto.status ?? VehicleStatus.DRAFT,
+    vehicleModel: dto.vehicleModel,
+    vin: dto.vin
+  };
+}
+
+function updateVehicleData(dto: UpdateVehicleDto, operatorId: string): Prisma.VehicleUpdateInput {
+  const data: Prisma.VehicleUpdateInput = {
+    updatedBy: operatorId
+  };
+
+  assignIfDefined(data, "assetLocation", dto.assetLocation);
+  assignIfDefined(data, "brand", dto.brand);
+  assignIfDefined(data, "currentMileageKm", dto.currentMileageKm);
+  assignIfDefined(data, "insuranceEndDate", parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"));
+  assignIfDefined(data, "insuranceStartDate", parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"));
+  assignIfDefined(data, "model", dto.model);
+  assignIfDefined(data, "modelYear", dto.modelYear);
+  assignIfDefined(data, "plateNo", dto.plateNo);
+  assignIfDefined(data, "purchaseDate", parseOptionalDateOnly(dto.purchaseDate, "purchaseDate"));
+  assignIfDefined(
+    data,
+    "purchasePriceAmount",
+    dto.purchasePriceAmount === undefined ? undefined : BigInt(dto.purchasePriceAmount)
+  );
+  assignIfDefined(data, "registrationDate", parseOptionalDateOnly(dto.registrationDate, "registrationDate"));
+  assignIfDefined(data, "remark", dto.remark);
+  assignIfDefined(data, "series", dto.series);
+  assignIfDefined(data, "status", dto.status);
+  assignIfDefined(data, "vehicleModel", dto.vehicleModel);
+  assignIfDefined(data, "vin", dto.vin);
+
+  return data;
+}
+
+function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined) {
+  if (value !== undefined) {
+    target[key] = value;
+  }
+}
+
+function assertRequiredString(value: string | null | undefined, message: string) {
+  if (!value?.trim()) {
+    throw new BadRequestException(message);
+  }
+}
+
+function assertCanCreateAsAvailable(status: VehicleStatus) {
+  if (status === VehicleStatus.AVAILABLE) {
+    throw new BadRequestException(INITIALIZE_BEFORE_AVAILABLE_MESSAGE);
+  }
+}
+
+function assertCanEnterAvailable(status: VehicleStatus, vehicle: VehicleWithHistory) {
+  if (status !== VehicleStatus.AVAILABLE) {
+    return;
+  }
+
+  if (isReturnReinitSourceStatus(vehicle.status) && !hasReturnReinitForCurrentPool(vehicle)) {
+    throw new BadRequestException(RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE);
+  }
+
+  if (!isPositiveBigInt(vehicle.currentSalePriceAmount) || vehicle.salePriceStatus !== SalePriceStatus.EFFECTIVE) {
+    throw new BadRequestException(INITIALIZE_BEFORE_AVAILABLE_MESSAGE);
+  }
+}
+
+function markSalePriceReinitRequired(
+  data: Prisma.VehicleUpdateInput,
+  beforeStatus: VehicleStatus,
+  nextStatus: VehicleStatus
+) {
+  if (beforeStatus !== nextStatus && isReturnReinitSourceStatus(nextStatus)) {
+    data.salePriceReinitRequiredAt = new Date();
+  }
+}
+
+function hasReturnReinitForCurrentPool(vehicle: VehicleWithHistory) {
+  const latestReturnReinit = vehicle.salePriceHistories?.find(
+    (history) => history.reviewType === VehicleSalePriceReviewType.RETURN_REINIT
+  );
+
+  if (!latestReturnReinit) {
+    return false;
+  }
+
+  if (!vehicle.salePriceReinitRequiredAt) {
+    return true;
+  }
+
+  return latestReturnReinit.createdAt.getTime() >= vehicle.salePriceReinitRequiredAt.getTime();
+}
+
+function isReturnReinitSourceStatus(status: VehicleStatus) {
+  return (
+    status === VehicleStatus.LEASED ||
+    status === VehicleStatus.RESERVED ||
+    status === VehicleStatus.RETURNED ||
+    status === VehicleStatus.MAINTENANCE ||
+    status === VehicleStatus.RENTED
+  );
+}
+
+function assertReviewQuarter(reviewQuarter: string) {
+  if (!/^\d{4}Q[1-4]$/.test(reviewQuarter)) {
+    throw new BadRequestException("reviewQuarter 必须是 YYYYQn 格式");
+  }
+}
+
+function assertPositiveAmount(amount: number, message: string) {
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    throw new BadRequestException(message);
+  }
+}
+
+function isPositiveBigInt(value: bigint | null | undefined) {
+  return value !== null && value !== undefined && value > 0n;
+}
+
+function throwVehicleUniqueError(error: unknown): never {
+  if (!isPrismaUniqueError(error)) {
+    throw error;
+  }
+
+  const target = Array.isArray(error.meta?.target) ? error.meta.target.join(",") : String(error.meta?.target ?? "");
+  if (target.includes("vin")) {
+    throw new BadRequestException("VIN 已存在");
+  }
+  if (target.includes("plate")) {
+    throw new BadRequestException("车牌号已存在");
+  }
+  throw new BadRequestException("车辆编号已存在，请重试");
+}
+
+function isPrismaUniqueError(error: unknown): error is { code: string; meta?: { target?: unknown } } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+function parseOptionalDateOnly(input: string | null | undefined, fieldName: string) {
+  if (input === undefined) {
+    return undefined;
+  }
+
+  if (input === null || input === "") {
+    return null;
+  }
+
+  return parseDateOnly(input, fieldName);
+}
+
+function parseDateOnly(input: string, fieldName: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
+
+  if (!match) {
+    throw new BadRequestException(`${fieldName} 必须是 YYYY-MM-DD 格式`);
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    throw new BadRequestException(`${fieldName} 不是有效日期`);
+  }
+
+  return date;
+}
+
+function addMonths(date: Date, months: number) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, date.getUTCDate()));
+}
+
+function todayDateOnly() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+}
+
+function toReviewQuarter(date: Date) {
+  return `${date.getUTCFullYear()}Q${Math.floor(date.getUTCMonth() / 3) + 1}`;
+}
+
+function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
+  return {
+    assetLocation: vehicle.assetLocation,
+    brand: vehicle.brand,
+    createdAt: vehicle.createdAt,
+    currentMileageKm: vehicle.currentMileageKm,
+    currentSalePriceAmount:
+      vehicle.currentSalePriceAmount === null ? null : Number(vehicle.currentSalePriceAmount),
+    currentSalePriceInitializedAt: vehicle.currentSalePriceInitializedAt,
+    currentSalePriceReviewedAt: vehicle.currentSalePriceReviewedAt,
+    deletedAt: vehicle.deletedAt,
+    id: vehicle.id,
+    insuranceEndDate: vehicle.insuranceEndDate,
+    insuranceStartDate: vehicle.insuranceStartDate,
+    model: vehicle.model,
+    modelYear: vehicle.modelYear,
+    nextSalePriceReviewAt: vehicle.nextSalePriceReviewAt,
+    plateNo: vehicle.plateNo,
+    purchaseDate: vehicle.purchaseDate,
+    purchasePriceAmount: Number(vehicle.purchasePriceAmount),
+    registrationDate: vehicle.registrationDate,
+    remark: vehicle.remark,
+    salePriceReinitRequiredAt: vehicle.salePriceReinitRequiredAt,
+    salePriceHistories: vehicle.salePriceHistories?.map(toSalePriceHistoryView) ?? [],
+    salePriceStatus: resolveSalePriceStatus(vehicle.salePriceStatus, vehicle.nextSalePriceReviewAt, today),
+    series: vehicle.series,
+    status: vehicle.status,
+    updatedAt: vehicle.updatedAt,
+    vehicleId: vehicle.id,
+    vehicleModel: vehicle.vehicleModel,
+    vehicleNo: vehicle.vehicleNo,
+    vin: vehicle.vin
+  };
+}
+
+function resolveSalePriceStatus(
+  salePriceStatus: SalePriceStatus,
+  nextSalePriceReviewAt: Date | null,
+  today: Date
+) {
+  if (
+    nextSalePriceReviewAt &&
+    (salePriceStatus === SalePriceStatus.EFFECTIVE || salePriceStatus === SalePriceStatus.REVIEW_DUE) &&
+    nextSalePriceReviewAt.getTime() <= today.getTime()
+  ) {
+    return SalePriceStatus.REVIEW_DUE;
+  }
+
+  return salePriceStatus;
+}
+
+function toSalePriceHistoryView(history: VehicleSalePriceHistory) {
+  return {
+    afterSalePriceAmount: Number(history.afterSalePriceAmount),
+    beforeSalePriceAmount:
+      history.beforeSalePriceAmount === null ? null : Number(history.beforeSalePriceAmount),
+    createdAt: history.createdAt,
+    effectiveFrom: history.effectiveFrom,
+    effectiveTo: history.effectiveTo,
+    id: history.id,
+    reason: history.reason,
+    remark: history.remark,
+    reviewQuarter: history.reviewQuarter,
+    reviewType: history.reviewType,
+    vehicleId: history.vehicleId
+  };
+}

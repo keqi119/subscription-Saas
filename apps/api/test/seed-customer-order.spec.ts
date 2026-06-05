@@ -33,4 +33,59 @@ describe("customer self-service review order seed", () => {
     expect(seedSource).toContain('monthlyFeeMode: "FIXED_AMOUNT"');
     expect(seedSource).not.toContain('monthlyFeeMode: "MANUAL_QUOTE"');
   });
+
+  it("creates an idempotent self-service application review scenario", () => {
+    const functionSource = functionSourceFor("seedSelfServiceApplicationReviewScenario");
+
+    for (const marker of [
+      "selfServiceApplicationReviewSeed",
+      "APP-SELF-SERVICE-REVIEW-001",
+      "13900000052",
+      "TESTSELFAPPET5001",
+      "VEH-SELF-SERVICE-APP-ET5-001"
+    ]) {
+      expect(seedSource).toContain(marker);
+    }
+
+    expect(seedSource).toContain("await seedSelfServiceApplicationReviewScenario(adminUser.id)");
+    expect(functionSource).toContain("prisma.subscriptionPlan.findUniqueOrThrow");
+    expect(functionSource).toContain("where: { planNo: autoReviewSeed.planNo }");
+    expect(functionSource).toContain("prisma.customer.upsert");
+    expect(functionSource).toContain("where: { customerNo: selfServiceApplicationReviewSeed.customerNo }");
+    expect(functionSource).toContain("prisma.vehicle.upsert");
+    expect(functionSource).toContain("where: { vin: selfServiceApplicationReviewSeed.vin }");
+    expect(functionSource).toContain("prisma.application.upsert");
+    expect(functionSource).toContain("where: { applicationNo: selfServiceApplicationReviewSeed.applicationNo }");
+    expect(functionSource).toContain('applicationSource: "SELF_SERVICE"');
+    expect(functionSource).toContain('status: "SUBMITTED"');
+    expect(functionSource).toContain('materialReviewStatus: "PENDING"');
+    expect(functionSource).toContain('creditReviewStatus: "PENDING"');
+    expect(functionSource).toContain('productReviewStatus: "PENDING"');
+    expect(functionSource).toContain('vehicleReviewStatus: "PENDING"');
+    expect(functionSource).toContain('depositStatus: "PENDING_CONFIRM"');
+    expect(functionSource).toContain('planConfirmStatus: "PENDING"');
+    expect(functionSource).toContain("finalDepositAmount: null");
+    expect(functionSource).toContain("intentVehicleId: vehicle.id");
+    expect(functionSource).toContain("intentSubscriptionPlanId: subscriptionPlan.id");
+    expect(functionSource).toContain("intentSnapshot");
+    expect(functionSource).toContain("customerSelectedSnapshot");
+    expect(functionSource).toContain('status: "REVIEW_RESERVED"');
+  });
+
+  it("keeps the self-service application seed before quote and order creation", () => {
+    const functionSource = functionSourceFor("seedSelfServiceApplicationReviewScenario");
+
+    expect(functionSource).not.toContain("subscriptionQuote");
+    expect(functionSource).not.toContain("subscriptionOrder");
+    expect(seedSource).toContain("async function seedCustomerSelfServiceReviewOrder");
+    expect(seedSource).toContain("await seedDemoVehicles(adminUser.id)");
+  });
+
+  function functionSourceFor(functionName: string) {
+    const start = seedSource.indexOf(`async function ${functionName}`);
+    expect(start).toBeGreaterThanOrEqual(0);
+
+    const nextFunction = seedSource.indexOf("\nasync function ", start + 1);
+    return seedSource.slice(start, nextFunction === -1 ? seedSource.length : nextFunction);
+  }
 });

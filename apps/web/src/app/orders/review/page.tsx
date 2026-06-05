@@ -550,7 +550,7 @@ export default function OrderReviewQueuePage() {
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
-            订单申请审核
+            旧版订单审核
           </Typography.Title>
           <Button icon={<ReloadOutlined />} onClick={() => loadOrders()} loading={loading}>
             刷新
@@ -581,7 +581,7 @@ export default function OrderReviewQueuePage() {
           }
           onClose={closeDrawer}
           open={drawerOpen}
-          title={selectedOrder ? `订单申请审核：${selectedOrder.orderNo}` : "订单申请审核"}
+          title={selectedOrder ? `旧版订单审核：${selectedOrder.orderNo}` : "旧版订单审核"}
           width={980}
         >
           {selectedOrder ? (

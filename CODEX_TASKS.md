@@ -456,6 +456,22 @@ R6: Seed, tests, quality gates, and PR cleanup
   submission, back-office review, final deposit confirmation, final-plan
   confirmation, and contract entry after formal order creation.
 
+**R5 Manual Acceptance**
+
+- Run `pnpm prisma:seed` to create the `SELF_SERVICE` self-service
+  application review scenario.
+- Use `/applications` as the main review workspace and filter by customer
+  self-service source.
+- Open `/applications/:id` to inspect the intent vehicle, intent subscription
+  plan, pending deposit state, and materials area.
+- Complete material, credit, product, and vehicle reviews, then finalize the
+  plan and create the formal order.
+- Confirm the application shows an order number, the order detail is reachable,
+  and the vehicle moves from `REVIEW_RESERVED` to `RESERVED`.
+- Keep `/orders/review` as a legacy order-review entry only; it is not the new
+  Stage 5.5 A/B mainline review workspace.
+- Confirm the B-line sales-assisted application and quote flow still works.
+
 ## Stage 6: Vehicle Delivery, Return, And Re-Pooling
 
 **Goal**

@@ -195,6 +195,30 @@ R6: seed、测试、质量门禁、PR 整理
 现有 `POST /api/customer-orders`、`CUSTOMER_SELF_SERVICE` 直建订单和
 `/orders/review` 属于 Stage 5.5 旧方向遗留能力，本阶段保留但标记为后续迁移对象。
 
+## Stage 5.5 人工验收路径
+
+A 线当前没有客户 App / 小程序前端。人工验收通过 `pnpm prisma:seed` 创建
+`SELF_SERVICE` 自助进件数据，然后在后台进件中心完成审核闭环。
+
+```text
+1. pnpm prisma:seed
+2. 如 seed 修改过权限，退出并重新登录 admin
+3. 打开 /applications
+4. 筛选进件来源 = 客户自助
+5. 找到 A线自助进件测试客户
+6. 进入 /applications/:id 详情
+7. 查看意向车辆、意向套餐、押金待确认和客户资料区域
+8. 依次完成资料审核、客户资质审核、产品匹配审核、车辆库存审核
+9. 点击确认最终方案
+10. 点击生成正式订单
+11. 确认进件显示订单编号并可跳转订单详情
+12. 确认车辆从 REVIEW_RESERVED 进入 RESERVED
+13. 确认 B线销售人工进件和报价流程仍可用
+```
+
+新 A/B 双线主线审核入口是 `/applications` 和 `/applications/:id`，不是 legacy
+`/orders/review`。
+
 ## Legacy A/B Direct-Order Notes
 
 后续订单主线需要同时支持两条路径，并最终汇入订单、合同、付款、交付、

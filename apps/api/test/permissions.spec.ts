@@ -86,15 +86,15 @@ describe("seed permission calibration", () => {
   });
 
   it("gives OP and SA quote, vehicle, application, and subscription plan access", () => {
-    expect(roleBlock("SA")).toContain("\"application:view\"");
-    expect(roleBlock("SA")).toContain("...productPackageViewPermissions");
-    expect(roleBlock("SA")).toContain("...vehicleViewPermissions");
-    expect(roleBlock("SA")).toContain("...quoteManagementPermissions");
-
-    expect(roleBlock("OP")).toContain("\"application:view\"");
-    expect(roleBlock("OP")).toContain("...productManagementPermissions");
-    expect(roleBlock("OP")).toContain("...vehicleManagementPermissions");
-    expect(roleBlock("OP")).toContain("...quoteManagementPermissions");
+    for (const roleCode of ["SA", "OP"]) {
+      expectRolePermissions(roleCode, [
+        "application:view",
+        "quote:create",
+        "quote:view",
+        "vehicle:view",
+        "subscription_plan:view"
+      ]);
+    }
 
     expect(seedSource).toContain("\"quote:create\"");
     expect(seedSource).toContain("\"subscription_plan:view\"");
@@ -108,11 +108,89 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("\"vehicle:review_sale_price\"");
   });
 
-  function roleBlock(roleCode: string) {
-    const marker = `await assignRoleAccess(\n    "${roleCode}",`;
-    const start = seedSource.indexOf(marker);
-    expect(start).toBeGreaterThanOrEqual(0);
-    const next = seedSource.indexOf("\n  await assignRoleAccess(", start + marker.length);
-    return seedSource.slice(start, next === -1 ? undefined : next);
+  function expectRolePermissions(roleCode: string, permissionCodes: string[]) {
+    const permissionsSource = rolePermissionArray(roleCode);
+
+    for (const permissionCode of permissionCodes) {
+      expect(roleHasPermission(permissionsSource, permissionCode)).toBe(true);
+    }
+  }
+
+  function rolePermissionArray(roleCode: string) {
+    const pattern = new RegExp(
+      `await\\s+assignRoleAccess\\(\\s*["']${escapeRegExp(roleCode)}["']\\s*,\\s*\\[([\\s\\S]*?)\\]\\s*,`
+    );
+    const match = seedSource.match(pattern);
+    const source = match?.[1];
+
+    expect(source).toBeDefined();
+    return source ?? "";
+  }
+
+  function roleHasPermission(source: string, permissionCode: string, seen = new Set<string>()) {
+    if (containsQuotedValue(source, permissionCode)) {
+      return true;
+    }
+
+    for (const identifier of spreadIdentifiers(source)) {
+      if (seen.has(identifier)) {
+        continue;
+      }
+
+      seen.add(identifier);
+
+      if (roleHasPermission(permissionConstantSource(identifier), permissionCode, seen)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function permissionConstantSource(identifier: string) {
+    const parts: string[] = [];
+    const declarationPattern = new RegExp(
+      `const\\s+${escapeRegExp(identifier)}\\s*=\\s*\\[([\\s\\S]*?)\\];`
+    );
+    const declarationMatch = seedSource.match(declarationPattern);
+    const declarationSource = declarationMatch?.[1];
+
+    if (declarationSource) {
+      parts.push(declarationSource);
+    }
+
+    const pushPattern = new RegExp(`${escapeRegExp(identifier)}\\.push\\(([\\s\\S]*?)\\);`, "g");
+
+    for (const pushMatch of seedSource.matchAll(pushPattern)) {
+      const pushSource = pushMatch[1];
+
+      if (pushSource) {
+        parts.push(pushSource);
+      }
+    }
+
+    return parts.join("\n");
+  }
+
+  function spreadIdentifiers(source: string) {
+    const identifiers: string[] = [];
+
+    for (const match of source.matchAll(/\.\.\.([A-Za-z_$][\w$]*)/g)) {
+      const identifier = match[1];
+
+      if (identifier) {
+        identifiers.push(identifier);
+      }
+    }
+
+    return identifiers;
+  }
+
+  function containsQuotedValue(source: string, value: string) {
+    return new RegExp(`["']${escapeRegExp(value)}["']`).test(source);
+  }
+
+  function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 });

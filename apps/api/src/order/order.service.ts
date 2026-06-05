@@ -48,7 +48,12 @@ const DISALLOWED_CHANGE_TYPES = new Set<OrderChangeType>([
   OrderChangeType.EARLY_SETTLEMENT,
   OrderChangeType.OWNERSHIP_TRANSFER
 ]);
-const PENDING_DEPOSIT_DESCRIPTION = "押金审核后确认";
+const CUSTOMER_ORDER_DEPOSIT_NOTICE =
+  "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。";
+const CUSTOMER_ORDER_MANUAL_QUOTE_MESSAGE =
+  "该套餐需后台报价确认，暂不支持客户自助提交。";
+const CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE =
+  "所选车辆当前不可租用，请重新选择车辆";
 
 const PRE_CONTRACT_CHANGE_STATUSES = new Set<OrderStatus>([
   OrderStatus.PENDING_REVIEW,
@@ -541,7 +546,7 @@ export class OrderService {
     const customerSelectedSnapshot = toJsonValue({
       customerId: customer.id,
       customerName: customer.name,
-      depositDescription: PENDING_DEPOSIT_DESCRIPTION,
+      depositDescription: CUSTOMER_ORDER_DEPOSIT_NOTICE,
       depositStatus: DepositStatus.PENDING_CONFIRM,
       periodMonths: dto.periodMonths,
       selectedAt: now.toISOString(),
@@ -550,7 +555,7 @@ export class OrderService {
       vehicleId: vehicle.id
     });
     const depositRuleSnapshot = toJsonValue({
-      depositDescription: PENDING_DEPOSIT_DESCRIPTION,
+      depositDescription: CUSTOMER_ORDER_DEPOSIT_NOTICE,
       status: DepositStatus.PENDING_CONFIRM
     });
 
@@ -637,7 +642,7 @@ export class OrderService {
       const quoteSnapshot = toJsonValue({
         ...(toPlain(quote) as Record<string, unknown>),
         customerSelectedSnapshot,
-        depositDescription: PENDING_DEPOSIT_DESCRIPTION,
+        depositDescription: CUSTOMER_ORDER_DEPOSIT_NOTICE,
         depositStatus: DepositStatus.PENDING_CONFIRM,
         finalDepositAmount: null
       });
@@ -1595,7 +1600,7 @@ function assertVehicleAvailableForCustomerOrder(
     throw new NotFoundException("车辆不存在");
   }
   if (vehicle.status !== VehicleStatus.AVAILABLE) {
-    throw new BadRequestException("所选车辆当前不可租用");
+    throw new BadRequestException(CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE);
   }
   if (
     vehicle.salePriceStatus !== SalePriceStatus.EFFECTIVE ||
@@ -1634,7 +1639,7 @@ function assertSubscriptionPlanAvailableForCustomerOrder(
     throw new BadRequestException("所选订阅套餐包含未启用组件");
   }
   if (plan.monthlyFeeMode === MonthlyFeeMode.MANUAL_QUOTE) {
-    throw new BadRequestException("客户自助下单不支持现场报价套餐");
+    throw new BadRequestException(CUSTOMER_ORDER_MANUAL_QUOTE_MESSAGE);
   }
 }
 
@@ -1677,7 +1682,7 @@ function calculateCustomerOrderVehicleBaseFee(plan: SubscriptionPlanWithDetails,
       vehicleBaseFeeAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * fixedRate));
       break;
     case MonthlyFeeMode.MANUAL_QUOTE:
-      throw new BadRequestException("客户自助下单不支持现场报价套餐");
+      throw new BadRequestException(CUSTOMER_ORDER_MANUAL_QUOTE_MESSAGE);
     default:
       throw new BadRequestException("不支持的车辆基础月费模式");
   }

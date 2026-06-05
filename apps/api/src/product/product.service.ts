@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException
 } from "@nestjs/common";
 import {
@@ -103,6 +104,12 @@ const subscriptionPlanInclude = {
   vehiclePackage: { include: packageInclude }
 } satisfies Prisma.SubscriptionPlanInclude;
 
+const VEHICLE_BASE_FEE_MODE_LABELS: Record<MonthlyFeeMode, string> = {
+  [MonthlyFeeMode.FIXED_AMOUNT]: "固定金额",
+  [MonthlyFeeMode.MANUAL_QUOTE]: "现场报价",
+  [MonthlyFeeMode.RATE_FORMULA]: "固定费率"
+};
+
 const quoteInclude = {
   application: {
     select: { applicationNo: true, id: true, salesUserId: true, status: true }
@@ -127,6 +134,7 @@ type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quo
 type ProductListVersion = ProductWithDetails["versions"][number];
 const CURRENT_PRODUCT_TYPE = ProductType.SUBSCRIPTION;
 const RENT_TO_OWN_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购产品线。";
+const productMapperLogger = new Logger("ProductService");
 
 @Injectable()
 export class ProductService {
@@ -212,7 +220,7 @@ export class ProductService {
       where: { deletedAt: null, productId }
     });
 
-    return versions.map(toVersionView);
+    return versions.map((version) => toVersionView(version)).filter(isNonNullable);
   }
 
   async getVersion(id: string) {
@@ -364,7 +372,7 @@ export class ProductService {
       orderBy: { vehicleModel: "asc" },
       where: { deletedAt: null, productVersionId: versionId }
     });
-    return rules.map(toPriceRuleView);
+    return rules.map((rule) => toPriceRuleView(rule)).filter(isNonNullable);
   }
 
   async createPriceRule(
@@ -1068,8 +1076,6 @@ export class ProductService {
       if (!dto.vehicleId) {
         throw new BadRequestException("报价必须选择具体车辆");
       }
-      const vehicleBaseFeeAmount = requirePositiveInteger(dto.vehicleBaseFeeAmount, "车辆基础费报价必须大于 0");
-      const vehicleBaseFeeAmountBigInt = BigInt(vehicleBaseFeeAmount);
       const vehicle = await this.findAvailableVehicleForQuote(dto.vehicleId);
       const plan = await this.findSubscriptionPlanOrThrow(dto.subscriptionPlanId);
       ensureSubscriptionPlanAvailableForQuote(plan);
@@ -1081,15 +1087,16 @@ export class ProductService {
       if (!vehicleSalePriceAmount || vehicleSalePriceAmount <= 0n) {
         throw new BadRequestException("当前车辆销售价未初始化，无法生成报价");
       }
-      const vehicleBaseFeeCapAmount = BigInt(
-        Math.floor(Number(vehicleSalePriceAmount) * Number(plan.vehiclePackage.monthlyFeeRate))
+      const vehicleBaseFeePricing = calculateVehicleBaseFeeForSubscriptionPlan(
+        plan,
+        vehicleSalePriceAmount,
+        dto.vehicleBaseFeeAmount
       );
-      assertVehicleBaseFeeWithinCap(vehicleBaseFeeAmount, vehicleBaseFeeCapAmount);
       const mileagePackagePriceAmount = plan.mileagePackage.priceAmount;
       const energyPackagePriceAmount = plan.energyPackage.priceAmount;
       const benefitPackagePriceAmount = plan.benefitPackage?.priceAmount ?? 0n;
       const monthlyFeeAmount =
-        vehicleBaseFeeAmountBigInt +
+        vehicleBaseFeePricing.vehicleBaseFeeAmount +
         mileagePackagePriceAmount +
         energyPackagePriceAmount +
         benefitPackagePriceAmount;
@@ -1117,7 +1124,7 @@ export class ProductService {
         mileagePackageId: plan.mileagePackage.id,
         mileagePackagePriceAmount,
         monthlyFeeAmount,
-        monthlyFeeCapAmount: vehicleBaseFeeCapAmount,
+        monthlyFeeCapAmount: vehicleBaseFeePricing.vehicleBaseFeeCapAmount,
         monthlyFeeRate: plan.monthlyFeeRate,
         overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
         packageSnapshot: toJsonValue({
@@ -1126,20 +1133,28 @@ export class ProductService {
           mileagePackage: toPackageView(plan.mileagePackage),
           pricing: {
             benefitPackagePriceAmount: Number(benefitPackagePriceAmount),
+            currentSalePriceAmount: Number(vehicleSalePriceAmount),
             energyPackagePriceAmount: Number(energyPackagePriceAmount),
+            fixedRate: vehicleBaseFeePricing.fixedRate,
             mileagePackagePriceAmount: Number(mileagePackagePriceAmount),
             monthlyFeeAmount: Number(monthlyFeeAmount),
-            vehicleBaseFeeAmount: Number(vehicleBaseFeeAmount),
-            vehicleBaseFeeCapAmount: Number(vehicleBaseFeeCapAmount)
+            vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+            vehicleBaseFeeCapAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeCapAmount),
+            vehicleBaseFeeMode: plan.monthlyFeeMode,
+            vehicleBaseFeeModeLabel: vehicleBaseFeePricing.vehicleBaseFeeModeLabel
           },
           subscriptionPlan: toSubscriptionPlanView(plan),
+          vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+          vehicleBaseFeeCapAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeCapAmount),
+          vehicleBaseFeeMode: plan.monthlyFeeMode,
+          vehicleBaseFeeModeLabel: vehicleBaseFeePricing.vehicleBaseFeeModeLabel,
           vehiclePackage: toPackageView(plan.vehiclePackage)
         }),
         productId: plan.productId,
         productVersionId: plan.productVersionId,
         subscriptionPlanId: plan.id,
-        vehicleBaseFeeAmount: vehicleBaseFeeAmountBigInt,
-        vehicleBaseFeeCapAmount,
+        vehicleBaseFeeAmount: vehicleBaseFeePricing.vehicleBaseFeeAmount,
+        vehicleBaseFeeCapAmount: vehicleBaseFeePricing.vehicleBaseFeeCapAmount,
         vehicleId: vehicle.id,
         vehicleModel: vehicle.vehicleModel,
         vehiclePackageId: plan.vehiclePackage.id,
@@ -1638,8 +1653,58 @@ function ensureNoLegacySubscriptionPlanQuoteFields(dto: CreateQuoteDto) {
   }
 }
 
-function assertVehicleBaseFeeWithinCap(vehicleBaseFeeAmount: number, capAmount: bigint) {
-  if (BigInt(vehicleBaseFeeAmount) > capAmount) {
+function calculateVehicleBaseFeeForSubscriptionPlan(
+  plan: SubscriptionPlanWithDetails,
+  vehicleSalePriceAmount: bigint,
+  requestedVehicleBaseFeeAmount?: number
+) {
+  const vehiclePackageRate = Number(plan.vehiclePackage.monthlyFeeRate);
+  if (!Number.isFinite(vehiclePackageRate) || vehiclePackageRate <= 0) {
+    throw new BadRequestException("车型包车辆基础费上限率必须大于 0");
+  }
+
+  const vehicleBaseFeeCapAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate));
+  let fixedRate: number | null = null;
+  let vehicleBaseFeeAmount: bigint;
+
+  switch (plan.monthlyFeeMode) {
+    case MonthlyFeeMode.FIXED_AMOUNT:
+      if (!plan.baseMonthlyFeeAmount || plan.baseMonthlyFeeAmount <= 0n) {
+        throw new BadRequestException("固定金额套餐必须配置车辆基础月费");
+      }
+      vehicleBaseFeeAmount = plan.baseMonthlyFeeAmount;
+      break;
+    case MonthlyFeeMode.RATE_FORMULA:
+      fixedRate = Number(plan.monthlyFeeRate ?? plan.vehiclePackage.monthlyFeeRate);
+      if (!Number.isFinite(fixedRate) || fixedRate <= 0) {
+        throw new BadRequestException("固定费率套餐的车辆基础月费费率必须大于 0");
+      }
+      if (fixedRate > vehiclePackageRate) {
+        throw new BadRequestException("固定费率套餐的车辆基础月费费率不能高于车型包上限率");
+      }
+      vehicleBaseFeeAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * fixedRate));
+      break;
+    case MonthlyFeeMode.MANUAL_QUOTE:
+      vehicleBaseFeeAmount = BigInt(
+        requirePositiveInteger(requestedVehicleBaseFeeAmount, "车辆基础费报价必须大于 0")
+      );
+      break;
+    default:
+      throw new BadRequestException("不支持的车辆基础月费模式");
+  }
+
+  assertVehicleBaseFeeAmountWithinCap(vehicleBaseFeeAmount, vehicleBaseFeeCapAmount);
+
+  return {
+    fixedRate,
+    vehicleBaseFeeAmount,
+    vehicleBaseFeeCapAmount,
+    vehicleBaseFeeModeLabel: VEHICLE_BASE_FEE_MODE_LABELS[plan.monthlyFeeMode]
+  };
+}
+
+function assertVehicleBaseFeeAmountWithinCap(vehicleBaseFeeAmount: bigint, capAmount: bigint) {
+  if (vehicleBaseFeeAmount > capAmount) {
     throw new BadRequestException("车辆基础费超过车型包系数允许上限");
   }
 }
@@ -1810,14 +1875,108 @@ export function ensureNoRentToOwnQuoteFields(dto: CreateQuoteDto) {
   }
 }
 
+type RecordSource = Record<string, unknown>;
+type ProductViewSource = ProductWithDetails & {
+  versions?: unknown;
+};
+type ProductVersionViewSource = RecordSource &
+  Partial<ProductListVersion> &
+  Partial<VersionWithDetails> & {
+    benefitPackages?: unknown;
+    energyPackages?: unknown;
+    mileagePackages?: unknown;
+    priceRules?: unknown;
+    product?: unknown;
+    vehiclePackages?: unknown;
+  };
+
+function isRecord(value: unknown): value is RecordSource {
+  return typeof value === "object" && value !== null;
+}
+
+function isNonNullable<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
+}
+
+function warnProductMapper(message: string, context: Record<string, unknown>) {
+  productMapperLogger.warn(`${message} ${JSON.stringify(context)}`);
+}
+
+function toRecordArray(value: unknown, field: string, context: Record<string, unknown>) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    warnProductMapper("Expected relation array while building product view.", { ...context, field });
+    return [];
+  }
+  return value.filter((item): item is RecordSource => {
+    const valid = isRecord(item);
+    if (!valid) {
+      warnProductMapper("Skipped invalid relation item while building product view.", { ...context, field });
+    }
+    return valid;
+  });
+}
+
+function toStringOrNull(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  if (typeof value === "object") {
+    return null;
+  }
+  return String(value);
+}
+
+function toStringOrDash(value: unknown) {
+  return toStringOrNull(value) ?? "-";
+}
+
+function toNumberOrZero(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return 0;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toNumberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatDateOnly(value: unknown) {
+  const date = toDateOrNull(value);
+  return date ? date.toISOString().slice(0, 10) : "-";
+}
+
+function formatOptionalDateOnly(value: unknown) {
+  const date = toDateOrNull(value);
+  return date ? date.toISOString().slice(0, 10) : null;
+}
+
+function toDateOrNull(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function toProductView(product: ProductWithDetails) {
-  const versions = Array.isArray(product.versions)
-    ? product.versions.map(toVersionView).filter((version) => version !== null)
-    : [];
-  const activeVersion = product.versions?.find((version) => version?.status === ProductVersionStatus.ACTIVE) ?? null;
+  const source = product as ProductViewSource;
+  const versionSources = toRecordArray(source.versions, "product.versions", { productId: source.id });
+  const versions = versionSources
+    .map((version) => safeToVersionView(version, source.id))
+    .filter(isNonNullable);
+  const activeVersion = versions.find((version) => version.status === ProductVersionStatus.ACTIVE) ?? null;
 
   return {
-    activeVersion: toVersionView(activeVersion),
+    activeVersion,
     createdAt: product.createdAt,
     description: product.description,
     id: product.id,
@@ -1829,83 +1988,136 @@ function toProductView(product: ProductWithDetails) {
   };
 }
 
-function toVersionView(version?: ProductListVersion | VersionWithDetails | null) {
+function safeToVersionView(version: ProductVersionViewSource | null | undefined, productId?: string | null) {
+  try {
+    return toVersionView(version, productId);
+  } catch (error) {
+    warnProductMapper("Skipped invalid product version while building product view.", {
+      productId,
+      versionId: isRecord(version) ? version.id : undefined,
+      reason: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+function toVersionView(version?: ProductVersionViewSource | null, parentProductId?: string | null) {
   if (!version) {
     return null;
   }
-  const product = "product" in version ? version.product : null;
+  if (!isRecord(version)) {
+    warnProductMapper("Skipped non-object product version while building product view.", { productId: parentProductId });
+    return null;
+  }
+
+  const versionId = toStringOrNull(version.id);
+  if (!versionId) {
+    warnProductMapper("Skipped product version without id while building product view.", { productId: parentProductId });
+    return null;
+  }
+
+  const product = isRecord(version.product) ? version.product : null;
+  const productId = toStringOrNull(version.productId) ?? toStringOrNull(product?.id) ?? parentProductId ?? "-";
 
   return {
     approvedAt: version.approvedAt,
     approver: version.approver,
-    effectiveFrom: version.effectiveFrom.toISOString().slice(0, 10),
-    effectiveTo: version.effectiveTo?.toISOString().slice(0, 10) ?? null,
-    id: version.id,
-    benefitPackages: version.benefitPackages?.map(toPackageView) ?? [],
-    energyPackages: version.energyPackages?.map(toPackageView) ?? [],
-    mileagePackages: version.mileagePackages?.map(toPackageView) ?? [],
-    priceRules: version.priceRules.map(toPriceRuleView),
+    effectiveFrom: formatDateOnly(version.effectiveFrom),
+    effectiveTo: formatOptionalDateOnly(version.effectiveTo),
+    id: versionId,
+    benefitPackages: toRecordArray(version.benefitPackages, "version.benefitPackages", { productId, versionId }).map(toPackageView),
+    energyPackages: toRecordArray(version.energyPackages, "version.energyPackages", { productId, versionId }).map(toPackageView),
+    mileagePackages: toRecordArray(version.mileagePackages, "version.mileagePackages", { productId, versionId }).map(toPackageView),
+    priceRules: toRecordArray(version.priceRules, "version.priceRules", { productId, versionId })
+      .map(toPriceRuleView)
+      .filter(isNonNullable),
     product: product
       ? {
-          id: product.id,
-          name: product.name,
-          productNo: product.productNo,
-          status: product.status
+          id: toStringOrNull(product.id) ?? productId,
+          name: toStringOrDash(product.name),
+          productNo: toStringOrDash(product.productNo),
+          status: toStringOrDash(product.status)
         }
       : null,
-    productId: version.productId,
-    status: version.status,
-    vehiclePackages: version.vehiclePackages?.map(toPackageView) ?? [],
-    versionNo: version.versionNo
+    productId,
+    status: toStringOrDash(version.status),
+    vehiclePackages: toRecordArray(version.vehiclePackages, "version.vehiclePackages", { productId, versionId }).map(toPackageView),
+    versionNo: toStringOrDash(version.versionNo)
   };
 }
 
-function toPriceRuleView(rule: Prisma.ProductPriceRuleGetPayload<{ include?: typeof priceRuleInclude }>) {
+function toPriceRuleView(rule?: RecordSource | null) {
+  if (!rule) {
+    return null;
+  }
   return {
     baseMileageKm: rule.baseMileageKm,
     energyLimitCount: rule.energyLimitCount,
     energyLimitKwh: rule.energyLimitKwh,
-    id: rule.id,
+    id: toStringOrDash(rule.id),
     maxPeriodMonths: rule.maxPeriodMonths,
     minPeriodMonths: rule.minPeriodMonths,
-    monthlyFeeRate: Number(rule.monthlyFeeRate),
-    overMileageFeeAmount: Number(rule.overMileageFeeAmount),
-    productVersionId: rule.productVersionId,
-    status: rule.status,
-    vehicleModel: rule.vehicleModel
+    monthlyFeeRate: toNumberOrZero(rule.monthlyFeeRate),
+    overMileageFeeAmount: toNumberOrZero(rule.overMileageFeeAmount),
+    productVersionId: toStringOrDash(rule.productVersionId),
+    status: toStringOrDash(rule.status),
+    vehicleModel: toStringOrDash(rule.vehicleModel)
   };
 }
 
 function toSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
+  const source = plan as SubscriptionPlanWithDetails & RecordSource;
+  const product = isRecord(source.product) ? source.product : null;
+  const productVersion = isRecord(source.productVersion) ? source.productVersion : null;
+  const productId = toStringOrDash(source.productId);
+  const productVersionId = toStringOrDash(source.productVersionId);
+  const monthlyFeeMode = toStringOrDash(source.monthlyFeeMode);
+
   return {
-    baseMonthlyFeeAmount: plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
-    benefitPackage: plan.benefitPackage ? toPackageView(plan.benefitPackage) : null,
-    benefitPackageId: plan.benefitPackageId,
-    createdAt: plan.createdAt,
-    deletedAt: plan.deletedAt,
-    effectiveFrom: plan.effectiveFrom.toISOString().slice(0, 10),
-    effectiveTo: plan.effectiveTo?.toISOString().slice(0, 10) ?? null,
-    energyPackage: toPackageView(plan.energyPackage),
-    energyPackageId: plan.energyPackageId,
-    id: plan.id,
-    maxPeriodMonths: plan.maxPeriodMonths,
-    mileagePackage: toPackageView(plan.mileagePackage),
-    mileagePackageId: plan.mileagePackageId,
-    minPeriodMonths: plan.minPeriodMonths,
-    monthlyFeeCapRate: plan.monthlyFeeCapRate === null ? null : Number(plan.monthlyFeeCapRate),
-    monthlyFeeMode: plan.monthlyFeeMode,
-    monthlyFeeRate: Number(plan.monthlyFeeRate),
-    planName: plan.planName,
-    planNo: plan.planNo,
-    product: plan.product,
-    productId: plan.productId,
-    productVersion: plan.productVersion,
-    productVersionId: plan.productVersionId,
-    remark: plan.remark,
-    status: plan.status,
-    updatedAt: plan.updatedAt,
-    vehiclePackage: toPackageView(plan.vehiclePackage),
-    vehiclePackageId: plan.vehiclePackageId
+    baseMonthlyFeeAmount: toNumberOrNull(source.baseMonthlyFeeAmount),
+    benefitPackage: source.benefitPackageId ? toPackageView(isRecord(source.benefitPackage) ? source.benefitPackage : null) : null,
+    benefitPackageId: source.benefitPackageId ?? null,
+    createdAt: source.createdAt,
+    deletedAt: source.deletedAt,
+    effectiveFrom: formatDateOnly(source.effectiveFrom),
+    effectiveTo: formatOptionalDateOnly(source.effectiveTo),
+    energyPackage: toPackageView(isRecord(source.energyPackage) ? source.energyPackage : null),
+    energyPackageId: toStringOrDash(source.energyPackageId),
+    id: toStringOrDash(source.id),
+    maxPeriodMonths: source.maxPeriodMonths ?? 0,
+    mileagePackage: toPackageView(isRecord(source.mileagePackage) ? source.mileagePackage : null),
+    mileagePackageId: toStringOrDash(source.mileagePackageId),
+    minPeriodMonths: source.minPeriodMonths ?? 0,
+    monthlyFeeCapRate: toNumberOrNull(source.monthlyFeeCapRate),
+    monthlyFeeMode,
+    monthlyFeeModeLabel: VEHICLE_BASE_FEE_MODE_LABELS[monthlyFeeMode as MonthlyFeeMode] ?? monthlyFeeMode,
+    monthlyFeeRate: toNumberOrZero(source.monthlyFeeRate),
+    planName: toStringOrDash(source.planName),
+    planNo: toStringOrDash(source.planNo),
+    product: product
+      ? {
+          ...product,
+          id: toStringOrDash(product.id),
+          name: toStringOrDash(product.name),
+          productNo: toStringOrDash(product.productNo),
+          status: toStringOrDash(product.status)
+        }
+      : { id: productId, name: "-", productNo: "-", status: "-" },
+    productId,
+    productVersion: productVersion
+      ? {
+          id: toStringOrDash(productVersion.id),
+          productId: toStringOrDash(productVersion.productId),
+          status: toStringOrDash(productVersion.status),
+          versionNo: toStringOrDash(productVersion.versionNo)
+        }
+      : { id: productVersionId, productId, status: "-", versionNo: "-" },
+    productVersionId,
+    remark: source.remark,
+    status: toStringOrDash(source.status),
+    updatedAt: source.updatedAt,
+    vehiclePackage: toPackageView(isRecord(source.vehiclePackage) ? source.vehiclePackage : null),
+    vehiclePackageId: toStringOrDash(source.vehiclePackageId)
   };
 }
 
@@ -1915,6 +2127,8 @@ function toAvailableSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
     benefitPackagePriceAmount: plan.benefitPackage ? Number(plan.benefitPackage.priceAmount) : 0,
     energyPackagePriceAmount: Number(plan.energyPackage.priceAmount),
     maxPeriodMonths: plan.maxPeriodMonths,
+    baseMonthlyFeeAmount:
+      plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
     maxPurchasePriceAmount:
       plan.vehiclePackage.maxPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.maxPurchasePriceAmount),
     minPeriodMonths: plan.minPeriodMonths,
@@ -1922,7 +2136,9 @@ function toAvailableSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
       plan.vehiclePackage.minPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.minPurchasePriceAmount),
     monthlyEnergyCount: plan.energyPackage.monthlyEnergyCount,
     monthlyEnergyKwh: plan.energyPackage.monthlyEnergyKwh,
-    monthlyFeeCapRate: Number(plan.monthlyFeeCapRate ?? plan.monthlyFeeRate),
+    monthlyFeeCapRate: Number(plan.vehiclePackage.monthlyFeeRate),
+    monthlyFeeMode: plan.monthlyFeeMode,
+    monthlyFeeModeLabel: VEHICLE_BASE_FEE_MODE_LABELS[plan.monthlyFeeMode],
     monthlyFeeRate: Number(plan.monthlyFeeRate),
     monthlyMileageKm: plan.mileagePackage.monthlyMileageKm,
     mileagePackagePriceAmount: Number(plan.mileagePackage.priceAmount),
@@ -1939,25 +2155,49 @@ function toAvailableSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
   };
 }
 
-function toPackageView(
-  row:
-    | Prisma.VehiclePackageGetPayload<{ include: typeof packageInclude }>
-    | Prisma.MileagePackageGetPayload<{ include: typeof packageInclude }>
-    | Prisma.EnergyPackageGetPayload<{ include: typeof packageInclude }>
-    | Prisma.BenefitPackageGetPayload<{ include: typeof packageInclude }>
-) {
+function toPackageView(row?: RecordSource | null) {
+  if (!row) {
+    warnProductMapper("Missing package relation while building product view.", {});
+    return {
+      id: "-",
+      packageName: "-",
+      packageNo: "-",
+      product: null,
+      productId: "-",
+      productVersion: null,
+      productVersionId: "-",
+      remark: null,
+      status: "-"
+    };
+  }
+  const product = isRecord(row.product) ? row.product : null;
+  const productVersion = isRecord(row.productVersion) ? row.productVersion : null;
   const result: Record<string, unknown> = {
     createdAt: row.createdAt,
     deletedAt: row.deletedAt,
-    id: row.id,
-    packageName: row.packageName,
-    packageNo: row.packageNo,
-    product: row.product,
-    productId: row.productId,
-    productVersion: row.productVersion,
-    productVersionId: row.productVersionId,
+    id: toStringOrDash(row.id),
+    packageName: toStringOrDash(row.packageName),
+    packageNo: toStringOrDash(row.packageNo),
+    product: product
+      ? {
+          id: toStringOrDash(product.id),
+          name: toStringOrDash(product.name),
+          productNo: toStringOrDash(product.productNo),
+          status: toStringOrDash(product.status)
+        }
+      : null,
+    productId: toStringOrDash(row.productId),
+    productVersion: productVersion
+      ? {
+          id: toStringOrDash(productVersion.id),
+          productId: toStringOrDash(productVersion.productId),
+          status: toStringOrDash(productVersion.status),
+          versionNo: toStringOrDash(productVersion.versionNo)
+        }
+      : null,
+    productVersionId: toStringOrDash(row.productVersionId),
     remark: row.remark,
-    status: row.status,
+    status: toStringOrDash(row.status),
     updatedAt: row.updatedAt
   };
 
@@ -1965,23 +2205,23 @@ function toPackageView(
     result.brand = row.brand;
     result.configName = row.configName;
     result.maxPeriodMonths = row.maxPeriodMonths;
-    result.maxPurchasePriceAmount = row.maxPurchasePriceAmount === null ? null : Number(row.maxPurchasePriceAmount);
+    result.maxPurchasePriceAmount = row.maxPurchasePriceAmount === null ? null : toNumberOrZero(row.maxPurchasePriceAmount);
     result.minPeriodMonths = row.minPeriodMonths;
-    result.minPurchasePriceAmount = row.minPurchasePriceAmount === null ? null : Number(row.minPurchasePriceAmount);
-    result.monthlyFeeRate = Number(row.monthlyFeeRate);
+    result.minPurchasePriceAmount = row.minPurchasePriceAmount === null ? null : toNumberOrZero(row.minPurchasePriceAmount);
+    result.monthlyFeeRate = toNumberOrZero(row.monthlyFeeRate);
     result.series = row.series;
     result.vehicleModel = row.vehicleModel;
     result.vehicleModelName = row.vehicleModelName;
   }
   if ("monthlyMileageKm" in row) {
     result.monthlyMileageKm = row.monthlyMileageKm;
-    result.overMileageFeeAmount = Number(row.overMileageFeeAmount);
-    result.priceAmount = Number(row.priceAmount);
+    result.overMileageFeeAmount = toNumberOrZero(row.overMileageFeeAmount);
+    result.priceAmount = toNumberOrZero(row.priceAmount);
   }
   if ("monthlyEnergyKwh" in row) {
     result.monthlyEnergyCount = row.monthlyEnergyCount;
     result.monthlyEnergyKwh = row.monthlyEnergyKwh;
-    result.priceAmount = Number(row.priceAmount);
+    result.priceAmount = toNumberOrZero(row.priceAmount);
     result.serviceDescription = row.serviceDescription;
     result.stationScope = row.stationScope;
   }
@@ -1989,7 +2229,7 @@ function toPackageView(
     result.benefitCount = row.benefitCount;
     result.benefitType = row.benefitType;
     result.description = row.description;
-    result.priceAmount = Number(row.priceAmount);
+    result.priceAmount = toNumberOrZero(row.priceAmount);
   }
 
   return result;
@@ -2015,6 +2255,7 @@ function toQuoteView(quote: QuoteWithDetails) {
     createdAt: quote.createdAt,
     customer: quote.customer,
     customerId: quote.customerId,
+    customerSelectedSnapshot: quote.customerSelectedSnapshot,
     depositAmount: Number(quote.depositAmount),
     depositRuleSnapshot: quote.depositRuleSnapshot,
     benefitPackagePriceAmount:

@@ -7,6 +7,7 @@ import {
   UploadOutlined
 } from "@ant-design/icons";
 import {
+  Alert,
   App,
   Button,
   Descriptions,
@@ -29,8 +30,9 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ProtectedShell } from "../../../components/protected-shell";
-import { MATERIAL_STATUS_LABELS, STATUS_LABELS, labelOf } from "../../../constants/labels";
+import { MATERIAL_STATUS_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
 import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
+import type { AuthMeResponse } from "../../../lib/auth";
 
 interface UserRef {
   id: string;
@@ -128,6 +130,11 @@ interface ApplicationDetail {
   intendedModel?: string | null;
   intendedPeriodMonths?: number | null;
   materials: MaterialGroup[];
+  orders?: Array<{
+    id: string;
+    orderNo: string;
+    orderStatus: string;
+  }>;
   rejectedReason?: string | null;
   riskResult?: {
     approvedDepositAmount: number;
@@ -173,6 +180,7 @@ interface AvailableVehicle {
   currentMileageKm: number;
   currentSalePriceAmount?: number | null;
   id: string;
+  model?: string | null;
   plateNo?: string | null;
   series?: string | null;
   status: string;
@@ -183,6 +191,7 @@ interface AvailableVehicle {
 }
 
 interface AvailableSubscriptionPlan {
+  baseMonthlyFeeAmount?: number | null;
   benefitDescription?: string | null;
   benefitPackagePriceAmount?: number;
   energyPackagePriceAmount?: number;
@@ -193,6 +202,8 @@ interface AvailableSubscriptionPlan {
   monthlyEnergyCount?: number | null;
   monthlyEnergyKwh?: number | null;
   monthlyFeeCapRate?: number | null;
+  monthlyFeeMode: "FIXED_AMOUNT" | "MANUAL_QUOTE" | "RATE_FORMULA";
+  monthlyFeeModeLabel?: string;
   monthlyFeeRate: number;
   monthlyMileageKm: number;
   mileagePackagePriceAmount?: number;
@@ -218,6 +229,14 @@ const materialOptions = [
 ];
 
 const materialLabels = Object.fromEntries(materialOptions.map((option) => [option.value, option.label]));
+
+function normalizeVehicleModel(value?: string | null) {
+  return value?.trim().toUpperCase() ?? "";
+}
+
+function vehicleBaseFeeModeLabel(plan?: AvailableSubscriptionPlan) {
+  return plan ? (plan.monthlyFeeModeLabel ?? VEHICLE_BASE_FEE_MODE_LABELS[plan.monthlyFeeMode] ?? plan.monthlyFeeMode) : "-";
+}
 
 const unusedLegacyMaterialStatusLabels: Record<string, string> = {
   APPROVED: "通过",
@@ -271,6 +290,7 @@ export default function ApplicationDetailPage() {
   const [deleteTarget, setDeleteTarget] = useState<MaterialFile | null>(null);
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [materialFileList, setMaterialFileList] = useState<UploadFile[]>([]);
   const [materialReviewStatus, setMaterialReviewStatus] = useState<"APPROVED" | "NEED_MORE_INFO" | "REJECTED" | null>(null);
   const [materialReviewTarget, setMaterialReviewTarget] = useState<MaterialGroup | null>(null);
@@ -289,7 +309,12 @@ export default function ApplicationDetailPage() {
   const loadDetail = useCallback(async () => {
     setLoading(true);
     try {
-      setDetail(await apiFetch<ApplicationDetail>(`/applications/${applicationId}`));
+      const [nextDetail, nextMe] = await Promise.all([
+        apiFetch<ApplicationDetail>(`/applications/${applicationId}`),
+        apiFetch<AuthMeResponse>("/auth/me")
+      ]);
+      setDetail(nextDetail);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -302,12 +327,36 @@ export default function ApplicationDetailPage() {
   }, [loadDetail]);
 
   const availableActions = useMemo(() => new Set(detail?.availableActions ?? []), [detail]);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const canCreateOrderChange = permissions.has("order_change:create");
+  const currentOrder = detail?.orders?.[0] ?? null;
   const selectedQuoteVehicle = availableVehicles.find((vehicle) => (vehicle.vehicleId ?? vehicle.id) === quoteVehicleId);
   const selectedQuotePlan = availablePlans.find((plan) => plan.subscriptionPlanId === quoteSubscriptionPlanId);
-  const quoteVehicleBaseFeeAmount = Math.round(Number(quoteVehicleBaseFeeYuan ?? 0) * 100);
+  const quotePlanEmptyReason =
+    selectedQuoteVehicle && availablePlans.length === 0
+      ? `当前所选车辆车型 ${selectedQuoteVehicle.vehicleModel ?? "-"} 暂无可报价订阅套餐。请确认该车型套餐已启用，且所属产品和产品版本已激活。`
+      : null;
+  const quoteVehicleBaseFeeModeDescription =
+    selectedQuotePlan?.monthlyFeeMode === "FIXED_AMOUNT"
+      ? "该套餐为固定金额，车辆基础月费由产品中心预设。"
+      : selectedQuotePlan?.monthlyFeeMode === "RATE_FORMULA"
+        ? "该套餐为固定费率，车辆基础月费由当前车辆销售价和费率自动计算。"
+        : selectedQuotePlan?.monthlyFeeMode === "MANUAL_QUOTE"
+          ? "该套餐允许现场报价，车辆基础费不得超过上限。"
+          : null;
+  const quoteVehicleBaseFeeEditable = selectedQuotePlan?.monthlyFeeMode === "MANUAL_QUOTE";
+  const computedQuoteVehicleBaseFeeAmount =
+    selectedQuotePlan?.monthlyFeeMode === "FIXED_AMOUNT"
+      ? (selectedQuotePlan.baseMonthlyFeeAmount ?? null)
+      : selectedQuotePlan?.monthlyFeeMode === "RATE_FORMULA" && selectedQuoteVehicle?.currentSalePriceAmount
+        ? Math.floor(selectedQuoteVehicle.currentSalePriceAmount * selectedQuotePlan.monthlyFeeRate)
+        : null;
+  const quoteVehicleBaseFeeAmount = quoteVehicleBaseFeeEditable
+    ? Math.round(Number(quoteVehicleBaseFeeYuan ?? 0) * 100)
+    : (computedQuoteVehicleBaseFeeAmount ?? 0);
   const quoteVehicleBaseFeeCap =
     selectedQuotePlan && selectedQuoteVehicle?.currentSalePriceAmount
-      ? Math.floor(selectedQuoteVehicle.currentSalePriceAmount * selectedQuotePlan.monthlyFeeRate)
+      ? Math.floor(selectedQuoteVehicle.currentSalePriceAmount * (selectedQuotePlan.monthlyFeeCapRate ?? selectedQuotePlan.monthlyFeeRate))
       : null;
   const quoteMileagePackagePriceAmount = selectedQuotePlan?.mileagePackagePriceAmount ?? 0;
   const quoteEnergyPackagePriceAmount = selectedQuotePlan?.energyPackagePriceAmount ?? 0;
@@ -327,6 +376,22 @@ export default function ApplicationDetailPage() {
       quotePeriodMonths !== undefined &&
       (quotePeriodMonths < selectedQuotePlan.minPeriodMonths || quotePeriodMonths > selectedQuotePlan.maxPeriodMonths)
   );
+
+  useEffect(() => {
+    if (!quoteOpen || !selectedQuotePlan || quoteVehicleBaseFeeEditable) {
+      return;
+    }
+    quoteForm.setFieldsValue({
+      vehicleBaseFeeAmountYuan:
+        computedQuoteVehicleBaseFeeAmount === null ? undefined : computedQuoteVehicleBaseFeeAmount / 100
+    });
+  }, [
+    computedQuoteVehicleBaseFeeAmount,
+    quoteForm,
+    quoteOpen,
+    quoteVehicleBaseFeeEditable,
+    selectedQuotePlan
+  ]);
 
   async function openPreview(file: MaterialFile) {
     if (file.isDeleted) {
@@ -551,7 +616,12 @@ export default function ApplicationDetailPage() {
     try {
       const vehicles = await apiFetch<AvailableVehicle[]>("/vehicles/available");
       setAvailableVehicles(vehicles);
-      const firstVehicle = vehicles[0];
+      const intendedModel = normalizeVehicleModel(detail?.intendedModel);
+      const firstVehicle =
+        vehicles.find((vehicle) => {
+          const vehicleModel = normalizeVehicleModel(vehicle.vehicleModel ?? vehicle.model);
+          return intendedModel && vehicleModel === intendedModel;
+        }) ?? vehicles[0];
       const firstVehicleId = firstVehicle ? (firstVehicle.vehicleId ?? firstVehicle.id) : undefined;
       const plans = firstVehicleId ? await loadQuotePlans(firstVehicleId) : [];
       const firstPlan = plans[0];
@@ -585,7 +655,7 @@ export default function ApplicationDetailPage() {
     if (!detail) {
       return;
     }
-    const vehicleBaseFeeAmount = Math.round(values.vehicleBaseFeeAmountYuan * 100);
+    const vehicleBaseFeeAmount = Math.round(Number(values.vehicleBaseFeeAmountYuan ?? 0) * 100);
     if (!selectedQuoteVehicle) {
       void message.error("请选择车辆");
       return;
@@ -594,7 +664,7 @@ export default function ApplicationDetailPage() {
       void message.error("请选择订阅套餐");
       return;
     }
-    if (vehicleBaseFeeAmount <= 0) {
+    if (selectedQuotePlan.monthlyFeeMode === "MANUAL_QUOTE" && vehicleBaseFeeAmount <= 0) {
       void message.error("车辆基础费报价必须大于 0");
       return;
     }
@@ -612,7 +682,7 @@ export default function ApplicationDetailPage() {
         body: JSON.stringify({
           periodMonths: values.periodMonths,
           subscriptionPlanId: values.subscriptionPlanId,
-          vehicleBaseFeeAmount,
+          vehicleBaseFeeAmount: selectedQuotePlan.monthlyFeeMode === "MANUAL_QUOTE" ? vehicleBaseFeeAmount : undefined,
           vehicleId: values.vehicleId
         }),
         method: "POST"
@@ -764,6 +834,18 @@ export default function ApplicationDetailPage() {
           </Space>
           {detail ? (
             <Space wrap>
+              {currentOrder ? (
+                <>
+                  <Button onClick={() => router.push(`/orders/${currentOrder.id}`)}>
+                    查看订单
+                  </Button>
+                  {canCreateOrderChange ? (
+                    <Button onClick={() => router.push(`/orders/${currentOrder.id}?createChange=1`)}>
+                      申请变更方案
+                    </Button>
+                  ) : null}
+                </>
+              ) : null}
               {availableActions.has("uploadMaterial") ? (
                 <Button icon={<UploadOutlined />} onClick={() => openUploadModal()}>
                   上传资料
@@ -1005,8 +1087,12 @@ export default function ApplicationDetailPage() {
             <Typography.Text>资产位置：{selectedQuoteVehicle?.assetLocation ?? "-"}</Typography.Text>
             <Typography.Text>状态：{selectedQuoteVehicle?.status ?? "-"}</Typography.Text>
             <Typography.Text>产品：{selectedQuotePlan ? `${selectedQuotePlan.productName} / ${selectedQuotePlan.versionNo}` : "-"}</Typography.Text>
+            <Typography.Text>车辆基础月费模式：{vehicleBaseFeeModeLabel(selectedQuotePlan)}</Typography.Text>
             <Typography.Text>
-              车型包系数：{selectedQuotePlan ? `${(selectedQuotePlan.monthlyFeeRate * 100).toFixed(2)}%` : "-"}
+              车型包系数：{selectedQuotePlan ? `${((selectedQuotePlan.monthlyFeeCapRate ?? selectedQuotePlan.monthlyFeeRate) * 100).toFixed(2)}%` : "-"}
+            </Typography.Text>
+            <Typography.Text>
+              固定费率：{selectedQuotePlan?.monthlyFeeMode === "RATE_FORMULA" ? `${(selectedQuotePlan.monthlyFeeRate * 100).toFixed(2)}%` : "-"}
             </Typography.Text>
             <Typography.Text>
               车辆基础费上限：{quoteVehicleBaseFeeCap === null ? "-" : formatYuan(quoteVehicleBaseFeeCap)}
@@ -1022,12 +1108,18 @@ export default function ApplicationDetailPage() {
             <Typography.Text>权益包价格：{formatYuan(quoteBenefitPackagePriceAmount)}</Typography.Text>
             <Typography.Text>套餐总价：{formatYuan(quotePackageMonthlyFeeAmount)}</Typography.Text>
             <Typography.Text>权益：{selectedQuotePlan?.benefitDescription ?? "-"}</Typography.Text>
+            {quoteVehicleBaseFeeModeDescription ? (
+              <Typography.Text type={quoteVehicleBaseFeeEditable ? "secondary" : "success"}>
+                {quoteVehicleBaseFeeModeDescription}
+              </Typography.Text>
+            ) : null}
             {periodOutOfRange ? (
               <Typography.Text type="danger">订阅周期不在套餐允许范围内</Typography.Text>
             ) : null}
             {quoteVehicleBaseFeeCap !== null && quoteVehicleBaseFeeAmount > quoteVehicleBaseFeeCap ? (
               <Typography.Text type="danger">车辆基础费超过车型包系数允许上限</Typography.Text>
             ) : null}
+            {quotePlanEmptyReason ? <Alert message={quotePlanEmptyReason} showIcon type="warning" /> : null}
           </Space>
           <Form.Item label="选择车辆" name="vehicleId" rules={[{ required: true, message: "请选择车辆" }]}>
             <Select
@@ -1040,14 +1132,22 @@ export default function ApplicationDetailPage() {
           </Form.Item>
           <Form.Item label="订阅套餐" name="subscriptionPlanId" rules={[{ required: true, message: "请选择订阅套餐" }]}>
             <Select
+              notFoundContent={quotePlanEmptyReason ?? "暂无可报价套餐"}
               options={availablePlans.map((plan) => ({
-                label: `${plan.planNo} / ${plan.planName} / ${plan.productName} / ${plan.versionNo}`,
+                label: `${plan.planNo} / ${plan.planName} / ${vehicleBaseFeeModeLabel(plan)} / ${plan.productName} / ${plan.versionNo} / ${plan.vehicleModel}`,
                 value: plan.subscriptionPlanId
               }))}
+              optionFilterProp="label"
+              placeholder="请选择订阅套餐"
+              showSearch
             />
           </Form.Item>
-          <Form.Item label="车辆基础费报价（元）" name="vehicleBaseFeeAmountYuan" rules={[{ required: true, message: "请输入车辆基础费报价" }]}>
-            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+          <Form.Item
+            label="车辆基础费报价（元）"
+            name="vehicleBaseFeeAmountYuan"
+            rules={[{ required: quoteVehicleBaseFeeEditable, message: "请输入车辆基础费报价" }]}
+          >
+            <InputNumber disabled={!quoteVehicleBaseFeeEditable} min={0} precision={2} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="订阅周期（月）" name="periodMonths" rules={[{ required: true }]}>
             <InputNumber min={1} style={{ width: "100%" }} />

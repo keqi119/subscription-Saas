@@ -27,6 +27,7 @@ Current development focus:
 
 - Stabilize the local Stage 5 optimization baseline.
 - Backfill product package, vehicle sale price, and quote formula changes into documentation.
+- Add the A/B dual-line order mainline before the next business-code round.
 - Establish a new Stage 0-9 execution plan before further feature work.
 
 ## 1. Current Actual Progress
@@ -290,12 +291,199 @@ depositRuleSnapshot
 vehicleSnapshot
 ```
 
-## 7. Vehicle Lock And Release Rules
+## 7. A/B Dual-Line Order Mainline
+
+The order mainline must support two parallel paths that eventually converge
+into order, contract, payment, delivery, and lease-start operations.
+
+### A Line: Customer Self-Service
+
+Target flow:
+
+```text
+Customer views vehicles
+  -> selects a concrete vehicle
+  -> selects a preset SubscriptionPlan
+  -> submits an order application
+  -> system creates an intent order and quote snapshots
+  -> back office reviews customer credit, product match, and vehicle inventory
+  -> deposit is finalized from the review result
+  -> customer confirms the final signing plan
+  -> contract signing
+```
+
+Business principles:
+
+- A line is "order first, review later".
+- The customer-selected plan is an intent plan, not the final signing plan.
+- Customer-facing UI may only expose preset active `SubscriptionPlan` options.
+- Customer-facing UI must not expose free package composition:
+  `VehiclePackage + MileagePackage + EnergyPackage + BenefitPackage`.
+- The deposit amount is pending when the customer submits and is finalized only
+  after qualification/risk review.
+
+Customer-facing copy:
+
+```text
+您当前选择的是意向订阅方案。押金金额将根据您的资质审核结果、信用等级及平台风控规则最终确认。审核通过后，平台将向您展示最终签约方案，您确认后再进入合同签署流程。
+```
+
+Primary customer action text should be:
+
+```text
+提交审核
+```
+
+Do not label the first A-line action as:
+
+```text
+立即下单
+```
+
+### B Line: Sales Assisted
+
+Current and continuing back-office flow:
+
+```text
+Customer creation / application
+  -> risk review
+  -> customer grading
+  -> sales selects vehicle and SubscriptionPlan
+  -> create quote / order
+  -> contract signing
+```
+
+Business principles:
+
+- B line is "review first, order later".
+- Reuse the existing customer, application, risk, quote, order, and contract
+  flow instead of replacing it.
+
+### Unified Model Direction
+
+First-version recommendation:
+
+- Keep `SubscriptionQuote` as the price and plan snapshot object.
+- Do not add `SubscriptionOrderApplication` in the first version.
+- Prefer extending `SubscriptionOrder` as the unified review and fulfillment object.
+- Add `orderSource` to distinguish:
+  `CUSTOMER_SELF_SERVICE` and `SALES_ASSISTED`.
+- Add A-line parallel review fields:
+  `creditReviewStatus`, `productReviewStatus`, and `vehicleReviewStatus`.
+- Suggested review enum:
+  `PENDING`, `APPROVED`, `REJECTED`, `NEED_MORE_INFO`.
+- Add deposit fields:
+  `depositStatus` and `finalDepositAmount`.
+- Add `customerSelectedSnapshot` to preserve the customer's original intent
+  separately from final quote/order snapshots.
+
+Recommended A-line initial values:
+
+```text
+orderSource = CUSTOMER_SELF_SERVICE
+orderStatus = PENDING_REVIEW
+creditReviewStatus = PENDING
+productReviewStatus = PENDING
+vehicleReviewStatus = PENDING
+depositStatus = PENDING_CONFIRM
+finalDepositAmount = null
+```
+
+When all three reviews are approved:
+
+```text
+orderStatus = PENDING_CUSTOMER_CONFIRMATION
+```
+
+After the customer confirms the final plan:
+
+```text
+orderStatus = PENDING_CONTRACT
+```
+
+If the first implementation does not include a customer second-confirmation
+page, the back office may temporarily perform "confirm final plan" and move the
+order to `PENDING_CONTRACT`. The data model and status machine must still keep
+the customer-confirmation extension point.
+
+B-line orders should keep the current compatible initial state:
+
+```text
+orderSource = SALES_ASSISTED
+orderStatus = PENDING_CONTRACT
+```
+
+### Deposit Confirmation
+
+A-line submission must keep the deposit pending:
+
+```text
+depositStatus = PENDING_CONFIRM
+finalDepositAmount = null
+```
+
+After review, the platform writes the final deposit from customer grade,
+deposit rules, and risk result:
+
+```text
+customerGrade
+depositRuleId
+depositRuleSnapshot
+finalDepositAmount
+defaultRate
+```
+
+If the final deposit, selected vehicle, subscription plan, period, or monthly
+fee differs from the customer's original intent, the order should enter
+`PENDING_CUSTOMER_CONFIRMATION` and wait for confirmation before contract
+signing.
+
+### Vehicle Status Linkage
+
+Target first-version vehicle transitions:
+
+```text
+A line customer submission: AVAILABLE -> REVIEW_RESERVED
+A line review failure / customer cancellation: REVIEW_RESERVED -> AVAILABLE
+A line review approved and entering signing: REVIEW_RESERVED -> RESERVED
+B line sales-assisted order: AVAILABLE -> RESERVED
+Contract signing / payment / delivery follow-up: RESERVED -> LEASED
+```
+
+Recommended target model is to add `REVIEW_RESERVED` because it separates
+"inventory held for review" from "vehicle reserved for signing". If the first
+implementation cannot add it immediately, `RESERVED` may be reused temporarily,
+but documentation, tests, and later migration planning should preserve
+`REVIEW_RESERVED` as the target state.
+
+### Object Relationships
+
+Mainline relationship:
+
+```text
+Product
+  -> ProductVersion
+  -> SubscriptionPlan
+  -> SubscriptionQuote
+  -> SubscriptionOrder
+  -> Contract
+
+Vehicle
+  -> SubscriptionQuote.vehicleId
+  -> SubscriptionOrder.vehicleId
+```
+
+`SubscriptionPlan` remains the customer-facing sellable package. Package
+components remain back-office product-center configuration only.
+
+## 8. Vehicle Lock And Release Rules
 
 Mainline rules:
 
 - Generating a quote does not lock a vehicle.
-- Confirming a quote locks a vehicle: `AVAILABLE -> RESERVED`.
+- B-line quote confirmation locks a vehicle: `AVAILABLE -> RESERVED`.
+- A-line customer submission should hold inventory as
+  `AVAILABLE -> REVIEW_RESERVED` in the target model.
 - Creating an order from a confirmed quote keeps the selected vehicle on the order.
 - Delivery moves reserved vehicle toward leased/in-use state.
 - Quote cancellation or order cancellation releases a reserved vehicle when no active contract/order blocks release.
@@ -306,7 +494,7 @@ Current implementation status:
 - Quote confirmation already updates selected vehicle to `RESERVED`.
 - Order/contract/delivery return status linkage needs Stage 5/6 stabilization.
 
-## 8. Permissions
+## 9. Permissions
 
 Existing permissions include:
 
@@ -353,7 +541,7 @@ Permission updates must be synchronized across:
 business responsibility. After seed changes, users must re-login to refresh JWT
 permissions.
 
-## 9. Audit And Status Logging
+## 10. Audit And Status Logging
 
 Audit logs are required for:
 
@@ -369,7 +557,7 @@ Audit logs are required for:
 Current vehicle status changes write audit logs. A dedicated
 `VehicleStatusLog` or lifecycle event table remains a Stage 2/5 decision.
 
-## 10. Testing Requirements
+## 11. Testing Requirements
 
 Write or update tests when touching:
 
@@ -394,7 +582,7 @@ pnpm --filter @subscription-saas/api test
 pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma
 ```
 
-## 11. Current Code / Documentation Differences
+## 12. Current Code / Documentation Differences
 
 Known differences after review:
 
@@ -409,7 +597,7 @@ Known differences after review:
 - Some Drawer/Modal sizing may need Ant Design v6 cleanup.
 - Migration status must be rechecked because current Prisma status command fails.
 
-## 12. Stage Plan Summary
+## 13. Stage Plan Summary
 
 Detailed execution scope is in `CODEX_TASKS.md`.
 
@@ -426,7 +614,7 @@ Detailed execution scope is in `CODEX_TASKS.md`.
 | 8 | Asset operations and ROA/ROE | lifecycle events, asset quality and financial reports |
 | 9 | Launch readiness and CI/CD | CI, deployment, seed strategy, backups, manual acceptance |
 
-## 13. Stage 0 Priorities
+## 14. Stage 0 Priorities
 
 Handle these before new business development:
 

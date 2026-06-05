@@ -22,6 +22,7 @@ export const STATUS_LABELS: Record<string, string> = {
   COMPLETED: "已完成",
   DRAFT: "草稿",
   EFFECTIVE: "生效中",
+  EXECUTED: "已完成退回处理",
   EXPIRED: "已过期",
   FROZEN: "冻结",
   GENERATED: "已生成",
@@ -33,10 +34,13 @@ export const STATUS_LABELS: Record<string, string> = {
   NEED_MORE_INFO: "待补件",
   PENDING: "待审核",
   PENDING_APPLICATION: "待进件",
+  PENDING_CONFIRM: "待确认",
   PENDING_CONTRACT: "待生成合同",
+  PENDING_CUSTOMER_CONFIRMATION: "待客户确认",
   PENDING_DELIVERY: "待交付",
   PENDING_INITIALIZE: "待初始化",
   PENDING_PAYMENT: "待付款",
+  PENDING_REVIEW: "待订单审核",
   PENDING_SIGN: "待签署",
   PENDING_VEHICLE: "待分车",
   REJECTED: "已拒绝",
@@ -44,6 +48,7 @@ export const STATUS_LABELS: Record<string, string> = {
   RESERVED: "已预约",
   RETIRED: "已退役",
   RETURNED: "已退回",
+  REVIEW_RESERVED: "审核占用",
   REVIEW_DUE: "待复核",
   SIGNED: "已签署",
   SIGNING: "签署中",
@@ -98,6 +103,12 @@ export const SALE_PRICE_REVIEW_TYPE_LABELS: Record<string, string> = {
   RETURN_REINIT: "退车再入池初始化"
 };
 
+export const VEHICLE_BASE_FEE_MODE_LABELS: Record<string, string> = {
+  FIXED_AMOUNT: "固定金额",
+  MANUAL_QUOTE: "现场报价",
+  RATE_FORMULA: "固定费率"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",
@@ -120,7 +131,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
 export const ORDER_CHANGE_TYPE_LABELS: Record<string, string> = {
   CANCEL_ORDER: "取消订单",
   EXTENSION: "展期",
-  PLAN_CHANGE: "方案变更",
+  PLAN_CHANGE: "方案变更 / 退回重做",
   RESTRUCTURE: "重组",
   TERMINATION: "终止",
   VEHICLE_SWAP: "换车"
@@ -169,6 +180,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "order:view": "查看订单",
   "order_change:approve": "审批订单变更",
   "order_change:create": "创建订单变更",
+  "order_change:execute": "执行订单变更",
   "order_change:reject": "拒绝订单变更",
   "order_change:view": "查看订单变更",
   "permission:view": "查看权限",
@@ -240,6 +252,7 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "order:view": "允许查看订阅订单",
   "order_change:approve": "允许审批订单变更",
   "order_change:create": "允许创建订单变更申请",
+  "order_change:execute": "允许执行已审批订单变更",
   "order_change:reject": "允许拒绝订单变更",
   "order_change:view": "允许查看订单变更",
   "permission:view": "允许查看权限清单",
@@ -291,6 +304,7 @@ export const MENU_LABELS: Record<string, string> = {
   orders: "订单中心",
   "orders.contract_templates": "合同模板",
   "orders.contracts": "合同管理",
+  "orders.review": "订单申请审核",
   "orders.subscription": "订阅订单",
   products: "产品中心",
   quotes: "订阅报价",

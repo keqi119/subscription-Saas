@@ -72,6 +72,7 @@ const permissionRows = [
   ["order_change:create", "创建订单变更", "order", "change_create"],
   ["order_change:approve", "审批订单变更", "order", "change_approve"],
   ["order_change:reject", "拒绝订单变更", "order", "change_reject"],
+  ["order_change:execute", "执行订单变更", "order", "change_execute"],
   ["contract:view", "查看合同", "contract", "view"],
   ["contract:generate", "生成合同", "contract", "generate"],
   ["contract:sign", "签署合同", "contract", "sign"],
@@ -132,6 +133,7 @@ const menuRows = [
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
+  ["orders.review", "订单申请审核", "/orders/review", "audit", 15, "order:view", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
@@ -278,8 +280,6 @@ const orderManagementPermissions = [
   "order:cancel",
   "order_change:view",
   "order_change:create",
-  "order_change:approve",
-  "order_change:reject",
   "contract:view",
   "contract:generate",
   "contract:sign",
@@ -409,7 +409,7 @@ async function main() {
       "order_change:create",
       "contract:view"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts"]
   );
 
   await assignRoleAccess(
@@ -424,9 +424,12 @@ async function main() {
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
       ...quoteManagementPermissions,
-      ...orderManagementPermissions
+      ...orderManagementPermissions,
+      "order_change:approve",
+      "order_change:reject",
+      "order_change:execute"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
   );
 
   await assignRoleAccess(
@@ -449,11 +452,9 @@ async function main() {
       "quote:view",
       "order:view",
       "order_change:view",
-      "order_change:approve",
-      "order_change:reject",
       "contract:view"
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts"]
   );
 
   for (const roleCode of ["FI", "AS"]) {
@@ -469,11 +470,9 @@ async function main() {
         "quote:view",
         "order:view",
         "order_change:view",
-        "order_change:approve",
-        "order_change:reject",
         "contract:view"
       ],
-      ["dashboard", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
+      ["dashboard", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts"]
     );
   }
 
@@ -491,7 +490,7 @@ async function main() {
       "quote:view",
       ...orderManagementPermissions
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
   );
 
   const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);

@@ -23,7 +23,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
-import { BENEFIT_TYPE_LABELS, PRODUCT_TYPE_LABELS, PRODUCT_VERSION_STATUS_LABELS, STATUS_LABELS, labelOf } from "../../constants/labels";
+import {
+  BENEFIT_TYPE_LABELS,
+  PRODUCT_TYPE_LABELS,
+  PRODUCT_VERSION_STATUS_LABELS,
+  STATUS_LABELS,
+  VEHICLE_BASE_FEE_MODE_LABELS,
+  labelOf
+} from "../../constants/labels";
 import { apiFetch, ApiError } from "../../lib/api";
 
 interface ProductVersion {
@@ -196,11 +203,7 @@ const packageMeta: Record<PackageKind, { createText: string; endpoint: string; t
   vehicle: { createText: "新增车辆使用费", endpoint: "vehicle-packages", tab: "vehicle-packages", title: "车辆使用费" }
 };
 
-const monthlyFeeModeLabels: Record<string, string> = {
-  FIXED_AMOUNT: "固定月费",
-  MANUAL_QUOTE: "人工报价",
-  RATE_FORMULA: "费率公式"
-};
+const monthlyFeeModeLabels = VEHICLE_BASE_FEE_MODE_LABELS;
 
 function formatRate(value?: number | null) {
   return value === undefined || value === null ? "-" : `${(value * 100).toFixed(2)}%`;
@@ -634,7 +637,7 @@ function ProductsPageContent() {
     { render: (_, record) => record.mileagePackage.packageName, title: "里程包", width: 150 },
     { render: (_, record) => record.energyPackage.packageName, title: "补能包", width: 150 },
     { render: (_, record) => record.benefitPackage?.packageName ?? "-", title: "权益包", width: 150 },
-    { dataIndex: "monthlyFeeMode", render: (value: string) => monthlyFeeModeLabels[value] ?? value, title: "月费模式", width: 110 },
+    { dataIndex: "monthlyFeeMode", render: (value: string) => monthlyFeeModeLabels[value] ?? value, title: "车辆基础月费模式", width: 150 },
     { dataIndex: "monthlyFeeRate", render: formatRate, title: "月费率", width: 100 },
     { render: (_, record) => `${record.minPeriodMonths} - ${record.maxPeriodMonths} 个月`, title: "订阅周期", width: 140 },
     { dataIndex: "status", render: (value: string) => <Tag color={statusColors[value]}>{labelOf(STATUS_LABELS, value)}</Tag>, title: "状态", width: 100 },
@@ -826,7 +829,7 @@ function ProductsPageContent() {
               { label: "权益说明", children: selectedPlanBenefitPackage?.description ?? selectedPlanBenefitPackage?.packageName ?? "-" }
             ]}
           />
-          <Form.Item label="月费模式" name="monthlyFeeMode" rules={[{ required: true, message: "请选择月费模式" }]}>
+          <Form.Item label="车辆基础月费模式" name="monthlyFeeMode" rules={[{ required: true, message: "请选择车辆基础月费模式" }]}>
             <Select
               options={Object.entries(monthlyFeeModeLabels).map(([value, label]) => ({ label, value }))}
             />
@@ -834,10 +837,10 @@ function ProductsPageContent() {
           <Form.Item label="月费率" name="monthlyFeeRate" rules={[{ required: true, message: "请输入月费率" }]}>
             <InputNumber max={1} min={0} precision={6} step={0.001} style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item label="月费上限率" name="monthlyFeeCapRate">
+          <Form.Item label="车辆基础费上限率" name="monthlyFeeCapRate">
             <InputNumber max={1} min={0} precision={6} step={0.001} style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item label="固定月费（元）" name="baseMonthlyFeeAmountYuan">
+          <Form.Item label="固定金额（元）" name="baseMonthlyFeeAmountYuan">
             <InputNumber min={0} precision={2} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="最短周期（月）" name="minPeriodMonths" rules={[{ required: true, message: "请输入最短周期" }]}>
@@ -872,7 +875,7 @@ function ProductsPageContent() {
               { label: "里程包", children: `${planDetail.mileagePackage.packageName} / ${planDetail.mileagePackage.monthlyMileageKm ?? "-"} km` },
               { label: "补能包", children: `${planDetail.energyPackage.packageName} / ${planDetail.energyPackage.monthlyEnergyKwh ?? "-"} kWh` },
               { label: "权益包", children: planDetail.benefitPackage?.packageName ?? "-" },
-              { label: "月费模式", children: monthlyFeeModeLabels[planDetail.monthlyFeeMode] ?? planDetail.monthlyFeeMode },
+              { label: "车辆基础月费模式", children: monthlyFeeModeLabels[planDetail.monthlyFeeMode] ?? planDetail.monthlyFeeMode },
               { label: "月费率", children: formatRate(planDetail.monthlyFeeRate) },
               { label: "订阅周期", children: `${planDetail.minPeriodMonths} - ${planDetail.maxPeriodMonths} 个月` },
               { label: "状态", children: <Tag color={statusColors[planDetail.status]}>{labelOf(STATUS_LABELS, planDetail.status)}</Tag> },

@@ -144,6 +144,8 @@ describe("subscription plan backend flow", () => {
     await expect(service.listAvailableSubscriptionPlans("application-1", user)).resolves.toMatchObject([
       {
         monthlyFeeCapRate: 0.035,
+        monthlyFeeMode: MonthlyFeeMode.MANUAL_QUOTE,
+        monthlyFeeModeLabel: "现场报价",
         monthlyFeeRate: 0.035,
         planName: "ET5 standard 12 months",
         productName: "Subscription",
@@ -220,6 +222,111 @@ describe("subscription plan backend flow", () => {
     );
   });
 
+  it("uses fixed amount subscription plan pricing and ignores submitted vehicle base fee", async () => {
+    const plan = makeSubscriptionPlan({
+      baseMonthlyFeeAmount: BigInt(360000),
+      monthlyFeeMode: MonthlyFeeMode.FIXED_AMOUNT
+    });
+    const { prisma, service } = makeService({ plan });
+
+    await service.createQuote(
+      "application-1",
+      {
+        periodMonths: 12,
+        subscriptionPlanId: "plan-1",
+        vehicleBaseFeeAmount: 123456,
+        vehicleId: "vehicle-asset-1"
+      },
+      user,
+      context
+    );
+
+    expect(prisma.subscriptionQuote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          monthlyFeeAmount: BigInt(360000),
+          packageSnapshot: expect.objectContaining({
+            pricing: expect.objectContaining({
+              benefitPackagePriceAmount: 0,
+              currentSalePriceAmount: 12000000,
+              energyPackagePriceAmount: 0,
+              fixedRate: null,
+              mileagePackagePriceAmount: 0,
+              monthlyFeeAmount: 360000,
+              vehicleBaseFeeAmount: 360000,
+              vehicleBaseFeeCapAmount: 420000,
+              vehicleBaseFeeMode: MonthlyFeeMode.FIXED_AMOUNT,
+              vehicleBaseFeeModeLabel: "固定金额"
+            }),
+            vehicleBaseFeeAmount: 360000,
+            vehicleBaseFeeCapAmount: 420000,
+            vehicleBaseFeeMode: MonthlyFeeMode.FIXED_AMOUNT,
+            vehicleBaseFeeModeLabel: "固定金额"
+          }),
+          vehicleBaseFeeAmount: BigInt(360000),
+          vehicleBaseFeeCapAmount: BigInt(420000)
+        })
+      })
+    );
+  });
+
+  it("uses fixed rate subscription plan pricing from the current vehicle sale price", async () => {
+    const plan = makeSubscriptionPlan({
+      monthlyFeeMode: MonthlyFeeMode.RATE_FORMULA,
+      monthlyFeeRate: new Prisma.Decimal("0.02")
+    });
+    const { prisma, service } = makeService({ plan });
+
+    await service.createQuote(
+      "application-1",
+      {
+        periodMonths: 12,
+        subscriptionPlanId: "plan-1",
+        vehicleBaseFeeAmount: 123456,
+        vehicleId: "vehicle-asset-1"
+      },
+      user,
+      context
+    );
+
+    expect(prisma.subscriptionQuote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          monthlyFeeAmount: BigInt(240000),
+          packageSnapshot: expect.objectContaining({
+            pricing: expect.objectContaining({
+              fixedRate: 0.02,
+              monthlyFeeAmount: 240000,
+              vehicleBaseFeeAmount: 240000,
+              vehicleBaseFeeCapAmount: 420000,
+              vehicleBaseFeeMode: MonthlyFeeMode.RATE_FORMULA,
+              vehicleBaseFeeModeLabel: "固定费率"
+            })
+          }),
+          vehicleBaseFeeAmount: BigInt(240000),
+          vehicleBaseFeeCapAmount: BigInt(420000)
+        })
+      })
+    );
+  });
+
+  it("requires vehicle base fee for manual quote subscription plans", async () => {
+    const { service } = makeService();
+
+    await expect(
+      service.createQuote(
+        "application-1",
+        {
+          periodMonths: 12,
+          subscriptionPlanId: "plan-1",
+          vehicleId: "vehicle-asset-1"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("车辆基础费报价必须大于 0");
+  });
+
   it("requires vehicleId for subscription plan quote creation", async () => {
     const { service } = makeService();
 
@@ -267,6 +374,27 @@ describe("subscription plan backend flow", () => {
           periodMonths: 12,
           subscriptionPlanId: "plan-1",
           vehicleBaseFeeAmount: 420001,
+          vehicleId: "vehicle-asset-1"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("车辆基础费超过车型包系数允许上限");
+  });
+
+  it("rejects fixed amount subscription plan pricing above the vehicle base fee cap", async () => {
+    const plan = makeSubscriptionPlan({
+      baseMonthlyFeeAmount: BigInt(420001),
+      monthlyFeeMode: MonthlyFeeMode.FIXED_AMOUNT
+    });
+    const { service } = makeService({ plan });
+
+    await expect(
+      service.createQuote(
+        "application-1",
+        {
+          periodMonths: 12,
+          subscriptionPlanId: "plan-1",
           vehicleId: "vehicle-asset-1"
         },
         user,

@@ -40,12 +40,27 @@ unless the user explicitly approves it.
 - Product center now uses `SubscriptionPlan` as the sellable subscription package.
 - `ProductPriceRule` is a legacy pricing rule retained for compatibility with old quotes and historical data.
 - Quote creation for the new flow must use a concrete `vehicleId` and an active `subscriptionPlanId`.
+- The order mainline must support two paths:
+  A line customer self-service is order first and review later; B line
+  sales-assisted is review first and order later.
+- A-line customer selections are intent plans, not final signing plans.
+- Customer-facing A-line UI must expose only preset active `SubscriptionPlan`
+  records, not free package composition.
+- Keep `SubscriptionQuote` as the price and plan snapshot object.
+- Do not add `SubscriptionOrderApplication` in the first version unless a later
+  reviewed design explicitly changes this decision; prefer extending
+  `SubscriptionOrder`.
+- A-line deposit is pending at submission and finalized after customer grade,
+  deposit rule, and risk review are known.
 - `purchasePriceAmount` is the asset cost basis used for depreciation and ROA/ROE.
 - `currentSalePriceAmount` is the quote pricing basis used for the vehicle base fee cap.
 - Vehicle base fee cap = `currentSalePriceAmount * vehiclePackage.monthlyFeeRate`.
 - The 3.5% style cap constrains only the vehicle base fee, not the full subscription package total.
 - Package total = vehicle base fee + mileage package price + energy package price + benefit package price.
 - Generating a quote does not lock a vehicle; confirming a quote may lock `AVAILABLE -> RESERVED`.
+- Target A-line vehicle hold is `AVAILABLE -> REVIEW_RESERVED`; if the first
+  implementation temporarily reuses `RESERVED`, keep `REVIEW_RESERVED` as the
+  documented target model.
 
 ## Permission Rules
 

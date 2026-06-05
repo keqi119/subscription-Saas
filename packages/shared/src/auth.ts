@@ -78,6 +78,7 @@ export enum PermissionCode {
   ORDER_CHANGE_CREATE = "order_change:create",
   ORDER_CHANGE_APPROVE = "order_change:approve",
   ORDER_CHANGE_REJECT = "order_change:reject",
+  ORDER_CHANGE_EXECUTE = "order_change:execute",
   CONTRACT_VIEW = "contract:view",
   CONTRACT_GENERATE = "contract:generate",
   CONTRACT_SIGN = "contract:sign",

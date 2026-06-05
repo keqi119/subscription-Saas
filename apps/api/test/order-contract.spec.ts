@@ -118,6 +118,18 @@ describe("subscription order and contract rules", () => {
     expect(order.quoteSnapshot.vehicleSnapshot?.vehicleNo).toBe("VEH2026060200001");
   });
 
+  it("reads legacy sales-assisted order details without A/B extension fields", async () => {
+    const harness = createOrderServiceHarness();
+
+    const order = (await harness.service.getOrder(harness.orderId, harness.user)) as {
+      orderStatus: OrderStatus;
+      quoteSnapshot: { vehicleSnapshot?: { vehicleNo?: string } };
+    };
+
+    expect(order.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
+    expect(order.quoteSnapshot.vehicleSnapshot?.vehicleNo).toBe("VEH2026060200001");
+  });
+
   it("rejects creating an order when the quote vehicle is not locked", async () => {
     const harness = createOrderServiceHarness();
     harness.state.vehicleStatus = VehicleStatus.AVAILABLE;

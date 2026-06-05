@@ -2,14 +2,49 @@ import {
   BusinessType,
   ContractTemplateType,
   ContractVersionStatus,
-  OrderChangeType
+  CustomerGrade,
+  OrderChangeType,
+  OrderReviewStatus
 } from "@prisma/client";
-import { IsEnum, IsOptional, IsString, IsUUID } from "class-validator";
+import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Min } from "class-validator";
 
 export class CreateOrderFromQuoteDto {
   @IsOptional()
   @IsEnum(BusinessType)
   businessType?: BusinessType;
+}
+
+export class CreateCustomerOrderDto {
+  @IsUUID()
+  customerId!: string;
+
+  @IsUUID()
+  vehicleId!: string;
+
+  @IsUUID()
+  subscriptionPlanId!: string;
+
+  @IsInt()
+  @Min(1)
+  periodMonths!: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  vehicleBaseFeeAmount?: number;
+}
+
+export class ReviewOrderDto {
+  @IsEnum(OrderReviewStatus)
+  status!: OrderReviewStatus;
+
+  @IsOptional()
+  @IsEnum(CustomerGrade)
+  customerGrade?: CustomerGrade;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
 }
 
 export class CancelOrderDto {
@@ -79,6 +114,20 @@ export class ArchiveContractDto {
 export class CreateOrderChangeDto {
   @IsEnum(OrderChangeType)
   changeType!: OrderChangeType;
+
+  @IsOptional()
+  @IsUUID()
+  subscriptionPlanId?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  periodMonths?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  vehicleBaseFeeAmount?: number;
 
   @IsString()
   reason!: string;

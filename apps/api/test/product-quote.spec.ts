@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { Prisma, ProductStatus, ProductType, ProductVersionStatus, RecordStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -129,6 +130,116 @@ describe("product and quote rules", () => {
         where: expect.objectContaining({ productType: ProductType.SUBSCRIPTION })
       })
     );
+  });
+
+  it("treats a missing product versions relation as an empty version list", async () => {
+    const now = new Date("2026-05-30T00:00:00.000Z");
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        createdAt: now,
+        createdBy: "user-1",
+        deletedAt: null,
+        description: null,
+        id: "product-1",
+        name: "Standard subscription",
+        productNo: "PRD2026053000001",
+        productType: "SUBSCRIPTION",
+        status: ProductStatus.DRAFT,
+        updatedAt: now,
+        updatedBy: "user-1"
+      }
+    ]);
+    const service = new ProductService({} as never, {
+      product: {
+        findMany
+      }
+    } as never);
+
+    const products = await service.listProducts();
+
+    expect(products[0]).toMatchObject({
+      activeVersion: null,
+      id: "product-1",
+      versions: []
+    });
+  });
+
+  it("skips malformed historical versions and downgrades missing relations", async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const now = new Date("2026-05-30T00:00:00.000Z");
+    const service = new ProductService({} as never, {
+      product: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            createdAt: now,
+            createdBy: "user-1",
+            deletedAt: null,
+            description: null,
+            id: "product-1",
+            name: "Standard subscription",
+            productNo: "PRD2026053000001",
+            productType: "SUBSCRIPTION",
+            status: ProductStatus.ACTIVE,
+            updatedAt: now,
+            updatedBy: "user-1",
+            versions: [
+              null,
+              undefined,
+              { status: ProductVersionStatus.ACTIVE },
+              {
+                approvedAt: null,
+                approver: null,
+                effectiveFrom: now,
+                effectiveTo: null,
+                id: "version-legacy",
+                priceRules: [
+                  {
+                    baseMileageKm: 1500,
+                    energyLimitCount: null,
+                    energyLimitKwh: null,
+                    id: "rule-legacy",
+                    maxPeriodMonths: 36,
+                    minPeriodMonths: 12,
+                    productVersionId: "version-legacy",
+                    status: RecordStatus.ACTIVE,
+                    vehicleModel: "ET5"
+                  }
+                ],
+                productId: "product-1",
+                status: ProductVersionStatus.ACTIVE,
+                versionNo: "V-legacy"
+              }
+            ]
+          }
+        ])
+      }
+    } as never);
+
+    try {
+      const products = await service.listProducts();
+      const version = products[0]?.versions[0];
+
+      expect(products[0]?.versions).toHaveLength(1);
+      expect(products[0]?.activeVersion).toMatchObject({ id: "version-legacy", productId: "product-1" });
+      expect(version).toMatchObject({
+        benefitPackages: [],
+        energyPackages: [],
+        mileagePackages: [],
+        product: null,
+        productId: "product-1",
+        vehiclePackages: []
+      });
+      expect(version?.priceRules).toEqual([
+        expect.objectContaining({
+          id: "rule-legacy",
+          monthlyFeeRate: 0,
+          overMileageFeeAmount: 0
+        })
+      ]);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("lists products with active versions from product-list includes", async () => {

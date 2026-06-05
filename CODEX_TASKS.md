@@ -17,6 +17,13 @@ Task 1-12 prompts as the active plan.
 - The new quote path is `vehicleId + subscriptionPlanId + vehicleBaseFeeAmount`.
 - `purchasePriceAmount` is asset cost basis; `currentSalePriceAmount` is quote pricing basis.
 - The vehicle package cap constrains only vehicle base fee, not full package total.
+- The A/B dual-line order mainline is now part of the target plan:
+  A line is customer self-service order first and review later; B line is
+  sales-assisted review first and order later.
+- Customer-facing A-line selection uses preset active `SubscriptionPlan`
+  records only, not free package composition.
+- Keep `SubscriptionQuote`; do not add `SubscriptionOrderApplication` in the
+  first version unless a later reviewed design changes this decision.
 - If seed changes permissions, users must seed again and re-login to refresh JWT permissions.
 
 ## Stage 0: Baseline Handover And Quality Gates
@@ -247,12 +254,12 @@ requiring sales to combine raw rules manually.
 - Sales can select an active plan for an approved application.
 - Legacy quote records still render and can follow their supported workflow.
 
-## Stage 4: Application Quote Closed Loop
+## Stage 4: Sales-Assisted Application Quote Closed Loop
 
 **Goal**
 
-For approved applications, generate quotes from a concrete vehicle and an active
-subscription plan.
+For approved sales-assisted applications, generate quotes from a concrete
+vehicle and an active subscription plan.
 
 **Scope**
 
@@ -263,6 +270,7 @@ subscription plan.
 - Enter vehicle base fee quote.
 - Add package prices.
 - Save `vehicleSnapshot`, `packageSnapshot`, and `depositRuleSnapshot`.
+- Preserve this path as B-line `SALES_ASSISTED`: review first, order later.
 
 **Do Not**
 
@@ -309,26 +317,41 @@ subscription plan.
 - Quote creation succeeds for approved application with available vehicle and active plan.
 - Quote detail shows vehicle and package snapshots.
 - Permission denied issue for `/api/vehicles/available` is resolved.
+- B-line sales-assisted quote creation remains backward compatible with the
+  existing application, risk, quote, order, and contract pages.
 
-## Stage 5: Orders, Contracts, And Vehicle Status Linkage
+## Stage 5: A/B Orders, Contracts, And Vehicle Status Linkage
 
 **Goal**
 
-Connect confirmed quote, vehicle reservation, order creation, contract status,
-and cancellation/rollback behavior.
+Connect A-line customer self-service orders and B-line sales-assisted quotes
+into one order, contract, vehicle reservation, cancellation, and rollback model.
 
 **Scope**
 
-- Confirmed quote locks `AVAILABLE -> RESERVED`.
-- Create subscription order from confirmed quote.
+- Keep B-line confirmed quote locking: `AVAILABLE -> RESERVED`.
+- Add A-line customer self-service flow:
+  customer selects a concrete vehicle and preset active `SubscriptionPlan`,
+  submits an order application, and the system creates an intent order plus
+  quote snapshots.
+- Add back-office review for A-line customer credit, product match, and vehicle
+  inventory.
+- Add final deposit confirmation after review; customer submission keeps deposit
+  pending.
+- Create subscription order from confirmed B-line quote.
 - Generate, sign, archive, cancel contracts.
 - Order cancellation releases vehicle when applicable.
 - Contract termination starts return flow.
+- Preserve the customer second-confirmation extension point before contract
+  signing.
 
 **Do Not**
 
 - Do not implement full delivery, billing, or guarantee deposit flows here.
 - Do not alter quote formula.
+- Do not expose customer free composition of vehicle, mileage, energy, and
+  benefit packages.
+- Do not remove existing sales-assisted quote generation.
 
 **Data Model**
 
@@ -337,6 +360,23 @@ and cancellation/rollback behavior.
 - `ContractVersion`
 - `OrderChange`
 - `SubscriptionOrder.vehicleId`
+- Keep `SubscriptionQuote` as the price and plan snapshot object.
+- Do not add `SubscriptionOrderApplication` in the first version.
+- Prefer extending `SubscriptionOrder` with:
+  `orderSource`, `creditReviewStatus`, `productReviewStatus`,
+  `vehicleReviewStatus`, `depositStatus`, `finalDepositAmount`, and
+  `customerSelectedSnapshot`.
+- Suggested `orderSource` values:
+  `CUSTOMER_SELF_SERVICE`, `SALES_ASSISTED`.
+- Suggested review values:
+  `PENDING`, `APPROVED`, `REJECTED`, `NEED_MORE_INFO`.
+- Suggested A-line initial state:
+  `PENDING_REVIEW` with all review statuses `PENDING`,
+  `depositStatus = PENDING_CONFIRM`, and `finalDepositAmount = null`.
+- Add or preserve a target `PENDING_CUSTOMER_CONFIRMATION` state before
+  `PENDING_CONTRACT`.
+- Evaluate adding `VehicleStatus.REVIEW_RESERVED` as the target inventory hold
+  state for A-line review.
 
 **Backend APIs**
 
@@ -345,6 +385,12 @@ and cancellation/rollback behavior.
 - `POST /api/orders/:id/generate-contract`
 - contract sign/archive/cancel endpoints
 - order change approval endpoints
+- Proposed A-line customer API:
+  `POST /api/customer/orders` or equivalent customer-facing order application
+  endpoint.
+- Proposed back-office review APIs:
+  order review queue, credit/product/vehicle review actions, final-plan
+  confirmation, and customer-confirmation transition.
 
 **Frontend Pages**
 
@@ -353,22 +399,38 @@ and cancellation/rollback behavior.
 - `/contracts`
 - `/contracts/[id]`
 - `/contract-versions`
+- Back-office order review queue and order detail review panel for A-line.
+- Future customer-facing confirmation page; first version may use a back-office
+  "confirm final plan" action while preserving the status extension point.
 
 **Permissions**
 
 - `order:*`, `order_change:*`, `contract:*`, vehicle status permissions.
+- Recommended additions or splits:
+  `order:review`, `order:confirm_final_plan`, and read access to vehicles,
+  active subscription plans, and deposit rules for reviewers.
 
 **Tests**
 
 - Confirm quote locks vehicle.
 - Order cancellation releases vehicle.
 - Contract cancellation/termination paths preserve audit trail.
+- A-line submission creates intent order and snapshots with pending deposit.
+- A-line review writes final deposit from A/B/C grade, deposit rule, and risk result.
+- Changed final deposit or plan enters `PENDING_CUSTOMER_CONFIRMATION`.
+- A-line vehicle status follows `AVAILABLE -> REVIEW_RESERVED -> RESERVED`
+  when `REVIEW_RESERVED` is implemented; otherwise document and test the
+  temporary `RESERVED` fallback.
 
 **Acceptance**
 
 - Vehicle cannot be double reserved.
 - Order/contract transitions are auditable.
 - Cancelled quote/order releases reserved vehicle when business rules allow it.
+- B-line sales-assisted flow remains compatible with current quote/order pages.
+- A-line minimum first version supports customer intent order submission,
+  back-office review, final deposit confirmation, final-plan confirmation, and
+  contract entry.
 
 ## Stage 6: Vehicle Delivery, Return, And Re-Pooling
 

@@ -128,6 +128,11 @@ const applicationInclude = {
     orderBy: { createdAt: "desc" as const },
     where: { deletedAt: null }
   },
+  orders: {
+    orderBy: { createdAt: "desc" as const },
+    select: { deletedAt: true, id: true, orderNo: true, orderStatus: true },
+    where: { deletedAt: null }
+  },
   salesUser: {
     select: { id: true, name: true, username: true }
   },
@@ -1636,6 +1641,13 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
     intendedModel: application.intendedModel,
     intendedPeriodMonths: application.intendedPeriodMonths,
     materials: application.materialGroups.map((group) => toMaterialGroupView(group, application, user)),
+    orders: (application.orders ?? [])
+      .filter((order) => !order.deletedAt)
+      .map((order) => ({
+        id: order.id,
+        orderNo: order.orderNo,
+        orderStatus: order.orderStatus
+      })),
     rejectedReason: application.rejectedReason,
     riskResult: application.riskResults[0] ? toRiskResultView(application.riskResults[0]) : null,
     salesUser: application.salesUser,

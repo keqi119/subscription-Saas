@@ -19,6 +19,7 @@ D:\Projects\auto-subscription-platform
 - 已有产品、产品版本、旧版 `ProductPriceRule`、产品组件包和 `SubscriptionPlan`。
 - 已有订阅报价、订单、合同模板、合同管理、订单变更基础能力。
 - 已新增车辆资产池、车辆当前销售价初始化、季度 review、销售价历史、可用车辆接口。
+- 已补充 A/B 双线订单主线文档：A 线客户自动下单，B 线销售手动下单。
 - 当前仍有大量未提交文件，开发前必须先确认工作区和 migration 状态。
 
 `ProductPriceRule` 是旧版价格规则，保留兼容历史报价。新版报价入口是
@@ -141,6 +142,8 @@ pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/
 
 ## 当前核心业务链路
 
+当前已实现基线主要对应 B 线销售手动下单：
+
 ```text
 客户创建
   -> 进件提交
@@ -153,6 +156,98 @@ pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/
   -> 从报价生成订单
   -> 生成/签署/归档合同
 ```
+
+## A/B 双线订单目标主线
+
+后续订单主线需要同时支持两条路径，并最终汇入订单、合同、付款、交付、
+起租流程。
+
+A 线：客户自动下单。
+
+```text
+客户看车
+  -> 选择具体车辆
+  -> 选择预设订阅套餐
+  -> 提交订单申请
+  -> 系统生成意向订单和报价快照
+  -> 后台审核客户资质、产品匹配、车辆库存
+  -> 押金根据审核结果最终确认
+  -> 客户确认最终方案
+  -> 合同签约
+```
+
+A 线原则：
+
+```text
+先下单，后审核
+客户选择的是意向方案，不是最终签约方案
+客户前端只选择预设套餐，不开放组件自由组合
+押金金额审核后确认
+```
+
+客户前端提示文案：
+
+```text
+您当前选择的是意向订阅方案。押金金额将根据您的资质审核结果、信用等级及平台风控规则最终确认。审核通过后，平台将向您展示最终签约方案，您确认后再进入合同签署流程。
+```
+
+客户提交按钮建议使用：
+
+```text
+提交审核
+```
+
+B 线：销售手动下单。
+
+```text
+客户建档 / 进件
+  -> 风控审核
+  -> 客户评级
+  -> 销售选择车辆和套餐
+  -> 生成报价 / 订单
+  -> 合同签约
+```
+
+B 线原则：
+
+```text
+先审核，后下单
+沿用现有后台进件、报价、订单流程
+```
+
+数据模型方向：
+
+```text
+保留 SubscriptionQuote
+不新增 SubscriptionOrderApplication 第一版
+优先扩展 SubscriptionOrder
+新增 orderSource
+新增 creditReviewStatus / productReviewStatus / vehicleReviewStatus
+新增 depositStatus / finalDepositAmount
+新增 customerSelectedSnapshot
+可选新增 REVIEW_RESERVED 车辆状态
+```
+
+A 线押金规则：
+
+```text
+客户下单时押金待确认
+审核后根据客户等级 A/B/C、押金规则、风控结果生成 finalDepositAmount
+如果最终押金或方案发生变化，应进入 PENDING_CUSTOMER_CONFIRMATION
+```
+
+车辆状态联动目标：
+
+```text
+A 线客户提交订单：AVAILABLE -> REVIEW_RESERVED
+A 线审核失败 / 客户取消：REVIEW_RESERVED -> AVAILABLE
+A 线审核通过进入签约：REVIEW_RESERVED -> RESERVED
+B 线销售下单：AVAILABLE -> RESERVED
+合同签署 / 支付 / 交付后续：RESERVED -> LEASED
+```
+
+如果第一版不立即实现 `REVIEW_RESERVED`，可以临时复用 `RESERVED`，但目标模型
+保留 `REVIEW_RESERVED`，后续应补齐库存审核占用与签约锁定的状态区分。
 
 关键价格口径：
 
@@ -185,6 +280,7 @@ pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/
 - 处理 `prisma migrate status` 当前失败的问题。
 - 修复 `/api/vehicles/available` 可能因 JWT 缺 `vehicle:view` 导致的 Permission denied。
 - 拆分 `vehicle:*` 和 `subscription_plan:*` 细粒度权限。
+- 落地 A/B 双线订单主线的数据模型、API、后台审核页和车辆状态联动。
 - 修复 Ant Design `Space direction`、`Drawer width` 迁移到 v6 推荐属性。
 - 补齐独立 `VehicleStatusLog` 或等价状态日志。
 - 跑完整质量门禁并处理阻断。

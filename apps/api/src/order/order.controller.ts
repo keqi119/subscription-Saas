@@ -1,15 +1,17 @@
 import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 
-import { RequirePermissions } from "../auth/auth.decorators";
+import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   ArchiveContractDto,
   CancelOrderDto,
   CreateContractVersionDto,
+  CreateCustomerOrderDto,
   CreateOrderChangeDto,
   CreateOrderFromQuoteDto,
+  ReviewOrderDto,
   UpdateContractVersionDto
 } from "./dto/order.dto";
 import { OrderService } from "./order.service";
@@ -25,10 +27,67 @@ export class OrderController {
     return this.orderService.listOrders(request.user);
   }
 
+  @Get("orders/review-queue")
+  @RequirePermissions(PermissionCode.ORDER_VIEW)
+  listReviewQueue(@Req() request: AuthenticatedRequest) {
+    return this.orderService.listReviewQueue(request.user);
+  }
+
+  @Get("orders/:id/change-options/subscription-plans")
+  @RequirePermissions(PermissionCode.ORDER_CHANGE_CREATE)
+  listPlanChangeSubscriptionPlans(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.listPlanChangeSubscriptionPlans(id, request.user);
+  }
+
   @Get("orders/:id")
   @RequirePermissions(PermissionCode.ORDER_VIEW)
   getOrder(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.getOrder(id, request.user);
+  }
+
+  @Post("customer-orders")
+  @RequirePermissions(PermissionCode.ORDER_CREATE)
+  createCustomerOrder(
+    @Body() dto: CreateCustomerOrderDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.createCustomerOrder(dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/reviews/credit")
+  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  reviewCredit(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.reviewOrder(id, "credit", dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/reviews/product")
+  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  reviewProduct(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.reviewOrder(id, "product", dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/reviews/vehicle")
+  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  reviewVehicle(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.reviewOrder(id, "vehicle", dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/finalize-plan")
+  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  finalizePlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.finalizePlan(id, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/reject")
+  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  rejectCustomerOrder(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.rejectCustomerOrder(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/customer-confirm")
+  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  confirmCustomerOrder(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.confirmCustomerOrder(id, request.user, requestContext(request));
   }
 
   @Post("orders/from-quote/:quoteId")
@@ -149,10 +208,28 @@ export class OrderController {
     return this.orderService.setOrderChangeStatus(id, "APPROVED", request.user, requestContext(request));
   }
 
+  @Post("order-changes/:id/cancel")
+  @RequirePermissions(PermissionCode.ORDER_CHANGE_CREATE)
+  cancelOrderChange(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.cancelOrderChange(id, request.user, requestContext(request));
+  }
+
   @Post("order-changes/:id/reject")
-  @RequirePermissions(PermissionCode.ORDER_CHANGE_REJECT)
+  @RequireAnyPermissions(PermissionCode.ORDER_CHANGE_REJECT, PermissionCode.ORDER_CHANGE_APPROVE)
   rejectOrderChange(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.setOrderChangeStatus(id, "REJECTED", request.user, requestContext(request));
+  }
+
+  @Post("order-changes/:id/execute")
+  @RequirePermissions(PermissionCode.ORDER_CHANGE_EXECUTE)
+  executeOrderChange(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.executeOrderChange(id, request.user, requestContext(request));
+  }
+
+  @Post("order-changes/:id/return-to-plan")
+  @RequirePermissions(PermissionCode.ORDER_CHANGE_EXECUTE)
+  returnOrderChangeToPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.returnOrderChangeToPlan(id, request.user, requestContext(request));
   }
 }
 

@@ -136,7 +136,7 @@ const menuRows = [
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
-  ["orders.review", "订单申请审核", "/orders/review", "audit", 15, "order:view", "orders"],
+  ["orders.review", "订单申请审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
@@ -415,7 +415,7 @@ async function main() {
       "order_change:create",
       "contract:view"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts"]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
   );
 
   await assignRoleAccess(
@@ -481,7 +481,7 @@ async function main() {
         "order_change:view",
         "contract:view"
       ],
-      ["dashboard", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts"]
+      ["dashboard", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", ...(roleCode === "AS" ? ["orders.review"] : []), "orders.contracts"]
     );
   }
 

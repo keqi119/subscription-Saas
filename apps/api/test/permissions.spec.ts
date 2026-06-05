@@ -66,6 +66,10 @@ describe("customer order review permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       OrderController.prototype.reviewCredit
     );
+    const reviewQueuePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.listReviewQueue
+    );
     const finalizePermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       OrderController.prototype.finalizePlan
@@ -76,6 +80,7 @@ describe("customer order review permissions", () => {
     );
 
     expect(reviewPermissions).toEqual([PermissionCode.ORDER_REVIEW]);
+    expect(reviewQueuePermissions).toEqual([PermissionCode.ORDER_REVIEW]);
     expect(finalizePermissions).toEqual([PermissionCode.ORDER_CONFIRM_FINAL_PLAN]);
     expect(rejectPermissions).toEqual([PermissionCode.ORDER_REJECT]);
     expect(hasRequiredPermissions([PermissionCode.ORDER_VIEW], reviewPermissions)).toBe(false);
@@ -139,7 +144,9 @@ describe("seed permission calibration", () => {
     expectRolePermissions("OP", ["order:review", "order:confirm_final_plan", "order:reject"]);
     expectRolePermissions("RC", ["order:review", "order:reject"]);
     expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"order:review\", \"order:reject\"] : [])");
+    expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"orders.review\"] : [])");
     expect(roleHasPermission(rolePermissionArray("SA"), "order:review")).toBe(false);
+    expect(roleHasMenu(roleMenuArray("SA"), "orders.review")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {
@@ -159,6 +166,21 @@ describe("seed permission calibration", () => {
 
     expect(source).toBeDefined();
     return source ?? "";
+  }
+
+  function roleMenuArray(roleCode: string) {
+    const pattern = new RegExp(
+      `await\\s+assignRoleAccess\\(\\s*["']${escapeRegExp(roleCode)}["']\\s*,\\s*\\[[\\s\\S]*?\\]\\s*,\\s*\\[([\\s\\S]*?)\\]\\s*\\)`
+    );
+    const match = seedSource.match(pattern);
+    const source = match?.[1];
+
+    expect(source).toBeDefined();
+    return source ?? "";
+  }
+
+  function roleHasMenu(source: string, menuCode: string) {
+    return containsQuotedValue(source, menuCode);
   }
 
   function roleHasPermission(source: string, permissionCode: string, seen = new Set<string>()) {

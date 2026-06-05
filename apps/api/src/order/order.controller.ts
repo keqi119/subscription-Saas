@@ -28,7 +28,7 @@ export class OrderController {
   }
 
   @Get("orders/review-queue")
-  @RequirePermissions(PermissionCode.ORDER_VIEW)
+  @RequirePermissions(PermissionCode.ORDER_REVIEW)
   listReviewQueue(@Req() request: AuthenticatedRequest) {
     return this.orderService.listReviewQueue(request.user);
   }

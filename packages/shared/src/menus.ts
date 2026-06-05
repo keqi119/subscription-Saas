@@ -129,7 +129,7 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         icon: "audit",
         label: "订单申请审核",
         path: "/orders/review",
-        permissionCode: PermissionCode.ORDER_VIEW
+        permissionCode: PermissionCode.ORDER_REVIEW
       },
       {
         code: "orders.contracts",

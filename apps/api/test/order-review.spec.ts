@@ -229,6 +229,34 @@ describe("customer self-service order review workflow", () => {
 
     expect(harness.tx.subscriptionOrder.update).not.toHaveBeenCalled();
   });
+
+  it("restricts review sections by reviewer role", async () => {
+    const harness = createReviewHarness();
+    const riskUser = { ...harness.user, roles: ["RC"] };
+    const assetUser = { ...harness.user, roles: ["AS"] };
+
+    await expect(
+      harness.service.reviewOrder(
+        harness.orderId,
+        "product",
+        { status: OrderReviewStatus.APPROVED },
+        riskUser,
+        harness.context
+      )
+    ).rejects.toThrow("当前角色无权执行该审核环节。");
+
+    await expect(
+      harness.service.reviewOrder(
+        harness.orderId,
+        "credit",
+        { customerGrade: CustomerGrade.A, status: OrderReviewStatus.APPROVED },
+        assetUser,
+        harness.context
+      )
+    ).rejects.toThrow("当前角色无权执行该审核环节。");
+
+    expect(harness.tx.subscriptionOrder.update).not.toHaveBeenCalled();
+  });
 });
 
 function createReviewHarness(overrides: Partial<ReviewState> = {}) {

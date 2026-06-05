@@ -250,14 +250,22 @@ function ReviewStatusTag({ value }: { value?: string }) {
 
 function canFinalizeOrder(order: OrderDetail) {
   return (
-    order.orderStatus === "PENDING_REVIEW" &&
+    ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) &&
     order.creditReviewStatus === "APPROVED" &&
     order.productReviewStatus === "APPROVED" &&
-    order.vehicleReviewStatus === "APPROVED"
+    order.vehicleReviewStatus === "APPROVED" &&
+    order.depositStatus === "CONFIRMED" &&
+    order.finalDepositAmount !== null &&
+    order.finalDepositAmount !== undefined
   );
 }
 
 function ReviewPanel({
+  canConfirmFinalPlan,
+  canRejectOrder,
+  canReviewCredit,
+  canReviewProduct,
+  canReviewVehicle,
   creditForm,
   onConfirmCustomer,
   onFinalizePlan,
@@ -265,6 +273,11 @@ function ReviewPanel({
   onReview,
   order
 }: {
+  canConfirmFinalPlan: boolean;
+  canRejectOrder: boolean;
+  canReviewCredit: boolean;
+  canReviewProduct: boolean;
+  canReviewVehicle: boolean;
   creditForm: ReturnType<typeof Form.useForm<{ customerGrade: string }>>[0];
   onConfirmCustomer: () => Promise<void>;
   onFinalizePlan: () => Promise<void>;
@@ -275,6 +288,8 @@ function ReviewPanel({
   if (order.orderSource !== "CUSTOMER_SELF_SERVICE") {
     return null;
   }
+
+  const canReviewPendingOrder = order.orderStatus === "PENDING_REVIEW";
 
   return (
     <Card title="订单申请审核">
@@ -296,63 +311,63 @@ function ReviewPanel({
         />
 
         <Space orientation="vertical" size={12} style={{ width: "100%" }}>
-          <Space wrap>
-            <Typography.Text strong>客户资质审核</Typography.Text>
-            <Form form={creditForm} initialValues={{ customerGrade: "A" }} layout="inline">
-              <Form.Item name="customerGrade" rules={[{ required: true, message: "请选择客户等级" }]}>
-                <Select options={customerGradeOptions} style={{ width: 96 }} />
-              </Form.Item>
-            </Form>
-            <Button onClick={() => onReview("credit", "APPROVED")} size="small" type="primary">
-              通过
-            </Button>
-            <Button onClick={() => onReview("credit", "NEED_MORE_INFO")} size="small">
-              补资料
-            </Button>
-            <Button danger onClick={() => onReview("credit", "REJECTED")} size="small">
-              拒绝
-            </Button>
-          </Space>
+          {canReviewCredit && canReviewPendingOrder ? (
+            <Space wrap>
+              <Typography.Text strong>客户资质审核</Typography.Text>
+              <Form form={creditForm} initialValues={{ customerGrade: "A" }} layout="inline">
+                <Form.Item name="customerGrade" rules={[{ required: true, message: "请选择客户等级" }]}>
+                  <Select options={customerGradeOptions} style={{ width: 96 }} />
+                </Form.Item>
+              </Form>
+              <Button onClick={() => onReview("credit", "APPROVED")} size="small" type="primary">
+                通过
+              </Button>
+              <Button onClick={() => onReview("credit", "NEED_MORE_INFO")} size="small">
+                补资料
+              </Button>
+              <Button danger onClick={() => onReview("credit", "REJECTED")} size="small">
+                拒绝
+              </Button>
+            </Space>
+          ) : null}
 
-          <Space wrap>
-            <Typography.Text strong>产品匹配审核</Typography.Text>
-            <Button onClick={() => onReview("product", "APPROVED")} size="small" type="primary">
-              通过
-            </Button>
-            <Button onClick={() => onReview("product", "NEED_MORE_INFO")} size="small">
-              补资料
-            </Button>
-            <Button danger onClick={() => onReview("product", "REJECTED")} size="small">
-              拒绝
-            </Button>
-          </Space>
+          {canReviewProduct && canReviewPendingOrder ? (
+            <Space wrap>
+              <Typography.Text strong>产品匹配审核</Typography.Text>
+              <Button onClick={() => onReview("product", "APPROVED")} size="small" type="primary">
+                通过
+              </Button>
+              <Button danger onClick={() => onReview("product", "REJECTED")} size="small">
+                拒绝
+              </Button>
+            </Space>
+          ) : null}
 
-          <Space wrap>
-            <Typography.Text strong>车辆库存审核</Typography.Text>
-            <Button onClick={() => onReview("vehicle", "APPROVED")} size="small" type="primary">
-              通过
-            </Button>
-            <Button onClick={() => onReview("vehicle", "NEED_MORE_INFO")} size="small">
-              补资料
-            </Button>
-            <Button danger onClick={() => onReview("vehicle", "REJECTED")} size="small">
-              拒绝
-            </Button>
-          </Space>
+          {canReviewVehicle && canReviewPendingOrder ? (
+            <Space wrap>
+              <Typography.Text strong>车辆库存审核</Typography.Text>
+              <Button onClick={() => onReview("vehicle", "APPROVED")} size="small" type="primary">
+                通过
+              </Button>
+              <Button danger onClick={() => onReview("vehicle", "REJECTED")} size="small">
+                拒绝
+              </Button>
+            </Space>
+          ) : null}
 
           <Space wrap>
             <Typography.Text strong>最终方案确认</Typography.Text>
-            {canFinalizeOrder(order) ? (
+            {canConfirmFinalPlan && canFinalizeOrder(order) ? (
               <Button onClick={onFinalizePlan} size="small" type="primary">
                 确认最终方案
               </Button>
             ) : null}
-            {order.orderStatus === "PENDING_CUSTOMER_CONFIRMATION" ? (
+            {canConfirmFinalPlan && order.orderStatus === "PENDING_CUSTOMER_CONFIRMATION" ? (
               <Button onClick={onConfirmCustomer} size="small">
                 后台代客户确认并进入签约
               </Button>
             ) : null}
-            {["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) ? (
+            {canRejectOrder && ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) ? (
               <Button danger onClick={onRejectOrder} size="small">
                 拒绝订单
               </Button>
@@ -744,6 +759,13 @@ export default function OrderDetailPage() {
   const canExecuteChange = permissions.has("order_change:execute");
   const canGenerateContract = permissions.has("contract:generate");
   const canCancelOrder = permissions.has("order:cancel");
+  const isAdminOrOperator = roles.has("ADMIN") || roles.has("OP") || roles.has("GM");
+  const hasOrderReviewPermission = permissions.has("order:review");
+  const canReviewCredit = hasOrderReviewPermission && (isAdminOrOperator || roles.has("RC"));
+  const canReviewProduct = hasOrderReviewPermission && isAdminOrOperator;
+  const canReviewVehicle = hasOrderReviewPermission && (isAdminOrOperator || roles.has("AS"));
+  const canConfirmFinalPlan = permissions.has("order:confirm_final_plan");
+  const canRejectCustomerOrder = permissions.has("order:reject") || isAdminOrOperator;
   const currentVehicleSalePrice = toNumber(
     order?.vehicle?.currentSalePriceAmount ??
       getSnapshotValue(order?.quoteSnapshot, "vehicleSnapshot.currentSalePriceAmount", "vehicleSalePriceAmount")
@@ -1155,6 +1177,11 @@ export default function OrderDetailPage() {
 
         {order ? (
           <ReviewPanel
+            canConfirmFinalPlan={canConfirmFinalPlan}
+            canRejectOrder={canRejectCustomerOrder}
+            canReviewCredit={canReviewCredit}
+            canReviewProduct={canReviewProduct}
+            canReviewVehicle={canReviewVehicle}
             creditForm={creditForm}
             onConfirmCustomer={confirmCustomerOrder}
             onFinalizePlan={finalizePlan}

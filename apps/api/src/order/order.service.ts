@@ -206,6 +206,7 @@ export class OrderService {
     assertReviewDecision(decision);
     const before = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(before, user);
+    ensureCanReviewOrderSection(user, reviewType);
     ensureCustomerSelfServiceOrder(before);
     assertNoActiveOrderChange(before);
 
@@ -1426,6 +1427,19 @@ function ensureUserPermission(user: RequestUser, permission: PermissionCode) {
   if (!user.roles.includes("ADMIN") && !user.permissions.includes(permission)) {
     throw new ForbiddenException("Permission denied.");
   }
+}
+
+function ensureCanReviewOrderSection(user: RequestUser, reviewType: "credit" | "product" | "vehicle") {
+  if (user.roles.some((role) => ["ADMIN", "GM", "OP"].includes(role))) {
+    return;
+  }
+  if (reviewType === "credit" && user.roles.includes("RC")) {
+    return;
+  }
+  if (reviewType === "vehicle" && user.roles.includes("AS")) {
+    return;
+  }
+  throw new ForbiddenException("当前角色无权执行该审核环节。");
 }
 
 function buildRequestedOrderChangeSnapshot(dto: CreateOrderChangeDto, order: OrderWithDetails) {

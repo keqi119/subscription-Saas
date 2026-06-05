@@ -11,16 +11,21 @@ import {
   ApplicationSource,
   ApplicationStatus,
   AuditAction,
+  BusinessType,
+  CustomerGrade,
   CustomerStatus,
   DepositStatus,
   MaterialStatus,
   MonthlyFeeMode,
   OrderReviewStatus,
+  OrderSource,
+  OrderStatus,
   PlanConfirmStatus,
   Prisma,
   ProductStatus,
   ProductType,
   ProductVersionStatus,
+  QuoteStatus,
   RecordStatus,
   SalePriceStatus,
   SubscriptionPlanStatus,
@@ -41,6 +46,7 @@ import {
   ApproveApplicationDto,
   NeedMoreInfoDto,
   RejectApplicationDto,
+  ReviewApplicationDto,
   SubmitApplicationDto
 } from "./dto/application-review.dto";
 import { CreateApplicationDto } from "./dto/create-application.dto";
@@ -221,6 +227,28 @@ type SelfServiceSubscriptionPlan = Prisma.SubscriptionPlanGetPayload<{
 }>;
 type SelfServiceVehicle = Prisma.VehicleGetPayload<object>;
 type Tx = Prisma.TransactionClient;
+type ApplicationReviewType = "material" | "credit" | "product" | "vehicle";
+type ApplicationFinalPlanInput = {
+  periodMonths: number;
+  subscriptionPlanId: string;
+  vehicleId: string;
+};
+type ApplicationFinalPlanDetails = {
+  benefitPackagePriceAmount: bigint;
+  energyPackagePriceAmount: bigint;
+  finalPlanSnapshot: Prisma.InputJsonValue;
+  fixedRate: number | null;
+  mileagePackagePriceAmount: bigint;
+  monthlyFeeAmount: bigint;
+  packageSnapshot: Prisma.InputJsonValue;
+  periodMonths: number;
+  plan: SelfServiceSubscriptionPlan;
+  vehicle: SelfServiceVehicle;
+  vehicleBaseFeeAmount: bigint;
+  vehicleBaseFeeCapAmount: bigint;
+  vehicleSalePriceAmount: bigint;
+  vehicleSnapshot: Prisma.InputJsonValue;
+};
 
 const SELF_SERVICE_APPLICATION_DEPOSIT_NOTICE =
   "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。";
@@ -472,6 +500,460 @@ export class CustomerService {
     });
 
     return applications.map((application) => toApplicationView(application, user));
+  }
+
+  async listApplicationReviewQueue(user: RequestUser) {
+    const applications = await this.prisma.application.findMany({
+      include: applicationInclude,
+      orderBy: { createdAt: "desc" },
+      where: {
+        ...this.applicationScopeWhere(user),
+        applicationSource: ApplicationSource.SELF_SERVICE,
+        orders: { none: { deletedAt: null } },
+        status: { notIn: [ApplicationStatus.REJECTED, ApplicationStatus.CANCELLED] }
+      }
+    });
+
+    return applications.map((application) => toApplicationView(application, user));
+  }
+
+  async reviewApplication(
+    id: string,
+    reviewType: ApplicationReviewType,
+    dto: ReviewApplicationDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const decision = applicationReviewDecision(dto);
+    const comment = applicationReviewComment(dto);
+    assertApplicationReviewDecision(decision);
+    const before = await this.findApplicationOrThrow(id);
+    ensureCanAccessApplication(before, user);
+    ensureApplicationReviewWorkflowAllowed(before);
+    assertApplicationHasNoOrder(before);
+
+    if (decision === OrderReviewStatus.REJECTED) {
+      return this.rejectApplicationWithReviewType(id, dto, user, context, reviewType, before);
+    }
+
+    if (decision === OrderReviewStatus.NEED_MORE_INFO) {
+      const application = await this.prisma.$transaction(async (tx) => {
+        await tx.application.update({
+          data: {
+            [applicationReviewStatusField(reviewType)]: OrderReviewStatus.NEED_MORE_INFO,
+            rejectedReason: comment,
+            status: ApplicationStatus.NEED_MORE_INFO,
+            updatedBy: user.id
+          },
+          where: { id }
+        });
+
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.NEED_MORE_INFO,
+          applicationId: id,
+          comment,
+          fromStatus: before.status,
+          operator: user,
+          toStatus: ApplicationStatus.NEED_MORE_INFO
+        });
+
+        return tx.application.findUniqueOrThrow({
+          include: applicationInclude,
+          where: { id }
+        });
+      });
+
+      await this.auditApplicationChange(AuditAction.UPDATE, before, application, user, context);
+      return toApplicationView(application, user);
+    }
+
+    if (reviewType === "material") {
+      const application = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.application.update({
+          data: {
+            materialReviewStatus: OrderReviewStatus.APPROVED,
+            rejectedReason: null,
+            status: ApplicationStatus.SUBMITTED,
+            updatedBy: user.id
+          },
+          include: applicationInclude,
+          where: { id }
+        });
+
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.REVIEW_MATERIAL,
+          applicationId: id,
+          comment,
+          fromStatus: before.status,
+          operator: user,
+          toStatus: updated.status
+        });
+
+        return updated;
+      });
+
+      await this.auditApplicationChange(AuditAction.APPROVE, before, application, user, context);
+      return toApplicationView(application, user);
+    }
+
+    if (reviewType === "credit") {
+      const customerGrade = dto.customerGrade;
+      if (!customerGrade) {
+        throw new BadRequestException("客户资质审核通过时必须选择客户等级。");
+      }
+
+      const result = await this.prisma.$transaction(async (tx) => {
+        const depositRule = await findActiveApplicationDepositRule(tx, customerGrade);
+        if (!depositRule) {
+          throw new BadRequestException(`No active deposit rule configured for grade ${customerGrade}.`);
+        }
+
+        const depositRuleSnapshot = toJsonSnapshot({
+          customerGrade,
+          defaultRate: Number(depositRule.defaultRate),
+          depositAmount: Number(depositRule.depositAmount),
+          depositRuleId: depositRule.id,
+          grade: depositRule.grade,
+          status: DepositStatus.CONFIRMED
+        });
+        const customerBefore = await tx.customer.findUnique({ where: { id: before.customerId } });
+        const customerAfter = await tx.customer.update({
+          data: {
+            grade: customerGrade,
+            status: CustomerStatus.APPROVED,
+            updatedBy: user.id
+          },
+          where: { id: before.customerId }
+        });
+        const application = await tx.application.update({
+          data: {
+            creditReviewComment: comment,
+            creditReviewStatus: OrderReviewStatus.APPROVED,
+            customerGrade,
+            depositRuleId: depositRule.id,
+            depositRuleSnapshot,
+            depositStatus: DepositStatus.CONFIRMED,
+            finalDepositAmount: depositRule.depositAmount,
+            rejectedReason: null,
+            status: ApplicationStatus.SUBMITTED,
+            updatedBy: user.id
+          },
+          include: applicationInclude,
+          where: { id }
+        });
+
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.APPROVE,
+          applicationId: id,
+          comment,
+          fromStatus: before.status,
+          operator: user,
+          toStatus: application.status
+        });
+
+        return { application, customerAfter, customerBefore };
+      });
+
+      if (result.customerBefore && result.customerAfter) {
+        await this.auditService.write({
+          action: AuditAction.UPDATE,
+          after: toAuditSnapshot(result.customerAfter),
+          before: toAuditSnapshot(result.customerBefore),
+          entityId: result.customerAfter.id,
+          entityType: "customer",
+          ipAddress: context.ipAddress,
+          module: "customer",
+          operatorId: user.id,
+          userAgent: context.userAgent
+        });
+      }
+      await this.auditApplicationChange(AuditAction.APPROVE, before, result.application, user, context);
+      return toApplicationView(result.application, user);
+    }
+
+    if (reviewType === "product") {
+      const application = await this.prisma.$transaction(async (tx) => {
+        const details = await loadApplicationFinalPlanDetails(tx, before, dto);
+        const updated = await tx.application.update({
+          data: {
+            finalPeriodMonths: details.periodMonths,
+            finalSubscriptionPlanId: details.plan.id,
+            finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+            finalVehicleId: details.vehicle.id,
+            productReviewStatus: OrderReviewStatus.APPROVED,
+            rejectedReason: null,
+            status: ApplicationStatus.SUBMITTED,
+            updatedBy: user.id
+          },
+          include: applicationInclude,
+          where: { id }
+        });
+
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.APPROVE,
+          applicationId: id,
+          comment,
+          fromStatus: before.status,
+          operator: user,
+          toStatus: updated.status
+        });
+
+        return updated;
+      });
+
+      await this.auditApplicationChange(AuditAction.APPROVE, before, application, user, context);
+      return toApplicationView(application, user);
+    }
+
+    if (reviewType === "vehicle") {
+      const application = await this.prisma.$transaction(async (tx) => {
+        const details = await loadApplicationFinalPlanDetails(tx, before, dto);
+        await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
+        const updated = await tx.application.update({
+          data: {
+            finalVehicleId: details.vehicle.id,
+            finalVehicleBaseFeeAmount:
+              before.finalVehicleBaseFeeAmount ?? details.vehicleBaseFeeAmount,
+            rejectedReason: null,
+            status: ApplicationStatus.SUBMITTED,
+            updatedBy: user.id,
+            vehicleReviewStatus: OrderReviewStatus.APPROVED
+          },
+          include: applicationInclude,
+          where: { id }
+        });
+
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.APPROVE,
+          applicationId: id,
+          comment,
+          fromStatus: before.status,
+          operator: user,
+          toStatus: updated.status
+        });
+
+        return updated;
+      });
+
+      await this.auditApplicationChange(AuditAction.APPROVE, before, application, user, context);
+      return toApplicationView(application, user);
+    }
+
+    throw new BadRequestException("Unsupported application review type.");
+  }
+
+  async finalizeApplicationPlan(id: string, user: RequestUser, context: RequestContext) {
+    const before = await this.findApplicationOrThrow(id);
+    ensureCanAccessApplication(before, user);
+    ensureApplicationReviewWorkflowAllowed(before);
+    assertApplicationHasNoOrder(before);
+    assertApplicationReadyForFinalPlan(before);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const details = await loadApplicationFinalPlanDetails(tx, before);
+      const now = new Date();
+      const application = await tx.application.update({
+        data: {
+          approvedAt: before.approvedAt ?? now,
+          finalPeriodMonths: details.periodMonths,
+          finalPlanConfirmedAt: now,
+          finalPlanSnapshot: details.finalPlanSnapshot,
+          finalQuoteSnapshot: details.finalPlanSnapshot,
+          finalSubscriptionPlanId: details.plan.id,
+          finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+          finalVehicleId: details.vehicle.id,
+          planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+          rejectedReason: null,
+          status: ApplicationStatus.APPROVED,
+          updatedBy: user.id
+        },
+        include: applicationInclude,
+        where: { id }
+      });
+
+      await createApplicationActionLog(tx, {
+        actionType: ApplicationActionType.APPROVE,
+        applicationId: id,
+        comment: "确认最终方案",
+        fromStatus: before.status,
+        operator: user,
+        toStatus: ApplicationStatus.APPROVED
+      });
+
+      return { application, details };
+    });
+
+    await this.auditApplicationChange(AuditAction.APPROVE, before, result.application, user, context);
+    return toApplicationView(result.application, user);
+  }
+
+  async createOrderFromApplication(id: string, user: RequestUser, context: RequestContext) {
+    const before = await this.findApplicationOrThrow(id);
+    ensureCanAccessApplication(before, user);
+    assertApplicationCanCreateOrder(before);
+    const finalDepositAmount = before.finalDepositAmount;
+    if (finalDepositAmount === null) {
+      throw new BadRequestException("押金确认后才可以生成订单。");
+    }
+
+    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      const details = await loadApplicationFinalPlanDetails(tx, before);
+      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: details.vehicle.id } });
+      assertApplicationVehicleCanEnterOrder(before, vehicleBefore);
+
+      const vehicleUpdate = await tx.vehicle.updateMany({
+        data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
+        where: {
+          deletedAt: null,
+          id: details.vehicle.id,
+          status:
+            before.applicationSource === ApplicationSource.SELF_SERVICE
+              ? VehicleStatus.REVIEW_RESERVED
+              : VehicleStatus.AVAILABLE
+        }
+      });
+      if (vehicleUpdate.count !== 1) {
+        throw new BadRequestException("车辆当前状态不允许生成订单。");
+      }
+      const vehicleAfter = await tx.vehicle.findUniqueOrThrow({ where: { id: details.vehicle.id } });
+
+      const finalPlanSnapshot = (before.finalPlanSnapshot ?? details.finalPlanSnapshot) as Prisma.InputJsonValue;
+      const quote = await tx.subscriptionQuote.create({
+        data: {
+          applicationId: before.id,
+          benefitPackageId: details.plan.benefitPackage?.id ?? null,
+          benefitPackagePriceAmount: details.benefitPackagePriceAmount,
+          confirmedAt: new Date(),
+          confirmedBy: user.id,
+          createdBy: user.id,
+          customerId: before.customerId,
+          customerSelectedSnapshot: before.customerSelectedSnapshot as Prisma.InputJsonValue | undefined,
+          depositAmount: finalDepositAmount,
+          depositRuleSnapshot: before.depositRuleSnapshot as Prisma.InputJsonValue | undefined,
+          energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+          energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+          energyPackageId: details.plan.energyPackage.id,
+          energyPackagePriceAmount: details.energyPackagePriceAmount,
+          mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+          mileagePackageId: details.plan.mileagePackage.id,
+          mileagePackagePriceAmount: details.mileagePackagePriceAmount,
+          monthlyFeeAmount: details.monthlyFeeAmount,
+          monthlyFeeCapAmount: details.vehicleBaseFeeCapAmount,
+          monthlyFeeRate: details.plan.monthlyFeeRate,
+          overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+          packageSnapshot: details.packageSnapshot,
+          periodMonths: details.periodMonths,
+          productId: details.plan.productId,
+          productVersionId: details.plan.productVersionId,
+          quoteNo: createBusinessNo("QUO"),
+          riskResultId: null,
+          status: QuoteStatus.CONFIRMED,
+          subscriptionPlanId: details.plan.id,
+          updatedBy: user.id,
+          vehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+          vehicleBaseFeeCapAmount: details.vehicleBaseFeeCapAmount,
+          vehicleId: details.vehicle.id,
+          vehicleModel: assertVehicleModel(details.vehicle.vehicleModel),
+          vehiclePackageId: details.plan.vehiclePackage.id,
+          vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+          vehicleSalePriceAmount: details.vehicleSalePriceAmount,
+          vehicleSnapshot: details.vehicleSnapshot
+        }
+      });
+
+      const confirmedAt = before.finalPlanConfirmedAt ?? new Date();
+      const order = await tx.subscriptionOrder.create({
+        data: {
+          applicationId: before.id,
+          businessType: BusinessType.SUBSCRIPTION,
+          createdBy: user.id,
+          creditReviewStatus: OrderReviewStatus.APPROVED,
+          customerConfirmedAt: confirmedAt,
+          customerId: before.customerId,
+          customerSelectedSnapshot: before.customerSelectedSnapshot as Prisma.InputJsonValue | undefined,
+          depositAmount: finalDepositAmount,
+          depositStatus: DepositStatus.CONFIRMED,
+          energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+          energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+          finalDepositAmount,
+          finalPlanConfirmedAt: confirmedAt,
+          finalPlanSnapshot,
+          mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+          monthlyFeeAmount: details.monthlyFeeAmount,
+          orderNo: createBusinessNo("ORD"),
+          orderSource: mapApplicationSourceToOrderSource(before.applicationSource),
+          orderStatus: OrderStatus.PENDING_CONTRACT,
+          overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+          periodMonths: details.periodMonths,
+          productId: details.plan.productId,
+          productReviewStatus: OrderReviewStatus.APPROVED,
+          productVersionId: details.plan.productVersionId,
+          quoteId: quote.id,
+          quoteSnapshot: finalPlanSnapshot,
+          riskResultId: null,
+          updatedBy: user.id,
+          vehicleId: details.vehicle.id,
+          vehicleModel: assertVehicleModel(details.vehicle.vehicleModel),
+          vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+          vehicleReviewStatus: OrderReviewStatus.APPROVED
+        }
+      });
+
+      await createApplicationActionLog(tx, {
+        actionType: ApplicationActionType.APPROVE,
+        applicationId: id,
+        comment: "生成正式订单",
+        fromStatus: before.status,
+        operator: user,
+        toStatus: before.status
+      });
+
+      return { order, quote, vehicleAfter, vehicleBefore };
+    }));
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toAuditSnapshot(result.quote),
+      entityId: result.quote.id,
+      entityType: "subscription_quote",
+      ipAddress: context.ipAddress,
+      module: "quote",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toAuditSnapshot(result.order),
+      entityId: result.order.id,
+      entityType: "subscription_order",
+      ipAddress: context.ipAddress,
+      module: "order",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    if (result.vehicleBefore) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toAuditSnapshot(result.vehicleAfter),
+        before: toAuditSnapshot(result.vehicleBefore),
+        entityId: result.vehicleAfter.id,
+        entityType: "vehicle",
+        ipAddress: context.ipAddress,
+        module: "vehicle",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    return {
+      applicationId: before.id,
+      orderId: result.order.id,
+      orderNo: result.order.orderNo,
+      orderStatus: result.order.orderStatus,
+      quoteId: result.quote.id,
+      quoteNo: result.quote.quoteNo,
+      vehicleStatus: result.vehicleAfter.status
+    };
   }
 
   async createApplication(dto: CreateApplicationDto, user: RequestUser, context: RequestContext) {
@@ -1314,16 +1796,94 @@ export class CustomerService {
     context: RequestContext
   ) {
     const before = await this.findApplicationOrThrow(id);
-    ensureReviewable(before);
+    ensureCanAccessApplication(before, user);
+    ensureApplicationReviewWorkflowAllowed(before);
+    return this.rejectApplicationWithReviewType(id, dto, user, context, undefined, before);
+  }
+
+  async cancelApplication(
+    id: string,
+    dto: RejectApplicationDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.findApplicationOrThrow(id);
+    ensureCanAccessApplication(before, user);
+    assertApplicationHasNoOrder(before);
+    if (before.status === ApplicationStatus.CANCELLED || before.status === ApplicationStatus.REJECTED) {
+      throw new BadRequestException("当前进件状态不允许取消。");
+    }
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
-    const application = await this.prisma.$transaction(async (tx) => {
-      await tx.application.update({
+    const result = await this.prisma.$transaction(async (tx) => {
+      const vehicleRelease = await releaseApplicationSoftReservedVehicle(tx, before, user);
+      const application = await tx.application.update({
         data: {
           rejectedReason: comment,
-          status: ApplicationStatus.REJECTED,
+          status: ApplicationStatus.CANCELLED,
           updatedBy: user.id
         },
+        include: applicationInclude,
+        where: { id }
+      });
+
+      await createApplicationActionLog(tx, {
+        actionType: ApplicationActionType.REJECT,
+        applicationId: id,
+        comment,
+        fromStatus: before.status,
+        operator: user,
+        toStatus: ApplicationStatus.CANCELLED
+      });
+
+      return { application, vehicleRelease };
+    });
+
+    await this.auditApplicationChange(AuditAction.UPDATE, before, result.application, user, context);
+    if (result.vehicleRelease) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toAuditSnapshot(result.vehicleRelease.after),
+        before: toAuditSnapshot(result.vehicleRelease.before),
+        entityId: result.vehicleRelease.after.id,
+        entityType: "vehicle",
+        ipAddress: context.ipAddress,
+        module: "vehicle",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+    return toApplicationView(result.application, user);
+  }
+
+  private async rejectApplicationWithReviewType(
+    id: string,
+    dto: Partial<ReviewApplicationDto & RejectApplicationDto>,
+    user: RequestUser,
+    context: RequestContext,
+    reviewType?: ApplicationReviewType,
+    beforeApplication?: ApplicationWithDetails
+  ) {
+    const before = beforeApplication ?? await this.findApplicationOrThrow(id);
+    ensureCanAccessApplication(before, user);
+    ensureApplicationReviewWorkflowAllowed(before);
+    assertApplicationHasNoOrder(before);
+    const comment = normalizeRequiredText(dto.comment ?? dto.reason ?? dto.remark, "comment");
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const vehicleRelease = await releaseApplicationSoftReservedVehicle(tx, before, user);
+      const data: Prisma.ApplicationUpdateInput = {
+        rejectedReason: comment,
+        status: ApplicationStatus.REJECTED,
+        updatedBy: user.id
+      };
+      if (reviewType) {
+        data[applicationReviewStatusField(reviewType)] = OrderReviewStatus.REJECTED;
+      }
+
+      const application = await tx.application.update({
+        data,
+        include: applicationInclude,
         where: { id }
       });
 
@@ -1341,14 +1901,24 @@ export class CustomerService {
         toStatus: ApplicationStatus.REJECTED
       });
 
-      return tx.application.findUniqueOrThrow({
-        include: applicationInclude,
-        where: { id }
-      });
+      return { application, vehicleRelease };
     });
 
-    await this.auditApplicationChange(AuditAction.REJECT, before, application, user, context);
-    return toApplicationView(application);
+    await this.auditApplicationChange(AuditAction.REJECT, before, result.application, user, context);
+    if (result.vehicleRelease) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toAuditSnapshot(result.vehicleRelease.after),
+        before: toAuditSnapshot(result.vehicleRelease.before),
+        entityId: result.vehicleRelease.after.id,
+        entityType: "vehicle",
+        ipAddress: context.ipAddress,
+        module: "vehicle",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+    return toApplicationView(result.application, user);
   }
 
   private customerScopeWhere(user: RequestUser): Prisma.CustomerWhereInput {
@@ -1441,6 +2011,377 @@ export class CustomerService {
 
     return absolutePath;
   }
+}
+
+function applicationReviewDecision(dto: ReviewApplicationDto) {
+  return dto.action ?? dto.status ?? OrderReviewStatus.APPROVED;
+}
+
+function applicationReviewComment(dto: {
+  comment?: string | null;
+  reason?: string | null;
+  remark?: string | null;
+}) {
+  return normalizeOptionalText(dto.comment ?? dto.remark ?? dto.reason);
+}
+
+function assertApplicationReviewDecision(status: OrderReviewStatus) {
+  if (
+    status !== OrderReviewStatus.APPROVED &&
+    status !== OrderReviewStatus.REJECTED &&
+    status !== OrderReviewStatus.NEED_MORE_INFO
+  ) {
+    throw new BadRequestException("审核状态必须为 APPROVED、REJECTED 或 NEED_MORE_INFO。");
+  }
+}
+
+function applicationReviewStatusField(reviewType: ApplicationReviewType) {
+  return {
+    credit: "creditReviewStatus",
+    material: "materialReviewStatus",
+    product: "productReviewStatus",
+    vehicle: "vehicleReviewStatus"
+  }[reviewType] as
+    | "creditReviewStatus"
+    | "materialReviewStatus"
+    | "productReviewStatus"
+    | "vehicleReviewStatus";
+}
+
+function ensureApplicationReviewWorkflowAllowed(application: ApplicationWithDetails) {
+  if (application.status === ApplicationStatus.REJECTED || application.status === ApplicationStatus.CANCELLED) {
+    throw new BadRequestException("当前进件状态不允许审核。");
+  }
+  if (
+    application.status !== ApplicationStatus.SUBMITTED &&
+    application.status !== ApplicationStatus.NEED_MORE_INFO &&
+    application.status !== ApplicationStatus.APPROVED
+  ) {
+    throw new BadRequestException("仅已提交、需补充资料或已确认方案前的进件可进入审核流程。");
+  }
+}
+
+function assertApplicationHasNoOrder(application: ApplicationWithDetails) {
+  const activeOrder = application.orders.find((order) => !order.deletedAt);
+  if (activeOrder) {
+    throw new BadRequestException("该进件已生成订单，请勿重复处理。");
+  }
+}
+
+async function findActiveApplicationDepositRule(tx: Tx, grade: CustomerGrade) {
+  const now = new Date();
+  return tx.depositRule.findFirst({
+    orderBy: { effectiveFrom: "desc" },
+    where: {
+      deletedAt: null,
+      effectiveFrom: { lte: now },
+      grade,
+      OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+      status: RecordStatus.ACTIVE
+    }
+  });
+}
+
+async function releaseApplicationSoftReservedVehicle(
+  tx: Tx,
+  application: ApplicationWithDetails,
+  user: RequestUser
+) {
+  if (!application.softReservedVehicleId) {
+    return null;
+  }
+
+  const before = await tx.vehicle.findUnique({ where: { id: application.softReservedVehicleId } });
+  if (!before || before.deletedAt || before.status !== VehicleStatus.REVIEW_RESERVED) {
+    return null;
+  }
+
+  const after = await tx.vehicle.update({
+    data: { status: VehicleStatus.AVAILABLE, updatedBy: user.id },
+    where: { id: before.id }
+  });
+
+  return { after, before };
+}
+
+async function loadApplicationFinalPlanDetails(
+  tx: Tx,
+  application: ApplicationWithDetails,
+  dto?: ReviewApplicationDto
+): Promise<ApplicationFinalPlanDetails> {
+  const input = resolveApplicationFinalPlanInput(application, dto);
+  const [plan, vehicle] = await Promise.all([
+    tx.subscriptionPlan.findUnique({
+      include: selfServiceSubscriptionPlanInclude,
+      where: { id: input.subscriptionPlanId }
+    }),
+    tx.vehicle.findUnique({ where: { id: input.vehicleId } })
+  ]);
+
+  assertSelfServiceSubscriptionPlanAvailable(plan);
+  assertApplicationVehicleExists(vehicle);
+  const vehicleModel = assertVehicleModel(vehicle.vehicleModel);
+  if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
+    throw new BadRequestException("所选套餐不适用于该车辆车型。");
+  }
+  assertSelfServicePeriodInRange(input.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
+
+  const vehicleSalePriceAmount = requireSelfServiceCurrentSalePriceAmount(
+    vehicle.currentSalePriceAmount
+  );
+  const vehicleBaseFeePricing = calculateSelfServiceVehicleBaseFee(plan, vehicleSalePriceAmount);
+  const mileagePackagePriceAmount = plan.mileagePackage.priceAmount;
+  const energyPackagePriceAmount = plan.energyPackage.priceAmount;
+  const benefitPackagePriceAmount = plan.benefitPackage?.priceAmount ?? 0n;
+  const monthlyFeeAmount =
+    vehicleBaseFeePricing.vehicleBaseFeeAmount +
+    mileagePackagePriceAmount +
+    energyPackagePriceAmount +
+    benefitPackagePriceAmount;
+  const vehicleSnapshot = toJsonSnapshot({
+    assetLocation: vehicle.assetLocation,
+    brand: vehicle.brand,
+    currentMileageKm: vehicle.currentMileageKm,
+    currentSalePriceAmount: Number(vehicleSalePriceAmount),
+    plateNo: vehicle.plateNo,
+    series: vehicle.series,
+    status: vehicle.status,
+    vehicleModel,
+    vehicleNo: vehicle.vehicleNo,
+    vin: vehicle.vin
+  });
+  const packageSnapshot = toJsonSnapshot({
+    benefitPackage: plan.benefitPackage ? toSelfServicePackageSnapshot(plan.benefitPackage) : null,
+    energyPackage: toSelfServicePackageSnapshot(plan.energyPackage),
+    mileagePackage: toSelfServicePackageSnapshot(plan.mileagePackage),
+    pricing: {
+      benefitPackagePriceAmount: Number(benefitPackagePriceAmount),
+      currentSalePriceAmount: Number(vehicleSalePriceAmount),
+      energyPackagePriceAmount: Number(energyPackagePriceAmount),
+      fixedRate: vehicleBaseFeePricing.fixedRate,
+      mileagePackagePriceAmount: Number(mileagePackagePriceAmount),
+      monthlyFeeAmount: Number(monthlyFeeAmount),
+      vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+      vehicleBaseFeeCapAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeCapAmount),
+      vehicleBaseFeeMode: plan.monthlyFeeMode,
+      vehicleBaseFeeModeLabel: vehicleBaseFeePricing.vehicleBaseFeeModeLabel
+    },
+    subscriptionPlan: toSelfServiceSubscriptionPlanSnapshot(plan),
+    vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+    vehicleBaseFeeCapAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeCapAmount),
+    vehicleBaseFeeMode: plan.monthlyFeeMode,
+    vehicleBaseFeeModeLabel: vehicleBaseFeePricing.vehicleBaseFeeModeLabel,
+    vehiclePackage: toSelfServicePackageSnapshot(plan.vehiclePackage)
+  });
+  const finalPlanSnapshot = toJsonSnapshot({
+    applicationId: application.id,
+    applicationNo: application.applicationNo,
+    applicationSource: application.applicationSource,
+    customerGrade: application.customerGrade,
+    customerId: application.customerId,
+    depositAmount: application.finalDepositAmount === null ? null : Number(application.finalDepositAmount),
+    depositRuleSnapshot: application.depositRuleSnapshot,
+    depositStatus: application.depositStatus,
+    finalPlanConfirmedAt: application.finalPlanConfirmedAt?.toISOString() ?? null,
+    packageSnapshot,
+    periodMonths: input.periodMonths,
+    pricing: {
+      benefitPackagePriceAmount: Number(benefitPackagePriceAmount),
+      currentSalePriceAmount: Number(vehicleSalePriceAmount),
+      energyPackagePriceAmount: Number(energyPackagePriceAmount),
+      fixedRate: vehicleBaseFeePricing.fixedRate,
+      mileagePackagePriceAmount: Number(mileagePackagePriceAmount),
+      monthlyFeeAmount: Number(monthlyFeeAmount),
+      vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+      vehicleBaseFeeCapAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeCapAmount),
+      vehicleBaseFeeMode: plan.monthlyFeeMode,
+      vehicleBaseFeeModeLabel: vehicleBaseFeePricing.vehicleBaseFeeModeLabel
+    },
+    subscriptionPlan: toSelfServiceSubscriptionPlanSnapshot(plan),
+    subscriptionPlanId: plan.id,
+    vehicleBaseFeeAmount: Number(vehicleBaseFeePricing.vehicleBaseFeeAmount),
+    vehicleId: vehicle.id,
+    vehicleSnapshot
+  });
+
+  return {
+    benefitPackagePriceAmount,
+    energyPackagePriceAmount,
+    finalPlanSnapshot,
+    fixedRate: vehicleBaseFeePricing.fixedRate,
+    mileagePackagePriceAmount,
+    monthlyFeeAmount,
+    packageSnapshot,
+    periodMonths: input.periodMonths,
+    plan,
+    vehicle,
+    vehicleBaseFeeAmount: vehicleBaseFeePricing.vehicleBaseFeeAmount,
+    vehicleBaseFeeCapAmount: vehicleBaseFeePricing.vehicleBaseFeeCapAmount,
+    vehicleSalePriceAmount,
+    vehicleSnapshot
+  };
+}
+
+function resolveApplicationFinalPlanInput(
+  application: ApplicationWithDetails,
+  dto?: ReviewApplicationDto
+): ApplicationFinalPlanInput {
+  const subscriptionPlanId =
+    dto?.finalSubscriptionPlanId ??
+    application.finalSubscriptionPlanId ??
+    application.intentSubscriptionPlanId;
+  const vehicleId =
+    dto?.finalVehicleId ??
+    application.finalVehicleId ??
+    application.intentVehicleId ??
+    application.softReservedVehicleId;
+  const periodMonths =
+    dto?.finalPeriodMonths ??
+    application.finalPeriodMonths ??
+    application.intentPeriodMonths ??
+    application.intendedPeriodMonths;
+
+  if (!subscriptionPlanId) {
+    throw new BadRequestException("进件缺少订阅套餐，无法确认最终方案。");
+  }
+  if (!vehicleId) {
+    throw new BadRequestException("进件缺少车辆，无法确认最终方案。");
+  }
+  if (!periodMonths) {
+    throw new BadRequestException("进件缺少订阅周期，无法确认最终方案。");
+  }
+
+  return { periodMonths, subscriptionPlanId, vehicleId };
+}
+
+function assertApplicationVehicleExists(
+  vehicle: SelfServiceVehicle | null
+): asserts vehicle is SelfServiceVehicle {
+  if (!vehicle || vehicle.deletedAt) {
+    throw new NotFoundException("Vehicle not found.");
+  }
+}
+
+function assertVehicleModel(model: SelfServiceVehicle["vehicleModel"]) {
+  if (!model) {
+    throw new BadRequestException("车辆缺少车型信息，无法确认方案。");
+  }
+  return model;
+}
+
+async function assertApplicationVehicleReviewAllowed(
+  tx: Tx,
+  application: ApplicationWithDetails,
+  vehicle: SelfServiceVehicle
+) {
+  if (
+    application.applicationSource === ApplicationSource.SELF_SERVICE &&
+    application.softReservedVehicleId !== vehicle.id
+  ) {
+    throw new BadRequestException("暂不支持审核中更换车辆，请取消当前进件后重新提交。");
+  }
+
+  if (application.applicationSource === ApplicationSource.SELF_SERVICE) {
+    if (vehicle.status !== VehicleStatus.REVIEW_RESERVED) {
+      throw new BadRequestException("暂不支持审核中更换车辆，请取消当前进件后重新提交。");
+    }
+  } else if (vehicle.status !== VehicleStatus.AVAILABLE) {
+    throw new BadRequestException("所选车辆当前不可租用，请重新选择车辆。");
+  }
+
+  requireSelfServiceCurrentSalePriceAmount(vehicle.currentSalePriceAmount);
+  const occupiedByOrderCount = await tx.subscriptionOrder.count({
+    where: {
+      deletedAt: null,
+      orderStatus: { notIn: [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.COMPLETED, OrderStatus.TERMINATED] },
+      vehicleId: vehicle.id
+    }
+  });
+  if (occupiedByOrderCount > 0) {
+    throw new BadRequestException("暂不支持审核中更换车辆，请取消当前进件后重新提交。");
+  }
+}
+
+function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails) {
+  if (!allApplicationReviewsApproved(applicationReviewStatuses(application))) {
+    throw new BadRequestException("资料、资质、产品和车辆审核全部通过后才可以确认最终方案。");
+  }
+  if (application.depositStatus !== DepositStatus.CONFIRMED || application.finalDepositAmount === null) {
+    throw new BadRequestException("押金确认后才可以确认最终方案。");
+  }
+  resolveApplicationFinalPlanInput(application);
+  if (application.finalVehicleBaseFeeAmount === null) {
+    throw new BadRequestException("进件缺少最终车辆基础费，无法确认最终方案。");
+  }
+}
+
+function assertApplicationCanCreateOrder(application: ApplicationWithDetails) {
+  if (application.status === ApplicationStatus.REJECTED || application.status === ApplicationStatus.CANCELLED) {
+    throw new BadRequestException("当前进件状态不允许生成订单。");
+  }
+  assertApplicationHasNoOrder(application);
+  if (application.status !== ApplicationStatus.APPROVED) {
+    throw new BadRequestException("最终方案确认后才可以生成订单。");
+  }
+  if (!allApplicationReviewsApproved(applicationReviewStatuses(application))) {
+    throw new BadRequestException("进件审核全部通过后才可以生成订单。");
+  }
+  if (application.depositStatus !== DepositStatus.CONFIRMED || application.finalDepositAmount === null) {
+    throw new BadRequestException("押金确认后才可以生成订单。");
+  }
+  if (application.planConfirmStatus !== PlanConfirmStatus.CONFIRMED || !application.finalPlanSnapshot) {
+    throw new BadRequestException("最终方案确认后才可以生成订单。");
+  }
+  resolveApplicationFinalPlanInput(application);
+}
+
+function assertApplicationVehicleCanEnterOrder(
+  application: ApplicationWithDetails,
+  vehicle: SelfServiceVehicle | null
+): asserts vehicle is SelfServiceVehicle {
+  assertApplicationVehicleExists(vehicle);
+  if (
+    application.applicationSource === ApplicationSource.SELF_SERVICE &&
+    application.softReservedVehicleId !== vehicle.id
+  ) {
+    throw new BadRequestException("暂不支持审核中更换车辆，请取消当前进件后重新提交。");
+  }
+  const expectedStatus =
+    application.applicationSource === ApplicationSource.SELF_SERVICE
+      ? VehicleStatus.REVIEW_RESERVED
+      : VehicleStatus.AVAILABLE;
+  if (vehicle.status !== expectedStatus) {
+    throw new BadRequestException("车辆当前状态不允许生成订单。");
+  }
+}
+
+function applicationReviewStatuses(application: ApplicationWithDetails) {
+  return {
+    creditReviewStatus: application.creditReviewStatus,
+    materialReviewStatus: application.materialReviewStatus,
+    productReviewStatus: application.productReviewStatus,
+    vehicleReviewStatus: application.vehicleReviewStatus
+  };
+}
+
+function allApplicationReviewsApproved(statuses: {
+  creditReviewStatus: OrderReviewStatus;
+  materialReviewStatus: OrderReviewStatus;
+  productReviewStatus: OrderReviewStatus;
+  vehicleReviewStatus: OrderReviewStatus;
+}) {
+  return (
+    statuses.creditReviewStatus === OrderReviewStatus.APPROVED &&
+    statuses.materialReviewStatus === OrderReviewStatus.APPROVED &&
+    statuses.productReviewStatus === OrderReviewStatus.APPROVED &&
+    statuses.vehicleReviewStatus === OrderReviewStatus.APPROVED
+  );
+}
+
+function mapApplicationSourceToOrderSource(source: ApplicationSource) {
+  return source === ApplicationSource.SELF_SERVICE
+    ? OrderSource.CUSTOMER_SELF_SERVICE
+    : OrderSource.SALES_ASSISTED;
 }
 
 function canViewAll(user: RequestUser) {
@@ -2020,7 +2961,8 @@ function getMaterialTypeName(type: ApplicationMaterialType) {
 }
 
 export function getAvailableApplicationActions(
-  application: Pick<ApplicationWithDetails, "salesUserId" | "status">,
+  application: Pick<ApplicationWithDetails, "salesUserId" | "status"> &
+    Partial<Pick<ApplicationWithDetails, "planConfirmStatus">>,
   user: RequestUser
 ) {
   const permissions = new Set(user.permissions);
@@ -2043,9 +2985,21 @@ export function getAvailableApplicationActions(
 
   if (
     permissions.has(PermissionCode.APPLICATION_REVIEW) &&
-    application.status === ApplicationStatus.SUBMITTED
+    (application.status === ApplicationStatus.SUBMITTED ||
+      application.status === ApplicationStatus.NEED_MORE_INFO ||
+      application.status === ApplicationStatus.APPROVED)
   ) {
-    actions.push("reviewMaterial", "approve", "needMoreInfo", "reject");
+    actions.push(
+      "reviewMaterial",
+      "approve",
+      "needMoreInfo",
+      "reject",
+      "reviewApplicationMaterial",
+      "reviewApplicationCredit",
+      "reviewApplicationProduct",
+      "reviewApplicationVehicle",
+      "finalizeApplicationPlan"
+    );
   }
 
   if (
@@ -2054,6 +3008,15 @@ export function getAvailableApplicationActions(
     application.status === ApplicationStatus.APPROVED
   ) {
     actions.push("createQuote");
+  }
+
+  if (
+    permissions.has(PermissionCode.ORDER_CREATE) &&
+    (canViewAll(user) || application.salesUserId === user.id) &&
+    application.status === ApplicationStatus.APPROVED &&
+    application.planConfirmStatus === PlanConfirmStatus.CONFIRMED
+  ) {
+    actions.push("createOrderFromApplication");
   }
 
   return actions;
@@ -2096,8 +3059,11 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
   return {
     actionLogs: application.actionLogs.map(toApplicationActionLogView),
     applicationNo: application.applicationNo,
+    applicationSource: application.applicationSource,
     approvedAt: application.approvedAt,
     availableActions: user ? getAvailableApplicationActions(application, user) : [],
+    creditReviewComment: application.creditReviewComment,
+    creditReviewStatus: application.creditReviewStatus,
     createdAt: application.createdAt,
     customer: {
       ...application.customer,
@@ -2112,9 +3078,35 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
         : null
     },
     customerId: application.customerId,
+    customerGrade: application.customerGrade,
+    customerSelectedSnapshot: application.customerSelectedSnapshot,
+    depositRuleId: application.depositRuleId,
+    depositRuleSnapshot: application.depositRuleSnapshot,
+    depositStatus: application.depositStatus,
+    finalDepositAmount:
+      application.finalDepositAmount === null ? null : Number(application.finalDepositAmount),
+    finalPeriodMonths: application.finalPeriodMonths,
+    finalPlanConfirmedAt: application.finalPlanConfirmedAt,
+    finalPlanSnapshot: application.finalPlanSnapshot,
+    finalQuoteSnapshot: application.finalQuoteSnapshot,
+    finalSubscriptionPlanId: application.finalSubscriptionPlanId,
+    finalVehicleBaseFeeAmount:
+      application.finalVehicleBaseFeeAmount === null
+        ? null
+        : Number(application.finalVehicleBaseFeeAmount),
+    finalVehicleId: application.finalVehicleId,
     id: application.id,
+    intentPeriodMonths: application.intentPeriodMonths,
+    intentSnapshot: application.intentSnapshot,
+    intentSubscriptionPlanId: application.intentSubscriptionPlanId,
+    intentVehicleBaseFeeAmount:
+      application.intentVehicleBaseFeeAmount === null
+        ? null
+        : Number(application.intentVehicleBaseFeeAmount),
+    intentVehicleId: application.intentVehicleId,
     intendedModel: application.intendedModel,
     intendedPeriodMonths: application.intendedPeriodMonths,
+    materialReviewStatus: application.materialReviewStatus,
     materials: application.materialGroups.map((group) => toMaterialGroupView(group, application, user)),
     orders: (application.orders ?? [])
       .filter((order) => !order.deletedAt)
@@ -2123,12 +3115,18 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
         orderNo: order.orderNo,
         orderStatus: order.orderStatus
       })),
+    planConfirmStatus: application.planConfirmStatus,
+    productReviewStatus: application.productReviewStatus,
     rejectedReason: application.rejectedReason,
     riskResult: application.riskResults[0] ? toRiskResultView(application.riskResults[0]) : null,
     salesUser: application.salesUser,
     salesUserId: application.salesUserId,
+    softReservationExpiresAt: application.softReservationExpiresAt,
+    softReservedAt: application.softReservedAt,
+    softReservedVehicleId: application.softReservedVehicleId,
     status: application.status,
-    submittedAt: application.submittedAt
+    submittedAt: application.submittedAt,
+    vehicleReviewStatus: application.vehicleReviewStatus
   };
 }
 

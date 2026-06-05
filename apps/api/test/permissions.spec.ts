@@ -102,6 +102,42 @@ describe("self-service application permissions", () => {
     expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_SUBMIT], requiredAnyPermissions)).toBe(true);
     expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_REVIEW], requiredAnyPermissions)).toBe(false);
   });
+
+  it("gates application review workflow behind review and order-create permissions", () => {
+    const reviewPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.reviewApplicationCredit
+    );
+    const queuePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.listApplicationReviewQueue
+    );
+    const finalizePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.finalizeApplicationPlan
+    );
+    const createOrderPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.createOrderFromApplication
+    );
+    const cancelAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      CustomerController.prototype.cancelApplication
+    );
+
+    expect(reviewPermissions).toEqual([PermissionCode.APPLICATION_REVIEW]);
+    expect(queuePermissions).toEqual([PermissionCode.APPLICATION_REVIEW]);
+    expect(finalizePermissions).toEqual([PermissionCode.APPLICATION_REVIEW]);
+    expect(createOrderPermissions).toEqual([
+      PermissionCode.QUOTE_CREATE,
+      PermissionCode.ORDER_CREATE
+    ]);
+    expect(cancelAnyPermissions).toEqual([
+      PermissionCode.APPLICATION_MANAGE,
+      PermissionCode.APPLICATION_REVIEW
+    ]);
+    expect(hasRequiredPermissions([PermissionCode.APPLICATION_VIEW], reviewPermissions)).toBe(false);
+  });
 });
 
 describe("seed permission calibration", () => {

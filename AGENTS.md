@@ -40,16 +40,21 @@ unless the user explicitly approves it.
 - Product center now uses `SubscriptionPlan` as the sellable subscription package.
 - `ProductPriceRule` is a legacy pricing rule retained for compatibility with old quotes and historical data.
 - Quote creation for the new flow must use a concrete `vehicleId` and an active `subscriptionPlanId`.
-- The order mainline must support two paths:
-  A line customer self-service is order first and review later; B line
-  sales-assisted is review first and order later.
-- A-line customer selections are intent plans, not final signing plans.
+- The A/B mainline is an intake-first model:
+  A line customer self-service creates a `SELF_SERVICE` `Application`; B line
+  sales-assisted creates a `SALES_ASSISTED` `Application`.
+- Both lines converge at application material review, credit/deposit review,
+  product-plan review, vehicle inventory review, and final-plan confirmation.
+- `SubscriptionOrder` represents a formal pre-contract order and must be
+  generated only after the final plan is confirmed.
+- A-line customer selections are intent plans stored on `Application`, not final
+  signing plans and not formal orders.
 - Customer-facing A-line UI must expose only preset active `SubscriptionPlan`
   records, not free package composition.
-- Keep `SubscriptionQuote` as the price and plan snapshot object.
-- Do not add `SubscriptionOrderApplication` in the first version unless a later
-  reviewed design explicitly changes this decision; prefer extending
-  `SubscriptionOrder`.
+- Keep `SubscriptionQuote` as the final price and plan snapshot object.
+- Extend `Application` for self-service intake state in the first version.
+- Existing `POST /api/customer-orders`, `CUSTOMER_SELF_SERVICE` direct orders,
+  and `/orders/review` are legacy Stage 5.5 artifacts pending migration.
 - A-line deposit is pending at submission and finalized after customer grade,
   deposit rule, and risk review are known.
 - `purchasePriceAmount` is the asset cost basis used for depreciation and ROA/ROE.

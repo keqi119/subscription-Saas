@@ -3,6 +3,8 @@
 import {
   CarOutlined,
   DollarOutlined,
+  EditOutlined,
+  EyeOutlined,
   HistoryOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -12,6 +14,7 @@ import {
   App,
   Button,
   DatePicker,
+  Descriptions,
   Empty,
   Form,
   Input,
@@ -28,12 +31,22 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
-import { SALE_PRICE_REVIEW_TYPE_LABELS, STATUS_LABELS, labelOf } from "../../constants/labels";
+import { SALE_PRICE_REVIEW_TYPE_LABELS, STATUS_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../constants/labels";
+import {
+  canInitializeVehicleSalePrice,
+  canReviewVehicleSalePrice,
+  canUpdateVehicleStatus
+} from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
+import type { AuthMeResponse } from "../../lib/auth";
 
 interface Vehicle {
   assetLocation?: string | null;
+  batteryCapacityKwh?: number | null;
+  batteryUsageType?: string | null;
+  batteryUsageTypeLabel?: string | null;
   brand: string;
   currentMileageKm: number;
   currentSalePriceAmount?: number | null;
@@ -72,6 +85,8 @@ interface SalePriceHistory {
 
 interface CreateVehicleValues {
   assetLocation?: string | null;
+  batteryCapacityKwh?: number | null;
+  batteryUsageType?: "BUYOUT" | "BAAS";
   brand: string;
   currentMileageKm?: number;
   model?: string | null;
@@ -84,6 +99,8 @@ interface CreateVehicleValues {
   vehicleModel: "ET5" | "ET7" | "ES6";
   vin: string;
 }
+
+type EditVehicleValues = CreateVehicleValues;
 
 interface InitializeSalePriceValues {
   currentSalePriceAmountYuan: number;
@@ -139,10 +156,23 @@ const vehicleStatusOptions = [
 
 const vehicleModelOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
 
+const batteryUsageTypeOptions = [
+  { label: "电池买断", value: "BUYOUT" },
+  { label: "BaaS / 电池租用", value: "BAAS" }
+];
+
 const returnReinitSourceStatuses = new Set(["LEASED", "RENTED", "RESERVED", "RETURNED", "MAINTENANCE"]);
 
 function formatYuan(value?: number | null) {
   return value === undefined || value === null ? "-" : `¥${(value / 100).toFixed(2)}`;
+}
+
+function formatKwh(value?: number | null) {
+  return value === undefined || value === null ? "-" : `${value.toLocaleString("zh-CN")} kWh`;
+}
+
+function batteryUsageTypeLabel(vehicle: Pick<Vehicle, "batteryUsageType" | "batteryUsageTypeLabel">) {
+  return vehicle.batteryUsageTypeLabel ?? (vehicle.batteryUsageType ? labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, vehicle.batteryUsageType) : "-");
 }
 
 function formatDate(value?: string | null) {
@@ -172,12 +202,15 @@ function toReviewQuarter(date: Dayjs) {
 export default function VehiclesPage() {
   const { message } = App.useApp();
   const [createForm] = Form.useForm<CreateVehicleValues>();
+  const [editForm] = Form.useForm<EditVehicleValues>();
   const [initializeForm] = Form.useForm<InitializeSalePriceValues>();
   const [reviewForm] = Form.useForm<ReviewSalePriceValues>();
   const [statusForm] = Form.useForm<StatusValues>();
   const [activeTab, setActiveTab] = useState("vehicles");
   const [createOpen, setCreateOpen] = useState(false);
+  const [detailVehicle, setDetailVehicle] = useState<Vehicle | null>(null);
   const [dueReviews, setDueReviews] = useState<Vehicle[]>([]);
+  const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyRows, setHistoryRows] = useState<SalePriceHistory[]>([]);
   const [historyVehicle, setHistoryVehicle] = useState<Vehicle | null>(null);
@@ -186,16 +219,20 @@ export default function VehiclesPage() {
   const [reviewingVehicle, setReviewingVehicle] = useState<Vehicle | null>(null);
   const [statusVehicle, setStatusVehicle] = useState<Vehicle | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [vehicleRows, dueRows] = await Promise.all([
+      const [vehicleRows, dueRows, nextMe] = await Promise.all([
         apiFetch<Vehicle[]>("/vehicles"),
-        apiFetch<Vehicle[]>("/vehicles/sale-price-reviews/due")
+        apiFetch<Vehicle[]>("/vehicles/sale-price-reviews/due"),
+        apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setVehicles(vehicleRows);
       setDueReviews(dueRows);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -208,14 +245,15 @@ export default function VehiclesPage() {
   }, [loadData]);
 
   const columns = useMemo(
-    () => buildVehicleColumns(openInitialize, openReview, openHistory, openStatus),
-    []
+    () => buildVehicleColumns(openDetail, openEditVehicle, openInitialize, openReview, openHistory, openStatus, permissions),
+    [permissions]
   );
 
   function openCreateVehicle() {
     setCreateOpen(true);
     createForm.setFieldsValue({
       brand: "NIO",
+      batteryUsageType: "BUYOUT",
       currentMileageKm: 0,
       vehicleModel: "ET5"
     });
@@ -226,6 +264,8 @@ export default function VehiclesPage() {
       await apiFetch<Vehicle>("/vehicles", {
         body: JSON.stringify({
           assetLocation: values.assetLocation,
+          batteryCapacityKwh: values.batteryCapacityKwh,
+          batteryUsageType: values.batteryUsageType,
           brand: values.brand,
           currentMileageKm: values.currentMileageKm ?? 0,
           model: values.model,
@@ -243,6 +283,63 @@ export default function VehiclesPage() {
       void message.success("车辆已创建");
       setCreateOpen(false);
       createForm.resetFields();
+      await loadData();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  function openDetail(vehicle: Vehicle) {
+    setDetailVehicle(vehicle);
+  }
+
+  function openEditVehicle(vehicle: Vehicle) {
+    setEditingVehicle(vehicle);
+    editForm.setFieldsValue({
+      assetLocation: vehicle.assetLocation,
+      batteryCapacityKwh: vehicle.batteryCapacityKwh,
+      batteryUsageType: (vehicle.batteryUsageType ?? "BUYOUT") as "BUYOUT" | "BAAS",
+      brand: vehicle.brand,
+      currentMileageKm: vehicle.currentMileageKm,
+      model: vehicle.model,
+      modelYear: vehicle.modelYear,
+      plateNo: vehicle.plateNo,
+      purchaseDate: vehicle.purchaseDate ? dayjs(vehicle.purchaseDate) : null,
+      purchasePriceAmountYuan: vehicle.purchasePriceAmount / 100,
+      remark: vehicle.remark,
+      series: vehicle.series,
+      vehicleModel: (vehicle.vehicleModel ?? "ET5") as "ET5" | "ET7" | "ES6",
+      vin: vehicle.vin ?? ""
+    });
+  }
+
+  async function saveEditVehicle(values: EditVehicleValues) {
+    if (!editingVehicle) {
+      return;
+    }
+    try {
+      await apiFetch<Vehicle>(`/vehicles/${editingVehicle.id}`, {
+        body: JSON.stringify({
+          assetLocation: values.assetLocation,
+          batteryCapacityKwh: values.batteryCapacityKwh,
+          batteryUsageType: values.batteryUsageType,
+          brand: values.brand,
+          currentMileageKm: values.currentMileageKm ?? 0,
+          model: values.model,
+          modelYear: values.modelYear,
+          plateNo: values.plateNo,
+          purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
+          purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
+          remark: values.remark,
+          series: values.series,
+          vehicleModel: values.vehicleModel,
+          vin: values.vin
+        }),
+        method: "PATCH"
+      });
+      void message.success("车辆已更新");
+      setEditingVehicle(null);
+      editForm.resetFields();
       await loadData();
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -371,9 +468,15 @@ export default function VehiclesPage() {
             <Typography.Text type="secondary">销售价初始化、季度复核与退车再入池管理</Typography.Text>
           </div>
           <Space>
-            <Button icon={<PlusOutlined />} onClick={openCreateVehicle} type="primary">
+            <ActionButton
+              icon={<PlusOutlined />}
+              onClick={openCreateVehicle}
+              permission="vehicle:create"
+              permissions={permissions}
+              type="primary"
+            >
               新增车辆
-            </Button>
+            </ActionButton>
             <Button icon={<ReloadOutlined />} loading={loading} onClick={loadData}>
               刷新
             </Button>
@@ -438,6 +541,101 @@ export default function VehiclesPage() {
           </Form.Item>
           <Form.Item label="车型代码" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
             <Select options={vehicleModelOptions} />
+          </Form.Item>
+          <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
+            <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="电池使用方式" name="batteryUsageType" rules={[{ required: true, message: "请选择电池使用方式" }]}>
+            <Select options={batteryUsageTypeOptions} />
+          </Form.Item>
+          <Form.Item label="年款" name="modelYear">
+            <InputNumber min={1900} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="采购价（元）" name="purchasePriceAmountYuan" rules={[{ required: true, message: "请输入采购价" }]}>
+            <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="采购日期" name="purchaseDate">
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="当前里程" name="currentMileageKm">
+            <InputNumber min={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="资产位置" name="assetLocation">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        footer={null}
+        onCancel={() => setDetailVehicle(null)}
+        open={Boolean(detailVehicle)}
+        title={detailVehicle ? `${detailVehicle.vehicleNo} 车辆详情` : "车辆详情"}
+        width={760}
+      >
+        {detailVehicle ? (
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "车辆编号", children: detailVehicle.vehicleNo },
+              { label: "VIN", children: detailVehicle.vin ?? "-" },
+              { label: "车牌号", children: detailVehicle.plateNo ?? "-" },
+              { label: "品牌", children: detailVehicle.brand },
+              { label: "车系", children: detailVehicle.series ?? "-" },
+              { label: "车型", children: vehicleModelText(detailVehicle) },
+              { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
+              { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
+              { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
+              { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
+              { label: "当前里程", children: `${detailVehicle.currentMileageKm.toLocaleString("zh-CN")} km` },
+              { label: "车辆状态", children: labelOf(STATUS_LABELS, detailVehicle.status) },
+              { label: "销售价状态", children: labelOf(STATUS_LABELS, detailVehicle.salePriceStatus) },
+              { label: "资产位置", children: detailVehicle.assetLocation ?? "-" },
+              { label: "备注", children: detailVehicle.remark ?? "-" }
+            ]}
+          />
+        ) : null}
+      </Modal>
+
+      <Modal
+        okText="保存"
+        onCancel={() => {
+          setEditingVehicle(null);
+          editForm.resetFields();
+        }}
+        onOk={() => editForm.submit()}
+        open={Boolean(editingVehicle)}
+        title={editingVehicle ? `${editingVehicle.vehicleNo} 编辑车辆` : "编辑车辆"}
+        width={720}
+      >
+        <Form<EditVehicleValues> form={editForm} layout="vertical" onFinish={saveEditVehicle}>
+          <Form.Item label="VIN" name="vin" rules={[{ required: true, message: "请输入 VIN" }]}>
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车牌号" name="plateNo">
+            <Input maxLength={32} />
+          </Form.Item>
+          <Form.Item label="品牌" name="brand" rules={[{ required: true, message: "请输入品牌" }]}>
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车系" name="series">
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车型" name="model">
+            <Input maxLength={64} />
+          </Form.Item>
+          <Form.Item label="车型代码" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
+            <Select options={vehicleModelOptions} />
+          </Form.Item>
+          <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
+            <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="电池使用方式" name="batteryUsageType" rules={[{ required: true, message: "请选择电池使用方式" }]}>
+            <Select options={batteryUsageTypeOptions} />
           </Form.Item>
           <Form.Item label="年款" name="modelYear">
             <InputNumber min={1900} style={{ width: "100%" }} />
@@ -576,7 +774,7 @@ function VehicleTable({
       dataSource={rows}
       loading={loading}
       rowKey="id"
-      scroll={{ x: 1380 }}
+      scroll={{ x: 1640 }}
     />
   );
 }
@@ -615,15 +813,20 @@ function HistoryTable({
 }
 
 function buildVehicleColumns(
+  openDetail: (vehicle: Vehicle) => void,
+  openEdit: (vehicle: Vehicle) => void,
   openInitialize: (vehicle: Vehicle) => void,
   openReview: (vehicle: Vehicle) => void,
   openHistory: (vehicle: Vehicle) => void,
-  openStatus: (vehicle: Vehicle) => void
+  openStatus: (vehicle: Vehicle) => void,
+  permissions: ReadonlySet<string>
 ): ColumnsType<Vehicle> {
   return [
     { dataIndex: "vin", render: (value: string | null) => value ?? "-", title: "VIN", width: 180 },
     { dataIndex: "plateNo", render: (value: string | null) => value ?? "-", title: "车牌号", width: 120 },
     { render: (_, record) => vehicleModelText(record), title: "车型", width: 220 },
+    { dataIndex: "batteryCapacityKwh", render: formatKwh, title: "电池容量", width: 120 },
+    { render: (_, record) => batteryUsageTypeLabel(record), title: "电池使用方式", width: 140 },
     { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 140 },
     { dataIndex: "currentSalePriceReviewedAt", render: formatDateTime, title: "最近复核时间", width: 170 },
     { dataIndex: "nextSalePriceReviewAt", render: formatDate, title: "下次复核时间", width: 140 },
@@ -643,27 +846,55 @@ function buildVehicleColumns(
       fixed: "right",
       render: (_, record) => (
         <Space>
-          <Button icon={<DollarOutlined />} onClick={() => openInitialize(record)} size="small">
-            初始化销售价
+          <Button icon={<EyeOutlined />} onClick={() => openDetail(record)} size="small">
+            详情
           </Button>
-          <Button
-            disabled={!record.currentSalePriceAmount}
+          <ActionButton
+            icon={<EditOutlined />}
+            onClick={() => openEdit(record)}
+            permission="vehicle:update"
+            permissions={permissions}
+            size="small"
+          >
+            编辑
+          </ActionButton>
+          <ActionButton
+            availability={canInitializeVehicleSalePrice(record, permissions)}
+            icon={<DollarOutlined />}
+            onClick={() => openInitialize(record)}
+            size="small"
+          >
+            初始化销售价
+          </ActionButton>
+          <ActionButton
+            availability={canReviewVehicleSalePrice(record, permissions)}
             icon={<SyncOutlined />}
             onClick={() => openReview(record)}
             size="small"
           >
             季度复核
-          </Button>
-          <Button icon={<HistoryOutlined />} onClick={() => openHistory(record)} size="small">
+          </ActionButton>
+          <ActionButton
+            icon={<HistoryOutlined />}
+            onClick={() => openHistory(record)}
+            permission="vehicle:history_view"
+            permissions={permissions}
+            size="small"
+          >
             查看历史
-          </Button>
-          <Button icon={<CarOutlined />} onClick={() => openStatus(record)} size="small">
+          </ActionButton>
+          <ActionButton
+            availability={canUpdateVehicleStatus(record, permissions)}
+            icon={<CarOutlined />}
+            onClick={() => openStatus(record)}
+            size="small"
+          >
             更新状态
-          </Button>
+          </ActionButton>
         </Space>
       ),
       title: "操作",
-      width: 430
+      width: 560
     }
   ];
 }

@@ -1,5 +1,6 @@
-import { VehicleModel, VehicleSalePriceReviewType, VehicleStatus } from "@prisma/client";
-import { IsEnum, IsIn, IsInt, IsOptional, IsString, Min } from "class-validator";
+import { Type } from "class-transformer";
+import { VehicleBatteryUsageType, VehicleModel, VehicleSalePriceReviewType, VehicleStatus } from "@prisma/client";
+import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from "class-validator";
 
 export class CreateVehicleDto {
   @IsString()
@@ -20,6 +21,17 @@ export class CreateVehicleDto {
 
   @IsEnum(VehicleModel)
   vehicleModel!: VehicleModel;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(9999.99)
+  batteryCapacityKwh?: number | null;
+
+  @IsOptional()
+  @IsEnum(VehicleBatteryUsageType)
+  batteryUsageType?: VehicleBatteryUsageType;
 
   @IsString()
   vin!: string;
@@ -87,6 +99,17 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(9999.99)
+  batteryCapacityKwh?: number | null;
+
+  @IsOptional()
+  @IsEnum(VehicleBatteryUsageType)
+  batteryUsageType?: VehicleBatteryUsageType;
 
   @IsOptional()
   @IsString()

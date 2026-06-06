@@ -5,11 +5,18 @@ import { App, Button, Card, Descriptions, Space, Spin, Tag, Typography } from "a
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
+import {
+  canArchiveContract,
+  canCancelContract,
+  canSignContract
+} from "../../../lib/action-guards";
 import { apiFetch, ApiError } from "../../../lib/api";
+import type { AuthMeResponse } from "../../../lib/auth";
 
 interface ContractDetail {
   archivedAt?: string | null;
@@ -82,6 +89,20 @@ function formatMonths(value?: unknown) {
 function formatKilometers(value?: unknown) {
   const kilometers = toNumber(value);
   return kilometers === null ? "-" : `${kilometers.toLocaleString("zh-CN")} km`;
+}
+
+function formatKwh(value?: unknown) {
+  const kwh = toNumber(value);
+  return kwh === null ? "-" : `${kwh.toLocaleString("zh-CN")} kWh`;
+}
+
+function formatBatteryUsageType(type?: unknown, label?: unknown) {
+  const labelText = safeText(label);
+  if (labelText !== "-") {
+    return labelText;
+  }
+  const typeText = safeText(type);
+  return typeText === "-" ? "-" : labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, typeText);
 }
 
 function toSnapshotRecord(value: unknown): SnapshotRecord | null {
@@ -223,6 +244,14 @@ function ContractSnapshotSection({ contract }: { contract: ContractDetail | null
             children: joinSnapshotText(getSnapshotValue(vehicleSnapshot, "brand"), getSnapshotValue(vehicleSnapshot, "series"))
           },
           { label: "车型", children: safeText(getSnapshotValue(vehicleSnapshot, "vehicleModel", "model") ?? getSnapshotValue(orderSnapshot, "vehicleModel")) },
+          { label: "电池容量", children: formatKwh(getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")) },
+          {
+            label: "电池使用方式",
+            children: formatBatteryUsageType(
+              getSnapshotValue(vehicleSnapshot, "batteryUsageType"),
+              getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel")
+            )
+          },
           { label: "车辆状态", children: formatStatus(getSnapshotValue(vehicleSnapshot, "status")) },
           { label: "当前销售价", children: formatYuan(getSnapshotValue(vehicleSnapshot, "currentSalePriceAmount") ?? getSnapshotValue(quoteSnapshot, "vehicleSalePriceAmount")) },
           { label: "当前里程", children: formatKilometers(getSnapshotValue(vehicleSnapshot, "currentMileageKm")) },
@@ -281,11 +310,18 @@ export default function ContractDetailPage() {
   const { message } = App.useApp();
   const [contract, setContract] = useState<ContractDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadContract = useCallback(async () => {
     setLoading(true);
     try {
-      setContract(await apiFetch<ContractDetail>(`/contracts/${params.id}`));
+      const [nextContract, nextMe] = await Promise.all([
+        apiFetch<ContractDetail>(`/contracts/${params.id}`),
+        apiFetch<AuthMeResponse>("/auth/me")
+      ]);
+      setContract(nextContract);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -326,17 +362,26 @@ export default function ContractDetailPage() {
           </Space>
           {contract ? (
             <Space>
-              {["GENERATED", "SIGNING"].includes(contract.status) ? (
-                <Button onClick={() => transition("sign")} type="primary">
-                  签署
-                </Button>
-              ) : null}
-              {contract.status === "SIGNED" ? <Button onClick={() => transition("archive")}>归档</Button> : null}
-              {["GENERATED", "SIGNING"].includes(contract.status) ? (
-                <Button danger onClick={() => transition("cancel")}>
-                  取消
-                </Button>
-              ) : null}
+              <ActionButton
+                availability={canSignContract(contract, permissions)}
+                onClick={() => transition("sign")}
+                type="primary"
+              >
+                签署
+              </ActionButton>
+              <ActionButton
+                availability={canArchiveContract(contract, permissions)}
+                onClick={() => transition("archive")}
+              >
+                归档
+              </ActionButton>
+              <ActionButton
+                availability={canCancelContract(contract, permissions)}
+                danger
+                onClick={() => transition("cancel")}
+              >
+                取消
+              </ActionButton>
             </Space>
           ) : null}
         </Space>

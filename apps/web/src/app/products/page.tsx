@@ -22,6 +22,7 @@ import dayjs, { type Dayjs } from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import {
   BENEFIT_TYPE_LABELS,
@@ -31,7 +32,13 @@ import {
   VEHICLE_BASE_FEE_MODE_LABELS,
   labelOf
 } from "../../constants/labels";
+import {
+  actionAvailability,
+  canActivateProductVersion,
+  canActivateSubscriptionPlan
+} from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
+import type { AuthMeResponse } from "../../lib/auth";
 
 interface ProductVersion {
   approvedAt?: string | null;
@@ -255,6 +262,8 @@ function ProductsPageContent() {
   const [vehiclePackages, setVehiclePackages] = useState<PackageRow[]>([]);
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionProductLocked, setVersionProductLocked] = useState(false);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const activeTab = searchParams.get("tab") ?? "products";
   const selectedPackageProductId = Form.useWatch("productId", packageForm);
@@ -278,13 +287,14 @@ function ProductsPageContent() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [productRows, vehicleRows, mileageRows, energyRows, benefitRows, planRows] = await Promise.all([
+      const [productRows, vehicleRows, mileageRows, energyRows, benefitRows, planRows, nextMe] = await Promise.all([
         apiFetch<Product[]>("/products"),
         apiFetch<PackageRow[]>("/vehicle-packages"),
         apiFetch<PackageRow[]>("/mileage-packages"),
         apiFetch<PackageRow[]>("/energy-packages"),
         apiFetch<PackageRow[]>("/benefit-packages"),
-        apiFetch<SubscriptionPlan[]>("/subscription-plans")
+        apiFetch<SubscriptionPlan[]>("/subscription-plans"),
+        apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setProducts(productRows);
       setVehiclePackages(vehicleRows);
@@ -292,6 +302,7 @@ function ProductsPageContent() {
       setEnergyPackages(energyRows);
       setBenefitPackages(benefitRows);
       setSubscriptionPlans(planRows);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -591,11 +602,32 @@ function ProductsPageContent() {
     {
       render: (_, record) => (
         <Space>
-          <Button onClick={() => openVersionModal(undefined, record)} size="small">新建版本</Button>
-          <Button icon={<EditOutlined />} onClick={() => openProductModal(record)} size="small">编辑</Button>
-          <Button icon={<PoweroffOutlined />} onClick={() => setProductStatus(record, record.status !== "ACTIVE")} size="small">
+          <ActionButton
+            onClick={() => openVersionModal(undefined, record)}
+            permission="product_version:create"
+            permissions={permissions}
+            size="small"
+          >
+            新建版本
+          </ActionButton>
+          <ActionButton
+            icon={<EditOutlined />}
+            onClick={() => openProductModal(record)}
+            permission="product:update"
+            permissions={permissions}
+            size="small"
+          >
+            编辑
+          </ActionButton>
+          <ActionButton
+            icon={<PoweroffOutlined />}
+            onClick={() => setProductStatus(record, record.status !== "ACTIVE")}
+            permission="product:activate"
+            permissions={permissions}
+            size="small"
+          >
             {record.status === "ACTIVE" ? "停用" : "启用"}
-          </Button>
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -616,10 +648,41 @@ function ProductsPageContent() {
     {
       render: (_, record) => (
         <Space>
-          <Button icon={<EditOutlined />} onClick={() => openVersionModal(record)} size="small">编辑</Button>
-          <Button icon={<CheckOutlined />} onClick={() => transitionVersion(record, "approve")} size="small">审批</Button>
-          <Button onClick={() => transitionVersion(record, "activate")} size="small">激活</Button>
-          <Button onClick={() => transitionVersion(record, "deactivate")} size="small">停用</Button>
+          <ActionButton
+            icon={<EditOutlined />}
+            onClick={() => openVersionModal(record)}
+            permission="product_version:update"
+            permissions={permissions}
+            size="small"
+          >
+            编辑
+          </ActionButton>
+          <ActionButton
+            icon={<CheckOutlined />}
+            onClick={() => transitionVersion(record, "approve")}
+            permission="product_version:approve"
+            permissions={permissions}
+            size="small"
+          >
+            审批
+          </ActionButton>
+          <ActionButton
+            availability={canActivateProductVersion(record, subscriptionPlans, permissions)}
+            onClick={() => transitionVersion(record, "activate")}
+            size="small"
+          >
+            激活
+          </ActionButton>
+          <ActionButton
+            allowed={record.status === "ACTIVE"}
+            disabledReason="当前产品版本未激活"
+            onClick={() => transitionVersion(record, "deactivate")}
+            permission="product_version:activate"
+            permissions={permissions}
+            size="small"
+          >
+            停用
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -647,11 +710,42 @@ function ProductsPageContent() {
       render: (_, record) => (
         <Space>
           <Button icon={<EyeOutlined />} onClick={() => setPlanDetail(record)} size="small">详情</Button>
-          <Button icon={<EditOutlined />} onClick={() => openPlanModal(record)} size="small">编辑</Button>
-          <Button onClick={() => setPlanStatus(record, record.status !== "ACTIVE")} size="small">
+          <ActionButton
+            allowed={record.status !== "ACTIVE"}
+            disabledReason="当前套餐已启用，请先停用后再编辑"
+            icon={<EditOutlined />}
+            onClick={() => openPlanModal(record)}
+            permission="subscription_plan:update"
+            permissions={permissions}
+            size="small"
+          >
+            编辑
+          </ActionButton>
+          <ActionButton
+            availability={
+              record.status === "ACTIVE"
+                ? actionAvailability({
+                    allowed: true,
+                    permission: "subscription_plan:deactivate",
+                    permissions
+                  })
+                : canActivateSubscriptionPlan(record, permissions)
+            }
+            onClick={() => setPlanStatus(record, record.status !== "ACTIVE")}
+            size="small"
+          >
             {record.status === "ACTIVE" ? "停用" : "启用"}
-          </Button>
-          <Button danger icon={<DeleteOutlined />} onClick={() => deletePlan(record)} size="small">删除</Button>
+          </ActionButton>
+          <ActionButton
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => deletePlan(record)}
+            permission="subscription_plan:delete"
+            permissions={permissions}
+            size="small"
+          >
+            删除
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -665,13 +759,49 @@ function ProductsPageContent() {
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={4} style={{ margin: 0 }}>产品中心</Typography.Title>
           <Space>
-            {activeTab === "products" ? <Button icon={<PlusOutlined />} onClick={() => openProductModal()} type="primary">新增订阅产品</Button> : null}
-            {activeTab === "versions" ? <Button icon={<PlusOutlined />} onClick={() => openVersionModal()} type="primary">新增产品版本</Button> : null}
-            {activeTab === "subscription-plans" ? <Button icon={<PlusOutlined />} onClick={() => openPlanModal()} type="primary">新增订阅套餐</Button> : null}
+            {activeTab === "products" ? (
+              <ActionButton
+                icon={<PlusOutlined />}
+                onClick={() => openProductModal()}
+                permission="product:create"
+                permissions={permissions}
+                type="primary"
+              >
+                新增订阅产品
+              </ActionButton>
+            ) : null}
+            {activeTab === "versions" ? (
+              <ActionButton
+                icon={<PlusOutlined />}
+                onClick={() => openVersionModal()}
+                permission="product_version:create"
+                permissions={permissions}
+                type="primary"
+              >
+                新增产品版本
+              </ActionButton>
+            ) : null}
+            {activeTab === "subscription-plans" ? (
+              <ActionButton
+                icon={<PlusOutlined />}
+                onClick={() => openPlanModal()}
+                permission="subscription_plan:create"
+                permissions={permissions}
+                type="primary"
+              >
+                新增订阅套餐
+              </ActionButton>
+            ) : null}
             {packageKindFromTab(activeTab) ? (
-              <Button icon={<PlusOutlined />} onClick={() => openPackageModal(packageKindFromTab(activeTab) ?? "vehicle")} type="primary">
+              <ActionButton
+                icon={<PlusOutlined />}
+                onClick={() => openPackageModal(packageKindFromTab(activeTab) ?? "vehicle")}
+                permission={packagePermission(packageKindFromTab(activeTab) ?? "vehicle", "create")}
+                permissions={permissions}
+                type="primary"
+              >
                 {packageMeta[packageKindFromTab(activeTab) ?? "vehicle"].createText}
-              </Button>
+              </ActionButton>
             ) : null}
           </Space>
         </Space>
@@ -682,10 +812,10 @@ function ProductsPageContent() {
           items={[
             { key: "products", label: "订阅产品", children: <Table columns={productColumns} dataSource={products} loading={loading} rowKey="id" scroll={{ x: 1200 }} /> },
             { key: "versions", label: "产品版本", children: <Table columns={versionColumns} dataSource={versionRows} loading={loading} rowKey="id" scroll={{ x: 1300 }} /> },
-            { key: "vehicle-packages", label: "车型包", children: packageTable("vehicle", vehiclePackages, openPackageModal, setPackageStatus, deletePackage, loading) },
-            { key: "mileage-packages", label: "里程包", children: packageTable("mileage", mileagePackages, openPackageModal, setPackageStatus, deletePackage, loading) },
-            { key: "energy-packages", label: "补能包", children: packageTable("energy", energyPackages, openPackageModal, setPackageStatus, deletePackage, loading) },
-            { key: "benefit-packages", label: "权益包", children: packageTable("benefit", benefitPackages, openPackageModal, setPackageStatus, deletePackage, loading) },
+            { key: "vehicle-packages", label: "车型包", children: packageTable("vehicle", vehiclePackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
+            { key: "mileage-packages", label: "里程包", children: packageTable("mileage", mileagePackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
+            { key: "energy-packages", label: "补能包", children: packageTable("energy", energyPackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
+            { key: "benefit-packages", label: "权益包", children: packageTable("benefit", benefitPackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
             { key: "subscription-plans", label: "订阅套餐", children: <Table columns={planColumns} dataSource={subscriptionPlans} loading={loading} rowKey="id" scroll={{ x: 2100 }} /> }
           ]}
         />
@@ -908,6 +1038,10 @@ function packageKindFromTab(tab: string): PackageKind | null {
   return Object.entries(packageMeta).find(([, meta]) => meta.tab === tab)?.[0] as PackageKind | null;
 }
 
+function packagePermission(kind: PackageKind, action: "activate" | "create" | "delete" | "update") {
+  return `${kind}_package:${action}`;
+}
+
 function buildPackagePayload(kind: PackageKind, values: PackageValues) {
   const base = {
     packageName: values.packageName,
@@ -1009,7 +1143,8 @@ function packageTable(
   openPackageModal: (kind: PackageKind, row?: PackageRow) => void,
   setPackageStatus: (kind: PackageKind, row: PackageRow, active: boolean) => void,
   deletePackage: (kind: PackageKind, row: PackageRow) => void,
-  loading: boolean
+  loading: boolean,
+  permissions: ReadonlySet<string>
 ) {
   const columns: ColumnsType<PackageRow> = [
     { dataIndex: "packageNo", title: `${packageMeta[kind].title}编号`, width: 170 },
@@ -1022,9 +1157,33 @@ function packageTable(
     {
       render: (_, record) => (
         <Space>
-          <Button icon={<EditOutlined />} onClick={() => openPackageModal(kind, record)} size="small">编辑</Button>
-          <Button onClick={() => setPackageStatus(kind, record, record.status !== "ACTIVE")} size="small">{record.status === "ACTIVE" ? "停用" : "启用"}</Button>
-          <Button danger icon={<DeleteOutlined />} onClick={() => deletePackage(kind, record)} size="small">删除</Button>
+          <ActionButton
+            icon={<EditOutlined />}
+            onClick={() => openPackageModal(kind, record)}
+            permission={packagePermission(kind, "update")}
+            permissions={permissions}
+            size="small"
+          >
+            编辑
+          </ActionButton>
+          <ActionButton
+            onClick={() => setPackageStatus(kind, record, record.status !== "ACTIVE")}
+            permission={packagePermission(kind, "activate")}
+            permissions={permissions}
+            size="small"
+          >
+            {record.status === "ACTIVE" ? "停用" : "启用"}
+          </ActionButton>
+          <ActionButton
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => deletePackage(kind, record)}
+            permission={packagePermission(kind, "delete")}
+            permissions={permissions}
+            size="small"
+          >
+            删除
+          </ActionButton>
         </Space>
       ),
       title: "操作",

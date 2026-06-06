@@ -1,8 +1,12 @@
 import {
+  ApplicationSource,
   ApplicationStatus,
   BenefitType,
   CustomerGrade,
+  DepositStatus,
   MonthlyFeeMode,
+  OrderReviewStatus,
+  PlanConfirmStatus,
   Prisma,
   ProductStatus,
   ProductType,
@@ -12,6 +16,7 @@ import {
   RiskResultDecision,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleStatus,
   VehicleModel
 } from "@prisma/client";
@@ -177,6 +182,62 @@ describe("subscription plan backend flow", () => {
     ).rejects.toThrow();
   });
 
+  it("allows assisted applications to create quotes before product vehicle and final plan review", async () => {
+    const assistedApplication = makeApplication({
+      applicationSource: ApplicationSource.SALES_ASSISTED,
+      creditReviewStatus: OrderReviewStatus.APPROVED,
+      depositStatus: DepositStatus.CONFIRMED,
+      finalSubscriptionPlanId: null,
+      finalVehicleId: null,
+      materialReviewStatus: OrderReviewStatus.APPROVED,
+      planConfirmStatus: PlanConfirmStatus.PENDING,
+      productReviewStatus: OrderReviewStatus.PENDING,
+      vehicleReviewStatus: OrderReviewStatus.PENDING
+    });
+    const { service } = makeService({ application: assistedApplication });
+
+    await expect(
+      service.createQuote(
+        "application-1",
+        {
+          periodMonths: 12,
+          subscriptionPlanId: "plan-1",
+          vehicleBaseFeeAmount: 420000,
+          vehicleId: "vehicle-asset-1"
+        },
+        user,
+        context
+      )
+    ).resolves.toMatchObject({
+      subscriptionPlanId: "plan-1",
+      vehicleId: "vehicle-asset-1"
+    });
+  });
+
+  it("routes self-service applications away from the assisted quote endpoint", async () => {
+    const selfServiceApplication = makeApplication({
+      applicationSource: ApplicationSource.SELF_SERVICE
+    });
+    const { service } = makeService({ application: selfServiceApplication });
+
+    await expect(service.listAvailableSubscriptionPlans("application-1", user)).rejects.toThrow(
+      "客户自助进件请使用确认最终方案 / 生成正式订单流程。"
+    );
+    await expect(
+      service.createQuote(
+        "application-1",
+        {
+          periodMonths: 12,
+          subscriptionPlanId: "plan-1",
+          vehicleBaseFeeAmount: 420000,
+          vehicleId: "vehicle-asset-1"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("客户自助进件请使用确认最终方案 / 生成正式订单流程。");
+  });
+
   it("creates quotes from subscriptionPlanId and stores package and deposit snapshots", async () => {
     const { prisma, service } = makeService();
 
@@ -215,7 +276,11 @@ describe("subscription plan backend flow", () => {
           vehicleId: "vehicle-asset-1",
           vehiclePurchasePriceAmount: BigInt(10000000),
           vehicleSalePriceAmount: BigInt(12000000),
-          vehicleSnapshot: expect.any(Object),
+          vehicleSnapshot: expect.objectContaining({
+            batteryCapacityKwh: 75,
+            batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+            batteryUsageTypeLabel: "电池买断"
+          }),
           vehiclePackageId: "vehicle-1"
         })
       })
@@ -775,6 +840,8 @@ function makeDepositRule(overrides: Record<string, unknown> = {}) {
 function makeVehicle(overrides: Record<string, unknown> = {}) {
   return {
     assetLocation: "Shanghai",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",
     createdAt: now,
     createdBy: "user-1",

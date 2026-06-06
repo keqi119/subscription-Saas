@@ -28,7 +28,7 @@ export class OrderController {
   }
 
   @Get("orders/review-queue")
-  @RequirePermissions(PermissionCode.ORDER_VIEW)
+  @RequirePermissions(PermissionCode.ORDER_REVIEW)
   listReviewQueue(@Req() request: AuthenticatedRequest) {
     return this.orderService.listReviewQueue(request.user);
   }
@@ -55,37 +55,37 @@ export class OrderController {
   }
 
   @Post("orders/:id/reviews/credit")
-  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  @RequirePermissions(PermissionCode.ORDER_REVIEW)
   reviewCredit(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
     return this.orderService.reviewOrder(id, "credit", dto, request.user, requestContext(request));
   }
 
   @Post("orders/:id/reviews/product")
-  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  @RequirePermissions(PermissionCode.ORDER_REVIEW)
   reviewProduct(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
     return this.orderService.reviewOrder(id, "product", dto, request.user, requestContext(request));
   }
 
   @Post("orders/:id/reviews/vehicle")
-  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  @RequirePermissions(PermissionCode.ORDER_REVIEW)
   reviewVehicle(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
     return this.orderService.reviewOrder(id, "vehicle", dto, request.user, requestContext(request));
   }
 
   @Post("orders/:id/finalize-plan")
-  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  @RequirePermissions(PermissionCode.ORDER_CONFIRM_FINAL_PLAN)
   finalizePlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.finalizePlan(id, request.user, requestContext(request));
   }
 
   @Post("orders/:id/reject")
-  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  @RequirePermissions(PermissionCode.ORDER_REJECT)
   rejectCustomerOrder(@Param("id") id: string, @Body() dto: ReviewOrderDto, @Req() request: AuthenticatedRequest) {
     return this.orderService.rejectCustomerOrder(id, dto, request.user, requestContext(request));
   }
 
   @Post("orders/:id/customer-confirm")
-  @RequirePermissions(PermissionCode.ORDER_UPDATE)
+  @RequirePermissions(PermissionCode.ORDER_CONFIRM_FINAL_PLAN)
   confirmCustomerOrder(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.confirmCustomerOrder(id, request.user, requestContext(request));
   }

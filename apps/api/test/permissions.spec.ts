@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import { REQUIRED_ANY_PERMISSIONS_KEY, REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
+import { CustomerController } from "../src/customer/customer.controller";
+import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
@@ -59,6 +61,85 @@ describe("vehicle availability permissions", () => {
   });
 });
 
+describe("customer order review permissions", () => {
+  it("requires order review and final-plan permissions for A-line review APIs", () => {
+    const reviewPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.reviewCredit
+    );
+    const reviewQueuePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.listReviewQueue
+    );
+    const finalizePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.finalizePlan
+    );
+    const rejectPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.rejectCustomerOrder
+    );
+
+    expect(reviewPermissions).toEqual([PermissionCode.ORDER_REVIEW]);
+    expect(reviewQueuePermissions).toEqual([PermissionCode.ORDER_REVIEW]);
+    expect(finalizePermissions).toEqual([PermissionCode.ORDER_CONFIRM_FINAL_PLAN]);
+    expect(rejectPermissions).toEqual([PermissionCode.ORDER_REJECT]);
+    expect(hasRequiredPermissions([PermissionCode.ORDER_VIEW], reviewPermissions)).toBe(false);
+  });
+});
+
+describe("self-service application permissions", () => {
+  it("keeps self-service application intake behind application permissions", () => {
+    const requiredAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      CustomerController.prototype.createSelfServiceApplication
+    );
+
+    expect(requiredAnyPermissions).toEqual([
+      PermissionCode.APPLICATION_MANAGE,
+      PermissionCode.APPLICATION_SUBMIT
+    ]);
+    expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_SUBMIT], requiredAnyPermissions)).toBe(true);
+    expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_REVIEW], requiredAnyPermissions)).toBe(false);
+  });
+
+  it("gates application review workflow behind review and order-create permissions", () => {
+    const reviewPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.reviewApplicationCredit
+    );
+    const queuePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.listApplicationReviewQueue
+    );
+    const finalizePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.finalizeApplicationPlan
+    );
+    const createOrderPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      CustomerController.prototype.createOrderFromApplication
+    );
+    const cancelAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      CustomerController.prototype.cancelApplication
+    );
+
+    expect(reviewPermissions).toEqual([PermissionCode.APPLICATION_REVIEW]);
+    expect(queuePermissions).toEqual([PermissionCode.APPLICATION_REVIEW]);
+    expect(finalizePermissions).toEqual([PermissionCode.APPLICATION_REVIEW]);
+    expect(createOrderPermissions).toEqual([
+      PermissionCode.QUOTE_CREATE,
+      PermissionCode.ORDER_CREATE
+    ]);
+    expect(cancelAnyPermissions).toEqual([
+      PermissionCode.APPLICATION_MANAGE,
+      PermissionCode.APPLICATION_REVIEW
+    ]);
+    expect(hasRequiredPermissions([PermissionCode.APPLICATION_VIEW], reviewPermissions)).toBe(false);
+  });
+});
+
 describe("seed permission calibration", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
@@ -86,15 +167,15 @@ describe("seed permission calibration", () => {
   });
 
   it("gives OP and SA quote, vehicle, application, and subscription plan access", () => {
-    expect(roleBlock("SA")).toContain("\"application:view\"");
-    expect(roleBlock("SA")).toContain("...productPackageViewPermissions");
-    expect(roleBlock("SA")).toContain("...vehicleViewPermissions");
-    expect(roleBlock("SA")).toContain("...quoteManagementPermissions");
-
-    expect(roleBlock("OP")).toContain("\"application:view\"");
-    expect(roleBlock("OP")).toContain("...productManagementPermissions");
-    expect(roleBlock("OP")).toContain("...vehicleManagementPermissions");
-    expect(roleBlock("OP")).toContain("...quoteManagementPermissions");
+    for (const roleCode of ["SA", "OP"]) {
+      expectRolePermissions(roleCode, [
+        "application:view",
+        "quote:create",
+        "quote:view",
+        "vehicle:view",
+        "subscription_plan:view"
+      ]);
+    }
 
     expect(seedSource).toContain("\"quote:create\"");
     expect(seedSource).toContain("\"subscription_plan:view\"");
@@ -108,11 +189,117 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("\"vehicle:review_sale_price\"");
   });
 
-  function roleBlock(roleCode: string) {
-    const marker = `await assignRoleAccess(\n    "${roleCode}",`;
-    const start = seedSource.indexOf(marker);
-    expect(start).toBeGreaterThanOrEqual(0);
-    const next = seedSource.indexOf("\n  await assignRoleAccess(", start + marker.length);
-    return seedSource.slice(start, next === -1 ? undefined : next);
+  it("calibrates A-line order review permissions by role", () => {
+    for (const permission of ["order:review", "order:confirm_final_plan", "order:reject"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expectRolePermissions("OP", ["order:review", "order:confirm_final_plan", "order:reject"]);
+    expectRolePermissions("RC", ["order:review", "order:reject"]);
+    expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"order:review\", \"order:reject\"] : [])");
+    expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"orders.review\"] : [])");
+    expect(roleHasPermission(rolePermissionArray("SA"), "order:review")).toBe(false);
+    expect(roleHasMenu(roleMenuArray("SA"), "orders.review")).toBe(false);
+  });
+
+  function expectRolePermissions(roleCode: string, permissionCodes: string[]) {
+    const permissionsSource = rolePermissionArray(roleCode);
+
+    for (const permissionCode of permissionCodes) {
+      expect(roleHasPermission(permissionsSource, permissionCode)).toBe(true);
+    }
+  }
+
+  function rolePermissionArray(roleCode: string) {
+    const pattern = new RegExp(
+      `await\\s+assignRoleAccess\\(\\s*["']${escapeRegExp(roleCode)}["']\\s*,\\s*\\[([\\s\\S]*?)\\]\\s*,`
+    );
+    const match = seedSource.match(pattern);
+    const source = match?.[1];
+
+    expect(source).toBeDefined();
+    return source ?? "";
+  }
+
+  function roleMenuArray(roleCode: string) {
+    const pattern = new RegExp(
+      `await\\s+assignRoleAccess\\(\\s*["']${escapeRegExp(roleCode)}["']\\s*,\\s*\\[[\\s\\S]*?\\]\\s*,\\s*\\[([\\s\\S]*?)\\]\\s*\\)`
+    );
+    const match = seedSource.match(pattern);
+    const source = match?.[1];
+
+    expect(source).toBeDefined();
+    return source ?? "";
+  }
+
+  function roleHasMenu(source: string, menuCode: string) {
+    return containsQuotedValue(source, menuCode);
+  }
+
+  function roleHasPermission(source: string, permissionCode: string, seen = new Set<string>()) {
+    if (containsQuotedValue(source, permissionCode)) {
+      return true;
+    }
+
+    for (const identifier of spreadIdentifiers(source)) {
+      if (seen.has(identifier)) {
+        continue;
+      }
+
+      seen.add(identifier);
+
+      if (roleHasPermission(permissionConstantSource(identifier), permissionCode, seen)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function permissionConstantSource(identifier: string) {
+    const parts: string[] = [];
+    const declarationPattern = new RegExp(
+      `const\\s+${escapeRegExp(identifier)}\\s*=\\s*\\[([\\s\\S]*?)\\];`
+    );
+    const declarationMatch = seedSource.match(declarationPattern);
+    const declarationSource = declarationMatch?.[1];
+
+    if (declarationSource) {
+      parts.push(declarationSource);
+    }
+
+    const pushPattern = new RegExp(`${escapeRegExp(identifier)}\\.push\\(([\\s\\S]*?)\\);`, "g");
+
+    for (const pushMatch of seedSource.matchAll(pushPattern)) {
+      const pushSource = pushMatch[1];
+
+      if (pushSource) {
+        parts.push(pushSource);
+      }
+    }
+
+    return parts.join("\n");
+  }
+
+  function spreadIdentifiers(source: string) {
+    const identifiers: string[] = [];
+
+    for (const match of source.matchAll(/\.\.\.([A-Za-z_$][\w$]*)/g)) {
+      const identifier = match[1];
+
+      if (identifier) {
+        identifiers.push(identifier);
+      }
+    }
+
+    return identifiers;
+  }
+
+  function containsQuotedValue(source: string, value: string) {
+    return new RegExp(`["']${escapeRegExp(value)}["']`).test(source);
+  }
+
+  function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 });

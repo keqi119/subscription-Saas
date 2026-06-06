@@ -15,6 +15,7 @@ import {
   RecordStatus,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleModel,
   VehicleStatus
 } from "@prisma/client";
@@ -56,12 +57,12 @@ describe("customer self-service order API rules", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           customerSelectedSnapshot: expect.objectContaining({
-            depositDescription: "押金审核后确认",
+            depositDescription: "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。",
             depositStatus: DepositStatus.PENDING_CONFIRM
           }),
           depositAmount: 0n,
           depositRuleSnapshot: expect.objectContaining({
-            depositDescription: "押金审核后确认",
+            depositDescription: "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。",
             status: DepositStatus.PENDING_CONFIRM
           }),
           packageSnapshot: expect.objectContaining({
@@ -77,11 +78,61 @@ describe("customer self-service order API rules", () => {
             vehicleBaseFeeModeLabel: "固定费率"
           }),
           riskResultId: null,
-          status: QuoteStatus.DRAFT
+          status: QuoteStatus.DRAFT,
+          vehicleSnapshot: expect.objectContaining({
+            batteryCapacityKwh: 75,
+            batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+            batteryUsageTypeLabel: "电池买断"
+          })
         })
       })
     );
     expect(harness.auditService.write).toHaveBeenCalledTimes(4);
+  });
+
+  it("uses the plan fixed amount for customer self-service fixed-amount plans", async () => {
+    const harness = createCustomerOrderHarness({
+      plan: {
+        baseMonthlyFeeAmount: 600000n,
+        monthlyFeeMode: MonthlyFeeMode.FIXED_AMOUNT
+      }
+    });
+
+    await harness.service.createCustomerOrder(
+      {
+        customerId: harness.customer.id,
+        periodMonths: 12,
+        subscriptionPlanId: harness.plan.id,
+        vehicleBaseFeeAmount: 123456,
+        vehicleId: harness.vehicle.id
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.tx.subscriptionQuote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          monthlyFeeAmount: 800000n,
+          packageSnapshot: expect.objectContaining({
+            pricing: expect.objectContaining({
+              fixedRate: null,
+              monthlyFeeAmount: 800000,
+              vehicleBaseFeeAmount: 600000,
+              vehicleBaseFeeMode: MonthlyFeeMode.FIXED_AMOUNT
+            })
+          }),
+          vehicleBaseFeeAmount: 600000n
+        })
+      })
+    );
+    expect(harness.tx.subscriptionOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          monthlyFeeAmount: 800000n
+        })
+      })
+    );
   });
 
   it("rejects a subscription plan that does not match the selected vehicle model", async () => {
@@ -124,7 +175,7 @@ describe("customer self-service order API rules", () => {
         harness.user,
         harness.context
       )
-    ).rejects.toThrow("所选车辆当前不可租用");
+    ).rejects.toThrow("所选车辆当前不可租用，请重新选择车辆");
 
     expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
@@ -172,7 +223,7 @@ describe("customer self-service order API rules", () => {
         harness.user,
         harness.context
       )
-    ).rejects.toThrow("客户自助下单不支持现场报价套餐");
+    ).rejects.toThrow("该套餐需后台报价确认，暂不支持客户自助提交。");
 
     expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
@@ -215,6 +266,8 @@ function createCustomerOrderHarness(overrides: {
   };
   const vehicle = {
     assetLocation: "上海",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",
     createdAt: now,
     createdBy: user.id,

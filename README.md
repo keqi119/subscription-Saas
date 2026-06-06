@@ -11,7 +11,7 @@ D:\Projects\auto-subscription-platform
 
 ## 当前阶段
 
-当前本地分支是 `feature/stage5-optimization`。代码已完成阶段 5 基线并进入阶段 5
+当前本地分支是 `feature/ab-order-review-flow`。代码已完成阶段 5 基线并进入阶段 5
 优化后的接管校准：
 
 - 已有登录、JWT Cookie、RBAC、菜单权限、用户/角色/权限管理、审计日志。
@@ -19,7 +19,7 @@ D:\Projects\auto-subscription-platform
 - 已有产品、产品版本、旧版 `ProductPriceRule`、产品组件包和 `SubscriptionPlan`。
 - 已有订阅报价、订单、合同模板、合同管理、订单变更基础能力。
 - 已新增车辆资产池、车辆当前销售价初始化、季度 review、销售价历史、可用车辆接口。
-- 已补充 A/B 双线订单主线文档：A 线客户自动下单，B 线销售手动下单。
+- 已重新校准 A/B 双线主线：A 线客户自助进件，B 线销售人工进件，两线合并到进件审核后再生成正式订单。
 - 当前仍有大量未提交文件，开发前必须先确认工作区和 migration 状态。
 
 `ProductPriceRule` 是旧版价格规则，保留兼容历史报价。新版报价入口是
@@ -142,7 +142,7 @@ pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/
 
 ## 当前核心业务链路
 
-当前已实现基线主要对应 B 线销售手动下单：
+当前已实现基线主要对应 B 线销售人工进件、报价后生成订单：
 
 ```text
 客户创建
@@ -157,7 +157,69 @@ pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/
   -> 生成/签署/归档合同
 ```
 
-## A/B 双线订单目标主线
+## A/B 双线进件目标主线
+
+当前校准后的主线是：
+
+```text
+A 线 = SELF_SERVICE Application，客户自助进件
+B 线 = SALES_ASSISTED Application，销售人工进件
+两线从客户资料审核开始合并
+正式 SubscriptionOrder 只在资料、授信、押金、产品套餐、车辆库存、最终方案均确认后生成
+```
+
+A 线客户提交时只保存意向选择：
+
+```text
+intentVehicleId
+intentSubscriptionPlanId
+intentPeriodMonths
+intentVehicleBaseFeeAmount
+intentSnapshot / customerSelectedSnapshot
+depositStatus = PENDING_CONFIRM
+finalDepositAmount = null
+```
+
+B 线继续沿用现有后台进件、风控、报价、订单、合同流程。
+
+后续迁移顺序：
+
+```text
+R2: POST /api/self-service-applications
+R3: Application 审核 API
+R4: 进件列表 / 进件详情审核页面
+R5: 废弃或兼容封装 POST /api/customer-orders 和 /orders/review
+R6: seed、测试、质量门禁、PR 整理
+```
+
+现有 `POST /api/customer-orders`、`CUSTOMER_SELF_SERVICE` 直建订单和
+`/orders/review` 属于 Stage 5.5 旧方向遗留能力，本阶段保留但标记为后续迁移对象。
+
+## Stage 5.5 人工验收路径
+
+A 线当前没有客户 App / 小程序前端。人工验收通过 `pnpm prisma:seed` 创建
+`SELF_SERVICE` 自助进件数据，然后在后台进件中心完成审核闭环。
+
+```text
+1. pnpm prisma:seed
+2. 如 seed 修改过权限，退出并重新登录 admin
+3. 打开 /applications
+4. 筛选进件来源 = 客户自助
+5. 找到 A线自助进件测试客户
+6. 进入 /applications/:id 详情
+7. 查看意向车辆、意向套餐、押金待确认和客户资料区域
+8. 依次完成资料审核、客户资质审核、产品匹配审核、车辆库存审核
+9. 点击确认最终方案
+10. 点击生成正式订单
+11. 确认进件显示订单编号并可跳转订单详情
+12. 确认车辆从 REVIEW_RESERVED 进入 RESERVED
+13. 确认 B线销售人工进件和报价流程仍可用
+```
+
+新 A/B 双线主线审核入口是 `/applications` 和 `/applications/:id`，不是 legacy
+`/orders/review`。
+
+## Legacy A/B Direct-Order Notes
 
 后续订单主线需要同时支持两条路径，并最终汇入订单、合同、付款、交付、
 起租流程。
@@ -280,7 +342,7 @@ B 线销售下单：AVAILABLE -> RESERVED
 - 处理 `prisma migrate status` 当前失败的问题。
 - 修复 `/api/vehicles/available` 可能因 JWT 缺 `vehicle:view` 导致的 Permission denied。
 - 拆分 `vehicle:*` 和 `subscription_plan:*` 细粒度权限。
-- 落地 A/B 双线订单主线的数据模型、API、后台审核页和车辆状态联动。
+- 按 R2-R6 落地 A/B 双线进件主线、Application 审核 API、后台审核页和车辆状态联动。
 - 修复 Ant Design `Space direction`、`Drawer width` 迁移到 v6 推荐属性。
 - 补齐独立 `VehicleStatusLog` 或等价状态日志。
 - 跑完整质量门禁并处理阻断。

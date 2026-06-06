@@ -75,7 +75,8 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
       .finally(() => setLoading(false));
   }, [message, router]);
 
-  const menuItems = useMemo(() => buildMenuItems(me?.menus ?? []), [me?.menus]);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
+  const menuItems = useMemo(() => buildMenuItems(me?.menus ?? [], permissions), [me?.menus, permissions]);
 
   if (loading) {
     return (
@@ -139,9 +140,10 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
   );
 }
 
-function buildMenuItems(menus: MenuItemDefinition[]): ItemType[] {
+function buildMenuItems(menus: MenuItemDefinition[], permissions: Set<string>): ItemType[] {
+  const allowedMenus = menus.filter((menu) => !menu.permissionCode || permissions.has(menu.permissionCode));
   const byCode = new Map(
-    menus.map((menu) => [menu.code, { ...menu, children: [] as MenuItemDefinition[] }])
+    allowedMenus.map((menu) => [menu.code, { ...menu, children: [] as MenuItemDefinition[] }])
   );
   const roots: Array<MenuItemDefinition & { children: MenuItemDefinition[] }> = [];
 
@@ -158,7 +160,7 @@ function buildMenuItems(menus: MenuItemDefinition[]): ItemType[] {
   }
 
   return roots.map((menu) => ({
-    children: menu.children.length ? buildMenuItems(menu.children) : undefined,
+    children: menu.children.length ? buildMenuItems(menu.children, permissions) : undefined,
     icon: menu.icon ? iconMap[menu.icon] : undefined,
     key: menu.children.length ? menu.code : menu.path,
     label: localizeMenuLabel(menu)

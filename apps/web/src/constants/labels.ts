@@ -58,6 +58,31 @@ export const STATUS_LABELS: Record<string, string> = {
   UNDER_REVIEW: "审批中"
 };
 
+export const APPLICATION_SOURCE_LABELS: Record<string, string> = {
+  SALES_ASSISTED: "销售人工",
+  SELF_SERVICE: "客户自助"
+};
+
+export const REVIEW_STATUS_LABELS: Record<string, string> = {
+  APPROVED: "已通过",
+  NEED_MORE_INFO: "需补充资料",
+  PENDING: "待审核",
+  REJECTED: "已拒绝"
+};
+
+export const DEPOSIT_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "押金已确认",
+  PENDING_CONFIRM: "押金待确认",
+  REJECTED: "押金拒绝",
+  WAIVED: "押金减免"
+};
+
+export const PLAN_CONFIRM_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  PENDING: "待确认",
+  REJECTED: "已拒绝"
+};
+
 export const MATERIAL_STATUS_LABELS: Record<string, string> = {
   APPROVED: "已通过",
   NEED_MORE_INFO: "需补充资料",
@@ -107,6 +132,11 @@ export const VEHICLE_BASE_FEE_MODE_LABELS: Record<string, string> = {
   FIXED_AMOUNT: "固定金额",
   MANUAL_QUOTE: "现场报价",
   RATE_FORMULA: "固定费率"
+};
+
+export const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<string, string> = {
+  BAAS: "BaaS / 电池租用",
+  BUYOUT: "电池买断"
 };
 
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
@@ -175,7 +205,10 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "dashboard:view": "查看首页驾驶舱",
   "menu:view": "查看菜单",
   "order:cancel": "取消订单",
+  "order:confirm_final_plan": "确认最终方案",
   "order:create": "创建订单",
+  "order:reject": "拒绝订单申请",
+  "order:review": "审核订单申请",
   "order:update": "编辑订单",
   "order:view": "查看订单",
   "order_change:approve": "审批订单变更",
@@ -247,7 +280,10 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "dashboard:view": "允许查看首页驾驶舱",
   "menu:view": "允许查看菜单管理",
   "order:cancel": "允许取消订阅订单",
+  "order:confirm_final_plan": "允许确认客户自助订单最终方案",
   "order:create": "允许从已确认报价创建订阅订单",
+  "order:reject": "允许拒绝客户自助订单申请",
+  "order:review": "允许查看和处理客户自助订单审核",
   "order:update": "允许编辑订阅订单",
   "order:view": "允许查看订阅订单",
   "order_change:approve": "允许审批订单变更",
@@ -304,7 +340,7 @@ export const MENU_LABELS: Record<string, string> = {
   orders: "订单中心",
   "orders.contract_templates": "合同模板",
   "orders.contracts": "合同管理",
-  "orders.review": "订单申请审核",
+  "orders.review": "旧版订单审核",
   "orders.subscription": "订阅订单",
   products: "产品中心",
   quotes: "订阅报价",

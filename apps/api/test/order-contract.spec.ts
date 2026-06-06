@@ -4,6 +4,7 @@ import {
   ContractStatus,
   ContractVersionStatus,
   OrderChangeType,
+  OrderSource,
   OrderStatus,
   ProductStatus,
   QuoteStatus,
@@ -116,6 +117,21 @@ describe("subscription order and contract rules", () => {
 
     expect(order.vehicleId).toBe(harness.vehicleId);
     expect(order.quoteSnapshot.vehicleSnapshot?.vehicleNo).toBe("VEH2026060200001");
+    expect(harness.prisma.subscriptionOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          orderStatus: OrderStatus.PENDING_CONTRACT
+        })
+      })
+    );
+    expect(harness.prisma.subscriptionOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.not.objectContaining({
+          orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
+          orderStatus: OrderStatus.PENDING_REVIEW
+        })
+      })
+    );
   });
 
   it("reads legacy sales-assisted order details without A/B extension fields", async () => {
@@ -472,5 +488,5 @@ function createOrderServiceHarness() {
   const auditService = { write: vi.fn(async () => undefined) };
   const service = new OrderService(auditService as never, prisma as never);
 
-  return { auditService, context, orderId, quoteId, service, state, tx, user, vehicleId };
+  return { auditService, context, orderId, prisma, quoteId, service, state, tx, user, vehicleId };
 }

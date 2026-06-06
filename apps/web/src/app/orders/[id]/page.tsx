@@ -8,8 +8,14 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { ORDER_CHANGE_TYPE_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import { ORDER_CHANGE_TYPE_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
+import {
+  actionAvailability,
+  canExecuteOrderChange,
+  canGenerateContract as getGenerateContractAvailability
+} from "../../../lib/action-guards";
 import { apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 
@@ -35,6 +41,9 @@ interface OrderDetail {
   quote?: { quoteNo: string; id: string } | null;
   quoteSnapshot?: unknown;
   vehicle?: {
+    batteryCapacityKwh?: number | null;
+    batteryUsageType?: string | null;
+    batteryUsageTypeLabel?: string | null;
     currentMileageKm?: number | null;
     currentSalePriceAmount?: number | null;
     plateNo?: string | null;
@@ -134,6 +143,15 @@ function formatKilometers(value?: unknown) {
 function formatKwh(value?: unknown) {
   const kwh = toNumber(value);
   return kwh === null ? "-" : `${kwh.toLocaleString("zh-CN")} kWh`;
+}
+
+function formatBatteryUsageType(type?: unknown, label?: unknown) {
+  const labelText = safeText(label);
+  if (labelText !== "-") {
+    return labelText;
+  }
+  const typeText = safeText(type);
+  return typeText === "-" ? "-" : labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, typeText);
 }
 
 function formatCount(value?: unknown) {
@@ -250,14 +268,22 @@ function ReviewStatusTag({ value }: { value?: string }) {
 
 function canFinalizeOrder(order: OrderDetail) {
   return (
-    order.orderStatus === "PENDING_REVIEW" &&
+    ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) &&
     order.creditReviewStatus === "APPROVED" &&
     order.productReviewStatus === "APPROVED" &&
-    order.vehicleReviewStatus === "APPROVED"
+    order.vehicleReviewStatus === "APPROVED" &&
+    order.depositStatus === "CONFIRMED" &&
+    order.finalDepositAmount !== null &&
+    order.finalDepositAmount !== undefined
   );
 }
 
 function ReviewPanel({
+  canConfirmFinalPlan,
+  canRejectOrder,
+  canReviewCredit,
+  canReviewProduct,
+  canReviewVehicle,
   creditForm,
   onConfirmCustomer,
   onFinalizePlan,
@@ -265,6 +291,11 @@ function ReviewPanel({
   onReview,
   order
 }: {
+  canConfirmFinalPlan: boolean;
+  canRejectOrder: boolean;
+  canReviewCredit: boolean;
+  canReviewProduct: boolean;
+  canReviewVehicle: boolean;
   creditForm: ReturnType<typeof Form.useForm<{ customerGrade: string }>>[0];
   onConfirmCustomer: () => Promise<void>;
   onFinalizePlan: () => Promise<void>;
@@ -275,6 +306,8 @@ function ReviewPanel({
   if (order.orderSource !== "CUSTOMER_SELF_SERVICE") {
     return null;
   }
+
+  const canReviewPendingOrder = order.orderStatus === "PENDING_REVIEW";
 
   return (
     <Card title="订单申请审核">
@@ -296,63 +329,63 @@ function ReviewPanel({
         />
 
         <Space orientation="vertical" size={12} style={{ width: "100%" }}>
-          <Space wrap>
-            <Typography.Text strong>客户资质审核</Typography.Text>
-            <Form form={creditForm} initialValues={{ customerGrade: "A" }} layout="inline">
-              <Form.Item name="customerGrade" rules={[{ required: true, message: "请选择客户等级" }]}>
-                <Select options={customerGradeOptions} style={{ width: 96 }} />
-              </Form.Item>
-            </Form>
-            <Button onClick={() => onReview("credit", "APPROVED")} size="small" type="primary">
-              通过
-            </Button>
-            <Button onClick={() => onReview("credit", "NEED_MORE_INFO")} size="small">
-              补资料
-            </Button>
-            <Button danger onClick={() => onReview("credit", "REJECTED")} size="small">
-              拒绝
-            </Button>
-          </Space>
+          {canReviewCredit && canReviewPendingOrder ? (
+            <Space wrap>
+              <Typography.Text strong>客户资质审核</Typography.Text>
+              <Form form={creditForm} initialValues={{ customerGrade: "A" }} layout="inline">
+                <Form.Item name="customerGrade" rules={[{ required: true, message: "请选择客户等级" }]}>
+                  <Select options={customerGradeOptions} style={{ width: 96 }} />
+                </Form.Item>
+              </Form>
+              <Button onClick={() => onReview("credit", "APPROVED")} size="small" type="primary">
+                通过
+              </Button>
+              <Button onClick={() => onReview("credit", "NEED_MORE_INFO")} size="small">
+                补资料
+              </Button>
+              <Button danger onClick={() => onReview("credit", "REJECTED")} size="small">
+                拒绝
+              </Button>
+            </Space>
+          ) : null}
 
-          <Space wrap>
-            <Typography.Text strong>产品匹配审核</Typography.Text>
-            <Button onClick={() => onReview("product", "APPROVED")} size="small" type="primary">
-              通过
-            </Button>
-            <Button onClick={() => onReview("product", "NEED_MORE_INFO")} size="small">
-              补资料
-            </Button>
-            <Button danger onClick={() => onReview("product", "REJECTED")} size="small">
-              拒绝
-            </Button>
-          </Space>
+          {canReviewProduct && canReviewPendingOrder ? (
+            <Space wrap>
+              <Typography.Text strong>产品匹配审核</Typography.Text>
+              <Button onClick={() => onReview("product", "APPROVED")} size="small" type="primary">
+                通过
+              </Button>
+              <Button danger onClick={() => onReview("product", "REJECTED")} size="small">
+                拒绝
+              </Button>
+            </Space>
+          ) : null}
 
-          <Space wrap>
-            <Typography.Text strong>车辆库存审核</Typography.Text>
-            <Button onClick={() => onReview("vehicle", "APPROVED")} size="small" type="primary">
-              通过
-            </Button>
-            <Button onClick={() => onReview("vehicle", "NEED_MORE_INFO")} size="small">
-              补资料
-            </Button>
-            <Button danger onClick={() => onReview("vehicle", "REJECTED")} size="small">
-              拒绝
-            </Button>
-          </Space>
+          {canReviewVehicle && canReviewPendingOrder ? (
+            <Space wrap>
+              <Typography.Text strong>车辆库存审核</Typography.Text>
+              <Button onClick={() => onReview("vehicle", "APPROVED")} size="small" type="primary">
+                通过
+              </Button>
+              <Button danger onClick={() => onReview("vehicle", "REJECTED")} size="small">
+                拒绝
+              </Button>
+            </Space>
+          ) : null}
 
           <Space wrap>
             <Typography.Text strong>最终方案确认</Typography.Text>
-            {canFinalizeOrder(order) ? (
+            {canConfirmFinalPlan && canFinalizeOrder(order) ? (
               <Button onClick={onFinalizePlan} size="small" type="primary">
                 确认最终方案
               </Button>
             ) : null}
-            {order.orderStatus === "PENDING_CUSTOMER_CONFIRMATION" ? (
+            {canConfirmFinalPlan && order.orderStatus === "PENDING_CUSTOMER_CONFIRMATION" ? (
               <Button onClick={onConfirmCustomer} size="small">
                 后台代客户确认并进入签约
               </Button>
             ) : null}
-            {["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) ? (
+            {canRejectOrder && ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) ? (
               <Button danger onClick={onRejectOrder} size="small">
                 拒绝订单
               </Button>
@@ -454,6 +487,22 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
                 getSnapshotValue(vehicleSnapshot, "vehicleModel", "model") ??
                   getSnapshotValue(snapshot, "vehicleModel", "model") ??
                   order.vehicleModel
+              )
+            },
+            {
+              label: "电池容量",
+              children: formatKwh(
+                getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh") ??
+                  getSnapshotValue(snapshot, "batteryCapacityKwh")
+              )
+            },
+            {
+              label: "电池使用方式",
+              children: formatBatteryUsageType(
+                getSnapshotValue(vehicleSnapshot, "batteryUsageType") ??
+                  getSnapshotValue(snapshot, "batteryUsageType"),
+                getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel") ??
+                  getSnapshotValue(snapshot, "batteryUsageTypeLabel")
               )
             },
             { label: "当前车辆销售价", children: formatYuan(currentVehicleSalePrice) },
@@ -694,6 +743,14 @@ function OrderInfoSections({
             { label: "VIN", children: safeText(order.vehicle?.vin ?? getSnapshotValue(vehicleSnapshot, "vin")) },
             { label: "车牌号", children: safeText(order.vehicle?.plateNo ?? getSnapshotValue(vehicleSnapshot, "plateNo")) },
             { label: "车型", children: safeText(order.vehicle?.vehicleModel ?? getSnapshotValue(vehicleSnapshot, "vehicleModel") ?? order.vehicleModel) },
+            { label: "电池容量", children: formatKwh(order.vehicle?.batteryCapacityKwh ?? getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")) },
+            {
+              label: "电池使用方式",
+              children: formatBatteryUsageType(
+                order.vehicle?.batteryUsageType ?? getSnapshotValue(vehicleSnapshot, "batteryUsageType"),
+                order.vehicle?.batteryUsageTypeLabel ?? getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel")
+              )
+            },
             { label: "车辆状态", children: safeText(order.vehicle?.status ?? getSnapshotValue(vehicleSnapshot, "status")) },
             { label: "当前车辆销售价", children: formatYuan(currentVehicleSalePrice) },
             { label: "当前里程", children: formatKilometers(order.vehicle?.currentMileageKm ?? getSnapshotValue(vehicleSnapshot, "currentMileageKm")) },
@@ -739,11 +796,14 @@ export default function OrderDetailPage() {
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const canCreateChange = permissions.has("order_change:create");
-  const canApproveChange = permissions.has("order_change:approve");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
-  const canExecuteChange = permissions.has("order_change:execute");
-  const canGenerateContract = permissions.has("contract:generate");
-  const canCancelOrder = permissions.has("order:cancel");
+  const isAdminOrOperator = roles.has("ADMIN") || roles.has("OP") || roles.has("GM");
+  const hasOrderReviewPermission = permissions.has("order:review");
+  const canReviewCredit = hasOrderReviewPermission && (isAdminOrOperator || roles.has("RC"));
+  const canReviewProduct = hasOrderReviewPermission && isAdminOrOperator;
+  const canReviewVehicle = hasOrderReviewPermission && (isAdminOrOperator || roles.has("AS"));
+  const canConfirmFinalPlan = permissions.has("order:confirm_final_plan");
+  const canRejectCustomerOrder = permissions.has("order:reject") || isAdminOrOperator;
   const currentVehicleSalePrice = toNumber(
     order?.vehicle?.currentSalePriceAmount ??
       getSnapshotValue(order?.quoteSnapshot, "vehicleSnapshot.currentSalePriceAmount", "vehicleSalePriceAmount")
@@ -763,24 +823,27 @@ export default function OrderDetailPage() {
       activeOrderChange.status === "PENDING" &&
       (roles.has("ADMIN") || activeOrderChange.createdBy === me?.user.id)
   );
-  const canApplyChange = Boolean(
-    order &&
-      canCreateChange &&
-      !orderChangeLocked &&
-      PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)
-  );
-  const canShowGenerateContract = Boolean(
-    order &&
-      order.orderStatus === "PENDING_CONTRACT" &&
-      canGenerateContract &&
-      !orderChangeLocked
-  );
-  const canShowCancelOrder = Boolean(
-    order &&
-      ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
-      canCancelOrder &&
-      !orderChangeLocked
-  );
+  const generateContractAvailability = orderChangeLocked
+    ? { allowed: false, reason: "当前订单存在进行中的变更申请，请先处理后再生成合同" }
+    : getGenerateContractAvailability(order, permissions);
+  const applyChangeAvailability = actionAvailability({
+    allowed: Boolean(order && !orderChangeLocked && PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)),
+    disabledReason: orderChangeLocked ? "该订单已有进行中的变更申请" : "当前订单状态不允许发起变更",
+    noPermissionReason: "无创建订单变更权限",
+    permission: "order_change:create",
+    permissions
+  });
+  const cancelOrderAvailability = actionAvailability({
+    allowed: Boolean(
+      order &&
+        ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
+        !orderChangeLocked
+    ),
+    disabledReason: orderChangeLocked ? "该订单已有进行中的变更申请" : "当前订单状态不允许取消",
+    noPermissionReason: "无取消订单权限",
+    permission: "order:cancel",
+    permissions
+  });
 
   const loadOrder = useCallback(async () => {
     setLoading(true);
@@ -993,41 +1056,61 @@ export default function OrderDetailPage() {
     },
     {
       render: (_, record) => {
-        const actions = [];
-        if (
-          record.status === "PENDING" &&
-          !record.executedAt &&
-          (roles.has("ADMIN") || record.createdBy === me?.user.id)
-        ) {
-          actions.push(
-            <Button key="cancel-change" onClick={() => cancelChange(record.id)} size="small">
-              取消变更申请
-            </Button>
-          );
-        }
-        if (record.status === "PENDING" && canApproveChange) {
-          actions.push(
-            <Button key="approve" onClick={() => reviewChange(record.id, "approve")} size="small" type="primary">
-              同意变更
-            </Button>
-          );
-        }
-        if (record.status === "PENDING" && canRejectChange) {
-          actions.push(
-            <Button danger key="reject" onClick={() => reviewChange(record.id, "reject")} size="small">
-              拒绝
-            </Button>
-          );
-        }
-        if (record.status === "APPROVED" && !record.executedAt && canExecuteChange) {
-          actions.push(
-            <Button key="return-to-plan" onClick={() => returnChangeToPlan(record.id)} size="small" type="primary">
-              取消当前订单并退回方案生成环节
-            </Button>
-          );
-        }
+        const cancelChangeAvailability = actionAvailability({
+          allowed: Boolean(record.status === "PENDING" && !record.executedAt && (roles.has("ADMIN") || record.createdBy === me?.user.id)),
+          disabledReason: record.executedAt ? "该变更已执行" : "当前变更状态不允许取消",
+          permissions
+        });
+        const approveChangeAvailability = actionAvailability({
+          allowed: record.status === "PENDING",
+          disabledReason: "当前变更状态不允许审批",
+          noPermissionReason: "无审批订单变更权限",
+          permission: "order_change:approve",
+          permissions
+        });
+        const rejectChangeAvailability = canRejectChange
+          ? actionAvailability({
+              allowed: record.status === "PENDING",
+              disabledReason: "当前变更状态不允许拒绝",
+              permissions
+            })
+          : { allowed: false, reason: "无拒绝订单变更权限" };
 
-        return actions.length > 0 ? <Space>{actions}</Space> : "-";
+        return (
+          <Space>
+            <ActionButton
+              availability={cancelChangeAvailability}
+              onClick={() => cancelChange(record.id)}
+              size="small"
+            >
+              取消变更申请
+            </ActionButton>
+            <ActionButton
+              availability={approveChangeAvailability}
+              onClick={() => reviewChange(record.id, "approve")}
+              size="small"
+              type="primary"
+            >
+              同意变更
+            </ActionButton>
+            <ActionButton
+              availability={rejectChangeAvailability}
+              danger
+              onClick={() => reviewChange(record.id, "reject")}
+              size="small"
+            >
+              拒绝
+            </ActionButton>
+            <ActionButton
+              availability={canExecuteOrderChange(record, order, permissions)}
+              onClick={() => returnChangeToPlan(record.id)}
+              size="small"
+              type="primary"
+            >
+              取消当前订单并退回方案生成环节
+            </ActionButton>
+          </Space>
+        );
       },
       title: "操作"
     }
@@ -1046,20 +1129,29 @@ export default function OrderDetailPage() {
           </Space>
           {order ? (
             <Space>
-              {canShowGenerateContract ? (
-                <Button onClick={generateContract} type="primary">
-                  生成合同
-                </Button>
-              ) : null}
+              <ActionButton
+                availability={generateContractAvailability}
+                onClick={generateContract}
+                type="primary"
+              >
+                生成合同
+              </ActionButton>
               {order.contract ? (
                 <Button onClick={() => router.push(`/contracts/${order.contract?.id}`)}>查看合同</Button>
               ) : null}
-              {canApplyChange ? <Button onClick={openChangeModal}>申请变更方案</Button> : null}
-              {canShowCancelOrder ? (
-                <Button danger onClick={cancelOrder}>
-                  取消订单
-                </Button>
-              ) : null}
+              <ActionButton
+                availability={applyChangeAvailability}
+                onClick={openChangeModal}
+              >
+                申请变更方案
+              </ActionButton>
+              <ActionButton
+                availability={cancelOrderAvailability}
+                danger
+                onClick={cancelOrder}
+              >
+                取消订单
+              </ActionButton>
               {order.orderStatus === "CANCELLED" && order.application && !isCustomerSelfServiceOrder ? (
                 <Button onClick={() => router.push(`/applications/${order.application?.id}`)}>
                   返回进件重新生成方案
@@ -1077,24 +1169,46 @@ export default function OrderDetailPage() {
                 状态：{labelOf(STATUS_LABELS, activeOrderChange.status)} / 创建时间：{formatTime(activeOrderChange.createdAt)}
               </Typography.Text>
               <Space wrap>
-                {canCancelActiveChange ? (
-                  <Button onClick={() => cancelChange(activeOrderChange.id)}>取消变更申请</Button>
-                ) : null}
-                {activeOrderChange.status === "PENDING" && canApproveChange ? (
-                  <Button onClick={() => reviewChange(activeOrderChange.id, "approve")} type="primary">
-                    同意变更
-                  </Button>
-                ) : null}
-                {activeOrderChange.status === "PENDING" && canRejectChange ? (
-                  <Button danger onClick={() => reviewChange(activeOrderChange.id, "reject")}>
-                    拒绝变更
-                  </Button>
-                ) : null}
-                {activeOrderChange.status === "APPROVED" && canExecuteChange ? (
-                  <Button onClick={() => returnChangeToPlan(activeOrderChange.id)} type="primary">
-                    取消当前订单并退回方案生成环节
-                  </Button>
-                ) : null}
+                <ActionButton
+                  allowed={canCancelActiveChange}
+                  disabledReason="当前变更不允许取消"
+                  onClick={() => cancelChange(activeOrderChange.id)}
+                >
+                  取消变更申请
+                </ActionButton>
+                <ActionButton
+                  allowed={activeOrderChange.status === "PENDING"}
+                  disabledReason="当前变更状态不允许审批"
+                  noPermissionReason="无审批订单变更权限"
+                  onClick={() => reviewChange(activeOrderChange.id, "approve")}
+                  permission="order_change:approve"
+                  permissions={permissions}
+                  type="primary"
+                >
+                  同意变更
+                </ActionButton>
+                <ActionButton
+                  availability={
+                    canRejectChange
+                      ? actionAvailability({
+                          allowed: activeOrderChange.status === "PENDING",
+                          disabledReason: "当前变更状态不允许拒绝",
+                          permissions
+                        })
+                      : { allowed: false, reason: "无拒绝订单变更权限" }
+                  }
+                  danger
+                  onClick={() => reviewChange(activeOrderChange.id, "reject")}
+                >
+                  拒绝变更
+                </ActionButton>
+                <ActionButton
+                  availability={canExecuteOrderChange(activeOrderChange, order, permissions)}
+                  onClick={() => returnChangeToPlan(activeOrderChange.id)}
+                  type="primary"
+                >
+                  取消当前订单并退回方案生成环节
+                </ActionButton>
               </Space>
             </Space>
           </Card>
@@ -1155,6 +1269,11 @@ export default function OrderDetailPage() {
 
         {order ? (
           <ReviewPanel
+            canConfirmFinalPlan={canConfirmFinalPlan}
+            canRejectOrder={canRejectCustomerOrder}
+            canReviewCredit={canReviewCredit}
+            canReviewProduct={canReviewProduct}
+            canReviewVehicle={canReviewVehicle}
             creditForm={creditForm}
             onConfirmCustomer={confirmCustomerOrder}
             onFinalizePlan={finalizePlan}

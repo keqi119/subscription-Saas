@@ -4,6 +4,7 @@ import {
   Prisma,
   SalePriceStatus,
   Vehicle,
+  VehicleBatteryUsageType,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
@@ -28,6 +29,12 @@ const vehicleInclude = {
 } satisfies Prisma.VehicleInclude;
 
 type VehicleWithHistory = Vehicle & { salePriceHistories?: VehicleSalePriceHistory[] };
+
+const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<VehicleBatteryUsageType, string> = {
+  BAAS: "BaaS / 电池租用",
+  BUYOUT: "电池买断"
+};
+const VEHICLE_BATTERY_USAGE_TYPES = new Set<string>(Object.values(VehicleBatteryUsageType));
 
 const INITIALIZE_BEFORE_AVAILABLE_MESSAGE = "请先初始化当前车辆销售价后再入池";
 const RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE = "退回车辆需重新初始化当前销售价后才能入池";
@@ -85,6 +92,8 @@ export class VehicleService {
       throw new BadRequestException("车型代码必填");
     }
     assertPositiveAmount(dto.purchasePriceAmount, "车辆采购价必须大于 0");
+    assertBatteryCapacity(dto.batteryCapacityKwh);
+    assertBatteryUsageType(dto.batteryUsageType);
     assertCanCreateAsAvailable(dto.status ?? VehicleStatus.DRAFT);
 
     const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id);
@@ -114,6 +123,8 @@ export class VehicleService {
     context: RequestContext
   ) {
     const before = await this.findVehicleOrThrow(id);
+    assertBatteryCapacity(dto.batteryCapacityKwh);
+    assertBatteryUsageType(dto.batteryUsageType);
     const data = updateVehicleData(dto, user.id);
 
     if (dto.status) {
@@ -380,6 +391,11 @@ async function createVehicleWithRetry(prisma: PrismaService, dto: CreateVehicleD
 function createVehicleData(dto: CreateVehicleDto): Omit<Prisma.VehicleCreateInput, "vehicleNo"> {
   return {
     assetLocation: dto.assetLocation,
+    batteryCapacityKwh:
+      dto.batteryCapacityKwh === undefined || dto.batteryCapacityKwh === null
+        ? undefined
+        : new Prisma.Decimal(dto.batteryCapacityKwh),
+    batteryUsageType: dto.batteryUsageType ?? VehicleBatteryUsageType.BUYOUT,
     brand: dto.brand,
     currentMileageKm: dto.currentMileageKm ?? 0,
     insuranceEndDate: parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"),
@@ -404,6 +420,14 @@ function updateVehicleData(dto: UpdateVehicleDto, operatorId: string): Prisma.Ve
   };
 
   assignIfDefined(data, "assetLocation", dto.assetLocation);
+  assignIfDefined(
+    data,
+    "batteryCapacityKwh",
+    dto.batteryCapacityKwh === undefined || dto.batteryCapacityKwh === null
+      ? dto.batteryCapacityKwh
+      : new Prisma.Decimal(dto.batteryCapacityKwh)
+  );
+  assignIfDefined(data, "batteryUsageType", dto.batteryUsageType);
   assignIfDefined(data, "brand", dto.brand);
   assignIfDefined(data, "currentMileageKm", dto.currentMileageKm);
   assignIfDefined(data, "insuranceEndDate", parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"));
@@ -507,6 +531,29 @@ function assertPositiveAmount(amount: number, message: string) {
   }
 }
 
+function assertBatteryCapacity(amount: number | null | undefined) {
+  if (amount === undefined || amount === null) {
+    return;
+  }
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    amount > 9999.99 ||
+    !/^\d+(\.\d{1,2})?$/.test(String(amount))
+  ) {
+    throw new BadRequestException("电池容量必须大于 0，且最多保留 2 位小数");
+  }
+}
+
+function assertBatteryUsageType(value: VehicleBatteryUsageType | null | undefined) {
+  if (value === undefined) {
+    return;
+  }
+  if (value === null || !VEHICLE_BATTERY_USAGE_TYPES.has(value)) {
+    throw new BadRequestException("电池使用方式只能是 BUYOUT 或 BAAS");
+  }
+}
+
 function isPositiveBigInt(value: bigint | null | undefined) {
   return value !== null && value !== undefined && value > 0n;
 }
@@ -586,6 +633,9 @@ function toReviewQuarter(date: Date) {
 function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
   return {
     assetLocation: vehicle.assetLocation,
+    batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
+    batteryUsageType: vehicle.batteryUsageType,
+    batteryUsageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType],
     brand: vehicle.brand,
     createdAt: vehicle.createdAt,
     currentMileageKm: vehicle.currentMileageKm,
@@ -616,6 +666,10 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
   };
+}
+
+function decimalToNumber(value: Prisma.Decimal | null | undefined) {
+  return value === null || value === undefined ? null : value.toNumber();
 }
 
 function resolveSalePriceStatus(

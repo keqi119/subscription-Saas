@@ -26,12 +26,38 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import dayjs from "dayjs";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { MATERIAL_STATUS_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import {
+  APPLICATION_SOURCE_LABELS,
+  DEPOSIT_STATUS_LABELS,
+  MATERIAL_STATUS_LABELS,
+  PLAN_CONFIRM_STATUS_LABELS,
+  REVIEW_STATUS_LABELS,
+  STATUS_LABELS,
+  VEHICLE_BASE_FEE_MODE_LABELS,
+  VEHICLE_BATTERY_USAGE_TYPE_LABELS,
+  labelOf
+} from "../../../constants/labels";
 import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
+import {
+  actionAvailability,
+  canCreateOrderFromApplication as getCreateOrderAvailability,
+  canFinalizeApplicationPlan as getFinalizePlanAvailability,
+  canGenerateApplicationQuote
+} from "../../../lib/action-guards";
+import {
+  formatMoneyCent,
+  formatMonths,
+  joinText,
+  safeText,
+  snapshotValue,
+  toNumber
+} from "../../../lib/application-snapshots";
 import type { AuthMeResponse } from "../../../lib/auth";
 
 interface UserRef {
@@ -101,9 +127,12 @@ interface ApplicationActionLog {
 interface ApplicationDetail {
   actionLogs: ApplicationActionLog[];
   applicationNo: string;
+  applicationSource?: string | null;
   approvedAt?: string | null;
   availableActions: string[];
   createdAt: string;
+  creditReviewComment?: string | null;
+  creditReviewStatus?: string | null;
   customer: {
     customerNo: string;
     id: string;
@@ -126,9 +155,28 @@ interface ApplicationDetail {
     sourceChannel?: string | null;
     status: string;
   };
+  customerGrade?: string | null;
+  customerSelectedSnapshot?: unknown;
+  depositRuleId?: string | null;
+  depositRuleSnapshot?: unknown;
+  depositStatus?: string | null;
+  finalDepositAmount?: number | null;
+  finalPeriodMonths?: number | null;
+  finalPlanConfirmedAt?: string | null;
+  finalPlanSnapshot?: unknown;
+  finalQuoteSnapshot?: unknown;
+  finalSubscriptionPlanId?: string | null;
+  finalVehicleBaseFeeAmount?: number | null;
+  finalVehicleId?: string | null;
   id: string;
+  intentPeriodMonths?: number | null;
+  intentSnapshot?: unknown;
+  intentSubscriptionPlanId?: string | null;
+  intentVehicleBaseFeeAmount?: number | null;
+  intentVehicleId?: string | null;
   intendedModel?: string | null;
   intendedPeriodMonths?: number | null;
+  materialReviewStatus?: string | null;
   materials: MaterialGroup[];
   orders?: Array<{
     id: string;
@@ -137,14 +185,23 @@ interface ApplicationDetail {
   }>;
   rejectedReason?: string | null;
   riskResult?: {
+    approvedAt?: string | null;
     approvedDepositAmount: number;
     defaultRate: number;
     grade: string;
+    maxVehiclePurchasePriceAmount?: number | null;
+    remark?: string | null;
     score?: number | null;
   } | null;
   salesUser?: UserRef | null;
+  softReservationExpiresAt?: string | null;
+  softReservedAt?: string | null;
+  softReservedVehicleId?: string | null;
   status: string;
   submittedAt?: string | null;
+  planConfirmStatus?: string | null;
+  productReviewStatus?: string | null;
+  vehicleReviewStatus?: string | null;
 }
 
 interface MaterialValues {
@@ -174,8 +231,21 @@ interface QuoteValues {
   vehicleId: string;
 }
 
+interface CreateOrderResult {
+  applicationId: string;
+  orderId: string;
+  orderNo: string;
+  orderStatus: string;
+  quoteId: string;
+  quoteNo: string;
+  vehicleStatus: string;
+}
+
 interface AvailableVehicle {
   assetLocation?: string | null;
+  batteryCapacityKwh?: number | null;
+  batteryUsageType?: string | null;
+  batteryUsageTypeLabel?: string | null;
   brand: string;
   currentMileageKm: number;
   currentSalePriceAmount?: number | null;
@@ -273,6 +343,20 @@ function formatYuan(value?: number | null) {
   return value === undefined || value === null ? "-" : `¥${(value / 100).toFixed(2)}`;
 }
 
+function formatKwh(value?: unknown) {
+  const kwh = toNumber(value);
+  return kwh === null ? "-" : `${kwh.toLocaleString("zh-CN")} kWh`;
+}
+
+function formatBatteryUsageType(type?: unknown, label?: unknown) {
+  const labelText = safeText(label);
+  if (labelText !== "-") {
+    return labelText;
+  }
+  const typeText = safeText(type);
+  return typeText === "-" ? "-" : labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, typeText);
+}
+
 function getErrorMessage(error: unknown) {
   return error instanceof ApiError ? error.message : "操作失败，请稍后重试";
 }
@@ -328,8 +412,48 @@ export default function ApplicationDetailPage() {
 
   const availableActions = useMemo(() => new Set(detail?.availableActions ?? []), [detail]);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const isSelfServiceApplication = detail?.applicationSource === "SELF_SERVICE";
+  const canReviewApplication = permissions.has("application:review");
   const canCreateOrderChange = permissions.has("order_change:create");
   const currentOrder = detail?.orders?.[0] ?? null;
+  const intentSnapshot = detail?.intentSnapshot ?? detail?.customerSelectedSnapshot;
+  const finalPlanSnapshot = detail?.finalPlanSnapshot ?? detail?.finalQuoteSnapshot;
+  const uploadMaterialAvailability = actionAvailability({
+    allowed: availableActions.has("uploadMaterial"),
+    disabledReason: "当前进件状态不允许上传资料",
+    noPermissionReason: "无上传进件资料权限",
+    permission: "application:material_upload",
+    permissions
+  });
+  const createQuoteAvailability = canGenerateApplicationQuote(detail, permissions);
+  const submitAvailability = actionAvailability({
+    allowed: availableActions.has("submit"),
+    disabledReason: "当前进件状态不允许提交",
+    permissions
+  });
+  const approveAvailability = actionAvailability({
+    allowed: availableActions.has("approve"),
+    disabledReason: "当前进件状态不允许审核",
+    noPermissionReason: "无进件审核权限",
+    permission: "application:review",
+    permissions
+  });
+  const needMoreInfoAvailability = actionAvailability({
+    allowed: availableActions.has("needMoreInfo"),
+    disabledReason: "当前进件不需要补件",
+    noPermissionReason: "无进件审核权限",
+    permission: "application:review",
+    permissions
+  });
+  const rejectAvailability = actionAvailability({
+    allowed: availableActions.has("reject"),
+    disabledReason: "当前进件状态不允许拒绝",
+    noPermissionReason: "无进件审核权限",
+    permission: "application:review",
+    permissions
+  });
+  const finalizeApplicationPlanAvailability = getFinalizePlanAvailability(detail, permissions);
+  const createOrderFromApplicationAvailability = getCreateOrderAvailability(detail, permissions);
   const selectedQuoteVehicle = availableVehicles.find((vehicle) => (vehicle.vehicleId ?? vehicle.id) === quoteVehicleId);
   const selectedQuotePlan = availablePlans.find((plan) => plan.subscriptionPlanId === quoteSubscriptionPlanId);
   const quotePlanEmptyReason =
@@ -700,6 +824,42 @@ export default function ApplicationDetailPage() {
     }
   }
 
+  async function finalizeApplicationPlan() {
+    if (!detail) {
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await apiFetch<ApplicationDetail>(`/applications/${detail.id}/finalize-plan`, { method: "POST" });
+      void message.success("后台已代客户确认最终方案（临时）");
+      await loadDetail();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function createOrderFromApplication() {
+    if (!detail) {
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const result = await apiFetch<CreateOrderResult>(`/applications/${detail.id}/create-order`, {
+        method: "POST"
+      });
+      void message.success(`正式订单已生成：${result.orderNo}`);
+      await loadDetail();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const materialColumns: ColumnsType<MaterialGroup> = [
     {
       dataIndex: "materialType",
@@ -757,25 +917,48 @@ export default function ApplicationDetailPage() {
     {
       render: (_, record) => (
         <Space wrap>
-          {record.canUpload ? (
-            <Button icon={<UploadOutlined />} onClick={() => openUploadModal(record.materialType)} size="small">
-              上传文件
-            </Button>
-          ) : null}
-          {record.canReview ? (
-            <>
-              <Button onClick={() => openMaterialReviewModal(record, "APPROVED")} size="small">
-                通过
-              </Button>
-              <Button onClick={() => openMaterialReviewModal(record, "NEED_MORE_INFO")} size="small">
-                补充资料
-              </Button>
-              <Button danger onClick={() => openMaterialReviewModal(record, "REJECTED")} size="small">
-                不通过
-              </Button>
-            </>
-          ) : null}
-          {!record.canUpload && !record.canReview ? "-" : null}
+          <ActionButton
+            allowed={record.canUpload}
+            disabledReason="当前资料项不可上传"
+            icon={<UploadOutlined />}
+            onClick={() => openUploadModal(record.materialType)}
+            permission="application:material_upload"
+            permissions={permissions}
+            size="small"
+          >
+            上传文件
+          </ActionButton>
+          <ActionButton
+            allowed={record.canReview}
+            disabledReason="当前资料项不可审核"
+            onClick={() => openMaterialReviewModal(record, "APPROVED")}
+            permission="application:review"
+            permissions={permissions}
+            size="small"
+          >
+            通过
+          </ActionButton>
+          <ActionButton
+            allowed={record.canReview}
+            disabledReason="当前资料项不可审核"
+            onClick={() => openMaterialReviewModal(record, "NEED_MORE_INFO")}
+            permission="application:review"
+            permissions={permissions}
+            size="small"
+          >
+            补充资料
+          </ActionButton>
+          <ActionButton
+            allowed={record.canReview}
+            danger
+            disabledReason="当前资料项不可审核"
+            onClick={() => openMaterialReviewModal(record, "REJECTED")}
+            permission="application:review"
+            permissions={permissions}
+            size="small"
+          >
+            不通过
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -846,34 +1029,57 @@ export default function ApplicationDetailPage() {
                   ) : null}
                 </>
               ) : null}
-              {availableActions.has("uploadMaterial") ? (
-                <Button icon={<UploadOutlined />} onClick={() => openUploadModal()}>
-                  上传资料
-                </Button>
-              ) : null}
-              {availableActions.has("createQuote") ? (
-                <Button onClick={openQuoteModal} type="primary">
+              <ActionButton
+                availability={uploadMaterialAvailability}
+                icon={<UploadOutlined />}
+                onClick={() => openUploadModal()}
+              >
+                上传资料
+              </ActionButton>
+              {!isSelfServiceApplication ? (
+                <ActionButton
+                  availability={createQuoteAvailability}
+                  onClick={openQuoteModal}
+                  type="primary"
+                >
                   生成订阅报价
-                </Button>
+                </ActionButton>
               ) : null}
-              {availableActions.has("submit") ? (
-                <Button onClick={() => openActionModal("submit")} type="primary">
-                  提交
-                </Button>
-              ) : null}
-              {availableActions.has("approve") ? (
-                <Button onClick={() => openActionModal("approve")} type="primary">
-                  通过
-                </Button>
-              ) : null}
-              {availableActions.has("needMoreInfo") ? (
-                <Button onClick={() => openActionModal("need-more-info")}>补件</Button>
-              ) : null}
-              {availableActions.has("reject") ? (
-                <Button danger onClick={() => openActionModal("reject")}>
-                  拒绝
-                </Button>
-              ) : null}
+              <ActionButton
+                availability={submitAvailability}
+                onClick={() => openActionModal("submit")}
+                type="primary"
+              >
+                提交
+              </ActionButton>
+              <ActionButton
+                availability={approveAvailability}
+                onClick={() => openActionModal("approve")}
+                type="primary"
+              >
+                通过
+              </ActionButton>
+              <ActionButton
+                availability={needMoreInfoAvailability}
+                onClick={() => openActionModal("need-more-info")}
+              >
+                补件
+              </ActionButton>
+              <ActionButton
+                availability={rejectAvailability}
+                danger
+                onClick={() => openActionModal("reject")}
+              >
+                拒绝
+              </ActionButton>
+              <ActionButton
+                availability={createOrderFromApplicationAvailability}
+                loading={submitting}
+                onClick={createOrderFromApplication}
+                type="primary"
+              >
+                生成正式订单
+              </ActionButton>
             </Space>
           ) : null}
         </Space>
@@ -924,15 +1130,294 @@ export default function ApplicationDetailPage() {
               />
             </section>
 
+            {isSelfServiceApplication ? (
+              <section>
+                <Typography.Title level={5}>客户意向选择</Typography.Title>
+                <Descriptions
+                  bordered
+                  column={3}
+                  items={[
+                    { label: "VIN", children: safeText(snapshotValue(intentSnapshot, "vehicleSnapshot.vin")) },
+                    { label: "车牌号", children: safeText(snapshotValue(intentSnapshot, "vehicleSnapshot.plateNo")) },
+                    { label: "品牌", children: safeText(snapshotValue(intentSnapshot, "vehicleSnapshot.brand")) },
+                    { label: "车系", children: safeText(snapshotValue(intentSnapshot, "vehicleSnapshot.series")) },
+                    {
+                      label: "车型",
+                      children: safeText(
+                        snapshotValue(intentSnapshot, "vehicleSnapshot.vehicleModel", "vehicleSnapshot.model")
+                      )
+                    },
+                    {
+                      label: "电池容量",
+                      children: formatKwh(snapshotValue(intentSnapshot, "vehicleSnapshot.batteryCapacityKwh"))
+                    },
+                    {
+                      label: "电池使用方式",
+                      children: formatBatteryUsageType(
+                        snapshotValue(intentSnapshot, "vehicleSnapshot.batteryUsageType"),
+                        snapshotValue(intentSnapshot, "vehicleSnapshot.batteryUsageTypeLabel")
+                      )
+                    },
+                    {
+                      label: "当前车辆销售价",
+                      children: formatMoneyCent(snapshotValue(intentSnapshot, "vehicleSnapshot.currentSalePriceAmount"))
+                    },
+                    {
+                      label: "车辆状态",
+                      children: (
+                        <Tag>
+                          {labelOf(
+                            STATUS_LABELS,
+                            safeText(snapshotValue(intentSnapshot, "vehicleSnapshot.status")) === "-"
+                              ? "REVIEW_RESERVED"
+                              : safeText(snapshotValue(intentSnapshot, "vehicleSnapshot.status"))
+                          )}
+                        </Tag>
+                      )
+                    },
+                    {
+                      label: "套餐名称",
+                      children: joinText(
+                        snapshotValue(intentSnapshot, "packageSnapshot.subscriptionPlan.planNo"),
+                        snapshotValue(intentSnapshot, "packageSnapshot.subscriptionPlan.planName")
+                      )
+                    },
+                    {
+                      label: "车辆基础月费模式",
+                      children: labelOf(
+                        VEHICLE_BASE_FEE_MODE_LABELS,
+                        safeText(
+                          snapshotValue(
+                            intentSnapshot,
+                            "packageSnapshot.pricing.vehicleBaseFeeMode",
+                            "packageSnapshot.subscriptionPlan.monthlyFeeMode"
+                          )
+                        )
+                      )
+                    },
+                    {
+                      label: "车辆基础费",
+                      children: formatMoneyCent(
+                        snapshotValue(
+                          intentSnapshot,
+                          "vehicleBaseFeeAmount",
+                          "packageSnapshot.pricing.vehicleBaseFeeAmount"
+                        )
+                      )
+                    },
+                    {
+                      label: "里程包",
+                      children: joinText(
+                        snapshotValue(intentSnapshot, "packageSnapshot.mileagePackage.packageName"),
+                        formatMoneyCent(snapshotValue(intentSnapshot, "packageSnapshot.pricing.mileagePackagePriceAmount"))
+                      )
+                    },
+                    {
+                      label: "补能包",
+                      children: joinText(
+                        snapshotValue(intentSnapshot, "packageSnapshot.energyPackage.packageName"),
+                        formatMoneyCent(snapshotValue(intentSnapshot, "packageSnapshot.pricing.energyPackagePriceAmount"))
+                      )
+                    },
+                    {
+                      label: "权益包",
+                      children: joinText(
+                        snapshotValue(intentSnapshot, "packageSnapshot.benefitPackage.packageName"),
+                        formatMoneyCent(snapshotValue(intentSnapshot, "packageSnapshot.pricing.benefitPackagePriceAmount"))
+                      )
+                    },
+                    {
+                      label: "套餐月费合计",
+                      children: formatMoneyCent(snapshotValue(intentSnapshot, "packageSnapshot.pricing.monthlyFeeAmount"))
+                    },
+                    {
+                      label: "订阅周期",
+                      children: formatMonths(snapshotValue(intentSnapshot, "periodMonths") ?? detail.intentPeriodMonths)
+                    },
+                    {
+                      label: "押金",
+                      children: labelOf(DEPOSIT_STATUS_LABELS, detail.depositStatus ?? "PENDING_CONFIRM")
+                    },
+                    {
+                      label: "最终押金",
+                      children: formatMoneyCent(detail.finalDepositAmount)
+                    }
+                  ]}
+                />
+              </section>
+            ) : (
+              <section>
+                <Typography.Title level={5}>销售人工进件说明</Typography.Title>
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                  B 线销售人工进件继续沿用现有资料上传、资质审批、生成报价、确认报价和创建订单流程；本页仅补充统一审核状态展示，不改变原有报价和订单主流程。
+                </Typography.Paragraph>
+              </section>
+            )}
+
+            <section>
+              <Typography.Title level={5}>统一审核面板</Typography.Title>
+              <Descriptions
+                bordered
+                column={3}
+                items={[
+                  {
+                    label: "进件来源",
+                    children: labelOf(APPLICATION_SOURCE_LABELS, detail.applicationSource)
+                  },
+                  {
+                    label: "资料审核",
+                    children: <Tag>{labelOf(REVIEW_STATUS_LABELS, detail.materialReviewStatus)}</Tag>
+                  },
+                  {
+                    label: "资质审核",
+                    children: <Tag>{labelOf(REVIEW_STATUS_LABELS, detail.creditReviewStatus)}</Tag>
+                  },
+                  {
+                    label: "押金状态",
+                    children: <Tag>{labelOf(DEPOSIT_STATUS_LABELS, detail.depositStatus)}</Tag>
+                  },
+                  {
+                    label: "最终押金",
+                    children: formatMoneyCent(detail.finalDepositAmount)
+                  },
+                  {
+                    label: "产品匹配",
+                    children: <Tag>{labelOf(REVIEW_STATUS_LABELS, detail.productReviewStatus)}</Tag>
+                  },
+                  {
+                    label: "车辆库存",
+                    children: <Tag>{labelOf(REVIEW_STATUS_LABELS, detail.vehicleReviewStatus)}</Tag>
+                  },
+                  {
+                    label: "最终方案",
+                    children: <Tag>{labelOf(PLAN_CONFIRM_STATUS_LABELS, detail.planConfirmStatus)}</Tag>
+                  },
+                  {
+                    label: "生成订单",
+                    children: currentOrder ? (
+                      <Link href={`/orders/${currentOrder.id}`}>{currentOrder.orderNo}</Link>
+                    ) : (
+                      "未生成"
+                    )
+                  }
+                ]}
+              />
+              {canReviewApplication ? (
+                <Space orientation="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
+                  <Alert
+                    message="自助进件审核已复用人工进件流程"
+                    description="资料请在下方资料清单逐项审核；资料不齐使用顶部补件；客户资质 / 授信使用顶部通过并填写评级、评分、车价和押金信息。"
+                    showIcon
+                    type="info"
+                  />
+                  <Descriptions
+                    bordered
+                    column={3}
+                    items={[
+                      { label: "资料审核", children: "使用资料清单逐项审核" },
+                      { label: "客户资质 / 授信", children: "使用顶部通过打开风控审核弹窗" },
+                      { label: "产品匹配", children: "生成订阅报价 / 确认最终方案时自动校验" },
+                      { label: "车辆库存", children: "生成订阅报价 / 确认最终方案时自动校验审核占用" },
+                      { label: "复购简易审核扩展", children: "保留历史评级参考，后续可在有效期内走简易审核通道" },
+                      { label: "最终方案确认", children: "正式流程由客户前端确认，当前仅用于阶段测试" }
+                    ]}
+                  />
+                  {isSelfServiceApplication ? (
+                    <Alert
+                      message="正式流程中，最终方案应由客户在小程序 / App 前端确认。当前后台按钮仅用于阶段测试和人工验收。"
+                      showIcon
+                      type="warning"
+                    />
+                  ) : null}
+                  <Space wrap>
+                    <ActionButton
+                      availability={finalizeApplicationPlanAvailability}
+                      loading={submitting}
+                      onClick={finalizeApplicationPlan}
+                      type="primary"
+                    >
+                      后台代客户确认最终方案（临时）
+                    </ActionButton>
+                    <ActionButton
+                      availability={createOrderFromApplicationAvailability}
+                      loading={submitting}
+                      onClick={createOrderFromApplication}
+                      type="primary"
+                    >
+                      生成正式订单
+                    </ActionButton>
+                  </Space>
+                </Space>
+              ) : null}
+            </section>
+
+            {finalPlanSnapshot ? (
+              <section>
+                <Typography.Title level={5}>最终方案</Typography.Title>
+                <Descriptions
+                  bordered
+                  column={3}
+                  items={[
+                    { label: "客户等级", children: safeText(snapshotValue(finalPlanSnapshot, "customerGrade") ?? detail.customerGrade) },
+                    { label: "最终押金", children: formatMoneyCent(snapshotValue(finalPlanSnapshot, "depositAmount") ?? detail.finalDepositAmount) },
+                    {
+                      label: "最终车辆",
+                      children: joinText(
+                        snapshotValue(finalPlanSnapshot, "vehicleSnapshot.vehicleNo"),
+                        snapshotValue(finalPlanSnapshot, "vehicleSnapshot.plateNo"),
+                        snapshotValue(finalPlanSnapshot, "vehicleSnapshot.vin")
+                      )
+                    },
+                    {
+                      label: "电池容量",
+                      children: formatKwh(snapshotValue(finalPlanSnapshot, "vehicleSnapshot.batteryCapacityKwh"))
+                    },
+                    {
+                      label: "电池使用方式",
+                      children: formatBatteryUsageType(
+                        snapshotValue(finalPlanSnapshot, "vehicleSnapshot.batteryUsageType"),
+                        snapshotValue(finalPlanSnapshot, "vehicleSnapshot.batteryUsageTypeLabel")
+                      )
+                    },
+                    {
+                      label: "最终套餐",
+                      children: joinText(
+                        snapshotValue(finalPlanSnapshot, "subscriptionPlan.planNo"),
+                        snapshotValue(finalPlanSnapshot, "subscriptionPlan.planName")
+                      )
+                    },
+                    { label: "最终周期", children: formatMonths(snapshotValue(finalPlanSnapshot, "periodMonths") ?? detail.finalPeriodMonths) },
+                    {
+                      label: "车辆基础费",
+                      children: formatMoneyCent(
+                        snapshotValue(finalPlanSnapshot, "vehicleBaseFeeAmount", "pricing.vehicleBaseFeeAmount") ??
+                          detail.finalVehicleBaseFeeAmount
+                      )
+                    },
+                    {
+                      label: "套餐月费合计",
+                      children: formatMoneyCent(snapshotValue(finalPlanSnapshot, "pricing.monthlyFeeAmount"))
+                    },
+                    { label: "确认状态", children: labelOf(PLAN_CONFIRM_STATUS_LABELS, detail.planConfirmStatus) },
+                    { label: "确认时间", children: formatTime(detail.finalPlanConfirmedAt) }
+                  ]}
+                />
+              </section>
+            ) : null}
+
             <section>
               <Typography.Title level={5}>资料清单</Typography.Title>
-              <Table
-                columns={materialColumns}
-                dataSource={detail.materials}
-                pagination={false}
-                rowKey="materialGroupId"
-                scroll={{ x: 1500 }}
-              />
+              {detail.materials.length > 0 ? (
+                <Table
+                  columns={materialColumns}
+                  dataSource={detail.materials}
+                  pagination={false}
+                  rowKey="materialGroupId"
+                  scroll={{ x: 1500 }}
+                />
+              ) : (
+                <Typography.Text type="secondary">客户尚未上传资质材料</Typography.Text>
+              )}
             </section>
 
             <section>
@@ -1008,6 +1493,17 @@ export default function ApplicationDetailPage() {
               <Form.Item label="最高可承租车价（元）" name="maxVehiclePurchasePriceAmountYuan">
                 <InputNumber min={0} precision={2} style={{ width: "100%" }} />
               </Form.Item>
+              {detail?.riskResult ? (
+                <Alert
+                  message="历史评级参考"
+                  description={`最近评级：${detail.riskResult.grade}；历史评分：${detail.riskResult.score ?? "-"}；历史押金：${formatYuan(detail.riskResult.approvedDepositAmount)}；通过时间：${formatTime(detail.riskResult.approvedAt)}`}
+                  showIcon
+                  type="info"
+                />
+              ) : null}
+              <Typography.Paragraph type="secondary">
+                后续可扩展复购简易审核通道：在评级有效期内参考历史评级、评分和押金结果，本轮仅展示参考，不自动覆盖本次风控结论。
+              </Typography.Paragraph>
             </>
           ) : null}
           <Form.Item
@@ -1082,6 +1578,10 @@ export default function ApplicationDetailPage() {
             <Typography.Text>VIN：{selectedQuoteVehicle?.vin ?? "-"}</Typography.Text>
             <Typography.Text>车牌号：{selectedQuoteVehicle?.plateNo ?? "-"}</Typography.Text>
             <Typography.Text>车型：{selectedQuoteVehicle?.vehicleModel ?? selectedQuotePlan?.vehicleModel ?? "-"}</Typography.Text>
+            <Typography.Text>电池容量：{formatKwh(selectedQuoteVehicle?.batteryCapacityKwh)}</Typography.Text>
+            <Typography.Text>
+              电池使用方式：{formatBatteryUsageType(selectedQuoteVehicle?.batteryUsageType, selectedQuoteVehicle?.batteryUsageTypeLabel)}
+            </Typography.Text>
             <Typography.Text>当前车辆销售价：{formatYuan(selectedQuoteVehicle?.currentSalePriceAmount)}</Typography.Text>
             <Typography.Text>当前里程：{selectedQuoteVehicle ? `${selectedQuoteVehicle.currentMileageKm} km` : "-"}</Typography.Text>
             <Typography.Text>资产位置：{selectedQuoteVehicle?.assetLocation ?? "-"}</Typography.Text>

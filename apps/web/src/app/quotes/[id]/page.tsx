@@ -6,9 +6,12 @@ import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
+import { actionAvailability } from "../../../lib/action-guards";
 import { apiFetch, ApiError } from "../../../lib/api";
+import type { AuthMeResponse } from "../../../lib/auth";
 
 interface UserSummary {
   name?: string | null;
@@ -76,6 +79,9 @@ interface PackageSnapshot {
 
 interface VehicleSnapshot {
   assetLocation?: string | null;
+  batteryCapacityKwh?: number | string | null;
+  batteryUsageType?: string | null;
+  batteryUsageTypeLabel?: string | null;
   brand?: string | null;
   currentMileageKm?: number | string | null;
   currentSalePriceAmount?: number | string | null;
@@ -233,6 +239,10 @@ function formatNumberWithUnit(value: unknown, unit: string) {
     return "-";
   }
   return `${n.toLocaleString("zh-CN")} ${unit}`;
+}
+
+function formatBatteryUsageType(type?: string | null, label?: string | null) {
+  return label ?? (type ? labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, type) : "-");
 }
 
 function formatVehicleBaseFeeModeLabel(mode?: string | null, label?: string | null) {
@@ -427,12 +437,19 @@ export default function QuoteDetailPage() {
   const router = useRouter();
   const { message, modal } = App.useApp();
   const [loading, setLoading] = useState(true);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [quote, setQuote] = useState<QuoteDetail | null>(null);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadQuote = useCallback(async () => {
     setLoading(true);
     try {
-      setQuote(await apiFetch<QuoteDetail>(`/quotes/${params.id}`));
+      const [nextQuote, nextMe] = await Promise.all([
+        apiFetch<QuoteDetail>(`/quotes/${params.id}`),
+        apiFetch<AuthMeResponse>("/auth/me")
+      ]);
+      setQuote(nextQuote);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -518,20 +535,44 @@ export default function QuoteDetailPage() {
             {quote ? renderStatusTag(quote.status) : null}
           </Space>
           <Space>
-            {quote?.status === "DRAFT" ? (
+            {quote ? (
               <>
-                <Button onClick={() => transition("confirm")} type="primary">
+                <ActionButton
+                  allowed={quote.status === "DRAFT"}
+                  disabledReason="当前报价状态不允许确认"
+                  noPermissionReason="无确认报价权限"
+                  onClick={() => transition("confirm")}
+                  permission="quote:confirm"
+                  permissions={permissions}
+                  type="primary"
+                >
                   确认报价
-                </Button>
-                <Button danger onClick={() => transition("cancel")}>
+                </ActionButton>
+                <ActionButton
+                  allowed={quote.status === "DRAFT"}
+                  danger
+                  disabledReason="当前报价状态不允许取消"
+                  noPermissionReason="无取消报价权限"
+                  onClick={() => transition("cancel")}
+                  permission="quote:cancel"
+                  permissions={permissions}
+                >
                   取消报价
-                </Button>
+                </ActionButton>
+                <ActionButton
+                  availability={actionAvailability({
+                    allowed: quote.status === "CONFIRMED" && !quote.order,
+                    disabledReason: quote.order ? "该报价已生成订单" : "请先确认报价",
+                    noPermissionReason: "无创建订单权限",
+                    permission: "order:create",
+                    permissions
+                  })}
+                  onClick={createOrder}
+                  type="primary"
+                >
+                  创建订阅订单
+                </ActionButton>
               </>
-            ) : null}
-            {quote?.status === "CONFIRMED" && !quote.order ? (
-              <Button onClick={createOrder} type="primary">
-                创建订阅订单
-              </Button>
             ) : null}
             {quote?.order ? <Button onClick={() => router.push(`/orders/${quote.order?.id}`)}>查看订单</Button> : null}
           </Space>
@@ -608,6 +649,14 @@ export default function QuoteDetailPage() {
                   { label: "品牌", children: safeText(quote.vehicleSnapshot?.brand ?? quote.vehicle?.brand) },
                   { label: "车系", children: safeText(quote.vehicleSnapshot?.series ?? quote.vehicle?.series) },
                   { label: "车型", children: getVehicleModel(quote) },
+                  { label: "电池容量", children: formatNumberWithUnit(quote.vehicleSnapshot?.batteryCapacityKwh ?? quote.vehicle?.batteryCapacityKwh, "kWh") },
+                  {
+                    label: "电池使用方式",
+                    children: formatBatteryUsageType(
+                      quote.vehicleSnapshot?.batteryUsageType ?? quote.vehicle?.batteryUsageType,
+                      quote.vehicleSnapshot?.batteryUsageTypeLabel ?? quote.vehicle?.batteryUsageTypeLabel
+                    )
+                  },
                   { label: "当前车辆销售价", children: formatAmount(quoteSections.currentSalePriceAmount) },
                   { label: "当前里程", children: formatNumberWithUnit(quote.vehicleSnapshot?.currentMileageKm ?? quote.vehicle?.currentMileageKm, "km") },
                   {

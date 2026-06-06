@@ -18,12 +18,13 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
-import { RequirePermissions } from "../auth/auth.decorators";
+import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   ApproveApplicationDto,
   NeedMoreInfoDto,
   RejectApplicationDto,
+  ReviewApplicationDto,
   SubmitApplicationDto
 } from "./dto/application-review.dto";
 import { CreateApplicationDto } from "./dto/create-application.dto";
@@ -34,6 +35,7 @@ import {
   DeleteMaterialFileDto,
   ReviewMaterialDto
 } from "./dto/create-material.dto";
+import { CreateSelfServiceApplicationDto } from "./dto/create-self-service-application.dto";
 import { UpdateApplicationDto } from "./dto/update-application.dto";
 import { UpdateCustomerDto } from "./dto/update-customer.dto";
 import { CustomerService, UploadedMaterialFile } from "./customer.service";
@@ -93,10 +95,25 @@ export class CustomerController {
     return this.customerService.listApplications(request.user);
   }
 
+  @Get("applications/review-queue")
+  @RequirePermissions(PermissionCode.APPLICATION_REVIEW)
+  listApplicationReviewQueue(@Req() request: AuthenticatedRequest) {
+    return this.customerService.listApplicationReviewQueue(request.user);
+  }
+
   @Post("applications")
   @RequirePermissions(PermissionCode.APPLICATION_MANAGE)
   createApplication(@Body() dto: CreateApplicationDto, @Req() request: AuthenticatedRequest) {
     return this.customerService.createApplication(dto, request.user, requestContext(request));
+  }
+
+  @Post("self-service-applications")
+  @RequireAnyPermissions(PermissionCode.APPLICATION_MANAGE, PermissionCode.APPLICATION_SUBMIT)
+  createSelfServiceApplication(
+    @Body() dto: CreateSelfServiceApplicationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.customerService.createSelfServiceApplication(dto, request.user, requestContext(request));
   }
 
   @Get("applications/:id")
@@ -123,6 +140,68 @@ export class CustomerController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.customerService.submitApplication(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("applications/:id/reviews/material")
+  @RequirePermissions(PermissionCode.APPLICATION_REVIEW)
+  reviewApplicationMaterial(
+    @Param("id") id: string,
+    @Body() dto: ReviewApplicationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.customerService.reviewApplication(id, "material", dto, request.user, requestContext(request));
+  }
+
+  @Post("applications/:id/reviews/credit")
+  @RequirePermissions(PermissionCode.APPLICATION_REVIEW)
+  reviewApplicationCredit(
+    @Param("id") id: string,
+    @Body() dto: ReviewApplicationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.customerService.reviewApplication(id, "credit", dto, request.user, requestContext(request));
+  }
+
+  @Post("applications/:id/reviews/product")
+  @RequirePermissions(PermissionCode.APPLICATION_REVIEW)
+  reviewApplicationProduct(
+    @Param("id") id: string,
+    @Body() dto: ReviewApplicationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.customerService.reviewApplication(id, "product", dto, request.user, requestContext(request));
+  }
+
+  @Post("applications/:id/reviews/vehicle")
+  @RequirePermissions(PermissionCode.APPLICATION_REVIEW)
+  reviewApplicationVehicle(
+    @Param("id") id: string,
+    @Body() dto: ReviewApplicationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.customerService.reviewApplication(id, "vehicle", dto, request.user, requestContext(request));
+  }
+
+  @Post("applications/:id/finalize-plan")
+  @RequirePermissions(PermissionCode.APPLICATION_REVIEW)
+  finalizeApplicationPlan(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.customerService.finalizeApplicationPlan(id, request.user, requestContext(request));
+  }
+
+  @Post("applications/:id/create-order")
+  @RequirePermissions(PermissionCode.QUOTE_CREATE, PermissionCode.ORDER_CREATE)
+  createOrderFromApplication(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.customerService.createOrderFromApplication(id, request.user, requestContext(request));
+  }
+
+  @Post("applications/:id/cancel")
+  @RequireAnyPermissions(PermissionCode.APPLICATION_MANAGE, PermissionCode.APPLICATION_REVIEW)
+  cancelApplication(
+    @Param("id") id: string,
+    @Body() dto: RejectApplicationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.customerService.cancelApplication(id, dto, request.user, requestContext(request));
   }
 
   @Post("applications/:id/materials")

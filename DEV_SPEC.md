@@ -2,7 +2,7 @@
 
 > Calibrated at: 2026-06-02  
 > Repository: `keqi119/subscription-Saas`  
-> Branch: `feature/stage5-optimization`  
+> Branch: `feature/ab-order-review-flow`
 > Local workspace: `D:\Projects\auto-subscription-platform`
 
 This document is the current mainline specification for Codex, developers,
@@ -291,10 +291,11 @@ depositRuleSnapshot
 vehicleSnapshot
 ```
 
-## 7. A/B Dual-Line Order Mainline
+## 7. A/B Dual-Line Application Intake Mainline
 
-The order mainline must support two parallel paths that eventually converge
-into order, contract, payment, delivery, and lease-start operations.
+The calibrated mainline is application intake first, order later. Both A and B
+lines converge on `Application` review before a formal `SubscriptionOrder`
+exists.
 
 ### A Line: Customer Self-Service
 
@@ -304,18 +305,20 @@ Target flow:
 Customer views vehicles
   -> selects a concrete vehicle
   -> selects a preset SubscriptionPlan
-  -> submits an order application
-  -> system creates an intent order and quote snapshots
-  -> back office reviews customer credit, product match, and vehicle inventory
-  -> deposit is finalized from the review result
-  -> customer confirms the final signing plan
+  -> submits a self-service application
+  -> system stores the customer's intent snapshot on Application
+  -> back office reviews materials, credit/deposit, product match, and vehicle inventory
+  -> back office confirms the final plan
+  -> system creates/confirms SubscriptionQuote
+  -> system creates SubscriptionOrder
   -> contract signing
 ```
 
 Business principles:
 
-- A line is "order first, review later".
-- The customer-selected plan is an intent plan, not the final signing plan.
+- A line is `SELF_SERVICE` `Application` creation, not formal order creation.
+- The customer-selected plan is an intent plan, not the final signing plan and
+  not a formal `SubscriptionOrder`.
 - Customer-facing UI may only expose preset active `SubscriptionPlan` options.
 - Customer-facing UI must not expose free package composition:
   `VehiclePackage + MileagePackage + EnergyPackage + BenefitPackage`.
@@ -355,71 +358,70 @@ Customer creation / application
 
 Business principles:
 
-- B line is "review first, order later".
+- B line is `SALES_ASSISTED` `Application` creation.
+- B line remains review first, quote/order later.
 - Reuse the existing customer, application, risk, quote, order, and contract
   flow instead of replacing it.
 
-### Unified Model Direction
+### Unified Application Model Direction
 
 First-version recommendation:
 
-- Keep `SubscriptionQuote` as the price and plan snapshot object.
+- Extend `Application`, not `SubscriptionOrder`, for A-line intake review state.
+- Add `applicationSource` to distinguish `SELF_SERVICE` and `SALES_ASSISTED`.
+- Store customer intent fields and snapshots on `Application`.
+- Store final plan fields and snapshots on `Application` before quote/order
+  creation.
+- Reuse existing review/deposit enums where practical.
+- Keep `SubscriptionQuote` as the final price and plan snapshot object.
+- `SubscriptionOrder` represents a formal pre-contract order generated only
+  after material, credit/deposit, product-plan, vehicle-inventory, and final
+  plan confirmation.
 - Do not add `SubscriptionOrderApplication` in the first version.
-- Prefer extending `SubscriptionOrder` as the unified review and fulfillment object.
-- Add `orderSource` to distinguish:
-  `CUSTOMER_SELF_SERVICE` and `SALES_ASSISTED`.
-- Add A-line parallel review fields:
-  `creditReviewStatus`, `productReviewStatus`, and `vehicleReviewStatus`.
-- Suggested review enum:
-  `PENDING`, `APPROVED`, `REJECTED`, `NEED_MORE_INFO`.
-- Add deposit fields:
-  `depositStatus` and `finalDepositAmount`.
-- Add `customerSelectedSnapshot` to preserve the customer's original intent
-  separately from final quote/order snapshots.
 
-Recommended A-line initial values:
+Recommended A-line initial values on `Application`:
 
 ```text
-orderSource = CUSTOMER_SELF_SERVICE
-orderStatus = PENDING_REVIEW
+applicationSource = SELF_SERVICE
+status = SUBMITTED
+materialReviewStatus = PENDING
 creditReviewStatus = PENDING
 productReviewStatus = PENDING
 vehicleReviewStatus = PENDING
 depositStatus = PENDING_CONFIRM
+planConfirmStatus = PENDING
 finalDepositAmount = null
 ```
 
-When all three reviews are approved:
+B-line applications keep the compatible source default:
 
 ```text
-orderStatus = PENDING_CUSTOMER_CONFIRMATION
+applicationSource = SALES_ASSISTED
 ```
 
-After the customer confirms the final plan:
+### Legacy Stage 5.5 Artifacts
+
+The current branch already contains legacy A-line direct-order artifacts:
 
 ```text
-orderStatus = PENDING_CONTRACT
+POST /api/customer-orders
+CUSTOMER_SELF_SERVICE direct SubscriptionOrder records
+GET /api/orders/review-queue
+/orders/review
 ```
 
-If the first implementation does not include a customer second-confirmation
-page, the back office may temporarily perform "confirm final plan" and move the
-order to `PENDING_CONTRACT`. The data model and status machine must still keep
-the customer-confirmation extension point.
-
-B-line orders should keep the current compatible initial state:
-
-```text
-orderSource = SALES_ASSISTED
-orderStatus = PENDING_CONTRACT
-```
+These are retained temporarily for compatibility and test stability, but they
+are no longer the target mainline. Later R2-R5 work will migrate the behavior
+to self-service applications and application review.
 
 ### Deposit Confirmation
 
-A-line submission must keep the deposit pending:
+A-line application submission must keep the deposit pending:
 
 ```text
 depositStatus = PENDING_CONFIRM
 finalDepositAmount = null
+depositRuleSnapshot = null
 ```
 
 After review, the platform writes the final deposit from customer grade,
@@ -434,41 +436,41 @@ defaultRate
 ```
 
 If the final deposit, selected vehicle, subscription plan, period, or monthly
-fee differs from the customer's original intent, the order should enter
-`PENDING_CUSTOMER_CONFIRMATION` and wait for confirmation before contract
-signing.
+fee differs from the customer's original intent, the application should wait
+for final-plan confirmation before quote/order creation.
 
 ### Vehicle Status Linkage
 
 Target first-version vehicle transitions:
 
 ```text
-A line customer submission: AVAILABLE -> REVIEW_RESERVED
+A line self-service application submission: AVAILABLE -> REVIEW_RESERVED
 A line review failure / customer cancellation: REVIEW_RESERVED -> AVAILABLE
-A line review approved and entering signing: REVIEW_RESERVED -> RESERVED
-B line sales-assisted order: AVAILABLE -> RESERVED
+A line final plan confirmed and order entry: REVIEW_RESERVED -> RESERVED
+B line quote confirmation: AVAILABLE -> RESERVED
 Contract signing / payment / delivery follow-up: RESERVED -> LEASED
 ```
 
-Recommended target model is to add `REVIEW_RESERVED` because it separates
-"inventory held for review" from "vehicle reserved for signing". If the first
-implementation cannot add it immediately, `RESERVED` may be reused temporarily,
-but documentation, tests, and later migration planning should preserve
-`REVIEW_RESERVED` as the target state.
+`REVIEW_RESERVED` separates "inventory held for review" from "vehicle reserved
+for signing" and is the target status for A-line self-service application holds.
 
 ### Object Relationships
 
 Mainline relationship:
 
 ```text
-Product
-  -> ProductVersion
-  -> SubscriptionPlan
+Application
   -> SubscriptionQuote
   -> SubscriptionOrder
   -> Contract
 
+Product
+  -> ProductVersion
+  -> SubscriptionPlan
+  -> SubscriptionQuote
+
 Vehicle
+  -> Application intent/final vehicle fields
   -> SubscriptionQuote.vehicleId
   -> SubscriptionOrder.vehicleId
 ```
@@ -482,7 +484,7 @@ Mainline rules:
 
 - Generating a quote does not lock a vehicle.
 - B-line quote confirmation locks a vehicle: `AVAILABLE -> RESERVED`.
-- A-line customer submission should hold inventory as
+- A-line self-service application submission should hold inventory as
   `AVAILABLE -> REVIEW_RESERVED` in the target model.
 - Creating an order from a confirmed quote keeps the selected vehicle on the order.
 - Delivery moves reserved vehicle toward leased/in-use state.

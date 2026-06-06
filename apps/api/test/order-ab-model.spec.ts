@@ -52,6 +52,11 @@ describe("A/B order status model schema", () => {
       depositAmount: 0n,
       depositStatus: DepositStatus.PENDING_CONFIRM,
       finalDepositAmount: null,
+      finalPlanSnapshot: {
+        depositStatus: DepositStatus.PENDING_CONFIRM,
+        subscriptionPlanId: "plan-1",
+        vehicleId: "vehicle-1"
+      },
       mileageLimitKm: 1500,
       monthlyFeeAmount: 300000n,
       orderNo: "ORD202606040002",
@@ -65,6 +70,7 @@ describe("A/B order status model schema", () => {
       quoteId: "quote-2",
       quoteSnapshot: { intent: true, subscriptionPlanId: "plan-1" },
       riskResultId: "risk-result-2",
+      reviewComment: "Initial customer intent pending back-office review.",
       vehicleModel: VehicleModel.ET5,
       vehiclePurchasePriceAmount: 10000000n,
       vehicleReviewStatus: OrderReviewStatus.PENDING
@@ -77,6 +83,12 @@ describe("A/B order status model schema", () => {
     expect(customerOrderInput.vehicleReviewStatus).toBe(OrderReviewStatus.PENDING);
     expect(customerOrderInput.depositStatus).toBe(DepositStatus.PENDING_CONFIRM);
     expect(customerOrderInput.finalDepositAmount).toBeNull();
+    expect(customerOrderInput.finalPlanSnapshot).toEqual(
+      expect.objectContaining({ subscriptionPlanId: "plan-1" })
+    );
+    expect(customerOrderInput.reviewComment).toBe(
+      "Initial customer intent pending back-office review."
+    );
   });
 
   it("exposes review, deposit, order, and vehicle status enum values", () => {

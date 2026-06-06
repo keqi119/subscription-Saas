@@ -100,7 +100,9 @@ permissionRows.push(
   ["payment:view", "查看收款记录", "payment", "view"],
   ["payment:create", "登记收款", "payment", "create"],
   ["payment:write_off", "收款核销", "payment", "write_off"],
-  ["deposit_ledger:view", "查看保证金台账", "deposit_ledger", "view"]
+  ["deposit_ledger:view", "查看保证金台账", "deposit_ledger", "view"],
+  ["deposit_ledger:deduct", "保证金扣减", "deposit_ledger", "deduct"],
+  ["deposit_ledger:refund", "保证金退款", "deposit_ledger", "refund"]
 );
 
 permissionRows.push(
@@ -407,7 +409,9 @@ const financeManagementPermissions = [
   "payment:view",
   "payment:create",
   "payment:write_off",
-  "deposit_ledger:view"
+  "deposit_ledger:view",
+  "deposit_ledger:deduct",
+  "deposit_ledger:refund"
 ];
 
 const financeViewPermissions = ["billing:view", "payment:view", "deposit_ledger:view"];
@@ -564,6 +568,7 @@ async function main() {
       ...orderManagementPermissions,
       "billing:view",
       "deposit_ledger:view",
+      "deposit_ledger:deduct",
       ...collectionActionPermissions,
       "order_change:approve",
       "order_change:reject",

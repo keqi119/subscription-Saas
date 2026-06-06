@@ -9,8 +9,10 @@ import {
   CollectionCasesQueryDto,
   CreateCollectionActionDto,
   CreatePaymentDto,
+  DeductDepositDto,
   GenerateMonthlyRentBillsDto,
   OverdueBillsQueryDto,
+  RefundDepositDto,
   RefreshOverdueBillsDto,
   WriteOffPaymentDto
 } from "./dto/finance.dto";
@@ -33,6 +35,12 @@ export class FinanceController {
     return this.financeService.generateNextMonthlyRentBill(id, request.user, requestContext(request));
   }
 
+  @Post("orders/:id/generate-damage-fee-bill")
+  @RequirePermissions(PermissionCode.BILLING_GENERATE)
+  generateDamageFeeBill(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.financeService.generateDamageFeeBill(id, request.user, requestContext(request));
+  }
+
   @Post("billing/monthly-rent/generate")
   @RequirePermissions(PermissionCode.BILLING_GENERATE)
   generateMonthlyRentBills(@Body() dto: GenerateMonthlyRentBillsDto, @Req() request: AuthenticatedRequest) {
@@ -49,6 +57,24 @@ export class FinanceController {
   @RequirePermissions(PermissionCode.BILLING_VIEW)
   getOrderFinanceSummary(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.financeService.getOrderFinanceSummary(id, request.user);
+  }
+
+  @Get("orders/:id/deposit-settlement")
+  @RequirePermissions(PermissionCode.DEPOSIT_LEDGER_VIEW)
+  getDepositSettlement(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.financeService.getDepositSettlement(id, request.user);
+  }
+
+  @Post("orders/:id/deduct-deposit")
+  @RequirePermissions(PermissionCode.DEPOSIT_LEDGER_DEDUCT)
+  deductDeposit(@Param("id") id: string, @Body() dto: DeductDepositDto, @Req() request: AuthenticatedRequest) {
+    return this.financeService.deductDeposit(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/refund-deposit")
+  @RequirePermissions(PermissionCode.DEPOSIT_LEDGER_REFUND)
+  refundDeposit(@Param("id") id: string, @Body() dto: RefundDepositDto, @Req() request: AuthenticatedRequest) {
+    return this.financeService.refundDeposit(id, dto, request.user, requestContext(request));
   }
 
   @Post("payments")

@@ -15,7 +15,13 @@ import {
   OrderStatus,
   PaymentMethod,
   PaymentStatus,
-  QuoteStatus
+  QuoteStatus,
+  VehicleDamageLevel,
+  VehicleDamageResponsibleParty,
+  VehicleDamageType,
+  VehicleReturnDamageStatus,
+  VehicleReturnStatus,
+  VehicleReturnType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -539,6 +545,251 @@ describe("billing finance minimum backend loop", () => {
   });
 });
 
+describe("deposit settlement backend loop", () => {
+  it("rejects DAMAGE_FEE bill generation when no billable customer damage exists", async () => {
+    const harness = createFinanceHarness();
+    addVehicleReturn(harness);
+    addReturnDamage(harness, {
+      estimatedRepairAmount: 80000n,
+      responsibleParty: VehicleDamageResponsibleParty.PLATFORM
+    });
+
+    await expect(
+      harness.service.generateDamageFeeBill(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow("当前订单无可生成账单的客户责任损伤费用");
+  });
+
+  it("generates a DAMAGE_FEE bill only for billable customer return damages", async () => {
+    const harness = createFinanceHarness();
+    addVehicleReturn(harness);
+    addReturnDamage(harness, { estimatedRepairAmount: 80000n, responsibleParty: VehicleDamageResponsibleParty.CUSTOMER });
+    addReturnDamage(harness, {
+      estimatedRepairAmount: 60000n,
+      responsibleParty: VehicleDamageResponsibleParty.CUSTOMER,
+      status: VehicleReturnDamageStatus.WAIVED
+    });
+    addReturnDamage(harness, { estimatedRepairAmount: 50000n, responsibleParty: VehicleDamageResponsibleParty.PLATFORM });
+    addReturnDamage(harness, { estimatedRepairAmount: 40000n, responsibleParty: VehicleDamageResponsibleParty.THIRD_PARTY });
+    addReturnDamage(harness, { estimatedRepairAmount: 30000n, responsibleParty: VehicleDamageResponsibleParty.UNKNOWN });
+
+    const bill = await harness.service.generateDamageFeeBill(harness.orderId, harness.user, harness.context);
+
+    expect(bill).toMatchObject({
+      amount: 80000,
+      billStatus: BillStatus.PENDING,
+      billType: BillType.DAMAGE_FEE,
+      remainingAmount: 80000
+    });
+    expect(harness.state.bills).toHaveLength(1);
+    expect(harness.state.bills[0]?.snapshot).toMatchObject({
+      amount: 80000,
+      billType: BillType.DAMAGE_FEE
+    });
+  });
+
+  it("returns the existing active DAMAGE_FEE bill instead of creating duplicates", async () => {
+    const harness = createFinanceHarness();
+    addVehicleReturn(harness);
+    addReturnDamage(harness, { estimatedRepairAmount: 80000n, responsibleParty: VehicleDamageResponsibleParty.CUSTOMER });
+
+    const first = await harness.service.generateDamageFeeBill(harness.orderId, harness.user, harness.context);
+    const second = await harness.service.generateDamageFeeBill(harness.orderId, harness.user, harness.context);
+
+    expect(first).toMatchObject({ amount: 80000, created: true });
+    expect(second).toMatchObject({ amount: 80000, created: false, id: first.id });
+    expect(harness.state.bills.filter((bill) => bill.billType === BillType.DAMAGE_FEE)).toHaveLength(1);
+  });
+
+  it("returns deposit settlement amounts, damage fee amounts, and suggested actions", async () => {
+    const harness = createFinanceHarness();
+    addVehicleReturn(harness);
+    addReturnDamage(harness, { estimatedRepairAmount: 200000n, responsibleParty: VehicleDamageResponsibleParty.CUSTOMER });
+    const damageBill = addReceivableBill(harness, {
+      amount: 200000n,
+      billType: BillType.DAMAGE_FEE,
+      paidAmount: 80000n,
+      remainingAmount: 120000n
+    });
+    addDepositLedger(harness, { amount: 500000n, balanceAfter: 500000n, transactionType: DepositTransactionType.COLLECT });
+    addDepositLedger(harness, {
+      amount: 80000n,
+      balanceAfter: 420000n,
+      billId: damageBill.id,
+      transactionType: DepositTransactionType.DEDUCT
+    });
+    addDepositLedger(harness, { amount: 100000n, balanceAfter: 320000n, transactionType: DepositTransactionType.REFUND });
+
+    const settlement = await harness.service.getDepositSettlement(harness.orderId, harness.user);
+
+    expect(settlement).toMatchObject({
+      availableDepositBalance: 320000,
+      collectedAmount: 500000,
+      damageFeeAmount: 200000,
+      damageFeeDeductedAmount: 80000,
+      damageFeeRemainingAmount: 120000,
+      deductibleAmount: 120000,
+      deductedAmount: 80000,
+      refundableAmount: 200000,
+      refundedAmount: 100000
+    });
+    expect(settlement.damages).toEqual([expect.objectContaining({ billable: true, estimatedRepairAmount: 200000 })]);
+    expect(settlement.depositLedgers).toHaveLength(3);
+  });
+
+  it("rejects deposit deduction when balance is insufficient or amount exceeds bill remaining", async () => {
+    const insufficientHarness = createFinanceHarness();
+    const insufficientBill = addReceivableBill(insufficientHarness, {
+      amount: 100000n,
+      billType: BillType.DAMAGE_FEE,
+      remainingAmount: 100000n
+    });
+    addDepositLedger(insufficientHarness, {
+      amount: 50000n,
+      balanceAfter: 50000n,
+      transactionType: DepositTransactionType.COLLECT
+    });
+
+    await expect(
+      insufficientHarness.service.deductDeposit(
+        insufficientHarness.orderId,
+        { amount: 80000, billId: String(insufficientBill.id) },
+        insufficientHarness.user,
+        insufficientHarness.context
+      )
+    ).rejects.toThrow("保证金余额不足，不能扣减");
+
+    const overBillHarness = createFinanceHarness();
+    const overBill = addReceivableBill(overBillHarness, {
+      amount: 80000n,
+      billType: BillType.DAMAGE_FEE,
+      remainingAmount: 80000n
+    });
+    addDepositLedger(overBillHarness, { amount: 500000n, balanceAfter: 500000n, transactionType: DepositTransactionType.COLLECT });
+
+    await expect(
+      overBillHarness.service.deductDeposit(
+        overBillHarness.orderId,
+        { amount: 100000, billId: String(overBill.id) },
+        overBillHarness.user,
+        overBillHarness.context
+      )
+    ).rejects.toThrow("扣减金额不能超过损伤费用账单剩余金额");
+  });
+
+  it("writes DEDUCT ledger and updates DAMAGE_FEE bill for partial and full deductions", async () => {
+    const partialHarness = createFinanceHarness();
+    const partialBill = addReceivableBill(partialHarness, {
+      amount: 100000n,
+      billType: BillType.DAMAGE_FEE,
+      remainingAmount: 100000n
+    });
+    addDepositLedger(partialHarness, { amount: 500000n, balanceAfter: 500000n, transactionType: DepositTransactionType.COLLECT });
+
+    const partial = await partialHarness.service.deductDeposit(
+      partialHarness.orderId,
+      { amount: 40000, billId: String(partialBill.id), remark: "退车损伤费用抵扣" },
+      partialHarness.user,
+      partialHarness.context
+    );
+
+    expect(partial.bill).toMatchObject({
+      billStatus: BillStatus.PARTIALLY_PAID,
+      paidAmount: 40000,
+      remainingAmount: 60000
+    });
+    expect(partial.ledger).toMatchObject({
+      amount: 40000,
+      balanceAfter: 460000,
+      transactionType: DepositTransactionType.DEDUCT
+    });
+
+    const fullHarness = createFinanceHarness();
+    const fullBill = addReceivableBill(fullHarness, {
+      amount: 80000n,
+      billType: BillType.DAMAGE_FEE,
+      remainingAmount: 80000n
+    });
+    addDepositLedger(fullHarness, { amount: 500000n, balanceAfter: 500000n, transactionType: DepositTransactionType.COLLECT });
+
+    const full = await fullHarness.service.deductDeposit(
+      fullHarness.orderId,
+      { amount: 80000, billId: String(fullBill.id) },
+      fullHarness.user,
+      fullHarness.context
+    );
+
+    expect(full.bill).toMatchObject({
+      billStatus: BillStatus.PAID,
+      paidAmount: 80000,
+      remainingAmount: 0
+    });
+    expect(fullHarness.state.depositLedgers.at(-1)).toMatchObject({
+      amount: 80000n,
+      balanceAfter: 420000n,
+      transactionStatus: DepositTransactionStatus.CONFIRMED,
+      transactionType: DepositTransactionType.DEDUCT
+    });
+  });
+
+  it("rejects over-refund and repeated refunds that would make deposit balance negative", async () => {
+    const harness = createFinanceHarness({ actualReturnAt: new Date("2026-06-20T03:00:00.000Z") });
+    addDepositLedger(harness, { amount: 500000n, balanceAfter: 500000n, transactionType: DepositTransactionType.COLLECT });
+
+    await expect(
+      harness.service.refundDeposit(harness.orderId, { amount: 600000 }, harness.user, harness.context)
+    ).rejects.toThrow("退款金额不能超过可用保证金余额");
+
+    await harness.service.refundDeposit(harness.orderId, { amount: 300000 }, harness.user, harness.context);
+
+    await expect(
+      harness.service.refundDeposit(harness.orderId, { amount: 250000 }, harness.user, harness.context)
+    ).rejects.toThrow("退款金额不能超过可用保证金余额");
+    expect(harness.state.depositLedgers.at(-1)).toMatchObject({
+      amount: 300000n,
+      balanceAfter: 200000n,
+      transactionType: DepositTransactionType.REFUND
+    });
+  });
+
+  it("writes audit logs for damage fee generation, deposit deduction, and deposit refund", async () => {
+    const harness = createFinanceHarness({ actualReturnAt: new Date("2026-06-20T03:00:00.000Z") });
+    addVehicleReturn(harness);
+    addReturnDamage(harness, { estimatedRepairAmount: 80000n, responsibleParty: VehicleDamageResponsibleParty.CUSTOMER });
+    addDepositLedger(harness, { amount: 500000n, balanceAfter: 500000n, transactionType: DepositTransactionType.COLLECT });
+
+    const bill = await harness.service.generateDamageFeeBill(harness.orderId, harness.user, harness.context);
+    await harness.service.deductDeposit(
+      harness.orderId,
+      { amount: 80000, billId: bill.id, remark: "退车损伤费用抵扣" },
+      harness.user,
+      harness.context
+    );
+    await harness.service.refundDeposit(
+      harness.orderId,
+      { amount: 420000, remark: "退车结算后人工确认退款" },
+      harness.user,
+      harness.context
+    );
+
+    const auditEntries = harness.auditService.write.mock.calls.map(([entry]) => entry);
+    expect(auditEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ entityType: "receivable_bill", module: "billing" }),
+        expect.objectContaining({
+          after: expect.objectContaining({ amount: 80000, transactionType: DepositTransactionType.DEDUCT }),
+          entityType: "deposit_ledger",
+          module: "deposit_ledger"
+        }),
+        expect.objectContaining({
+          after: expect.objectContaining({ amount: 420000, transactionType: DepositTransactionType.REFUND }),
+          entityType: "deposit_ledger",
+          module: "deposit_ledger"
+        })
+      ])
+    );
+  });
+});
+
 describe("overdue collection backend loop", () => {
   it("dryRun returns overdue bills without writing bills, cases, links, or audit logs", async () => {
     const harness = createFinanceHarness();
@@ -876,6 +1127,89 @@ function addReceivableBill(harness: ReturnType<typeof createFinanceHarness>, ove
   return bill;
 }
 
+function addVehicleReturn(harness: ReturnType<typeof createFinanceHarness>, overrides: Record<string, unknown> = {}) {
+  const returnedAt = new Date("2026-06-20T03:00:00.000Z");
+  Object.assign(harness.state.order, {
+    actualReturnAt: returnedAt,
+    orderStatus: OrderStatus.COMPLETED
+  });
+  const vehicleReturn = {
+    checklistSnapshot: {},
+    cleaningRequired: false,
+    createdAt: new Date("2026-06-20T03:00:00.000Z"),
+    customerId: harness.customerId,
+    damageFound: false,
+    deletedAt: null,
+    id: "return-1",
+    maintenanceRequired: false,
+    orderId: harness.orderId,
+    remark: null,
+    returnMileageKm: 32000,
+    returnNo: "RET2026062000001",
+    returnedAt,
+    returnLocation: "静安旺旺大厦",
+    returnStatus: VehicleReturnStatus.CONFIRMED,
+    returnType: VehicleReturnType.NORMAL_RETURN,
+    scheduledAt: new Date("2026-06-20T02:00:00.000Z"),
+    updatedAt: new Date("2026-06-20T03:00:00.000Z"),
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+  harness.state.vehicleReturn = vehicleReturn;
+  return vehicleReturn;
+}
+
+function addReturnDamage(harness: ReturnType<typeof createFinanceHarness>, overrides: Record<string, unknown> = {}) {
+  if (!harness.state.vehicleReturn) {
+    addVehicleReturn(harness);
+  }
+  const damage = {
+    createdAt: new Date("2026-06-20T03:00:00.000Z"),
+    createdBy: harness.user.id,
+    damageLevel: VehicleDamageLevel.MEDIUM,
+    damageType: VehicleDamageType.EXTERIOR,
+    deletedAt: null,
+    description: "右后门划痕",
+    estimatedRepairAmount: 80000n,
+    id: `damage-${harness.state.returnDamages.length + 1}`,
+    orderId: harness.orderId,
+    photoUrls: [],
+    responsibleParty: VehicleDamageResponsibleParty.CUSTOMER,
+    returnId: harness.state.vehicleReturn!.id,
+    status: VehicleReturnDamageStatus.RECORDED,
+    updatedAt: new Date("2026-06-20T03:00:00.000Z"),
+    updatedBy: harness.user.id,
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+  harness.state.returnDamages.push(damage);
+  return damage;
+}
+
+function addDepositLedger(harness: ReturnType<typeof createFinanceHarness>, overrides: Record<string, unknown> = {}) {
+  const ledger = {
+    amount: 500000n,
+    balanceAfter: 500000n,
+    billId: null,
+    createdAt: new Date("2026-06-06T08:00:00.000Z"),
+    createdBy: harness.user.id,
+    customerId: harness.customerId,
+    deletedAt: null,
+    id: `ledger-existing-${harness.state.depositLedgers.length + 1}`,
+    ledgerNo: `DPL-EXISTING-${harness.state.depositLedgers.length + 1}`,
+    occurredAt: new Date("2026-06-06T08:00:00.000Z"),
+    orderId: harness.orderId,
+    paymentId: null,
+    remark: null,
+    snapshot: {},
+    transactionStatus: DepositTransactionStatus.CONFIRMED,
+    transactionType: DepositTransactionType.COLLECT,
+    ...overrides
+  };
+  harness.state.depositLedgers.push(ledger);
+  return ledger;
+}
+
 function cloneOrder(harness: ReturnType<typeof createFinanceHarness>, overrides: Record<string, unknown>) {
   return {
     ...harness.state.order,
@@ -967,6 +1301,8 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
     },
     orders: [] as Array<Record<string, unknown>>,
     payments: [] as Array<Record<string, unknown>>,
+    returnDamages: [] as Array<Record<string, unknown>>,
+    vehicleReturn: null as Record<string, unknown> | null,
     writeOffs: [] as Array<Record<string, unknown>>
   };
   state.orders.push(state.order);
@@ -1061,13 +1397,21 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
         ) ?? null
       ),
       findMany: vi.fn(async ({ where }) =>
-        state.depositLedgers.filter(
-          (ledger) =>
-            ledger.customerId === where.customerId &&
-            ledger.orderId === where.orderId &&
-            ledger.deletedAt === where.deletedAt &&
-            ledger.transactionStatus === where.transactionStatus
-        )
+        state.depositLedgers.filter((ledger) => {
+          if (where.customerId && ledger.customerId !== where.customerId) {
+            return false;
+          }
+          if (where.orderId && ledger.orderId !== where.orderId) {
+            return false;
+          }
+          if ("deletedAt" in where && ledger.deletedAt !== where.deletedAt) {
+            return false;
+          }
+          if (where.transactionStatus && ledger.transactionStatus !== where.transactionStatus) {
+            return false;
+          }
+          return true;
+        })
       )
     },
     paymentRecord: {
@@ -1135,6 +1479,23 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
     subscriptionOrder: {
       findMany: vi.fn(async ({ where }) => filterOrders(state.orders, where)),
       findUnique: vi.fn(async ({ where }) => state.orders.find((order) => order.id === where.id) ?? null)
+    },
+    vehicleReturn: {
+      findUnique: vi.fn(async ({ where }) => {
+        if (!state.vehicleReturn) {
+          return null;
+        }
+        if (where.orderId && state.vehicleReturn.orderId !== where.orderId) {
+          return null;
+        }
+        if (where.id && state.vehicleReturn.id !== where.id) {
+          return null;
+        }
+        return state.vehicleReturn;
+      })
+    },
+    vehicleReturnDamage: {
+      findMany: vi.fn(async ({ where }) => filterReturnDamages(state.returnDamages, where))
     }
   };
 
@@ -1300,6 +1661,30 @@ function filterCollectionCaseBills(caseBills: Array<Record<string, unknown>>, wh
       return false;
     }
     if (where.billId && caseBill.billId !== where.billId) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function filterReturnDamages(damages: Array<Record<string, unknown>>, where: Record<string, unknown> = {}) {
+  return damages.filter((damage) => {
+    if (where.orderId && damage.orderId !== where.orderId) {
+      return false;
+    }
+    if (where.returnId && damage.returnId !== where.returnId) {
+      return false;
+    }
+    if ("deletedAt" in where && damage.deletedAt !== where.deletedAt) {
+      return false;
+    }
+    if (where.responsibleParty && damage.responsibleParty !== where.responsibleParty) {
+      return false;
+    }
+    if (where.status && !matchesScalarFilter(damage.status, where.status)) {
+      return false;
+    }
+    if (where.estimatedRepairAmount && !matchesScalarFilter(damage.estimatedRepairAmount, where.estimatedRepairAmount)) {
       return false;
     }
     return true;

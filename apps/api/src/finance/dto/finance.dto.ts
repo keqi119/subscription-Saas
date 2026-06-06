@@ -75,6 +75,29 @@ export class WriteOffPaymentDto {
   remark?: string;
 }
 
+export class DeductDepositDto {
+  @IsUUID()
+  billId!: string;
+
+  @IsInt()
+  @Min(1)
+  amount!: number;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+export class RefundDepositDto {
+  @IsInt()
+  @Min(1)
+  amount!: number;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
 export class RefreshOverdueBillsDto {
   @IsDateString()
   asOfDate!: string;

@@ -79,6 +79,10 @@ const permissionRows = [
   ["delivery:view", "查看车辆交付", "delivery", "view"],
   ["delivery:prepare", "准备车辆交付", "delivery", "prepare"],
   ["delivery:confirm", "确认车辆交付", "delivery", "confirm"],
+  ["vehicle_return:view", "查看退车验收", "vehicle_return", "view"],
+  ["vehicle_return:prepare", "准备退车验收", "vehicle_return", "prepare"],
+  ["vehicle_return:confirm", "确认退车验收", "vehicle_return", "confirm"],
+  ["vehicle_return:damage_record", "记录退车损伤", "vehicle_return", "damage_record"],
   ["contract:view", "查看合同", "contract", "view"],
   ["contract:generate", "生成合同", "contract", "generate"],
   ["contract:sign", "签署合同", "contract", "sign"],
@@ -363,6 +367,10 @@ const orderManagementPermissions = [
   "delivery:view",
   "delivery:prepare",
   "delivery:confirm",
+  "vehicle_return:view",
+  "vehicle_return:prepare",
+  "vehicle_return:confirm",
+  "vehicle_return:damage_record",
   "contract:view",
   "contract:generate",
   "contract:sign",
@@ -491,6 +499,7 @@ async function main() {
       "order_change:view",
       "order_change:create",
       "delivery:view",
+      "vehicle_return:view",
       "contract:view"
     ],
     ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
@@ -556,6 +565,10 @@ async function main() {
         "quote:view",
         "order:view",
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
+        "vehicle_return:view",
+        ...(roleCode === "AS"
+          ? ["vehicle_return:prepare", "vehicle_return:confirm", "vehicle_return:damage_record"]
+          : []),
         ...(roleCode === "AS" ? ["order:review", "order:reject"] : []),
         "order_change:view",
         "contract:view"

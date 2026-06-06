@@ -161,7 +161,11 @@ describe("seed permission calibration", () => {
       "subscription_plan:delete",
       "delivery:view",
       "delivery:prepare",
-      "delivery:confirm"
+      "delivery:confirm",
+      "vehicle_return:view",
+      "vehicle_return:prepare",
+      "vehicle_return:confirm",
+      "vehicle_return:damage_record"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -215,6 +219,32 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("roleCode === \"AS\" ? [\"delivery:view\", \"delivery:prepare\", \"delivery:confirm\"] : []");
     expect(roleHasPermission(rolePermissionArray("SA"), "delivery:prepare")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "delivery:confirm")).toBe(false);
+  });
+
+  it("calibrates vehicle return permissions by role", () => {
+    for (const permission of [
+      "vehicle_return:view",
+      "vehicle_return:prepare",
+      "vehicle_return:confirm",
+      "vehicle_return:damage_record"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expectRolePermissions("OP", [
+      "vehicle_return:view",
+      "vehicle_return:prepare",
+      "vehicle_return:confirm",
+      "vehicle_return:damage_record"
+    ]);
+    expectRolePermissions("SA", ["vehicle_return:view"]);
+    expect(seedSource).toContain("for (const roleCode of [\"FI\", \"AS\"])");
+    expect(seedSource).toContain("roleCode === \"AS\"");
+    expect(seedSource).toContain("\"vehicle_return:view\"");
+    expect(seedSource).toContain("\"vehicle_return:prepare\"");
+    expect(seedSource).toContain("\"vehicle_return:confirm\"");
+    expect(seedSource).toContain("\"vehicle_return:damage_record\"");
+    expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_return:prepare")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

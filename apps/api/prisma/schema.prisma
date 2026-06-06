@@ -262,6 +262,61 @@ enum DeliveryStatus {
   @@map("delivery_status")
 }
 
+enum VehicleReturnStatus {
+  PENDING
+  READY
+  CONFIRMED
+  CANCELLED
+
+  @@map("vehicle_return_status")
+}
+
+enum VehicleReturnType {
+  NORMAL_RETURN
+  EARLY_TERMINATION
+
+  @@map("vehicle_return_type")
+}
+
+enum VehicleDamageType {
+  EXTERIOR
+  INTERIOR
+  BATTERY
+  TIRE
+  GLASS
+  CHASSIS
+  EQUIPMENT
+  OTHER
+
+  @@map("vehicle_damage_type")
+}
+
+enum VehicleDamageLevel {
+  MINOR
+  MEDIUM
+  SEVERE
+
+  @@map("vehicle_damage_level")
+}
+
+enum VehicleDamageResponsibleParty {
+  CUSTOMER
+  PLATFORM
+  THIRD_PARTY
+  UNKNOWN
+
+  @@map("vehicle_damage_responsible_party")
+}
+
+enum VehicleReturnDamageStatus {
+  RECORDED
+  CONFIRMED
+  WAIVED
+  SETTLED
+
+  @@map("vehicle_return_damage_status")
+}
+
 enum ContractStatus {
   DRAFT
   GENERATED
@@ -554,6 +609,7 @@ model Customer {
   orders        SubscriptionOrder[]
   contracts     Contract[]
   deliveries    VehicleDelivery[]
+  returns       VehicleReturn[]
   createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy     String?             @map("created_by") @db.Uuid
@@ -1152,6 +1208,8 @@ model Vehicle {
   quotes                        SubscriptionQuote[]
   orders                        SubscriptionOrder[]
   deliveries                    VehicleDelivery[]
+  returns                       VehicleReturn[]
+  returnDamages                 VehicleReturnDamage[]
   salePriceHistories            VehicleSalePriceHistory[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1308,7 +1366,10 @@ model SubscriptionOrder {
   startDate                  DateTime?         @map("start_date") @db.Date
   endDate                    DateTime?         @map("end_date") @db.Date
   actualDeliveryAt           DateTime?         @map("actual_delivery_at") @db.Timestamptz(6)
+  actualReturnAt             DateTime?         @map("actual_return_at") @db.Timestamptz(6)
   deliveries                 VehicleDelivery[]
+  returns                    VehicleReturn[]
+  returnDamages              VehicleReturnDamage[]
   contracts                  Contract[]        @relation("OrderContracts")
   changes                    OrderChange[]
   createdAt                  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1369,6 +1430,81 @@ model VehicleDelivery {
   @@index([scheduledAt])
   @@index([deliveredAt])
   @@map("vehicle_delivery")
+}
+
+model VehicleReturn {
+  id                                  String                @id @default(uuid()) @db.Uuid
+  returnNo                            String                @unique @map("return_no") @db.VarChar(64)
+  orderId                             String                @unique @map("order_id") @db.Uuid
+  order                               SubscriptionOrder     @relation(fields: [orderId], references: [id])
+  vehicleId                           String                @map("vehicle_id") @db.Uuid
+  vehicle                             Vehicle               @relation(fields: [vehicleId], references: [id])
+  customerId                          String                @map("customer_id") @db.Uuid
+  customer                            Customer              @relation(fields: [customerId], references: [id])
+  returnType                          VehicleReturnType     @default(NORMAL_RETURN) @map("return_type")
+  returnStatus                        VehicleReturnStatus   @default(PENDING) @map("return_status")
+  scheduledAt                         DateTime?             @map("scheduled_at") @db.Timestamptz(6)
+  returnLocation                      String?               @map("return_location") @db.VarChar(255)
+  returnedAt                          DateTime?             @map("returned_at") @db.Timestamptz(6)
+  returnMileageKm                     Int?                  @map("return_mileage_km")
+  keysReturnedConfirmed               Boolean               @default(false) @map("keys_returned_confirmed")
+  chargingEquipmentReturnedConfirmed  Boolean               @default(false) @map("charging_equipment_returned_confirmed")
+  vehicleDocumentsReturnedConfirmed   Boolean               @default(false) @map("vehicle_documents_returned_confirmed")
+  customerItemsClearedConfirmed       Boolean               @default(false) @map("customer_items_cleared_confirmed")
+  exteriorCheckedConfirmed            Boolean               @default(false) @map("exterior_checked_confirmed")
+  interiorCheckedConfirmed            Boolean               @default(false) @map("interior_checked_confirmed")
+  batteryCheckedConfirmed             Boolean               @default(false) @map("battery_checked_confirmed")
+  mileageConfirmed                    Boolean               @default(false) @map("mileage_confirmed")
+  violationCheckedConfirmed           Boolean               @default(false) @map("violation_checked_confirmed")
+  cleaningRequired                    Boolean               @default(false) @map("cleaning_required")
+  maintenanceRequired                 Boolean               @default(false) @map("maintenance_required")
+  damageFound                         Boolean               @default(false) @map("damage_found")
+  checklistSnapshot                   Json?                 @map("checklist_snapshot")
+  remark                              String?               @db.Text
+  damages                             VehicleReturnDamage[]
+  createdAt                           DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                           DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                           String?               @map("created_by") @db.Uuid
+  updatedBy                           String?               @map("updated_by") @db.Uuid
+  deletedAt                           DateTime?             @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([customerId])
+  @@index([returnStatus])
+  @@index([returnType])
+  @@index([scheduledAt])
+  @@index([returnedAt])
+  @@map("vehicle_return")
+}
+
+model VehicleReturnDamage {
+  id                    String                         @id @default(uuid()) @db.Uuid
+  returnId              String                         @map("return_id") @db.Uuid
+  vehicleReturn         VehicleReturn                  @relation(fields: [returnId], references: [id])
+  vehicleId             String                         @map("vehicle_id") @db.Uuid
+  vehicle               Vehicle                        @relation(fields: [vehicleId], references: [id])
+  orderId               String                         @map("order_id") @db.Uuid
+  order                 SubscriptionOrder              @relation(fields: [orderId], references: [id])
+  damageType            VehicleDamageType              @map("damage_type")
+  damageLevel           VehicleDamageLevel             @map("damage_level")
+  description           String                         @db.Text
+  estimatedRepairAmount BigInt?                        @map("estimated_repair_amount")
+  responsibleParty      VehicleDamageResponsibleParty  @default(UNKNOWN) @map("responsible_party")
+  photoUrls             Json?                          @map("photo_urls")
+  status                VehicleReturnDamageStatus      @default(RECORDED)
+  createdAt             DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy             String?                        @map("created_by") @db.Uuid
+  updatedBy             String?                        @map("updated_by") @db.Uuid
+  deletedAt             DateTime?                      @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([returnId])
+  @@index([vehicleId])
+  @@index([orderId])
+  @@index([damageType])
+  @@index([damageLevel])
+  @@index([status])
+  @@map("vehicle_return_damage")
 }
 
 model ContractVersion {

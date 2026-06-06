@@ -25,6 +25,9 @@ import {
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
+  VehicleDamageLevel,
+  VehicleReturnStatus,
+  VehicleReturnType,
   VehicleStatus
 } from "@prisma/client";
 
@@ -40,7 +43,9 @@ import {
   CreateOrderChangeDto,
   CreateOrderFromQuoteDto,
   ConfirmDeliveryDto,
+  ConfirmReturnDto,
   PrepareDeliveryDto,
+  PrepareReturnDto,
   ReviewOrderDto,
   UpdateContractVersionDto
 } from "./dto/order.dto";
@@ -106,6 +111,19 @@ const DELIVERY_ALLOWED_ORDER_STATUSES = new Set<OrderStatus>([
 ]);
 const DELIVERY_ALREADY_DONE_MESSAGE = "该订单已完成交付，不能重复确认。";
 const DELIVERY_INSURANCE_INVALID_MESSAGE = "车辆保险未生效或已过期，不能交付。";
+const RETURN_ALREADY_DONE_MESSAGE = "该订单已完成退车，不能重复退车。";
+const RETURN_READY_REQUIRED_MESSAGE = "请先准备退车验收。";
+const RETURN_REQUIRED_CHECKLIST: Array<keyof ConfirmReturnDto> = [
+  "keysReturnedConfirmed",
+  "chargingEquipmentReturnedConfirmed",
+  "vehicleDocumentsReturnedConfirmed",
+  "customerItemsClearedConfirmed",
+  "exteriorCheckedConfirmed",
+  "interiorCheckedConfirmed",
+  "batteryCheckedConfirmed",
+  "mileageConfirmed",
+  "violationCheckedConfirmed"
+];
 
 const packageInclude = {
   product: { select: { id: true, name: true, productNo: true, status: true } },
@@ -168,11 +186,18 @@ const deliveryInclude = {
   vehicle: true
 } satisfies Prisma.VehicleDeliveryInclude;
 
+const returnInclude = {
+  customer: { select: { id: true, mobile: true, name: true } },
+  damages: { orderBy: { createdAt: "asc" as const }, where: { deletedAt: null } },
+  vehicle: true
+} satisfies Prisma.VehicleReturnInclude;
+
 type OrderWithDetails = Prisma.SubscriptionOrderGetPayload<{ include: typeof orderInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ContractWithDetails = Prisma.ContractGetPayload<{ include: typeof contractInclude }>;
 type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
 type DeliveryWithDetails = Prisma.VehicleDeliveryGetPayload<{ include: typeof deliveryInclude }>;
+type ReturnWithDetails = Prisma.VehicleReturnGetPayload<{ include: typeof returnInclude }>;
 
 @Injectable()
 export class OrderService {
@@ -1068,6 +1093,238 @@ export class OrderService {
     return toDeliveryView(result.delivery);
   }
 
+  async getReturnCheck(id: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const vehicleReturn = await this.prisma.vehicleReturn.findUnique({
+      include: returnInclude,
+      where: { orderId: id }
+    });
+    return buildReturnCheck(order, vehicleReturn && !vehicleReturn.deletedAt ? vehicleReturn : null);
+  }
+
+  async getReturn(id: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const vehicleReturn = await this.prisma.vehicleReturn.findUnique({
+      include: returnInclude,
+      where: { orderId: id }
+    });
+    return vehicleReturn && !vehicleReturn.deletedAt ? toReturnView(vehicleReturn) : null;
+  }
+
+  async prepareReturn(id: string, dto: PrepareReturnDto, user: RequestUser, context: RequestContext) {
+    const beforeOrder = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(beforeOrder, user);
+    assertNoActiveOrderChange(beforeOrder);
+    assertCanPrepareReturn(beforeOrder);
+
+    const scheduledAt = dto.scheduledAt ? parseDateTime(dto.scheduledAt, "scheduledAt") : null;
+    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      const beforeReturn = await tx.vehicleReturn.findUnique({
+        include: returnInclude,
+        where: { orderId: id }
+      });
+
+      if (beforeReturn?.returnStatus === VehicleReturnStatus.CONFIRMED || beforeReturn?.returnedAt) {
+        throw new BadRequestException(RETURN_ALREADY_DONE_MESSAGE);
+      }
+
+      const returnData = buildPrepareReturnData(dto, scheduledAt, user.id, beforeReturn);
+      const vehicleReturn = beforeReturn
+        ? await tx.vehicleReturn.update({
+            data: returnData,
+            include: returnInclude,
+            where: { id: beforeReturn.id }
+          })
+        : await tx.vehicleReturn.create({
+            data: {
+              ...returnData,
+              createdBy: user.id,
+              customerId: beforeOrder.customerId,
+              orderId: beforeOrder.id,
+              returnNo: createBusinessNo("RET"),
+              vehicleId: beforeOrder.vehicleId!
+            },
+            include: returnInclude
+          });
+
+      return { beforeReturn, vehicleReturn };
+    }));
+
+    await this.writeReturnAudit(
+      result.beforeReturn ? AuditAction.UPDATE : AuditAction.CREATE,
+      result.vehicleReturn.id,
+      result.beforeReturn ? toReturnView(result.beforeReturn) : undefined,
+      toReturnView(result.vehicleReturn),
+      user,
+      context
+    );
+    return toReturnView(result.vehicleReturn);
+  }
+
+  async confirmReturn(id: string, dto: ConfirmReturnDto, user: RequestUser, context: RequestContext) {
+    const beforeOrder = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(beforeOrder, user);
+    assertNoActiveOrderChange(beforeOrder);
+    assertValidReturnMileage(dto.returnMileageKm);
+    assertReturnChecklistConfirmed(dto);
+
+    const returnedAt = dto.returnedAt ? parseDateTime(dto.returnedAt, "returnedAt") : new Date();
+    const beforeReturn = await this.prisma.vehicleReturn.findUnique({
+      include: returnInclude,
+      where: { orderId: id }
+    });
+    assertCanConfirmReturn(beforeOrder, beforeReturn);
+
+    const delivery = await this.prisma.vehicleDelivery.findUnique({
+      where: { orderId: id }
+    });
+    if (delivery?.handoverMileageKm !== null && delivery?.handoverMileageKm !== undefined && dto.returnMileageKm < delivery.handoverMileageKm) {
+      throw new BadRequestException("退车里程不能小于交付里程。");
+    }
+
+    const damages = dto.damages ?? [];
+    const returnType = dto.returnType ?? beforeReturn!.returnType;
+    const hasMediumOrSevereDamage = damages.some(
+      (damage) =>
+        damage.damageLevel === VehicleDamageLevel.MEDIUM || damage.damageLevel === VehicleDamageLevel.SEVERE
+    );
+    const nextVehicleStatus = dto.maintenanceRequired || hasMediumOrSevereDamage
+      ? VehicleStatus.MAINTENANCE
+      : VehicleStatus.RETURNED;
+    const nextOrderStatus = returnType === VehicleReturnType.EARLY_TERMINATION
+      ? OrderStatus.TERMINATED
+      : OrderStatus.COMPLETED;
+    const damageFound = dto.damageFound ?? damages.length > 0;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
+      if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.LEASED) {
+        throw new BadRequestException("车辆状态不是已出租，不能退车。");
+      }
+
+      const vehicleReturn = await tx.vehicleReturn.update({
+        data: {
+          batteryCheckedConfirmed: dto.batteryCheckedConfirmed,
+          chargingEquipmentReturnedConfirmed: dto.chargingEquipmentReturnedConfirmed,
+          checklistSnapshot: toJsonValue(buildReturnChecklistSnapshot(dto, damageFound)),
+          cleaningRequired: dto.cleaningRequired ?? false,
+          customerItemsClearedConfirmed: dto.customerItemsClearedConfirmed,
+          damageFound,
+          exteriorCheckedConfirmed: dto.exteriorCheckedConfirmed,
+          interiorCheckedConfirmed: dto.interiorCheckedConfirmed,
+          keysReturnedConfirmed: dto.keysReturnedConfirmed,
+          maintenanceRequired: dto.maintenanceRequired ?? false,
+          mileageConfirmed: dto.mileageConfirmed,
+          remark: dto.remark,
+          returnMileageKm: dto.returnMileageKm,
+          returnStatus: VehicleReturnStatus.CONFIRMED,
+          returnType,
+          returnedAt,
+          updatedBy: user.id,
+          vehicleDocumentsReturnedConfirmed: dto.vehicleDocumentsReturnedConfirmed,
+          violationCheckedConfirmed: dto.violationCheckedConfirmed
+        },
+        include: returnInclude,
+        where: { id: beforeReturn!.id }
+      });
+
+      const createdDamages = [];
+      for (const damage of damages) {
+        createdDamages.push(
+          await tx.vehicleReturnDamage.create({
+            data: {
+              createdBy: user.id,
+              damageLevel: damage.damageLevel,
+              damageType: damage.damageType,
+              description: damage.description,
+              estimatedRepairAmount:
+                damage.estimatedRepairAmount === undefined ? null : BigInt(damage.estimatedRepairAmount),
+              orderId: beforeOrder.id,
+              photoUrls: damage.photoUrls ? toJsonValue(damage.photoUrls) : undefined,
+              responsibleParty: damage.responsibleParty ?? "UNKNOWN",
+              returnId: vehicleReturn.id,
+              status: "RECORDED",
+              updatedBy: user.id,
+              vehicleId: beforeOrder.vehicleId!
+            }
+          })
+        );
+      }
+
+      const vehicleReturnAfterDamage = await tx.vehicleReturn.findUniqueOrThrow({
+        include: returnInclude,
+        where: { id: vehicleReturn.id }
+      });
+
+      const order = await tx.subscriptionOrder.update({
+        data: {
+          actualReturnAt: returnedAt,
+          orderStatus: nextOrderStatus,
+          updatedBy: user.id
+        },
+        include: orderInclude,
+        where: { id }
+      });
+
+      const vehicleAfter = await tx.vehicle.update({
+        data: {
+          currentMileageKm: dto.returnMileageKm,
+          salePriceReinitRequiredAt: new Date(),
+          status: nextVehicleStatus,
+          updatedBy: user.id
+        },
+        where: { id: beforeOrder.vehicleId! }
+      });
+
+      return { createdDamages, order, vehicleAfter, vehicleBefore, vehicleReturn: vehicleReturnAfterDamage };
+    });
+
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "subscription_order",
+      id,
+      toOrderView(beforeOrder),
+      toOrderView(result.order),
+      user,
+      context
+    );
+    await this.writeReturnAudit(
+      AuditAction.UPDATE,
+      result.vehicleReturn.id,
+      toReturnView(beforeReturn!),
+      toReturnView(result.vehicleReturn),
+      user,
+      context
+    );
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toJsonValue(result.vehicleAfter),
+      before: toJsonValue(result.vehicleBefore),
+      entityId: result.vehicleAfter.id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    for (const damage of result.createdDamages) {
+      await this.auditService.write({
+        action: AuditAction.CREATE,
+        after: toJsonValue(damage),
+        entityId: damage.id,
+        entityType: "vehicle_return_damage",
+        ipAddress: context.ipAddress,
+        module: "vehicle_return",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    return toReturnView(result.vehicleReturn);
+  }
+
   async generateContract(orderId: string, user: RequestUser, context: RequestContext) {
     const before = await this.findOrderOrThrow(orderId);
     assertNoActiveOrderChange(before);
@@ -1624,6 +1881,27 @@ export class OrderService {
       userAgent: context.userAgent
     });
   }
+
+  private async writeReturnAudit(
+    action: AuditAction,
+    entityId: string,
+    before: unknown,
+    after: unknown,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    await this.auditService.write({
+      action,
+      after,
+      before,
+      entityId,
+      entityType: "vehicle_return",
+      ipAddress: context.ipAddress,
+      module: "vehicle_return",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+  }
 }
 
 export function ensureSubscriptionBusinessType(businessType?: BusinessType | null) {
@@ -1680,6 +1958,37 @@ function assertCanConfirmDelivery(
 }
 
 function firstBlockingReason(check: ReturnType<typeof buildDeliveryCheck>, fallback: string) {
+  return check.blockingReasons[0] ?? fallback;
+}
+
+function assertCanPrepareReturn(order: OrderWithDetails) {
+  const check = buildReturnCheck(order, null);
+  if (!check.canPrepareReturn) {
+    throw new BadRequestException(firstReturnBlockingReason(check, "当前订单不满足准备退车条件。"));
+  }
+}
+
+function assertCanConfirmReturn(
+  order: OrderWithDetails,
+  vehicleReturn: ReturnWithDetails | null
+) {
+  if (!vehicleReturn || vehicleReturn.deletedAt) {
+    throw new BadRequestException(RETURN_READY_REQUIRED_MESSAGE);
+  }
+  if (vehicleReturn.returnStatus === VehicleReturnStatus.CONFIRMED || vehicleReturn.returnedAt) {
+    throw new BadRequestException(RETURN_ALREADY_DONE_MESSAGE);
+  }
+  if (vehicleReturn.returnStatus !== VehicleReturnStatus.READY) {
+    throw new BadRequestException(RETURN_READY_REQUIRED_MESSAGE);
+  }
+
+  const check = buildReturnCheck(order, vehicleReturn);
+  if (!check.canConfirmReturn) {
+    throw new BadRequestException(firstReturnBlockingReason(check, "当前订单不满足确认退车条件。"));
+  }
+}
+
+function firstReturnBlockingReason(check: ReturnType<typeof buildReturnCheck>, fallback: string) {
   return check.blockingReasons[0] ?? fallback;
 }
 
@@ -1796,6 +2105,62 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   };
 }
 
+function buildReturnCheck(order: OrderWithDetails, vehicleReturn: ReturnWithDetails | null) {
+  const vehicle = order.vehicle;
+  const alreadyReturned = Boolean(
+    order.actualReturnAt ||
+      vehicleReturn?.returnStatus === VehicleReturnStatus.CONFIRMED ||
+      vehicleReturn?.returnedAt
+  );
+
+  if (alreadyReturned) {
+    return {
+      alreadyReturned,
+      blockingReasons: [RETURN_ALREADY_DONE_MESSAGE],
+      canConfirmReturn: false,
+      canPrepareReturn: false,
+      orderId: order.id,
+      orderNo: order.orderNo,
+      orderStatus: order.orderStatus,
+      returnStatus: vehicleReturn?.returnStatus ?? null,
+      vehicleId: order.vehicleId,
+      vehicleStatus: vehicle?.status ?? null
+    };
+  }
+
+  const prepareBlockingReasons: string[] = [];
+  const confirmBlockingReasons: string[] = [];
+
+  if (order.orderStatus !== OrderStatus.ACTIVE || !order.actualDeliveryAt) {
+    prepareBlockingReasons.push("订单尚未起租，不能退车");
+  }
+  if (!order.vehicleId || !vehicle || vehicle.deletedAt) {
+    prepareBlockingReasons.push("订单未绑定有效车辆");
+  } else if (vehicle.id !== order.vehicleId) {
+    prepareBlockingReasons.push("车辆与订单不匹配");
+  } else if (vehicle.status !== VehicleStatus.LEASED) {
+    prepareBlockingReasons.push("车辆状态不是已出租，不能退车");
+  }
+
+  confirmBlockingReasons.push(...prepareBlockingReasons);
+  if (vehicleReturn?.returnStatus !== VehicleReturnStatus.READY) {
+    confirmBlockingReasons.push(RETURN_READY_REQUIRED_MESSAGE);
+  }
+
+  return {
+    alreadyReturned,
+    blockingReasons: confirmBlockingReasons,
+    canConfirmReturn: confirmBlockingReasons.length === 0,
+    canPrepareReturn: prepareBlockingReasons.length === 0,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    orderStatus: order.orderStatus,
+    returnStatus: vehicleReturn?.returnStatus ?? null,
+    vehicleId: order.vehicleId,
+    vehicleStatus: vehicle?.status ?? null
+  };
+}
+
 function buildPrepareDeliveryData(
   order: OrderWithDetails,
   dto: PrepareDeliveryDto,
@@ -1842,6 +2207,51 @@ function buildPrepareDeliveryData(
     vehiclePhotosConfirmed,
     vehiclePreparedConfirmed
   };
+}
+
+function buildPrepareReturnData(
+  dto: PrepareReturnDto,
+  scheduledAt: Date | null,
+  userId: string,
+  beforeReturn: ReturnWithDetails | null
+) {
+  return {
+    remark: dto.remark ?? beforeReturn?.remark ?? null,
+    returnLocation: dto.returnLocation ?? beforeReturn?.returnLocation ?? null,
+    returnStatus: VehicleReturnStatus.READY,
+    returnType: dto.returnType ?? beforeReturn?.returnType ?? VehicleReturnType.NORMAL_RETURN,
+    scheduledAt: scheduledAt ?? beforeReturn?.scheduledAt ?? null,
+    updatedBy: userId
+  };
+}
+
+function buildReturnChecklistSnapshot(dto: ConfirmReturnDto, damageFound: boolean) {
+  return {
+    batteryCheckedConfirmed: Boolean(dto.batteryCheckedConfirmed),
+    chargingEquipmentReturnedConfirmed: Boolean(dto.chargingEquipmentReturnedConfirmed),
+    cleaningRequired: Boolean(dto.cleaningRequired),
+    customerItemsClearedConfirmed: Boolean(dto.customerItemsClearedConfirmed),
+    damageFound,
+    exteriorCheckedConfirmed: Boolean(dto.exteriorCheckedConfirmed),
+    interiorCheckedConfirmed: Boolean(dto.interiorCheckedConfirmed),
+    keysReturnedConfirmed: Boolean(dto.keysReturnedConfirmed),
+    maintenanceRequired: Boolean(dto.maintenanceRequired),
+    mileageConfirmed: Boolean(dto.mileageConfirmed),
+    vehicleDocumentsReturnedConfirmed: Boolean(dto.vehicleDocumentsReturnedConfirmed),
+    violationCheckedConfirmed: Boolean(dto.violationCheckedConfirmed)
+  };
+}
+
+function assertReturnChecklistConfirmed(dto: ConfirmReturnDto) {
+  if (RETURN_REQUIRED_CHECKLIST.some((field) => dto[field] !== true)) {
+    throw new BadRequestException("退车验收必填检查项尚未全部确认。");
+  }
+}
+
+function assertValidReturnMileage(returnMileageKm: number | undefined) {
+  if (typeof returnMileageKm !== "number" || !Number.isSafeInteger(returnMileageKm) || returnMileageKm < 0) {
+    throw new BadRequestException("退车里程必须是大于等于 0 的整数。");
+  }
 }
 
 function isCurrentContractSigned(order: OrderWithDetails) {
@@ -2403,6 +2813,10 @@ function toOrderView(order: OrderWithDetails): Record<string, unknown> {
 
 function toDeliveryView(delivery: DeliveryWithDetails): Record<string, unknown> {
   return toPlain(delivery) as Record<string, unknown>;
+}
+
+function toReturnView(vehicleReturn: ReturnWithDetails): Record<string, unknown> {
+  return toPlain(vehicleReturn) as Record<string, unknown>;
 }
 
 function toQuoteAuditView(quote: QuoteWithDetails): Prisma.InputJsonValue {

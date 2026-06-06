@@ -29,7 +29,7 @@ export const STATUS_LABELS: Record<string, string> = {
   IN_PREPARATION: "整备中",
   INACTIVE: "停用",
   LEAD: "线索",
-  LEASED: "租赁中",
+  LEASED: "已出租",
   MAINTENANCE: "维修 / 整备",
   NEED_MORE_INFO: "待补件",
   PENDING: "待审核",
@@ -45,7 +45,7 @@ export const STATUS_LABELS: Record<string, string> = {
   PENDING_VEHICLE: "待分车",
   REJECTED: "已拒绝",
   RENTED: "已租赁",
-  RESERVED: "已预约",
+  RESERVED: "签约锁定（待交付）",
   RETIRED: "已退役",
   RETURNED: "已退回",
   REVIEW_RESERVED: "审核占用",
@@ -56,6 +56,22 @@ export const STATUS_LABELS: Record<string, string> = {
   SUSPENDED: "暂停",
   TERMINATED: "已终止",
   UNDER_REVIEW: "审批中"
+};
+
+export const ORDER_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "在租",
+  CANCELLED: "已取消",
+  COMPLETED: "已完成",
+  PENDING_CONTRACT: "待生成合同",
+  PENDING_CUSTOMER_CONFIRMATION: "待客户确认",
+  PENDING_DELIVERY: "待交付",
+  PENDING_PAYMENT: "待付款",
+  PENDING_REVIEW: "待审核",
+  PENDING_SIGN: "待签署",
+  PENDING_VEHICLE: "待车辆确认",
+  REJECTED: "已拒绝",
+  SUSPENDED: "暂停履约",
+  TERMINATED: "已终止"
 };
 
 export const APPLICATION_SOURCE_LABELS: Record<string, string> = {
@@ -75,6 +91,56 @@ export const DEPOSIT_STATUS_LABELS: Record<string, string> = {
   PENDING_CONFIRM: "押金待确认",
   REJECTED: "押金拒绝",
   WAIVED: "押金减免"
+};
+
+export const DELIVERY_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  DELIVERED: "已交付",
+  PENDING: "待准备",
+  READY: "待交付"
+};
+
+export const VEHICLE_RETURN_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CONFIRMED: "已退车",
+  PENDING: "待退车",
+  READY: "待验收"
+};
+
+export const VEHICLE_RETURN_TYPE_LABELS: Record<string, string> = {
+  EARLY_TERMINATION: "提前终止退车",
+  NORMAL_RETURN: "正常到期退车"
+};
+
+export const VEHICLE_DAMAGE_TYPE_LABELS: Record<string, string> = {
+  BATTERY: "电池",
+  CHASSIS: "底盘",
+  EQUIPMENT: "随车设备",
+  EXTERIOR: "外观",
+  GLASS: "玻璃",
+  INTERIOR: "内饰",
+  OTHER: "其他",
+  TIRE: "轮胎"
+};
+
+export const VEHICLE_DAMAGE_LEVEL_LABELS: Record<string, string> = {
+  MEDIUM: "中等",
+  MINOR: "轻微",
+  SEVERE: "严重"
+};
+
+export const VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS: Record<string, string> = {
+  CUSTOMER: "客户",
+  PLATFORM: "平台",
+  THIRD_PARTY: "第三方",
+  UNKNOWN: "未确认"
+};
+
+export const VEHICLE_RETURN_DAMAGE_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  RECORDED: "已记录",
+  SETTLED: "已结算",
+  WAIVED: "已豁免"
 };
 
 export const PLAN_CONFIRM_STATUS_LABELS: Record<string, string> = {
@@ -125,7 +191,7 @@ export const SALE_PRICE_REVIEW_TYPE_LABELS: Record<string, string> = {
   INITIAL_POOL: "新入池初始化",
   MANUAL_ADJUST: "人工调整",
   QUARTERLY_REVIEW: "季度复核",
-  RETURN_REINIT: "退车再入池初始化"
+  RETURN_REINIT: "退车再入池重新定价"
 };
 
 export const VEHICLE_BASE_FEE_MODE_LABELS: Record<string, string> = {
@@ -174,6 +240,8 @@ export const MODULE_LABELS: Record<string, string> = {
   contract_template: "合同模板",
   customer: "客户中心",
   dashboard: "首页驾驶舱",
+  delivery: "车辆交付",
+  vehicle_return: "退车验收",
   order: "订单中心",
   order_change: "订单变更",
   product: "产品中心",
@@ -203,6 +271,13 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "customer:manage": "管理客户",
   "customer:view": "查看客户",
   "dashboard:view": "查看首页驾驶舱",
+  "delivery:confirm": "确认车辆交付",
+  "delivery:prepare": "准备车辆交付",
+  "delivery:view": "查看车辆交付",
+  "vehicle_return:confirm": "确认退车验收",
+  "vehicle_return:damage_record": "记录退车损伤",
+  "vehicle_return:prepare": "准备退车验收",
+  "vehicle_return:view": "查看退车验收",
   "menu:view": "查看菜单",
   "order:cancel": "取消订单",
   "order:confirm_final_plan": "确认最终方案",
@@ -278,6 +353,13 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "customer:manage": "允许新建和编辑客户",
   "customer:view": "允许查看客户列表和详情",
   "dashboard:view": "允许查看首页驾驶舱",
+  "delivery:confirm": "允许确认车辆实际交付",
+  "delivery:prepare": "允许维护车辆交付准备信息",
+  "delivery:view": "允许查看订单车辆交付信息",
+  "vehicle_return:confirm": "允许确认退车验收并记录退车结果",
+  "vehicle_return:damage_record": "允许录入退车损伤记录",
+  "vehicle_return:prepare": "允许维护退车预约和验收准备信息",
+  "vehicle_return:view": "允许查看订单退车验收信息",
   "menu:view": "允许查看菜单管理",
   "order:cancel": "允许取消订阅订单",
   "order:confirm_final_plan": "允许确认客户自助订单最终方案",

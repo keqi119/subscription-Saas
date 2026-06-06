@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import { ORDER_STATUS_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
 import { apiFetch, ApiError } from "../../../lib/api";
 import { actionAvailability } from "../../../lib/action-guards";
 import type { AuthMeResponse } from "../../../lib/auth";
@@ -88,13 +88,6 @@ const DEPOSIT_STATUS_LABELS: Record<string, string> = {
   PENDING_CONFIRM: "押金待确认",
   REJECTED: "押金已拒绝",
   WAIVED: "已免押"
-};
-
-const ORDER_STATUS_LABELS: Record<string, string> = {
-  PENDING_CONTRACT: "待生成合同",
-  PENDING_CUSTOMER_CONFIRMATION: "待客户确认",
-  PENDING_REVIEW: "待审核",
-  REJECTED: "已拒绝"
 };
 
 const statusColors: Record<string, string> = {

@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
+import { ORDER_STATUS_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
 import {
   canArchiveContract,
   canCancelContract,
@@ -166,6 +166,11 @@ function formatStatus(value?: unknown) {
   return status === "-" ? "-" : labelOf(STATUS_LABELS, status);
 }
 
+function formatOrderStatus(value?: unknown) {
+  const status = safeText(value);
+  return status === "-" ? "-" : labelOf(ORDER_STATUS_LABELS, status);
+}
+
 function getErrorMessage(error: unknown) {
   return error instanceof ApiError ? error.message : "操作失败，请稍后重试";
 }
@@ -220,7 +225,7 @@ function ContractSnapshotSection({ contract }: { contract: ContractDetail | null
           { label: "合同标题", children: contract?.contractTitle ?? "-" },
           { label: "合同状态", children: contract ? labelOf(STATUS_LABELS, contract.status) : "-" },
           { label: "订单编号", children: safeText(getSnapshotValue(orderSnapshot, "orderNo") ?? contract?.order.orderNo) },
-          { label: "订单状态", children: formatStatus(getSnapshotValue(orderSnapshot, "orderStatus", "status")) },
+          { label: "订单状态", children: formatOrderStatus(getSnapshotValue(orderSnapshot, "orderStatus", "status")) },
           { label: "报价编号", children: safeText(getSnapshotValue(orderSnapshot, "quote.quoteNo") ?? getSnapshotValue(quoteSnapshot, "quoteNo")) },
           { label: "合同版本", children: contract?.version?.versionNo ?? "-" },
           { label: "创建时间", children: formatTime(contract?.createdAt) },

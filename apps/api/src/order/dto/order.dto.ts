@@ -4,9 +4,14 @@ import {
   ContractVersionStatus,
   CustomerGrade,
   OrderChangeType,
-  OrderReviewStatus
+  OrderReviewStatus,
+  VehicleDamageLevel,
+  VehicleDamageResponsibleParty,
+  VehicleDamageType,
+  VehicleReturnType
 } from "@prisma/client";
-import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Min } from "class-validator";
+import { IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Min, ValidateNested } from "class-validator";
+import { Type } from "class-transformer";
 
 export class CreateOrderFromQuoteDto {
   @IsOptional()
@@ -60,6 +65,177 @@ export class CancelOrderDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+export class PrepareDeliveryDto {
+  @IsOptional()
+  @IsDateString()
+  scheduledAt?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryLocation?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  depositReceivedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  firstMonthlyFeeReceivedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  insuranceValidConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  vehiclePreparedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  vehiclePhotosConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  customerIdentityConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  handoverDocumentsConfirmed?: boolean;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+export class ConfirmDeliveryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  handoverMileageKm?: number;
+
+  @IsOptional()
+  @IsDateString()
+  deliveredAt?: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+export class PrepareReturnDto {
+  @IsOptional()
+  @IsEnum(VehicleReturnType)
+  returnType?: VehicleReturnType;
+
+  @IsOptional()
+  @IsDateString()
+  scheduledAt?: string;
+
+  @IsOptional()
+  @IsString()
+  returnLocation?: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+export class ConfirmReturnDamageDto {
+  @IsEnum(VehicleDamageType)
+  damageType!: VehicleDamageType;
+
+  @IsEnum(VehicleDamageLevel)
+  damageLevel!: VehicleDamageLevel;
+
+  @IsString()
+  description!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  estimatedRepairAmount?: number;
+
+  @IsOptional()
+  @IsEnum(VehicleDamageResponsibleParty)
+  responsibleParty?: VehicleDamageResponsibleParty;
+
+  @IsOptional()
+  @IsArray()
+  photoUrls?: string[];
+}
+
+export class ConfirmReturnDto {
+  @IsOptional()
+  @IsEnum(VehicleReturnType)
+  returnType?: VehicleReturnType;
+
+  @IsOptional()
+  @IsDateString()
+  returnedAt?: string;
+
+  @IsInt()
+  @Min(0)
+  returnMileageKm!: number;
+
+  @IsOptional()
+  @IsBoolean()
+  keysReturnedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  chargingEquipmentReturnedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  vehicleDocumentsReturnedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  customerItemsClearedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  exteriorCheckedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  interiorCheckedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  batteryCheckedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  mileageConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  violationCheckedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  cleaningRequired?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  maintenanceRequired?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  damageFound?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ConfirmReturnDamageDto)
+  damages?: ConfirmReturnDamageDto[];
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
 }
 
 export class CreateContractVersionDto {

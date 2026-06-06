@@ -12,6 +12,7 @@ import {
 } from "@ant-design/icons";
 import {
   App,
+  Alert,
   Button,
   DatePicker,
   Descriptions,
@@ -35,6 +36,7 @@ import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import { SALE_PRICE_REVIEW_TYPE_LABELS, STATUS_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../constants/labels";
 import {
+  actionAvailability,
   canInitializeVehicleSalePrice,
   canReviewVehicleSalePrice,
   canUpdateVehicleStatus
@@ -148,7 +150,6 @@ const vehicleStatusOptions = [
   "AVAILABLE",
   "RESERVED",
   "LEASED",
-  "RENTED",
   "RETURNED",
   "MAINTENANCE",
   "RETIRED"
@@ -161,7 +162,7 @@ const batteryUsageTypeOptions = [
   { label: "BaaS / 电池租用", value: "BAAS" }
 ];
 
-const returnReinitSourceStatuses = new Set(["LEASED", "RENTED", "RESERVED", "RETURNED", "MAINTENANCE"]);
+const returnReinitSourceStatuses = new Set(["RETURNED", "MAINTENANCE"]);
 
 function formatYuan(value?: number | null) {
   return value === undefined || value === null ? "-" : `¥${(value / 100).toFixed(2)}`;
@@ -185,6 +186,57 @@ function formatDateTime(value?: string | null) {
 
 function toCents(value: number) {
   return Math.round(value * 100);
+}
+
+function isReturnReinitVehicle(vehicle: Pick<Vehicle, "status"> | null | undefined) {
+  return Boolean(vehicle && returnReinitSourceStatuses.has(vehicle.status));
+}
+
+function hasReturnReinitForCurrentPool(vehicle: Vehicle) {
+  const latestReturnReinit = vehicle.salePriceHistories?.find((history) => history.reviewType === "RETURN_REINIT");
+  if (!latestReturnReinit) {
+    return false;
+  }
+  if (!vehicle.salePriceReinitRequiredAt) {
+    return true;
+  }
+  return dayjs(latestReturnReinit.createdAt).valueOf() >= dayjs(vehicle.salePriceReinitRequiredAt).valueOf();
+}
+
+function canRelistAfterReturn(vehicle: Vehicle) {
+  return Boolean(
+    isReturnReinitVehicle(vehicle) &&
+      vehicle.currentSalePriceAmount &&
+      vehicle.currentSalePriceAmount > 0 &&
+      vehicle.salePriceStatus === "EFFECTIVE" &&
+      hasReturnReinitForCurrentPool(vehicle)
+  );
+}
+
+function getReturnReinitNotice(vehicle: Vehicle) {
+  if (!isReturnReinitVehicle(vehicle)) {
+    return null;
+  }
+
+  if (canRelistAfterReturn(vehicle)) {
+    return "退车再入池重新定价已完成，可确认整备完成后设置为可租用。";
+  }
+
+  return vehicle.status === "MAINTENANCE"
+    ? "该车辆维修中，完成整备并通过 RETURN_REINIT 重新初始化当前销售价后才能再次入池。"
+    : "该车辆已退回，需重新初始化当前销售价后才能再次入池。";
+}
+
+function statusOptionsForVehicle(vehicle: Vehicle | null) {
+  if (!vehicle || !isReturnReinitVehicle(vehicle) || canRelistAfterReturn(vehicle)) {
+    return vehicleStatusOptions;
+  }
+
+  return vehicleStatusOptions.map((option) =>
+    option.value === "AVAILABLE"
+      ? { ...option, disabled: true, label: `${option.label}（需先 RETURN_REINIT）` }
+      : option
+  );
 }
 
 function getErrorMessage(error: unknown) {
@@ -245,7 +297,7 @@ export default function VehiclesPage() {
   }, [loadData]);
 
   const columns = useMemo(
-    () => buildVehicleColumns(openDetail, openEditVehicle, openInitialize, openReview, openHistory, openStatus, permissions),
+    () => buildVehicleColumns(openDetail, openEditVehicle, openInitialize, openReview, openHistory, openStatus, relistVehicle, permissions),
     [permissions]
   );
 
@@ -347,17 +399,14 @@ export default function VehiclesPage() {
   }
 
   function openInitialize(vehicle: Vehicle) {
-    const reviewType =
-      vehicle.currentSalePriceAmount || returnReinitSourceStatuses.has(vehicle.status)
-        ? "RETURN_REINIT"
-        : "INITIAL_POOL";
+    const reviewType = isReturnReinitVehicle(vehicle) ? "RETURN_REINIT" : "INITIAL_POOL";
     setInitializingVehicle(vehicle);
     initializeForm.setFieldsValue({
       currentSalePriceAmountYuan: vehicle.currentSalePriceAmount
         ? vehicle.currentSalePriceAmount / 100
         : undefined,
       effectiveFrom: dayjs(),
-      reason: reviewType === "RETURN_REINIT" ? "合同终止退回后重新入池" : "新入池初始化",
+      reason: reviewType === "RETURN_REINIT" ? "退车整备后重新入池" : "新入池初始化",
       reviewType
     });
   }
@@ -406,7 +455,7 @@ export default function VehiclesPage() {
         }),
         method: "POST"
       });
-      void message.success(values.reviewType === "RETURN_REINIT" ? "退车再入池销售价已初始化" : "销售价已初始化");
+      void message.success(values.reviewType === "RETURN_REINIT" ? "退车再入池重新定价已完成" : "销售价已初始化");
       setInitializingVehicle(null);
       initializeForm.resetFields();
       await loadData();
@@ -451,6 +500,22 @@ export default function VehiclesPage() {
       void message.success("车辆状态已更新");
       setStatusVehicle(null);
       statusForm.resetFields();
+      await loadData();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function relistVehicle(vehicle: Vehicle) {
+    try {
+      await apiFetch<Vehicle>(`/vehicles/${vehicle.id}/update-status`, {
+        body: JSON.stringify({
+          remark: "退车整备完成后重新入池",
+          status: "AVAILABLE"
+        }),
+        method: "POST"
+      });
+      void message.success("车辆已设置为可租用");
       await loadData();
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -577,27 +642,36 @@ export default function VehiclesPage() {
         width={760}
       >
         {detailVehicle ? (
-          <Descriptions
-            bordered
-            column={2}
-            items={[
-              { label: "车辆编号", children: detailVehicle.vehicleNo },
-              { label: "VIN", children: detailVehicle.vin ?? "-" },
-              { label: "车牌号", children: detailVehicle.plateNo ?? "-" },
-              { label: "品牌", children: detailVehicle.brand },
-              { label: "车系", children: detailVehicle.series ?? "-" },
-              { label: "车型", children: vehicleModelText(detailVehicle) },
-              { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
-              { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
-              { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
-              { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
-              { label: "当前里程", children: `${detailVehicle.currentMileageKm.toLocaleString("zh-CN")} km` },
-              { label: "车辆状态", children: labelOf(STATUS_LABELS, detailVehicle.status) },
-              { label: "销售价状态", children: labelOf(STATUS_LABELS, detailVehicle.salePriceStatus) },
-              { label: "资产位置", children: detailVehicle.assetLocation ?? "-" },
-              { label: "备注", children: detailVehicle.remark ?? "-" }
-            ]}
-          />
+          <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+            {getReturnReinitNotice(detailVehicle) ? (
+              <Alert
+                message={getReturnReinitNotice(detailVehicle)}
+                showIcon
+                type={canRelistAfterReturn(detailVehicle) ? "success" : "warning"}
+              />
+            ) : null}
+            <Descriptions
+              bordered
+              column={2}
+              items={[
+                { label: "车辆编号", children: detailVehicle.vehicleNo },
+                { label: "VIN", children: detailVehicle.vin ?? "-" },
+                { label: "车牌号", children: detailVehicle.plateNo ?? "-" },
+                { label: "品牌", children: detailVehicle.brand },
+                { label: "车系", children: detailVehicle.series ?? "-" },
+                { label: "车型", children: vehicleModelText(detailVehicle) },
+                { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
+                { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
+                { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
+                { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
+                { label: "当前里程", children: `${detailVehicle.currentMileageKm.toLocaleString("zh-CN")} km` },
+                { label: "车辆状态", children: labelOf(STATUS_LABELS, detailVehicle.status) },
+                { label: "销售价状态", children: labelOf(STATUS_LABELS, detailVehicle.salePriceStatus) },
+                { label: "资产位置", children: detailVehicle.assetLocation ?? "-" },
+                { label: "备注", children: detailVehicle.remark ?? "-" }
+              ]}
+            />
+          </Space>
         ) : null}
       </Modal>
 
@@ -663,7 +737,11 @@ export default function VehiclesPage() {
         onCancel={() => setInitializingVehicle(null)}
         onOk={() => initializeForm.submit()}
         open={Boolean(initializingVehicle)}
-        title={initializingVehicle ? `${initializingVehicle.vehicleNo} 初始化销售价` : "初始化销售价"}
+        title={
+          initializingVehicle
+            ? `${initializingVehicle.vehicleNo} ${isReturnReinitVehicle(initializingVehicle) ? "RETURN_REINIT 重新定价" : "初始化销售价"}`
+            : "初始化销售价"
+        }
         width={620}
       >
         <Form<InitializeSalePriceValues> form={initializeForm} layout="vertical" onFinish={saveInitialize}>
@@ -671,12 +749,12 @@ export default function VehiclesPage() {
             <Select
               options={[
                 { label: "新入池初始化", value: "INITIAL_POOL" },
-                { label: "退车再入池初始化", value: "RETURN_REINIT" }
+                { label: "退车再入池重新定价", value: "RETURN_REINIT" }
               ]}
               onChange={(value) =>
                 initializeForm.setFieldValue(
                   "reason",
-                  value === "RETURN_REINIT" ? "合同终止退回后重新入池" : "新入池初始化"
+                  value === "RETURN_REINIT" ? "退车整备后重新入池" : "新入池初始化"
                 )
               }
             />
@@ -747,8 +825,16 @@ export default function VehiclesPage() {
         width={520}
       >
         <Form<StatusValues> form={statusForm} layout="vertical" onFinish={saveStatus}>
+          {statusVehicle && getReturnReinitNotice(statusVehicle) ? (
+            <Alert
+              message={getReturnReinitNotice(statusVehicle)}
+              showIcon
+              style={{ marginBottom: 16 }}
+              type={canRelistAfterReturn(statusVehicle) ? "success" : "warning"}
+            />
+          ) : null}
           <Form.Item label="车辆状态" name="status" rules={[{ required: true, message: "请选择车辆状态" }]}>
-            <Select options={vehicleStatusOptions} />
+            <Select options={statusOptionsForVehicle(statusVehicle)} />
           </Form.Item>
           <Form.Item label="备注" name="remark">
             <Input.TextArea rows={3} />
@@ -819,6 +905,7 @@ function buildVehicleColumns(
   openReview: (vehicle: Vehicle) => void,
   openHistory: (vehicle: Vehicle) => void,
   openStatus: (vehicle: Vehicle) => void,
+  relistVehicle: (vehicle: Vehicle) => void,
   permissions: ReadonlySet<string>
 ): ColumnsType<Vehicle> {
   return [
@@ -864,8 +951,24 @@ function buildVehicleColumns(
             onClick={() => openInitialize(record)}
             size="small"
           >
-            初始化销售价
+            {isReturnReinitVehicle(record) ? "RETURN_REINIT 重新定价" : "初始化销售价"}
           </ActionButton>
+          {isReturnReinitVehicle(record) ? (
+            <ActionButton
+              availability={actionAvailability({
+                allowed: canRelistAfterReturn(record),
+                disabledReason: "退回车辆需重新初始化当前销售价后才能入池",
+                noPermissionReason: "无更新车辆状态权限",
+                permission: "vehicle:update_status",
+                permissions
+              })}
+              icon={<CarOutlined />}
+              onClick={() => relistVehicle(record)}
+              size="small"
+            >
+              设置为可租用
+            </ActionButton>
+          ) : null}
           <ActionButton
             availability={canReviewVehicleSalePrice(record, permissions)}
             icon={<SyncOutlined />}

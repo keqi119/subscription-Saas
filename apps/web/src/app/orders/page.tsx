@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
-import { STATUS_LABELS, labelOf } from "../../constants/labels";
+import { ORDER_STATUS_LABELS, STATUS_LABELS, labelOf } from "../../constants/labels";
 import { canGenerateContract } from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
 import type { AuthMeResponse } from "../../lib/auth";
@@ -114,7 +114,7 @@ export default function OrdersPage() {
     { dataIndex: "periodMonths", render: (value: number) => `${value} 个月`, title: "订阅周期", width: 110 },
     {
       dataIndex: "orderStatus",
-      render: (value: string) => <Tag color={statusColors[value]}>{labelOf(STATUS_LABELS, value)}</Tag>,
+      render: (value: string) => <Tag color={statusColors[value]}>{labelOf(ORDER_STATUS_LABELS, value)}</Tag>,
       title: "订单状态",
       width: 120
     },

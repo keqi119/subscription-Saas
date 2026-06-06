@@ -1,16 +1,30 @@
 "use client";
 
-import { ArrowLeftOutlined } from "@ant-design/icons";
-import { App, Button, Card, Descriptions, Form, Input, Modal, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { ORDER_CHANGE_TYPE_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
+import {
+  DELIVERY_STATUS_LABELS,
+  ORDER_STATUS_LABELS,
+  ORDER_CHANGE_TYPE_LABELS,
+  STATUS_LABELS,
+  VEHICLE_BASE_FEE_MODE_LABELS,
+  VEHICLE_BATTERY_USAGE_TYPE_LABELS,
+  VEHICLE_DAMAGE_LEVEL_LABELS,
+  VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS,
+  VEHICLE_DAMAGE_TYPE_LABELS,
+  VEHICLE_RETURN_DAMAGE_STATUS_LABELS,
+  VEHICLE_RETURN_STATUS_LABELS,
+  VEHICLE_RETURN_TYPE_LABELS,
+  labelOf
+} from "../../../constants/labels";
 import {
   actionAvailability,
   canExecuteOrderChange,
@@ -20,6 +34,8 @@ import { apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 
 interface OrderDetail {
+  actualDeliveryAt?: string | null;
+  actualReturnAt?: string | null;
   application?: { applicationNo: string; id: string } | null;
   contract?: { contractNo: string; id: string; status: string } | null;
   createdAt: string;
@@ -73,6 +89,147 @@ interface ChangeFormValues {
   reason: string;
 }
 
+interface DeliveryCheck {
+  alreadyDelivered?: boolean;
+  blockingReasons: string[];
+  canConfirmDelivery: boolean;
+  canPrepareDelivery: boolean;
+  contractSigned: boolean;
+  currentSalePriceInitialized: boolean;
+  deliveryStatus?: string | null;
+  depositReceivedConfirmed: boolean;
+  firstMonthlyFeeReceivedConfirmed: boolean;
+  insuranceValid: boolean;
+  orderId: string;
+  orderNo: string;
+  orderStatus: string;
+  vehiclePrepared: boolean;
+  vehicleStatus?: string | null;
+}
+
+interface VehicleDelivery {
+  contractSignedConfirmed?: boolean;
+  customerIdentityConfirmed?: boolean;
+  deliveredAt?: string | null;
+  deliveryLocation?: string | null;
+  deliveryNo: string;
+  deliveryStatus: string;
+  depositReceivedConfirmed?: boolean;
+  firstMonthlyFeeReceivedConfirmed?: boolean;
+  handoverDocumentsConfirmed?: boolean;
+  handoverMileageKm?: number | null;
+  id: string;
+  insuranceValidConfirmed?: boolean;
+  remark?: string | null;
+  scheduledAt?: string | null;
+  vehiclePhotosConfirmed?: boolean;
+  vehiclePreparedConfirmed?: boolean;
+}
+
+interface PrepareDeliveryFormValues {
+  customerIdentityConfirmed?: boolean;
+  deliveryLocation?: string;
+  depositReceivedConfirmed?: boolean;
+  firstMonthlyFeeReceivedConfirmed?: boolean;
+  handoverDocumentsConfirmed?: boolean;
+  insuranceValidConfirmed?: boolean;
+  remark?: string;
+  scheduledAt?: Dayjs;
+  vehiclePhotosConfirmed?: boolean;
+  vehiclePreparedConfirmed?: boolean;
+}
+
+interface ConfirmDeliveryFormValues {
+  deliveredAt?: Dayjs;
+  handoverMileageKm?: number;
+  remark?: string;
+}
+
+interface ReturnCheck {
+  alreadyReturned?: boolean;
+  blockingReasons: string[];
+  canConfirmReturn: boolean;
+  canPrepareReturn: boolean;
+  orderId: string;
+  orderNo: string;
+  orderStatus: string;
+  returnStatus?: string | null;
+  vehicleId?: string | null;
+  vehicleStatus?: string | null;
+}
+
+interface VehicleReturnDamage {
+  damageLevel: string;
+  damageType: string;
+  description?: string | null;
+  estimatedRepairAmount?: number | null;
+  id: string;
+  photoUrls?: string[] | null;
+  responsibleParty?: string | null;
+  status: string;
+}
+
+interface VehicleReturn {
+  batteryCheckedConfirmed?: boolean;
+  chargingEquipmentReturnedConfirmed?: boolean;
+  cleaningRequired?: boolean;
+  customerItemsClearedConfirmed?: boolean;
+  damageFound?: boolean;
+  damages?: VehicleReturnDamage[];
+  exteriorCheckedConfirmed?: boolean;
+  id: string;
+  interiorCheckedConfirmed?: boolean;
+  keysReturnedConfirmed?: boolean;
+  maintenanceRequired?: boolean;
+  mileageConfirmed?: boolean;
+  remark?: string | null;
+  returnLocation?: string | null;
+  returnMileageKm?: number | null;
+  returnNo: string;
+  returnStatus: string;
+  returnType: string;
+  returnedAt?: string | null;
+  scheduledAt?: string | null;
+  vehicleDocumentsReturnedConfirmed?: boolean;
+  violationCheckedConfirmed?: boolean;
+}
+
+interface PrepareReturnFormValues {
+  remark?: string;
+  returnLocation?: string;
+  returnType?: string;
+  scheduledAt?: Dayjs;
+}
+
+interface ConfirmReturnDamageFormValues {
+  damageLevel?: string;
+  damageType?: string;
+  description?: string;
+  estimatedRepairAmount?: number;
+  photoUrlsText?: string;
+  responsibleParty?: string;
+}
+
+interface ConfirmReturnFormValues {
+  batteryCheckedConfirmed?: boolean;
+  chargingEquipmentReturnedConfirmed?: boolean;
+  cleaningRequired?: boolean;
+  customerItemsClearedConfirmed?: boolean;
+  damageFound?: boolean;
+  damages?: ConfirmReturnDamageFormValues[];
+  exteriorCheckedConfirmed?: boolean;
+  interiorCheckedConfirmed?: boolean;
+  keysReturnedConfirmed?: boolean;
+  maintenanceRequired?: boolean;
+  mileageConfirmed?: boolean;
+  remark?: string;
+  returnMileageKm?: number;
+  returnType?: string;
+  returnedAt?: Dayjs;
+  vehicleDocumentsReturnedConfirmed?: boolean;
+  violationCheckedConfirmed?: boolean;
+}
+
 type SnapshotRecord = Record<string, unknown>;
 
 const ORDER_SOURCE_LABELS: Record<string, string> = {
@@ -89,6 +246,41 @@ const PRE_CONTRACT_CHANGE_ORDER_STATUSES = new Set([
   "PENDING_VEHICLE",
   "PENDING_DELIVERY"
 ]);
+
+const DELIVERY_PREPARE_ORDER_STATUSES = new Set([
+  "PENDING_PAYMENT",
+  "PENDING_VEHICLE",
+  "PENDING_DELIVERY"
+]);
+
+const returnTypeOptions = [
+  { label: "正常到期退车", value: "NORMAL_RETURN" },
+  { label: "提前终止退车", value: "EARLY_TERMINATION" }
+];
+
+const damageTypeOptions = [
+  { label: "外观", value: "EXTERIOR" },
+  { label: "内饰", value: "INTERIOR" },
+  { label: "电池", value: "BATTERY" },
+  { label: "轮胎", value: "TIRE" },
+  { label: "玻璃", value: "GLASS" },
+  { label: "底盘", value: "CHASSIS" },
+  { label: "随车设备", value: "EQUIPMENT" },
+  { label: "其他", value: "OTHER" }
+];
+
+const damageLevelOptions = [
+  { label: "轻微", value: "MINOR" },
+  { label: "中等", value: "MEDIUM" },
+  { label: "严重", value: "SEVERE" }
+];
+
+const responsiblePartyOptions = [
+  { label: "客户", value: "CUSTOMER" },
+  { label: "平台", value: "PLATFORM" },
+  { label: "第三方", value: "THIRD_PARTY" },
+  { label: "未确认", value: "UNKNOWN" }
+];
 
 const reviewStatusColors: Record<string, string> = {
   APPROVED: "green",
@@ -115,6 +307,16 @@ function formatYuan(value?: unknown) {
     maximumFractionDigits: 2,
     minimumFractionDigits: 2
   })} 元`;
+}
+
+function centsToYuan(value?: unknown) {
+  const amount = toNumber(value);
+  return amount === null ? undefined : Number((amount / 100).toFixed(2));
+}
+
+function yuanToCents(value?: unknown) {
+  const amount = toNumber(value);
+  return amount === null ? undefined : Math.round(amount * 100);
 }
 
 function formatTime(value?: unknown) {
@@ -172,6 +374,24 @@ function safeText(value?: unknown) {
     return "-";
   }
   return String(value);
+}
+
+function parsePhotoUrls(value?: string) {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function photoUrlsToText(value?: string[] | null) {
+  return Array.isArray(value) ? value.join("\n") : "";
+}
+
+function normalizePhotoUrls(value?: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : [];
 }
 
 function toNumber(value?: unknown) {
@@ -264,6 +484,55 @@ function ReviewStatusTag({ value }: { value?: string }) {
   ) : (
     <Tag>-</Tag>
   );
+}
+
+function BooleanTag({ checked }: { checked?: boolean }) {
+  return checked ? <Tag color="green">已确认</Tag> : <Tag>未确认</Tag>;
+}
+
+function DeliveryStatusTag({ value }: { value?: string | null }) {
+  if (!value) {
+    return <Tag>-</Tag>;
+  }
+
+  const colors: Record<string, string> = {
+    CANCELLED: "red",
+    DELIVERED: "green",
+    PENDING: "blue",
+    READY: "orange"
+  };
+
+  return <Tag color={colors[value]}>{labelOf(DELIVERY_STATUS_LABELS, value)}</Tag>;
+}
+
+function ReturnStatusTag({ value }: { value?: string | null }) {
+  if (!value) {
+    return <Tag>-</Tag>;
+  }
+
+  const colors: Record<string, string> = {
+    CANCELLED: "red",
+    CONFIRMED: "green",
+    PENDING: "blue",
+    READY: "orange"
+  };
+
+  return <Tag color={colors[value]}>{labelOf(VEHICLE_RETURN_STATUS_LABELS, value)}</Tag>;
+}
+
+function DamageStatusTag({ value }: { value?: string | null }) {
+  if (!value) {
+    return <Tag>-</Tag>;
+  }
+
+  const colors: Record<string, string> = {
+    CONFIRMED: "green",
+    RECORDED: "blue",
+    SETTLED: "purple",
+    WAIVED: "default"
+  };
+
+  return <Tag color={colors[value]}>{labelOf(VEHICLE_RETURN_DAMAGE_STATUS_LABELS, value)}</Tag>;
 }
 
 function canFinalizeOrder(order: OrderDetail) {
@@ -700,7 +969,7 @@ function OrderInfoSections({
           column={2}
           items={[
             { label: "订单编号", children: safeText(order.orderNo) },
-            { label: "订单状态", children: <Tag>{labelOf(STATUS_LABELS, order.orderStatus)}</Tag> },
+            { label: "订单状态", children: <Tag>{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> },
             { label: "订单来源", children: labelOf(ORDER_SOURCE_LABELS, order.orderSource) },
             { label: "订阅周期", children: formatMonths(order.periodMonths) },
             {
@@ -780,21 +1049,516 @@ function OrderInfoSections({
   );
 }
 
+function DeliveryPanel({
+  confirmAvailability,
+  delivery,
+  deliveryCheck,
+  onOpenConfirm,
+  onOpenPrepare,
+  prepareAvailability
+}: {
+  confirmAvailability: ReturnType<typeof actionAvailability>;
+  delivery: VehicleDelivery | null;
+  deliveryCheck: DeliveryCheck | null;
+  onOpenConfirm: () => void;
+  onOpenPrepare: () => void;
+  prepareAvailability: ReturnType<typeof actionAvailability>;
+}) {
+  const blockingReasons = deliveryCheck?.blockingReasons ?? [];
+  const deliveryStatus = deliveryCheck?.deliveryStatus ?? delivery?.deliveryStatus ?? null;
+  const alreadyDelivered = Boolean(
+    deliveryCheck?.alreadyDelivered || deliveryStatus === "DELIVERED" || delivery?.deliveredAt
+  );
+  const readyForDelivery = !alreadyDelivered && deliveryStatus === "READY";
+  const checklistItems = [
+    { label: "合同签署确认", value: delivery?.contractSignedConfirmed ?? deliveryCheck?.contractSigned },
+    { label: "押金收取确认", value: delivery?.depositReceivedConfirmed },
+    { label: "首期月费收取确认", value: delivery?.firstMonthlyFeeReceivedConfirmed },
+    { label: "保险有效确认", value: delivery?.insuranceValidConfirmed },
+    { label: "车辆整备完成确认", value: delivery?.vehiclePreparedConfirmed },
+    { label: "车辆照片确认", value: delivery?.vehiclePhotosConfirmed },
+    { label: "客户身份核验确认", value: delivery?.customerIdentityConfirmed },
+    { label: "交付文件确认", value: delivery?.handoverDocumentsConfirmed }
+  ];
+
+  return (
+    <Card
+      extra={
+        <Space wrap>
+          <ActionButton availability={prepareAvailability} onClick={onOpenPrepare} type="primary">
+            准备交付
+          </ActionButton>
+          <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
+            确认交付
+          </ActionButton>
+        </Space>
+      }
+      title="车辆交付"
+    >
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+        <Alert
+          description={
+            alreadyDelivered ? (
+              <Space orientation="vertical" size={4}>
+                <Typography.Text>订单已进入在租状态</Typography.Text>
+                <Typography.Text>
+                  车辆状态：
+                  {deliveryCheck?.vehicleStatus === "LEASED"
+                    ? "已出租（LEASED）"
+                    : deliveryCheck?.vehicleStatus
+                      ? labelOf(STATUS_LABELS, deliveryCheck.vehicleStatus)
+                      : "-"}
+                </Typography.Text>
+              </Space>
+            ) : readyForDelivery ? (
+              "交付准备已完成，待确认交付"
+            ) : blockingReasons.length > 0 ? (
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                {blockingReasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            ) : undefined
+          }
+          message={
+            alreadyDelivered
+              ? "交付已完成"
+              : readyForDelivery
+                ? "交付准备已完成，待确认交付"
+                : blockingReasons.length > 0
+                  ? "暂不可交付"
+                  : "交付条件已满足"
+          }
+          showIcon
+          type={alreadyDelivered || readyForDelivery || blockingReasons.length === 0 ? "success" : "warning"}
+        />
+
+        {!alreadyDelivered ? (
+          <Typography.Text type="secondary">
+            签约锁定（RESERVED）：车辆已被订单锁定，处于合同 / 付款 / 交付前流程中，不能被其他订单选择；交付完成后车辆进入已出租（LEASED）状态。
+          </Typography.Text>
+        ) : null}
+
+        {!alreadyDelivered ? (
+          <Descriptions
+            bordered
+            column={2}
+            title="交付条件检查"
+            items={[
+              { label: "合同签署状态", children: <BooleanTag checked={deliveryCheck?.contractSigned} /> },
+              { label: "押金确认状态", children: <BooleanTag checked={deliveryCheck?.depositReceivedConfirmed} /> },
+              { label: "首期月费确认状态", children: <BooleanTag checked={deliveryCheck?.firstMonthlyFeeReceivedConfirmed} /> },
+              { label: "保险有效状态", children: <BooleanTag checked={deliveryCheck?.insuranceValid} /> },
+              { label: "车辆整备状态", children: <BooleanTag checked={deliveryCheck?.vehiclePrepared} /> },
+              {
+                label: "车辆状态",
+                children: deliveryCheck?.vehicleStatus ? labelOf(STATUS_LABELS, deliveryCheck.vehicleStatus) : "-"
+              },
+              {
+                label: "车辆当前销售价初始化状态",
+                children: <BooleanTag checked={deliveryCheck?.currentSalePriceInitialized} />
+              },
+              { label: "是否可准备交付", children: <BooleanTag checked={deliveryCheck?.canPrepareDelivery} /> },
+              { label: "是否可确认交付", children: <BooleanTag checked={deliveryCheck?.canConfirmDelivery} /> }
+            ]}
+          />
+        ) : null}
+
+        <Descriptions
+          bordered
+          column={2}
+          title="当前交付记录"
+          items={[
+            { label: "交付单号", children: safeText(delivery?.deliveryNo) },
+            { label: "交付状态", children: <DeliveryStatusTag value={delivery?.deliveryStatus} /> },
+            { label: "预约交付时间", children: formatTime(delivery?.scheduledAt) },
+            { label: "交付地点", children: safeText(delivery?.deliveryLocation) },
+            { label: "实际交付时间", children: formatTime(delivery?.deliveredAt) },
+            { label: "交付里程", children: formatKilometers(delivery?.handoverMileageKm) },
+            { label: "备注", children: safeText(delivery?.remark) }
+          ]}
+        />
+
+        <Descriptions
+          bordered
+          column={4}
+          title="交付检查项"
+          items={checklistItems.map((item) => ({
+            label: item.label,
+            children: <BooleanTag checked={item.value} />
+          }))}
+        />
+      </Space>
+    </Card>
+  );
+}
+
+function ReturnPanel({
+  confirmAvailability,
+  onOpenConfirm,
+  onOpenPrepare,
+  order,
+  prepareAvailability,
+  returnCheck,
+  vehicleReturn
+}: {
+  confirmAvailability: ReturnType<typeof actionAvailability>;
+  onOpenConfirm: () => void;
+  onOpenPrepare: () => void;
+  order: OrderDetail;
+  prepareAvailability: ReturnType<typeof actionAvailability>;
+  returnCheck: ReturnCheck | null;
+  vehicleReturn: VehicleReturn | null;
+}) {
+  const returnStatus = returnCheck?.returnStatus ?? vehicleReturn?.returnStatus ?? null;
+  const alreadyReturned = Boolean(
+    returnCheck?.alreadyReturned || order.actualReturnAt || returnStatus === "CONFIRMED" || vehicleReturn?.returnedAt
+  );
+  const readyForReturn = !alreadyReturned && returnStatus === "READY";
+  const blockingReasons = alreadyReturned ? [] : returnCheck?.blockingReasons ?? [];
+  const vehicleStatus = returnCheck?.vehicleStatus ?? order.vehicle?.status ?? null;
+  const checklistItems = [
+    { label: "钥匙已归还", value: vehicleReturn?.keysReturnedConfirmed },
+    { label: "充电设备已归还", value: vehicleReturn?.chargingEquipmentReturnedConfirmed },
+    { label: "车辆文件已归还", value: vehicleReturn?.vehicleDocumentsReturnedConfirmed },
+    { label: "客户物品已清空", value: vehicleReturn?.customerItemsClearedConfirmed },
+    { label: "外观已检查", value: vehicleReturn?.exteriorCheckedConfirmed },
+    { label: "内饰已检查", value: vehicleReturn?.interiorCheckedConfirmed },
+    { label: "电池已检查", value: vehicleReturn?.batteryCheckedConfirmed },
+    { label: "里程已确认", value: vehicleReturn?.mileageConfirmed },
+    { label: "违章已检查", value: vehicleReturn?.violationCheckedConfirmed },
+    { label: "是否需要清洁", value: vehicleReturn?.cleaningRequired },
+    { label: "是否需要维修", value: vehicleReturn?.maintenanceRequired },
+    { label: "是否发现损伤", value: vehicleReturn?.damageFound }
+  ];
+  const damageColumns: ColumnsType<VehicleReturnDamage> = [
+    {
+      dataIndex: "damageType",
+      render: (value: string) => labelOf(VEHICLE_DAMAGE_TYPE_LABELS, value),
+      title: "损伤类型"
+    },
+    {
+      dataIndex: "damageLevel",
+      render: (value: string) => labelOf(VEHICLE_DAMAGE_LEVEL_LABELS, value),
+      title: "损伤等级"
+    },
+    { dataIndex: "description", render: safeText, title: "损伤描述" },
+    {
+      dataIndex: "responsibleParty",
+      render: (value?: string | null) => labelOf(VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS, value ?? "UNKNOWN"),
+      title: "责任方"
+    },
+    {
+      dataIndex: "estimatedRepairAmount",
+      render: formatYuan,
+      title: "预估维修金额"
+    },
+    {
+      dataIndex: "photoUrls",
+      render: (value?: string[] | null) => {
+        const urls = normalizePhotoUrls(value);
+        return urls.length > 0 ? (
+          <Space direction="vertical" size={2}>
+            {urls.map((url, index) => (
+              <Typography.Link href={url} key={`${url}-${index}`} rel="noreferrer" target="_blank">
+                照片 {index + 1}
+              </Typography.Link>
+            ))}
+          </Space>
+        ) : "-";
+      },
+      title: "照片"
+    },
+    {
+      dataIndex: "status",
+      render: (value: string) => <DamageStatusTag value={value} />,
+      title: "状态"
+    }
+  ];
+
+  return (
+    <Card
+      extra={
+        <Space wrap>
+          <ActionButton availability={prepareAvailability} onClick={onOpenPrepare} type="primary">
+            准备退车
+          </ActionButton>
+          <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
+            确认退车
+          </ActionButton>
+        </Space>
+      }
+      title="车辆退回 / 退车验收"
+    >
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+        <Alert
+          description={
+            alreadyReturned ? (
+              <Space orientation="vertical" size={4}>
+                <Typography.Text>
+                  {vehicleStatus === "MAINTENANCE" ? "车辆需维修" : vehicleStatus === "RETURNED" ? "车辆已退回" : "该订单已完成退车"}
+                </Typography.Text>
+                <Typography.Text>订单状态：{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Typography.Text>
+                <Typography.Text>
+                  车辆状态：{vehicleStatus ? labelOf(STATUS_LABELS, vehicleStatus) : "-"}
+                </Typography.Text>
+                {vehicleStatus === "MAINTENANCE" ? (
+                  <Typography.Text type="secondary">
+                    车辆需完成整备并通过 RETURN_REINIT 重新初始化销售价后，才能再次入池。
+                  </Typography.Text>
+                ) : null}
+              </Space>
+            ) : readyForReturn ? (
+              "退车准备已完成，待确认退车"
+            ) : blockingReasons.length > 0 ? (
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                {blockingReasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            ) : undefined
+          }
+          message={
+            alreadyReturned
+              ? "该订单已完成退车"
+              : readyForReturn
+                ? "退车准备已完成，待确认退车"
+                : blockingReasons.length > 0
+                  ? "暂不可退车"
+                  : "退车条件已满足"
+          }
+          showIcon
+          type={alreadyReturned || readyForReturn || blockingReasons.length === 0 ? "success" : "warning"}
+        />
+
+        <Descriptions
+          bordered
+          column={2}
+          title="退车条件检查"
+          items={[
+            { label: "订单状态", children: labelOf(ORDER_STATUS_LABELS, returnCheck?.orderStatus ?? order.orderStatus) },
+            { label: "车辆状态", children: vehicleStatus ? labelOf(STATUS_LABELS, vehicleStatus) : "-" },
+            { label: "是否已交付", children: <BooleanTag checked={Boolean(order.actualDeliveryAt)} /> },
+            { label: "是否已退车", children: <BooleanTag checked={alreadyReturned} /> },
+            { label: "是否可准备退车", children: <BooleanTag checked={returnCheck?.canPrepareReturn} /> },
+            { label: "是否可确认退车", children: <BooleanTag checked={returnCheck?.canConfirmReturn} /> }
+          ]}
+        />
+
+        <Descriptions
+          bordered
+          column={2}
+          title="当前退车记录"
+          items={[
+            { label: "退车单号", children: safeText(vehicleReturn?.returnNo) },
+            { label: "退车状态", children: <ReturnStatusTag value={vehicleReturn?.returnStatus} /> },
+            {
+              label: "退车类型",
+              children: vehicleReturn?.returnType ? labelOf(VEHICLE_RETURN_TYPE_LABELS, vehicleReturn.returnType) : "-"
+            },
+            { label: "预约退车时间", children: formatTime(vehicleReturn?.scheduledAt) },
+            { label: "退车地点", children: safeText(vehicleReturn?.returnLocation) },
+            { label: "实际退车时间", children: formatTime(vehicleReturn?.returnedAt) },
+            { label: "退车里程", children: formatKilometers(vehicleReturn?.returnMileageKm) },
+            { label: "是否需清洁", children: <BooleanTag checked={vehicleReturn?.cleaningRequired} /> },
+            { label: "是否需维修", children: <BooleanTag checked={vehicleReturn?.maintenanceRequired} /> },
+            { label: "是否发现损伤", children: <BooleanTag checked={vehicleReturn?.damageFound} /> },
+            { label: "备注", children: safeText(vehicleReturn?.remark) }
+          ]}
+        />
+
+        <Descriptions
+          bordered
+          column={4}
+          title="退车检查项"
+          items={checklistItems.map((item) => ({
+            label: item.label,
+            children: <BooleanTag checked={item.value} />
+          }))}
+        />
+
+        <Table
+          columns={damageColumns}
+          dataSource={vehicleReturn?.damages ?? []}
+          locale={{ emptyText: "-" }}
+          pagination={false}
+          rowKey="id"
+          size="small"
+          title={() => "损伤记录"}
+        />
+      </Space>
+    </Card>
+  );
+}
+
+function getPrepareDeliveryDisabledReason(
+  order: OrderDetail | null,
+  deliveryCheck: DeliveryCheck | null,
+  delivery: VehicleDelivery | null,
+  orderChangeLocked: boolean
+) {
+  if (!order) {
+    return "数据加载完成后才可操作";
+  }
+  if (orderChangeLocked) {
+    return "当前订单存在进行中的变更申请";
+  }
+  if (deliveryCheck?.alreadyDelivered || isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
+    return "订单已交付，不能重新准备交付";
+  }
+  if (!DELIVERY_PREPARE_ORDER_STATUSES.has(order.orderStatus)) {
+    return "当前订单状态不允许准备交付";
+  }
+  if (!(deliveryCheck?.contractSigned ?? isContractSigned(order.contract?.status))) {
+    return "请先完成合同签署";
+  }
+  if ((deliveryCheck?.vehicleStatus ?? order.vehicle?.status) !== "RESERVED") {
+    return "交付前车辆必须处于“签约锁定（RESERVED）”状态。";
+  }
+  if (deliveryCheck && !deliveryCheck.canPrepareDelivery) {
+    return deliveryCheck.blockingReasons[0] ?? "当前订单不满足准备交付条件";
+  }
+  if (!deliveryCheck) {
+    return "交付条件检查加载完成后才可操作";
+  }
+  return null;
+}
+
+function getConfirmDeliveryDisabledReason(
+  order: OrderDetail | null,
+  deliveryCheck: DeliveryCheck | null,
+  delivery: VehicleDelivery | null,
+  orderChangeLocked: boolean
+) {
+  if (!order) {
+    return "数据加载完成后才可操作";
+  }
+  if (orderChangeLocked) {
+    return "当前订单存在进行中的变更申请";
+  }
+  if (deliveryCheck?.alreadyDelivered || isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
+    return "订单已交付，不能重复确认交付";
+  }
+  if (delivery?.deliveryStatus !== "READY") {
+    return "请先完成准备交付";
+  }
+  if ((deliveryCheck?.vehicleStatus ?? order.vehicle?.status) !== "RESERVED") {
+    return "交付前车辆必须处于“签约锁定（RESERVED）”状态。";
+  }
+  if (!deliveryCheck) {
+    return "交付条件检查加载完成后才可操作";
+  }
+  if (!deliveryCheck.canConfirmDelivery) {
+    return "交付条件未全部满足";
+  }
+  return null;
+}
+
+function getPrepareReturnDisabledReason(
+  order: OrderDetail | null,
+  returnCheck: ReturnCheck | null,
+  vehicleReturn: VehicleReturn | null,
+  orderChangeLocked: boolean
+) {
+  if (!order) {
+    return "数据加载完成后才可操作";
+  }
+  if (orderChangeLocked) {
+    return "当前订单存在进行中的变更申请";
+  }
+  if (returnCheck?.alreadyReturned || isOrderReturned(order) || vehicleReturn?.returnStatus === "CONFIRMED") {
+    return "该订单已完成退车";
+  }
+  if (order.orderStatus !== "ACTIVE" || !order.actualDeliveryAt) {
+    return "订单尚未起租，不能退车";
+  }
+  if ((returnCheck?.vehicleStatus ?? order.vehicle?.status) !== "LEASED") {
+    return "车辆状态不是已出租，不能退车";
+  }
+  if (returnCheck && !returnCheck.canPrepareReturn) {
+    return returnCheck.blockingReasons[0] ?? "当前订单不满足准备退车条件";
+  }
+  if (!returnCheck) {
+    return "退车条件检查加载完成后才可操作";
+  }
+  return null;
+}
+
+function getConfirmReturnDisabledReason(
+  order: OrderDetail | null,
+  returnCheck: ReturnCheck | null,
+  vehicleReturn: VehicleReturn | null,
+  orderChangeLocked: boolean
+) {
+  if (!order) {
+    return "数据加载完成后才可操作";
+  }
+  if (orderChangeLocked) {
+    return "当前订单存在进行中的变更申请";
+  }
+  if (returnCheck?.alreadyReturned || isOrderReturned(order) || vehicleReturn?.returnStatus === "CONFIRMED") {
+    return "该订单已完成退车";
+  }
+  if (vehicleReturn?.returnStatus !== "READY") {
+    return "请先准备退车";
+  }
+  if (order.orderStatus !== "ACTIVE" || !order.actualDeliveryAt) {
+    return "当前订单尚未起租";
+  }
+  if ((returnCheck?.vehicleStatus ?? order.vehicle?.status) !== "LEASED") {
+    return "当前车辆不是已出租状态";
+  }
+  if (!returnCheck) {
+    return "退车条件检查加载完成后才可操作";
+  }
+  if (!returnCheck.canConfirmReturn) {
+    return returnCheck.blockingReasons[0] ?? "退车条件未全部满足";
+  }
+  return null;
+}
+
+function isOrderDelivered(order: OrderDetail) {
+  return Boolean(order.actualDeliveryAt || order.orderStatus === "ACTIVE");
+}
+
+function isOrderReturned(order: OrderDetail) {
+  return Boolean(order.actualReturnAt || order.orderStatus === "COMPLETED" || order.orderStatus === "TERMINATED");
+}
+
+function isContractSigned(status?: string | null) {
+  return status === "SIGNED" || status === "ARCHIVED";
+}
+
 export default function OrderDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
   const { message } = App.useApp();
   const [changeForm] = Form.useForm<ChangeFormValues>();
+  const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
+  const [confirmReturnForm] = Form.useForm<ConfirmReturnFormValues>();
   const [creditForm] = Form.useForm<{ customerGrade: string }>();
+  const [prepareDeliveryForm] = Form.useForm<PrepareDeliveryFormValues>();
+  const [prepareReturnForm] = Form.useForm<PrepareReturnFormValues>();
   const [changeModalOpen, setChangeModalOpen] = useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
+  const [confirmDeliveryModalOpen, setConfirmDeliveryModalOpen] = useState(false);
+  const [confirmReturnModalOpen, setConfirmReturnModalOpen] = useState(false);
+  const [delivery, setDelivery] = useState<VehicleDelivery | null>(null);
+  const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [prepareDeliveryModalOpen, setPrepareDeliveryModalOpen] = useState(false);
+  const [prepareReturnModalOpen, setPrepareReturnModalOpen] = useState(false);
+  const [returnCheck, setReturnCheck] = useState<ReturnCheck | null>(null);
+  const [vehicleReturn, setVehicleReturn] = useState<VehicleReturn | null>(null);
   const [autoOpenChangeModalDone, setAutoOpenChangeModalDone] = useState(false);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
+  const hasDeliveryViewPermission = permissions.has("delivery:view");
+  const hasReturnViewPermission = permissions.has("vehicle_return:view");
+  const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
   const canCreateChange = permissions.has("order_change:create");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
   const isAdminOrOperator = roles.has("ADMIN") || roles.has("OP") || roles.has("GM");
@@ -844,18 +1608,60 @@ export default function OrderDetailPage() {
     permission: "order:cancel",
     permissions
   });
+  const prepareDeliveryDisabledReason = getPrepareDeliveryDisabledReason(order, deliveryCheck, delivery, orderChangeLocked);
+  const prepareDeliveryAvailability = actionAvailability({
+    allowed: prepareDeliveryDisabledReason === null,
+    disabledReason: prepareDeliveryDisabledReason ?? "当前订单状态不允许准备交付",
+    noPermissionReason: "无准备交付权限",
+    permission: "delivery:prepare",
+    permissions
+  });
+  const confirmDeliveryDisabledReason = getConfirmDeliveryDisabledReason(order, deliveryCheck, delivery, orderChangeLocked);
+  const confirmDeliveryAvailability = actionAvailability({
+    allowed: confirmDeliveryDisabledReason === null,
+    disabledReason: confirmDeliveryDisabledReason ?? "当前订单状态不允许交付",
+    noPermissionReason: "无确认交付权限",
+    permission: "delivery:confirm",
+    permissions
+  });
+  const prepareReturnDisabledReason = getPrepareReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
+  const prepareReturnAvailability = actionAvailability({
+    allowed: prepareReturnDisabledReason === null,
+    disabledReason: prepareReturnDisabledReason ?? "当前订单状态不允许准备退车",
+    noPermissionReason: "无准备退车权限",
+    permission: "vehicle_return:prepare",
+    permissions
+  });
+  const confirmReturnDisabledReason = getConfirmReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
+  const confirmReturnAvailability = actionAvailability({
+    allowed: confirmReturnDisabledReason === null,
+    disabledReason: confirmReturnDisabledReason ?? "当前订单状态不允许确认退车",
+    noPermissionReason: "无确认退车权限",
+    permission: "vehicle_return:confirm",
+    permissions
+  });
 
   const loadOrder = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextOrder, nextChanges, nextMe] = await Promise.all([
+      const nextMe = await apiFetch<AuthMeResponse>("/auth/me");
+      const canViewDelivery = nextMe.user.permissions.includes("delivery:view");
+      const canViewReturn = nextMe.user.permissions.includes("vehicle_return:view");
+      const [nextOrder, nextChanges, nextDeliveryCheck, nextDelivery, nextReturnCheck, nextReturn] = await Promise.all([
         apiFetch<OrderDetail>(`/orders/${params.id}`),
         apiFetch<OrderChangeRow[]>(`/orders/${params.id}/changes`).catch(() => []),
-        apiFetch<AuthMeResponse>("/auth/me")
+        canViewDelivery ? apiFetch<DeliveryCheck>(`/orders/${params.id}/delivery-check`) : Promise.resolve(null),
+        canViewDelivery ? apiFetch<VehicleDelivery | null>(`/orders/${params.id}/delivery`) : Promise.resolve(null),
+        canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
+        canViewReturn ? apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`) : Promise.resolve(null)
       ]);
       setOrder(nextOrder);
       setChanges(nextChanges);
       setMe(nextMe);
+      setDeliveryCheck(nextDeliveryCheck);
+      setDelivery(nextDelivery);
+      setReturnCheck(nextReturnCheck);
+      setVehicleReturn(nextReturn);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -897,6 +1703,91 @@ export default function OrderDetailPage() {
     changeForm.resetFields();
   }
 
+  function openPrepareDeliveryModal() {
+    prepareDeliveryForm.setFieldsValue({
+      customerIdentityConfirmed: delivery?.customerIdentityConfirmed ?? false,
+      deliveryLocation: delivery?.deliveryLocation ?? undefined,
+      depositReceivedConfirmed: delivery?.depositReceivedConfirmed ?? false,
+      firstMonthlyFeeReceivedConfirmed: delivery?.firstMonthlyFeeReceivedConfirmed ?? false,
+      handoverDocumentsConfirmed: delivery?.handoverDocumentsConfirmed ?? false,
+      insuranceValidConfirmed: delivery?.insuranceValidConfirmed ?? false,
+      remark: delivery?.remark ?? undefined,
+      scheduledAt: delivery?.scheduledAt ? dayjs(delivery.scheduledAt) : undefined,
+      vehiclePhotosConfirmed: delivery?.vehiclePhotosConfirmed ?? false,
+      vehiclePreparedConfirmed: delivery?.vehiclePreparedConfirmed ?? false
+    });
+    setPrepareDeliveryModalOpen(true);
+  }
+
+  function closePrepareDeliveryModal() {
+    setPrepareDeliveryModalOpen(false);
+    prepareDeliveryForm.resetFields();
+  }
+
+  function openConfirmDeliveryModal() {
+    confirmDeliveryForm.setFieldsValue({
+      deliveredAt: dayjs(),
+      handoverMileageKm: order?.vehicle?.currentMileageKm ?? undefined,
+      remark: delivery?.remark ?? undefined
+    });
+    setConfirmDeliveryModalOpen(true);
+  }
+
+  function closeConfirmDeliveryModal() {
+    setConfirmDeliveryModalOpen(false);
+    confirmDeliveryForm.resetFields();
+  }
+
+  function openPrepareReturnModal() {
+    prepareReturnForm.setFieldsValue({
+      remark: vehicleReturn?.remark ?? undefined,
+      returnLocation: vehicleReturn?.returnLocation ?? undefined,
+      returnType: vehicleReturn?.returnType ?? "NORMAL_RETURN",
+      scheduledAt: vehicleReturn?.scheduledAt ? dayjs(vehicleReturn.scheduledAt) : undefined
+    });
+    setPrepareReturnModalOpen(true);
+  }
+
+  function closePrepareReturnModal() {
+    setPrepareReturnModalOpen(false);
+    prepareReturnForm.resetFields();
+  }
+
+  function openConfirmReturnModal() {
+    confirmReturnForm.setFieldsValue({
+      batteryCheckedConfirmed: vehicleReturn?.batteryCheckedConfirmed ?? false,
+      chargingEquipmentReturnedConfirmed: vehicleReturn?.chargingEquipmentReturnedConfirmed ?? false,
+      cleaningRequired: vehicleReturn?.cleaningRequired ?? false,
+      customerItemsClearedConfirmed: vehicleReturn?.customerItemsClearedConfirmed ?? false,
+      damageFound: vehicleReturn?.damageFound ?? false,
+      damages: (vehicleReturn?.damages ?? []).map((damage) => ({
+        damageLevel: damage.damageLevel,
+        damageType: damage.damageType,
+        description: damage.description ?? undefined,
+        estimatedRepairAmount: centsToYuan(damage.estimatedRepairAmount),
+        photoUrlsText: photoUrlsToText(damage.photoUrls),
+        responsibleParty: damage.responsibleParty ?? "UNKNOWN"
+      })),
+      exteriorCheckedConfirmed: vehicleReturn?.exteriorCheckedConfirmed ?? false,
+      interiorCheckedConfirmed: vehicleReturn?.interiorCheckedConfirmed ?? false,
+      keysReturnedConfirmed: vehicleReturn?.keysReturnedConfirmed ?? false,
+      maintenanceRequired: vehicleReturn?.maintenanceRequired ?? false,
+      mileageConfirmed: vehicleReturn?.mileageConfirmed ?? false,
+      remark: vehicleReturn?.remark ?? undefined,
+      returnMileageKm: order?.vehicle?.currentMileageKm ?? undefined,
+      returnType: vehicleReturn?.returnType ?? "NORMAL_RETURN",
+      returnedAt: dayjs(),
+      vehicleDocumentsReturnedConfirmed: vehicleReturn?.vehicleDocumentsReturnedConfirmed ?? false,
+      violationCheckedConfirmed: vehicleReturn?.violationCheckedConfirmed ?? false
+    });
+    setConfirmReturnModalOpen(true);
+  }
+
+  function closeConfirmReturnModal() {
+    setConfirmReturnModalOpen(false);
+    confirmReturnForm.resetFields();
+  }
+
   async function generateContract() {
     if (!order) {
       return;
@@ -920,6 +1811,134 @@ export default function OrderDetailPage() {
         method: "POST"
       });
       void message.success("订单已取消");
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function prepareDelivery() {
+    if (!order) {
+      return;
+    }
+    const values = await prepareDeliveryForm.validateFields();
+    try {
+      await apiFetch(`/orders/${order.id}/prepare-delivery`, {
+        body: JSON.stringify({
+          customerIdentityConfirmed: Boolean(values.customerIdentityConfirmed),
+          deliveryLocation: values.deliveryLocation,
+          depositReceivedConfirmed: Boolean(values.depositReceivedConfirmed),
+          firstMonthlyFeeReceivedConfirmed: Boolean(values.firstMonthlyFeeReceivedConfirmed),
+          handoverDocumentsConfirmed: Boolean(values.handoverDocumentsConfirmed),
+          insuranceValidConfirmed: Boolean(values.insuranceValidConfirmed),
+          remark: values.remark,
+          scheduledAt: values.scheduledAt?.toISOString(),
+          vehiclePhotosConfirmed: Boolean(values.vehiclePhotosConfirmed),
+          vehiclePreparedConfirmed: Boolean(values.vehiclePreparedConfirmed)
+        }),
+        method: "POST"
+      });
+      void message.success("交付准备信息已保存");
+      closePrepareDeliveryModal();
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function confirmDelivery() {
+    if (!order) {
+      return;
+    }
+    const values = await confirmDeliveryForm.validateFields();
+    try {
+      await apiFetch(`/orders/${order.id}/confirm-delivery`, {
+        body: JSON.stringify({
+          deliveredAt: values.deliveredAt?.toISOString(),
+          handoverMileageKm: values.handoverMileageKm,
+          remark: values.remark
+        }),
+        method: "POST"
+      });
+      void message.success("车辆已确认交付");
+      closeConfirmDeliveryModal();
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function prepareReturn() {
+    if (!order) {
+      return;
+    }
+    const values = await prepareReturnForm.validateFields();
+    try {
+      await apiFetch(`/orders/${order.id}/prepare-return`, {
+        body: JSON.stringify({
+          remark: values.remark,
+          returnLocation: values.returnLocation,
+          returnType: values.returnType ?? "NORMAL_RETURN",
+          scheduledAt: values.scheduledAt?.toISOString()
+        }),
+        method: "POST"
+      });
+      void message.success("退车准备信息已保存");
+      closePrepareReturnModal();
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function confirmReturn() {
+    if (!order) {
+      return;
+    }
+    const values = await confirmReturnForm.validateFields();
+    const damageRows = canRecordReturnDamage ? values.damages ?? [] : [];
+    const damages = damageRows
+      .filter(
+        (damage) =>
+          Boolean(damage.damageType) ||
+          Boolean(damage.damageLevel) ||
+          Boolean(damage.description) ||
+          damage.estimatedRepairAmount !== undefined
+      )
+      .map((damage) => ({
+        damageLevel: damage.damageLevel,
+        damageType: damage.damageType,
+        description: damage.description,
+        estimatedRepairAmount: yuanToCents(damage.estimatedRepairAmount),
+        photoUrls: parsePhotoUrls(damage.photoUrlsText),
+        responsibleParty: damage.responsibleParty ?? "UNKNOWN"
+      }));
+
+    try {
+      await apiFetch(`/orders/${order.id}/confirm-return`, {
+        body: JSON.stringify({
+          batteryCheckedConfirmed: Boolean(values.batteryCheckedConfirmed),
+          chargingEquipmentReturnedConfirmed: Boolean(values.chargingEquipmentReturnedConfirmed),
+          cleaningRequired: Boolean(values.cleaningRequired),
+          customerItemsClearedConfirmed: Boolean(values.customerItemsClearedConfirmed),
+          damageFound: Boolean(values.damageFound) || damages.length > 0,
+          damages,
+          exteriorCheckedConfirmed: Boolean(values.exteriorCheckedConfirmed),
+          interiorCheckedConfirmed: Boolean(values.interiorCheckedConfirmed),
+          keysReturnedConfirmed: Boolean(values.keysReturnedConfirmed),
+          maintenanceRequired: Boolean(values.maintenanceRequired),
+          mileageConfirmed: Boolean(values.mileageConfirmed),
+          remark: values.remark,
+          returnMileageKm: values.returnMileageKm,
+          returnType: values.returnType ?? vehicleReturn?.returnType ?? "NORMAL_RETURN",
+          returnedAt: values.returnedAt?.toISOString(),
+          vehicleDocumentsReturnedConfirmed: Boolean(values.vehicleDocumentsReturnedConfirmed),
+          violationCheckedConfirmed: Boolean(values.violationCheckedConfirmed)
+        }),
+        method: "POST"
+      });
+      void message.success("退车验收已确认");
+      closeConfirmReturnModal();
       await loadOrder();
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -1125,7 +2144,7 @@ export default function OrderDetailPage() {
             <Typography.Title level={4} style={{ margin: 0 }}>
               {order?.orderNo ?? "订阅订单详情"}
             </Typography.Title>
-            {order ? <Tag color="blue">{labelOf(STATUS_LABELS, order.orderStatus)}</Tag> : null}
+            {order ? <Tag color="blue">{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> : null}
           </Space>
           {order ? (
             <Space>
@@ -1228,6 +2247,29 @@ export default function OrderDetailPage() {
 
         {loading ? <Spin /> : order ? <OrderInfoSections currentVehicleSalePrice={currentVehicleSalePrice} order={order} /> : null}
 
+        {order && hasDeliveryViewPermission ? (
+          <DeliveryPanel
+            confirmAvailability={confirmDeliveryAvailability}
+            delivery={delivery}
+            deliveryCheck={deliveryCheck}
+            onOpenConfirm={openConfirmDeliveryModal}
+            onOpenPrepare={openPrepareDeliveryModal}
+            prepareAvailability={prepareDeliveryAvailability}
+          />
+        ) : null}
+
+        {order && hasReturnViewPermission ? (
+          <ReturnPanel
+            confirmAvailability={confirmReturnAvailability}
+            onOpenConfirm={openConfirmReturnModal}
+            onOpenPrepare={openPrepareReturnModal}
+            order={order}
+            prepareAvailability={prepareReturnAvailability}
+            returnCheck={returnCheck}
+            vehicleReturn={vehicleReturn}
+          />
+        ) : null}
+
         {/*
           <Descriptions
             bordered
@@ -1253,7 +2295,7 @@ export default function OrderDetailPage() {
                   { label: "押金", children: formatYuan(order.depositAmount) },
                   { label: "订阅周期", children: `${order.periodMonths} 个月` },
                   { label: "月里程额度", children: `${order.mileageLimitKm} km` },
-                  { label: "订单状态", children: <Tag>{labelOf(STATUS_LABELS, order.orderStatus)}</Tag> },
+                  { label: "订单状态", children: <Tag>{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> },
                   {
                     label: "合同信息",
                     children: order.contract ? (
@@ -1294,6 +2336,220 @@ export default function OrderDetailPage() {
         <Card title="订单变更记录">
           <Table columns={changeColumns} dataSource={changes} pagination={false} rowKey="id" />
         </Card>
+
+        <Modal
+          destroyOnHidden
+          onCancel={closePrepareDeliveryModal}
+          onOk={prepareDelivery}
+          open={prepareDeliveryModalOpen}
+          title="准备交付"
+        >
+          <Form form={prepareDeliveryForm} layout="vertical">
+            <Form.Item label="预约交付时间" name="scheduledAt">
+              <DatePicker showTime style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item label="交付地点" name="deliveryLocation">
+              <Input placeholder="静安旺旺大厦" />
+            </Form.Item>
+            <Form.Item name="depositReceivedConfirmed" valuePropName="checked">
+              <Checkbox>押金收取确认</Checkbox>
+            </Form.Item>
+            <Form.Item name="firstMonthlyFeeReceivedConfirmed" valuePropName="checked">
+              <Checkbox>首期月费收取确认</Checkbox>
+            </Form.Item>
+            <Form.Item name="insuranceValidConfirmed" valuePropName="checked">
+              <Checkbox>保险有效确认</Checkbox>
+            </Form.Item>
+            <Form.Item name="vehiclePreparedConfirmed" valuePropName="checked">
+              <Checkbox>车辆整备完成确认</Checkbox>
+            </Form.Item>
+            <Form.Item name="vehiclePhotosConfirmed" valuePropName="checked">
+              <Checkbox>车辆照片确认</Checkbox>
+            </Form.Item>
+            <Form.Item name="customerIdentityConfirmed" valuePropName="checked">
+              <Checkbox>客户身份核验确认</Checkbox>
+            </Form.Item>
+            <Form.Item name="handoverDocumentsConfirmed" valuePropName="checked">
+              <Checkbox>交付文件确认</Checkbox>
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          onCancel={closeConfirmDeliveryModal}
+          onOk={confirmDelivery}
+          open={confirmDeliveryModalOpen}
+          title="确认交付"
+        >
+          <Form form={confirmDeliveryForm} layout="vertical">
+            <Form.Item label="实际交付时间" name="deliveredAt" rules={[{ required: true, message: "请选择实际交付时间" }]}>
+              <DatePicker showTime style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item label="交付里程" name="handoverMileageKm" rules={[{ required: true, message: "请填写交付里程" }]}>
+              <InputNumber min={0} addonAfter="km" style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          onCancel={closePrepareReturnModal}
+          onOk={prepareReturn}
+          open={prepareReturnModalOpen}
+          title="准备退车"
+        >
+          <Form form={prepareReturnForm} layout="vertical">
+            <Form.Item label="退车类型" name="returnType" rules={[{ required: true, message: "请选择退车类型" }]}>
+              <Select options={returnTypeOptions} />
+            </Form.Item>
+            <Form.Item label="预约退车时间" name="scheduledAt">
+              <DatePicker showTime style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item label="退车地点" name="returnLocation">
+              <Input placeholder="静安旺旺大厦" />
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          onCancel={closeConfirmReturnModal}
+          onOk={confirmReturn}
+          open={confirmReturnModalOpen}
+          title="确认退车"
+          width={860}
+        >
+          <Form form={confirmReturnForm} layout="vertical">
+            <Form.Item label="退车类型" name="returnType" rules={[{ required: true, message: "请选择退车类型" }]}>
+              <Select options={returnTypeOptions} />
+            </Form.Item>
+            <Form.Item label="实际退车时间" name="returnedAt" rules={[{ required: true, message: "请选择实际退车时间" }]}>
+              <DatePicker showTime style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item label="退车里程" name="returnMileageKm" rules={[{ required: true, message: "请填写退车里程" }]}>
+              <InputNumber min={0} precision={0} addonAfter="km" style={{ width: "100%" }} />
+            </Form.Item>
+            <Space orientation="vertical" size={0} style={{ width: "100%" }}>
+              <Form.Item name="keysReturnedConfirmed" valuePropName="checked">
+                <Checkbox>钥匙已归还</Checkbox>
+              </Form.Item>
+              <Form.Item name="chargingEquipmentReturnedConfirmed" valuePropName="checked">
+                <Checkbox>充电设备已归还</Checkbox>
+              </Form.Item>
+              <Form.Item name="vehicleDocumentsReturnedConfirmed" valuePropName="checked">
+                <Checkbox>车辆文件已归还</Checkbox>
+              </Form.Item>
+              <Form.Item name="customerItemsClearedConfirmed" valuePropName="checked">
+                <Checkbox>客户物品已清空</Checkbox>
+              </Form.Item>
+              <Form.Item name="exteriorCheckedConfirmed" valuePropName="checked">
+                <Checkbox>外观已检查</Checkbox>
+              </Form.Item>
+              <Form.Item name="interiorCheckedConfirmed" valuePropName="checked">
+                <Checkbox>内饰已检查</Checkbox>
+              </Form.Item>
+              <Form.Item name="batteryCheckedConfirmed" valuePropName="checked">
+                <Checkbox>电池已检查</Checkbox>
+              </Form.Item>
+              <Form.Item name="mileageConfirmed" valuePropName="checked">
+                <Checkbox>里程已确认</Checkbox>
+              </Form.Item>
+              <Form.Item name="violationCheckedConfirmed" valuePropName="checked">
+                <Checkbox>违章已检查</Checkbox>
+              </Form.Item>
+              <Form.Item name="cleaningRequired" valuePropName="checked">
+                <Checkbox>是否需要清洁</Checkbox>
+              </Form.Item>
+              <Form.Item name="maintenanceRequired" valuePropName="checked">
+                <Checkbox>是否需要维修</Checkbox>
+              </Form.Item>
+              <Form.Item name="damageFound" valuePropName="checked">
+                <Checkbox>是否发现损伤</Checkbox>
+              </Form.Item>
+            </Space>
+
+            <Form.List name="damages">
+              {(fields, { add, remove }) => (
+                <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+                  <Space style={{ justifyContent: "space-between", width: "100%" }}>
+                    <Typography.Text strong>损伤记录</Typography.Text>
+                    <ActionButton
+                      allowed={canRecordReturnDamage}
+                      disabledReason="无损伤记录权限"
+                      icon={<PlusOutlined />}
+                      onClick={() => add({ responsibleParty: "UNKNOWN" })}
+                    >
+                      新增损伤
+                    </ActionButton>
+                  </Space>
+                  {!canRecordReturnDamage ? (
+                    <Alert message="无损伤记录权限，仅可提交退车检查项。" showIcon type="info" />
+                  ) : null}
+                  {fields.map((field, index) => (
+                    <Card
+                      extra={
+                        <Button
+                          aria-label="删除损伤记录"
+                          icon={<DeleteOutlined />}
+                          onClick={() => remove(field.name)}
+                          size="small"
+                        />
+                      }
+                      key={field.key}
+                      size="small"
+                      title={`损伤 ${index + 1}`}
+                    >
+                      <Form.Item
+                        label="损伤类型"
+                        name={[field.name, "damageType"]}
+                        rules={[{ required: true, message: "请选择损伤类型" }]}
+                      >
+                        <Select options={damageTypeOptions} />
+                      </Form.Item>
+                      <Form.Item
+                        label="损伤等级"
+                        name={[field.name, "damageLevel"]}
+                        rules={[{ required: true, message: "请选择损伤等级" }]}
+                      >
+                        <Select options={damageLevelOptions} />
+                      </Form.Item>
+                      <Form.Item
+                        label="描述"
+                        name={[field.name, "description"]}
+                        rules={[{ required: true, message: "请填写损伤描述" }]}
+                      >
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                      <Form.Item label="责任方" name={[field.name, "responsibleParty"]}>
+                        <Select options={responsiblePartyOptions} />
+                      </Form.Item>
+                      <Form.Item label="预估维修金额" name={[field.name, "estimatedRepairAmount"]}>
+                        <InputNumber min={0} precision={2} addonAfter="元" style={{ width: "100%" }} />
+                      </Form.Item>
+                      <Form.Item label="照片 URL" name={[field.name, "photoUrlsText"]}>
+                        <Input.TextArea placeholder="多个 URL 可用逗号或换行分隔" rows={2} />
+                      </Form.Item>
+                    </Card>
+                  ))}
+                </Space>
+              )}
+            </Form.List>
+
+            <Form.Item label="备注" name="remark" style={{ marginTop: 16 }}>
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Modal>
 
         <Modal
           onCancel={closeChangeModal}

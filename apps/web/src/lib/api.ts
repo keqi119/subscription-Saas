@@ -30,7 +30,12 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     throw new ApiError(await readErrorMessage(response), response.status);
   }
 
-  return (await response.json()) as T;
+  const text = await response.text();
+  if (!text) {
+    return null as T;
+  }
+
+  return JSON.parse(text) as T;
 }
 
 async function readErrorMessage(response: Response) {

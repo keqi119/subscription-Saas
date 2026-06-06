@@ -58,6 +58,22 @@ export const STATUS_LABELS: Record<string, string> = {
   UNDER_REVIEW: "审批中"
 };
 
+export const ORDER_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "在租",
+  CANCELLED: "已取消",
+  COMPLETED: "已完成",
+  PENDING_CONTRACT: "待生成合同",
+  PENDING_CUSTOMER_CONFIRMATION: "待客户确认",
+  PENDING_DELIVERY: "待交付",
+  PENDING_PAYMENT: "待付款",
+  PENDING_REVIEW: "待审核",
+  PENDING_SIGN: "待签署",
+  PENDING_VEHICLE: "待车辆确认",
+  REJECTED: "已拒绝",
+  SUSPENDED: "暂停履约",
+  TERMINATED: "已终止"
+};
+
 export const APPLICATION_SOURCE_LABELS: Record<string, string> = {
   SALES_ASSISTED: "销售人工",
   SELF_SERVICE: "客户自助"

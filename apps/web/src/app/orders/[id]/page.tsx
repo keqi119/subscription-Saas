@@ -12,6 +12,7 @@ import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
 import {
   DELIVERY_STATUS_LABELS,
+  ORDER_STATUS_LABELS,
   ORDER_CHANGE_TYPE_LABELS,
   STATUS_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
@@ -968,7 +969,7 @@ function OrderInfoSections({
           column={2}
           items={[
             { label: "订单编号", children: safeText(order.orderNo) },
-            { label: "订单状态", children: <Tag>{labelOf(STATUS_LABELS, order.orderStatus)}</Tag> },
+            { label: "订单状态", children: <Tag>{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> },
             { label: "订单来源", children: labelOf(ORDER_SOURCE_LABELS, order.orderSource) },
             { label: "订阅周期", children: formatMonths(order.periodMonths) },
             {
@@ -1297,7 +1298,7 @@ function ReturnPanel({
                 <Typography.Text>
                   {vehicleStatus === "MAINTENANCE" ? "车辆需维修" : vehicleStatus === "RETURNED" ? "车辆已退回" : "该订单已完成退车"}
                 </Typography.Text>
-                <Typography.Text>订单状态：{labelOf(STATUS_LABELS, order.orderStatus)}</Typography.Text>
+                <Typography.Text>订单状态：{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Typography.Text>
                 <Typography.Text>
                   车辆状态：{vehicleStatus ? labelOf(STATUS_LABELS, vehicleStatus) : "-"}
                 </Typography.Text>
@@ -1335,7 +1336,7 @@ function ReturnPanel({
           column={2}
           title="退车条件检查"
           items={[
-            { label: "订单状态", children: labelOf(STATUS_LABELS, returnCheck?.orderStatus ?? order.orderStatus) },
+            { label: "订单状态", children: labelOf(ORDER_STATUS_LABELS, returnCheck?.orderStatus ?? order.orderStatus) },
             { label: "车辆状态", children: vehicleStatus ? labelOf(STATUS_LABELS, vehicleStatus) : "-" },
             { label: "是否已交付", children: <BooleanTag checked={Boolean(order.actualDeliveryAt)} /> },
             { label: "是否已退车", children: <BooleanTag checked={alreadyReturned} /> },
@@ -2143,7 +2144,7 @@ export default function OrderDetailPage() {
             <Typography.Title level={4} style={{ margin: 0 }}>
               {order?.orderNo ?? "订阅订单详情"}
             </Typography.Title>
-            {order ? <Tag color="blue">{labelOf(STATUS_LABELS, order.orderStatus)}</Tag> : null}
+            {order ? <Tag color="blue">{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> : null}
           </Space>
           {order ? (
             <Space>
@@ -2294,7 +2295,7 @@ export default function OrderDetailPage() {
                   { label: "押金", children: formatYuan(order.depositAmount) },
                   { label: "订阅周期", children: `${order.periodMonths} 个月` },
                   { label: "月里程额度", children: `${order.mileageLimitKm} km` },
-                  { label: "订单状态", children: <Tag>{labelOf(STATUS_LABELS, order.orderStatus)}</Tag> },
+                  { label: "订单状态", children: <Tag>{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> },
                   {
                     label: "合同信息",
                     children: order.contract ? (

@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { REQUIRED_ANY_PERMISSIONS_KEY, REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
 import { CustomerController } from "../src/customer/customer.controller";
+import { FinanceController } from "../src/finance/finance.controller";
 import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
@@ -140,6 +141,37 @@ describe("self-service application permissions", () => {
   });
 });
 
+describe("billing finance permissions", () => {
+  it("gates billing and payment APIs behind finance permissions", () => {
+    const generatePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.generateInitialBills
+    );
+    const billsPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.listOrderBills
+    );
+    const summaryPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.getOrderFinanceSummary
+    );
+    const createPaymentPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.createPayment
+    );
+    const writeOffPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.writeOffPayment
+    );
+
+    expect(generatePermissions).toEqual([PermissionCode.BILLING_GENERATE]);
+    expect(billsPermissions).toEqual([PermissionCode.BILLING_VIEW]);
+    expect(summaryPermissions).toEqual([PermissionCode.BILLING_VIEW]);
+    expect(createPaymentPermissions).toEqual([PermissionCode.PAYMENT_CREATE]);
+    expect(writeOffPermissions).toEqual([PermissionCode.PAYMENT_WRITE_OFF]);
+  });
+});
+
 describe("seed permission calibration", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
@@ -165,7 +197,13 @@ describe("seed permission calibration", () => {
       "vehicle_return:view",
       "vehicle_return:prepare",
       "vehicle_return:confirm",
-      "vehicle_return:damage_record"
+      "vehicle_return:damage_record",
+      "billing:view",
+      "billing:generate",
+      "payment:view",
+      "payment:create",
+      "payment:write_off",
+      "deposit_ledger:view"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -245,6 +283,27 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("\"vehicle_return:confirm\"");
     expect(seedSource).toContain("\"vehicle_return:damage_record\"");
     expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_return:prepare")).toBe(false);
+  });
+
+  it("calibrates billing finance permissions by role", () => {
+    for (const permission of [
+      "billing:view",
+      "billing:generate",
+      "payment:view",
+      "payment:create",
+      "payment:write_off",
+      "deposit_ledger:view"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain("const financeManagementPermissions = [");
+    expect(seedSource).toContain("...(roleCode === \"FI\" ? financeManagementPermissions : [])");
+    expectRolePermissions("OP", ["billing:view", "deposit_ledger:view"]);
+    expectRolePermissions("SA", ["billing:view"]);
+    expectRolePermissions("GM", ["billing:view", "payment:view", "deposit_ledger:view"]);
+    expect(roleHasPermission(rolePermissionArray("OP"), "payment:create")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("SA"), "payment:write_off")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

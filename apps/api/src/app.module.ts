@@ -6,6 +6,7 @@ import { AppService } from "./app.service";
 import { AuditModule } from "./audit/audit.module";
 import { AuthModule } from "./auth/auth.module";
 import { CustomerModule } from "./customer/customer.module";
+import { FinanceModule } from "./finance/finance.module";
 import { OrderModule } from "./order/order.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { ProductModule } from "./product/product.module";
@@ -23,6 +24,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     AuditModule,
     AuthModule,
     CustomerModule,
+    FinanceModule,
     OrderModule,
     ProductModule,
     RiskModule,

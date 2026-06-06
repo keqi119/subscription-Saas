@@ -3,6 +3,14 @@ import {
   AuditAction,
   BillStatus,
   BillType,
+  CollectionAction,
+  CollectionActionResult,
+  CollectionActionType,
+  CollectionCase,
+  CollectionCaseBill,
+  CollectionCaseStatus,
+  CollectionLevel,
+  ContactMethod,
   DepositLedger,
   DepositTransactionStatus,
   DepositTransactionType,
@@ -18,7 +26,16 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
-import { CreatePaymentDto, WriteOffPaymentDto } from "./dto/finance.dto";
+import {
+  CloseCollectionCaseDto,
+  CollectionCasesQueryDto,
+  CreateCollectionActionDto,
+  CreatePaymentDto,
+  GenerateMonthlyRentBillsDto,
+  OverdueBillsQueryDto,
+  RefreshOverdueBillsDto,
+  WriteOffPaymentDto
+} from "./dto/finance.dto";
 
 const INITIAL_BILL_TYPES = [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] as const;
 const FINAL_ORDER_STATUSES = new Set<OrderStatus>([
@@ -41,11 +58,21 @@ const BILL_WRITE_OFF_OVER_AMOUNT_MESSAGE = "核销金额不能超过账单剩余
 const BILL_PAYMENT_SCOPE_MISMATCH_MESSAGE = "账单与收款不属于同一订单";
 const CANCELLED_BILL_WRITE_OFF_MESSAGE = "已取消账单不能核销";
 const DUPLICATE_WRITE_OFF_BILL_MESSAGE = "核销账单不能重复";
+const MONTHLY_RENT_ORDER_STATUS_MESSAGE = "当前订单状态不允许生成月租账单";
+const MONTHLY_RENT_NOT_STARTED_MESSAGE = "订单尚未起租，无法生成月租账单";
+const MISSING_MONTHLY_RENT_AMOUNT_MESSAGE = "订单缺少月租金额，无法生成月租账单";
+const COLLECTION_CASE_NOT_FOUND_MESSAGE = "催收案件不存在";
+const COLLECTION_CASE_ACTION_CLOSED_MESSAGE = "已关闭催收案件不能新增催收动作";
+const COLLECTION_CASE_CLOSE_UNSETTLED_MESSAGE = "催收案件仍有关联账单未结清，不能关闭";
+const CHINA_TIME_OFFSET_MINUTES = 8 * 60;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const OVERDUE_BILL_STATUSES = [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE] as const;
 
 const financeOrderInclude = {
   application: { select: { applicationNo: true, id: true, salesUserId: true } },
   customer: { select: { grade: true, id: true, mobile: true, name: true } },
-  quote: { select: { id: true, quoteNo: true, status: true } }
+  quote: { select: { id: true, monthlyFeeAmount: true, quoteNo: true, status: true } },
+  vehicle: { select: { id: true, plateNo: true, vehicleNo: true, vin: true } }
 } satisfies Prisma.SubscriptionOrderInclude;
 
 const paymentWriteOffInclude = {
@@ -57,13 +84,88 @@ const paymentWriteOffOrderInclude = {
   writeOffs: { where: { deletedAt: null } }
 } satisfies Prisma.PaymentRecordInclude;
 
+const overdueBillInclude = {
+  collectionCaseBills: {
+    include: { case: true },
+    orderBy: { createdAt: "desc" },
+    where: { deletedAt: null }
+  },
+  customer: { select: { id: true, mobile: true, name: true } },
+  order: { include: financeOrderInclude }
+} satisfies Prisma.ReceivableBillInclude;
+
+const collectionCaseListInclude = {
+  customer: { select: { id: true, mobile: true, name: true } },
+  order: { select: { id: true, orderNo: true } }
+} satisfies Prisma.CollectionCaseInclude;
+
+const collectionCaseDetailInclude = {
+  actions: {
+    orderBy: { createdAt: "desc" },
+    where: { deletedAt: null }
+  },
+  bills: {
+    include: { bill: true },
+    orderBy: { createdAt: "asc" },
+    where: { deletedAt: null }
+  },
+  customer: { select: { id: true, mobile: true, name: true } },
+  order: { include: financeOrderInclude }
+} satisfies Prisma.CollectionCaseInclude;
+
 type FinanceOrder = Prisma.SubscriptionOrderGetPayload<{ include: typeof financeOrderInclude }>;
 type PaymentWithWriteOffs = Prisma.PaymentRecordGetPayload<{ include: typeof paymentWriteOffInclude }>;
 type PaymentWithOrderAndWriteOffs = Prisma.PaymentRecordGetPayload<{ include: typeof paymentWriteOffOrderInclude }>;
+type OverdueBillWithRelations = Prisma.ReceivableBillGetPayload<{ include: typeof overdueBillInclude }>;
+type CollectionCaseListRecord = Prisma.CollectionCaseGetPayload<{ include: typeof collectionCaseListInclude }>;
+type CollectionCaseDetailRecord = Prisma.CollectionCaseGetPayload<{ include: typeof collectionCaseDetailInclude }>;
 type ReceivableBillRecord = ReceivableBill;
 type PaymentRecordRecord = PaymentRecord;
 type PaymentWriteOffRecord = PaymentWriteOff;
 type DepositLedgerRecord = DepositLedger;
+type CollectionCaseRecord = CollectionCase;
+type CollectionCaseBillRecord = CollectionCaseBill;
+type CollectionActionRecord = CollectionAction;
+type MonthlyRentBillSource = "SINGLE" | "BATCH";
+export type MonthlyRentBatchAction =
+  | "GENERATED"
+  | "SKIPPED_NOT_DUE"
+  | "SKIPPED_EXISTING"
+  | "FAILED"
+  | "DRY_RUN_GENERATE"
+  | "DRY_RUN_SKIP"
+  | "DRY_RUN_FAILED";
+
+interface MonthlyRentPeriod {
+  end: Date;
+  index: number;
+  start: Date;
+}
+
+export interface MonthlyRentBatchItem {
+  action: MonthlyRentBatchAction;
+  amount?: number;
+  billId?: string;
+  dryRun: boolean;
+  error?: string;
+  orderId: string;
+  orderNo: string;
+  periodEnd?: string;
+  periodStart?: string;
+  reason?: string;
+}
+
+interface CollectionCasePlan {
+  bills: OverdueBillWithRelations[];
+  collectionLevel: CollectionLevel;
+  customerId: string;
+  existingCase: CollectionCaseRecord | null;
+  latestDueDate: Date;
+  maxOverdueDays: number;
+  orderId: string;
+  snapshot: Record<string, unknown>;
+  totalOverdueAmount: bigint;
+}
 
 @Injectable()
 export class FinanceService {
@@ -165,6 +267,132 @@ export class FinanceService {
       bills: result.bills.map(toBillView),
       createdCount: result.createdBills.length
     };
+  }
+
+  async generateNextMonthlyRentBill(orderId: string, user: RequestUser, context: RequestContext) {
+    const order = await this.findOrderOrThrow(orderId);
+    ensureCanAccessOrderFinance(order, user);
+    ensureOrderCanGenerateMonthlyRentBill(order);
+
+    const monthlyRentAmount = resolveMonthlyRentAmount(order);
+    if (monthlyRentAmount === null) {
+      throw new BadRequestException(MISSING_MONTHLY_RENT_AMOUNT_MESSAGE);
+    }
+
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) =>
+        generateNextMonthlyRentBillInTransaction(tx, order, monthlyRentAmount, user.id, "SINGLE")
+      )
+    );
+
+    if (result.created) {
+      await writeMonthlyRentBillAudit(this.auditService, result.bill, user, context, "SINGLE");
+    }
+
+    return { ...toBillView(result.bill), created: result.created };
+  }
+
+  async generateMonthlyRentBills(dto: GenerateMonthlyRentBillsDto, user: RequestUser, context: RequestContext) {
+    const billingDate = parseBillingDate(dto.billingDate, "billingDate");
+    const dryRun = Boolean(dto.dryRun);
+    const orders = await this.prisma.subscriptionOrder.findMany({
+      include: financeOrderInclude,
+      orderBy: { createdAt: "asc" },
+      where: { deletedAt: null, orderStatus: OrderStatus.ACTIVE }
+    });
+    const items: MonthlyRentBatchItem[] = [];
+
+    for (const order of orders) {
+      const item = await this.generateMonthlyRentBillBatchItem(order, billingDate, dryRun, user, context);
+      items.push(item);
+    }
+
+    return {
+      billingDate: toIsoDate(billingDate),
+      dryRun,
+      failedCount: items.filter((item) => isFailedMonthlyRentAction(item.action)).length,
+      generatedCount: items.filter((item) => isGeneratedMonthlyRentAction(item.action)).length,
+      items,
+      skippedCount: items.filter((item) => isSkippedMonthlyRentAction(item.action)).length
+    };
+  }
+
+  private async generateMonthlyRentBillBatchItem(
+    order: FinanceOrder,
+    billingDate: Date,
+    dryRun: boolean,
+    user: RequestUser,
+    context: RequestContext
+  ): Promise<MonthlyRentBatchItem> {
+    const baseItem = { dryRun, orderId: order.id, orderNo: order.orderNo };
+
+    try {
+      ensureCanAccessOrderFinance(order, user);
+
+      if (!order.actualDeliveryAt) {
+        return {
+          ...baseItem,
+          action: dryRun ? "DRY_RUN_SKIP" : "SKIPPED_NOT_DUE",
+          reason: MONTHLY_RENT_NOT_STARTED_MESSAGE
+        };
+      }
+
+      const monthlyRentAmount = resolveMonthlyRentAmount(order);
+      if (monthlyRentAmount === null) {
+        throw new BadRequestException(MISSING_MONTHLY_RENT_AMOUNT_MESSAGE);
+      }
+
+      const monthlyBills = await findValidMonthlyRentBills(this.prisma, order.id);
+      const period = buildNextMonthlyRentPeriod(order.actualDeliveryAt, monthlyBills.length);
+      const existingSamePeriod = findMonthlyRentBillForPeriod(monthlyBills, period);
+
+      if (existingSamePeriod) {
+        return monthlyRentBatchItem(baseItem, dryRun ? "DRY_RUN_SKIP" : "SKIPPED_EXISTING", {
+          amount: existingSamePeriod.amount,
+          bill: existingSamePeriod,
+          period,
+          reason: "已存在同账期月租账单"
+        });
+      }
+
+      if (period.start.getTime() > billingDate.getTime()) {
+        const existingCurrentPeriod = findMonthlyRentBillCoveringDate(monthlyBills, billingDate);
+
+        return monthlyRentBatchItem(baseItem, dryRun ? "DRY_RUN_SKIP" : existingCurrentPeriod ? "SKIPPED_EXISTING" : "SKIPPED_NOT_DUE", {
+          amount: existingCurrentPeriod?.amount ?? monthlyRentAmount,
+          bill: existingCurrentPeriod,
+          period: existingCurrentPeriod ? periodFromBill(existingCurrentPeriod) : period,
+          reason: existingCurrentPeriod ? "当前账期已存在月租账单" : "下一期月租账单尚未到生成日期"
+        });
+      }
+
+      if (dryRun) {
+        return monthlyRentBatchItem(baseItem, "DRY_RUN_GENERATE", { amount: monthlyRentAmount, period });
+      }
+
+      const result = await withUniqueBusinessNoRetry(() =>
+        this.prisma.$transaction(async (tx) =>
+          createMonthlyRentBillForPeriodIfAbsent(tx, order, monthlyRentAmount, period, user.id, "BATCH")
+        )
+      );
+
+      if (result.created) {
+        await writeMonthlyRentBillAudit(this.auditService, result.bill, user, context, "BATCH");
+      }
+
+      return monthlyRentBatchItem(baseItem, result.created ? "GENERATED" : "SKIPPED_EXISTING", {
+        amount: result.bill.amount,
+        bill: result.bill,
+        period,
+        reason: result.created ? undefined : "已存在同账期月租账单"
+      });
+    } catch (error) {
+      return {
+        ...baseItem,
+        action: dryRun ? "DRY_RUN_FAILED" : "FAILED",
+        error: getErrorMessage(error)
+      };
+    }
   }
 
   async listOrderBills(orderId: string, user: RequestUser) {
@@ -403,6 +631,382 @@ export class FinanceService {
     };
   }
 
+  async refreshOverdueBills(dto: RefreshOverdueBillsDto, user: RequestUser, context: RequestContext) {
+    const asOfDate = parseBillingDate(dto.asOfDate, "asOfDate");
+    const dryRun = Boolean(dto.dryRun);
+    const overdueBills = await this.findRefreshableOverdueBills(asOfDate, user);
+    const casePlans = await this.buildCollectionCasePlans(overdueBills, asOfDate);
+
+    if (dryRun) {
+      return {
+        asOfDate: toIsoDate(asOfDate),
+        createdCaseCount: casePlans.filter((plan) => !plan.existingCase).length,
+        dryRun,
+        items: overdueBills.map((bill) => toOverdueRefreshItem(bill, asOfDate)),
+        overdueBillCount: overdueBills.length,
+        updatedCaseCount: casePlans.filter((plan) => plan.existingCase).length
+      };
+    }
+
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const updatedBills: ReceivableBillRecord[] = [];
+        const createdCases: CollectionCaseRecord[] = [];
+        const updatedCases: CollectionCaseRecord[] = [];
+        const linkedCaseBills: CollectionCaseBillRecord[] = [];
+
+        for (const bill of overdueBills) {
+          if (bill.billStatus === BillStatus.OVERDUE) {
+            updatedBills.push(bill);
+            continue;
+          }
+
+          updatedBills.push(
+            await tx.receivableBill.update({
+              data: { billStatus: BillStatus.OVERDUE, updatedBy: user.id },
+              where: { id: bill.id }
+            })
+          );
+        }
+
+        for (const plan of casePlans) {
+          const caseData = {
+            collectionLevel: plan.collectionLevel,
+            latestDueDate: plan.latestDueDate,
+            maxOverdueDays: plan.maxOverdueDays,
+            snapshot: toJsonValue(plan.snapshot),
+            totalOverdueAmount: plan.totalOverdueAmount,
+            updatedBy: user.id
+          };
+          const collectionCase = plan.existingCase
+            ? await tx.collectionCase.update({
+                data: caseData,
+                where: { id: plan.existingCase.id }
+              })
+            : await tx.collectionCase.create({
+                data: {
+                  ...caseData,
+                  caseNo: createBusinessNo("COL"),
+                  caseStatus: CollectionCaseStatus.ACTIVE,
+                  createdBy: user.id,
+                  customerId: plan.customerId,
+                  orderId: plan.orderId
+                }
+              });
+
+          if (plan.existingCase) {
+            updatedCases.push(collectionCase);
+          } else {
+            createdCases.push(collectionCase);
+          }
+
+          for (const bill of plan.bills) {
+            const overdueDays = calculateOverdueDays(bill.dueDate, asOfDate);
+            const existingLink = await tx.collectionCaseBill.findFirst({
+              where: {
+                billId: bill.id,
+                caseId: collectionCase.id,
+                deletedAt: null
+              }
+            });
+
+            if (existingLink) {
+              linkedCaseBills.push(
+                await tx.collectionCaseBill.update({
+                  data: {
+                    overdueAmount: bill.remainingAmount,
+                    overdueDays
+                  },
+                  where: { id: existingLink.id }
+                })
+              );
+              continue;
+            }
+
+            linkedCaseBills.push(
+              await tx.collectionCaseBill.create({
+                data: {
+                  billId: bill.id,
+                  caseId: collectionCase.id,
+                  customerId: bill.customerId,
+                  orderId: bill.orderId,
+                  overdueAmount: bill.remainingAmount,
+                  overdueDays
+                }
+              })
+            );
+          }
+        }
+
+        return { createdCases, linkedCaseBills, updatedBills, updatedCases };
+      })
+    );
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: {
+        asOfDate: toIsoDate(asOfDate),
+        billIds: result.updatedBills.map((bill) => bill.id),
+        dryRun,
+        overdueBillCount: overdueBills.length
+      },
+      entityId: `overdue-refresh-${toIsoDate(asOfDate)}`,
+      entityType: "overdue_refresh",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    for (const collectionCase of result.createdCases) {
+      await this.auditService.write({
+        action: AuditAction.CREATE,
+        after: toCollectionCaseView(collectionCase),
+        entityId: collectionCase.id,
+        entityType: "collection_case",
+        ipAddress: context.ipAddress,
+        module: "collection",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    for (const collectionCase of result.updatedCases) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toCollectionCaseView(collectionCase),
+        entityId: collectionCase.id,
+        entityType: "collection_case",
+        ipAddress: context.ipAddress,
+        module: "collection",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    return {
+      asOfDate: toIsoDate(asOfDate),
+      createdCaseCount: result.createdCases.length,
+      dryRun,
+      items: overdueBills.map((bill) => toOverdueRefreshItem(bill, asOfDate)),
+      overdueBillCount: overdueBills.length,
+      updatedCaseCount: result.updatedCases.length
+    };
+  }
+
+  async listOverdueBills(query: OverdueBillsQueryDto, user: RequestUser) {
+    const where: Prisma.ReceivableBillWhereInput = {
+      billStatus: BillStatus.OVERDUE,
+      deletedAt: null,
+      remainingAmount: { gt: 0 }
+    };
+
+    if (query.billType) {
+      where.billType = query.billType;
+    }
+
+    if (query.orderNo || !canViewAllFinanceOrders(user)) {
+      where.order = {
+        ...(query.orderNo ? { orderNo: { contains: query.orderNo } } : {}),
+        ...(!canViewAllFinanceOrders(user) ? { application: { salesUserId: user.id } } : {})
+      };
+    }
+
+    if (query.customerName) {
+      where.customer = { name: { contains: query.customerName } };
+    }
+
+    const asOfDate = toBillingDateOnly(new Date());
+    const bills = await this.prisma.receivableBill.findMany({
+      include: overdueBillInclude,
+      orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+      where
+    });
+
+    return bills
+      .map((bill) => toOverdueBillView(bill, asOfDate))
+      .filter((bill) => query.collectionLevel === undefined || bill.collectionLevel === query.collectionLevel)
+      .filter((bill) => query.minOverdueDays === undefined || bill.overdueDays >= query.minOverdueDays)
+      .filter((bill) => query.maxOverdueDays === undefined || bill.overdueDays <= query.maxOverdueDays);
+  }
+
+  async listCollectionCases(query: CollectionCasesQueryDto, user: RequestUser) {
+    const where: Prisma.CollectionCaseWhereInput = { deletedAt: null };
+
+    if (query.caseStatus) {
+      where.caseStatus = query.caseStatus;
+    }
+    if (query.collectionLevel) {
+      where.collectionLevel = query.collectionLevel;
+    }
+    if (query.assignedTo) {
+      where.assignedTo = query.assignedTo;
+    }
+    if (query.customerName) {
+      where.customer = { name: { contains: query.customerName } };
+    }
+    if (query.orderNo || !canViewAllFinanceOrders(user)) {
+      where.order = {
+        ...(query.orderNo ? { orderNo: { contains: query.orderNo } } : {}),
+        ...(!canViewAllFinanceOrders(user) ? { application: { salesUserId: user.id } } : {})
+      };
+    }
+
+    const cases = await this.prisma.collectionCase.findMany({
+      include: collectionCaseListInclude,
+      orderBy: [{ caseStatus: "asc" }, { maxOverdueDays: "desc" }, { createdAt: "desc" }],
+      where
+    });
+
+    return cases.map(toCollectionCaseListView);
+  }
+
+  async getCollectionCase(id: string, user: RequestUser) {
+    const collectionCase = await this.findCollectionCaseOrThrow(id);
+    ensureCanAccessOrderFinance(collectionCase.order, user);
+    return toCollectionCaseDetailView(collectionCase);
+  }
+
+  async createCollectionAction(
+    id: string,
+    dto: CreateCollectionActionDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const collectionCase = await this.findCollectionCaseOrThrow(id);
+    ensureCanAccessOrderFinance(collectionCase.order, user);
+
+    if (collectionCase.caseStatus === CollectionCaseStatus.CLOSED) {
+      throw new BadRequestException(COLLECTION_CASE_ACTION_CLOSED_MESSAGE);
+    }
+
+    if (dto.promisedAmount !== undefined) {
+      assertPositiveInteger(dto.promisedAmount, "promisedAmount");
+    }
+
+    const promisedPayAt = dto.promisedPayAt ? parseBillingDate(dto.promisedPayAt, "promisedPayAt") : null;
+    const nextFollowUpAt = dto.nextFollowUpAt ? parseDateTime(dto.nextFollowUpAt, "nextFollowUpAt") : null;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const action = await tx.collectionAction.create({
+        data: {
+          actionResult: dto.actionResult,
+          actionType: dto.actionType,
+          caseId: collectionCase.id,
+          contactMethod: dto.contactMethod,
+          content: dto.content,
+          createdBy: user.id,
+          customerId: collectionCase.customerId,
+          nextFollowUpAt,
+          orderId: collectionCase.orderId,
+          promisedAmount: dto.promisedAmount === undefined ? null : BigInt(dto.promisedAmount),
+          promisedPayAt
+        }
+      });
+      const updatedCase = nextFollowUpAt
+        ? await tx.collectionCase.update({
+            data: { nextFollowUpAt, updatedBy: user.id },
+            where: { id: collectionCase.id }
+          })
+        : collectionCase;
+
+      return { action, updatedCase };
+    });
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toCollectionActionView(result.action),
+      entityId: result.action.id,
+      entityType: "collection_action",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    if (nextFollowUpAt) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toCollectionCaseView(result.updatedCase),
+        entityId: collectionCase.id,
+        entityType: "collection_case",
+        ipAddress: context.ipAddress,
+        module: "collection",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    return toCollectionActionView(result.action);
+  }
+
+  async closeCollectionCase(
+    id: string,
+    dto: CloseCollectionCaseDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const collectionCase = await this.findCollectionCaseOrThrow(id);
+    ensureCanAccessOrderFinance(collectionCase.order, user);
+
+    if (!collectionCase.bills.every((caseBill) => isBillSettled(caseBill.bill))) {
+      throw new BadRequestException(COLLECTION_CASE_CLOSE_UNSETTLED_MESSAGE);
+    }
+
+    const now = new Date();
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updatedCase = await tx.collectionCase.update({
+        data: {
+          caseStatus: CollectionCaseStatus.CLOSED,
+          closedAt: now,
+          closeReason: dto.closeReason,
+          updatedBy: user.id
+        },
+        where: { id: collectionCase.id }
+      });
+      const action = await tx.collectionAction.create({
+        data: {
+          actionResult: CollectionActionResult.SUCCESS,
+          actionType: CollectionActionType.CLOSE,
+          caseId: collectionCase.id,
+          contactMethod: ContactMethod.SYSTEM,
+          content: dto.closeReason,
+          createdBy: user.id,
+          customerId: collectionCase.customerId,
+          orderId: collectionCase.orderId
+        }
+      });
+
+      return { action, updatedCase };
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toCollectionCaseView(result.updatedCase),
+      entityId: collectionCase.id,
+      entityType: "collection_case",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toCollectionActionView(result.action),
+      entityId: result.action.id,
+      entityType: "collection_action",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return {
+      action: toCollectionActionView(result.action),
+      case: toCollectionCaseView(result.updatedCase)
+    };
+  }
+
   async getOrderFinanceSummary(orderId: string, user: RequestUser) {
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrderFinance(order, user);
@@ -442,6 +1046,275 @@ export class FinanceService {
 
     return order;
   }
+
+  private async findRefreshableOverdueBills(asOfDate: Date, user: RequestUser) {
+    const where: Prisma.ReceivableBillWhereInput = {
+      billStatus: { in: [...OVERDUE_BILL_STATUSES] },
+      deletedAt: null,
+      dueDate: { lt: asOfDate },
+      remainingAmount: { gt: 0 }
+    };
+
+    if (!canViewAllFinanceOrders(user)) {
+      where.order = { application: { salesUserId: user.id } };
+    }
+
+    const bills = await this.prisma.receivableBill.findMany({
+      include: overdueBillInclude,
+      orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+      where
+    });
+
+    return bills.filter((bill) => calculateOverdueDays(bill.dueDate, asOfDate) > 0);
+  }
+
+  private async buildCollectionCasePlans(overdueBills: OverdueBillWithRelations[], asOfDate: Date) {
+    const billsByOrder = new Map<string, OverdueBillWithRelations[]>();
+
+    for (const bill of overdueBills) {
+      const groupedBills = billsByOrder.get(bill.orderId) ?? [];
+      groupedBills.push(bill);
+      billsByOrder.set(bill.orderId, groupedBills);
+    }
+
+    const plans: CollectionCasePlan[] = [];
+
+    for (const [orderId, bills] of billsByOrder) {
+      const existingCase = await this.prisma.collectionCase.findFirst({
+        where: {
+          caseStatus: CollectionCaseStatus.ACTIVE,
+          deletedAt: null,
+          orderId
+        }
+      });
+      const overdueDays = bills.map((bill) => calculateOverdueDays(bill.dueDate, asOfDate));
+      const maxOverdueDays = Math.max(...overdueDays);
+      const totalOverdueAmount = bills.reduce((sum, bill) => sum + bill.remainingAmount, 0n);
+      const latestDueDate = bills.reduce<Date | null>(
+        (latest, bill) => (latest === null || bill.dueDate.getTime() > latest.getTime() ? bill.dueDate : latest),
+        null
+      );
+      const firstBill = bills[0]!;
+
+      plans.push({
+        bills,
+        collectionLevel: calculateCollectionLevel(maxOverdueDays),
+        customerId: firstBill.customerId,
+        existingCase,
+        latestDueDate: latestDueDate ?? firstBill.dueDate,
+        maxOverdueDays,
+        orderId,
+        snapshot: buildCollectionCaseSnapshot(firstBill.order, bills, asOfDate, totalOverdueAmount, maxOverdueDays),
+        totalOverdueAmount
+      });
+    }
+
+    return plans;
+  }
+
+  private async findCollectionCaseOrThrow(id: string) {
+    const collectionCase = await this.prisma.collectionCase.findUnique({
+      include: collectionCaseDetailInclude,
+      where: { id }
+    });
+
+    if (!collectionCase || collectionCase.deletedAt) {
+      throw new NotFoundException(COLLECTION_CASE_NOT_FOUND_MESSAGE);
+    }
+
+    return collectionCase;
+  }
+}
+
+function calculateOverdueDays(dueDate: Date, asOfDate: Date) {
+  const dueDateOnly = toBillingDateOnly(dueDate);
+  const asOfDateOnly = toBillingDateOnly(asOfDate);
+  return Math.max(0, Math.floor((asOfDateOnly.getTime() - dueDateOnly.getTime()) / MS_PER_DAY));
+}
+
+function calculateCollectionLevel(overdueDays: number) {
+  if (overdueDays <= 3) {
+    return CollectionLevel.D1;
+  }
+  if (overdueDays <= 7) {
+    return CollectionLevel.D2;
+  }
+  if (overdueDays <= 15) {
+    return CollectionLevel.D3;
+  }
+  if (overdueDays <= 30) {
+    return CollectionLevel.D4;
+  }
+  return CollectionLevel.D5;
+}
+
+function toOverdueRefreshItem(bill: OverdueBillWithRelations, asOfDate: Date) {
+  const overdueDays = calculateOverdueDays(bill.dueDate, asOfDate);
+
+  return {
+    amount: Number(bill.amount),
+    billId: bill.id,
+    billNo: bill.billNo,
+    billStatus: bill.billStatus,
+    billType: bill.billType,
+    collectionLevel: calculateCollectionLevel(overdueDays),
+    customerId: bill.customerId,
+    customerName: bill.customer.name,
+    dueDate: toIsoDate(bill.dueDate),
+    orderId: bill.orderId,
+    orderNo: bill.order.orderNo,
+    overdueDays,
+    paidAmount: Number(bill.paidAmount),
+    remainingAmount: Number(bill.remainingAmount)
+  };
+}
+
+function toOverdueBillView(bill: OverdueBillWithRelations, asOfDate: Date) {
+  const overdueDays = calculateOverdueDays(bill.dueDate, asOfDate);
+  const activeCaseBill = bill.collectionCaseBills.find((caseBill) => !caseBill.case.deletedAt);
+
+  return {
+    amount: Number(bill.amount),
+    billId: bill.id,
+    billNo: bill.billNo,
+    billStatus: bill.billStatus,
+    billType: bill.billType,
+    collectionCaseId: activeCaseBill?.caseId ?? null,
+    collectionCaseStatus: activeCaseBill?.case.caseStatus ?? null,
+    collectionLevel: calculateCollectionLevel(overdueDays),
+    customer: {
+      id: bill.customer.id,
+      mobile: bill.customer.mobile,
+      name: bill.customer.name
+    },
+    dueDate: toIsoDate(bill.dueDate),
+    order: {
+      id: bill.order.id,
+      orderNo: bill.order.orderNo
+    },
+    overdueDays,
+    paidAmount: Number(bill.paidAmount),
+    remainingAmount: Number(bill.remainingAmount)
+  };
+}
+
+function toCollectionCaseView(collectionCase: CollectionCaseRecord) {
+  return {
+    assignedTo: collectionCase.assignedTo,
+    caseNo: collectionCase.caseNo,
+    caseStatus: collectionCase.caseStatus,
+    closeReason: collectionCase.closeReason,
+    closedAt: toIsoDateTime(collectionCase.closedAt),
+    collectionLevel: collectionCase.collectionLevel,
+    createdAt: toIsoDateTime(collectionCase.createdAt),
+    customerId: collectionCase.customerId,
+    id: collectionCase.id,
+    latestDueDate: toIsoDate(collectionCase.latestDueDate),
+    maxOverdueDays: collectionCase.maxOverdueDays,
+    nextFollowUpAt: toIsoDateTime(collectionCase.nextFollowUpAt),
+    orderId: collectionCase.orderId,
+    remark: collectionCase.remark,
+    snapshot: collectionCase.snapshot,
+    totalOverdueAmount: Number(collectionCase.totalOverdueAmount),
+    updatedAt: toIsoDateTime(collectionCase.updatedAt)
+  };
+}
+
+function toCollectionCaseListView(collectionCase: CollectionCaseListRecord) {
+  return {
+    ...toCollectionCaseView(collectionCase),
+    customer: {
+      id: collectionCase.customer.id,
+      mobile: collectionCase.customer.mobile,
+      name: collectionCase.customer.name
+    },
+    order: {
+      id: collectionCase.order.id,
+      orderNo: collectionCase.order.orderNo
+    }
+  };
+}
+
+function toCollectionCaseDetailView(collectionCase: CollectionCaseDetailRecord) {
+  return {
+    ...toCollectionCaseView(collectionCase),
+    actions: collectionCase.actions.map(toCollectionActionView),
+    bills: collectionCase.bills.map(toCollectionCaseBillView),
+    customer: {
+      id: collectionCase.customer.id,
+      mobile: collectionCase.customer.mobile,
+      name: collectionCase.customer.name
+    },
+    order: {
+      id: collectionCase.order.id,
+      orderNo: collectionCase.order.orderNo
+    }
+  };
+}
+
+function toCollectionCaseBillView(caseBill: CollectionCaseBillRecord & { bill: ReceivableBillRecord }) {
+  return {
+    bill: toBillView(caseBill.bill),
+    billId: caseBill.billId,
+    caseId: caseBill.caseId,
+    createdAt: toIsoDateTime(caseBill.createdAt),
+    customerId: caseBill.customerId,
+    id: caseBill.id,
+    orderId: caseBill.orderId,
+    overdueAmount: Number(caseBill.overdueAmount),
+    overdueDays: caseBill.overdueDays
+  };
+}
+
+function toCollectionActionView(action: CollectionActionRecord) {
+  return {
+    actionResult: action.actionResult,
+    actionType: action.actionType,
+    caseId: action.caseId,
+    contactMethod: action.contactMethod,
+    content: action.content,
+    createdAt: toIsoDateTime(action.createdAt),
+    customerId: action.customerId,
+    id: action.id,
+    nextFollowUpAt: toIsoDateTime(action.nextFollowUpAt),
+    orderId: action.orderId,
+    promisedAmount: action.promisedAmount === null ? null : Number(action.promisedAmount),
+    promisedPayAt: toIsoDate(action.promisedPayAt)
+  };
+}
+
+function buildCollectionCaseSnapshot(
+  order: FinanceOrder,
+  bills: OverdueBillWithRelations[],
+  asOfDate: Date,
+  totalOverdueAmount: bigint,
+  maxOverdueDays: number
+) {
+  return {
+    asOfDate: toIsoDate(asOfDate),
+    bills: bills.map((bill) => ({
+      billId: bill.id,
+      billNo: bill.billNo,
+      billType: bill.billType,
+      dueDate: toIsoDate(bill.dueDate),
+      overdueDays: calculateOverdueDays(bill.dueDate, asOfDate),
+      remainingAmount: Number(bill.remainingAmount)
+    })),
+    collectionLevel: calculateCollectionLevel(maxOverdueDays),
+    customer: {
+      id: order.customerId,
+      mobile: order.customer.mobile,
+      name: order.customer.name
+    },
+    maxOverdueDays,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    totalOverdueAmount: Number(totalOverdueAmount)
+  };
+}
+
+function isBillSettled(bill: ReceivableBillRecord) {
+  return bill.remainingAmount === 0n || bill.billStatus === BillStatus.PAID;
 }
 
 async function createInitialBill(
@@ -477,9 +1350,254 @@ async function createInitialBill(
   });
 }
 
+async function generateNextMonthlyRentBillInTransaction(
+  tx: Prisma.TransactionClient,
+  order: FinanceOrder,
+  amount: bigint,
+  userId: string,
+  source: MonthlyRentBillSource
+) {
+  if (!order.actualDeliveryAt) {
+    throw new BadRequestException(MONTHLY_RENT_NOT_STARTED_MESSAGE);
+  }
+
+  const monthlyBills = await findValidMonthlyRentBills(tx, order.id);
+  const period = buildNextMonthlyRentPeriod(order.actualDeliveryAt, monthlyBills.length);
+  return createMonthlyRentBillForPeriodIfAbsent(tx, order, amount, period, userId, source);
+}
+
+async function createMonthlyRentBillForPeriodIfAbsent(
+  tx: Prisma.TransactionClient,
+  order: FinanceOrder,
+  amount: bigint,
+  period: MonthlyRentPeriod,
+  userId: string,
+  source: MonthlyRentBillSource
+) {
+  const existingBill = await tx.receivableBill.findFirst({
+    where: monthlyRentPeriodWhere(order.id, period)
+  });
+
+  if (existingBill) {
+    return { bill: existingBill, created: false, period };
+  }
+
+  const bill = await tx.receivableBill.create({
+    data: {
+      amount,
+      billNo: createBusinessNo("BIL"),
+      billPeriodEnd: period.end,
+      billPeriodStart: period.start,
+      billStatus: BillStatus.PENDING,
+      billType: BillType.MONTHLY_RENT,
+      createdBy: userId,
+      customerId: order.customerId,
+      dueDate: period.start,
+      orderId: order.id,
+      paidAmount: 0n,
+      remainingAmount: amount,
+      snapshot: toJsonValue(buildMonthlyRentBillSnapshot(order, period, amount, source)),
+      updatedBy: userId
+    }
+  });
+
+  return { bill, created: true, period };
+}
+
+async function findValidMonthlyRentBills(
+  client: Pick<Prisma.TransactionClient, "receivableBill">,
+  orderId: string
+) {
+  return client.receivableBill.findMany({
+    orderBy: [{ billPeriodStart: "asc" }, { createdAt: "asc" }],
+    where: {
+      billStatus: { not: BillStatus.CANCELLED },
+      billType: BillType.MONTHLY_RENT,
+      deletedAt: null,
+      orderId
+    }
+  });
+}
+
+function monthlyRentPeriodWhere(orderId: string, period: MonthlyRentPeriod) {
+  return {
+    billPeriodEnd: period.end,
+    billPeriodStart: period.start,
+    billStatus: { not: BillStatus.CANCELLED },
+    billType: BillType.MONTHLY_RENT,
+    deletedAt: null,
+    orderId
+  } satisfies Prisma.ReceivableBillWhereInput;
+}
+
+function findMonthlyRentBillForPeriod(bills: ReceivableBillRecord[], period: MonthlyRentPeriod) {
+  return bills.find(
+    (bill) =>
+      bill.billPeriodStart?.getTime() === period.start.getTime() &&
+      bill.billPeriodEnd?.getTime() === period.end.getTime()
+  );
+}
+
+function findMonthlyRentBillCoveringDate(bills: ReceivableBillRecord[], billingDate: Date) {
+  return bills.find(
+    (bill) =>
+      bill.billPeriodStart !== null &&
+      bill.billPeriodEnd !== null &&
+      bill.billPeriodStart.getTime() <= billingDate.getTime() &&
+      bill.billPeriodEnd.getTime() >= billingDate.getTime()
+  );
+}
+
+function periodFromBill(bill: ReceivableBillRecord): MonthlyRentPeriod {
+  return {
+    end: bill.billPeriodEnd ?? new Date(0),
+    index: 0,
+    start: bill.billPeriodStart ?? new Date(0)
+  };
+}
+
+function buildNextMonthlyRentPeriod(actualDeliveryAt: Date, existingMonthlyRentBillCount: number): MonthlyRentPeriod {
+  const startDate = toBillingDateOnly(actualDeliveryAt);
+  const index = existingMonthlyRentBillCount + 1;
+  const start = addMonthsClamped(startDate, index);
+  const end = addDays(addMonthsClamped(start, 1), -1);
+  return { end, index, start };
+}
+
+function toBillingDateOnly(value: Date) {
+  const shifted = new Date(value.getTime() + CHINA_TIME_OFFSET_MINUTES * 60 * 1000);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
+}
+
+function addMonthsClamped(value: Date, months: number) {
+  const year = value.getUTCFullYear();
+  const month = value.getUTCMonth() + months;
+  const day = value.getUTCDate();
+  const targetFirstDay = new Date(Date.UTC(year, month, 1));
+  const targetYear = targetFirstDay.getUTCFullYear();
+  const targetMonth = targetFirstDay.getUTCMonth();
+  const targetLastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(targetYear, targetMonth, Math.min(day, targetLastDay)));
+}
+
+function addDays(value: Date, days: number) {
+  const next = new Date(value);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function buildMonthlyRentBillSnapshot(
+  order: FinanceOrder,
+  period: MonthlyRentPeriod,
+  amount: bigint,
+  source: MonthlyRentBillSource
+) {
+  return {
+    amount: Number(amount),
+    billType: BillType.MONTHLY_RENT,
+    customer: {
+      id: order.customerId,
+      mobile: order.customer.mobile,
+      name: order.customer.name
+    },
+    orderId: order.id,
+    orderNo: order.orderNo,
+    periodEnd: toIsoDate(period.end),
+    periodIndex: period.index,
+    periodStart: toIsoDate(period.start),
+    productId: order.productId,
+    productVersionId: order.productVersionId,
+    quote: {
+      id: order.quoteId,
+      quoteNo: order.quote.quoteNo
+    },
+    source,
+    vehicle: order.vehicle
+      ? {
+          id: order.vehicle.id,
+          plateNo: order.vehicle.plateNo,
+          vehicleNo: order.vehicle.vehicleNo,
+          vin: order.vehicle.vin
+        }
+      : null,
+    vehicleId: order.vehicleId,
+    vehicleModel: order.vehicleModel
+  };
+}
+
+async function writeMonthlyRentBillAudit(
+  auditService: AuditService,
+  bill: ReceivableBillRecord,
+  user: RequestUser,
+  context: RequestContext,
+  source: MonthlyRentBillSource
+) {
+  await auditService.write({
+    action: AuditAction.CREATE,
+    after: {
+      amount: Number(bill.amount),
+      bill: toBillView(bill),
+      billId: bill.id,
+      billType: bill.billType,
+      orderId: bill.orderId,
+      periodEnd: toIsoDate(bill.billPeriodEnd),
+      periodStart: toIsoDate(bill.billPeriodStart),
+      source
+    },
+    entityId: bill.id,
+    entityType: "receivable_bill",
+    ipAddress: context.ipAddress,
+    module: "billing",
+    operatorId: user.id,
+    userAgent: context.userAgent
+  });
+}
+
+function monthlyRentBatchItem(
+  baseItem: Pick<MonthlyRentBatchItem, "dryRun" | "orderId" | "orderNo">,
+  action: MonthlyRentBatchAction,
+  options: {
+    amount?: bigint;
+    bill?: ReceivableBillRecord;
+    period?: MonthlyRentPeriod;
+    reason?: string;
+  } = {}
+): MonthlyRentBatchItem {
+  return {
+    ...baseItem,
+    action,
+    amount: options.amount === undefined ? undefined : Number(options.amount),
+    billId: options.bill?.id,
+    periodEnd: options.period ? toIsoDate(options.period.end) ?? undefined : undefined,
+    periodStart: options.period ? toIsoDate(options.period.start) ?? undefined : undefined,
+    reason: options.reason
+  };
+}
+
+function isGeneratedMonthlyRentAction(action: MonthlyRentBatchAction) {
+  return action === "GENERATED" || action === "DRY_RUN_GENERATE";
+}
+
+function isSkippedMonthlyRentAction(action: MonthlyRentBatchAction) {
+  return action === "SKIPPED_NOT_DUE" || action === "SKIPPED_EXISTING" || action === "DRY_RUN_SKIP";
+}
+
+function isFailedMonthlyRentAction(action: MonthlyRentBatchAction) {
+  return action === "FAILED" || action === "DRY_RUN_FAILED";
+}
+
 function ensureOrderCanGenerateInitialBills(order: FinanceOrder) {
   if (FINAL_ORDER_STATUSES.has(order.orderStatus)) {
     throw new BadRequestException("订单已取消、终止或完成，不能生成应收账单");
+  }
+}
+
+function ensureOrderCanGenerateMonthlyRentBill(order: FinanceOrder) {
+  if (order.orderStatus !== OrderStatus.ACTIVE) {
+    throw new BadRequestException(MONTHLY_RENT_ORDER_STATUS_MESSAGE);
+  }
+  if (!order.actualDeliveryAt) {
+    throw new BadRequestException(MONTHLY_RENT_NOT_STARTED_MESSAGE);
   }
 }
 
@@ -508,6 +1626,15 @@ function resolveFirstMonthlyFeeAmount(order: FinanceOrder) {
     order.monthlyFeeAmount,
     readSnapshotAmount(order.quoteSnapshot, ["monthlyFeeAmount"]),
     readSnapshotAmount(order.quoteSnapshot, ["pricing", "monthlyFeeAmount"])
+  );
+}
+
+function resolveMonthlyRentAmount(order: FinanceOrder) {
+  return pickPositiveAmount(
+    order.monthlyFeeAmount,
+    readSnapshotAmount(order.quoteSnapshot, ["pricing", "monthlyFeeAmount"]),
+    readSnapshotAmount(order.quoteSnapshot, ["monthlyFeeAmount"]),
+    order.quote.monthlyFeeAmount
   );
 }
 
@@ -618,6 +1745,28 @@ function parseDateTime(value: string, field: string) {
     throw new BadRequestException(`${field} 时间格式不正确`);
   }
   return date;
+}
+
+function parseBillingDate(value: string, field: string) {
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    if (
+      parsed.getUTCFullYear() === Number(year) &&
+      parsed.getUTCMonth() === Number(month) - 1 &&
+      parsed.getUTCDate() === Number(day)
+    ) {
+      return parsed;
+    }
+    throw new BadRequestException(`${field} 日期格式不正确`);
+  }
+
+  return toBillingDateOnly(parseDateTime(value, field));
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sumWriteOffAmount(writeOffs: Array<{ deletedAt?: Date | null; writeOffAmount: bigint }>) {

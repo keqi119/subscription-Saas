@@ -137,6 +137,49 @@ export const DEPOSIT_TRANSACTION_STATUS_LABELS: Record<string, string> = {
   PENDING: "待确认"
 };
 
+export const COLLECTION_LEVEL_LABELS: Record<string, string> = {
+  D1: "D1：1-3天",
+  D2: "D2：4-7天",
+  D3: "D3：8-15天",
+  D4: "D4：16-30天",
+  D5: "D5：31天以上"
+};
+
+export const COLLECTION_CASE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "催收中",
+  CLOSED: "已关闭",
+  PAUSED: "暂停催收"
+};
+
+export const COLLECTION_ACTION_TYPE_LABELS: Record<string, string> = {
+  CLOSE: "关闭",
+  CUSTOMER_DISPUTE: "客户异议",
+  ESCALATION: "升级处理",
+  FOLLOW_UP: "跟进",
+  PROMISE_TO_PAY: "承诺付款",
+  REMINDER: "提醒"
+};
+
+export const CONTACT_METHOD_LABELS: Record<string, string> = {
+  EMAIL: "邮件",
+  OFFLINE: "线下",
+  OTHER: "其他",
+  PHONE: "电话",
+  SMS: "短信",
+  SYSTEM: "系统",
+  WECHAT: "微信"
+};
+
+export const COLLECTION_ACTION_RESULT_LABELS: Record<string, string> = {
+  CUSTOMER_PROMISED: "承诺付款",
+  CUSTOMER_REFUSED: "拒绝付款",
+  DISPUTED: "有异议",
+  INVALID_CONTACT: "联系方式无效",
+  NO_ANSWER: "未接通",
+  OTHER: "其他",
+  SUCCESS: "已触达"
+};
+
 export const DELIVERY_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "已取消",
   DELIVERED: "已交付",
@@ -281,6 +324,7 @@ export const MODULE_LABELS: Record<string, string> = {
   application: "进件管理",
   audit_log: "操作日志",
   billing: "应收账单",
+  collection: "催收管理",
   contract: "合同管理",
   contract_template: "合同模板",
   customer: "客户中心",
@@ -308,6 +352,10 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "audit_log:view": "查看操作日志",
   "billing:generate": "生成应收账单",
   "billing:view": "查看应收账单",
+  "collection:action_create": "新增催收动作",
+  "collection:close": "关闭催收案件",
+  "collection:refresh_overdue": "刷新逾期账单",
+  "collection:view": "查看催收案件",
   "contract:archive": "归档合同",
   "contract:cancel": "取消合同",
   "contract:generate": "生成合同",
@@ -396,6 +444,10 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "audit_log:view": "允许查看操作日志",
   "billing:generate": "允许为订单生成初始应收账单",
   "billing:view": "允许查看订单财务概览和应收账单",
+  "collection:action_create": "允许新增催收跟进动作",
+  "collection:close": "允许关闭已结清的催收案件",
+  "collection:refresh_overdue": "允许刷新逾期账单并创建催收案件",
+  "collection:view": "允许查看逾期账单和催收案件",
   "contract:archive": "允许归档订阅合同",
   "contract:cancel": "允许取消订阅合同",
   "contract:generate": "允许从订阅订单生成合同",
@@ -476,6 +528,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
 
 export const MENU_LABELS: Record<string, string> = {
   applications: "进件管理",
+  billing: "财务管理",
+  "billing.collections": "逾期催收",
+  "billing.monthly_rent": "月租账单生成",
   customers: "客户中心",
   dashboard: "首页驾驶舱",
   orders: "订单中心",

@@ -110,6 +110,11 @@ interface PaymentRecordResponse {
   paymentNo?: string;
 }
 
+interface MonthlyRentBillResponse {
+  created?: boolean;
+  id: string;
+}
+
 interface OrderChangeRow {
   afterSnapshot?: unknown;
   changeType: string;
@@ -416,6 +421,24 @@ function isDeliveryPaymentSatisfied(summary?: FinanceSummary | null) {
 
 function validInitialBill(bill: ReceivableBillRow) {
   return INITIAL_BILL_TYPES.has(bill.billType) && bill.billStatus !== "CANCELLED";
+}
+
+function validMonthlyRentBill(bill: ReceivableBillRow) {
+  return bill.billType === "MONTHLY_RENT" && bill.billStatus !== "CANCELLED";
+}
+
+function sumBillAmount(bills: ReceivableBillRow[], field: "paidAmount" | "remainingAmount") {
+  return bills.reduce((sum, bill) => sum + (toNumber(bill[field]) ?? 0), 0);
+}
+
+function formatBillPeriod(start?: string | null, end?: string | null) {
+  if (!start || !end) {
+    return "-";
+  }
+
+  const formattedStart = formatDate(start);
+  const formattedEnd = formatDate(end);
+  return formattedStart === "-" || formattedEnd === "-" ? "-" : `${formattedStart} 至 ${formattedEnd}`;
 }
 
 function formatPercent(value?: unknown) {
@@ -1156,8 +1179,11 @@ function FinancePanel({
   bills,
   financeLoading,
   generateAvailability,
+  generateMonthlyRentAvailability,
   generatingBills,
+  generatingMonthlyRentBill,
   onGenerateInitialBills,
+  onGenerateNextMonthlyRentBill,
   onOpenPayment,
   paymentAvailability,
   summary
@@ -1165,13 +1191,20 @@ function FinancePanel({
   bills: ReceivableBillRow[];
   financeLoading: boolean;
   generateAvailability: ReturnType<typeof actionAvailability>;
+  generateMonthlyRentAvailability: ReturnType<typeof actionAvailability>;
   generatingBills: boolean;
+  generatingMonthlyRentBill: boolean;
   onGenerateInitialBills: () => void;
+  onGenerateNextMonthlyRentBill: () => void;
   onOpenPayment: () => void;
   paymentAvailability: ReturnType<typeof actionAvailability>;
   summary: FinanceSummary | null;
 }) {
   const deliverySatisfied = isDeliveryPaymentSatisfied(summary);
+  const monthlyRentBills = bills.filter(validMonthlyRentBill);
+  const latestMonthlyRentBill = [...monthlyRentBills]
+    .filter((bill) => bill.billPeriodStart)
+    .sort((left, right) => String(right.billPeriodStart).localeCompare(String(left.billPeriodStart)))[0];
   const billColumns: ColumnsType<ReceivableBillRow> = [
     { dataIndex: "billNo", title: "账单编号" },
     {
@@ -1187,9 +1220,13 @@ function FinancePanel({
     { dataIndex: "amount", render: formatYuan, title: "应收金额" },
     { dataIndex: "paidAmount", render: formatYuan, title: "已收金额" },
     { dataIndex: "remainingAmount", render: formatYuan, title: "剩余金额" },
-    { dataIndex: "dueDate", render: formatTime, title: "到期日" },
+    {
+      render: (_, record) => formatBillPeriod(record.billPeriodStart, record.billPeriodEnd),
+      title: "账期"
+    },
     { dataIndex: "billPeriodStart", render: formatDate, title: "账期开始" },
     { dataIndex: "billPeriodEnd", render: formatDate, title: "账期结束" },
+    { dataIndex: "dueDate", render: formatTime, title: "到期日" },
     { dataIndex: "paidAt", render: formatTime, title: "已收款时间" },
     { dataIndex: "remark", render: safeText, title: "备注" }
   ];
@@ -1205,6 +1242,13 @@ function FinancePanel({
             type="primary"
           >
             生成初始账单
+          </ActionButton>
+          <ActionButton
+            availability={generateMonthlyRentAvailability}
+            loading={generatingMonthlyRentBill}
+            onClick={onGenerateNextMonthlyRentBill}
+          >
+            生成下一期月租账单
           </ActionButton>
           <ActionButton availability={paymentAvailability} onClick={onOpenPayment}>
             登记收款
@@ -1241,6 +1285,23 @@ function FinancePanel({
           ]}
         />
 
+        <Descriptions
+          bordered
+          column={2}
+          title="月租账单概览"
+          items={[
+            { label: "已生成月租账单数量", children: monthlyRentBills.length },
+            { label: "月租账单待收金额", children: formatYuan(sumBillAmount(monthlyRentBills, "remainingAmount")) },
+            { label: "月租账单已收金额", children: formatYuan(sumBillAmount(monthlyRentBills, "paidAmount")) },
+            {
+              label: "最近一期月租账期",
+              children: latestMonthlyRentBill
+                ? formatBillPeriod(latestMonthlyRentBill.billPeriodStart, latestMonthlyRentBill.billPeriodEnd)
+                : "-"
+            }
+          ]}
+        />
+
         <Table
           columns={billColumns}
           dataSource={bills}
@@ -1248,7 +1309,7 @@ function FinancePanel({
           locale={{ emptyText: "-" }}
           pagination={false}
           rowKey="id"
-          scroll={{ x: 1320 }}
+          scroll={{ x: 1480 }}
           size="small"
           title={() => "应收账单"}
         />
@@ -1758,6 +1819,7 @@ export default function OrderDetailPage() {
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeSummary, setFinanceSummary] = useState<FinanceSummary | null>(null);
   const [generatingBills, setGeneratingBills] = useState(false);
+  const [generatingMonthlyRentBill, setGeneratingMonthlyRentBill] = useState(false);
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [order, setOrder] = useState<OrderDetail | null>(null);
@@ -1816,6 +1878,13 @@ export default function OrderDetailPage() {
         getSnapshotValue(order.quoteSnapshot, "pricing.monthlyFeeAmount")
       )
     : undefined;
+  const monthlyRentAmount = order
+    ? pickPositiveValue(
+        order.monthlyFeeAmount,
+        getSnapshotValue(order.quoteSnapshot, "pricing.monthlyFeeAmount"),
+        getSnapshotValue(order.quoteSnapshot, "monthlyFeeAmount")
+      )
+    : undefined;
   const orderHasInitialBillAmounts = Boolean(
     order && hasPositiveAmount(initialDepositAmount) && hasPositiveAmount(initialMonthlyFeeAmount)
   );
@@ -1831,6 +1900,22 @@ export default function OrderDetailPage() {
   const generateInitialBillsAvailability = actionAvailability({
     allowed: generateInitialBillsDisabledReason === null,
     disabledReason: generateInitialBillsDisabledReason ?? "当前订单状态不允许生成账单",
+    noPermissionReason: "无生成账单权限",
+    permission: "billing:generate",
+    permissions
+  });
+  const generateMonthlyRentDisabledReason = !order
+    ? "数据加载完成后才可操作"
+    : order.orderStatus !== "ACTIVE"
+      ? "当前订单状态不允许生成月租账单"
+      : !order.actualDeliveryAt
+        ? "当前订单尚未起租，不能生成月租账单"
+        : !hasPositiveAmount(monthlyRentAmount)
+          ? "订单缺少月租金额，无法生成月租账单"
+          : null;
+  const generateMonthlyRentAvailability = actionAvailability({
+    allowed: generateMonthlyRentDisabledReason === null,
+    disabledReason: generateMonthlyRentDisabledReason ?? "当前订单状态不允许生成月租账单",
     noPermissionReason: "无生成账单权限",
     permission: "billing:generate",
     permissions
@@ -2118,6 +2203,26 @@ export default function OrderDetailPage() {
       void message.error(getErrorMessage(error));
     } finally {
       setGeneratingBills(false);
+    }
+  }
+
+  async function generateNextMonthlyRentBill() {
+    if (!order) {
+      return;
+    }
+    setGeneratingMonthlyRentBill(true);
+    try {
+      const bill = await apiFetch<MonthlyRentBillResponse>(`/orders/${order.id}/generate-next-monthly-bill`, {
+        method: "POST"
+      });
+      void message.success(
+        bill.created === false ? "该账期月租账单已存在，已刷新账单列表" : "下一期月租账单已生成"
+      );
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setGeneratingMonthlyRentBill(false);
     }
   }
 
@@ -2675,8 +2780,11 @@ export default function OrderDetailPage() {
             bills={receivableBills}
             financeLoading={financeLoading}
             generateAvailability={generateInitialBillsAvailability}
+            generateMonthlyRentAvailability={generateMonthlyRentAvailability}
             generatingBills={generatingBills}
+            generatingMonthlyRentBill={generatingMonthlyRentBill}
             onGenerateInitialBills={generateInitialBills}
+            onGenerateNextMonthlyRentBill={generateNextMonthlyRentBill}
             onOpenPayment={openPaymentModal}
             paymentAvailability={paymentAvailability}
             summary={financeSummary}

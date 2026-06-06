@@ -309,6 +309,59 @@ enum DepositTransactionStatus {
   @@map("deposit_transaction_status")
 }
 
+enum CollectionLevel {
+  D1
+  D2
+  D3
+  D4
+  D5
+
+  @@map("collection_level")
+}
+
+enum CollectionCaseStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+
+  @@map("collection_case_status")
+}
+
+enum CollectionActionType {
+  REMINDER
+  FOLLOW_UP
+  PROMISE_TO_PAY
+  CUSTOMER_DISPUTE
+  ESCALATION
+  CLOSE
+
+  @@map("collection_action_type")
+}
+
+enum ContactMethod {
+  PHONE
+  SMS
+  WECHAT
+  EMAIL
+  OFFLINE
+  SYSTEM
+  OTHER
+
+  @@map("contact_method")
+}
+
+enum CollectionActionResult {
+  SUCCESS
+  NO_ANSWER
+  CUSTOMER_PROMISED
+  CUSTOMER_REFUSED
+  DISPUTED
+  INVALID_CONTACT
+  OTHER
+
+  @@map("collection_action_result")
+}
+
 enum DeliveryStatus {
   PENDING
   READY
@@ -670,6 +723,9 @@ model Customer {
   paymentRecords   PaymentRecord[]
   paymentWriteOffs PaymentWriteOff[]
   depositLedgers   DepositLedger[]
+  collectionCases   CollectionCase[]
+  collectionCaseBills CollectionCaseBill[]
+  collectionActions CollectionAction[]
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy        String?             @map("created_by") @db.Uuid
@@ -1434,6 +1490,9 @@ model SubscriptionOrder {
   paymentRecords             PaymentRecord[]
   paymentWriteOffs           PaymentWriteOff[]
   depositLedgers             DepositLedger[]
+  collectionCases            CollectionCase[]
+  collectionCaseBills        CollectionCaseBill[]
+  collectionActions          CollectionAction[]
   contracts                  Contract[]            @relation("OrderContracts")
   changes                    OrderChange[]
   createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1479,6 +1538,7 @@ model ReceivableBill {
   remark          String?           @db.Text
   writeOffs       PaymentWriteOff[]
   depositLedgers  DepositLedger[]
+  collectionCaseBills CollectionCaseBill[]
   createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy       String?           @map("created_by") @db.Uuid
@@ -1578,6 +1638,90 @@ model DepositLedger {
   @@index([transactionStatus])
   @@index([occurredAt])
   @@map("deposit_ledger")
+}
+
+model CollectionCase {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  caseNo             String                 @unique @map("case_no") @db.VarChar(64)
+  customerId         String                 @map("customer_id") @db.Uuid
+  customer           Customer               @relation(fields: [customerId], references: [id])
+  orderId            String                 @map("order_id") @db.Uuid
+  order              SubscriptionOrder      @relation(fields: [orderId], references: [id])
+  caseStatus         CollectionCaseStatus   @default(ACTIVE) @map("case_status")
+  collectionLevel    CollectionLevel        @map("collection_level")
+  totalOverdueAmount BigInt                 @map("total_overdue_amount")
+  maxOverdueDays     Int                    @map("max_overdue_days")
+  latestDueDate      DateTime               @map("latest_due_date") @db.Timestamptz(6)
+  assignedTo         String?                @map("assigned_to") @db.Uuid
+  nextFollowUpAt     DateTime?              @map("next_follow_up_at") @db.Timestamptz(6)
+  closedAt           DateTime?              @map("closed_at") @db.Timestamptz(6)
+  closeReason        String?                @map("close_reason") @db.Text
+  remark             String?                @db.Text
+  snapshot           Json?
+  bills              CollectionCaseBill[]
+  actions            CollectionAction[]
+  createdAt          DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?                @map("created_by") @db.Uuid
+  updatedBy          String?                @map("updated_by") @db.Uuid
+  deletedAt          DateTime?              @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([orderId])
+  @@index([caseStatus])
+  @@index([collectionLevel])
+  @@index([assignedTo])
+  @@index([nextFollowUpAt])
+  @@map("collection_case")
+}
+
+model CollectionCaseBill {
+  id            String            @id @default(uuid()) @db.Uuid
+  caseId        String            @map("case_id") @db.Uuid
+  case          CollectionCase    @relation(fields: [caseId], references: [id])
+  billId        String            @map("bill_id") @db.Uuid
+  bill          ReceivableBill    @relation(fields: [billId], references: [id])
+  orderId       String            @map("order_id") @db.Uuid
+  order         SubscriptionOrder @relation(fields: [orderId], references: [id])
+  customerId    String            @map("customer_id") @db.Uuid
+  customer      Customer          @relation(fields: [customerId], references: [id])
+  overdueAmount BigInt            @map("overdue_amount")
+  overdueDays   Int               @map("overdue_days")
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt     DateTime?         @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([caseId])
+  @@index([billId])
+  @@index([orderId])
+  @@index([customerId])
+  @@map("collection_case_bill")
+}
+
+model CollectionAction {
+  id             String                 @id @default(uuid()) @db.Uuid
+  caseId         String                 @map("case_id") @db.Uuid
+  case           CollectionCase         @relation(fields: [caseId], references: [id])
+  customerId     String                 @map("customer_id") @db.Uuid
+  customer       Customer               @relation(fields: [customerId], references: [id])
+  orderId        String                 @map("order_id") @db.Uuid
+  order          SubscriptionOrder      @relation(fields: [orderId], references: [id])
+  actionType     CollectionActionType   @map("action_type")
+  contactMethod  ContactMethod          @map("contact_method")
+  actionResult   CollectionActionResult @map("action_result")
+  content        String?                @db.Text
+  promisedPayAt  DateTime?              @map("promised_pay_at") @db.Date
+  promisedAmount BigInt?                @map("promised_amount")
+  nextFollowUpAt DateTime?              @map("next_follow_up_at") @db.Timestamptz(6)
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?                @map("created_by") @db.Uuid
+  deletedAt      DateTime?              @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([caseId])
+  @@index([customerId])
+  @@index([orderId])
+  @@index([actionType])
+  @@index([createdAt])
+  @@map("collection_action")
 }
 
 model VehicleDelivery {

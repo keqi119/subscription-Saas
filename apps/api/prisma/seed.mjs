@@ -141,6 +141,13 @@ permissionRows.push(
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"]
 );
 
+permissionRows.push(
+  ["collection:view", "查看催收案件", "collection", "view"],
+  ["collection:refresh_overdue", "刷新逾期账单", "collection", "refresh_overdue"],
+  ["collection:action_create", "新增催收动作", "collection", "action_create"],
+  ["collection:close", "关闭催收案件", "collection", "close"]
+);
+
 const menuRows = [
   ["dashboard", "首页驾驶舱", "/", "dashboard", 10, "dashboard:view", null],
   ["customers", "客户中心", "/customers", "customer", 20, "customer:view", null],
@@ -155,6 +162,9 @@ const menuRows = [
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
+  ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
+  ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
+  ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
   ["system.users", "用户管理", "/system/users", "team", 10, "user:view", "system"],
   ["system.roles", "角色管理", "/system/roles", "safety", 20, "role:view", "system"],
@@ -402,6 +412,19 @@ const financeManagementPermissions = [
 
 const financeViewPermissions = ["billing:view", "payment:view", "deposit_ledger:view"];
 
+const collectionManagementPermissions = [
+  "collection:view",
+  "collection:refresh_overdue",
+  "collection:action_create",
+  "collection:close"
+];
+
+const collectionActionPermissions = ["collection:view", "collection:action_create"];
+
+const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collections"];
+
+const collectionMenuCodes = ["billing", "billing.collections"];
+
 const productMenuCodes = [
   "products",
   "products.subscription",
@@ -541,11 +564,12 @@ async function main() {
       ...orderManagementPermissions,
       "billing:view",
       "deposit_ledger:view",
+      ...collectionActionPermissions,
       "order_change:approve",
       "order_change:reject",
       "order_change:execute"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
   );
 
   await assignRoleAccess(
@@ -588,6 +612,7 @@ async function main() {
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
+        ...(roleCode === "FI" ? collectionManagementPermissions : []),
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         "vehicle_return:view",
         ...(roleCode === "AS"
@@ -597,7 +622,17 @@ async function main() {
         "order_change:view",
         "contract:view"
       ],
-      ["dashboard", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", ...(roleCode === "AS" ? ["orders.review"] : []), "orders.contracts"]
+      [
+        "dashboard",
+        ...productMenuCodes,
+        ...vehicleMenuCodes,
+        "quotes",
+        "orders",
+        "orders.subscription",
+        ...(roleCode === "AS" ? ["orders.review"] : []),
+        "orders.contracts",
+        ...(roleCode === "FI" ? financeMenuCodes : [])
+      ]
     );
   }
 
@@ -614,9 +649,10 @@ async function main() {
       ...vehicleManagementPermissions,
       "quote:view",
       ...orderManagementPermissions,
-      ...financeViewPermissions
+      ...financeViewPermissions,
+      "collection:view"
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
   );
 
   const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);

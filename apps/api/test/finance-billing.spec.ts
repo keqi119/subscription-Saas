@@ -293,6 +293,245 @@ describe("billing finance minimum backend loop", () => {
       expect.arrayContaining(["receivable_bill", "payment_record", "payment_write_off", "deposit_ledger"])
     );
   });
+
+  it("generates the next MONTHLY_RENT bill for an ACTIVE started order", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+
+    const bill = (await harness.service.generateNextMonthlyRentBill(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as {
+      amount: number;
+      billPeriodEnd: string;
+      billPeriodStart: string;
+      billStatus: BillStatus;
+      billType: BillType;
+      created: boolean;
+      dueDate: string;
+    };
+
+    expect(bill).toMatchObject({
+      amount: 300000,
+      billPeriodEnd: "2026-08-09",
+      billPeriodStart: "2026-07-10",
+      billStatus: BillStatus.PENDING,
+      billType: BillType.MONTHLY_RENT,
+      created: true,
+      dueDate: "2026-07-10T00:00:00.000Z"
+    });
+  });
+
+  it("rejects monthly rent generation when order is not ACTIVE", async () => {
+    const harness = createFinanceHarness();
+
+    await expect(
+      harness.service.generateNextMonthlyRentBill(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow("当前订单状态不允许生成月租账单");
+  });
+
+  it("rejects monthly rent generation when the order has not started", async () => {
+    const harness = createFinanceHarness({ orderStatus: OrderStatus.ACTIVE });
+
+    await expect(
+      harness.service.generateNextMonthlyRentBill(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow("订单尚未起租，无法生成月租账单");
+  });
+
+  it("rejects monthly rent generation when monthly rent amount is missing", async () => {
+    const harness = createFinanceHarness({
+      actualDeliveryAt: new Date("2026-06-10T02:00:00.000Z"),
+      monthlyFeeAmount: 0n,
+      orderStatus: OrderStatus.ACTIVE,
+      quote: { id: "quote-1", monthlyFeeAmount: 0n, quoteNo: "QUO2026060600001", status: QuoteStatus.CONFIRMED },
+      quoteSnapshot: {}
+    });
+
+    await expect(
+      harness.service.generateNextMonthlyRentBill(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow("订单缺少月租金额，无法生成月租账单");
+  });
+
+  it("uses quoteSnapshot pricing monthly fee when order monthly fee is missing", async () => {
+    const harness = createFinanceHarness({
+      actualDeliveryAt: new Date("2026-06-10T02:00:00.000Z"),
+      monthlyFeeAmount: 0n,
+      orderStatus: OrderStatus.ACTIVE,
+      quoteSnapshot: { pricing: { monthlyFeeAmount: 420000 } }
+    });
+
+    const bill = (await harness.service.generateNextMonthlyRentBill(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { amount: number };
+
+    expect(bill.amount).toBe(420000);
+  });
+
+  it("generates the second monthly rent bill on the second call", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+
+    await harness.service.generateNextMonthlyRentBill(harness.orderId, harness.user, harness.context);
+    const second = (await harness.service.generateNextMonthlyRentBill(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { billPeriodEnd: string; billPeriodStart: string; created: boolean };
+
+    expect(second).toMatchObject({
+      billPeriodEnd: "2026-09-09",
+      billPeriodStart: "2026-08-10",
+      created: true
+    });
+    expect(harness.state.bills.filter((bill) => bill.billType === BillType.MONTHLY_RENT)).toHaveLength(2);
+  });
+
+  it("returns an existing monthly rent bill when the same period already exists", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    const existingBill = addMonthlyRentBill(harness, "2026-08-10", "2026-09-09");
+
+    const result = (await harness.service.generateNextMonthlyRentBill(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { created: boolean; id: string };
+
+    expect(result).toMatchObject({ created: false, id: existingBill.id });
+    expect(harness.state.bills.filter((bill) => bill.billType === BillType.MONTHLY_RENT)).toHaveLength(1);
+  });
+
+  it("batch generation only processes ACTIVE orders", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    harness.state.orders.push(
+      cloneOrder(harness, {
+        actualDeliveryAt: new Date("2026-06-10T02:00:00.000Z"),
+        id: "order-pending",
+        orderNo: "ORD2026060600999",
+        orderStatus: OrderStatus.PENDING_PAYMENT
+      })
+    );
+
+    const result = await harness.service.generateMonthlyRentBills(
+      { billingDate: "2026-07-10", dryRun: false },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({ failedCount: 0, generatedCount: 1, skippedCount: 0 });
+    expect(result.items.map((item) => item.orderId)).toEqual([harness.orderId]);
+  });
+
+  it("batch generation skips orders whose next period is not due", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+
+    const result = await harness.service.generateMonthlyRentBills(
+      { billingDate: "2026-07-09" },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({ generatedCount: 0, skippedCount: 1 });
+    expect(result.items[0]).toMatchObject({ action: "SKIPPED_NOT_DUE" });
+  });
+
+  it("batch generation skips an existing monthly rent bill for the billing date", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    addMonthlyRentBill(harness, "2026-07-10", "2026-08-09");
+
+    const result = await harness.service.generateMonthlyRentBills(
+      { billingDate: "2026-07-10" },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({ generatedCount: 0, skippedCount: 1 });
+    expect(result.items[0]).toMatchObject({ action: "SKIPPED_EXISTING" });
+    expect(harness.state.bills.filter((bill) => bill.billType === BillType.MONTHLY_RENT)).toHaveLength(1);
+  });
+
+  it("batch generation keeps going when one order fails", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    harness.state.orders.push(
+      cloneOrder(harness, {
+        actualDeliveryAt: new Date("2026-06-10T02:00:00.000Z"),
+        id: "order-missing-monthly-fee",
+        monthlyFeeAmount: 0n,
+        orderNo: "ORD2026060600888",
+        orderStatus: OrderStatus.ACTIVE,
+        quote: { id: "quote-2", monthlyFeeAmount: 0n, quoteNo: "QUO2026060600888", status: QuoteStatus.CONFIRMED },
+        quoteId: "quote-2",
+        quoteSnapshot: {}
+      })
+    );
+
+    const result = await harness.service.generateMonthlyRentBills(
+      { billingDate: "2026-07-10" },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({ failedCount: 1, generatedCount: 1, skippedCount: 0 });
+    expect(result.items.map((item) => item.action)).toEqual(["GENERATED", "FAILED"]);
+    expect(harness.state.bills.filter((bill) => bill.billType === BillType.MONTHLY_RENT)).toHaveLength(1);
+  });
+
+  it("dryRun returns generation details without writing bills or audit logs", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+
+    const result = await harness.service.generateMonthlyRentBills(
+      { billingDate: "2026-07-10", dryRun: true },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({ dryRun: true, generatedCount: 1, skippedCount: 0 });
+    expect(result.items[0]).toMatchObject({
+      action: "DRY_RUN_GENERATE",
+      amount: 300000,
+      periodEnd: "2026-08-09",
+      periodStart: "2026-07-10"
+    });
+    expect(harness.state.bills).toHaveLength(0);
+    expect(harness.auditService.write).not.toHaveBeenCalled();
+  });
+
+  it("writes audit logs for single and batch monthly rent bill generation", async () => {
+    const singleHarness = createFinanceHarness();
+    activateMonthlyOrder(singleHarness);
+    await singleHarness.service.generateNextMonthlyRentBill(
+      singleHarness.orderId,
+      singleHarness.user,
+      singleHarness.context
+    );
+
+    const batchHarness = createFinanceHarness();
+    activateMonthlyOrder(batchHarness);
+    await batchHarness.service.generateMonthlyRentBills(
+      { billingDate: "2026-07-10" },
+      batchHarness.user,
+      batchHarness.context
+    );
+
+    expect(singleHarness.auditService.write.mock.calls[0]?.[0]).toMatchObject({
+      after: expect.objectContaining({ billType: BillType.MONTHLY_RENT, source: "SINGLE" }),
+      entityType: "receivable_bill",
+      module: "billing"
+    });
+    expect(batchHarness.auditService.write.mock.calls[0]?.[0]).toMatchObject({
+      after: expect.objectContaining({ billType: BillType.MONTHLY_RENT, source: "BATCH" }),
+      entityType: "receivable_bill",
+      module: "billing"
+    });
+  });
 });
 
 function validPaymentDto(harness: ReturnType<typeof createFinanceHarness>, paymentAmount = 800000) {
@@ -307,6 +546,62 @@ function validPaymentDto(harness: ReturnType<typeof createFinanceHarness>, payme
     receivedAt: "2026-06-10T10:00:00+08:00",
     remark: "客户转账"
   };
+}
+
+function activateMonthlyOrder(harness: ReturnType<typeof createFinanceHarness>) {
+  Object.assign(harness.state.order, {
+    actualDeliveryAt: new Date("2026-06-10T02:00:00.000Z"),
+    orderStatus: OrderStatus.ACTIVE
+  });
+}
+
+function addMonthlyRentBill(
+  harness: ReturnType<typeof createFinanceHarness>,
+  periodStart: string,
+  periodEnd: string,
+  overrides: Record<string, unknown> = {}
+) {
+  const bill = {
+    amount: 300000n,
+    billNo: `BIL-MONTHLY-${harness.state.bills.length + 1}`,
+    billPeriodEnd: dateOnly(periodEnd),
+    billPeriodStart: dateOnly(periodStart),
+    billStatus: BillStatus.PENDING,
+    billType: BillType.MONTHLY_RENT,
+    cancelledAt: null,
+    createdAt: new Date("2026-06-06T08:00:00.000Z"),
+    createdBy: harness.user.id,
+    customerId: harness.customerId,
+    deletedAt: null,
+    dueDate: dateOnly(periodStart),
+    id: `bill-existing-${harness.state.bills.length + 1}`,
+    orderId: harness.orderId,
+    paidAmount: 0n,
+    paidAt: null,
+    remainingAmount: 300000n,
+    remark: null,
+    snapshot: {},
+    updatedAt: new Date("2026-06-06T08:00:00.000Z"),
+    updatedBy: harness.user.id,
+    ...overrides
+  };
+  harness.state.bills.push(bill);
+  return bill as { id: string };
+}
+
+function cloneOrder(harness: ReturnType<typeof createFinanceHarness>, overrides: Record<string, unknown>) {
+  return {
+    ...harness.state.order,
+    application: { ...(harness.state.order.application as Record<string, unknown>) },
+    customer: { ...(harness.state.order.customer as Record<string, unknown>) },
+    quote: { ...(harness.state.order.quote as Record<string, unknown>) },
+    vehicle: { ...(harness.state.order.vehicle as Record<string, unknown>) },
+    ...overrides
+  };
+}
+
+function dateOnly(value: string) {
+  return new Date(`${value}T00:00:00.000Z`);
 }
 
 function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
@@ -362,7 +657,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
       periodMonths: 12,
       productId: "product-1",
       productVersionId: "product-version-1",
-      quote: { id: "quote-1", quoteNo: "QUO2026060600001", status: QuoteStatus.CONFIRMED },
+      quote: { id: "quote-1", monthlyFeeAmount: 300000n, quoteNo: "QUO2026060600001", status: QuoteStatus.CONFIRMED },
       quoteId: "quote-1",
       quoteSnapshot: {
         depositAmount: 500000,
@@ -374,14 +669,17 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
       startDate: null,
       updatedAt: now,
       updatedBy: user.id,
+      vehicle: { id: "vehicle-1", plateNo: "沪A12345", vehicleNo: "VEH2026060600001", vin: "VIN0001" },
       vehicleId: "vehicle-1",
       vehicleModel: "ET5",
       vehiclePurchasePriceAmount: 10000000n,
       ...orderOverrides
     },
+    orders: [] as Array<Record<string, unknown>>,
     payments: [] as Array<Record<string, unknown>>,
     writeOffs: [] as Array<Record<string, unknown>>
   };
+  state.orders.push(state.order);
 
   const client = {
     depositLedger: {
@@ -464,6 +762,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
         state.bills.push(bill);
         return bill;
       }),
+      findFirst: vi.fn(async ({ where }) => filterBills(state.bills, where).at(0) ?? null),
       findMany: vi.fn(async ({ where }) => filterBills(state.bills, where)),
       update: vi.fn(async ({ data, where }) => {
         const bill = state.bills.find((item) => item.id === where.id);
@@ -475,7 +774,8 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
       })
     },
     subscriptionOrder: {
-      findUnique: vi.fn(async ({ where }) => (where.id === orderId ? state.order : null))
+      findMany: vi.fn(async ({ where }) => filterOrders(state.orders, where)),
+      findUnique: vi.fn(async ({ where }) => state.orders.find((order) => order.id === where.id) ?? null)
     }
   };
 
@@ -544,11 +844,33 @@ function filterBills(bills: Array<Record<string, unknown>>, where: Record<string
     if (where.id && !matchesScalarFilter(bill.id, where.id)) {
       return false;
     }
+    if (where.billPeriodStart && !matchesScalarFilter(bill.billPeriodStart, where.billPeriodStart)) {
+      return false;
+    }
+    if (where.billPeriodEnd && !matchesScalarFilter(bill.billPeriodEnd, where.billPeriodEnd)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function filterOrders(orders: Array<Record<string, unknown>>, where: Record<string, unknown> = {}) {
+  return orders.filter((order) => {
+    if ("deletedAt" in where && order.deletedAt !== where.deletedAt) {
+      return false;
+    }
+    if (where.orderStatus && !matchesScalarFilter(order.orderStatus, where.orderStatus)) {
+      return false;
+    }
     return true;
   });
 }
 
 function matchesScalarFilter(value: unknown, filter: unknown) {
+  if (value instanceof Date && filter instanceof Date) {
+    return value.getTime() === filter.getTime();
+  }
+
   if (typeof filter !== "object" || filter === null) {
     return value === filter;
   }

@@ -1,6 +1,15 @@
 import { PaymentMethod } from "@prisma/client";
 import { Type } from "class-transformer";
-import { ArrayMinSize, IsArray, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Min, ValidateNested } from "class-validator";
+import { ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Min, ValidateNested } from "class-validator";
+
+export class GenerateMonthlyRentBillsDto {
+  @IsDateString()
+  billingDate!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+}
 
 export class CreatePaymentDto {
   @IsUUID()

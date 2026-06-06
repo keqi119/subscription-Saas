@@ -4,7 +4,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
-import { CreatePaymentDto, WriteOffPaymentDto } from "./dto/finance.dto";
+import { CreatePaymentDto, GenerateMonthlyRentBillsDto, WriteOffPaymentDto } from "./dto/finance.dto";
 import { FinanceService } from "./finance.service";
 
 @Controller()
@@ -16,6 +16,18 @@ export class FinanceController {
   @RequirePermissions(PermissionCode.BILLING_GENERATE)
   generateInitialBills(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.financeService.generateInitialBills(id, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/generate-next-monthly-bill")
+  @RequirePermissions(PermissionCode.BILLING_GENERATE)
+  generateNextMonthlyRentBill(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.financeService.generateNextMonthlyRentBill(id, request.user, requestContext(request));
+  }
+
+  @Post("billing/monthly-rent/generate")
+  @RequirePermissions(PermissionCode.BILLING_GENERATE)
+  generateMonthlyRentBills(@Body() dto: GenerateMonthlyRentBillsDto, @Req() request: AuthenticatedRequest) {
+    return this.financeService.generateMonthlyRentBills(dto, request.user, requestContext(request));
   }
 
   @Get("orders/:id/bills")

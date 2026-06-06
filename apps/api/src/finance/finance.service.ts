@@ -18,7 +18,7 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
-import { CreatePaymentDto, WriteOffPaymentDto } from "./dto/finance.dto";
+import { CreatePaymentDto, GenerateMonthlyRentBillsDto, WriteOffPaymentDto } from "./dto/finance.dto";
 
 const INITIAL_BILL_TYPES = [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] as const;
 const FINAL_ORDER_STATUSES = new Set<OrderStatus>([
@@ -41,11 +41,16 @@ const BILL_WRITE_OFF_OVER_AMOUNT_MESSAGE = "核销金额不能超过账单剩余
 const BILL_PAYMENT_SCOPE_MISMATCH_MESSAGE = "账单与收款不属于同一订单";
 const CANCELLED_BILL_WRITE_OFF_MESSAGE = "已取消账单不能核销";
 const DUPLICATE_WRITE_OFF_BILL_MESSAGE = "核销账单不能重复";
+const MONTHLY_RENT_ORDER_STATUS_MESSAGE = "当前订单状态不允许生成月租账单";
+const MONTHLY_RENT_NOT_STARTED_MESSAGE = "订单尚未起租，无法生成月租账单";
+const MISSING_MONTHLY_RENT_AMOUNT_MESSAGE = "订单缺少月租金额，无法生成月租账单";
+const CHINA_TIME_OFFSET_MINUTES = 8 * 60;
 
 const financeOrderInclude = {
   application: { select: { applicationNo: true, id: true, salesUserId: true } },
   customer: { select: { grade: true, id: true, mobile: true, name: true } },
-  quote: { select: { id: true, quoteNo: true, status: true } }
+  quote: { select: { id: true, monthlyFeeAmount: true, quoteNo: true, status: true } },
+  vehicle: { select: { id: true, plateNo: true, vehicleNo: true, vin: true } }
 } satisfies Prisma.SubscriptionOrderInclude;
 
 const paymentWriteOffInclude = {
@@ -64,6 +69,34 @@ type ReceivableBillRecord = ReceivableBill;
 type PaymentRecordRecord = PaymentRecord;
 type PaymentWriteOffRecord = PaymentWriteOff;
 type DepositLedgerRecord = DepositLedger;
+type MonthlyRentBillSource = "SINGLE" | "BATCH";
+export type MonthlyRentBatchAction =
+  | "GENERATED"
+  | "SKIPPED_NOT_DUE"
+  | "SKIPPED_EXISTING"
+  | "FAILED"
+  | "DRY_RUN_GENERATE"
+  | "DRY_RUN_SKIP"
+  | "DRY_RUN_FAILED";
+
+interface MonthlyRentPeriod {
+  end: Date;
+  index: number;
+  start: Date;
+}
+
+export interface MonthlyRentBatchItem {
+  action: MonthlyRentBatchAction;
+  amount?: number;
+  billId?: string;
+  dryRun: boolean;
+  error?: string;
+  orderId: string;
+  orderNo: string;
+  periodEnd?: string;
+  periodStart?: string;
+  reason?: string;
+}
 
 @Injectable()
 export class FinanceService {
@@ -165,6 +198,132 @@ export class FinanceService {
       bills: result.bills.map(toBillView),
       createdCount: result.createdBills.length
     };
+  }
+
+  async generateNextMonthlyRentBill(orderId: string, user: RequestUser, context: RequestContext) {
+    const order = await this.findOrderOrThrow(orderId);
+    ensureCanAccessOrderFinance(order, user);
+    ensureOrderCanGenerateMonthlyRentBill(order);
+
+    const monthlyRentAmount = resolveMonthlyRentAmount(order);
+    if (monthlyRentAmount === null) {
+      throw new BadRequestException(MISSING_MONTHLY_RENT_AMOUNT_MESSAGE);
+    }
+
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) =>
+        generateNextMonthlyRentBillInTransaction(tx, order, monthlyRentAmount, user.id, "SINGLE")
+      )
+    );
+
+    if (result.created) {
+      await writeMonthlyRentBillAudit(this.auditService, result.bill, user, context, "SINGLE");
+    }
+
+    return { ...toBillView(result.bill), created: result.created };
+  }
+
+  async generateMonthlyRentBills(dto: GenerateMonthlyRentBillsDto, user: RequestUser, context: RequestContext) {
+    const billingDate = parseBillingDate(dto.billingDate, "billingDate");
+    const dryRun = Boolean(dto.dryRun);
+    const orders = await this.prisma.subscriptionOrder.findMany({
+      include: financeOrderInclude,
+      orderBy: { createdAt: "asc" },
+      where: { deletedAt: null, orderStatus: OrderStatus.ACTIVE }
+    });
+    const items: MonthlyRentBatchItem[] = [];
+
+    for (const order of orders) {
+      const item = await this.generateMonthlyRentBillBatchItem(order, billingDate, dryRun, user, context);
+      items.push(item);
+    }
+
+    return {
+      billingDate: toIsoDate(billingDate),
+      dryRun,
+      failedCount: items.filter((item) => isFailedMonthlyRentAction(item.action)).length,
+      generatedCount: items.filter((item) => isGeneratedMonthlyRentAction(item.action)).length,
+      items,
+      skippedCount: items.filter((item) => isSkippedMonthlyRentAction(item.action)).length
+    };
+  }
+
+  private async generateMonthlyRentBillBatchItem(
+    order: FinanceOrder,
+    billingDate: Date,
+    dryRun: boolean,
+    user: RequestUser,
+    context: RequestContext
+  ): Promise<MonthlyRentBatchItem> {
+    const baseItem = { dryRun, orderId: order.id, orderNo: order.orderNo };
+
+    try {
+      ensureCanAccessOrderFinance(order, user);
+
+      if (!order.actualDeliveryAt) {
+        return {
+          ...baseItem,
+          action: dryRun ? "DRY_RUN_SKIP" : "SKIPPED_NOT_DUE",
+          reason: MONTHLY_RENT_NOT_STARTED_MESSAGE
+        };
+      }
+
+      const monthlyRentAmount = resolveMonthlyRentAmount(order);
+      if (monthlyRentAmount === null) {
+        throw new BadRequestException(MISSING_MONTHLY_RENT_AMOUNT_MESSAGE);
+      }
+
+      const monthlyBills = await findValidMonthlyRentBills(this.prisma, order.id);
+      const period = buildNextMonthlyRentPeriod(order.actualDeliveryAt, monthlyBills.length);
+      const existingSamePeriod = findMonthlyRentBillForPeriod(monthlyBills, period);
+
+      if (existingSamePeriod) {
+        return monthlyRentBatchItem(baseItem, dryRun ? "DRY_RUN_SKIP" : "SKIPPED_EXISTING", {
+          amount: existingSamePeriod.amount,
+          bill: existingSamePeriod,
+          period,
+          reason: "已存在同账期月租账单"
+        });
+      }
+
+      if (period.start.getTime() > billingDate.getTime()) {
+        const existingCurrentPeriod = findMonthlyRentBillCoveringDate(monthlyBills, billingDate);
+
+        return monthlyRentBatchItem(baseItem, dryRun ? "DRY_RUN_SKIP" : existingCurrentPeriod ? "SKIPPED_EXISTING" : "SKIPPED_NOT_DUE", {
+          amount: existingCurrentPeriod?.amount ?? monthlyRentAmount,
+          bill: existingCurrentPeriod,
+          period: existingCurrentPeriod ? periodFromBill(existingCurrentPeriod) : period,
+          reason: existingCurrentPeriod ? "当前账期已存在月租账单" : "下一期月租账单尚未到生成日期"
+        });
+      }
+
+      if (dryRun) {
+        return monthlyRentBatchItem(baseItem, "DRY_RUN_GENERATE", { amount: monthlyRentAmount, period });
+      }
+
+      const result = await withUniqueBusinessNoRetry(() =>
+        this.prisma.$transaction(async (tx) =>
+          createMonthlyRentBillForPeriodIfAbsent(tx, order, monthlyRentAmount, period, user.id, "BATCH")
+        )
+      );
+
+      if (result.created) {
+        await writeMonthlyRentBillAudit(this.auditService, result.bill, user, context, "BATCH");
+      }
+
+      return monthlyRentBatchItem(baseItem, result.created ? "GENERATED" : "SKIPPED_EXISTING", {
+        amount: result.bill.amount,
+        bill: result.bill,
+        period,
+        reason: result.created ? undefined : "已存在同账期月租账单"
+      });
+    } catch (error) {
+      return {
+        ...baseItem,
+        action: dryRun ? "DRY_RUN_FAILED" : "FAILED",
+        error: getErrorMessage(error)
+      };
+    }
   }
 
   async listOrderBills(orderId: string, user: RequestUser) {
@@ -477,9 +636,254 @@ async function createInitialBill(
   });
 }
 
+async function generateNextMonthlyRentBillInTransaction(
+  tx: Prisma.TransactionClient,
+  order: FinanceOrder,
+  amount: bigint,
+  userId: string,
+  source: MonthlyRentBillSource
+) {
+  if (!order.actualDeliveryAt) {
+    throw new BadRequestException(MONTHLY_RENT_NOT_STARTED_MESSAGE);
+  }
+
+  const monthlyBills = await findValidMonthlyRentBills(tx, order.id);
+  const period = buildNextMonthlyRentPeriod(order.actualDeliveryAt, monthlyBills.length);
+  return createMonthlyRentBillForPeriodIfAbsent(tx, order, amount, period, userId, source);
+}
+
+async function createMonthlyRentBillForPeriodIfAbsent(
+  tx: Prisma.TransactionClient,
+  order: FinanceOrder,
+  amount: bigint,
+  period: MonthlyRentPeriod,
+  userId: string,
+  source: MonthlyRentBillSource
+) {
+  const existingBill = await tx.receivableBill.findFirst({
+    where: monthlyRentPeriodWhere(order.id, period)
+  });
+
+  if (existingBill) {
+    return { bill: existingBill, created: false, period };
+  }
+
+  const bill = await tx.receivableBill.create({
+    data: {
+      amount,
+      billNo: createBusinessNo("BIL"),
+      billPeriodEnd: period.end,
+      billPeriodStart: period.start,
+      billStatus: BillStatus.PENDING,
+      billType: BillType.MONTHLY_RENT,
+      createdBy: userId,
+      customerId: order.customerId,
+      dueDate: period.start,
+      orderId: order.id,
+      paidAmount: 0n,
+      remainingAmount: amount,
+      snapshot: toJsonValue(buildMonthlyRentBillSnapshot(order, period, amount, source)),
+      updatedBy: userId
+    }
+  });
+
+  return { bill, created: true, period };
+}
+
+async function findValidMonthlyRentBills(
+  client: Pick<Prisma.TransactionClient, "receivableBill">,
+  orderId: string
+) {
+  return client.receivableBill.findMany({
+    orderBy: [{ billPeriodStart: "asc" }, { createdAt: "asc" }],
+    where: {
+      billStatus: { not: BillStatus.CANCELLED },
+      billType: BillType.MONTHLY_RENT,
+      deletedAt: null,
+      orderId
+    }
+  });
+}
+
+function monthlyRentPeriodWhere(orderId: string, period: MonthlyRentPeriod) {
+  return {
+    billPeriodEnd: period.end,
+    billPeriodStart: period.start,
+    billStatus: { not: BillStatus.CANCELLED },
+    billType: BillType.MONTHLY_RENT,
+    deletedAt: null,
+    orderId
+  } satisfies Prisma.ReceivableBillWhereInput;
+}
+
+function findMonthlyRentBillForPeriod(bills: ReceivableBillRecord[], period: MonthlyRentPeriod) {
+  return bills.find(
+    (bill) =>
+      bill.billPeriodStart?.getTime() === period.start.getTime() &&
+      bill.billPeriodEnd?.getTime() === period.end.getTime()
+  );
+}
+
+function findMonthlyRentBillCoveringDate(bills: ReceivableBillRecord[], billingDate: Date) {
+  return bills.find(
+    (bill) =>
+      bill.billPeriodStart !== null &&
+      bill.billPeriodEnd !== null &&
+      bill.billPeriodStart.getTime() <= billingDate.getTime() &&
+      bill.billPeriodEnd.getTime() >= billingDate.getTime()
+  );
+}
+
+function periodFromBill(bill: ReceivableBillRecord): MonthlyRentPeriod {
+  return {
+    end: bill.billPeriodEnd ?? new Date(0),
+    index: 0,
+    start: bill.billPeriodStart ?? new Date(0)
+  };
+}
+
+function buildNextMonthlyRentPeriod(actualDeliveryAt: Date, existingMonthlyRentBillCount: number): MonthlyRentPeriod {
+  const startDate = toBillingDateOnly(actualDeliveryAt);
+  const index = existingMonthlyRentBillCount + 1;
+  const start = addMonthsClamped(startDate, index);
+  const end = addDays(addMonthsClamped(start, 1), -1);
+  return { end, index, start };
+}
+
+function toBillingDateOnly(value: Date) {
+  const shifted = new Date(value.getTime() + CHINA_TIME_OFFSET_MINUTES * 60 * 1000);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
+}
+
+function addMonthsClamped(value: Date, months: number) {
+  const year = value.getUTCFullYear();
+  const month = value.getUTCMonth() + months;
+  const day = value.getUTCDate();
+  const targetFirstDay = new Date(Date.UTC(year, month, 1));
+  const targetYear = targetFirstDay.getUTCFullYear();
+  const targetMonth = targetFirstDay.getUTCMonth();
+  const targetLastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(targetYear, targetMonth, Math.min(day, targetLastDay)));
+}
+
+function addDays(value: Date, days: number) {
+  const next = new Date(value);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function buildMonthlyRentBillSnapshot(
+  order: FinanceOrder,
+  period: MonthlyRentPeriod,
+  amount: bigint,
+  source: MonthlyRentBillSource
+) {
+  return {
+    amount: Number(amount),
+    billType: BillType.MONTHLY_RENT,
+    customer: {
+      id: order.customerId,
+      mobile: order.customer.mobile,
+      name: order.customer.name
+    },
+    orderId: order.id,
+    orderNo: order.orderNo,
+    periodEnd: toIsoDate(period.end),
+    periodIndex: period.index,
+    periodStart: toIsoDate(period.start),
+    productId: order.productId,
+    productVersionId: order.productVersionId,
+    quote: {
+      id: order.quoteId,
+      quoteNo: order.quote.quoteNo
+    },
+    source,
+    vehicle: order.vehicle
+      ? {
+          id: order.vehicle.id,
+          plateNo: order.vehicle.plateNo,
+          vehicleNo: order.vehicle.vehicleNo,
+          vin: order.vehicle.vin
+        }
+      : null,
+    vehicleId: order.vehicleId,
+    vehicleModel: order.vehicleModel
+  };
+}
+
+async function writeMonthlyRentBillAudit(
+  auditService: AuditService,
+  bill: ReceivableBillRecord,
+  user: RequestUser,
+  context: RequestContext,
+  source: MonthlyRentBillSource
+) {
+  await auditService.write({
+    action: AuditAction.CREATE,
+    after: {
+      amount: Number(bill.amount),
+      bill: toBillView(bill),
+      billId: bill.id,
+      billType: bill.billType,
+      orderId: bill.orderId,
+      periodEnd: toIsoDate(bill.billPeriodEnd),
+      periodStart: toIsoDate(bill.billPeriodStart),
+      source
+    },
+    entityId: bill.id,
+    entityType: "receivable_bill",
+    ipAddress: context.ipAddress,
+    module: "billing",
+    operatorId: user.id,
+    userAgent: context.userAgent
+  });
+}
+
+function monthlyRentBatchItem(
+  baseItem: Pick<MonthlyRentBatchItem, "dryRun" | "orderId" | "orderNo">,
+  action: MonthlyRentBatchAction,
+  options: {
+    amount?: bigint;
+    bill?: ReceivableBillRecord;
+    period?: MonthlyRentPeriod;
+    reason?: string;
+  } = {}
+): MonthlyRentBatchItem {
+  return {
+    ...baseItem,
+    action,
+    amount: options.amount === undefined ? undefined : Number(options.amount),
+    billId: options.bill?.id,
+    periodEnd: options.period ? toIsoDate(options.period.end) ?? undefined : undefined,
+    periodStart: options.period ? toIsoDate(options.period.start) ?? undefined : undefined,
+    reason: options.reason
+  };
+}
+
+function isGeneratedMonthlyRentAction(action: MonthlyRentBatchAction) {
+  return action === "GENERATED" || action === "DRY_RUN_GENERATE";
+}
+
+function isSkippedMonthlyRentAction(action: MonthlyRentBatchAction) {
+  return action === "SKIPPED_NOT_DUE" || action === "SKIPPED_EXISTING" || action === "DRY_RUN_SKIP";
+}
+
+function isFailedMonthlyRentAction(action: MonthlyRentBatchAction) {
+  return action === "FAILED" || action === "DRY_RUN_FAILED";
+}
+
 function ensureOrderCanGenerateInitialBills(order: FinanceOrder) {
   if (FINAL_ORDER_STATUSES.has(order.orderStatus)) {
     throw new BadRequestException("订单已取消、终止或完成，不能生成应收账单");
+  }
+}
+
+function ensureOrderCanGenerateMonthlyRentBill(order: FinanceOrder) {
+  if (order.orderStatus !== OrderStatus.ACTIVE) {
+    throw new BadRequestException(MONTHLY_RENT_ORDER_STATUS_MESSAGE);
+  }
+  if (!order.actualDeliveryAt) {
+    throw new BadRequestException(MONTHLY_RENT_NOT_STARTED_MESSAGE);
   }
 }
 
@@ -508,6 +912,15 @@ function resolveFirstMonthlyFeeAmount(order: FinanceOrder) {
     order.monthlyFeeAmount,
     readSnapshotAmount(order.quoteSnapshot, ["monthlyFeeAmount"]),
     readSnapshotAmount(order.quoteSnapshot, ["pricing", "monthlyFeeAmount"])
+  );
+}
+
+function resolveMonthlyRentAmount(order: FinanceOrder) {
+  return pickPositiveAmount(
+    order.monthlyFeeAmount,
+    readSnapshotAmount(order.quoteSnapshot, ["pricing", "monthlyFeeAmount"]),
+    readSnapshotAmount(order.quoteSnapshot, ["monthlyFeeAmount"]),
+    order.quote.monthlyFeeAmount
   );
 }
 
@@ -618,6 +1031,28 @@ function parseDateTime(value: string, field: string) {
     throw new BadRequestException(`${field} 时间格式不正确`);
   }
   return date;
+}
+
+function parseBillingDate(value: string, field: string) {
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    if (
+      parsed.getUTCFullYear() === Number(year) &&
+      parsed.getUTCMonth() === Number(month) - 1 &&
+      parsed.getUTCDate() === Number(day)
+    ) {
+      return parsed;
+    }
+    throw new BadRequestException(`${field} 日期格式不正确`);
+  }
+
+  return toBillingDateOnly(parseDateTime(value, field));
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sumWriteOffAmount(writeOffs: Array<{ deletedAt?: Date | null; writeOffAmount: bigint }>) {

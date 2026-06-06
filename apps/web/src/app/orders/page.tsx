@@ -5,11 +5,14 @@ import { App, Button, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import { STATUS_LABELS, labelOf } from "../../constants/labels";
+import { canGenerateContract } from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
+import type { AuthMeResponse } from "../../lib/auth";
 
 interface OrderRow {
   application?: { applicationNo: string; id: string } | null;
@@ -44,12 +47,19 @@ function getErrorMessage(error: unknown) {
 export default function OrdersPage() {
   const { message } = App.useApp();
   const [loading, setLoading] = useState(false);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      setOrders(await apiFetch<OrderRow[]>("/orders"));
+      const [nextOrders, nextMe] = await Promise.all([
+        apiFetch<OrderRow[]>("/orders"),
+        apiFetch<AuthMeResponse>("/auth/me")
+      ]);
+      setOrders(nextOrders);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -129,11 +139,14 @@ export default function OrdersPage() {
               查看详情
             </Button>
           </Link>
-          {record.orderStatus === "PENDING_CONTRACT" ? (
-            <Button icon={<FileTextOutlined />} onClick={() => generateContract(record.id)} size="small">
-              生成合同
-            </Button>
-          ) : null}
+          <ActionButton
+            availability={canGenerateContract(record, permissions)}
+            icon={<FileTextOutlined />}
+            onClick={() => generateContract(record.id)}
+            size="small"
+          >
+            生成合同
+          </ActionButton>
         </Space>
       ),
       title: "操作",

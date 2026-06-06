@@ -22,6 +22,7 @@ import dayjs from "dayjs";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import {
   APPLICATION_SOURCE_LABELS,
@@ -32,7 +33,9 @@ import {
   STATUS_LABELS,
   labelOf
 } from "../../constants/labels";
+import { actionAvailability } from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
+import type { AuthMeResponse } from "../../lib/auth";
 import { joinText, snapshotValue, safeText } from "../../lib/application-snapshots";
 import type { CompatibleMaterialFile } from "../../lib/application-materials";
 import { renderMaterialFileNames } from "../../lib/application-materials";
@@ -242,16 +245,20 @@ export default function ApplicationsPage() {
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
   const [uploadTarget, setUploadTarget] = useState<ApplicationRow | null>(null);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [applicationRows, customerRows] = await Promise.all([
+      const [applicationRows, customerRows, nextMe] = await Promise.all([
         apiFetch<ApplicationRow[]>("/applications"),
-        apiFetch<CustomerOption[]>("/customers")
+        apiFetch<CustomerOption[]>("/customers"),
+        apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setApplications(applicationRows);
       setCustomers(customerRows);
+      setMe(nextMe);
     } finally {
       setLoading(false);
     }
@@ -409,20 +416,26 @@ export default function ApplicationsPage() {
           <Button href={`/applications/${record.id}`} size="small" type="link">
             查看 / 审核
           </Button>
-          <Button
-            disabled={!uploadableStatuses.includes(record.status)}
+          <ActionButton
+            allowed={uploadableStatuses.includes(record.status)}
+            disabledReason="当前进件状态不允许上传资料"
             onClick={() => setUploadTarget(record)}
+            permission="application:material_upload"
+            permissions={permissions}
             size="small"
           >
             上传资料
-          </Button>
-          <Button
-            disabled={!["DRAFT", "NEED_MORE_INFO"].includes(record.status)}
+          </ActionButton>
+          <ActionButton
+            allowed={["DRAFT", "NEED_MORE_INFO"].includes(record.status)}
+            disabledReason="当前进件状态不允许提交"
             onClick={() => submitApplication(record)}
+            permission="application:submit"
+            permissions={permissions}
             size="small"
           >
             提交
-          </Button>
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -437,9 +450,17 @@ export default function ApplicationsPage() {
           <Typography.Title level={4} style={{ margin: 0 }}>
             进件管理
           </Typography.Title>
-          <Button onClick={() => setModalOpen(true)} type="primary">
+          <ActionButton
+            availability={actionAvailability({
+              permission: "application:manage",
+              permissions,
+              noPermissionReason: "无创建进件权限"
+            })}
+            onClick={() => setModalOpen(true)}
+            type="primary"
+          >
             新建进件
-          </Button>
+          </ActionButton>
         </Space>
 
         <Space wrap>

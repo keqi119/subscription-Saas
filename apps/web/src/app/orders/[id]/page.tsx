@@ -8,8 +8,14 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
 import { ORDER_CHANGE_TYPE_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import {
+  actionAvailability,
+  canExecuteOrderChange,
+  canGenerateContract as getGenerateContractAvailability
+} from "../../../lib/action-guards";
 import { apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 
@@ -754,11 +760,7 @@ export default function OrderDetailPage() {
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const canCreateChange = permissions.has("order_change:create");
-  const canApproveChange = permissions.has("order_change:approve");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
-  const canExecuteChange = permissions.has("order_change:execute");
-  const canGenerateContract = permissions.has("contract:generate");
-  const canCancelOrder = permissions.has("order:cancel");
   const isAdminOrOperator = roles.has("ADMIN") || roles.has("OP") || roles.has("GM");
   const hasOrderReviewPermission = permissions.has("order:review");
   const canReviewCredit = hasOrderReviewPermission && (isAdminOrOperator || roles.has("RC"));
@@ -785,24 +787,27 @@ export default function OrderDetailPage() {
       activeOrderChange.status === "PENDING" &&
       (roles.has("ADMIN") || activeOrderChange.createdBy === me?.user.id)
   );
-  const canApplyChange = Boolean(
-    order &&
-      canCreateChange &&
-      !orderChangeLocked &&
-      PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)
-  );
-  const canShowGenerateContract = Boolean(
-    order &&
-      order.orderStatus === "PENDING_CONTRACT" &&
-      canGenerateContract &&
-      !orderChangeLocked
-  );
-  const canShowCancelOrder = Boolean(
-    order &&
-      ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
-      canCancelOrder &&
-      !orderChangeLocked
-  );
+  const generateContractAvailability = orderChangeLocked
+    ? { allowed: false, reason: "当前订单存在进行中的变更申请，请先处理后再生成合同" }
+    : getGenerateContractAvailability(order, permissions);
+  const applyChangeAvailability = actionAvailability({
+    allowed: Boolean(order && !orderChangeLocked && PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)),
+    disabledReason: orderChangeLocked ? "该订单已有进行中的变更申请" : "当前订单状态不允许发起变更",
+    noPermissionReason: "无创建订单变更权限",
+    permission: "order_change:create",
+    permissions
+  });
+  const cancelOrderAvailability = actionAvailability({
+    allowed: Boolean(
+      order &&
+        ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
+        !orderChangeLocked
+    ),
+    disabledReason: orderChangeLocked ? "该订单已有进行中的变更申请" : "当前订单状态不允许取消",
+    noPermissionReason: "无取消订单权限",
+    permission: "order:cancel",
+    permissions
+  });
 
   const loadOrder = useCallback(async () => {
     setLoading(true);
@@ -1015,41 +1020,61 @@ export default function OrderDetailPage() {
     },
     {
       render: (_, record) => {
-        const actions = [];
-        if (
-          record.status === "PENDING" &&
-          !record.executedAt &&
-          (roles.has("ADMIN") || record.createdBy === me?.user.id)
-        ) {
-          actions.push(
-            <Button key="cancel-change" onClick={() => cancelChange(record.id)} size="small">
-              取消变更申请
-            </Button>
-          );
-        }
-        if (record.status === "PENDING" && canApproveChange) {
-          actions.push(
-            <Button key="approve" onClick={() => reviewChange(record.id, "approve")} size="small" type="primary">
-              同意变更
-            </Button>
-          );
-        }
-        if (record.status === "PENDING" && canRejectChange) {
-          actions.push(
-            <Button danger key="reject" onClick={() => reviewChange(record.id, "reject")} size="small">
-              拒绝
-            </Button>
-          );
-        }
-        if (record.status === "APPROVED" && !record.executedAt && canExecuteChange) {
-          actions.push(
-            <Button key="return-to-plan" onClick={() => returnChangeToPlan(record.id)} size="small" type="primary">
-              取消当前订单并退回方案生成环节
-            </Button>
-          );
-        }
+        const cancelChangeAvailability = actionAvailability({
+          allowed: Boolean(record.status === "PENDING" && !record.executedAt && (roles.has("ADMIN") || record.createdBy === me?.user.id)),
+          disabledReason: record.executedAt ? "该变更已执行" : "当前变更状态不允许取消",
+          permissions
+        });
+        const approveChangeAvailability = actionAvailability({
+          allowed: record.status === "PENDING",
+          disabledReason: "当前变更状态不允许审批",
+          noPermissionReason: "无审批订单变更权限",
+          permission: "order_change:approve",
+          permissions
+        });
+        const rejectChangeAvailability = canRejectChange
+          ? actionAvailability({
+              allowed: record.status === "PENDING",
+              disabledReason: "当前变更状态不允许拒绝",
+              permissions
+            })
+          : { allowed: false, reason: "无拒绝订单变更权限" };
 
-        return actions.length > 0 ? <Space>{actions}</Space> : "-";
+        return (
+          <Space>
+            <ActionButton
+              availability={cancelChangeAvailability}
+              onClick={() => cancelChange(record.id)}
+              size="small"
+            >
+              取消变更申请
+            </ActionButton>
+            <ActionButton
+              availability={approveChangeAvailability}
+              onClick={() => reviewChange(record.id, "approve")}
+              size="small"
+              type="primary"
+            >
+              同意变更
+            </ActionButton>
+            <ActionButton
+              availability={rejectChangeAvailability}
+              danger
+              onClick={() => reviewChange(record.id, "reject")}
+              size="small"
+            >
+              拒绝
+            </ActionButton>
+            <ActionButton
+              availability={canExecuteOrderChange(record, order, permissions)}
+              onClick={() => returnChangeToPlan(record.id)}
+              size="small"
+              type="primary"
+            >
+              取消当前订单并退回方案生成环节
+            </ActionButton>
+          </Space>
+        );
       },
       title: "操作"
     }
@@ -1068,20 +1093,29 @@ export default function OrderDetailPage() {
           </Space>
           {order ? (
             <Space>
-              {canShowGenerateContract ? (
-                <Button onClick={generateContract} type="primary">
-                  生成合同
-                </Button>
-              ) : null}
+              <ActionButton
+                availability={generateContractAvailability}
+                onClick={generateContract}
+                type="primary"
+              >
+                生成合同
+              </ActionButton>
               {order.contract ? (
                 <Button onClick={() => router.push(`/contracts/${order.contract?.id}`)}>查看合同</Button>
               ) : null}
-              {canApplyChange ? <Button onClick={openChangeModal}>申请变更方案</Button> : null}
-              {canShowCancelOrder ? (
-                <Button danger onClick={cancelOrder}>
-                  取消订单
-                </Button>
-              ) : null}
+              <ActionButton
+                availability={applyChangeAvailability}
+                onClick={openChangeModal}
+              >
+                申请变更方案
+              </ActionButton>
+              <ActionButton
+                availability={cancelOrderAvailability}
+                danger
+                onClick={cancelOrder}
+              >
+                取消订单
+              </ActionButton>
               {order.orderStatus === "CANCELLED" && order.application && !isCustomerSelfServiceOrder ? (
                 <Button onClick={() => router.push(`/applications/${order.application?.id}`)}>
                   返回进件重新生成方案
@@ -1099,24 +1133,46 @@ export default function OrderDetailPage() {
                 状态：{labelOf(STATUS_LABELS, activeOrderChange.status)} / 创建时间：{formatTime(activeOrderChange.createdAt)}
               </Typography.Text>
               <Space wrap>
-                {canCancelActiveChange ? (
-                  <Button onClick={() => cancelChange(activeOrderChange.id)}>取消变更申请</Button>
-                ) : null}
-                {activeOrderChange.status === "PENDING" && canApproveChange ? (
-                  <Button onClick={() => reviewChange(activeOrderChange.id, "approve")} type="primary">
-                    同意变更
-                  </Button>
-                ) : null}
-                {activeOrderChange.status === "PENDING" && canRejectChange ? (
-                  <Button danger onClick={() => reviewChange(activeOrderChange.id, "reject")}>
-                    拒绝变更
-                  </Button>
-                ) : null}
-                {activeOrderChange.status === "APPROVED" && canExecuteChange ? (
-                  <Button onClick={() => returnChangeToPlan(activeOrderChange.id)} type="primary">
-                    取消当前订单并退回方案生成环节
-                  </Button>
-                ) : null}
+                <ActionButton
+                  allowed={canCancelActiveChange}
+                  disabledReason="当前变更不允许取消"
+                  onClick={() => cancelChange(activeOrderChange.id)}
+                >
+                  取消变更申请
+                </ActionButton>
+                <ActionButton
+                  allowed={activeOrderChange.status === "PENDING"}
+                  disabledReason="当前变更状态不允许审批"
+                  noPermissionReason="无审批订单变更权限"
+                  onClick={() => reviewChange(activeOrderChange.id, "approve")}
+                  permission="order_change:approve"
+                  permissions={permissions}
+                  type="primary"
+                >
+                  同意变更
+                </ActionButton>
+                <ActionButton
+                  availability={
+                    canRejectChange
+                      ? actionAvailability({
+                          allowed: activeOrderChange.status === "PENDING",
+                          disabledReason: "当前变更状态不允许拒绝",
+                          permissions
+                        })
+                      : { allowed: false, reason: "无拒绝订单变更权限" }
+                  }
+                  danger
+                  onClick={() => reviewChange(activeOrderChange.id, "reject")}
+                >
+                  拒绝变更
+                </ActionButton>
+                <ActionButton
+                  availability={canExecuteOrderChange(activeOrderChange, order, permissions)}
+                  onClick={() => returnChangeToPlan(activeOrderChange.id)}
+                  type="primary"
+                >
+                  取消当前订单并退回方案生成环节
+                </ActionButton>
               </Space>
             </Space>
           </Card>

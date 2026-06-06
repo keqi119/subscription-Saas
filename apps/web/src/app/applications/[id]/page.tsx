@@ -30,6 +30,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
 import {
   APPLICATION_SOURCE_LABELS,
@@ -42,6 +43,12 @@ import {
   labelOf
 } from "../../../constants/labels";
 import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
+import {
+  actionAvailability,
+  canCreateOrderFromApplication as getCreateOrderAvailability,
+  canFinalizeApplicationPlan as getFinalizePlanAvailability,
+  canGenerateApplicationQuote
+} from "../../../lib/action-guards";
 import {
   formatMoneyCent,
   formatMonths,
@@ -388,31 +395,46 @@ export default function ApplicationDetailPage() {
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const isSelfServiceApplication = detail?.applicationSource === "SELF_SERVICE";
   const canReviewApplication = permissions.has("application:review");
-  const canCreateOfficialOrder = permissions.has("order:create") && permissions.has("quote:create");
   const canCreateOrderChange = permissions.has("order_change:create");
   const currentOrder = detail?.orders?.[0] ?? null;
   const intentSnapshot = detail?.intentSnapshot ?? detail?.customerSelectedSnapshot;
   const finalPlanSnapshot = detail?.finalPlanSnapshot ?? detail?.finalQuoteSnapshot;
-  const requiredApplicationReviewsApproved = Boolean(
-    detail?.materialReviewStatus === "APPROVED" &&
-      detail.creditReviewStatus === "APPROVED"
-  );
-  const canFinalizeApplicationPlan = Boolean(
-    canReviewApplication &&
-      requiredApplicationReviewsApproved &&
-      detail?.depositStatus === "CONFIRMED" &&
-      detail.planConfirmStatus !== "CONFIRMED" &&
-      !currentOrder &&
-      detail.status !== "REJECTED" &&
-      detail.status !== "CANCELLED"
-  );
-  const canCreateOrderFromApplication = Boolean(
-    canCreateOfficialOrder &&
-      detail?.planConfirmStatus === "CONFIRMED" &&
-      !currentOrder &&
-      detail.status !== "REJECTED" &&
-      detail.status !== "CANCELLED"
-  );
+  const uploadMaterialAvailability = actionAvailability({
+    allowed: availableActions.has("uploadMaterial"),
+    disabledReason: "当前进件状态不允许上传资料",
+    noPermissionReason: "无上传进件资料权限",
+    permission: "application:material_upload",
+    permissions
+  });
+  const createQuoteAvailability = canGenerateApplicationQuote(detail, permissions);
+  const submitAvailability = actionAvailability({
+    allowed: availableActions.has("submit"),
+    disabledReason: "当前进件状态不允许提交",
+    permissions
+  });
+  const approveAvailability = actionAvailability({
+    allowed: availableActions.has("approve"),
+    disabledReason: "当前进件状态不允许审核",
+    noPermissionReason: "无进件审核权限",
+    permission: "application:review",
+    permissions
+  });
+  const needMoreInfoAvailability = actionAvailability({
+    allowed: availableActions.has("needMoreInfo"),
+    disabledReason: "当前进件不需要补件",
+    noPermissionReason: "无进件审核权限",
+    permission: "application:review",
+    permissions
+  });
+  const rejectAvailability = actionAvailability({
+    allowed: availableActions.has("reject"),
+    disabledReason: "当前进件状态不允许拒绝",
+    noPermissionReason: "无进件审核权限",
+    permission: "application:review",
+    permissions
+  });
+  const finalizeApplicationPlanAvailability = getFinalizePlanAvailability(detail, permissions);
+  const createOrderFromApplicationAvailability = getCreateOrderAvailability(detail, permissions);
   const selectedQuoteVehicle = availableVehicles.find((vehicle) => (vehicle.vehicleId ?? vehicle.id) === quoteVehicleId);
   const selectedQuotePlan = availablePlans.find((plan) => plan.subscriptionPlanId === quoteSubscriptionPlanId);
   const quotePlanEmptyReason =
@@ -876,25 +898,48 @@ export default function ApplicationDetailPage() {
     {
       render: (_, record) => (
         <Space wrap>
-          {record.canUpload ? (
-            <Button icon={<UploadOutlined />} onClick={() => openUploadModal(record.materialType)} size="small">
-              上传文件
-            </Button>
-          ) : null}
-          {record.canReview ? (
-            <>
-              <Button onClick={() => openMaterialReviewModal(record, "APPROVED")} size="small">
-                通过
-              </Button>
-              <Button onClick={() => openMaterialReviewModal(record, "NEED_MORE_INFO")} size="small">
-                补充资料
-              </Button>
-              <Button danger onClick={() => openMaterialReviewModal(record, "REJECTED")} size="small">
-                不通过
-              </Button>
-            </>
-          ) : null}
-          {!record.canUpload && !record.canReview ? "-" : null}
+          <ActionButton
+            allowed={record.canUpload}
+            disabledReason="当前资料项不可上传"
+            icon={<UploadOutlined />}
+            onClick={() => openUploadModal(record.materialType)}
+            permission="application:material_upload"
+            permissions={permissions}
+            size="small"
+          >
+            上传文件
+          </ActionButton>
+          <ActionButton
+            allowed={record.canReview}
+            disabledReason="当前资料项不可审核"
+            onClick={() => openMaterialReviewModal(record, "APPROVED")}
+            permission="application:review"
+            permissions={permissions}
+            size="small"
+          >
+            通过
+          </ActionButton>
+          <ActionButton
+            allowed={record.canReview}
+            disabledReason="当前资料项不可审核"
+            onClick={() => openMaterialReviewModal(record, "NEED_MORE_INFO")}
+            permission="application:review"
+            permissions={permissions}
+            size="small"
+          >
+            补充资料
+          </ActionButton>
+          <ActionButton
+            allowed={record.canReview}
+            danger
+            disabledReason="当前资料项不可审核"
+            onClick={() => openMaterialReviewModal(record, "REJECTED")}
+            permission="application:review"
+            permissions={permissions}
+            size="small"
+          >
+            不通过
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -965,39 +1010,57 @@ export default function ApplicationDetailPage() {
                   ) : null}
                 </>
               ) : null}
-              {availableActions.has("uploadMaterial") ? (
-                <Button icon={<UploadOutlined />} onClick={() => openUploadModal()}>
-                  上传资料
-                </Button>
-              ) : null}
-              {!isSelfServiceApplication && availableActions.has("createQuote") ? (
-                <Button onClick={openQuoteModal} type="primary">
+              <ActionButton
+                availability={uploadMaterialAvailability}
+                icon={<UploadOutlined />}
+                onClick={() => openUploadModal()}
+              >
+                上传资料
+              </ActionButton>
+              {!isSelfServiceApplication ? (
+                <ActionButton
+                  availability={createQuoteAvailability}
+                  onClick={openQuoteModal}
+                  type="primary"
+                >
                   生成订阅报价
-                </Button>
+                </ActionButton>
               ) : null}
-              {availableActions.has("submit") ? (
-                <Button onClick={() => openActionModal("submit")} type="primary">
-                  提交
-                </Button>
-              ) : null}
-              {availableActions.has("approve") ? (
-                <Button onClick={() => openActionModal("approve")} type="primary">
-                  通过
-                </Button>
-              ) : null}
-              {availableActions.has("needMoreInfo") ? (
-                <Button onClick={() => openActionModal("need-more-info")}>补件</Button>
-              ) : null}
-              {availableActions.has("reject") ? (
-                <Button danger onClick={() => openActionModal("reject")}>
-                  拒绝
-                </Button>
-              ) : null}
-              {canCreateOrderFromApplication ? (
-                <Button loading={submitting} onClick={createOrderFromApplication} type="primary">
-                  生成正式订单
-                </Button>
-              ) : null}
+              <ActionButton
+                availability={submitAvailability}
+                onClick={() => openActionModal("submit")}
+                type="primary"
+              >
+                提交
+              </ActionButton>
+              <ActionButton
+                availability={approveAvailability}
+                onClick={() => openActionModal("approve")}
+                type="primary"
+              >
+                通过
+              </ActionButton>
+              <ActionButton
+                availability={needMoreInfoAvailability}
+                onClick={() => openActionModal("need-more-info")}
+              >
+                补件
+              </ActionButton>
+              <ActionButton
+                availability={rejectAvailability}
+                danger
+                onClick={() => openActionModal("reject")}
+              >
+                拒绝
+              </ActionButton>
+              <ActionButton
+                availability={createOrderFromApplicationAvailability}
+                loading={submitting}
+                onClick={createOrderFromApplication}
+                type="primary"
+              >
+                生成正式订单
+              </ActionButton>
             </Space>
           ) : null}
         </Space>
@@ -1237,22 +1300,22 @@ export default function ApplicationDetailPage() {
                     />
                   ) : null}
                   <Space wrap>
-                    <Button
-                      disabled={!canFinalizeApplicationPlan}
+                    <ActionButton
+                      availability={finalizeApplicationPlanAvailability}
                       loading={submitting}
                       onClick={finalizeApplicationPlan}
                       type="primary"
                     >
                       后台代客户确认最终方案（临时）
-                    </Button>
-                    <Button
-                      disabled={!canCreateOrderFromApplication}
+                    </ActionButton>
+                    <ActionButton
+                      availability={createOrderFromApplicationAvailability}
                       loading={submitting}
                       onClick={createOrderFromApplication}
                       type="primary"
                     >
                       生成正式订单
-                    </Button>
+                    </ActionButton>
                   </Space>
                 </Space>
               ) : null}

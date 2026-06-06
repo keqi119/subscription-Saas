@@ -28,9 +28,16 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import { SALE_PRICE_REVIEW_TYPE_LABELS, STATUS_LABELS, labelOf } from "../../constants/labels";
+import {
+  canInitializeVehicleSalePrice,
+  canReviewVehicleSalePrice,
+  canUpdateVehicleStatus
+} from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
+import type { AuthMeResponse } from "../../lib/auth";
 
 interface Vehicle {
   assetLocation?: string | null;
@@ -186,16 +193,20 @@ export default function VehiclesPage() {
   const [reviewingVehicle, setReviewingVehicle] = useState<Vehicle | null>(null);
   const [statusVehicle, setStatusVehicle] = useState<Vehicle | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [vehicleRows, dueRows] = await Promise.all([
+      const [vehicleRows, dueRows, nextMe] = await Promise.all([
         apiFetch<Vehicle[]>("/vehicles"),
-        apiFetch<Vehicle[]>("/vehicles/sale-price-reviews/due")
+        apiFetch<Vehicle[]>("/vehicles/sale-price-reviews/due"),
+        apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setVehicles(vehicleRows);
       setDueReviews(dueRows);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -208,8 +219,8 @@ export default function VehiclesPage() {
   }, [loadData]);
 
   const columns = useMemo(
-    () => buildVehicleColumns(openInitialize, openReview, openHistory, openStatus),
-    []
+    () => buildVehicleColumns(openInitialize, openReview, openHistory, openStatus, permissions),
+    [permissions]
   );
 
   function openCreateVehicle() {
@@ -371,9 +382,15 @@ export default function VehiclesPage() {
             <Typography.Text type="secondary">销售价初始化、季度复核与退车再入池管理</Typography.Text>
           </div>
           <Space>
-            <Button icon={<PlusOutlined />} onClick={openCreateVehicle} type="primary">
+            <ActionButton
+              icon={<PlusOutlined />}
+              onClick={openCreateVehicle}
+              permission="vehicle:create"
+              permissions={permissions}
+              type="primary"
+            >
               新增车辆
-            </Button>
+            </ActionButton>
             <Button icon={<ReloadOutlined />} loading={loading} onClick={loadData}>
               刷新
             </Button>
@@ -618,7 +635,8 @@ function buildVehicleColumns(
   openInitialize: (vehicle: Vehicle) => void,
   openReview: (vehicle: Vehicle) => void,
   openHistory: (vehicle: Vehicle) => void,
-  openStatus: (vehicle: Vehicle) => void
+  openStatus: (vehicle: Vehicle) => void,
+  permissions: ReadonlySet<string>
 ): ColumnsType<Vehicle> {
   return [
     { dataIndex: "vin", render: (value: string | null) => value ?? "-", title: "VIN", width: 180 },
@@ -643,23 +661,39 @@ function buildVehicleColumns(
       fixed: "right",
       render: (_, record) => (
         <Space>
-          <Button icon={<DollarOutlined />} onClick={() => openInitialize(record)} size="small">
+          <ActionButton
+            availability={canInitializeVehicleSalePrice(record, permissions)}
+            icon={<DollarOutlined />}
+            onClick={() => openInitialize(record)}
+            size="small"
+          >
             初始化销售价
-          </Button>
-          <Button
-            disabled={!record.currentSalePriceAmount}
+          </ActionButton>
+          <ActionButton
+            availability={canReviewVehicleSalePrice(record, permissions)}
             icon={<SyncOutlined />}
             onClick={() => openReview(record)}
             size="small"
           >
             季度复核
-          </Button>
-          <Button icon={<HistoryOutlined />} onClick={() => openHistory(record)} size="small">
+          </ActionButton>
+          <ActionButton
+            icon={<HistoryOutlined />}
+            onClick={() => openHistory(record)}
+            permission="vehicle:history_view"
+            permissions={permissions}
+            size="small"
+          >
             查看历史
-          </Button>
-          <Button icon={<CarOutlined />} onClick={() => openStatus(record)} size="small">
+          </ActionButton>
+          <ActionButton
+            availability={canUpdateVehicleStatus(record, permissions)}
+            icon={<CarOutlined />}
+            onClick={() => openStatus(record)}
+            size="small"
+          >
             更新状态
-          </Button>
+          </ActionButton>
         </Space>
       ),
       title: "操作",

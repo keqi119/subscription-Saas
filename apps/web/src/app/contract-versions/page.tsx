@@ -4,11 +4,13 @@ import { PlusOutlined } from "@ant-design/icons";
 import { App, Button, DatePicker, Drawer, Form, Input, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import { STATUS_LABELS, labelOf } from "../../constants/labels";
 import { apiFetch, ApiError } from "../../lib/api";
+import type { AuthMeResponse } from "../../lib/auth";
 
 interface ContractVersionRow {
   businessType: string;
@@ -42,12 +44,19 @@ export default function ContractVersionsPage() {
   const [form] = Form.useForm<ContractVersionFormValues>();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [versions, setVersions] = useState<ContractVersionRow[]>([]);
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadVersions = useCallback(async () => {
     setLoading(true);
     try {
-      setVersions(await apiFetch<ContractVersionRow[]>("/contract-versions"));
+      const [nextVersions, nextMe] = await Promise.all([
+        apiFetch<ContractVersionRow[]>("/contract-versions"),
+        apiFetch<AuthMeResponse>("/auth/me")
+      ]);
+      setVersions(nextVersions);
+      setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -103,16 +112,26 @@ export default function ContractVersionsPage() {
     {
       render: (_, record) => (
         <Space>
-          {record.status !== "ACTIVE" ? (
-            <Button onClick={() => setStatus(record.id, "activate")} size="small">
-              启用
-            </Button>
-          ) : null}
-          {record.status === "ACTIVE" ? (
-            <Button onClick={() => setStatus(record.id, "deactivate")} size="small">
-              停用
-            </Button>
-          ) : null}
+          <ActionButton
+            allowed={record.status !== "ACTIVE"}
+            disabledReason="当前模板已启用"
+            onClick={() => setStatus(record.id, "activate")}
+            permission="contract_template:activate"
+            permissions={permissions}
+            size="small"
+          >
+            启用
+          </ActionButton>
+          <ActionButton
+            allowed={record.status === "ACTIVE"}
+            disabledReason="当前模板未启用"
+            onClick={() => setStatus(record.id, "deactivate")}
+            permission="contract_template:activate"
+            permissions={permissions}
+            size="small"
+          >
+            停用
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -127,9 +146,15 @@ export default function ContractVersionsPage() {
           <Typography.Title level={4} style={{ margin: 0 }}>
             合同模板
           </Typography.Title>
-          <Button icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)} type="primary">
+          <ActionButton
+            icon={<PlusOutlined />}
+            onClick={() => setDrawerOpen(true)}
+            permission="contract_template:create"
+            permissions={permissions}
+            type="primary"
+          >
             新增模板
-          </Button>
+          </ActionButton>
         </Space>
         <Table columns={columns} dataSource={versions} loading={loading} rowKey="id" scroll={{ x: 1200 }} />
       </Space>
@@ -162,9 +187,14 @@ export default function ContractVersionsPage() {
             <Input.TextArea rows={8} />
           </Form.Item>
           <Space>
-            <Button onClick={saveVersion} type="primary">
+            <ActionButton
+              onClick={saveVersion}
+              permission="contract_template:create"
+              permissions={permissions}
+              type="primary"
+            >
               保存
-            </Button>
+            </ActionButton>
             <Button onClick={() => setDrawerOpen(false)}>取消</Button>
           </Space>
         </Form>

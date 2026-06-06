@@ -7,14 +7,16 @@ import {
   ReloadOutlined,
   StopOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Descriptions, Drawer, Form, Input, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Descriptions, Drawer, Form, Input, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
 import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
 import { apiFetch, ApiError } from "../../../lib/api";
+import { actionAvailability } from "../../../lib/action-guards";
 import type { AuthMeResponse } from "../../../lib/auth";
 
 type ReviewDecision = "APPROVED" | "NEED_MORE_INFO" | "REJECTED";
@@ -526,18 +528,21 @@ export default function OrderReviewQueuePage() {
           <Button icon={<EyeOutlined />} onClick={() => openDrawer(record)} size="small">
             审核
           </Button>
-          {canConfirmFinalPlan && canFinalize(record) ? (
-            <Tooltip title="确认最终方案后后台代客户确认">
-              <Button
-                icon={<FileDoneOutlined />}
-                onClick={() => confirmFinalPlanFlow(record)}
-                size="small"
-                type="primary"
-              >
-                最终确认
-              </Button>
-            </Tooltip>
-          ) : null}
+          <ActionButton
+            availability={actionAvailability({
+              allowed: canFinalize(record),
+              disabledReason: "三项审核通过且押金确认后，才能确认最终方案",
+              noPermissionReason: "无确认最终方案权限",
+              permission: "order:confirm_final_plan",
+              permissions
+            })}
+            icon={<FileDoneOutlined />}
+            onClick={() => confirmFinalPlanFlow(record)}
+            size="small"
+            type="primary"
+          >
+            最终确认
+          </ActionButton>
         </Space>
       ),
       title: "操作",
@@ -568,15 +573,22 @@ export default function OrderReviewQueuePage() {
         <Drawer
           destroyOnHidden
           extra={
-            selectedOrder && canConfirmFinalPlan && canFinalize(selectedOrder) ? (
-              <Button
+            selectedOrder ? (
+              <ActionButton
+                availability={actionAvailability({
+                  allowed: canFinalize(selectedOrder),
+                  disabledReason: "三项审核通过且押金确认后，才能确认最终方案",
+                  noPermissionReason: "无确认最终方案权限",
+                  permission: "order:confirm_final_plan",
+                  permissions
+                })}
                 icon={<FileDoneOutlined />}
                 loading={submitting}
                 onClick={() => confirmFinalPlanFlow(selectedOrder)}
                 type="primary"
               >
                 确认最终方案并进入签约
-              </Button>
+              </ActionButton>
             ) : null
           }
           onClose={closeDrawer}
@@ -788,21 +800,33 @@ function ReviewDrawerContent({
         ]}
       />
       <Space align="end" wrap>
-        {canConfirmFinalPlan && canFinalize(order) ? (
-          <Button icon={<FileDoneOutlined />} loading={loading} onClick={onConfirmFinalPlan} type="primary">
-            后台确认客户最终方案
-          </Button>
-        ) : null}
-        {canRejectOrder && ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) ? (
-          <>
-            <Form.Item label="拒绝原因" name="rejectComment">
-              <Input.TextArea placeholder="填写拒绝原因" rows={2} style={{ width: 360 }} />
-            </Form.Item>
-            <Button danger icon={<StopOutlined />} loading={loading} onClick={onRejectOrder}>
-              拒绝订单
-            </Button>
-          </>
-        ) : null}
+        <ActionButton
+          availability={actionAvailability({
+            allowed: canConfirmFinalPlan && canFinalize(order),
+            disabledReason: canConfirmFinalPlan ? "三项审核通过且押金确认后，才能确认最终方案" : "无确认最终方案权限"
+          })}
+          icon={<FileDoneOutlined />}
+          loading={loading}
+          onClick={onConfirmFinalPlan}
+          type="primary"
+        >
+          后台确认客户最终方案
+        </ActionButton>
+        <Form.Item label="拒绝原因" name="rejectComment">
+          <Input.TextArea placeholder="填写拒绝原因" rows={2} style={{ width: 360 }} />
+        </Form.Item>
+        <ActionButton
+          availability={actionAvailability({
+            allowed: canRejectOrder && ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus),
+            disabledReason: canRejectOrder ? "当前订单状态不允许拒绝" : "无拒绝订单权限"
+          })}
+          danger
+          icon={<StopOutlined />}
+          loading={loading}
+          onClick={onRejectOrder}
+        >
+          拒绝订单
+        </ActionButton>
       </Space>
     </Space>
   );

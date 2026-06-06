@@ -40,6 +40,7 @@ import {
   REVIEW_STATUS_LABELS,
   STATUS_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
+  VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   labelOf
 } from "../../../constants/labels";
 import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
@@ -54,7 +55,8 @@ import {
   formatMonths,
   joinText,
   safeText,
-  snapshotValue
+  snapshotValue,
+  toNumber
 } from "../../../lib/application-snapshots";
 import type { AuthMeResponse } from "../../../lib/auth";
 
@@ -241,6 +243,9 @@ interface CreateOrderResult {
 
 interface AvailableVehicle {
   assetLocation?: string | null;
+  batteryCapacityKwh?: number | null;
+  batteryUsageType?: string | null;
+  batteryUsageTypeLabel?: string | null;
   brand: string;
   currentMileageKm: number;
   currentSalePriceAmount?: number | null;
@@ -336,6 +341,20 @@ function formatTime(value?: string | null) {
 
 function formatYuan(value?: number | null) {
   return value === undefined || value === null ? "-" : `¥${(value / 100).toFixed(2)}`;
+}
+
+function formatKwh(value?: unknown) {
+  const kwh = toNumber(value);
+  return kwh === null ? "-" : `${kwh.toLocaleString("zh-CN")} kWh`;
+}
+
+function formatBatteryUsageType(type?: unknown, label?: unknown) {
+  const labelText = safeText(label);
+  if (labelText !== "-") {
+    return labelText;
+  }
+  const typeText = safeText(type);
+  return typeText === "-" ? "-" : labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, typeText);
 }
 
 function getErrorMessage(error: unknown) {
@@ -1129,6 +1148,17 @@ export default function ApplicationDetailPage() {
                       )
                     },
                     {
+                      label: "电池容量",
+                      children: formatKwh(snapshotValue(intentSnapshot, "vehicleSnapshot.batteryCapacityKwh"))
+                    },
+                    {
+                      label: "电池使用方式",
+                      children: formatBatteryUsageType(
+                        snapshotValue(intentSnapshot, "vehicleSnapshot.batteryUsageType"),
+                        snapshotValue(intentSnapshot, "vehicleSnapshot.batteryUsageTypeLabel")
+                      )
+                    },
+                    {
                       label: "当前车辆销售价",
                       children: formatMoneyCent(snapshotValue(intentSnapshot, "vehicleSnapshot.currentSalePriceAmount"))
                     },
@@ -1339,6 +1369,17 @@ export default function ApplicationDetailPage() {
                       )
                     },
                     {
+                      label: "电池容量",
+                      children: formatKwh(snapshotValue(finalPlanSnapshot, "vehicleSnapshot.batteryCapacityKwh"))
+                    },
+                    {
+                      label: "电池使用方式",
+                      children: formatBatteryUsageType(
+                        snapshotValue(finalPlanSnapshot, "vehicleSnapshot.batteryUsageType"),
+                        snapshotValue(finalPlanSnapshot, "vehicleSnapshot.batteryUsageTypeLabel")
+                      )
+                    },
+                    {
                       label: "最终套餐",
                       children: joinText(
                         snapshotValue(finalPlanSnapshot, "subscriptionPlan.planNo"),
@@ -1537,6 +1578,10 @@ export default function ApplicationDetailPage() {
             <Typography.Text>VIN：{selectedQuoteVehicle?.vin ?? "-"}</Typography.Text>
             <Typography.Text>车牌号：{selectedQuoteVehicle?.plateNo ?? "-"}</Typography.Text>
             <Typography.Text>车型：{selectedQuoteVehicle?.vehicleModel ?? selectedQuotePlan?.vehicleModel ?? "-"}</Typography.Text>
+            <Typography.Text>电池容量：{formatKwh(selectedQuoteVehicle?.batteryCapacityKwh)}</Typography.Text>
+            <Typography.Text>
+              电池使用方式：{formatBatteryUsageType(selectedQuoteVehicle?.batteryUsageType, selectedQuoteVehicle?.batteryUsageTypeLabel)}
+            </Typography.Text>
             <Typography.Text>当前车辆销售价：{formatYuan(selectedQuoteVehicle?.currentSalePriceAmount)}</Typography.Text>
             <Typography.Text>当前里程：{selectedQuoteVehicle ? `${selectedQuoteVehicle.currentMileageKm} km` : "-"}</Typography.Text>
             <Typography.Text>资产位置：{selectedQuoteVehicle?.assetLocation ?? "-"}</Typography.Text>

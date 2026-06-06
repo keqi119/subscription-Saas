@@ -20,6 +20,7 @@ import {
   RiskResultDecision,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleModel,
   VehicleStatus
 } from "@prisma/client";
@@ -789,6 +790,8 @@ function makeCustomerForApplication() {
 function makeVehicle(now: Date, overrides: Record<string, unknown> = {}) {
   return {
     assetLocation: "上海",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",
     createdAt: now,
     createdBy: "00000000-0000-4000-8000-000000000001",

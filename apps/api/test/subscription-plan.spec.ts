@@ -12,6 +12,7 @@ import {
   RiskResultDecision,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleStatus,
   VehicleModel
 } from "@prisma/client";
@@ -215,7 +216,11 @@ describe("subscription plan backend flow", () => {
           vehicleId: "vehicle-asset-1",
           vehiclePurchasePriceAmount: BigInt(10000000),
           vehicleSalePriceAmount: BigInt(12000000),
-          vehicleSnapshot: expect.any(Object),
+          vehicleSnapshot: expect.objectContaining({
+            batteryCapacityKwh: 75,
+            batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+            batteryUsageTypeLabel: "电池买断"
+          }),
           vehiclePackageId: "vehicle-1"
         })
       })
@@ -775,6 +780,8 @@ function makeDepositRule(overrides: Record<string, unknown> = {}) {
 function makeVehicle(overrides: Record<string, unknown> = {}) {
   return {
     assetLocation: "Shanghai",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",
     createdAt: now,
     createdBy: "user-1",

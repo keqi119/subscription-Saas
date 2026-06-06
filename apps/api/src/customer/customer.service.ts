@@ -29,6 +29,7 @@ import {
   RecordStatus,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleStatus
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
@@ -1062,6 +1063,9 @@ export class CustomerService {
     const softReservationExpiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     const vehicleSnapshot = toJsonSnapshot({
       assetLocation: vehicle.assetLocation,
+      batteryCapacityKwh: vehicle.batteryCapacityKwh?.toNumber() ?? null,
+      batteryUsageType: vehicle.batteryUsageType,
+      batteryUsageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType],
       brand: vehicle.brand,
       currentMileageKm: vehicle.currentMileageKm,
       currentSalePriceAmount: Number(vehicleSalePriceAmount),
@@ -2184,6 +2188,9 @@ async function loadApplicationFinalPlanDetails(
     benefitPackagePriceAmount;
   const vehicleSnapshot = toJsonSnapshot({
     assetLocation: vehicle.assetLocation,
+    batteryCapacityKwh: vehicle.batteryCapacityKwh?.toNumber() ?? null,
+    batteryUsageType: vehicle.batteryUsageType,
+    batteryUsageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType],
     brand: vehicle.brand,
     currentMileageKm: vehicle.currentMileageKm,
     currentSalePriceAmount: Number(vehicleSalePriceAmount),
@@ -2807,6 +2814,11 @@ const SELF_SERVICE_VEHICLE_BASE_FEE_MODE_LABELS: Record<MonthlyFeeMode, string> 
   [MonthlyFeeMode.FIXED_AMOUNT]: "固定金额",
   [MonthlyFeeMode.MANUAL_QUOTE]: "现场报价",
   [MonthlyFeeMode.RATE_FORMULA]: "固定费率"
+};
+
+const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<VehicleBatteryUsageType, string> = {
+  [VehicleBatteryUsageType.BAAS]: "BaaS / 电池租用",
+  [VehicleBatteryUsageType.BUYOUT]: "电池买断"
 };
 
 function calculateSelfServiceVehicleBaseFee(

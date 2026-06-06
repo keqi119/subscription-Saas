@@ -3,8 +3,10 @@ import path from "node:path";
 
 import {
   AuditAction,
+  Prisma,
   SalePriceStatus,
   Vehicle,
+  VehicleBatteryUsageType,
   VehicleModel,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
@@ -26,6 +28,8 @@ describe("VehicleService sale price baseline", () => {
     const result = await service.createVehicle(
       {
         brand: "NIO",
+        batteryCapacityKwh: 75,
+        batteryUsageType: VehicleBatteryUsageType.BUYOUT,
         purchasePriceAmount: 16800000,
         vehicleModel: VehicleModel.ET5,
         vin: "TESTVINET50000002"
@@ -38,15 +42,58 @@ describe("VehicleService sale price baseline", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           purchasePriceAmount: 16800000n,
+          batteryCapacityKwh: new Prisma.Decimal(75),
+          batteryUsageType: VehicleBatteryUsageType.BUYOUT,
           vin: "TESTVINET50000002",
           vehicleNo: expect.stringMatching(/^VEH\d{14}[A-Z0-9]{4}$/)
         })
       })
     );
     expect(result.purchasePriceAmount).toBe(16800000);
+    expect(result.batteryCapacityKwh).toBe(75);
+    expect(result.batteryUsageType).toBe(VehicleBatteryUsageType.BUYOUT);
+    expect(result.batteryUsageTypeLabel).toBe("电池买断");
     expect(auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({ action: AuditAction.CREATE, entityType: "vehicle" })
     );
+  });
+
+  it("rejects invalid battery capacity when creating a vehicle", async () => {
+    const { service } = makeService();
+
+    await expect(
+      service.createVehicle(
+        {
+          batteryCapacityKwh: 0,
+          batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+          brand: "NIO",
+          purchasePriceAmount: 16800000,
+          vehicleModel: VehicleModel.ET5,
+          vin: "TESTVINET50000002"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("电池容量必须大于 0");
+  });
+
+  it("rejects invalid battery usage type when creating a vehicle", async () => {
+    const { service } = makeService();
+
+    await expect(
+      service.createVehicle(
+        {
+          batteryCapacityKwh: 75,
+          batteryUsageType: "LEASED" as VehicleBatteryUsageType,
+          brand: "NIO",
+          purchasePriceAmount: 16800000,
+          vehicleModel: VehicleModel.ET5,
+          vin: "TESTVINET50000002"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("电池使用方式只能是 BUYOUT 或 BAAS");
   });
 
   it("rejects duplicate VIN when creating a vehicle", async () => {
@@ -413,6 +460,23 @@ describe("VehicleService sale price baseline", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.status).toBe(VehicleStatus.AVAILABLE);
     expect(result[0]?.currentSalePriceAmount).toBe(15000000);
+    expect(result[0]?.batteryCapacityKwh).toBe(75);
+    expect(result[0]?.batteryUsageType).toBe(VehicleBatteryUsageType.BUYOUT);
+  });
+
+  it("returns old vehicles without battery capacity", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findMany.mockResolvedValueOnce([
+      makeVehicle({
+        batteryCapacityKwh: null,
+        batteryUsageType: VehicleBatteryUsageType.BUYOUT
+      })
+    ]);
+
+    const result = await service.listVehicles();
+
+    expect(result[0]?.batteryCapacityKwh).toBeNull();
+    expect(result[0]?.batteryUsageType).toBe(VehicleBatteryUsageType.BUYOUT);
   });
 
   it("keeps demo seed vehicles eligible for available vehicle lookup", () => {
@@ -431,6 +495,8 @@ describe("VehicleService sale price baseline", () => {
     expect(seedSource).toContain("prisma.vehicle.upsert");
     expect(seedSource).toContain('status: "AVAILABLE"');
     expect(seedSource).toContain('salePriceStatus: "EFFECTIVE"');
+    expect(seedSource).toContain("batteryCapacityKwh");
+    expect(seedSource).toContain('batteryUsageType: "BUYOUT"');
     expect(seedSource).toContain('reviewType: "INITIAL_POOL"');
     expect(serviceSource).toContain("currentSalePriceAmount: { gt: 0 }");
   });
@@ -514,6 +580,8 @@ function makeVehicleBase(): VehicleFixture {
 
   return {
     assetLocation: null,
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",
     createdAt: now,
     createdBy: "user-1",

@@ -15,6 +15,7 @@ import {
   RecordStatus,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleModel,
   VehicleStatus
 } from "@prisma/client";
@@ -77,7 +78,12 @@ describe("customer self-service order API rules", () => {
             vehicleBaseFeeModeLabel: "固定费率"
           }),
           riskResultId: null,
-          status: QuoteStatus.DRAFT
+          status: QuoteStatus.DRAFT,
+          vehicleSnapshot: expect.objectContaining({
+            batteryCapacityKwh: 75,
+            batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+            batteryUsageTypeLabel: "电池买断"
+          })
         })
       })
     );
@@ -260,6 +266,8 @@ function createCustomerOrderHarness(overrides: {
   };
   const vehicle = {
     assetLocation: "上海",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",
     createdAt: now,
     createdBy: user.id,

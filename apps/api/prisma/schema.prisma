@@ -326,6 +326,13 @@ enum VehicleStatus {
   @@map("vehicle_status")
 }
 
+enum VehicleBatteryUsageType {
+  BUYOUT
+  BAAS
+
+  @@map("vehicle_battery_usage_type")
+}
+
 enum SalePriceStatus {
   PENDING_INITIALIZE
   EFFECTIVE
@@ -1115,6 +1122,8 @@ model Vehicle {
   model                         String?                   @db.VarChar(64)
   modelYear                     Int?                      @map("model_year")
   vehicleModel                  VehicleModel?             @map("vehicle_model")
+  batteryCapacityKwh            Decimal?                  @map("battery_capacity_kwh") @db.Decimal(6, 2)
+  batteryUsageType              VehicleBatteryUsageType   @default(BUYOUT) @map("battery_usage_type")
   purchasePriceAmount           BigInt                    @map("purchase_price_amount")
   purchaseDate                  DateTime?                 @map("purchase_date") @db.Date
   currentSalePriceAmount        BigInt?                   @map("current_sale_price_amount")

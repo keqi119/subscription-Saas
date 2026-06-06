@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { ORDER_CHANGE_TYPE_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import { ORDER_CHANGE_TYPE_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
 import {
   actionAvailability,
   canExecuteOrderChange,
@@ -41,6 +41,9 @@ interface OrderDetail {
   quote?: { quoteNo: string; id: string } | null;
   quoteSnapshot?: unknown;
   vehicle?: {
+    batteryCapacityKwh?: number | null;
+    batteryUsageType?: string | null;
+    batteryUsageTypeLabel?: string | null;
     currentMileageKm?: number | null;
     currentSalePriceAmount?: number | null;
     plateNo?: string | null;
@@ -140,6 +143,15 @@ function formatKilometers(value?: unknown) {
 function formatKwh(value?: unknown) {
   const kwh = toNumber(value);
   return kwh === null ? "-" : `${kwh.toLocaleString("zh-CN")} kWh`;
+}
+
+function formatBatteryUsageType(type?: unknown, label?: unknown) {
+  const labelText = safeText(label);
+  if (labelText !== "-") {
+    return labelText;
+  }
+  const typeText = safeText(type);
+  return typeText === "-" ? "-" : labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, typeText);
 }
 
 function formatCount(value?: unknown) {
@@ -477,6 +489,22 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
                   order.vehicleModel
               )
             },
+            {
+              label: "电池容量",
+              children: formatKwh(
+                getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh") ??
+                  getSnapshotValue(snapshot, "batteryCapacityKwh")
+              )
+            },
+            {
+              label: "电池使用方式",
+              children: formatBatteryUsageType(
+                getSnapshotValue(vehicleSnapshot, "batteryUsageType") ??
+                  getSnapshotValue(snapshot, "batteryUsageType"),
+                getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel") ??
+                  getSnapshotValue(snapshot, "batteryUsageTypeLabel")
+              )
+            },
             { label: "当前车辆销售价", children: formatYuan(currentVehicleSalePrice) },
             {
               label: "当前里程",
@@ -715,6 +743,14 @@ function OrderInfoSections({
             { label: "VIN", children: safeText(order.vehicle?.vin ?? getSnapshotValue(vehicleSnapshot, "vin")) },
             { label: "车牌号", children: safeText(order.vehicle?.plateNo ?? getSnapshotValue(vehicleSnapshot, "plateNo")) },
             { label: "车型", children: safeText(order.vehicle?.vehicleModel ?? getSnapshotValue(vehicleSnapshot, "vehicleModel") ?? order.vehicleModel) },
+            { label: "电池容量", children: formatKwh(order.vehicle?.batteryCapacityKwh ?? getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")) },
+            {
+              label: "电池使用方式",
+              children: formatBatteryUsageType(
+                order.vehicle?.batteryUsageType ?? getSnapshotValue(vehicleSnapshot, "batteryUsageType"),
+                order.vehicle?.batteryUsageTypeLabel ?? getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel")
+              )
+            },
             { label: "车辆状态", children: safeText(order.vehicle?.status ?? getSnapshotValue(vehicleSnapshot, "status")) },
             { label: "当前车辆销售价", children: formatYuan(currentVehicleSalePrice) },
             { label: "当前里程", children: formatKilometers(order.vehicle?.currentMileageKm ?? getSnapshotValue(vehicleSnapshot, "currentMileageKm")) },

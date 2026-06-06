@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
 import { actionAvailability } from "../../../lib/action-guards";
 import { apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
@@ -79,6 +79,9 @@ interface PackageSnapshot {
 
 interface VehicleSnapshot {
   assetLocation?: string | null;
+  batteryCapacityKwh?: number | string | null;
+  batteryUsageType?: string | null;
+  batteryUsageTypeLabel?: string | null;
   brand?: string | null;
   currentMileageKm?: number | string | null;
   currentSalePriceAmount?: number | string | null;
@@ -236,6 +239,10 @@ function formatNumberWithUnit(value: unknown, unit: string) {
     return "-";
   }
   return `${n.toLocaleString("zh-CN")} ${unit}`;
+}
+
+function formatBatteryUsageType(type?: string | null, label?: string | null) {
+  return label ?? (type ? labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, type) : "-");
 }
 
 function formatVehicleBaseFeeModeLabel(mode?: string | null, label?: string | null) {
@@ -642,6 +649,14 @@ export default function QuoteDetailPage() {
                   { label: "品牌", children: safeText(quote.vehicleSnapshot?.brand ?? quote.vehicle?.brand) },
                   { label: "车系", children: safeText(quote.vehicleSnapshot?.series ?? quote.vehicle?.series) },
                   { label: "车型", children: getVehicleModel(quote) },
+                  { label: "电池容量", children: formatNumberWithUnit(quote.vehicleSnapshot?.batteryCapacityKwh ?? quote.vehicle?.batteryCapacityKwh, "kWh") },
+                  {
+                    label: "电池使用方式",
+                    children: formatBatteryUsageType(
+                      quote.vehicleSnapshot?.batteryUsageType ?? quote.vehicle?.batteryUsageType,
+                      quote.vehicleSnapshot?.batteryUsageTypeLabel ?? quote.vehicle?.batteryUsageTypeLabel
+                    )
+                  },
                   { label: "当前车辆销售价", children: formatAmount(quoteSections.currentSalePriceAmount) },
                   { label: "当前里程", children: formatNumberWithUnit(quote.vehicleSnapshot?.currentMileageKm ?? quote.vehicle?.currentMileageKm, "km") },
                   {

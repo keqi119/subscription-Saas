@@ -180,6 +180,8 @@ const defaultDepositRules = [
 const demoVehicles = [
   {
     brand: "NIO",
+    batteryCapacityKwh: 75,
+    batteryUsageType: "BUYOUT",
     currentMileageKm: 3200,
     currentSalePriceAmount: 14800000,
     model: "ET5 75kWh",
@@ -193,6 +195,8 @@ const demoVehicles = [
   },
   {
     brand: "NIO",
+    batteryCapacityKwh: 100,
+    batteryUsageType: "BUYOUT",
     currentMileageKm: 2100,
     currentSalePriceAmount: 20500000,
     model: "ET7 100kWh",
@@ -206,6 +210,8 @@ const demoVehicles = [
   },
   {
     brand: "NIO",
+    batteryCapacityKwh: 75,
+    batteryUsageType: "BUYOUT",
     currentMileageKm: 2800,
     currentSalePriceAmount: 17600000,
     model: "ES6 75kWh",
@@ -661,6 +667,8 @@ async function seedDemoVehicles(operatorId) {
     const vehicle = await prisma.vehicle.upsert({
       create: {
         assetLocation: "上海验收车库",
+        batteryCapacityKwh: vehicleSeed.batteryCapacityKwh,
+        batteryUsageType: vehicleSeed.batteryUsageType,
         brand: vehicleSeed.brand,
         createdBy: operatorId,
         currentMileageKm: vehicleSeed.currentMileageKm,
@@ -684,6 +692,8 @@ async function seedDemoVehicles(operatorId) {
       },
       update: {
         assetLocation: "上海验收车库",
+        batteryCapacityKwh: vehicleSeed.batteryCapacityKwh,
+        batteryUsageType: vehicleSeed.batteryUsageType,
         brand: vehicleSeed.brand,
         currentMileageKm: vehicleSeed.currentMileageKm,
         currentSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount),
@@ -1035,6 +1045,8 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
   const vehicle = await prisma.vehicle.upsert({
     create: {
       assetLocation: "上海验收车库",
+      batteryCapacityKwh: 75,
+      batteryUsageType: "BUYOUT",
       brand: "NIO",
       createdBy: operatorId,
       currentMileageKm: 1200,
@@ -1058,6 +1070,8 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
     },
     update: {
       assetLocation: "上海验收车库",
+      batteryCapacityKwh: 75,
+      batteryUsageType: "BUYOUT",
       brand: "NIO",
       currentMileageKm: 1200,
       currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
@@ -1168,6 +1182,9 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
 
   const vehicleSnapshot = {
     assetLocation: vehicle.assetLocation,
+    batteryCapacityKwh: Number(vehicle.batteryCapacityKwh),
+    batteryUsageType: vehicle.batteryUsageType,
+    batteryUsageTypeLabel: "电池买断",
     brand: vehicle.brand,
     currentMileageKm: vehicle.currentMileageKm,
     currentSalePriceAmount: vehicleSalePriceAmount,
@@ -1443,6 +1460,8 @@ async function seedSelfServiceApplicationReviewScenario(operatorId) {
   const vehicle = await prisma.vehicle.upsert({
     create: {
       assetLocation: "上海验收车库",
+      batteryCapacityKwh: 75,
+      batteryUsageType: "BUYOUT",
       brand: "NIO",
       createdBy: operatorId,
       currentMileageKm: 900,
@@ -1466,6 +1485,8 @@ async function seedSelfServiceApplicationReviewScenario(operatorId) {
     },
     update: {
       assetLocation: "上海验收车库",
+      batteryCapacityKwh: 75,
+      batteryUsageType: "BUYOUT",
       brand: "NIO",
       currentMileageKm: 900,
       currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
@@ -1527,6 +1548,9 @@ async function seedSelfServiceApplicationReviewScenario(operatorId) {
 
   const vehicleSnapshot = {
     assetLocation: vehicle.assetLocation,
+    batteryCapacityKwh: Number(vehicle.batteryCapacityKwh),
+    batteryUsageType: vehicle.batteryUsageType,
+    batteryUsageTypeLabel: "电池买断",
     brand: vehicle.brand,
     currentMileageKm: vehicle.currentMileageKm,
     currentSalePriceAmount: vehicleSalePriceAmount,

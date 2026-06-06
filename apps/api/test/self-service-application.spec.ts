@@ -13,6 +13,7 @@ import {
   RecordStatus,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleModel,
   VehicleStatus
 } from "@prisma/client";
@@ -76,7 +77,12 @@ describe("self-service application intake API rules", () => {
         depositStatus: DepositStatus.PENDING_CONFIRM,
         subscriptionPlanId: harness.plan.id,
         vehicleBaseFeeAmount: 700000,
-        vehicleId: harness.vehicle.id
+        vehicleId: harness.vehicle.id,
+        vehicleSnapshot: expect.objectContaining({
+          batteryCapacityKwh: 75,
+          batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+          batteryUsageTypeLabel: "电池买断"
+        })
       })
     );
     expect(harness.tx.application.create.mock.calls[0]?.[0].data.customerSelectedSnapshot).toEqual(
@@ -244,6 +250,8 @@ function createSelfServiceApplicationHarness(overrides: {
   };
   const vehicle = {
     assetLocation: "上海",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",
     createdAt: now,
     createdBy: user.id,

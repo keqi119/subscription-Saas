@@ -18,6 +18,7 @@ import {
   RiskResultDecision,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
   VehicleStatus
 } from "@prisma/client";
 
@@ -108,6 +109,11 @@ const VEHICLE_BASE_FEE_MODE_LABELS: Record<MonthlyFeeMode, string> = {
   [MonthlyFeeMode.FIXED_AMOUNT]: "固定金额",
   [MonthlyFeeMode.MANUAL_QUOTE]: "现场报价",
   [MonthlyFeeMode.RATE_FORMULA]: "固定费率"
+};
+
+const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<VehicleBatteryUsageType, string> = {
+  [VehicleBatteryUsageType.BAAS]: "BaaS / 电池租用",
+  [VehicleBatteryUsageType.BUYOUT]: "电池买断"
 };
 
 const quoteInclude = {
@@ -1102,6 +1108,9 @@ export class ProductService {
         benefitPackagePriceAmount;
       const vehicleSnapshot = toJsonValue({
         assetLocation: vehicle.assetLocation,
+        batteryCapacityKwh: vehicle.batteryCapacityKwh?.toNumber() ?? null,
+        batteryUsageType: vehicle.batteryUsageType,
+        batteryUsageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType],
         brand: vehicle.brand,
         currentMileageKm: vehicle.currentMileageKm,
         currentSalePriceAmount: Number(vehicleSalePriceAmount),
@@ -2318,6 +2327,9 @@ function toQuoteView(quote: QuoteWithDetails) {
 function toQuoteVehicleView(vehicle: NonNullable<QuoteWithDetails["vehicle"]>) {
   return {
     assetLocation: vehicle.assetLocation,
+    batteryCapacityKwh: vehicle.batteryCapacityKwh?.toNumber() ?? null,
+    batteryUsageType: vehicle.batteryUsageType,
+    batteryUsageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType],
     brand: vehicle.brand,
     currentMileageKm: vehicle.currentMileageKm,
     currentSalePriceAmount:

@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, labelOf } from "../../../constants/labels";
+import { STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
 import {
   canArchiveContract,
   canCancelContract,
@@ -89,6 +89,20 @@ function formatMonths(value?: unknown) {
 function formatKilometers(value?: unknown) {
   const kilometers = toNumber(value);
   return kilometers === null ? "-" : `${kilometers.toLocaleString("zh-CN")} km`;
+}
+
+function formatKwh(value?: unknown) {
+  const kwh = toNumber(value);
+  return kwh === null ? "-" : `${kwh.toLocaleString("zh-CN")} kWh`;
+}
+
+function formatBatteryUsageType(type?: unknown, label?: unknown) {
+  const labelText = safeText(label);
+  if (labelText !== "-") {
+    return labelText;
+  }
+  const typeText = safeText(type);
+  return typeText === "-" ? "-" : labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, typeText);
 }
 
 function toSnapshotRecord(value: unknown): SnapshotRecord | null {
@@ -230,6 +244,14 @@ function ContractSnapshotSection({ contract }: { contract: ContractDetail | null
             children: joinSnapshotText(getSnapshotValue(vehicleSnapshot, "brand"), getSnapshotValue(vehicleSnapshot, "series"))
           },
           { label: "车型", children: safeText(getSnapshotValue(vehicleSnapshot, "vehicleModel", "model") ?? getSnapshotValue(orderSnapshot, "vehicleModel")) },
+          { label: "电池容量", children: formatKwh(getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")) },
+          {
+            label: "电池使用方式",
+            children: formatBatteryUsageType(
+              getSnapshotValue(vehicleSnapshot, "batteryUsageType"),
+              getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel")
+            )
+          },
           { label: "车辆状态", children: formatStatus(getSnapshotValue(vehicleSnapshot, "status")) },
           { label: "当前销售价", children: formatYuan(getSnapshotValue(vehicleSnapshot, "currentSalePriceAmount") ?? getSnapshotValue(quoteSnapshot, "vehicleSalePriceAmount")) },
           { label: "当前里程", children: formatKilometers(getSnapshotValue(vehicleSnapshot, "currentMileageKm")) },

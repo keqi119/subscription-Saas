@@ -134,6 +134,11 @@ export const VEHICLE_BASE_FEE_MODE_LABELS: Record<string, string> = {
   RATE_FORMULA: "固定费率"
 };
 
+export const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<string, string> = {
+  BAAS: "BaaS / 电池租用",
+  BUYOUT: "电池买断"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",

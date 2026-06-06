@@ -11,9 +11,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
 import {
+  BILL_STATUS_LABELS,
+  BILL_TYPE_LABELS,
   DELIVERY_STATUS_LABELS,
   ORDER_STATUS_LABELS,
   ORDER_CHANGE_TYPE_LABELS,
+  PAYMENT_METHOD_LABELS,
   STATUS_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
@@ -41,6 +44,7 @@ interface OrderDetail {
   createdAt: string;
   creditReviewStatus?: string;
   customer: { name: string; mobile: string };
+  customerId: string;
   customerConfirmedAt?: string | null;
   depositAmount: number;
   depositStatus?: string;
@@ -73,6 +77,39 @@ interface OrderDetail {
   vehicleReviewStatus?: string;
 }
 
+interface FinanceSummary {
+  deliveryPaymentSatisfied?: boolean;
+  depositPaidAmount?: number | null;
+  depositReceivableAmount?: number | null;
+  depositStatus?: string | null;
+  firstMonthlyFeePaidAmount?: number | null;
+  firstMonthlyFeeReceivableAmount?: number | null;
+  firstMonthlyFeeStatus?: string | null;
+  isDeliveryPaymentSatisfied?: boolean;
+  totalPaidAmount?: number | null;
+  totalReceivableAmount?: number | null;
+}
+
+interface ReceivableBillRow {
+  amount?: number | null;
+  billNo: string;
+  billPeriodEnd?: string | null;
+  billPeriodStart?: string | null;
+  billStatus: string;
+  billType: string;
+  dueDate?: string | null;
+  id: string;
+  paidAmount?: number | null;
+  paidAt?: string | null;
+  remainingAmount?: number | null;
+  remark?: string | null;
+}
+
+interface PaymentRecordResponse {
+  id: string;
+  paymentNo?: string;
+}
+
 interface OrderChangeRow {
   afterSnapshot?: unknown;
   changeType: string;
@@ -87,6 +124,23 @@ interface OrderChangeRow {
 
 interface ChangeFormValues {
   reason: string;
+}
+
+interface PaymentWriteOffFormItem {
+  billId?: string;
+  writeOffAmountYuan?: number;
+}
+
+interface PaymentFormValues {
+  payerAccount?: string;
+  payerName?: string;
+  paymentAmountYuan?: number;
+  paymentMethod?: string;
+  paymentProofUrlsText?: string;
+  receivedAt?: Dayjs;
+  remark?: string;
+  writeOffEnabled?: boolean;
+  writeOffItems?: PaymentWriteOffFormItem[];
 }
 
 interface DeliveryCheck {
@@ -253,6 +307,18 @@ const DELIVERY_PREPARE_ORDER_STATUSES = new Set([
   "PENDING_DELIVERY"
 ]);
 
+const FINANCE_FINAL_ORDER_STATUSES = new Set(["CANCELLED", "TERMINATED", "COMPLETED", "REJECTED"]);
+
+const INITIAL_BILL_TYPES = new Set(["DEPOSIT", "FIRST_MONTHLY_FEE"]);
+
+const paymentMethodOptions = [
+  { label: PAYMENT_METHOD_LABELS.BANK_TRANSFER, value: "BANK_TRANSFER" },
+  { label: PAYMENT_METHOD_LABELS.WECHAT, value: "WECHAT" },
+  { label: PAYMENT_METHOD_LABELS.ALIPAY, value: "ALIPAY" },
+  { label: PAYMENT_METHOD_LABELS.CASH, value: "CASH" },
+  { label: PAYMENT_METHOD_LABELS.OTHER, value: "OTHER" }
+];
+
 const returnTypeOptions = [
   { label: "正常到期退车", value: "NORMAL_RETURN" },
   { label: "提前终止退车", value: "EARLY_TERMINATION" }
@@ -291,6 +357,14 @@ const reviewStatusColors: Record<string, string> = {
   REJECTED: "red"
 };
 
+const billStatusColors: Record<string, string> = {
+  CANCELLED: "default",
+  OVERDUE: "red",
+  PAID: "green",
+  PARTIALLY_PAID: "orange",
+  PENDING: "blue"
+};
+
 const customerGradeOptions = [
   { label: "A", value: "A" },
   { label: "B", value: "B" },
@@ -321,6 +395,27 @@ function yuanToCents(value?: unknown) {
 
 function formatTime(value?: unknown) {
   return typeof value === "string" && value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+function formatDate(value?: unknown) {
+  return typeof value === "string" && value ? dayjs(value).format("YYYY-MM-DD") : "-";
+}
+
+function hasPositiveAmount(value?: unknown) {
+  const amount = toNumber(value);
+  return amount !== null && amount > 0;
+}
+
+function pickPositiveValue(...values: unknown[]) {
+  return values.find(hasPositiveAmount);
+}
+
+function isDeliveryPaymentSatisfied(summary?: FinanceSummary | null) {
+  return Boolean(summary?.deliveryPaymentSatisfied ?? summary?.isDeliveryPaymentSatisfied);
+}
+
+function validInitialBill(bill: ReceivableBillRow) {
+  return INITIAL_BILL_TYPES.has(bill.billType) && bill.billStatus !== "CANCELLED";
 }
 
 function formatPercent(value?: unknown) {
@@ -518,6 +613,14 @@ function ReturnStatusTag({ value }: { value?: string | null }) {
   };
 
   return <Tag color={colors[value]}>{labelOf(VEHICLE_RETURN_STATUS_LABELS, value)}</Tag>;
+}
+
+function BillStatusTag({ value }: { value?: string | null }) {
+  if (!value) {
+    return <Tag>-</Tag>;
+  }
+
+  return <Tag color={billStatusColors[value]}>{labelOf(BILL_STATUS_LABELS, value)}</Tag>;
 }
 
 function DamageStatusTag({ value }: { value?: string | null }) {
@@ -1049,6 +1152,111 @@ function OrderInfoSections({
   );
 }
 
+function FinancePanel({
+  bills,
+  financeLoading,
+  generateAvailability,
+  generatingBills,
+  onGenerateInitialBills,
+  onOpenPayment,
+  paymentAvailability,
+  summary
+}: {
+  bills: ReceivableBillRow[];
+  financeLoading: boolean;
+  generateAvailability: ReturnType<typeof actionAvailability>;
+  generatingBills: boolean;
+  onGenerateInitialBills: () => void;
+  onOpenPayment: () => void;
+  paymentAvailability: ReturnType<typeof actionAvailability>;
+  summary: FinanceSummary | null;
+}) {
+  const deliverySatisfied = isDeliveryPaymentSatisfied(summary);
+  const billColumns: ColumnsType<ReceivableBillRow> = [
+    { dataIndex: "billNo", title: "账单编号" },
+    {
+      dataIndex: "billType",
+      render: (value: string) => labelOf(BILL_TYPE_LABELS, value),
+      title: "账单类型"
+    },
+    {
+      dataIndex: "billStatus",
+      render: (value: string) => <BillStatusTag value={value} />,
+      title: "账单状态"
+    },
+    { dataIndex: "amount", render: formatYuan, title: "应收金额" },
+    { dataIndex: "paidAmount", render: formatYuan, title: "已收金额" },
+    { dataIndex: "remainingAmount", render: formatYuan, title: "剩余金额" },
+    { dataIndex: "dueDate", render: formatTime, title: "到期日" },
+    { dataIndex: "billPeriodStart", render: formatDate, title: "账期开始" },
+    { dataIndex: "billPeriodEnd", render: formatDate, title: "账期结束" },
+    { dataIndex: "paidAt", render: formatTime, title: "已收款时间" },
+    { dataIndex: "remark", render: safeText, title: "备注" }
+  ];
+
+  return (
+    <Card
+      extra={
+        <Space wrap>
+          <ActionButton
+            availability={generateAvailability}
+            loading={generatingBills}
+            onClick={onGenerateInitialBills}
+            type="primary"
+          >
+            生成初始账单
+          </ActionButton>
+          <ActionButton availability={paymentAvailability} onClick={onOpenPayment}>
+            登记收款
+          </ActionButton>
+        </Space>
+      }
+      title="财务 / 收款核销"
+    >
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+        <Alert
+          message={
+            deliverySatisfied
+              ? "押金和首期月费已满足交付付款条件"
+              : "押金或首期月费尚未完成收款核销"
+          }
+          showIcon
+          type={deliverySatisfied ? "success" : "warning"}
+        />
+
+        <Descriptions
+          bordered
+          column={2}
+          title="财务概览"
+          items={[
+            { label: "押金应收", children: formatYuan(summary?.depositReceivableAmount) },
+            { label: "押金已收", children: formatYuan(summary?.depositPaidAmount) },
+            { label: "押金状态", children: <BillStatusTag value={summary?.depositStatus} /> },
+            { label: "首期月费应收", children: formatYuan(summary?.firstMonthlyFeeReceivableAmount) },
+            { label: "首期月费已收", children: formatYuan(summary?.firstMonthlyFeePaidAmount) },
+            { label: "首期月费状态", children: <BillStatusTag value={summary?.firstMonthlyFeeStatus} /> },
+            { label: "总应收", children: formatYuan(summary?.totalReceivableAmount) },
+            { label: "总已收", children: formatYuan(summary?.totalPaidAmount) },
+            { label: "交付付款条件", children: deliverySatisfied ? <Tag color="green">已满足</Tag> : <Tag color="orange">未满足</Tag> }
+          ]}
+        />
+
+        <Table
+          columns={billColumns}
+          dataSource={bills}
+          loading={financeLoading}
+          locale={{ emptyText: "-" }}
+          pagination={false}
+          rowKey="id"
+          scroll={{ x: 1320 }}
+          size="small"
+          title={() => "应收账单"}
+        />
+      </Space>
+    </Card>
+  );
+}
+
 function DeliveryPanel({
   confirmAvailability,
   delivery,
@@ -1538,6 +1746,7 @@ export default function OrderDetailPage() {
   const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
   const [confirmReturnForm] = Form.useForm<ConfirmReturnFormValues>();
   const [creditForm] = Form.useForm<{ customerGrade: string }>();
+  const [paymentForm] = Form.useForm<PaymentFormValues>();
   const [prepareDeliveryForm] = Form.useForm<PrepareDeliveryFormValues>();
   const [prepareReturnForm] = Form.useForm<PrepareReturnFormValues>();
   const [changeModalOpen, setChangeModalOpen] = useState(false);
@@ -1546,16 +1755,27 @@ export default function OrderDetailPage() {
   const [confirmReturnModalOpen, setConfirmReturnModalOpen] = useState(false);
   const [delivery, setDelivery] = useState<VehicleDelivery | null>(null);
   const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
+  const [financeLoading, setFinanceLoading] = useState(false);
+  const [financeSummary, setFinanceSummary] = useState<FinanceSummary | null>(null);
+  const [generatingBills, setGeneratingBills] = useState(false);
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
   const [prepareDeliveryModalOpen, setPrepareDeliveryModalOpen] = useState(false);
   const [prepareReturnModalOpen, setPrepareReturnModalOpen] = useState(false);
+  const [receivableBills, setReceivableBills] = useState<ReceivableBillRow[]>([]);
   const [returnCheck, setReturnCheck] = useState<ReturnCheck | null>(null);
   const [vehicleReturn, setVehicleReturn] = useState<VehicleReturn | null>(null);
   const [autoOpenChangeModalDone, setAutoOpenChangeModalDone] = useState(false);
+  const paymentAmountYuan = Form.useWatch("paymentAmountYuan", paymentForm);
+  const writeOffEnabled = Form.useWatch("writeOffEnabled", paymentForm);
+  const writeOffItems = Form.useWatch("writeOffItems", paymentForm);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
+  const hasBillingViewPermission = permissions.has("billing:view");
+  const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
   const hasDeliveryViewPermission = permissions.has("delivery:view");
   const hasReturnViewPermission = permissions.has("vehicle_return:view");
   const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
@@ -1571,6 +1791,78 @@ export default function OrderDetailPage() {
   const currentVehicleSalePrice = toNumber(
     order?.vehicle?.currentSalePriceAmount ??
       getSnapshotValue(order?.quoteSnapshot, "vehicleSnapshot.currentSalePriceAmount", "vehicleSalePriceAmount")
+  );
+  const validInitialBills = useMemo(() => receivableBills.filter(validInitialBill), [receivableBills]);
+  const hasDepositBill = validInitialBills.some((bill) => bill.billType === "DEPOSIT");
+  const hasFirstMonthlyFeeBill = validInitialBills.some((bill) => bill.billType === "FIRST_MONTHLY_FEE");
+  const hasAllInitialBills = hasDepositBill && hasFirstMonthlyFeeBill;
+  const unsettledBills = useMemo(
+    () => receivableBills.filter((bill) => bill.billStatus !== "CANCELLED" && hasPositiveAmount(bill.remainingAmount)),
+    [receivableBills]
+  );
+  const initialDepositAmount = order
+    ? pickPositiveValue(
+        order.finalDepositAmount,
+        order.depositAmount,
+        getSnapshotValue(order.quoteSnapshot, "finalDepositAmount"),
+        getSnapshotValue(order.quoteSnapshot, "depositAmount"),
+        getSnapshotValue(order.quoteSnapshot, "pricing.depositAmount")
+      )
+    : undefined;
+  const initialMonthlyFeeAmount = order
+    ? pickPositiveValue(
+        order.monthlyFeeAmount,
+        getSnapshotValue(order.quoteSnapshot, "monthlyFeeAmount"),
+        getSnapshotValue(order.quoteSnapshot, "pricing.monthlyFeeAmount")
+      )
+    : undefined;
+  const orderHasInitialBillAmounts = Boolean(
+    order && hasPositiveAmount(initialDepositAmount) && hasPositiveAmount(initialMonthlyFeeAmount)
+  );
+  const generateInitialBillsDisabledReason = !order
+    ? "数据加载完成后才可操作"
+    : FINANCE_FINAL_ORDER_STATUSES.has(order.orderStatus)
+      ? "当前订单状态不允许生成账单"
+      : !orderHasInitialBillAmounts
+        ? "订单缺少押金或首期月费金额"
+        : hasAllInitialBills
+          ? "已存在有效初始账单"
+          : null;
+  const generateInitialBillsAvailability = actionAvailability({
+    allowed: generateInitialBillsDisabledReason === null,
+    disabledReason: generateInitialBillsDisabledReason ?? "当前订单状态不允许生成账单",
+    noPermissionReason: "无生成账单权限",
+    permission: "billing:generate",
+    permissions
+  });
+  const paymentDisabledReason = !order
+    ? "数据加载完成后才可操作"
+    : FINANCE_FINAL_ORDER_STATUSES.has(order.orderStatus)
+      ? "当前订单已取消，不能登记收款"
+      : null;
+  const paymentAvailability = actionAvailability({
+    allowed: paymentDisabledReason === null,
+    disabledReason: paymentDisabledReason ?? "当前订单已取消，不能登记收款",
+    noPermissionReason: "无登记收款权限",
+    permission: "payment:create",
+    permissions
+  });
+  const watchedPaymentAmount = yuanToCents(paymentAmountYuan) ?? 0;
+  const watchedWriteOffTotalAmount = useMemo(
+    () =>
+      (writeOffItems ?? []).reduce((sum, item) => {
+        const amount = yuanToCents(item?.writeOffAmountYuan);
+        return sum + (amount && amount > 0 ? amount : 0);
+      }, 0),
+    [writeOffItems]
+  );
+  const writeOffDisabledReason = !hasPaymentWriteOffPermission
+    ? "无核销权限"
+    : unsettledBills.length === 0
+      ? "没有可核销的未结清账单"
+      : null;
+  const writeOffTotalExceedsPayment = Boolean(
+    writeOffEnabled && watchedWriteOffTotalAmount > 0 && watchedWriteOffTotalAmount > watchedPaymentAmount
   );
   const isCustomerSelfServiceOrder = order?.orderSource === "CUSTOMER_SELF_SERVICE";
   const returnToPlanHint = isCustomerSelfServiceOrder
@@ -1645,11 +1937,15 @@ export default function OrderDetailPage() {
     setLoading(true);
     try {
       const nextMe = await apiFetch<AuthMeResponse>("/auth/me");
+      const canViewFinance = nextMe.user.permissions.includes("billing:view");
       const canViewDelivery = nextMe.user.permissions.includes("delivery:view");
       const canViewReturn = nextMe.user.permissions.includes("vehicle_return:view");
-      const [nextOrder, nextChanges, nextDeliveryCheck, nextDelivery, nextReturnCheck, nextReturn] = await Promise.all([
+      setFinanceLoading(canViewFinance);
+      const [nextOrder, nextChanges, nextFinanceSummary, nextBills, nextDeliveryCheck, nextDelivery, nextReturnCheck, nextReturn] = await Promise.all([
         apiFetch<OrderDetail>(`/orders/${params.id}`),
         apiFetch<OrderChangeRow[]>(`/orders/${params.id}/changes`).catch(() => []),
+        canViewFinance ? apiFetch<FinanceSummary>(`/orders/${params.id}/finance-summary`) : Promise.resolve(null),
+        canViewFinance ? apiFetch<ReceivableBillRow[]>(`/orders/${params.id}/bills`) : Promise.resolve([]),
         canViewDelivery ? apiFetch<DeliveryCheck>(`/orders/${params.id}/delivery-check`) : Promise.resolve(null),
         canViewDelivery ? apiFetch<VehicleDelivery | null>(`/orders/${params.id}/delivery`) : Promise.resolve(null),
         canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
@@ -1657,6 +1953,8 @@ export default function OrderDetailPage() {
       ]);
       setOrder(nextOrder);
       setChanges(nextChanges);
+      setFinanceSummary(nextFinanceSummary);
+      setReceivableBills(nextBills);
       setMe(nextMe);
       setDeliveryCheck(nextDeliveryCheck);
       setDelivery(nextDelivery);
@@ -1666,6 +1964,7 @@ export default function OrderDetailPage() {
       void message.error(getErrorMessage(error));
     } finally {
       setLoading(false);
+      setFinanceLoading(false);
     }
   }, [message, params.id]);
 
@@ -1786,6 +2085,130 @@ export default function OrderDetailPage() {
   function closeConfirmReturnModal() {
     setConfirmReturnModalOpen(false);
     confirmReturnForm.resetFields();
+  }
+
+  function openPaymentModal() {
+    if (!order) {
+      return;
+    }
+    paymentForm.setFieldsValue({
+      paymentMethod: "BANK_TRANSFER",
+      receivedAt: dayjs(),
+      writeOffEnabled: hasPaymentWriteOffPermission && unsettledBills.length > 0,
+      writeOffItems: unsettledBills.map((bill) => ({ billId: bill.id }))
+    });
+    setPaymentModalOpen(true);
+  }
+
+  function closePaymentModal() {
+    setPaymentModalOpen(false);
+    paymentForm.resetFields();
+  }
+
+  async function generateInitialBills() {
+    if (!order) {
+      return;
+    }
+    setGeneratingBills(true);
+    try {
+      await apiFetch(`/orders/${order.id}/generate-initial-bills`, { method: "POST" });
+      void message.success("初始账单已生成");
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setGeneratingBills(false);
+    }
+  }
+
+  async function submitPayment() {
+    if (!order) {
+      return;
+    }
+    const values = await paymentForm.validateFields();
+    const paymentAmount = yuanToCents(values.paymentAmountYuan);
+
+    if (!paymentAmount || paymentAmount <= 0) {
+      void message.error("收款金额必须大于 0");
+      return;
+    }
+
+    const writeOffItemsPayload: Array<{ billId: string; writeOffAmount: number }> = [];
+    if (values.writeOffEnabled) {
+      if (!hasPaymentWriteOffPermission) {
+        void message.error("无核销权限");
+        return;
+      }
+      if (unsettledBills.length === 0) {
+        void message.error("没有可核销的未结清账单");
+        return;
+      }
+
+      const billById = new Map(unsettledBills.map((bill) => [bill.id, bill]));
+      for (const item of values.writeOffItems ?? []) {
+        const writeOffAmount = yuanToCents(item.writeOffAmountYuan);
+        if (!writeOffAmount || writeOffAmount <= 0) {
+          continue;
+        }
+        const bill = item.billId ? billById.get(item.billId) : null;
+        if (!bill) {
+          continue;
+        }
+        const remainingAmount = toNumber(bill.remainingAmount) ?? 0;
+        if (writeOffAmount > remainingAmount) {
+          void message.error("核销金额不能超过账单剩余金额");
+          return;
+        }
+        writeOffItemsPayload.push({ billId: bill.id, writeOffAmount });
+      }
+
+      if (writeOffItemsPayload.length === 0) {
+        void message.error("至少选择一张账单才能提交核销");
+        return;
+      }
+
+      const writeOffTotalAmount = writeOffItemsPayload.reduce((sum, item) => sum + item.writeOffAmount, 0);
+      if (writeOffTotalAmount > paymentAmount) {
+        void message.error("核销金额不能超过收款金额");
+        return;
+      }
+    }
+
+    setPaymentSubmitting(true);
+    try {
+      const payment = await apiFetch<PaymentRecordResponse>("/payments", {
+        body: JSON.stringify({
+          customerId: order.customerId,
+          orderId: order.id,
+          paymentAmount,
+          paymentMethod: values.paymentMethod,
+          paymentProofUrls: parsePhotoUrls(values.paymentProofUrlsText),
+          payerAccount: values.payerAccount,
+          payerName: values.payerName,
+          receivedAt: values.receivedAt?.toISOString(),
+          remark: values.remark
+        }),
+        method: "POST"
+      });
+
+      if (writeOffItemsPayload.length > 0) {
+        await apiFetch(`/payments/${payment.id}/write-off`, {
+          body: JSON.stringify({
+            items: writeOffItemsPayload,
+            remark: values.remark
+          }),
+          method: "POST"
+        });
+      }
+
+      void message.success(writeOffItemsPayload.length > 0 ? "收款已登记并完成核销" : "收款已登记");
+      closePaymentModal();
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setPaymentSubmitting(false);
+    }
   }
 
   async function generateContract() {
@@ -2247,6 +2670,19 @@ export default function OrderDetailPage() {
 
         {loading ? <Spin /> : order ? <OrderInfoSections currentVehicleSalePrice={currentVehicleSalePrice} order={order} /> : null}
 
+        {order && hasBillingViewPermission ? (
+          <FinancePanel
+            bills={receivableBills}
+            financeLoading={financeLoading}
+            generateAvailability={generateInitialBillsAvailability}
+            generatingBills={generatingBills}
+            onGenerateInitialBills={generateInitialBills}
+            onOpenPayment={openPaymentModal}
+            paymentAvailability={paymentAvailability}
+            summary={financeSummary}
+          />
+        ) : null}
+
         {order && hasDeliveryViewPermission ? (
           <DeliveryPanel
             confirmAvailability={confirmDeliveryAvailability}
@@ -2336,6 +2772,119 @@ export default function OrderDetailPage() {
         <Card title="订单变更记录">
           <Table columns={changeColumns} dataSource={changes} pagination={false} rowKey="id" />
         </Card>
+
+        <Modal
+          confirmLoading={paymentSubmitting}
+          destroyOnHidden
+          onCancel={closePaymentModal}
+          onOk={submitPayment}
+          open={paymentModalOpen}
+          title="登记收款"
+          width={860}
+        >
+          <Form form={paymentForm} layout="vertical">
+            <Form.Item
+              label="收款金额"
+              name="paymentAmountYuan"
+              rules={[{ required: true, message: "请填写收款金额" }]}
+            >
+              <InputNumber min={0.01} precision={2} addonAfter="元" style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item
+              label="收款方式"
+              name="paymentMethod"
+              rules={[{ required: true, message: "请选择收款方式" }]}
+            >
+              <Select options={paymentMethodOptions} />
+            </Form.Item>
+            <Form.Item
+              label="收款时间"
+              name="receivedAt"
+              rules={[{ required: true, message: "请选择收款时间" }]}
+            >
+              <DatePicker showTime style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item label="付款人" name="payerName">
+              <Input placeholder="张三" />
+            </Form.Item>
+            <Form.Item label="付款账户" name="payerAccount">
+              <Input placeholder="招商银行 6222****" />
+            </Form.Item>
+            <Form.Item label="付款凭证 URL" name="paymentProofUrlsText">
+              <Input.TextArea placeholder="多个 URL 可用逗号或换行分隔" rows={2} />
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+
+            <Form.Item name="writeOffEnabled" valuePropName="checked">
+              <Checkbox disabled={Boolean(writeOffDisabledReason)}>同时核销账单</Checkbox>
+            </Form.Item>
+            {writeOffDisabledReason ? <Alert message={writeOffDisabledReason} showIcon type="info" /> : null}
+
+            {writeOffEnabled ? (
+              <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+                <Alert
+                  message={`本次核销合计：${formatYuan(watchedWriteOffTotalAmount)} / 收款金额：${formatYuan(watchedPaymentAmount)}`}
+                  showIcon
+                  type={writeOffTotalExceedsPayment ? "error" : "info"}
+                />
+                {writeOffTotalExceedsPayment ? (
+                  <Alert message="核销金额不能超过收款金额" showIcon type="error" />
+                ) : null}
+                {unsettledBills.map((bill, index) => {
+                  const remainingAmount = toNumber(bill.remainingAmount) ?? 0;
+
+                  return (
+                    <Card
+                      key={bill.id}
+                      size="small"
+                      title={`${labelOf(BILL_TYPE_LABELS, bill.billType)} / ${bill.billNo}`}
+                    >
+                      <Descriptions
+                        column={3}
+                        size="small"
+                        items={[
+                          { label: "账单状态", children: <BillStatusTag value={bill.billStatus} /> },
+                          { label: "应收金额", children: formatYuan(bill.amount) },
+                          { label: "剩余金额", children: formatYuan(bill.remainingAmount) }
+                        ]}
+                      />
+                      <Form.Item hidden name={["writeOffItems", index, "billId"]}>
+                        <Input />
+                      </Form.Item>
+                      <Form.Item
+                        label="本次核销金额"
+                        name={["writeOffItems", index, "writeOffAmountYuan"]}
+                        rules={[
+                          {
+                            validator: async (_, value) => {
+                              const amount = yuanToCents(value);
+                              if (!amount || amount <= 0) {
+                                return;
+                              }
+                              if (amount > remainingAmount) {
+                                throw new Error("核销金额不能超过账单剩余金额");
+                              }
+                            }
+                          }
+                        ]}
+                      >
+                        <InputNumber
+                          min={0}
+                          max={centsToYuan(remainingAmount)}
+                          precision={2}
+                          addonAfter="元"
+                          style={{ width: "100%" }}
+                        />
+                      </Form.Item>
+                    </Card>
+                  );
+                })}
+              </Space>
+            ) : null}
+          </Form>
+        </Modal>
 
         <Modal
           destroyOnHidden

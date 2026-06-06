@@ -93,6 +93,50 @@ export const DEPOSIT_STATUS_LABELS: Record<string, string> = {
   WAIVED: "押金减免"
 };
 
+export const BILL_TYPE_LABELS: Record<string, string> = {
+  DAMAGE_FEE: "损伤费用",
+  DEPOSIT: "押金",
+  FIRST_MONTHLY_FEE: "首期月费",
+  MONTHLY_RENT: "月租账单",
+  OTHER: "其他"
+};
+
+export const BILL_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  OVERDUE: "已逾期",
+  PAID: "已收款",
+  PARTIALLY_PAID: "部分收款",
+  PENDING: "待收款"
+};
+
+export const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  ALIPAY: "支付宝",
+  BANK_TRANSFER: "银行转账",
+  CASH: "现金",
+  OTHER: "其他",
+  WECHAT: "微信"
+};
+
+export const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CONFIRMED: "已确认",
+  PENDING_CONFIRM: "待确认"
+};
+
+export const DEPOSIT_TRANSACTION_TYPE_LABELS: Record<string, string> = {
+  COLLECT: "收取",
+  DEDUCT: "扣减",
+  FREEZE: "冻结",
+  REFUND: "退还",
+  RELEASE: "释放"
+};
+
+export const DEPOSIT_TRANSACTION_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CONFIRMED: "已确认",
+  PENDING: "待确认"
+};
+
 export const DELIVERY_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "已取消",
   DELIVERED: "已交付",
@@ -236,11 +280,14 @@ export const ORDER_CHANGE_TYPE_LABELS: Record<string, string> = {
 export const MODULE_LABELS: Record<string, string> = {
   application: "进件管理",
   audit_log: "操作日志",
+  billing: "应收账单",
   contract: "合同管理",
   contract_template: "合同模板",
   customer: "客户中心",
   dashboard: "首页驾驶舱",
+  deposit_ledger: "保证金台账",
   delivery: "车辆交付",
+  payment: "收款核销",
   vehicle_return: "退车验收",
   order: "订单中心",
   order_change: "订单变更",
@@ -259,6 +306,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "application:submit": "提交进件",
   "application:view": "查看进件",
   "audit_log:view": "查看操作日志",
+  "billing:generate": "生成应收账单",
+  "billing:view": "查看应收账单",
   "contract:archive": "归档合同",
   "contract:cancel": "取消合同",
   "contract:generate": "生成合同",
@@ -274,6 +323,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "delivery:confirm": "确认车辆交付",
   "delivery:prepare": "准备车辆交付",
   "delivery:view": "查看车辆交付",
+  "deposit_ledger:view": "查看保证金台账",
   "vehicle_return:confirm": "确认退车验收",
   "vehicle_return:damage_record": "记录退车损伤",
   "vehicle_return:prepare": "准备退车验收",
@@ -292,6 +342,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "order_change:reject": "拒绝订单变更",
   "order_change:view": "查看订单变更",
   "permission:view": "查看权限",
+  "payment:create": "登记收款",
+  "payment:view": "查看收款记录",
+  "payment:write_off": "收款核销",
   "product:activate": "启用产品",
   "product:create": "新建产品",
   "product:update": "编辑产品",
@@ -341,6 +394,8 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "application:submit": "允许提交进件",
   "application:view": "允许查看进件列表和详情",
   "audit_log:view": "允许查看操作日志",
+  "billing:generate": "允许为订单生成初始应收账单",
+  "billing:view": "允许查看订单财务概览和应收账单",
   "contract:archive": "允许归档订阅合同",
   "contract:cancel": "允许取消订阅合同",
   "contract:generate": "允许从订阅订单生成合同",
@@ -356,6 +411,7 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "delivery:confirm": "允许确认车辆实际交付",
   "delivery:prepare": "允许维护车辆交付准备信息",
   "delivery:view": "允许查看订单车辆交付信息",
+  "deposit_ledger:view": "允许查看保证金台账",
   "vehicle_return:confirm": "允许确认退车验收并记录退车结果",
   "vehicle_return:damage_record": "允许录入退车损伤记录",
   "vehicle_return:prepare": "允许维护退车预约和验收准备信息",
@@ -374,6 +430,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "order_change:reject": "允许拒绝订单变更",
   "order_change:view": "允许查看订单变更",
   "permission:view": "允许查看权限清单",
+  "payment:create": "允许登记客户收款",
+  "payment:view": "允许查看收款记录",
+  "payment:write_off": "允许将收款核销到应收账单",
   "product:activate": "允许启用和停用产品",
   "product:create": "允许新建产品",
   "product:update": "允许编辑产品",

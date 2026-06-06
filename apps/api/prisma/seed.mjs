@@ -95,6 +95,15 @@ const permissionRows = [
 ];
 
 permissionRows.push(
+  ["billing:view", "查看应收账单", "billing", "view"],
+  ["billing:generate", "生成应收账单", "billing", "generate"],
+  ["payment:view", "查看收款记录", "payment", "view"],
+  ["payment:create", "登记收款", "payment", "create"],
+  ["payment:write_off", "收款核销", "payment", "write_off"],
+  ["deposit_ledger:view", "查看保证金台账", "deposit_ledger", "view"]
+);
+
+permissionRows.push(
   ["vehicle_package:view", "查看车型包", "product", "vehicle_package_view"],
   ["vehicle_package:create", "新建车型包", "product", "vehicle_package_create"],
   ["vehicle_package:update", "编辑车型包", "product", "vehicle_package_update"],
@@ -382,6 +391,17 @@ const orderManagementPermissions = [
   "contract_template:activate"
 ];
 
+const financeManagementPermissions = [
+  "billing:view",
+  "billing:generate",
+  "payment:view",
+  "payment:create",
+  "payment:write_off",
+  "deposit_ledger:view"
+];
+
+const financeViewPermissions = ["billing:view", "payment:view", "deposit_ledger:view"];
+
 const productMenuCodes = [
   "products",
   "products.subscription",
@@ -498,6 +518,7 @@ async function main() {
       "order:create",
       "order_change:view",
       "order_change:create",
+      "billing:view",
       "delivery:view",
       "vehicle_return:view",
       "contract:view"
@@ -518,6 +539,8 @@ async function main() {
       ...vehicleManagementPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
+      "billing:view",
+      "deposit_ledger:view",
       "order_change:approve",
       "order_change:reject",
       "order_change:execute"
@@ -564,6 +587,7 @@ async function main() {
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         "quote:view",
         "order:view",
+        ...(roleCode === "FI" ? financeManagementPermissions : []),
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         "vehicle_return:view",
         ...(roleCode === "AS"
@@ -589,7 +613,8 @@ async function main() {
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
       "quote:view",
-      ...orderManagementPermissions
+      ...orderManagementPermissions,
+      ...financeViewPermissions
     ],
     ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
   );

@@ -253,6 +253,62 @@ enum DepositStatus {
   @@map("deposit_status")
 }
 
+enum BillType {
+  DEPOSIT
+  FIRST_MONTHLY_FEE
+  MONTHLY_RENT
+  DAMAGE_FEE
+  OTHER
+
+  @@map("bill_type")
+}
+
+enum BillStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+
+  @@map("bill_status")
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  WECHAT
+  ALIPAY
+  CASH
+  OTHER
+
+  @@map("payment_method")
+}
+
+enum PaymentStatus {
+  PENDING_CONFIRM
+  CONFIRMED
+  CANCELLED
+
+  @@map("payment_status")
+}
+
+enum DepositTransactionType {
+  COLLECT
+  FREEZE
+  DEDUCT
+  REFUND
+  RELEASE
+
+  @@map("deposit_transaction_type")
+}
+
+enum DepositTransactionStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+
+  @@map("deposit_transaction_status")
+}
+
 enum DeliveryStatus {
   PENDING
   READY
@@ -588,33 +644,37 @@ model AuditLog {
 }
 
 model Customer {
-  id            String              @id @default(uuid()) @db.Uuid
-  customerNo    String              @unique @map("customer_no") @db.VarChar(64)
-  name          String              @db.VarChar(64)
-  mobile        String              @db.VarChar(32)
-  customerType  CustomerType        @default(PERSONAL) @map("customer_type")
-  sourceChannel String?             @map("source_channel") @db.VarChar(64)
-  grade         CustomerGrade?
-  riskScore     Int?                @map("risk_score")
-  status        CustomerStatus      @default(LEAD)
-  ownerUserId   String?             @map("owner_user_id") @db.Uuid
-  ownerUser     User?               @relation("CustomerOwner", fields: [ownerUserId], references: [id])
-  remark        String?             @db.Text
-  identity      CustomerIdentity?
-  profile       CustomerProfile?
-  followups     CustomerFollowup[]
-  applications  Application[]
-  riskResults   RiskResult[]
-  quotes        SubscriptionQuote[]
-  orders        SubscriptionOrder[]
-  contracts     Contract[]
-  deliveries    VehicleDelivery[]
-  returns       VehicleReturn[]
-  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy     String?             @map("created_by") @db.Uuid
-  updatedBy     String?             @map("updated_by") @db.Uuid
-  deletedAt     DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  id               String              @id @default(uuid()) @db.Uuid
+  customerNo       String              @unique @map("customer_no") @db.VarChar(64)
+  name             String              @db.VarChar(64)
+  mobile           String              @db.VarChar(32)
+  customerType     CustomerType        @default(PERSONAL) @map("customer_type")
+  sourceChannel    String?             @map("source_channel") @db.VarChar(64)
+  grade            CustomerGrade?
+  riskScore        Int?                @map("risk_score")
+  status           CustomerStatus      @default(LEAD)
+  ownerUserId      String?             @map("owner_user_id") @db.Uuid
+  ownerUser        User?               @relation("CustomerOwner", fields: [ownerUserId], references: [id])
+  remark           String?             @db.Text
+  identity         CustomerIdentity?
+  profile          CustomerProfile?
+  followups        CustomerFollowup[]
+  applications     Application[]
+  riskResults      RiskResult[]
+  quotes           SubscriptionQuote[]
+  orders           SubscriptionOrder[]
+  contracts        Contract[]
+  deliveries       VehicleDelivery[]
+  returns          VehicleReturn[]
+  receivableBills  ReceivableBill[]
+  paymentRecords   PaymentRecord[]
+  paymentWriteOffs PaymentWriteOff[]
+  depositLedgers   DepositLedger[]
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?             @map("created_by") @db.Uuid
+  updatedBy        String?             @map("updated_by") @db.Uuid
+  deletedAt        DateTime?           @map("deleted_at") @db.Timestamptz(6)
 
   @@index([mobile])
   @@index([ownerUserId])
@@ -1322,61 +1382,65 @@ model SubscriptionQuote {
 }
 
 model SubscriptionOrder {
-  id                         String            @id @default(uuid()) @db.Uuid
-  orderNo                    String            @unique @map("order_no") @db.VarChar(64)
-  businessType               BusinessType      @default(SUBSCRIPTION) @map("business_type")
-  customerId                 String            @map("customer_id") @db.Uuid
-  customer                   Customer          @relation(fields: [customerId], references: [id])
-  applicationId              String            @map("application_id") @db.Uuid
-  application                Application       @relation(fields: [applicationId], references: [id])
-  quoteId                    String            @unique @map("quote_id") @db.Uuid
-  quote                      SubscriptionQuote @relation(fields: [quoteId], references: [id])
-  riskResultId               String?           @map("risk_result_id") @db.Uuid
-  riskResult                 RiskResult?       @relation(fields: [riskResultId], references: [id])
-  contractId                 String?           @unique @map("contract_id") @db.Uuid
-  contract                   Contract?         @relation("OrderContract", fields: [contractId], references: [id])
-  vehicleId                  String?           @map("vehicle_id") @db.Uuid
-  vehicle                    Vehicle?          @relation(fields: [vehicleId], references: [id])
-  productId                  String            @map("product_id") @db.Uuid
-  product                    Product           @relation(fields: [productId], references: [id])
-  productVersionId           String            @map("product_version_id") @db.Uuid
-  productVersion             ProductVersion    @relation(fields: [productVersionId], references: [id])
-  vehicleModel               VehicleModel      @map("vehicle_model")
-  vehiclePurchasePriceAmount BigInt            @map("vehicle_purchase_price_amount")
-  monthlyFeeAmount           BigInt            @map("monthly_fee_amount")
-  depositAmount              BigInt            @map("deposit_amount")
-  periodMonths               Int               @map("period_months")
-  mileageLimitKm             Int               @map("mileage_limit_km")
-  overMileageFeeAmount       BigInt            @map("over_mileage_fee_amount")
-  energyLimitKwh             Int?              @map("energy_limit_kwh")
-  energyLimitCount           Int?              @map("energy_limit_count")
-  quoteSnapshot              Json              @map("quote_snapshot")
-  customerSelectedSnapshot   Json?             @map("customer_selected_snapshot")
-  finalPlanSnapshot          Json?             @map("final_plan_snapshot")
-  orderSource                OrderSource       @default(SALES_ASSISTED) @map("order_source")
-  orderStatus                OrderStatus       @default(PENDING_CONTRACT) @map("order_status")
-  creditReviewStatus         OrderReviewStatus @default(APPROVED) @map("credit_review_status")
-  productReviewStatus        OrderReviewStatus @default(APPROVED) @map("product_review_status")
-  vehicleReviewStatus        OrderReviewStatus @default(APPROVED) @map("vehicle_review_status")
-  depositStatus              DepositStatus     @default(CONFIRMED) @map("deposit_status")
-  finalDepositAmount         BigInt?           @map("final_deposit_amount")
-  customerConfirmedAt        DateTime?         @map("customer_confirmed_at") @db.Timestamptz(6)
-  finalPlanConfirmedAt       DateTime?         @map("final_plan_confirmed_at") @db.Timestamptz(6)
-  reviewComment              String?           @map("review_comment") @db.Text
-  startDate                  DateTime?         @map("start_date") @db.Date
-  endDate                    DateTime?         @map("end_date") @db.Date
-  actualDeliveryAt           DateTime?         @map("actual_delivery_at") @db.Timestamptz(6)
-  actualReturnAt             DateTime?         @map("actual_return_at") @db.Timestamptz(6)
+  id                         String                @id @default(uuid()) @db.Uuid
+  orderNo                    String                @unique @map("order_no") @db.VarChar(64)
+  businessType               BusinessType          @default(SUBSCRIPTION) @map("business_type")
+  customerId                 String                @map("customer_id") @db.Uuid
+  customer                   Customer              @relation(fields: [customerId], references: [id])
+  applicationId              String                @map("application_id") @db.Uuid
+  application                Application           @relation(fields: [applicationId], references: [id])
+  quoteId                    String                @unique @map("quote_id") @db.Uuid
+  quote                      SubscriptionQuote     @relation(fields: [quoteId], references: [id])
+  riskResultId               String?               @map("risk_result_id") @db.Uuid
+  riskResult                 RiskResult?           @relation(fields: [riskResultId], references: [id])
+  contractId                 String?               @unique @map("contract_id") @db.Uuid
+  contract                   Contract?             @relation("OrderContract", fields: [contractId], references: [id])
+  vehicleId                  String?               @map("vehicle_id") @db.Uuid
+  vehicle                    Vehicle?              @relation(fields: [vehicleId], references: [id])
+  productId                  String                @map("product_id") @db.Uuid
+  product                    Product               @relation(fields: [productId], references: [id])
+  productVersionId           String                @map("product_version_id") @db.Uuid
+  productVersion             ProductVersion        @relation(fields: [productVersionId], references: [id])
+  vehicleModel               VehicleModel          @map("vehicle_model")
+  vehiclePurchasePriceAmount BigInt                @map("vehicle_purchase_price_amount")
+  monthlyFeeAmount           BigInt                @map("monthly_fee_amount")
+  depositAmount              BigInt                @map("deposit_amount")
+  periodMonths               Int                   @map("period_months")
+  mileageLimitKm             Int                   @map("mileage_limit_km")
+  overMileageFeeAmount       BigInt                @map("over_mileage_fee_amount")
+  energyLimitKwh             Int?                  @map("energy_limit_kwh")
+  energyLimitCount           Int?                  @map("energy_limit_count")
+  quoteSnapshot              Json                  @map("quote_snapshot")
+  customerSelectedSnapshot   Json?                 @map("customer_selected_snapshot")
+  finalPlanSnapshot          Json?                 @map("final_plan_snapshot")
+  orderSource                OrderSource           @default(SALES_ASSISTED) @map("order_source")
+  orderStatus                OrderStatus           @default(PENDING_CONTRACT) @map("order_status")
+  creditReviewStatus         OrderReviewStatus     @default(APPROVED) @map("credit_review_status")
+  productReviewStatus        OrderReviewStatus     @default(APPROVED) @map("product_review_status")
+  vehicleReviewStatus        OrderReviewStatus     @default(APPROVED) @map("vehicle_review_status")
+  depositStatus              DepositStatus         @default(CONFIRMED) @map("deposit_status")
+  finalDepositAmount         BigInt?               @map("final_deposit_amount")
+  customerConfirmedAt        DateTime?             @map("customer_confirmed_at") @db.Timestamptz(6)
+  finalPlanConfirmedAt       DateTime?             @map("final_plan_confirmed_at") @db.Timestamptz(6)
+  reviewComment              String?               @map("review_comment") @db.Text
+  startDate                  DateTime?             @map("start_date") @db.Date
+  endDate                    DateTime?             @map("end_date") @db.Date
+  actualDeliveryAt           DateTime?             @map("actual_delivery_at") @db.Timestamptz(6)
+  actualReturnAt             DateTime?             @map("actual_return_at") @db.Timestamptz(6)
   deliveries                 VehicleDelivery[]
   returns                    VehicleReturn[]
   returnDamages              VehicleReturnDamage[]
-  contracts                  Contract[]        @relation("OrderContracts")
+  receivableBills            ReceivableBill[]
+  paymentRecords             PaymentRecord[]
+  paymentWriteOffs           PaymentWriteOff[]
+  depositLedgers             DepositLedger[]
+  contracts                  Contract[]            @relation("OrderContracts")
   changes                    OrderChange[]
-  createdAt                  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                  DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                  String?           @map("created_by") @db.Uuid
-  updatedBy                  String?           @map("updated_by") @db.Uuid
-  deletedAt                  DateTime?         @map("deleted_at") @db.Timestamptz(6)
+  createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                  String?               @map("created_by") @db.Uuid
+  updatedBy                  String?               @map("updated_by") @db.Uuid
+  deletedAt                  DateTime?             @map("deleted_at") @db.Timestamptz(6)
 
   @@index([businessType])
   @@index([customerId])
@@ -1394,35 +1458,157 @@ model SubscriptionOrder {
   @@map("subscription_order")
 }
 
+model ReceivableBill {
+  id              String            @id @default(uuid()) @db.Uuid
+  billNo          String            @unique @map("bill_no") @db.VarChar(64)
+  orderId         String            @map("order_id") @db.Uuid
+  order           SubscriptionOrder @relation(fields: [orderId], references: [id])
+  customerId      String            @map("customer_id") @db.Uuid
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  billType        BillType          @map("bill_type")
+  billStatus      BillStatus        @default(PENDING) @map("bill_status")
+  amount          BigInt
+  paidAmount      BigInt            @default(0) @map("paid_amount")
+  remainingAmount BigInt            @map("remaining_amount")
+  dueDate         DateTime          @map("due_date") @db.Timestamptz(6)
+  billPeriodStart DateTime?         @map("bill_period_start") @db.Date
+  billPeriodEnd   DateTime?         @map("bill_period_end") @db.Date
+  paidAt          DateTime?         @map("paid_at") @db.Timestamptz(6)
+  cancelledAt     DateTime?         @map("cancelled_at") @db.Timestamptz(6)
+  snapshot        Json?
+  remark          String?           @db.Text
+  writeOffs       PaymentWriteOff[]
+  depositLedgers  DepositLedger[]
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?           @map("created_by") @db.Uuid
+  updatedBy       String?           @map("updated_by") @db.Uuid
+  deletedAt       DateTime?         @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([orderId])
+  @@index([customerId])
+  @@index([billType])
+  @@index([billStatus])
+  @@index([dueDate])
+  @@map("receivable_bill")
+}
+
+model PaymentRecord {
+  id               String            @id @default(uuid()) @db.Uuid
+  paymentNo        String            @unique @map("payment_no") @db.VarChar(64)
+  customerId       String            @map("customer_id") @db.Uuid
+  customer         Customer          @relation(fields: [customerId], references: [id])
+  orderId          String            @map("order_id") @db.Uuid
+  order            SubscriptionOrder @relation(fields: [orderId], references: [id])
+  paymentAmount    BigInt            @map("payment_amount")
+  paymentMethod    PaymentMethod     @map("payment_method")
+  paymentStatus    PaymentStatus     @default(CONFIRMED) @map("payment_status")
+  receivedAt       DateTime          @map("received_at") @db.Timestamptz(6)
+  payerName        String?           @map("payer_name") @db.VarChar(64)
+  payerAccount     String?           @map("payer_account") @db.VarChar(128)
+  paymentProofUrls Json?             @map("payment_proof_urls")
+  remark           String?           @db.Text
+  writeOffs        PaymentWriteOff[]
+  depositLedgers   DepositLedger[]
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?           @map("created_by") @db.Uuid
+  updatedBy        String?           @map("updated_by") @db.Uuid
+  deletedAt        DateTime?         @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([orderId])
+  @@index([paymentStatus])
+  @@index([receivedAt])
+  @@map("payment_record")
+}
+
+model PaymentWriteOff {
+  id             String            @id @default(uuid()) @db.Uuid
+  paymentId      String            @map("payment_id") @db.Uuid
+  payment        PaymentRecord     @relation(fields: [paymentId], references: [id])
+  billId         String            @map("bill_id") @db.Uuid
+  bill           ReceivableBill    @relation(fields: [billId], references: [id])
+  orderId        String            @map("order_id") @db.Uuid
+  order          SubscriptionOrder @relation(fields: [orderId], references: [id])
+  customerId     String            @map("customer_id") @db.Uuid
+  customer       Customer          @relation(fields: [customerId], references: [id])
+  writeOffAmount BigInt            @map("write_off_amount")
+  writeOffAt     DateTime          @default(now()) @map("write_off_at") @db.Timestamptz(6)
+  remark         String?           @db.Text
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?           @map("created_by") @db.Uuid
+  deletedAt      DateTime?         @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([paymentId])
+  @@index([billId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([writeOffAt])
+  @@map("payment_write_off")
+}
+
+model DepositLedger {
+  id                String                   @id @default(uuid()) @db.Uuid
+  ledgerNo          String                   @unique @map("ledger_no") @db.VarChar(64)
+  customerId        String                   @map("customer_id") @db.Uuid
+  customer          Customer                 @relation(fields: [customerId], references: [id])
+  orderId           String                   @map("order_id") @db.Uuid
+  order             SubscriptionOrder        @relation(fields: [orderId], references: [id])
+  billId            String?                  @map("bill_id") @db.Uuid
+  bill              ReceivableBill?          @relation(fields: [billId], references: [id])
+  paymentId         String?                  @map("payment_id") @db.Uuid
+  payment           PaymentRecord?           @relation(fields: [paymentId], references: [id])
+  transactionType   DepositTransactionType   @map("transaction_type")
+  transactionStatus DepositTransactionStatus @default(CONFIRMED) @map("transaction_status")
+  amount            BigInt
+  balanceAfter      BigInt                   @map("balance_after")
+  occurredAt        DateTime                 @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  remark            String?                  @db.Text
+  snapshot          Json?
+  createdAt         DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?                  @map("created_by") @db.Uuid
+  deletedAt         DateTime?                @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([orderId])
+  @@index([billId])
+  @@index([paymentId])
+  @@index([transactionType])
+  @@index([transactionStatus])
+  @@index([occurredAt])
+  @@map("deposit_ledger")
+}
+
 model VehicleDelivery {
-  id                                String             @id @default(uuid()) @db.Uuid
-  deliveryNo                        String             @unique @map("delivery_no") @db.VarChar(64)
-  orderId                           String             @unique @map("order_id") @db.Uuid
-  order                             SubscriptionOrder  @relation(fields: [orderId], references: [id])
-  vehicleId                         String             @map("vehicle_id") @db.Uuid
-  vehicle                           Vehicle            @relation(fields: [vehicleId], references: [id])
-  customerId                        String             @map("customer_id") @db.Uuid
-  customer                          Customer           @relation(fields: [customerId], references: [id])
-  deliveryStatus                    DeliveryStatus     @default(PENDING) @map("delivery_status")
-  scheduledAt                       DateTime?          @map("scheduled_at") @db.Timestamptz(6)
-  deliveryLocation                  String?            @map("delivery_location") @db.VarChar(255)
-  deliveredAt                       DateTime?          @map("delivered_at") @db.Timestamptz(6)
-  handoverMileageKm                 Int?               @map("handover_mileage_km")
-  contractSignedConfirmed           Boolean            @default(false) @map("contract_signed_confirmed")
-  depositReceivedConfirmed          Boolean            @default(false) @map("deposit_received_confirmed")
-  firstMonthlyFeeReceivedConfirmed  Boolean            @default(false) @map("first_monthly_fee_received_confirmed")
-  insuranceValidConfirmed           Boolean            @default(false) @map("insurance_valid_confirmed")
-  vehiclePreparedConfirmed          Boolean            @default(false) @map("vehicle_prepared_confirmed")
-  vehiclePhotosConfirmed            Boolean            @default(false) @map("vehicle_photos_confirmed")
-  customerIdentityConfirmed         Boolean            @default(false) @map("customer_identity_confirmed")
-  handoverDocumentsConfirmed        Boolean            @default(false) @map("handover_documents_confirmed")
-  checklistSnapshot                 Json?              @map("checklist_snapshot")
-  remark                            String?            @db.Text
-  createdAt                         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                         String?            @map("created_by") @db.Uuid
-  updatedBy                         String?            @map("updated_by") @db.Uuid
-  deletedAt                         DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  id                               String            @id @default(uuid()) @db.Uuid
+  deliveryNo                       String            @unique @map("delivery_no") @db.VarChar(64)
+  orderId                          String            @unique @map("order_id") @db.Uuid
+  order                            SubscriptionOrder @relation(fields: [orderId], references: [id])
+  vehicleId                        String            @map("vehicle_id") @db.Uuid
+  vehicle                          Vehicle           @relation(fields: [vehicleId], references: [id])
+  customerId                       String            @map("customer_id") @db.Uuid
+  customer                         Customer          @relation(fields: [customerId], references: [id])
+  deliveryStatus                   DeliveryStatus    @default(PENDING) @map("delivery_status")
+  scheduledAt                      DateTime?         @map("scheduled_at") @db.Timestamptz(6)
+  deliveryLocation                 String?           @map("delivery_location") @db.VarChar(255)
+  deliveredAt                      DateTime?         @map("delivered_at") @db.Timestamptz(6)
+  handoverMileageKm                Int?              @map("handover_mileage_km")
+  contractSignedConfirmed          Boolean           @default(false) @map("contract_signed_confirmed")
+  depositReceivedConfirmed         Boolean           @default(false) @map("deposit_received_confirmed")
+  firstMonthlyFeeReceivedConfirmed Boolean           @default(false) @map("first_monthly_fee_received_confirmed")
+  insuranceValidConfirmed          Boolean           @default(false) @map("insurance_valid_confirmed")
+  vehiclePreparedConfirmed         Boolean           @default(false) @map("vehicle_prepared_confirmed")
+  vehiclePhotosConfirmed           Boolean           @default(false) @map("vehicle_photos_confirmed")
+  customerIdentityConfirmed        Boolean           @default(false) @map("customer_identity_confirmed")
+  handoverDocumentsConfirmed       Boolean           @default(false) @map("handover_documents_confirmed")
+  checklistSnapshot                Json?             @map("checklist_snapshot")
+  remark                           String?           @db.Text
+  createdAt                        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                        String?           @map("created_by") @db.Uuid
+  updatedBy                        String?           @map("updated_by") @db.Uuid
+  deletedAt                        DateTime?         @map("deleted_at") @db.Timestamptz(6)
 
   @@index([vehicleId])
   @@index([customerId])
@@ -1433,40 +1619,40 @@ model VehicleDelivery {
 }
 
 model VehicleReturn {
-  id                                  String                @id @default(uuid()) @db.Uuid
-  returnNo                            String                @unique @map("return_no") @db.VarChar(64)
-  orderId                             String                @unique @map("order_id") @db.Uuid
-  order                               SubscriptionOrder     @relation(fields: [orderId], references: [id])
-  vehicleId                           String                @map("vehicle_id") @db.Uuid
-  vehicle                             Vehicle               @relation(fields: [vehicleId], references: [id])
-  customerId                          String                @map("customer_id") @db.Uuid
-  customer                            Customer              @relation(fields: [customerId], references: [id])
-  returnType                          VehicleReturnType     @default(NORMAL_RETURN) @map("return_type")
-  returnStatus                        VehicleReturnStatus   @default(PENDING) @map("return_status")
-  scheduledAt                         DateTime?             @map("scheduled_at") @db.Timestamptz(6)
-  returnLocation                      String?               @map("return_location") @db.VarChar(255)
-  returnedAt                          DateTime?             @map("returned_at") @db.Timestamptz(6)
-  returnMileageKm                     Int?                  @map("return_mileage_km")
-  keysReturnedConfirmed               Boolean               @default(false) @map("keys_returned_confirmed")
-  chargingEquipmentReturnedConfirmed  Boolean               @default(false) @map("charging_equipment_returned_confirmed")
-  vehicleDocumentsReturnedConfirmed   Boolean               @default(false) @map("vehicle_documents_returned_confirmed")
-  customerItemsClearedConfirmed       Boolean               @default(false) @map("customer_items_cleared_confirmed")
-  exteriorCheckedConfirmed            Boolean               @default(false) @map("exterior_checked_confirmed")
-  interiorCheckedConfirmed            Boolean               @default(false) @map("interior_checked_confirmed")
-  batteryCheckedConfirmed             Boolean               @default(false) @map("battery_checked_confirmed")
-  mileageConfirmed                    Boolean               @default(false) @map("mileage_confirmed")
-  violationCheckedConfirmed           Boolean               @default(false) @map("violation_checked_confirmed")
-  cleaningRequired                    Boolean               @default(false) @map("cleaning_required")
-  maintenanceRequired                 Boolean               @default(false) @map("maintenance_required")
-  damageFound                         Boolean               @default(false) @map("damage_found")
-  checklistSnapshot                   Json?                 @map("checklist_snapshot")
-  remark                              String?               @db.Text
-  damages                             VehicleReturnDamage[]
-  createdAt                           DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                           DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                           String?               @map("created_by") @db.Uuid
-  updatedBy                           String?               @map("updated_by") @db.Uuid
-  deletedAt                           DateTime?             @map("deleted_at") @db.Timestamptz(6)
+  id                                 String                @id @default(uuid()) @db.Uuid
+  returnNo                           String                @unique @map("return_no") @db.VarChar(64)
+  orderId                            String                @unique @map("order_id") @db.Uuid
+  order                              SubscriptionOrder     @relation(fields: [orderId], references: [id])
+  vehicleId                          String                @map("vehicle_id") @db.Uuid
+  vehicle                            Vehicle               @relation(fields: [vehicleId], references: [id])
+  customerId                         String                @map("customer_id") @db.Uuid
+  customer                           Customer              @relation(fields: [customerId], references: [id])
+  returnType                         VehicleReturnType     @default(NORMAL_RETURN) @map("return_type")
+  returnStatus                       VehicleReturnStatus   @default(PENDING) @map("return_status")
+  scheduledAt                        DateTime?             @map("scheduled_at") @db.Timestamptz(6)
+  returnLocation                     String?               @map("return_location") @db.VarChar(255)
+  returnedAt                         DateTime?             @map("returned_at") @db.Timestamptz(6)
+  returnMileageKm                    Int?                  @map("return_mileage_km")
+  keysReturnedConfirmed              Boolean               @default(false) @map("keys_returned_confirmed")
+  chargingEquipmentReturnedConfirmed Boolean               @default(false) @map("charging_equipment_returned_confirmed")
+  vehicleDocumentsReturnedConfirmed  Boolean               @default(false) @map("vehicle_documents_returned_confirmed")
+  customerItemsClearedConfirmed      Boolean               @default(false) @map("customer_items_cleared_confirmed")
+  exteriorCheckedConfirmed           Boolean               @default(false) @map("exterior_checked_confirmed")
+  interiorCheckedConfirmed           Boolean               @default(false) @map("interior_checked_confirmed")
+  batteryCheckedConfirmed            Boolean               @default(false) @map("battery_checked_confirmed")
+  mileageConfirmed                   Boolean               @default(false) @map("mileage_confirmed")
+  violationCheckedConfirmed          Boolean               @default(false) @map("violation_checked_confirmed")
+  cleaningRequired                   Boolean               @default(false) @map("cleaning_required")
+  maintenanceRequired                Boolean               @default(false) @map("maintenance_required")
+  damageFound                        Boolean               @default(false) @map("damage_found")
+  checklistSnapshot                  Json?                 @map("checklist_snapshot")
+  remark                             String?               @db.Text
+  damages                            VehicleReturnDamage[]
+  createdAt                          DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                          DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                          String?               @map("created_by") @db.Uuid
+  updatedBy                          String?               @map("updated_by") @db.Uuid
+  deletedAt                          DateTime?             @map("deleted_at") @db.Timestamptz(6)
 
   @@index([vehicleId])
   @@index([customerId])
@@ -1478,25 +1664,25 @@ model VehicleReturn {
 }
 
 model VehicleReturnDamage {
-  id                    String                         @id @default(uuid()) @db.Uuid
-  returnId              String                         @map("return_id") @db.Uuid
-  vehicleReturn         VehicleReturn                  @relation(fields: [returnId], references: [id])
-  vehicleId             String                         @map("vehicle_id") @db.Uuid
-  vehicle               Vehicle                        @relation(fields: [vehicleId], references: [id])
-  orderId               String                         @map("order_id") @db.Uuid
-  order                 SubscriptionOrder              @relation(fields: [orderId], references: [id])
-  damageType            VehicleDamageType              @map("damage_type")
-  damageLevel           VehicleDamageLevel             @map("damage_level")
-  description           String                         @db.Text
-  estimatedRepairAmount BigInt?                        @map("estimated_repair_amount")
-  responsibleParty      VehicleDamageResponsibleParty  @default(UNKNOWN) @map("responsible_party")
-  photoUrls             Json?                          @map("photo_urls")
-  status                VehicleReturnDamageStatus      @default(RECORDED)
-  createdAt             DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy             String?                        @map("created_by") @db.Uuid
-  updatedBy             String?                        @map("updated_by") @db.Uuid
-  deletedAt             DateTime?                      @map("deleted_at") @db.Timestamptz(6)
+  id                    String                        @id @default(uuid()) @db.Uuid
+  returnId              String                        @map("return_id") @db.Uuid
+  vehicleReturn         VehicleReturn                 @relation(fields: [returnId], references: [id])
+  vehicleId             String                        @map("vehicle_id") @db.Uuid
+  vehicle               Vehicle                       @relation(fields: [vehicleId], references: [id])
+  orderId               String                        @map("order_id") @db.Uuid
+  order                 SubscriptionOrder             @relation(fields: [orderId], references: [id])
+  damageType            VehicleDamageType             @map("damage_type")
+  damageLevel           VehicleDamageLevel            @map("damage_level")
+  description           String                        @db.Text
+  estimatedRepairAmount BigInt?                       @map("estimated_repair_amount")
+  responsibleParty      VehicleDamageResponsibleParty @default(UNKNOWN) @map("responsible_party")
+  photoUrls             Json?                         @map("photo_urls")
+  status                VehicleReturnDamageStatus     @default(RECORDED)
+  createdAt             DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy             String?                       @map("created_by") @db.Uuid
+  updatedBy             String?                       @map("updated_by") @db.Uuid
+  deletedAt             DateTime?                     @map("deleted_at") @db.Timestamptz(6)
 
   @@index([returnId])
   @@index([vehicleId])

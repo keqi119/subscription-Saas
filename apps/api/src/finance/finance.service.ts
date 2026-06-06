@@ -3,6 +3,14 @@ import {
   AuditAction,
   BillStatus,
   BillType,
+  CollectionAction,
+  CollectionActionResult,
+  CollectionActionType,
+  CollectionCase,
+  CollectionCaseBill,
+  CollectionCaseStatus,
+  CollectionLevel,
+  ContactMethod,
   DepositLedger,
   DepositTransactionStatus,
   DepositTransactionType,
@@ -18,7 +26,16 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
-import { CreatePaymentDto, GenerateMonthlyRentBillsDto, WriteOffPaymentDto } from "./dto/finance.dto";
+import {
+  CloseCollectionCaseDto,
+  CollectionCasesQueryDto,
+  CreateCollectionActionDto,
+  CreatePaymentDto,
+  GenerateMonthlyRentBillsDto,
+  OverdueBillsQueryDto,
+  RefreshOverdueBillsDto,
+  WriteOffPaymentDto
+} from "./dto/finance.dto";
 
 const INITIAL_BILL_TYPES = [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] as const;
 const FINAL_ORDER_STATUSES = new Set<OrderStatus>([
@@ -44,7 +61,12 @@ const DUPLICATE_WRITE_OFF_BILL_MESSAGE = "核销账单不能重复";
 const MONTHLY_RENT_ORDER_STATUS_MESSAGE = "当前订单状态不允许生成月租账单";
 const MONTHLY_RENT_NOT_STARTED_MESSAGE = "订单尚未起租，无法生成月租账单";
 const MISSING_MONTHLY_RENT_AMOUNT_MESSAGE = "订单缺少月租金额，无法生成月租账单";
+const COLLECTION_CASE_NOT_FOUND_MESSAGE = "催收案件不存在";
+const COLLECTION_CASE_ACTION_CLOSED_MESSAGE = "已关闭催收案件不能新增催收动作";
+const COLLECTION_CASE_CLOSE_UNSETTLED_MESSAGE = "催收案件仍有关联账单未结清，不能关闭";
 const CHINA_TIME_OFFSET_MINUTES = 8 * 60;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const OVERDUE_BILL_STATUSES = [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE] as const;
 
 const financeOrderInclude = {
   application: { select: { applicationNo: true, id: true, salesUserId: true } },
@@ -62,13 +84,48 @@ const paymentWriteOffOrderInclude = {
   writeOffs: { where: { deletedAt: null } }
 } satisfies Prisma.PaymentRecordInclude;
 
+const overdueBillInclude = {
+  collectionCaseBills: {
+    include: { case: true },
+    orderBy: { createdAt: "desc" },
+    where: { deletedAt: null }
+  },
+  customer: { select: { id: true, mobile: true, name: true } },
+  order: { include: financeOrderInclude }
+} satisfies Prisma.ReceivableBillInclude;
+
+const collectionCaseListInclude = {
+  customer: { select: { id: true, mobile: true, name: true } },
+  order: { select: { id: true, orderNo: true } }
+} satisfies Prisma.CollectionCaseInclude;
+
+const collectionCaseDetailInclude = {
+  actions: {
+    orderBy: { createdAt: "desc" },
+    where: { deletedAt: null }
+  },
+  bills: {
+    include: { bill: true },
+    orderBy: { createdAt: "asc" },
+    where: { deletedAt: null }
+  },
+  customer: { select: { id: true, mobile: true, name: true } },
+  order: { include: financeOrderInclude }
+} satisfies Prisma.CollectionCaseInclude;
+
 type FinanceOrder = Prisma.SubscriptionOrderGetPayload<{ include: typeof financeOrderInclude }>;
 type PaymentWithWriteOffs = Prisma.PaymentRecordGetPayload<{ include: typeof paymentWriteOffInclude }>;
 type PaymentWithOrderAndWriteOffs = Prisma.PaymentRecordGetPayload<{ include: typeof paymentWriteOffOrderInclude }>;
+type OverdueBillWithRelations = Prisma.ReceivableBillGetPayload<{ include: typeof overdueBillInclude }>;
+type CollectionCaseListRecord = Prisma.CollectionCaseGetPayload<{ include: typeof collectionCaseListInclude }>;
+type CollectionCaseDetailRecord = Prisma.CollectionCaseGetPayload<{ include: typeof collectionCaseDetailInclude }>;
 type ReceivableBillRecord = ReceivableBill;
 type PaymentRecordRecord = PaymentRecord;
 type PaymentWriteOffRecord = PaymentWriteOff;
 type DepositLedgerRecord = DepositLedger;
+type CollectionCaseRecord = CollectionCase;
+type CollectionCaseBillRecord = CollectionCaseBill;
+type CollectionActionRecord = CollectionAction;
 type MonthlyRentBillSource = "SINGLE" | "BATCH";
 export type MonthlyRentBatchAction =
   | "GENERATED"
@@ -96,6 +153,18 @@ export interface MonthlyRentBatchItem {
   periodEnd?: string;
   periodStart?: string;
   reason?: string;
+}
+
+interface CollectionCasePlan {
+  bills: OverdueBillWithRelations[];
+  collectionLevel: CollectionLevel;
+  customerId: string;
+  existingCase: CollectionCaseRecord | null;
+  latestDueDate: Date;
+  maxOverdueDays: number;
+  orderId: string;
+  snapshot: Record<string, unknown>;
+  totalOverdueAmount: bigint;
 }
 
 @Injectable()
@@ -562,6 +631,382 @@ export class FinanceService {
     };
   }
 
+  async refreshOverdueBills(dto: RefreshOverdueBillsDto, user: RequestUser, context: RequestContext) {
+    const asOfDate = parseBillingDate(dto.asOfDate, "asOfDate");
+    const dryRun = Boolean(dto.dryRun);
+    const overdueBills = await this.findRefreshableOverdueBills(asOfDate, user);
+    const casePlans = await this.buildCollectionCasePlans(overdueBills, asOfDate);
+
+    if (dryRun) {
+      return {
+        asOfDate: toIsoDate(asOfDate),
+        createdCaseCount: casePlans.filter((plan) => !plan.existingCase).length,
+        dryRun,
+        items: overdueBills.map((bill) => toOverdueRefreshItem(bill, asOfDate)),
+        overdueBillCount: overdueBills.length,
+        updatedCaseCount: casePlans.filter((plan) => plan.existingCase).length
+      };
+    }
+
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const updatedBills: ReceivableBillRecord[] = [];
+        const createdCases: CollectionCaseRecord[] = [];
+        const updatedCases: CollectionCaseRecord[] = [];
+        const linkedCaseBills: CollectionCaseBillRecord[] = [];
+
+        for (const bill of overdueBills) {
+          if (bill.billStatus === BillStatus.OVERDUE) {
+            updatedBills.push(bill);
+            continue;
+          }
+
+          updatedBills.push(
+            await tx.receivableBill.update({
+              data: { billStatus: BillStatus.OVERDUE, updatedBy: user.id },
+              where: { id: bill.id }
+            })
+          );
+        }
+
+        for (const plan of casePlans) {
+          const caseData = {
+            collectionLevel: plan.collectionLevel,
+            latestDueDate: plan.latestDueDate,
+            maxOverdueDays: plan.maxOverdueDays,
+            snapshot: toJsonValue(plan.snapshot),
+            totalOverdueAmount: plan.totalOverdueAmount,
+            updatedBy: user.id
+          };
+          const collectionCase = plan.existingCase
+            ? await tx.collectionCase.update({
+                data: caseData,
+                where: { id: plan.existingCase.id }
+              })
+            : await tx.collectionCase.create({
+                data: {
+                  ...caseData,
+                  caseNo: createBusinessNo("COL"),
+                  caseStatus: CollectionCaseStatus.ACTIVE,
+                  createdBy: user.id,
+                  customerId: plan.customerId,
+                  orderId: plan.orderId
+                }
+              });
+
+          if (plan.existingCase) {
+            updatedCases.push(collectionCase);
+          } else {
+            createdCases.push(collectionCase);
+          }
+
+          for (const bill of plan.bills) {
+            const overdueDays = calculateOverdueDays(bill.dueDate, asOfDate);
+            const existingLink = await tx.collectionCaseBill.findFirst({
+              where: {
+                billId: bill.id,
+                caseId: collectionCase.id,
+                deletedAt: null
+              }
+            });
+
+            if (existingLink) {
+              linkedCaseBills.push(
+                await tx.collectionCaseBill.update({
+                  data: {
+                    overdueAmount: bill.remainingAmount,
+                    overdueDays
+                  },
+                  where: { id: existingLink.id }
+                })
+              );
+              continue;
+            }
+
+            linkedCaseBills.push(
+              await tx.collectionCaseBill.create({
+                data: {
+                  billId: bill.id,
+                  caseId: collectionCase.id,
+                  customerId: bill.customerId,
+                  orderId: bill.orderId,
+                  overdueAmount: bill.remainingAmount,
+                  overdueDays
+                }
+              })
+            );
+          }
+        }
+
+        return { createdCases, linkedCaseBills, updatedBills, updatedCases };
+      })
+    );
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: {
+        asOfDate: toIsoDate(asOfDate),
+        billIds: result.updatedBills.map((bill) => bill.id),
+        dryRun,
+        overdueBillCount: overdueBills.length
+      },
+      entityId: `overdue-refresh-${toIsoDate(asOfDate)}`,
+      entityType: "overdue_refresh",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    for (const collectionCase of result.createdCases) {
+      await this.auditService.write({
+        action: AuditAction.CREATE,
+        after: toCollectionCaseView(collectionCase),
+        entityId: collectionCase.id,
+        entityType: "collection_case",
+        ipAddress: context.ipAddress,
+        module: "collection",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    for (const collectionCase of result.updatedCases) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toCollectionCaseView(collectionCase),
+        entityId: collectionCase.id,
+        entityType: "collection_case",
+        ipAddress: context.ipAddress,
+        module: "collection",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    return {
+      asOfDate: toIsoDate(asOfDate),
+      createdCaseCount: result.createdCases.length,
+      dryRun,
+      items: overdueBills.map((bill) => toOverdueRefreshItem(bill, asOfDate)),
+      overdueBillCount: overdueBills.length,
+      updatedCaseCount: result.updatedCases.length
+    };
+  }
+
+  async listOverdueBills(query: OverdueBillsQueryDto, user: RequestUser) {
+    const where: Prisma.ReceivableBillWhereInput = {
+      billStatus: BillStatus.OVERDUE,
+      deletedAt: null,
+      remainingAmount: { gt: 0 }
+    };
+
+    if (query.billType) {
+      where.billType = query.billType;
+    }
+
+    if (query.orderNo || !canViewAllFinanceOrders(user)) {
+      where.order = {
+        ...(query.orderNo ? { orderNo: { contains: query.orderNo } } : {}),
+        ...(!canViewAllFinanceOrders(user) ? { application: { salesUserId: user.id } } : {})
+      };
+    }
+
+    if (query.customerName) {
+      where.customer = { name: { contains: query.customerName } };
+    }
+
+    const asOfDate = toBillingDateOnly(new Date());
+    const bills = await this.prisma.receivableBill.findMany({
+      include: overdueBillInclude,
+      orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+      where
+    });
+
+    return bills
+      .map((bill) => toOverdueBillView(bill, asOfDate))
+      .filter((bill) => query.collectionLevel === undefined || bill.collectionLevel === query.collectionLevel)
+      .filter((bill) => query.minOverdueDays === undefined || bill.overdueDays >= query.minOverdueDays)
+      .filter((bill) => query.maxOverdueDays === undefined || bill.overdueDays <= query.maxOverdueDays);
+  }
+
+  async listCollectionCases(query: CollectionCasesQueryDto, user: RequestUser) {
+    const where: Prisma.CollectionCaseWhereInput = { deletedAt: null };
+
+    if (query.caseStatus) {
+      where.caseStatus = query.caseStatus;
+    }
+    if (query.collectionLevel) {
+      where.collectionLevel = query.collectionLevel;
+    }
+    if (query.assignedTo) {
+      where.assignedTo = query.assignedTo;
+    }
+    if (query.customerName) {
+      where.customer = { name: { contains: query.customerName } };
+    }
+    if (query.orderNo || !canViewAllFinanceOrders(user)) {
+      where.order = {
+        ...(query.orderNo ? { orderNo: { contains: query.orderNo } } : {}),
+        ...(!canViewAllFinanceOrders(user) ? { application: { salesUserId: user.id } } : {})
+      };
+    }
+
+    const cases = await this.prisma.collectionCase.findMany({
+      include: collectionCaseListInclude,
+      orderBy: [{ caseStatus: "asc" }, { maxOverdueDays: "desc" }, { createdAt: "desc" }],
+      where
+    });
+
+    return cases.map(toCollectionCaseListView);
+  }
+
+  async getCollectionCase(id: string, user: RequestUser) {
+    const collectionCase = await this.findCollectionCaseOrThrow(id);
+    ensureCanAccessOrderFinance(collectionCase.order, user);
+    return toCollectionCaseDetailView(collectionCase);
+  }
+
+  async createCollectionAction(
+    id: string,
+    dto: CreateCollectionActionDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const collectionCase = await this.findCollectionCaseOrThrow(id);
+    ensureCanAccessOrderFinance(collectionCase.order, user);
+
+    if (collectionCase.caseStatus === CollectionCaseStatus.CLOSED) {
+      throw new BadRequestException(COLLECTION_CASE_ACTION_CLOSED_MESSAGE);
+    }
+
+    if (dto.promisedAmount !== undefined) {
+      assertPositiveInteger(dto.promisedAmount, "promisedAmount");
+    }
+
+    const promisedPayAt = dto.promisedPayAt ? parseBillingDate(dto.promisedPayAt, "promisedPayAt") : null;
+    const nextFollowUpAt = dto.nextFollowUpAt ? parseDateTime(dto.nextFollowUpAt, "nextFollowUpAt") : null;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const action = await tx.collectionAction.create({
+        data: {
+          actionResult: dto.actionResult,
+          actionType: dto.actionType,
+          caseId: collectionCase.id,
+          contactMethod: dto.contactMethod,
+          content: dto.content,
+          createdBy: user.id,
+          customerId: collectionCase.customerId,
+          nextFollowUpAt,
+          orderId: collectionCase.orderId,
+          promisedAmount: dto.promisedAmount === undefined ? null : BigInt(dto.promisedAmount),
+          promisedPayAt
+        }
+      });
+      const updatedCase = nextFollowUpAt
+        ? await tx.collectionCase.update({
+            data: { nextFollowUpAt, updatedBy: user.id },
+            where: { id: collectionCase.id }
+          })
+        : collectionCase;
+
+      return { action, updatedCase };
+    });
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toCollectionActionView(result.action),
+      entityId: result.action.id,
+      entityType: "collection_action",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    if (nextFollowUpAt) {
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: toCollectionCaseView(result.updatedCase),
+        entityId: collectionCase.id,
+        entityType: "collection_case",
+        ipAddress: context.ipAddress,
+        module: "collection",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
+    }
+
+    return toCollectionActionView(result.action);
+  }
+
+  async closeCollectionCase(
+    id: string,
+    dto: CloseCollectionCaseDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const collectionCase = await this.findCollectionCaseOrThrow(id);
+    ensureCanAccessOrderFinance(collectionCase.order, user);
+
+    if (!collectionCase.bills.every((caseBill) => isBillSettled(caseBill.bill))) {
+      throw new BadRequestException(COLLECTION_CASE_CLOSE_UNSETTLED_MESSAGE);
+    }
+
+    const now = new Date();
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updatedCase = await tx.collectionCase.update({
+        data: {
+          caseStatus: CollectionCaseStatus.CLOSED,
+          closedAt: now,
+          closeReason: dto.closeReason,
+          updatedBy: user.id
+        },
+        where: { id: collectionCase.id }
+      });
+      const action = await tx.collectionAction.create({
+        data: {
+          actionResult: CollectionActionResult.SUCCESS,
+          actionType: CollectionActionType.CLOSE,
+          caseId: collectionCase.id,
+          contactMethod: ContactMethod.SYSTEM,
+          content: dto.closeReason,
+          createdBy: user.id,
+          customerId: collectionCase.customerId,
+          orderId: collectionCase.orderId
+        }
+      });
+
+      return { action, updatedCase };
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toCollectionCaseView(result.updatedCase),
+      entityId: collectionCase.id,
+      entityType: "collection_case",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toCollectionActionView(result.action),
+      entityId: result.action.id,
+      entityType: "collection_action",
+      ipAddress: context.ipAddress,
+      module: "collection",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return {
+      action: toCollectionActionView(result.action),
+      case: toCollectionCaseView(result.updatedCase)
+    };
+  }
+
   async getOrderFinanceSummary(orderId: string, user: RequestUser) {
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrderFinance(order, user);
@@ -601,6 +1046,275 @@ export class FinanceService {
 
     return order;
   }
+
+  private async findRefreshableOverdueBills(asOfDate: Date, user: RequestUser) {
+    const where: Prisma.ReceivableBillWhereInput = {
+      billStatus: { in: [...OVERDUE_BILL_STATUSES] },
+      deletedAt: null,
+      dueDate: { lt: asOfDate },
+      remainingAmount: { gt: 0 }
+    };
+
+    if (!canViewAllFinanceOrders(user)) {
+      where.order = { application: { salesUserId: user.id } };
+    }
+
+    const bills = await this.prisma.receivableBill.findMany({
+      include: overdueBillInclude,
+      orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+      where
+    });
+
+    return bills.filter((bill) => calculateOverdueDays(bill.dueDate, asOfDate) > 0);
+  }
+
+  private async buildCollectionCasePlans(overdueBills: OverdueBillWithRelations[], asOfDate: Date) {
+    const billsByOrder = new Map<string, OverdueBillWithRelations[]>();
+
+    for (const bill of overdueBills) {
+      const groupedBills = billsByOrder.get(bill.orderId) ?? [];
+      groupedBills.push(bill);
+      billsByOrder.set(bill.orderId, groupedBills);
+    }
+
+    const plans: CollectionCasePlan[] = [];
+
+    for (const [orderId, bills] of billsByOrder) {
+      const existingCase = await this.prisma.collectionCase.findFirst({
+        where: {
+          caseStatus: CollectionCaseStatus.ACTIVE,
+          deletedAt: null,
+          orderId
+        }
+      });
+      const overdueDays = bills.map((bill) => calculateOverdueDays(bill.dueDate, asOfDate));
+      const maxOverdueDays = Math.max(...overdueDays);
+      const totalOverdueAmount = bills.reduce((sum, bill) => sum + bill.remainingAmount, 0n);
+      const latestDueDate = bills.reduce<Date | null>(
+        (latest, bill) => (latest === null || bill.dueDate.getTime() > latest.getTime() ? bill.dueDate : latest),
+        null
+      );
+      const firstBill = bills[0]!;
+
+      plans.push({
+        bills,
+        collectionLevel: calculateCollectionLevel(maxOverdueDays),
+        customerId: firstBill.customerId,
+        existingCase,
+        latestDueDate: latestDueDate ?? firstBill.dueDate,
+        maxOverdueDays,
+        orderId,
+        snapshot: buildCollectionCaseSnapshot(firstBill.order, bills, asOfDate, totalOverdueAmount, maxOverdueDays),
+        totalOverdueAmount
+      });
+    }
+
+    return plans;
+  }
+
+  private async findCollectionCaseOrThrow(id: string) {
+    const collectionCase = await this.prisma.collectionCase.findUnique({
+      include: collectionCaseDetailInclude,
+      where: { id }
+    });
+
+    if (!collectionCase || collectionCase.deletedAt) {
+      throw new NotFoundException(COLLECTION_CASE_NOT_FOUND_MESSAGE);
+    }
+
+    return collectionCase;
+  }
+}
+
+function calculateOverdueDays(dueDate: Date, asOfDate: Date) {
+  const dueDateOnly = toBillingDateOnly(dueDate);
+  const asOfDateOnly = toBillingDateOnly(asOfDate);
+  return Math.max(0, Math.floor((asOfDateOnly.getTime() - dueDateOnly.getTime()) / MS_PER_DAY));
+}
+
+function calculateCollectionLevel(overdueDays: number) {
+  if (overdueDays <= 3) {
+    return CollectionLevel.D1;
+  }
+  if (overdueDays <= 7) {
+    return CollectionLevel.D2;
+  }
+  if (overdueDays <= 15) {
+    return CollectionLevel.D3;
+  }
+  if (overdueDays <= 30) {
+    return CollectionLevel.D4;
+  }
+  return CollectionLevel.D5;
+}
+
+function toOverdueRefreshItem(bill: OverdueBillWithRelations, asOfDate: Date) {
+  const overdueDays = calculateOverdueDays(bill.dueDate, asOfDate);
+
+  return {
+    amount: Number(bill.amount),
+    billId: bill.id,
+    billNo: bill.billNo,
+    billStatus: bill.billStatus,
+    billType: bill.billType,
+    collectionLevel: calculateCollectionLevel(overdueDays),
+    customerId: bill.customerId,
+    customerName: bill.customer.name,
+    dueDate: toIsoDate(bill.dueDate),
+    orderId: bill.orderId,
+    orderNo: bill.order.orderNo,
+    overdueDays,
+    paidAmount: Number(bill.paidAmount),
+    remainingAmount: Number(bill.remainingAmount)
+  };
+}
+
+function toOverdueBillView(bill: OverdueBillWithRelations, asOfDate: Date) {
+  const overdueDays = calculateOverdueDays(bill.dueDate, asOfDate);
+  const activeCaseBill = bill.collectionCaseBills.find((caseBill) => !caseBill.case.deletedAt);
+
+  return {
+    amount: Number(bill.amount),
+    billId: bill.id,
+    billNo: bill.billNo,
+    billStatus: bill.billStatus,
+    billType: bill.billType,
+    collectionCaseId: activeCaseBill?.caseId ?? null,
+    collectionCaseStatus: activeCaseBill?.case.caseStatus ?? null,
+    collectionLevel: calculateCollectionLevel(overdueDays),
+    customer: {
+      id: bill.customer.id,
+      mobile: bill.customer.mobile,
+      name: bill.customer.name
+    },
+    dueDate: toIsoDate(bill.dueDate),
+    order: {
+      id: bill.order.id,
+      orderNo: bill.order.orderNo
+    },
+    overdueDays,
+    paidAmount: Number(bill.paidAmount),
+    remainingAmount: Number(bill.remainingAmount)
+  };
+}
+
+function toCollectionCaseView(collectionCase: CollectionCaseRecord) {
+  return {
+    assignedTo: collectionCase.assignedTo,
+    caseNo: collectionCase.caseNo,
+    caseStatus: collectionCase.caseStatus,
+    closeReason: collectionCase.closeReason,
+    closedAt: toIsoDateTime(collectionCase.closedAt),
+    collectionLevel: collectionCase.collectionLevel,
+    createdAt: toIsoDateTime(collectionCase.createdAt),
+    customerId: collectionCase.customerId,
+    id: collectionCase.id,
+    latestDueDate: toIsoDate(collectionCase.latestDueDate),
+    maxOverdueDays: collectionCase.maxOverdueDays,
+    nextFollowUpAt: toIsoDateTime(collectionCase.nextFollowUpAt),
+    orderId: collectionCase.orderId,
+    remark: collectionCase.remark,
+    snapshot: collectionCase.snapshot,
+    totalOverdueAmount: Number(collectionCase.totalOverdueAmount),
+    updatedAt: toIsoDateTime(collectionCase.updatedAt)
+  };
+}
+
+function toCollectionCaseListView(collectionCase: CollectionCaseListRecord) {
+  return {
+    ...toCollectionCaseView(collectionCase),
+    customer: {
+      id: collectionCase.customer.id,
+      mobile: collectionCase.customer.mobile,
+      name: collectionCase.customer.name
+    },
+    order: {
+      id: collectionCase.order.id,
+      orderNo: collectionCase.order.orderNo
+    }
+  };
+}
+
+function toCollectionCaseDetailView(collectionCase: CollectionCaseDetailRecord) {
+  return {
+    ...toCollectionCaseView(collectionCase),
+    actions: collectionCase.actions.map(toCollectionActionView),
+    bills: collectionCase.bills.map(toCollectionCaseBillView),
+    customer: {
+      id: collectionCase.customer.id,
+      mobile: collectionCase.customer.mobile,
+      name: collectionCase.customer.name
+    },
+    order: {
+      id: collectionCase.order.id,
+      orderNo: collectionCase.order.orderNo
+    }
+  };
+}
+
+function toCollectionCaseBillView(caseBill: CollectionCaseBillRecord & { bill: ReceivableBillRecord }) {
+  return {
+    bill: toBillView(caseBill.bill),
+    billId: caseBill.billId,
+    caseId: caseBill.caseId,
+    createdAt: toIsoDateTime(caseBill.createdAt),
+    customerId: caseBill.customerId,
+    id: caseBill.id,
+    orderId: caseBill.orderId,
+    overdueAmount: Number(caseBill.overdueAmount),
+    overdueDays: caseBill.overdueDays
+  };
+}
+
+function toCollectionActionView(action: CollectionActionRecord) {
+  return {
+    actionResult: action.actionResult,
+    actionType: action.actionType,
+    caseId: action.caseId,
+    contactMethod: action.contactMethod,
+    content: action.content,
+    createdAt: toIsoDateTime(action.createdAt),
+    customerId: action.customerId,
+    id: action.id,
+    nextFollowUpAt: toIsoDateTime(action.nextFollowUpAt),
+    orderId: action.orderId,
+    promisedAmount: action.promisedAmount === null ? null : Number(action.promisedAmount),
+    promisedPayAt: toIsoDate(action.promisedPayAt)
+  };
+}
+
+function buildCollectionCaseSnapshot(
+  order: FinanceOrder,
+  bills: OverdueBillWithRelations[],
+  asOfDate: Date,
+  totalOverdueAmount: bigint,
+  maxOverdueDays: number
+) {
+  return {
+    asOfDate: toIsoDate(asOfDate),
+    bills: bills.map((bill) => ({
+      billId: bill.id,
+      billNo: bill.billNo,
+      billType: bill.billType,
+      dueDate: toIsoDate(bill.dueDate),
+      overdueDays: calculateOverdueDays(bill.dueDate, asOfDate),
+      remainingAmount: Number(bill.remainingAmount)
+    })),
+    collectionLevel: calculateCollectionLevel(maxOverdueDays),
+    customer: {
+      id: order.customerId,
+      mobile: order.customer.mobile,
+      name: order.customer.name
+    },
+    maxOverdueDays,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    totalOverdueAmount: Number(totalOverdueAmount)
+  };
+}
+
+function isBillSettled(bill: ReceivableBillRecord) {
+  return bill.remainingAmount === 0n || bill.billStatus === BillStatus.PAID;
 }
 
 async function createInitialBill(

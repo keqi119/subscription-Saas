@@ -3,6 +3,11 @@ import {
   BillStatus,
   BillType,
   BusinessType,
+  CollectionActionResult,
+  CollectionActionType,
+  CollectionCaseStatus,
+  CollectionLevel,
+  ContactMethod,
   DepositStatus,
   DepositTransactionStatus,
   DepositTransactionType,
@@ -534,6 +539,259 @@ describe("billing finance minimum backend loop", () => {
   });
 });
 
+describe("overdue collection backend loop", () => {
+  it("dryRun returns overdue bills without writing bills, cases, links, or audit logs", async () => {
+    const harness = createFinanceHarness();
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+
+    const result = await harness.service.refreshOverdueBills(
+      { asOfDate: "2026-06-06", dryRun: true },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({
+      createdCaseCount: 1,
+      dryRun: true,
+      overdueBillCount: 1,
+      updatedCaseCount: 0
+    });
+    expect(result.items[0]).toMatchObject({
+      collectionLevel: CollectionLevel.D2,
+      overdueDays: 5
+    });
+    expect(harness.state.bills[0]?.billStatus).toBe(BillStatus.PENDING);
+    expect(harness.state.collectionCases).toHaveLength(0);
+    expect(harness.state.collectionCaseBills).toHaveLength(0);
+    expect(harness.auditService.write).not.toHaveBeenCalled();
+  });
+
+  it("marks only overdue unsettled bills and creates a collection case with case bill links", async () => {
+    const harness = createFinanceHarness();
+    const overdueBill = addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    const paidBill = addReceivableBill(harness, {
+      billStatus: BillStatus.PAID,
+      dueDate: dateOnly("2026-05-20"),
+      paidAmount: 300000n,
+      remainingAmount: 0n
+    });
+    const cancelledBill = addReceivableBill(harness, {
+      billStatus: BillStatus.CANCELLED,
+      dueDate: dateOnly("2026-05-20")
+    });
+    const dueTodayBill = addReceivableBill(harness, { dueDate: dateOnly("2026-06-06") });
+
+    const result = await harness.service.refreshOverdueBills(
+      { asOfDate: "2026-06-06" },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({
+      createdCaseCount: 1,
+      dryRun: false,
+      overdueBillCount: 1,
+      updatedCaseCount: 0
+    });
+    expect(overdueBill.billStatus).toBe(BillStatus.OVERDUE);
+    expect(paidBill.billStatus).toBe(BillStatus.PAID);
+    expect(cancelledBill.billStatus).toBe(BillStatus.CANCELLED);
+    expect(dueTodayBill.billStatus).toBe(BillStatus.PENDING);
+    expect(harness.state.collectionCases).toEqual([
+      expect.objectContaining({
+        caseStatus: CollectionCaseStatus.ACTIVE,
+        collectionLevel: CollectionLevel.D2,
+        maxOverdueDays: 5,
+        totalOverdueAmount: 300000n
+      })
+    ]);
+    expect(harness.state.collectionCaseBills).toEqual([
+      expect.objectContaining({
+        billId: overdueBill.id,
+        overdueAmount: 300000n,
+        overdueDays: 5
+      })
+    ]);
+  });
+
+  it("calculates D1-D5 collection levels by natural overdue days", async () => {
+    const harness = createFinanceHarness();
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-05") });
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-02") });
+    addReceivableBill(harness, { dueDate: dateOnly("2026-05-25") });
+    addReceivableBill(harness, { dueDate: dateOnly("2026-05-15") });
+    addReceivableBill(harness, { dueDate: dateOnly("2026-05-01") });
+
+    const result = await harness.service.refreshOverdueBills(
+      { asOfDate: "2026-06-06", dryRun: true },
+      harness.user,
+      harness.context
+    );
+    const levelsByDays = result.items
+      .map((item) => ({ days: item.overdueDays, level: item.collectionLevel }))
+      .sort((left, right) => left.days - right.days);
+
+    expect(levelsByDays).toEqual([
+      { days: 1, level: CollectionLevel.D1 },
+      { days: 4, level: CollectionLevel.D2 },
+      { days: 12, level: CollectionLevel.D3 },
+      { days: 22, level: CollectionLevel.D4 },
+      { days: 36, level: CollectionLevel.D5 }
+    ]);
+  });
+
+  it("updates an existing ACTIVE collection case instead of creating duplicates", async () => {
+    const harness = createFinanceHarness();
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    await harness.service.refreshOverdueBills({ asOfDate: "2026-06-06" }, harness.user, harness.context);
+    const existingCaseId = harness.state.collectionCases[0]?.id;
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-02") });
+
+    const result = await harness.service.refreshOverdueBills(
+      { asOfDate: "2026-06-06" },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({ createdCaseCount: 0, overdueBillCount: 2, updatedCaseCount: 1 });
+    expect(harness.state.collectionCases).toHaveLength(1);
+    expect(harness.state.collectionCases[0]).toMatchObject({
+      id: existingCaseId,
+      maxOverdueDays: 5,
+      totalOverdueAmount: 600000n
+    });
+    expect(harness.state.collectionCaseBills).toHaveLength(2);
+  });
+
+  it("lists overdue bills, collection cases, and collection case details", async () => {
+    const harness = createFinanceHarness();
+    const bill = addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    await harness.service.refreshOverdueBills({ asOfDate: "2026-06-06" }, harness.user, harness.context);
+    const collectionCase = harness.state.collectionCases[0]!;
+
+    const overdueBills = await harness.service.listOverdueBills({}, harness.user);
+    const cases = await harness.service.listCollectionCases({ caseStatus: CollectionCaseStatus.ACTIVE }, harness.user);
+    const detail = await harness.service.getCollectionCase(String(collectionCase.id), harness.user);
+
+    expect(overdueBills).toEqual([
+      expect.objectContaining({
+        billId: bill.id,
+        collectionCaseStatus: CollectionCaseStatus.ACTIVE,
+        collectionLevel: expect.any(String),
+        remainingAmount: 300000
+      })
+    ]);
+    expect(cases).toEqual([
+      expect.objectContaining({
+        caseStatus: CollectionCaseStatus.ACTIVE,
+        customer: expect.objectContaining({ id: harness.customerId }),
+        order: expect.objectContaining({ id: harness.orderId })
+      })
+    ]);
+    expect(detail).toMatchObject({
+      id: collectionCase.id,
+      actions: [],
+      bills: [expect.objectContaining({ billId: bill.id })]
+    });
+  });
+
+  it("creates collection actions and updates next follow-up time", async () => {
+    const harness = createFinanceHarness();
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    await harness.service.refreshOverdueBills({ asOfDate: "2026-06-06" }, harness.user, harness.context);
+    const collectionCase = harness.state.collectionCases[0]!;
+
+    const action = await harness.service.createCollectionAction(
+      String(collectionCase.id),
+      {
+        actionResult: CollectionActionResult.CUSTOMER_PROMISED,
+        actionType: CollectionActionType.PROMISE_TO_PAY,
+        contactMethod: ContactMethod.PHONE,
+        content: "客户承诺三日内付款",
+        nextFollowUpAt: "2026-06-09T10:00:00+08:00",
+        promisedAmount: 300000,
+        promisedPayAt: "2026-06-09"
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(action).toMatchObject({
+      actionResult: CollectionActionResult.CUSTOMER_PROMISED,
+      actionType: CollectionActionType.PROMISE_TO_PAY,
+      promisedAmount: 300000,
+      promisedPayAt: "2026-06-09"
+    });
+    expect(harness.state.collectionCases[0]?.nextFollowUpAt).toEqual(new Date("2026-06-09T02:00:00.000Z"));
+    expect(harness.state.collectionActions).toHaveLength(1);
+  });
+
+  it("prevents closing unsettled cases and closes cases after all linked bills are settled", async () => {
+    const harness = createFinanceHarness();
+    const bill = addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    await harness.service.refreshOverdueBills({ asOfDate: "2026-06-06" }, harness.user, harness.context);
+    const collectionCase = harness.state.collectionCases[0]!;
+
+    await expect(
+      harness.service.closeCollectionCase(
+        String(collectionCase.id),
+        { closeReason: "账单已结清" },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("不能关闭");
+
+    Object.assign(bill, { billStatus: BillStatus.PAID, paidAmount: 300000n, remainingAmount: 0n });
+    const result = await harness.service.closeCollectionCase(
+      String(collectionCase.id),
+      { closeReason: "账单已结清" },
+      harness.user,
+      harness.context
+    );
+
+    expect(result.case).toMatchObject({
+      caseStatus: CollectionCaseStatus.CLOSED,
+      closeReason: "账单已结清"
+    });
+    expect(harness.state.collectionActions).toEqual([
+      expect.objectContaining({
+        actionType: CollectionActionType.CLOSE,
+        contactMethod: ContactMethod.SYSTEM
+      })
+    ]);
+  });
+
+  it("writes audit logs for overdue refresh, case changes, actions, and close", async () => {
+    const harness = createFinanceHarness();
+    const bill = addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    await harness.service.refreshOverdueBills({ asOfDate: "2026-06-06" }, harness.user, harness.context);
+    const collectionCase = harness.state.collectionCases[0]!;
+    await harness.service.createCollectionAction(
+      String(collectionCase.id),
+      {
+        actionResult: CollectionActionResult.SUCCESS,
+        actionType: CollectionActionType.FOLLOW_UP,
+        contactMethod: ContactMethod.PHONE,
+        content: "已提醒客户付款"
+      },
+      harness.user,
+      harness.context
+    );
+    Object.assign(bill, { billStatus: BillStatus.PAID, paidAmount: 300000n, remainingAmount: 0n });
+    await harness.service.closeCollectionCase(
+      String(collectionCase.id),
+      { closeReason: "账单已结清" },
+      harness.user,
+      harness.context
+    );
+
+    const entityTypes = harness.auditService.write.mock.calls.map(([entry]) => entry.entityType);
+    expect(entityTypes).toEqual(
+      expect.arrayContaining(["overdue_refresh", "collection_case", "collection_action"])
+    );
+  });
+});
+
 function validPaymentDto(harness: ReturnType<typeof createFinanceHarness>, paymentAmount = 800000) {
   return {
     customerId: harness.customerId,
@@ -589,6 +847,35 @@ function addMonthlyRentBill(
   return bill as { id: string };
 }
 
+function addReceivableBill(harness: ReturnType<typeof createFinanceHarness>, overrides: Record<string, unknown> = {}) {
+  const bill = {
+    amount: 300000n,
+    billNo: `BIL-OVERDUE-${harness.state.bills.length + 1}`,
+    billPeriodEnd: null,
+    billPeriodStart: null,
+    billStatus: BillStatus.PENDING,
+    billType: BillType.MONTHLY_RENT,
+    cancelledAt: null,
+    createdAt: new Date("2026-06-01T08:00:00.000Z"),
+    createdBy: harness.user.id,
+    customerId: harness.customerId,
+    deletedAt: null,
+    dueDate: dateOnly("2026-06-01"),
+    id: `bill-overdue-${harness.state.bills.length + 1}`,
+    orderId: harness.orderId,
+    paidAmount: 0n,
+    paidAt: null,
+    remainingAmount: 300000n,
+    remark: null,
+    snapshot: {},
+    updatedAt: new Date("2026-06-01T08:00:00.000Z"),
+    updatedBy: harness.user.id,
+    ...overrides
+  };
+  harness.state.bills.push(bill);
+  return bill;
+}
+
 function cloneOrder(harness: ReturnType<typeof createFinanceHarness>, overrides: Record<string, unknown>) {
   return {
     ...harness.state.order,
@@ -619,6 +906,9 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state = {
     bills: [] as Array<Record<string, unknown>>,
+    collectionActions: [] as Array<Record<string, unknown>>,
+    collectionCaseBills: [] as Array<Record<string, unknown>>,
+    collectionCases: [] as Array<Record<string, unknown>>,
     depositLedgers: [] as Array<Record<string, unknown>>,
     order: {
       actualDeliveryAt: null,
@@ -682,6 +972,75 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
   state.orders.push(state.order);
 
   const client = {
+    collectionAction: {
+      create: vi.fn(async ({ data }) => {
+        const action = {
+          ...data,
+          createdAt: now,
+          deletedAt: null,
+          id: `collection-action-${state.collectionActions.length + 1}`
+        };
+        state.collectionActions.push(action);
+        return action;
+      })
+    },
+    collectionCase: {
+      create: vi.fn(async ({ data }) => {
+        const collectionCase = {
+          assignedTo: null,
+          closedAt: null,
+          closeReason: null,
+          createdAt: now,
+          deletedAt: null,
+          id: `collection-case-${state.collectionCases.length + 1}`,
+          nextFollowUpAt: null,
+          remark: null,
+          updatedAt: now,
+          ...data
+        };
+        state.collectionCases.push(collectionCase);
+        return collectionCase;
+      }),
+      findFirst: vi.fn(async ({ where }) => filterCollectionCases(state.collectionCases, where).at(0) ?? null),
+      findMany: vi.fn(async ({ include, where }) =>
+        filterCollectionCases(state.collectionCases, where).map((collectionCase) =>
+          decorateCollectionCase(collectionCase, include)
+        )
+      ),
+      findUnique: vi.fn(async ({ include, where }) => {
+        const collectionCase = state.collectionCases.find((item) => item.id === where.id);
+        return collectionCase ? decorateCollectionCase(collectionCase, include) : null;
+      }),
+      update: vi.fn(async ({ data, where }) => {
+        const collectionCase = state.collectionCases.find((item) => item.id === where.id);
+        if (!collectionCase) {
+          throw new Error("Collection case not found");
+        }
+        Object.assign(collectionCase, data, { updatedAt: now });
+        return collectionCase;
+      })
+    },
+    collectionCaseBill: {
+      create: vi.fn(async ({ data }) => {
+        const caseBill = {
+          ...data,
+          createdAt: now,
+          deletedAt: null,
+          id: `collection-case-bill-${state.collectionCaseBills.length + 1}`
+        };
+        state.collectionCaseBills.push(caseBill);
+        return caseBill;
+      }),
+      findFirst: vi.fn(async ({ where }) => filterCollectionCaseBills(state.collectionCaseBills, where).at(0) ?? null),
+      update: vi.fn(async ({ data, where }) => {
+        const caseBill = state.collectionCaseBills.find((item) => item.id === where.id);
+        if (!caseBill) {
+          throw new Error("Collection case bill not found");
+        }
+        Object.assign(caseBill, data);
+        return caseBill;
+      })
+    },
     depositLedger: {
       create: vi.fn(async ({ data }) => {
         const ledger = {
@@ -763,7 +1122,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
         return bill;
       }),
       findFirst: vi.fn(async ({ where }) => filterBills(state.bills, where).at(0) ?? null),
-      findMany: vi.fn(async ({ where }) => filterBills(state.bills, where)),
+      findMany: vi.fn(async ({ include, where }) => filterBills(state.bills, where).map((bill) => decorateBill(bill, include))),
       update: vi.fn(async ({ data, where }) => {
         const bill = state.bills.find((item) => item.id === where.id);
         if (!bill) {
@@ -825,6 +1184,54 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
       ...(include?.order ? { order: state.order } : {})
     };
   }
+
+  function decorateBill(bill: Record<string, unknown>, include: Record<string, unknown> | undefined) {
+    const order = state.orders.find((item) => item.id === bill.orderId) ?? state.order;
+    return {
+      ...bill,
+      ...(include?.customer ? { customer: order.customer } : {}),
+      ...(include?.order ? { order } : {}),
+      ...(include?.collectionCaseBills
+        ? {
+            collectionCaseBills: state.collectionCaseBills
+              .filter((caseBill) => caseBill.billId === bill.id && caseBill.deletedAt === null)
+              .map((caseBill) => ({
+                ...caseBill,
+                case: state.collectionCases.find((collectionCase) => collectionCase.id === caseBill.caseId)
+              }))
+          }
+        : {})
+    };
+  }
+
+  function decorateCollectionCase(
+    collectionCase: Record<string, unknown>,
+    include: Record<string, unknown> | undefined
+  ) {
+    const order = state.orders.find((item) => item.id === collectionCase.orderId) ?? state.order;
+    return {
+      ...collectionCase,
+      ...(include?.actions
+        ? {
+            actions: state.collectionActions.filter(
+              (action) => action.caseId === collectionCase.id && action.deletedAt === null
+            )
+          }
+        : {}),
+      ...(include?.bills
+        ? {
+            bills: state.collectionCaseBills
+              .filter((caseBill) => caseBill.caseId === collectionCase.id && caseBill.deletedAt === null)
+              .map((caseBill) => ({
+                ...caseBill,
+                bill: state.bills.find((bill) => bill.id === caseBill.billId)
+              }))
+          }
+        : {}),
+      ...(include?.customer ? { customer: order.customer } : {}),
+      ...(include?.order ? { order } : {})
+    };
+  }
 }
 
 function filterBills(bills: Array<Record<string, unknown>>, where: Record<string, unknown> = {}) {
@@ -841,6 +1248,12 @@ function filterBills(bills: Array<Record<string, unknown>>, where: Record<string
     if (where.billStatus && !matchesScalarFilter(bill.billStatus, where.billStatus)) {
       return false;
     }
+    if (where.remainingAmount && !matchesScalarFilter(bill.remainingAmount, where.remainingAmount)) {
+      return false;
+    }
+    if (where.dueDate && !matchesScalarFilter(bill.dueDate, where.dueDate)) {
+      return false;
+    }
     if (where.id && !matchesScalarFilter(bill.id, where.id)) {
       return false;
     }
@@ -848,6 +1261,45 @@ function filterBills(bills: Array<Record<string, unknown>>, where: Record<string
       return false;
     }
     if (where.billPeriodEnd && !matchesScalarFilter(bill.billPeriodEnd, where.billPeriodEnd)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function filterCollectionCases(cases: Array<Record<string, unknown>>, where: Record<string, unknown> = {}) {
+  return cases.filter((collectionCase) => {
+    if ("deletedAt" in where && collectionCase.deletedAt !== where.deletedAt) {
+      return false;
+    }
+    if (where.id && collectionCase.id !== where.id) {
+      return false;
+    }
+    if (where.orderId && collectionCase.orderId !== where.orderId) {
+      return false;
+    }
+    if (where.caseStatus && !matchesScalarFilter(collectionCase.caseStatus, where.caseStatus)) {
+      return false;
+    }
+    if (where.collectionLevel && !matchesScalarFilter(collectionCase.collectionLevel, where.collectionLevel)) {
+      return false;
+    }
+    if (where.assignedTo && collectionCase.assignedTo !== where.assignedTo) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function filterCollectionCaseBills(caseBills: Array<Record<string, unknown>>, where: Record<string, unknown> = {}) {
+  return caseBills.filter((caseBill) => {
+    if ("deletedAt" in where && caseBill.deletedAt !== where.deletedAt) {
+      return false;
+    }
+    if (where.caseId && caseBill.caseId !== where.caseId) {
+      return false;
+    }
+    if (where.billId && caseBill.billId !== where.billId) {
       return false;
     }
     return true;
@@ -876,6 +1328,15 @@ function matchesScalarFilter(value: unknown, filter: unknown) {
   }
 
   const record = filter as { in?: unknown[]; not?: unknown };
+  if ("contains" in record && typeof value === "string") {
+    return value.includes(String(record.contains));
+  }
+  if ("gt" in record && record.gt !== undefined && compareScalar(value, record.gt) <= 0) {
+    return false;
+  }
+  if ("lt" in record && record.lt !== undefined && compareScalar(value, record.lt) >= 0) {
+    return false;
+  }
   if (record.in) {
     return record.in.includes(value);
   }
@@ -883,4 +1344,34 @@ function matchesScalarFilter(value: unknown, filter: unknown) {
     return value !== record.not;
   }
   return true;
+}
+
+function compareScalar(left: unknown, right: unknown) {
+  const normalizedLeft = normalizeComparable(left);
+  const normalizedRight = normalizeComparable(right);
+
+  if (normalizedLeft === null || normalizedRight === null) {
+    return 0;
+  }
+
+  if (normalizedLeft > normalizedRight) {
+    return 1;
+  }
+  if (normalizedLeft < normalizedRight) {
+    return -1;
+  }
+  return 0;
+}
+
+function normalizeComparable(value: unknown) {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return BigInt(value);
+  }
+  if (value instanceof Date) {
+    return BigInt(value.getTime());
+  }
+  return null;
 }

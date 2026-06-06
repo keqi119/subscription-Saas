@@ -141,6 +141,13 @@ permissionRows.push(
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"]
 );
 
+permissionRows.push(
+  ["collection:view", "查看催收案件", "collection", "view"],
+  ["collection:refresh_overdue", "刷新逾期账单", "collection", "refresh_overdue"],
+  ["collection:action_create", "新增催收动作", "collection", "action_create"],
+  ["collection:close", "关闭催收案件", "collection", "close"]
+);
+
 const menuRows = [
   ["dashboard", "首页驾驶舱", "/", "dashboard", 10, "dashboard:view", null],
   ["customers", "客户中心", "/customers", "customer", 20, "customer:view", null],
@@ -404,6 +411,15 @@ const financeManagementPermissions = [
 
 const financeViewPermissions = ["billing:view", "payment:view", "deposit_ledger:view"];
 
+const collectionManagementPermissions = [
+  "collection:view",
+  "collection:refresh_overdue",
+  "collection:action_create",
+  "collection:close"
+];
+
+const collectionActionPermissions = ["collection:view", "collection:action_create"];
+
 const financeMenuCodes = ["billing", "billing.monthly_rent"];
 
 const productMenuCodes = [
@@ -545,6 +561,7 @@ async function main() {
       ...orderManagementPermissions,
       "billing:view",
       "deposit_ledger:view",
+      ...collectionActionPermissions,
       "order_change:approve",
       "order_change:reject",
       "order_change:execute"
@@ -592,6 +609,7 @@ async function main() {
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
+        ...(roleCode === "FI" ? collectionManagementPermissions : []),
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         "vehicle_return:view",
         ...(roleCode === "AS"
@@ -628,7 +646,8 @@ async function main() {
       ...vehicleManagementPermissions,
       "quote:view",
       ...orderManagementPermissions,
-      ...financeViewPermissions
+      ...financeViewPermissions,
+      "collection:view"
     ],
     ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
   );

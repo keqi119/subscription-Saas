@@ -77,6 +77,13 @@ export const DEPOSIT_STATUS_LABELS: Record<string, string> = {
   WAIVED: "押金减免"
 };
 
+export const DELIVERY_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  DELIVERED: "已交付",
+  PENDING: "待准备",
+  READY: "待交付"
+};
+
 export const PLAN_CONFIRM_STATUS_LABELS: Record<string, string> = {
   CONFIRMED: "已确认",
   PENDING: "待确认",
@@ -174,6 +181,7 @@ export const MODULE_LABELS: Record<string, string> = {
   contract_template: "合同模板",
   customer: "客户中心",
   dashboard: "首页驾驶舱",
+  delivery: "车辆交付",
   order: "订单中心",
   order_change: "订单变更",
   product: "产品中心",
@@ -203,6 +211,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "customer:manage": "管理客户",
   "customer:view": "查看客户",
   "dashboard:view": "查看首页驾驶舱",
+  "delivery:confirm": "确认车辆交付",
+  "delivery:prepare": "准备车辆交付",
+  "delivery:view": "查看车辆交付",
   "menu:view": "查看菜单",
   "order:cancel": "取消订单",
   "order:confirm_final_plan": "确认最终方案",
@@ -278,6 +289,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "customer:manage": "允许新建和编辑客户",
   "customer:view": "允许查看客户列表和详情",
   "dashboard:view": "允许查看首页驾驶舱",
+  "delivery:confirm": "允许确认车辆实际交付",
+  "delivery:prepare": "允许维护车辆交付准备信息",
+  "delivery:view": "允许查看订单车辆交付信息",
   "menu:view": "允许查看菜单管理",
   "order:cancel": "允许取消订阅订单",
   "order:confirm_final_plan": "允许确认客户自助订单最终方案",

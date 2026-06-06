@@ -253,6 +253,15 @@ enum DepositStatus {
   @@map("deposit_status")
 }
 
+enum DeliveryStatus {
+  PENDING
+  READY
+  DELIVERED
+  CANCELLED
+
+  @@map("delivery_status")
+}
+
 enum ContractStatus {
   DRAFT
   GENERATED
@@ -544,6 +553,7 @@ model Customer {
   quotes        SubscriptionQuote[]
   orders        SubscriptionOrder[]
   contracts     Contract[]
+  deliveries    VehicleDelivery[]
   createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy     String?             @map("created_by") @db.Uuid
@@ -1141,6 +1151,7 @@ model Vehicle {
   remark                        String?                   @db.Text
   quotes                        SubscriptionQuote[]
   orders                        SubscriptionOrder[]
+  deliveries                    VehicleDelivery[]
   salePriceHistories            VehicleSalePriceHistory[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1297,6 +1308,7 @@ model SubscriptionOrder {
   startDate                  DateTime?         @map("start_date") @db.Date
   endDate                    DateTime?         @map("end_date") @db.Date
   actualDeliveryAt           DateTime?         @map("actual_delivery_at") @db.Timestamptz(6)
+  deliveries                 VehicleDelivery[]
   contracts                  Contract[]        @relation("OrderContracts")
   changes                    OrderChange[]
   createdAt                  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1319,6 +1331,44 @@ model SubscriptionOrder {
   @@index([vehicleReviewStatus])
   @@index([depositStatus])
   @@map("subscription_order")
+}
+
+model VehicleDelivery {
+  id                                String             @id @default(uuid()) @db.Uuid
+  deliveryNo                        String             @unique @map("delivery_no") @db.VarChar(64)
+  orderId                           String             @unique @map("order_id") @db.Uuid
+  order                             SubscriptionOrder  @relation(fields: [orderId], references: [id])
+  vehicleId                         String             @map("vehicle_id") @db.Uuid
+  vehicle                           Vehicle            @relation(fields: [vehicleId], references: [id])
+  customerId                        String             @map("customer_id") @db.Uuid
+  customer                          Customer           @relation(fields: [customerId], references: [id])
+  deliveryStatus                    DeliveryStatus     @default(PENDING) @map("delivery_status")
+  scheduledAt                       DateTime?          @map("scheduled_at") @db.Timestamptz(6)
+  deliveryLocation                  String?            @map("delivery_location") @db.VarChar(255)
+  deliveredAt                       DateTime?          @map("delivered_at") @db.Timestamptz(6)
+  handoverMileageKm                 Int?               @map("handover_mileage_km")
+  contractSignedConfirmed           Boolean            @default(false) @map("contract_signed_confirmed")
+  depositReceivedConfirmed          Boolean            @default(false) @map("deposit_received_confirmed")
+  firstMonthlyFeeReceivedConfirmed  Boolean            @default(false) @map("first_monthly_fee_received_confirmed")
+  insuranceValidConfirmed           Boolean            @default(false) @map("insurance_valid_confirmed")
+  vehiclePreparedConfirmed          Boolean            @default(false) @map("vehicle_prepared_confirmed")
+  vehiclePhotosConfirmed            Boolean            @default(false) @map("vehicle_photos_confirmed")
+  customerIdentityConfirmed         Boolean            @default(false) @map("customer_identity_confirmed")
+  handoverDocumentsConfirmed        Boolean            @default(false) @map("handover_documents_confirmed")
+  checklistSnapshot                 Json?              @map("checklist_snapshot")
+  remark                            String?            @db.Text
+  createdAt                         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                         String?            @map("created_by") @db.Uuid
+  updatedBy                         String?            @map("updated_by") @db.Uuid
+  deletedAt                         DateTime?          @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([customerId])
+  @@index([deliveryStatus])
+  @@index([scheduledAt])
+  @@index([deliveredAt])
+  @@map("vehicle_delivery")
 }
 
 model ContractVersion {

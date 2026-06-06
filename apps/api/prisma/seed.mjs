@@ -76,6 +76,9 @@ const permissionRows = [
   ["order_change:approve", "审批订单变更", "order", "change_approve"],
   ["order_change:reject", "拒绝订单变更", "order", "change_reject"],
   ["order_change:execute", "执行订单变更", "order", "change_execute"],
+  ["delivery:view", "查看车辆交付", "delivery", "view"],
+  ["delivery:prepare", "准备车辆交付", "delivery", "prepare"],
+  ["delivery:confirm", "确认车辆交付", "delivery", "confirm"],
   ["contract:view", "查看合同", "contract", "view"],
   ["contract:generate", "生成合同", "contract", "generate"],
   ["contract:sign", "签署合同", "contract", "sign"],
@@ -326,6 +329,9 @@ const orderManagementPermissions = [
   "order:reject",
   "order_change:view",
   "order_change:create",
+  "delivery:view",
+  "delivery:prepare",
+  "delivery:confirm",
   "contract:view",
   "contract:generate",
   "contract:sign",
@@ -453,6 +459,7 @@ async function main() {
       "order:create",
       "order_change:view",
       "order_change:create",
+      "delivery:view",
       "contract:view"
     ],
     ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
@@ -517,6 +524,7 @@ async function main() {
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         "quote:view",
         "order:view",
+        ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         ...(roleCode === "AS" ? ["order:review", "order:reject"] : []),
         "order_change:view",
         "contract:view"

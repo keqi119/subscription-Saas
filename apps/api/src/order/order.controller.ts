@@ -11,6 +11,8 @@ import {
   CreateCustomerOrderDto,
   CreateOrderChangeDto,
   CreateOrderFromQuoteDto,
+  ConfirmDeliveryDto,
+  PrepareDeliveryDto,
   ReviewOrderDto,
   UpdateContractVersionDto
 } from "./dto/order.dto";
@@ -37,6 +39,18 @@ export class OrderController {
   @RequirePermissions(PermissionCode.ORDER_CHANGE_CREATE)
   listPlanChangeSubscriptionPlans(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.listPlanChangeSubscriptionPlans(id, request.user);
+  }
+
+  @Get("orders/:id/delivery-check")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  getDeliveryCheck(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.getDeliveryCheck(id, request.user);
+  }
+
+  @Get("orders/:id/delivery")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  getDelivery(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.getDelivery(id, request.user);
   }
 
   @Get("orders/:id")
@@ -104,6 +118,18 @@ export class OrderController {
   @RequirePermissions(PermissionCode.ORDER_CANCEL)
   cancelOrder(@Param("id") id: string, @Body() dto: CancelOrderDto, @Req() request: AuthenticatedRequest) {
     return this.orderService.cancelOrder(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/prepare-delivery")
+  @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
+  prepareDelivery(@Param("id") id: string, @Body() dto: PrepareDeliveryDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.prepareDelivery(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/confirm-delivery")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  confirmDelivery(@Param("id") id: string, @Body() dto: ConfirmDeliveryDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.confirmDelivery(id, dto, request.user, requestContext(request));
   }
 
   @Post("orders/:orderId/generate-contract")

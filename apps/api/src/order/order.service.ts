@@ -8,6 +8,7 @@ import {
   ContractStatus,
   ContractVersionStatus,
   CustomerStatus,
+  DeliveryStatus,
   DepositStatus,
   MonthlyFeeMode,
   OrderChangeStatus,
@@ -38,6 +39,8 @@ import {
   CreateCustomerOrderDto,
   CreateOrderChangeDto,
   CreateOrderFromQuoteDto,
+  ConfirmDeliveryDto,
+  PrepareDeliveryDto,
   ReviewOrderDto,
   UpdateContractVersionDto
 } from "./dto/order.dto";
@@ -96,6 +99,13 @@ const RETURN_TO_PLAN_CHANGE_TYPES = new Set<OrderChangeType>([
   OrderChangeType.EXTENSION,
   OrderChangeType.CANCEL_ORDER
 ]);
+const DELIVERY_ALLOWED_ORDER_STATUSES = new Set<OrderStatus>([
+  OrderStatus.PENDING_PAYMENT,
+  OrderStatus.PENDING_VEHICLE,
+  OrderStatus.PENDING_DELIVERY
+]);
+const DELIVERY_ALREADY_DONE_MESSAGE = "该订单已完成交付，不能重复确认。";
+const DELIVERY_INSURANCE_INVALID_MESSAGE = "车辆保险未生效或已过期，不能交付。";
 
 const packageInclude = {
   product: { select: { id: true, name: true, productNo: true, status: true } },
@@ -153,10 +163,16 @@ const contractInclude = {
   }
 } satisfies Prisma.ContractInclude;
 
+const deliveryInclude = {
+  customer: { select: { id: true, mobile: true, name: true } },
+  vehicle: true
+} satisfies Prisma.VehicleDeliveryInclude;
+
 type OrderWithDetails = Prisma.SubscriptionOrderGetPayload<{ include: typeof orderInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ContractWithDetails = Prisma.ContractGetPayload<{ include: typeof contractInclude }>;
 type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
+type DeliveryWithDetails = Prisma.VehicleDeliveryGetPayload<{ include: typeof deliveryInclude }>;
 
 @Injectable()
 export class OrderService {
@@ -874,6 +890,184 @@ export class OrderService {
     return toOrderView(order);
   }
 
+  async getDeliveryCheck(id: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const delivery = await this.prisma.vehicleDelivery.findUnique({
+      include: deliveryInclude,
+      where: { orderId: id }
+    });
+    return buildDeliveryCheck(order, delivery && !delivery.deletedAt ? delivery : null);
+  }
+
+  async getDelivery(id: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const delivery = await this.prisma.vehicleDelivery.findUnique({
+      include: deliveryInclude,
+      where: { orderId: id }
+    });
+    return delivery && !delivery.deletedAt ? toDeliveryView(delivery) : null;
+  }
+
+  async prepareDelivery(id: string, dto: PrepareDeliveryDto, user: RequestUser, context: RequestContext) {
+    const beforeOrder = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(beforeOrder, user);
+    assertNoActiveOrderChange(beforeOrder);
+    assertOrderNotDelivered(beforeOrder);
+
+    const scheduledAt = dto.scheduledAt ? parseDateTime(dto.scheduledAt, "scheduledAt") : null;
+    assertCanPrepareDelivery(beforeOrder, scheduledAt);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const beforeDelivery = await tx.vehicleDelivery.findUnique({
+        include: deliveryInclude,
+        where: { orderId: id }
+      });
+
+      if (beforeDelivery?.deliveryStatus === DeliveryStatus.DELIVERED || beforeDelivery?.deliveredAt) {
+        throw new BadRequestException(DELIVERY_ALREADY_DONE_MESSAGE);
+      }
+
+      const deliveryData = buildPrepareDeliveryData(beforeOrder, dto, scheduledAt, user.id, beforeDelivery);
+      const delivery = beforeDelivery
+        ? await tx.vehicleDelivery.update({
+            data: deliveryData,
+            include: deliveryInclude,
+            where: { id: beforeDelivery.id }
+          })
+        : await tx.vehicleDelivery.create({
+            data: {
+              ...deliveryData,
+              createdBy: user.id,
+              customerId: beforeOrder.customerId,
+              deliveryNo: createBusinessNo("DLV"),
+              orderId: beforeOrder.id,
+              vehicleId: beforeOrder.vehicleId!
+            },
+            include: deliveryInclude
+          });
+
+      const order = await tx.subscriptionOrder.update({
+        data: { orderStatus: OrderStatus.PENDING_DELIVERY, updatedBy: user.id },
+        include: orderInclude,
+        where: { id }
+      });
+
+      return { beforeDelivery, delivery, order };
+    });
+
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "subscription_order",
+      id,
+      toOrderView(beforeOrder),
+      toOrderView(result.order),
+      user,
+      context
+    );
+    await this.writeDeliveryAudit(
+      result.beforeDelivery ? AuditAction.UPDATE : AuditAction.CREATE,
+      result.delivery.id,
+      result.beforeDelivery ? toDeliveryView(result.beforeDelivery) : undefined,
+      toDeliveryView(result.delivery),
+      user,
+      context
+    );
+    return toDeliveryView(result.delivery);
+  }
+
+  async confirmDelivery(id: string, dto: ConfirmDeliveryDto, user: RequestUser, context: RequestContext) {
+    const beforeOrder = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(beforeOrder, user);
+    assertNoActiveOrderChange(beforeOrder);
+    assertOrderNotDelivered(beforeOrder);
+
+    const deliveredAt = dto.deliveredAt ? parseDateTime(dto.deliveredAt, "deliveredAt") : new Date();
+    const beforeDelivery = await this.prisma.vehicleDelivery.findUnique({
+      include: deliveryInclude,
+      where: { orderId: id }
+    });
+    assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
+      if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.RESERVED) {
+        throw new BadRequestException("车辆状态不是签约锁定，不能交付。");
+      }
+
+      const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
+        where: {
+          deletedAt: null,
+          id: { not: beforeOrder.id },
+          orderStatus: { notIn: VEHICLE_OCCUPYING_FINAL_STATUSES },
+          vehicleId: beforeOrder.vehicleId
+        }
+      });
+      if (occupiedByOtherOrderCount > 0) {
+        throw new BadRequestException("车辆已被其他订单占用，不能交付。");
+      }
+
+      const delivery = await tx.vehicleDelivery.update({
+        data: {
+          deliveredAt,
+          deliveryStatus: DeliveryStatus.DELIVERED,
+          handoverMileageKm: dto.handoverMileageKm,
+          remark: dto.remark,
+          updatedBy: user.id
+        },
+        include: deliveryInclude,
+        where: { id: beforeDelivery!.id }
+      });
+      const order = await tx.subscriptionOrder.update({
+        data: {
+          actualDeliveryAt: deliveredAt,
+          orderStatus: OrderStatus.ACTIVE,
+          updatedBy: user.id
+        },
+        include: orderInclude,
+        where: { id }
+      });
+      const vehicleAfter = await tx.vehicle.update({
+        data: { status: VehicleStatus.LEASED, updatedBy: user.id },
+        where: { id: beforeOrder.vehicleId! }
+      });
+
+      return { delivery, order, vehicleAfter, vehicleBefore };
+    });
+
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "subscription_order",
+      id,
+      toOrderView(beforeOrder),
+      toOrderView(result.order),
+      user,
+      context
+    );
+    await this.writeDeliveryAudit(
+      AuditAction.UPDATE,
+      result.delivery.id,
+      toDeliveryView(beforeDelivery!),
+      toDeliveryView(result.delivery),
+      user,
+      context
+    );
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toJsonValue(result.vehicleAfter),
+      before: toJsonValue(result.vehicleBefore),
+      entityId: result.vehicleAfter.id,
+      entityType: "vehicle",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toDeliveryView(result.delivery);
+  }
+
   async generateContract(orderId: string, user: RequestUser, context: RequestContext) {
     const before = await this.findOrderOrThrow(orderId);
     assertNoActiveOrderChange(before);
@@ -1409,6 +1603,27 @@ export class OrderService {
       userAgent: context.userAgent
     });
   }
+
+  private async writeDeliveryAudit(
+    action: AuditAction,
+    entityId: string,
+    before: unknown,
+    after: unknown,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    await this.auditService.write({
+      action,
+      after,
+      before,
+      entityId,
+      entityType: "vehicle_delivery",
+      ipAddress: context.ipAddress,
+      module: "delivery",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+  }
 }
 
 export function ensureSubscriptionBusinessType(businessType?: BusinessType | null) {
@@ -1425,6 +1640,208 @@ export function ensureAllowedChangeType(changeType: OrderChangeType) {
   if (DISALLOWED_CHANGE_TYPES.has(changeType)) {
     throw new BadRequestException("当前阶段暂未开放以租代购订单变更类型。");
   }
+}
+
+function assertOrderNotDelivered(order: OrderWithDetails) {
+  if (order.actualDeliveryAt || order.orderStatus === OrderStatus.ACTIVE) {
+    throw new BadRequestException(DELIVERY_ALREADY_DONE_MESSAGE);
+  }
+}
+
+function assertCanPrepareDelivery(order: OrderWithDetails, scheduledAt: Date | null) {
+  const check = buildDeliveryCheck(order, null, scheduledAt ?? undefined);
+  if (!check.canPrepareDelivery) {
+    throw new BadRequestException(firstBlockingReason(check, "当前订单不满足准备交付条件。"));
+  }
+}
+
+function assertCanConfirmDelivery(
+  order: OrderWithDetails,
+  delivery: DeliveryWithDetails | null,
+  deliveredAt: Date
+) {
+  if (!delivery || delivery.deletedAt) {
+    throw new BadRequestException("请先准备交付。");
+  }
+  if (delivery.deliveryStatus === DeliveryStatus.DELIVERED || delivery.deliveredAt) {
+    throw new BadRequestException(DELIVERY_ALREADY_DONE_MESSAGE);
+  }
+  if (delivery.deliveryStatus !== DeliveryStatus.READY) {
+    throw new BadRequestException("请先准备交付。");
+  }
+
+  const check = buildDeliveryCheck(order, delivery, deliveredAt);
+  if (!check.insuranceValid) {
+    throw new BadRequestException(DELIVERY_INSURANCE_INVALID_MESSAGE);
+  }
+  if (!check.canConfirmDelivery) {
+    throw new BadRequestException(firstBlockingReason(check, "当前订单不满足确认交付条件。"));
+  }
+}
+
+function firstBlockingReason(check: ReturnType<typeof buildDeliveryCheck>, fallback: string) {
+  return check.blockingReasons[0] ?? fallback;
+}
+
+function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetails | null, targetAt?: Date) {
+  const contractSigned = isCurrentContractSigned(order);
+  const vehicle = order.vehicle;
+  const deliveryCheckAt = targetAt ?? delivery?.deliveredAt ?? delivery?.scheduledAt ?? new Date();
+  const currentSalePriceInitialized = Boolean(
+    vehicle &&
+      vehicle.salePriceStatus === SalePriceStatus.EFFECTIVE &&
+      vehicle.currentSalePriceAmount &&
+      vehicle.currentSalePriceAmount > 0n
+  );
+  const insuranceValid = Boolean(vehicle && isVehicleInsuranceValid(vehicle, deliveryCheckAt));
+  const depositReceivedConfirmed = order.depositStatus === DepositStatus.CONFIRMED && Boolean(delivery?.depositReceivedConfirmed);
+  const firstMonthlyFeeReceivedConfirmed = Boolean(delivery?.firstMonthlyFeeReceivedConfirmed);
+  const vehiclePrepared = Boolean(delivery?.vehiclePreparedConfirmed);
+  const vehiclePhotosConfirmed = Boolean(delivery?.vehiclePhotosConfirmed);
+  const customerIdentityConfirmed = Boolean(delivery?.customerIdentityConfirmed);
+  const handoverDocumentsConfirmed = Boolean(delivery?.handoverDocumentsConfirmed);
+  const deliveryReady = delivery?.deliveryStatus === DeliveryStatus.READY;
+
+  const prepareBlockingReasons: string[] = [];
+  const confirmBlockingReasons: string[] = [];
+
+  if (!DELIVERY_ALLOWED_ORDER_STATUSES.has(order.orderStatus)) {
+    prepareBlockingReasons.push("订单状态不允许交付");
+  }
+  if (!contractSigned) {
+    prepareBlockingReasons.push("合同尚未签署");
+  }
+  if (!order.vehicleId || !vehicle || vehicle.deletedAt) {
+    prepareBlockingReasons.push("订单未绑定有效车辆");
+  } else if (vehicle.id !== order.vehicleId) {
+    prepareBlockingReasons.push("订单绑定车辆不一致");
+  } else if (vehicle.status !== VehicleStatus.RESERVED) {
+    prepareBlockingReasons.push("车辆状态不是签约锁定");
+  }
+  if (!currentSalePriceInitialized) {
+    prepareBlockingReasons.push("车辆当前销售价尚未初始化");
+  }
+  if (!insuranceValid) {
+    prepareBlockingReasons.push("车辆保险已过期");
+  }
+
+  confirmBlockingReasons.push(...prepareBlockingReasons);
+  if (!deliveryReady) {
+    confirmBlockingReasons.push("请先准备交付");
+  }
+  if (!depositReceivedConfirmed) {
+    confirmBlockingReasons.push("押金尚未确认收取");
+  }
+  if (!firstMonthlyFeeReceivedConfirmed) {
+    confirmBlockingReasons.push("首期月费尚未确认收取");
+  }
+  if (!delivery?.insuranceValidConfirmed) {
+    confirmBlockingReasons.push("保险有效性尚未确认");
+  }
+  if (!vehiclePrepared) {
+    confirmBlockingReasons.push("车辆尚未整备");
+  }
+  if (!vehiclePhotosConfirmed) {
+    confirmBlockingReasons.push("交付照片尚未确认");
+  }
+  if (!customerIdentityConfirmed) {
+    confirmBlockingReasons.push("客户身份尚未核验");
+  }
+  if (!handoverDocumentsConfirmed) {
+    confirmBlockingReasons.push("交付文件尚未准备");
+  }
+
+  return {
+    blockingReasons: confirmBlockingReasons,
+    canConfirmDelivery: confirmBlockingReasons.length === 0,
+    canPrepareDelivery: prepareBlockingReasons.length === 0,
+    contractSigned,
+    currentSalePriceInitialized,
+    depositReceivedConfirmed,
+    firstMonthlyFeeReceivedConfirmed,
+    insuranceValid,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    orderStatus: order.orderStatus,
+    vehiclePrepared,
+    vehicleStatus: vehicle?.status ?? null
+  };
+}
+
+function buildPrepareDeliveryData(
+  order: OrderWithDetails,
+  dto: PrepareDeliveryDto,
+  scheduledAt: Date | null,
+  userId: string,
+  beforeDelivery: DeliveryWithDetails | null
+) {
+  const contractSignedConfirmed = isCurrentContractSigned(order);
+  const depositReceivedConfirmed = dto.depositReceivedConfirmed ?? beforeDelivery?.depositReceivedConfirmed ?? false;
+  const firstMonthlyFeeReceivedConfirmed =
+    dto.firstMonthlyFeeReceivedConfirmed ?? beforeDelivery?.firstMonthlyFeeReceivedConfirmed ?? false;
+  const insuranceValidConfirmed = dto.insuranceValidConfirmed ?? beforeDelivery?.insuranceValidConfirmed ?? false;
+  const vehiclePreparedConfirmed = dto.vehiclePreparedConfirmed ?? beforeDelivery?.vehiclePreparedConfirmed ?? false;
+  const vehiclePhotosConfirmed = dto.vehiclePhotosConfirmed ?? beforeDelivery?.vehiclePhotosConfirmed ?? false;
+  const customerIdentityConfirmed = dto.customerIdentityConfirmed ?? beforeDelivery?.customerIdentityConfirmed ?? false;
+  const handoverDocumentsConfirmed =
+    dto.handoverDocumentsConfirmed ?? beforeDelivery?.handoverDocumentsConfirmed ?? false;
+  const nextScheduledAt = scheduledAt ?? beforeDelivery?.scheduledAt ?? null;
+  const deliveryLocation = dto.deliveryLocation ?? beforeDelivery?.deliveryLocation ?? null;
+  const remark = dto.remark ?? beforeDelivery?.remark ?? null;
+
+  return {
+    checklistSnapshot: toJsonValue({
+      contractSignedConfirmed,
+      customerIdentityConfirmed,
+      depositReceivedConfirmed,
+      firstMonthlyFeeReceivedConfirmed,
+      handoverDocumentsConfirmed,
+      insuranceValidConfirmed,
+      vehiclePhotosConfirmed,
+      vehiclePreparedConfirmed
+    }),
+    contractSignedConfirmed,
+    customerIdentityConfirmed,
+    deliveryLocation,
+    deliveryStatus: DeliveryStatus.READY,
+    depositReceivedConfirmed,
+    firstMonthlyFeeReceivedConfirmed,
+    handoverDocumentsConfirmed,
+    insuranceValidConfirmed,
+    remark,
+    scheduledAt: nextScheduledAt,
+    updatedBy: userId,
+    vehiclePhotosConfirmed,
+    vehiclePreparedConfirmed
+  };
+}
+
+function isCurrentContractSigned(order: OrderWithDetails) {
+  const contract = findCurrentContract(order);
+  return contract?.status === ContractStatus.SIGNED || contract?.status === ContractStatus.ARCHIVED;
+}
+
+function isVehicleInsuranceValid(
+  vehicle: Pick<NonNullable<OrderWithDetails["vehicle"]>, "insuranceEndDate" | "insuranceStartDate">,
+  targetAt: Date
+) {
+  if (!vehicle.insuranceStartDate || !vehicle.insuranceEndDate) {
+    return false;
+  }
+  const targetDate = dateKey(targetAt);
+  return dateKey(vehicle.insuranceStartDate) <= targetDate && targetDate <= dateKey(vehicle.insuranceEndDate);
+}
+
+function dateKey(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function parseDateTime(value: string, field: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestException(`${field} must be a valid datetime.`);
+  }
+  return date;
 }
 
 function ensureUserPermission(user: RequestUser, permission: PermissionCode) {
@@ -1954,6 +2371,10 @@ function toOrderView(order: OrderWithDetails): Record<string, unknown> {
     overMileageFeeAmount: Number(order.overMileageFeeAmount),
     vehiclePurchasePriceAmount: Number(order.vehiclePurchasePriceAmount)
   }) as Record<string, unknown>;
+}
+
+function toDeliveryView(delivery: DeliveryWithDetails): Record<string, unknown> {
+  return toPlain(delivery) as Record<string, unknown>;
 }
 
 function toQuoteAuditView(quote: QuoteWithDetails): Prisma.InputJsonValue {

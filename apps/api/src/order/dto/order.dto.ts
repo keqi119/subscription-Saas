@@ -6,7 +6,7 @@ import {
   OrderChangeType,
   OrderReviewStatus
 } from "@prisma/client";
-import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Min } from "class-validator";
+import { IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Min } from "class-validator";
 
 export class CreateOrderFromQuoteDto {
   @IsOptional()
@@ -60,6 +60,63 @@ export class CancelOrderDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+export class PrepareDeliveryDto {
+  @IsOptional()
+  @IsDateString()
+  scheduledAt?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryLocation?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  depositReceivedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  firstMonthlyFeeReceivedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  insuranceValidConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  vehiclePreparedConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  vehiclePhotosConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  customerIdentityConfirmed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  handoverDocumentsConfirmed?: boolean;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+export class ConfirmDeliveryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  handoverMileageKm?: number;
+
+  @IsOptional()
+  @IsDateString()
+  deliveredAt?: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
 }
 
 export class CreateContractVersionDto {

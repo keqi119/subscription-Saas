@@ -158,7 +158,10 @@ describe("seed permission calibration", () => {
       "subscription_plan:update",
       "subscription_plan:activate",
       "subscription_plan:deactivate",
-      "subscription_plan:delete"
+      "subscription_plan:delete",
+      "delivery:view",
+      "delivery:prepare",
+      "delivery:confirm"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -200,6 +203,18 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"orders.review\"] : [])");
     expect(roleHasPermission(rolePermissionArray("SA"), "order:review")).toBe(false);
     expect(roleHasMenu(roleMenuArray("SA"), "orders.review")).toBe(false);
+  });
+
+  it("calibrates delivery permissions by role", () => {
+    for (const permission of ["delivery:view", "delivery:prepare", "delivery:confirm"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expectRolePermissions("OP", ["delivery:view", "delivery:prepare", "delivery:confirm"]);
+    expectRolePermissions("SA", ["delivery:view"]);
+    expect(seedSource).toContain("roleCode === \"AS\" ? [\"delivery:view\", \"delivery:prepare\", \"delivery:confirm\"] : []");
+    expect(roleHasPermission(rolePermissionArray("SA"), "delivery:prepare")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("SA"), "delivery:confirm")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

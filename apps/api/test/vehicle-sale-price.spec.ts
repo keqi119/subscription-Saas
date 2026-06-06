@@ -344,6 +344,51 @@ describe("VehicleService sale price baseline", () => {
     expect(prisma.vehicle.update).not.toHaveBeenCalled();
   });
 
+  it("blocks maintenance vehicles from entering AVAILABLE without RETURN_REINIT history", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(
+      makeVehicle({
+        currentSalePriceAmount: 15000000n,
+        salePriceHistories: [makeHistory()],
+        salePriceReinitRequiredAt: new Date("2026-08-01T00:00:00.000Z"),
+        salePriceStatus: SalePriceStatus.EFFECTIVE,
+        status: VehicleStatus.MAINTENANCE
+      })
+    );
+
+    await expect(
+      service.updateStatus("vehicle-1", { status: VehicleStatus.AVAILABLE }, user, context)
+    ).rejects.toThrow("退回车辆需重新初始化当前销售价后才能入池");
+    expect(prisma.vehicle.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects RETURN_REINIT for vehicles that are not returned or under maintenance", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(
+      makeVehicle({
+        currentSalePriceAmount: 15000000n,
+        salePriceStatus: SalePriceStatus.EFFECTIVE,
+        status: VehicleStatus.LEASED
+      })
+    );
+
+    await expect(
+      service.initializeSalePrice(
+        "vehicle-1",
+        {
+          currentSalePriceAmount: 13800000,
+          effectiveFrom: "2026-08-01",
+          reason: "退车整备后重新入池",
+          reviewType: VehicleSalePriceReviewType.RETURN_REINIT
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("仅退回或维修中的车辆可以执行退车再入池重新定价");
+    expect(prisma.vehicle.update).not.toHaveBeenCalled();
+    expect(prisma.vehicleSalePriceHistory.create).not.toHaveBeenCalled();
+  });
+
   it("allows RETURN_REINIT sale price initialization before entering AVAILABLE", async () => {
     const { prisma, service } = makeService();
     const requiredAt = new Date("2026-08-01T00:00:00.000Z");
@@ -435,6 +480,72 @@ describe("VehicleService sale price baseline", () => {
     expect(available.status).toBe(VehicleStatus.AVAILABLE);
   });
 
+  it("allows MAINTENANCE vehicles to enter AVAILABLE after RETURN_REINIT", async () => {
+    const { prisma, service } = makeService();
+    const returnHistory = makeHistory({
+      afterSalePriceAmount: 13800000n,
+      beforeSalePriceAmount: 15000000n,
+      createdAt: new Date("2026-08-02T01:00:00.000Z"),
+      effectiveFrom: new Date("2026-08-01T00:00:00.000Z"),
+      reviewType: VehicleSalePriceReviewType.RETURN_REINIT
+    });
+
+    prisma.vehicle.findUnique.mockResolvedValueOnce(
+      makeVehicle({
+        currentSalePriceAmount: 13800000n,
+        salePriceHistories: [returnHistory],
+        salePriceReinitRequiredAt: null,
+        salePriceStatus: SalePriceStatus.EFFECTIVE,
+        status: VehicleStatus.MAINTENANCE
+      })
+    );
+    prisma.vehicle.update.mockResolvedValueOnce(
+      makeVehicle({
+        currentSalePriceAmount: 13800000n,
+        salePriceHistories: [returnHistory],
+        salePriceReinitRequiredAt: null,
+        salePriceStatus: SalePriceStatus.EFFECTIVE,
+        status: VehicleStatus.AVAILABLE
+      })
+    );
+
+    const available = await service.updateStatus(
+      "vehicle-1",
+      { status: VehicleStatus.AVAILABLE },
+      user,
+      context
+    );
+
+    expect(available.status).toBe(VehicleStatus.AVAILABLE);
+  });
+
+  it("blocks occupied or retired vehicles from entering AVAILABLE directly", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(
+      makeVehicle({
+        currentSalePriceAmount: 15000000n,
+        salePriceStatus: SalePriceStatus.EFFECTIVE,
+        status: VehicleStatus.LEASED
+      })
+    );
+
+    await expect(
+      service.updateStatus("vehicle-1", { status: VehicleStatus.AVAILABLE }, user, context)
+    ).rejects.toThrow("当前车辆状态不允许直接入池");
+
+    prisma.vehicle.findUnique.mockResolvedValueOnce(
+      makeVehicle({
+        currentSalePriceAmount: 15000000n,
+        salePriceStatus: SalePriceStatus.EFFECTIVE,
+        status: VehicleStatus.RETIRED
+      })
+    );
+
+    await expect(
+      service.updateStatus("vehicle-1", { status: VehicleStatus.AVAILABLE }, user, context)
+    ).rejects.toThrow("当前车辆状态不允许直接入池");
+  });
+
   it("returns only available vehicles with effective current sale price", async () => {
     const { prisma, service } = makeService();
     prisma.vehicle.findMany.mockResolvedValueOnce([
@@ -520,6 +631,15 @@ describe("VehicleService sale price baseline", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.reviewType).toBe(VehicleSalePriceReviewType.QUARTERLY_REVIEW);
     expect(result[0]?.beforeSalePriceAmount).toBe(14000000);
+  });
+
+  it("labels RETURN_REINIT sale price history in Chinese", () => {
+    const labelsSource = fs.readFileSync(
+      path.resolve(__dirname, "../../../apps/web/src/constants/labels.ts"),
+      "utf8"
+    );
+
+    expect(labelsSource).toContain('RETURN_REINIT: "退车再入池重新定价"');
   });
 });
 

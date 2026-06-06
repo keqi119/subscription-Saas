@@ -191,7 +191,7 @@ export const SALE_PRICE_REVIEW_TYPE_LABELS: Record<string, string> = {
   INITIAL_POOL: "新入池初始化",
   MANUAL_ADJUST: "人工调整",
   QUARTERLY_REVIEW: "季度复核",
-  RETURN_REINIT: "退车再入池初始化"
+  RETURN_REINIT: "退车再入池重新定价"
 };
 
 export const VEHICLE_BASE_FEE_MODE_LABELS: Record<string, string> = {

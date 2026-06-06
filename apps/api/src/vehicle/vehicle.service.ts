@@ -38,6 +38,17 @@ const VEHICLE_BATTERY_USAGE_TYPES = new Set<string>(Object.values(VehicleBattery
 
 const INITIALIZE_BEFORE_AVAILABLE_MESSAGE = "请先初始化当前车辆销售价后再入池";
 const RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE = "退回车辆需重新初始化当前销售价后才能入池";
+const RETURN_REINIT_ALLOWED_STATUSES = new Set<VehicleStatus>([
+  VehicleStatus.RETURNED,
+  VehicleStatus.MAINTENANCE
+]);
+const OCCUPIED_STATUSES = new Set<VehicleStatus>([
+  VehicleStatus.REVIEW_RESERVED,
+  VehicleStatus.RESERVED,
+  VehicleStatus.LEASED,
+  VehicleStatus.RENTED,
+  VehicleStatus.RETIRED
+]);
 
 @Injectable()
 export class VehicleService {
@@ -163,6 +174,8 @@ export class VehicleService {
 
     const before = await this.findVehicleOrThrow(id);
     const reviewType = dto.reviewType ?? VehicleSalePriceReviewType.INITIAL_POOL;
+
+    assertCanInitializeSalePriceForReviewType(before, reviewType);
 
     if (
       reviewType === VehicleSalePriceReviewType.INITIAL_POOL &&
@@ -469,12 +482,32 @@ function assertCanCreateAsAvailable(status: VehicleStatus) {
   }
 }
 
+function assertCanInitializeSalePriceForReviewType(
+  vehicle: VehicleWithHistory,
+  reviewType: VehicleSalePriceReviewType
+) {
+  if (reviewType === VehicleSalePriceReviewType.RETURN_REINIT) {
+    if (!RETURN_REINIT_ALLOWED_STATUSES.has(vehicle.status)) {
+      throw new BadRequestException("仅退回或维修中的车辆可以执行退车再入池重新定价");
+    }
+    return;
+  }
+
+  if (RETURN_REINIT_ALLOWED_STATUSES.has(vehicle.status)) {
+    throw new BadRequestException(RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE);
+  }
+}
+
 function assertCanEnterAvailable(status: VehicleStatus, vehicle: VehicleWithHistory) {
   if (status !== VehicleStatus.AVAILABLE) {
     return;
   }
 
-  if (isReturnReinitSourceStatus(vehicle.status) && !hasReturnReinitForCurrentPool(vehicle)) {
+  if (OCCUPIED_STATUSES.has(vehicle.status)) {
+    throw new BadRequestException("当前车辆状态不允许直接入池");
+  }
+
+  if (RETURN_REINIT_ALLOWED_STATUSES.has(vehicle.status) && !hasReturnReinitForCurrentPool(vehicle)) {
     throw new BadRequestException(RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE);
   }
 
@@ -488,7 +521,7 @@ function markSalePriceReinitRequired(
   beforeStatus: VehicleStatus,
   nextStatus: VehicleStatus
 ) {
-  if (beforeStatus !== nextStatus && isReturnReinitSourceStatus(nextStatus)) {
+  if (beforeStatus !== nextStatus && RETURN_REINIT_ALLOWED_STATUSES.has(nextStatus)) {
     data.salePriceReinitRequiredAt = new Date();
   }
 }
@@ -507,16 +540,6 @@ function hasReturnReinitForCurrentPool(vehicle: VehicleWithHistory) {
   }
 
   return latestReturnReinit.createdAt.getTime() >= vehicle.salePriceReinitRequiredAt.getTime();
-}
-
-function isReturnReinitSourceStatus(status: VehicleStatus) {
-  return (
-    status === VehicleStatus.LEASED ||
-    status === VehicleStatus.RESERVED ||
-    status === VehicleStatus.RETURNED ||
-    status === VehicleStatus.MAINTENANCE ||
-    status === VehicleStatus.RENTED
-  );
 }
 
 function assertReviewQuarter(reviewQuarter: string) {

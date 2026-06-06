@@ -14,12 +14,17 @@ export interface PermissionGuardOptions {
 }
 
 export interface ApplicationActionState {
+  applicationSource?: string | null;
   creditReviewStatus?: string | null;
   depositStatus?: string | null;
+  finalSubscriptionPlanId?: string | null;
+  finalVehicleId?: string | null;
   orders?: readonly unknown[] | null;
   planConfirmStatus?: string | null;
+  productReviewStatus?: string | null;
   status?: string | null;
   materialReviewStatus?: string | null;
+  vehicleReviewStatus?: string | null;
 }
 
 export interface OrderActionState {
@@ -111,19 +116,31 @@ export function canGenerateApplicationQuote(
   permissions: PermissionCollection
 ): ActionAvailability {
   if (!hasPermission(permissions, "quote:create")) {
-    return { allowed: false, reason: "无生成报价权限" };
+    return { allowed: false, reason: "无生成订阅报价权限" };
   }
   if (!application) {
     return { allowed: false, reason: "数据加载完成后才可操作" };
   }
-  if (application.status === "REJECTED" || application.status === "CANCELLED") {
-    return { allowed: false, reason: "当前进件状态不允许生成报价" };
+  if (application.status === "REJECTED") {
+    return { allowed: false, reason: "当前进件已拒绝，不能生成报价" };
+  }
+  if (application.status === "CANCELLED") {
+    return { allowed: false, reason: "当前进件已取消，不能生成报价" };
   }
   if ((application.orders?.length ?? 0) > 0) {
     return { allowed: false, reason: "该进件已生成订单" };
   }
+  if (application.applicationSource === "SELF_SERVICE") {
+    return { allowed: false, reason: "客户自助进件请使用确认最终方案 / 生成正式订单流程" };
+  }
+  if (application.status === "APPROVED") {
+    return { allowed: true };
+  }
+  if (application.materialReviewStatus !== "APPROVED") {
+    return { allowed: false, reason: "请先完成资料审核" };
+  }
   if (application.creditReviewStatus !== "APPROVED") {
-    return { allowed: false, reason: "请先完成客户资质审核" };
+    return { allowed: false, reason: "请先完成客户资质 / 授信审核" };
   }
   if (application.depositStatus !== "CONFIRMED") {
     return { allowed: false, reason: "请先确认押金" };

@@ -6,6 +6,7 @@ import {
   NotFoundException
 } from "@nestjs/common";
 import {
+  ApplicationSource,
   ApplicationStatus,
   AuditAction,
   MonthlyFeeMode,
@@ -140,6 +141,7 @@ type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quo
 type ProductListVersion = ProductWithDetails["versions"][number];
 const CURRENT_PRODUCT_TYPE = ProductType.SUBSCRIPTION;
 const RENT_TO_OWN_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购产品线。";
+const SELF_SERVICE_APPLICATION_QUOTE_MESSAGE = "客户自助进件请使用确认最终方案 / 生成正式订单流程。";
 const productMapperLogger = new Logger("ProductService");
 
 @Injectable()
@@ -935,7 +937,7 @@ export class ProductService {
 
   async listAvailableSubscriptionPlans(applicationId: string, user: RequestUser, vehicleId?: string) {
     const application = await this.prisma.application.findUnique({
-      select: { deletedAt: true, id: true, salesUserId: true, status: true },
+      select: { applicationSource: true, deletedAt: true, id: true, salesUserId: true, status: true },
       where: { id: applicationId }
     });
     if (!application || application.deletedAt) {
@@ -943,6 +945,9 @@ export class ProductService {
     }
     if (!canViewAllQuotes(user) && application.salesUserId !== user.id) {
       throw new ForbiddenException("Application is outside your scope.");
+    }
+    if (application.applicationSource === ApplicationSource.SELF_SERVICE) {
+      throw new BadRequestException(SELF_SERVICE_APPLICATION_QUOTE_MESSAGE);
     }
     if (application.status !== ApplicationStatus.APPROVED) {
       throw new BadRequestException("只有审批通过的进件可以获取可报价套餐。");
@@ -1013,6 +1018,9 @@ export class ProductService {
     }
     if (!canViewAllQuotes(user) && application.salesUserId !== user.id) {
       throw new ForbiddenException("Application is outside your scope.");
+    }
+    if (application.applicationSource === ApplicationSource.SELF_SERVICE) {
+      throw new BadRequestException(SELF_SERVICE_APPLICATION_QUOTE_MESSAGE);
     }
     if (application.status !== ApplicationStatus.APPROVED) {
       throw new BadRequestException("Only approved applications can be quoted.");

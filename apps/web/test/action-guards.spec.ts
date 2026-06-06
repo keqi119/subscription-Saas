@@ -40,21 +40,133 @@ describe("action guards", () => {
 
   it("returns a Chinese disabled reason", () => {
     const result = canGenerateApplicationQuote(
-      { creditReviewStatus: "PENDING", depositStatus: "PENDING_CONFIRM", status: "SUBMITTED" },
+      {
+        applicationSource: "SALES_ASSISTED",
+        creditReviewStatus: "PENDING",
+        depositStatus: "PENDING_CONFIRM",
+        materialReviewStatus: "APPROVED",
+        status: "SUBMITTED"
+      },
       new Set(["quote:create"])
     );
 
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe("请先完成客户资质审核");
+    expect(result.reason).toBe("请先完成客户资质 / 授信审核");
   });
 
   it("disables generating quotes before application review is approved", () => {
     expect(
       canGenerateApplicationQuote(
-        { creditReviewStatus: "PENDING", depositStatus: "CONFIRMED", status: "SUBMITTED" },
+        {
+          applicationSource: "SALES_ASSISTED",
+          creditReviewStatus: "APPROVED",
+          depositStatus: "CONFIRMED",
+          materialReviewStatus: "PENDING",
+          status: "SUBMITTED"
+        },
         new Set(["quote:create"])
       )
-    ).toEqual({ allowed: false, reason: "请先完成客户资质审核" });
+    ).toEqual({ allowed: false, reason: "请先完成资料审核" });
+  });
+
+  it("enables assisted applications after material credit and deposit review", () => {
+    expect(
+      canGenerateApplicationQuote(
+        {
+          applicationSource: "SALES_ASSISTED",
+          creditReviewStatus: "APPROVED",
+          depositStatus: "CONFIRMED",
+          finalSubscriptionPlanId: null,
+          finalVehicleId: null,
+          materialReviewStatus: "APPROVED",
+          planConfirmStatus: "PENDING",
+          productReviewStatus: "PENDING",
+          status: "SUBMITTED",
+          vehicleReviewStatus: "PENDING"
+        },
+        new Set(["quote:create"])
+      )
+    ).toEqual({ allowed: true });
+  });
+
+  it("does not require product vehicle or final plan review before assisted quote generation", () => {
+    expect(
+      canGenerateApplicationQuote(
+        {
+          applicationSource: "SALES_ASSISTED",
+          creditReviewStatus: "APPROVED",
+          depositStatus: "CONFIRMED",
+          finalSubscriptionPlanId: null,
+          finalVehicleId: null,
+          materialReviewStatus: "APPROVED",
+          planConfirmStatus: "PENDING",
+          productReviewStatus: "PENDING",
+          status: "SUBMITTED",
+          vehicleReviewStatus: "PENDING"
+        },
+        new Set(["quote:create"])
+      )
+    ).toEqual({ allowed: true });
+  });
+
+  it("keeps legacy approved assisted applications eligible for quote generation", () => {
+    expect(
+      canGenerateApplicationQuote(
+        {
+          applicationSource: "SALES_ASSISTED",
+          creditReviewStatus: "PENDING",
+          depositStatus: "PENDING_CONFIRM",
+          materialReviewStatus: "PENDING",
+          status: "APPROVED"
+        },
+        new Set(["quote:create"])
+      )
+    ).toEqual({ allowed: true });
+  });
+
+  it("routes self-service applications away from the assisted quote button", () => {
+    expect(
+      canGenerateApplicationQuote(
+        {
+          applicationSource: "SELF_SERVICE",
+          creditReviewStatus: "APPROVED",
+          depositStatus: "CONFIRMED",
+          materialReviewStatus: "APPROVED",
+          status: "SUBMITTED"
+        },
+        new Set(["quote:create"])
+      )
+    ).toEqual({ allowed: false, reason: "客户自助进件请使用确认最终方案 / 生成正式订单流程" });
+  });
+
+  it("disables assisted quote generation without quote permission", () => {
+    expect(
+      canGenerateApplicationQuote(
+        {
+          applicationSource: "SALES_ASSISTED",
+          creditReviewStatus: "APPROVED",
+          depositStatus: "CONFIRMED",
+          materialReviewStatus: "APPROVED",
+          status: "SUBMITTED"
+        },
+        new Set<string>()
+      )
+    ).toEqual({ allowed: false, reason: "无生成订阅报价权限" });
+  });
+
+  it("disables assisted quote generation before deposit confirmation", () => {
+    expect(
+      canGenerateApplicationQuote(
+        {
+          applicationSource: "SALES_ASSISTED",
+          creditReviewStatus: "APPROVED",
+          depositStatus: "PENDING_CONFIRM",
+          materialReviewStatus: "APPROVED",
+          status: "SUBMITTED"
+        },
+        new Set(["quote:create"])
+      )
+    ).toEqual({ allowed: false, reason: "请先确认押金" });
   });
 
   it("disables creating an official order before final plan confirmation", () => {

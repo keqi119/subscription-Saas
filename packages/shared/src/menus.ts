@@ -152,7 +152,7 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
     icon: "money",
     label: "财务管理",
     path: "/billing",
-    permissionCode: PermissionCode.BILLING_GENERATE,
+    permissionCode: PermissionCode.BILLING_VIEW,
     children: [
       {
         code: "billing.monthly_rent",
@@ -160,6 +160,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "月租账单生成",
         path: "/billing/monthly-rent",
         permissionCode: PermissionCode.BILLING_GENERATE
+      },
+      {
+        code: "billing.collections",
+        icon: "audit",
+        label: "逾期催收",
+        path: "/billing/collections",
+        permissionCode: PermissionCode.COLLECTION_VIEW
       }
     ]
   },

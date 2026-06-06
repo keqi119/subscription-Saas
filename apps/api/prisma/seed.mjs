@@ -162,8 +162,9 @@ const menuRows = [
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
-  ["billing", "财务管理", "/billing", "money", 80, "billing:generate", null],
+  ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
   ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
+  ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
   ["system.users", "用户管理", "/system/users", "team", 10, "user:view", "system"],
   ["system.roles", "角色管理", "/system/roles", "safety", 20, "role:view", "system"],
@@ -420,7 +421,9 @@ const collectionManagementPermissions = [
 
 const collectionActionPermissions = ["collection:view", "collection:action_create"];
 
-const financeMenuCodes = ["billing", "billing.monthly_rent"];
+const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collections"];
+
+const collectionMenuCodes = ["billing", "billing.collections"];
 
 const productMenuCodes = [
   "products",
@@ -566,7 +569,7 @@ async function main() {
       "order_change:reject",
       "order_change:execute"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
   );
 
   await assignRoleAccess(
@@ -649,7 +652,7 @@ async function main() {
       ...financeViewPermissions,
       "collection:view"
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates"]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
   );
 
   const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);

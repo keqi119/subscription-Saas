@@ -137,6 +137,49 @@ export const DEPOSIT_TRANSACTION_STATUS_LABELS: Record<string, string> = {
   PENDING: "待确认"
 };
 
+export const COLLECTION_LEVEL_LABELS: Record<string, string> = {
+  D1: "D1：1-3天",
+  D2: "D2：4-7天",
+  D3: "D3：8-15天",
+  D4: "D4：16-30天",
+  D5: "D5：31天以上"
+};
+
+export const COLLECTION_CASE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "催收中",
+  CLOSED: "已关闭",
+  PAUSED: "暂停催收"
+};
+
+export const COLLECTION_ACTION_TYPE_LABELS: Record<string, string> = {
+  CLOSE: "关闭",
+  CUSTOMER_DISPUTE: "客户异议",
+  ESCALATION: "升级处理",
+  FOLLOW_UP: "跟进",
+  PROMISE_TO_PAY: "承诺付款",
+  REMINDER: "提醒"
+};
+
+export const CONTACT_METHOD_LABELS: Record<string, string> = {
+  EMAIL: "邮件",
+  OFFLINE: "线下",
+  OTHER: "其他",
+  PHONE: "电话",
+  SMS: "短信",
+  SYSTEM: "系统",
+  WECHAT: "微信"
+};
+
+export const COLLECTION_ACTION_RESULT_LABELS: Record<string, string> = {
+  CUSTOMER_PROMISED: "承诺付款",
+  CUSTOMER_REFUSED: "拒绝付款",
+  DISPUTED: "有异议",
+  INVALID_CONTACT: "联系方式无效",
+  NO_ANSWER: "未接通",
+  OTHER: "其他",
+  SUCCESS: "已触达"
+};
+
 export const DELIVERY_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "已取消",
   DELIVERED: "已交付",
@@ -485,6 +528,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
 
 export const MENU_LABELS: Record<string, string> = {
   applications: "进件管理",
+  billing: "财务管理",
+  "billing.collections": "逾期催收",
+  "billing.monthly_rent": "月租账单生成",
   customers: "客户中心",
   dashboard: "首页驾驶舱",
   orders: "订单中心",

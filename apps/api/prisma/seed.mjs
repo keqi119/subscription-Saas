@@ -155,6 +155,8 @@ const menuRows = [
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
+  ["billing", "财务管理", "/billing", "money", 80, "billing:generate", null],
+  ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
   ["system.users", "用户管理", "/system/users", "team", 10, "user:view", "system"],
   ["system.roles", "角色管理", "/system/roles", "safety", 20, "role:view", "system"],
@@ -402,6 +404,8 @@ const financeManagementPermissions = [
 
 const financeViewPermissions = ["billing:view", "payment:view", "deposit_ledger:view"];
 
+const financeMenuCodes = ["billing", "billing.monthly_rent"];
+
 const productMenuCodes = [
   "products",
   "products.subscription",
@@ -597,7 +601,17 @@ async function main() {
         "order_change:view",
         "contract:view"
       ],
-      ["dashboard", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", ...(roleCode === "AS" ? ["orders.review"] : []), "orders.contracts"]
+      [
+        "dashboard",
+        ...productMenuCodes,
+        ...vehicleMenuCodes,
+        "quotes",
+        "orders",
+        "orders.subscription",
+        ...(roleCode === "AS" ? ["orders.review"] : []),
+        "orders.contracts",
+        ...(roleCode === "FI" ? financeMenuCodes : [])
+      ]
     );
   }
 

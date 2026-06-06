@@ -993,7 +993,7 @@ export class OrderService {
     const result = await this.prisma.$transaction(async (tx) => {
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
       if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.RESERVED) {
-        throw new BadRequestException("车辆状态不是签约锁定，不能交付。");
+        throw new BadRequestException("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
       }
 
       const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
@@ -1687,6 +1687,12 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
   const deliveryCheckAt = targetAt ?? delivery?.deliveredAt ?? delivery?.scheduledAt ?? new Date();
+  const alreadyDelivered = Boolean(
+    order.actualDeliveryAt ||
+      order.orderStatus === OrderStatus.ACTIVE ||
+      delivery?.deliveryStatus === DeliveryStatus.DELIVERED ||
+      delivery?.deliveredAt
+  );
   const currentSalePriceInitialized = Boolean(
     vehicle &&
       vehicle.salePriceStatus === SalePriceStatus.EFFECTIVE &&
@@ -1702,6 +1708,26 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   const handoverDocumentsConfirmed = Boolean(delivery?.handoverDocumentsConfirmed);
   const deliveryReady = delivery?.deliveryStatus === DeliveryStatus.READY;
 
+  if (alreadyDelivered) {
+    return {
+      alreadyDelivered,
+      blockingReasons: [],
+      canConfirmDelivery: false,
+      canPrepareDelivery: false,
+      contractSigned,
+      currentSalePriceInitialized,
+      deliveryStatus: delivery?.deliveryStatus ?? null,
+      depositReceivedConfirmed,
+      firstMonthlyFeeReceivedConfirmed,
+      insuranceValid,
+      orderId: order.id,
+      orderNo: order.orderNo,
+      orderStatus: order.orderStatus,
+      vehiclePrepared,
+      vehicleStatus: vehicle?.status ?? null
+    };
+  }
+
   const prepareBlockingReasons: string[] = [];
   const confirmBlockingReasons: string[] = [];
 
@@ -1716,7 +1742,7 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   } else if (vehicle.id !== order.vehicleId) {
     prepareBlockingReasons.push("订单绑定车辆不一致");
   } else if (vehicle.status !== VehicleStatus.RESERVED) {
-    prepareBlockingReasons.push("车辆状态不是签约锁定");
+    prepareBlockingReasons.push("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
   }
   if (!currentSalePriceInitialized) {
     prepareBlockingReasons.push("车辆当前销售价尚未初始化");
@@ -1752,11 +1778,13 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   }
 
   return {
+    alreadyDelivered,
     blockingReasons: confirmBlockingReasons,
     canConfirmDelivery: confirmBlockingReasons.length === 0,
     canPrepareDelivery: prepareBlockingReasons.length === 0,
     contractSigned,
     currentSalePriceInitialized,
+    deliveryStatus: delivery?.deliveryStatus ?? null,
     depositReceivedConfirmed,
     firstMonthlyFeeReceivedConfirmed,
     insuranceValid,

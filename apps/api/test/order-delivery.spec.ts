@@ -36,7 +36,7 @@ describe("vehicle delivery handover workflow", () => {
 
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
-    ).rejects.toThrow("车辆状态不是签约锁定");
+    ).rejects.toThrow("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
   });
 
   it("rejects confirm when deposit or first monthly fee is not confirmed", async () => {
@@ -152,6 +152,69 @@ describe("vehicle delivery handover workflow", () => {
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
     ).rejects.toThrow("该订单已完成交付，不能重复确认。");
+  });
+
+  it("delivery-check treats delivered orders as completed instead of pre-delivery blocked", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.actualDeliveryAt = new Date("2026-06-10T03:00:00.000Z");
+    harness.state.orderStatus = OrderStatus.ACTIVE;
+    harness.state.vehicleStatus = VehicleStatus.LEASED;
+    harness.state.delivery = buildReadyDelivery(harness, {
+      deliveredAt: new Date("2026-06-10T03:00:00.000Z"),
+      deliveryStatus: DeliveryStatus.DELIVERED,
+      handoverMileageKm: 28500
+    });
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      alreadyDelivered: boolean;
+      blockingReasons: string[];
+      canConfirmDelivery: boolean;
+      canPrepareDelivery: boolean;
+      deliveryStatus: DeliveryStatus;
+      vehicleStatus: VehicleStatus;
+    };
+
+    expect(check.alreadyDelivered).toBe(true);
+    expect(check.deliveryStatus).toBe(DeliveryStatus.DELIVERED);
+    expect(check.vehicleStatus).toBe(VehicleStatus.LEASED);
+    expect(check.canPrepareDelivery).toBe(false);
+    expect(check.canConfirmDelivery).toBe(false);
+    expect(check.blockingReasons).toEqual([]);
+  });
+
+  it("delivery-check still returns normal blockers when delivery has not been prepared", async () => {
+    const harness = createDeliveryHarness();
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      alreadyDelivered: boolean;
+      blockingReasons: string[];
+      canConfirmDelivery: boolean;
+      canPrepareDelivery: boolean;
+      deliveryStatus: DeliveryStatus | null;
+    };
+
+    expect(check.alreadyDelivered).toBe(false);
+    expect(check.deliveryStatus).toBeNull();
+    expect(check.canPrepareDelivery).toBe(true);
+    expect(check.canConfirmDelivery).toBe(false);
+    expect(check.blockingReasons).toEqual(expect.arrayContaining(["请先准备交付", "押金尚未确认收取"]));
+  });
+
+  it("delivery-check keeps READY orders confirmable", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      alreadyDelivered: boolean;
+      blockingReasons: string[];
+      canConfirmDelivery: boolean;
+      deliveryStatus: DeliveryStatus;
+    };
+
+    expect(check.alreadyDelivered).toBe(false);
+    expect(check.deliveryStatus).toBe(DeliveryStatus.READY);
+    expect(check.canConfirmDelivery).toBe(true);
+    expect(check.blockingReasons).toEqual([]);
   });
 });
 

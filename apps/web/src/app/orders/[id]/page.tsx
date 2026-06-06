@@ -75,11 +75,13 @@ interface ChangeFormValues {
 }
 
 interface DeliveryCheck {
+  alreadyDelivered?: boolean;
   blockingReasons: string[];
   canConfirmDelivery: boolean;
   canPrepareDelivery: boolean;
   contractSigned: boolean;
   currentSalePriceInitialized: boolean;
+  deliveryStatus?: string | null;
   depositReceivedConfirmed: boolean;
   firstMonthlyFeeReceivedConfirmed: boolean;
   insuranceValid: boolean;
@@ -876,6 +878,11 @@ function DeliveryPanel({
   prepareAvailability: ReturnType<typeof actionAvailability>;
 }) {
   const blockingReasons = deliveryCheck?.blockingReasons ?? [];
+  const deliveryStatus = deliveryCheck?.deliveryStatus ?? delivery?.deliveryStatus ?? null;
+  const alreadyDelivered = Boolean(
+    deliveryCheck?.alreadyDelivered || deliveryStatus === "DELIVERED" || delivery?.deliveredAt
+  );
+  const readyForDelivery = !alreadyDelivered && deliveryStatus === "READY";
   const checklistItems = [
     { label: "合同签署确认", value: delivery?.contractSignedConfirmed ?? deliveryCheck?.contractSigned },
     { label: "押金收取确认", value: delivery?.depositReceivedConfirmed },
@@ -904,7 +911,21 @@ function DeliveryPanel({
       <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Alert
           description={
-            blockingReasons.length > 0 ? (
+            alreadyDelivered ? (
+              <Space orientation="vertical" size={4}>
+                <Typography.Text>订单已进入在租状态</Typography.Text>
+                <Typography.Text>
+                  车辆状态：
+                  {deliveryCheck?.vehicleStatus === "LEASED"
+                    ? "已出租（LEASED）"
+                    : deliveryCheck?.vehicleStatus
+                      ? labelOf(STATUS_LABELS, deliveryCheck.vehicleStatus)
+                      : "-"}
+                </Typography.Text>
+              </Space>
+            ) : readyForDelivery ? (
+              "交付准备已完成，待确认交付"
+            ) : blockingReasons.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 20 }}>
                 {blockingReasons.map((reason) => (
                   <li key={reason}>{reason}</li>
@@ -912,33 +933,49 @@ function DeliveryPanel({
               </ul>
             ) : undefined
           }
-          message={blockingReasons.length > 0 ? "暂不可交付" : "交付条件已满足"}
+          message={
+            alreadyDelivered
+              ? "交付已完成"
+              : readyForDelivery
+                ? "交付准备已完成，待确认交付"
+                : blockingReasons.length > 0
+                  ? "暂不可交付"
+                  : "交付条件已满足"
+          }
           showIcon
-          type={blockingReasons.length > 0 ? "warning" : "success"}
+          type={alreadyDelivered || readyForDelivery || blockingReasons.length === 0 ? "success" : "warning"}
         />
 
-        <Descriptions
-          bordered
-          column={2}
-          title="交付条件检查"
-          items={[
-            { label: "合同签署状态", children: <BooleanTag checked={deliveryCheck?.contractSigned} /> },
-            { label: "押金确认状态", children: <BooleanTag checked={deliveryCheck?.depositReceivedConfirmed} /> },
-            { label: "首期月费确认状态", children: <BooleanTag checked={deliveryCheck?.firstMonthlyFeeReceivedConfirmed} /> },
-            { label: "保险有效状态", children: <BooleanTag checked={deliveryCheck?.insuranceValid} /> },
-            { label: "车辆整备状态", children: <BooleanTag checked={deliveryCheck?.vehiclePrepared} /> },
-            {
-              label: "车辆状态",
-              children: deliveryCheck?.vehicleStatus ? labelOf(STATUS_LABELS, deliveryCheck.vehicleStatus) : "-"
-            },
-            {
-              label: "车辆当前销售价初始化状态",
-              children: <BooleanTag checked={deliveryCheck?.currentSalePriceInitialized} />
-            },
-            { label: "是否可准备交付", children: <BooleanTag checked={deliveryCheck?.canPrepareDelivery} /> },
-            { label: "是否可确认交付", children: <BooleanTag checked={deliveryCheck?.canConfirmDelivery} /> }
-          ]}
-        />
+        {!alreadyDelivered ? (
+          <Typography.Text type="secondary">
+            签约锁定（RESERVED）：车辆已被订单锁定，处于合同 / 付款 / 交付前流程中，不能被其他订单选择；交付完成后车辆进入已出租（LEASED）状态。
+          </Typography.Text>
+        ) : null}
+
+        {!alreadyDelivered ? (
+          <Descriptions
+            bordered
+            column={2}
+            title="交付条件检查"
+            items={[
+              { label: "合同签署状态", children: <BooleanTag checked={deliveryCheck?.contractSigned} /> },
+              { label: "押金确认状态", children: <BooleanTag checked={deliveryCheck?.depositReceivedConfirmed} /> },
+              { label: "首期月费确认状态", children: <BooleanTag checked={deliveryCheck?.firstMonthlyFeeReceivedConfirmed} /> },
+              { label: "保险有效状态", children: <BooleanTag checked={deliveryCheck?.insuranceValid} /> },
+              { label: "车辆整备状态", children: <BooleanTag checked={deliveryCheck?.vehiclePrepared} /> },
+              {
+                label: "车辆状态",
+                children: deliveryCheck?.vehicleStatus ? labelOf(STATUS_LABELS, deliveryCheck.vehicleStatus) : "-"
+              },
+              {
+                label: "车辆当前销售价初始化状态",
+                children: <BooleanTag checked={deliveryCheck?.currentSalePriceInitialized} />
+              },
+              { label: "是否可准备交付", children: <BooleanTag checked={deliveryCheck?.canPrepareDelivery} /> },
+              { label: "是否可确认交付", children: <BooleanTag checked={deliveryCheck?.canConfirmDelivery} /> }
+            ]}
+          />
+        ) : null}
 
         <Descriptions
           bordered
@@ -981,8 +1018,8 @@ function getPrepareDeliveryDisabledReason(
   if (orderChangeLocked) {
     return "当前订单存在进行中的变更申请";
   }
-  if (isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
-    return "当前订单已交付";
+  if (deliveryCheck?.alreadyDelivered || isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
+    return "订单已交付，不能重新准备交付";
   }
   if (!DELIVERY_PREPARE_ORDER_STATUSES.has(order.orderStatus)) {
     return "当前订单状态不允许准备交付";
@@ -991,7 +1028,7 @@ function getPrepareDeliveryDisabledReason(
     return "请先完成合同签署";
   }
   if ((deliveryCheck?.vehicleStatus ?? order.vehicle?.status) !== "RESERVED") {
-    return "当前车辆状态不是签约锁定";
+    return "交付前车辆必须处于“签约锁定（RESERVED）”状态。";
   }
   if (deliveryCheck && !deliveryCheck.canPrepareDelivery) {
     return deliveryCheck.blockingReasons[0] ?? "当前订单不满足准备交付条件";
@@ -1014,14 +1051,14 @@ function getConfirmDeliveryDisabledReason(
   if (orderChangeLocked) {
     return "当前订单存在进行中的变更申请";
   }
-  if (isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
-    return "当前订单已交付";
+  if (deliveryCheck?.alreadyDelivered || isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
+    return "订单已交付，不能重复确认交付";
   }
   if (delivery?.deliveryStatus !== "READY") {
     return "请先完成准备交付";
   }
   if ((deliveryCheck?.vehicleStatus ?? order.vehicle?.status) !== "RESERVED") {
-    return "当前车辆状态不允许交付";
+    return "交付前车辆必须处于“签约锁定（RESERVED）”状态。";
   }
   if (!deliveryCheck) {
     return "交付条件检查加载完成后才可操作";

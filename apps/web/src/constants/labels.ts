@@ -84,6 +84,49 @@ export const DELIVERY_STATUS_LABELS: Record<string, string> = {
   READY: "待交付"
 };
 
+export const VEHICLE_RETURN_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CONFIRMED: "已退车",
+  PENDING: "待退车",
+  READY: "待验收"
+};
+
+export const VEHICLE_RETURN_TYPE_LABELS: Record<string, string> = {
+  EARLY_TERMINATION: "提前终止退车",
+  NORMAL_RETURN: "正常到期退车"
+};
+
+export const VEHICLE_DAMAGE_TYPE_LABELS: Record<string, string> = {
+  BATTERY: "电池",
+  CHASSIS: "底盘",
+  EQUIPMENT: "随车设备",
+  EXTERIOR: "外观",
+  GLASS: "玻璃",
+  INTERIOR: "内饰",
+  OTHER: "其他",
+  TIRE: "轮胎"
+};
+
+export const VEHICLE_DAMAGE_LEVEL_LABELS: Record<string, string> = {
+  MEDIUM: "中等",
+  MINOR: "轻微",
+  SEVERE: "严重"
+};
+
+export const VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS: Record<string, string> = {
+  CUSTOMER: "客户",
+  PLATFORM: "平台",
+  THIRD_PARTY: "第三方",
+  UNKNOWN: "未确认"
+};
+
+export const VEHICLE_RETURN_DAMAGE_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  RECORDED: "已记录",
+  SETTLED: "已结算",
+  WAIVED: "已豁免"
+};
+
 export const PLAN_CONFIRM_STATUS_LABELS: Record<string, string> = {
   CONFIRMED: "已确认",
   PENDING: "待确认",
@@ -182,6 +225,7 @@ export const MODULE_LABELS: Record<string, string> = {
   customer: "客户中心",
   dashboard: "首页驾驶舱",
   delivery: "车辆交付",
+  vehicle_return: "退车验收",
   order: "订单中心",
   order_change: "订单变更",
   product: "产品中心",
@@ -214,6 +258,10 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "delivery:confirm": "确认车辆交付",
   "delivery:prepare": "准备车辆交付",
   "delivery:view": "查看车辆交付",
+  "vehicle_return:confirm": "确认退车验收",
+  "vehicle_return:damage_record": "记录退车损伤",
+  "vehicle_return:prepare": "准备退车验收",
+  "vehicle_return:view": "查看退车验收",
   "menu:view": "查看菜单",
   "order:cancel": "取消订单",
   "order:confirm_final_plan": "确认最终方案",
@@ -292,6 +340,10 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "delivery:confirm": "允许确认车辆实际交付",
   "delivery:prepare": "允许维护车辆交付准备信息",
   "delivery:view": "允许查看订单车辆交付信息",
+  "vehicle_return:confirm": "允许确认退车验收并记录退车结果",
+  "vehicle_return:damage_record": "允许录入退车损伤记录",
+  "vehicle_return:prepare": "允许维护退车预约和验收准备信息",
+  "vehicle_return:view": "允许查看订单退车验收信息",
   "menu:view": "允许查看菜单管理",
   "order:cancel": "允许取消订阅订单",
   "order:confirm_final_plan": "允许确认客户自助订单最终方案",

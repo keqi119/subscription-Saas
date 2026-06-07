@@ -90,6 +90,24 @@ pnpm dev
 
 如果 seed 更新了权限或菜单，必须重新登录以刷新 JWT 中的 permissions。
 
+默认 `pnpm prisma:seed` 只初始化基础主数据：权限、角色、菜单、测试用户、客户
+leads、产品/套餐、押金规则、车辆资产池和车辆销售价初始化记录。默认 seed 不再
+创建测试进件、报价、订单、合同、账单、收款、交付、退车、催收或权益履约数据；
+seed 后车辆资产应处于 `AVAILABLE` 且销售价状态为 `EFFECTIVE`。
+
+复杂验收数据后续应拆到独立场景脚本，例如：
+
+```powershell
+pnpm seed:scenario delivery
+pnpm seed:scenario return
+pnpm seed:scenario billing
+pnpm seed:scenario collection
+pnpm seed:scenario entitlement
+```
+
+场景 seed 必须使用专用测试车辆，执行前清理同场景旧数据，并输出创建的进件、
+订单和车辆编号，避免污染默认车辆池。
+
 ## SSH Tunnel / PostgreSQL 注意事项
 
 当前本地开发可能依赖 SSH tunnel 连接远程 PostgreSQL。开始开发前确认：
@@ -198,15 +216,16 @@ R6: seed、测试、质量门禁、PR 整理
 
 ## Stage 5.5 人工验收路径
 
-A 线当前没有客户 App / 小程序前端。人工验收通过 `pnpm prisma:seed` 创建
-`SELF_SERVICE` 自助进件数据，然后在后台进件中心完成审核闭环。
+A 线当前没有客户 App / 小程序前端。默认 `pnpm prisma:seed` 只提供干净基础
+主数据和可用车辆池；人工验收应从后台手动创建客户/进件开始，或后续使用独立
+场景 seed 创建专用流程数据。
 
 ```text
 1. pnpm prisma:seed
 2. 如 seed 修改过权限，退出并重新登录 admin
-3. 打开 /applications
-4. 筛选进件来源 = 客户自助
-5. 找到 A线自助进件测试客户
+3. 打开 /vehicles，确认 seed 车辆均为 AVAILABLE
+4. 打开 /customers，选择或创建一个 lead
+5. 在 /applications 创建自助或销售人工进件
 6. 进入 /applications/:id 详情
 7. 查看意向车辆、意向套餐、押金待确认和客户资料区域
 8. 依次完成资料审核、客户资质审核、产品匹配审核、车辆库存审核

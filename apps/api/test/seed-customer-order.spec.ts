@@ -3,82 +3,115 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-describe("customer self-service review order seed", () => {
+describe("default seed baseline customer and catalog data", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
-  it("creates an idempotent A-line review order for manual acceptance", () => {
+  it("does not create default application, quote, order, or contract scenarios", () => {
+    for (const oldFunctionName of [
+      "seedCustomerSelfServiceReviewOrder",
+      "seedSelfServiceApplicationReviewScenario",
+      "seedDeliveryHandoverAcceptanceOrders"
+    ]) {
+      expect(seedSource).not.toContain(oldFunctionName);
+    }
+
+    for (const forbiddenCreate of [
+      "prisma.application.upsert",
+      "prisma.subscriptionQuote.upsert",
+      "prisma.subscriptionOrder.upsert",
+      "prisma.contract.upsert",
+      "prisma.vehicleDelivery.upsert",
+      "prisma.vehicleReturn.upsert",
+      "prisma.receivableBill.upsert",
+      "prisma.paymentRecord.upsert",
+      "prisma.paymentWriteOff.upsert",
+      "prisma.collectionCase.upsert",
+      "prisma.orderEntitlementAccount.upsert"
+    ]) {
+      expect(seedSource).not.toContain(forbiddenCreate);
+    }
+  });
+
+  it("keeps default seed entrypoint scoped to cleanup and master data", () => {
+    const mainSource = functionSourceFor("main");
+
+    expect(mainSource).toContain("await cleanupDefaultSeedFlowData()");
+    expect(mainSource).toContain("await seedDefaultDepositRules(adminUser.id)");
+    expect(mainSource).toContain("await seedBaselineSubscriptionCatalog(adminUser.id)");
+    expect(mainSource).toContain("await seedBaselineCustomerLeads(adminUser.id)");
+    expect(mainSource).toContain("await seedDemoVehicles(adminUser.id)");
+    expect(mainSource).not.toContain("seedCustomerSelfServiceReviewOrder");
+    expect(mainSource).not.toContain("seedDeliveryHandoverAcceptanceOrders");
+  });
+
+  it("keeps clean customer leads without binding applications or orders", () => {
+    const leadSource = sourceBetween("const baselineCustomerLeads = [", "const oldDefaultFlowSeedData = {");
+    const seedLeadsFunction = functionSourceFor("seedBaselineCustomerLeads");
+
     for (const marker of [
-      "A线自助下单测试客户",
-      "13900000051",
-      "TESTAUTOORDERET5001",
-      "A线ET5标准订阅套餐",
-      "ORD-AUTO-REVIEW-ET5-001"
+      "CUS-SEED-LEAD-A-001",
+      "CUS-SEED-LEAD-B-001",
+      "CUS-SEED-LEAD-C-001",
+      "CUS-SEED-LEAD-COMPANY-001",
+      'customerType: "COMPANY"',
+      'status: "LEAD"'
+    ]) {
+      expect(seedSource).toContain(marker);
+    }
+    expect(leadSource).not.toContain("applicationNo");
+    expect(leadSource).not.toContain("orderNo");
+    expect(seedLeadsFunction).toContain("prisma.customer.upsert");
+    expect(seedLeadsFunction).not.toContain("prisma.application");
+    expect(seedLeadsFunction).not.toContain("prisma.subscriptionOrder");
+  });
+
+  it("keeps active baseline product packages and subscription plan", () => {
+    const catalogSource = functionSourceFor("seedBaselineSubscriptionCatalog");
+
+    for (const marker of [
+      "PROD-AUTO-ET5",
+      "2026-AUTO-REVIEW",
+      "VPK-AUTO-ET5-STANDARD",
+      "MPK-AUTO-ET5-1500",
+      "EPK-AUTO-ET5-POWER",
+      "BPK-AUTO-ET5-WASH",
+      "PLAN-AUTO-ET5-STANDARD",
+      'status: "ACTIVE"',
+      'monthlyFeeMode: "FIXED_AMOUNT"'
     ]) {
       expect(seedSource).toContain(marker);
     }
 
-    expect(seedSource).toContain("async function seedCustomerSelfServiceReviewOrder");
-    expect(seedSource).toContain("await seedCustomerSelfServiceReviewOrder(adminUser.id)");
-    expect(seedSource).toContain("prisma.subscriptionOrder.upsert");
-    expect(seedSource).toContain("where: { orderNo: autoReviewSeed.orderNo }");
-    expect(seedSource).toContain('orderSource: "CUSTOMER_SELF_SERVICE"');
-    expect(seedSource).toContain('orderStatus: "PENDING_REVIEW"');
-    expect(seedSource).toContain('creditReviewStatus: "PENDING"');
-    expect(seedSource).toContain('productReviewStatus: "PENDING"');
-    expect(seedSource).toContain('vehicleReviewStatus: "PENDING"');
-    expect(seedSource).toContain('depositStatus: "PENDING_CONFIRM"');
-    expect(seedSource).toContain("finalDepositAmount: null");
-    expect(seedSource).toContain('status: "REVIEW_RESERVED"');
-    expect(seedSource).toContain('reviewType: "INITIAL_POOL"');
-    expect(seedSource).toContain('monthlyFeeMode: "FIXED_AMOUNT"');
-    expect(seedSource).not.toContain('monthlyFeeMode: "MANUAL_QUOTE"');
-  });
-
-  it("creates an idempotent self-service application review scenario", () => {
-    const functionSource = functionSourceFor("seedSelfServiceApplicationReviewScenario");
-
-    for (const marker of [
-      "selfServiceApplicationReviewSeed",
-      "APP-SELF-SERVICE-REVIEW-001",
-      "13900000052",
-      "TESTSELFAPPET5001",
-      "VEH-SELF-SERVICE-APP-ET5-001"
+    for (const upsert of [
+      "prisma.product.upsert",
+      "prisma.productVersion.upsert",
+      "prisma.productPriceRule.upsert",
+      "prisma.vehiclePackage.upsert",
+      "prisma.mileagePackage.upsert",
+      "prisma.energyPackage.upsert",
+      "prisma.benefitPackage.upsert",
+      "prisma.subscriptionPlan.upsert"
     ]) {
-      expect(seedSource).toContain(marker);
+      expect(catalogSource).toContain(upsert);
     }
-
-    expect(seedSource).toContain("await seedSelfServiceApplicationReviewScenario(adminUser.id)");
-    expect(functionSource).toContain("prisma.subscriptionPlan.findUniqueOrThrow");
-    expect(functionSource).toContain("where: { planNo: autoReviewSeed.planNo }");
-    expect(functionSource).toContain("prisma.customer.upsert");
-    expect(functionSource).toContain("where: { customerNo: selfServiceApplicationReviewSeed.customerNo }");
-    expect(functionSource).toContain("prisma.vehicle.upsert");
-    expect(functionSource).toContain("where: { vin: selfServiceApplicationReviewSeed.vin }");
-    expect(functionSource).toContain("prisma.application.upsert");
-    expect(functionSource).toContain("where: { applicationNo: selfServiceApplicationReviewSeed.applicationNo }");
-    expect(functionSource).toContain('applicationSource: "SELF_SERVICE"');
-    expect(functionSource).toContain('status: "SUBMITTED"');
-    expect(functionSource).toContain('materialReviewStatus: "PENDING"');
-    expect(functionSource).toContain('creditReviewStatus: "PENDING"');
-    expect(functionSource).toContain('productReviewStatus: "PENDING"');
-    expect(functionSource).toContain('vehicleReviewStatus: "PENDING"');
-    expect(functionSource).toContain('depositStatus: "PENDING_CONFIRM"');
-    expect(functionSource).toContain('planConfirmStatus: "PENDING"');
-    expect(functionSource).toContain("finalDepositAmount: null");
-    expect(functionSource).toContain("intentVehicleId: vehicle.id");
-    expect(functionSource).toContain("intentSubscriptionPlanId: subscriptionPlan.id");
-    expect(functionSource).toContain("intentSnapshot");
-    expect(functionSource).toContain("customerSelectedSnapshot");
-    expect(functionSource).toContain('status: "REVIEW_RESERVED"');
   });
 
-  it("keeps the self-service application seed before quote and order creation", () => {
-    const functionSource = functionSourceFor("seedSelfServiceApplicationReviewScenario");
+  it("keeps seed idempotent for baseline objects", () => {
+    expect(seedSource).toContain("skipDuplicates: true");
+    expect(seedSource).toContain("prisma.auditLog.findFirst");
 
-    expect(functionSource).not.toContain("subscriptionQuote");
-    expect(functionSource).not.toContain("subscriptionOrder");
-    expect(seedSource).toContain("async function seedCustomerSelfServiceReviewOrder");
-    expect(seedSource).toContain("await seedDemoVehicles(adminUser.id)");
+    expect(functionSourceFor("seedDefaultDepositRules")).toContain("prisma.depositRule.findFirst");
+    expect(functionSourceFor("seedDefaultDepositRules")).toContain("prisma.depositRule.update");
+    expect(functionSourceFor("seedDefaultDepositRules")).toContain("prisma.depositRule.create");
+
+    for (const functionName of [
+      "seedDefaultUsers",
+      "seedBaselineSubscriptionCatalog",
+      "seedBaselineCustomerLeads",
+      "seedDemoVehicles"
+    ]) {
+      expect(functionSourceFor(functionName)).toContain(".upsert");
+    }
   });
 
   function functionSourceFor(functionName: string) {
@@ -87,5 +120,15 @@ describe("customer self-service review order seed", () => {
 
     const nextFunction = seedSource.indexOf("\nasync function ", start + 1);
     return seedSource.slice(start, nextFunction === -1 ? seedSource.length : nextFunction);
+  }
+
+  function sourceBetween(startMarker: string, endMarker: string) {
+    const start = seedSource.indexOf(startMarker);
+    const end = seedSource.indexOf(endMarker);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+
+    return seedSource.slice(start, end);
   }
 });

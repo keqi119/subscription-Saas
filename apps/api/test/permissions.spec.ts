@@ -379,6 +379,26 @@ describe("report permissions", () => {
 describe("seed permission calibration", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
+  it("seeds baseline users for each operating role", () => {
+    for (const marker of [
+      '["admin", "系统管理员", "admin@example.com", "ADMIN"]',
+      '["sa", "销售顾问", "sa@example.com", "SA"]',
+      '["op", "运营管理", "op@example.com", "OP"]',
+      '["rc", "风控专员", "rc@example.com", "RC"]',
+      '["fi", "财务专员", "fi@example.com", "FI"]',
+      '["as", "资产运营", "as@example.com", "AS"]',
+      '["cs", "客服运营", "cs@example.com", "CS"]',
+      '["gm", "运营总监", "gm@example.com", "GM"]'
+    ]) {
+      expect(seedSource).toContain(marker);
+    }
+
+    expect(seedSource).toContain("async function seedDefaultUsers");
+    expect(seedSource).toContain("await seedDefaultUsers()");
+    expect(seedSource).toContain("prisma.user.upsert");
+    expect(seedSource).toContain("prisma.userRole.upsert");
+  });
+
   it("defines vehicle and subscription plan permissions for ADMIN all-permission seeding", () => {
     for (const permission of [
       "vehicle:view",

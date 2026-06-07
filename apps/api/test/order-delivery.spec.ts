@@ -95,6 +95,26 @@ describe("vehicle delivery handover workflow", () => {
     expect(harness.tx.vehicleDelivery.create).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks delivery on missing vehicle insurance master-data dates", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.insuranceEndDate = null;
+    harness.state.insuranceStartDate = null;
+
+    const initialCheck = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      blockingReasons: string[];
+      canPrepareDelivery: boolean;
+      insuranceValid: boolean;
+    };
+
+    expect(initialCheck.canPrepareDelivery).toBe(false);
+    expect(initialCheck.insuranceValid).toBe(false);
+    expect(initialCheck.blockingReasons).toContain("车辆保险已过期");
+
+    await expect(
+      harness.service.prepareDelivery(harness.orderId, validPrepareDto(), harness.user, harness.context)
+    ).rejects.toThrow("车辆保险已过期");
+  });
+
   it("prepare-delivery updates the existing delivery record instead of creating another one", async () => {
     const harness = createDeliveryHarness();
 

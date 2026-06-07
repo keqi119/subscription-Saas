@@ -150,6 +150,12 @@ permissionRows.push(
   ["collection:close", "关闭催收案件", "collection", "close"]
 );
 
+permissionRows.push(
+  ["report:view", "查看经营报表", "report", "view"],
+  ["report:finance", "查看财务报表", "report", "finance"],
+  ["report:asset", "查看资产报表", "report", "asset"]
+);
+
 const menuRows = [
   ["dashboard", "首页驾驶舱", "/", "dashboard", 10, "dashboard:view", null],
   ["customers", "客户中心", "/customers", "customer", 20, "customer:view", null],
@@ -425,6 +431,14 @@ const collectionManagementPermissions = [
 
 const collectionActionPermissions = ["collection:view", "collection:action_create"];
 
+const reportViewPermissions = ["report:view"];
+
+const reportFinancePermissions = ["report:view", "report:finance"];
+
+const reportAssetPermissions = ["report:asset"];
+
+const reportAllPermissions = ["report:view", "report:finance", "report:asset"];
+
 const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collections"];
 
 const collectionMenuCodes = ["billing", "billing.collections"];
@@ -566,6 +580,8 @@ async function main() {
       ...vehicleManagementPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
+      ...reportViewPermissions,
+      ...reportAssetPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -618,6 +634,7 @@ async function main() {
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
         ...(roleCode === "FI" ? collectionManagementPermissions : []),
+        ...(roleCode === "FI" ? reportFinancePermissions : reportAssetPermissions),
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         "vehicle_return:view",
         ...(roleCode === "AS"
@@ -655,7 +672,8 @@ async function main() {
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,
-      "collection:view"
+      "collection:view",
+      ...reportAllPermissions
     ],
     ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
   );

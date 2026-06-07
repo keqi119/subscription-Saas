@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import Link from "next/link";
@@ -16,6 +16,13 @@ import {
   DELIVERY_STATUS_LABELS,
   DEPOSIT_TRANSACTION_STATUS_LABELS,
   DEPOSIT_TRANSACTION_TYPE_LABELS,
+  ENTITLEMENT_ACCOUNT_STATUS_LABELS,
+  ENTITLEMENT_GRANT_SOURCE_LABELS,
+  ENTITLEMENT_GRANT_STATUS_LABELS,
+  ENTITLEMENT_TYPE_LABELS,
+  ENTITLEMENT_UNIT_LABELS,
+  ENTITLEMENT_USAGE_SOURCE_LABELS,
+  ENTITLEMENT_USAGE_STATUS_LABELS,
   ORDER_STATUS_LABELS,
   ORDER_CHANGE_TYPE_LABELS,
   PAYMENT_METHOD_LABELS,
@@ -362,6 +369,75 @@ interface ConfirmReturnFormValues {
   violationCheckedConfirmed?: boolean;
 }
 
+interface OrderEntitlementAccount {
+  accountNo: string;
+  accountStatus: string;
+  createdAt?: string | null;
+  customerId: string;
+  id: string;
+  orderId: string;
+  periodEnd?: string | null;
+  periodStart?: string | null;
+  snapshot?: unknown;
+  subscriptionPlanId?: string | null;
+}
+
+interface OrderEntitlementGrant {
+  entitlementName: string;
+  entitlementType: string;
+  grantNo: string;
+  grantPeriodEnd?: string | null;
+  grantPeriodStart?: string | null;
+  grantSource: string;
+  id: string;
+  latestUsageAt?: string | null;
+  remainingAmount?: number | null;
+  remark?: string | null;
+  snapshot?: unknown;
+  status: string;
+  totalAmount?: number | null;
+  unit: string;
+  usedAmount?: number | null;
+}
+
+interface OrderEntitlementsResponse {
+  account: OrderEntitlementAccount | null;
+  grants: OrderEntitlementGrant[];
+}
+
+interface OrderEntitlementUsage {
+  createdAt?: string | null;
+  entitlementName: string;
+  entitlementType: string;
+  externalRefNo?: string | null;
+  grantId: string;
+  id: string;
+  occurredAt?: string | null;
+  remark?: string | null;
+  scenario?: string | null;
+  unit: string;
+  usageNo: string;
+  usageSource: string;
+  usageStatus: string;
+  usedAmount?: number | null;
+}
+
+interface OrderEntitlementUsageResponse {
+  items: OrderEntitlementUsage[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+interface ConsumeEntitlementFormValues {
+  externalRefNo?: string;
+  occurredAt?: Dayjs;
+  remark?: string;
+  scenario?: string;
+  usageSource?: string;
+  usedAmount?: number;
+}
+
 type SnapshotRecord = Record<string, unknown>;
 
 const ORDER_SOURCE_LABELS: Record<string, string> = {
@@ -395,6 +471,12 @@ const paymentMethodOptions = [
   { label: PAYMENT_METHOD_LABELS.ALIPAY, value: "ALIPAY" },
   { label: PAYMENT_METHOD_LABELS.CASH, value: "CASH" },
   { label: PAYMENT_METHOD_LABELS.OTHER, value: "OTHER" }
+];
+
+const entitlementUsageSourceOptions = [
+  { label: ENTITLEMENT_USAGE_SOURCE_LABELS.MANUAL, value: "MANUAL" },
+  { label: ENTITLEMENT_USAGE_SOURCE_LABELS.SYSTEM, value: "SYSTEM" },
+  { label: ENTITLEMENT_USAGE_SOURCE_LABELS.THIRD_PARTY, value: "THIRD_PARTY" }
 ];
 
 const returnTypeOptions = [
@@ -441,6 +523,24 @@ const billStatusColors: Record<string, string> = {
   PAID: "green",
   PARTIALLY_PAID: "orange",
   PENDING: "blue"
+};
+
+const entitlementAccountStatusColors: Record<string, string> = {
+  ACTIVE: "green",
+  CLOSED: "default",
+  SUSPENDED: "orange"
+};
+
+const entitlementGrantStatusColors: Record<string, string> = {
+  ACTIVE: "green",
+  CANCELLED: "default",
+  EXHAUSTED: "purple",
+  EXPIRED: "red"
+};
+
+const entitlementUsageStatusColors: Record<string, string> = {
+  CANCELLED: "default",
+  CONFIRMED: "green"
 };
 
 const customerGradeOptions = [
@@ -590,6 +690,46 @@ function formatKwh(value?: unknown) {
   return kwh === null ? "-" : `${kwh.toLocaleString("zh-CN")} kWh`;
 }
 
+function formatEntitlementAmount(value: unknown, unit?: string | null) {
+  const amount = toNumber(value);
+  if (amount === null) {
+    return "-";
+  }
+  const unitLabel = unit ? labelOf(ENTITLEMENT_UNIT_LABELS, unit) : "";
+  return `${amount.toLocaleString("zh-CN")} ${unitLabel}`.trim();
+}
+
+function formatEntitlementPeriod(start?: string | null, end?: string | null) {
+  const formattedStart = formatDate(start);
+  const formattedEnd = formatDate(end);
+  if (formattedStart === "-" && formattedEnd === "-") {
+    return "-";
+  }
+  return `${formattedStart} 至 ${formattedEnd}`;
+}
+
+function entitlementProgressPercent(grant: OrderEntitlementGrant) {
+  const totalAmount = toNumber(grant.totalAmount);
+  const usedAmount = toNumber(grant.usedAmount) ?? 0;
+  if (totalAmount === null || totalAmount <= 0) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, Number(((usedAmount / totalAmount) * 100).toFixed(1))));
+}
+
+function isTextEntitlement(grant: OrderEntitlementGrant) {
+  return grant.unit === "TEXT";
+}
+
+function getEntitlementPlanText(account: OrderEntitlementAccount | null) {
+  if (!account) {
+    return "-";
+  }
+  const planNo = getSnapshotValue(account.snapshot, "packageSnapshot.subscriptionPlan.planNo", "sourceSnapshot.subscriptionPlan.planNo");
+  const planName = getSnapshotValue(account.snapshot, "packageSnapshot.subscriptionPlan.planName", "sourceSnapshot.subscriptionPlan.planName");
+  return joinText(planNo, planName, account.subscriptionPlanId);
+}
+
 function formatBatteryUsageType(type?: unknown, label?: unknown) {
   const labelText = safeText(label);
   if (labelText !== "-") {
@@ -718,7 +858,14 @@ function formatVehicleBaseFeeModeLabel(mode?: unknown, label?: unknown) {
 }
 
 function getErrorMessage(error: unknown) {
-  return error instanceof ApiError ? error.message : "操作失败，请稍后重试";
+  if (error instanceof ApiError) {
+    const text = error.message.trim();
+    if (!text || text === "Internal Server Error" || text === "Bad Request") {
+      return "操作失败，请稍后重试";
+    }
+    return text;
+  }
+  return "操作失败，请稍后重试";
 }
 
 function ReviewStatusTag({ value }: { value?: string }) {
@@ -771,6 +918,27 @@ function BillStatusTag({ value }: { value?: string | null }) {
   return <Tag color={billStatusColors[value]}>{labelOf(BILL_STATUS_LABELS, value)}</Tag>;
 }
 
+function EntitlementAccountStatusTag({ value }: { value?: string | null }) {
+  if (!value) {
+    return <Tag>-</Tag>;
+  }
+  return <Tag color={entitlementAccountStatusColors[value]}>{labelOf(ENTITLEMENT_ACCOUNT_STATUS_LABELS, value)}</Tag>;
+}
+
+function EntitlementGrantStatusTag({ value }: { value?: string | null }) {
+  if (!value) {
+    return <Tag>-</Tag>;
+  }
+  return <Tag color={entitlementGrantStatusColors[value]}>{labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, value)}</Tag>;
+}
+
+function EntitlementUsageStatusTag({ value }: { value?: string | null }) {
+  if (!value) {
+    return <Tag>-</Tag>;
+  }
+  return <Tag color={entitlementUsageStatusColors[value]}>{labelOf(ENTITLEMENT_USAGE_STATUS_LABELS, value)}</Tag>;
+}
+
 function DamageStatusTag({ value }: { value?: string | null }) {
   if (!value) {
     return <Tag>-</Tag>;
@@ -796,6 +964,45 @@ function canFinalizeOrder(order: OrderDetail) {
     order.finalDepositAmount !== null &&
     order.finalDepositAmount !== undefined
   );
+}
+
+function getGenerateEntitlementDisabledReason(order: OrderDetail | null, account: OrderEntitlementAccount | null) {
+  if (!order) {
+    return "数据加载完成后才能操作";
+  }
+  if (account?.accountStatus === "ACTIVE") {
+    return "该订单已生成权益账户";
+  }
+  if (order.orderStatus !== "ACTIVE") {
+    return "当前订单尚未起租，不能生成权益";
+  }
+  if (!order.actualDeliveryAt) {
+    return "当前订单缺少实际交付时间，不能生成权益";
+  }
+  return null;
+}
+
+function getConsumeEntitlementDisabledReason(
+  order: OrderDetail,
+  account: OrderEntitlementAccount | null,
+  grant: OrderEntitlementGrant
+) {
+  if (order.orderStatus !== "ACTIVE") {
+    return "当前订单不是在租状态";
+  }
+  if (account?.accountStatus !== "ACTIVE") {
+    return "权益账户不是生效中";
+  }
+  if (grant.status !== "ACTIVE") {
+    return "当前权益不可用";
+  }
+  if (isTextEntitlement(grant)) {
+    return "文本型权益不支持消耗核销";
+  }
+  if ((toNumber(grant.remainingAmount) ?? 0) <= 0) {
+    return "当前权益已用尽";
+  }
+  return null;
 }
 
 function ReviewPanel({
@@ -1296,6 +1503,251 @@ function OrderInfoSections({
           ]}
         />
       </Card>
+    </Space>
+  );
+}
+
+function EntitlementPanel({
+  entitlements,
+  entitlementLoading,
+  generatingEntitlements,
+  onGenerateEntitlements,
+  onOpenConsume,
+  onUsagePageChange,
+  order,
+  permissions,
+  usageLoading,
+  usagePage,
+  usagePageSize,
+  usageTotal,
+  usages
+}: {
+  entitlements: OrderEntitlementsResponse;
+  entitlementLoading: boolean;
+  generatingEntitlements: boolean;
+  onGenerateEntitlements: () => void;
+  onOpenConsume: (grant: OrderEntitlementGrant) => void;
+  onUsagePageChange: (page: number, pageSize: number) => void;
+  order: OrderDetail;
+  permissions: ReadonlySet<string>;
+  usageLoading: boolean;
+  usagePage: number;
+  usagePageSize: number;
+  usageTotal: number;
+  usages: OrderEntitlementUsage[];
+}) {
+  const account = entitlements.account;
+  const generateDisabledReason = getGenerateEntitlementDisabledReason(order, account);
+  const generateAvailability = actionAvailability({
+    allowed: generateDisabledReason === null,
+    disabledReason: generateDisabledReason ?? "当前订单不能生成权益",
+    noPermissionReason: "无生成权益权限",
+    permission: "entitlement:generate",
+    permissions
+  });
+  const grantColumns: ColumnsType<OrderEntitlementGrant> = [
+    { dataIndex: "grantNo", title: "权益编号", width: 180 },
+    {
+      dataIndex: "entitlementType",
+      render: (value: string) => labelOf(ENTITLEMENT_TYPE_LABELS, value),
+      title: "权益类型",
+      width: 110
+    },
+    { dataIndex: "entitlementName", render: safeText, title: "权益名称", width: 180 },
+    {
+      dataIndex: "totalAmount",
+      render: (value: unknown, record) => isTextEntitlement(record) ? "文本权益" : formatEntitlementAmount(value, record.unit),
+      title: "总量",
+      width: 120
+    },
+    {
+      dataIndex: "usedAmount",
+      render: (value: unknown, record) => isTextEntitlement(record) ? "-" : formatEntitlementAmount(value, record.unit),
+      title: "已用",
+      width: 120
+    },
+    {
+      dataIndex: "remainingAmount",
+      render: (value: unknown, record) => isTextEntitlement(record) ? "文本权益" : formatEntitlementAmount(value, record.unit),
+      title: "剩余",
+      width: 120
+    },
+    {
+      dataIndex: "unit",
+      render: (value: string) => labelOf(ENTITLEMENT_UNIT_LABELS, value),
+      title: "单位",
+      width: 100
+    },
+    {
+      dataIndex: "status",
+      render: (value: string) => <EntitlementGrantStatusTag value={value} />,
+      title: "状态",
+      width: 100
+    },
+    {
+      dataIndex: "grantSource",
+      render: (value: string) => labelOf(ENTITLEMENT_GRANT_SOURCE_LABELS, value),
+      title: "来源",
+      width: 110
+    },
+    {
+      render: (_, record) => formatEntitlementPeriod(record.grantPeriodStart, record.grantPeriodEnd),
+      title: "有效期",
+      width: 180
+    },
+    { dataIndex: "remark", render: safeText, title: "备注", width: 160 },
+    {
+      render: (_, record) => {
+        const disabledReason = getConsumeEntitlementDisabledReason(order, account, record);
+        const availability = actionAvailability({
+          allowed: disabledReason === null,
+          disabledReason: disabledReason ?? "当前权益不能消耗",
+          noPermissionReason: "无权益消耗权限",
+          permission: "entitlement:consume",
+          permissions
+        });
+        return (
+          <ActionButton availability={availability} onClick={() => onOpenConsume(record)} size="small">
+            消耗权益
+          </ActionButton>
+        );
+      },
+      title: "操作",
+      width: 120
+    }
+  ];
+  const usageColumns: ColumnsType<OrderEntitlementUsage> = [
+    { dataIndex: "usageNo", title: "流水编号", width: 180 },
+    {
+      dataIndex: "entitlementType",
+      render: (value: string) => labelOf(ENTITLEMENT_TYPE_LABELS, value),
+      title: "权益类型",
+      width: 110
+    },
+    { dataIndex: "entitlementName", render: safeText, title: "权益名称", width: 180 },
+    {
+      render: (_, record) => formatEntitlementAmount(record.usedAmount, record.unit),
+      title: "消耗数量",
+      width: 120
+    },
+    {
+      dataIndex: "unit",
+      render: (value: string) => labelOf(ENTITLEMENT_UNIT_LABELS, value),
+      title: "单位",
+      width: 100
+    },
+    {
+      dataIndex: "usageStatus",
+      render: (value: string) => <EntitlementUsageStatusTag value={value} />,
+      title: "消耗状态",
+      width: 110
+    },
+    {
+      dataIndex: "usageSource",
+      render: (value: string) => labelOf(ENTITLEMENT_USAGE_SOURCE_LABELS, value),
+      title: "消耗来源",
+      width: 110
+    },
+    { dataIndex: "occurredAt", render: formatTime, title: "发生时间", width: 160 },
+    { dataIndex: "externalRefNo", render: safeText, title: "外部流水号", width: 180 },
+    { dataIndex: "scenario", render: safeText, title: "使用场景", width: 180 },
+    { dataIndex: "remark", render: safeText, title: "备注", width: 180 },
+    { dataIndex: "createdAt", render: formatTime, title: "创建时间", width: 160 }
+  ];
+
+  return (
+    <Card
+      extra={
+        <ActionButton
+          availability={generateAvailability}
+          loading={generatingEntitlements}
+          onClick={onGenerateEntitlements}
+          type="primary"
+        >
+          生成订单权益
+        </ActionButton>
+      }
+      title="订阅权益"
+    >
+      <Spin spinning={entitlementLoading}>
+        <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+          {account ? (
+            <Descriptions
+              bordered
+              column={3}
+              items={[
+                { label: "权益账户编号", children: safeText(account.accountNo) },
+                { label: "账户状态", children: <EntitlementAccountStatusTag value={account.accountStatus} /> },
+                { label: "订单编号", children: safeText(order.orderNo) },
+                { label: "客户", children: joinText(order.customer.name, order.customer.mobile) },
+                { label: "订阅套餐", children: getEntitlementPlanText(account) },
+                { label: "权益周期开始", children: formatDate(account.periodStart) },
+                { label: "权益周期结束", children: formatDate(account.periodEnd) },
+                { label: "创建时间", children: formatTime(account.createdAt) }
+              ]}
+            />
+          ) : (
+            <Alert message="当前订单尚未生成权益账户" showIcon type="info" />
+          )}
+
+          {entitlements.grants.some(isTextEntitlement) ? (
+            <Alert message="文本型权益仅展示说明，不支持消耗核销。" showIcon type="info" />
+          ) : null}
+
+          <Table<OrderEntitlementGrant>
+            columns={grantColumns}
+            dataSource={entitlements.grants}
+            expandable={{
+              expandedRowRender: (record) => <EntitlementGrantBalance grant={record} />,
+              rowExpandable: () => true
+            }}
+            pagination={false}
+            rowKey="id"
+            scroll={{ x: 1500 }}
+          />
+
+          <Typography.Title level={5} style={{ margin: 0 }}>
+            权益消耗流水
+          </Typography.Title>
+          <Table<OrderEntitlementUsage>
+            columns={usageColumns}
+            dataSource={usages}
+            loading={usageLoading}
+            locale={{ emptyText: "暂无权益消耗记录" }}
+            pagination={{
+              current: usagePage,
+              onChange: onUsagePageChange,
+              pageSize: usagePageSize,
+              showSizeChanger: true,
+              total: usageTotal
+            }}
+            rowKey="id"
+            scroll={{ x: 1600 }}
+          />
+        </Space>
+      </Spin>
+    </Card>
+  );
+}
+
+function EntitlementGrantBalance({ grant }: { grant: OrderEntitlementGrant }) {
+  if (isTextEntitlement(grant)) {
+    return (
+      <Typography.Text type="secondary">
+        文本权益仅展示说明，不支持消耗核销。{safeText(grant.entitlementName)}
+      </Typography.Text>
+    );
+  }
+
+  const percent = entitlementProgressPercent(grant);
+  return (
+    <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+      <Typography.Text>
+        {formatEntitlementAmount(grant.totalAmount, grant.unit)} / 已用 {formatEntitlementAmount(grant.usedAmount, grant.unit)} / 剩余{" "}
+        {formatEntitlementAmount(grant.remainingAmount, grant.unit)}
+      </Typography.Text>
+      {percent === null ? null : <Progress percent={percent} size="small" />}
+      <Typography.Text type="secondary">最近消耗：{formatTime(grant.latestUsageAt)}</Typography.Text>
     </Space>
   );
 }
@@ -2112,6 +2564,7 @@ export default function OrderDetailPage() {
   const [confirmReturnForm] = Form.useForm<ConfirmReturnFormValues>();
   const [creditForm] = Form.useForm<{ customerGrade: string }>();
   const [deductDepositForm] = Form.useForm<DeductDepositFormValues>();
+  const [consumeEntitlementForm] = Form.useForm<ConsumeEntitlementFormValues>();
   const [paymentForm] = Form.useForm<PaymentFormValues>();
   const [prepareDeliveryForm] = Form.useForm<PrepareDeliveryFormValues>();
   const [prepareReturnForm] = Form.useForm<PrepareReturnFormValues>();
@@ -2124,11 +2577,22 @@ export default function OrderDetailPage() {
   const [deductingDeposit, setDeductingDeposit] = useState(false);
   const [delivery, setDelivery] = useState<VehicleDelivery | null>(null);
   const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
+  const [consumeEntitlementModalOpen, setConsumeEntitlementModalOpen] = useState(false);
+  const [consumeEntitlementSubmitting, setConsumeEntitlementSubmitting] = useState(false);
+  const [consumingGrant, setConsumingGrant] = useState<OrderEntitlementGrant | null>(null);
   const [depositSettlement, setDepositSettlement] = useState<DepositSettlement | null>(null);
   const [depositSettlementError, setDepositSettlementError] = useState<string | null>(null);
   const [depositSettlementLoading, setDepositSettlementLoading] = useState(false);
+  const [entitlementLoading, setEntitlementLoading] = useState(false);
+  const [entitlementUsageLoading, setEntitlementUsageLoading] = useState(false);
+  const [entitlementUsagePage, setEntitlementUsagePage] = useState(1);
+  const [entitlementUsagePageSize, setEntitlementUsagePageSize] = useState(10);
+  const [entitlementUsageTotal, setEntitlementUsageTotal] = useState(0);
+  const [entitlementUsages, setEntitlementUsages] = useState<OrderEntitlementUsage[]>([]);
+  const [entitlements, setEntitlements] = useState<OrderEntitlementsResponse>({ account: null, grants: [] });
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeSummary, setFinanceSummary] = useState<FinanceSummary | null>(null);
+  const [generatingEntitlements, setGeneratingEntitlements] = useState(false);
   const [generatingDamageFeeBill, setGeneratingDamageFeeBill] = useState(false);
   const [generatingBills, setGeneratingBills] = useState(false);
   const [generatingMonthlyRentBill, setGeneratingMonthlyRentBill] = useState(false);
@@ -2155,6 +2619,7 @@ export default function OrderDetailPage() {
   const hasDeliveryViewPermission = permissions.has("delivery:view");
   const hasReturnViewPermission = permissions.has("vehicle_return:view");
   const hasDepositSettlementViewPermission = permissions.has("deposit_ledger:view");
+  const hasEntitlementViewPermission = permissions.has("entitlement:view");
   const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
   const canCreateChange = permissions.has("order_change:create");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
@@ -2421,6 +2886,22 @@ export default function OrderDetailPage() {
     permissions
   });
 
+  const loadEntitlementUsages = useCallback(async (orderId: string, page: number, pageSize: number) => {
+    setEntitlementUsageLoading(true);
+    try {
+      const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      const result = await apiFetch<OrderEntitlementUsageResponse>(`/orders/${orderId}/entitlement-usages?${query}`);
+      setEntitlementUsages(result.items);
+      setEntitlementUsageTotal(result.total);
+      setEntitlementUsagePage(result.page);
+      setEntitlementUsagePageSize(result.pageSize);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setEntitlementUsageLoading(false);
+    }
+  }, [message]);
+
   const loadOrder = useCallback(async () => {
     setLoading(true);
     try {
@@ -2429,8 +2910,11 @@ export default function OrderDetailPage() {
       const canViewDepositSettlement = nextMe.user.permissions.includes("deposit_ledger:view");
       const canViewDelivery = nextMe.user.permissions.includes("delivery:view");
       const canViewReturn = nextMe.user.permissions.includes("vehicle_return:view");
+      const canViewEntitlement = nextMe.user.permissions.includes("entitlement:view");
       setFinanceLoading(canViewFinance);
       setDepositSettlementLoading(canViewDepositSettlement);
+      setEntitlementLoading(canViewEntitlement);
+      setEntitlementUsageLoading(canViewEntitlement);
       setDepositSettlementError(null);
       const [
         nextOrder,
@@ -2441,7 +2925,9 @@ export default function OrderDetailPage() {
         nextDeliveryCheck,
         nextDelivery,
         nextReturnCheck,
-        nextReturn
+        nextReturn,
+        nextEntitlements,
+        nextEntitlementUsages
       ] = await Promise.all([
         apiFetch<OrderDetail>(`/orders/${params.id}`),
         apiFetch<OrderChangeRow[]>(`/orders/${params.id}/changes`).catch(() => []),
@@ -2456,7 +2942,13 @@ export default function OrderDetailPage() {
         canViewDelivery ? apiFetch<DeliveryCheck>(`/orders/${params.id}/delivery-check`) : Promise.resolve(null),
         canViewDelivery ? apiFetch<VehicleDelivery | null>(`/orders/${params.id}/delivery`) : Promise.resolve(null),
         canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
-        canViewReturn ? apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`) : Promise.resolve(null)
+        canViewReturn ? apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`) : Promise.resolve(null),
+        canViewEntitlement
+          ? apiFetch<OrderEntitlementsResponse>(`/orders/${params.id}/entitlements`)
+          : Promise.resolve({ account: null, grants: [] }),
+        canViewEntitlement
+          ? apiFetch<OrderEntitlementUsageResponse>(`/orders/${params.id}/entitlement-usages?page=1&pageSize=10`)
+          : Promise.resolve({ items: [], page: 1, pageSize: 10, total: 0 })
       ]);
       setOrder(nextOrder);
       setChanges(nextChanges);
@@ -2468,12 +2960,19 @@ export default function OrderDetailPage() {
       setDelivery(nextDelivery);
       setReturnCheck(nextReturnCheck);
       setVehicleReturn(nextReturn);
+      setEntitlements(nextEntitlements);
+      setEntitlementUsages(nextEntitlementUsages.items);
+      setEntitlementUsageTotal(nextEntitlementUsages.total);
+      setEntitlementUsagePage(nextEntitlementUsages.page);
+      setEntitlementUsagePageSize(nextEntitlementUsages.pageSize);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
       setLoading(false);
       setFinanceLoading(false);
       setDepositSettlementLoading(false);
+      setEntitlementLoading(false);
+      setEntitlementUsageLoading(false);
     }
   }, [message, params.id]);
 
@@ -2643,6 +3142,110 @@ export default function OrderDetailPage() {
   function closeRefundDepositModal() {
     setRefundDepositModalOpen(false);
     refundDepositForm.resetFields();
+  }
+
+  async function refreshEntitlementData(page = entitlementUsagePage, pageSize = entitlementUsagePageSize) {
+    if (!order || !hasEntitlementViewPermission) {
+      return;
+    }
+    setEntitlementLoading(true);
+    try {
+      const nextEntitlements = await apiFetch<OrderEntitlementsResponse>(`/orders/${order.id}/entitlements`);
+      setEntitlements(nextEntitlements);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setEntitlementLoading(false);
+    }
+    await loadEntitlementUsages(order.id, page, pageSize);
+  }
+
+  async function generateOrderEntitlements() {
+    if (!order) {
+      return;
+    }
+    const hadAccount = Boolean(entitlements.account);
+    setGeneratingEntitlements(true);
+    try {
+      const nextEntitlements = await apiFetch<OrderEntitlementsResponse>(`/orders/${order.id}/entitlements/generate`, {
+        method: "POST"
+      });
+      setEntitlements(nextEntitlements);
+      void message.success(hadAccount ? "该订单已生成权益账户，已刷新权益信息。" : "订单权益已生成");
+      await loadEntitlementUsages(order.id, entitlementUsagePage, entitlementUsagePageSize);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setGeneratingEntitlements(false);
+    }
+  }
+
+  function openConsumeEntitlementModal(grant: OrderEntitlementGrant) {
+    if (!order) {
+      return;
+    }
+    const disabledReason = getConsumeEntitlementDisabledReason(order, entitlements.account, grant);
+    if (disabledReason) {
+      void message.error(disabledReason);
+      return;
+    }
+    consumeEntitlementForm.setFieldsValue({
+      occurredAt: dayjs(),
+      usageSource: "MANUAL"
+    });
+    setConsumingGrant(grant);
+    setConsumeEntitlementModalOpen(true);
+  }
+
+  function closeConsumeEntitlementModal() {
+    setConsumeEntitlementModalOpen(false);
+    setConsumingGrant(null);
+    consumeEntitlementForm.resetFields();
+  }
+
+  async function submitConsumeEntitlement() {
+    if (!order || !consumingGrant) {
+      return;
+    }
+    const values = await consumeEntitlementForm.validateFields();
+    const usedAmount = toNumber(values.usedAmount);
+    const remainingAmount = toNumber(consumingGrant.remainingAmount) ?? 0;
+    if (usedAmount === null || usedAmount <= 0) {
+      void message.error("本次消耗数量必须大于 0");
+      return;
+    }
+    if (usedAmount > remainingAmount) {
+      void message.error("本次消耗数量不能超过当前剩余");
+      return;
+    }
+    setConsumeEntitlementSubmitting(true);
+    try {
+      await apiFetch(`/orders/${order.id}/entitlements/${consumingGrant.id}/consume`, {
+        body: JSON.stringify({
+          externalRefNo: values.externalRefNo,
+          occurredAt: values.occurredAt?.toISOString(),
+          remark: values.remark,
+          scenario: values.scenario,
+          usageSource: values.usageSource ?? "MANUAL",
+          usedAmount
+        }),
+        method: "POST"
+      });
+      void message.success("权益消耗已记录");
+      closeConsumeEntitlementModal();
+      await refreshEntitlementData(entitlementUsagePage, entitlementUsagePageSize);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setConsumeEntitlementSubmitting(false);
+    }
+  }
+
+  function handleEntitlementUsagePageChange(page: number, pageSize: number) {
+    if (!order) {
+      return;
+    }
+    void loadEntitlementUsages(order.id, page, pageSize);
   }
 
   async function generateInitialBills() {
@@ -3351,6 +3954,24 @@ export default function OrderDetailPage() {
           />
         ) : null}
 
+        {order && hasEntitlementViewPermission ? (
+          <EntitlementPanel
+            entitlements={entitlements}
+            entitlementLoading={entitlementLoading}
+            generatingEntitlements={generatingEntitlements}
+            onGenerateEntitlements={generateOrderEntitlements}
+            onOpenConsume={openConsumeEntitlementModal}
+            onUsagePageChange={handleEntitlementUsagePageChange}
+            order={order}
+            permissions={permissions}
+            usageLoading={entitlementUsageLoading}
+            usagePage={entitlementUsagePage}
+            usagePageSize={entitlementUsagePageSize}
+            usageTotal={entitlementUsageTotal}
+            usages={entitlementUsages}
+          />
+        ) : null}
+
         {order && hasDeliveryViewPermission ? (
           <DeliveryPanel
             confirmAvailability={confirmDeliveryAvailability}
@@ -3456,6 +4077,82 @@ export default function OrderDetailPage() {
         <Card title="订单变更记录">
           <Table columns={changeColumns} dataSource={changes} pagination={false} rowKey="id" />
         </Card>
+
+        <Modal
+          confirmLoading={consumeEntitlementSubmitting}
+          destroyOnHidden
+          onCancel={closeConsumeEntitlementModal}
+          onOk={submitConsumeEntitlement}
+          open={consumeEntitlementModalOpen}
+          title="消耗权益"
+          width={640}
+        >
+          <Form form={consumeEntitlementForm} layout="vertical">
+            <Form.Item label="权益名称">
+              <Input disabled value={safeText(consumingGrant?.entitlementName)} />
+            </Form.Item>
+            <Form.Item label="当前剩余">
+              <Input
+                disabled
+                value={
+                  consumingGrant
+                    ? formatEntitlementAmount(consumingGrant.remainingAmount, consumingGrant.unit)
+                    : "-"
+                }
+              />
+            </Form.Item>
+            <Form.Item
+              label="本次消耗数量"
+              name="usedAmount"
+              rules={[
+                { required: true, message: "请输入本次消耗数量" },
+                {
+                  validator: async (_, value) => {
+                    const usedAmount = toNumber(value);
+                    const remainingAmount = toNumber(consumingGrant?.remainingAmount) ?? 0;
+                    if (usedAmount === null || usedAmount <= 0) {
+                      throw new Error("本次消耗数量必须大于 0");
+                    }
+                    if (usedAmount > remainingAmount) {
+                      throw new Error("本次消耗数量不能超过当前剩余");
+                    }
+                  }
+                }
+              ]}
+            >
+              <InputNumber
+                addonAfter={consumingGrant ? labelOf(ENTITLEMENT_UNIT_LABELS, consumingGrant.unit) : undefined}
+                max={toNumber(consumingGrant?.remainingAmount) ?? undefined}
+                min={0.01}
+                precision={2}
+                style={{ width: "100%" }}
+              />
+            </Form.Item>
+            <Form.Item
+              label="发生时间"
+              name="occurredAt"
+              rules={[{ required: true, message: "请选择发生时间" }]}
+            >
+              <DatePicker showTime style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item
+              label="消耗来源"
+              name="usageSource"
+              rules={[{ required: true, message: "请选择消耗来源" }]}
+            >
+              <Select options={entitlementUsageSourceOptions} />
+            </Form.Item>
+            <Form.Item label="外部流水号" name="externalRefNo">
+              <Input placeholder="CHARGE-20260610-001" />
+            </Form.Item>
+            <Form.Item label="使用场景" name="scenario">
+              <Input placeholder="客户补能核销" />
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Modal>
 
         <Modal
           confirmLoading={paymentSubmitting}

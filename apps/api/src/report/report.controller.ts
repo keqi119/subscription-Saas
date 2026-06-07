@@ -9,6 +9,9 @@ import {
   BillDetailQueryDto,
   CollectionCaseDetailQueryDto,
   DepositLedgerDetailQueryDto,
+  EntitlementGrantDetailQueryDto,
+  EntitlementReportQueryDto,
+  EntitlementUsageDetailQueryDto,
   OrderDetailQueryDto,
   OrderReportQueryDto,
   OverdueBillDetailQueryDto,
@@ -176,6 +179,24 @@ export class ReportController {
   @RequirePermissions(PermissionCode.REPORT_ASSET)
   async exportVehicleDetails(@Query() query: VehicleDetailQueryDto, @Res({ passthrough: true }) response: Response) {
     return csvResponse(response, await this.reportService.exportVehicleDetails(query));
+  }
+
+  @Get("entitlements")
+  @RequirePermissions(PermissionCode.REPORT_VIEW, PermissionCode.ENTITLEMENT_VIEW)
+  getEntitlementReport(@Query() query: EntitlementReportQueryDto) {
+    return this.reportService.getEntitlementReport(query);
+  }
+
+  @Get("details/entitlement-grants")
+  @RequirePermissions(PermissionCode.REPORT_VIEW, PermissionCode.ENTITLEMENT_VIEW)
+  getEntitlementGrantDetails(@Query() query: EntitlementGrantDetailQueryDto) {
+    return this.reportService.getEntitlementGrantDetails(query);
+  }
+
+  @Get("details/entitlement-usages")
+  @RequirePermissions(PermissionCode.REPORT_VIEW, PermissionCode.ENTITLEMENT_VIEW)
+  getEntitlementUsageDetails(@Query() query: EntitlementUsageDetailQueryDto) {
+    return this.reportService.getEntitlementUsageDetails(query);
   }
 }
 

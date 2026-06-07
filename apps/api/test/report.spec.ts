@@ -5,6 +5,12 @@ import {
   CollectionLevel,
   DepositTransactionStatus,
   DepositTransactionType,
+  EntitlementAccountStatus,
+  EntitlementGrantStatus,
+  EntitlementType,
+  EntitlementUnit,
+  EntitlementUsageSource,
+  EntitlementUsageStatus,
   OrderSource,
   OrderStatus,
   VehicleModel,
@@ -323,6 +329,180 @@ describe("reporting dashboard APIs", () => {
     });
 
     expect(result.rentalRate).toBeCloseTo(2 / 6);
+  });
+
+  it("entitlements report returns account, grant, usage, and exhausted summaries", async () => {
+    const { prisma, service } = createReportHarness();
+    mockEntitlementReport(prisma);
+
+    const result = await service.getEntitlementReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.accountOverview).toMatchObject({
+      activeAccountCount: 2,
+      closedAccountCount: 1,
+      suspendedAccountCount: 0,
+      totalAccountCount: 3
+    });
+    expect(result.grantOverview).toMatchObject({
+      activeGrantCount: 3,
+      exhaustedGrantCount: 1,
+      totalGrantCount: 4
+    });
+    expect(findBy(result.byEntitlementTypeUnit, "unit", EntitlementUnit.KM)).toMatchObject({
+      entitlementType: EntitlementType.MILEAGE,
+      grantCount: 2,
+      totalAmount: 3000,
+      usedAmount: 1200,
+      remainingAmount: 1800,
+      exhaustedCount: 1
+    });
+    expect(result.usageOverview).toMatchObject({
+      manualUsageCount: 2,
+      systemUsageCount: 1,
+      totalUsageCount: 3
+    });
+    expect(result.recentlyExhausted).toEqual([
+      expect.objectContaining({
+        customerName: "寮犱笁",
+        entitlementName: "月里程额度",
+        latestUsageAt: new Date("2026-06-12T08:00:00.000Z"),
+        orderNo: "SO-001"
+      })
+    ]);
+  });
+
+  it("entitlements report groups by entitlementType + unit and keeps TEXT amounts null", async () => {
+    const { prisma, service } = createReportHarness();
+    mockEntitlementReport(prisma);
+
+    const result = await service.getEntitlementReport({
+      endDate: "2026-06-30",
+      entitlementType: EntitlementType.BENEFIT,
+      startDate: "2026-06-01",
+      unit: EntitlementUnit.TEXT
+    });
+
+    expect(findBy(result.byEntitlementTypeUnit, "unit", EntitlementUnit.TEXT)).toMatchObject({
+      entitlementType: EntitlementType.BENEFIT,
+      grantCount: 1,
+      totalAmount: null,
+      usedAmount: null,
+      remainingAmount: null
+    });
+    expect(prisma.orderEntitlementGrant.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          entitlementType: EntitlementType.BENEFIT,
+          unit: EntitlementUnit.TEXT
+        })
+      })
+    );
+  });
+
+  it("entitlements report counts usageSource and usageStatus", async () => {
+    const { prisma, service } = createReportHarness();
+    mockEntitlementReport(prisma);
+
+    const result = await service.getEntitlementReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(findBy(result.usageOverview.bySource, "usageSource", EntitlementUsageSource.MANUAL)).toMatchObject({
+      count: 2,
+      usedAmount: 101
+    });
+    expect(findBy(result.usageOverview.byStatus, "usageStatus", EntitlementUsageStatus.CONFIRMED)).toMatchObject({
+      count: 3,
+      usedAmount: 121
+    });
+  });
+
+  it("entitlement-grants detail supports pagination and entitlementType / unit filters", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.orderEntitlementGrant.count.mockResolvedValue(1);
+    prisma.orderEntitlementGrant.findMany.mockResolvedValue([
+      entitlementGrantRecord({
+        entitlementType: EntitlementType.ENERGY,
+        unit: EntitlementUnit.KWH
+      })
+    ]);
+
+    const result = await service.getEntitlementGrantDetails({
+      endDate: "2026-06-30",
+      entitlementType: EntitlementType.ENERGY,
+      page: 2,
+      pageSize: 10,
+      startDate: "2026-06-01",
+      unit: EntitlementUnit.KWH
+    });
+
+    expect(result).toMatchObject({
+      page: 2,
+      pageSize: 10,
+      total: 1,
+      items: [{ entitlementType: EntitlementType.ENERGY, grantNo: "EG-001", unit: EntitlementUnit.KWH }]
+    });
+    expect(prisma.orderEntitlementGrant.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 10,
+        take: 10,
+        where: expect.objectContaining({
+          entitlementType: EntitlementType.ENERGY,
+          unit: EntitlementUnit.KWH
+        })
+      })
+    );
+  });
+
+  it("entitlement-usages detail supports pagination and usageSource filtering", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.orderEntitlementUsage.count.mockResolvedValue(1);
+    prisma.orderEntitlementUsage.findMany.mockResolvedValue([
+      entitlementUsageRecord({ usageSource: EntitlementUsageSource.THIRD_PARTY })
+    ]);
+
+    const result = await service.getEntitlementUsageDetails({
+      endDate: "2026-06-30",
+      pageSize: 5,
+      startDate: "2026-06-01",
+      usageSource: EntitlementUsageSource.THIRD_PARTY
+    });
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 5,
+      total: 1,
+      items: [{ usageNo: "EU-001", usageSource: EntitlementUsageSource.THIRD_PARTY }]
+    });
+    expect(prisma.orderEntitlementUsage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 5,
+        where: expect.objectContaining({
+          usageSource: EntitlementUsageSource.THIRD_PARTY
+        })
+      })
+    );
+  });
+
+  it("entitlements report applies date range to grants and usages", async () => {
+    const { prisma, service } = createReportHarness();
+    mockEntitlementReport(prisma);
+
+    await service.getEntitlementReport({
+      endDate: "2026-06-02",
+      startDate: "2026-06-01"
+    });
+
+    const grantGroupCall = prisma.orderEntitlementGrant.groupBy.mock.calls[0];
+    const usageGroupCall = prisma.orderEntitlementUsage.groupBy.mock.calls[0];
+    expect(grantGroupCall?.[0].where.createdAt.gte.toISOString()).toBe("2026-05-31T16:00:00.000Z");
+    expect(grantGroupCall?.[0].where.createdAt.lt.toISOString()).toBe("2026-06-02T16:00:00.000Z");
+    expect(usageGroupCall?.[0].where.occurredAt.gte.toISOString()).toBe("2026-05-31T16:00:00.000Z");
+    expect(usageGroupCall?.[0].where.occurredAt.lt.toISOString()).toBe("2026-06-02T16:00:00.000Z");
   });
 
   it("applies startDate and endDate as Asia business natural days", async () => {
@@ -1140,6 +1320,19 @@ function createReportHarness() {
       findMany: vi.fn(),
       groupBy: vi.fn()
     },
+    orderEntitlementAccount: {
+      groupBy: vi.fn()
+    },
+    orderEntitlementGrant: {
+      count: vi.fn(),
+      findMany: vi.fn(),
+      groupBy: vi.fn()
+    },
+    orderEntitlementUsage: {
+      count: vi.fn(),
+      findMany: vi.fn(),
+      groupBy: vi.fn()
+    },
     receivableBill: {
       aggregate: vi.fn(),
       count: vi.fn(),
@@ -1241,6 +1434,138 @@ function mockVehicleAssetReport(prisma: ReportPrismaMock) {
     { order: { vehicleModel: VehicleModel.ET5 }, paidAmount: 1000n },
     { order: { vehicleModel: VehicleModel.ES6 }, paidAmount: 500n }
   ]);
+}
+
+function mockEntitlementReport(prisma: ReportPrismaMock) {
+  prisma.orderEntitlementAccount.groupBy.mockResolvedValue([
+    countGroup("accountStatus", EntitlementAccountStatus.ACTIVE, 2),
+    countGroup("accountStatus", EntitlementAccountStatus.CLOSED, 1)
+  ]);
+  prisma.orderEntitlementGrant.groupBy
+    .mockResolvedValueOnce([
+      countGroup("status", EntitlementGrantStatus.ACTIVE, 3),
+      countGroup("status", EntitlementGrantStatus.EXHAUSTED, 1)
+    ])
+    .mockResolvedValueOnce([
+      entitlementAmountGroup(EntitlementType.MILEAGE, EntitlementUnit.KM, 2, {
+        remainingAmount: decimalLike(1800),
+        totalAmount: decimalLike(3000),
+        usedAmount: decimalLike(1200)
+      }),
+      entitlementAmountGroup(EntitlementType.BENEFIT, EntitlementUnit.TEXT, 1, {
+        remainingAmount: null,
+        totalAmount: null,
+        usedAmount: null
+      })
+    ])
+    .mockResolvedValueOnce([
+      { entitlementType: EntitlementType.MILEAGE, unit: EntitlementUnit.KM, _count: { _all: 1 } }
+    ]);
+  prisma.orderEntitlementUsage.groupBy
+    .mockResolvedValueOnce([
+      usageAmountGroup("unit", EntitlementUnit.KM, 2, 100),
+      usageAmountGroup("unit", EntitlementUnit.KWH, 1, 21)
+    ])
+    .mockResolvedValueOnce([
+      usageAmountGroup("usageSource", EntitlementUsageSource.MANUAL, 2, 101),
+      usageAmountGroup("usageSource", EntitlementUsageSource.SYSTEM, 1, 20)
+    ])
+    .mockResolvedValueOnce([
+      usageAmountGroup("usageStatus", EntitlementUsageStatus.CONFIRMED, 3, 121),
+      usageAmountGroup("usageStatus", EntitlementUsageStatus.CANCELLED, 0, 0)
+    ]);
+  prisma.orderEntitlementGrant.findMany.mockResolvedValue([
+    entitlementGrantRecord({
+      status: EntitlementGrantStatus.EXHAUSTED,
+      usages: [{ occurredAt: new Date("2026-06-12T08:00:00.000Z") }]
+    })
+  ]);
+}
+
+function entitlementGrantRecord(
+  overrides: Partial<ReturnType<typeof baseEntitlementGrantRecord>> = {}
+) {
+  return {
+    ...baseEntitlementGrantRecord(),
+    ...overrides
+  };
+}
+
+function baseEntitlementGrantRecord() {
+  return {
+    createdAt: new Date("2026-06-10T08:00:00.000Z"),
+    customer: { name: "寮犱笁" },
+    entitlementName: "月里程额度",
+    entitlementType: EntitlementType.MILEAGE as EntitlementType,
+    grantNo: "EG-001",
+    grantPeriodEnd: new Date("2026-06-30T00:00:00.000Z"),
+    grantPeriodStart: new Date("2026-06-01T00:00:00.000Z"),
+    grantSource: "ORDER_START",
+    id: "grant-1",
+    order: { id: "order-1", orderNo: "SO-001" },
+    remainingAmount: decimalLike(0),
+    status: EntitlementGrantStatus.ACTIVE as EntitlementGrantStatus,
+    totalAmount: decimalLike(1500),
+    unit: EntitlementUnit.KM as EntitlementUnit,
+    updatedAt: new Date("2026-06-12T08:00:00.000Z"),
+    usedAmount: decimalLike(1500),
+    usages: [] as Array<{ occurredAt: Date }>
+  };
+}
+
+function entitlementUsageRecord(
+  overrides: Partial<ReturnType<typeof baseEntitlementUsageRecord>> = {}
+) {
+  return {
+    ...baseEntitlementUsageRecord(),
+    ...overrides
+  };
+}
+
+function baseEntitlementUsageRecord() {
+  return {
+    createdAt: new Date("2026-06-12T08:00:00.000Z"),
+    customer: { name: "寮犱笁" },
+    entitlementName: "月补能额度",
+    entitlementType: EntitlementType.ENERGY as EntitlementType,
+    externalRefNo: "EXT-001",
+    id: "usage-1",
+    occurredAt: new Date("2026-06-12T08:00:00.000Z"),
+    order: { id: "order-1", orderNo: "SO-001" },
+    remark: "测试消耗",
+    scenario: "补能核销",
+    unit: EntitlementUnit.KWH as EntitlementUnit,
+    usageNo: "EU-001",
+    usageSource: EntitlementUsageSource.MANUAL as EntitlementUsageSource,
+    usageStatus: EntitlementUsageStatus.CONFIRMED as EntitlementUsageStatus,
+    usedAmount: decimalLike(20)
+  };
+}
+
+function entitlementAmountGroup(
+  entitlementType: EntitlementType,
+  unit: EntitlementUnit,
+  count: number,
+  sums: Record<string, unknown>
+) {
+  return {
+    entitlementType,
+    unit,
+    _count: { _all: count },
+    _sum: sums
+  };
+}
+
+function usageAmountGroup(field: string, value: unknown, count: number, usedAmount: number) {
+  return {
+    [field]: value,
+    _count: { _all: count },
+    _sum: { usedAmount: decimalLike(usedAmount) }
+  };
+}
+
+function decimalLike(value: number) {
+  return { toNumber: () => value };
 }
 
 function countGroup(field: string, value: unknown, count: number) {

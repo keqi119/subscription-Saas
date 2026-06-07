@@ -5,6 +5,11 @@ import {
   CollectionLevel,
   DepositTransactionStatus,
   DepositTransactionType,
+  EntitlementGrantStatus,
+  EntitlementType,
+  EntitlementUnit,
+  EntitlementUsageSource,
+  EntitlementUsageStatus,
   OrderSource,
   OrderStatus,
   VehicleModel,
@@ -182,4 +187,70 @@ export class VehicleDetailQueryDto extends ReportDetailQueryDto {
   @IsOptional()
   @IsString()
   series?: string;
+}
+
+export class EntitlementReportQueryDto extends ReportDateRangeQueryDto {
+  @IsOptional()
+  @IsEnum(EntitlementType)
+  entitlementType?: EntitlementType;
+
+  @IsOptional()
+  @IsEnum(EntitlementUnit)
+  unit?: EntitlementUnit;
+
+  @IsOptional()
+  @IsEnum(EntitlementGrantStatus)
+  grantStatus?: EntitlementGrantStatus;
+
+  @IsOptional()
+  @IsEnum(OrderStatus)
+  orderStatus?: OrderStatus;
+}
+
+export class EntitlementGrantDetailQueryDto extends ReportDetailQueryDto {
+  @IsOptional()
+  @IsEnum(EntitlementType)
+  entitlementType?: EntitlementType;
+
+  @IsOptional()
+  @IsEnum(EntitlementUnit)
+  unit?: EntitlementUnit;
+
+  @IsOptional()
+  @IsEnum(EntitlementGrantStatus)
+  status?: EntitlementGrantStatus;
+
+  @IsOptional()
+  @IsString()
+  orderNo?: string;
+
+  @IsOptional()
+  @IsString()
+  customerName?: string;
+}
+
+export class EntitlementUsageDetailQueryDto extends ReportDetailQueryDto {
+  @IsOptional()
+  @IsEnum(EntitlementType)
+  entitlementType?: EntitlementType;
+
+  @IsOptional()
+  @IsEnum(EntitlementUnit)
+  unit?: EntitlementUnit;
+
+  @IsOptional()
+  @IsEnum(EntitlementUsageSource)
+  usageSource?: EntitlementUsageSource;
+
+  @IsOptional()
+  @IsEnum(EntitlementUsageStatus)
+  usageStatus?: EntitlementUsageStatus;
+
+  @IsOptional()
+  @IsString()
+  orderNo?: string;
+
+  @IsOptional()
+  @IsString()
+  customerName?: string;
 }

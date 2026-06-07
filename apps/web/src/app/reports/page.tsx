@@ -31,6 +31,11 @@ import {
   COLLECTION_LEVEL_LABELS,
   DEPOSIT_TRANSACTION_STATUS_LABELS,
   DEPOSIT_TRANSACTION_TYPE_LABELS,
+  ENTITLEMENT_GRANT_STATUS_LABELS,
+  ENTITLEMENT_TYPE_LABELS,
+  ENTITLEMENT_UNIT_LABELS,
+  ENTITLEMENT_USAGE_SOURCE_LABELS,
+  ENTITLEMENT_USAGE_STATUS_LABELS,
   ORDER_STATUS_LABELS,
   STATUS_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
@@ -41,8 +46,8 @@ import type { AuthMeResponse } from "../../lib/auth";
 
 const { RangePicker } = DatePicker;
 
-type ReportKey = "summary" | "orders" | "finance" | "deposit" | "collections" | "assets";
-type ExportReportKey = Exclude<ReportKey, "summary">;
+type ReportKey = "summary" | "orders" | "finance" | "deposit" | "collections" | "assets" | "entitlements";
+type ExportReportKey = Exclude<ReportKey, "summary" | "entitlements">;
 
 interface DateRangeResponse {
   endDate?: string | null;
@@ -189,13 +194,81 @@ interface VehicleAssetReport {
   totalVehicles?: number | null;
 }
 
+interface EntitlementTypeUnitRow {
+  entitlementType?: string | null;
+  exhaustedCount?: number | null;
+  grantCount?: number | null;
+  remainingAmount?: number | null;
+  totalAmount?: number | null;
+  unit?: string | null;
+  usedAmount?: number | null;
+}
+
+interface EntitlementUsageGroupRow extends CountRow {
+  unit?: string | null;
+  usageSource?: string | null;
+  usageStatus?: string | null;
+  usedAmount?: number | null;
+}
+
+interface RecentlyExhaustedEntitlementRow {
+  customerName?: string | null;
+  entitlementName?: string | null;
+  entitlementType?: string | null;
+  grantNo?: string | null;
+  id?: string | null;
+  latestUsageAt?: string | null;
+  orderId?: string | null;
+  orderNo?: string | null;
+  remainingAmount?: number | null;
+  totalAmount?: number | null;
+  unit?: string | null;
+  usedAmount?: number | null;
+}
+
+interface EntitlementReport {
+  accountOverview?: {
+    activeAccountCount?: number | null;
+    closedAccountCount?: number | null;
+    suspendedAccountCount?: number | null;
+    totalAccountCount?: number | null;
+  };
+  byEntitlementTypeUnit?: EntitlementTypeUnitRow[];
+  dateRange?: DateRangeResponse;
+  grantOverview?: {
+    activeGrantCount?: number | null;
+    cancelledGrantCount?: number | null;
+    exhaustedGrantCount?: number | null;
+    expiredGrantCount?: number | null;
+    totalGrantCount?: number | null;
+  };
+  recentlyExhausted?: RecentlyExhaustedEntitlementRow[];
+  usageOverview?: {
+    bySource?: EntitlementUsageGroupRow[];
+    byStatus?: EntitlementUsageGroupRow[];
+    byUnit?: EntitlementUsageGroupRow[];
+    manualUsageCount?: number | null;
+    systemUsageCount?: number | null;
+    thirdPartyUsageCount?: number | null;
+    totalUsageCount?: number | null;
+  };
+}
+
 interface OrderFilterValues {
   orderSource?: string;
   orderStatus?: string;
   vehicleModel?: string;
 }
 
-type DetailKind = "orders" | "bills" | "depositLedgers" | "overdueBills" | "collectionCases" | "vehicles";
+type DetailKind =
+  | "orders"
+  | "bills"
+  | "depositLedgers"
+  | "overdueBills"
+  | "collectionCases"
+  | "vehicles"
+  | "entitlementGrants"
+  | "entitlementUsages";
 type DetailRow = Record<string, unknown>;
 
 interface PagedDetailResponse {
@@ -218,6 +291,7 @@ interface DrilldownState {
 const defaultDateRange = (): [Dayjs, Dayjs] => [dayjs().subtract(29, "day"), dayjs()];
 
 const reportLabels: Record<ReportKey, string> = {
+  entitlements: "权益报表",
   assets: "车辆资产",
   collections: "逾期催收",
   deposit: "保证金池",
@@ -309,6 +383,8 @@ function detailExportDefaultFilename(kind: DetailKind, dateRange: [Dayjs, Dayjs]
     bills: "bills-detail",
     collectionCases: "collection-cases-detail",
     depositLedgers: "deposit-ledgers-detail",
+    entitlementGrants: "entitlement-grants-detail",
+    entitlementUsages: "entitlement-usages-detail",
     orders: "orders-detail",
     overdueBills: "overdue-bills-detail",
     vehicles: "vehicles-detail"
@@ -339,6 +415,9 @@ function canExportDetailKind(
       return access.canViewCollectionReport;
     case "vehicles":
       return access.canViewAssetReport;
+    case "entitlementGrants":
+    case "entitlementUsages":
+      return false;
     default:
       return false;
   }
@@ -433,6 +512,26 @@ function formatYuan(value?: number | null) {
   })} 元`;
 }
 
+function formatEntitlementAmount(value?: number | null) {
+  const numberValue = safeNumber(value);
+  if (numberValue === null) {
+    return "-";
+  }
+
+  return numberValue.toLocaleString("zh-CN", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0
+  });
+}
+
+function formatEntitlementAmountWithUnit(value?: number | null, unit?: string | null) {
+  const amount = formatEntitlementAmount(value);
+  if (amount === "-") {
+    return "-";
+  }
+  return `${amount} ${labelOf(ENTITLEMENT_UNIT_LABELS, unit)}`;
+}
+
 function formatPercent(value?: number | null) {
   const numberValue = safeNumber(value);
   if (numberValue === null) {
@@ -498,6 +597,8 @@ function detailTableRowKey(record: DetailRow) {
     detailId(record, "ledgerNo") ??
     detailId(record, "caseNo") ??
     detailId(record, "vehicleNo") ??
+    detailId(record, "grantNo") ??
+    detailId(record, "usageNo") ??
     JSON.stringify(record)
   );
 }
@@ -560,6 +661,7 @@ export default function ReportsPage() {
     assets: false,
     collections: false,
     deposit: false,
+    entitlements: false,
     finance: false,
     orders: false,
     summary: false
@@ -583,11 +685,13 @@ export default function ReportsPage() {
   const [depositReport, setDepositReport] = useState<DepositPoolReport | null>(null);
   const [collectionReport, setCollectionReport] = useState<CollectionReport | null>(null);
   const [vehicleAssetReport, setVehicleAssetReport] = useState<VehicleAssetReport | null>(null);
+  const [entitlementReport, setEntitlementReport] = useState<EntitlementReport | null>(null);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canViewReports = permissions.has("report:view");
   const canViewFinanceReports = permissions.has("report:finance");
   const canViewCollectionReport = canViewFinanceReports || permissions.has("collection:view");
   const canViewAssetReport = permissions.has("report:asset");
+  const canViewEntitlementReport = canViewReports && permissions.has("entitlement:view");
   const canExportCurrentDetail = canExportDetailKind(drilldown?.kind, {
     canViewAssetReport,
     canViewCollectionReport,
@@ -611,8 +715,11 @@ export default function ReportsPage() {
     if (canViewAssetReport) {
       keys.push("assets");
     }
+    if (canViewEntitlementReport) {
+      keys.push("entitlements");
+    }
     return keys;
-  }, [canViewAssetReport, canViewCollectionReport, canViewFinanceReports, canViewReports]);
+  }, [canViewAssetReport, canViewCollectionReport, canViewEntitlementReport, canViewFinanceReports, canViewReports]);
 
   const setReportLoading = useCallback((key: ReportKey, value: boolean) => {
     setLoading((current) => ({ ...current, [key]: value }));
@@ -731,6 +838,23 @@ export default function ReportsPage() {
     }
   }, [canViewAssetReport, canViewReports, dateRange, setReportError, setReportLoading]);
 
+  const loadEntitlementReport = useCallback(async () => {
+    if (!canViewEntitlementReport) {
+      return;
+    }
+    setReportLoading("entitlements", true);
+    setReportError("entitlements", undefined);
+    try {
+      setEntitlementReport(
+        await apiFetch<EntitlementReport>(`/reports/entitlements${buildQuery(dateRangeParams(dateRange))}`)
+      );
+    } catch (error) {
+      setReportError("entitlements", getErrorMessage(error));
+    } finally {
+      setReportLoading("entitlements", false);
+    }
+  }, [canViewEntitlementReport, dateRange, setReportError, setReportLoading]);
+
   const loadVisibleReports = useCallback(async () => {
     await Promise.all([
       loadDashboardSummary(),
@@ -738,12 +862,14 @@ export default function ReportsPage() {
       loadFinanceReport(),
       loadDepositReport(),
       loadCollectionReport(),
-      loadVehicleAssetReport()
+      loadVehicleAssetReport(),
+      loadEntitlementReport()
     ]);
   }, [
     loadCollectionReport,
     loadDashboardSummary,
     loadDepositReport,
+    loadEntitlementReport,
     loadFinanceReport,
     loadOrderReport,
     loadVehicleAssetReport
@@ -947,6 +1073,40 @@ export default function ReportsPage() {
       filters,
       kind: "vehicles",
       path: "/reports/details/vehicles",
+      query,
+      title
+    });
+  }
+
+  function openEntitlementGrantDetails(
+    title: string,
+    query: Record<string, unknown> = {},
+    filters: DrilldownState["filters"] = []
+  ) {
+    if (!canViewEntitlementReport) {
+      return;
+    }
+    openDrilldown({
+      filters,
+      kind: "entitlementGrants",
+      path: "/reports/details/entitlement-grants",
+      query,
+      title
+    });
+  }
+
+  function openEntitlementUsageDetails(
+    title: string,
+    query: Record<string, unknown> = {},
+    filters: DrilldownState["filters"] = []
+  ) {
+    if (!canViewEntitlementReport) {
+      return;
+    }
+    openDrilldown({
+      filters,
+      kind: "entitlementUsages",
+      path: "/reports/details/entitlement-usages",
       query,
       title
     });
@@ -1405,6 +1565,97 @@ export default function ReportsPage() {
       );
     }
 
+    if (key === "entitlements") {
+      return (
+        <ReportPanel data={entitlementReport} error={errors.entitlements} loading={loading.entitlements}>
+          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              showIcon
+              title="权益报表按权益发放 createdAt 与权益消耗 occurredAt 统计。TEXT 权益只统计发放数量，不参与余额扣减；不同单位权益不直接相加。"
+              type="info"
+            />
+            <MetricGrid
+              items={[
+                metric("权益账户总数", formatInteger(entitlementReport?.accountOverview?.totalAccountCount), () =>
+                  openEntitlementGrantDetails("权益发放明细")
+                ),
+                metric("生效中账户数", formatInteger(entitlementReport?.accountOverview?.activeAccountCount), () =>
+                  openEntitlementGrantDetails("生效账户权益发放明细")
+                ),
+                metric("权益发放总数", formatInteger(entitlementReport?.grantOverview?.totalGrantCount), () =>
+                  openEntitlementGrantDetails("权益发放明细")
+                ),
+                metric("可用权益数", formatInteger(entitlementReport?.grantOverview?.activeGrantCount), () =>
+                  openEntitlementGrantDetails("可用权益发放明细", { status: "ACTIVE" }, [
+                    { label: "权益状态", value: labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, "ACTIVE") }
+                  ])
+                ),
+                metric("已用尽权益数", formatInteger(entitlementReport?.grantOverview?.exhaustedGrantCount), () =>
+                  openEntitlementGrantDetails("已用尽权益发放明细", { status: "EXHAUSTED" }, [
+                    { label: "权益状态", value: labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, "EXHAUSTED") }
+                  ])
+                ),
+                metric("消耗流水数", formatInteger(entitlementReport?.usageOverview?.totalUsageCount), () =>
+                  openEntitlementUsageDetails("权益消耗明细")
+                )
+              ]}
+            />
+            <Table
+              columns={entitlementTypeUnitColumns}
+              dataSource={entitlementReport?.byEntitlementTypeUnit ?? []}
+              loading={loading.entitlements}
+              onRow={clickableRow((record: EntitlementTypeUnitRow) =>
+                openEntitlementGrantDetails(
+                  `${labelOf(ENTITLEMENT_TYPE_LABELS, record.entitlementType)} ${labelOf(ENTITLEMENT_UNIT_LABELS, record.unit)} 发放明细`,
+                  { entitlementType: record.entitlementType, unit: record.unit },
+                  [
+                    { label: "权益类型", value: labelOf(ENTITLEMENT_TYPE_LABELS, record.entitlementType) },
+                    { label: "单位", value: labelOf(ENTITLEMENT_UNIT_LABELS, record.unit) }
+                  ]
+                )
+              )}
+              pagination={false}
+              rowKey={(record) => `${record.entitlementType ?? "unknown"}-${record.unit ?? "unknown"}`}
+              scroll={{ x: 760 }}
+              size="small"
+              title={() => "按权益类型 / 单位统计"}
+              locale={{ emptyText: "暂无权益发放记录" }}
+            />
+            <ReportTablesGrid>
+              <Table
+                columns={entitlementUsageSourceColumns}
+                dataSource={entitlementReport?.usageOverview?.bySource ?? []}
+                loading={loading.entitlements}
+                onRow={clickableRow((record: EntitlementUsageGroupRow) =>
+                  openEntitlementUsageDetails(
+                    `${labelOf(ENTITLEMENT_USAGE_SOURCE_LABELS, record.usageSource)}权益消耗明细`,
+                    { usageSource: record.usageSource },
+                    [{ label: "消耗来源", value: labelOf(ENTITLEMENT_USAGE_SOURCE_LABELS, record.usageSource) }]
+                  )
+                )}
+                pagination={false}
+                rowKey={(record) => record.usageSource ?? "unknown"}
+                size="small"
+                title={() => "消耗来源统计"}
+                locale={{ emptyText: "暂无权益消耗记录" }}
+              />
+              <Table
+                columns={recentlyExhaustedEntitlementColumns}
+                dataSource={entitlementReport?.recentlyExhausted ?? []}
+                loading={loading.entitlements}
+                pagination={false}
+                rowKey={(record) => record.id ?? record.grantNo ?? "unknown"}
+                scroll={{ x: 920 }}
+                size="small"
+                title={() => "最近用尽权益"}
+                locale={{ emptyText: "暂无用尽权益" }}
+              />
+            </ReportTablesGrid>
+          </Space>
+        </ReportPanel>
+      );
+    }
+
     return (
       <ReportPanel data={vehicleAssetReport} error={errors.assets} loading={loading.assets}>
         <Space orientation="vertical" size={16} style={{ width: "100%" }}>
@@ -1658,7 +1909,128 @@ const vehicleAssetColumns: ColumnsType<VehicleModelAssetRow> = [
   { dataIndex: "incomeAmount", render: formatYuan, title: "收入", width: 160 }
 ];
 
+const entitlementTypeUnitColumns: ColumnsType<EntitlementTypeUnitRow> = [
+  {
+    dataIndex: "entitlementType",
+    render: (value?: string | null) => labelOf(ENTITLEMENT_TYPE_LABELS, value),
+    title: "权益类型",
+    width: 130
+  },
+  {
+    dataIndex: "unit",
+    render: (value?: string | null) => labelOf(ENTITLEMENT_UNIT_LABELS, value),
+    title: "单位",
+    width: 100
+  },
+  { dataIndex: "grantCount", render: formatInteger, title: "发放数量", width: 110 },
+  { dataIndex: "totalAmount", render: formatEntitlementAmount, title: "总量", width: 120 },
+  { dataIndex: "usedAmount", render: formatEntitlementAmount, title: "已用", width: 120 },
+  { dataIndex: "remainingAmount", render: formatEntitlementAmount, title: "剩余", width: 120 },
+  { dataIndex: "exhaustedCount", render: formatInteger, title: "已用尽数量", width: 120 }
+];
+
+const entitlementUsageSourceColumns: ColumnsType<EntitlementUsageGroupRow> = [
+  {
+    dataIndex: "usageSource",
+    render: (value?: string | null) => labelOf(ENTITLEMENT_USAGE_SOURCE_LABELS, value),
+    title: "消耗来源",
+    width: 140
+  },
+  { dataIndex: "count", render: formatInteger, title: "数量", width: 100 },
+  { dataIndex: "usedAmount", render: formatEntitlementAmount, title: "消耗总量", width: 130 }
+];
+
+const recentlyExhaustedEntitlementColumns: ColumnsType<RecentlyExhaustedEntitlementRow> = [
+  {
+    render: (_value, record) => detailLink(orderHrefFrom(record as DetailRow, "orderId"), safeText(record.orderNo)),
+    title: "订单编号",
+    width: 160
+  },
+  { dataIndex: "customerName", render: safeText, title: "客户", width: 120 },
+  { dataIndex: "entitlementName", render: safeText, title: "权益名称", width: 180 },
+  {
+    dataIndex: "entitlementType",
+    render: (value?: string | null) => labelOf(ENTITLEMENT_TYPE_LABELS, value),
+    title: "权益类型",
+    width: 120
+  },
+  {
+    dataIndex: "unit",
+    render: (value?: string | null) => labelOf(ENTITLEMENT_UNIT_LABELS, value),
+    title: "单位",
+    width: 100
+  },
+  {
+    render: (_value, record) => formatEntitlementAmountWithUnit(record.totalAmount, record.unit),
+    title: "总量",
+    width: 120
+  },
+  { dataIndex: "usedAmount", render: formatEntitlementAmount, title: "已用", width: 110 },
+  { dataIndex: "remainingAmount", render: formatEntitlementAmount, title: "剩余", width: 110 },
+  { dataIndex: "latestUsageAt", render: formatDate, title: "最近消耗时间", width: 140 }
+];
+
 const detailColumnsByKind: Record<DetailKind, ColumnsType<DetailRow>> = {
+  entitlementGrants: [
+    { render: (_value, record) => detailText(record, "grantNo"), title: "权益编号", width: 170 },
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "orderNo")), title: "订单编号", width: 160 },
+    { render: (_value, record) => detailText(record, "customerName"), title: "客户姓名", width: 120 },
+    {
+      render: (_value, record) => labelOf(ENTITLEMENT_TYPE_LABELS, detailId(record, "entitlementType")),
+      title: "权益类型",
+      width: 120
+    },
+    { render: (_value, record) => detailText(record, "entitlementName"), title: "权益名称", width: 180 },
+    { render: (_value, record) => formatEntitlementAmount(detailNumber(record, "totalAmount")), title: "总量", width: 110 },
+    { render: (_value, record) => formatEntitlementAmount(detailNumber(record, "usedAmount")), title: "已用", width: 110 },
+    { render: (_value, record) => formatEntitlementAmount(detailNumber(record, "remainingAmount")), title: "剩余", width: 110 },
+    {
+      render: (_value, record) => labelOf(ENTITLEMENT_UNIT_LABELS, detailId(record, "unit")),
+      title: "单位",
+      width: 100
+    },
+    {
+      render: (_value, record) => formatTag(ENTITLEMENT_GRANT_STATUS_LABELS, detailId(record, "status")),
+      title: "状态",
+      width: 110
+    },
+    { render: (_value, record) => detailText(record, "grantSource"), title: "来源", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "grantPeriodStart")), title: "有效期开始", width: 130 },
+    { render: (_value, record) => formatDate(detailValue(record, "grantPeriodEnd")), title: "有效期结束", width: 130 },
+    { render: (_value, record) => formatDate(detailValue(record, "createdAt")), title: "创建时间", width: 120 }
+  ],
+  entitlementUsages: [
+    { render: (_value, record) => detailText(record, "usageNo"), title: "流水编号", width: 170 },
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "orderNo")), title: "订单编号", width: 160 },
+    { render: (_value, record) => detailText(record, "customerName"), title: "客户姓名", width: 120 },
+    {
+      render: (_value, record) => labelOf(ENTITLEMENT_TYPE_LABELS, detailId(record, "entitlementType")),
+      title: "权益类型",
+      width: 120
+    },
+    { render: (_value, record) => detailText(record, "entitlementName"), title: "权益名称", width: 180 },
+    { render: (_value, record) => formatEntitlementAmount(detailNumber(record, "usedAmount")), title: "消耗数量", width: 120 },
+    {
+      render: (_value, record) => labelOf(ENTITLEMENT_UNIT_LABELS, detailId(record, "unit")),
+      title: "单位",
+      width: 100
+    },
+    {
+      render: (_value, record) => labelOf(ENTITLEMENT_USAGE_SOURCE_LABELS, detailId(record, "usageSource")),
+      title: "消耗来源",
+      width: 120
+    },
+    {
+      render: (_value, record) => formatTag(ENTITLEMENT_USAGE_STATUS_LABELS, detailId(record, "usageStatus")),
+      title: "消耗状态",
+      width: 120
+    },
+    { render: (_value, record) => formatDate(detailValue(record, "occurredAt")), title: "发生时间", width: 130 },
+    { render: (_value, record) => detailText(record, "externalRefNo"), title: "外部流水号", width: 150 },
+    { render: (_value, record) => detailText(record, "scenario"), title: "使用场景", width: 150 },
+    { render: (_value, record) => detailText(record, "remark"), title: "备注", width: 180 },
+    { render: (_value, record) => formatDate(detailValue(record, "createdAt")), title: "创建时间", width: 120 }
+  ],
   bills: [
     {
       render: (_value, record) => detailLink(orderHref(record), detailText(record, "billNo")),

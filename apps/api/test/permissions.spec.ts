@@ -321,6 +321,18 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.exportVehicleDetails
     );
+    const entitlementReportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getEntitlementReport
+    );
+    const entitlementGrantDetailsPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getEntitlementGrantDetails
+    );
+    const entitlementUsageDetailsPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getEntitlementUsageDetails
+    );
 
     expect(dashboardPermissions).toEqual([PermissionCode.REPORT_VIEW]);
     expect(ordersPermissions).toEqual([PermissionCode.REPORT_VIEW]);
@@ -363,6 +375,18 @@ describe("report permissions", () => {
     expect(vehicleAssetExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(vehicleDetailsPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(vehicleDetailsExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(entitlementReportPermissions).toEqual([
+      PermissionCode.REPORT_VIEW,
+      PermissionCode.ENTITLEMENT_VIEW
+    ]);
+    expect(entitlementGrantDetailsPermissions).toEqual([
+      PermissionCode.REPORT_VIEW,
+      PermissionCode.ENTITLEMENT_VIEW
+    ]);
+    expect(entitlementUsageDetailsPermissions).toEqual([
+      PermissionCode.REPORT_VIEW,
+      PermissionCode.ENTITLEMENT_VIEW
+    ]);
     expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financePermissions)).toBe(false);
     expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financeExportPermissions)).toBe(false);
     expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], billDetailsPermissions)).toBe(false);
@@ -373,6 +397,14 @@ describe("report permissions", () => {
     expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], overdueBillDetailsExportAnyPermissions)).toBe(true);
     expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionCaseDetailsAnyPermissions)).toBe(true);
     expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionCaseDetailsExportAnyPermissions)).toBe(true);
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], entitlementReportPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], entitlementReportPermissions)).toBe(false);
+    expect(
+      hasRequiredPermissions(
+        [PermissionCode.REPORT_VIEW, PermissionCode.ENTITLEMENT_VIEW],
+        entitlementReportPermissions
+      )
+    ).toBe(true);
   });
 });
 

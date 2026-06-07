@@ -54,13 +54,20 @@ describe("vehicle delivery handover workflow", () => {
     ).rejects.toThrow("首期月费尚未确认收取");
   });
 
-  it("rejects confirm when insurance is not confirmed", async () => {
+  it("rejects confirm when insurance is not confirmed or expired", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness, { insuranceValidConfirmed: false });
 
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
     ).rejects.toThrow("保险有效性尚未确认");
+
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.insuranceEndDate = new Date("2026-06-09T00:00:00.000Z");
+
+    await expect(
+      harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
+    ).rejects.toThrow("车辆保险未生效或已过期，不能交付。");
   });
 
   it("rejects confirm when the vehicle is not prepared", async () => {
@@ -88,7 +95,7 @@ describe("vehicle delivery handover workflow", () => {
     expect(harness.tx.vehicleDelivery.create).toHaveBeenCalledTimes(1);
   });
 
-  it("does not block delivery on vehicle insurance master-data dates", async () => {
+  it("blocks delivery on missing vehicle insurance master-data dates", async () => {
     const harness = createDeliveryHarness();
     harness.state.insuranceEndDate = null;
     harness.state.insuranceStartDate = null;
@@ -99,23 +106,13 @@ describe("vehicle delivery handover workflow", () => {
       insuranceValid: boolean;
     };
 
-    expect(initialCheck.canPrepareDelivery).toBe(true);
+    expect(initialCheck.canPrepareDelivery).toBe(false);
     expect(initialCheck.insuranceValid).toBe(false);
-    expect(initialCheck.blockingReasons).not.toContain("车辆保险已过期");
-
-    await harness.service.prepareDelivery(harness.orderId, validPrepareDto(), harness.user, harness.context);
-
-    const readyCheck = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
-      canConfirmDelivery: boolean;
-      insuranceValid: boolean;
-    };
-
-    expect(readyCheck.insuranceValid).toBe(true);
-    expect(readyCheck.canConfirmDelivery).toBe(true);
+    expect(initialCheck.blockingReasons).toContain("车辆保险已过期");
 
     await expect(
-      harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
-    ).resolves.toMatchObject({ deliveryStatus: DeliveryStatus.DELIVERED });
+      harness.service.prepareDelivery(harness.orderId, validPrepareDto(), harness.user, harness.context)
+    ).rejects.toThrow("车辆保险已过期");
   });
 
   it("prepare-delivery updates the existing delivery record instead of creating another one", async () => {

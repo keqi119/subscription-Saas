@@ -55,6 +55,8 @@ interface Vehicle {
   currentSalePriceInitializedAt?: string | null;
   currentSalePriceReviewedAt?: string | null;
   id: string;
+  insuranceEndDate?: string | null;
+  insuranceStartDate?: string | null;
   model?: string | null;
   modelYear?: number | null;
   nextSalePriceReviewAt?: string | null;
@@ -94,6 +96,8 @@ interface CreateVehicleValues {
   model?: string | null;
   modelYear?: number | null;
   plateNo?: string | null;
+  insuranceEndDate?: Dayjs | null;
+  insuranceStartDate?: Dayjs | null;
   purchaseDate?: Dayjs | null;
   purchasePriceAmountYuan: number;
   remark?: string | null;
@@ -178,6 +182,13 @@ function batteryUsageTypeLabel(vehicle: Pick<Vehicle, "batteryUsageType" | "batt
 
 function formatDate(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD") : "-";
+}
+
+function formatInsurancePeriod(vehicle: Pick<Vehicle, "insuranceEndDate" | "insuranceStartDate">) {
+  if (!vehicle.insuranceStartDate || !vehicle.insuranceEndDate) {
+    return "-";
+  }
+  return `${formatDate(vehicle.insuranceStartDate)} 至 ${formatDate(vehicle.insuranceEndDate)}`;
 }
 
 function formatDateTime(value?: string | null) {
@@ -307,6 +318,8 @@ export default function VehiclesPage() {
       brand: "NIO",
       batteryUsageType: "BUYOUT",
       currentMileageKm: 0,
+      insuranceEndDate: dayjs().add(1, "year"),
+      insuranceStartDate: dayjs(),
       vehicleModel: "ET5"
     });
   }
@@ -320,6 +333,8 @@ export default function VehiclesPage() {
           batteryUsageType: values.batteryUsageType,
           brand: values.brand,
           currentMileageKm: values.currentMileageKm ?? 0,
+          insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
+          insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
           model: values.model,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
@@ -356,6 +371,8 @@ export default function VehiclesPage() {
       model: vehicle.model,
       modelYear: vehicle.modelYear,
       plateNo: vehicle.plateNo,
+      insuranceEndDate: vehicle.insuranceEndDate ? dayjs(vehicle.insuranceEndDate) : null,
+      insuranceStartDate: vehicle.insuranceStartDate ? dayjs(vehicle.insuranceStartDate) : null,
       purchaseDate: vehicle.purchaseDate ? dayjs(vehicle.purchaseDate) : null,
       purchasePriceAmountYuan: vehicle.purchasePriceAmount / 100,
       remark: vehicle.remark,
@@ -377,6 +394,8 @@ export default function VehiclesPage() {
           batteryUsageType: values.batteryUsageType,
           brand: values.brand,
           currentMileageKm: values.currentMileageKm ?? 0,
+          insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
+          insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
           model: values.model,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
@@ -622,6 +641,12 @@ export default function VehiclesPage() {
           <Form.Item label="采购日期" name="purchaseDate">
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
+          <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="保险止期" name="insuranceEndDate" rules={[{ required: true, message: "请选择保险止期" }]}>
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
           <Form.Item label="当前里程" name="currentMileageKm">
             <InputNumber min={0} style={{ width: "100%" }} />
           </Form.Item>
@@ -663,6 +688,7 @@ export default function VehiclesPage() {
                 { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
                 { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
                 { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
+                { label: "保险有效期", children: formatInsurancePeriod(detailVehicle) },
                 { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
                 { label: "当前里程", children: `${detailVehicle.currentMileageKm.toLocaleString("zh-CN")} km` },
                 { label: "车辆状态", children: labelOf(STATUS_LABELS, detailVehicle.status) },
@@ -718,6 +744,12 @@ export default function VehiclesPage() {
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="采购日期" name="purchaseDate">
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="保险止期" name="insuranceEndDate" rules={[{ required: true, message: "请选择保险止期" }]}>
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="当前里程" name="currentMileageKm">
@@ -915,6 +947,7 @@ function buildVehicleColumns(
     { dataIndex: "batteryCapacityKwh", render: formatKwh, title: "电池容量", width: 120 },
     { render: (_, record) => batteryUsageTypeLabel(record), title: "电池使用方式", width: 140 },
     { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 140 },
+    { render: (_, record) => formatInsurancePeriod(record), title: "保险有效期", width: 230 },
     { dataIndex: "currentSalePriceReviewedAt", render: formatDateTime, title: "最近复核时间", width: 170 },
     { dataIndex: "nextSalePriceReviewAt", render: formatDate, title: "下次复核时间", width: 140 },
     {

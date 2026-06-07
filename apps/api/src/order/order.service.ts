@@ -1328,7 +1328,7 @@ export class OrderService {
     assertOrderNotDelivered(beforeOrder);
 
     const scheduledAt = dto.scheduledAt ? parseDateTime(dto.scheduledAt, "scheduledAt") : null;
-    assertCanPrepareDelivery(beforeOrder, scheduledAt);
+    assertCanPrepareDelivery(beforeOrder);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const beforeDelivery = await tx.vehicleDelivery.findUnique({
@@ -1399,7 +1399,7 @@ export class OrderService {
       include: deliveryInclude,
       where: { orderId: id }
     });
-    assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt);
+    assertCanConfirmDelivery(beforeOrder, beforeDelivery);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
@@ -2745,8 +2745,8 @@ function assertOrderNotDelivered(order: OrderWithDetails) {
   }
 }
 
-function assertCanPrepareDelivery(order: OrderWithDetails, scheduledAt: Date | null) {
-  const check = buildDeliveryCheck(order, null, scheduledAt ?? undefined);
+function assertCanPrepareDelivery(order: OrderWithDetails) {
+  const check = buildDeliveryCheck(order, null);
   if (!check.canPrepareDelivery) {
     throw new BadRequestException(firstBlockingReason(check, "当前订单不满足准备交付条件。"));
   }
@@ -2754,8 +2754,7 @@ function assertCanPrepareDelivery(order: OrderWithDetails, scheduledAt: Date | n
 
 function assertCanConfirmDelivery(
   order: OrderWithDetails,
-  delivery: DeliveryWithDetails | null,
-  deliveredAt: Date
+  delivery: DeliveryWithDetails | null
 ) {
   if (!delivery || delivery.deletedAt) {
     throw new BadRequestException("请先准备交付。");
@@ -2767,7 +2766,7 @@ function assertCanConfirmDelivery(
     throw new BadRequestException("请先准备交付。");
   }
 
-  const check = buildDeliveryCheck(order, delivery, deliveredAt);
+  const check = buildDeliveryCheck(order, delivery);
   if (!check.canConfirmDelivery) {
     throw new BadRequestException(firstBlockingReason(check, "当前订单不满足确认交付条件。"));
   }
@@ -2808,7 +2807,7 @@ function firstReturnBlockingReason(check: ReturnType<typeof buildReturnCheck>, f
   return check.blockingReasons[0] ?? fallback;
 }
 
-function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetails | null, _targetAt?: Date) {
+function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetails | null) {
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
   const alreadyDelivered = Boolean(

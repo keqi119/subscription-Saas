@@ -500,10 +500,16 @@ describe("reporting dashboard APIs", () => {
 
   it("export controller returns text/csv headers and attachment filenames", async () => {
     const controller = new ReportController({
+      exportBillDetails: vi.fn().mockResolvedValue(csvFile("bills-detail-20260601-20260630.csv")),
       exportCollectionReport: vi.fn().mockResolvedValue(csvFile("collections-report-20260601-20260630.csv")),
+      exportCollectionCaseDetails: vi.fn().mockResolvedValue(csvFile("collection-cases-detail-20260601-20260630.csv")),
+      exportDepositLedgerDetails: vi.fn().mockResolvedValue(csvFile("deposit-ledgers-detail-20260601-20260630.csv")),
       exportDepositPoolReport: vi.fn().mockResolvedValue(csvFile("deposit-pool-report-20260601-20260630.csv")),
       exportFinanceReport: vi.fn().mockResolvedValue(csvFile("finance-report-20260601-20260630.csv")),
+      exportOrderDetails: vi.fn().mockResolvedValue(csvFile("orders-detail-20260601-20260630.csv")),
       exportOrderReport: vi.fn().mockResolvedValue(csvFile("orders-report-20260601-20260630.csv")),
+      exportOverdueBillDetails: vi.fn().mockResolvedValue(csvFile("overdue-bills-detail-20260601-20260630.csv")),
+      exportVehicleDetails: vi.fn().mockResolvedValue(csvFile("vehicles-detail-20260601-20260630.csv")),
       exportVehicleAssetReport: vi.fn().mockResolvedValue(csvFile("vehicle-assets-report-20260601-20260630.csv"))
     } as never);
 
@@ -536,6 +542,42 @@ describe("reporting dashboard APIs", () => {
       "vehicle-assets-report-20260601-20260630.csv",
       assetsResponse,
       controller.exportVehicleAssetReport({}, assetsResponse as never)
+    );
+    const orderDetailsResponse = mockResponse();
+    await expectCsvResponse(
+      "orders-detail-20260601-20260630.csv",
+      orderDetailsResponse,
+      controller.exportOrderDetails({}, orderDetailsResponse as never)
+    );
+    const billDetailsResponse = mockResponse();
+    await expectCsvResponse(
+      "bills-detail-20260601-20260630.csv",
+      billDetailsResponse,
+      controller.exportBillDetails({}, billDetailsResponse as never)
+    );
+    const depositLedgerDetailsResponse = mockResponse();
+    await expectCsvResponse(
+      "deposit-ledgers-detail-20260601-20260630.csv",
+      depositLedgerDetailsResponse,
+      controller.exportDepositLedgerDetails({}, depositLedgerDetailsResponse as never)
+    );
+    const overdueBillDetailsResponse = mockResponse();
+    await expectCsvResponse(
+      "overdue-bills-detail-20260601-20260630.csv",
+      overdueBillDetailsResponse,
+      controller.exportOverdueBillDetails({}, overdueBillDetailsResponse as never)
+    );
+    const collectionCaseDetailsResponse = mockResponse();
+    await expectCsvResponse(
+      "collection-cases-detail-20260601-20260630.csv",
+      collectionCaseDetailsResponse,
+      controller.exportCollectionCaseDetails({}, collectionCaseDetailsResponse as never)
+    );
+    const vehicleDetailsResponse = mockResponse();
+    await expectCsvResponse(
+      "vehicles-detail-20260601-20260630.csv",
+      vehicleDetailsResponse,
+      controller.exportVehicleDetails({}, vehicleDetailsResponse as never)
     );
   });
 
@@ -833,6 +875,252 @@ describe("reporting dashboard APIs", () => {
         where: expect.objectContaining({ status: VehicleStatus.LEASED })
       })
     );
+  });
+
+  it("orders detail export returns CSV for all filtered rows with Chinese labels and escaped cells", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.subscriptionOrder.count.mockResolvedValue(1);
+    prisma.subscriptionOrder.findMany.mockResolvedValue([
+      {
+        actualReturnAt: null,
+        contract: { status: "SIGNED" },
+        createdAt: new Date("2026-06-10T08:00:00.000Z"),
+        customer: { mobile: "13800000000", name: "张三" },
+        depositAmount: 200000n,
+        id: "order-1",
+        monthlyFeeAmount: 300000n,
+        orderNo: "SO-001",
+        orderSource: OrderSource.SALES_ASSISTED,
+        orderStatus: OrderStatus.ACTIVE,
+        quote: {
+          subscriptionPlan: { id: "plan-1", planName: '标准,套餐"豪华\n版', planNo: "PLAN-001" },
+          subscriptionPlanId: "plan-1"
+        },
+        startDate: new Date("2026-06-01T00:00:00.000Z"),
+        vehicle: { plateNo: "沪A12345", vehicleNo: "VH-001", vin: "VIN001" },
+        vehicleModel: VehicleModel.ET5
+      }
+    ]);
+
+    const result = await service.exportOrderDetails({
+      endDate: "2026-06-30",
+      orderStatus: OrderStatus.ACTIVE,
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("orders-detail-20260601-20260630.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("订单编号,客户姓名,手机号,订单来源,订单状态");
+    expect(result.content).toContain("销售人工,在租");
+    expect(result.content).toContain('"标准,套餐""豪华\n版"');
+    expect(result.content).toContain("3000.00,2000.00,已签署");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+    expect(prisma.subscriptionOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 100,
+        where: expect.objectContaining({ orderStatus: OrderStatus.ACTIVE })
+      })
+    );
+  });
+
+  it("bills detail export returns CSV with yuan amounts and bill labels", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.receivableBill.count.mockResolvedValue(1);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      {
+        amount: 123456n,
+        billNo: "BILL-001",
+        billPeriodEnd: new Date("2026-06-30T00:00:00.000Z"),
+        billPeriodStart: new Date("2026-06-01T00:00:00.000Z"),
+        billStatus: BillStatus.PAID,
+        billType: BillType.MONTHLY_RENT,
+        createdAt: new Date("2026-06-01T08:00:00.000Z"),
+        customer: { name: "张三" },
+        dueDate: new Date("2026-06-05T08:00:00.000Z"),
+        id: "bill-1",
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        paidAmount: 120000n,
+        remainingAmount: 3456n
+      }
+    ]);
+
+    const result = await service.exportBillDetails({
+      billStatus: BillStatus.PAID,
+      billType: BillType.MONTHLY_RENT,
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("bills-detail-20260601-20260630.csv");
+    expect(result.content).toContain("账单编号,订单编号,客户姓名,账单类型,账单状态");
+    expect(result.content).toContain("月租账单,已收款,1234.56,1200.00,34.56");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+    expect(prisma.receivableBill.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          billStatus: BillStatus.PAID,
+          billType: BillType.MONTHLY_RENT
+        })
+      })
+    );
+  });
+
+  it("deposit-ledgers detail export returns CSV with transaction labels and escaped remarks", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.depositLedger.count.mockResolvedValue(1);
+    prisma.depositLedger.findMany.mockResolvedValue([
+      {
+        amount: 50000n,
+        balanceAfter: 150000n,
+        bill: { billNo: "BILL-001" },
+        customer: { name: "张三" },
+        id: "ledger-1",
+        ledgerNo: "DL-001",
+        occurredAt: new Date("2026-06-10T08:00:00.000Z"),
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        remark: '包含,逗号"引号\n换行',
+        transactionStatus: DepositTransactionStatus.CONFIRMED,
+        transactionType: DepositTransactionType.DEDUCT
+      }
+    ]);
+
+    const result = await service.exportDepositLedgerDetails({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01",
+      transactionType: DepositTransactionType.DEDUCT
+    });
+
+    expect(result.filename).toBe("deposit-ledgers-detail-20260601-20260630.csv");
+    expect(result.content).toContain("台账编号,订单编号,客户姓名,交易类型,交易状态");
+    expect(result.content).toContain("扣减,已确认,500.00,1500.00");
+    expect(result.content).toContain('"包含,逗号""引号\n换行"');
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+  });
+
+  it("overdue-bills detail export returns CSV with collection level and case status labels", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.receivableBill.count.mockResolvedValue(1);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      {
+        billNo: "BILL-OD-001",
+        billType: BillType.MONTHLY_RENT,
+        collectionCaseBills: [
+          {
+            case: {
+              caseNo: "CC-001",
+              caseStatus: CollectionCaseStatus.ACTIVE,
+              collectionLevel: CollectionLevel.D3
+            },
+            overdueDays: 8
+          }
+        ],
+        customer: { name: "张三" },
+        dueDate: new Date("2026-06-01T08:00:00.000Z"),
+        id: "bill-1",
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        remainingAmount: 80000n
+      }
+    ]);
+
+    const result = await service.exportOverdueBillDetails({
+      collectionLevel: CollectionLevel.D3,
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("overdue-bills-detail-20260601-20260630.csv");
+    expect(result.content).toContain("账单编号,订单编号,客户姓名,账单类型,剩余金额（元）");
+    expect(result.content).toContain("月租账单,800.00,2026-06-01,8,D3：8-15天,CC-001,催收中");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+  });
+
+  it("collection-cases detail export returns CSV with case labels and yuan amounts", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.collectionCase.count.mockResolvedValue(1);
+    prisma.collectionCase.findMany.mockResolvedValue([
+      {
+        assignedTo: "user-1",
+        caseNo: "CC-001",
+        caseStatus: CollectionCaseStatus.CLOSED,
+        closedAt: new Date("2026-06-20T08:00:00.000Z"),
+        collectionLevel: CollectionLevel.D2,
+        createdAt: new Date("2026-06-10T08:00:00.000Z"),
+        customer: { name: "张三" },
+        id: "case-1",
+        maxOverdueDays: 6,
+        nextFollowUpAt: null,
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        totalOverdueAmount: 60000n
+      }
+    ]);
+
+    const result = await service.exportCollectionCaseDetails({
+      caseStatus: CollectionCaseStatus.CLOSED,
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("collection-cases-detail-20260601-20260630.csv");
+    expect(result.content).toContain("案件编号,客户姓名,订单编号,逾期总金额（元）");
+    expect(result.content).toContain("CC-001,张三,SO-001,600.00,6,D2：4-7天,已关闭");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+  });
+
+  it("vehicles detail export returns CSV with vehicle labels and paid amounts", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.count.mockResolvedValue(1);
+    prisma.vehicle.findMany.mockResolvedValue([
+      {
+        batteryCapacityKwh: { toNumber: () => 75.5 },
+        batteryUsageType: "BUYOUT",
+        brand: "NIO",
+        createdAt: new Date("2026-06-01T08:00:00.000Z"),
+        currentSalePriceAmount: 20000000n,
+        deliveries: [{ deliveredAt: new Date("2026-06-03T08:00:00.000Z") }],
+        id: "vehicle-1",
+        model: "ET5 75kWh",
+        orders: [{ customer: { name: "张三" }, id: "order-1", orderNo: "SO-001" }],
+        plateNo: "沪A12345",
+        purchasePriceAmount: 25000000n,
+        returns: [],
+        series: "ET",
+        status: VehicleStatus.LEASED,
+        vehicleModel: VehicleModel.ET5,
+        vehicleNo: "VH-001",
+        vin: "VIN001"
+      }
+    ]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      { order: { vehicleId: "vehicle-1" }, paidAmount: 300000n }
+    ]);
+
+    const result = await service.exportVehicleDetails({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01",
+      vehicleStatus: VehicleStatus.LEASED
+    });
+
+    expect(result.filename).toBe("vehicles-detail-20260601-20260630.csv");
+    expect(result.content).toContain("车辆编号,VIN,车牌号,品牌,车系,车型");
+    expect(result.content).toContain("买断,已出租,250000.00,200000.00,SO-001,张三,3000.00");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+  });
+
+  it("detail export rejects when the filtered result exceeds maxExportRows", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.receivableBill.count.mockResolvedValue(5001);
+    prisma.receivableBill.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.exportBillDetails({
+        endDate: "2026-06-30",
+        startDate: "2026-06-01"
+      })
+    ).rejects.toThrow("明细数据超过 5000 行，请缩小筛选范围后再导出。");
   });
 });
 

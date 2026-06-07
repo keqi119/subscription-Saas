@@ -14,7 +14,16 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
-import { compactDate, CsvRow, formatMoneyYuan, formatPercent, safeCell, toCsv, withUtf8Bom } from "./report-csv";
+import {
+  compactDate,
+  CsvRow,
+  formatDate,
+  formatMoneyYuan,
+  formatPercent,
+  safeCell,
+  toCsv,
+  withUtf8Bom
+} from "./report-csv";
 import {
   BillDetailQueryDto,
   CollectionCaseDetailQueryDto,
@@ -30,14 +39,20 @@ import {
   billTypeLabels,
   collectionCaseStatusLabels,
   collectionLevelLabels,
+  contractStatusLabels,
+  depositTransactionStatusLabels,
   depositTransactionTypeLabels,
   labelOf,
   orderSourceLabels,
-  orderStatusLabels
+  orderStatusLabels,
+  vehicleBatteryUsageTypeLabels,
+  vehicleStatusLabels
 } from "./report-labels";
 
 const BUSINESS_UTC_OFFSET_MINUTES = 8 * 60;
 const DEFAULT_REPORT_RANGE_DAYS = 30;
+const DETAIL_EXPORT_PAGE_SIZE = 100;
+const MAX_DETAIL_EXPORT_ROWS = 5000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BUSINESS_OFFSET_MS = BUSINESS_UTC_OFFSET_MINUTES * 60 * 1000;
 
@@ -986,6 +1001,289 @@ export class ReportService {
     return csvExport("vehicle-assets-report", report.dateRange, rows);
   }
 
+  async exportOrderDetails(query: OrderDetailQueryDto) {
+    const { dateRange, items } = await this.collectDetailExportRows(query, (pageQuery) =>
+      this.getOrderDetails(pageQuery)
+    );
+    const rows: CsvRow[] = [
+      ["订单明细"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "订单编号",
+        "客户姓名",
+        "手机号",
+        "订单来源",
+        "订单状态",
+        "车辆VIN",
+        "车牌号",
+        "车型",
+        "订阅套餐",
+        "月费（元）",
+        "押金（元）",
+        "合同状态",
+        "起租时间",
+        "退车时间",
+        "创建时间"
+      ],
+      ...items.map((row) => [
+        row.orderNo,
+        row.customerName,
+        row.mobile,
+        labelOf(orderSourceLabels, row.orderSource),
+        labelOf(orderStatusLabels, row.orderStatus),
+        row.vehicleVin,
+        row.plateNo,
+        row.vehicleModel,
+        row.subscriptionPlanName ?? row.subscriptionPlanNo,
+        formatMoneyYuan(row.monthlyFeeAmount),
+        formatMoneyYuan(row.depositAmount),
+        labelOf(contractStatusLabels, row.contractStatus),
+        formatDate(row.leaseStartDate),
+        formatDate(row.returnAt),
+        formatDate(row.createdAt)
+      ])
+    ];
+
+    return csvExport("orders-detail", dateRange, rows);
+  }
+
+  async exportBillDetails(query: BillDetailQueryDto) {
+    const { dateRange, items } = await this.collectDetailExportRows(query, (pageQuery) =>
+      this.getBillDetails(pageQuery)
+    );
+    const rows: CsvRow[] = [
+      ["账单明细"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "账单编号",
+        "订单编号",
+        "客户姓名",
+        "账单类型",
+        "账单状态",
+        "应收金额（元）",
+        "已收金额（元）",
+        "剩余金额（元）",
+        "到期日",
+        "账期开始",
+        "账期结束",
+        "创建时间"
+      ],
+      ...items.map((row) => [
+        row.billNo,
+        row.orderNo,
+        row.customerName,
+        labelOf(billTypeLabels, row.billType),
+        labelOf(billStatusLabels, row.billStatus),
+        formatMoneyYuan(row.amount),
+        formatMoneyYuan(row.paidAmount),
+        formatMoneyYuan(row.remainingAmount),
+        formatDate(row.dueDate),
+        formatDate(row.periodStart),
+        formatDate(row.periodEnd),
+        formatDate(row.createdAt)
+      ])
+    ];
+
+    return csvExport("bills-detail", dateRange, rows);
+  }
+
+  async exportDepositLedgerDetails(query: DepositLedgerDetailQueryDto) {
+    const { dateRange, items } = await this.collectDetailExportRows(query, (pageQuery) =>
+      this.getDepositLedgerDetails(pageQuery)
+    );
+    const rows: CsvRow[] = [
+      ["保证金台账明细"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "台账编号",
+        "订单编号",
+        "客户姓名",
+        "交易类型",
+        "交易状态",
+        "金额（元）",
+        "交易后余额（元）",
+        "关联账单编号",
+        "发生时间",
+        "备注"
+      ],
+      ...items.map((row) => [
+        row.ledgerNo,
+        row.orderNo,
+        row.customerName,
+        labelOf(depositTransactionTypeLabels, row.transactionType),
+        labelOf(depositTransactionStatusLabels, row.transactionStatus),
+        formatMoneyYuan(row.amount),
+        formatMoneyYuan(row.balanceAfterAmount),
+        row.relatedBillNo,
+        formatDate(row.occurredAt),
+        row.remark
+      ])
+    ];
+
+    return csvExport("deposit-ledgers-detail", dateRange, rows);
+  }
+
+  async exportOverdueBillDetails(query: OverdueBillDetailQueryDto) {
+    const { dateRange, items } = await this.collectDetailExportRows(query, (pageQuery) =>
+      this.getOverdueBillDetails(pageQuery)
+    );
+    const rows: CsvRow[] = [
+      ["逾期账单明细"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "账单编号",
+        "订单编号",
+        "客户姓名",
+        "账单类型",
+        "剩余金额（元）",
+        "到期日",
+        "逾期天数",
+        "逾期等级",
+        "案件编号",
+        "案件状态"
+      ],
+      ...items.map((row) => [
+        row.billNo,
+        row.orderNo,
+        row.customerName,
+        labelOf(billTypeLabels, row.billType),
+        formatMoneyYuan(row.remainingAmount),
+        formatDate(row.dueDate),
+        row.overdueDays,
+        labelOf(collectionLevelLabels, row.collectionLevel),
+        row.caseNo,
+        labelOf(collectionCaseStatusLabels, row.caseStatus)
+      ])
+    ];
+
+    return csvExport("overdue-bills-detail", dateRange, rows);
+  }
+
+  async exportCollectionCaseDetails(query: CollectionCaseDetailQueryDto) {
+    const { dateRange, items } = await this.collectDetailExportRows(query, (pageQuery) =>
+      this.getCollectionCaseDetails(pageQuery)
+    );
+    const rows: CsvRow[] = [
+      ["催收案件明细"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "案件编号",
+        "客户姓名",
+        "订单编号",
+        "逾期总金额（元）",
+        "最大逾期天数",
+        "逾期等级",
+        "案件状态",
+        "负责人",
+        "下次跟进时间",
+        "创建时间",
+        "关闭时间"
+      ],
+      ...items.map((row) => [
+        row.caseNo,
+        row.customerName,
+        row.orderNo,
+        formatMoneyYuan(row.totalOverdueAmount),
+        row.maxOverdueDays,
+        labelOf(collectionLevelLabels, row.collectionLevel),
+        labelOf(collectionCaseStatusLabels, row.caseStatus),
+        row.assignedTo,
+        formatDate(row.nextFollowUpAt),
+        formatDate(row.createdAt),
+        formatDate(row.closedAt)
+      ])
+    ];
+
+    return csvExport("collection-cases-detail", dateRange, rows);
+  }
+
+  async exportVehicleDetails(query: VehicleDetailQueryDto) {
+    const { dateRange, items } = await this.collectDetailExportRows(query, (pageQuery) =>
+      this.getVehicleDetails(pageQuery)
+    );
+    const rows: CsvRow[] = [
+      ["车辆明细"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "车辆编号",
+        "VIN",
+        "车牌号",
+        "品牌",
+        "车系",
+        "车型",
+        "电池容量（kWh）",
+        "电池使用方式",
+        "车辆状态",
+        "采购价（元）",
+        "当前销售价（元）",
+        "当前订单编号",
+        "当前客户",
+        "累计已收金额（元）",
+        "最近交付时间",
+        "最近退车时间",
+        "创建时间"
+      ],
+      ...items.map((row) => [
+        row.vehicleNo,
+        row.vin,
+        row.plateNo,
+        row.brand,
+        row.series,
+        row.model ?? row.vehicleModel,
+        row.batteryCapacityKwh,
+        labelOf(vehicleBatteryUsageTypeLabels, row.batteryUsageType),
+        labelOf(vehicleStatusLabels, row.vehicleStatus),
+        formatMoneyYuan(row.purchasePriceAmount),
+        formatMoneyYuan(row.currentSalePriceAmount),
+        row.currentOrderNo,
+        row.currentCustomerName,
+        formatMoneyYuan(row.totalPaidAmount),
+        formatDate(row.latestDeliveredAt),
+        formatDate(row.latestReturnedAt),
+        formatDate(row.createdAt)
+      ])
+    ];
+
+    return csvExport("vehicles-detail", dateRange, rows);
+  }
+
+  private async collectDetailExportRows<TQuery extends ReportDateRangeQueryDto, TItem>(
+    query: TQuery,
+    loadPage: (query: TQuery & PaginationQuery) => Promise<PagedResult<TItem>>
+  ) {
+    const dateRange = resolveReportDateRange(query).output;
+    const firstPage = await loadPage({
+      ...query,
+      page: 1,
+      pageSize: DETAIL_EXPORT_PAGE_SIZE
+    });
+
+    if (firstPage.total > MAX_DETAIL_EXPORT_ROWS) {
+      throw new BadRequestException(`明细数据超过 ${MAX_DETAIL_EXPORT_ROWS} 行，请缩小筛选范围后再导出。`);
+    }
+
+    const items = [...firstPage.items];
+    for (let page = 2; items.length < firstPage.total; page += 1) {
+      const nextPage = await loadPage({
+        ...query,
+        page,
+        pageSize: DETAIL_EXPORT_PAGE_SIZE
+      });
+      if (nextPage.items.length === 0) {
+        break;
+      }
+      items.push(...nextPage.items);
+    }
+
+    return { dateRange, items };
+  }
+
   private async paidAmountByVehicle(
     range: ReturnType<typeof resolveReportDateRange>,
     vehicleIds: string[]
@@ -1044,6 +1342,7 @@ type AmountGroup = {
 type ReportDateRangeOutput = { endDate: string; startDate: string };
 type PaginationQuery = { page?: number; pageSize?: number };
 type ResolvedPagination = { page: number; pageSize: number; skip: number };
+type PagedResult<T> = { items: T[]; page: number; pageSize: number; total: number };
 
 function csvExport(prefix: string, dateRange: ReportDateRangeOutput, rows: CsvRow[]) {
   return {

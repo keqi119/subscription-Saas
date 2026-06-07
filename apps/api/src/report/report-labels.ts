@@ -44,6 +44,12 @@ export const depositTransactionTypeLabels: Record<string, string> = {
   RELEASE: "释放"
 };
 
+export const depositTransactionStatusLabels: Record<string, string> = {
+  CANCELLED: "已取消",
+  CONFIRMED: "已确认",
+  PENDING: "待确认"
+};
+
 export const collectionLevelLabels: Record<string, string> = {
   D1: "D1：1-3天",
   D2: "D2：4-7天",
@@ -56,6 +62,33 @@ export const collectionCaseStatusLabels: Record<string, string> = {
   ACTIVE: "催收中",
   CLOSED: "已关闭",
   PAUSED: "暂停催收"
+};
+
+export const contractStatusLabels: Record<string, string> = {
+  ARCHIVED: "已归档",
+  CANCELLED: "已取消",
+  GENERATED: "已生成",
+  SIGNED: "已签署",
+  SIGNING: "签署中"
+};
+
+export const vehicleBatteryUsageTypeLabels: Record<string, string> = {
+  BAAS: "BaaS",
+  BUYOUT: "买断"
+};
+
+export const vehicleStatusLabels: Record<string, string> = {
+  AVAILABLE: "可租用",
+  DRAFT: "草稿",
+  IN_PREPARATION: "整备中",
+  LEASED: "已出租",
+  MAINTENANCE: "维修中",
+  RENTED: "已租赁",
+  RESERVED: "签约锁定",
+  RETIRED: "已退役",
+  RETURNED: "已退回",
+  REVIEW_RESERVED: "审核占用",
+  SOLD: "已出售"
 };
 
 export function labelOf(labels: Record<string, string>, value: unknown) {

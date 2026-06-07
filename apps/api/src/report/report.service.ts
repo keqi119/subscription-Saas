@@ -15,7 +15,16 @@ import {
 
 import { PrismaService } from "../prisma/prisma.service";
 import { compactDate, CsvRow, formatMoneyYuan, formatPercent, safeCell, toCsv, withUtf8Bom } from "./report-csv";
-import { OrderReportQueryDto, ReportDateRangeQueryDto } from "./dto/report.dto";
+import {
+  BillDetailQueryDto,
+  CollectionCaseDetailQueryDto,
+  DepositLedgerDetailQueryDto,
+  OrderDetailQueryDto,
+  OrderReportQueryDto,
+  OverdueBillDetailQueryDto,
+  ReportDateRangeQueryDto,
+  VehicleDetailQueryDto
+} from "./dto/report.dto";
 import {
   billStatusLabels,
   billTypeLabels,
@@ -402,6 +411,421 @@ export class ReportService {
     };
   }
 
+  async getOrderDetails(query: OrderDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.SubscriptionOrderWhereInput = {
+      createdAt: range.dateTimeFilter,
+      deletedAt: null,
+      ...(query.orderStatus ? { orderStatus: query.orderStatus } : {}),
+      ...(query.orderSource ? { orderSource: query.orderSource } : {}),
+      ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {}),
+      ...(query.productId ? { productId: query.productId } : {}),
+      ...(query.subscriptionPlanId ? { quote: { subscriptionPlanId: query.subscriptionPlanId } } : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.subscriptionOrder.count({ where }),
+      this.prisma.subscriptionOrder.findMany({
+        orderBy: { createdAt: "desc" },
+        select: {
+          actualReturnAt: true,
+          contract: { select: { status: true } },
+          createdAt: true,
+          customer: { select: { mobile: true, name: true } },
+          depositAmount: true,
+          id: true,
+          monthlyFeeAmount: true,
+          orderNo: true,
+          orderSource: true,
+          orderStatus: true,
+          quote: {
+            select: {
+              subscriptionPlan: { select: { id: true, planName: true, planNo: true } },
+              subscriptionPlanId: true
+            }
+          },
+          startDate: true,
+          vehicle: { select: { plateNo: true, vehicleNo: true, vin: true } },
+          vehicleModel: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+
+    return pagedResult(
+      items.map((order) => ({
+        id: order.id,
+        orderNo: order.orderNo,
+        customerName: order.customer.name,
+        mobile: order.customer.mobile,
+        orderSource: order.orderSource,
+        orderStatus: order.orderStatus,
+        vehicleVin: order.vehicle?.vin ?? null,
+        vehicleNo: order.vehicle?.vehicleNo ?? null,
+        plateNo: order.vehicle?.plateNo ?? null,
+        vehicleModel: order.vehicleModel,
+        subscriptionPlanId: order.quote.subscriptionPlanId,
+        subscriptionPlanName: order.quote.subscriptionPlan?.planName ?? null,
+        subscriptionPlanNo: order.quote.subscriptionPlan?.planNo ?? null,
+        monthlyFeeAmount: toNumber(order.monthlyFeeAmount),
+        depositAmount: toNumber(order.depositAmount),
+        contractStatus: order.contract?.status ?? null,
+        leaseStartDate: order.startDate,
+        returnAt: order.actualReturnAt,
+        createdAt: order.createdAt
+      })),
+      total,
+      pagination
+    );
+  }
+
+  async getBillDetails(query: BillDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.ReceivableBillWhereInput = {
+      deletedAt: null,
+      dueDate: range.dateTimeFilter,
+      ...(query.billType ? { billType: query.billType } : {}),
+      ...(query.billStatus ? { billStatus: query.billStatus } : {}),
+      ...(query.orderId ? { orderId: query.orderId } : {}),
+      ...(query.customerName ? { customer: { name: containsText(query.customerName) } } : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.receivableBill.count({ where }),
+      this.prisma.receivableBill.findMany({
+        orderBy: { dueDate: "desc" },
+        select: {
+          amount: true,
+          billNo: true,
+          billPeriodEnd: true,
+          billPeriodStart: true,
+          billStatus: true,
+          billType: true,
+          createdAt: true,
+          customer: { select: { name: true } },
+          dueDate: true,
+          id: true,
+          order: { select: { id: true, orderNo: true } },
+          orderId: true,
+          paidAmount: true,
+          remainingAmount: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+
+    return pagedResult(
+      items.map((bill) => ({
+        id: bill.id,
+        billNo: bill.billNo,
+        orderId: bill.orderId,
+        orderNo: bill.order.orderNo,
+        customerName: bill.customer.name,
+        billType: bill.billType,
+        billStatus: bill.billStatus,
+        amount: toNumber(bill.amount),
+        paidAmount: toNumber(bill.paidAmount),
+        remainingAmount: toNumber(bill.remainingAmount),
+        dueDate: bill.dueDate,
+        periodStart: bill.billPeriodStart,
+        periodEnd: bill.billPeriodEnd,
+        createdAt: bill.createdAt
+      })),
+      total,
+      pagination
+    );
+  }
+
+  async getDepositLedgerDetails(query: DepositLedgerDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.DepositLedgerWhereInput = {
+      deletedAt: null,
+      occurredAt: range.dateTimeFilter,
+      transactionStatus: query.transactionStatus ?? DepositTransactionStatus.CONFIRMED,
+      ...(query.transactionType ? { transactionType: query.transactionType } : {}),
+      ...(query.orderId ? { orderId: query.orderId } : {}),
+      ...(query.customerName ? { customer: { name: containsText(query.customerName) } } : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.depositLedger.count({ where }),
+      this.prisma.depositLedger.findMany({
+        orderBy: { occurredAt: "desc" },
+        select: {
+          amount: true,
+          balanceAfter: true,
+          bill: { select: { billNo: true } },
+          customer: { select: { name: true } },
+          id: true,
+          ledgerNo: true,
+          occurredAt: true,
+          order: { select: { id: true, orderNo: true } },
+          orderId: true,
+          remark: true,
+          transactionStatus: true,
+          transactionType: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+
+    return pagedResult(
+      items.map((ledger) => ({
+        id: ledger.id,
+        ledgerNo: ledger.ledgerNo,
+        orderId: ledger.orderId,
+        orderNo: ledger.order.orderNo,
+        customerName: ledger.customer.name,
+        transactionType: ledger.transactionType,
+        transactionStatus: ledger.transactionStatus,
+        amount: toNumber(ledger.amount),
+        balanceAfterAmount: toNumber(ledger.balanceAfter),
+        relatedBillNo: ledger.bill?.billNo ?? null,
+        occurredAt: ledger.occurredAt,
+        remark: ledger.remark
+      })),
+      total,
+      pagination
+    );
+  }
+
+  async getOverdueBillDetails(query: OverdueBillDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.ReceivableBillWhereInput = {
+      billStatus: BillStatus.OVERDUE,
+      deletedAt: null,
+      dueDate: overdueDueDateFilter(query, range),
+      remainingAmount: { gt: 0n },
+      ...(query.billType ? { billType: query.billType } : {}),
+      ...(query.orderId ? { orderId: query.orderId } : {}),
+      ...(query.customerName ? { customer: { name: containsText(query.customerName) } } : {}),
+      ...(query.collectionLevel
+        ? {
+            collectionCaseBills: {
+              some: {
+                case: { collectionLevel: query.collectionLevel, deletedAt: null },
+                deletedAt: null
+              }
+            }
+          }
+        : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.receivableBill.count({ where }),
+      this.prisma.receivableBill.findMany({
+        orderBy: { dueDate: "asc" },
+        select: {
+          billNo: true,
+          billType: true,
+          collectionCaseBills: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              case: { select: { caseNo: true, caseStatus: true, collectionLevel: true } },
+              overdueDays: true
+            },
+            take: 1,
+            where: { deletedAt: null }
+          },
+          customer: { select: { name: true } },
+          dueDate: true,
+          id: true,
+          order: { select: { id: true, orderNo: true } },
+          orderId: true,
+          remainingAmount: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+
+    return pagedResult(
+      items.map((bill) => {
+        const caseBill = bill.collectionCaseBills[0];
+        const overdueDays = caseBill?.overdueDays ?? overdueDaysBetween(bill.dueDate, range.endExclusive);
+
+        return {
+          id: bill.id,
+          billNo: bill.billNo,
+          orderId: bill.orderId,
+          orderNo: bill.order.orderNo,
+          customerName: bill.customer.name,
+          billType: bill.billType,
+          remainingAmount: toNumber(bill.remainingAmount),
+          dueDate: bill.dueDate,
+          overdueDays,
+          collectionLevel: caseBill?.case.collectionLevel ?? collectionLevelForDays(overdueDays),
+          caseNo: caseBill?.case.caseNo ?? null,
+          caseStatus: caseBill?.case.caseStatus ?? null
+        };
+      }),
+      total,
+      pagination
+    );
+  }
+
+  async getCollectionCaseDetails(query: CollectionCaseDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.CollectionCaseWhereInput = {
+      createdAt: range.dateTimeFilter,
+      deletedAt: null,
+      ...(query.caseStatus ? { caseStatus: query.caseStatus } : {}),
+      ...(query.collectionLevel ? { collectionLevel: query.collectionLevel } : {}),
+      ...(query.assignedTo ? { assignedTo: query.assignedTo } : {}),
+      ...(query.customerName ? { customer: { name: containsText(query.customerName) } } : {}),
+      ...(query.orderNo ? { order: { orderNo: containsText(query.orderNo) } } : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.collectionCase.count({ where }),
+      this.prisma.collectionCase.findMany({
+        orderBy: { createdAt: "desc" },
+        select: {
+          assignedTo: true,
+          caseNo: true,
+          caseStatus: true,
+          closedAt: true,
+          collectionLevel: true,
+          createdAt: true,
+          customer: { select: { name: true } },
+          id: true,
+          maxOverdueDays: true,
+          nextFollowUpAt: true,
+          order: { select: { id: true, orderNo: true } },
+          orderId: true,
+          totalOverdueAmount: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+
+    return pagedResult(
+      items.map((collectionCase) => ({
+        id: collectionCase.id,
+        caseNo: collectionCase.caseNo,
+        customerName: collectionCase.customer.name,
+        orderId: collectionCase.orderId,
+        orderNo: collectionCase.order.orderNo,
+        totalOverdueAmount: toNumber(collectionCase.totalOverdueAmount),
+        maxOverdueDays: collectionCase.maxOverdueDays,
+        collectionLevel: collectionCase.collectionLevel,
+        caseStatus: collectionCase.caseStatus,
+        assignedTo: collectionCase.assignedTo,
+        nextFollowUpAt: collectionCase.nextFollowUpAt,
+        createdAt: collectionCase.createdAt,
+        closedAt: collectionCase.closedAt
+      })),
+      total,
+      pagination
+    );
+  }
+
+  async getVehicleDetails(query: VehicleDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.VehicleWhereInput = {
+      deletedAt: null,
+      ...(query.vehicleStatus ? { status: query.vehicleStatus } : {}),
+      ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {}),
+      ...(query.brand ? { brand: containsText(query.brand) } : {}),
+      ...(query.series ? { series: containsText(query.series) } : {})
+    };
+
+    const [total, vehicles] = await Promise.all([
+      this.prisma.vehicle.count({ where }),
+      this.prisma.vehicle.findMany({
+        orderBy: { createdAt: "desc" },
+        select: {
+          batteryCapacityKwh: true,
+          batteryUsageType: true,
+          brand: true,
+          createdAt: true,
+          currentSalePriceAmount: true,
+          deliveries: {
+            orderBy: { deliveredAt: "desc" },
+            select: { deliveredAt: true },
+            take: 1,
+            where: { deletedAt: null, deliveredAt: { not: null } }
+          },
+          id: true,
+          model: true,
+          orders: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              customer: { select: { name: true } },
+              id: true,
+              orderNo: true
+            },
+            take: 1,
+            where: { deletedAt: null, orderStatus: { in: currentVehicleOrderStatuses } }
+          },
+          plateNo: true,
+          purchasePriceAmount: true,
+          returns: {
+            orderBy: { returnedAt: "desc" },
+            select: { returnedAt: true },
+            take: 1,
+            where: { deletedAt: null, returnedAt: { not: null } }
+          },
+          series: true,
+          status: true,
+          vehicleModel: true,
+          vehicleNo: true,
+          vin: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+    const paidAmountByVehicleId = await this.paidAmountByVehicle(range, vehicles.map((vehicle) => vehicle.id));
+
+    return pagedResult(
+      vehicles.map((vehicle) => {
+        const currentOrder = vehicle.orders[0];
+
+        return {
+          id: vehicle.id,
+          vehicleNo: vehicle.vehicleNo,
+          vin: vehicle.vin,
+          plateNo: vehicle.plateNo,
+          brand: vehicle.brand,
+          series: vehicle.series,
+          model: vehicle.model,
+          vehicleModel: vehicle.vehicleModel,
+          batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
+          batteryUsageType: vehicle.batteryUsageType,
+          vehicleStatus: vehicle.status,
+          purchasePriceAmount: toNumber(vehicle.purchasePriceAmount),
+          currentSalePriceAmount: toNumber(vehicle.currentSalePriceAmount),
+          currentOrderId: currentOrder?.id ?? null,
+          currentOrderNo: currentOrder?.orderNo ?? null,
+          currentCustomerName: currentOrder?.customer.name ?? null,
+          totalPaidAmount: paidAmountByVehicleId.get(vehicle.id) ?? 0,
+          latestDeliveredAt: vehicle.deliveries[0]?.deliveredAt ?? null,
+          latestReturnedAt: vehicle.returns[0]?.returnedAt ?? null,
+          createdAt: vehicle.createdAt
+        };
+      }),
+      total,
+      pagination
+    );
+  }
+
   async exportOrderReport(query: OrderReportQueryDto) {
     const report = await this.getOrderReport(query);
     const rows: CsvRow[] = [
@@ -561,6 +985,36 @@ export class ReportService {
 
     return csvExport("vehicle-assets-report", report.dateRange, rows);
   }
+
+  private async paidAmountByVehicle(
+    range: ReturnType<typeof resolveReportDateRange>,
+    vehicleIds: string[]
+  ) {
+    const result = new Map<string, number>();
+    if (vehicleIds.length === 0) {
+      return result;
+    }
+
+    const bills = await this.prisma.receivableBill.findMany({
+      where: {
+        deletedAt: null,
+        dueDate: range.dateTimeFilter,
+        order: { vehicleId: { in: vehicleIds } }
+      },
+      select: {
+        order: { select: { vehicleId: true } },
+        paidAmount: true
+      }
+    });
+
+    for (const bill of bills) {
+      if (bill.order.vehicleId) {
+        result.set(bill.order.vehicleId, (result.get(bill.order.vehicleId) ?? 0) + toNumber(bill.paidAmount));
+      }
+    }
+
+    return result;
+  }
 }
 
 const operationalVehicleStatuses = [
@@ -573,12 +1027,23 @@ const operationalVehicleStatuses = [
   VehicleStatus.MAINTENANCE
 ];
 
+const currentVehicleOrderStatuses = [
+  OrderStatus.ACTIVE,
+  OrderStatus.PENDING_DELIVERY,
+  OrderStatus.PENDING_PAYMENT,
+  OrderStatus.PENDING_SIGN,
+  OrderStatus.PENDING_VEHICLE,
+  OrderStatus.SUSPENDED
+];
+
 type CountGroup = { _count: { _all: number } } & Record<string, unknown>;
 type AmountGroup = {
   _count: { _all: number };
   _sum: Record<string, bigint | number | null | undefined>;
 } & Record<string, unknown>;
 type ReportDateRangeOutput = { endDate: string; startDate: string };
+type PaginationQuery = { page?: number; pageSize?: number };
+type ResolvedPagination = { page: number; pageSize: number; skip: number };
 
 function csvExport(prefix: string, dateRange: ReportDateRangeOutput, rows: CsvRow[]) {
   return {
@@ -589,6 +1054,38 @@ function csvExport(prefix: string, dateRange: ReportDateRangeOutput, rows: CsvRo
 
 function dateRangeText(dateRange: ReportDateRangeOutput) {
   return `${dateRange.startDate} 至 ${dateRange.endDate}`;
+}
+
+function resolvePagination(query: PaginationQuery): ResolvedPagination {
+  const page = clampInteger(query.page, 1, Number.MAX_SAFE_INTEGER, 1);
+  const pageSize = clampInteger(query.pageSize, 1, 100, 20);
+
+  return {
+    page,
+    pageSize,
+    skip: (page - 1) * pageSize
+  };
+}
+
+function pagedResult<T>(items: T[], total: number, pagination: ResolvedPagination) {
+  return {
+    items,
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize
+  };
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number) {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(numberValue)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, numberValue));
+}
+
+function containsText(value: string) {
+  return { contains: value.trim(), mode: "insensitive" as const };
 }
 
 function resolveReportDateRange(query: ReportDateRangeQueryDto) {
@@ -607,6 +1104,42 @@ function resolveReportDateRange(query: ReportDateRangeQueryDto) {
     output: { endDate, startDate },
     start
   };
+}
+
+function overdueDueDateFilter(
+  query: Pick<OverdueBillDetailQueryDto, "maxOverdueDays" | "minOverdueDays">,
+  range: ReturnType<typeof resolveReportDateRange>
+) {
+  const filter: Prisma.DateTimeFilter = { ...range.dateTimeFilter };
+
+  if (query.minOverdueDays) {
+    filter.lte = new Date(range.endExclusive.getTime() - query.minOverdueDays * DAY_MS);
+  }
+  if (query.maxOverdueDays) {
+    filter.gt = new Date(range.endExclusive.getTime() - (query.maxOverdueDays + 1) * DAY_MS);
+  }
+
+  return filter;
+}
+
+function overdueDaysBetween(dueDate: Date, endExclusive: Date) {
+  return Math.max(0, Math.floor((endExclusive.getTime() - dueDate.getTime()) / DAY_MS));
+}
+
+function collectionLevelForDays(overdueDays: number) {
+  if (overdueDays <= 3) {
+    return CollectionLevel.D1;
+  }
+  if (overdueDays <= 7) {
+    return CollectionLevel.D2;
+  }
+  if (overdueDays <= 15) {
+    return CollectionLevel.D3;
+  }
+  if (overdueDays <= 30) {
+    return CollectionLevel.D4;
+  }
+  return CollectionLevel.D5;
 }
 
 function businessDateForNow(now: Date) {
@@ -849,6 +1382,20 @@ function vehicleModelAssetRows(
 
 function toNumber(value: bigint | number | null | undefined) {
   return value === null || value === undefined ? 0 : Number(value);
+}
+
+function decimalToNumber(value: unknown) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "object" && "toNumber" in value && typeof value.toNumber === "function") {
+    return value.toNumber();
+  }
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
 }
 
 function sumNumbers(values: number[]) {

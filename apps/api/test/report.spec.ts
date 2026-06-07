@@ -3,6 +3,7 @@ import {
   BillType,
   CollectionCaseStatus,
   CollectionLevel,
+  DepositTransactionStatus,
   DepositTransactionType,
   OrderSource,
   OrderStatus,
@@ -537,6 +538,302 @@ describe("reporting dashboard APIs", () => {
       controller.exportVehicleAssetReport({}, assetsResponse as never)
     );
   });
+
+  it("orders detail API returns paginated items and filters by orderStatus", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.subscriptionOrder.count.mockResolvedValue(21);
+    prisma.subscriptionOrder.findMany.mockResolvedValue([
+      {
+        actualReturnAt: null,
+        contract: { status: "SIGNED" },
+        createdAt: new Date("2026-06-10T08:00:00.000Z"),
+        customer: { mobile: "13800000000", name: "张三" },
+        depositAmount: 200000n,
+        id: "order-1",
+        monthlyFeeAmount: 300000n,
+        orderNo: "SO-001",
+        orderSource: OrderSource.SALES_ASSISTED,
+        orderStatus: OrderStatus.ACTIVE,
+        quote: {
+          subscriptionPlan: { id: "plan-1", planName: "标准套餐", planNo: "PLAN-001" },
+          subscriptionPlanId: "plan-1"
+        },
+        startDate: new Date("2026-06-01T00:00:00.000Z"),
+        vehicle: { plateNo: "沪A12345", vehicleNo: "VH-001", vin: "VIN001" },
+        vehicleModel: VehicleModel.ET5
+      }
+    ]);
+
+    const result = await service.getOrderDetails({
+      endDate: "2026-06-30",
+      orderStatus: OrderStatus.ACTIVE,
+      page: 2,
+      pageSize: 10,
+      startDate: "2026-06-01"
+    });
+
+    expect(result).toMatchObject({
+      page: 2,
+      pageSize: 10,
+      total: 21,
+      items: [
+        {
+          contractStatus: "SIGNED",
+          customerName: "张三",
+          depositAmount: 200000,
+          id: "order-1",
+          monthlyFeeAmount: 300000,
+          orderNo: "SO-001",
+          orderStatus: OrderStatus.ACTIVE,
+          subscriptionPlanName: "标准套餐"
+        }
+      ]
+    });
+    expect(prisma.subscriptionOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 10,
+        take: 10,
+        where: expect.objectContaining({ orderStatus: OrderStatus.ACTIVE })
+      })
+    );
+  });
+
+  it("bills detail API filters by billType and billStatus", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.receivableBill.count.mockResolvedValue(1);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      {
+        amount: 123456n,
+        billNo: "BILL-001",
+        billPeriodEnd: new Date("2026-06-30T00:00:00.000Z"),
+        billPeriodStart: new Date("2026-06-01T00:00:00.000Z"),
+        billStatus: BillStatus.PAID,
+        billType: BillType.MONTHLY_RENT,
+        createdAt: new Date("2026-06-01T08:00:00.000Z"),
+        customer: { name: "张三" },
+        dueDate: new Date("2026-06-05T08:00:00.000Z"),
+        id: "bill-1",
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        paidAmount: 123456n,
+        remainingAmount: 0n
+      }
+    ]);
+
+    const result = await service.getBillDetails({
+      billStatus: BillStatus.PAID,
+      billType: BillType.MONTHLY_RENT,
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 20,
+      total: 1,
+      items: [{ amount: 123456, billNo: "BILL-001", billStatus: BillStatus.PAID, billType: BillType.MONTHLY_RENT }]
+    });
+    expect(prisma.receivableBill.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          billStatus: BillStatus.PAID,
+          billType: BillType.MONTHLY_RENT
+        })
+      })
+    );
+  });
+
+  it("deposit-ledgers detail API filters by transactionType and defaults to confirmed ledgers", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.depositLedger.count.mockResolvedValue(1);
+    prisma.depositLedger.findMany.mockResolvedValue([
+      {
+        amount: 50000n,
+        balanceAfter: 150000n,
+        bill: { billNo: "BILL-001" },
+        customer: { name: "张三" },
+        id: "ledger-1",
+        ledgerNo: "DL-001",
+        occurredAt: new Date("2026-06-10T08:00:00.000Z"),
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        remark: "扣减",
+        transactionStatus: DepositTransactionStatus.CONFIRMED,
+        transactionType: DepositTransactionType.DEDUCT
+      }
+    ]);
+
+    const result = await service.getDepositLedgerDetails({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01",
+      transactionType: DepositTransactionType.DEDUCT
+    });
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 20,
+      total: 1,
+      items: [{ amount: 50000, balanceAfterAmount: 150000, ledgerNo: "DL-001" }]
+    });
+    expect(prisma.depositLedger.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          transactionStatus: DepositTransactionStatus.CONFIRMED,
+          transactionType: DepositTransactionType.DEDUCT
+        })
+      })
+    );
+  });
+
+  it("overdue-bills detail API filters by collectionLevel", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.receivableBill.count.mockResolvedValue(1);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      {
+        billNo: "BILL-OD-001",
+        billType: BillType.MONTHLY_RENT,
+        collectionCaseBills: [
+          {
+            case: {
+              caseNo: "CC-001",
+              caseStatus: CollectionCaseStatus.ACTIVE,
+              collectionLevel: CollectionLevel.D3
+            },
+            overdueDays: 8
+          }
+        ],
+        customer: { name: "张三" },
+        dueDate: new Date("2026-06-01T08:00:00.000Z"),
+        id: "bill-1",
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        remainingAmount: 80000n
+      }
+    ]);
+
+    const result = await service.getOverdueBillDetails({
+      collectionLevel: CollectionLevel.D3,
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 20,
+      total: 1,
+      items: [{ billNo: "BILL-OD-001", collectionLevel: CollectionLevel.D3, overdueDays: 8, remainingAmount: 80000 }]
+    });
+    expect(prisma.receivableBill.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          collectionCaseBills: {
+            some: {
+              case: { collectionLevel: CollectionLevel.D3, deletedAt: null },
+              deletedAt: null
+            }
+          }
+        })
+      })
+    );
+  });
+
+  it("collection-cases detail API filters by caseStatus", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.collectionCase.count.mockResolvedValue(1);
+    prisma.collectionCase.findMany.mockResolvedValue([
+      {
+        assignedTo: "user-1",
+        caseNo: "CC-001",
+        caseStatus: CollectionCaseStatus.CLOSED,
+        closedAt: new Date("2026-06-20T08:00:00.000Z"),
+        collectionLevel: CollectionLevel.D2,
+        createdAt: new Date("2026-06-10T08:00:00.000Z"),
+        customer: { name: "张三" },
+        id: "case-1",
+        maxOverdueDays: 6,
+        nextFollowUpAt: null,
+        order: { id: "order-1", orderNo: "SO-001" },
+        orderId: "order-1",
+        totalOverdueAmount: 60000n
+      }
+    ]);
+
+    const result = await service.getCollectionCaseDetails({
+      caseStatus: CollectionCaseStatus.CLOSED,
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 20,
+      total: 1,
+      items: [{ caseNo: "CC-001", caseStatus: CollectionCaseStatus.CLOSED, totalOverdueAmount: 60000 }]
+    });
+    expect(prisma.collectionCase.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ caseStatus: CollectionCaseStatus.CLOSED })
+      })
+    );
+  });
+
+  it("vehicles detail API filters by vehicleStatus and returns paginated asset fields", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.count.mockResolvedValue(1);
+    prisma.vehicle.findMany.mockResolvedValue([
+      {
+        batteryCapacityKwh: { toNumber: () => 75.5 },
+        batteryUsageType: "BUYOUT",
+        brand: "NIO",
+        createdAt: new Date("2026-06-01T08:00:00.000Z"),
+        currentSalePriceAmount: 20000000n,
+        deliveries: [{ deliveredAt: new Date("2026-06-03T08:00:00.000Z") }],
+        id: "vehicle-1",
+        model: "ET5 75kWh",
+        orders: [{ customer: { name: "张三" }, id: "order-1", orderNo: "SO-001" }],
+        plateNo: "沪A12345",
+        purchasePriceAmount: 25000000n,
+        returns: [],
+        series: "ET",
+        status: VehicleStatus.LEASED,
+        vehicleModel: VehicleModel.ET5,
+        vehicleNo: "VH-001",
+        vin: "VIN001"
+      }
+    ]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      { order: { vehicleId: "vehicle-1" }, paidAmount: 300000n }
+    ]);
+
+    const result = await service.getVehicleDetails({
+      endDate: "2026-06-30",
+      pageSize: 100,
+      startDate: "2026-06-01",
+      vehicleStatus: VehicleStatus.LEASED
+    });
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 100,
+      total: 1,
+      items: [
+        {
+          batteryCapacityKwh: 75.5,
+          currentCustomerName: "张三",
+          currentOrderNo: "SO-001",
+          totalPaidAmount: 300000,
+          vehicleNo: "VH-001",
+          vehicleStatus: VehicleStatus.LEASED
+        }
+      ]
+    });
+    expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 100,
+        where: expect.objectContaining({ status: VehicleStatus.LEASED })
+      })
+    );
+  });
 });
 
 function createReportHarness() {
@@ -547,9 +844,12 @@ function createReportHarness() {
     },
     collectionCase: {
       count: vi.fn(),
+      findMany: vi.fn(),
       groupBy: vi.fn()
     },
     depositLedger: {
+      count: vi.fn(),
+      findMany: vi.fn(),
       groupBy: vi.fn()
     },
     receivableBill: {
@@ -566,6 +866,7 @@ function createReportHarness() {
     vehicle: {
       aggregate: vi.fn(),
       count: vi.fn(),
+      findMany: vi.fn(),
       groupBy: vi.fn()
     }
   };

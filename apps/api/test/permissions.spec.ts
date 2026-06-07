@@ -211,6 +211,10 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.exportOrderReport
     );
+    const orderDetailsPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getOrderDetails
+    );
     const financePermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getFinanceReport
@@ -218,6 +222,10 @@ describe("report permissions", () => {
     const financeExportPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.exportFinanceReport
+    );
+    const billDetailsPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getBillDetails
     );
     const depositPoolPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
@@ -227,6 +235,10 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.exportDepositPoolReport
     );
+    const depositLedgerDetailsPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getDepositLedgerDetails
+    );
     const collectionAnyPermissions = Reflect.getMetadata(
       REQUIRED_ANY_PERMISSIONS_KEY,
       ReportController.prototype.getCollectionReport
@@ -234,6 +246,14 @@ describe("report permissions", () => {
     const collectionExportAnyPermissions = Reflect.getMetadata(
       REQUIRED_ANY_PERMISSIONS_KEY,
       ReportController.prototype.exportCollectionReport
+    );
+    const overdueBillDetailsAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      ReportController.prototype.getOverdueBillDetails
+    );
+    const collectionCaseDetailsAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      ReportController.prototype.getCollectionCaseDetails
     );
     const vehicleAssetPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
@@ -243,14 +263,21 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.exportVehicleAssetReport
     );
+    const vehicleDetailsPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getVehicleDetails
+    );
 
     expect(dashboardPermissions).toEqual([PermissionCode.REPORT_VIEW]);
     expect(ordersPermissions).toEqual([PermissionCode.REPORT_VIEW]);
     expect(ordersExportPermissions).toEqual([PermissionCode.REPORT_VIEW]);
+    expect(orderDetailsPermissions).toEqual([PermissionCode.REPORT_VIEW]);
     expect(financePermissions).toEqual([PermissionCode.REPORT_FINANCE]);
     expect(financeExportPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
+    expect(billDetailsPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
     expect(depositPoolPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
     expect(depositPoolExportPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
+    expect(depositLedgerDetailsPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
     expect(collectionAnyPermissions).toEqual([
       PermissionCode.REPORT_FINANCE,
       PermissionCode.COLLECTION_VIEW
@@ -259,12 +286,24 @@ describe("report permissions", () => {
       PermissionCode.REPORT_FINANCE,
       PermissionCode.COLLECTION_VIEW
     ]);
+    expect(overdueBillDetailsAnyPermissions).toEqual([
+      PermissionCode.REPORT_FINANCE,
+      PermissionCode.COLLECTION_VIEW
+    ]);
+    expect(collectionCaseDetailsAnyPermissions).toEqual([
+      PermissionCode.REPORT_FINANCE,
+      PermissionCode.COLLECTION_VIEW
+    ]);
     expect(vehicleAssetPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(vehicleAssetExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(vehicleDetailsPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financePermissions)).toBe(false);
     expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financeExportPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], billDetailsPermissions)).toBe(false);
     expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionAnyPermissions)).toBe(true);
     expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionExportAnyPermissions)).toBe(true);
+    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], overdueBillDetailsAnyPermissions)).toBe(true);
+    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionCaseDetailsAnyPermissions)).toBe(true);
   });
 });
 

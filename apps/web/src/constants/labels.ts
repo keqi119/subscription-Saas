@@ -137,6 +137,50 @@ export const DEPOSIT_TRANSACTION_STATUS_LABELS: Record<string, string> = {
   PENDING: "待确认"
 };
 
+export const ENTITLEMENT_ACCOUNT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  CLOSED: "已关闭",
+  SUSPENDED: "暂停"
+};
+
+export const ENTITLEMENT_TYPE_LABELS: Record<string, string> = {
+  BENEFIT: "服务权益",
+  ENERGY: "补能权益",
+  MILEAGE: "里程权益"
+};
+
+export const ENTITLEMENT_UNIT_LABELS: Record<string, string> = {
+  ITEM: "项",
+  KM: "公里",
+  KWH: "kWh",
+  TEXT: "文本权益",
+  TIMES: "次"
+};
+
+export const ENTITLEMENT_GRANT_SOURCE_LABELS: Record<string, string> = {
+  MANUAL_ADJUST: "手工调整",
+  MONTHLY_RENEWAL: "月度续发",
+  ORDER_START: "起租发放"
+};
+
+export const ENTITLEMENT_GRANT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "可用",
+  CANCELLED: "已取消",
+  EXHAUSTED: "已用尽",
+  EXPIRED: "已过期"
+};
+
+export const ENTITLEMENT_USAGE_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CONFIRMED: "已确认"
+};
+
+export const ENTITLEMENT_USAGE_SOURCE_LABELS: Record<string, string> = {
+  MANUAL: "人工录入",
+  SYSTEM: "系统记录",
+  THIRD_PARTY: "第三方接口"
+};
+
 export const COLLECTION_LEVEL_LABELS: Record<string, string> = {
   D1: "D1：1-3天",
   D2: "D2：4-7天",

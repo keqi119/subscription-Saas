@@ -458,10 +458,16 @@ R6: Seed, tests, quality gates, and PR cleanup
 
 **R5 Manual Acceptance**
 
-- Run `pnpm prisma:seed` to create the `SELF_SERVICE` self-service
-  application review scenario.
+- Run `pnpm prisma:seed` to initialize only baseline master data: roles,
+  permissions, menus, test users, clean customer leads, active product/package
+  configuration, deposit rules, available vehicles, and vehicle sale price
+  initialization records.
+- Do not rely on default seed for `SELF_SERVICE` application, quote, order,
+  contract, delivery, return, billing, collection, or entitlement demo records.
 - Use `/applications` as the main review workspace and filter by customer
   self-service source.
+- Create or select a clean customer lead, then create the self-service
+  application manually.
 - Open `/applications/:id` to inspect the intent vehicle, intent subscription
   plan, pending deposit state, and materials area.
 - Complete material, credit, product, and vehicle reviews, then finalize the
@@ -471,6 +477,13 @@ R6: Seed, tests, quality gates, and PR cleanup
 - Keep `/orders/review` as a legacy order-review entry only; it is not the new
   Stage 5.5 A/B mainline review workspace.
 - Confirm the B-line sales-assisted application and quote flow still works.
+
+Future complex acceptance data should live in explicit scenario seed commands
+such as `pnpm seed:scenario delivery`, `pnpm seed:scenario return`,
+`pnpm seed:scenario billing`, `pnpm seed:scenario collection`, and
+`pnpm seed:scenario entitlement`. Each scenario seed must use dedicated
+vehicles, clean its own old records first, and print the generated application,
+order, and vehicle identifiers.
 
 ## Stage 6: Vehicle Delivery, Return, And Re-Pooling
 
@@ -654,6 +667,17 @@ manual acceptance.
 
 - Do not deploy with pending migrations or undocumented environment variables.
 - Do not rely on local-only seed state for production roles.
+- Do not put workflow acceptance records back into the default seed.
+
+**Seed Strategy**
+
+- Default `pnpm prisma:seed` is a baseline master-data initializer only.
+- Seed vehicles must remain `AVAILABLE`, have `currentSalePriceAmount > 0`,
+  `salePriceStatus = EFFECTIVE`, valid insurance dates, and an
+  `INITIAL_POOL` sale price history.
+- Scenario seed scripts must be isolated from the default vehicle pool and
+  may not leave reusable seed vehicles in `REVIEW_RESERVED`, `RESERVED`,
+  `LEASED`, `RETURNED`, or `MAINTENANCE`.
 
 **Data Model**
 

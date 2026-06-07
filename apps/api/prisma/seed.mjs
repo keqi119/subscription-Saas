@@ -27,6 +27,17 @@ const roleRows = [
   ["ADMIN", "系统管理员", "用户、角色、权限与系统配置"]
 ];
 
+const userRows = [
+  ["admin", "系统管理员", "admin@example.com", "ADMIN"],
+  ["sa", "销售顾问", "sa@example.com", "SA"],
+  ["op", "运营管理", "op@example.com", "OP"],
+  ["rc", "风控专员", "rc@example.com", "RC"],
+  ["fi", "财务专员", "fi@example.com", "FI"],
+  ["as", "资产运营", "as@example.com", "AS"],
+  ["cs", "客服运营", "cs@example.com", "CS"],
+  ["gm", "运营总监", "gm@example.com", "GM"]
+];
+
 const permissionRows = [
   ["dashboard:view", "查看首页驾驶舱", "dashboard", "view"],
   ["user:view", "查看用户", "system", "view"],
@@ -267,70 +278,91 @@ const demoVehicles = [
   }
 ];
 
-const CUSTOMER_SELF_SERVICE_DEPOSIT_NOTICE =
-  "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。";
-
-const autoReviewSeed = {
-  applicationNo: "APP-AUTO-REVIEW-ET5-001",
+const baselineSubscriptionSeed = {
   benefitPackageNo: "BPK-AUTO-ET5-WASH",
   benefitPackagePriceAmount: 30000,
-  customerMobile: "13900000051",
-  customerName: "A线自助下单测试客户",
-  customerNo: "CUS-AUTO-REVIEW-001",
   energyPackageNo: "EPK-AUTO-ET5-POWER",
   energyPackagePriceAmount: 120000,
   mileagePackageNo: "MPK-AUTO-ET5-1500",
   mileagePackagePriceAmount: 80000,
-  orderNo: "ORD-AUTO-REVIEW-ET5-001",
   planNo: "PLAN-AUTO-ET5-STANDARD",
   productNo: "PROD-AUTO-ET5",
-  quoteNo: "QUO-AUTO-REVIEW-ET5-001",
-  vehicleNo: "VEH-AUTO-REVIEW-ET5-001",
   vehiclePackageNo: "VPK-AUTO-ET5-STANDARD",
-  versionNo: "2026-AUTO-REVIEW",
-  vin: "TESTAUTOORDERET5001"
+  versionNo: "2026-AUTO-REVIEW"
 };
 
-const selfServiceApplicationReviewSeed = {
-  applicationNo: "APP-SELF-SERVICE-REVIEW-001",
-  customerMobile: "13900000052",
-  customerName: "A线自助进件测试客户",
-  customerNo: "CUS-SELF-SERVICE-APP-001",
-  plateNo: "沪A自助02",
-  vehicleNo: "VEH-SELF-SERVICE-APP-ET5-001",
-  vin: "TESTSELFAPPET5001"
-};
-
-const deliveryHandoverAcceptanceSeeds = [
+const baselineCustomerLeads = [
   {
-    applicationNo: "APP-DELIVERY-PREPARE-001",
-    contractNo: "CON-DELIVERY-PREPARE-001",
-    customerMobile: "13900000061",
-    customerName: "交付验收测试客户A",
-    customerNo: "CUS-DELIVERY-PREPARE-001",
-    deliveryNo: null,
-    deliveryScenario: "PREPARE",
-    orderNo: "ORD-DELIVERY-PREPARE-001",
-    plateNo: "沪A交付01",
-    quoteNo: "QUO-DELIVERY-PREPARE-001",
-    vehicleNo: "VEH-DELIVERY-PREPARE-001",
-    vin: "TESTDELIVERYPREPARE001"
+    customerNo: "CUS-SEED-LEAD-A-001",
+    customerType: "PERSONAL",
+    grade: "A",
+    mobile: "13900000011",
+    name: "李晨",
+    remark: "默认 seed A 级个人 lead",
+    sourceChannel: "默认 seed"
   },
   {
-    applicationNo: "APP-DELIVERY-CONFIRM-001",
-    contractNo: "CON-DELIVERY-CONFIRM-001",
-    customerMobile: "13900000062",
-    customerName: "交付验收测试客户B",
-    customerNo: "CUS-DELIVERY-CONFIRM-001",
-    deliveryNo: "DLV-DELIVERY-CONFIRM-001",
-    deliveryScenario: "CONFIRM",
-    orderNo: "ORD-DELIVERY-CONFIRM-001",
-    plateNo: "沪A交付02",
-    quoteNo: "QUO-DELIVERY-CONFIRM-001",
-    vehicleNo: "VEH-DELIVERY-CONFIRM-001",
-    vin: "TESTDELIVERYCONFIRM001"
+    customerNo: "CUS-SEED-LEAD-B-001",
+    customerType: "PERSONAL",
+    grade: "B",
+    mobile: "13900000012",
+    name: "周雨",
+    remark: "默认 seed B 级个人 lead",
+    sourceChannel: "默认 seed"
+  },
+  {
+    customerNo: "CUS-SEED-LEAD-C-001",
+    customerType: "PERSONAL",
+    grade: "C",
+    mobile: "13900000013",
+    name: "王宁",
+    remark: "默认 seed C 级个人 lead",
+    sourceChannel: "默认 seed"
+  },
+  {
+    customerNo: "CUS-SEED-LEAD-COMPANY-001",
+    customerType: "COMPANY",
+    grade: "A",
+    mobile: "13900000014",
+    name: "上海澄明科技有限公司",
+    remark: "默认 seed 企业 lead",
+    sourceChannel: "默认 seed"
   }
 ];
+
+const oldDefaultFlowSeedData = {
+  applicationNos: [
+    "APP-AUTO-REVIEW-ET5-001",
+    "APP-SELF-SERVICE-REVIEW-001",
+    "APP-DELIVERY-PREPARE-001",
+    "APP-DELIVERY-CONFIRM-001"
+  ],
+  contractNos: ["CON-DELIVERY-PREPARE-001", "CON-DELIVERY-CONFIRM-001"],
+  contractVersions: [{ templateName: "Stage 6.1 Delivery Acceptance Contract", versionNo: "V1" }],
+  customerNos: [
+    "CUS-AUTO-REVIEW-001",
+    "CUS-SELF-SERVICE-APP-001",
+    "CUS-DELIVERY-PREPARE-001",
+    "CUS-DELIVERY-CONFIRM-001"
+  ],
+  deliveryNos: ["DLV-DELIVERY-CONFIRM-001"],
+  orderNos: [
+    "ORD-AUTO-REVIEW-ET5-001",
+    "ORD-DELIVERY-PREPARE-001",
+    "ORD-DELIVERY-CONFIRM-001"
+  ],
+  quoteNos: [
+    "QUO-AUTO-REVIEW-ET5-001",
+    "QUO-DELIVERY-PREPARE-001",
+    "QUO-DELIVERY-CONFIRM-001"
+  ],
+  vehicleVins: [
+    "TESTAUTOORDERET5001",
+    "TESTSELFAPPET5001",
+    "TESTDELIVERYPREPARE001",
+    "TESTDELIVERYCONFIRM001"
+  ]
+};
 
 const productManagementPermissions = [
   "product:view",
@@ -695,50 +727,34 @@ async function main() {
     ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", "reports", ...collectionMenuCodes]
   );
 
-  const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);
-  const adminUser = await prisma.user.upsert({
-    create: {
-      email: "admin@example.com",
-      name: "系统管理员",
-      passwordHash,
-      username: "admin"
-    },
-    update: {
-      name: "系统管理员",
-      status: "ACTIVE"
-    },
-    where: { username: "admin" }
-  });
+  const adminUser = await seedDefaultUsers();
 
-  await prisma.userRole.upsert({
-    create: {
-      roleId: adminRole.id,
-      userId: adminUser.id
-    },
-    update: {},
-    where: {
-      userId_roleId: {
-        roleId: adminRole.id,
-        userId: adminUser.id
-      }
-    }
-  });
-
+  await cleanupDefaultSeedFlowData();
   await seedDefaultDepositRules(adminUser.id);
+  await seedBaselineSubscriptionCatalog(adminUser.id);
+  await seedBaselineCustomerLeads(adminUser.id);
   await seedDemoVehicles(adminUser.id);
-  await seedCustomerSelfServiceReviewOrder(adminUser.id);
-  await seedSelfServiceApplicationReviewScenario(adminUser.id);
-  await seedDeliveryHandoverAcceptanceOrders(adminUser.id);
 
-  await prisma.auditLog.create({
-    data: {
+  const existingSeedAudit = await prisma.auditLog.findFirst({
+    where: {
       action: "CREATE",
-      afterSnapshot: { username: "admin", roles: ["ADMIN"] },
       entityId: adminUser.id,
       entityType: "user",
       module: "system"
     }
   });
+
+  if (!existingSeedAudit) {
+    await prisma.auditLog.create({
+      data: {
+        action: "CREATE",
+        afterSnapshot: { username: "admin", roles: ["ADMIN"] },
+        entityId: adminUser.id,
+        entityType: "user",
+        module: "system"
+      }
+    });
+  }
 }
 
 async function assignRoleAccess(roleCode, permissionCodes, menuCodes) {
@@ -770,6 +786,226 @@ async function assignRoleAccess(roleCode, permissionCodes, menuCodes) {
     })),
     skipDuplicates: true
   });
+}
+
+async function seedDefaultUsers() {
+  const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);
+  let adminUser = null;
+
+  for (const [username, name, email, roleCode] of userRows) {
+    const user = await prisma.user.upsert({
+      create: {
+        email,
+        name,
+        passwordHash,
+        username
+      },
+      update: {
+        deletedAt: null,
+        email,
+        name,
+        status: "ACTIVE"
+      },
+      where: { username }
+    });
+    const role = await prisma.role.findUniqueOrThrow({ where: { code: roleCode } });
+
+    await prisma.userRole.upsert({
+      create: {
+        roleId: role.id,
+        userId: user.id
+      },
+      update: {},
+      where: {
+        userId_roleId: {
+          roleId: role.id,
+          userId: user.id
+        }
+      }
+    });
+
+    if (username === "admin") {
+      adminUser = user;
+    }
+  }
+
+  if (!adminUser) {
+    throw new Error("Admin seed user was not created.");
+  }
+
+  return adminUser;
+}
+
+async function cleanupDefaultSeedFlowData() {
+  const oldFlowCustomers = await prisma.customer.findMany({
+    select: { id: true },
+    where: { customerNo: { in: oldDefaultFlowSeedData.customerNos } }
+  });
+  const oldFlowCustomerIds = oldFlowCustomers.map((customer) => customer.id);
+  const oldFlowVehicles = await prisma.vehicle.findMany({
+    select: { id: true },
+    where: { vin: { in: oldDefaultFlowSeedData.vehicleVins } }
+  });
+  const oldFlowVehicleIds = oldFlowVehicles.map((vehicle) => vehicle.id);
+  const baselineVehicles = await prisma.vehicle.findMany({
+    select: { id: true },
+    where: { vin: { in: demoVehicles.map((vehicle) => vehicle.vin) } }
+  });
+  const cleanupVehicleIds = [...oldFlowVehicleIds, ...baselineVehicles.map((vehicle) => vehicle.id)];
+
+  const applications = await prisma.application.findMany({
+    select: { id: true },
+    where: {
+      OR: [
+        { applicationNo: { in: oldDefaultFlowSeedData.applicationNos } },
+        ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : []),
+        ...(cleanupVehicleIds.length > 0
+          ? [
+              { finalVehicleId: { in: cleanupVehicleIds } },
+              { intentVehicleId: { in: cleanupVehicleIds } },
+              { softReservedVehicleId: { in: cleanupVehicleIds } }
+            ]
+          : [])
+      ]
+    }
+  });
+  const applicationIds = applications.map((application) => application.id);
+
+  const quotes = await prisma.subscriptionQuote.findMany({
+    select: { id: true },
+    where: {
+      OR: [
+        { quoteNo: { in: oldDefaultFlowSeedData.quoteNos } },
+        ...(applicationIds.length > 0 ? [{ applicationId: { in: applicationIds } }] : []),
+        ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : []),
+        ...(cleanupVehicleIds.length > 0 ? [{ vehicleId: { in: cleanupVehicleIds } }] : [])
+      ]
+    }
+  });
+  const quoteIds = quotes.map((quote) => quote.id);
+
+  const orders = await prisma.subscriptionOrder.findMany({
+    select: { id: true, quoteId: true },
+    where: {
+      OR: [
+        { orderNo: { in: oldDefaultFlowSeedData.orderNos } },
+        ...(applicationIds.length > 0 ? [{ applicationId: { in: applicationIds } }] : []),
+        ...(quoteIds.length > 0 ? [{ quoteId: { in: quoteIds } }] : []),
+        ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : []),
+        ...(cleanupVehicleIds.length > 0 ? [{ vehicleId: { in: cleanupVehicleIds } }] : [])
+      ]
+    }
+  });
+  const orderIds = orders.map((order) => order.id);
+  const orderQuoteIds = orders.map((order) => order.quoteId);
+  const allQuoteIds = [...new Set([...quoteIds, ...orderQuoteIds])];
+
+  if (orderIds.length > 0) {
+    await prisma.orderEntitlementUsage.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.orderEntitlementGrant.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.orderEntitlementAccount.deleteMany({ where: { orderId: { in: orderIds } } });
+
+    await prisma.collectionAction.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.collectionCaseBill.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.collectionCase.deleteMany({ where: { orderId: { in: orderIds } } });
+
+    await prisma.depositLedger.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.paymentWriteOff.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.paymentRecord.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.receivableBill.deleteMany({ where: { orderId: { in: orderIds } } });
+
+    await prisma.vehicleReturnDamage.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.vehicleReturn.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.vehicleDelivery.deleteMany({ where: { orderId: { in: orderIds } } });
+
+    await prisma.orderChange.deleteMany({ where: { orderId: { in: orderIds } } });
+    await prisma.subscriptionOrder.updateMany({
+      data: { contractId: null },
+      where: { id: { in: orderIds } }
+    });
+    await prisma.contract.deleteMany({
+      where: {
+        OR: [
+          { orderId: { in: orderIds } },
+          { contractNo: { in: oldDefaultFlowSeedData.contractNos } },
+          ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : [])
+        ]
+      }
+    });
+    await prisma.subscriptionOrder.deleteMany({ where: { id: { in: orderIds } } });
+  }
+
+  await prisma.vehicleDelivery.deleteMany({
+    where: {
+      OR: [
+        { deliveryNo: { in: oldDefaultFlowSeedData.deliveryNos } },
+        ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : []),
+        ...(cleanupVehicleIds.length > 0 ? [{ vehicleId: { in: cleanupVehicleIds } }] : [])
+      ]
+    }
+  });
+  await prisma.vehicleReturnDamage.deleteMany({
+    where: cleanupVehicleIds.length > 0 ? { vehicleId: { in: cleanupVehicleIds } } : { id: { in: [] } }
+  });
+  if (oldFlowCustomerIds.length > 0 || cleanupVehicleIds.length > 0) {
+    await prisma.vehicleReturn.deleteMany({
+      where: {
+        OR: [
+          ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : []),
+          ...(cleanupVehicleIds.length > 0 ? [{ vehicleId: { in: cleanupVehicleIds } }] : [])
+        ]
+      }
+    });
+  }
+  await prisma.contract.deleteMany({
+    where: {
+      OR: [
+        { contractNo: { in: oldDefaultFlowSeedData.contractNos } },
+        ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : [])
+      ]
+    }
+  });
+  await prisma.contractVersion.deleteMany({
+    where: {
+      OR: oldDefaultFlowSeedData.contractVersions.map((contractVersion) => ({
+        templateName: contractVersion.templateName,
+        versionNo: contractVersion.versionNo
+      }))
+    }
+  });
+
+  await prisma.subscriptionQuote.deleteMany({
+    where: {
+      OR: [
+        { quoteNo: { in: oldDefaultFlowSeedData.quoteNos } },
+        ...(allQuoteIds.length > 0 ? [{ id: { in: allQuoteIds } }] : []),
+        ...(applicationIds.length > 0 ? [{ applicationId: { in: applicationIds } }] : []),
+        ...(oldFlowCustomerIds.length > 0 ? [{ customerId: { in: oldFlowCustomerIds } }] : []),
+        ...(cleanupVehicleIds.length > 0 ? [{ vehicleId: { in: cleanupVehicleIds } }] : [])
+      ]
+    }
+  });
+
+  if (applicationIds.length > 0) {
+    await prisma.riskResult.deleteMany({ where: { applicationId: { in: applicationIds } } });
+    await prisma.applicationActionLog.deleteMany({ where: { applicationId: { in: applicationIds } } });
+    await prisma.applicationMaterialFile.deleteMany({ where: { applicationId: { in: applicationIds } } });
+    await prisma.applicationMaterialGroup.deleteMany({ where: { applicationId: { in: applicationIds } } });
+    await prisma.applicationMaterial.deleteMany({ where: { applicationId: { in: applicationIds } } });
+    await prisma.application.deleteMany({ where: { id: { in: applicationIds } } });
+  }
+
+  if (oldFlowVehicleIds.length > 0) {
+    await prisma.vehicleSalePriceHistory.deleteMany({ where: { vehicleId: { in: oldFlowVehicleIds } } });
+    await prisma.vehicle.deleteMany({ where: { id: { in: oldFlowVehicleIds } } });
+  }
+
+  if (oldFlowCustomerIds.length > 0) {
+    await prisma.customerFollowup.deleteMany({ where: { customerId: { in: oldFlowCustomerIds } } });
+    await prisma.customerIdentity.deleteMany({ where: { customerId: { in: oldFlowCustomerIds } } });
+    await prisma.customerProfile.deleteMany({ where: { customerId: { in: oldFlowCustomerIds } } });
+    await prisma.customer.deleteMany({ where: { id: { in: oldFlowCustomerIds } } });
+  }
 }
 
 async function seedDefaultDepositRules(operatorId) {
@@ -814,6 +1050,8 @@ async function seedDefaultDepositRules(operatorId) {
 
 async function seedDemoVehicles(operatorId) {
   const effectiveFrom = new Date("2026-06-01T00:00:00.000Z");
+  const insuranceStartDate = new Date("2026-01-01T00:00:00.000Z");
+  const insuranceEndDate = new Date("2027-12-31T00:00:00.000Z");
   const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
   const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
 
@@ -829,6 +1067,8 @@ async function seedDemoVehicles(operatorId) {
         currentSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount),
         currentSalePriceInitializedAt: reviewedAt,
         currentSalePriceReviewedAt: reviewedAt,
+        insuranceEndDate,
+        insuranceStartDate,
         model: vehicleSeed.model,
         modelYear: vehicleSeed.modelYear,
         nextSalePriceReviewAt,
@@ -854,6 +1094,8 @@ async function seedDemoVehicles(operatorId) {
         currentSalePriceInitializedAt: reviewedAt,
         currentSalePriceReviewedAt: reviewedAt,
         deletedAt: null,
+        insuranceEndDate,
+        insuranceStartDate,
         model: vehicleSeed.model,
         modelYear: vehicleSeed.modelYear,
         nextSalePriceReviewAt,
@@ -908,23 +1150,45 @@ async function seedDemoVehicles(operatorId) {
   }
 }
 
-async function seedCustomerSelfServiceReviewOrder(operatorId) {
-  const now = new Date("2026-06-05T00:00:00.000Z");
+async function seedBaselineCustomerLeads(operatorId) {
+  for (const lead of baselineCustomerLeads) {
+    await prisma.customer.upsert({
+      create: {
+        createdBy: operatorId,
+        customerNo: lead.customerNo,
+        customerType: lead.customerType,
+        grade: lead.grade,
+        mobile: lead.mobile,
+        name: lead.name,
+        ownerUserId: operatorId,
+        remark: lead.remark,
+        sourceChannel: lead.sourceChannel,
+        status: "LEAD",
+        updatedBy: operatorId
+      },
+      update: {
+        customerType: lead.customerType,
+        deletedAt: null,
+        grade: lead.grade,
+        mobile: lead.mobile,
+        name: lead.name,
+        ownerUserId: operatorId,
+        remark: lead.remark,
+        sourceChannel: lead.sourceChannel,
+        status: "LEAD",
+        updatedBy: operatorId
+      },
+      where: { customerNo: lead.customerNo }
+    });
+  }
+}
+
+async function seedBaselineSubscriptionCatalog(operatorId) {
   const effectiveFrom = new Date("2026-06-01T00:00:00.000Z");
   const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
-  const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
-  const periodMonths = 12;
-  const vehicleSalePriceAmount = 14800000;
-  const vehiclePurchasePriceAmount = 15000000;
   const vehicleBaseFeeAmount = 520000;
   const vehiclePackageRate = "0.040000";
   const monthlyFeeRate = "0.035000";
-  const vehicleBaseFeeCapAmount = 592000;
-  const monthlyFeeAmount =
-    vehicleBaseFeeAmount +
-    autoReviewSeed.mileagePackagePriceAmount +
-    autoReviewSeed.energyPackagePriceAmount +
-    autoReviewSeed.benefitPackagePriceAmount;
   const mileageLimitKm = 1500;
   const overMileageFeeAmount = 120;
   const energyLimitKwh = 200;
@@ -933,22 +1197,22 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
   const product = await prisma.product.upsert({
     create: {
       createdBy: operatorId,
-      description: "A 线自助下单人工验收专用订阅产品",
+      description: "默认 ET5 订阅产品",
       name: "A线ET5自助订阅产品",
-      productNo: autoReviewSeed.productNo,
+      productNo: baselineSubscriptionSeed.productNo,
       productType: "SUBSCRIPTION",
       status: "ACTIVE",
       updatedBy: operatorId
     },
     update: {
       deletedAt: null,
-      description: "A 线自助下单人工验收专用订阅产品",
+      description: "默认 ET5 订阅产品",
       name: "A线ET5自助订阅产品",
       productType: "SUBSCRIPTION",
       status: "ACTIVE",
       updatedBy: operatorId
     },
-    where: { productNo: autoReviewSeed.productNo }
+    where: { productNo: baselineSubscriptionSeed.productNo }
   });
 
   const productVersion = await prisma.productVersion.upsert({
@@ -960,7 +1224,7 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       productId: product.id,
       status: "ACTIVE",
       updatedBy: operatorId,
-      versionNo: autoReviewSeed.versionNo
+      versionNo: baselineSubscriptionSeed.versionNo
     },
     update: {
       approvedAt: reviewedAt,
@@ -974,7 +1238,7 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
     where: {
       productId_versionNo: {
         productId: product.id,
-        versionNo: autoReviewSeed.versionNo
+        versionNo: baselineSubscriptionSeed.versionNo
       }
     }
   });
@@ -1017,7 +1281,7 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
   const vehiclePackage = await prisma.vehiclePackage.upsert({
     create: {
       brand: "NIO",
-      configName: "ET5 标准验收配置",
+      configName: "ET5 标准配置",
       createdBy: operatorId,
       maxPeriodMonths: 36,
       maxPurchasePriceAmount: BigInt(18000000),
@@ -1025,10 +1289,10 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       minPurchasePriceAmount: BigInt(10000000),
       monthlyFeeRate: vehiclePackageRate,
       packageName: "A线ET5标准车型包",
-      packageNo: autoReviewSeed.vehiclePackageNo,
+      packageNo: baselineSubscriptionSeed.vehiclePackageNo,
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收车型包",
+      remark: "默认 seed 车型包",
       series: "ET5",
       status: "ACTIVE",
       updatedBy: operatorId,
@@ -1037,7 +1301,7 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
     },
     update: {
       brand: "NIO",
-      configName: "ET5 标准验收配置",
+      configName: "ET5 标准配置",
       deletedAt: null,
       maxPeriodMonths: 36,
       maxPurchasePriceAmount: BigInt(18000000),
@@ -1047,14 +1311,14 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       packageName: "A线ET5标准车型包",
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收车型包",
+      remark: "默认 seed 车型包",
       series: "ET5",
       status: "ACTIVE",
       updatedBy: operatorId,
       vehicleModel: "ET5",
       vehicleModelName: "ET5"
     },
-    where: { packageNo: autoReviewSeed.vehiclePackageNo }
+    where: { packageNo: baselineSubscriptionSeed.vehiclePackageNo }
   });
 
   const mileagePackage = await prisma.mileagePackage.upsert({
@@ -1063,11 +1327,11 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       monthlyMileageKm: mileageLimitKm,
       overMileageFeeAmount: BigInt(overMileageFeeAmount),
       packageName: "A线ET5 1500km里程包",
-      packageNo: autoReviewSeed.mileagePackageNo,
-      priceAmount: BigInt(autoReviewSeed.mileagePackagePriceAmount),
+      packageNo: baselineSubscriptionSeed.mileagePackageNo,
+      priceAmount: BigInt(baselineSubscriptionSeed.mileagePackagePriceAmount),
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收里程包",
+      remark: "默认 seed 里程包",
       status: "ACTIVE",
       updatedBy: operatorId
     },
@@ -1076,14 +1340,14 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       monthlyMileageKm: mileageLimitKm,
       overMileageFeeAmount: BigInt(overMileageFeeAmount),
       packageName: "A线ET5 1500km里程包",
-      priceAmount: BigInt(autoReviewSeed.mileagePackagePriceAmount),
+      priceAmount: BigInt(baselineSubscriptionSeed.mileagePackagePriceAmount),
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收里程包",
+      remark: "默认 seed 里程包",
       status: "ACTIVE",
       updatedBy: operatorId
     },
-    where: { packageNo: autoReviewSeed.mileagePackageNo }
+    where: { packageNo: baselineSubscriptionSeed.mileagePackageNo }
   });
 
   const energyPackage = await prisma.energyPackage.upsert({
@@ -1092,11 +1356,11 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       monthlyEnergyCount: energyLimitCount,
       monthlyEnergyKwh: energyLimitKwh,
       packageName: "A线ET5补能包",
-      packageNo: autoReviewSeed.energyPackageNo,
-      priceAmount: BigInt(autoReviewSeed.energyPackagePriceAmount),
+      packageNo: baselineSubscriptionSeed.energyPackageNo,
+      priceAmount: BigInt(baselineSubscriptionSeed.energyPackagePriceAmount),
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收补能包",
+      remark: "默认 seed 补能包",
       serviceDescription: "每月 4 次补能服务",
       stationScope: "上海核心城区",
       status: "ACTIVE",
@@ -1107,16 +1371,16 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       monthlyEnergyCount: energyLimitCount,
       monthlyEnergyKwh: energyLimitKwh,
       packageName: "A线ET5补能包",
-      priceAmount: BigInt(autoReviewSeed.energyPackagePriceAmount),
+      priceAmount: BigInt(baselineSubscriptionSeed.energyPackagePriceAmount),
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收补能包",
+      remark: "默认 seed 补能包",
       serviceDescription: "每月 4 次补能服务",
       stationScope: "上海核心城区",
       status: "ACTIVE",
       updatedBy: operatorId
     },
-    where: { packageNo: autoReviewSeed.energyPackageNo }
+    where: { packageNo: baselineSubscriptionSeed.energyPackageNo }
   });
 
   const benefitPackage = await prisma.benefitPackage.upsert({
@@ -1126,11 +1390,11 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       createdBy: operatorId,
       description: "每月 2 次洗车权益",
       packageName: "A线ET5权益包",
-      packageNo: autoReviewSeed.benefitPackageNo,
-      priceAmount: BigInt(autoReviewSeed.benefitPackagePriceAmount),
+      packageNo: baselineSubscriptionSeed.benefitPackageNo,
+      priceAmount: BigInt(baselineSubscriptionSeed.benefitPackagePriceAmount),
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收权益包",
+      remark: "默认 seed 权益包",
       status: "ACTIVE",
       updatedBy: operatorId
     },
@@ -1140,17 +1404,17 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       deletedAt: null,
       description: "每月 2 次洗车权益",
       packageName: "A线ET5权益包",
-      priceAmount: BigInt(autoReviewSeed.benefitPackagePriceAmount),
+      priceAmount: BigInt(baselineSubscriptionSeed.benefitPackagePriceAmount),
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收权益包",
+      remark: "默认 seed 权益包",
       status: "ACTIVE",
       updatedBy: operatorId
     },
-    where: { packageNo: autoReviewSeed.benefitPackageNo }
+    where: { packageNo: baselineSubscriptionSeed.benefitPackageNo }
   });
 
-  const subscriptionPlan = await prisma.subscriptionPlan.upsert({
+  await prisma.subscriptionPlan.upsert({
     create: {
       baseMonthlyFeeAmount: BigInt(vehicleBaseFeeAmount),
       benefitPackageId: benefitPackage.id,
@@ -1164,10 +1428,10 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       monthlyFeeMode: "FIXED_AMOUNT",
       monthlyFeeRate,
       planName: "A线ET5标准订阅套餐",
-      planNo: autoReviewSeed.planNo,
+      planNo: baselineSubscriptionSeed.planNo,
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收预设套餐",
+      remark: "默认 seed 订阅套餐",
       status: "ACTIVE",
       updatedBy: operatorId,
       vehiclePackageId: vehiclePackage.id
@@ -1188,1254 +1452,13 @@ async function seedCustomerSelfServiceReviewOrder(operatorId) {
       planName: "A线ET5标准订阅套餐",
       productId: product.id,
       productVersionId: productVersion.id,
-      remark: "A 线自助下单人工验收预设套餐",
+      remark: "默认 seed 订阅套餐",
       status: "ACTIVE",
       updatedBy: operatorId,
       vehiclePackageId: vehiclePackage.id
     },
-    where: { planNo: autoReviewSeed.planNo }
+    where: { planNo: baselineSubscriptionSeed.planNo }
   });
-
-  const vehicle = await prisma.vehicle.upsert({
-    create: {
-      assetLocation: "上海验收车库",
-      batteryCapacityKwh: 75,
-      batteryUsageType: "BUYOUT",
-      brand: "NIO",
-      createdBy: operatorId,
-      currentMileageKm: 1200,
-      currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
-      currentSalePriceInitializedAt: reviewedAt,
-      currentSalePriceReviewedAt: reviewedAt,
-      model: "ET5 75kWh",
-      modelYear: 2026,
-      nextSalePriceReviewAt,
-      plateNo: "沪A自助01",
-      purchaseDate: new Date("2026-05-25T00:00:00.000Z"),
-      purchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-      remark: "A 线自助下单人工验收测试车辆",
-      salePriceStatus: "EFFECTIVE",
-      series: "ET5",
-      status: "AVAILABLE",
-      updatedBy: operatorId,
-      vehicleModel: "ET5",
-      vehicleNo: autoReviewSeed.vehicleNo,
-      vin: autoReviewSeed.vin
-    },
-    update: {
-      assetLocation: "上海验收车库",
-      batteryCapacityKwh: 75,
-      batteryUsageType: "BUYOUT",
-      brand: "NIO",
-      currentMileageKm: 1200,
-      currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
-      currentSalePriceInitializedAt: reviewedAt,
-      currentSalePriceReviewedAt: reviewedAt,
-      deletedAt: null,
-      model: "ET5 75kWh",
-      modelYear: 2026,
-      nextSalePriceReviewAt,
-      plateNo: "沪A自助01",
-      purchaseDate: new Date("2026-05-25T00:00:00.000Z"),
-      purchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-      remark: "A 线自助下单人工验收测试车辆",
-      salePriceReinitRequiredAt: null,
-      salePriceStatus: "EFFECTIVE",
-      series: "ET5",
-      status: "AVAILABLE",
-      updatedBy: operatorId,
-      vehicleModel: "ET5",
-      vehicleNo: autoReviewSeed.vehicleNo
-    },
-    where: { vin: autoReviewSeed.vin }
-  });
-
-  await upsertInitialSalePriceHistory({
-    effectiveFrom,
-    operatorId,
-    reason: "A 线自助下单验收车辆初始化",
-    remark: "seed customer self-service review order",
-    vehicleId: vehicle.id,
-    vehicleSalePriceAmount
-  });
-
-  const customer = await prisma.customer.upsert({
-    create: {
-      createdBy: operatorId,
-      customerNo: autoReviewSeed.customerNo,
-      mobile: autoReviewSeed.customerMobile,
-      name: autoReviewSeed.customerName,
-      ownerUserId: operatorId,
-      remark: "A 线自助下单人工验收客户",
-      sourceChannel: "客户自助",
-      status: "PENDING_APPLICATION",
-      updatedBy: operatorId
-    },
-    update: {
-      deletedAt: null,
-      grade: null,
-      mobile: autoReviewSeed.customerMobile,
-      name: autoReviewSeed.customerName,
-      ownerUserId: operatorId,
-      remark: "A 线自助下单人工验收客户",
-      sourceChannel: "客户自助",
-      status: "PENDING_APPLICATION",
-      updatedBy: operatorId
-    },
-    where: { customerNo: autoReviewSeed.customerNo }
-  });
-
-  const application = await prisma.application.upsert({
-    create: {
-      applicationNo: autoReviewSeed.applicationNo,
-      createdBy: operatorId,
-      customerId: customer.id,
-      intendedModel: "ET5",
-      intendedPeriodMonths: periodMonths,
-      salesUserId: operatorId,
-      status: "SUBMITTED",
-      submittedAt: now,
-      updatedBy: operatorId
-    },
-    update: {
-      customerId: customer.id,
-      deletedAt: null,
-      intendedModel: "ET5",
-      intendedPeriodMonths: periodMonths,
-      rejectedReason: null,
-      salesUserId: operatorId,
-      status: "SUBMITTED",
-      submittedAt: now,
-      updatedBy: operatorId
-    },
-    where: { applicationNo: autoReviewSeed.applicationNo }
-  });
-
-  const existingActionLog = await prisma.applicationActionLog.findFirst({
-    where: {
-      actionType: "CREATE",
-      applicationId: application.id,
-      comment: "A 线自助下单 seed 自动生成进件"
-    }
-  });
-
-  if (!existingActionLog) {
-    await prisma.applicationActionLog.create({
-      data: {
-        actionType: "CREATE",
-        applicationId: application.id,
-        comment: "A 线自助下单 seed 自动生成进件",
-        createdBy: operatorId,
-        operatorId,
-        operatorName: "系统管理员",
-        toStatus: "SUBMITTED",
-        updatedBy: operatorId
-      }
-    });
-  }
-
-  const vehicleSnapshot = {
-    assetLocation: vehicle.assetLocation,
-    batteryCapacityKwh: Number(vehicle.batteryCapacityKwh),
-    batteryUsageType: vehicle.batteryUsageType,
-    batteryUsageTypeLabel: "电池买断",
-    brand: vehicle.brand,
-    currentMileageKm: vehicle.currentMileageKm,
-    currentSalePriceAmount: vehicleSalePriceAmount,
-    plateNo: vehicle.plateNo,
-    series: vehicle.series,
-    status: "AVAILABLE",
-    vehicleModel: "ET5",
-    vehicleNo: vehicle.vehicleNo,
-    vin: vehicle.vin
-  };
-  const packageSnapshot = {
-    benefitPackage: toSeedPackageSnapshot(benefitPackage, {
-      benefitCount: 2,
-      benefitType: "WASH_CAR",
-      description: "每月 2 次洗车权益",
-      priceAmount: autoReviewSeed.benefitPackagePriceAmount
-    }),
-    energyPackage: toSeedPackageSnapshot(energyPackage, {
-      monthlyEnergyCount: energyLimitCount,
-      monthlyEnergyKwh: energyLimitKwh,
-      priceAmount: autoReviewSeed.energyPackagePriceAmount
-    }),
-    mileagePackage: toSeedPackageSnapshot(mileagePackage, {
-      monthlyMileageKm: mileageLimitKm,
-      overMileageFeeAmount,
-      priceAmount: autoReviewSeed.mileagePackagePriceAmount
-    }),
-    pricing: {
-      benefitPackagePriceAmount: autoReviewSeed.benefitPackagePriceAmount,
-      currentSalePriceAmount: vehicleSalePriceAmount,
-      energyPackagePriceAmount: autoReviewSeed.energyPackagePriceAmount,
-      fixedRate: null,
-      mileagePackagePriceAmount: autoReviewSeed.mileagePackagePriceAmount,
-      monthlyFeeAmount,
-      vehicleBaseFeeAmount,
-      vehicleBaseFeeCapAmount,
-      vehicleBaseFeeMode: "FIXED_AMOUNT",
-      vehicleBaseFeeModeLabel: "固定金额"
-    },
-    subscriptionPlan: {
-      baseMonthlyFeeAmount: vehicleBaseFeeAmount,
-      benefitPackageId: benefitPackage.id,
-      effectiveFrom: "2026-06-01",
-      effectiveTo: null,
-      energyPackageId: energyPackage.id,
-      id: subscriptionPlan.id,
-      maxPeriodMonths: 36,
-      mileagePackageId: mileagePackage.id,
-      minPeriodMonths: 12,
-      monthlyFeeCapRate: Number(vehiclePackageRate),
-      monthlyFeeMode: "FIXED_AMOUNT",
-      monthlyFeeModeLabel: "固定金额",
-      monthlyFeeRate: Number(monthlyFeeRate),
-      planName: "A线ET5标准订阅套餐",
-      planNo: autoReviewSeed.planNo,
-      productId: product.id,
-      productVersionId: productVersion.id,
-      status: "ACTIVE",
-      vehiclePackageId: vehiclePackage.id
-    },
-    vehicleBaseFeeAmount,
-    vehicleBaseFeeCapAmount,
-    vehicleBaseFeeMode: "FIXED_AMOUNT",
-    vehicleBaseFeeModeLabel: "固定金额",
-    vehiclePackage: toSeedPackageSnapshot(vehiclePackage, {
-      configName: "ET5 标准验收配置",
-      maxPurchasePriceAmount: 18000000,
-      minPurchasePriceAmount: 10000000,
-      monthlyFeeRate: Number(vehiclePackageRate),
-      vehicleModel: "ET5"
-    })
-  };
-  const customerSelectedSnapshot = {
-    customerId: customer.id,
-    customerName: customer.name,
-    depositDescription: CUSTOMER_SELF_SERVICE_DEPOSIT_NOTICE,
-    depositStatus: "PENDING_CONFIRM",
-    monthlyFeeAmount,
-    periodMonths,
-    selectedAt: now.toISOString(),
-    subscriptionPlan: {
-      planName: "A线ET5标准订阅套餐",
-      planNo: autoReviewSeed.planNo
-    },
-    subscriptionPlanId: subscriptionPlan.id,
-    vehicle: {
-      plateNo: vehicle.plateNo,
-      vehicleModel: "ET5",
-      vehicleNo: vehicle.vehicleNo,
-      vin: vehicle.vin
-    },
-    vehicleBaseFeeAmount,
-    vehicleId: vehicle.id
-  };
-  const depositRuleSnapshot = {
-    depositDescription: CUSTOMER_SELF_SERVICE_DEPOSIT_NOTICE,
-    status: "PENDING_CONFIRM"
-  };
-
-  const quoteData = {
-    applicationId: application.id,
-    benefitPackageId: benefitPackage.id,
-    benefitPackagePriceAmount: BigInt(autoReviewSeed.benefitPackagePriceAmount),
-    customerId: customer.id,
-    customerSelectedSnapshot,
-    depositAmount: 0n,
-    depositRuleSnapshot,
-    energyLimitCount,
-    energyLimitKwh,
-    energyPackageId: energyPackage.id,
-    energyPackagePriceAmount: BigInt(autoReviewSeed.energyPackagePriceAmount),
-    mileageLimitKm,
-    mileagePackageId: mileagePackage.id,
-    mileagePackagePriceAmount: BigInt(autoReviewSeed.mileagePackagePriceAmount),
-    monthlyFeeAmount: BigInt(monthlyFeeAmount),
-    monthlyFeeCapAmount: BigInt(vehicleBaseFeeCapAmount),
-    monthlyFeeRate,
-    overMileageFeeAmount: BigInt(overMileageFeeAmount),
-    packageSnapshot,
-    periodMonths,
-    productId: product.id,
-    productVersionId: productVersion.id,
-    riskResultId: null,
-    status: "DRAFT",
-    subscriptionPlanId: subscriptionPlan.id,
-    updatedBy: operatorId,
-    vehicleBaseFeeAmount: BigInt(vehicleBaseFeeAmount),
-    vehicleBaseFeeCapAmount: BigInt(vehicleBaseFeeCapAmount),
-    vehicleId: vehicle.id,
-    vehicleModel: "ET5",
-    vehiclePackageId: vehiclePackage.id,
-    vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-    vehicleSalePriceAmount: BigInt(vehicleSalePriceAmount),
-    vehicleSnapshot
-  };
-
-  const quote = await prisma.subscriptionQuote.upsert({
-    create: {
-      ...quoteData,
-      createdBy: operatorId,
-      quoteNo: autoReviewSeed.quoteNo
-    },
-    update: {
-      ...quoteData,
-      cancelledAt: null,
-      confirmedAt: null,
-      confirmedBy: null,
-      deletedAt: null
-    },
-    where: { quoteNo: autoReviewSeed.quoteNo }
-  });
-
-  const quoteSnapshot = {
-    applicationId: application.id,
-    customerId: customer.id,
-    customerSelectedSnapshot,
-    depositAmount: 0,
-    depositDescription: CUSTOMER_SELF_SERVICE_DEPOSIT_NOTICE,
-    depositRuleSnapshot,
-    depositStatus: "PENDING_CONFIRM",
-    finalDepositAmount: null,
-    monthlyFeeAmount,
-    packageSnapshot,
-    periodMonths,
-    productId: product.id,
-    productVersionId: productVersion.id,
-    quoteId: quote.id,
-    quoteNo: quote.quoteNo,
-    status: "DRAFT",
-    subscriptionPlanId: subscriptionPlan.id,
-    vehicleBaseFeeAmount,
-    vehicleBaseFeeCapAmount,
-    vehicleId: vehicle.id,
-    vehicleModel: "ET5",
-    vehicleSalePriceAmount,
-    vehicleSnapshot
-  };
-
-  const orderData = {
-    applicationId: application.id,
-    businessType: "SUBSCRIPTION",
-    creditReviewStatus: "PENDING",
-    customerId: customer.id,
-    customerConfirmedAt: null,
-    customerSelectedSnapshot,
-    depositAmount: 0n,
-    depositStatus: "PENDING_CONFIRM",
-    energyLimitCount,
-    energyLimitKwh,
-    finalDepositAmount: null,
-    finalPlanConfirmedAt: null,
-    finalPlanSnapshot: null,
-    mileageLimitKm,
-    monthlyFeeAmount: BigInt(monthlyFeeAmount),
-    orderSource: "CUSTOMER_SELF_SERVICE",
-    orderStatus: "PENDING_REVIEW",
-    overMileageFeeAmount: BigInt(overMileageFeeAmount),
-    periodMonths,
-    productId: product.id,
-    productReviewStatus: "PENDING",
-    productVersionId: productVersion.id,
-    quoteId: quote.id,
-    quoteSnapshot,
-    reviewComment: null,
-    riskResultId: null,
-    updatedBy: operatorId,
-    vehicleId: vehicle.id,
-    vehicleModel: "ET5",
-    vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-    vehicleReviewStatus: "PENDING"
-  };
-
-  await prisma.subscriptionOrder.upsert({
-    create: {
-      ...orderData,
-      createdBy: operatorId,
-      orderNo: autoReviewSeed.orderNo
-    },
-    update: {
-      ...orderData,
-      actualDeliveryAt: null,
-      deletedAt: null,
-      endDate: null,
-      startDate: null
-    },
-    where: { orderNo: autoReviewSeed.orderNo }
-  });
-
-  await prisma.vehicle.update({
-    data: {
-      status: "REVIEW_RESERVED",
-      updatedBy: operatorId
-    },
-    where: { id: vehicle.id }
-  });
-}
-
-async function seedSelfServiceApplicationReviewScenario(operatorId) {
-  const now = new Date("2026-06-05T01:00:00.000Z");
-  const effectiveFrom = new Date("2026-06-01T00:00:00.000Z");
-  const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
-  const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
-  const softReservationExpiresAt = new Date("2026-06-12T01:00:00.000Z");
-  const periodMonths = 12;
-  const vehicleSalePriceAmount = 14800000;
-  const vehiclePurchasePriceAmount = 15000000;
-
-  const subscriptionPlan = await prisma.subscriptionPlan.findUniqueOrThrow({
-    include: {
-      benefitPackage: true,
-      energyPackage: true,
-      mileagePackage: true,
-      product: true,
-      productVersion: true,
-      vehiclePackage: true
-    },
-    where: { planNo: autoReviewSeed.planNo }
-  });
-
-  const vehicleBaseFeeAmount = Number(subscriptionPlan.baseMonthlyFeeAmount ?? 520000n);
-  const vehicleBaseFeeCapAmount = Math.floor(
-    vehicleSalePriceAmount * Number(subscriptionPlan.vehiclePackage.monthlyFeeRate)
-  );
-  const mileagePackagePriceAmount = Number(subscriptionPlan.mileagePackage.priceAmount);
-  const energyPackagePriceAmount = Number(subscriptionPlan.energyPackage.priceAmount);
-  const benefitPackagePriceAmount = Number(subscriptionPlan.benefitPackage?.priceAmount ?? 0n);
-  const monthlyFeeAmount =
-    vehicleBaseFeeAmount +
-    mileagePackagePriceAmount +
-    energyPackagePriceAmount +
-    benefitPackagePriceAmount;
-
-  const vehicle = await prisma.vehicle.upsert({
-    create: {
-      assetLocation: "上海验收车库",
-      batteryCapacityKwh: 75,
-      batteryUsageType: "BUYOUT",
-      brand: "NIO",
-      createdBy: operatorId,
-      currentMileageKm: 900,
-      currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
-      currentSalePriceInitializedAt: reviewedAt,
-      currentSalePriceReviewedAt: reviewedAt,
-      model: "ET5 75kWh",
-      modelYear: 2026,
-      nextSalePriceReviewAt,
-      plateNo: selfServiceApplicationReviewSeed.plateNo,
-      purchaseDate: new Date("2026-05-26T00:00:00.000Z"),
-      purchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-      remark: "A线自助进件人工验收测试车辆",
-      salePriceStatus: "EFFECTIVE",
-      series: "ET5",
-      status: "REVIEW_RESERVED",
-      updatedBy: operatorId,
-      vehicleModel: "ET5",
-      vehicleNo: selfServiceApplicationReviewSeed.vehicleNo,
-      vin: selfServiceApplicationReviewSeed.vin
-    },
-    update: {
-      assetLocation: "上海验收车库",
-      batteryCapacityKwh: 75,
-      batteryUsageType: "BUYOUT",
-      brand: "NIO",
-      currentMileageKm: 900,
-      currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
-      currentSalePriceInitializedAt: reviewedAt,
-      currentSalePriceReviewedAt: reviewedAt,
-      deletedAt: null,
-      model: "ET5 75kWh",
-      modelYear: 2026,
-      nextSalePriceReviewAt,
-      plateNo: selfServiceApplicationReviewSeed.plateNo,
-      purchaseDate: new Date("2026-05-26T00:00:00.000Z"),
-      purchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-      remark: "A线自助进件人工验收测试车辆",
-      salePriceReinitRequiredAt: null,
-      salePriceStatus: "EFFECTIVE",
-      series: "ET5",
-      status: "REVIEW_RESERVED",
-      updatedBy: operatorId,
-      vehicleModel: "ET5",
-      vehicleNo: selfServiceApplicationReviewSeed.vehicleNo
-    },
-    where: { vin: selfServiceApplicationReviewSeed.vin }
-  });
-
-  await upsertInitialSalePriceHistory({
-    effectiveFrom,
-    operatorId,
-    reason: "A线自助进件验收车辆初始化",
-    remark: "seed self-service application review scenario",
-    vehicleId: vehicle.id,
-    vehicleSalePriceAmount
-  });
-
-  const customer = await prisma.customer.upsert({
-    create: {
-      createdBy: operatorId,
-      customerNo: selfServiceApplicationReviewSeed.customerNo,
-      mobile: selfServiceApplicationReviewSeed.customerMobile,
-      name: selfServiceApplicationReviewSeed.customerName,
-      ownerUserId: operatorId,
-      remark: "A线自助进件人工验收客户",
-      sourceChannel: "客户自助",
-      status: "PENDING_APPLICATION",
-      updatedBy: operatorId
-    },
-    update: {
-      deletedAt: null,
-      grade: null,
-      mobile: selfServiceApplicationReviewSeed.customerMobile,
-      name: selfServiceApplicationReviewSeed.customerName,
-      ownerUserId: operatorId,
-      remark: "A线自助进件人工验收客户",
-      sourceChannel: "客户自助",
-      status: "PENDING_APPLICATION",
-      updatedBy: operatorId
-    },
-    where: { customerNo: selfServiceApplicationReviewSeed.customerNo }
-  });
-
-  const vehicleSnapshot = {
-    assetLocation: vehicle.assetLocation,
-    batteryCapacityKwh: Number(vehicle.batteryCapacityKwh),
-    batteryUsageType: vehicle.batteryUsageType,
-    batteryUsageTypeLabel: "电池买断",
-    brand: vehicle.brand,
-    currentMileageKm: vehicle.currentMileageKm,
-    currentSalePriceAmount: vehicleSalePriceAmount,
-    plateNo: vehicle.plateNo,
-    series: vehicle.series,
-    status: "REVIEW_RESERVED",
-    vehicleModel: "ET5",
-    vehicleNo: vehicle.vehicleNo,
-    vin: vehicle.vin
-  };
-  const packageSnapshot = {
-    benefitPackage: subscriptionPlan.benefitPackage
-      ? toSeedPackageSnapshot(subscriptionPlan.benefitPackage, {
-          priceAmount: benefitPackagePriceAmount
-        })
-      : null,
-    energyPackage: toSeedPackageSnapshot(subscriptionPlan.energyPackage, {
-      monthlyEnergyCount: subscriptionPlan.energyPackage.monthlyEnergyCount,
-      monthlyEnergyKwh: subscriptionPlan.energyPackage.monthlyEnergyKwh,
-      priceAmount: energyPackagePriceAmount
-    }),
-    mileagePackage: toSeedPackageSnapshot(subscriptionPlan.mileagePackage, {
-      monthlyMileageKm: subscriptionPlan.mileagePackage.monthlyMileageKm,
-      overMileageFeeAmount: Number(subscriptionPlan.mileagePackage.overMileageFeeAmount),
-      priceAmount: mileagePackagePriceAmount
-    }),
-    pricing: {
-      benefitPackagePriceAmount,
-      currentSalePriceAmount: vehicleSalePriceAmount,
-      energyPackagePriceAmount,
-      fixedRate: null,
-      mileagePackagePriceAmount,
-      monthlyFeeAmount,
-      vehicleBaseFeeAmount,
-      vehicleBaseFeeCapAmount,
-      vehicleBaseFeeMode: subscriptionPlan.monthlyFeeMode,
-      vehicleBaseFeeModeLabel: "固定金额"
-    },
-    subscriptionPlan: {
-      baseMonthlyFeeAmount: vehicleBaseFeeAmount,
-      benefitPackageId: subscriptionPlan.benefitPackageId,
-      effectiveFrom: subscriptionPlan.effectiveFrom.toISOString().slice(0, 10),
-      effectiveTo: subscriptionPlan.effectiveTo?.toISOString().slice(0, 10) ?? null,
-      energyPackageId: subscriptionPlan.energyPackageId,
-      id: subscriptionPlan.id,
-      maxPeriodMonths: subscriptionPlan.maxPeriodMonths,
-      mileagePackageId: subscriptionPlan.mileagePackageId,
-      minPeriodMonths: subscriptionPlan.minPeriodMonths,
-      monthlyFeeCapRate: Number(subscriptionPlan.monthlyFeeCapRate),
-      monthlyFeeMode: subscriptionPlan.monthlyFeeMode,
-      monthlyFeeModeLabel: "固定金额",
-      monthlyFeeRate: Number(subscriptionPlan.monthlyFeeRate),
-      planName: subscriptionPlan.planName,
-      planNo: subscriptionPlan.planNo,
-      productId: subscriptionPlan.productId,
-      productVersionId: subscriptionPlan.productVersionId,
-      status: subscriptionPlan.status,
-      vehiclePackageId: subscriptionPlan.vehiclePackageId
-    },
-    vehicleBaseFeeAmount,
-    vehicleBaseFeeCapAmount,
-    vehicleBaseFeeMode: subscriptionPlan.monthlyFeeMode,
-    vehicleBaseFeeModeLabel: "固定金额",
-    vehiclePackage: toSeedPackageSnapshot(subscriptionPlan.vehiclePackage, {
-      configName: subscriptionPlan.vehiclePackage.configName,
-      maxPurchasePriceAmount: Number(subscriptionPlan.vehiclePackage.maxPurchasePriceAmount),
-      minPurchasePriceAmount: Number(subscriptionPlan.vehiclePackage.minPurchasePriceAmount),
-      monthlyFeeRate: Number(subscriptionPlan.vehiclePackage.monthlyFeeRate),
-      vehicleModel: "ET5"
-    })
-  };
-  const intentSnapshot = {
-    customerId: customer.id,
-    customerName: customer.name,
-    depositDescription: CUSTOMER_SELF_SERVICE_DEPOSIT_NOTICE,
-    depositStatus: "PENDING_CONFIRM",
-    monthlyFeeAmount,
-    packageSnapshot,
-    periodMonths,
-    selectedAt: now.toISOString(),
-    subscriptionPlanId: subscriptionPlan.id,
-    vehicleBaseFeeAmount,
-    vehicleId: vehicle.id,
-    vehicleSnapshot
-  };
-  const customerSelectedSnapshot = intentSnapshot;
-
-  const applicationData = {
-    applicationSource: "SELF_SERVICE",
-    approvedAt: null,
-    creditReviewComment: null,
-    creditReviewStatus: "PENDING",
-    customerGrade: null,
-    customerId: customer.id,
-    customerSelectedSnapshot,
-    depositRuleId: null,
-    depositRuleSnapshot: {
-      depositDescription: CUSTOMER_SELF_SERVICE_DEPOSIT_NOTICE,
-      status: "PENDING_CONFIRM"
-    },
-    depositStatus: "PENDING_CONFIRM",
-    finalDepositAmount: null,
-    finalPeriodMonths: null,
-    finalPlanConfirmedAt: null,
-    finalPlanSnapshot: null,
-    finalQuoteSnapshot: null,
-    finalSubscriptionPlanId: null,
-    finalVehicleBaseFeeAmount: null,
-    finalVehicleId: null,
-    intendedModel: "ET5",
-    intendedPeriodMonths: periodMonths,
-    intentPeriodMonths: periodMonths,
-    intentSnapshot,
-    intentSubscriptionPlanId: subscriptionPlan.id,
-    intentVehicleBaseFeeAmount: BigInt(vehicleBaseFeeAmount),
-    intentVehicleId: vehicle.id,
-    materialReviewStatus: "PENDING",
-    planConfirmStatus: "PENDING",
-    productReviewStatus: "PENDING",
-    rejectedReason: null,
-    salesUserId: operatorId,
-    softReservationExpiresAt,
-    softReservedAt: now,
-    softReservedVehicleId: vehicle.id,
-    status: "SUBMITTED",
-    submittedAt: now,
-    updatedBy: operatorId,
-    vehicleReviewStatus: "PENDING"
-  };
-
-  const application = await prisma.application.upsert({
-    create: {
-      ...applicationData,
-      applicationNo: selfServiceApplicationReviewSeed.applicationNo,
-      createdBy: operatorId
-    },
-    update: {
-      ...applicationData,
-      deletedAt: null
-    },
-    where: { applicationNo: selfServiceApplicationReviewSeed.applicationNo }
-  });
-
-  const existingActionLog = await prisma.applicationActionLog.findFirst({
-    where: {
-      actionType: "CREATE",
-      applicationId: application.id,
-      comment: "seed self-service application review scenario"
-    }
-  });
-
-  if (!existingActionLog) {
-    await prisma.applicationActionLog.create({
-      data: {
-        actionType: "CREATE",
-        applicationId: application.id,
-        comment: "seed self-service application review scenario",
-        createdBy: operatorId,
-        operatorId,
-        operatorName: "系统管理员",
-        toStatus: "SUBMITTED",
-        updatedBy: operatorId
-      }
-    });
-  }
-}
-
-async function seedDeliveryHandoverAcceptanceOrders(operatorId) {
-  const now = new Date("2026-06-06T02:00:00.000Z");
-  const effectiveFrom = new Date("2026-06-01T00:00:00.000Z");
-  const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
-  const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
-  const insuranceStartDate = new Date("2026-01-01T00:00:00.000Z");
-  const insuranceEndDate = new Date("2027-12-31T00:00:00.000Z");
-  const scheduledAt = new Date("2026-06-10T02:00:00.000Z");
-  const signedAt = new Date("2026-06-06T02:30:00.000Z");
-  const periodMonths = 12;
-  const vehicleSalePriceAmount = 14800000;
-  const vehiclePurchasePriceAmount = 15000000;
-  const depositAmount = 500000;
-
-  const subscriptionPlan = await prisma.subscriptionPlan.findUniqueOrThrow({
-    include: {
-      benefitPackage: true,
-      energyPackage: true,
-      mileagePackage: true,
-      product: true,
-      productVersion: true,
-      vehiclePackage: true
-    },
-    where: { planNo: autoReviewSeed.planNo }
-  });
-
-  const contractVersion = await prisma.contractVersion.upsert({
-    create: {
-      approvedAt: now,
-      approvedBy: operatorId,
-      businessType: "SUBSCRIPTION",
-      contentTemplate: "Stage 6.1 delivery handover acceptance contract template",
-      createdBy: operatorId,
-      effectiveFrom,
-      status: "ACTIVE",
-      templateName: "Stage 6.1 Delivery Acceptance Contract",
-      templateType: "SUBSCRIPTION_STANDARD",
-      updatedBy: operatorId,
-      versionNo: "V1"
-    },
-    update: {
-      approvedAt: now,
-      approvedBy: operatorId,
-      businessType: "SUBSCRIPTION",
-      contentTemplate: "Stage 6.1 delivery handover acceptance contract template",
-      deletedAt: null,
-      effectiveFrom,
-      effectiveTo: null,
-      status: "ACTIVE",
-      templateType: "SUBSCRIPTION_STANDARD",
-      updatedBy: operatorId
-    },
-    where: {
-      templateName_versionNo: {
-        templateName: "Stage 6.1 Delivery Acceptance Contract",
-        versionNo: "V1"
-      }
-    }
-  });
-
-  const vehicleBaseFeeAmount = Number(subscriptionPlan.baseMonthlyFeeAmount ?? 520000n);
-  const vehicleBaseFeeCapAmount = Math.floor(
-    vehicleSalePriceAmount * Number(subscriptionPlan.vehiclePackage.monthlyFeeRate)
-  );
-  const mileagePackagePriceAmount = Number(subscriptionPlan.mileagePackage.priceAmount);
-  const energyPackagePriceAmount = Number(subscriptionPlan.energyPackage.priceAmount);
-  const benefitPackagePriceAmount = Number(subscriptionPlan.benefitPackage?.priceAmount ?? 0n);
-  const monthlyFeeAmount =
-    vehicleBaseFeeAmount +
-    mileagePackagePriceAmount +
-    energyPackagePriceAmount +
-    benefitPackagePriceAmount;
-  const mileageLimitKm = subscriptionPlan.mileagePackage.monthlyMileageKm;
-  const overMileageFeeAmount = Number(subscriptionPlan.mileagePackage.overMileageFeeAmount);
-  const energyLimitKwh = subscriptionPlan.energyPackage.monthlyEnergyKwh;
-  const energyLimitCount = subscriptionPlan.energyPackage.monthlyEnergyCount;
-
-  for (const seed of deliveryHandoverAcceptanceSeeds) {
-    const vehicle = await prisma.vehicle.upsert({
-      create: {
-        assetLocation: "Stage 6.1 delivery acceptance pool",
-        batteryCapacityKwh: 75,
-        batteryUsageType: "BUYOUT",
-        brand: "NIO",
-        createdBy: operatorId,
-        currentMileageKm: seed.deliveryScenario === "CONFIRM" ? 2800 : 1800,
-        currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
-        currentSalePriceInitializedAt: reviewedAt,
-        currentSalePriceReviewedAt: reviewedAt,
-        insuranceEndDate,
-        insuranceStartDate,
-        model: "ET5 75kWh",
-        modelYear: 2026,
-        nextSalePriceReviewAt,
-        plateNo: seed.plateNo,
-        purchaseDate: new Date("2026-05-28T00:00:00.000Z"),
-        purchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-        remark: "Stage 6.1 delivery handover acceptance vehicle",
-        salePriceStatus: "EFFECTIVE",
-        series: "ET5",
-        status: "RESERVED",
-        updatedBy: operatorId,
-        vehicleModel: "ET5",
-        vehicleNo: seed.vehicleNo,
-        vin: seed.vin
-      },
-      update: {
-        assetLocation: "Stage 6.1 delivery acceptance pool",
-        batteryCapacityKwh: 75,
-        batteryUsageType: "BUYOUT",
-        brand: "NIO",
-        currentMileageKm: seed.deliveryScenario === "CONFIRM" ? 2800 : 1800,
-        currentSalePriceAmount: BigInt(vehicleSalePriceAmount),
-        currentSalePriceInitializedAt: reviewedAt,
-        currentSalePriceReviewedAt: reviewedAt,
-        deletedAt: null,
-        insuranceEndDate,
-        insuranceStartDate,
-        model: "ET5 75kWh",
-        modelYear: 2026,
-        nextSalePriceReviewAt,
-        plateNo: seed.plateNo,
-        purchaseDate: new Date("2026-05-28T00:00:00.000Z"),
-        purchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-        remark: "Stage 6.1 delivery handover acceptance vehicle",
-        salePriceReinitRequiredAt: null,
-        salePriceStatus: "EFFECTIVE",
-        series: "ET5",
-        status: "RESERVED",
-        updatedBy: operatorId,
-        vehicleModel: "ET5",
-        vehicleNo: seed.vehicleNo
-      },
-      where: { vin: seed.vin }
-    });
-
-    await upsertInitialSalePriceHistory({
-      effectiveFrom,
-      operatorId,
-      reason: "Stage 6.1 delivery acceptance vehicle sale price initialization",
-      remark: seed.orderNo,
-      vehicleId: vehicle.id,
-      vehicleSalePriceAmount
-    });
-
-    const customer = await prisma.customer.upsert({
-      create: {
-        createdBy: operatorId,
-        customerNo: seed.customerNo,
-        grade: "A",
-        mobile: seed.customerMobile,
-        name: seed.customerName,
-        ownerUserId: operatorId,
-        remark: "Stage 6.1 delivery handover acceptance customer",
-        sourceChannel: "Stage 6.1 acceptance seed",
-        status: "APPROVED",
-        updatedBy: operatorId
-      },
-      update: {
-        deletedAt: null,
-        grade: "A",
-        mobile: seed.customerMobile,
-        name: seed.customerName,
-        ownerUserId: operatorId,
-        remark: "Stage 6.1 delivery handover acceptance customer",
-        sourceChannel: "Stage 6.1 acceptance seed",
-        status: "APPROVED",
-        updatedBy: operatorId
-      },
-      where: { customerNo: seed.customerNo }
-    });
-
-    const vehicleSnapshot = {
-      assetLocation: vehicle.assetLocation,
-      batteryCapacityKwh: Number(vehicle.batteryCapacityKwh),
-      batteryUsageType: vehicle.batteryUsageType,
-      batteryUsageTypeLabel: "买断电池",
-      brand: vehicle.brand,
-      currentMileageKm: vehicle.currentMileageKm,
-      currentSalePriceAmount: vehicleSalePriceAmount,
-      insuranceEndDate: insuranceEndDate.toISOString().slice(0, 10),
-      insuranceStartDate: insuranceStartDate.toISOString().slice(0, 10),
-      model: vehicle.model,
-      plateNo: vehicle.plateNo,
-      purchasePriceAmount: vehiclePurchasePriceAmount,
-      salePriceStatus: "EFFECTIVE",
-      series: vehicle.series,
-      status: "RESERVED",
-      vehicleModel: "ET5",
-      vehicleNo: vehicle.vehicleNo,
-      vin: vehicle.vin
-    };
-    const packageSnapshot = {
-      benefitPackage: subscriptionPlan.benefitPackage
-        ? toSeedPackageSnapshot(subscriptionPlan.benefitPackage, {
-            benefitCount: subscriptionPlan.benefitPackage.benefitCount,
-            benefitType: subscriptionPlan.benefitPackage.benefitType,
-            description: subscriptionPlan.benefitPackage.description,
-            priceAmount: benefitPackagePriceAmount
-          })
-        : null,
-      energyPackage: toSeedPackageSnapshot(subscriptionPlan.energyPackage, {
-        monthlyEnergyCount: energyLimitCount,
-        monthlyEnergyKwh: energyLimitKwh,
-        priceAmount: energyPackagePriceAmount
-      }),
-      mileagePackage: toSeedPackageSnapshot(subscriptionPlan.mileagePackage, {
-        monthlyMileageKm: mileageLimitKm,
-        overMileageFeeAmount,
-        priceAmount: mileagePackagePriceAmount
-      }),
-      pricing: {
-        benefitPackagePriceAmount,
-        currentSalePriceAmount: vehicleSalePriceAmount,
-        defaultRate: 0.018,
-        depositAmount,
-        energyPackagePriceAmount,
-        mileagePackagePriceAmount,
-        monthlyFeeAmount,
-        vehicleBaseFeeAmount,
-        vehicleBaseFeeCapAmount,
-        vehicleBaseFeeMode: subscriptionPlan.monthlyFeeMode,
-        vehicleBaseFeeModeLabel: "固定金额"
-      },
-      subscriptionPlan: {
-        baseMonthlyFeeAmount: vehicleBaseFeeAmount,
-        benefitPackageId: subscriptionPlan.benefitPackageId,
-        effectiveFrom: subscriptionPlan.effectiveFrom.toISOString().slice(0, 10),
-        effectiveTo: subscriptionPlan.effectiveTo?.toISOString().slice(0, 10) ?? null,
-        energyPackageId: subscriptionPlan.energyPackageId,
-        id: subscriptionPlan.id,
-        maxPeriodMonths: subscriptionPlan.maxPeriodMonths,
-        mileagePackageId: subscriptionPlan.mileagePackageId,
-        minPeriodMonths: subscriptionPlan.minPeriodMonths,
-        monthlyFeeCapRate: Number(subscriptionPlan.monthlyFeeCapRate),
-        monthlyFeeMode: subscriptionPlan.monthlyFeeMode,
-        monthlyFeeModeLabel: "固定金额",
-        monthlyFeeRate: Number(subscriptionPlan.monthlyFeeRate),
-        planName: subscriptionPlan.planName,
-        planNo: subscriptionPlan.planNo,
-        productId: subscriptionPlan.productId,
-        productVersionId: subscriptionPlan.productVersionId,
-        status: subscriptionPlan.status,
-        vehiclePackageId: subscriptionPlan.vehiclePackageId
-      },
-      vehicleBaseFeeAmount,
-      vehicleBaseFeeCapAmount,
-      vehicleBaseFeeMode: subscriptionPlan.monthlyFeeMode,
-      vehicleBaseFeeModeLabel: "固定金额",
-      vehiclePackage: toSeedPackageSnapshot(subscriptionPlan.vehiclePackage, {
-        configName: subscriptionPlan.vehiclePackage.configName,
-        maxPurchasePriceAmount: Number(subscriptionPlan.vehiclePackage.maxPurchasePriceAmount),
-        minPurchasePriceAmount: Number(subscriptionPlan.vehiclePackage.minPurchasePriceAmount),
-        monthlyFeeRate: Number(subscriptionPlan.vehiclePackage.monthlyFeeRate),
-        vehicleModel: "ET5"
-      })
-    };
-    const depositRuleSnapshot = {
-      defaultRate: 0.018,
-      depositAmount,
-      grade: "A",
-      status: "CONFIRMED"
-    };
-    const customerSelectedSnapshot = {
-      customerId: customer.id,
-      customerName: customer.name,
-      depositAmount,
-      depositRuleSnapshot,
-      monthlyFeeAmount,
-      packageSnapshot,
-      periodMonths,
-      selectedAt: now.toISOString(),
-      subscriptionPlanId: subscriptionPlan.id,
-      vehicleBaseFeeAmount,
-      vehicleId: vehicle.id,
-      vehicleSnapshot
-    };
-
-    const applicationData = {
-      applicationSource: "SALES_ASSISTED",
-      approvedAt: now,
-      creditReviewComment: "Stage 6.1 delivery acceptance seed approved",
-      creditReviewStatus: "APPROVED",
-      customerGrade: "A",
-      customerId: customer.id,
-      customerSelectedSnapshot,
-      depositRuleSnapshot,
-      depositStatus: "CONFIRMED",
-      finalDepositAmount: BigInt(depositAmount),
-      finalPeriodMonths: periodMonths,
-      finalPlanConfirmedAt: now,
-      finalPlanSnapshot: customerSelectedSnapshot,
-      finalSubscriptionPlanId: subscriptionPlan.id,
-      finalVehicleBaseFeeAmount: BigInt(vehicleBaseFeeAmount),
-      finalVehicleId: vehicle.id,
-      intendedModel: "ET5",
-      intendedPeriodMonths: periodMonths,
-      intentPeriodMonths: periodMonths,
-      intentSnapshot: customerSelectedSnapshot,
-      intentSubscriptionPlanId: subscriptionPlan.id,
-      intentVehicleBaseFeeAmount: BigInt(vehicleBaseFeeAmount),
-      intentVehicleId: vehicle.id,
-      materialReviewStatus: "APPROVED",
-      planConfirmStatus: "CONFIRMED",
-      productReviewStatus: "APPROVED",
-      rejectedReason: null,
-      salesUserId: operatorId,
-      softReservationExpiresAt: null,
-      softReservedAt: now,
-      softReservedVehicleId: vehicle.id,
-      status: "APPROVED",
-      submittedAt: now,
-      updatedBy: operatorId,
-      vehicleReviewStatus: "APPROVED"
-    };
-
-    const application = await prisma.application.upsert({
-      create: {
-        ...applicationData,
-        applicationNo: seed.applicationNo,
-        createdBy: operatorId
-      },
-      update: {
-        ...applicationData,
-        deletedAt: null
-      },
-      where: { applicationNo: seed.applicationNo }
-    });
-
-    const quoteData = {
-      applicationId: application.id,
-      benefitPackageId: subscriptionPlan.benefitPackageId,
-      benefitPackagePriceAmount: BigInt(benefitPackagePriceAmount),
-      confirmedAt: now,
-      confirmedBy: operatorId,
-      customerId: customer.id,
-      customerSelectedSnapshot,
-      depositAmount: BigInt(depositAmount),
-      depositRuleSnapshot,
-      energyLimitCount,
-      energyLimitKwh,
-      energyPackageId: subscriptionPlan.energyPackageId,
-      energyPackagePriceAmount: BigInt(energyPackagePriceAmount),
-      mileageLimitKm,
-      mileagePackageId: subscriptionPlan.mileagePackageId,
-      mileagePackagePriceAmount: BigInt(mileagePackagePriceAmount),
-      monthlyFeeAmount: BigInt(monthlyFeeAmount),
-      monthlyFeeCapAmount: BigInt(vehicleBaseFeeCapAmount),
-      monthlyFeeRate: subscriptionPlan.monthlyFeeRate,
-      overMileageFeeAmount: BigInt(overMileageFeeAmount),
-      packageSnapshot,
-      periodMonths,
-      productId: subscriptionPlan.productId,
-      productVersionId: subscriptionPlan.productVersionId,
-      riskResultId: null,
-      status: "CONFIRMED",
-      subscriptionPlanId: subscriptionPlan.id,
-      updatedBy: operatorId,
-      vehicleBaseFeeAmount: BigInt(vehicleBaseFeeAmount),
-      vehicleBaseFeeCapAmount: BigInt(vehicleBaseFeeCapAmount),
-      vehicleId: vehicle.id,
-      vehicleModel: "ET5",
-      vehiclePackageId: subscriptionPlan.vehiclePackageId,
-      vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-      vehicleSalePriceAmount: BigInt(vehicleSalePriceAmount),
-      vehicleSnapshot
-    };
-
-    const quote = await prisma.subscriptionQuote.upsert({
-      create: {
-        ...quoteData,
-        createdBy: operatorId,
-        quoteNo: seed.quoteNo
-      },
-      update: {
-        ...quoteData,
-        cancelledAt: null,
-        deletedAt: null,
-        expiredAt: null
-      },
-      where: { quoteNo: seed.quoteNo }
-    });
-
-    const quoteSnapshot = {
-      applicationId: application.id,
-      customerId: customer.id,
-      customerSelectedSnapshot,
-      depositAmount,
-      depositRuleSnapshot,
-      depositStatus: "CONFIRMED",
-      finalDepositAmount: depositAmount,
-      monthlyFeeAmount,
-      packageSnapshot,
-      periodMonths,
-      pricing: packageSnapshot.pricing,
-      productId: subscriptionPlan.productId,
-      productVersionId: subscriptionPlan.productVersionId,
-      quoteId: quote.id,
-      quoteNo: quote.quoteNo,
-      status: "CONFIRMED",
-      subscriptionPlanId: subscriptionPlan.id,
-      vehicleBaseFeeAmount,
-      vehicleBaseFeeCapAmount,
-      vehicleId: vehicle.id,
-      vehicleModel: "ET5",
-      vehicleSalePriceAmount,
-      vehicleSnapshot
-    };
-
-    const orderData = {
-      actualDeliveryAt: null,
-      applicationId: application.id,
-      businessType: "SUBSCRIPTION",
-      creditReviewStatus: "APPROVED",
-      customerConfirmedAt: now,
-      customerId: customer.id,
-      customerSelectedSnapshot,
-      depositAmount: BigInt(depositAmount),
-      depositStatus: "CONFIRMED",
-      energyLimitCount,
-      energyLimitKwh,
-      finalDepositAmount: BigInt(depositAmount),
-      finalPlanConfirmedAt: now,
-      finalPlanSnapshot: customerSelectedSnapshot,
-      mileageLimitKm,
-      monthlyFeeAmount: BigInt(monthlyFeeAmount),
-      orderSource: "SALES_ASSISTED",
-      orderStatus: seed.deliveryScenario === "CONFIRM" ? "PENDING_DELIVERY" : "PENDING_PAYMENT",
-      overMileageFeeAmount: BigInt(overMileageFeeAmount),
-      periodMonths,
-      productId: subscriptionPlan.productId,
-      productReviewStatus: "APPROVED",
-      productVersionId: subscriptionPlan.productVersionId,
-      quoteId: quote.id,
-      quoteSnapshot,
-      reviewComment: "Stage 6.1 delivery handover acceptance seed",
-      riskResultId: null,
-      updatedBy: operatorId,
-      vehicleId: vehicle.id,
-      vehicleModel: "ET5",
-      vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount),
-      vehicleReviewStatus: "APPROVED"
-    };
-
-    const order = await prisma.subscriptionOrder.upsert({
-      create: {
-        ...orderData,
-        createdBy: operatorId,
-        orderNo: seed.orderNo
-      },
-      update: {
-        ...orderData,
-        deletedAt: null,
-        endDate: null,
-        startDate: null
-      },
-      where: { orderNo: seed.orderNo }
-    });
-
-    const contractSnapshot = {
-      contractVersion: {
-        templateName: contractVersion.templateName,
-        versionNo: contractVersion.versionNo
-      },
-      customer: {
-        customerNo: customer.customerNo,
-        mobile: customer.mobile,
-        name: customer.name
-      },
-      order: {
-        monthlyFeeAmount,
-        orderNo: order.orderNo,
-        periodMonths,
-        vehicleSnapshot
-      },
-      quoteSnapshot
-    };
-    const contract = await prisma.contract.upsert({
-      create: {
-        businessType: "SUBSCRIPTION",
-        contractNo: seed.contractNo,
-        contractSnapshot,
-        contractTitle: "Stage 6.1 Delivery Acceptance Contract",
-        contractVersionId: contractVersion.id,
-        createdBy: operatorId,
-        customerId: customer.id,
-        orderId: order.id,
-        signedAt,
-        status: "SIGNED",
-        updatedBy: operatorId
-      },
-      update: {
-        businessType: "SUBSCRIPTION",
-        contractSnapshot,
-        contractTitle: "Stage 6.1 Delivery Acceptance Contract",
-        contractVersionId: contractVersion.id,
-        customerId: customer.id,
-        deletedAt: null,
-        orderId: order.id,
-        signedAt,
-        status: "SIGNED",
-        updatedBy: operatorId
-      },
-      where: { contractNo: seed.contractNo }
-    });
-
-    await prisma.subscriptionOrder.update({
-      data: {
-        contractId: contract.id,
-        orderStatus: orderData.orderStatus,
-        updatedBy: operatorId
-      },
-      where: { id: order.id }
-    });
-
-    if (seed.deliveryScenario === "CONFIRM") {
-      const readyChecklistSnapshot = {
-        contractSignedConfirmed: true,
-        customerIdentityConfirmed: true,
-        depositReceivedConfirmed: true,
-        firstMonthlyFeeReceivedConfirmed: true,
-        handoverDocumentsConfirmed: true,
-        insuranceValidConfirmed: true,
-        vehiclePhotosConfirmed: true,
-        vehiclePreparedConfirmed: true
-      };
-
-      await prisma.vehicleDelivery.upsert({
-        create: {
-          ...readyChecklistSnapshot,
-          checklistSnapshot: readyChecklistSnapshot,
-          createdBy: operatorId,
-          customerId: customer.id,
-          deliveredAt: null,
-          deliveryLocation: "Stage 6.1 交付验收中心",
-          deliveryNo: seed.deliveryNo,
-          deliveryStatus: "READY",
-          handoverMileageKm: null,
-          orderId: order.id,
-          remark: "可直接执行确认交付验收",
-          scheduledAt,
-          updatedBy: operatorId,
-          vehicleId: vehicle.id
-        },
-        update: {
-          ...readyChecklistSnapshot,
-          checklistSnapshot: readyChecklistSnapshot,
-          customerId: customer.id,
-          deletedAt: null,
-          deliveredAt: null,
-          deliveryLocation: "Stage 6.1 交付验收中心",
-          deliveryNo: seed.deliveryNo,
-          deliveryStatus: "READY",
-          handoverMileageKm: null,
-          orderId: order.id,
-          remark: "可直接执行确认交付验收",
-          scheduledAt,
-          updatedBy: operatorId,
-          vehicleId: vehicle.id
-        },
-        where: { orderId: order.id }
-      });
-    }
-  }
 }
 
 async function upsertInitialSalePriceHistory({
@@ -2479,18 +1502,6 @@ async function upsertInitialSalePriceHistory({
       vehicleId
     }
   });
-}
-
-function toSeedPackageSnapshot(row, extra = {}) {
-  return {
-    id: row.id,
-    packageName: row.packageName,
-    packageNo: row.packageNo,
-    productId: row.productId,
-    productVersionId: row.productVersionId,
-    status: row.status,
-    ...extra
-  };
 }
 
 main()

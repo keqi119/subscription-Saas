@@ -3,98 +3,122 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-describe("delivery handover acceptance seed", () => {
+describe("default seed baseline vehicle and flow cleanup", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
-  it("defines the Stage 6.1 delivery acceptance orders and vehicles", () => {
+  it("keeps legacy flow markers only as cleanup targets", () => {
+    const cleanupMarkersSource = sourceBetween(
+      "const oldDefaultFlowSeedData = {",
+      "const productManagementPermissions = ["
+    );
+    const cleanupFunctionSource = functionSourceFor("cleanupDefaultSeedFlowData");
+
     for (const marker of [
-      "deliveryHandoverAcceptanceSeeds",
+      "APP-SELF-SERVICE-REVIEW-001",
       "ORD-DELIVERY-PREPARE-001",
       "ORD-DELIVERY-CONFIRM-001",
-      "交付验收测试客户A",
-      "交付验收测试客户B",
+      "CON-DELIVERY-CONFIRM-001",
+      "DLV-DELIVERY-CONFIRM-001",
       "TESTDELIVERYPREPARE001",
-      "TESTDELIVERYCONFIRM001",
-      "沪A交付01",
-      "沪A交付02"
+      "TESTDELIVERYCONFIRM001"
+    ]) {
+      expect(cleanupMarkersSource).toContain(marker);
+    }
+
+    expect(cleanupFunctionSource).toContain("deleteMany");
+    expect(cleanupFunctionSource).not.toContain(".upsert");
+    expect(cleanupFunctionSource).not.toContain(".create(");
+  });
+
+  it("cleans all default flow object families in dependency order", () => {
+    const cleanupFunctionSource = functionSourceFor("cleanupDefaultSeedFlowData");
+
+    for (const deleteTarget of [
+      "orderEntitlementUsage.deleteMany",
+      "orderEntitlementGrant.deleteMany",
+      "orderEntitlementAccount.deleteMany",
+      "collectionAction.deleteMany",
+      "collectionCaseBill.deleteMany",
+      "collectionCase.deleteMany",
+      "depositLedger.deleteMany",
+      "paymentWriteOff.deleteMany",
+      "paymentRecord.deleteMany",
+      "receivableBill.deleteMany",
+      "vehicleReturnDamage.deleteMany",
+      "vehicleReturn.deleteMany",
+      "vehicleDelivery.deleteMany",
+      "orderChange.deleteMany",
+      "contract.deleteMany",
+      "subscriptionOrder.deleteMany",
+      "subscriptionQuote.deleteMany",
+      "applicationActionLog.deleteMany",
+      "applicationMaterialFile.deleteMany",
+      "applicationMaterialGroup.deleteMany",
+      "applicationMaterial.deleteMany",
+      "application.deleteMany"
+    ]) {
+      expect(cleanupFunctionSource).toContain(deleteTarget);
+    }
+
+    expect(cleanupFunctionSource.indexOf("paymentWriteOff.deleteMany")).toBeLessThan(
+      cleanupFunctionSource.indexOf("paymentRecord.deleteMany")
+    );
+    expect(cleanupFunctionSource.indexOf("vehicleReturnDamage.deleteMany")).toBeLessThan(
+      cleanupFunctionSource.indexOf("vehicleReturn.deleteMany")
+    );
+    expect(cleanupFunctionSource.indexOf("contract.deleteMany")).toBeLessThan(
+      cleanupFunctionSource.indexOf("subscriptionOrder.deleteMany")
+    );
+    expect(cleanupFunctionSource.indexOf("subscriptionOrder.deleteMany")).toBeLessThan(
+      cleanupFunctionSource.indexOf("subscriptionQuote.deleteMany")
+    );
+  });
+
+  it("keeps default vehicle seeds available with initialized sale price and insurance", () => {
+    const vehicleFunctionSource = functionSourceFor("seedDemoVehicles");
+
+    for (const marker of [
+      "VEH-DEMO-ET5-001",
+      "VEH-DEMO-ET7-001",
+      "VEH-DEMO-ES6-001",
+      "TESTVINET50000001",
+      "TESTVINET70000001",
+      "TESTVINES60000001",
+      'status: "AVAILABLE"',
+      'salePriceStatus: "EFFECTIVE"',
+      "currentSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount)",
+      "purchasePriceAmount: BigInt(vehicleSeed.purchasePriceAmount)",
+      "insuranceStartDate",
+      "insuranceEndDate",
+      'reviewType: "INITIAL_POOL"'
     ]) {
       expect(seedSource).toContain(marker);
     }
+
+    expect(vehicleFunctionSource).not.toContain('status: "REVIEW_RESERVED"');
+    expect(vehicleFunctionSource).not.toContain('status: "RESERVED"');
+    expect(vehicleFunctionSource).not.toContain('status: "LEASED"');
+    expect(vehicleFunctionSource).not.toContain('status: "RETURNED"');
+    expect(vehicleFunctionSource).not.toContain('status: "MAINTENANCE"');
   });
 
-  it("creates idempotent dependencies for delivery-check readable orders", () => {
-    const functionSource = functionSourceFor("seedDeliveryHandoverAcceptanceOrders");
-
-    expect(seedSource).toContain("await seedDeliveryHandoverAcceptanceOrders(adminUser.id)");
-    expect(functionSource).toContain("prisma.customer.upsert");
-    expect(functionSource).toContain("prisma.application.upsert");
-    expect(functionSource).toContain("prisma.subscriptionQuote.upsert");
-    expect(functionSource).toContain("prisma.subscriptionOrder.upsert");
-    expect(functionSource).toContain("prisma.contract.upsert");
-    expect(functionSource).toContain("prisma.vehicle.upsert");
-    expect(functionSource).toContain("prisma.vehicleDelivery.upsert");
-    expect(functionSource).toContain("where: { customerNo: seed.customerNo }");
-    expect(functionSource).toContain("where: { applicationNo: seed.applicationNo }");
-    expect(functionSource).toContain("where: { quoteNo: seed.quoteNo }");
-    expect(functionSource).toContain("where: { orderNo: seed.orderNo }");
-    expect(functionSource).toContain("where: { contractNo: seed.contractNo }");
-    expect(functionSource).toContain("where: { vin: seed.vin }");
-    expect(functionSource).toContain("where: { orderId: order.id }");
-  });
-
-  it("keeps both acceptance orders linked to signed contracts and reserved vehicles", () => {
-    const functionSource = functionSourceFor("seedDeliveryHandoverAcceptanceOrders");
-
-    expect(functionSource).toContain('orderStatus: seed.deliveryScenario === "CONFIRM" ? "PENDING_DELIVERY" : "PENDING_PAYMENT"');
-    expect(functionSource).toContain('status: "SIGNED"');
-    expect(functionSource).toContain("signedAt");
-    expect(functionSource).toContain("contractId: contract.id");
-    expect(functionSource).toContain('status: "RESERVED"');
-    expect(functionSource).toContain('salePriceStatus: "EFFECTIVE"');
-    expect(functionSource).toContain("currentSalePriceAmount: BigInt(vehicleSalePriceAmount)");
-    expect(functionSource).toContain("insuranceStartDate");
-    expect(functionSource).toContain("insuranceEndDate");
-    expect(functionSource).toContain("batteryCapacityKwh: 75");
-    expect(functionSource).toContain('batteryUsageType: "BUYOUT"');
-  });
-
-  it("creates a READY delivery record with all confirmation items for the confirm order", () => {
-    const functionSource = functionSourceFor("seedDeliveryHandoverAcceptanceOrders");
-
-    expect(seedSource).toContain('deliveryNo: "DLV-DELIVERY-CONFIRM-001"');
-    expect(functionSource).toContain('deliveryStatus: "READY"');
-    for (const marker of [
-      "contractSignedConfirmed: true",
-      "depositReceivedConfirmed: true",
-      "firstMonthlyFeeReceivedConfirmed: true",
-      "insuranceValidConfirmed: true",
-      "vehiclePreparedConfirmed: true",
-      "vehiclePhotosConfirmed: true",
-      "customerIdentityConfirmed: true",
-      "handoverDocumentsConfirmed: true"
+  it("does not create default financial, collection, return, or entitlement demo data", () => {
+    for (const forbiddenCreate of [
+      "prisma.receivableBill.create",
+      "prisma.paymentRecord.create",
+      "prisma.paymentWriteOff.create",
+      "prisma.depositLedger.create",
+      "prisma.collectionCase.create",
+      "prisma.collectionCaseBill.create",
+      "prisma.collectionAction.create",
+      "prisma.vehicleDelivery.create",
+      "prisma.vehicleReturn.create",
+      "prisma.vehicleReturnDamage.create",
+      "prisma.orderEntitlementAccount.create",
+      "prisma.orderEntitlementGrant.create",
+      "prisma.orderEntitlementUsage.create"
     ]) {
-      expect(functionSource).toContain(marker);
-    }
-  });
-
-  it("seeds non-empty quote and order snapshots for order detail rendering", () => {
-    const functionSource = functionSourceFor("seedDeliveryHandoverAcceptanceOrders");
-
-    for (const marker of [
-      "vehicleSnapshot",
-      "packageSnapshot",
-      "depositRuleSnapshot",
-      "pricing: packageSnapshot.pricing",
-      "currentSalePriceAmount: vehicleSalePriceAmount",
-      "vehicleBaseFeeAmount",
-      "mileagePackagePriceAmount",
-      "energyPackagePriceAmount",
-      "benefitPackagePriceAmount",
-      "monthlyFeeAmount",
-      "depositAmount",
-      "defaultRate: 0.018"
-    ]) {
-      expect(functionSource).toContain(marker);
+      expect(seedSource).not.toContain(forbiddenCreate);
     }
   });
 
@@ -104,5 +128,15 @@ describe("delivery handover acceptance seed", () => {
 
     const nextFunction = seedSource.indexOf("\nasync function ", start + 1);
     return seedSource.slice(start, nextFunction === -1 ? seedSource.length : nextFunction);
+  }
+
+  function sourceBetween(startMarker: string, endMarker: string) {
+    const start = seedSource.indexOf(startMarker);
+    const end = seedSource.indexOf(endMarker);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+
+    return seedSource.slice(start, end);
   }
 });

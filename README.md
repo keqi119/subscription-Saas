@@ -39,6 +39,7 @@ D:\Projects\auto-subscription-platform
 - `DEV_SPEC.md`：当前主线业务规格
 - `AGENTS.md`：Codex / Agent 执行规则
 - `CODEX_TASKS.md`：Stage 0-9 后续开发计划
+- `docs/reporting-metrics.md`：报表口径文档
 - `docs/aliyun-db-only.md`：阿里云方案 A，服务器只跑 PostgreSQL/Redis，本地跑应用
 
 ## 本地开发启动

@@ -11,6 +11,8 @@ import {
 } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ReportController } from "../src/report/report.controller";
+import { escapeCsvCell, toCsv } from "../src/report/report-csv";
 import { ReportService } from "../src/report/report.service";
 
 describe("reporting dashboard APIs", () => {
@@ -358,6 +360,183 @@ describe("reporting dashboard APIs", () => {
     expect(where.dueDate.gte.toISOString()).toBe("2026-05-08T16:00:00.000Z");
     expect(where.dueDate.lt.toISOString()).toBe("2026-06-07T16:00:00.000Z");
   });
+
+  it("orders export returns UTF-8 BOM CSV with Chinese headers, escaped cells, and filename", async () => {
+    const { prisma, service } = createReportHarness();
+    mockOrderReport(prisma, '标准,套餐"豪华\n版');
+
+    const result = await service.exportOrderReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("orders-report-20260601-20260630.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("订单报表");
+    expect(result.content).toContain("状态,数量");
+    expect(result.content).toContain('"标准,套餐""豪华\n版"');
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+  });
+
+  it("finance export returns amounts in yuan", async () => {
+    const { prisma, service } = createReportHarness();
+
+    prisma.receivableBill.aggregate.mockResolvedValue(
+      sumResult({ amount: 123456n, paidAmount: 120000n, remainingAmount: 3456n })
+    );
+    prisma.receivableBill.groupBy
+      .mockResolvedValueOnce([
+        amountGroup("billType", BillType.DEPOSIT, 1, {
+          amount: 123456n,
+          paidAmount: 120000n,
+          remainingAmount: 3456n
+        })
+      ])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.exportFinanceReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("finance-report-20260601-20260630.csv");
+    expect(result.content).toContain("财务报表");
+    expect(result.content).toContain("总应收金额,1234.56");
+    expect(result.content).toContain("押金,1234.56,1200.00,34.56,1");
+  });
+
+  it("deposit-pool export returns text rows with yuan amounts", async () => {
+    const { prisma, service } = createReportHarness();
+
+    prisma.depositLedger.groupBy.mockResolvedValue([
+      amountGroup("transactionType", DepositTransactionType.COLLECT, 1, { amount: 123456n }),
+      amountGroup("transactionType", DepositTransactionType.DEDUCT, 1, { amount: 10000n }),
+      amountGroup("transactionType", DepositTransactionType.REFUND, 1, { amount: 20000n })
+    ]);
+
+    const result = await service.exportDepositPoolReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("deposit-pool-report-20260601-20260630.csv");
+    expect(result.content).toContain("保证金池报表");
+    expect(result.content).toContain("累计收取保证金,1234.56");
+    expect(result.content).toContain("收取,1234.56,1");
+  });
+
+  it("collections export returns overdue and case sections", async () => {
+    const { prisma, service } = createReportHarness();
+
+    prisma.receivableBill.count.mockResolvedValue(2);
+    prisma.receivableBill.aggregate.mockResolvedValue(sumResult({ remainingAmount: 5000n }));
+    prisma.receivableBill.groupBy.mockResolvedValue([countGroup("orderId", "order-1", 1)]);
+    prisma.collectionCase.count
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(1);
+    prisma.collectionCase.groupBy
+      .mockResolvedValueOnce([
+        amountGroup("collectionLevel", CollectionLevel.D1, 2, { totalOverdueAmount: 3000n })
+      ])
+      .mockResolvedValueOnce([
+        amountGroup("caseStatus", CollectionCaseStatus.ACTIVE, 1, { totalOverdueAmount: 3000n })
+      ]);
+    prisma.collectionAction.count.mockResolvedValue(3);
+    prisma.collectionAction.aggregate.mockResolvedValue(sumResult({ promisedAmount: 1500n }));
+
+    const result = await service.exportCollectionReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("collections-report-20260601-20260630.csv");
+    expect(result.content).toContain("逾期催收报表");
+    expect(result.content).toContain("逾期金额,50.00");
+    expect(result.content).toContain("D1：1-3天,30.00,2,-");
+    expect(result.content).toContain("催收中,1");
+  });
+
+  it("vehicle-assets export returns status summary, rental rate, and model income", async () => {
+    const { prisma, service } = createReportHarness();
+    mockVehicleAssetReport(prisma);
+
+    const result = await service.exportVehicleAssetReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("vehicle-assets-report-20260601-20260630.csv");
+    expect(result.content).toContain("车辆资产报表");
+    expect(result.content).toContain("出租率,33.33%");
+    expect(result.content).toContain("采购成本合计（元）,100.00");
+    expect(result.content).toContain("ET5,3,2,1,10.00");
+  });
+
+  it("orders export applies date range parameters", async () => {
+    const { prisma, service } = createReportHarness();
+    mockOrderReport(prisma);
+
+    await service.exportOrderReport({
+      endDate: "2026-06-02",
+      startDate: "2026-06-01"
+    });
+
+    const countCall = prisma.subscriptionOrder.count.mock.calls[0];
+    expect(countCall).toBeDefined();
+    const where = countCall![0].where;
+    expect(where.createdAt.gte.toISOString()).toBe("2026-05-31T16:00:00.000Z");
+    expect(where.createdAt.lt.toISOString()).toBe("2026-06-02T16:00:00.000Z");
+  });
+
+  it("CSV escape handles comma, quote, newline, and unsafe values", () => {
+    expect(toCsv([["包含,逗号", '包含"引号', "第一行\n第二行"]])).toBe(
+      '"包含,逗号","包含""引号","第一行\n第二行"'
+    );
+    expect(escapeCsvCell({ value: "object" })).toBe("-");
+    expect(escapeCsvCell(Number.NaN)).toBe("-");
+  });
+
+  it("export controller returns text/csv headers and attachment filenames", async () => {
+    const controller = new ReportController({
+      exportCollectionReport: vi.fn().mockResolvedValue(csvFile("collections-report-20260601-20260630.csv")),
+      exportDepositPoolReport: vi.fn().mockResolvedValue(csvFile("deposit-pool-report-20260601-20260630.csv")),
+      exportFinanceReport: vi.fn().mockResolvedValue(csvFile("finance-report-20260601-20260630.csv")),
+      exportOrderReport: vi.fn().mockResolvedValue(csvFile("orders-report-20260601-20260630.csv")),
+      exportVehicleAssetReport: vi.fn().mockResolvedValue(csvFile("vehicle-assets-report-20260601-20260630.csv"))
+    } as never);
+
+    const ordersResponse = mockResponse();
+    await expectCsvResponse(
+      "orders-report-20260601-20260630.csv",
+      ordersResponse,
+      controller.exportOrderReport({}, ordersResponse as never)
+    );
+    const financeResponse = mockResponse();
+    await expectCsvResponse(
+      "finance-report-20260601-20260630.csv",
+      financeResponse,
+      controller.exportFinanceReport({}, financeResponse as never)
+    );
+    const depositResponse = mockResponse();
+    await expectCsvResponse(
+      "deposit-pool-report-20260601-20260630.csv",
+      depositResponse,
+      controller.exportDepositPoolReport({}, depositResponse as never)
+    );
+    const collectionsResponse = mockResponse();
+    await expectCsvResponse(
+      "collections-report-20260601-20260630.csv",
+      collectionsResponse,
+      controller.exportCollectionReport({}, collectionsResponse as never)
+    );
+    const assetsResponse = mockResponse();
+    await expectCsvResponse(
+      "vehicle-assets-report-20260601-20260630.csv",
+      assetsResponse,
+      controller.exportVehicleAssetReport({}, assetsResponse as never)
+    );
+  });
 });
 
 function createReportHarness() {
@@ -399,7 +578,7 @@ function createReportHarness() {
 
 type ReportPrismaMock = ReturnType<typeof createReportHarness>["prisma"];
 
-function mockOrderReport(prisma: ReportPrismaMock) {
+function mockOrderReport(prisma: ReportPrismaMock, planName = "Standard") {
   prisma.subscriptionOrder.count.mockResolvedValue(3);
   prisma.subscriptionOrder.groupBy
     .mockResolvedValueOnce([
@@ -417,13 +596,13 @@ function mockOrderReport(prisma: ReportPrismaMock) {
   prisma.subscriptionOrder.findMany.mockResolvedValue([
     {
       quote: {
-        subscriptionPlan: { id: "plan-1", planName: "Standard", planNo: "PLAN-001" },
+        subscriptionPlan: { id: "plan-1", planName, planNo: "PLAN-001" },
         subscriptionPlanId: "plan-1"
       }
     },
     {
       quote: {
-        subscriptionPlan: { id: "plan-1", planName: "Standard", planNo: "PLAN-001" },
+        subscriptionPlan: { id: "plan-1", planName, planNo: "PLAN-001" },
         subscriptionPlanId: "plan-1"
       }
     },
@@ -498,4 +677,35 @@ function findBy<T extends Record<string, unknown>>(rows: T[], field: keyof T, va
   const row = rows.find((item) => item[field] === value);
   expect(row).toBeDefined();
   return row;
+}
+
+function csvFile(filename: string) {
+  return {
+    content: "\uFEFF测试",
+    filename
+  };
+}
+
+function mockResponse() {
+  const headers = new Map<string, string>();
+
+  return {
+    headers,
+    setHeader(name: string, value: string) {
+      headers.set(name, value);
+    }
+  };
+}
+
+async function expectCsvResponse(
+  filename: string,
+  response: ReturnType<typeof mockResponse>,
+  responsePromise: Promise<string>
+) {
+  const content = await responsePromise;
+
+  expect(content.charCodeAt(0)).toBe(0xfeff);
+  expect(response.headers.get("Content-Type")).toBe("text/csv; charset=utf-8");
+  expect(response.headers.get("Content-Disposition")).toBe(`attachment; filename="${filename}"`);
+  expect(response.headers.get("Access-Control-Expose-Headers")).toBe("Content-Disposition");
 }

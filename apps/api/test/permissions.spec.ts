@@ -207,34 +207,64 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getOrderReport
     );
+    const ordersExportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.exportOrderReport
+    );
     const financePermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getFinanceReport
+    );
+    const financeExportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.exportFinanceReport
     );
     const depositPoolPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getDepositPoolReport
     );
+    const depositPoolExportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.exportDepositPoolReport
+    );
     const collectionAnyPermissions = Reflect.getMetadata(
       REQUIRED_ANY_PERMISSIONS_KEY,
       ReportController.prototype.getCollectionReport
+    );
+    const collectionExportAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      ReportController.prototype.exportCollectionReport
     );
     const vehicleAssetPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getVehicleAssetReport
     );
+    const vehicleAssetExportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.exportVehicleAssetReport
+    );
 
     expect(dashboardPermissions).toEqual([PermissionCode.REPORT_VIEW]);
     expect(ordersPermissions).toEqual([PermissionCode.REPORT_VIEW]);
+    expect(ordersExportPermissions).toEqual([PermissionCode.REPORT_VIEW]);
     expect(financePermissions).toEqual([PermissionCode.REPORT_FINANCE]);
+    expect(financeExportPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
     expect(depositPoolPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
+    expect(depositPoolExportPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
     expect(collectionAnyPermissions).toEqual([
       PermissionCode.REPORT_FINANCE,
       PermissionCode.COLLECTION_VIEW
     ]);
+    expect(collectionExportAnyPermissions).toEqual([
+      PermissionCode.REPORT_FINANCE,
+      PermissionCode.COLLECTION_VIEW
+    ]);
     expect(vehicleAssetPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(vehicleAssetExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financePermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financeExportPermissions)).toBe(false);
     expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionAnyPermissions)).toBe(true);
+    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionExportAnyPermissions)).toBe(true);
   });
 });
 

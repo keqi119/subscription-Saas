@@ -223,6 +223,57 @@ CSV 缺失值统一使用 `-`。
 
 CSV escape 规则覆盖逗号、换行、双引号和中文内容。
 
+## 下钻明细与明细导出
+
+汇总导出和明细导出是两类不同文件：
+
+- 汇总导出：导出订单、财务、保证金池、逾期催收、车辆资产等报表的聚合结果。
+- 明细导出：在经营看板 Drawer 中按当前下钻条件导出底层业务明细。
+
+明细导出导出的是当前下钻筛选条件下的全部明细，不是 Drawer 当前分页。
+
+明细查看 API：
+
+- `GET /api/reports/details/orders`
+- `GET /api/reports/details/bills`
+- `GET /api/reports/details/deposit-ledgers`
+- `GET /api/reports/details/overdue-bills`
+- `GET /api/reports/details/collection-cases`
+- `GET /api/reports/details/vehicles`
+
+明细 CSV 导出 API：
+
+- `GET /api/reports/details/orders/export`
+- `GET /api/reports/details/bills/export`
+- `GET /api/reports/details/deposit-ledgers/export`
+- `GET /api/reports/details/overdue-bills/export`
+- `GET /api/reports/details/collection-cases/export`
+- `GET /api/reports/details/vehicles/export`
+
+明细导出第一版最大导出行数为 5000 行。超过上限时返回中文错误：
+
+```text
+明细数据超过 5000 行，请缩小筛选范围后再导出。
+```
+
+明细导出权限与明细查看权限一致：
+
+- 订单明细：`report:view`
+- 账单明细：`report:finance`
+- 保证金台账明细：`report:finance`
+- 逾期账单明细：`report:finance` 或 `collection:view`
+- 催收案件明细：`report:finance` 或 `collection:view`
+- 车辆明细：`report:asset`
+
+明细导出字段：
+
+- 订单明细：订单编号、客户姓名、手机号、订单来源、订单状态、车辆 VIN、车牌号、车型、订阅套餐、月费、押金、合同状态、起租时间、退车时间、创建时间。
+- 账单明细：账单编号、订单编号、客户姓名、账单类型、账单状态、应收金额、已收金额、剩余金额、到期日、账期开始、账期结束、创建时间。
+- 保证金台账明细：台账编号、订单编号、客户姓名、交易类型、交易状态、金额、交易后余额、关联账单编号、发生时间、备注。
+- 逾期账单明细：账单编号、订单编号、客户姓名、账单类型、剩余金额、到期日、逾期天数、逾期等级、案件编号、案件状态。
+- 催收案件明细：案件编号、客户姓名、订单编号、逾期总金额、最大逾期天数、逾期等级、案件状态、负责人、下次跟进时间、创建时间、关闭时间。
+- 车辆明细：车辆编号、VIN、车牌号、品牌、车系、车型、电池容量、电池使用方式、车辆状态、采购价、当前销售价、当前订单编号、当前客户、累计已收金额、最近交付时间、最近退车时间、创建时间。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

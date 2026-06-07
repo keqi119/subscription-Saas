@@ -304,6 +304,46 @@ function exportDefaultFilename(key: ExportReportKey, dateRange: [Dayjs, Dayjs]) 
   return `${prefixByKey[key]}-${startDate}-${endDate}.csv`;
 }
 
+function detailExportDefaultFilename(kind: DetailKind, dateRange: [Dayjs, Dayjs]) {
+  const prefixByKind: Record<DetailKind, string> = {
+    bills: "bills-detail",
+    collectionCases: "collection-cases-detail",
+    depositLedgers: "deposit-ledgers-detail",
+    orders: "orders-detail",
+    overdueBills: "overdue-bills-detail",
+    vehicles: "vehicles-detail"
+  };
+  const startDate = dateRange[0].format("YYYYMMDD");
+  const endDate = dateRange[1].format("YYYYMMDD");
+
+  return `${prefixByKind[kind]}-${startDate}-${endDate}.csv`;
+}
+
+function canExportDetailKind(
+  kind: DetailKind | undefined,
+  access: {
+    canViewAssetReport: boolean;
+    canViewCollectionReport: boolean;
+    canViewFinanceReports: boolean;
+    canViewReports: boolean;
+  }
+) {
+  switch (kind) {
+    case "orders":
+      return access.canViewReports;
+    case "bills":
+    case "depositLedgers":
+      return access.canViewFinanceReports;
+    case "overdueBills":
+    case "collectionCases":
+      return access.canViewCollectionReport;
+    case "vehicles":
+      return access.canViewAssetReport;
+    default:
+      return false;
+  }
+}
+
 async function downloadCsv(path: string, defaultFilename: string) {
   let response: Response;
 
@@ -531,6 +571,7 @@ export default function ReportsPage() {
     finance: false,
     orders: false
   });
+  const [exportingDetail, setExportingDetail] = useState(false);
   const [drilldown, setDrilldown] = useState<DrilldownState | null>(null);
   const [detailData, setDetailData] = useState<PagedDetailResponse | null>(null);
   const [detailError, setDetailError] = useState<string | undefined>();
@@ -547,6 +588,12 @@ export default function ReportsPage() {
   const canViewFinanceReports = permissions.has("report:finance");
   const canViewCollectionReport = canViewFinanceReports || permissions.has("collection:view");
   const canViewAssetReport = permissions.has("report:asset");
+  const canExportCurrentDetail = canExportDetailKind(drilldown?.kind, {
+    canViewAssetReport,
+    canViewCollectionReport,
+    canViewFinanceReports,
+    canViewReports
+  });
 
   const visibleReportKeys = useMemo(() => {
     if (!canViewReports) {
@@ -718,6 +765,27 @@ export default function ReportsPage() {
     },
     [dateRange, message, orderFilterForm]
   );
+
+  const exportCurrentDetailCsv = useCallback(async () => {
+    if (!drilldown) {
+      return;
+    }
+
+    setExportingDetail(true);
+    try {
+      await downloadCsv(
+        `${drilldown.path}/export${buildQuery({
+          ...dateRangeParams(dateRange),
+          ...drilldown.query
+        })}`,
+        detailExportDefaultFilename(drilldown.kind, dateRange)
+      );
+    } catch (error) {
+      void message.error(getExportErrorMessage(error));
+    } finally {
+      setExportingDetail(false);
+    }
+  }, [dateRange, drilldown, message]);
 
   const openDrilldown = useCallback((config: Omit<DrilldownState, "page" | "pageSize">) => {
     setDetailData(null);
@@ -1455,6 +1523,18 @@ export default function ReportsPage() {
                 </>
               ) : null}
             </Typography.Text>
+            <Space align="start" style={{ justifyContent: "space-between", width: "100%" }} wrap>
+              <Typography.Text type="secondary">导出当前下钻条件下的全部明细，非仅当前分页。</Typography.Text>
+              {canExportCurrentDetail ? (
+                <Button
+                  icon={<DownloadOutlined />}
+                  loading={exportingDetail}
+                  onClick={() => void exportCurrentDetailCsv()}
+                >
+                  导出当前明细
+                </Button>
+              ) : null}
+            </Space>
             {detailError ? <Alert showIcon title={detailError} type="error" /> : null}
             <Table<DetailRow>
               columns={drilldown ? detailColumnsByKind[drilldown.kind] : []}

@@ -247,6 +247,7 @@ const collectionCaseStatusLabels: Record<string, string> = {
 };
 
 const vehicleModelOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+const detailDrawerSize = "min(1472px, calc(100vw - 32px))";
 
 function buildQuery(values: Record<string, unknown>) {
   const params = new URLSearchParams();
@@ -1440,7 +1441,7 @@ export default function ReportsPage() {
         <Drawer
           destroyOnClose
           open={Boolean(drilldown)}
-          size="large"
+          size={detailDrawerSize}
           title={drilldown?.title}
           onClose={closeDrilldown}
         >

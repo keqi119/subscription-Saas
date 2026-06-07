@@ -148,6 +148,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
     ]
   },
   {
+    code: "reports",
+    icon: "dashboard",
+    label: "经营看板",
+    path: "/reports",
+    permissionCode: PermissionCode.REPORT_VIEW
+  },
+  {
     code: "billing",
     icon: "money",
     label: "财务管理",

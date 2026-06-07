@@ -170,6 +170,7 @@ const menuRows = [
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
+  ["reports", "经营看板", "/reports", "dashboard", 75, "report:view", null],
   ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
   ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
   ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
@@ -590,7 +591,7 @@ async function main() {
       "order_change:reject",
       "order_change:execute"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", "reports", ...collectionMenuCodes]
   );
 
   await assignRoleAccess(
@@ -653,7 +654,7 @@ async function main() {
         "orders.subscription",
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
-        ...(roleCode === "FI" ? financeMenuCodes : [])
+        ...(roleCode === "FI" ? ["reports", ...financeMenuCodes] : [])
       ]
     );
   }
@@ -675,7 +676,7 @@ async function main() {
       "collection:view",
       ...reportAllPermissions
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", "reports", ...collectionMenuCodes]
   );
 
   const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);

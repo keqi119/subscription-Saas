@@ -390,6 +390,10 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const reportFinancePermissions = [\"report:view\", \"report:finance\"]");
     expect(seedSource).toContain("const reportAssetPermissions = [\"report:asset\"]");
     expect(seedSource).toContain("...(roleCode === \"FI\" ? reportFinancePermissions : reportAssetPermissions)");
+    expect(seedSource).toContain("[\"reports\", \"经营看板\", \"/reports\", \"dashboard\", 75, \"report:view\", null]");
+    expect(roleHasMenu(roleMenuArray("OP"), "reports")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "reports")).toBe(true);
+    expect(seedSource).toContain("...(roleCode === \"FI\" ? [\"reports\", ...financeMenuCodes] : [])");
     expect(roleHasPermission(rolePermissionArray("SA"), "report:view")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "report:finance")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "report:finance")).toBe(false);

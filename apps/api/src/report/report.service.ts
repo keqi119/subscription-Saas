@@ -14,7 +14,18 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { compactDate, CsvRow, formatMoneyYuan, formatPercent, safeCell, toCsv, withUtf8Bom } from "./report-csv";
 import { OrderReportQueryDto, ReportDateRangeQueryDto } from "./dto/report.dto";
+import {
+  billStatusLabels,
+  billTypeLabels,
+  collectionCaseStatusLabels,
+  collectionLevelLabels,
+  depositTransactionTypeLabels,
+  labelOf,
+  orderSourceLabels,
+  orderStatusLabels
+} from "./report-labels";
 
 const BUSINESS_UTC_OFFSET_MINUTES = 8 * 60;
 const DEFAULT_REPORT_RANGE_DAYS = 30;
@@ -390,6 +401,166 @@ export class ReportService {
       byVehicleModel: vehicleModelAssetRows(vehicleModelGroups, incomeByVehicleModel)
     };
   }
+
+  async exportOrderReport(query: OrderReportQueryDto) {
+    const report = await this.getOrderReport(query);
+    const rows: CsvRow[] = [
+      ["订单报表"],
+      ["统计周期", dateRangeText(report.dateRange)],
+      [],
+      ["订单总数", report.totalOrders],
+      [],
+      ["订单状态统计"],
+      ["状态", "数量"],
+      ...report.byStatus.map((row) => [labelOf(orderStatusLabels, row.orderStatus), row.count]),
+      [],
+      ["订单来源统计"],
+      ["来源", "数量"],
+      ...report.bySource.map((row) => [labelOf(orderSourceLabels, row.orderSource), row.count]),
+      [],
+      ["车型统计"],
+      ["车型", "数量"],
+      ...report.byVehicleModel.map((row) => [row.vehicleModel, row.count]),
+      [],
+      ["订阅套餐统计"],
+      ["套餐", "数量"],
+      ...report.bySubscriptionPlan.map((row) => [
+        safeCell(row.subscriptionPlanName ?? row.subscriptionPlanNo),
+        row.count
+      ])
+    ];
+
+    return csvExport("orders-report", report.dateRange, rows);
+  }
+
+  async exportFinanceReport(query: ReportDateRangeQueryDto) {
+    const report = await this.getFinanceReport(query);
+    const rows: CsvRow[] = [
+      ["财务报表"],
+      ["统计周期", dateRangeText(report.dateRange)],
+      [],
+      ["汇总"],
+      ["指标", "金额（元）"],
+      ["总应收金额", formatMoneyYuan(report.totalReceivableAmount)],
+      ["总已收金额", formatMoneyYuan(report.totalPaidAmount)],
+      ["总未收金额", formatMoneyYuan(report.totalUnpaidAmount)],
+      [],
+      ["按账单类型统计"],
+      ["账单类型", "应收金额（元）", "已收金额（元）", "未收金额（元）", "数量"],
+      ...report.byBillType.map((row) => [
+        labelOf(billTypeLabels, row.billType),
+        formatMoneyYuan(row.totalReceivableAmount),
+        formatMoneyYuan(row.totalPaidAmount),
+        formatMoneyYuan(row.totalUnpaidAmount),
+        row.count
+      ]),
+      [],
+      ["按账单状态统计"],
+      ["账单状态", "应收金额（元）", "已收金额（元）", "未收金额（元）", "数量"],
+      ...report.byBillStatus.map((row) => [
+        labelOf(billStatusLabels, row.billStatus),
+        formatMoneyYuan(row.totalReceivableAmount),
+        formatMoneyYuan(row.totalPaidAmount),
+        formatMoneyYuan(row.totalUnpaidAmount),
+        row.count
+      ])
+    ];
+
+    return csvExport("finance-report", report.dateRange, rows);
+  }
+
+  async exportDepositPoolReport(query: ReportDateRangeQueryDto) {
+    const report = await this.getDepositPoolReport(query);
+    const rows: CsvRow[] = [
+      ["保证金池报表"],
+      ["统计周期", dateRangeText(report.dateRange)],
+      [],
+      ["汇总"],
+      ["指标", "金额（元）/数量"],
+      ["累计收取保证金", formatMoneyYuan(report.collectedAmount)],
+      ["累计扣减保证金", formatMoneyYuan(report.deductedAmount)],
+      ["累计退款保证金", formatMoneyYuan(report.refundedAmount)],
+      ["当前保证金余额", formatMoneyYuan(report.currentBalanceAmount)],
+      ["保证金交易笔数", report.transactionCount],
+      [],
+      ["按交易类型统计"],
+      ["交易类型", "金额（元）", "数量"],
+      ...report.byTransactionType.map((row) => [
+        labelOf(depositTransactionTypeLabels, row.transactionType),
+        formatMoneyYuan(row.amount),
+        row.count
+      ])
+    ];
+
+    return csvExport("deposit-pool-report", report.dateRange, rows);
+  }
+
+  async exportCollectionReport(query: ReportDateRangeQueryDto) {
+    const report = await this.getCollectionReport(query);
+    const rows: CsvRow[] = [
+      ["逾期催收报表"],
+      ["统计周期", dateRangeText(report.dateRange)],
+      [],
+      ["汇总"],
+      ["指标", "金额（元）/数量"],
+      ["逾期账单数", report.overdueBillCount],
+      ["逾期金额", formatMoneyYuan(report.overdueAmount)],
+      ["逾期订单数", report.overdueOrderCount],
+      ["催收案件数", report.collectionCaseCount],
+      ["催收中案件数", report.activeCaseCount],
+      ["已关闭案件数", report.closedCaseCount],
+      ["催收动作数量", report.actionCount],
+      ["承诺付款金额", formatMoneyYuan(report.promisedPaymentAmount)],
+      [],
+      ["按逾期等级统计"],
+      ["逾期等级", "逾期金额（元）", "案件数", "账单数"],
+      ...report.byCollectionLevel.map((row) => [
+        labelOf(collectionLevelLabels, row.collectionLevel),
+        formatMoneyYuan(row.totalOverdueAmount),
+        row.count,
+        "-"
+      ]),
+      [],
+      ["按案件状态统计"],
+      ["案件状态", "案件数"],
+      ...report.byCaseStatus.map((row) => [labelOf(collectionCaseStatusLabels, row.caseStatus), row.count])
+    ];
+
+    return csvExport("collections-report", report.dateRange, rows);
+  }
+
+  async exportVehicleAssetReport(query: ReportDateRangeQueryDto) {
+    const report = await this.getVehicleAssetReport(query);
+    const rows: CsvRow[] = [
+      ["车辆资产报表"],
+      ["统计周期", dateRangeText(report.dateRange)],
+      [],
+      ["汇总"],
+      ["指标", "值"],
+      ["车辆总数", report.totalVehicles],
+      ["可租车辆数", report.availableVehicles],
+      ["在租车辆数", report.leasedVehicles],
+      ["维修中车辆数", report.maintenanceVehicles],
+      ["已退回车辆数", report.returnedVehicles],
+      ["已售车辆数", report.soldVehicles],
+      ["出租率", formatPercent(report.rentalRate)],
+      ["平均当前车辆销售价（元）", formatMoneyYuan(report.averageCurrentSalePriceAmount)],
+      ["采购成本合计（元）", formatMoneyYuan(report.totalPurchasePriceAmount)],
+      ["当前销售价合计（元）", formatMoneyYuan(report.totalCurrentSalePriceAmount)],
+      [],
+      ["按车型统计"],
+      ["车型", "车辆数", "在租数", "可租数", "收入（元）"],
+      ...report.byVehicleModel.map((row) => [
+        row.vehicleModel,
+        row.totalVehicles,
+        row.leasedVehicles,
+        row.availableVehicles,
+        formatMoneyYuan(row.incomeAmount)
+      ])
+    ];
+
+    return csvExport("vehicle-assets-report", report.dateRange, rows);
+  }
 }
 
 const operationalVehicleStatuses = [
@@ -407,6 +578,18 @@ type AmountGroup = {
   _count: { _all: number };
   _sum: Record<string, bigint | number | null | undefined>;
 } & Record<string, unknown>;
+type ReportDateRangeOutput = { endDate: string; startDate: string };
+
+function csvExport(prefix: string, dateRange: ReportDateRangeOutput, rows: CsvRow[]) {
+  return {
+    content: withUtf8Bom(toCsv(rows)),
+    filename: `${prefix}-${compactDate(dateRange.startDate)}-${compactDate(dateRange.endDate)}.csv`
+  };
+}
+
+function dateRangeText(dateRange: ReportDateRangeOutput) {
+  return `${dateRange.startDate} 至 ${dateRange.endDate}`;
+}
 
 function resolveReportDateRange(query: ReportDateRangeQueryDto) {
   const endDate = query.endDate ?? businessDateForNow(new Date());

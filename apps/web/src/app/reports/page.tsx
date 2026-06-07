@@ -1,6 +1,6 @@
 "use client";
 
-import { ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -32,12 +32,13 @@ import {
   ORDER_STATUS_LABELS,
   labelOf
 } from "../../constants/labels";
-import { ApiError, apiFetch } from "../../lib/api";
+import { API_BASE_URL, ApiError, apiFetch } from "../../lib/api";
 import type { AuthMeResponse } from "../../lib/auth";
 
 const { RangePicker } = DatePicker;
 
 type ReportKey = "summary" | "orders" | "finance" | "deposit" | "collections" | "assets";
+type ExportReportKey = Exclude<ReportKey, "summary">;
 
 interface DateRangeResponse {
   endDate?: string | null;
@@ -244,6 +245,108 @@ function dateRangeParams(dateRange: [Dayjs, Dayjs]) {
   };
 }
 
+function exportReportPath(
+  key: ExportReportKey,
+  dateRange: [Dayjs, Dayjs],
+  orderFilters: OrderFilterValues
+) {
+  const dateParams = dateRangeParams(dateRange);
+  const endpointByKey: Record<ExportReportKey, string> = {
+    assets: "/reports/vehicle-assets/export",
+    collections: "/reports/collections/export",
+    deposit: "/reports/deposit-pool/export",
+    finance: "/reports/finance/export",
+    orders: "/reports/orders/export"
+  };
+
+  return `${endpointByKey[key]}${buildQuery({
+    ...dateParams,
+    ...(key === "orders" ? orderFilters : {})
+  })}`;
+}
+
+function exportDefaultFilename(key: ExportReportKey, dateRange: [Dayjs, Dayjs]) {
+  const prefixByKey: Record<ExportReportKey, string> = {
+    assets: "vehicle-assets-report",
+    collections: "collections-report",
+    deposit: "deposit-pool-report",
+    finance: "finance-report",
+    orders: "orders-report"
+  };
+  const startDate = dateRange[0].format("YYYYMMDD");
+  const endDate = dateRange[1].format("YYYYMMDD");
+
+  return `${prefixByKey[key]}-${startDate}-${endDate}.csv`;
+}
+
+async function downloadCsv(path: string, defaultFilename: string) {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      credentials: "include"
+    });
+  } catch {
+    throw new ApiError("无法连接 API 服务，请确认后端 3001 端口已启动。", 0);
+  }
+
+  if (!response.ok) {
+    throw new ApiError(await readExportError(response), response.status);
+  }
+
+  const blob = await response.blob();
+  const filename = filenameFromDisposition(response.headers.get("Content-Disposition")) ?? defaultFilename;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function readExportError(response: Response) {
+  const contentType = response.headers.get("Content-Type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      const body = (await response.json()) as { message?: string | string[] };
+      if (Array.isArray(body.message)) {
+        return body.message.join(", ");
+      }
+      if (body.message) {
+        return body.message;
+      }
+    } catch {
+      return "导出失败，请稍后重试";
+    }
+  }
+
+  const text = await response.text();
+  return text.trim() || "导出失败，请稍后重试";
+}
+
+function filenameFromDisposition(disposition: string | null) {
+  if (!disposition) {
+    return null;
+  }
+
+  const encodedMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  if (encodedMatch?.[1]) {
+    return decodeURIComponent(encodedMatch[1].trim());
+  }
+
+  const quotedMatch = /filename="([^"]+)"/i.exec(disposition);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+
+  const plainMatch = /filename=([^;]+)/i.exec(disposition);
+  return plainMatch?.[1]?.trim() ?? null;
+}
+
 function safeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -296,6 +399,18 @@ function getErrorMessage(error: unknown) {
   return "报表加载失败，请稍后重试";
 }
 
+function getExportErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    const message = error.message.trim();
+    if (!message || message === "Internal Server Error" || message === "Bad Request") {
+      return error.status === 403 ? "无导出权限" : "导出失败，请稍后重试";
+    }
+    return message;
+  }
+
+  return "导出失败，请稍后重试";
+}
+
 function optionsFromLabels(labels: Record<string, string>) {
   return Object.entries(labels).map(([value, label]) => ({ label, value }));
 }
@@ -326,6 +441,13 @@ export default function ReportsPage() {
     finance: false,
     orders: false,
     summary: false
+  });
+  const [exporting, setExporting] = useState<Record<ExportReportKey, boolean>>({
+    assets: false,
+    collections: false,
+    deposit: false,
+    finance: false,
+    orders: false
   });
   const [errors, setErrors] = useState<Partial<Record<ReportKey, string>>>({});
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummaryReport | null>(null);
@@ -494,6 +616,23 @@ export default function ReportsPage() {
     loadVehicleAssetReport
   ]);
 
+  const exportReportCsv = useCallback(
+    async (key: ExportReportKey) => {
+      setExporting((current) => ({ ...current, [key]: true }));
+      try {
+        await downloadCsv(
+          exportReportPath(key, dateRange, orderFilterForm.getFieldsValue()),
+          exportDefaultFilename(key, dateRange)
+        );
+      } catch (error) {
+        void message.error(getExportErrorMessage(error));
+      } finally {
+        setExporting((current) => ({ ...current, [key]: false }));
+      }
+    },
+    [dateRange, message, orderFilterForm]
+  );
+
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
       .then(setMe)
@@ -557,6 +696,7 @@ export default function ReportsPage() {
       return (
         <ReportPanel data={orderReport} error={errors.orders} loading={loading.orders}>
           <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+            <ExportButton loading={exporting.orders} onClick={() => void exportReportCsv("orders")} />
             <Form form={orderFilterForm} layout="inline" onFinish={loadOrderReport}>
               <Form.Item label="订单来源" name="orderSource">
                 <Select allowClear options={optionsFromLabels(orderSourceLabels)} style={{ width: 150 }} />
@@ -635,6 +775,7 @@ export default function ReportsPage() {
       return (
         <ReportPanel data={financeReport} error={errors.finance} loading={loading.finance}>
           <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+            <ExportButton loading={exporting.finance} onClick={() => void exportReportCsv("finance")} />
             <Alert
               showIcon
               title="应收金额来自 ReceivableBill.amount；已收金额来自 ReceivableBill.paidAmount；未收金额来自 ReceivableBill.remainingAmount。收款记录 PaymentRecord 不直接等同收入，需通过核销确认到具体账单。"
@@ -680,6 +821,7 @@ export default function ReportsPage() {
       return (
         <ReportPanel data={depositReport} error={errors.deposit} loading={loading.deposit}>
           <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+            <ExportButton loading={exporting.deposit} onClick={() => void exportReportCsv("deposit")} />
             <Alert
               showIcon
               title="仅统计 CONFIRMED 且未删除的 DepositLedger。COLLECT 增加余额，DEDUCT / REFUND / RELEASE 减少余额，FREEZE 第一版不影响可用余额。"
@@ -713,6 +855,7 @@ export default function ReportsPage() {
       return (
         <ReportPanel data={collectionReport} error={errors.collections} loading={loading.collections}>
           <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+            <ExportButton loading={exporting.collections} onClick={() => void exportReportCsv("collections")} />
             <MetricGrid
               items={[
                 metric("逾期账单数", formatInteger(collectionReport?.overdueBillCount)),
@@ -755,6 +898,7 @@ export default function ReportsPage() {
     return (
       <ReportPanel data={vehicleAssetReport} error={errors.assets} loading={loading.assets}>
         <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+          <ExportButton loading={exporting.assets} onClick={() => void exportReportCsv("assets")} />
           <Alert
             showIcon
             title="出租率 = 在租车辆数 / 可运营车辆数。可运营车辆不包含已售和待退出车辆。收入第一版使用 ReceivableBill.paidAmount。ROA / ROE 后续需要引入资金成本、折旧、生命周期收入、残值和费用，本阶段暂不计算。"
@@ -927,6 +1071,16 @@ const vehicleAssetColumns: ColumnsType<VehicleModelAssetRow> = [
   { dataIndex: "availableVehicles", render: formatInteger, title: "可租数", width: 110 },
   { dataIndex: "incomeAmount", render: formatYuan, title: "收入", width: 160 }
 ];
+
+function ExportButton({ loading, onClick }: Readonly<{ loading: boolean; onClick: () => void }>) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <Button icon={<DownloadOutlined />} loading={loading} onClick={onClick}>
+        导出 CSV
+      </Button>
+    </div>
+  );
+}
 
 function ReportPanel({
   children,

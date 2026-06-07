@@ -253,6 +253,49 @@ enum DepositStatus {
   @@map("deposit_status")
 }
 
+enum EntitlementAccountStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+
+  @@map("entitlement_account_status")
+}
+
+enum EntitlementType {
+  MILEAGE
+  ENERGY
+  BENEFIT
+
+  @@map("entitlement_type")
+}
+
+enum EntitlementUnit {
+  KM
+  KWH
+  TIMES
+  ITEM
+  TEXT
+
+  @@map("entitlement_unit")
+}
+
+enum EntitlementGrantSource {
+  ORDER_START
+  MONTHLY_RENEWAL
+  MANUAL_ADJUST
+
+  @@map("entitlement_grant_source")
+}
+
+enum EntitlementGrantStatus {
+  ACTIVE
+  EXHAUSTED
+  EXPIRED
+  CANCELLED
+
+  @@map("entitlement_grant_status")
+}
+
 enum BillType {
   DEPOSIT
   FIRST_MONTHLY_FEE
@@ -726,6 +769,8 @@ model Customer {
   collectionCases   CollectionCase[]
   collectionCaseBills CollectionCaseBill[]
   collectionActions CollectionAction[]
+  entitlementAccounts OrderEntitlementAccount[]
+  entitlementGrants OrderEntitlementGrant[]
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy        String?             @map("created_by") @db.Uuid
@@ -1251,6 +1296,7 @@ model SubscriptionPlan {
   effectiveTo          DateTime?              @map("effective_to") @db.Date
   remark               String?                @db.Text
   quotes               SubscriptionQuote[]
+  entitlementAccounts  OrderEntitlementAccount[]
   createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy            String?                @map("created_by") @db.Uuid
@@ -1493,6 +1539,8 @@ model SubscriptionOrder {
   collectionCases            CollectionCase[]
   collectionCaseBills        CollectionCaseBill[]
   collectionActions          CollectionAction[]
+  entitlementAccounts        OrderEntitlementAccount[]
+  entitlementGrants          OrderEntitlementGrant[]
   contracts                  Contract[]            @relation("OrderContracts")
   changes                    OrderChange[]
   createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1515,6 +1563,71 @@ model SubscriptionOrder {
   @@index([vehicleReviewStatus])
   @@index([depositStatus])
   @@map("subscription_order")
+}
+
+model OrderEntitlementAccount {
+  id                 String                   @id @default(uuid()) @db.Uuid
+  accountNo          String                   @unique @map("account_no") @db.VarChar(64)
+  orderId            String                   @map("order_id") @db.Uuid
+  order              SubscriptionOrder        @relation(fields: [orderId], references: [id])
+  customerId         String                   @map("customer_id") @db.Uuid
+  customer           Customer                 @relation(fields: [customerId], references: [id])
+  subscriptionPlanId String?                  @map("subscription_plan_id") @db.Uuid
+  subscriptionPlan   SubscriptionPlan?        @relation(fields: [subscriptionPlanId], references: [id])
+  accountStatus      EntitlementAccountStatus @default(ACTIVE) @map("account_status")
+  periodStart        DateTime                 @map("period_start") @db.Date
+  periodEnd          DateTime?                @map("period_end") @db.Date
+  snapshot           Json
+  grants             OrderEntitlementGrant[]
+  createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?                  @map("created_by") @db.Uuid
+  updatedBy          String?                  @map("updated_by") @db.Uuid
+  deletedAt          DateTime?                @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([orderId])
+  @@index([customerId])
+  @@index([subscriptionPlanId])
+  @@index([accountStatus])
+  @@index([periodStart, periodEnd])
+  @@map("order_entitlement_account")
+}
+
+model OrderEntitlementGrant {
+  id               String                 @id @default(uuid()) @db.Uuid
+  grantNo          String                 @unique @map("grant_no") @db.VarChar(64)
+  accountId        String                 @map("account_id") @db.Uuid
+  account          OrderEntitlementAccount @relation(fields: [accountId], references: [id])
+  orderId          String                 @map("order_id") @db.Uuid
+  order            SubscriptionOrder      @relation(fields: [orderId], references: [id])
+  customerId       String                 @map("customer_id") @db.Uuid
+  customer         Customer               @relation(fields: [customerId], references: [id])
+  entitlementType  EntitlementType        @map("entitlement_type")
+  entitlementName  String                 @map("entitlement_name") @db.VarChar(128)
+  totalAmount      Decimal?               @map("total_amount") @db.Decimal(12, 2)
+  usedAmount       Decimal?               @default(0) @map("used_amount") @db.Decimal(12, 2)
+  remainingAmount  Decimal?               @map("remaining_amount") @db.Decimal(12, 2)
+  unit             EntitlementUnit
+  grantSource      EntitlementGrantSource @default(ORDER_START) @map("grant_source")
+  grantPeriodStart DateTime               @map("grant_period_start") @db.Date
+  grantPeriodEnd   DateTime?              @map("grant_period_end") @db.Date
+  status           EntitlementGrantStatus @default(ACTIVE)
+  snapshot         Json?
+  remark           String?                @db.Text
+  createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?                @map("created_by") @db.Uuid
+  updatedBy        String?                @map("updated_by") @db.Uuid
+  deletedAt        DateTime?              @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([accountId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([entitlementType])
+  @@index([grantSource])
+  @@index([status])
+  @@index([grantPeriodStart, grantPeriodEnd])
+  @@map("order_entitlement_grant")
 }
 
 model ReceivableBill {

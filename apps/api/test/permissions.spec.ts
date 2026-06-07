@@ -90,6 +90,24 @@ describe("customer order review permissions", () => {
   });
 });
 
+describe("order entitlement permissions", () => {
+  it("gates entitlement query and generation APIs behind entitlement permissions", () => {
+    const viewPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.getOrderEntitlements
+    );
+    const generatePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.generateOrderEntitlements
+    );
+
+    expect(viewPermissions).toEqual([PermissionCode.ENTITLEMENT_VIEW]);
+    expect(generatePermissions).toEqual([PermissionCode.ENTITLEMENT_GENERATE]);
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], viewPermissions)).toBe(true);
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], generatePermissions)).toBe(false);
+  });
+});
+
 describe("self-service application permissions", () => {
   it("keeps self-service application intake behind application permissions", () => {
     const requiredAnyPermissions = Reflect.getMetadata(
@@ -380,6 +398,10 @@ describe("seed permission calibration", () => {
       "deposit_ledger:view",
       "deposit_ledger:deduct",
       "deposit_ledger:refund",
+      "entitlement:view",
+      "entitlement:generate",
+      "entitlement:adjust",
+      "entitlement:consume",
       "report:view",
       "report:finance",
       "report:asset"
@@ -486,6 +508,27 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(rolePermissionArray("OP"), "payment:create")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "deposit_ledger:refund")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "payment:write_off")).toBe(false);
+  });
+
+  it("calibrates entitlement permissions by role", () => {
+    for (const permission of [
+      "entitlement:view",
+      "entitlement:generate",
+      "entitlement:adjust",
+      "entitlement:consume"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain("const entitlementViewPermissions = [\"entitlement:view\"]");
+    expect(seedSource).toContain("const entitlementGeneratePermissions = [\"entitlement:view\", \"entitlement:generate\"]");
+    expectRolePermissions("OP", ["entitlement:view", "entitlement:generate"]);
+    expectRolePermissions("SA", ["entitlement:view"]);
+    expectRolePermissions("GM", ["entitlement:view"]);
+    expect(roleHasPermission(rolePermissionArray("SA"), "entitlement:generate")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "entitlement:generate")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "entitlement:adjust")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "entitlement:consume")).toBe(false);
   });
 
   it("calibrates report permissions by role", () => {

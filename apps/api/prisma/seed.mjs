@@ -151,6 +151,13 @@ permissionRows.push(
 );
 
 permissionRows.push(
+  ["entitlement:view", "查看订单权益", "entitlement", "view"],
+  ["entitlement:generate", "生成订单权益", "entitlement", "generate"],
+  ["entitlement:adjust", "调整订单权益", "entitlement", "adjust"],
+  ["entitlement:consume", "消耗订单权益", "entitlement", "consume"]
+);
+
+permissionRows.push(
   ["report:view", "查看经营报表", "report", "view"],
   ["report:finance", "查看财务报表", "report", "finance"],
   ["report:asset", "查看资产报表", "report", "asset"]
@@ -432,6 +439,10 @@ const collectionManagementPermissions = [
 
 const collectionActionPermissions = ["collection:view", "collection:action_create"];
 
+const entitlementViewPermissions = ["entitlement:view"];
+
+const entitlementGeneratePermissions = ["entitlement:view", "entitlement:generate"];
+
 const reportViewPermissions = ["report:view"];
 
 const reportFinancePermissions = ["report:view", "report:finance"];
@@ -560,6 +571,7 @@ async function main() {
       "order:create",
       "order_change:view",
       "order_change:create",
+      ...entitlementViewPermissions,
       "billing:view",
       "delivery:view",
       "vehicle_return:view",
@@ -581,6 +593,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
+      ...entitlementGeneratePermissions,
       ...reportViewPermissions,
       ...reportAssetPermissions,
       "billing:view",
@@ -673,6 +686,7 @@ async function main() {
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,
+      ...entitlementViewPermissions,
       "collection:view",
       ...reportAllPermissions
     ],

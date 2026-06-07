@@ -67,6 +67,18 @@ export class OrderController {
     return this.orderService.getReturn(id, request.user);
   }
 
+  @Get("orders/:id/entitlements")
+  @RequirePermissions(PermissionCode.ENTITLEMENT_VIEW)
+  getOrderEntitlements(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.getOrderEntitlements(id, request.user);
+  }
+
+  @Post("orders/:id/entitlements/generate")
+  @RequirePermissions(PermissionCode.ENTITLEMENT_GENERATE)
+  generateOrderEntitlements(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.generateOrderEntitlements(id, request.user, requestContext(request));
+  }
+
   @Get("orders/:id")
   @RequirePermissions(PermissionCode.ORDER_VIEW)
   getOrder(@Param("id") id: string, @Req() request: AuthenticatedRequest) {

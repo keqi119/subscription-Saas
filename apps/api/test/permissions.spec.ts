@@ -12,6 +12,7 @@ import { CustomerController } from "../src/customer/customer.controller";
 import { FinanceController } from "../src/finance/finance.controller";
 import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
+import { ReportController } from "../src/report/report.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
 describe("hasRequiredPermissions", () => {
@@ -196,6 +197,47 @@ describe("billing finance permissions", () => {
   });
 });
 
+describe("report permissions", () => {
+  it("gates report APIs behind report permissions", () => {
+    const dashboardPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getDashboardSummary
+    );
+    const ordersPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getOrderReport
+    );
+    const financePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getFinanceReport
+    );
+    const depositPoolPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getDepositPoolReport
+    );
+    const collectionAnyPermissions = Reflect.getMetadata(
+      REQUIRED_ANY_PERMISSIONS_KEY,
+      ReportController.prototype.getCollectionReport
+    );
+    const vehicleAssetPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getVehicleAssetReport
+    );
+
+    expect(dashboardPermissions).toEqual([PermissionCode.REPORT_VIEW]);
+    expect(ordersPermissions).toEqual([PermissionCode.REPORT_VIEW]);
+    expect(financePermissions).toEqual([PermissionCode.REPORT_FINANCE]);
+    expect(depositPoolPermissions).toEqual([PermissionCode.REPORT_FINANCE]);
+    expect(collectionAnyPermissions).toEqual([
+      PermissionCode.REPORT_FINANCE,
+      PermissionCode.COLLECTION_VIEW
+    ]);
+    expect(vehicleAssetPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financePermissions)).toBe(false);
+    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionAnyPermissions)).toBe(true);
+  });
+});
+
 describe("seed permission calibration", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
@@ -229,7 +271,10 @@ describe("seed permission calibration", () => {
       "payment:write_off",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
-      "deposit_ledger:refund"
+      "deposit_ledger:refund",
+      "report:view",
+      "report:finance",
+      "report:asset"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -333,6 +378,26 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(rolePermissionArray("OP"), "payment:create")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "deposit_ledger:refund")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "payment:write_off")).toBe(false);
+  });
+
+  it("calibrates report permissions by role", () => {
+    for (const permission of ["report:view", "report:finance", "report:asset"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expectRolePermissions("OP", ["report:view", "report:asset"]);
+    expectRolePermissions("GM", ["report:view", "report:finance", "report:asset"]);
+    expect(seedSource).toContain("const reportFinancePermissions = [\"report:view\", \"report:finance\"]");
+    expect(seedSource).toContain("const reportAssetPermissions = [\"report:asset\"]");
+    expect(seedSource).toContain("...(roleCode === \"FI\" ? reportFinancePermissions : reportAssetPermissions)");
+    expect(seedSource).toContain("[\"reports\", \"经营看板\", \"/reports\", \"dashboard\", 75, \"report:view\", null]");
+    expect(roleHasMenu(roleMenuArray("OP"), "reports")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "reports")).toBe(true);
+    expect(seedSource).toContain("...(roleCode === \"FI\" ? [\"reports\", ...financeMenuCodes] : [])");
+    expect(roleHasPermission(rolePermissionArray("SA"), "report:view")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("SA"), "report:finance")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "report:finance")).toBe(false);
+    expect(roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:view")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

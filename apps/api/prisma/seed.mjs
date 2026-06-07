@@ -150,6 +150,12 @@ permissionRows.push(
   ["collection:close", "关闭催收案件", "collection", "close"]
 );
 
+permissionRows.push(
+  ["report:view", "查看经营报表", "report", "view"],
+  ["report:finance", "查看财务报表", "report", "finance"],
+  ["report:asset", "查看资产报表", "report", "asset"]
+);
+
 const menuRows = [
   ["dashboard", "首页驾驶舱", "/", "dashboard", 10, "dashboard:view", null],
   ["customers", "客户中心", "/customers", "customer", 20, "customer:view", null],
@@ -164,6 +170,7 @@ const menuRows = [
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
+  ["reports", "经营看板", "/reports", "dashboard", 75, "report:view", null],
   ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
   ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
   ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
@@ -425,6 +432,14 @@ const collectionManagementPermissions = [
 
 const collectionActionPermissions = ["collection:view", "collection:action_create"];
 
+const reportViewPermissions = ["report:view"];
+
+const reportFinancePermissions = ["report:view", "report:finance"];
+
+const reportAssetPermissions = ["report:asset"];
+
+const reportAllPermissions = ["report:view", "report:finance", "report:asset"];
+
 const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collections"];
 
 const collectionMenuCodes = ["billing", "billing.collections"];
@@ -566,6 +581,8 @@ async function main() {
       ...vehicleManagementPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
+      ...reportViewPermissions,
+      ...reportAssetPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -574,7 +591,7 @@ async function main() {
       "order_change:reject",
       "order_change:execute"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
+    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", "reports", ...collectionMenuCodes]
   );
 
   await assignRoleAccess(
@@ -618,6 +635,7 @@ async function main() {
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
         ...(roleCode === "FI" ? collectionManagementPermissions : []),
+        ...(roleCode === "FI" ? reportFinancePermissions : reportAssetPermissions),
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         "vehicle_return:view",
         ...(roleCode === "AS"
@@ -636,7 +654,7 @@ async function main() {
         "orders.subscription",
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
-        ...(roleCode === "FI" ? financeMenuCodes : [])
+        ...(roleCode === "FI" ? ["reports", ...financeMenuCodes] : [])
       ]
     );
   }
@@ -655,9 +673,10 @@ async function main() {
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,
-      "collection:view"
+      "collection:view",
+      ...reportAllPermissions
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", ...collectionMenuCodes]
+    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", "reports", ...collectionMenuCodes]
   );
 
   const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD ?? "Admin@123456", 12);

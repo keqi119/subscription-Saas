@@ -10,6 +10,7 @@ import { FinanceModule } from "./finance/finance.module";
 import { OrderModule } from "./order/order.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { ProductModule } from "./product/product.module";
+import { ReportModule } from "./report/report.module";
 import { RiskModule } from "./risk/risk.module";
 import { SystemModule } from "./system/system.module";
 import { VehicleModule } from "./vehicle/vehicle.module";
@@ -27,6 +28,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     FinanceModule,
     OrderModule,
     ProductModule,
+    ReportModule,
     RiskModule,
     SystemModule,
     VehicleModule

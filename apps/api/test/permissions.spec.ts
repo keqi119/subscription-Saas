@@ -147,6 +147,10 @@ describe("billing finance permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       FinanceController.prototype.generateInitialBills
     );
+    const generateDamageFeePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.generateDamageFeeBill
+    );
     const billsPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       FinanceController.prototype.listOrderBills
@@ -154,6 +158,18 @@ describe("billing finance permissions", () => {
     const summaryPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       FinanceController.prototype.getOrderFinanceSummary
+    );
+    const settlementPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.getDepositSettlement
+    );
+    const deductPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.deductDeposit
+    );
+    const refundPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      FinanceController.prototype.refundDeposit
     );
     const createPaymentPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
@@ -165,8 +181,16 @@ describe("billing finance permissions", () => {
     );
 
     expect(generatePermissions).toEqual([PermissionCode.BILLING_GENERATE]);
+    expect(generateDamageFeePermissions).toEqual([PermissionCode.BILLING_GENERATE]);
     expect(billsPermissions).toEqual([PermissionCode.BILLING_VIEW]);
     expect(summaryPermissions).toEqual([PermissionCode.BILLING_VIEW]);
+    expect(settlementPermissions).toEqual([PermissionCode.DEPOSIT_LEDGER_VIEW]);
+    expect(deductPermissions).toEqual([PermissionCode.DEPOSIT_LEDGER_DEDUCT]);
+    expect(refundPermissions).toEqual([PermissionCode.DEPOSIT_LEDGER_REFUND]);
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_VIEW], deductPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_DEDUCT], deductPermissions)).toBe(true);
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_VIEW], refundPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_REFUND], refundPermissions)).toBe(true);
     expect(createPaymentPermissions).toEqual([PermissionCode.PAYMENT_CREATE]);
     expect(writeOffPermissions).toEqual([PermissionCode.PAYMENT_WRITE_OFF]);
   });
@@ -203,7 +227,9 @@ describe("seed permission calibration", () => {
       "payment:view",
       "payment:create",
       "payment:write_off",
-      "deposit_ledger:view"
+      "deposit_ledger:view",
+      "deposit_ledger:deduct",
+      "deposit_ledger:refund"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -292,17 +318,20 @@ describe("seed permission calibration", () => {
       "payment:view",
       "payment:create",
       "payment:write_off",
-      "deposit_ledger:view"
+      "deposit_ledger:view",
+      "deposit_ledger:deduct",
+      "deposit_ledger:refund"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
     expect(seedSource).toContain("const financeManagementPermissions = [");
     expect(seedSource).toContain("...(roleCode === \"FI\" ? financeManagementPermissions : [])");
-    expectRolePermissions("OP", ["billing:view", "deposit_ledger:view"]);
+    expectRolePermissions("OP", ["billing:view", "deposit_ledger:view", "deposit_ledger:deduct"]);
     expectRolePermissions("SA", ["billing:view"]);
     expectRolePermissions("GM", ["billing:view", "payment:view", "deposit_ledger:view"]);
     expect(roleHasPermission(rolePermissionArray("OP"), "payment:create")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "deposit_ledger:refund")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "payment:write_off")).toBe(false);
   });
 

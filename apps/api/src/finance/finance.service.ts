@@ -19,7 +19,11 @@ import {
   PaymentStatus,
   PaymentWriteOff,
   Prisma,
-  ReceivableBill
+  ReceivableBill,
+  VehicleDamageResponsibleParty,
+  VehicleReturn,
+  VehicleReturnDamage,
+  VehicleReturnDamageStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -31,8 +35,10 @@ import {
   CollectionCasesQueryDto,
   CreateCollectionActionDto,
   CreatePaymentDto,
+  DeductDepositDto,
   GenerateMonthlyRentBillsDto,
   OverdueBillsQueryDto,
+  RefundDepositDto,
   RefreshOverdueBillsDto,
   WriteOffPaymentDto
 } from "./dto/finance.dto";
@@ -64,6 +70,15 @@ const MISSING_MONTHLY_RENT_AMOUNT_MESSAGE = "订单缺少月租金额，无法�
 const COLLECTION_CASE_NOT_FOUND_MESSAGE = "催收案件不存在";
 const COLLECTION_CASE_ACTION_CLOSED_MESSAGE = "已关闭催收案件不能新增催收动作";
 const COLLECTION_CASE_CLOSE_UNSETTLED_MESSAGE = "催收案件仍有关联账单未结清，不能关闭";
+const DAMAGE_FEE_RETURN_NOT_COMPLETED_MESSAGE = "当前订单尚未完成退车，不能生成损伤费用账单";
+const DAMAGE_FEE_EMPTY_MESSAGE = "当前订单无可生成账单的客户责任损伤费用";
+const DAMAGE_FEE_BILL_REQUIRED_MESSAGE = "请选择损伤费用账单";
+const DAMAGE_FEE_BILL_INVALID_MESSAGE = "只能扣减未结清的损伤费用账单";
+const DEPOSIT_NOT_COLLECTED_MESSAGE = "订单尚未收取可用保证金";
+const DEPOSIT_BALANCE_INSUFFICIENT_MESSAGE = "保证金余额不足，不能扣减";
+const DEPOSIT_DEDUCT_OVER_BILL_MESSAGE = "扣减金额不能超过损伤费用账单剩余金额";
+const DEPOSIT_REFUND_NOT_ALLOWED_MESSAGE = "当前订单尚未完成退车，不能退还保证金";
+const DEPOSIT_REFUND_OVER_BALANCE_MESSAGE = "退款金额不能超过可用保证金余额";
 const CHINA_TIME_OFFSET_MINUTES = 8 * 60;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const OVERDUE_BILL_STATUSES = [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE] as const;
@@ -123,6 +138,8 @@ type ReceivableBillRecord = ReceivableBill;
 type PaymentRecordRecord = PaymentRecord;
 type PaymentWriteOffRecord = PaymentWriteOff;
 type DepositLedgerRecord = DepositLedger;
+type VehicleReturnRecord = VehicleReturn;
+type VehicleReturnDamageRecord = VehicleReturnDamage;
 type CollectionCaseRecord = CollectionCase;
 type CollectionCaseBillRecord = CollectionCaseBill;
 type CollectionActionRecord = CollectionAction;
@@ -140,6 +157,15 @@ interface MonthlyRentPeriod {
   end: Date;
   index: number;
   start: Date;
+}
+
+interface DepositBalanceDetails {
+  availableBalance: bigint;
+  collectedAmount: bigint;
+  deductedAmount: bigint;
+  latestLedger: DepositLedgerRecord | null;
+  refundedAmount: bigint;
+  releasedAmount: bigint;
 }
 
 export interface MonthlyRentBatchItem {
@@ -287,6 +313,73 @@ export class FinanceService {
 
     if (result.created) {
       await writeMonthlyRentBillAudit(this.auditService, result.bill, user, context, "SINGLE");
+    }
+
+    return { ...toBillView(result.bill), created: result.created };
+  }
+
+  async generateDamageFeeBill(orderId: string, user: RequestUser, context: RequestContext) {
+    const order = await this.findOrderOrThrow(orderId);
+    ensureCanAccessOrderFinance(order, user);
+    ensureOrderCanGenerateDamageFeeBill(order);
+
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const existingBill = await tx.receivableBill.findFirst({
+          where: activeDamageFeeBillWhere(order.id)
+        });
+
+        if (existingBill) {
+          return { bill: existingBill, created: false };
+        }
+
+        const vehicleReturn = await tx.vehicleReturn.findUnique({
+          where: { orderId: order.id }
+        });
+
+        if (!vehicleReturn || vehicleReturn.deletedAt || !vehicleReturn.returnedAt) {
+          throw new BadRequestException(DAMAGE_FEE_RETURN_NOT_COMPLETED_MESSAGE);
+        }
+
+        const damages = await findBillableReturnDamages(tx, order.id, vehicleReturn.id);
+        const amount = sumDamageRepairAmount(damages);
+
+        if (amount <= 0n) {
+          throw new BadRequestException(DAMAGE_FEE_EMPTY_MESSAGE);
+        }
+
+        const bill = await tx.receivableBill.create({
+          data: {
+            amount,
+            billNo: createBusinessNo("BIL"),
+            billStatus: BillStatus.PENDING,
+            billType: BillType.DAMAGE_FEE,
+            createdBy: user.id,
+            customerId: order.customerId,
+            dueDate: vehicleReturn.returnedAt,
+            orderId: order.id,
+            paidAmount: 0n,
+            remainingAmount: amount,
+            snapshot: toJsonValue(buildDamageFeeBillSnapshot(order, vehicleReturn, damages, amount)),
+            updatedBy: user.id
+          }
+        });
+
+        return { bill, created: true };
+      })
+    );
+
+    if (result.created) {
+      await this.auditService.write({
+        action: AuditAction.CREATE,
+        after: buildBillAuditPayload(result.bill),
+        entityId: result.bill.id,
+        entityType: "receivable_bill",
+        ipAddress: context.ipAddress,
+        module: "billing",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      });
     }
 
     return { ...toBillView(result.bill), created: result.created };
@@ -1034,6 +1127,237 @@ export class FinanceService {
     };
   }
 
+  async getDepositSettlement(orderId: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(orderId);
+    ensureCanAccessOrderFinance(order, user);
+
+    const [ledgers, damageFeeBills, damages] = await Promise.all([
+      this.prisma.depositLedger.findMany({
+        orderBy: [{ occurredAt: "asc" }, { createdAt: "asc" }],
+        where: { customerId: order.customerId, deletedAt: null, orderId: order.id }
+      }),
+      this.prisma.receivableBill.findMany({
+        orderBy: [{ createdAt: "asc" }],
+        where: activeDamageFeeBillWhere(order.id)
+      }),
+      this.prisma.vehicleReturnDamage.findMany({
+        orderBy: [{ createdAt: "asc" }],
+        where: { deletedAt: null, orderId: order.id }
+      })
+    ]);
+
+    const balance = calculateDepositBalanceDetailsFromLedgers(ledgers);
+    const damageFeeBillIds = new Set(damageFeeBills.map((bill) => bill.id));
+    const damageFeeAmount = damageFeeBills.reduce((sum, bill) => sum + bill.amount, 0n);
+    const damageFeePaidAmount = damageFeeBills.reduce((sum, bill) => sum + bill.paidAmount, 0n);
+    const damageFeeRemainingAmount = damageFeeBills.reduce((sum, bill) => sum + bill.remainingAmount, 0n);
+    const damageFeeDeductedAmount = ledgers
+      .filter(
+        (ledger) =>
+          ledger.transactionStatus === DepositTransactionStatus.CONFIRMED &&
+          ledger.deletedAt === null &&
+          ledger.transactionType === DepositTransactionType.DEDUCT &&
+          ledger.billId !== null &&
+          damageFeeBillIds.has(ledger.billId)
+      )
+      .reduce((sum, ledger) => sum + ledger.amount, 0n);
+    const deductibleAmount =
+      balance.availableBalance < damageFeeRemainingAmount ? balance.availableBalance : damageFeeRemainingAmount;
+    const refundableAmount = balance.availableBalance - deductibleAmount;
+
+    return {
+      availableBalance: Number(balance.availableBalance),
+      availableDepositBalance: Number(balance.availableBalance),
+      collectedAmount: Number(balance.collectedAmount),
+      customer: {
+        id: order.customer.id,
+        mobile: order.customer.mobile,
+        name: order.customer.name
+      },
+      damageFeeAmount: Number(damageFeeAmount),
+      damageFeeBills: damageFeeBills.map(toBillView),
+      damageFeeDeductedAmount: Number(damageFeeDeductedAmount),
+      damageFeePaidAmount: Number(damageFeePaidAmount),
+      damageFeeRemainingAmount: Number(damageFeeRemainingAmount),
+      damages: damages.map(toReturnDamageView),
+      deductibleAmount: Number(deductibleAmount),
+      deductedAmount: Number(balance.deductedAmount),
+      depositLedgers: ledgers.map(toDepositLedgerView),
+      latestLedger: balance.latestLedger ? toDepositLedgerView(balance.latestLedger) : null,
+      orderId: order.id,
+      orderNo: order.orderNo,
+      refundableAmount: Number(refundableAmount),
+      refundedAmount: Number(balance.refundedAmount),
+      releasedAmount: Number(balance.releasedAmount)
+    };
+  }
+
+  async deductDeposit(orderId: string, dto: DeductDepositDto, user: RequestUser, context: RequestContext) {
+    assertPositiveInteger(dto.amount, "amount");
+    if (!dto.billId) {
+      throw new BadRequestException(DAMAGE_FEE_BILL_REQUIRED_MESSAGE);
+    }
+
+    const order = await this.findOrderOrThrow(orderId);
+    ensureCanAccessOrderFinance(order, user);
+    const amount = BigInt(dto.amount);
+
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const bill = await tx.receivableBill.findFirst({
+          where: {
+            deletedAt: null,
+            id: dto.billId
+          }
+        });
+
+        if (
+          !bill ||
+          bill.orderId !== order.id ||
+          bill.customerId !== order.customerId ||
+          bill.billType !== BillType.DAMAGE_FEE ||
+          bill.billStatus === BillStatus.CANCELLED ||
+          bill.remainingAmount <= 0n
+        ) {
+          throw new BadRequestException(DAMAGE_FEE_BILL_INVALID_MESSAGE);
+        }
+
+        const balance = await calculateDepositBalanceDetails(tx, order.customerId, order.id);
+
+        if (balance.collectedAmount <= 0n || balance.availableBalance <= 0n) {
+          throw new BadRequestException(DEPOSIT_NOT_COLLECTED_MESSAGE);
+        }
+
+        if (amount > balance.availableBalance) {
+          throw new BadRequestException(DEPOSIT_BALANCE_INSUFFICIENT_MESSAGE);
+        }
+
+        if (amount > bill.remainingAmount) {
+          throw new BadRequestException(DEPOSIT_DEDUCT_OVER_BILL_MESSAGE);
+        }
+
+        const balanceAfter = balance.availableBalance - amount;
+        if (balanceAfter < 0n) {
+          throw new BadRequestException(DEPOSIT_BALANCE_INSUFFICIENT_MESSAGE);
+        }
+
+        const now = new Date();
+        const ledger = await tx.depositLedger.create({
+          data: {
+            amount,
+            balanceAfter,
+            billId: bill.id,
+            createdBy: user.id,
+            customerId: order.customerId,
+            ledgerNo: createBusinessNo("DPL"),
+            occurredAt: now,
+            orderId: order.id,
+            remark: dto.remark,
+            snapshot: toJsonValue({
+              amount: Number(amount),
+              bill: toBillView(bill),
+              orderNo: order.orderNo,
+              transactionType: DepositTransactionType.DEDUCT
+            }),
+            transactionStatus: DepositTransactionStatus.CONFIRMED,
+            transactionType: DepositTransactionType.DEDUCT
+          }
+        });
+        const nextRemainingAmount = bill.remainingAmount - amount;
+        const nextPaidAmount = bill.paidAmount + amount;
+        const nextBillStatus = nextRemainingAmount === 0n ? BillStatus.PAID : BillStatus.PARTIALLY_PAID;
+        const updatedBill = await tx.receivableBill.update({
+          data: {
+            billStatus: nextBillStatus,
+            paidAmount: nextPaidAmount,
+            paidAt: nextBillStatus === BillStatus.PAID ? now : bill.paidAt,
+            remainingAmount: nextRemainingAmount,
+            updatedBy: user.id
+          },
+          where: { id: bill.id }
+        });
+
+        return { bill: updatedBill, ledger };
+      })
+    );
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: buildDepositLedgerAuditPayload(result.ledger),
+      entityId: result.ledger.id,
+      entityType: "deposit_ledger",
+      ipAddress: context.ipAddress,
+      module: "deposit_ledger",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return {
+      bill: toBillView(result.bill),
+      depositBalance: Number(result.ledger.balanceAfter),
+      ledger: toDepositLedgerView(result.ledger)
+    };
+  }
+
+  async refundDeposit(orderId: string, dto: RefundDepositDto, user: RequestUser, context: RequestContext) {
+    assertPositiveInteger(dto.amount, "amount");
+    const order = await this.findOrderOrThrow(orderId);
+    ensureCanAccessOrderFinance(order, user);
+    ensureOrderCanRefundDeposit(order);
+    const amount = BigInt(dto.amount);
+
+    const ledger = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const balance = await calculateDepositBalanceDetails(tx, order.customerId, order.id);
+
+        if (amount > balance.availableBalance) {
+          throw new BadRequestException(DEPOSIT_REFUND_OVER_BALANCE_MESSAGE);
+        }
+
+        const balanceAfter = balance.availableBalance - amount;
+        if (balanceAfter < 0n) {
+          throw new BadRequestException(DEPOSIT_REFUND_OVER_BALANCE_MESSAGE);
+        }
+
+        return tx.depositLedger.create({
+          data: {
+            amount,
+            balanceAfter,
+            createdBy: user.id,
+            customerId: order.customerId,
+            ledgerNo: createBusinessNo("DPL"),
+            occurredAt: new Date(),
+            orderId: order.id,
+            remark: dto.remark,
+            snapshot: toJsonValue({
+              amount: Number(amount),
+              orderNo: order.orderNo,
+              transactionType: DepositTransactionType.REFUND
+            }),
+            transactionStatus: DepositTransactionStatus.CONFIRMED,
+            transactionType: DepositTransactionType.REFUND
+          }
+        });
+      })
+    );
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: buildDepositLedgerAuditPayload(ledger),
+      entityId: ledger.id,
+      entityType: "deposit_ledger",
+      ipAddress: context.ipAddress,
+      module: "deposit_ledger",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return {
+      depositBalance: Number(ledger.balanceAfter),
+      ledger: toDepositLedgerView(ledger)
+    };
+  }
+
   private async findOrderOrThrow(orderId: string) {
     const order = await this.prisma.subscriptionOrder.findUnique({
       include: financeOrderInclude,
@@ -1525,6 +1849,61 @@ function buildMonthlyRentBillSnapshot(
   };
 }
 
+function buildDamageFeeBillSnapshot(
+  order: FinanceOrder,
+  vehicleReturn: VehicleReturnRecord,
+  damages: VehicleReturnDamageRecord[],
+  amount: bigint
+) {
+  return {
+    amount: Number(amount),
+    billType: BillType.DAMAGE_FEE,
+    customer: {
+      id: order.customerId,
+      mobile: order.customer.mobile,
+      name: order.customer.name
+    },
+    damages: damages.map((damage) => ({
+      damageLevel: damage.damageLevel,
+      damageType: damage.damageType,
+      description: damage.description,
+      estimatedRepairAmount: damage.estimatedRepairAmount === null ? null : Number(damage.estimatedRepairAmount),
+      id: damage.id,
+      responsibleParty: damage.responsibleParty,
+      status: damage.status
+    })),
+    orderId: order.id,
+    orderNo: order.orderNo,
+    returnId: vehicleReturn.id,
+    returnNo: vehicleReturn.returnNo,
+    returnedAt: toIsoDateTime(vehicleReturn.returnedAt),
+    vehicleId: order.vehicleId
+  };
+}
+
+function buildBillAuditPayload(bill: ReceivableBillRecord) {
+  return {
+    ...toBillView(bill),
+    amount: Number(bill.amount),
+    billId: bill.id,
+    customerId: bill.customerId,
+    orderId: bill.orderId,
+    remark: bill.remark
+  };
+}
+
+function buildDepositLedgerAuditPayload(ledger: DepositLedgerRecord) {
+  return {
+    ...toDepositLedgerView(ledger),
+    amount: Number(ledger.amount),
+    billId: ledger.billId,
+    customerId: ledger.customerId,
+    orderId: ledger.orderId,
+    remark: ledger.remark,
+    transactionType: ledger.transactionType
+  };
+}
+
 async function writeMonthlyRentBillAudit(
   auditService: AuditService,
   bill: ReceivableBillRecord,
@@ -1589,6 +1968,45 @@ function isFailedMonthlyRentAction(action: MonthlyRentBatchAction) {
 function ensureOrderCanGenerateInitialBills(order: FinanceOrder) {
   if (FINAL_ORDER_STATUSES.has(order.orderStatus)) {
     throw new BadRequestException("订单已取消、终止或完成，不能生成应收账单");
+  }
+}
+
+function activeDamageFeeBillWhere(orderId: string) {
+  return {
+    billStatus: { not: BillStatus.CANCELLED },
+    billType: BillType.DAMAGE_FEE,
+    deletedAt: null,
+    orderId
+  } satisfies Prisma.ReceivableBillWhereInput;
+}
+
+function findBillableReturnDamages(tx: Prisma.TransactionClient, orderId: string, returnId: string) {
+  return tx.vehicleReturnDamage.findMany({
+    orderBy: [{ createdAt: "asc" }],
+    where: {
+      deletedAt: null,
+      estimatedRepairAmount: { gt: 0 },
+      orderId,
+      responsibleParty: VehicleDamageResponsibleParty.CUSTOMER,
+      returnId,
+      status: { in: [VehicleReturnDamageStatus.RECORDED, VehicleReturnDamageStatus.CONFIRMED] }
+    }
+  });
+}
+
+function sumDamageRepairAmount(damages: VehicleReturnDamageRecord[]) {
+  return damages.reduce((sum, damage) => sum + (damage.estimatedRepairAmount ?? 0n), 0n);
+}
+
+function ensureOrderCanGenerateDamageFeeBill(order: FinanceOrder) {
+  if (!order.actualReturnAt) {
+    throw new BadRequestException(DAMAGE_FEE_RETURN_NOT_COMPLETED_MESSAGE);
+  }
+}
+
+function ensureOrderCanRefundDeposit(order: FinanceOrder) {
+  if (!order.actualReturnAt && order.orderStatus !== OrderStatus.COMPLETED && order.orderStatus !== OrderStatus.TERMINATED) {
+    throw new BadRequestException(DEPOSIT_REFUND_NOT_ALLOWED_MESSAGE);
   }
 }
 
@@ -1691,7 +2109,17 @@ function buildFirstMonthlyFeePeriod(startDate: Date | null) {
 }
 
 async function calculateDepositBalance(tx: Prisma.TransactionClient, customerId: string, orderId: string) {
+  const details = await calculateDepositBalanceDetails(tx, customerId, orderId);
+  return details.availableBalance;
+}
+
+async function calculateDepositBalanceDetails(
+  tx: Prisma.TransactionClient,
+  customerId: string,
+  orderId: string
+): Promise<DepositBalanceDetails> {
   const ledgers = await tx.depositLedger.findMany({
+    orderBy: [{ occurredAt: "asc" }, { createdAt: "asc" }],
     where: {
       customerId,
       deletedAt: null,
@@ -1700,13 +2128,49 @@ async function calculateDepositBalance(tx: Prisma.TransactionClient, customerId:
     }
   });
 
-  return ledgers.reduce((balance, ledger) => balance + signedDepositLedgerAmount(ledger), 0n);
+  return calculateDepositBalanceDetailsFromLedgers(ledgers);
+}
+
+function calculateDepositBalanceDetailsFromLedgers(ledgers: DepositLedgerRecord[]): DepositBalanceDetails {
+  const confirmedLedgers = ledgers.filter(
+    (ledger) => ledger.deletedAt === null && ledger.transactionStatus === DepositTransactionStatus.CONFIRMED
+  );
+
+  return confirmedLedgers.reduce<DepositBalanceDetails>(
+    (details, ledger) => {
+      if (ledger.transactionType === DepositTransactionType.COLLECT) {
+        details.collectedAmount += ledger.amount;
+      }
+      if (ledger.transactionType === DepositTransactionType.DEDUCT) {
+        details.deductedAmount += ledger.amount;
+      }
+      if (ledger.transactionType === DepositTransactionType.REFUND) {
+        details.refundedAmount += ledger.amount;
+      }
+      if (ledger.transactionType === DepositTransactionType.RELEASE) {
+        details.releasedAmount += ledger.amount;
+      }
+
+      details.availableBalance += signedDepositLedgerAmount(ledger);
+      details.latestLedger = ledger;
+      return details;
+    },
+    {
+      availableBalance: 0n,
+      collectedAmount: 0n,
+      deductedAmount: 0n,
+      latestLedger: null,
+      refundedAmount: 0n,
+      releasedAmount: 0n
+    }
+  );
 }
 
 function signedDepositLedgerAmount(ledger: Pick<DepositLedgerRecord, "amount" | "transactionType">) {
   if (
     ledger.transactionType === DepositTransactionType.DEDUCT ||
-    ledger.transactionType === DepositTransactionType.REFUND
+    ledger.transactionType === DepositTransactionType.REFUND ||
+    ledger.transactionType === DepositTransactionType.RELEASE
   ) {
     return -ledger.amount;
   }
@@ -1834,6 +2298,35 @@ function toBillView(bill: ReceivableBillRecord) {
     snapshot: bill.snapshot,
     updatedAt: toIsoDateTime(bill.updatedAt)
   };
+}
+
+function toReturnDamageView(damage: VehicleReturnDamageRecord) {
+  return {
+    billable: isBillableReturnDamage(damage),
+    createdAt: toIsoDateTime(damage.createdAt),
+    damageLevel: damage.damageLevel,
+    damageType: damage.damageType,
+    description: damage.description,
+    estimatedRepairAmount: damage.estimatedRepairAmount === null ? null : Number(damage.estimatedRepairAmount),
+    id: damage.id,
+    orderId: damage.orderId,
+    photoUrls: damage.photoUrls ?? [],
+    responsibleParty: damage.responsibleParty,
+    returnId: damage.returnId,
+    status: damage.status,
+    updatedAt: toIsoDateTime(damage.updatedAt),
+    vehicleId: damage.vehicleId
+  };
+}
+
+function isBillableReturnDamage(damage: VehicleReturnDamageRecord) {
+  return (
+    damage.deletedAt === null &&
+    damage.responsibleParty === VehicleDamageResponsibleParty.CUSTOMER &&
+    (damage.status === VehicleReturnDamageStatus.RECORDED || damage.status === VehicleReturnDamageStatus.CONFIRMED) &&
+    damage.estimatedRepairAmount !== null &&
+    damage.estimatedRepairAmount > 0n
+  );
 }
 
 function toPaymentView(payment: PaymentRecordRecord | PaymentWithWriteOffs | PaymentWithOrderAndWriteOffs, writtenOffAmount: bigint) {

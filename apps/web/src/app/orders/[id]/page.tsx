@@ -14,6 +14,8 @@ import {
   BILL_STATUS_LABELS,
   BILL_TYPE_LABELS,
   DELIVERY_STATUS_LABELS,
+  DEPOSIT_TRANSACTION_STATUS_LABELS,
+  DEPOSIT_TRANSACTION_TYPE_LABELS,
   ORDER_STATUS_LABELS,
   ORDER_CHANGE_TYPE_LABELS,
   PAYMENT_METHOD_LABELS,
@@ -113,6 +115,10 @@ interface PaymentRecordResponse {
 interface MonthlyRentBillResponse {
   created?: boolean;
   id: string;
+}
+
+interface DamageFeeBillResponse extends ReceivableBillRow {
+  created?: boolean;
 }
 
 interface OrderChangeRow {
@@ -251,6 +257,73 @@ interface VehicleReturn {
   scheduledAt?: string | null;
   vehicleDocumentsReturnedConfirmed?: boolean;
   violationCheckedConfirmed?: boolean;
+}
+
+interface DepositSettlementDamage {
+  billable?: boolean;
+  createdAt?: string | null;
+  damageLevel: string;
+  damageType: string;
+  description?: string | null;
+  estimatedRepairAmount?: number | null;
+  id: string;
+  orderId?: string;
+  photoUrls?: string[] | null;
+  responsibleParty?: string | null;
+  returnId?: string;
+  status: string;
+  updatedAt?: string | null;
+  vehicleId?: string;
+}
+
+interface DepositLedgerRow {
+  amount?: number | null;
+  balanceAfter?: number | null;
+  billId?: string | null;
+  createdAt?: string | null;
+  customerId?: string;
+  id: string;
+  ledgerNo?: string;
+  occurredAt?: string | null;
+  orderId?: string;
+  paymentId?: string | null;
+  remark?: string | null;
+  snapshot?: unknown;
+  transactionStatus: string;
+  transactionType: string;
+}
+
+interface DepositSettlement {
+  availableBalance?: number | null;
+  availableDepositBalance?: number | null;
+  collectedAmount?: number | null;
+  customer?: { id: string; mobile?: string | null; name?: string | null };
+  damageFeeAmount?: number | null;
+  damageFeeBills?: ReceivableBillRow[];
+  damageFeeDeductedAmount?: number | null;
+  damageFeePaidAmount?: number | null;
+  damageFeeRemainingAmount?: number | null;
+  damages?: DepositSettlementDamage[];
+  deductibleAmount?: number | null;
+  deductedAmount?: number | null;
+  depositLedgers?: DepositLedgerRow[];
+  latestLedger?: DepositLedgerRow | null;
+  orderId: string;
+  orderNo: string;
+  refundableAmount?: number | null;
+  refundedAmount?: number | null;
+  releasedAmount?: number | null;
+}
+
+interface DeductDepositFormValues {
+  amountYuan?: number;
+  billId?: string;
+  remark?: string;
+}
+
+interface RefundDepositFormValues {
+  amountYuan?: number;
+  remark?: string;
 }
 
 interface PrepareReturnFormValues {
@@ -425,6 +498,58 @@ function validInitialBill(bill: ReceivableBillRow) {
 
 function validMonthlyRentBill(bill: ReceivableBillRow) {
   return bill.billType === "MONTHLY_RENT" && bill.billStatus !== "CANCELLED";
+}
+
+function validDamageFeeBill(bill: ReceivableBillRow) {
+  return bill.billType === "DAMAGE_FEE" && bill.billStatus !== "CANCELLED";
+}
+
+function getDamageFeeBills(settlement: DepositSettlement | null, bills: ReceivableBillRow[]) {
+  const byId = new Map<string, ReceivableBillRow>();
+
+  for (const bill of settlement?.damageFeeBills ?? []) {
+    if (validDamageFeeBill(bill)) {
+      byId.set(bill.id, bill);
+    }
+  }
+
+  for (const bill of bills) {
+    if (validDamageFeeBill(bill)) {
+      byId.set(bill.id, bill);
+    }
+  }
+
+  return [...byId.values()];
+}
+
+function getDepositAvailableBalance(settlement: DepositSettlement | null) {
+  return toNumber(settlement?.availableDepositBalance ?? settlement?.availableBalance) ?? 0;
+}
+
+function getDamageFeeRemainingAmount(settlement: DepositSettlement | null) {
+  return toNumber(settlement?.damageFeeRemainingAmount) ?? 0;
+}
+
+function getSuggestedDeductibleAmount(settlement: DepositSettlement | null) {
+  return toNumber(settlement?.deductibleAmount) ?? 0;
+}
+
+function getSuggestedRefundableAmount(settlement: DepositSettlement | null) {
+  return toNumber(settlement?.refundableAmount) ?? 0;
+}
+
+function hasBillableCustomerDamage(settlement: DepositSettlement | null) {
+  return (settlement?.damages ?? []).some((damage) => {
+    if (damage.billable) {
+      return true;
+    }
+
+    return (
+      damage.responsibleParty === "CUSTOMER" &&
+      (damage.status === "RECORDED" || damage.status === "CONFIRMED") &&
+      hasPositiveAmount(damage.estimatedRepairAmount)
+    );
+  });
 }
 
 function sumBillAmount(bills: ReceivableBillRow[], field: "paidAmount" | "remainingAmount") {
@@ -1660,6 +1785,185 @@ function ReturnPanel({
   );
 }
 
+function DepositSettlementPanel({
+  deductAvailability,
+  depositSettlementLoading,
+  generateAvailability,
+  generatingDamageFeeBill,
+  onGenerateDamageFeeBill,
+  onOpenDeduct,
+  onOpenRefund,
+  order,
+  refundAvailability,
+  settlement,
+  settlementError
+}: {
+  deductAvailability: ReturnType<typeof actionAvailability>;
+  depositSettlementLoading: boolean;
+  generateAvailability: ReturnType<typeof actionAvailability>;
+  generatingDamageFeeBill: boolean;
+  onGenerateDamageFeeBill: () => void;
+  onOpenDeduct: () => void;
+  onOpenRefund: () => void;
+  order: OrderDetail;
+  refundAvailability: ReturnType<typeof actionAvailability>;
+  settlement: DepositSettlement | null;
+  settlementError?: string | null;
+}) {
+  const alreadyReturned = isOrderReturned(order);
+  const damageRows = settlement?.damages ?? [];
+  const ledgerRows = settlement?.depositLedgers ?? [];
+  const billNoById = new Map((settlement?.damageFeeBills ?? []).map((bill) => [bill.id, bill.billNo]));
+  const damageColumns: ColumnsType<DepositSettlementDamage> = [
+    {
+      dataIndex: "damageType",
+      render: (value: string) => labelOf(VEHICLE_DAMAGE_TYPE_LABELS, value),
+      title: "损伤类型"
+    },
+    {
+      dataIndex: "damageLevel",
+      render: (value: string) => labelOf(VEHICLE_DAMAGE_LEVEL_LABELS, value),
+      title: "损伤等级"
+    },
+    { dataIndex: "description", render: safeText, title: "描述" },
+    {
+      dataIndex: "responsibleParty",
+      render: (value?: string | null) => labelOf(VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS, value ?? "UNKNOWN"),
+      title: "责任方"
+    },
+    {
+      dataIndex: "estimatedRepairAmount",
+      render: formatYuan,
+      title: "预估维修金额"
+    },
+    {
+      dataIndex: "status",
+      render: (value: string) => <DamageStatusTag value={value} />,
+      title: "状态"
+    },
+    {
+      dataIndex: "photoUrls",
+      render: (value?: string[] | null) => {
+        const urls = normalizePhotoUrls(value);
+        return urls.length > 0 ? (
+          <Space direction="vertical" size={2}>
+            {urls.map((url, index) => (
+              <Typography.Link href={url} key={`${url}-${index}`} rel="noreferrer" target="_blank">
+                照片 {index + 1}
+              </Typography.Link>
+            ))}
+          </Space>
+        ) : "-";
+      },
+      title: "照片"
+    }
+  ];
+  const ledgerColumns: ColumnsType<DepositLedgerRow> = [
+    {
+      dataIndex: "transactionType",
+      render: (value: string) => labelOf(DEPOSIT_TRANSACTION_TYPE_LABELS, value),
+      title: "交易类型"
+    },
+    {
+      dataIndex: "transactionStatus",
+      render: (value: string) => <Tag>{labelOf(DEPOSIT_TRANSACTION_STATUS_LABELS, value)}</Tag>,
+      title: "交易状态"
+    },
+    { dataIndex: "amount", render: formatYuan, title: "金额" },
+    { dataIndex: "balanceAfter", render: formatYuan, title: "交易后余额" },
+    {
+      dataIndex: "billId",
+      render: (value?: string | null) => (value ? (billNoById.get(value) ?? value) : "-"),
+      title: "关联账单"
+    },
+    { dataIndex: "occurredAt", render: formatTime, title: "发生时间" },
+    { dataIndex: "remark", render: safeText, title: "备注" }
+  ];
+
+  return (
+    <Card
+      extra={
+        <Space wrap>
+          <ActionButton
+            availability={generateAvailability}
+            loading={generatingDamageFeeBill}
+            onClick={onGenerateDamageFeeBill}
+            type="primary"
+          >
+            生成损伤费用账单
+          </ActionButton>
+          <ActionButton availability={deductAvailability} onClick={onOpenDeduct}>
+            保证金扣减
+          </ActionButton>
+          <ActionButton availability={refundAvailability} onClick={onOpenRefund}>
+            保证金退款
+          </ActionButton>
+        </Space>
+      }
+      title="保证金结算"
+    >
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Alert
+          message={
+            alreadyReturned
+              ? "本面板用于退车后的保证金结算。当前阶段支持损伤费用账单、保证金扣减和人工确认退款，不接入真实退款渠道。"
+              : "订单尚未完成退车，暂不能进行保证金结算。"
+          }
+          showIcon
+          type={alreadyReturned ? "info" : "warning"}
+        />
+        {settlementError ? <Alert message={settlementError} showIcon type="error" /> : null}
+
+        <Descriptions
+          bordered
+          column={2}
+          title="结算概览"
+          items={[
+            { label: "订单编号", children: safeText(settlement?.orderNo ?? order.orderNo) },
+            {
+              label: "客户",
+              children: joinText(settlement?.customer?.name ?? order.customer.name, settlement?.customer?.mobile ?? order.customer.mobile)
+            },
+            { label: "保证金已收", children: formatYuan(settlement?.collectedAmount) },
+            { label: "已扣减", children: formatYuan(settlement?.deductedAmount) },
+            { label: "已退款", children: formatYuan(settlement?.refundedAmount) },
+            { label: "当前可用余额", children: formatYuan(settlement?.availableDepositBalance ?? settlement?.availableBalance) },
+            { label: "损伤费用账单", children: formatYuan(settlement?.damageFeeAmount) },
+            { label: "已抵扣", children: formatYuan(settlement?.damageFeeDeductedAmount) },
+            { label: "剩余未收", children: formatYuan(settlement?.damageFeeRemainingAmount) },
+            { label: "建议扣减", children: formatYuan(settlement?.deductibleAmount) },
+            { label: "建议退款", children: formatYuan(settlement?.refundableAmount) }
+          ]}
+        />
+
+        <Table
+          columns={damageColumns}
+          dataSource={damageRows}
+          loading={depositSettlementLoading}
+          locale={{ emptyText: "-" }}
+          pagination={false}
+          rowKey="id"
+          scroll={{ x: 980 }}
+          size="small"
+          title={() => "损伤明细"}
+        />
+
+        <Table
+          columns={ledgerColumns}
+          dataSource={ledgerRows}
+          loading={depositSettlementLoading}
+          locale={{ emptyText: "-" }}
+          pagination={false}
+          rowKey="id"
+          scroll={{ x: 1040 }}
+          size="small"
+          title={() => "保证金台账"}
+        />
+      </Space>
+    </Card>
+  );
+}
+
 function getPrepareDeliveryDisabledReason(
   order: OrderDetail | null,
   deliveryCheck: DeliveryCheck | null,
@@ -1807,17 +2111,25 @@ export default function OrderDetailPage() {
   const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
   const [confirmReturnForm] = Form.useForm<ConfirmReturnFormValues>();
   const [creditForm] = Form.useForm<{ customerGrade: string }>();
+  const [deductDepositForm] = Form.useForm<DeductDepositFormValues>();
   const [paymentForm] = Form.useForm<PaymentFormValues>();
   const [prepareDeliveryForm] = Form.useForm<PrepareDeliveryFormValues>();
   const [prepareReturnForm] = Form.useForm<PrepareReturnFormValues>();
+  const [refundDepositForm] = Form.useForm<RefundDepositFormValues>();
   const [changeModalOpen, setChangeModalOpen] = useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
   const [confirmDeliveryModalOpen, setConfirmDeliveryModalOpen] = useState(false);
   const [confirmReturnModalOpen, setConfirmReturnModalOpen] = useState(false);
+  const [deductDepositModalOpen, setDeductDepositModalOpen] = useState(false);
+  const [deductingDeposit, setDeductingDeposit] = useState(false);
   const [delivery, setDelivery] = useState<VehicleDelivery | null>(null);
   const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
+  const [depositSettlement, setDepositSettlement] = useState<DepositSettlement | null>(null);
+  const [depositSettlementError, setDepositSettlementError] = useState<string | null>(null);
+  const [depositSettlementLoading, setDepositSettlementLoading] = useState(false);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeSummary, setFinanceSummary] = useState<FinanceSummary | null>(null);
+  const [generatingDamageFeeBill, setGeneratingDamageFeeBill] = useState(false);
   const [generatingBills, setGeneratingBills] = useState(false);
   const [generatingMonthlyRentBill, setGeneratingMonthlyRentBill] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1828,6 +2140,8 @@ export default function OrderDetailPage() {
   const [prepareDeliveryModalOpen, setPrepareDeliveryModalOpen] = useState(false);
   const [prepareReturnModalOpen, setPrepareReturnModalOpen] = useState(false);
   const [receivableBills, setReceivableBills] = useState<ReceivableBillRow[]>([]);
+  const [refundDepositModalOpen, setRefundDepositModalOpen] = useState(false);
+  const [refundingDeposit, setRefundingDeposit] = useState(false);
   const [returnCheck, setReturnCheck] = useState<ReturnCheck | null>(null);
   const [vehicleReturn, setVehicleReturn] = useState<VehicleReturn | null>(null);
   const [autoOpenChangeModalDone, setAutoOpenChangeModalDone] = useState(false);
@@ -1840,6 +2154,7 @@ export default function OrderDetailPage() {
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
   const hasDeliveryViewPermission = permissions.has("delivery:view");
   const hasReturnViewPermission = permissions.has("vehicle_return:view");
+  const hasDepositSettlementViewPermission = permissions.has("deposit_ledger:view");
   const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
   const canCreateChange = permissions.has("order_change:create");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
@@ -1862,6 +2177,27 @@ export default function OrderDetailPage() {
     () => receivableBills.filter((bill) => bill.billStatus !== "CANCELLED" && hasPositiveAmount(bill.remainingAmount)),
     [receivableBills]
   );
+  const damageFeeBills = useMemo(
+    () => getDamageFeeBills(depositSettlement, receivableBills),
+    [depositSettlement, receivableBills]
+  );
+  const damageFeeBillOptions = useMemo(
+    () =>
+      damageFeeBills.map((bill) => ({
+        label: `${labelOf(BILL_TYPE_LABELS, bill.billType)} / ${bill.billNo} / 剩余 ${formatYuan(bill.remainingAmount)}`,
+        value: bill.id
+      })),
+    [damageFeeBills]
+  );
+  const damageFeeBillForDeduction =
+    damageFeeBills.find((bill) => (toNumber(bill.remainingAmount) ?? 0) > 0) ?? null;
+  const hasActiveDamageFeeBill = damageFeeBills.length > 0;
+  const orderReturned = Boolean(order && isOrderReturned(order));
+  const availableDepositBalance = getDepositAvailableBalance(depositSettlement);
+  const damageFeeRemainingAmount = getDamageFeeRemainingAmount(depositSettlement);
+  const suggestedDeductibleAmount = getSuggestedDeductibleAmount(depositSettlement);
+  const suggestedRefundableAmount = getSuggestedRefundableAmount(depositSettlement);
+  const hasCustomerDamageFee = hasBillableCustomerDamage(depositSettlement);
   const initialDepositAmount = order
     ? pickPositiveValue(
         order.finalDepositAmount,
@@ -2018,19 +2354,105 @@ export default function OrderDetailPage() {
     permissions
   });
 
+  const generateDamageFeeBillDisabledReason = !order
+    ? "数据加载完成后才可操作"
+    : !orderReturned
+      ? "订单尚未完成退车，不能生成损伤费用账单"
+      : depositSettlementLoading
+        ? "保证金结算信息加载完成后才可操作"
+        : depositSettlementError
+          ? depositSettlementError
+          : hasActiveDamageFeeBill
+            ? "该订单已存在损伤费用账单"
+            : !hasCustomerDamageFee
+              ? "当前订单无客户责任损伤费用"
+              : null;
+  const generateDamageFeeBillAvailability = actionAvailability({
+    allowed: generateDamageFeeBillDisabledReason === null,
+    disabledReason: generateDamageFeeBillDisabledReason ?? "当前订单不能生成损伤费用账单",
+    noPermissionReason: "无生成账单权限",
+    permission: "billing:generate",
+    permissions
+  });
+  const deductDepositDisabledReason = !order
+    ? "数据加载完成后才可操作"
+    : !orderReturned
+      ? "订单尚未完成退车，不能扣减保证金"
+      : depositSettlementLoading
+        ? "保证金结算信息加载完成后才可操作"
+        : depositSettlementError
+          ? depositSettlementError
+          : !damageFeeBillForDeduction
+            ? "没有可扣减的损伤费用账单"
+            : damageFeeRemainingAmount <= 0
+              ? "损伤费用已结清"
+              : availableDepositBalance <= 0
+                ? "当前可用保证金余额不足"
+                : suggestedDeductibleAmount <= 0
+                  ? "没有可扣减金额"
+                  : null;
+  const deductDepositAvailability = actionAvailability({
+    allowed: deductDepositDisabledReason === null,
+    disabledReason: deductDepositDisabledReason ?? "当前不能扣减保证金",
+    noPermissionReason: "无保证金扣减权限",
+    permission: "deposit_ledger:deduct",
+    permissions
+  });
+  const refundDepositDisabledReason = !order
+    ? "数据加载完成后才可操作"
+    : !orderReturned
+      ? "订单尚未完成退车，不能退款"
+      : depositSettlementLoading
+        ? "保证金结算信息加载完成后才可操作"
+        : depositSettlementError
+          ? depositSettlementError
+          : availableDepositBalance <= 0
+            ? "当前无可退款保证金"
+            : damageFeeRemainingAmount > 0 && suggestedDeductibleAmount > 0
+              ? "请先处理损伤费用"
+              : suggestedRefundableAmount <= 0
+                ? "当前无可退款保证金"
+                : null;
+  const refundDepositAvailability = actionAvailability({
+    allowed: refundDepositDisabledReason === null,
+    disabledReason: refundDepositDisabledReason ?? "当前不能退款",
+    noPermissionReason: "无保证金退款权限",
+    permission: "deposit_ledger:refund",
+    permissions
+  });
+
   const loadOrder = useCallback(async () => {
     setLoading(true);
     try {
       const nextMe = await apiFetch<AuthMeResponse>("/auth/me");
       const canViewFinance = nextMe.user.permissions.includes("billing:view");
+      const canViewDepositSettlement = nextMe.user.permissions.includes("deposit_ledger:view");
       const canViewDelivery = nextMe.user.permissions.includes("delivery:view");
       const canViewReturn = nextMe.user.permissions.includes("vehicle_return:view");
       setFinanceLoading(canViewFinance);
-      const [nextOrder, nextChanges, nextFinanceSummary, nextBills, nextDeliveryCheck, nextDelivery, nextReturnCheck, nextReturn] = await Promise.all([
+      setDepositSettlementLoading(canViewDepositSettlement);
+      setDepositSettlementError(null);
+      const [
+        nextOrder,
+        nextChanges,
+        nextFinanceSummary,
+        nextBills,
+        nextDepositSettlement,
+        nextDeliveryCheck,
+        nextDelivery,
+        nextReturnCheck,
+        nextReturn
+      ] = await Promise.all([
         apiFetch<OrderDetail>(`/orders/${params.id}`),
         apiFetch<OrderChangeRow[]>(`/orders/${params.id}/changes`).catch(() => []),
         canViewFinance ? apiFetch<FinanceSummary>(`/orders/${params.id}/finance-summary`) : Promise.resolve(null),
         canViewFinance ? apiFetch<ReceivableBillRow[]>(`/orders/${params.id}/bills`) : Promise.resolve([]),
+        canViewDepositSettlement
+          ? apiFetch<DepositSettlement>(`/orders/${params.id}/deposit-settlement`).catch((error) => {
+              setDepositSettlementError(getErrorMessage(error));
+              return null;
+            })
+          : Promise.resolve(null),
         canViewDelivery ? apiFetch<DeliveryCheck>(`/orders/${params.id}/delivery-check`) : Promise.resolve(null),
         canViewDelivery ? apiFetch<VehicleDelivery | null>(`/orders/${params.id}/delivery`) : Promise.resolve(null),
         canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
@@ -2040,6 +2462,7 @@ export default function OrderDetailPage() {
       setChanges(nextChanges);
       setFinanceSummary(nextFinanceSummary);
       setReceivableBills(nextBills);
+      setDepositSettlement(nextDepositSettlement);
       setMe(nextMe);
       setDeliveryCheck(nextDeliveryCheck);
       setDelivery(nextDelivery);
@@ -2050,6 +2473,7 @@ export default function OrderDetailPage() {
     } finally {
       setLoading(false);
       setFinanceLoading(false);
+      setDepositSettlementLoading(false);
     }
   }, [message, params.id]);
 
@@ -2190,6 +2614,37 @@ export default function OrderDetailPage() {
     paymentForm.resetFields();
   }
 
+  function openDeductDepositModal() {
+    if (!damageFeeBillForDeduction) {
+      void message.error("没有可扣减的损伤费用账单");
+      return;
+    }
+    deductDepositForm.setFieldsValue({
+      amountYuan: centsToYuan(suggestedDeductibleAmount),
+      billId: damageFeeBillForDeduction.id,
+      remark: "退车损伤费用抵扣"
+    });
+    setDeductDepositModalOpen(true);
+  }
+
+  function closeDeductDepositModal() {
+    setDeductDepositModalOpen(false);
+    deductDepositForm.resetFields();
+  }
+
+  function openRefundDepositModal() {
+    refundDepositForm.setFieldsValue({
+      amountYuan: centsToYuan(suggestedRefundableAmount),
+      remark: "退车结算后人工确认退款"
+    });
+    setRefundDepositModalOpen(true);
+  }
+
+  function closeRefundDepositModal() {
+    setRefundDepositModalOpen(false);
+    refundDepositForm.resetFields();
+  }
+
   async function generateInitialBills() {
     if (!order) {
       return;
@@ -2223,6 +2678,111 @@ export default function OrderDetailPage() {
       void message.error(getErrorMessage(error));
     } finally {
       setGeneratingMonthlyRentBill(false);
+    }
+  }
+
+  async function generateDamageFeeBill() {
+    if (!order) {
+      return;
+    }
+    setGeneratingDamageFeeBill(true);
+    try {
+      const bill = await apiFetch<DamageFeeBillResponse>(`/orders/${order.id}/generate-damage-fee-bill`, {
+        method: "POST"
+      });
+      void message.success(
+        bill.created === false ? "损伤费用账单已存在，已刷新结算信息。" : "损伤费用账单已生成"
+      );
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setGeneratingDamageFeeBill(false);
+    }
+  }
+
+  async function submitDeductDeposit() {
+    if (!order) {
+      return;
+    }
+    const values = await deductDepositForm.validateFields();
+    const amount = yuanToCents(values.amountYuan);
+    const bill = values.billId ? damageFeeBills.find((item) => item.id === values.billId) : null;
+    const billRemainingAmount = toNumber(bill?.remainingAmount) ?? damageFeeRemainingAmount;
+
+    if (!bill) {
+      void message.error("必须存在 DAMAGE_FEE 账单");
+      return;
+    }
+    if (!amount || amount <= 0) {
+      void message.error("扣减金额必须大于 0");
+      return;
+    }
+    if (amount > availableDepositBalance) {
+      void message.error("扣减金额不能超过可用保证金余额");
+      return;
+    }
+    if (amount > billRemainingAmount) {
+      void message.error("扣减金额不能超过损伤费用剩余未收金额");
+      return;
+    }
+
+    setDeductingDeposit(true);
+    try {
+      await apiFetch(`/orders/${order.id}/deduct-deposit`, {
+        body: JSON.stringify({
+          amount,
+          billId: bill.id,
+          remark: values.remark
+        }),
+        method: "POST"
+      });
+      void message.success("保证金扣减成功");
+      closeDeductDepositModal();
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setDeductingDeposit(false);
+    }
+  }
+
+  async function submitRefundDeposit() {
+    if (!order) {
+      return;
+    }
+    const values = await refundDepositForm.validateFields();
+    const amount = yuanToCents(values.amountYuan);
+
+    if (!amount || amount <= 0) {
+      void message.error("退款金额必须大于 0");
+      return;
+    }
+    if (amount > availableDepositBalance) {
+      void message.error("退款金额不能超过可用保证金余额");
+      return;
+    }
+    if (damageFeeRemainingAmount > 0 && suggestedDeductibleAmount > 0) {
+      void message.error("请先处理损伤费用");
+      return;
+    }
+
+    setRefundingDeposit(true);
+    try {
+      await apiFetch(`/orders/${order.id}/refund-deposit`, {
+        body: JSON.stringify({
+          amount,
+          remark: values.remark
+        }),
+        method: "POST"
+      });
+      void message.success("保证金退款已记录");
+      closeRefundDepositModal();
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setRefundingDeposit(false);
     }
   }
 
@@ -2814,6 +3374,22 @@ export default function OrderDetailPage() {
           />
         ) : null}
 
+        {order && hasDepositSettlementViewPermission ? (
+          <DepositSettlementPanel
+            deductAvailability={deductDepositAvailability}
+            depositSettlementLoading={depositSettlementLoading}
+            generateAvailability={generateDamageFeeBillAvailability}
+            generatingDamageFeeBill={generatingDamageFeeBill}
+            onGenerateDamageFeeBill={generateDamageFeeBill}
+            onOpenDeduct={openDeductDepositModal}
+            onOpenRefund={openRefundDepositModal}
+            order={order}
+            refundAvailability={refundDepositAvailability}
+            settlement={depositSettlement}
+            settlementError={depositSettlementError}
+          />
+        ) : null}
+
         {/*
           <Descriptions
             bordered
@@ -2992,6 +3568,114 @@ export default function OrderDetailPage() {
               </Space>
             ) : null}
           </Form>
+        </Modal>
+
+        <Modal
+          confirmLoading={deductingDeposit}
+          destroyOnHidden
+          onCancel={closeDeductDepositModal}
+          onOk={submitDeductDeposit}
+          open={deductDepositModalOpen}
+          title="保证金扣减"
+          width={720}
+        >
+          <Form form={deductDepositForm} layout="vertical">
+            <Form.Item
+              label="损伤费用账单"
+              name="billId"
+              rules={[{ required: true, message: "请选择损伤费用账单" }]}
+            >
+              <Select options={damageFeeBillOptions} />
+            </Form.Item>
+            <Form.Item
+              label="扣减金额"
+              name="amountYuan"
+              rules={[
+                { required: true, message: "请填写扣减金额" },
+                {
+                  validator: async (_, value) => {
+                    const amount = yuanToCents(value);
+                    const billId = deductDepositForm.getFieldValue("billId");
+                    const bill = billId ? damageFeeBills.find((item) => item.id === billId) : null;
+                    const billRemainingAmount = toNumber(bill?.remainingAmount) ?? damageFeeRemainingAmount;
+
+                    if (!amount || amount <= 0) {
+                      throw new Error("扣减金额必须大于 0");
+                    }
+                    if (amount > availableDepositBalance) {
+                      throw new Error("扣减金额不能超过可用保证金余额");
+                    }
+                    if (amount > billRemainingAmount) {
+                      throw new Error("扣减金额不能超过损伤费用剩余未收金额");
+                    }
+                  }
+                }
+              ]}
+            >
+              <InputNumber
+                addonAfter="元"
+                max={centsToYuan(Math.min(availableDepositBalance, damageFeeRemainingAmount))}
+                min={0.01}
+                precision={2}
+                style={{ width: "100%" }}
+              />
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Modal>
+
+        <Modal
+          confirmLoading={refundingDeposit}
+          destroyOnHidden
+          onCancel={closeRefundDepositModal}
+          onOk={submitRefundDeposit}
+          open={refundDepositModalOpen}
+          title="保证金退款"
+          width={640}
+        >
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Alert
+              message="当前为人工确认退款记录，不代表已通过银行或第三方支付渠道自动打款。"
+              showIcon
+              type="warning"
+            />
+            <Form form={refundDepositForm} layout="vertical">
+              <Form.Item
+                label="退款金额"
+                name="amountYuan"
+                rules={[
+                  { required: true, message: "请填写退款金额" },
+                  {
+                    validator: async (_, value) => {
+                      const amount = yuanToCents(value);
+                      if (!amount || amount <= 0) {
+                        throw new Error("退款金额必须大于 0");
+                      }
+                      if (amount > availableDepositBalance) {
+                        throw new Error("退款金额不能超过可用保证金余额");
+                      }
+                      if (damageFeeRemainingAmount > 0 && suggestedDeductibleAmount > 0) {
+                        throw new Error("请先处理损伤费用");
+                      }
+                    }
+                  }
+                ]}
+              >
+                <InputNumber
+                  addonAfter="元"
+                  max={centsToYuan(availableDepositBalance)}
+                  min={0.01}
+                  precision={2}
+                  style={{ width: "100%" }}
+                />
+              </Form.Item>
+              <Form.Item label="备注" name="remark">
+                <Input.TextArea rows={3} />
+              </Form.Item>
+            </Form>
+          </Space>
         </Modal>
 
         <Modal

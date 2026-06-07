@@ -88,6 +88,8 @@ export enum PermissionCode {
   PAYMENT_CREATE = "payment:create",
   PAYMENT_WRITE_OFF = "payment:write_off",
   DEPOSIT_LEDGER_VIEW = "deposit_ledger:view",
+  DEPOSIT_LEDGER_DEDUCT = "deposit_ledger:deduct",
+  DEPOSIT_LEDGER_REFUND = "deposit_ledger:refund",
   COLLECTION_VIEW = "collection:view",
   COLLECTION_REFRESH_OVERDUE = "collection:refresh_overdue",
   COLLECTION_ACTION_CREATE = "collection:action_create",

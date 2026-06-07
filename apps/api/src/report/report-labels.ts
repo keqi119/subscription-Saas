@@ -50,6 +50,38 @@ export const depositTransactionStatusLabels: Record<string, string> = {
   PENDING: "待确认"
 };
 
+export const entitlementTypeLabels: Record<string, string> = {
+  BENEFIT: "服务权益",
+  ENERGY: "补能权益",
+  MILEAGE: "里程权益"
+};
+
+export const entitlementUnitLabels: Record<string, string> = {
+  ITEM: "项",
+  KM: "公里",
+  KWH: "kWh",
+  TEXT: "文本权益",
+  TIMES: "次"
+};
+
+export const entitlementGrantStatusLabels: Record<string, string> = {
+  ACTIVE: "可用",
+  CANCELLED: "已取消",
+  EXHAUSTED: "已用尽",
+  EXPIRED: "已过期"
+};
+
+export const entitlementUsageStatusLabels: Record<string, string> = {
+  CANCELLED: "已取消",
+  CONFIRMED: "已确认"
+};
+
+export const entitlementUsageSourceLabels: Record<string, string> = {
+  MANUAL: "人工录入",
+  SYSTEM: "系统记录",
+  THIRD_PARTY: "第三方接口"
+};
+
 export const collectionLevelLabels: Record<string, string> = {
   D1: "D1：1-3天",
   D2: "D2：4-7天",

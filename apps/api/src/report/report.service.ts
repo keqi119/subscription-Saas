@@ -6,6 +6,12 @@ import {
   CollectionLevel,
   DepositTransactionStatus,
   DepositTransactionType,
+  EntitlementAccountStatus,
+  EntitlementGrantStatus,
+  EntitlementType,
+  EntitlementUnit,
+  EntitlementUsageSource,
+  EntitlementUsageStatus,
   OrderSource,
   OrderStatus,
   Prisma,
@@ -28,6 +34,9 @@ import {
   BillDetailQueryDto,
   CollectionCaseDetailQueryDto,
   DepositLedgerDetailQueryDto,
+  EntitlementGrantDetailQueryDto,
+  EntitlementReportQueryDto,
+  EntitlementUsageDetailQueryDto,
   OrderDetailQueryDto,
   OrderReportQueryDto,
   OverdueBillDetailQueryDto,
@@ -424,6 +433,280 @@ export class ReportService {
       totalPaidAmount: sumNumbers([...incomeByVehicleModel.values()]),
       byVehicleModel: vehicleModelAssetRows(vehicleModelGroups, incomeByVehicleModel)
     };
+  }
+
+  async getEntitlementReport(query: EntitlementReportQueryDto) {
+    const range = resolveReportDateRange(query);
+    const accountWhere: Prisma.OrderEntitlementAccountWhereInput = {
+      createdAt: range.dateTimeFilter,
+      deletedAt: null,
+      ...(query.orderStatus ? { order: { orderStatus: query.orderStatus } } : {})
+    };
+    const grantWhere = entitlementGrantReportWhere(query, range);
+    const usageWhere = entitlementUsageReportWhere(query, range);
+    const exhaustedGrantWhere: Prisma.OrderEntitlementGrantWhereInput =
+      query.grantStatus && query.grantStatus !== EntitlementGrantStatus.EXHAUSTED
+        ? { ...grantWhere, id: { in: [] } }
+        : { ...grantWhere, status: EntitlementGrantStatus.EXHAUSTED };
+
+    const [
+      accountStatusGroups,
+      grantStatusGroups,
+      grantTypeUnitGroups,
+      exhaustedGrantTypeUnitGroups,
+      usageUnitGroups,
+      usageSourceGroups,
+      usageStatusGroups,
+      recentlyExhaustedGrants
+    ] = await Promise.all([
+      this.prisma.orderEntitlementAccount.groupBy({
+        by: ["accountStatus"],
+        where: accountWhere,
+        _count: { _all: true }
+      }),
+      this.prisma.orderEntitlementGrant.groupBy({
+        by: ["status"],
+        where: grantWhere,
+        _count: { _all: true }
+      }),
+      this.prisma.orderEntitlementGrant.groupBy({
+        by: ["entitlementType", "unit"],
+        where: grantWhere,
+        _count: { _all: true },
+        _sum: { remainingAmount: true, totalAmount: true, usedAmount: true }
+      }),
+      this.prisma.orderEntitlementGrant.groupBy({
+        by: ["entitlementType", "unit"],
+        where: exhaustedGrantWhere,
+        _count: { _all: true }
+      }),
+      this.prisma.orderEntitlementUsage.groupBy({
+        by: ["unit"],
+        where: usageWhere,
+        _count: { _all: true },
+        _sum: { usedAmount: true }
+      }),
+      this.prisma.orderEntitlementUsage.groupBy({
+        by: ["usageSource"],
+        where: usageWhere,
+        _count: { _all: true },
+        _sum: { usedAmount: true }
+      }),
+      this.prisma.orderEntitlementUsage.groupBy({
+        by: ["usageStatus"],
+        where: usageWhere,
+        _count: { _all: true },
+        _sum: { usedAmount: true }
+      }),
+      this.prisma.orderEntitlementGrant.findMany({
+        orderBy: { updatedAt: "desc" },
+        select: {
+          customer: { select: { name: true } },
+          entitlementName: true,
+          entitlementType: true,
+          grantNo: true,
+          id: true,
+          order: { select: { id: true, orderNo: true } },
+          remainingAmount: true,
+          totalAmount: true,
+          unit: true,
+          updatedAt: true,
+          usedAmount: true,
+          usages: {
+            orderBy: { occurredAt: "desc" },
+            select: { occurredAt: true },
+            take: 1,
+            where: { deletedAt: null, usageStatus: EntitlementUsageStatus.CONFIRMED }
+          }
+        },
+        take: 10,
+        where: exhaustedGrantWhere
+      })
+    ]);
+
+    const accountStatusCount = countMap(accountStatusGroups, "accountStatus");
+    const grantStatusCount = countMap(grantStatusGroups, "status");
+    const usageSourceCount = countMap(usageSourceGroups, "usageSource");
+
+    return {
+      dateRange: range.output,
+      accountOverview: {
+        activeAccountCount: accountStatusCount.get(EntitlementAccountStatus.ACTIVE) ?? 0,
+        closedAccountCount: accountStatusCount.get(EntitlementAccountStatus.CLOSED) ?? 0,
+        suspendedAccountCount: accountStatusCount.get(EntitlementAccountStatus.SUSPENDED) ?? 0,
+        totalAccountCount: sumNumbers([...accountStatusCount.values()])
+      },
+      grantOverview: {
+        activeGrantCount: grantStatusCount.get(EntitlementGrantStatus.ACTIVE) ?? 0,
+        cancelledGrantCount: grantStatusCount.get(EntitlementGrantStatus.CANCELLED) ?? 0,
+        exhaustedGrantCount: grantStatusCount.get(EntitlementGrantStatus.EXHAUSTED) ?? 0,
+        expiredGrantCount: grantStatusCount.get(EntitlementGrantStatus.EXPIRED) ?? 0,
+        totalGrantCount: sumNumbers([...grantStatusCount.values()])
+      },
+      byEntitlementTypeUnit: grantTypeUnitGroups.map((group) => ({
+        entitlementType: group.entitlementType,
+        grantCount: group._count._all,
+        remainingAmount: group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.remainingAmount),
+        totalAmount: group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.totalAmount),
+        unit: group.unit,
+        usedAmount: group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.usedAmount)
+      })).map((row) => ({
+        ...row,
+        exhaustedCount: exhaustedCountForTypeUnit(exhaustedGrantTypeUnitGroups, row.entitlementType, row.unit)
+      })),
+      usageOverview: {
+        manualUsageCount: usageSourceCount.get(EntitlementUsageSource.MANUAL) ?? 0,
+        systemUsageCount: usageSourceCount.get(EntitlementUsageSource.SYSTEM) ?? 0,
+        thirdPartyUsageCount: usageSourceCount.get(EntitlementUsageSource.THIRD_PARTY) ?? 0,
+        totalUsageCount: sumNumbers([...usageSourceCount.values()]),
+        bySource: usageAmountRows(EntitlementUsageSource, usageSourceGroups, "usageSource"),
+        byStatus: usageAmountRows(EntitlementUsageStatus, usageStatusGroups, "usageStatus"),
+        byUnit: usageAmountRows(EntitlementUnit, usageUnitGroups, "unit")
+      },
+      recentlyExhausted: recentlyExhaustedGrants.map((grant) => ({
+        customerName: grant.customer.name,
+        entitlementName: grant.entitlementName,
+        entitlementType: grant.entitlementType,
+        grantNo: grant.grantNo,
+        id: grant.id,
+        latestUsageAt: grant.usages[0]?.occurredAt ?? grant.updatedAt,
+        orderId: grant.order.id,
+        orderNo: grant.order.orderNo,
+        remainingAmount: nullableAmount(grant.remainingAmount),
+        totalAmount: nullableAmount(grant.totalAmount),
+        unit: grant.unit,
+        usedAmount: nullableAmount(grant.usedAmount)
+      }))
+    };
+  }
+
+  async getEntitlementGrantDetails(query: EntitlementGrantDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.OrderEntitlementGrantWhereInput = {
+      createdAt: range.dateTimeFilter,
+      deletedAt: null,
+      ...(query.entitlementType ? { entitlementType: query.entitlementType } : {}),
+      ...(query.unit ? { unit: query.unit } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.orderNo ? { order: { orderNo: containsText(query.orderNo) } } : {}),
+      ...(query.customerName ? { customer: { name: containsText(query.customerName) } } : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.orderEntitlementGrant.count({ where }),
+      this.prisma.orderEntitlementGrant.findMany({
+        orderBy: { createdAt: "desc" },
+        select: {
+          createdAt: true,
+          customer: { select: { name: true } },
+          entitlementName: true,
+          entitlementType: true,
+          grantNo: true,
+          grantPeriodEnd: true,
+          grantPeriodStart: true,
+          grantSource: true,
+          id: true,
+          order: { select: { id: true, orderNo: true } },
+          remainingAmount: true,
+          status: true,
+          totalAmount: true,
+          unit: true,
+          usedAmount: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+
+    return pagedResult(
+      items.map((grant) => ({
+        id: grant.id,
+        grantNo: grant.grantNo,
+        orderId: grant.order.id,
+        orderNo: grant.order.orderNo,
+        customerName: grant.customer.name,
+        entitlementType: grant.entitlementType,
+        entitlementName: grant.entitlementName,
+        totalAmount: nullableAmount(grant.totalAmount),
+        usedAmount: nullableAmount(grant.usedAmount),
+        remainingAmount: nullableAmount(grant.remainingAmount),
+        unit: grant.unit,
+        status: grant.status,
+        grantSource: grant.grantSource,
+        grantPeriodStart: grant.grantPeriodStart,
+        grantPeriodEnd: grant.grantPeriodEnd,
+        createdAt: grant.createdAt
+      })),
+      total,
+      pagination
+    );
+  }
+
+  async getEntitlementUsageDetails(query: EntitlementUsageDetailQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const where: Prisma.OrderEntitlementUsageWhereInput = {
+      deletedAt: null,
+      occurredAt: range.dateTimeFilter,
+      ...(query.entitlementType ? { entitlementType: query.entitlementType } : {}),
+      ...(query.unit ? { unit: query.unit } : {}),
+      ...(query.usageSource ? { usageSource: query.usageSource } : {}),
+      ...(query.usageStatus ? { usageStatus: query.usageStatus } : {}),
+      ...(query.orderNo ? { order: { orderNo: containsText(query.orderNo) } } : {}),
+      ...(query.customerName ? { customer: { name: containsText(query.customerName) } } : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.orderEntitlementUsage.count({ where }),
+      this.prisma.orderEntitlementUsage.findMany({
+        orderBy: { occurredAt: "desc" },
+        select: {
+          createdAt: true,
+          customer: { select: { name: true } },
+          entitlementName: true,
+          entitlementType: true,
+          externalRefNo: true,
+          id: true,
+          occurredAt: true,
+          order: { select: { id: true, orderNo: true } },
+          remark: true,
+          scenario: true,
+          unit: true,
+          usageNo: true,
+          usageSource: true,
+          usageStatus: true,
+          usedAmount: true
+        },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      })
+    ]);
+
+    return pagedResult(
+      items.map((usage) => ({
+        id: usage.id,
+        usageNo: usage.usageNo,
+        orderId: usage.order.id,
+        orderNo: usage.order.orderNo,
+        customerName: usage.customer.name,
+        entitlementType: usage.entitlementType,
+        entitlementName: usage.entitlementName,
+        usedAmount: amountToNumber(usage.usedAmount),
+        unit: usage.unit,
+        usageSource: usage.usageSource,
+        usageStatus: usage.usageStatus,
+        occurredAt: usage.occurredAt,
+        externalRefNo: usage.externalRefNo,
+        scenario: usage.scenario,
+        remark: usage.remark,
+        createdAt: usage.createdAt
+      })),
+      total,
+      pagination
+    );
   }
 
   async getOrderDetails(query: OrderDetailQueryDto) {
@@ -1339,6 +1622,11 @@ type AmountGroup = {
   _count: { _all: number };
   _sum: Record<string, bigint | number | null | undefined>;
 } & Record<string, unknown>;
+type EntitlementAmountGroup = {
+  _count: { _all: number };
+  _sum: Record<string, unknown>;
+} & Record<string, unknown>;
+type EntitlementCountGroup = { _count: { _all: number } } & Record<string, unknown>;
 type ReportDateRangeOutput = { endDate: string; startDate: string };
 type PaginationQuery = { page?: number; pageSize?: number };
 type ResolvedPagination = { page: number; pageSize: number; skip: number };
@@ -1572,6 +1860,61 @@ function overdueGroupRows<T extends Record<string, string>>(
   });
 }
 
+function entitlementGrantReportWhere(
+  query: EntitlementReportQueryDto,
+  range: ReturnType<typeof resolveReportDateRange>
+): Prisma.OrderEntitlementGrantWhereInput {
+  return {
+    createdAt: range.dateTimeFilter,
+    deletedAt: null,
+    ...(query.entitlementType ? { entitlementType: query.entitlementType } : {}),
+    ...(query.unit ? { unit: query.unit } : {}),
+    ...(query.grantStatus ? { status: query.grantStatus } : {}),
+    ...(query.orderStatus ? { order: { orderStatus: query.orderStatus } } : {})
+  };
+}
+
+function entitlementUsageReportWhere(
+  query: EntitlementReportQueryDto,
+  range: ReturnType<typeof resolveReportDateRange>
+): Prisma.OrderEntitlementUsageWhereInput {
+  return {
+    deletedAt: null,
+    occurredAt: range.dateTimeFilter,
+    ...(query.entitlementType ? { entitlementType: query.entitlementType } : {}),
+    ...(query.unit ? { unit: query.unit } : {}),
+    ...(query.grantStatus ? { grant: { status: query.grantStatus } } : {}),
+    ...(query.orderStatus ? { order: { orderStatus: query.orderStatus } } : {})
+  };
+}
+
+function usageAmountRows<T extends Record<string, string>>(
+  enumObject: T,
+  rows: EntitlementAmountGroup[],
+  sourceField: string
+) {
+  const groupByKey = new Map(rows.map((row) => [String(row[sourceField]), row]));
+
+  return Object.values(enumObject).map((value) => {
+    const row = groupByKey.get(value);
+
+    return {
+      [sourceField]: value,
+      count: row?._count._all ?? 0,
+      usedAmount: amountToNumber(row?._sum.usedAmount)
+    };
+  });
+}
+
+function exhaustedCountForTypeUnit(
+  rows: EntitlementCountGroup[],
+  entitlementType: EntitlementType,
+  unit: EntitlementUnit
+) {
+  const row = rows.find((item) => item.entitlementType === entitlementType && item.unit === unit);
+  return row?._count._all ?? 0;
+}
+
 function summarizeDepositGroups(groups: AmountGroup[]) {
   const amountByType = new Map(
     groups.map((group) => [String(group.transactionType), toNumber(group._sum.amount)])
@@ -1681,6 +2024,14 @@ function vehicleModelAssetRows(
 
 function toNumber(value: bigint | number | null | undefined) {
   return value === null || value === undefined ? 0 : Number(value);
+}
+
+function amountToNumber(value: unknown) {
+  return decimalToNumber(value) ?? 0;
+}
+
+function nullableAmount(value: unknown) {
+  return decimalToNumber(value);
 }
 
 function decimalToNumber(value: unknown) {

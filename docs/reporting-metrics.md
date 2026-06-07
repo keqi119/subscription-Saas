@@ -274,6 +274,73 @@ CSV escape 规则覆盖逗号、换行、双引号和中文内容。
 - 催收案件明细：案件编号、客户姓名、订单编号、逾期总金额、最大逾期天数、逾期等级、案件状态、负责人、下次跟进时间、创建时间、关闭时间。
 - 车辆明细：车辆编号、VIN、车牌号、品牌、车系、车型、电池容量、电池使用方式、车辆状态、采购价、当前销售价、当前订单编号、当前客户、累计已收金额、最近交付时间、最近退车时间、创建时间。
 
+## 权益报表口径
+
+统计来源：
+
+- `OrderEntitlementAccount`
+- `OrderEntitlementGrant`
+- `OrderEntitlementUsage`
+
+查看 API：
+
+- `GET /api/reports/entitlements`
+- `GET /api/reports/details/entitlement-grants`
+- `GET /api/reports/details/entitlement-usages`
+
+统计周期：
+
+- 权益账户概览按 `OrderEntitlementAccount.createdAt` 进入统计周期。
+- 权益发放概览、权益类型 / 单位统计、最近用尽权益按 `OrderEntitlementGrant.createdAt` 进入统计周期。
+- 权益消耗概览、消耗来源 / 状态 / 单位统计、消耗明细按 `OrderEntitlementUsage.occurredAt` 进入统计周期。
+- 未传 `startDate` / `endDate` 时默认最近 30 个业务自然日。
+
+筛选条件：
+
+- `startDate`
+- `endDate`
+- `entitlementType`
+- `unit`
+- `grantStatus`
+- `orderStatus`
+
+权益账户统计：
+
+- 权益账户总数 = 周期内未删除权益账户数。
+- 生效中账户数 = `accountStatus = ACTIVE`。
+- 暂停账户数 = `accountStatus = SUSPENDED`。
+- 已关闭账户数 = `accountStatus = CLOSED`。
+
+权益发放统计：
+
+- 权益发放总数 = 周期内未删除权益发放记录数。
+- 可用权益数 = `status = ACTIVE`。
+- 已用尽权益数 = `status = EXHAUSTED`。
+- 已过期权益数 = `status = EXPIRED`。
+- 已取消权益数 = `status = CANCELLED`。
+- 按权益类型 + 单位统计时，`totalAmount`、`usedAmount`、`remainingAmount` 只在同一单位内求和。
+
+权益消耗统计：
+
+- 消耗流水数 = 周期内未删除权益消耗流水数。
+- 消耗总量按 `unit` 分组统计，不同单位不能直接相加。
+- 消耗来源按 `usageSource` 分组：`MANUAL`、`SYSTEM`、`THIRD_PARTY`。
+- 消耗状态按 `usageStatus` 分组：`CONFIRMED`、`CANCELLED`。
+
+TEXT 权益口径：
+
+- `unit = TEXT` 的权益只统计发放数量。
+- TEXT 权益不参与余额扣减。
+- TEXT 权益的 `totalAmount`、`usedAmount`、`remainingAmount` 不参与求和，报表中返回 `null` 或展示为 `-`。
+
+当前阶段不包含：
+
+- 权益月度续发。
+- 权益过期批处理。
+- 第三方权益自动发放。
+- 权益调整审批。
+- 权益取消 / 冲正。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

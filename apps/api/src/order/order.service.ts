@@ -119,7 +119,6 @@ const DELIVERY_ALLOWED_ORDER_STATUSES = new Set<OrderStatus>([
   OrderStatus.PENDING_DELIVERY
 ]);
 const DELIVERY_ALREADY_DONE_MESSAGE = "该订单已完成交付，不能重复确认。";
-const DELIVERY_INSURANCE_INVALID_MESSAGE = "车辆保险未生效或已过期，不能交付。";
 const RETURN_ALREADY_DONE_MESSAGE = "该订单已完成退车，不能重复退车。";
 const RETURN_READY_REQUIRED_MESSAGE = "请先准备退车验收。";
 const RETURN_REQUIRED_CHECKLIST: Array<keyof ConfirmReturnDto> = [
@@ -2769,9 +2768,6 @@ function assertCanConfirmDelivery(
   }
 
   const check = buildDeliveryCheck(order, delivery, deliveredAt);
-  if (!check.insuranceValid) {
-    throw new BadRequestException(DELIVERY_INSURANCE_INVALID_MESSAGE);
-  }
   if (!check.canConfirmDelivery) {
     throw new BadRequestException(firstBlockingReason(check, "当前订单不满足确认交付条件。"));
   }
@@ -2812,10 +2808,9 @@ function firstReturnBlockingReason(check: ReturnType<typeof buildReturnCheck>, f
   return check.blockingReasons[0] ?? fallback;
 }
 
-function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetails | null, targetAt?: Date) {
+function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetails | null, _targetAt?: Date) {
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
-  const deliveryCheckAt = targetAt ?? delivery?.deliveredAt ?? delivery?.scheduledAt ?? new Date();
   const alreadyDelivered = Boolean(
     order.actualDeliveryAt ||
       order.orderStatus === OrderStatus.ACTIVE ||
@@ -2828,7 +2823,7 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
       vehicle.currentSalePriceAmount &&
       vehicle.currentSalePriceAmount > 0n
   );
-  const insuranceValid = Boolean(vehicle && isVehicleInsuranceValid(vehicle, deliveryCheckAt));
+  const insuranceValid = Boolean(delivery?.insuranceValidConfirmed);
   const depositReceivedConfirmed = order.depositStatus === DepositStatus.CONFIRMED && Boolean(delivery?.depositReceivedConfirmed);
   const firstMonthlyFeeReceivedConfirmed = Boolean(delivery?.firstMonthlyFeeReceivedConfirmed);
   const vehiclePrepared = Boolean(delivery?.vehiclePreparedConfirmed);
@@ -2875,9 +2870,6 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   }
   if (!currentSalePriceInitialized) {
     prepareBlockingReasons.push("车辆当前销售价尚未初始化");
-  }
-  if (!insuranceValid) {
-    prepareBlockingReasons.push("车辆保险已过期");
   }
 
   confirmBlockingReasons.push(...prepareBlockingReasons);
@@ -3077,21 +3069,6 @@ function assertValidReturnMileage(returnMileageKm: number | undefined) {
 function isCurrentContractSigned(order: OrderWithDetails) {
   const contract = findCurrentContract(order);
   return contract?.status === ContractStatus.SIGNED || contract?.status === ContractStatus.ARCHIVED;
-}
-
-function isVehicleInsuranceValid(
-  vehicle: Pick<NonNullable<OrderWithDetails["vehicle"]>, "insuranceEndDate" | "insuranceStartDate">,
-  targetAt: Date
-) {
-  if (!vehicle.insuranceStartDate || !vehicle.insuranceEndDate) {
-    return false;
-  }
-  const targetDate = dateKey(targetAt);
-  return dateKey(vehicle.insuranceStartDate) <= targetDate && targetDate <= dateKey(vehicle.insuranceEndDate);
-}
-
-function dateKey(date: Date) {
-  return date.toISOString().slice(0, 10);
 }
 
 function parseDateTime(value: string, field: string) {

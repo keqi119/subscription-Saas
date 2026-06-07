@@ -296,6 +296,21 @@ enum EntitlementGrantStatus {
   @@map("entitlement_grant_status")
 }
 
+enum EntitlementUsageStatus {
+  CONFIRMED
+  CANCELLED
+
+  @@map("entitlement_usage_status")
+}
+
+enum EntitlementUsageSource {
+  MANUAL
+  SYSTEM
+  THIRD_PARTY
+
+  @@map("entitlement_usage_source")
+}
+
 enum BillType {
   DEPOSIT
   FIRST_MONTHLY_FEE
@@ -770,7 +785,8 @@ model Customer {
   collectionCaseBills CollectionCaseBill[]
   collectionActions CollectionAction[]
   entitlementAccounts OrderEntitlementAccount[]
-  entitlementGrants OrderEntitlementGrant[]
+  entitlementGrants   OrderEntitlementGrant[]
+  entitlementUsages   OrderEntitlementUsage[]
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy        String?             @map("created_by") @db.Uuid
@@ -1541,6 +1557,7 @@ model SubscriptionOrder {
   collectionActions          CollectionAction[]
   entitlementAccounts        OrderEntitlementAccount[]
   entitlementGrants          OrderEntitlementGrant[]
+  entitlementUsages          OrderEntitlementUsage[]
   contracts                  Contract[]            @relation("OrderContracts")
   changes                    OrderChange[]
   createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1579,6 +1596,7 @@ model OrderEntitlementAccount {
   periodEnd          DateTime?                @map("period_end") @db.Date
   snapshot           Json
   grants             OrderEntitlementGrant[]
+  usages             OrderEntitlementUsage[]
   createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy          String?                  @map("created_by") @db.Uuid
@@ -1614,6 +1632,7 @@ model OrderEntitlementGrant {
   status           EntitlementGrantStatus @default(ACTIVE)
   snapshot         Json?
   remark           String?                @db.Text
+  usages           OrderEntitlementUsage[]
   createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy        String?                @map("created_by") @db.Uuid
@@ -1628,6 +1647,46 @@ model OrderEntitlementGrant {
   @@index([status])
   @@index([grantPeriodStart, grantPeriodEnd])
   @@map("order_entitlement_grant")
+}
+
+model OrderEntitlementUsage {
+  id              String                  @id @default(uuid()) @db.Uuid
+  usageNo         String                  @unique @map("usage_no") @db.VarChar(64)
+  accountId       String                  @map("account_id") @db.Uuid
+  account         OrderEntitlementAccount @relation(fields: [accountId], references: [id])
+  grantId         String                  @map("grant_id") @db.Uuid
+  grant           OrderEntitlementGrant   @relation(fields: [grantId], references: [id])
+  orderId         String                  @map("order_id") @db.Uuid
+  order           SubscriptionOrder       @relation(fields: [orderId], references: [id])
+  customerId      String                  @map("customer_id") @db.Uuid
+  customer        Customer                @relation(fields: [customerId], references: [id])
+  entitlementType EntitlementType         @map("entitlement_type")
+  entitlementName String                  @map("entitlement_name") @db.VarChar(128)
+  usedAmount      Decimal                 @map("used_amount") @db.Decimal(12, 2)
+  unit            EntitlementUnit
+  usageStatus     EntitlementUsageStatus  @default(CONFIRMED) @map("usage_status")
+  usageSource     EntitlementUsageSource  @default(MANUAL) @map("usage_source")
+  occurredAt      DateTime                @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  externalRefNo   String?                 @map("external_ref_no") @db.VarChar(128)
+  scenario        String?                 @db.VarChar(128)
+  remark          String?                 @db.Text
+  snapshot        Json?
+  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?                 @map("created_by") @db.Uuid
+  updatedBy       String?                 @map("updated_by") @db.Uuid
+  deletedAt       DateTime?               @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([accountId])
+  @@index([grantId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([entitlementType])
+  @@index([usageStatus])
+  @@index([usageSource])
+  @@index([occurredAt])
+  @@index([externalRefNo])
+  @@map("order_entitlement_usage")
 }
 
 model ReceivableBill {

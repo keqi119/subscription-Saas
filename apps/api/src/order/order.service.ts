@@ -15,6 +15,8 @@ import {
   EntitlementGrantStatus,
   EntitlementType,
   EntitlementUnit,
+  EntitlementUsageSource,
+  EntitlementUsageStatus,
   MonthlyFeeMode,
   OrderChangeStatus,
   OrderChangeType,
@@ -43,12 +45,14 @@ import { PrismaService } from "../prisma/prisma.service";
 import {
   ArchiveContractDto,
   CancelOrderDto,
+  ConsumeEntitlementDto,
   CreateContractVersionDto,
   CreateCustomerOrderDto,
   CreateOrderChangeDto,
   CreateOrderFromQuoteDto,
   ConfirmDeliveryDto,
   ConfirmReturnDto,
+  ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
   ReviewOrderDto,
@@ -197,8 +201,20 @@ const returnInclude = {
   vehicle: true
 } satisfies Prisma.VehicleReturnInclude;
 
+const entitlementGrantUsageOverviewInclude = {
+  usages: {
+    orderBy: { occurredAt: "desc" as const },
+    take: 1,
+    where: { deletedAt: null, usageStatus: EntitlementUsageStatus.CONFIRMED }
+  }
+} satisfies Prisma.OrderEntitlementGrantInclude;
+
 const entitlementAccountInclude = {
-  grants: { orderBy: { createdAt: "asc" as const }, where: { deletedAt: null } }
+  grants: {
+    include: entitlementGrantUsageOverviewInclude,
+    orderBy: { createdAt: "asc" as const },
+    where: { deletedAt: null }
+  }
 } satisfies Prisma.OrderEntitlementAccountInclude;
 
 type OrderWithDetails = Prisma.SubscriptionOrderGetPayload<{ include: typeof orderInclude }>;
@@ -208,6 +224,8 @@ type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: 
 type DeliveryWithDetails = Prisma.VehicleDeliveryGetPayload<{ include: typeof deliveryInclude }>;
 type ReturnWithDetails = Prisma.VehicleReturnGetPayload<{ include: typeof returnInclude }>;
 type EntitlementAccountWithGrants = Prisma.OrderEntitlementAccountGetPayload<{ include: typeof entitlementAccountInclude }>;
+type EntitlementGrantWithUsageOverview = Prisma.OrderEntitlementGrantGetPayload<{ include: typeof entitlementGrantUsageOverviewInclude }>;
+type EntitlementUsageRecord = Prisma.OrderEntitlementUsageGetPayload<object>;
 
 @Injectable()
 export class OrderService {
@@ -367,6 +385,227 @@ export class OrderService {
     }
 
     return toEntitlementResponse(result.account);
+  }
+
+  async consumeOrderEntitlement(
+    id: string,
+    grantId: string,
+    dto: ConsumeEntitlementDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    assertCanConsumeEntitlementOrder(order);
+
+    const usedAmount = positiveEntitlementAmount(dto.usedAmount);
+    const occurredAt = dto.occurredAt ? parseDateTime(dto.occurredAt, "occurredAt") : new Date();
+    const usageSource = dto.usageSource ?? EntitlementUsageSource.MANUAL;
+    const externalRefNo = optionalText(dto.externalRefNo, 128);
+    const scenario = optionalText(dto.scenario, 128);
+    const remark = optionalText(dto.remark);
+
+    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      const existingUsage = externalRefNo
+        ? await tx.orderEntitlementUsage.findFirst({
+            where: {
+              deletedAt: null,
+              externalRefNo,
+              grantId,
+              orderId: id,
+              usageStatus: { not: EntitlementUsageStatus.CANCELLED }
+            }
+          })
+        : null;
+
+      if (existingUsage) {
+        const existingGrant = await tx.orderEntitlementGrant.findFirst({
+          include: entitlementGrantUsageOverviewInclude,
+          where: { deletedAt: null, id: existingUsage.grantId, orderId: id }
+        });
+        if (!existingGrant) {
+          throw new NotFoundException("权益发放记录不存在或不属于当前订单。");
+        }
+        return { created: false, grant: existingGrant, usage: existingUsage };
+      }
+
+      const activeAccount = await tx.orderEntitlementAccount.findFirst({
+        orderBy: { createdAt: "desc" },
+        where: {
+          accountStatus: EntitlementAccountStatus.ACTIVE,
+          deletedAt: null,
+          orderId: id
+        }
+      });
+      const account = activeAccount ?? await tx.orderEntitlementAccount.findFirst({
+        orderBy: { createdAt: "desc" },
+        where: { deletedAt: null, orderId: id }
+      });
+      assertCanConsumeEntitlementAccount(account);
+
+      const grant = await tx.orderEntitlementGrant.findFirst({
+        where: {
+          accountId: account.id,
+          deletedAt: null,
+          id: grantId,
+          orderId: id
+        }
+      });
+      assertCanConsumeEntitlementGrant(grant);
+
+      const remainingAmount = requiredGrantRemainingAmount(grant);
+      if (usedAmount.gt(remainingAmount)) {
+        throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
+      }
+
+      const nextRemainingAmount = remainingAmount.minus(usedAmount);
+      if (nextRemainingAmount.lt(0)) {
+        throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
+      }
+
+      const currentUsedAmount = grant.usedAmount ?? new Prisma.Decimal(0);
+      const nextUsedAmount = currentUsedAmount.plus(usedAmount);
+      const nextStatus = nextRemainingAmount.equals(0) ? EntitlementGrantStatus.EXHAUSTED : EntitlementGrantStatus.ACTIVE;
+      const updateResult = await tx.orderEntitlementGrant.updateMany({
+        data: {
+          remainingAmount: nextRemainingAmount,
+          status: nextStatus,
+          updatedBy: user.id,
+          usedAmount: nextUsedAmount
+        },
+        where: {
+          deletedAt: null,
+          id: grant.id,
+          remainingAmount: { gte: usedAmount },
+          status: EntitlementGrantStatus.ACTIVE
+        }
+      });
+
+      if (updateResult.count !== 1) {
+        throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
+      }
+
+      const usage = await tx.orderEntitlementUsage.create({
+        data: {
+          accountId: account.id,
+          createdBy: user.id,
+          customerId: order.customerId,
+          entitlementName: grant.entitlementName,
+          entitlementType: grant.entitlementType,
+          externalRefNo,
+          grantId: grant.id,
+          occurredAt,
+          orderId: order.id,
+          remark,
+          scenario,
+          snapshot: toJsonValue({
+            account: {
+              accountNo: account.accountNo,
+              accountStatus: account.accountStatus,
+              id: account.id
+            },
+            grant: {
+              entitlementName: grant.entitlementName,
+              entitlementType: grant.entitlementType,
+              grantNo: grant.grantNo,
+              id: grant.id,
+              remainingAmount: grant.remainingAmount,
+              status: grant.status,
+              totalAmount: grant.totalAmount,
+              unit: grant.unit,
+              usedAmount: grant.usedAmount
+            },
+            order: {
+              orderId: order.id,
+              orderNo: order.orderNo,
+              orderStatus: order.orderStatus
+            }
+          }),
+          unit: grant.unit,
+          updatedBy: user.id,
+          usageNo: createBusinessNo("EU"),
+          usageSource,
+          usageStatus: EntitlementUsageStatus.CONFIRMED,
+          usedAmount
+        }
+      });
+
+      const updatedGrant = await tx.orderEntitlementGrant.findUniqueOrThrow({
+        include: entitlementGrantUsageOverviewInclude,
+        where: { id: grant.id }
+      });
+
+      return { created: true, grant: updatedGrant, usage };
+    }));
+
+    if (result.created) {
+      await this.writeEntitlementAudit(
+        AuditAction.CREATE,
+        "order_entitlement_usage",
+        result.usage.id,
+        {
+          accountId: result.usage.accountId,
+          customerId: result.usage.customerId,
+          entitlementType: result.usage.entitlementType,
+          externalRefNo: result.usage.externalRefNo,
+          grantId: result.usage.grantId,
+          orderId: result.usage.orderId,
+          remainingAmount: result.grant.remainingAmount,
+          source: result.usage.usageSource,
+          unit: result.usage.unit,
+          usageId: result.usage.id,
+          usedAmount: result.usage.usedAmount
+        },
+        user,
+        context
+      );
+    }
+
+    return {
+      grant: toEntitlementGrantView(result.grant),
+      usage: toEntitlementUsageView(result.usage)
+    };
+  }
+
+  async listOrderEntitlementUsages(id: string, query: ListEntitlementUsagesQueryDto, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+
+    const pagination = resolveEntitlementUsagePagination(query);
+    const where: Prisma.OrderEntitlementUsageWhereInput = {
+      deletedAt: null,
+      orderId: id,
+      ...(query.entitlementType ? { entitlementType: query.entitlementType } : {}),
+      ...(query.grantId ? { grantId: query.grantId } : {}),
+      ...(query.usageStatus ? { usageStatus: query.usageStatus } : {})
+    };
+    const occurredAt: Prisma.DateTimeFilter = {};
+    if (query.startDate) {
+      occurredAt.gte = parseDateTime(query.startDate, "startDate");
+    }
+    if (query.endDate) {
+      occurredAt.lte = parseDateTime(query.endDate, "endDate");
+    }
+    if (Object.keys(occurredAt).length > 0) {
+      where.occurredAt = occurredAt;
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.orderEntitlementUsage.findMany({
+        orderBy: { occurredAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.pageSize,
+        where
+      }),
+      this.prisma.orderEntitlementUsage.count({ where })
+    ]);
+
+    return {
+      items: items.map(toEntitlementUsageView),
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+      total
+    };
   }
 
   async listReviewQueue(user: RequestUser) {
@@ -2137,6 +2376,52 @@ function assertCanGenerateEntitlements(order: OrderWithDetails) {
   }
 }
 
+function assertCanConsumeEntitlementOrder(order: OrderWithDetails) {
+  if (order.orderStatus !== OrderStatus.ACTIVE) {
+    throw new BadRequestException("当前订单尚未起租，不能消耗权益。");
+  }
+}
+
+function assertCanConsumeEntitlementAccount(
+  account: Prisma.OrderEntitlementAccountGetPayload<object> | null
+): asserts account is Prisma.OrderEntitlementAccountGetPayload<object> {
+  if (!account) {
+    throw new BadRequestException("当前订单尚未生成权益账户，不能消耗权益。");
+  }
+  if (account.accountStatus !== EntitlementAccountStatus.ACTIVE) {
+    throw new BadRequestException("当前权益账户不是生效中，不能消耗权益。");
+  }
+}
+
+function assertCanConsumeEntitlementGrant(
+  grant: Prisma.OrderEntitlementGrantGetPayload<object> | null
+): asserts grant is Prisma.OrderEntitlementGrantGetPayload<object> {
+  if (!grant) {
+    throw new NotFoundException("权益发放记录不存在或不属于当前订单。");
+  }
+  if (grant.status !== EntitlementGrantStatus.ACTIVE) {
+    throw new BadRequestException("当前权益发放记录不是生效中，不能消耗权益。");
+  }
+  if (grant.unit === EntitlementUnit.TEXT) {
+    throw new BadRequestException("文本型权益不支持消耗核销");
+  }
+}
+
+function positiveEntitlementAmount(value: unknown) {
+  const amount = numberValue(value);
+  if (amount === null || amount <= 0) {
+    throw new BadRequestException("权益消耗数量必须大于 0。");
+  }
+  return new Prisma.Decimal(amount);
+}
+
+function requiredGrantRemainingAmount(grant: Prisma.OrderEntitlementGrantGetPayload<object>) {
+  if (grant.remainingAmount === null) {
+    throw new BadRequestException("权益发放记录缺少剩余额度，不能消耗权益。");
+  }
+  return grant.remainingAmount;
+}
+
 function resolveOrderEntitlementSnapshot(order: OrderWithDetails): OrderEntitlementSnapshot {
   const orderRecord = order as unknown as SnapshotRecord;
   const quoteRecord = asSnapshotRecord(order.quote);
@@ -2336,8 +2621,45 @@ function toEntitlementAccountView(account: EntitlementAccountWithGrants) {
   return toPlain(accountData) as Record<string, unknown>;
 }
 
-function toEntitlementGrantView(grant: EntitlementAccountWithGrants["grants"][number]) {
-  return toPlain(grant) as Record<string, unknown>;
+function toEntitlementGrantView(grant: EntitlementAccountWithGrants["grants"][number] | EntitlementGrantWithUsageOverview) {
+  const grantData = { ...grant } as Record<string, unknown>;
+  const usages = Array.isArray(grantData.usages) ? grantData.usages : [];
+  const latestUsage = usages[0] as { occurredAt?: Date | string | null } | undefined;
+  delete grantData.usages;
+  return {
+    ...(toPlain(grantData) as Record<string, unknown>),
+    latestUsageAt: latestUsage?.occurredAt ? toPlain(latestUsage.occurredAt) : null
+  };
+}
+
+function toEntitlementUsageView(usage: EntitlementUsageRecord) {
+  return toPlain(usage) as Record<string, unknown>;
+}
+
+function resolveEntitlementUsagePagination(query: { page?: number; pageSize?: number }) {
+  const page = clampInteger(query.page, 1, Number.MAX_SAFE_INTEGER, 1);
+  const pageSize = clampInteger(query.pageSize, 1, 100, 20);
+  return {
+    page,
+    pageSize,
+    skip: (page - 1) * pageSize
+  };
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed)) {
+    return fallback;
+  }
+  return Math.min(Math.max(parsed, min), max);
+}
+
+function optionalText(value: string | undefined, maxLength?: number) {
+  if (!value?.trim()) {
+    return null;
+  }
+  const text = value.trim();
+  return maxLength ? text.slice(0, maxLength) : text;
 }
 
 function firstSnapshotRecord(...values: unknown[]) {

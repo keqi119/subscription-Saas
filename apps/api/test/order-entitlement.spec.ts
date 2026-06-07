@@ -6,6 +6,8 @@ import {
   EntitlementGrantStatus,
   EntitlementType,
   EntitlementUnit,
+  EntitlementUsageSource,
+  EntitlementUsageStatus,
   OrderStatus,
   Prisma,
   ProductStatus,
@@ -186,6 +188,277 @@ describe("order entitlement grant backend loop", () => {
       })
     ]);
   });
+
+  it("consumes an ACTIVE grant, decreases remaining amount, and records latest usage overview", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+    const mileageGrant = entitlements.grants.find((grant) => grant.unit === EntitlementUnit.KM)!;
+
+    const result = (await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      mileageGrant.id,
+      {
+        externalRefNo: "MILEAGE-20260610-001",
+        occurredAt: "2026-06-10T10:00:00.000Z",
+        remark: "use 100km",
+        scenario: "客户里程核销",
+        usageSource: EntitlementUsageSource.MANUAL,
+        usedAmount: 100
+      },
+      harness.user,
+      harness.context
+    )) as ConsumeResponse;
+
+    expect(result.usage.usageNo).toMatch(/^EU/);
+    expect(result.usage.usedAmount).toBe(100);
+    expect(result.usage.usageStatus).toBe(EntitlementUsageStatus.CONFIRMED);
+    expect(result.grant.usedAmount).toBe(100);
+    expect(result.grant.remainingAmount).toBe(1400);
+    expect(result.grant.status).toBe(EntitlementGrantStatus.ACTIVE);
+    expect(harness.state.usages).toHaveLength(1);
+
+    const balance = (await harness.service.getOrderEntitlements(harness.orderId, harness.user)) as EntitlementResponse;
+    expect(balance.grants.find((grant) => grant.id === mileageGrant.id)?.latestUsageAt).toBe("2026-06-10T10:00:00.000Z");
+  });
+
+  it("rejects entitlement consumption for non-ACTIVE orders", async () => {
+    const harness = createEntitlementHarness({ orderStatus: OrderStatus.PENDING_DELIVERY });
+
+    await expect(
+      harness.service.consumeOrderEntitlement(
+        harness.orderId,
+        "grant-1",
+        { usedAmount: 1 },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("当前订单尚未起租，不能消耗权益。");
+  });
+
+  it("rejects entitlement consumption when account or grant state is not active", async () => {
+    const noAccountHarness = createEntitlementHarness();
+    await expect(
+      noAccountHarness.service.consumeOrderEntitlement(
+        noAccountHarness.orderId,
+        "grant-1",
+        { usedAmount: 1 },
+        noAccountHarness.user,
+        noAccountHarness.context
+      )
+    ).rejects.toThrow("当前订单尚未生成权益账户，不能消耗权益。");
+
+    const inactiveAccountHarness = createEntitlementHarness();
+    const inactiveAccountEntitlements = (await inactiveAccountHarness.service.generateOrderEntitlements(
+      inactiveAccountHarness.orderId,
+      inactiveAccountHarness.user,
+      inactiveAccountHarness.context
+    )) as EntitlementResponse;
+    inactiveAccountHarness.state.accounts[0]!.accountStatus = EntitlementAccountStatus.SUSPENDED;
+    await expect(
+      inactiveAccountHarness.service.consumeOrderEntitlement(
+        inactiveAccountHarness.orderId,
+        inactiveAccountEntitlements.grants[0]!.id,
+        { usedAmount: 1 },
+        inactiveAccountHarness.user,
+        inactiveAccountHarness.context
+      )
+    ).rejects.toThrow("当前权益账户不是生效中，不能消耗权益。");
+
+    const inactiveGrantHarness = createEntitlementHarness();
+    const inactiveGrantEntitlements = (await inactiveGrantHarness.service.generateOrderEntitlements(
+      inactiveGrantHarness.orderId,
+      inactiveGrantHarness.user,
+      inactiveGrantHarness.context
+    )) as EntitlementResponse;
+    inactiveGrantHarness.state.grants[0]!.status = EntitlementGrantStatus.EXPIRED;
+    await expect(
+      inactiveGrantHarness.service.consumeOrderEntitlement(
+        inactiveGrantHarness.orderId,
+        inactiveGrantEntitlements.grants[0]!.id,
+        { usedAmount: 1 },
+        inactiveGrantHarness.user,
+        inactiveGrantHarness.context
+      )
+    ).rejects.toThrow("当前权益发放记录不是生效中，不能消耗权益。");
+  });
+
+  it("rejects TEXT grants and invalid or excessive amounts", async () => {
+    const textHarness = createEntitlementHarness({
+      finalPlanSnapshot: {
+        packageSnapshot: buildPackageSnapshot({
+          benefitPackage: {
+            benefitCount: null,
+            benefitType: "DRIVER_SERVICE",
+            description: "service text"
+          },
+          energyPackage: null,
+          mileagePackage: null
+        })
+      }
+    });
+    const textEntitlements = (await textHarness.service.generateOrderEntitlements(
+      textHarness.orderId,
+      textHarness.user,
+      textHarness.context
+    )) as EntitlementResponse;
+    await expect(
+      textHarness.service.consumeOrderEntitlement(
+        textHarness.orderId,
+        textEntitlements.grants[0]!.id,
+        { usedAmount: 1 },
+        textHarness.user,
+        textHarness.context
+      )
+    ).rejects.toThrow("文本型权益不支持消耗核销");
+
+    const amountHarness = createEntitlementHarness();
+    const amountEntitlements = (await amountHarness.service.generateOrderEntitlements(
+      amountHarness.orderId,
+      amountHarness.user,
+      amountHarness.context
+    )) as EntitlementResponse;
+    await expect(
+      amountHarness.service.consumeOrderEntitlement(
+        amountHarness.orderId,
+        amountEntitlements.grants[0]!.id,
+        { usedAmount: 0 },
+        amountHarness.user,
+        amountHarness.context
+      )
+    ).rejects.toThrow("权益消耗数量必须大于 0。");
+    await expect(
+      amountHarness.service.consumeOrderEntitlement(
+        amountHarness.orderId,
+        amountEntitlements.grants[0]!.id,
+        { usedAmount: 2000 },
+        amountHarness.user,
+        amountHarness.context
+      )
+    ).rejects.toThrow("权益剩余额度不足，不能超额消耗。");
+  });
+
+  it("marks a grant EXHAUSTED when remaining amount reaches zero", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+
+    const result = (await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      entitlements.grants[0]!.id,
+      { usedAmount: 1500 },
+      harness.user,
+      harness.context
+    )) as ConsumeResponse;
+
+    expect(result.grant.usedAmount).toBe(1500);
+    expect(result.grant.remainingAmount).toBe(0);
+    expect(result.grant.status).toBe(EntitlementGrantStatus.EXHAUSTED);
+  });
+
+  it("lists entitlement usages with pagination", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+    await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      entitlements.grants[0]!.id,
+      { occurredAt: "2026-06-10T10:00:00.000Z", usedAmount: 100 },
+      harness.user,
+      harness.context
+    );
+    await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      entitlements.grants[1]!.id,
+      { occurredAt: "2026-06-11T10:00:00.000Z", scenario: "客户补能核销", usedAmount: 20 },
+      harness.user,
+      harness.context
+    );
+
+    const result = (await harness.service.listOrderEntitlementUsages(
+      harness.orderId,
+      { page: 1, pageSize: 1 },
+      harness.user
+    )) as UsageListResponse;
+
+    expect(result.total).toBe(2);
+    expect(result.page).toBe(1);
+    expect(result.pageSize).toBe(1);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.usageNo).toMatch(/^EU/);
+    expect(result.items[0]!.scenario).toBe("客户补能核销");
+  });
+
+  it("uses externalRefNo idempotency without double-deducting remaining amount", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+
+    const first = (await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      entitlements.grants[0]!.id,
+      { externalRefNo: "IDEMPOTENT-001", usedAmount: 100 },
+      harness.user,
+      harness.context
+    )) as ConsumeResponse;
+    const second = (await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      entitlements.grants[0]!.id,
+      { externalRefNo: "IDEMPOTENT-001", usedAmount: 100 },
+      harness.user,
+      harness.context
+    )) as ConsumeResponse;
+
+    expect(first.usage.id).toBe(second.usage.id);
+    expect(harness.state.usages).toHaveLength(1);
+    expect(second.grant.remainingAmount).toBe(1400);
+    expect(harness.tx.orderEntitlementGrant.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes an audit log when consuming entitlements", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+
+    await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      entitlements.grants[0]!.id,
+      { externalRefNo: "AUDIT-001", usedAmount: 100 },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "CREATE",
+        after: expect.objectContaining({
+          externalRefNo: "AUDIT-001",
+          grantId: entitlements.grants[0]!.id,
+          orderId: harness.orderId,
+          remainingAmount: 1400,
+          source: EntitlementUsageSource.MANUAL,
+          usedAmount: 100
+        }),
+        entityType: "order_entitlement_usage",
+        module: "entitlement"
+      })
+    );
+  });
 });
 
 type EntitlementResponse = {
@@ -195,12 +468,37 @@ type EntitlementResponse = {
     entitlementType: EntitlementType;
     grantNo: string;
     grantSource: EntitlementGrantSource;
+    id: string;
+    latestUsageAt: string | null;
     remainingAmount: number | null;
     status: EntitlementGrantStatus;
     totalAmount: number | null;
     unit: EntitlementUnit;
     usedAmount: number | null;
   }>;
+};
+
+type ConsumeResponse = {
+  grant: EntitlementResponse["grants"][number];
+  usage: {
+    externalRefNo: string | null;
+    id: string;
+    scenario: string | null;
+    usageNo: string;
+    usageSource: EntitlementUsageSource;
+    usageStatus: EntitlementUsageStatus;
+    usedAmount: number;
+  };
+};
+
+type UsageListResponse = {
+  items: Array<{
+    scenario: string | null;
+    usageNo: string;
+  }>;
+  page: number;
+  pageSize: number;
+  total: number;
 };
 
 function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
@@ -225,6 +523,7 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
     orderStatus: OrderStatus;
     quotePackageSnapshot: unknown;
     quoteSnapshot: unknown;
+    usages: UsageRecord[];
   } = {
     accounts: [],
     actualDeliveryAt: new Date("2026-06-10T03:00:00.000Z"),
@@ -233,6 +532,7 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
     orderStatus: OrderStatus.ACTIVE,
     quotePackageSnapshot: null,
     quoteSnapshot: { packageSnapshot: buildPackageSnapshot() },
+    usages: [],
     ...overrides
   };
 
@@ -306,17 +606,101 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
     };
   }
 
-  function activeAccount() {
-    return state.accounts.find(
-      (account) => account.accountStatus === EntitlementAccountStatus.ACTIVE && !account.deletedAt
-    ) ?? null;
+  function findAccount(args: { where?: Record<string, unknown> } = {}) {
+    const where = args.where ?? {};
+    return state.accounts.find((account) => {
+      if (account.deletedAt) {
+        return false;
+      }
+      if (where.orderId && account.orderId !== where.orderId) {
+        return false;
+      }
+      if (where.accountStatus && account.accountStatus !== where.accountStatus) {
+        return false;
+      }
+      return true;
+    }) ?? null;
   }
 
   function accountWithGrants(account: AccountRecord) {
     return {
       ...account,
-      grants: state.grants.filter((grant) => grant.accountId === account.id && !grant.deletedAt)
+      grants: state.grants.filter((grant) => grant.accountId === account.id && !grant.deletedAt).map(grantWithUsages)
     };
+  }
+
+  function grantWithUsages(grant: GrantRecord) {
+    return {
+      ...grant,
+      usages: state.usages
+        .filter((usage) => usage.grantId === grant.id && !usage.deletedAt && usage.usageStatus === EntitlementUsageStatus.CONFIRMED)
+        .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())
+        .slice(0, 1)
+    };
+  }
+
+  function findGrant(args: { where?: Record<string, unknown> } = {}) {
+    const where = args.where ?? {};
+    return state.grants.find((grant) => {
+      if (grant.deletedAt) {
+        return false;
+      }
+      if (where.id && grant.id !== where.id) {
+        return false;
+      }
+      if (where.orderId && grant.orderId !== where.orderId) {
+        return false;
+      }
+      if (where.accountId && grant.accountId !== where.accountId) {
+        return false;
+      }
+      if (where.status && grant.status !== where.status) {
+        return false;
+      }
+      const remainingFilter = where.remainingAmount as { gte?: Prisma.Decimal } | undefined;
+      if (remainingFilter?.gte && (!grant.remainingAmount || grant.remainingAmount.lt(remainingFilter.gte))) {
+        return false;
+      }
+      return true;
+    }) ?? null;
+  }
+
+  function findUsage(args: { where?: Record<string, unknown> } = {}) {
+    const where = args.where ?? {};
+    return state.usages.find((usage) => usageMatchesWhere(usage, where)) ?? null;
+  }
+
+  function usageMatchesWhere(usage: UsageRecord, where: Record<string, unknown>) {
+    if (where.deletedAt === null && usage.deletedAt) {
+      return false;
+    }
+    if (where.orderId && usage.orderId !== where.orderId) {
+      return false;
+    }
+    if (where.grantId && usage.grantId !== where.grantId) {
+      return false;
+    }
+    if (where.externalRefNo && usage.externalRefNo !== where.externalRefNo) {
+      return false;
+    }
+    if (where.entitlementType && usage.entitlementType !== where.entitlementType) {
+      return false;
+    }
+    const usageStatusWhere = where.usageStatus as EntitlementUsageStatus | { not?: EntitlementUsageStatus } | undefined;
+    if (typeof usageStatusWhere === "string" && usage.usageStatus !== usageStatusWhere) {
+      return false;
+    }
+    if (typeof usageStatusWhere === "object" && usageStatusWhere?.not && usage.usageStatus === usageStatusWhere.not) {
+      return false;
+    }
+    const occurredAtWhere = where.occurredAt as { gte?: Date; lte?: Date } | undefined;
+    if (occurredAtWhere?.gte && usage.occurredAt < occurredAtWhere.gte) {
+      return false;
+    }
+    if (occurredAtWhere?.lte && usage.occurredAt > occurredAtWhere.lte) {
+      return false;
+    }
+    return true;
   }
 
   const tx = {
@@ -332,8 +716,8 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
         state.accounts.push(account);
         return account;
       }),
-      findFirst: vi.fn(async () => {
-        const account = activeAccount();
+      findFirst: vi.fn(async (args) => {
+        const account = findAccount(args);
         return account ? accountWithGrants(account) : null;
       }),
       findUniqueOrThrow: vi.fn(async ({ where }) => {
@@ -355,17 +739,57 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
         };
         state.grants.push(grant);
         return grant;
+      }),
+      findFirst: vi.fn(async (args) => {
+        const grant = findGrant(args);
+        return grant ? grantWithUsages(grant) : null;
+      }),
+      findUniqueOrThrow: vi.fn(async ({ where }) => {
+        const grant = state.grants.find((item) => item.id === where.id);
+        if (!grant) {
+          throw new Error("Grant not found");
+        }
+        return grantWithUsages(grant);
+      }),
+      updateMany: vi.fn(async ({ data, where }) => {
+        const grant = findGrant({ where });
+        if (!grant) {
+          return { count: 0 };
+        }
+        Object.assign(grant, data, { updatedAt: now });
+        return { count: 1 };
       })
+    },
+    orderEntitlementUsage: {
+      create: vi.fn(async ({ data }) => {
+        const usage: UsageRecord = {
+          ...data,
+          createdAt: now,
+          deletedAt: null,
+          id: `usage-${state.usages.length + 1}`,
+          updatedAt: now
+        };
+        state.usages.push(usage);
+        return usage;
+      }),
+      findFirst: vi.fn(async (args) => findUsage(args))
     }
   };
 
   const prisma = {
     $transaction: vi.fn(async (callback) => callback(tx)),
     orderEntitlementAccount: {
-      findFirst: vi.fn(async () => {
-        const account = activeAccount();
+      findFirst: vi.fn(async (args) => {
+        const account = findAccount(args);
         return account ? accountWithGrants(account) : null;
       })
+    },
+    orderEntitlementUsage: {
+      count: vi.fn(async ({ where }) => state.usages.filter((usage) => usageMatchesWhere(usage, where)).length),
+      findMany: vi.fn(async ({ skip = 0, take = 20, where }) => state.usages
+        .filter((usage) => usageMatchesWhere(usage, where))
+        .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())
+        .slice(skip, skip + take))
     },
     subscriptionOrder: {
       findUnique: vi.fn(async () => buildOrder())
@@ -450,4 +874,29 @@ type GrantRecord = {
   updatedAt: Date;
   updatedBy?: string | null;
   usedAmount: Prisma.Decimal | null;
+};
+
+type UsageRecord = {
+  accountId: string;
+  createdAt: Date;
+  createdBy?: string | null;
+  customerId: string;
+  deletedAt: Date | null;
+  entitlementName: string;
+  entitlementType: EntitlementType;
+  externalRefNo: string | null;
+  grantId: string;
+  id: string;
+  occurredAt: Date;
+  orderId: string;
+  remark: string | null;
+  scenario: string | null;
+  snapshot: unknown;
+  unit: EntitlementUnit;
+  updatedAt: Date;
+  updatedBy?: string | null;
+  usageNo: string;
+  usageSource: EntitlementUsageSource;
+  usageStatus: EntitlementUsageStatus;
+  usedAmount: Prisma.Decimal;
 };

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
@@ -7,12 +7,14 @@ import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   ArchiveContractDto,
   CancelOrderDto,
+  ConsumeEntitlementDto,
   CreateContractVersionDto,
   CreateCustomerOrderDto,
   CreateOrderChangeDto,
   CreateOrderFromQuoteDto,
   ConfirmDeliveryDto,
   ConfirmReturnDto,
+  ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
   ReviewOrderDto,
@@ -73,10 +75,31 @@ export class OrderController {
     return this.orderService.getOrderEntitlements(id, request.user);
   }
 
+  @Get("orders/:id/entitlement-usages")
+  @RequirePermissions(PermissionCode.ENTITLEMENT_VIEW)
+  listOrderEntitlementUsages(
+    @Param("id") id: string,
+    @Query() query: ListEntitlementUsagesQueryDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.listOrderEntitlementUsages(id, query, request.user);
+  }
+
   @Post("orders/:id/entitlements/generate")
   @RequirePermissions(PermissionCode.ENTITLEMENT_GENERATE)
   generateOrderEntitlements(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.generateOrderEntitlements(id, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/entitlements/:grantId/consume")
+  @RequirePermissions(PermissionCode.ENTITLEMENT_CONSUME)
+  consumeOrderEntitlement(
+    @Param("id") id: string,
+    @Param("grantId") grantId: string,
+    @Body() dto: ConsumeEntitlementDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.consumeOrderEntitlement(id, grantId, dto, request.user, requestContext(request));
   }
 
   @Get("orders/:id")

@@ -3,6 +3,9 @@ import {
   ContractTemplateType,
   ContractVersionStatus,
   CustomerGrade,
+  EntitlementType,
+  EntitlementUsageSource,
+  EntitlementUsageStatus,
   OrderChangeType,
   OrderReviewStatus,
   VehicleDamageLevel,
@@ -10,7 +13,7 @@ import {
   VehicleDamageType,
   VehicleReturnType
 } from "@prisma/client";
-import { IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Min, ValidateNested } from "class-validator";
+import { IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, Min, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 
 export class CreateOrderFromQuoteDto {
@@ -65,6 +68,66 @@ export class CancelOrderDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+export class ConsumeEntitlementDto {
+  @IsNumber()
+  @Min(0.01)
+  usedAmount!: number;
+
+  @IsOptional()
+  @IsDateString()
+  occurredAt?: string;
+
+  @IsOptional()
+  @IsEnum(EntitlementUsageSource)
+  usageSource?: EntitlementUsageSource;
+
+  @IsOptional()
+  @IsString()
+  externalRefNo?: string;
+
+  @IsOptional()
+  @IsString()
+  scenario?: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+}
+
+export class ListEntitlementUsagesQueryDto {
+  @IsOptional()
+  @IsUUID()
+  grantId?: string;
+
+  @IsOptional()
+  @IsEnum(EntitlementType)
+  entitlementType?: EntitlementType;
+
+  @IsOptional()
+  @IsEnum(EntitlementUsageStatus)
+  usageStatus?: EntitlementUsageStatus;
+
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  pageSize?: number;
 }
 
 export class PrepareDeliveryDto {

@@ -443,6 +443,8 @@ const entitlementViewPermissions = ["entitlement:view"];
 
 const entitlementGeneratePermissions = ["entitlement:view", "entitlement:generate"];
 
+const entitlementOperationPermissions = ["entitlement:view", "entitlement:generate", "entitlement:consume"];
+
 const reportViewPermissions = ["report:view"];
 
 const reportFinancePermissions = ["report:view", "report:finance"];
@@ -593,7 +595,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
-      ...entitlementGeneratePermissions,
+      ...entitlementOperationPermissions,
       ...reportViewPermissions,
       ...reportAssetPermissions,
       "billing:view",

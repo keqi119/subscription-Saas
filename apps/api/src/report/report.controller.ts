@@ -5,7 +5,16 @@ import type { Response } from "express";
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
-import { OrderReportQueryDto, ReportDateRangeQueryDto } from "./dto/report.dto";
+import {
+  BillDetailQueryDto,
+  CollectionCaseDetailQueryDto,
+  DepositLedgerDetailQueryDto,
+  OrderDetailQueryDto,
+  OrderReportQueryDto,
+  OverdueBillDetailQueryDto,
+  ReportDateRangeQueryDto,
+  VehicleDetailQueryDto
+} from "./dto/report.dto";
 import { ReportService } from "./report.service";
 
 @Controller("reports")
@@ -31,6 +40,12 @@ export class ReportController {
     return csvResponse(response, await this.reportService.exportOrderReport(query));
   }
 
+  @Get("details/orders")
+  @RequirePermissions(PermissionCode.REPORT_VIEW)
+  getOrderDetails(@Query() query: OrderDetailQueryDto) {
+    return this.reportService.getOrderDetails(query);
+  }
+
   @Get("finance")
   @RequirePermissions(PermissionCode.REPORT_FINANCE)
   getFinanceReport(@Query() query: ReportDateRangeQueryDto) {
@@ -41,6 +56,12 @@ export class ReportController {
   @RequirePermissions(PermissionCode.REPORT_FINANCE)
   async exportFinanceReport(@Query() query: ReportDateRangeQueryDto, @Res({ passthrough: true }) response: Response) {
     return csvResponse(response, await this.reportService.exportFinanceReport(query));
+  }
+
+  @Get("details/bills")
+  @RequirePermissions(PermissionCode.REPORT_FINANCE)
+  getBillDetails(@Query() query: BillDetailQueryDto) {
+    return this.reportService.getBillDetails(query);
   }
 
   @Get("deposit-pool")
@@ -58,6 +79,12 @@ export class ReportController {
     return csvResponse(response, await this.reportService.exportDepositPoolReport(query));
   }
 
+  @Get("details/deposit-ledgers")
+  @RequirePermissions(PermissionCode.REPORT_FINANCE)
+  getDepositLedgerDetails(@Query() query: DepositLedgerDetailQueryDto) {
+    return this.reportService.getDepositLedgerDetails(query);
+  }
+
   @Get("collections")
   @RequireAnyPermissions(PermissionCode.REPORT_FINANCE, PermissionCode.COLLECTION_VIEW)
   getCollectionReport(@Query() query: ReportDateRangeQueryDto) {
@@ -73,6 +100,18 @@ export class ReportController {
     return csvResponse(response, await this.reportService.exportCollectionReport(query));
   }
 
+  @Get("details/overdue-bills")
+  @RequireAnyPermissions(PermissionCode.REPORT_FINANCE, PermissionCode.COLLECTION_VIEW)
+  getOverdueBillDetails(@Query() query: OverdueBillDetailQueryDto) {
+    return this.reportService.getOverdueBillDetails(query);
+  }
+
+  @Get("details/collection-cases")
+  @RequireAnyPermissions(PermissionCode.REPORT_FINANCE, PermissionCode.COLLECTION_VIEW)
+  getCollectionCaseDetails(@Query() query: CollectionCaseDetailQueryDto) {
+    return this.reportService.getCollectionCaseDetails(query);
+  }
+
   @Get("vehicle-assets")
   @RequirePermissions(PermissionCode.REPORT_ASSET)
   getVehicleAssetReport(@Query() query: ReportDateRangeQueryDto) {
@@ -86,6 +125,12 @@ export class ReportController {
     @Res({ passthrough: true }) response: Response
   ) {
     return csvResponse(response, await this.reportService.exportVehicleAssetReport(query));
+  }
+
+  @Get("details/vehicles")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  getVehicleDetails(@Query() query: VehicleDetailQueryDto) {
+    return this.reportService.getVehicleDetails(query);
   }
 }
 

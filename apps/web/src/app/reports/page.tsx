@@ -7,6 +7,7 @@ import {
   Button,
   Card,
   DatePicker,
+  Drawer,
   Empty,
   Form,
   Select,
@@ -28,8 +29,11 @@ import {
   BILL_TYPE_LABELS,
   COLLECTION_CASE_STATUS_LABELS,
   COLLECTION_LEVEL_LABELS,
+  DEPOSIT_TRANSACTION_STATUS_LABELS,
   DEPOSIT_TRANSACTION_TYPE_LABELS,
   ORDER_STATUS_LABELS,
+  STATUS_LABELS,
+  VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   labelOf
 } from "../../constants/labels";
 import { API_BASE_URL, ApiError, apiFetch } from "../../lib/api";
@@ -189,6 +193,26 @@ interface OrderFilterValues {
   orderSource?: string;
   orderStatus?: string;
   vehicleModel?: string;
+}
+
+type DetailKind = "orders" | "bills" | "depositLedgers" | "overdueBills" | "collectionCases" | "vehicles";
+type DetailRow = Record<string, unknown>;
+
+interface PagedDetailResponse {
+  items: DetailRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+interface DrilldownState {
+  filters?: Array<{ label: string; value: string }>;
+  kind: DetailKind;
+  page: number;
+  pageSize: number;
+  path: string;
+  query?: Record<string, unknown>;
+  title: string;
 }
 
 const defaultDateRange = (): [Dayjs, Dayjs] => [dayjs().subtract(29, "day"), dayjs()];
@@ -380,11 +404,68 @@ function formatPercent(value?: number | null) {
   })}%`;
 }
 
+function formatDate(value?: unknown) {
+  if (!value) {
+    return "-";
+  }
+  const parsed = dayjs(value as string | number | Date);
+  return parsed.isValid() ? parsed.format("YYYY-MM-DD") : "-";
+}
+
 function safeText(value?: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return String(value);
   }
   return typeof value === "string" && value.trim() ? value : "-";
+}
+
+function detailValue(record: DetailRow, key: string) {
+  return record[key];
+}
+
+function detailText(record: DetailRow, key: string) {
+  return safeText(detailValue(record, key));
+}
+
+function detailNumber(record: DetailRow, key: string) {
+  return safeNumber(detailValue(record, key));
+}
+
+function detailId(record: DetailRow, key: string) {
+  const value = detailValue(record, key);
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function detailLink(href: string | null, text: unknown) {
+  const label = safeText(text);
+  if (!href || label === "-") {
+    return label;
+  }
+
+  return (
+    <Button href={href} size="small" type="link">
+      {label}
+    </Button>
+  );
+}
+
+function detailTableRowKey(record: DetailRow) {
+  return (
+    detailId(record, "id") ??
+    detailId(record, "orderNo") ??
+    detailId(record, "billNo") ??
+    detailId(record, "ledgerNo") ??
+    detailId(record, "caseNo") ??
+    detailId(record, "vehicleNo") ??
+    JSON.stringify(record)
+  );
+}
+
+function clickableRow<T>(onClick: (record: T) => void) {
+  return (record: T) => ({
+    onClick: () => onClick(record),
+    style: { cursor: "pointer" }
+  });
 }
 
 function getErrorMessage(error: unknown) {
@@ -423,8 +504,8 @@ function formatTag(labels: Record<string, string>, value?: string | null, color?
   return <Tag color={color}>{labelOf(labels, value)}</Tag>;
 }
 
-function metric(title: string, value: string | number) {
-  return { title, value };
+function metric(title: string, value: string | number, onClick?: () => void) {
+  return { onClick, title, value };
 }
 
 export default function ReportsPage() {
@@ -449,6 +530,10 @@ export default function ReportsPage() {
     finance: false,
     orders: false
   });
+  const [drilldown, setDrilldown] = useState<DrilldownState | null>(null);
+  const [detailData, setDetailData] = useState<PagedDetailResponse | null>(null);
+  const [detailError, setDetailError] = useState<string | undefined>();
+  const [detailLoading, setDetailLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<ReportKey, string>>>({});
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummaryReport | null>(null);
   const [orderReport, setOrderReport] = useState<OrderReport | null>(null);
@@ -633,6 +718,50 @@ export default function ReportsPage() {
     [dateRange, message, orderFilterForm]
   );
 
+  const openDrilldown = useCallback((config: Omit<DrilldownState, "page" | "pageSize">) => {
+    setDetailData(null);
+    setDetailError(undefined);
+    setDrilldown({
+      ...config,
+      page: 1,
+      pageSize: 20
+    });
+  }, []);
+
+  const closeDrilldown = useCallback(() => {
+    setDrilldown(null);
+    setDetailData(null);
+    setDetailError(undefined);
+  }, []);
+
+  const changeDrilldownPage = useCallback((page: number, pageSize: number) => {
+    setDrilldown((current) => (current ? { ...current, page, pageSize } : current));
+  }, []);
+
+  const loadDrilldown = useCallback(
+    async (config: DrilldownState) => {
+      setDetailLoading(true);
+      setDetailError(undefined);
+      try {
+        setDetailData(
+          await apiFetch<PagedDetailResponse>(
+            `${config.path}${buildQuery({
+              ...dateRangeParams(dateRange),
+              ...config.query,
+              page: config.page,
+              pageSize: config.pageSize
+            })}`
+          )
+        );
+      } catch (error) {
+        setDetailError(getErrorMessage(error));
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [dateRange]
+  );
+
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
       .then(setMe)
@@ -654,6 +783,12 @@ export default function ReportsPage() {
     }
   }, [activeTab, visibleReportKeys]);
 
+  useEffect(() => {
+    if (drilldown) {
+      void loadDrilldown(drilldown);
+    }
+  }, [drilldown, loadDrilldown]);
+
   const tabItems = visibleReportKeys.map((key) => ({
     children: renderReportTab(key),
     forceRender: key === "orders",
@@ -661,31 +796,232 @@ export default function ReportsPage() {
     label: reportLabels[key]
   }));
 
+  function openOrderDetails(title: string, query: Record<string, unknown> = {}, filters: DrilldownState["filters"] = []) {
+    openDrilldown({
+      filters,
+      kind: "orders",
+      path: "/reports/details/orders",
+      query,
+      title
+    });
+  }
+
+  function openBillDetails(title: string, query: Record<string, unknown> = {}, filters: DrilldownState["filters"] = []) {
+    if (!canViewFinanceReports) {
+      return;
+    }
+    openDrilldown({
+      filters,
+      kind: "bills",
+      path: "/reports/details/bills",
+      query,
+      title
+    });
+  }
+
+  function openDepositLedgerDetails(
+    title: string,
+    query: Record<string, unknown> = {},
+    filters: DrilldownState["filters"] = []
+  ) {
+    if (!canViewFinanceReports) {
+      return;
+    }
+    openDrilldown({
+      filters,
+      kind: "depositLedgers",
+      path: "/reports/details/deposit-ledgers",
+      query,
+      title
+    });
+  }
+
+  function openOverdueBillDetails(
+    title: string,
+    query: Record<string, unknown> = {},
+    filters: DrilldownState["filters"] = []
+  ) {
+    if (!canViewCollectionReport) {
+      return;
+    }
+    openDrilldown({
+      filters,
+      kind: "overdueBills",
+      path: "/reports/details/overdue-bills",
+      query,
+      title
+    });
+  }
+
+  function openCollectionCaseDetails(
+    title: string,
+    query: Record<string, unknown> = {},
+    filters: DrilldownState["filters"] = []
+  ) {
+    if (!canViewCollectionReport) {
+      return;
+    }
+    openDrilldown({
+      filters,
+      kind: "collectionCases",
+      path: "/reports/details/collection-cases",
+      query,
+      title
+    });
+  }
+
+  function openVehicleDetails(title: string, query: Record<string, unknown> = {}, filters: DrilldownState["filters"] = []) {
+    if (!canViewAssetReport) {
+      return;
+    }
+    openDrilldown({
+      filters,
+      kind: "vehicles",
+      path: "/reports/details/vehicles",
+      query,
+      title
+    });
+  }
+
+  function currentOrderFilters(extra: Record<string, unknown> = {}) {
+    return {
+      ...orderFilterForm.getFieldsValue(),
+      ...extra
+    };
+  }
+
+  function currentOrderFilterEntries(extra: Record<string, unknown> = {}) {
+    const values = currentOrderFilters(extra);
+    const entries: Array<{ label: string; value: string }> = [];
+    if (typeof values.orderSource === "string") {
+      entries.push({ label: "订单来源", value: labelOf(orderSourceLabels, values.orderSource) });
+    }
+    if (typeof values.orderStatus === "string") {
+      entries.push({ label: "订单状态", value: labelOf(ORDER_STATUS_LABELS, values.orderStatus) });
+    }
+    if (typeof values.vehicleModel === "string") {
+      entries.push({ label: "车型", value: values.vehicleModel });
+    }
+    return entries;
+  }
+
   function renderReportTab(key: ReportKey) {
     if (key === "summary") {
       return (
         <ReportPanel data={dashboardSummary} error={errors.summary} loading={loading.summary}>
           <MetricGrid
             items={[
-              metric("订单总数", formatInteger(dashboardSummary?.totalOrders)),
-              metric("新增订单数", formatInteger(dashboardSummary?.newOrders)),
-              metric("在租订单数", formatInteger(dashboardSummary?.activeOrders)),
-              metric("已完成订单数", formatInteger(dashboardSummary?.completedOrders)),
-              metric("已取消订单数", formatInteger(dashboardSummary?.cancelledOrders)),
-              metric("车辆总数", formatInteger(dashboardSummary?.totalVehicles)),
-              metric("可租车辆数", formatInteger(dashboardSummary?.availableVehicles)),
-              metric("审核占用车辆数", formatInteger(dashboardSummary?.reviewReservedVehicles)),
-              metric("签约锁定车辆数", formatInteger(dashboardSummary?.signingLockedVehicles)),
-              metric("在租车辆数", formatInteger(dashboardSummary?.leasedVehicles)),
-              metric("维修中车辆数", formatInteger(dashboardSummary?.maintenanceVehicles)),
-              metric("已退回车辆数", formatInteger(dashboardSummary?.returnedVehicles)),
-              metric("总应收", formatYuan(dashboardSummary?.totalReceivableAmount)),
-              metric("总实收", formatYuan(dashboardSummary?.totalPaidAmount)),
-              metric("总欠收", formatYuan(dashboardSummary?.totalUnpaidAmount)),
-              metric("押金余额", formatYuan(dashboardSummary?.depositBalanceAmount)),
-              metric("逾期金额", formatYuan(dashboardSummary?.overdueAmount)),
-              metric("逾期订单数", formatInteger(dashboardSummary?.overdueOrderCount)),
-              metric("催收案件数", formatInteger(dashboardSummary?.collectionCaseCount))
+              metric("订单总数", formatInteger(dashboardSummary?.totalOrders), () => openOrderDetails("订单明细")),
+              metric("新增订单数", formatInteger(dashboardSummary?.newOrders), () => openOrderDetails("新增订单明细")),
+              metric("在租订单数", formatInteger(dashboardSummary?.activeOrders), () =>
+                openOrderDetails("在租订单明细", { orderStatus: "ACTIVE" }, [{ label: "订单状态", value: "在租" }])
+              ),
+              metric("已完成订单数", formatInteger(dashboardSummary?.completedOrders), () =>
+                openOrderDetails("已完成订单明细", { orderStatus: "COMPLETED" }, [{ label: "订单状态", value: "已完成" }])
+              ),
+              metric("已取消订单数", formatInteger(dashboardSummary?.cancelledOrders), () =>
+                openOrderDetails("已取消订单明细", { orderStatus: "CANCELLED" }, [{ label: "订单状态", value: "已取消" }])
+              ),
+              metric(
+                "车辆总数",
+                formatInteger(dashboardSummary?.totalVehicles),
+                canViewAssetReport ? () => openVehicleDetails("车辆明细") : undefined
+              ),
+              metric(
+                "可租车辆数",
+                formatInteger(dashboardSummary?.availableVehicles),
+                canViewAssetReport
+                  ? () =>
+                      openVehicleDetails("可租车辆明细", { vehicleStatus: "AVAILABLE" }, [
+                        { label: "车辆状态", value: "可用" }
+                      ])
+                  : undefined
+              ),
+              metric(
+                "审核占用车辆数",
+                formatInteger(dashboardSummary?.reviewReservedVehicles),
+                canViewAssetReport
+                  ? () =>
+                      openVehicleDetails("审核占用车辆明细", { vehicleStatus: "REVIEW_RESERVED" }, [
+                        { label: "车辆状态", value: "审核占用" }
+                      ])
+                  : undefined
+              ),
+              metric(
+                "签约锁定车辆数",
+                formatInteger(dashboardSummary?.signingLockedVehicles),
+                canViewAssetReport
+                  ? () =>
+                      openVehicleDetails("签约锁定车辆明细", { vehicleStatus: "RESERVED" }, [
+                        { label: "车辆状态", value: "签约锁定" }
+                      ])
+                  : undefined
+              ),
+              metric(
+                "在租车辆数",
+                formatInteger(dashboardSummary?.leasedVehicles),
+                canViewAssetReport
+                  ? () =>
+                      openVehicleDetails("在租车辆明细", { vehicleStatus: "LEASED" }, [
+                        { label: "车辆状态", value: "已出租" }
+                      ])
+                  : undefined
+              ),
+              metric(
+                "维修中车辆数",
+                formatInteger(dashboardSummary?.maintenanceVehicles),
+                canViewAssetReport
+                  ? () =>
+                      openVehicleDetails("维修中车辆明细", { vehicleStatus: "MAINTENANCE" }, [
+                        { label: "车辆状态", value: "维修 / 整备" }
+                      ])
+                  : undefined
+              ),
+              metric(
+                "已退回车辆数",
+                formatInteger(dashboardSummary?.returnedVehicles),
+                canViewAssetReport
+                  ? () =>
+                      openVehicleDetails("已退回车辆明细", { vehicleStatus: "RETURNED" }, [
+                        { label: "车辆状态", value: "已退回" }
+                      ])
+                  : undefined
+              ),
+              metric(
+                "总应收",
+                formatYuan(dashboardSummary?.totalReceivableAmount),
+                canViewFinanceReports ? () => openBillDetails("账单明细") : undefined
+              ),
+              metric(
+                "总实收",
+                formatYuan(dashboardSummary?.totalPaidAmount),
+                canViewFinanceReports ? () => openBillDetails("已收账单明细") : undefined
+              ),
+              metric(
+                "总欠收",
+                formatYuan(dashboardSummary?.totalUnpaidAmount),
+                canViewFinanceReports ? () => openBillDetails("欠收账单明细") : undefined
+              ),
+              metric(
+                "押金余额",
+                formatYuan(dashboardSummary?.depositBalanceAmount),
+                canViewFinanceReports ? () => openDepositLedgerDetails("保证金台账明细") : undefined
+              ),
+              metric(
+                "逾期金额",
+                formatYuan(dashboardSummary?.overdueAmount),
+                canViewCollectionReport ? () => openOverdueBillDetails("逾期账单明细") : undefined
+              ),
+              metric(
+                "逾期订单数",
+                formatInteger(dashboardSummary?.overdueOrderCount),
+                canViewCollectionReport ? () => openOverdueBillDetails("逾期订单账单明细") : undefined
+              ),
+              metric(
+                "催收案件数",
+                formatInteger(dashboardSummary?.collectionCaseCount),
+                canViewCollectionReport ? () => openCollectionCaseDetails("催收案件明细") : undefined
+              )
             ]}
           />
         </ReportPanel>
@@ -723,12 +1059,25 @@ export default function ReportsPage() {
                 </Space>
               </Form.Item>
             </Form>
-            <MetricGrid items={[metric("订单总数", formatInteger(orderReport?.totalOrders))]} />
+            <MetricGrid
+              items={[
+                metric("订单总数", formatInteger(orderReport?.totalOrders), () =>
+                  openOrderDetails("订单报表明细", currentOrderFilters(), currentOrderFilterEntries())
+                )
+              ]}
+            />
             <ReportTablesGrid>
               <Table
                 columns={orderStatusColumns}
                 dataSource={orderReport?.byStatus ?? []}
                 loading={loading.orders}
+                onRow={clickableRow((record: OrderStatusRow) =>
+                  openOrderDetails(
+                    `${labelOf(ORDER_STATUS_LABELS, record.orderStatus)}订单明细`,
+                    currentOrderFilters({ orderStatus: record.orderStatus }),
+                    currentOrderFilterEntries({ orderStatus: record.orderStatus })
+                  )
+                )}
                 pagination={false}
                 rowKey={(record) => record.orderStatus ?? "unknown"}
                 size="small"
@@ -739,6 +1088,13 @@ export default function ReportsPage() {
                 columns={orderSourceColumns}
                 dataSource={orderReport?.bySource ?? []}
                 loading={loading.orders}
+                onRow={clickableRow((record: OrderSourceRow) =>
+                  openOrderDetails(
+                    `${labelOf(orderSourceLabels, record.orderSource)}订单明细`,
+                    currentOrderFilters({ orderSource: record.orderSource }),
+                    currentOrderFilterEntries({ orderSource: record.orderSource })
+                  )
+                )}
                 pagination={false}
                 rowKey={(record) => record.orderSource ?? "unknown"}
                 size="small"
@@ -749,6 +1105,13 @@ export default function ReportsPage() {
                 columns={vehicleModelCountColumns}
                 dataSource={orderReport?.byVehicleModel ?? []}
                 loading={loading.orders}
+                onRow={clickableRow((record: VehicleModelCountRow) =>
+                  openOrderDetails(
+                    `${safeText(record.vehicleModel)}订单明细`,
+                    currentOrderFilters({ vehicleModel: record.vehicleModel }),
+                    currentOrderFilterEntries({ vehicleModel: record.vehicleModel })
+                  )
+                )}
                 pagination={false}
                 rowKey={(record) => record.vehicleModel ?? "unknown"}
                 size="small"
@@ -759,6 +1122,19 @@ export default function ReportsPage() {
                 columns={subscriptionPlanColumns}
                 dataSource={orderReport?.bySubscriptionPlan ?? []}
                 loading={loading.orders}
+                onRow={clickableRow((record: SubscriptionPlanCountRow) => {
+                  if (!record.subscriptionPlanId) {
+                    return;
+                  }
+                  openOrderDetails(
+                    `${safeText(record.subscriptionPlanName ?? record.subscriptionPlanNo)}订单明细`,
+                    currentOrderFilters({ subscriptionPlanId: record.subscriptionPlanId }),
+                    [
+                      ...currentOrderFilterEntries(),
+                      { label: "订阅套餐", value: safeText(record.subscriptionPlanName ?? record.subscriptionPlanNo) }
+                    ]
+                  );
+                })}
                 pagination={false}
                 rowKey={(record) => record.subscriptionPlanId ?? record.subscriptionPlanName ?? "unassigned"}
                 size="small"
@@ -783,9 +1159,9 @@ export default function ReportsPage() {
             />
             <MetricGrid
               items={[
-                metric("总应收金额", formatYuan(financeReport?.totalReceivableAmount)),
-                metric("总已收金额", formatYuan(financeReport?.totalPaidAmount)),
-                metric("总未收金额", formatYuan(financeReport?.totalUnpaidAmount))
+                metric("总应收金额", formatYuan(financeReport?.totalReceivableAmount), () => openBillDetails("财务账单明细")),
+                metric("总已收金额", formatYuan(financeReport?.totalPaidAmount), () => openBillDetails("已收账单明细")),
+                metric("总未收金额", formatYuan(financeReport?.totalUnpaidAmount), () => openBillDetails("未收账单明细"))
               ]}
             />
             <ReportTablesGrid>
@@ -793,6 +1169,13 @@ export default function ReportsPage() {
                 columns={billTypeColumns}
                 dataSource={financeReport?.byBillType ?? []}
                 loading={loading.finance}
+                onRow={clickableRow((record: BillTypeReportRow) =>
+                  openBillDetails(
+                    `${labelOf(BILL_TYPE_LABELS, record.billType)}账单明细`,
+                    { billType: record.billType },
+                    [{ label: "账单类型", value: labelOf(BILL_TYPE_LABELS, record.billType) }]
+                  )
+                )}
                 pagination={false}
                 rowKey={(record) => record.billType ?? "unknown"}
                 scroll={{ x: 640 }}
@@ -804,6 +1187,13 @@ export default function ReportsPage() {
                 columns={billStatusColumns}
                 dataSource={financeReport?.byBillStatus ?? []}
                 loading={loading.finance}
+                onRow={clickableRow((record: BillStatusReportRow) =>
+                  openBillDetails(
+                    `${labelOf(BILL_STATUS_LABELS, record.billStatus)}账单明细`,
+                    { billStatus: record.billStatus },
+                    [{ label: "账单状态", value: labelOf(BILL_STATUS_LABELS, record.billStatus) }]
+                  )
+                )}
                 pagination={false}
                 rowKey={(record) => record.billStatus ?? "unknown"}
                 scroll={{ x: 640 }}
@@ -829,17 +1219,40 @@ export default function ReportsPage() {
             />
             <MetricGrid
               items={[
-                metric("累计收取保证金", formatYuan(depositReport?.collectedAmount)),
-                metric("累计扣减保证金", formatYuan(depositReport?.deductedAmount)),
-                metric("累计退款保证金", formatYuan(depositReport?.refundedAmount)),
-                metric("当前保证金余额", formatYuan(depositReport?.currentBalanceAmount)),
-                metric("保证金交易笔数", formatInteger(depositReport?.transactionCount))
+                metric("累计收取保证金", formatYuan(depositReport?.collectedAmount), () =>
+                  openDepositLedgerDetails("保证金收取明细", { transactionType: "COLLECT" }, [
+                    { label: "交易类型", value: "收取" }
+                  ])
+                ),
+                metric("累计扣减保证金", formatYuan(depositReport?.deductedAmount), () =>
+                  openDepositLedgerDetails("保证金扣减明细", { transactionType: "DEDUCT" }, [
+                    { label: "交易类型", value: "扣减" }
+                  ])
+                ),
+                metric("累计退款保证金", formatYuan(depositReport?.refundedAmount), () =>
+                  openDepositLedgerDetails("保证金退款明细", { transactionType: "REFUND" }, [
+                    { label: "交易类型", value: "退还" }
+                  ])
+                ),
+                metric("当前保证金余额", formatYuan(depositReport?.currentBalanceAmount), () =>
+                  openDepositLedgerDetails("保证金台账明细")
+                ),
+                metric("保证金交易笔数", formatInteger(depositReport?.transactionCount), () =>
+                  openDepositLedgerDetails("保证金交易明细")
+                )
               ]}
             />
             <Table
               columns={depositTransactionColumns}
               dataSource={depositReport?.byTransactionType ?? []}
               loading={loading.deposit}
+              onRow={clickableRow((record: DepositTransactionTypeRow) =>
+                openDepositLedgerDetails(
+                  `${labelOf(DEPOSIT_TRANSACTION_TYPE_LABELS, record.transactionType)}保证金明细`,
+                  { transactionType: record.transactionType },
+                  [{ label: "交易类型", value: labelOf(DEPOSIT_TRANSACTION_TYPE_LABELS, record.transactionType) }]
+                )
+              )}
               pagination={false}
               rowKey={(record) => record.transactionType ?? "unknown"}
               size="small"
@@ -858,12 +1271,26 @@ export default function ReportsPage() {
             <ExportButton loading={exporting.collections} onClick={() => void exportReportCsv("collections")} />
             <MetricGrid
               items={[
-                metric("逾期账单数", formatInteger(collectionReport?.overdueBillCount)),
-                metric("逾期金额", formatYuan(collectionReport?.overdueAmount)),
-                metric("逾期订单数", formatInteger(collectionReport?.overdueOrderCount)),
-                metric("催收案件数", formatInteger(collectionReport?.collectionCaseCount)),
-                metric("催收中案件数", formatInteger(collectionReport?.activeCaseCount)),
-                metric("已关闭案件数", formatInteger(collectionReport?.closedCaseCount)),
+                metric("逾期账单数", formatInteger(collectionReport?.overdueBillCount), () =>
+                  openOverdueBillDetails("逾期账单明细")
+                ),
+                metric("逾期金额", formatYuan(collectionReport?.overdueAmount), () => openOverdueBillDetails("逾期金额明细")),
+                metric("逾期订单数", formatInteger(collectionReport?.overdueOrderCount), () =>
+                  openOverdueBillDetails("逾期订单账单明细")
+                ),
+                metric("催收案件数", formatInteger(collectionReport?.collectionCaseCount), () =>
+                  openCollectionCaseDetails("催收案件明细")
+                ),
+                metric("催收中案件数", formatInteger(collectionReport?.activeCaseCount), () =>
+                  openCollectionCaseDetails("催收中案件明细", { caseStatus: "ACTIVE" }, [
+                    { label: "案件状态", value: "催收中" }
+                  ])
+                ),
+                metric("已关闭案件数", formatInteger(collectionReport?.closedCaseCount), () =>
+                  openCollectionCaseDetails("已关闭案件明细", { caseStatus: "CLOSED" }, [
+                    { label: "案件状态", value: "已关闭" }
+                  ])
+                ),
                 metric("催收动作数量", formatInteger(collectionReport?.actionCount)),
                 metric("承诺付款金额", formatYuan(collectionReport?.promisedPaymentAmount))
               ]}
@@ -873,6 +1300,13 @@ export default function ReportsPage() {
                 columns={collectionLevelColumns}
                 dataSource={collectionReport?.byCollectionLevel ?? []}
                 loading={loading.collections}
+                onRow={clickableRow((record: CollectionLevelRow) =>
+                  openOverdueBillDetails(
+                    `${labelOf(collectionLevelLabels, record.collectionLevel)}逾期账单明细`,
+                    { collectionLevel: record.collectionLevel },
+                    [{ label: "逾期等级", value: labelOf(collectionLevelLabels, record.collectionLevel) }]
+                  )
+                )}
                 pagination={false}
                 rowKey={(record) => record.collectionLevel ?? "unknown"}
                 size="small"
@@ -883,6 +1317,13 @@ export default function ReportsPage() {
                 columns={collectionCaseStatusColumns}
                 dataSource={collectionReport?.byCaseStatus ?? []}
                 loading={loading.collections}
+                onRow={clickableRow((record: CollectionCaseStatusRow) =>
+                  openCollectionCaseDetails(
+                    `${labelOf(collectionCaseStatusLabels, record.caseStatus)}案件明细`,
+                    { caseStatus: record.caseStatus },
+                    [{ label: "案件状态", value: labelOf(collectionCaseStatusLabels, record.caseStatus) }]
+                  )
+                )}
                 pagination={false}
                 rowKey={(record) => record.caseStatus ?? "unknown"}
                 size="small"
@@ -906,12 +1347,32 @@ export default function ReportsPage() {
           />
           <MetricGrid
             items={[
-              metric("车辆总数", formatInteger(vehicleAssetReport?.totalVehicles)),
-              metric("可租车辆数", formatInteger(vehicleAssetReport?.availableVehicles)),
-              metric("在租车辆数", formatInteger(vehicleAssetReport?.leasedVehicles)),
-              metric("维修中车辆数", formatInteger(vehicleAssetReport?.maintenanceVehicles)),
-              metric("已退回车辆数", formatInteger(vehicleAssetReport?.returnedVehicles)),
-              metric("已售车辆数", formatInteger(vehicleAssetReport?.soldVehicles)),
+              metric("车辆总数", formatInteger(vehicleAssetReport?.totalVehicles), () => openVehicleDetails("车辆明细")),
+              metric("可租车辆数", formatInteger(vehicleAssetReport?.availableVehicles), () =>
+                openVehicleDetails("可租车辆明细", { vehicleStatus: "AVAILABLE" }, [
+                  { label: "车辆状态", value: "可用" }
+                ])
+              ),
+              metric("在租车辆数", formatInteger(vehicleAssetReport?.leasedVehicles), () =>
+                openVehicleDetails("在租车辆明细", { vehicleStatus: "LEASED" }, [
+                  { label: "车辆状态", value: "已出租" }
+                ])
+              ),
+              metric("维修中车辆数", formatInteger(vehicleAssetReport?.maintenanceVehicles), () =>
+                openVehicleDetails("维修中车辆明细", { vehicleStatus: "MAINTENANCE" }, [
+                  { label: "车辆状态", value: "维修 / 整备" }
+                ])
+              ),
+              metric("已退回车辆数", formatInteger(vehicleAssetReport?.returnedVehicles), () =>
+                openVehicleDetails("已退回车辆明细", { vehicleStatus: "RETURNED" }, [
+                  { label: "车辆状态", value: "已退回" }
+                ])
+              ),
+              metric("已售车辆数", formatInteger(vehicleAssetReport?.soldVehicles), () =>
+                openVehicleDetails("已售车辆明细", { vehicleStatus: "RETIRED" }, [
+                  { label: "车辆状态", value: "已退役" }
+                ])
+              ),
               metric("出租率", formatPercent(vehicleAssetReport?.rentalRate)),
               metric("平均当前车辆销售价", formatYuan(vehicleAssetReport?.averageCurrentSalePriceAmount)),
               metric("采购成本合计", formatYuan(vehicleAssetReport?.totalPurchasePriceAmount)),
@@ -922,6 +1383,13 @@ export default function ReportsPage() {
             columns={vehicleAssetColumns}
             dataSource={vehicleAssetReport?.byVehicleModel ?? []}
             loading={loading.assets}
+            onRow={clickableRow((record: VehicleModelAssetRow) =>
+              openVehicleDetails(
+                `${safeText(record.vehicleModel)}车辆明细`,
+                { vehicleModel: record.vehicleModel },
+                [{ label: "车型", value: safeText(record.vehicleModel) }]
+              )
+            )}
             pagination={false}
             rowKey={(record) => record.vehicleModel ?? "unknown"}
             size="small"
@@ -968,6 +1436,43 @@ export default function ReportsPage() {
         {visibleReportKeys.length > 0 ? (
           <Tabs activeKey={activeTab} items={tabItems} onChange={(key) => setActiveTab(key as ReportKey)} />
         ) : null}
+
+        <Drawer
+          destroyOnClose
+          open={Boolean(drilldown)}
+          size="large"
+          title={drilldown?.title}
+          onClose={closeDrilldown}
+        >
+          <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+            <Typography.Text type="secondary">
+              统计周期：{dateRange[0].format("YYYY-MM-DD")} 至 {dateRange[1].format("YYYY-MM-DD")}
+              {drilldown?.filters?.length ? (
+                <>
+                  {"；筛选："}
+                  {drilldown.filters.map((filter) => `${filter.label}=${filter.value}`).join("，")}
+                </>
+              ) : null}
+            </Typography.Text>
+            {detailError ? <Alert showIcon title={detailError} type="error" /> : null}
+            <Table<DetailRow>
+              columns={drilldown ? detailColumnsByKind[drilldown.kind] : []}
+              dataSource={detailData?.items ?? []}
+              loading={detailLoading}
+              pagination={{
+                current: detailData?.page ?? drilldown?.page ?? 1,
+                onChange: changeDrilldownPage,
+                pageSize: detailData?.pageSize ?? drilldown?.pageSize ?? 20,
+                showSizeChanger: true,
+                total: detailData?.total ?? 0
+              }}
+              rowKey={detailTableRowKey}
+              scroll={{ x: 1200 }}
+              size="small"
+              locale={{ emptyText: "暂无数据" }}
+            />
+          </Space>
+        </Drawer>
       </Space>
     </ProtectedShell>
   );
@@ -1072,6 +1577,158 @@ const vehicleAssetColumns: ColumnsType<VehicleModelAssetRow> = [
   { dataIndex: "incomeAmount", render: formatYuan, title: "收入", width: 160 }
 ];
 
+const detailColumnsByKind: Record<DetailKind, ColumnsType<DetailRow>> = {
+  bills: [
+    {
+      render: (_value, record) => detailLink(orderHref(record), detailText(record, "billNo")),
+      title: "账单编号",
+      width: 160
+    },
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "orderNo")), title: "订单编号", width: 150 },
+    { render: (_value, record) => detailText(record, "customerName"), title: "客户姓名", width: 120 },
+    {
+      render: (_value, record) => labelOf(BILL_TYPE_LABELS, detailId(record, "billType")),
+      title: "账单类型",
+      width: 120
+    },
+    {
+      render: (_value, record) => formatTag(BILL_STATUS_LABELS, detailId(record, "billStatus")),
+      title: "账单状态",
+      width: 120
+    },
+    { render: (_value, record) => formatYuan(detailNumber(record, "amount")), title: "应收金额", width: 130 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "paidAmount")), title: "已收金额", width: 130 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "remainingAmount")), title: "剩余金额", width: 130 },
+    { render: (_value, record) => formatDate(detailValue(record, "dueDate")), title: "到期日", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "periodStart")), title: "账期开始", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "periodEnd")), title: "账期结束", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "createdAt")), title: "创建时间", width: 120 }
+  ],
+  collectionCases: [
+    {
+      render: (_value, record) => detailLink("/billing/collections", detailText(record, "caseNo")),
+      title: "案件编号",
+      width: 160
+    },
+    { render: (_value, record) => detailText(record, "customerName"), title: "客户姓名", width: 120 },
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "orderNo")), title: "订单编号", width: 150 },
+    {
+      render: (_value, record) => formatYuan(detailNumber(record, "totalOverdueAmount")),
+      title: "逾期总金额",
+      width: 140
+    },
+    { render: (_value, record) => formatInteger(detailNumber(record, "maxOverdueDays")), title: "最大逾期天数", width: 130 },
+    {
+      render: (_value, record) => labelOf(collectionLevelLabels, detailId(record, "collectionLevel")),
+      title: "逾期等级",
+      width: 140
+    },
+    {
+      render: (_value, record) => formatTag(collectionCaseStatusLabels, detailId(record, "caseStatus")),
+      title: "案件状态",
+      width: 120
+    },
+    { render: (_value, record) => detailText(record, "assignedTo"), title: "负责人", width: 180 },
+    { render: (_value, record) => formatDate(detailValue(record, "nextFollowUpAt")), title: "下次跟进", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "createdAt")), title: "创建时间", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "closedAt")), title: "关闭时间", width: 120 }
+  ],
+  depositLedgers: [
+    { render: (_value, record) => detailText(record, "ledgerNo"), title: "台账编号", width: 160 },
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "orderNo")), title: "订单编号", width: 150 },
+    { render: (_value, record) => detailText(record, "customerName"), title: "客户姓名", width: 120 },
+    {
+      render: (_value, record) => labelOf(DEPOSIT_TRANSACTION_TYPE_LABELS, detailId(record, "transactionType")),
+      title: "交易类型",
+      width: 120
+    },
+    {
+      render: (_value, record) => labelOf(DEPOSIT_TRANSACTION_STATUS_LABELS, detailId(record, "transactionStatus")),
+      title: "交易状态",
+      width: 120
+    },
+    { render: (_value, record) => formatYuan(detailNumber(record, "amount")), title: "金额", width: 130 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "balanceAfterAmount")), title: "交易后余额", width: 140 },
+    { render: (_value, record) => detailText(record, "relatedBillNo"), title: "关联账单", width: 150 },
+    { render: (_value, record) => formatDate(detailValue(record, "occurredAt")), title: "发生时间", width: 120 },
+    { render: (_value, record) => detailText(record, "remark"), title: "备注", width: 200 }
+  ],
+  orders: [
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "orderNo")), title: "订单编号", width: 150 },
+    { render: (_value, record) => detailText(record, "customerName"), title: "客户姓名", width: 120 },
+    { render: (_value, record) => detailText(record, "mobile"), title: "手机号", width: 130 },
+    { render: (_value, record) => labelOf(orderSourceLabels, detailId(record, "orderSource")), title: "订单来源", width: 120 },
+    {
+      render: (_value, record) => formatTag(ORDER_STATUS_LABELS, detailId(record, "orderStatus")),
+      title: "订单状态",
+      width: 140
+    },
+    { render: (_value, record) => detailText(record, "vehicleVin"), title: "车辆 VIN", width: 170 },
+    { render: (_value, record) => detailText(record, "plateNo"), title: "车牌号", width: 110 },
+    { render: (_value, record) => detailText(record, "vehicleModel"), title: "车型", width: 100 },
+    { render: (_value, record) => detailText(record, "subscriptionPlanName"), title: "订阅套餐", width: 180 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "monthlyFeeAmount")), title: "月费", width: 120 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "depositAmount")), title: "押金", width: 120 },
+    { render: (_value, record) => labelOf(STATUS_LABELS, detailId(record, "contractStatus")), title: "合同状态", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "leaseStartDate")), title: "起租时间", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "returnAt")), title: "退车时间", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "createdAt")), title: "创建时间", width: 120 }
+  ],
+  overdueBills: [
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "billNo")), title: "账单编号", width: 160 },
+    { render: (_value, record) => detailLink(orderHref(record), detailText(record, "orderNo")), title: "订单编号", width: 150 },
+    { render: (_value, record) => detailText(record, "customerName"), title: "客户姓名", width: 120 },
+    { render: (_value, record) => labelOf(BILL_TYPE_LABELS, detailId(record, "billType")), title: "账单类型", width: 120 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "remainingAmount")), title: "剩余金额", width: 130 },
+    { render: (_value, record) => formatDate(detailValue(record, "dueDate")), title: "到期日", width: 120 },
+    { render: (_value, record) => formatInteger(detailNumber(record, "overdueDays")), title: "逾期天数", width: 110 },
+    {
+      render: (_value, record) => labelOf(collectionLevelLabels, detailId(record, "collectionLevel")),
+      title: "逾期等级",
+      width: 140
+    },
+    { render: (_value, record) => detailLink("/billing/collections", detailText(record, "caseNo")), title: "案件编号", width: 150 },
+    {
+      render: (_value, record) => formatTag(collectionCaseStatusLabels, detailId(record, "caseStatus")),
+      title: "案件状态",
+      width: 120
+    }
+  ],
+  vehicles: [
+    { render: (_value, record) => detailLink("/vehicles", detailText(record, "vehicleNo")), title: "车辆编号", width: 140 },
+    { render: (_value, record) => detailLink("/vehicles", detailText(record, "vin")), title: "VIN", width: 170 },
+    { render: (_value, record) => detailText(record, "plateNo"), title: "车牌号", width: 110 },
+    { render: (_value, record) => detailText(record, "brand"), title: "品牌", width: 100 },
+    { render: (_value, record) => detailText(record, "series"), title: "车系", width: 100 },
+    { render: (_value, record) => detailText(record, "model"), title: "车型配置", width: 140 },
+    { render: (_value, record) => detailText(record, "vehicleModel"), title: "车型", width: 100 },
+    { render: (_value, record) => safeText(detailNumber(record, "batteryCapacityKwh")), title: "电池容量", width: 110 },
+    {
+      render: (_value, record) => labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, detailId(record, "batteryUsageType")),
+      title: "电池使用方式",
+      width: 140
+    },
+    { render: (_value, record) => formatTag(STATUS_LABELS, detailId(record, "vehicleStatus")), title: "车辆状态", width: 130 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "purchasePriceAmount")), title: "采购价", width: 130 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "currentSalePriceAmount")), title: "当前销售价", width: 140 },
+    { render: (_value, record) => detailLink(orderHrefFrom(record, "currentOrderId"), detailText(record, "currentOrderNo")), title: "当前订单", width: 150 },
+    { render: (_value, record) => detailText(record, "currentCustomerName"), title: "当前客户", width: 120 },
+    { render: (_value, record) => formatYuan(detailNumber(record, "totalPaidAmount")), title: "累计已收金额", width: 140 },
+    { render: (_value, record) => formatDate(detailValue(record, "latestDeliveredAt")), title: "最近交付", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "latestReturnedAt")), title: "最近退车", width: 120 },
+    { render: (_value, record) => formatDate(detailValue(record, "createdAt")), title: "创建时间", width: 120 }
+  ]
+};
+
+function orderHref(record: DetailRow) {
+  return orderHrefFrom(record, "orderId") ?? orderHrefFrom(record, "id");
+}
+
+function orderHrefFrom(record: DetailRow, key: string) {
+  const id = detailId(record, key);
+  return id ? `/orders/${id}` : null;
+}
+
 function ExportButton({ loading, onClick }: Readonly<{ loading: boolean; onClick: () => void }>) {
   return (
     <div style={{ display: "flex", justifyContent: "flex-end" }}>
@@ -1108,7 +1765,9 @@ function ReportPanel({
   return <>{children}</>;
 }
 
-function MetricGrid({ items }: Readonly<{ items: Array<{ title: string; value: string | number }> }>) {
+function MetricGrid({
+  items
+}: Readonly<{ items: Array<{ onClick?: () => void; title: string; value: string | number }> }>) {
   return (
     <div
       style={{
@@ -1118,7 +1777,21 @@ function MetricGrid({ items }: Readonly<{ items: Array<{ title: string; value: s
       }}
     >
       {items.map((item) => (
-        <Card key={item.title} size="small">
+        <Card
+          hoverable={Boolean(item.onClick)}
+          key={item.title}
+          role={item.onClick ? "button" : undefined}
+          size="small"
+          style={{ cursor: item.onClick ? "pointer" : "default" }}
+          tabIndex={item.onClick ? 0 : undefined}
+          onClick={item.onClick}
+          onKeyDown={(event) => {
+            if (item.onClick && (event.key === "Enter" || event.key === " ")) {
+              event.preventDefault();
+              item.onClick();
+            }
+          }}
+        >
           <Statistic title={item.title} value={item.value} />
         </Card>
       ))}

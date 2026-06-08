@@ -7,6 +7,9 @@ import { AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   BillDetailQueryDto,
+  AssetReturnTrialQueryDto,
+  AssetReturnTrialVehicleDetailQueryDto,
+  AssetReturnTrialVehicleListQueryDto,
   AssetProfitabilityQueryDto,
   AssetProfitabilityVehicleDetailQueryDto,
   AssetProfitabilityVehicleListQueryDto,
@@ -188,6 +191,27 @@ export class ReportController {
     @Res({ passthrough: true }) response: Response
   ) {
     return csvResponse(response, await this.reportService.exportAssetProfitabilitySummary(query));
+  }
+
+  @Get("asset-profitability/returns/summary")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  getAssetReturnTrialSummary(@Query() query: AssetReturnTrialQueryDto) {
+    return this.reportService.getAssetReturnTrialSummary(query);
+  }
+
+  @Get("asset-profitability/returns/vehicles")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  getAssetReturnTrialVehicles(@Query() query: AssetReturnTrialVehicleListQueryDto) {
+    return this.reportService.getAssetReturnTrialVehicles(query);
+  }
+
+  @Get("asset-profitability/returns/vehicles/:id")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  getAssetReturnTrialVehicleDetail(
+    @Param("id") id: string,
+    @Query() query: AssetReturnTrialVehicleDetailQueryDto
+  ) {
+    return this.reportService.getAssetReturnTrialVehicleDetail(id, query);
   }
 
   @Get("asset-profitability/vehicles")

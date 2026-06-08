@@ -13,6 +13,8 @@ import {
   EntitlementUsageStatus,
   OrderSource,
   OrderStatus,
+  VehicleAssetCostProfileStatus,
+  VehicleDepreciationMethod,
   VehicleModel,
   VehicleStatus
 } from "@prisma/client";
@@ -560,6 +562,289 @@ describe("reporting dashboard APIs", () => {
     ]);
     expect(result.damageRecords).toEqual([
       expect.objectContaining({ damageId: "damage-1", estimatedRepairAmount: 30000 })
+    ]);
+  });
+
+  it("asset return trial marks missing cost profiles and excludes deposits from operating revenue", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      bills: [
+        assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 100000n }),
+        assetBill({
+          billNo: "BILL-DAMAGE",
+          billType: BillType.DAMAGE_FEE,
+          id: "bill-damage",
+          paidAmount: 30000n
+        }),
+        assetBill({
+          billNo: "BILL-OTHER",
+          billType: BillType.OTHER,
+          id: "bill-other",
+          paidAmount: 20000n
+        }),
+        assetBill({
+          billNo: "BILL-DEPOSIT",
+          billType: BillType.DEPOSIT,
+          id: "bill-deposit",
+          paidAmount: 500000n
+        })
+      ],
+      profiles: []
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      costProfileMissing: true,
+      depositCollectedAmount: 500000,
+      operatingCostAmount: null,
+      operatingRevenueAmount: 150000,
+      trialRoa: null
+    });
+  });
+
+  it("asset return trial calculates STRAIGHT_LINE costs, net income, ROA, and annualized ROA", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma);
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      capitalCostAmount: 120000,
+      depreciationCostAmount: 1080000,
+      insuranceCostAmount: 36500,
+      maintenanceReserveCostAmount: 73000,
+      operatingCostAmount: 1321500,
+      operatingRevenueAmount: 650000,
+      otherCostAmount: 12000,
+      trialNetOperatingIncomeAmount: -671500
+    });
+    expect(result.items[0]?.trialRoa).toBeCloseTo(-671500 / 1200000);
+    expect(result.items[0]?.annualizedTrialRoa).toBeCloseTo(-671500 / 1200000);
+  });
+
+  it("asset return trial supports NONE and MANUAL depreciation methods", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      vehicles: [
+        assetReturnVehicle({
+          assetCostProfiles: [
+            assetCostProfile({
+              depreciationMethod: VehicleDepreciationMethod.NONE,
+              id: "profile-none"
+            })
+          ],
+          id: "vehicle-none",
+          vehicleNo: "VH-NONE"
+        }),
+        assetReturnVehicle({
+          assetCostProfiles: [
+            assetCostProfile({
+              depreciationMethod: VehicleDepreciationMethod.MANUAL,
+              id: "profile-manual"
+            })
+          ],
+          id: "vehicle-manual",
+          vehicleNo: "VH-MANUAL"
+        })
+      ],
+      bills: [
+        assetBill({ orderId: "order-none", paidAmount: 200000n, vehicleId: "vehicle-none" }),
+        assetBill({
+          orderId: "order-manual",
+          orderNo: "SO-MANUAL",
+          paidAmount: 200000n,
+          vehicleId: "vehicle-manual"
+        })
+      ],
+      orders: [
+        assetOrder({ id: "order-none", orderNo: "SO-NONE", vehicleId: "vehicle-none" }),
+        assetOrder({ id: "order-manual", orderNo: "SO-MANUAL", vehicleId: "vehicle-manual" })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      sortBy: "operatingCostAmount",
+      sortOrder: "asc",
+      startDate: "2026-01-01"
+    });
+    const none = result.items.find((item) => item.vehicleId === "vehicle-none");
+    const manual = result.items.find((item) => item.vehicleId === "vehicle-manual");
+
+    expect(none).toMatchObject({
+      depreciationCostAmount: 0,
+      manualDepreciationUnsupported: false
+    });
+    expect(manual).toMatchObject({
+      depreciationCostAmount: null,
+      manualDepreciationUnsupported: true,
+      operatingCostAmount: null,
+      trialRoa: null
+    });
+    expect(manual?.costUnavailableReason).toContain("MANUAL 折旧方法暂未配置手工折旧明细");
+  });
+
+  it("asset return trial returns null ROA when purchase price is zero", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      vehicles: [
+        assetReturnVehicle({
+          assetCostProfiles: [assetCostProfile({ residualValueAmount: 0n })],
+          purchasePriceAmount: 0n
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.items[0]?.trialNetOperatingIncomeAmount).not.toBeNull();
+    expect(result.items[0]?.trialRoa).toBeNull();
+    expect(result.items[0]?.annualizedTrialRoa).toBeNull();
+  });
+
+  it("asset return trial summary aggregates income, costs, counts, and ROE unavailability", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      vehicles: [
+        assetReturnVehicle(),
+        assetReturnVehicle({ assetCostProfiles: [], id: "vehicle-missing", vehicleNo: "VH-MISS" })
+      ],
+      bills: [
+        assetBill({ paidAmount: 500000n }),
+        assetBill({
+          billNo: "BILL-MISS",
+          id: "bill-miss",
+          orderId: "order-missing",
+          orderNo: "SO-MISS",
+          paidAmount: 100000n,
+          vehicleId: "vehicle-missing"
+        })
+      ],
+      orders: [
+        assetOrder({ vehicleId: "vehicle-1" }),
+        assetOrder({ id: "order-missing", orderNo: "SO-MISS", vehicleId: "vehicle-missing" })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialSummary({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result).toMatchObject({
+      costCalculatedVehicleCount: 1,
+      costUnavailableVehicleCount: 1,
+      operatingRevenueAmount: 600000,
+      rentalPaidAmount: 600000,
+      roeTrial: null,
+      vehicleCount: 2,
+      vehicleMissingCostProfileCount: 1,
+      vehicleWithCostProfileCount: 1
+    });
+    expect(result.operatingCostAmount).toBe(1321500);
+    expect(result.trialRoa).toBeCloseTo((500000 - 1321500) / 1200000);
+    expect(result.roeUnavailableReason).toContain("缺少债务 / 自有资本拆分模型");
+  });
+
+  it("asset return trial vehicle list supports pagination, sorting, and date-range cost allocation", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      vehicles: [
+        assetReturnVehicle({ id: "vehicle-low", vehicleNo: "VH-LOW" }),
+        assetReturnVehicle({ id: "vehicle-high", vehicleNo: "VH-HIGH" })
+      ],
+      bills: [
+        assetBill({ orderId: "order-low", paidAmount: 100000n, vehicleId: "vehicle-low" }),
+        assetBill({
+          orderId: "order-high",
+          orderNo: "SO-HIGH",
+          paidAmount: 900000n,
+          vehicleId: "vehicle-high"
+        })
+      ],
+      orders: [
+        assetOrder({ id: "order-low", orderNo: "SO-LOW", vehicleId: "vehicle-low" }),
+        assetOrder({ id: "order-high", orderNo: "SO-HIGH", vehicleId: "vehicle-high" })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-01-30",
+      page: 1,
+      pageSize: 1,
+      sortBy: "trialNetOperatingIncomeAmount",
+      sortOrder: "desc",
+      startDate: "2026-01-01"
+    });
+
+    expect(result).toMatchObject({ page: 1, pageSize: 1, total: 2 });
+    expect(result.items[0]?.vehicleId).toBe("vehicle-high");
+    expect(result.items[0]?.costDays).toBe(30);
+  });
+
+  it("asset return trial vehicle detail returns profile, preview, income details, cost breakdown, and ROE reason", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        paidAmount: 100000n
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([
+      { amount: 500000n, order: { vehicleId: "vehicle-1" } }
+    ]);
+
+    const result = await service.getAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.vehicle).toMatchObject({ vehicleId: "vehicle-1", vehicleNo: "VH-001" });
+    expect(result.costProfile).toMatchObject({
+      depreciationMethod: VehicleDepreciationMethod.STRAIGHT_LINE,
+      residualValueAmount: 120000
+    });
+    expect(result.costPreview).toMatchObject({
+      monthlyDepreciationAmount: 90000,
+      monthlyCapitalCostAmount: 10000
+    });
+    expect(result.incomeBreakdown).toMatchObject({
+      depositIncludedInOperatingRevenue: false,
+      operatingRevenueAmount: 600000
+    });
+    expect(result.costBreakdown).toMatchObject({
+      capitalCostAmount: 120000,
+      depreciationCostAmount: 1080000,
+      operatingCostAmount: 1321500
+    });
+    expect(result.returns).toMatchObject({
+      roeTrial: null,
+      roeUnavailableReason: "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。"
+    });
+    expect(result.bills).toEqual([
+      expect.objectContaining({
+        billType: BillType.MONTHLY_RENT,
+        includedInOperatingRevenue: true
+      }),
+      expect.objectContaining({
+        billType: BillType.DAMAGE_FEE,
+        includedInOperatingRevenue: true
+      })
     ]);
   });
 
@@ -1972,6 +2257,50 @@ function mockAssetProfitability(prisma: ReportPrismaMock) {
   ]);
 }
 
+function mockAssetReturnTrial(
+  prisma: ReportPrismaMock,
+  overrides: {
+    bills?: Array<Record<string, unknown>>;
+    orders?: Array<Record<string, unknown>>;
+    profiles?: Array<Record<string, unknown>>;
+    vehicles?: Array<Record<string, unknown>>;
+  } = {}
+) {
+  const vehicles = overrides.vehicles ?? [
+    assetReturnVehicle({
+      assetCostProfiles: overrides.profiles ?? [assetCostProfile()]
+    })
+  ];
+  prisma.vehicle.findMany.mockResolvedValue(vehicles);
+  prisma.subscriptionOrder.findMany.mockResolvedValue(overrides.orders ?? [assetOrder()]);
+  prisma.receivableBill.findMany.mockResolvedValue(
+    overrides.bills ?? [
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        paidAmount: 100000n
+      }),
+      assetBill({
+        billNo: "BILL-OTHER",
+        billType: BillType.OTHER,
+        id: "bill-other",
+        paidAmount: 50000n
+      }),
+      assetBill({
+        billNo: "BILL-DEPOSIT",
+        billType: BillType.DEPOSIT,
+        id: "bill-deposit",
+        paidAmount: 800000n
+      })
+    ]
+  );
+  prisma.depositLedger.findMany.mockResolvedValue([
+    { amount: 500000n, order: { vehicleId: "vehicle-1" } }
+  ]);
+}
+
 function assetVehicle(overrides: Record<string, unknown> = {}) {
   return {
     batteryCapacityKwh: decimalLike(75),
@@ -1995,12 +2324,60 @@ function assetVehicle(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function assetReturnVehicle(overrides: Record<string, unknown> = {}) {
+  return {
+    ...assetVehicle({
+      currentSalePriceAmount: 1000000n,
+      purchasePriceAmount: 1200000n
+    }),
+    assetCostProfiles: [assetCostProfile()],
+    ...overrides
+  };
+}
+
 function assetVehicleDetail(overrides: Record<string, unknown> = {}) {
   return {
     ...assetVehicle(),
     deliveries: [],
     returnDamages: [],
     returns: [],
+    ...overrides
+  };
+}
+
+function assetReturnVehicleDetail(overrides: Record<string, unknown> = {}) {
+  return {
+    ...assetVehicleDetail({
+      currentSalePriceAmount: 1000000n,
+      purchasePriceAmount: 1200000n
+    }),
+    assetCostProfiles: [assetCostProfile()],
+    ...overrides
+  };
+}
+
+function assetCostProfile(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+
+  return {
+    annualInsuranceCostAmount: 36500n,
+    annualMaintenanceReserveAmount: 73000n,
+    capitalCostRateBps: 1000,
+    createdAt: now,
+    createdBy: "user-1",
+    deletedAt: null,
+    depreciationMethod: VehicleDepreciationMethod.STRAIGHT_LINE,
+    depreciationStartDate: new Date("2026-01-01T00:00:00.000Z"),
+    id: "asset-cost-profile-1",
+    otherMonthlyCostAmount: 1000n,
+    profileStatus: VehicleAssetCostProfileStatus.ACTIVE,
+    remark: "trial profile",
+    residualValueAmount: 120000n,
+    snapshot: null,
+    updatedAt: now,
+    updatedBy: "user-1",
+    usefulLifeMonths: 12,
+    vehicleId: "vehicle-1",
     ...overrides
   };
 }

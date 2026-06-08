@@ -15,11 +15,17 @@ import {
   OrderSource,
   OrderStatus,
   Prisma,
+  VehicleAssetCostProfileStatus,
   VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import {
+  buildVehicleAssetCostProfilePreview,
+  buildVehicleAssetPeriodCost,
+  MANUAL_DEPRECIATION_UNSUPPORTED_REASON
+} from "../vehicle/asset-cost-profile-calculation";
 import {
   compactDate,
   CsvRow,
@@ -34,6 +40,9 @@ import {
   AssetProfitabilityQueryDto,
   AssetProfitabilityVehicleDetailQueryDto,
   AssetProfitabilityVehicleListQueryDto,
+  AssetReturnTrialQueryDto,
+  AssetReturnTrialVehicleDetailQueryDto,
+  AssetReturnTrialVehicleListQueryDto,
   BillDetailQueryDto,
   CollectionCaseDetailQueryDto,
   DepositLedgerDetailQueryDto,
@@ -603,6 +612,167 @@ export class ReportService {
         remark: history.remark,
         createdAt: history.createdAt
       }))
+    };
+  }
+
+  async getAssetReturnTrialSummary(query: AssetReturnTrialQueryDto) {
+    const { dateRange, rows } = await this.buildAssetReturnTrialVehicleRows(query);
+    const costCalculatedRows = rows.filter((row) => row.operatingCostAmount !== null);
+    const roaRows = costCalculatedRows.filter(
+      (row) => row.purchasePriceAmount > 0 && row.trialNetOperatingIncomeAmount !== null
+    );
+    const trialNetOperatingIncomeAmount =
+      costCalculatedRows.length === 0
+        ? null
+        : sumNumbers(
+            costCalculatedRows.map((row) => row.trialNetOperatingIncomeAmount ?? 0)
+          );
+    const roaPurchasePriceAmount = sumNumbers(roaRows.map((row) => row.purchasePriceAmount));
+    const trialRoa =
+      trialNetOperatingIncomeAmount === null || roaPurchasePriceAmount <= 0
+        ? null
+        : trialNetOperatingIncomeAmount / roaPurchasePriceAmount;
+    const analysisDays = inclusiveBusinessDays(dateRange.startDate, dateRange.endDate);
+
+    return {
+      annualizedTrialRoa:
+        trialRoa === null || analysisDays <= 0 ? null : (trialRoa * 365) / analysisDays,
+      capitalCostAmount: sumNullable(costCalculatedRows.map((row) => row.capitalCostAmount)),
+      costCalculatedVehicleCount: costCalculatedRows.length,
+      costUnavailableVehicleCount: rows.length - costCalculatedRows.length,
+      currentSalePriceAmount: sumNumbers(rows.map((row) => row.currentSalePriceAmount)),
+      damagePaidAmount: sumNumbers(rows.map((row) => row.damagePaidAmount)),
+      dateRange,
+      depositCollectedAmount: sumNumbers(rows.map((row) => row.depositCollectedAmount)),
+      depreciationCostAmount: sumNullable(
+        costCalculatedRows.map((row) => row.depreciationCostAmount)
+      ),
+      insuranceCostAmount: sumNullable(costCalculatedRows.map((row) => row.insuranceCostAmount)),
+      maintenanceReserveCostAmount: sumNullable(
+        costCalculatedRows.map((row) => row.maintenanceReserveCostAmount)
+      ),
+      operatingCostAmount: sumNullable(costCalculatedRows.map((row) => row.operatingCostAmount)),
+      operatingRevenueAmount: sumNumbers(rows.map((row) => row.operatingRevenueAmount)),
+      otherCostAmount: sumNullable(costCalculatedRows.map((row) => row.otherCostAmount)),
+      otherPaidAmount: sumNumbers(rows.map((row) => row.otherPaidAmount)),
+      purchasePriceAmount: sumNumbers(rows.map((row) => row.purchasePriceAmount)),
+      rentalPaidAmount: sumNumbers(rows.map((row) => row.rentalPaidAmount)),
+      roeTrial: null,
+      roeUnavailableReason: ROE_UNAVAILABLE_REASON,
+      trialNetOperatingIncomeAmount,
+      trialRoa,
+      vehicleCount: rows.length,
+      vehicleMissingCostProfileCount: rows.filter((row) => row.costProfileMissing).length,
+      vehicleWithCostProfileCount: rows.filter((row) => !row.costProfileMissing).length
+    };
+  }
+
+  async getAssetReturnTrialVehicles(query: AssetReturnTrialVehicleListQueryDto) {
+    const pagination = resolvePagination(query);
+    const { rows } = await this.buildAssetReturnTrialVehicleRows(query);
+
+    return pagedResult(
+      rows.slice(pagination.skip, pagination.skip + pagination.pageSize),
+      rows.length,
+      pagination
+    );
+  }
+
+  async getAssetReturnTrialVehicleDetail(
+    id: string,
+    query: AssetReturnTrialVehicleDetailQueryDto
+  ) {
+    const range = resolveReportDateRange(query);
+    const vehicle = await this.prisma.vehicle.findFirst({
+      select: assetReturnTrialVehicleDetailSelect,
+      where: { ...assetProfitabilityVehicleWhere(query), id }
+    });
+
+    if (!vehicle) {
+      throw new NotFoundException("Vehicle not found.");
+    }
+
+    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics([vehicle], range);
+    const metrics = metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics();
+    const row = assetReturnTrialVehicleRow(vehicle, metrics, range);
+    const profile = activeCostProfileFor(vehicle);
+
+    return {
+      bills: metrics.bills.map((bill) => ({
+        amount: toNumber(bill.amount),
+        billId: bill.id,
+        billNo: bill.billNo,
+        billStatus: bill.billStatus,
+        billType: bill.billType,
+        includedInOperatingRevenue: operatingRevenueBillTypes.includes(bill.billType),
+        orderId: bill.orderId,
+        orderNo: bill.order.orderNo,
+        paidAmount: toNumber(bill.paidAmount),
+        periodEnd: bill.billPeriodEnd,
+        periodStart: bill.billPeriodStart,
+        remainingAmount: toNumber(bill.remainingAmount)
+      })),
+      costBreakdown: {
+        capitalCostAmount: row.capitalCostAmount,
+        costDays: row.costDays,
+        costProfileMissing: row.costProfileMissing,
+        costUnavailableReason: row.costUnavailableReason,
+        depreciationCostAmount: row.depreciationCostAmount,
+        insuranceCostAmount: row.insuranceCostAmount,
+        maintenanceReserveCostAmount: row.maintenanceReserveCostAmount,
+        manualDepreciationUnsupported: row.manualDepreciationUnsupported,
+        operatingCostAmount: row.operatingCostAmount,
+        otherCostAmount: row.otherCostAmount
+      },
+      costPreview: profile ? buildVehicleAssetCostProfilePreview(vehicle, profile) : null,
+      costProfile: profile ? assetCostProfileView(profile) : null,
+      dateRange: range.output,
+      incomeBreakdown: {
+        damagePaidAmount: row.damagePaidAmount,
+        depositCollectedAmount: row.depositCollectedAmount,
+        depositIncludedInOperatingRevenue: false,
+        operatingRevenueAmount: row.operatingRevenueAmount,
+        otherPaidAmount: row.otherPaidAmount,
+        rentalPaidAmount: row.rentalPaidAmount
+      },
+      orderCycles: metrics.orders.map((order) => {
+        const orderMetrics =
+          metrics.orderMetricsById.get(order.id) ?? emptyOrderProfitabilityMetrics();
+
+        return {
+          customerName: order.customer.name,
+          damagePaidAmount: orderMetrics.damagePaidAmount,
+          deliveredAt: order.actualDeliveryAt,
+          leasedDays: leasedDaysForOrder(order, range),
+          monthlyFeeAmount: toNumber(order.monthlyFeeAmount),
+          orderId: order.id,
+          orderNo: order.orderNo,
+          orderStatus: order.orderStatus,
+          otherPaidAmount: orderMetrics.otherPaidAmount,
+          rentalPaidAmount: orderMetrics.rentalPaidAmount,
+          returnedAt: order.actualReturnAt
+        };
+      }),
+      returns: {
+        annualizedTrialRoa: row.annualizedTrialRoa,
+        roeTrial: row.roeTrial,
+        roeUnavailableReason: row.roeUnavailableReason,
+        trialNetOperatingIncomeAmount: row.trialNetOperatingIncomeAmount,
+        trialRoa: row.trialRoa
+      },
+      vehicle: {
+        brand: vehicle.brand,
+        currentSalePriceAmount: row.currentSalePriceAmount,
+        model: vehicle.model,
+        plateNo: vehicle.plateNo,
+        purchasePriceAmount: row.purchasePriceAmount,
+        series: vehicle.series,
+        vehicleId: vehicle.id,
+        vehicleModel: vehicle.vehicleModel,
+        vehicleNo: vehicle.vehicleNo,
+        vehicleStatus: vehicle.status,
+        vin: vehicle.vin
+      }
     };
   }
 
@@ -2003,6 +2173,34 @@ export class ReportService {
     };
   }
 
+  private async buildAssetReturnTrialVehicleRows(
+    query: AssetReturnTrialQueryDto & Partial<Pick<AssetReturnTrialVehicleListQueryDto, "sortBy" | "sortOrder">>
+  ) {
+    const range = resolveReportDateRange(query);
+    const vehicles = await this.prisma.vehicle.findMany({
+      orderBy: { createdAt: "desc" },
+      select: assetReturnTrialVehicleSelect,
+      where: assetProfitabilityVehicleWhere(query)
+    });
+    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
+    const rows = vehicles.map((vehicle) =>
+      assetReturnTrialVehicleRow(
+        vehicle,
+        metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics(),
+        range
+      )
+    );
+
+    if (query.sortBy) {
+      rows.sort(assetReturnTrialComparator(query.sortBy, query.sortOrder ?? "desc"));
+    }
+
+    return {
+      dateRange: range.output,
+      rows
+    };
+  }
+
   private async buildAssetProfitabilityMetrics(
     vehicles: AssetProfitabilityVehicleRecord[],
     range: ReturnType<typeof resolveReportDateRange>
@@ -2668,6 +2866,47 @@ const assetProfitabilityVehicleDetailSelect = {
   }
 } satisfies Prisma.VehicleSelect;
 
+const assetCostProfileSelect = {
+  annualInsuranceCostAmount: true,
+  annualMaintenanceReserveAmount: true,
+  capitalCostRateBps: true,
+  createdAt: true,
+  createdBy: true,
+  deletedAt: true,
+  depreciationMethod: true,
+  depreciationStartDate: true,
+  id: true,
+  otherMonthlyCostAmount: true,
+  profileStatus: true,
+  remark: true,
+  residualValueAmount: true,
+  snapshot: true,
+  updatedAt: true,
+  updatedBy: true,
+  usefulLifeMonths: true,
+  vehicleId: true
+} satisfies Prisma.VehicleAssetCostProfileSelect;
+
+const activeAssetCostProfileRelationSelect = {
+  orderBy: { updatedAt: "desc" as const },
+  select: assetCostProfileSelect,
+  take: 1,
+  where: {
+    deletedAt: null,
+    profileStatus: VehicleAssetCostProfileStatus.ACTIVE
+  }
+};
+
+const assetReturnTrialVehicleSelect = {
+  ...assetProfitabilityVehicleSelect,
+  assetCostProfiles: activeAssetCostProfileRelationSelect
+} satisfies Prisma.VehicleSelect;
+
+const assetReturnTrialVehicleDetailSelect = {
+  ...assetProfitabilityVehicleDetailSelect,
+  assetCostProfiles: activeAssetCostProfileRelationSelect
+} satisfies Prisma.VehicleSelect;
+
 const assetProfitabilityOrderSelect = {
   actualDeliveryAt: true,
   actualReturnAt: true,
@@ -2702,6 +2941,10 @@ type AssetProfitabilityVehicleRecord = Prisma.VehicleGetPayload<{
 type AssetProfitabilityVehicleDetailRecord = Prisma.VehicleGetPayload<{
   select: typeof assetProfitabilityVehicleDetailSelect;
 }>;
+type AssetReturnTrialVehicleRecord = Prisma.VehicleGetPayload<{
+  select: typeof assetReturnTrialVehicleSelect;
+}>;
+type AssetCostProfileRecord = AssetReturnTrialVehicleRecord["assetCostProfiles"][number];
 type AssetProfitabilityOrderRecord = Prisma.SubscriptionOrderGetPayload<{
   select: typeof assetProfitabilityOrderSelect;
 }>;
@@ -2709,6 +2952,16 @@ type AssetProfitabilityBillRecord = Prisma.ReceivableBillGetPayload<{
   select: typeof assetProfitabilityBillSelect;
 }>;
 type AssetProfitabilitySortField = NonNullable<AssetProfitabilityVehicleListQueryDto["sortBy"]>;
+type AssetReturnTrialSortField = NonNullable<AssetReturnTrialVehicleListQueryDto["sortBy"]>;
+
+const ROE_UNAVAILABLE_REASON = "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。";
+const MISSING_COST_PROFILE_REASON = "缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。";
+const operatingRevenueBillTypes: BillType[] = [
+  BillType.FIRST_MONTHLY_FEE,
+  BillType.MONTHLY_RENT,
+  BillType.DAMAGE_FEE,
+  BillType.OTHER
+];
 
 type OrderProfitabilityMetrics = {
   damagePaidAmount: number;
@@ -2785,6 +3038,115 @@ function assetProfitabilityVehicleRow(
   };
 }
 
+function assetReturnTrialVehicleRow(
+  vehicle: AssetReturnTrialVehicleRecord,
+  metrics: AssetProfitabilityMetrics,
+  range: ReturnType<typeof resolveReportDateRange>
+) {
+  const baseRow = assetProfitabilityVehicleRow(vehicle, metrics);
+  const profile = activeCostProfileFor(vehicle);
+  const operatingRevenueAmount =
+    baseRow.rentalPaidAmount + baseRow.damagePaidAmount + baseRow.otherPaidAmount;
+  const analysisDays = inclusiveBusinessDays(range.output.startDate, range.output.endDate);
+
+  if (!profile) {
+    return {
+      ...baseRow,
+      annualizedTrialRoa: null,
+      capitalCostAmount: null,
+      costDays: 0,
+      costProfileMissing: true,
+      costProfileStatus: null,
+      costUnavailableReason: MISSING_COST_PROFILE_REASON,
+      depreciationCostAmount: null,
+      insuranceCostAmount: null,
+      maintenanceReserveCostAmount: null,
+      manualDepreciationUnsupported: false,
+      operatingCostAmount: null,
+      operatingRevenueAmount,
+      otherCostAmount: null,
+      roeTrial: null,
+      roeUnavailableReason: ROE_UNAVAILABLE_REASON,
+      trialNetOperatingIncomeAmount: null,
+      trialRoa: null
+    };
+  }
+
+  const costDays = costDaysForProfile(profile, range);
+  const periodCost = buildVehicleAssetPeriodCost(vehicle, profile, costDays);
+  const trialNetOperatingIncomeAmount =
+    periodCost.operatingCostAmount === null
+      ? null
+      : operatingRevenueAmount - periodCost.operatingCostAmount;
+  const trialRoa =
+    trialNetOperatingIncomeAmount === null || baseRow.purchasePriceAmount <= 0
+      ? null
+      : trialNetOperatingIncomeAmount / baseRow.purchasePriceAmount;
+
+  return {
+    ...baseRow,
+    ...periodCost,
+    annualizedTrialRoa:
+      trialRoa === null || analysisDays <= 0 ? null : (trialRoa * 365) / analysisDays,
+    costDays,
+    costProfileMissing: false,
+    costProfileStatus: profile.profileStatus,
+    costUnavailableReason: periodCost.manualDepreciationUnsupported
+      ? MANUAL_DEPRECIATION_UNSUPPORTED_REASON
+      : null,
+    operatingRevenueAmount,
+    roeTrial: null,
+    roeUnavailableReason: ROE_UNAVAILABLE_REASON,
+    trialNetOperatingIncomeAmount,
+    trialRoa
+  };
+}
+
+function activeCostProfileFor(
+  vehicle: Pick<AssetReturnTrialVehicleRecord, "assetCostProfiles">
+): AssetCostProfileRecord | null {
+  return vehicle.assetCostProfiles[0] ?? null;
+}
+
+function costDaysForProfile(
+  profile: Pick<AssetCostProfileRecord, "depreciationStartDate">,
+  range: ReturnType<typeof resolveReportDateRange>
+) {
+  const costStart = maxBusinessDate(
+    range.output.startDate,
+    formatDateOnly(profile.depreciationStartDate)
+  );
+
+  if (costStart > range.output.endDate) {
+    return 0;
+  }
+
+  return inclusiveBusinessDays(costStart, range.output.endDate);
+}
+
+function assetCostProfileView(profile: AssetCostProfileRecord) {
+  return {
+    annualInsuranceCostAmount: toNullableNumber(profile.annualInsuranceCostAmount),
+    annualMaintenanceReserveAmount: toNullableNumber(profile.annualMaintenanceReserveAmount),
+    capitalCostRateBps: profile.capitalCostRateBps,
+    createdAt: profile.createdAt,
+    createdBy: profile.createdBy,
+    deletedAt: profile.deletedAt,
+    depreciationMethod: profile.depreciationMethod,
+    depreciationStartDate: profile.depreciationStartDate,
+    id: profile.id,
+    otherMonthlyCostAmount: toNullableNumber(profile.otherMonthlyCostAmount),
+    profileStatus: profile.profileStatus,
+    remark: profile.remark,
+    residualValueAmount: Number(profile.residualValueAmount),
+    snapshot: profile.snapshot,
+    updatedAt: profile.updatedAt,
+    updatedBy: profile.updatedBy,
+    usefulLifeMonths: profile.usefulLifeMonths,
+    vehicleId: profile.vehicleId
+  };
+}
+
 function emptyAssetProfitabilityMetrics(): AssetProfitabilityMetrics {
   return {
     bills: [],
@@ -2830,6 +3192,24 @@ function assetProfitabilityComparator(field: AssetProfitabilitySortField, order:
   return (
     left: ReturnType<typeof assetProfitabilityVehicleRow>,
     right: ReturnType<typeof assetProfitabilityVehicleRow>
+  ) => {
+    const leftValue = sortableNumber(left[field]);
+    const rightValue = sortableNumber(right[field]);
+
+    if (leftValue === rightValue) {
+      return left.vehicleNo.localeCompare(right.vehicleNo);
+    }
+
+    return (leftValue - rightValue) * direction;
+  };
+}
+
+function assetReturnTrialComparator(field: AssetReturnTrialSortField, order: "asc" | "desc") {
+  const direction = order === "asc" ? 1 : -1;
+
+  return (
+    left: ReturnType<typeof assetReturnTrialVehicleRow>,
+    right: ReturnType<typeof assetReturnTrialVehicleRow>
   ) => {
     const leftValue = sortableNumber(left[field]);
     const rightValue = sortableNumber(right[field]);
@@ -2992,6 +3372,10 @@ function toNumber(value: bigint | number | null | undefined) {
   return value === null || value === undefined ? 0 : Number(value);
 }
 
+function toNullableNumber(value: bigint | number | null | undefined) {
+  return value === null || value === undefined ? null : Number(value);
+}
+
 function amountToNumber(value: unknown) {
   return decimalToNumber(value) ?? 0;
 }
@@ -3016,6 +3400,13 @@ function decimalToNumber(value: unknown) {
 
 function sumNumbers(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0);
+}
+
+function sumNullable(values: Array<number | null>) {
+  if (values.length === 0 || values.some((value) => value === null)) {
+    return null;
+  }
+  return sumNumbers(values as number[]);
 }
 
 function average(values: number[]) {

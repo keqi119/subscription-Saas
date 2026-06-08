@@ -582,6 +582,21 @@ enum VehicleSalePriceReviewType {
   @@map("vehicle_sale_price_review_type")
 }
 
+enum VehicleAssetCostProfileStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("vehicle_asset_cost_profile_status")
+}
+
+enum VehicleDepreciationMethod {
+  STRAIGHT_LINE
+  NONE
+  MANUAL
+
+  @@map("vehicle_depreciation_method")
+}
+
 enum BenefitType {
   WASH_CAR
   CAR_SWAP
@@ -1389,6 +1404,7 @@ model Vehicle {
   returns                       VehicleReturn[]
   returnDamages                 VehicleReturnDamage[]
   salePriceHistories            VehicleSalePriceHistory[]
+  assetCostProfiles             VehicleAssetCostProfile[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                   @map("created_by") @db.Uuid
@@ -1422,6 +1438,34 @@ model VehicleSalePriceHistory {
   @@index([reviewType])
   @@index([effectiveFrom, effectiveTo])
   @@map("vehicle_sale_price_history")
+}
+
+model VehicleAssetCostProfile {
+  id                             String                        @id @default(uuid()) @db.Uuid
+  vehicleId                      String                        @map("vehicle_id") @db.Uuid
+  vehicle                        Vehicle                       @relation(fields: [vehicleId], references: [id])
+  profileStatus                  VehicleAssetCostProfileStatus @default(ACTIVE) @map("profile_status")
+  depreciationMethod             VehicleDepreciationMethod     @map("depreciation_method")
+  depreciationStartDate          DateTime                      @map("depreciation_start_date") @db.Date
+  usefulLifeMonths               Int                           @map("useful_life_months")
+  residualValueAmount            BigInt                        @map("residual_value_amount")
+  capitalCostRateBps             Int?                          @map("capital_cost_rate_bps")
+  annualInsuranceCostAmount      BigInt?                       @map("annual_insurance_cost_amount")
+  annualMaintenanceReserveAmount BigInt?                       @map("annual_maintenance_reserve_amount")
+  otherMonthlyCostAmount         BigInt?                       @map("other_monthly_cost_amount")
+  remark                         String?                       @db.Text
+  snapshot                       Json?
+  createdAt                      DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                      DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                      String?                       @map("created_by") @db.Uuid
+  updatedBy                      String?                       @map("updated_by") @db.Uuid
+  deletedAt                      DateTime?                     @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([vehicleId, profileStatus])
+  @@index([profileStatus])
+  @@index([deletedAt])
+  @@map("vehicle_asset_cost_profile")
 }
 
 model SubscriptionQuote {

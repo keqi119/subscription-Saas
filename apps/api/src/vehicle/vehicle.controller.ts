@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Put, Req, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
@@ -9,7 +9,8 @@ import {
   InitializeSalePriceDto,
   ReviewSalePriceDto,
   UpdateVehicleDto,
-  UpdateVehicleStatusDto
+  UpdateVehicleStatusDto,
+  UpsertVehicleAssetCostProfileDto
 } from "./dto/vehicle.dto";
 import { VehicleService } from "./vehicle.service";
 
@@ -46,6 +47,28 @@ export class VehicleController {
   @RequirePermissions(PermissionCode.VEHICLE_HISTORY_VIEW)
   listSalePriceHistory(@Param("id") id: string) {
     return this.vehicleService.listSalePriceHistory(id);
+  }
+
+  @Get("vehicles/:id/asset-cost-profile")
+  @RequireAnyPermissions(PermissionCode.VEHICLE_VIEW, PermissionCode.REPORT_ASSET)
+  getAssetCostProfile(@Param("id") id: string) {
+    return this.vehicleService.getAssetCostProfile(id);
+  }
+
+  @Put("vehicles/:id/asset-cost-profile")
+  @RequirePermissions(PermissionCode.VEHICLE_MANAGE)
+  upsertAssetCostProfile(
+    @Param("id") id: string,
+    @Body() dto: UpsertVehicleAssetCostProfileDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleService.upsertAssetCostProfile(id, dto, request.user, requestContext(request));
+  }
+
+  @Get("vehicles/:id/asset-cost-profile/preview")
+  @RequireAnyPermissions(PermissionCode.VEHICLE_VIEW, PermissionCode.REPORT_ASSET)
+  getAssetCostProfilePreview(@Param("id") id: string) {
+    return this.vehicleService.getAssetCostProfilePreview(id);
   }
 
   @Get("vehicles/:id")

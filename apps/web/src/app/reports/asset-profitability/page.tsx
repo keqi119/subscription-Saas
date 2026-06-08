@@ -406,9 +406,15 @@ const lifecycleNodeLabels: Record<string, string> = {
 
 const defaultDateRange = (): [Dayjs, Dayjs] => [dayjs().subtract(29, "day"), dayjs()];
 
-function exportDefaultFilename(kind: "detail" | "summary" | "vehicles", dateRange: [Dayjs, Dayjs]) {
+function exportDefaultFilename(
+  kind: "detail" | "returnDetail" | "returnSummary" | "returnVehicles" | "summary" | "vehicles",
+  dateRange: [Dayjs, Dayjs]
+) {
   const prefixByKind = {
     detail: "asset-profitability-vehicle-detail",
+    returnDetail: "asset-return-trial-vehicle-detail",
+    returnSummary: "asset-return-trial-summary",
+    returnVehicles: "asset-return-trial-vehicles",
     summary: "asset-profitability-summary",
     vehicles: "asset-profitability-vehicles"
   };
@@ -470,6 +476,9 @@ export default function AssetProfitabilityPage() {
   const [returnDetail, setReturnDetail] = useState<AssetReturnTrialVehicleDetail | null>(null);
   const [returnDetailError, setReturnDetailError] = useState<string | null>(null);
   const [returnDetailLoading, setReturnDetailLoading] = useState(false);
+  const [returnSummaryExporting, setReturnSummaryExporting] = useState(false);
+  const [returnVehiclesExporting, setReturnVehiclesExporting] = useState(false);
+  const [returnDetailExporting, setReturnDetailExporting] = useState(false);
 
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
   const canViewAssetReport = permissions.has("report:asset");
@@ -687,6 +696,67 @@ export default function AssetProfitabilityPage() {
       setDetailExporting(false);
     }
   }, [canViewAssetReport, dateRange, message, selectedVehicle]);
+
+  const exportReturnSummaryCsv = useCallback(async () => {
+    if (!canViewAssetReport) {
+      return;
+    }
+
+    setReturnSummaryExporting(true);
+    try {
+      await downloadCsv(
+        `/reports/asset-profitability/returns/summary/export${buildQuery(baseQuery())}`,
+        exportDefaultFilename("returnSummary", dateRange)
+      );
+    } catch (error) {
+      void message.error(normalizeErrorMessage(error));
+    } finally {
+      setReturnSummaryExporting(false);
+    }
+  }, [baseQuery, canViewAssetReport, dateRange, message]);
+
+  const exportReturnVehiclesCsv = useCallback(async () => {
+    if (!canViewAssetReport) {
+      return;
+    }
+
+    setReturnVehiclesExporting(true);
+    try {
+      await downloadCsv(
+        `/reports/asset-profitability/returns/vehicles/export${buildQuery({
+          ...baseQuery(),
+          sortBy: returnSortBy,
+          sortOrder: returnSortOrder
+        })}`,
+        exportDefaultFilename("returnVehicles", dateRange)
+      );
+    } catch (error) {
+      void message.error(normalizeErrorMessage(error));
+    } finally {
+      setReturnVehiclesExporting(false);
+    }
+  }, [baseQuery, canViewAssetReport, dateRange, message, returnSortBy, returnSortOrder]);
+
+  const exportReturnVehicleDetailCsv = useCallback(async () => {
+    if (!canViewAssetReport || !selectedReturnVehicle) {
+      return;
+    }
+
+    setReturnDetailExporting(true);
+    try {
+      await downloadCsv(
+        `/reports/asset-profitability/returns/vehicles/${selectedReturnVehicle.vehicleId}/export${buildQuery({
+          endDate: dateRange[1].format("YYYY-MM-DD"),
+          startDate: dateRange[0].format("YYYY-MM-DD")
+        })}`,
+        exportDefaultFilename("returnDetail", dateRange)
+      );
+    } catch (error) {
+      void message.error(normalizeErrorMessage(error));
+    } finally {
+      setReturnDetailExporting(false);
+    }
+  }, [canViewAssetReport, dateRange, message, selectedReturnVehicle]);
 
   const openDetail = useCallback(async (record: AssetProfitabilityVehicleRow) => {
     if (!canViewAssetReport) {
@@ -1050,6 +1120,22 @@ export default function AssetProfitabilityPage() {
                   type="info"
                   description="本页为经营分析试算口径，不构成会计凭证或正式财务报表。试算 ROA = 试算经营净收益 / 车辆采购价；年化试算 ROA 基于查询天数折算；押金不计入经营收入；ROE 当前缺少债务 / 自有资本拆分模型，暂不输出正式值。"
                 />
+                <Space wrap>
+                  <Button
+                    icon={<DownloadOutlined />}
+                    loading={returnSummaryExporting}
+                    onClick={() => void exportReturnSummaryCsv()}
+                  >
+                    导出收益汇总 CSV
+                  </Button>
+                  <Button
+                    icon={<DownloadOutlined />}
+                    loading={returnVehiclesExporting}
+                    onClick={() => void exportReturnVehiclesCsv()}
+                  >
+                    导出车辆收益列表 CSV
+                  </Button>
+                </Space>
                 {returnSummaryError ? (
                   <Alert showIcon title={returnSummaryError} type="error" />
                 ) : null}
@@ -1125,6 +1211,17 @@ export default function AssetProfitabilityPage() {
 
       <Drawer
         destroyOnClose
+        extra={
+          selectedReturnVehicle ? (
+            <Button
+              icon={<DownloadOutlined />}
+              loading={returnDetailExporting}
+              onClick={() => void exportReturnVehicleDetailCsv()}
+            >
+              导出单车收益详情 CSV
+            </Button>
+          ) : null
+        }
         onClose={() => setReturnDetailOpen(false)}
         open={returnDetailOpen}
         size="min(1120px, calc(100vw - 32px))"

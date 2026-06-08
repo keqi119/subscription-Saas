@@ -123,6 +123,17 @@ export const vehicleStatusLabels: Record<string, string> = {
   SOLD: "已出售"
 };
 
+export const vehicleAssetCostProfileStatusLabels: Record<string, string> = {
+  ACTIVE: "生效中",
+  INACTIVE: "已停用"
+};
+
+export const vehicleDepreciationMethodLabels: Record<string, string> = {
+  MANUAL: "手工口径",
+  NONE: "不计提",
+  STRAIGHT_LINE: "直线法"
+};
+
 export const salePriceStatusLabels: Record<string, string> = {
   EFFECTIVE: "生效中",
   EXPIRED: "已过期",

@@ -12,6 +12,7 @@
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma",
     "prisma:seed": "node prisma/seed.mjs",
+    "prisma:seed:verify": "node prisma/verify-seed-baseline.mjs",
     "prisma:validate": "prisma validate --schema prisma/schema.prisma"
   },
   "dependencies": {

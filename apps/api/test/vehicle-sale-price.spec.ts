@@ -6,7 +6,10 @@ import {
   Prisma,
   SalePriceStatus,
   Vehicle,
+  VehicleAssetCostProfile,
+  VehicleAssetCostProfileStatus,
   VehicleBatteryUsageType,
+  VehicleDepreciationMethod,
   VehicleModel,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
@@ -643,6 +646,243 @@ describe("VehicleService sale price baseline", () => {
   });
 });
 
+describe("VehicleService asset cost profile", () => {
+  it("returns null when a vehicle has no active asset cost profile", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle());
+    prisma.vehicleAssetCostProfile.findFirst.mockResolvedValueOnce(null);
+
+    await expect(service.getAssetCostProfile("vehicle-1")).resolves.toBeNull();
+  });
+
+  it("returns null preview when a vehicle has no active asset cost profile", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle());
+    prisma.vehicleAssetCostProfile.findFirst.mockResolvedValueOnce(null);
+
+    await expect(service.getAssetCostProfilePreview("vehicle-1")).resolves.toEqual({
+      preview: null,
+      profile: null
+    });
+  });
+
+  it("creates an ACTIVE asset cost profile with default depreciation start date and audit log", async () => {
+    const { auditService, prisma, service } = makeService();
+    const vehicle = makeVehicle({
+      salePriceHistories: [
+        makeHistory({ effectiveFrom: new Date("2026-06-01T00:00:00.000Z") }),
+        makeHistory({ effectiveFrom: new Date("2026-05-20T00:00:00.000Z"), id: "history-0" })
+      ]
+    });
+    const profile = makeAssetCostProfile({
+      depreciationStartDate: new Date("2026-05-20T00:00:00.000Z"),
+      residualValueAmount: 6000000n
+    });
+
+    prisma.vehicle.findUnique.mockResolvedValueOnce(vehicle);
+    prisma.vehicleAssetCostProfile.findFirst.mockResolvedValueOnce(null);
+    prisma.vehicleAssetCostProfile.create.mockResolvedValueOnce(profile);
+
+    const result = await service.upsertAssetCostProfile(
+      "vehicle-1",
+      validAssetCostProfileDto({ depreciationStartDate: undefined, residualValueAmount: 6000000 }),
+      user,
+      context
+    );
+
+    expect(prisma.vehicleAssetCostProfile.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        createdBy: user.id,
+        depreciationMethod: VehicleDepreciationMethod.STRAIGHT_LINE,
+        depreciationStartDate: new Date("2026-05-20T00:00:00.000Z"),
+        profileStatus: VehicleAssetCostProfileStatus.ACTIVE,
+        residualValueAmount: 6000000n,
+        updatedBy: user.id,
+        vehicleId: "vehicle-1"
+      })
+    });
+    expect(result.profileStatus).toBe(VehicleAssetCostProfileStatus.ACTIVE);
+    expect(result.residualValueAmount).toBe(6000000);
+    expect(auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.CREATE,
+        entityType: "vehicle_asset_cost_profile"
+      })
+    );
+  });
+
+  it("updates the existing ACTIVE asset cost profile instead of creating another one", async () => {
+    const { prisma, service } = makeService();
+    const before = makeAssetCostProfile({ residualValueAmount: 3000000n });
+    const after = makeAssetCostProfile({ residualValueAmount: 5000000n });
+
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle());
+    prisma.vehicleAssetCostProfile.findFirst.mockResolvedValueOnce(before);
+    prisma.vehicleAssetCostProfile.update.mockResolvedValueOnce(after);
+
+    const result = await service.upsertAssetCostProfile(
+      "vehicle-1",
+      validAssetCostProfileDto({ residualValueAmount: 5000000 }),
+      user,
+      context
+    );
+
+    expect(prisma.vehicleAssetCostProfile.create).not.toHaveBeenCalled();
+    expect(prisma.vehicleAssetCostProfile.update).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        residualValueAmount: 5000000n,
+        updatedBy: user.id
+      }),
+      where: { id: before.id }
+    });
+    expect(result.id).toBe(after.id);
+    expect(result.residualValueAmount).toBe(5000000);
+  });
+
+  it("rejects usefulLifeMonths <= 0", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle());
+
+    await expect(
+      service.upsertAssetCostProfile(
+        "vehicle-1",
+        validAssetCostProfileDto({ usefulLifeMonths: 0 }),
+        user,
+        context
+      )
+    ).rejects.toThrow("预计使用月数必须大于 0");
+  });
+
+  it("rejects residualValueAmount greater than purchasePriceAmount", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle({ purchasePriceAmount: 1000000n }));
+
+    await expect(
+      service.upsertAssetCostProfile(
+        "vehicle-1",
+        validAssetCostProfileDto({ residualValueAmount: 1000001 }),
+        user,
+        context
+      )
+    ).rejects.toThrow("预计残值不能大于车辆采购价");
+  });
+
+  it("rejects missing purchase price when setting residual value", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle({ purchasePriceAmount: 0n }));
+
+    await expect(
+      service.upsertAssetCostProfile("vehicle-1", validAssetCostProfileDto(), user, context)
+    ).rejects.toThrow("车辆采购价缺失，无法设置残值参数。");
+  });
+
+  it.each([
+    ["residualValueAmount", { residualValueAmount: -1 }, "预计残值必须大于等于 0"],
+    ["annualInsuranceCostAmount", { annualInsuranceCostAmount: -1 }, "年度保险成本必须大于等于 0"],
+    [
+      "annualMaintenanceReserveAmount",
+      { annualMaintenanceReserveAmount: -1 },
+      "年度维修准备金必须大于等于 0"
+    ],
+    ["otherMonthlyCostAmount", { otherMonthlyCostAmount: -1 }, "其他月度成本必须大于等于 0"],
+    ["capitalCostRateBps", { capitalCostRateBps: -1 }, "资金成本率必须大于等于 0"]
+  ])("rejects negative %s", async (_field, overrides, message) => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle());
+
+    await expect(
+      service.upsertAssetCostProfile(
+        "vehicle-1",
+        validAssetCostProfileDto(overrides),
+        user,
+        context
+      )
+    ).rejects.toThrow(message);
+  });
+
+  it("calculates STRAIGHT_LINE preview amounts with rounded monthly cost", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle({ purchasePriceAmount: 12000000n }));
+    prisma.vehicleAssetCostProfile.findFirst.mockResolvedValueOnce(
+      makeAssetCostProfile({
+        annualInsuranceCostAmount: 120000n,
+        annualMaintenanceReserveAmount: 240000n,
+        capitalCostRateBps: 600,
+        otherMonthlyCostAmount: 5000n,
+        residualValueAmount: 2400000n,
+        usefulLifeMonths: 48
+      })
+    );
+
+    const result = await service.getAssetCostProfilePreview("vehicle-1");
+
+    expect(result.preview).toEqual({
+      annualCapitalCostAmount: 720000,
+      depreciableAmount: 9600000,
+      estimatedMonthlyCostAmount: 295000,
+      monthlyCapitalCostAmount: 60000,
+      monthlyDepreciationAmount: 200000,
+      monthlyInsuranceCostAmount: 10000,
+      monthlyMaintenanceReserveAmount: 20000,
+      otherMonthlyCostAmount: 5000,
+      purchasePriceAmount: 12000000,
+      residualValueAmount: 2400000
+    });
+  });
+
+  it("calculates NONE depreciation as zero", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle({ purchasePriceAmount: 12000000n }));
+    prisma.vehicleAssetCostProfile.findFirst.mockResolvedValueOnce(
+      makeAssetCostProfile({
+        annualInsuranceCostAmount: null,
+        annualMaintenanceReserveAmount: null,
+        capitalCostRateBps: null,
+        depreciationMethod: VehicleDepreciationMethod.NONE,
+        otherMonthlyCostAmount: null,
+        residualValueAmount: 2400000n
+      })
+    );
+
+    const result = await service.getAssetCostProfilePreview("vehicle-1");
+
+    expect(result.preview?.monthlyDepreciationAmount).toBe(0);
+    expect(result.preview?.estimatedMonthlyCostAmount).toBe(0);
+  });
+
+  it("calculates MANUAL depreciation as null and leaves estimated monthly cost null", async () => {
+    const { prisma, service } = makeService();
+    prisma.vehicle.findUnique.mockResolvedValueOnce(makeVehicle({ purchasePriceAmount: 12000000n }));
+    prisma.vehicleAssetCostProfile.findFirst.mockResolvedValueOnce(
+      makeAssetCostProfile({
+        annualInsuranceCostAmount: 120000n,
+        depreciationMethod: VehicleDepreciationMethod.MANUAL,
+        residualValueAmount: 2400000n
+      })
+    );
+
+    const result = await service.getAssetCostProfilePreview("vehicle-1");
+
+    expect(result.preview?.monthlyDepreciationAmount).toBeNull();
+    expect(result.preview?.estimatedMonthlyCostAmount).toBeNull();
+  });
+
+  it("keeps the database-level partial unique index for one ACTIVE profile per vehicle", () => {
+    const migration = fs.readFileSync(
+      path.resolve(
+        __dirname,
+        "../prisma/migrations/20260608120000_vehicle_asset_cost_profile/migration.sql"
+      ),
+      "utf8"
+    );
+
+    expect(migration).toContain("vehicle_asset_cost_profile_active_vehicle_key");
+    expect(migration).toContain(
+      "WHERE \"deleted_at\" IS NULL AND \"profile_status\" = 'ACTIVE'"
+    );
+  });
+});
+
 const user: RequestUser = {
   id: "user-1",
   menus: [],
@@ -664,6 +904,11 @@ function makeService() {
       create: vi.fn(),
       findMany: vi.fn(),
       findUnique: vi.fn(),
+      update: vi.fn()
+    },
+    vehicleAssetCostProfile: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn()
     },
     vehicleSalePriceHistory: {
@@ -755,5 +1000,48 @@ function makeHistoryBase(): VehicleSalePriceHistory {
     reviewQuarter: "2026Q2",
     reviewType: VehicleSalePriceReviewType.INITIAL_POOL,
     vehicleId: "vehicle-1"
+  };
+}
+
+function validAssetCostProfileDto(
+  overrides: Partial<Parameters<VehicleService["upsertAssetCostProfile"]>[1]> = {}
+) {
+  return {
+    annualInsuranceCostAmount: 120000,
+    annualMaintenanceReserveAmount: 240000,
+    capitalCostRateBps: 600,
+    depreciationMethod: VehicleDepreciationMethod.STRAIGHT_LINE,
+    depreciationStartDate: "2026-06-01",
+    otherMonthlyCostAmount: 5000,
+    remark: "asset cost profile",
+    residualValueAmount: 2400000,
+    usefulLifeMonths: 48,
+    ...overrides
+  };
+}
+
+function makeAssetCostProfile(overrides: Partial<VehicleAssetCostProfile> = {}) {
+  const now = new Date("2026-06-02T00:00:00.000Z");
+
+  return {
+    annualInsuranceCostAmount: 120000n,
+    annualMaintenanceReserveAmount: 240000n,
+    capitalCostRateBps: 600,
+    createdAt: now,
+    createdBy: "user-1",
+    deletedAt: null,
+    depreciationMethod: VehicleDepreciationMethod.STRAIGHT_LINE,
+    depreciationStartDate: new Date("2026-06-01T00:00:00.000Z"),
+    id: "asset-cost-profile-1",
+    otherMonthlyCostAmount: 5000n,
+    profileStatus: VehicleAssetCostProfileStatus.ACTIVE,
+    remark: "asset cost profile",
+    residualValueAmount: 2400000n,
+    snapshot: null,
+    updatedAt: now,
+    updatedBy: "user-1",
+    usefulLifeMonths: 48,
+    vehicleId: "vehicle-1",
+    ...overrides
   };
 }

@@ -422,6 +422,60 @@ simpleReturnRate = rentalPaidAmount / purchasePriceAmount
 6. `simpleReturnRate` 仍是简化经营回报率，不是会计 ROA / ROE。
 7. ROA / ROE 后续需要引入折旧、资金成本、残值和费用模型后再单独定义。
 
+## 车辆资产成本参数口径
+
+Stage 8.2A 新增车辆资产成本参数层，用于后续资产收益试算。本阶段只维护参数和成本预览，不改变现有资产经营分析 API、页面或 CSV 导出口径。
+
+模型：
+
+- `VehicleAssetCostProfile`
+
+枚举：
+
+- `VehicleAssetCostProfileStatus.ACTIVE`：生效中。
+- `VehicleAssetCostProfileStatus.INACTIVE`：已停用。
+- `VehicleDepreciationMethod.STRAIGHT_LINE`：直线法。
+- `VehicleDepreciationMethod.NONE`：不计提。
+- `VehicleDepreciationMethod.MANUAL`：手工口径。
+
+字段口径：
+
+1. `depreciationMethod`：折旧方法，第一版支持直线法和不计提；`MANUAL` 可保存参数，但不生成手工折旧明细。
+2. `depreciationStartDate`：折旧起算日。未传入时优先取最早 `VehicleSalePriceHistory.reviewType = INITIAL_POOL` 的 `effectiveFrom`，其次取 `Vehicle.purchaseDate`，再次取 `Vehicle.createdAt`。
+3. `usefulLifeMonths`：预计使用月数，必须大于 0。
+4. `residualValueAmount`：预计残值，单位为分，必须大于等于 0 且不大于 `Vehicle.purchasePriceAmount`。
+5. `capitalCostRateBps`：资金成本率，单位为 bps，例如 `800 = 8.00%`；为空时 preview 按 0 处理。
+6. `annualInsuranceCostAmount`：年度保险成本，单位为分；为空时 preview 按 0 处理。
+7. `annualMaintenanceReserveAmount`：年度维修准备金，单位为分；为空时 preview 按 0 处理。
+8. `otherMonthlyCostAmount`：其他月度成本，单位为分；为空时 preview 按 0 处理。
+
+成本预览口径：
+
+```text
+depreciableAmount = purchasePriceAmount - residualValueAmount
+
+monthlyDepreciationAmount =
+  STRAIGHT_LINE: round(depreciableAmount / usefulLifeMonths)
+  NONE: 0
+  MANUAL: null
+
+annualCapitalCostAmount = round(purchasePriceAmount * capitalCostRateBps / 10000)
+monthlyCapitalCostAmount = round(annualCapitalCostAmount / 12)
+monthlyInsuranceCostAmount = round(annualInsuranceCostAmount / 12)
+monthlyMaintenanceReserveAmount = round(annualMaintenanceReserveAmount / 12)
+
+estimatedMonthlyCostAmount =
+  monthlyDepreciationAmount
+  + monthlyCapitalCostAmount
+  + monthlyInsuranceCostAmount
+  + monthlyMaintenanceReserveAmount
+  + otherMonthlyCostAmount
+```
+
+当 `depreciationMethod = MANUAL` 时，`monthlyDepreciationAmount = null`，`estimatedMonthlyCostAmount = null`，避免在未维护手工折旧明细时产生误导。
+
+`estimatedMonthlyCostAmount` 只是经营分析预估成本，不构成会计凭证，不产生财务入账。本阶段不计算正式 ROA / ROE。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

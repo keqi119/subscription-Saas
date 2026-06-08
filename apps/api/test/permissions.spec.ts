@@ -72,6 +72,34 @@ describe("vehicle availability permissions", () => {
   });
 });
 
+describe("vehicle asset cost profile permissions", () => {
+  const getPermissions = Reflect.getMetadata(
+    REQUIRED_ANY_PERMISSIONS_KEY,
+    VehicleController.prototype.getAssetCostProfile
+  );
+  const previewPermissions = Reflect.getMetadata(
+    REQUIRED_ANY_PERMISSIONS_KEY,
+    VehicleController.prototype.getAssetCostProfilePreview
+  );
+  const updatePermissions = Reflect.getMetadata(
+    REQUIRED_PERMISSIONS_KEY,
+    VehicleController.prototype.upsertAssetCostProfile
+  );
+
+  it("allows vehicle:view or report:asset to read asset cost profiles and previews", () => {
+    expect(getPermissions).toEqual([PermissionCode.VEHICLE_VIEW, PermissionCode.REPORT_ASSET]);
+    expect(previewPermissions).toEqual([PermissionCode.VEHICLE_VIEW, PermissionCode.REPORT_ASSET]);
+    expect(hasAnyRequiredPermission([PermissionCode.VEHICLE_VIEW], getPermissions)).toBe(true);
+    expect(hasAnyRequiredPermission([PermissionCode.REPORT_ASSET], previewPermissions)).toBe(true);
+  });
+
+  it("requires vehicle:manage to upsert asset cost profiles", () => {
+    expect(updatePermissions).toEqual([PermissionCode.VEHICLE_MANAGE]);
+    expect(hasRequiredPermissions([PermissionCode.VEHICLE_VIEW], updatePermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.VEHICLE_MANAGE], updatePermissions)).toBe(true);
+  });
+});
+
 describe("customer order review permissions", () => {
   it("requires order review and final-plan permissions for A-line review APIs", () => {
     const reviewPermissions = Reflect.getMetadata(

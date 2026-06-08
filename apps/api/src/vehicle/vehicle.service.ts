@@ -4,7 +4,10 @@ import {
   Prisma,
   SalePriceStatus,
   Vehicle,
+  VehicleAssetCostProfile,
+  VehicleAssetCostProfileStatus,
   VehicleBatteryUsageType,
+  VehicleDepreciationMethod,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
@@ -19,7 +22,8 @@ import {
   InitializeSalePriceDto,
   ReviewSalePriceDto,
   UpdateVehicleDto,
-  UpdateVehicleStatusDto
+  UpdateVehicleStatusDto,
+  UpsertVehicleAssetCostProfileDto
 } from "./dto/vehicle.dto";
 
 const vehicleInclude = {
@@ -369,6 +373,89 @@ export class VehicleService {
     });
 
     return histories.map(toSalePriceHistoryView);
+  }
+
+  async getAssetCostProfile(id: string) {
+    await this.findVehicleOrThrow(id);
+    const profile = await this.prisma.vehicleAssetCostProfile.findFirst({
+      orderBy: { updatedAt: "desc" },
+      where: activeAssetCostProfileWhere(id)
+    });
+
+    return profile ? toAssetCostProfileView(profile) : null;
+  }
+
+  async upsertAssetCostProfile(
+    id: string,
+    dto: UpsertVehicleAssetCostProfileDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const vehicle = await this.findVehicleOrThrow(id);
+    assertAssetCostProfileInput(dto, vehicle);
+    const profileFields = buildAssetCostProfileFields(dto, vehicle);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const before = await tx.vehicleAssetCostProfile.findFirst({
+        orderBy: { updatedAt: "desc" },
+        where: activeAssetCostProfileWhere(id)
+      });
+
+      if (before) {
+        const profile = await tx.vehicleAssetCostProfile.update({
+          data: {
+            ...profileFields,
+            updatedBy: user.id
+          },
+          where: { id: before.id }
+        });
+        return { action: AuditAction.UPDATE, before, profile };
+      }
+
+      const profile = await tx.vehicleAssetCostProfile.create({
+        data: {
+          ...profileFields,
+          createdBy: user.id,
+          updatedBy: user.id,
+          vehicleId: id
+        }
+      });
+      return { action: AuditAction.CREATE, before: null, profile };
+    });
+
+    await this.auditService.write({
+      action: result.action,
+      after: toAssetCostProfileAuditSnapshot(result.profile, dto.remark),
+      before: result.before ? toAssetCostProfileAuditSnapshot(result.before, dto.remark) : undefined,
+      entityId: result.profile.id,
+      entityType: "vehicle_asset_cost_profile",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toAssetCostProfileView(result.profile);
+  }
+
+  async getAssetCostProfilePreview(id: string) {
+    const vehicle = await this.findVehicleOrThrow(id);
+    const profile = await this.prisma.vehicleAssetCostProfile.findFirst({
+      orderBy: { updatedAt: "desc" },
+      where: activeAssetCostProfileWhere(id)
+    });
+
+    if (!profile) {
+      return {
+        preview: null,
+        profile: null
+      };
+    }
+
+    return {
+      preview: buildAssetCostProfilePreview(vehicle, profile),
+      profile: toAssetCostProfileView(profile)
+    };
   }
 
   private async findVehicleOrThrow(id: string) {
@@ -726,4 +813,223 @@ function toSalePriceHistoryView(history: VehicleSalePriceHistory) {
     reviewType: history.reviewType,
     vehicleId: history.vehicleId
   };
+}
+
+function activeAssetCostProfileWhere(vehicleId: string): Prisma.VehicleAssetCostProfileWhereInput {
+  return {
+    deletedAt: null,
+    profileStatus: VehicleAssetCostProfileStatus.ACTIVE,
+    vehicleId
+  };
+}
+
+function assertAssetCostProfileInput(
+  dto: UpsertVehicleAssetCostProfileDto,
+  vehicle: Pick<VehicleWithHistory, "purchasePriceAmount">
+) {
+  if (!isPositiveBigInt(vehicle.purchasePriceAmount)) {
+    throw new BadRequestException("车辆采购价缺失，无法设置残值参数。");
+  }
+  assertPositiveInteger(dto.usefulLifeMonths, "预计使用月数必须大于 0。");
+  assertNonNegativeInteger(dto.residualValueAmount, "预计残值必须大于等于 0。");
+  if (BigInt(dto.residualValueAmount) > vehicle.purchasePriceAmount) {
+    throw new BadRequestException("预计残值不能大于车辆采购价。");
+  }
+  assertOptionalNonNegativeInteger(dto.capitalCostRateBps, "资金成本率必须大于等于 0。");
+  assertOptionalNonNegativeInteger(dto.annualInsuranceCostAmount, "年度保险成本必须大于等于 0。");
+  assertOptionalNonNegativeInteger(dto.annualMaintenanceReserveAmount, "年度维修准备金必须大于等于 0。");
+  assertOptionalNonNegativeInteger(dto.otherMonthlyCostAmount, "其他月度成本必须大于等于 0。");
+}
+
+function buildAssetCostProfileFields(
+  dto: UpsertVehicleAssetCostProfileDto,
+  vehicle: VehicleWithHistory
+) {
+  const depreciationStartDate =
+    dto.depreciationStartDate === undefined
+      ? defaultDepreciationStartDate(vehicle)
+      : parseDateOnly(dto.depreciationStartDate, "depreciationStartDate");
+  const profileFields = {
+    annualInsuranceCostAmount: optionalBigInt(dto.annualInsuranceCostAmount),
+    annualMaintenanceReserveAmount: optionalBigInt(dto.annualMaintenanceReserveAmount),
+    capitalCostRateBps: optionalInteger(dto.capitalCostRateBps),
+    depreciationMethod: dto.depreciationMethod,
+    depreciationStartDate,
+    otherMonthlyCostAmount: optionalBigInt(dto.otherMonthlyCostAmount),
+    profileStatus: VehicleAssetCostProfileStatus.ACTIVE,
+    remark: dto.remark ?? null,
+    residualValueAmount: BigInt(dto.residualValueAmount),
+    usefulLifeMonths: dto.usefulLifeMonths
+  };
+
+  return {
+    ...profileFields,
+    snapshot: buildAssetCostProfileSnapshot(vehicle, profileFields)
+  };
+}
+
+function buildAssetCostProfileSnapshot(
+  vehicle: VehicleWithHistory,
+  profileFields: {
+    annualInsuranceCostAmount: bigint | null;
+    annualMaintenanceReserveAmount: bigint | null;
+    capitalCostRateBps: number | null;
+    depreciationMethod: VehicleDepreciationMethod;
+    depreciationStartDate: Date;
+    otherMonthlyCostAmount: bigint | null;
+    residualValueAmount: bigint;
+    usefulLifeMonths: number;
+  }
+): Prisma.InputJsonObject {
+  return {
+    annualInsuranceCostAmount: numberOrNull(profileFields.annualInsuranceCostAmount),
+    annualMaintenanceReserveAmount: numberOrNull(profileFields.annualMaintenanceReserveAmount),
+    capitalCostRateBps: profileFields.capitalCostRateBps,
+    depreciationMethod: profileFields.depreciationMethod,
+    depreciationStartDate: formatDateOnly(profileFields.depreciationStartDate),
+    otherMonthlyCostAmount: numberOrNull(profileFields.otherMonthlyCostAmount),
+    purchasePriceAmount: Number(vehicle.purchasePriceAmount),
+    residualValueAmount: Number(profileFields.residualValueAmount),
+    usefulLifeMonths: profileFields.usefulLifeMonths,
+    vehicleId: vehicle.id,
+    vehicleNo: vehicle.vehicleNo
+  };
+}
+
+function buildAssetCostProfilePreview(
+  vehicle: Pick<VehicleWithHistory, "purchasePriceAmount">,
+  profile: VehicleAssetCostProfile
+) {
+  const purchasePriceAmount = Number(vehicle.purchasePriceAmount);
+  const residualValueAmount = Number(profile.residualValueAmount);
+  const depreciableAmount = Math.max(purchasePriceAmount - residualValueAmount, 0);
+  const monthlyDepreciationAmount = monthlyDepreciation(profile, depreciableAmount);
+  const capitalCostRateBps = profile.capitalCostRateBps ?? 0;
+  const annualCapitalCostAmount = Math.round((purchasePriceAmount * capitalCostRateBps) / 10000);
+  const monthlyCapitalCostAmount = Math.round(annualCapitalCostAmount / 12);
+  const monthlyInsuranceCostAmount = Math.round(
+    amountOrZero(profile.annualInsuranceCostAmount) / 12
+  );
+  const monthlyMaintenanceReserveAmount = Math.round(
+    amountOrZero(profile.annualMaintenanceReserveAmount) / 12
+  );
+  const otherMonthlyCostAmount = amountOrZero(profile.otherMonthlyCostAmount);
+  const estimatedMonthlyCostAmount =
+    monthlyDepreciationAmount === null
+      ? null
+      : monthlyDepreciationAmount +
+        monthlyCapitalCostAmount +
+        monthlyInsuranceCostAmount +
+        monthlyMaintenanceReserveAmount +
+        otherMonthlyCostAmount;
+
+  return {
+    annualCapitalCostAmount,
+    depreciableAmount,
+    estimatedMonthlyCostAmount,
+    monthlyCapitalCostAmount,
+    monthlyDepreciationAmount,
+    monthlyInsuranceCostAmount,
+    monthlyMaintenanceReserveAmount,
+    otherMonthlyCostAmount,
+    purchasePriceAmount,
+    residualValueAmount
+  };
+}
+
+function monthlyDepreciation(profile: VehicleAssetCostProfile, depreciableAmount: number) {
+  if (profile.depreciationMethod === VehicleDepreciationMethod.NONE) {
+    return 0;
+  }
+  if (profile.depreciationMethod === VehicleDepreciationMethod.MANUAL) {
+    return null;
+  }
+  return Math.round(depreciableAmount / profile.usefulLifeMonths);
+}
+
+function defaultDepreciationStartDate(vehicle: VehicleWithHistory) {
+  const initialPoolDate = vehicle.salePriceHistories
+    ?.filter((history) => history.reviewType === VehicleSalePriceReviewType.INITIAL_POOL)
+    .map((history) => history.effectiveFrom)
+    .sort((left, right) => left.getTime() - right.getTime())[0];
+
+  return dateOnly(initialPoolDate ?? vehicle.purchaseDate ?? vehicle.createdAt);
+}
+
+function toAssetCostProfileView(profile: VehicleAssetCostProfile) {
+  return {
+    annualInsuranceCostAmount: numberOrNull(profile.annualInsuranceCostAmount),
+    annualMaintenanceReserveAmount: numberOrNull(profile.annualMaintenanceReserveAmount),
+    capitalCostRateBps: profile.capitalCostRateBps,
+    createdAt: profile.createdAt,
+    createdBy: profile.createdBy,
+    deletedAt: profile.deletedAt,
+    depreciationMethod: profile.depreciationMethod,
+    depreciationStartDate: profile.depreciationStartDate,
+    id: profile.id,
+    otherMonthlyCostAmount: numberOrNull(profile.otherMonthlyCostAmount),
+    profileStatus: profile.profileStatus,
+    remark: profile.remark,
+    residualValueAmount: Number(profile.residualValueAmount),
+    snapshot: profile.snapshot,
+    updatedAt: profile.updatedAt,
+    updatedBy: profile.updatedBy,
+    usefulLifeMonths: profile.usefulLifeMonths,
+    vehicleId: profile.vehicleId
+  };
+}
+
+function toAssetCostProfileAuditSnapshot(
+  profile: VehicleAssetCostProfile,
+  remark: string | null | undefined
+) {
+  return {
+    profile: toAssetCostProfileView(profile),
+    profileId: profile.id,
+    remark: remark ?? profile.remark,
+    vehicleId: profile.vehicleId
+  };
+}
+
+function assertPositiveInteger(value: number, message: string) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new BadRequestException(message);
+  }
+}
+
+function assertNonNegativeInteger(value: number, message: string) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new BadRequestException(message);
+  }
+}
+
+function assertOptionalNonNegativeInteger(value: number | null | undefined, message: string) {
+  if (value === undefined || value === null) {
+    return;
+  }
+  assertNonNegativeInteger(value, message);
+}
+
+function optionalBigInt(value: number | null | undefined) {
+  return value === undefined || value === null ? null : BigInt(value);
+}
+
+function optionalInteger(value: number | null | undefined) {
+  return value === undefined || value === null ? null : value;
+}
+
+function amountOrZero(value: bigint | number | null | undefined) {
+  return value === null || value === undefined ? 0 : Number(value);
+}
+
+function numberOrNull(value: bigint | number | null | undefined) {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function dateOnly(date: Date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function formatDateOnly(date: Date) {
+  return date.toISOString().slice(0, 10);
 }

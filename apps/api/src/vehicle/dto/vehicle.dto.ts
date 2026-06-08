@@ -1,5 +1,11 @@
 import { Type } from "class-transformer";
-import { VehicleBatteryUsageType, VehicleModel, VehicleSalePriceReviewType, VehicleStatus } from "@prisma/client";
+import {
+  VehicleBatteryUsageType,
+  VehicleDepreciationMethod,
+  VehicleModel,
+  VehicleSalePriceReviewType,
+  VehicleStatus
+} from "@prisma/client";
 import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from "class-validator";
 
 export class CreateVehicleDto {
@@ -200,6 +206,53 @@ export class ReviewSalePriceDto {
 export class UpdateVehicleStatusDto {
   @IsEnum(VehicleStatus)
   status!: VehicleStatus;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class UpsertVehicleAssetCostProfileDto {
+  @IsEnum(VehicleDepreciationMethod)
+  depreciationMethod!: VehicleDepreciationMethod;
+
+  @IsOptional()
+  @IsString()
+  depreciationStartDate?: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  usefulLifeMonths!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  residualValueAmount!: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  capitalCostRateBps?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  annualInsuranceCostAmount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  annualMaintenanceReserveAmount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  otherMonthlyCostAmount?: number | null;
 
   @IsOptional()
   @IsString()

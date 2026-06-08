@@ -188,7 +188,9 @@ const menuRows = [
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
-  ["reports", "经营看板", "/reports", "dashboard", 75, "report:view", null],
+  ["reports", "经营看板", "/reports", "dashboard", 75, null, null],
+  ["reports.overview", "经营总览", "/reports", "dashboard", 10, "report:view", "reports"],
+  ["reports.asset_profitability", "资产经营分析", "/reports/asset-profitability", "car", 20, "report:asset", "reports"],
   ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
   ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
   ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
@@ -485,6 +487,10 @@ const reportAssetPermissions = ["report:asset"];
 
 const reportAllPermissions = ["report:view", "report:finance", "report:asset"];
 
+const reportOverviewMenuCodes = ["reports", "reports.overview"];
+
+const reportAssetMenuCodes = ["reports", "reports.asset_profitability"];
+
 const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collections"];
 
 const collectionMenuCodes = ["billing", "billing.collections"];
@@ -638,7 +644,22 @@ async function main() {
       "order_change:reject",
       "order_change:execute"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", "reports", ...collectionMenuCodes]
+    [
+      "dashboard",
+      "customers",
+      "applications",
+      ...productMenuCodes,
+      ...vehicleMenuCodes,
+      "quotes",
+      "orders",
+      "orders.subscription",
+      "orders.review",
+      "orders.contracts",
+      "orders.contract_templates",
+      ...reportOverviewMenuCodes,
+      ...reportAssetMenuCodes,
+      ...collectionMenuCodes
+    ]
   );
 
   await assignRoleAccess(
@@ -701,7 +722,8 @@ async function main() {
         "orders.subscription",
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
-        ...(roleCode === "FI" ? ["reports", ...financeMenuCodes] : [])
+        ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : []),
+        ...(roleCode === "AS" ? reportAssetMenuCodes : [])
       ]
     );
   }
@@ -724,7 +746,24 @@ async function main() {
       "collection:view",
       ...reportAllPermissions
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts", "orders.contract_templates", "reports", ...collectionMenuCodes]
+    [
+      "dashboard",
+      "customers",
+      "applications",
+      "risk",
+      "risk.deposit_rules",
+      ...productMenuCodes,
+      ...vehicleMenuCodes,
+      "quotes",
+      "orders",
+      "orders.subscription",
+      "orders.review",
+      "orders.contracts",
+      "orders.contract_templates",
+      ...reportOverviewMenuCodes,
+      ...reportAssetMenuCodes,
+      ...collectionMenuCodes
+    ]
   );
 
   const adminUser = await seedDefaultUsers();

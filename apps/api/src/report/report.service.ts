@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import {
   BillStatus,
   BillType,
@@ -31,6 +31,9 @@ import {
   withUtf8Bom
 } from "./report-csv";
 import {
+  AssetProfitabilityQueryDto,
+  AssetProfitabilityVehicleDetailQueryDto,
+  AssetProfitabilityVehicleListQueryDto,
   BillDetailQueryDto,
   CollectionCaseDetailQueryDto,
   DepositLedgerDetailQueryDto,
@@ -212,9 +215,12 @@ export class ReportService {
       totalOrders,
       byStatus: enumCountRows(OrderStatus, statusGroups, "orderStatus", "orderStatus"),
       bySource: enumCountRows(OrderSource, sourceGroups, "orderSource", "orderSource"),
-      byVehicleModel: enumCountRows(VehicleModel, vehicleModelGroups, "vehicleModel", "vehicleModel").filter(
-        (row) => row.count > 0
-      ),
+      byVehicleModel: enumCountRows(
+        VehicleModel,
+        vehicleModelGroups,
+        "vehicleModel",
+        "vehicleModel"
+      ).filter((row) => row.count > 0),
       bySubscriptionPlan: subscriptionPlanRows(ordersWithPlans)
     };
   }
@@ -354,8 +360,18 @@ export class ReportService {
       collectionCaseCount,
       activeCaseCount,
       closedCaseCount,
-      byCollectionLevel: overdueGroupRows(CollectionLevel, levelGroups, "collectionLevel", "collectionLevel"),
-      byCaseStatus: overdueGroupRows(CollectionCaseStatus, statusGroups, "caseStatus", "caseStatus"),
+      byCollectionLevel: overdueGroupRows(
+        CollectionLevel,
+        levelGroups,
+        "collectionLevel",
+        "collectionLevel"
+      ),
+      byCaseStatus: overdueGroupRows(
+        CollectionCaseStatus,
+        statusGroups,
+        "caseStatus",
+        "caseStatus"
+      ),
       actionCount,
       promisedPaymentAmount: toNumber(promisedTotals._sum.promisedAmount)
     };
@@ -432,6 +448,177 @@ export class ReportService {
       totalCurrentSalePriceAmount,
       totalPaidAmount: sumNumbers([...incomeByVehicleModel.values()]),
       byVehicleModel: vehicleModelAssetRows(vehicleModelGroups, incomeByVehicleModel)
+    };
+  }
+
+  async getAssetProfitabilitySummary(query: AssetProfitabilityQueryDto) {
+    const range = resolveReportDateRange(query);
+    const vehicles = await this.prisma.vehicle.findMany({
+      orderBy: { createdAt: "desc" },
+      select: assetProfitabilityVehicleSelect,
+      where: assetProfitabilityVehicleWhere(query)
+    });
+    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
+    const rows = vehicles.map((vehicle) =>
+      assetProfitabilityVehicleRow(
+        vehicle,
+        metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics()
+      )
+    );
+    const simpleReturnRates = rows
+      .map((row) => row.simpleReturnRate)
+      .filter((value): value is number => value !== null);
+
+    return {
+      dateRange: range.output,
+      totalVehicles: rows.length,
+      totalPurchasePriceAmount: sumNumbers(rows.map((row) => row.purchasePriceAmount)),
+      totalCurrentSalePriceAmount: sumNumbers(rows.map((row) => row.currentSalePriceAmount)),
+      rentalPaidAmount: sumNumbers(rows.map((row) => row.rentalPaidAmount)),
+      damagePaidAmount: sumNumbers(rows.map((row) => row.damagePaidAmount)),
+      depositCollectedAmount: sumNumbers(rows.map((row) => row.depositCollectedAmount)),
+      totalReceivableAmount: sumNumbers(rows.map((row) => row.totalReceivableAmount)),
+      totalPaidAmount: sumNumbers(rows.map((row) => row.totalPaidAmount)),
+      totalRemainingAmount: sumNumbers(rows.map((row) => row.totalRemainingAmount)),
+      totalLeasedDays: sumNumbers(rows.map((row) => row.leasedDays)),
+      averageUtilizationRate: average(rows.map((row) => row.utilizationRate)),
+      // simpleReturnRate is a simplified operating return rate, not accounting ROA or ROE.
+      averageSimpleReturnRate: averageNullable(simpleReturnRates)
+    };
+  }
+
+  async getAssetProfitabilityVehicles(query: AssetProfitabilityVehicleListQueryDto) {
+    const range = resolveReportDateRange(query);
+    const pagination = resolvePagination(query);
+    const vehicles = await this.prisma.vehicle.findMany({
+      orderBy: { createdAt: "desc" },
+      select: assetProfitabilityVehicleSelect,
+      where: assetProfitabilityVehicleWhere(query)
+    });
+    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
+    const rows = vehicles.map((vehicle) =>
+      assetProfitabilityVehicleRow(
+        vehicle,
+        metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics()
+      )
+    );
+
+    if (query.sortBy) {
+      rows.sort(assetProfitabilityComparator(query.sortBy, query.sortOrder ?? "desc"));
+    }
+
+    return pagedResult(
+      rows.slice(pagination.skip, pagination.skip + pagination.pageSize),
+      rows.length,
+      pagination
+    );
+  }
+
+  async getAssetProfitabilityVehicleDetail(
+    id: string,
+    query: AssetProfitabilityVehicleDetailQueryDto
+  ) {
+    const range = resolveReportDateRange(query);
+    const vehicle = await this.prisma.vehicle.findFirst({
+      select: assetProfitabilityVehicleDetailSelect,
+      where: { deletedAt: null, id }
+    });
+
+    if (!vehicle) {
+      throw new NotFoundException("Vehicle not found.");
+    }
+
+    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics([vehicle], range);
+    const metrics = metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics();
+    const baseRow = assetProfitabilityVehicleRow(vehicle, metrics);
+
+    return {
+      dateRange: range.output,
+      vehicle: {
+        vehicleId: vehicle.id,
+        vehicleNo: vehicle.vehicleNo,
+        vin: vehicle.vin,
+        plateNo: vehicle.plateNo,
+        brand: vehicle.brand,
+        series: vehicle.series,
+        model: vehicle.model,
+        vehicleModel: vehicle.vehicleModel,
+        batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
+        batteryUsageType: vehicle.batteryUsageType,
+        vehicleStatus: vehicle.status
+      },
+      assetValue: {
+        purchasePriceAmount: baseRow.purchasePriceAmount,
+        currentSalePriceAmount: baseRow.currentSalePriceAmount
+      },
+      summary: {
+        rentalPaidAmount: baseRow.rentalPaidAmount,
+        damagePaidAmount: baseRow.damagePaidAmount,
+        otherPaidAmount: baseRow.otherPaidAmount,
+        depositCollectedAmount: baseRow.depositCollectedAmount,
+        totalReceivableAmount: baseRow.totalReceivableAmount,
+        totalPaidAmount: baseRow.totalPaidAmount,
+        totalRemainingAmount: baseRow.totalRemainingAmount,
+        leasedDays: baseRow.leasedDays,
+        operatingDays: baseRow.operatingDays,
+        utilizationRate: baseRow.utilizationRate,
+        // simpleReturnRate is a simplified operating return rate, not accounting ROA or ROE.
+        simpleReturnRate: baseRow.simpleReturnRate
+      },
+      orderCycles: metrics.orders.map((order) => {
+        const orderMetrics =
+          metrics.orderMetricsById.get(order.id) ?? emptyOrderProfitabilityMetrics();
+
+        return {
+          orderId: order.id,
+          orderNo: order.orderNo,
+          customerName: order.customer.name,
+          orderStatus: order.orderStatus,
+          deliveredAt: order.actualDeliveryAt,
+          returnedAt: order.actualReturnAt,
+          leasedDays: leasedDaysForOrder(order, range),
+          monthlyFeeAmount: toNumber(order.monthlyFeeAmount),
+          rentalPaidAmount: orderMetrics.rentalPaidAmount,
+          damagePaidAmount: orderMetrics.damagePaidAmount
+        };
+      }),
+      bills: metrics.bills.map((bill) => ({
+        billId: bill.id,
+        billNo: bill.billNo,
+        orderId: bill.orderId,
+        orderNo: bill.order.orderNo,
+        billType: bill.billType,
+        billStatus: bill.billStatus,
+        amount: toNumber(bill.amount),
+        paidAmount: toNumber(bill.paidAmount),
+        remainingAmount: toNumber(bill.remainingAmount),
+        dueDate: bill.dueDate,
+        periodStart: bill.billPeriodStart,
+        periodEnd: bill.billPeriodEnd
+      })),
+      lifecycleNodes: assetProfitabilityLifecycleNodes(vehicle),
+      damageRecords: vehicle.returnDamages.map((damage) => ({
+        damageId: damage.id,
+        orderId: damage.orderId,
+        damageType: damage.damageType,
+        damageLevel: damage.damageLevel,
+        description: damage.description,
+        estimatedRepairAmount: toNumber(damage.estimatedRepairAmount),
+        responsibleParty: damage.responsibleParty,
+        status: damage.status,
+        createdAt: damage.createdAt
+      })),
+      salePriceHistory: vehicle.salePriceHistories.map((history) => ({
+        id: history.id,
+        beforeSalePriceAmount: toNumber(history.beforeSalePriceAmount),
+        afterSalePriceAmount: toNumber(history.afterSalePriceAmount),
+        reviewType: history.reviewType,
+        effectiveFrom: history.effectiveFrom,
+        effectiveTo: history.effectiveTo,
+        reason: history.reason,
+        remark: history.remark,
+        createdAt: history.createdAt
+      }))
     };
   }
 
@@ -543,17 +730,26 @@ export class ReportService {
         expiredGrantCount: grantStatusCount.get(EntitlementGrantStatus.EXPIRED) ?? 0,
         totalGrantCount: sumNumbers([...grantStatusCount.values()])
       },
-      byEntitlementTypeUnit: grantTypeUnitGroups.map((group) => ({
-        entitlementType: group.entitlementType,
-        grantCount: group._count._all,
-        remainingAmount: group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.remainingAmount),
-        totalAmount: group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.totalAmount),
-        unit: group.unit,
-        usedAmount: group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.usedAmount)
-      })).map((row) => ({
-        ...row,
-        exhaustedCount: exhaustedCountForTypeUnit(exhaustedGrantTypeUnitGroups, row.entitlementType, row.unit)
-      })),
+      byEntitlementTypeUnit: grantTypeUnitGroups
+        .map((group) => ({
+          entitlementType: group.entitlementType,
+          grantCount: group._count._all,
+          remainingAmount:
+            group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.remainingAmount),
+          totalAmount:
+            group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.totalAmount),
+          unit: group.unit,
+          usedAmount:
+            group.unit === EntitlementUnit.TEXT ? null : amountToNumber(group._sum.usedAmount)
+        }))
+        .map((row) => ({
+          ...row,
+          exhaustedCount: exhaustedCountForTypeUnit(
+            exhaustedGrantTypeUnitGroups,
+            row.entitlementType,
+            row.unit
+          )
+        })),
       usageOverview: {
         manualUsageCount: usageSourceCount.get(EntitlementUsageSource.MANUAL) ?? 0,
         systemUsageCount: usageSourceCount.get(EntitlementUsageSource.SYSTEM) ?? 0,
@@ -719,7 +915,9 @@ export class ReportService {
       ...(query.orderSource ? { orderSource: query.orderSource } : {}),
       ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {}),
       ...(query.productId ? { productId: query.productId } : {}),
-      ...(query.subscriptionPlanId ? { quote: { subscriptionPlanId: query.subscriptionPlanId } } : {})
+      ...(query.subscriptionPlanId
+        ? { quote: { subscriptionPlanId: query.subscriptionPlanId } }
+        : {})
     };
 
     const [total, items] = await Promise.all([
@@ -951,7 +1149,8 @@ export class ReportService {
     return pagedResult(
       items.map((bill) => {
         const caseBill = bill.collectionCaseBills[0];
-        const overdueDays = caseBill?.overdueDays ?? overdueDaysBetween(bill.dueDate, range.endExclusive);
+        const overdueDays =
+          caseBill?.overdueDays ?? overdueDaysBetween(bill.dueDate, range.endExclusive);
 
         return {
           id: bill.id,
@@ -1090,7 +1289,10 @@ export class ReportService {
         where
       })
     ]);
-    const paidAmountByVehicleId = await this.paidAmountByVehicle(range, vehicles.map((vehicle) => vehicle.id));
+    const paidAmountByVehicleId = await this.paidAmountByVehicle(
+      range,
+      vehicles.map((vehicle) => vehicle.id)
+    );
 
     return pagedResult(
       vehicles.map((vehicle) => {
@@ -1245,7 +1447,10 @@ export class ReportService {
       [],
       ["按案件状态统计"],
       ["案件状态", "案件数"],
-      ...report.byCaseStatus.map((row) => [labelOf(collectionCaseStatusLabels, row.caseStatus), row.count])
+      ...report.byCaseStatus.map((row) => [
+        labelOf(collectionCaseStatusLabels, row.caseStatus),
+        row.count
+      ])
     ];
 
     return csvExport("collections-report", report.dateRange, rows);
@@ -1548,7 +1753,9 @@ export class ReportService {
     });
 
     if (firstPage.total > MAX_DETAIL_EXPORT_ROWS) {
-      throw new BadRequestException(`明细数据超过 ${MAX_DETAIL_EXPORT_ROWS} 行，请缩小筛选范围后再导出。`);
+      throw new BadRequestException(
+        `明细数据超过 ${MAX_DETAIL_EXPORT_ROWS} 行，请缩小筛选范围后再导出。`
+      );
     }
 
     const items = [...firstPage.items];
@@ -1565,6 +1772,134 @@ export class ReportService {
     }
 
     return { dateRange, items };
+  }
+
+  private async buildAssetProfitabilityMetrics(
+    vehicles: AssetProfitabilityVehicleRecord[],
+    range: ReturnType<typeof resolveReportDateRange>
+  ) {
+    const metricsByVehicleId = new Map(
+      vehicles.map((vehicle) => [vehicle.id, emptyAssetProfitabilityMetrics()])
+    );
+    const vehicleIds = vehicles.map((vehicle) => vehicle.id);
+
+    if (vehicleIds.length === 0) {
+      return metricsByVehicleId;
+    }
+
+    const [orders, bills, depositLedgers] = await Promise.all([
+      this.prisma.subscriptionOrder.findMany({
+        orderBy: { createdAt: "desc" },
+        select: assetProfitabilityOrderSelect,
+        where: {
+          deletedAt: null,
+          vehicleId: { in: vehicleIds }
+        }
+      }),
+      this.prisma.receivableBill.findMany({
+        orderBy: { dueDate: "asc" },
+        select: assetProfitabilityBillSelect,
+        where: {
+          deletedAt: null,
+          dueDate: range.dateTimeFilter,
+          order: { vehicleId: { in: vehicleIds } }
+        }
+      }),
+      this.prisma.depositLedger.findMany({
+        select: {
+          amount: true,
+          order: { select: { vehicleId: true } }
+        },
+        where: {
+          deletedAt: null,
+          occurredAt: range.dateTimeFilter,
+          order: { vehicleId: { in: vehicleIds } },
+          transactionStatus: DepositTransactionStatus.CONFIRMED,
+          transactionType: DepositTransactionType.COLLECT
+        }
+      })
+    ]);
+
+    for (const order of orders) {
+      if (!order.vehicleId) {
+        continue;
+      }
+
+      const metrics = metricsByVehicleId.get(order.vehicleId);
+      if (!metrics) {
+        continue;
+      }
+
+      metrics.orders.push(order);
+      metrics.leasedDays += leasedDaysForOrder(order, range);
+
+      if (
+        order.actualDeliveryAt &&
+        (!metrics.lastDeliveryAt || order.actualDeliveryAt > metrics.lastDeliveryAt)
+      ) {
+        metrics.lastDeliveryAt = order.actualDeliveryAt;
+      }
+      if (
+        order.actualReturnAt &&
+        (!metrics.lastReturnAt || order.actualReturnAt > metrics.lastReturnAt)
+      ) {
+        metrics.lastReturnAt = order.actualReturnAt;
+      }
+      if (!metrics.currentOrder && currentVehicleOrderStatuses.includes(order.orderStatus)) {
+        metrics.currentOrder = order;
+      }
+    }
+
+    for (const bill of bills) {
+      const vehicleId = bill.order.vehicleId;
+      if (!vehicleId) {
+        continue;
+      }
+
+      const metrics = metricsByVehicleId.get(vehicleId);
+      if (!metrics) {
+        continue;
+      }
+
+      const orderMetrics = orderMetricsFor(metrics, bill.orderId);
+      const paidAmount = toNumber(bill.paidAmount);
+      metrics.bills.push(bill);
+      metrics.totalReceivableAmount += toNumber(bill.amount);
+      metrics.totalPaidAmount += paidAmount;
+      metrics.totalRemainingAmount += toNumber(bill.remainingAmount);
+
+      if (bill.billType === BillType.FIRST_MONTHLY_FEE || bill.billType === BillType.MONTHLY_RENT) {
+        metrics.rentalPaidAmount += paidAmount;
+        orderMetrics.rentalPaidAmount += paidAmount;
+      } else if (bill.billType === BillType.DAMAGE_FEE) {
+        metrics.damagePaidAmount += paidAmount;
+        orderMetrics.damagePaidAmount += paidAmount;
+      } else if (bill.billType === BillType.OTHER) {
+        metrics.otherPaidAmount += paidAmount;
+        orderMetrics.otherPaidAmount += paidAmount;
+      }
+    }
+
+    for (const ledger of depositLedgers) {
+      const vehicleId = ledger.order.vehicleId;
+      if (!vehicleId) {
+        continue;
+      }
+      const metrics = metricsByVehicleId.get(vehicleId);
+      if (metrics) {
+        metrics.depositCollectedAmount += toNumber(ledger.amount);
+      }
+    }
+
+    for (const vehicle of vehicles) {
+      const metrics = metricsByVehicleId.get(vehicle.id);
+      if (!metrics) {
+        continue;
+      }
+      metrics.operatingDays = operatingDaysForVehicle(vehicle, range);
+    }
+
+    return metricsByVehicleId;
   }
 
   private async paidAmountByVehicle(
@@ -1590,7 +1925,10 @@ export class ReportService {
 
     for (const bill of bills) {
       if (bill.order.vehicleId) {
-        result.set(bill.order.vehicleId, (result.get(bill.order.vehicleId) ?? 0) + toNumber(bill.paidAmount));
+        result.set(
+          bill.order.vehicleId,
+          (result.get(bill.order.vehicleId) ?? 0) + toNumber(bill.paidAmount)
+        );
       }
     }
 
@@ -1608,7 +1946,7 @@ const operationalVehicleStatuses = [
   VehicleStatus.MAINTENANCE
 ];
 
-const currentVehicleOrderStatuses = [
+const currentVehicleOrderStatuses: OrderStatus[] = [
   OrderStatus.ACTIVE,
   OrderStatus.PENDING_DELIVERY,
   OrderStatus.PENDING_PAYMENT,
@@ -1731,6 +2069,10 @@ function collectionLevelForDays(overdueDays: number) {
 
 function businessDateForNow(now: Date) {
   return formatDateOnly(new Date(now.getTime() + BUSINESS_OFFSET_MS));
+}
+
+function businessDateForInstant(value: Date) {
+  return formatDateOnly(new Date(value.getTime() + BUSINESS_OFFSET_MS));
 }
 
 function businessDateStartUtc(value: string, field: string) {
@@ -1919,7 +2261,9 @@ function summarizeDepositGroups(groups: AmountGroup[]) {
   const amountByType = new Map(
     groups.map((group) => [String(group.transactionType), toNumber(group._sum.amount)])
   );
-  const countByType = new Map(groups.map((group) => [String(group.transactionType), group._count._all]));
+  const countByType = new Map(
+    groups.map((group) => [String(group.transactionType), group._count._all])
+  );
   const collectedAmount = amountByType.get(DepositTransactionType.COLLECT) ?? 0;
   const deductedAmount = amountByType.get(DepositTransactionType.DEDUCT) ?? 0;
   const refundedAmount = amountByType.get(DepositTransactionType.REFUND) ?? 0;
@@ -1945,7 +2289,12 @@ function subscriptionPlanRows(
 ) {
   const groups = new Map<
     string,
-    { count: number; subscriptionPlanId: string | null; subscriptionPlanName: string | null; subscriptionPlanNo: string | null }
+    {
+      count: number;
+      subscriptionPlanId: string | null;
+      subscriptionPlanName: string | null;
+      subscriptionPlanNo: string | null;
+    }
   >();
 
   for (const order of orders) {
@@ -1964,27 +2313,364 @@ function subscriptionPlanRows(
   return [...groups.values()];
 }
 
+const assetProfitabilityVehicleSelect = {
+  batteryCapacityKwh: true,
+  batteryUsageType: true,
+  brand: true,
+  createdAt: true,
+  currentSalePriceAmount: true,
+  id: true,
+  model: true,
+  plateNo: true,
+  purchasePriceAmount: true,
+  salePriceHistories: {
+    orderBy: { effectiveFrom: "asc" as const },
+    select: {
+      afterSalePriceAmount: true,
+      beforeSalePriceAmount: true,
+      createdAt: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      id: true,
+      reason: true,
+      remark: true,
+      reviewType: true
+    },
+    where: {}
+  },
+  series: true,
+  status: true,
+  vehicleModel: true,
+  vehicleNo: true,
+  vin: true
+} satisfies Prisma.VehicleSelect;
+
+const assetProfitabilityVehicleDetailSelect = {
+  ...assetProfitabilityVehicleSelect,
+  deliveries: {
+    orderBy: { deliveredAt: "asc" as const },
+    select: {
+      deliveredAt: true,
+      deliveryNo: true,
+      deliveryStatus: true,
+      id: true,
+      orderId: true,
+      scheduledAt: true
+    },
+    where: { deletedAt: null }
+  },
+  returnDamages: {
+    orderBy: { createdAt: "asc" as const },
+    select: {
+      createdAt: true,
+      damageLevel: true,
+      damageType: true,
+      description: true,
+      estimatedRepairAmount: true,
+      id: true,
+      orderId: true,
+      responsibleParty: true,
+      status: true
+    },
+    where: { deletedAt: null }
+  },
+  returns: {
+    orderBy: { returnedAt: "asc" as const },
+    select: {
+      id: true,
+      orderId: true,
+      returnedAt: true,
+      returnNo: true,
+      returnStatus: true,
+      scheduledAt: true
+    },
+    where: { deletedAt: null }
+  }
+} satisfies Prisma.VehicleSelect;
+
+const assetProfitabilityOrderSelect = {
+  actualDeliveryAt: true,
+  actualReturnAt: true,
+  createdAt: true,
+  customer: { select: { name: true } },
+  endDate: true,
+  id: true,
+  monthlyFeeAmount: true,
+  orderNo: true,
+  orderStatus: true,
+  vehicleId: true
+} satisfies Prisma.SubscriptionOrderSelect;
+
+const assetProfitabilityBillSelect = {
+  amount: true,
+  billNo: true,
+  billPeriodEnd: true,
+  billPeriodStart: true,
+  billStatus: true,
+  billType: true,
+  dueDate: true,
+  id: true,
+  order: { select: { orderNo: true, vehicleId: true } },
+  orderId: true,
+  paidAmount: true,
+  remainingAmount: true
+} satisfies Prisma.ReceivableBillSelect;
+
+type AssetProfitabilityVehicleRecord = Prisma.VehicleGetPayload<{
+  select: typeof assetProfitabilityVehicleSelect;
+}>;
+type AssetProfitabilityVehicleDetailRecord = Prisma.VehicleGetPayload<{
+  select: typeof assetProfitabilityVehicleDetailSelect;
+}>;
+type AssetProfitabilityOrderRecord = Prisma.SubscriptionOrderGetPayload<{
+  select: typeof assetProfitabilityOrderSelect;
+}>;
+type AssetProfitabilityBillRecord = Prisma.ReceivableBillGetPayload<{
+  select: typeof assetProfitabilityBillSelect;
+}>;
+type AssetProfitabilitySortField = NonNullable<AssetProfitabilityVehicleListQueryDto["sortBy"]>;
+
+type OrderProfitabilityMetrics = {
+  damagePaidAmount: number;
+  otherPaidAmount: number;
+  rentalPaidAmount: number;
+};
+
+type AssetProfitabilityMetrics = {
+  bills: AssetProfitabilityBillRecord[];
+  currentOrder: AssetProfitabilityOrderRecord | null;
+  damagePaidAmount: number;
+  depositCollectedAmount: number;
+  lastDeliveryAt: Date | null;
+  lastReturnAt: Date | null;
+  leasedDays: number;
+  operatingDays: number;
+  orderMetricsById: Map<string, OrderProfitabilityMetrics>;
+  orders: AssetProfitabilityOrderRecord[];
+  otherPaidAmount: number;
+  rentalPaidAmount: number;
+  totalPaidAmount: number;
+  totalReceivableAmount: number;
+  totalRemainingAmount: number;
+};
+
+function assetProfitabilityVehicleWhere(
+  query: Pick<AssetProfitabilityQueryDto, "vehicleModel" | "vehicleStatus">
+): Prisma.VehicleWhereInput {
+  return {
+    deletedAt: null,
+    ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {}),
+    ...(query.vehicleStatus ? { status: query.vehicleStatus } : {})
+  };
+}
+
+function assetProfitabilityVehicleRow(
+  vehicle: AssetProfitabilityVehicleRecord,
+  metrics: AssetProfitabilityMetrics
+) {
+  const purchasePriceAmount = toNumber(vehicle.purchasePriceAmount);
+  const currentOrder = metrics.currentOrder;
+
+  return {
+    vehicleId: vehicle.id,
+    vehicleNo: vehicle.vehicleNo,
+    vin: vehicle.vin,
+    plateNo: vehicle.plateNo,
+    brand: vehicle.brand,
+    series: vehicle.series,
+    model: vehicle.model,
+    vehicleModel: vehicle.vehicleModel,
+    batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
+    batteryUsageType: vehicle.batteryUsageType,
+    vehicleStatus: vehicle.status,
+    purchasePriceAmount,
+    currentSalePriceAmount: toNumber(vehicle.currentSalePriceAmount),
+    rentalPaidAmount: metrics.rentalPaidAmount,
+    damagePaidAmount: metrics.damagePaidAmount,
+    otherPaidAmount: metrics.otherPaidAmount,
+    depositCollectedAmount: metrics.depositCollectedAmount,
+    totalReceivableAmount: metrics.totalReceivableAmount,
+    totalPaidAmount: metrics.totalPaidAmount,
+    totalRemainingAmount: metrics.totalRemainingAmount,
+    leasedDays: metrics.leasedDays,
+    operatingDays: metrics.operatingDays,
+    utilizationRate: metrics.operatingDays === 0 ? 0 : metrics.leasedDays / metrics.operatingDays,
+    // simpleReturnRate is a simplified operating return rate, not accounting ROA or ROE.
+    simpleReturnRate:
+      purchasePriceAmount <= 0 ? null : metrics.rentalPaidAmount / purchasePriceAmount,
+    currentOrderNo: currentOrder?.orderNo ?? null,
+    currentCustomerName: currentOrder?.customer.name ?? null,
+    lastDeliveryAt: metrics.lastDeliveryAt,
+    lastReturnAt: metrics.lastReturnAt
+  };
+}
+
+function emptyAssetProfitabilityMetrics(): AssetProfitabilityMetrics {
+  return {
+    bills: [],
+    currentOrder: null,
+    damagePaidAmount: 0,
+    depositCollectedAmount: 0,
+    lastDeliveryAt: null,
+    lastReturnAt: null,
+    leasedDays: 0,
+    operatingDays: 0,
+    orderMetricsById: new Map(),
+    orders: [],
+    otherPaidAmount: 0,
+    rentalPaidAmount: 0,
+    totalPaidAmount: 0,
+    totalReceivableAmount: 0,
+    totalRemainingAmount: 0
+  };
+}
+
+function emptyOrderProfitabilityMetrics(): OrderProfitabilityMetrics {
+  return {
+    damagePaidAmount: 0,
+    otherPaidAmount: 0,
+    rentalPaidAmount: 0
+  };
+}
+
+function orderMetricsFor(metrics: AssetProfitabilityMetrics, orderId: string) {
+  const existing = metrics.orderMetricsById.get(orderId);
+  if (existing) {
+    return existing;
+  }
+
+  const created = emptyOrderProfitabilityMetrics();
+  metrics.orderMetricsById.set(orderId, created);
+  return created;
+}
+
+function assetProfitabilityComparator(field: AssetProfitabilitySortField, order: "asc" | "desc") {
+  const direction = order === "asc" ? 1 : -1;
+
+  return (
+    left: ReturnType<typeof assetProfitabilityVehicleRow>,
+    right: ReturnType<typeof assetProfitabilityVehicleRow>
+  ) => {
+    const leftValue = sortableNumber(left[field]);
+    const rightValue = sortableNumber(right[field]);
+
+    if (leftValue === rightValue) {
+      return left.vehicleNo.localeCompare(right.vehicleNo);
+    }
+
+    return (leftValue - rightValue) * direction;
+  };
+}
+
+function sortableNumber(value: number | null) {
+  return value ?? Number.NEGATIVE_INFINITY;
+}
+
+function leasedDaysForOrder(
+  order: Pick<AssetProfitabilityOrderRecord, "actualDeliveryAt" | "actualReturnAt" | "endDate">,
+  range: ReturnType<typeof resolveReportDateRange>
+) {
+  if (!order.actualDeliveryAt) {
+    return 0;
+  }
+
+  const startDate = maxBusinessDate(
+    businessDateForInstant(order.actualDeliveryAt),
+    range.output.startDate
+  );
+  const rawEndDate = order.actualReturnAt
+    ? businessDateForInstant(order.actualReturnAt)
+    : order.endDate
+      ? formatDateOnly(order.endDate)
+      : range.output.endDate;
+  const endDate = minBusinessDate(rawEndDate, range.output.endDate);
+
+  return inclusiveBusinessDays(startDate, endDate);
+}
+
+function operatingDaysForVehicle(
+  vehicle: Pick<AssetProfitabilityVehicleRecord, "createdAt" | "salePriceHistories">,
+  range: ReturnType<typeof resolveReportDateRange>
+) {
+  const initialPoolDate =
+    vehicle.salePriceHistories
+      .filter((history) => history.reviewType === "INITIAL_POOL")
+      .map((history) => formatDateOnly(history.effectiveFrom))
+      .sort()[0] ?? businessDateForInstant(vehicle.createdAt);
+  const startDate = maxBusinessDate(initialPoolDate, range.output.startDate);
+
+  return inclusiveBusinessDays(startDate, range.output.endDate);
+}
+
+function assetProfitabilityLifecycleNodes(vehicle: AssetProfitabilityVehicleDetailRecord) {
+  const salePriceNodes = vehicle.salePriceHistories.map((history) => ({
+    type:
+      history.reviewType === "INITIAL_POOL"
+        ? "INITIAL_POOL"
+        : history.reviewType === "RETURN_REINIT"
+          ? "RETURN_REINIT"
+          : "SALE_PRICE_REVIEW",
+    occurredAt: history.effectiveFrom,
+    refId: history.id,
+    label: history.reviewType,
+    amount: toNumber(history.afterSalePriceAmount)
+  }));
+  const deliveryNodes = vehicle.deliveries.map((delivery) => ({
+    type: "DELIVERY",
+    occurredAt: delivery.deliveredAt ?? delivery.scheduledAt,
+    refId: delivery.id,
+    label: delivery.deliveryNo,
+    status: delivery.deliveryStatus
+  }));
+  const returnNodes = vehicle.returns.map((vehicleReturn) => ({
+    type: "RETURN",
+    occurredAt: vehicleReturn.returnedAt ?? vehicleReturn.scheduledAt,
+    refId: vehicleReturn.id,
+    label: vehicleReturn.returnNo,
+    status: vehicleReturn.returnStatus
+  }));
+
+  return [...salePriceNodes, ...deliveryNodes, ...returnNodes].sort(
+    (left, right) => (left.occurredAt?.getTime() ?? 0) - (right.occurredAt?.getTime() ?? 0)
+  );
+}
+
 function leasedVehicleCount(statusCount: Map<string, number>) {
-  return (statusCount.get(VehicleStatus.LEASED) ?? 0) + (statusCount.get(VehicleStatus.RENTED) ?? 0);
+  return (
+    (statusCount.get(VehicleStatus.LEASED) ?? 0) + (statusCount.get(VehicleStatus.RENTED) ?? 0)
+  );
 }
 
 function incomeMap(bills: Array<{ order: { vehicleModel: VehicleModel }; paidAmount: bigint }>) {
   const result = new Map<string, number>();
 
   for (const bill of bills) {
-    result.set(bill.order.vehicleModel, (result.get(bill.order.vehicleModel) ?? 0) + Number(bill.paidAmount));
+    result.set(
+      bill.order.vehicleModel,
+      (result.get(bill.order.vehicleModel) ?? 0) + Number(bill.paidAmount)
+    );
   }
 
   return result;
 }
 
 function vehicleModelAssetRows(
-  groups: Array<{ _count: { _all: number }; status: VehicleStatus; vehicleModel: VehicleModel | null }>,
+  groups: Array<{
+    _count: { _all: number };
+    status: VehicleStatus;
+    vehicleModel: VehicleModel | null;
+  }>,
   incomeByVehicleModel: Map<string, number>
 ) {
   const rows = new Map<
     string,
-    { availableVehicles: number; incomeAmount: number; leasedVehicles: number; totalVehicles: number; vehicleModel: VehicleModel | null }
+    {
+      availableVehicles: number;
+      incomeAmount: number;
+      leasedVehicles: number;
+      totalVehicles: number;
+      vehicleModel: VehicleModel | null;
+    }
   >();
 
   for (const group of groups) {
@@ -2050,4 +2736,30 @@ function decimalToNumber(value: unknown) {
 
 function sumNumbers(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0);
+}
+
+function average(values: number[]) {
+  return values.length === 0 ? 0 : sumNumbers(values) / values.length;
+}
+
+function averageNullable(values: number[]) {
+  return values.length === 0 ? null : average(values);
+}
+
+function minBusinessDate(left: string, right: string) {
+  return left <= right ? left : right;
+}
+
+function maxBusinessDate(left: string, right: string) {
+  return left >= right ? left : right;
+}
+
+function inclusiveBusinessDays(startDate: string, endDate: string) {
+  if (startDate > endDate) {
+    return 0;
+  }
+
+  const start = businessDateStartUtc(startDate, "startDate");
+  const end = businessDateStartUtc(endDate, "endDate");
+  return Math.floor((end.getTime() - start.getTime()) / DAY_MS) + 1;
 }

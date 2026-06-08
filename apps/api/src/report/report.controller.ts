@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
+import { Controller, Get, Param, Query, Res, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
@@ -7,6 +7,9 @@ import { AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   BillDetailQueryDto,
+  AssetProfitabilityQueryDto,
+  AssetProfitabilityVehicleDetailQueryDto,
+  AssetProfitabilityVehicleListQueryDto,
   CollectionCaseDetailQueryDto,
   DepositLedgerDetailQueryDto,
   EntitlementGrantDetailQueryDto,
@@ -39,7 +42,10 @@ export class ReportController {
 
   @Get("orders/export")
   @RequirePermissions(PermissionCode.REPORT_VIEW)
-  async exportOrderReport(@Query() query: OrderReportQueryDto, @Res({ passthrough: true }) response: Response) {
+  async exportOrderReport(
+    @Query() query: OrderReportQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
     return csvResponse(response, await this.reportService.exportOrderReport(query));
   }
 
@@ -51,7 +57,10 @@ export class ReportController {
 
   @Get("details/orders/export")
   @RequirePermissions(PermissionCode.REPORT_VIEW)
-  async exportOrderDetails(@Query() query: OrderDetailQueryDto, @Res({ passthrough: true }) response: Response) {
+  async exportOrderDetails(
+    @Query() query: OrderDetailQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
     return csvResponse(response, await this.reportService.exportOrderDetails(query));
   }
 
@@ -63,7 +72,10 @@ export class ReportController {
 
   @Get("finance/export")
   @RequirePermissions(PermissionCode.REPORT_FINANCE)
-  async exportFinanceReport(@Query() query: ReportDateRangeQueryDto, @Res({ passthrough: true }) response: Response) {
+  async exportFinanceReport(
+    @Query() query: ReportDateRangeQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
     return csvResponse(response, await this.reportService.exportFinanceReport(query));
   }
 
@@ -75,7 +87,10 @@ export class ReportController {
 
   @Get("details/bills/export")
   @RequirePermissions(PermissionCode.REPORT_FINANCE)
-  async exportBillDetails(@Query() query: BillDetailQueryDto, @Res({ passthrough: true }) response: Response) {
+  async exportBillDetails(
+    @Query() query: BillDetailQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
     return csvResponse(response, await this.reportService.exportBillDetails(query));
   }
 
@@ -160,6 +175,27 @@ export class ReportController {
     return this.reportService.getVehicleAssetReport(query);
   }
 
+  @Get("asset-profitability/summary")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  getAssetProfitabilitySummary(@Query() query: AssetProfitabilityQueryDto) {
+    return this.reportService.getAssetProfitabilitySummary(query);
+  }
+
+  @Get("asset-profitability/vehicles")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  getAssetProfitabilityVehicles(@Query() query: AssetProfitabilityVehicleListQueryDto) {
+    return this.reportService.getAssetProfitabilityVehicles(query);
+  }
+
+  @Get("asset-profitability/vehicles/:id")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  getAssetProfitabilityVehicleDetail(
+    @Param("id") id: string,
+    @Query() query: AssetProfitabilityVehicleDetailQueryDto
+  ) {
+    return this.reportService.getAssetProfitabilityVehicleDetail(id, query);
+  }
+
   @Get("vehicle-assets/export")
   @RequirePermissions(PermissionCode.REPORT_ASSET)
   async exportVehicleAssetReport(
@@ -177,7 +213,10 @@ export class ReportController {
 
   @Get("details/vehicles/export")
   @RequirePermissions(PermissionCode.REPORT_ASSET)
-  async exportVehicleDetails(@Query() query: VehicleDetailQueryDto, @Res({ passthrough: true }) response: Response) {
+  async exportVehicleDetails(
+    @Query() query: VehicleDetailQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
     return csvResponse(response, await this.reportService.exportVehicleDetails(query));
   }
 

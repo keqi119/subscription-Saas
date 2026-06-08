@@ -58,6 +58,20 @@ export const STATUS_LABELS: Record<string, string> = {
   UNDER_REVIEW: "审批中"
 };
 
+export const VEHICLE_STATUS_LABELS: Record<string, string> = {
+  AVAILABLE: "可租用",
+  DRAFT: "草稿",
+  IN_PREPARATION: "整备中",
+  LEASED: "已出租",
+  MAINTENANCE: "维修中",
+  RENTED: "已租赁",
+  RESERVED: "签约锁定",
+  RETIRED: "已退役",
+  RETURNED: "已退回",
+  REVIEW_RESERVED: "审核占用",
+  SOLD: "已出售"
+};
+
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "在租",
   CANCELLED: "已取消",
@@ -320,7 +334,7 @@ export const PRODUCT_VERSION_STATUS_LABELS: Record<string, string> = {
 
 export const SALE_PRICE_REVIEW_TYPE_LABELS: Record<string, string> = {
   INITIAL_POOL: "新入池初始化",
-  MANUAL_ADJUST: "人工调整",
+  MANUAL_ADJUST: "手工调整",
   QUARTERLY_REVIEW: "季度复核",
   RETURN_REINIT: "退车再入池重新定价"
 };
@@ -332,8 +346,8 @@ export const VEHICLE_BASE_FEE_MODE_LABELS: Record<string, string> = {
 };
 
 export const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<string, string> = {
-  BAAS: "BaaS / 电池租用",
-  BUYOUT: "电池买断"
+  BAAS: "BaaS",
+  BUYOUT: "买断"
 };
 
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
@@ -592,6 +606,8 @@ export const MENU_LABELS: Record<string, string> = {
   products: "产品中心",
   quotes: "订阅报价",
   reports: "经营看板",
+  "reports.asset_profitability": "资产经营分析",
+  "reports.overview": "经营总览",
   risk: "风控中心",
   "risk.deposit_rules": "押金规则",
   system: "系统管理",

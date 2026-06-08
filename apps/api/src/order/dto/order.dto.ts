@@ -96,6 +96,26 @@ export class ConsumeEntitlementDto {
   remark?: string;
 }
 
+export class EntitlementMonthlyRenewalDto {
+  @IsOptional()
+  @IsDateString()
+  asOfDate?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+}
+
+export class ExpireEntitlementsDto {
+  @IsOptional()
+  @IsDateString()
+  asOfDate?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+}
+
 export class ListEntitlementUsagesQueryDto {
   @IsOptional()
   @IsUUID()

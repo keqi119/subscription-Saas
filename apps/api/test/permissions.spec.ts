@@ -104,6 +104,18 @@ describe("order entitlement permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       OrderController.prototype.generateOrderEntitlements
     );
+    const renewMonthlyPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.renewOrderMonthlyEntitlements
+    );
+    const batchRenewMonthlyPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.generateMonthlyEntitlements
+    );
+    const expirePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      OrderController.prototype.expireEntitlements
+    );
     const consumePermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       OrderController.prototype.consumeOrderEntitlement
@@ -112,10 +124,15 @@ describe("order entitlement permissions", () => {
     expect(viewPermissions).toEqual([PermissionCode.ENTITLEMENT_VIEW]);
     expect(usageListPermissions).toEqual([PermissionCode.ENTITLEMENT_VIEW]);
     expect(generatePermissions).toEqual([PermissionCode.ENTITLEMENT_GENERATE]);
+    expect(renewMonthlyPermissions).toEqual([PermissionCode.ENTITLEMENT_GENERATE]);
+    expect(batchRenewMonthlyPermissions).toEqual([PermissionCode.ENTITLEMENT_GENERATE]);
+    expect(expirePermissions).toEqual([PermissionCode.ENTITLEMENT_ADJUST]);
     expect(consumePermissions).toEqual([PermissionCode.ENTITLEMENT_CONSUME]);
     expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], viewPermissions)).toBe(true);
     expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], usageListPermissions)).toBe(true);
     expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], generatePermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], renewMonthlyPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], expirePermissions)).toBe(false);
     expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], consumePermissions)).toBe(false);
   });
 });
@@ -587,16 +604,16 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const entitlementViewPermissions = [\"entitlement:view\"]");
     expect(seedSource).toContain("const entitlementGeneratePermissions = [\"entitlement:view\", \"entitlement:generate\"]");
     expect(seedSource).toContain(
-      "const entitlementOperationPermissions = [\"entitlement:view\", \"entitlement:generate\", \"entitlement:consume\"]"
+      "const entitlementOperationPermissions = [\"entitlement:view\", \"entitlement:generate\", \"entitlement:adjust\", \"entitlement:consume\"]"
     );
-    expectRolePermissions("OP", ["entitlement:view", "entitlement:generate", "entitlement:consume"]);
+    expectRolePermissions("OP", ["entitlement:view", "entitlement:generate", "entitlement:adjust", "entitlement:consume"]);
     expectRolePermissions("SA", ["entitlement:view"]);
     expectRolePermissions("GM", ["entitlement:view"]);
     expect(roleHasPermission(rolePermissionArray("SA"), "entitlement:generate")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "entitlement:generate")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "entitlement:consume")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "entitlement:consume")).toBe(false);
-    expect(roleHasPermission(rolePermissionArray("OP"), "entitlement:adjust")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "entitlement:adjust")).toBe(true);
   });
 
   it("calibrates report permissions by role", () => {

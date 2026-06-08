@@ -52,6 +52,8 @@ import {
   CreateOrderFromQuoteDto,
   ConfirmDeliveryDto,
   ConfirmReturnDto,
+  EntitlementMonthlyRenewalDto,
+  ExpireEntitlementsDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
@@ -226,6 +228,29 @@ type ReturnWithDetails = Prisma.VehicleReturnGetPayload<{ include: typeof return
 type EntitlementAccountWithGrants = Prisma.OrderEntitlementAccountGetPayload<{ include: typeof entitlementAccountInclude }>;
 type EntitlementGrantWithUsageOverview = Prisma.OrderEntitlementGrantGetPayload<{ include: typeof entitlementGrantUsageOverviewInclude }>;
 type EntitlementUsageRecord = Prisma.OrderEntitlementUsageGetPayload<object>;
+type EntitlementRenewalAction =
+  | "GENERATED"
+  | "SKIPPED_NOT_DUE"
+  | "SKIPPED_EXISTING"
+  | "FAILED"
+  | "DRY_RUN_GENERATE"
+  | "DRY_RUN_SKIP"
+  | "DRY_RUN_FAILED";
+
+type MonthlyRenewalPlan = {
+  action: EntitlementRenewalAction;
+  account: EntitlementAccountWithGrants;
+  asOfDate: Date;
+  dryRun: boolean;
+  existingGrants: EntitlementAccountWithGrants["grants"];
+  grantInputs: OrderEntitlementGrantInput[];
+  missingGrantInputs: OrderEntitlementGrantInput[];
+  nextCycleIndex: number;
+  order: OrderWithDetails;
+  periodEnd: Date;
+  periodStart: Date;
+  reason: string;
+};
 
 @Injectable()
 export class OrderService {
@@ -277,8 +302,9 @@ export class OrderService {
       throw new BadRequestException("当前订单套餐快照缺少可生成权益的组件。");
     }
 
-    const periodStart = toBusinessDate(order.actualDeliveryAt!);
-    const periodEnd = resolveEntitlementPeriodEnd(order, periodStart);
+    const firstPeriod = resolveMonthlyEntitlementPeriod(order, 0);
+    const periodStart = firstPeriod.periodStart;
+    const periodEnd = firstPeriod.periodEnd;
     const accountSnapshot = toJsonValue({
       customer: order.customer,
       generatedAt: new Date().toISOString(),
@@ -387,6 +413,169 @@ export class OrderService {
     return toEntitlementResponse(result.account);
   }
 
+  async renewOrderMonthlyEntitlements(
+    id: string,
+    dto: EntitlementMonthlyRenewalDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+
+    const asOfDate = resolveEntitlementAsOfDate(dto.asOfDate);
+    const dryRun = Boolean(dto.dryRun);
+    const plan = await this.buildMonthlyRenewalPlan(order, asOfDate, dryRun);
+    if (plan.action !== "GENERATED" && plan.action !== "DRY_RUN_GENERATE") {
+      return toMonthlyRenewalResponse(plan);
+    }
+    if (dryRun) {
+      return toMonthlyRenewalResponse(plan);
+    }
+
+    const createdGrants = await this.createMonthlyRenewalGrants(plan, user);
+    const action = createdGrants.length > 0 ? "GENERATED" : "SKIPPED_EXISTING";
+    const response = toMonthlyRenewalResponse(plan, action, createdGrants.map((grant) => grant.id));
+
+    if (createdGrants.length > 0) {
+      await this.writeEntitlementAudit(
+        AuditAction.CREATE,
+        "order_entitlement_grant",
+        plan.account.id,
+        {
+          accountId: plan.account.id,
+          asOfDate: dateKey(plan.asOfDate),
+          grantCount: createdGrants.length,
+          grantIds: createdGrants.map((grant) => grant.id),
+          orderId: order.id,
+          periodEnd: dateKey(plan.periodEnd),
+          periodStart: dateKey(plan.periodStart),
+          source: EntitlementGrantSource.MONTHLY_RENEWAL
+        },
+        user,
+        context
+      );
+    }
+
+    return response;
+  }
+
+  async generateMonthlyEntitlements(dto: EntitlementMonthlyRenewalDto, user: RequestUser, context: RequestContext) {
+    const asOfDate = resolveEntitlementAsOfDate(dto.asOfDate);
+    const dryRun = Boolean(dto.dryRun);
+    const orders = await this.prisma.subscriptionOrder.findMany({
+      include: orderInclude,
+      orderBy: { actualDeliveryAt: "asc" },
+      where: {
+        actualDeliveryAt: { not: null },
+        deletedAt: null,
+        orderStatus: OrderStatus.ACTIVE
+      }
+    });
+    const items: Array<Record<string, unknown>> = [];
+    const generatedAuditItems: Array<Record<string, unknown>> = [];
+
+    for (const order of orders) {
+      try {
+        const plan = await this.buildMonthlyRenewalPlan(order, asOfDate, dryRun);
+        if (plan.action === "GENERATED" && !dryRun) {
+          const createdGrants = await this.createMonthlyRenewalGrants(plan, user);
+          const action = createdGrants.length > 0 ? "GENERATED" : "SKIPPED_EXISTING";
+          const item = toMonthlyRenewalItem(plan, action, createdGrants.map((grant) => grant.id));
+          items.push(item);
+          if (createdGrants.length > 0) {
+            generatedAuditItems.push({
+              accountId: plan.account.id,
+              grantCount: createdGrants.length,
+              grantIds: createdGrants.map((grant) => grant.id),
+              orderId: order.id,
+              orderNo: order.orderNo,
+              periodEnd: dateKey(plan.periodEnd),
+              periodStart: dateKey(plan.periodStart)
+            });
+          }
+        } else {
+          items.push(toMonthlyRenewalItem(plan));
+        }
+      } catch (error) {
+        items.push(toMonthlyRenewalFailedItem(order, dryRun, error));
+      }
+    }
+
+    if (!dryRun && generatedAuditItems.length > 0) {
+      await this.writeEntitlementAudit(
+        AuditAction.CREATE,
+        "order_entitlement_grant",
+        `monthly-renewal-${dateKey(asOfDate)}`,
+        {
+          asOfDate: dateKey(asOfDate),
+          generatedCount: generatedAuditItems.length,
+          items: generatedAuditItems,
+          source: EntitlementGrantSource.MONTHLY_RENEWAL
+        },
+        user,
+        context
+      );
+    }
+
+    return toMonthlyRenewalBatchResponse(items, dryRun);
+  }
+
+  async expireEntitlements(dto: ExpireEntitlementsDto, user: RequestUser, context: RequestContext) {
+    const asOfDate = resolveEntitlementAsOfDate(dto.asOfDate);
+    const dryRun = Boolean(dto.dryRun);
+    const where: Prisma.OrderEntitlementGrantWhereInput = {
+      deletedAt: null,
+      grantPeriodEnd: { lt: asOfDate },
+      status: EntitlementGrantStatus.ACTIVE
+    };
+    const [items, activeCount] = await Promise.all([
+      this.prisma.orderEntitlementGrant.findMany({
+        orderBy: { grantPeriodEnd: "asc" },
+        where
+      }),
+      this.prisma.orderEntitlementGrant.count({
+        where: { deletedAt: null, status: EntitlementGrantStatus.ACTIVE }
+      })
+    ]);
+
+    if (dryRun) {
+      return toExpireEntitlementsResponse(items, activeCount, dryRun);
+    }
+
+    const result = await this.prisma.orderEntitlementGrant.updateMany({
+      data: {
+        status: EntitlementGrantStatus.EXPIRED,
+        updatedBy: user.id
+      },
+      where
+    });
+
+    if (result.count > 0) {
+      await this.writeEntitlementAudit(
+        AuditAction.UPDATE,
+        "order_entitlement_grant",
+        `entitlement-expire-${dateKey(asOfDate)}`,
+        {
+          asOfDate: dateKey(asOfDate),
+          expiredCount: result.count,
+          grantIds: items.map((grant) => grant.id),
+          items: items.map((grant) => ({
+            accountId: grant.accountId,
+            grantId: grant.id,
+            orderId: grant.orderId,
+            periodEnd: grant.grantPeriodEnd ? dateKey(grant.grantPeriodEnd) : null,
+            periodStart: dateKey(grant.grantPeriodStart)
+          })),
+          source: "ENTITLEMENT_EXPIRE"
+        },
+        user,
+        context
+      );
+    }
+
+    return toExpireEntitlementsResponse(items, activeCount, dryRun, result.count);
+  }
+
   async consumeOrderEntitlement(
     id: string,
     grantId: string,
@@ -452,6 +641,7 @@ export class OrderService {
         }
       });
       assertCanConsumeEntitlementGrant(grant);
+      assertGrantWithinConsumptionPeriod(grant, order, occurredAt);
 
       const remainingAmount = requiredGrantRemainingAmount(grant);
       if (usedAmount.gt(remainingAmount)) {
@@ -2210,6 +2400,154 @@ export class OrderService {
     return order;
   }
 
+  private async buildMonthlyRenewalPlan(
+    order: OrderWithDetails,
+    asOfDate: Date,
+    dryRun: boolean
+  ): Promise<MonthlyRenewalPlan> {
+    assertCanGenerateEntitlements(order);
+
+    const account = await this.findActiveEntitlementAccount(order.id);
+    if (!account) {
+      throw new BadRequestException("当前订单缺少生效中的权益账户，不能续发。");
+    }
+
+    const snapshot = resolveOrderEntitlementSnapshot(order);
+    const grantInputs = buildOrderEntitlementGrantInputs(snapshot.packageSnapshot);
+    if (grantInputs.length === 0) {
+      throw new BadRequestException("当前订单套餐快照缺少可生成权益的组件。");
+    }
+
+    const latestCycleIndex = resolveLatestEntitlementCycleIndex(order, account);
+    if (latestCycleIndex === null) {
+      throw new BadRequestException("当前权益账户缺少首期权益，不能续发。");
+    }
+
+    const latestPeriod = resolveMonthlyEntitlementPeriod(order, latestCycleIndex);
+    const latestExistingGrants = findExistingMonthlyRenewalGrants(account, latestPeriod.periodStart, latestPeriod.periodEnd, grantInputs);
+    const latestPeriodCovered = latestCycleIndex > 0 && latestExistingGrants.length === grantInputs.length;
+    const nextCycleIndex = latestCycleIndex + 1;
+    const nextPeriod = resolveMonthlyEntitlementPeriod(order, nextCycleIndex);
+
+    if (nextPeriod.periodStart > asOfDate) {
+      if (latestPeriodCovered && latestPeriod.periodStart <= asOfDate && asOfDate <= latestPeriod.periodEnd) {
+        return {
+          account,
+          action: dryRun ? "DRY_RUN_SKIP" : "SKIPPED_EXISTING",
+          asOfDate,
+          dryRun,
+          existingGrants: latestExistingGrants,
+          grantInputs,
+          missingGrantInputs: [],
+          nextCycleIndex: latestCycleIndex,
+          order,
+          periodEnd: latestPeriod.periodEnd,
+          periodStart: latestPeriod.periodStart,
+          reason: "本期权益已存在。"
+        };
+      }
+
+      return {
+        account,
+        action: dryRun ? "DRY_RUN_SKIP" : "SKIPPED_NOT_DUE",
+        asOfDate,
+        dryRun,
+        existingGrants: [],
+        grantInputs,
+        missingGrantInputs: [],
+        nextCycleIndex,
+        order,
+        periodEnd: nextPeriod.periodEnd,
+        periodStart: nextPeriod.periodStart,
+        reason: "未到续发日期。"
+      };
+    }
+
+    const existingGrants = findExistingMonthlyRenewalGrants(account, nextPeriod.periodStart, nextPeriod.periodEnd, grantInputs);
+    const missingGrantInputs = grantInputs.filter((grantInput) => !existingGrants.some((grant) => isSameEntitlementGrant(grant, grantInput)));
+    if (missingGrantInputs.length === 0) {
+      return {
+        account,
+        action: dryRun ? "DRY_RUN_SKIP" : "SKIPPED_EXISTING",
+        asOfDate,
+        dryRun,
+        existingGrants,
+        grantInputs,
+        missingGrantInputs,
+        nextCycleIndex,
+        order,
+        periodEnd: nextPeriod.periodEnd,
+        periodStart: nextPeriod.periodStart,
+        reason: "本期权益已存在。"
+      };
+    }
+
+    return {
+      account,
+      action: dryRun ? "DRY_RUN_GENERATE" : "GENERATED",
+      asOfDate,
+      dryRun,
+      existingGrants,
+      grantInputs,
+      missingGrantInputs,
+      nextCycleIndex,
+      order,
+      periodEnd: nextPeriod.periodEnd,
+      periodStart: nextPeriod.periodStart,
+      reason: "-"
+    };
+  }
+
+  private async createMonthlyRenewalGrants(plan: MonthlyRenewalPlan, user: RequestUser) {
+    return withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      const createdGrants: Prisma.OrderEntitlementGrantGetPayload<object>[] = [];
+
+      for (const grant of plan.missingGrantInputs) {
+        const existingGrant = await tx.orderEntitlementGrant.findFirst({
+          where: {
+            accountId: plan.account.id,
+            deletedAt: null,
+            entitlementName: grant.entitlementName,
+            entitlementType: grant.entitlementType,
+            grantPeriodEnd: plan.periodEnd,
+            grantPeriodStart: plan.periodStart,
+            grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
+            orderId: plan.order.id,
+            unit: grant.unit
+          }
+        });
+        if (existingGrant) {
+          continue;
+        }
+
+        const createdGrant = await tx.orderEntitlementGrant.create({
+          data: {
+            accountId: plan.account.id,
+            createdBy: user.id,
+            customerId: plan.order.customerId,
+            entitlementName: grant.entitlementName,
+            entitlementType: grant.entitlementType,
+            grantNo: createBusinessNo("EG"),
+            grantPeriodEnd: plan.periodEnd,
+            grantPeriodStart: plan.periodStart,
+            grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
+            orderId: plan.order.id,
+            remainingAmount: grant.remainingAmount,
+            snapshot: grant.snapshot,
+            status: EntitlementGrantStatus.ACTIVE,
+            totalAmount: grant.totalAmount,
+            unit: grant.unit,
+            updatedBy: user.id,
+            usedAmount: grant.usedAmount
+          }
+        });
+        createdGrants.push(createdGrant);
+      }
+
+      return createdGrants;
+    }));
+  }
+
   private async findActiveEntitlementAccount(orderId: string) {
     return this.prisma.orderEntitlementAccount.findFirst({
       include: entitlementAccountInclude,
@@ -2422,6 +2760,36 @@ function requiredGrantRemainingAmount(grant: Prisma.OrderEntitlementGrantGetPayl
   return grant.remainingAmount;
 }
 
+function assertGrantWithinConsumptionPeriod(
+  grant: Prisma.OrderEntitlementGrantGetPayload<object>,
+  order: OrderWithDetails,
+  occurredAt: Date
+) {
+  const occurredDate = toBusinessDate(occurredAt);
+  const periodStart = toBusinessDate(grant.grantPeriodStart);
+  const periodEnd = resolveConsumableGrantPeriodEnd(grant, order, periodStart);
+  if (!periodEnd) {
+    throw new BadRequestException("权益缺少有效期，不能消耗。");
+  }
+  if (occurredDate < periodStart || occurredDate > periodEnd) {
+    throw new BadRequestException("权益不在有效期内，不能消耗");
+  }
+}
+
+function resolveConsumableGrantPeriodEnd(
+  grant: Prisma.OrderEntitlementGrantGetPayload<object>,
+  order: OrderWithDetails,
+  periodStart: Date
+) {
+  if (grant.grantPeriodEnd) {
+    return toBusinessDate(grant.grantPeriodEnd);
+  }
+  if (grant.grantSource === EntitlementGrantSource.ORDER_START && order.actualDeliveryAt) {
+    return resolveMonthlyEntitlementPeriod(order, 0, periodStart).periodEnd;
+  }
+  return null;
+}
+
 function resolveOrderEntitlementSnapshot(order: OrderWithDetails): OrderEntitlementSnapshot {
   const orderRecord = order as unknown as SnapshotRecord;
   const quoteRecord = asSnapshotRecord(order.quote);
@@ -2587,21 +2955,93 @@ function resolveSubscriptionPlanId(packageSnapshot: OrderEntitlementPackageSnaps
   return packageSnapshot.subscriptionPlanId ?? stringField(packageSnapshot.subscriptionPlan, "id");
 }
 
-function resolveEntitlementPeriodEnd(order: OrderWithDetails, periodStart: Date) {
-  if (order.endDate) {
-    return toBusinessDate(order.endDate);
-  }
-  if (!order.periodMonths || order.periodMonths <= 0) {
-    return null;
-  }
+function resolveMonthlyEntitlementPeriod(order: OrderWithDetails, cycleIndex: number, fallbackStart?: Date) {
+  const baseDate = fallbackStart ?? toBusinessDate(order.actualDeliveryAt!);
+  const periodStart = fallbackStart ? toBusinessDate(fallbackStart) : addMonthsClampedUtc(baseDate, cycleIndex);
+  const nextPeriodStart = fallbackStart ? addMonthsClampedUtc(periodStart, 1) : addMonthsClampedUtc(baseDate, cycleIndex + 1);
+  return {
+    periodEnd: addDaysUtc(nextPeriodStart, -1),
+    periodStart
+  };
+}
 
-  const periodEnd = new Date(Date.UTC(
-    periodStart.getUTCFullYear(),
-    periodStart.getUTCMonth() + order.periodMonths,
-    periodStart.getUTCDate()
+function resolveEntitlementAsOfDate(value?: string) {
+  return toBusinessDate(value ? parseDateTime(value, "asOfDate") : new Date());
+}
+
+function resolveLatestEntitlementCycleIndex(order: OrderWithDetails, account: EntitlementAccountWithGrants) {
+  let latestCycleIndex: number | null = null;
+  for (const grant of account.grants) {
+    if (grant.grantSource !== EntitlementGrantSource.ORDER_START && grant.grantSource !== EntitlementGrantSource.MONTHLY_RENEWAL) {
+      continue;
+    }
+    const cycleIndex = grant.grantSource === EntitlementGrantSource.ORDER_START
+      ? 0
+      : resolveCycleIndexByPeriodStart(order, grant.grantPeriodStart);
+    if (cycleIndex === null) {
+      continue;
+    }
+    latestCycleIndex = latestCycleIndex === null ? cycleIndex : Math.max(latestCycleIndex, cycleIndex);
+  }
+  return latestCycleIndex;
+}
+
+function resolveCycleIndexByPeriodStart(order: OrderWithDetails, periodStart: Date) {
+  const targetKey = dateKey(toBusinessDate(periodStart));
+  const maxCycles = Math.max(order.periodMonths + 24, 240);
+  for (let cycleIndex = 0; cycleIndex <= maxCycles; cycleIndex += 1) {
+    const currentPeriod = resolveMonthlyEntitlementPeriod(order, cycleIndex);
+    const currentKey = dateKey(currentPeriod.periodStart);
+    if (currentKey === targetKey) {
+      return cycleIndex;
+    }
+    if (currentPeriod.periodStart > periodStart) {
+      return null;
+    }
+  }
+  return null;
+}
+
+function findExistingMonthlyRenewalGrants(
+  account: EntitlementAccountWithGrants,
+  periodStart: Date,
+  periodEnd: Date,
+  grantInputs: OrderEntitlementGrantInput[]
+) {
+  return account.grants.filter((grant) =>
+    grant.grantSource === EntitlementGrantSource.MONTHLY_RENEWAL &&
+    dateKey(grant.grantPeriodStart) === dateKey(periodStart) &&
+    grant.grantPeriodEnd !== null &&
+    dateKey(grant.grantPeriodEnd) === dateKey(periodEnd) &&
+    grantInputs.some((grantInput) => isSameEntitlementGrant(grant, grantInput))
+  );
+}
+
+function isSameEntitlementGrant(
+  grant: Pick<EntitlementAccountWithGrants["grants"][number], "entitlementName" | "entitlementType" | "unit">,
+  grantInput: OrderEntitlementGrantInput
+) {
+  return grant.entitlementType === grantInput.entitlementType &&
+    grant.entitlementName === grantInput.entitlementName &&
+    grant.unit === grantInput.unit;
+}
+
+function addMonthsClampedUtc(date: Date, months: number) {
+  const firstOfTargetMonth = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
+  const lastDayOfTargetMonth = new Date(Date.UTC(
+    firstOfTargetMonth.getUTCFullYear(),
+    firstOfTargetMonth.getUTCMonth() + 1,
+    0
+  )).getUTCDate();
+  return new Date(Date.UTC(
+    firstOfTargetMonth.getUTCFullYear(),
+    firstOfTargetMonth.getUTCMonth(),
+    Math.min(date.getUTCDate(), lastDayOfTargetMonth)
   ));
-  periodEnd.setUTCDate(periodEnd.getUTCDate() - 1);
-  return periodEnd;
+}
+
+function addDaysUtc(date: Date, days: number) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
 }
 
 function toBusinessDate(value: Date) {
@@ -2612,6 +3052,104 @@ function toEntitlementResponse(account: EntitlementAccountWithGrants) {
   return {
     account: toEntitlementAccountView(account),
     grants: account.grants.map(toEntitlementGrantView)
+  };
+}
+
+function toMonthlyRenewalResponse(
+  plan: MonthlyRenewalPlan,
+  overrideAction?: EntitlementRenewalAction,
+  grantIds: string[] = []
+) {
+  return {
+    dryRun: plan.dryRun,
+    grants: plan.missingGrantInputs.map(toMonthlyRenewalGrantPreview),
+    ...toMonthlyRenewalItem(plan, overrideAction, grantIds)
+  };
+}
+
+function toMonthlyRenewalItem(
+  plan: MonthlyRenewalPlan,
+  overrideAction?: EntitlementRenewalAction,
+  grantIds: string[] = []
+) {
+  const action = overrideAction ?? plan.action;
+  const isExisting = action === "SKIPPED_EXISTING" || (action === "DRY_RUN_SKIP" && plan.reason !== "未到续发日期。");
+  return {
+    accountId: plan.account.id,
+    action,
+    grantCount: isExisting ? plan.existingGrants.length : plan.missingGrantInputs.length,
+    grantIds,
+    orderId: plan.order.id,
+    orderNo: plan.order.orderNo,
+    periodEnd: dateKey(plan.periodEnd),
+    periodStart: dateKey(plan.periodStart),
+    reason: action === "GENERATED" || action === "DRY_RUN_GENERATE" ? "-" : plan.reason
+  };
+}
+
+function toMonthlyRenewalGrantPreview(grant: OrderEntitlementGrantInput) {
+  return {
+    entitlementName: grant.entitlementName,
+    entitlementType: grant.entitlementType,
+    remainingAmount: toPlain(grant.remainingAmount),
+    totalAmount: toPlain(grant.totalAmount),
+    unit: grant.unit,
+    usedAmount: toPlain(grant.usedAmount)
+  };
+}
+
+function toMonthlyRenewalFailedItem(order: OrderWithDetails, dryRun: boolean, error: unknown) {
+  return {
+    action: dryRun ? "DRY_RUN_FAILED" : "FAILED",
+    grantCount: 0,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    periodEnd: null,
+    periodStart: null,
+    reason: error instanceof Error ? error.message : "权益月度续发失败。"
+  };
+}
+
+function toMonthlyRenewalBatchResponse(items: Array<Record<string, unknown>>, dryRun: boolean) {
+  const generatedActions = new Set(["GENERATED", "DRY_RUN_GENERATE"]);
+  const failedActions = new Set(["FAILED", "DRY_RUN_FAILED"]);
+  const generatedCount = items.filter((item) => generatedActions.has(String(item.action))).length;
+  const failedCount = items.filter((item) => failedActions.has(String(item.action))).length;
+  return {
+    dryRun,
+    failedCount,
+    generatedCount,
+    items,
+    skippedCount: items.length - generatedCount - failedCount
+  };
+}
+
+function toExpireEntitlementsResponse(
+  grants: Array<Prisma.OrderEntitlementGrantGetPayload<object>>,
+  activeCount: number,
+  dryRun: boolean,
+  updatedCount = grants.length
+) {
+  return {
+    dryRun,
+    expiredCount: updatedCount,
+    items: grants.map(toExpireEntitlementItem),
+    skippedCount: Math.max(activeCount - grants.length, 0)
+  };
+}
+
+function toExpireEntitlementItem(grant: Prisma.OrderEntitlementGrantGetPayload<object>) {
+  return {
+    accountId: grant.accountId,
+    entitlementName: grant.entitlementName,
+    entitlementType: grant.entitlementType,
+    grantId: grant.id,
+    grantNo: grant.grantNo,
+    orderId: grant.orderId,
+    periodEnd: grant.grantPeriodEnd ? dateKey(grant.grantPeriodEnd) : null,
+    periodStart: dateKey(grant.grantPeriodStart),
+    status: grant.status,
+    unit: grant.unit
   };
 }
 

@@ -31,6 +31,7 @@ describe("order entitlement grant backend loop", () => {
     expect(result.account?.accountStatus).toBe(EntitlementAccountStatus.ACTIVE);
     expect(result.account?.accountNo).toMatch(/^EA/);
     expect(result.account?.periodStart).toBe("2026-06-10T00:00:00.000Z");
+    expect(result.account?.periodEnd).toBe("2026-07-09T00:00:00.000Z");
     expect(result.grants).toHaveLength(4);
     expect(result.grants.map((grant) => [grant.entitlementType, grant.unit, grant.totalAmount])).toEqual([
       [EntitlementType.MILEAGE, EntitlementUnit.KM, 1500],
@@ -39,6 +40,8 @@ describe("order entitlement grant backend loop", () => {
       [EntitlementType.BENEFIT, EntitlementUnit.TIMES, 2]
     ]);
     expect(result.grants.every((grant) => grant.grantSource === EntitlementGrantSource.ORDER_START)).toBe(true);
+    expect(result.grants.every((grant) => grant.grantPeriodStart === "2026-06-10T00:00:00.000Z")).toBe(true);
+    expect(result.grants.every((grant) => grant.grantPeriodEnd === "2026-07-09T00:00:00.000Z")).toBe(true);
     expect(result.grants.every((grant) => grant.status === EntitlementGrantStatus.ACTIVE)).toBe(true);
     expect(result.grants.every((grant) => grant.usedAmount === 0)).toBe(true);
     expect(result.grants.map((grant) => grant.grantNo).every((grantNo) => grantNo.startsWith("EG"))).toBe(true);
@@ -334,7 +337,7 @@ describe("order entitlement grant backend loop", () => {
       amountHarness.service.consumeOrderEntitlement(
         amountHarness.orderId,
         amountEntitlements.grants[0]!.id,
-        { usedAmount: 2000 },
+        { occurredAt: "2026-06-10T10:00:00.000Z", usedAmount: 2000 },
         amountHarness.user,
         amountHarness.context
       )
@@ -352,7 +355,7 @@ describe("order entitlement grant backend loop", () => {
     const result = (await harness.service.consumeOrderEntitlement(
       harness.orderId,
       entitlements.grants[0]!.id,
-      { usedAmount: 1500 },
+      { occurredAt: "2026-06-10T10:00:00.000Z", usedAmount: 1500 },
       harness.user,
       harness.context
     )) as ConsumeResponse;
@@ -409,14 +412,14 @@ describe("order entitlement grant backend loop", () => {
     const first = (await harness.service.consumeOrderEntitlement(
       harness.orderId,
       entitlements.grants[0]!.id,
-      { externalRefNo: "IDEMPOTENT-001", usedAmount: 100 },
+      { externalRefNo: "IDEMPOTENT-001", occurredAt: "2026-06-10T10:00:00.000Z", usedAmount: 100 },
       harness.user,
       harness.context
     )) as ConsumeResponse;
     const second = (await harness.service.consumeOrderEntitlement(
       harness.orderId,
       entitlements.grants[0]!.id,
-      { externalRefNo: "IDEMPOTENT-001", usedAmount: 100 },
+      { externalRefNo: "IDEMPOTENT-001", occurredAt: "2026-06-10T10:00:00.000Z", usedAmount: 100 },
       harness.user,
       harness.context
     )) as ConsumeResponse;
@@ -438,7 +441,7 @@ describe("order entitlement grant backend loop", () => {
     await harness.service.consumeOrderEntitlement(
       harness.orderId,
       entitlements.grants[0]!.id,
-      { externalRefNo: "AUDIT-001", usedAmount: 100 },
+      { externalRefNo: "AUDIT-001", occurredAt: "2026-06-10T10:00:00.000Z", usedAmount: 100 },
       harness.user,
       harness.context
     );
@@ -459,14 +462,243 @@ describe("order entitlement grant backend loop", () => {
       })
     );
   });
+
+  it("generates next monthly renewal entitlements for an ACTIVE order", async () => {
+    const harness = createEntitlementHarness();
+    await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
+
+    const result = (await harness.service.renewOrderMonthlyEntitlements(
+      harness.orderId,
+      { asOfDate: "2026-07-10", dryRun: false },
+      harness.user,
+      harness.context
+    )) as MonthlyRenewalResponse;
+
+    expect(result.action).toBe("GENERATED");
+    expect(result.periodStart).toBe("2026-07-10");
+    expect(result.periodEnd).toBe("2026-08-09");
+    expect(result.grantCount).toBe(4);
+    expect(harness.state.grants).toHaveLength(8);
+    expect(harness.state.grants.slice(4).every((grant) => grant.grantSource === EntitlementGrantSource.MONTHLY_RENEWAL)).toBe(true);
+  });
+
+  it("rejects monthly renewal when order, delivery, or active account prerequisites are missing", async () => {
+    const inactiveOrderHarness = createEntitlementHarness({ orderStatus: OrderStatus.COMPLETED });
+    await expect(
+      inactiveOrderHarness.service.renewOrderMonthlyEntitlements(
+        inactiveOrderHarness.orderId,
+        { asOfDate: "2026-07-10" },
+        inactiveOrderHarness.user,
+        inactiveOrderHarness.context
+      )
+    ).rejects.toThrow();
+
+    const noDeliveryHarness = createEntitlementHarness({ actualDeliveryAt: null });
+    await expect(
+      noDeliveryHarness.service.renewOrderMonthlyEntitlements(
+        noDeliveryHarness.orderId,
+        { asOfDate: "2026-07-10" },
+        noDeliveryHarness.user,
+        noDeliveryHarness.context
+      )
+    ).rejects.toThrow();
+
+    const noAccountHarness = createEntitlementHarness();
+    await expect(
+      noAccountHarness.service.renewOrderMonthlyEntitlements(
+        noAccountHarness.orderId,
+        { asOfDate: "2026-07-10" },
+        noAccountHarness.user,
+        noAccountHarness.context
+      )
+    ).rejects.toThrow("当前订单缺少生效中的权益账户，不能续发。");
+  });
+
+  it("skips monthly renewal before the next period starts", async () => {
+    const harness = createEntitlementHarness();
+    await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
+
+    const result = (await harness.service.renewOrderMonthlyEntitlements(
+      harness.orderId,
+      { asOfDate: "2026-07-09" },
+      harness.user,
+      harness.context
+    )) as MonthlyRenewalResponse;
+
+    expect(result.action).toBe("SKIPPED_NOT_DUE");
+    expect(result.periodStart).toBe("2026-07-10");
+    expect(harness.state.grants).toHaveLength(4);
+  });
+
+  it("does not duplicate the same monthly renewal period and can generate the following period", async () => {
+    const harness = createEntitlementHarness();
+    await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
+
+    await harness.service.renewOrderMonthlyEntitlements(
+      harness.orderId,
+      { asOfDate: "2026-07-10" },
+      harness.user,
+      harness.context
+    );
+    const duplicate = (await harness.service.renewOrderMonthlyEntitlements(
+      harness.orderId,
+      { asOfDate: "2026-07-10" },
+      harness.user,
+      harness.context
+    )) as MonthlyRenewalResponse;
+    const next = (await harness.service.renewOrderMonthlyEntitlements(
+      harness.orderId,
+      { asOfDate: "2026-08-10" },
+      harness.user,
+      harness.context
+    )) as MonthlyRenewalResponse;
+
+    expect(duplicate.action).toBe("SKIPPED_EXISTING");
+    expect(next.action).toBe("GENERATED");
+    expect(next.periodStart).toBe("2026-08-10");
+    expect(next.periodEnd).toBe("2026-09-09");
+    expect(harness.state.grants).toHaveLength(12);
+  });
+
+  it("dry-runs batch monthly renewal without writing grants or audit logs", async () => {
+    const harness = createEntitlementHarness();
+    await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
+    harness.auditService.write.mockClear();
+
+    const result = (await harness.service.generateMonthlyEntitlements(
+      { asOfDate: "2026-07-10", dryRun: true },
+      harness.user,
+      harness.context
+    )) as MonthlyRenewalBatchResponse;
+
+    expect(result.dryRun).toBe(true);
+    expect(result.generatedCount).toBe(1);
+    expect(result.items[0]?.action).toBe("DRY_RUN_GENERATE");
+    expect(harness.state.grants).toHaveLength(4);
+    expect(harness.auditService.write).not.toHaveBeenCalled();
+  });
+
+  it("batch monthly renewal writes due grants and reports single-order failures", async () => {
+    const successHarness = createEntitlementHarness();
+    await successHarness.service.generateOrderEntitlements(successHarness.orderId, successHarness.user, successHarness.context);
+    successHarness.auditService.write.mockClear();
+
+    const successResult = (await successHarness.service.generateMonthlyEntitlements(
+      { asOfDate: "2026-07-10" },
+      successHarness.user,
+      successHarness.context
+    )) as MonthlyRenewalBatchResponse;
+
+    expect(successResult.generatedCount).toBe(1);
+    expect(successResult.items[0]?.action).toBe("GENERATED");
+    expect(successHarness.state.grants).toHaveLength(8);
+    expect(successHarness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "CREATE", entityType: "order_entitlement_grant", module: "entitlement" })
+    );
+
+    const failedHarness = createEntitlementHarness();
+    const failedResult = (await failedHarness.service.generateMonthlyEntitlements(
+      { asOfDate: "2026-07-10" },
+      failedHarness.user,
+      failedHarness.context
+    )) as MonthlyRenewalBatchResponse;
+    expect(failedResult.failedCount).toBe(1);
+    expect(failedResult.items[0]?.action).toBe("FAILED");
+  });
+
+  it("expires only overdue ACTIVE grants and supports dryRun", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+    harness.state.grants[0]!.grantPeriodEnd = new Date("2026-07-09T00:00:00.000Z");
+    harness.state.grants[1]!.grantPeriodEnd = new Date("2026-07-09T00:00:00.000Z");
+    harness.state.grants[1]!.status = EntitlementGrantStatus.EXHAUSTED;
+    harness.state.grants[2]!.grantPeriodEnd = new Date("2026-07-09T00:00:00.000Z");
+    harness.state.grants[2]!.status = EntitlementGrantStatus.CANCELLED;
+
+    const dryRun = (await harness.service.expireEntitlements(
+      { asOfDate: "2026-07-10", dryRun: true },
+      harness.user,
+      harness.context
+    )) as ExpireEntitlementsResponse;
+    expect(dryRun.expiredCount).toBe(2);
+    expect(harness.state.grants[0]!.status).toBe(EntitlementGrantStatus.ACTIVE);
+
+    harness.auditService.write.mockClear();
+    const result = (await harness.service.expireEntitlements(
+      { asOfDate: "2026-07-10" },
+      harness.user,
+      harness.context
+    )) as ExpireEntitlementsResponse;
+    expect(result.expiredCount).toBe(2);
+    expect(harness.state.grants[0]!.status).toBe(EntitlementGrantStatus.EXPIRED);
+    expect(harness.state.grants[1]!.status).toBe(EntitlementGrantStatus.EXHAUSTED);
+    expect(harness.state.grants[2]!.status).toBe(EntitlementGrantStatus.CANCELLED);
+    expect(result.items.map((item) => item.grantId)).toContain(entitlements.grants[0]!.id);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "UPDATE", entityType: "order_entitlement_grant", module: "entitlement" })
+    );
+  });
+
+  it("rejects entitlement consumption outside the grant validity period", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+
+    await expect(
+      harness.service.consumeOrderEntitlement(
+        harness.orderId,
+        entitlements.grants[0]!.id,
+        { occurredAt: "2026-07-10T10:00:00.000Z", usedAmount: 1 },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("权益不在有效期内，不能消耗");
+  });
+
+  it("uses the ORDER_START one-month fallback when legacy grants miss grantPeriodEnd", async () => {
+    const harness = createEntitlementHarness();
+    const entitlements = (await harness.service.generateOrderEntitlements(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as EntitlementResponse;
+    harness.state.grants[0]!.grantPeriodEnd = null;
+
+    await harness.service.consumeOrderEntitlement(
+      harness.orderId,
+      entitlements.grants[0]!.id,
+      { occurredAt: "2026-06-15T10:00:00.000Z", usedAmount: 1 },
+      harness.user,
+      harness.context
+    );
+
+    await expect(
+      harness.service.consumeOrderEntitlement(
+        harness.orderId,
+        entitlements.grants[0]!.id,
+        { occurredAt: "2026-07-10T10:00:00.000Z", usedAmount: 1 },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("权益不在有效期内，不能消耗");
+  });
 });
 
 type EntitlementResponse = {
-  account: { accountNo: string; accountStatus: EntitlementAccountStatus; id: string; periodStart: string } | null;
+  account: { accountNo: string; accountStatus: EntitlementAccountStatus; id: string; periodEnd: string; periodStart: string } | null;
   grants: Array<{
     entitlementName: string;
     entitlementType: EntitlementType;
     grantNo: string;
+    grantPeriodEnd: string | null;
+    grantPeriodStart: string;
     grantSource: EntitlementGrantSource;
     id: string;
     latestUsageAt: string | null;
@@ -489,6 +721,37 @@ type ConsumeResponse = {
     usageStatus: EntitlementUsageStatus;
     usedAmount: number;
   };
+};
+
+type MonthlyRenewalResponse = {
+  action: string;
+  dryRun: boolean;
+  grantCount: number;
+  grantIds: string[];
+  grants: Array<{
+    entitlementName: string;
+    entitlementType: EntitlementType;
+    totalAmount: number | null;
+    unit: EntitlementUnit;
+  }>;
+  periodEnd: string;
+  periodStart: string;
+  reason: string;
+};
+
+type MonthlyRenewalBatchResponse = {
+  dryRun: boolean;
+  failedCount: number;
+  generatedCount: number;
+  items: Array<{ action: string; grantCount: number; orderId: string; periodEnd: string | null; periodStart: string | null; reason: string }>;
+  skippedCount: number;
+};
+
+type ExpireEntitlementsResponse = {
+  dryRun: boolean;
+  expiredCount: number;
+  items: Array<{ grantId: string; status: EntitlementGrantStatus }>;
+  skippedCount: number;
 };
 
 type UsageListResponse = {
@@ -657,12 +920,50 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
       if (where.status && grant.status !== where.status) {
         return false;
       }
+      if (where.grantSource && grant.grantSource !== where.grantSource) {
+        return false;
+      }
+      if (where.entitlementName && grant.entitlementName !== where.entitlementName) {
+        return false;
+      }
+      if (where.entitlementType && grant.entitlementType !== where.entitlementType) {
+        return false;
+      }
+      if (where.unit && grant.unit !== where.unit) {
+        return false;
+      }
+      if (where.grantPeriodStart && !sameDate(grant.grantPeriodStart, where.grantPeriodStart as Date)) {
+        return false;
+      }
+      if (where.grantPeriodEnd && (!grant.grantPeriodEnd || !sameDate(grant.grantPeriodEnd, where.grantPeriodEnd as Date))) {
+        return false;
+      }
       const remainingFilter = where.remainingAmount as { gte?: Prisma.Decimal } | undefined;
       if (remainingFilter?.gte && (!grant.remainingAmount || grant.remainingAmount.lt(remainingFilter.gte))) {
         return false;
       }
       return true;
     }) ?? null;
+  }
+
+  function grantsMatchingWhere(where: Record<string, unknown>) {
+    return state.grants.filter((grant) => {
+      if (where.deletedAt === null && grant.deletedAt) {
+        return false;
+      }
+      if (where.status && grant.status !== where.status) {
+        return false;
+      }
+      const periodEndWhere = where.grantPeriodEnd as { lt?: Date } | undefined;
+      if (periodEndWhere?.lt && (!grant.grantPeriodEnd || grant.grantPeriodEnd >= periodEndWhere.lt)) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  function sameDate(left: Date, right: Date) {
+    return left.toISOString().slice(0, 10) === right.toISOString().slice(0, 10);
   }
 
   function findUsage(args: { where?: Record<string, unknown> } = {}) {
@@ -791,7 +1092,19 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
         .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())
         .slice(skip, skip + take))
     },
+    orderEntitlementGrant: {
+      count: vi.fn(async ({ where }) => grantsMatchingWhere(where).length),
+      findMany: vi.fn(async ({ where }) => grantsMatchingWhere(where)),
+      updateMany: vi.fn(async ({ data, where }) => {
+        const grants = grantsMatchingWhere(where);
+        for (const grant of grants) {
+          Object.assign(grant, data, { updatedAt: now });
+        }
+        return { count: grants.length };
+      })
+    },
     subscriptionOrder: {
+      findMany: vi.fn(async () => [buildOrder()]),
       findUnique: vi.fn(async () => buildOrder())
     }
   };

@@ -14,6 +14,8 @@ import {
   CreateOrderFromQuoteDto,
   ConfirmDeliveryDto,
   ConfirmReturnDto,
+  EntitlementMonthlyRenewalDto,
+  ExpireEntitlementsDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
@@ -89,6 +91,31 @@ export class OrderController {
   @RequirePermissions(PermissionCode.ENTITLEMENT_GENERATE)
   generateOrderEntitlements(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.generateOrderEntitlements(id, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/entitlements/renew-monthly")
+  @RequirePermissions(PermissionCode.ENTITLEMENT_GENERATE)
+  renewOrderMonthlyEntitlements(
+    @Param("id") id: string,
+    @Body() dto: EntitlementMonthlyRenewalDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.renewOrderMonthlyEntitlements(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("entitlements/monthly-renewal/generate")
+  @RequirePermissions(PermissionCode.ENTITLEMENT_GENERATE)
+  generateMonthlyEntitlements(
+    @Body() dto: EntitlementMonthlyRenewalDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.generateMonthlyEntitlements(dto, request.user, requestContext(request));
+  }
+
+  @Post("entitlements/expire")
+  @RequirePermissions(PermissionCode.ENTITLEMENT_ADJUST)
+  expireEntitlements(@Body() dto: ExpireEntitlementsDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.expireEntitlements(dto, request.user, requestContext(request));
   }
 
   @Post("orders/:id/entitlements/:grantId/consume")

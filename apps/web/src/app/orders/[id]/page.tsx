@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, ClockCircleOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
@@ -438,6 +438,55 @@ interface ConsumeEntitlementFormValues {
   usedAmount?: number;
 }
 
+interface EntitlementOperationFormValues {
+  asOfDate?: Dayjs;
+  dryRun?: boolean;
+}
+
+interface EntitlementOperationItem {
+  action?: string | null;
+  entitlementName?: string | null;
+  entitlementType?: string | null;
+  grantCount?: number | null;
+  grantId?: string | null;
+  grantNo?: string | null;
+  orderId?: string | null;
+  orderNo?: string | null;
+  periodEnd?: string | null;
+  periodStart?: string | null;
+  reason?: string | null;
+  rowKey?: string;
+  status?: string | null;
+  unit?: string | null;
+}
+
+interface EntitlementRenewalGrantPreview {
+  entitlementName?: string | null;
+  entitlementType?: string | null;
+  remainingAmount?: number | null;
+  rowKey?: string;
+  totalAmount?: number | null;
+  unit?: string | null;
+  usedAmount?: number | null;
+}
+
+interface EntitlementRenewalResponse extends EntitlementOperationItem {
+  dryRun?: boolean;
+  failedCount?: number | null;
+  generatedCount?: number | null;
+  grantIds?: string[];
+  grants?: EntitlementRenewalGrantPreview[];
+  items?: EntitlementOperationItem[];
+  skippedCount?: number | null;
+}
+
+interface ExpireEntitlementsResponse {
+  dryRun?: boolean;
+  expiredCount?: number | null;
+  items?: EntitlementOperationItem[];
+  skippedCount?: number | null;
+}
+
 type SnapshotRecord = Record<string, unknown>;
 
 const ORDER_SOURCE_LABELS: Record<string, string> = {
@@ -478,6 +527,18 @@ const entitlementUsageSourceOptions = [
   { label: ENTITLEMENT_USAGE_SOURCE_LABELS.SYSTEM, value: "SYSTEM" },
   { label: ENTITLEMENT_USAGE_SOURCE_LABELS.THIRD_PARTY, value: "THIRD_PARTY" }
 ];
+
+const entitlementOperationActionLabels: Record<string, string> = {
+  DRY_RUN_FAILED: "试算失败",
+  DRY_RUN_GENERATE: "试算可生成",
+  DRY_RUN_SKIP: "试算跳过",
+  DRY_RUN_EXPIRE: "试算将过期",
+  EXPIRED: "已过期",
+  FAILED: "失败",
+  GENERATED: "已生成",
+  SKIPPED_EXISTING: "已存在",
+  SKIPPED_NOT_DUE: "未到续发日期"
+};
 
 const returnTypeOptions = [
   { label: "正常到期退车", value: "NORMAL_RETURN" },
@@ -706,6 +767,81 @@ function formatEntitlementPeriod(start?: string | null, end?: string | null) {
     return "-";
   }
   return `${formattedStart} 至 ${formattedEnd}`;
+}
+
+function todayBusinessDate() {
+  return dayjs().startOf("day");
+}
+
+function formatOperationAction(action?: string | null) {
+  const value = safeText(action);
+  return value === "-" ? "-" : entitlementOperationActionLabels[value] ?? value;
+}
+
+function formatOperationCount(value?: unknown) {
+  const count = toNumber(value);
+  return count === null ? "-" : count.toLocaleString("zh-CN");
+}
+
+function normalizeEntitlementOperationItems(result?: { items?: EntitlementOperationItem[] } | EntitlementOperationItem | null) {
+  if (!result) {
+    return [];
+  }
+  if ("items" in result && Array.isArray(result.items) && result.items.length > 0) {
+    return result.items;
+  }
+  if ("action" in result && result.action) {
+    return [result];
+  }
+  return [];
+}
+
+function getRenewalResultText(result?: EntitlementRenewalResponse | null) {
+  const item = normalizeEntitlementOperationItems(result)[0] ?? result;
+  const action = safeText(item?.action);
+  if (action === "GENERATED") {
+    return "下一期权益已生成。";
+  }
+  if (action === "DRY_RUN_GENERATE") {
+    return "可生成下一期权益。";
+  }
+  const reason = safeText(item?.reason);
+  if (reason !== "-") {
+    return reason;
+  }
+  return action === "-" ? "权益续发处理完成。" : formatOperationAction(action);
+}
+
+function getExpireResultText(result?: ExpireEntitlementsResponse | null) {
+  const expiredCount = toNumber(result?.expiredCount) ?? 0;
+  if (result?.dryRun) {
+    return `当前为试算结果，预计将过期 ${expiredCount.toLocaleString("zh-CN")} 条权益，未修改任何权益状态。`;
+  }
+  return "过期权益处理完成。";
+}
+
+function getConsumeOccurredAtError(grant: OrderEntitlementGrant | null, occurredAt?: Dayjs | null) {
+  if (!grant || !occurredAt || !grant.grantPeriodStart || !grant.grantPeriodEnd) {
+    return null;
+  }
+  const occurredDate = occurredAt.startOf("day");
+  const periodStart = dayjs(grant.grantPeriodStart).startOf("day");
+  const periodEnd = dayjs(grant.grantPeriodEnd).startOf("day");
+  if (!periodStart.isValid() || !periodEnd.isValid()) {
+    return null;
+  }
+  if (occurredDate.isBefore(periodStart) || occurredDate.isAfter(periodEnd)) {
+    return "消耗时间不在权益有效期内";
+  }
+  return null;
+}
+
+function isGrantPastEffectivePeriod(grant: OrderEntitlementGrant) {
+  if (grant.status !== "ACTIVE" || !grant.grantPeriodEnd) {
+    return false;
+  }
+  const periodEnd = dayjs(grant.grantPeriodEnd).endOf("day");
+  return periodEnd.isValid() && periodEnd.isBefore(dayjs());
 }
 
 function entitlementProgressPercent(grant: OrderEntitlementGrant) {
@@ -982,11 +1118,36 @@ function getGenerateEntitlementDisabledReason(order: OrderDetail | null, account
   return null;
 }
 
+function getRenewMonthlyEntitlementDisabledReason(order: OrderDetail | null, account: OrderEntitlementAccount | null) {
+  if (!order) {
+    return "数据加载完成后才能操作";
+  }
+  if (order.orderStatus !== "ACTIVE") {
+    return "当前订单不是在租状态，不能续发权益";
+  }
+  if (!order.actualDeliveryAt) {
+    return "当前订单缺少实际交付时间，不能续发权益";
+  }
+  if (account?.accountStatus !== "ACTIVE") {
+    return "请先生成订单权益账户";
+  }
+  return null;
+}
+
 function getConsumeEntitlementDisabledReason(
   order: OrderDetail,
   account: OrderEntitlementAccount | null,
   grant: OrderEntitlementGrant
 ) {
+  if (grant.status === "EXPIRED") {
+    return "权益已过期，不能消耗";
+  }
+  if (grant.status === "EXHAUSTED") {
+    return "当前权益已用尽";
+  }
+  if (grant.status === "CANCELLED") {
+    return "权益已取消，不能消耗";
+  }
   if (order.orderStatus !== "ACTIVE") {
     return "当前订单不是在租状态";
   }
@@ -1510,12 +1671,16 @@ function OrderInfoSections({
 function EntitlementPanel({
   entitlements,
   entitlementLoading,
+  expiringEntitlements,
   generatingEntitlements,
   onGenerateEntitlements,
+  onOpenExpireEntitlements,
   onOpenConsume,
+  onOpenMonthlyRenewal,
   onUsagePageChange,
   order,
   permissions,
+  renewingEntitlements,
   usageLoading,
   usagePage,
   usagePageSize,
@@ -1524,12 +1689,16 @@ function EntitlementPanel({
 }: {
   entitlements: OrderEntitlementsResponse;
   entitlementLoading: boolean;
+  expiringEntitlements: boolean;
   generatingEntitlements: boolean;
   onGenerateEntitlements: () => void;
+  onOpenExpireEntitlements: () => void;
   onOpenConsume: (grant: OrderEntitlementGrant) => void;
+  onOpenMonthlyRenewal: () => void;
   onUsagePageChange: (page: number, pageSize: number) => void;
   order: OrderDetail;
   permissions: ReadonlySet<string>;
+  renewingEntitlements: boolean;
   usageLoading: boolean;
   usagePage: number;
   usagePageSize: number;
@@ -1545,6 +1714,22 @@ function EntitlementPanel({
     permission: "entitlement:generate",
     permissions
   });
+  const renewDisabledReason = getRenewMonthlyEntitlementDisabledReason(order, account);
+  const renewAvailability = actionAvailability({
+    allowed: renewDisabledReason === null,
+    disabledReason: renewDisabledReason ?? "当前订单不能续发权益",
+    noPermissionReason: "无权益续发权限",
+    permission: "entitlement:generate",
+    permissions
+  });
+  const expireAvailability = actionAvailability({
+    allowed: true,
+    disabledReason: "当前不能处理过期权益",
+    noPermissionReason: "无权益过期处理权限",
+    permission: "entitlement:adjust",
+    permissions
+  });
+  const hasPastActiveGrant = entitlements.grants.some(isGrantPastEffectivePeriod);
   const grantColumns: ColumnsType<OrderEntitlementGrant> = [
     { dataIndex: "grantNo", title: "权益编号", width: 180 },
     {
@@ -1658,14 +1843,32 @@ function EntitlementPanel({
   return (
     <Card
       extra={
-        <ActionButton
-          availability={generateAvailability}
-          loading={generatingEntitlements}
-          onClick={onGenerateEntitlements}
-          type="primary"
-        >
-          生成订单权益
-        </ActionButton>
+        <Space wrap>
+          <ActionButton
+            availability={generateAvailability}
+            loading={generatingEntitlements}
+            onClick={onGenerateEntitlements}
+            type="primary"
+          >
+            生成订单权益
+          </ActionButton>
+          <ActionButton
+            availability={renewAvailability}
+            icon={<ReloadOutlined />}
+            loading={renewingEntitlements}
+            onClick={onOpenMonthlyRenewal}
+          >
+            生成下一期权益
+          </ActionButton>
+          <ActionButton
+            availability={expireAvailability}
+            icon={<ClockCircleOutlined />}
+            loading={expiringEntitlements}
+            onClick={onOpenExpireEntitlements}
+          >
+            处理过期权益（全局）
+          </ActionButton>
+        </Space>
       }
       title="订阅权益"
     >
@@ -1692,6 +1895,14 @@ function EntitlementPanel({
 
           {entitlements.grants.some(isTextEntitlement) ? (
             <Alert message="文本型权益仅展示说明，不支持消耗核销。" showIcon type="info" />
+          ) : null}
+          <Alert
+            showIcon
+            title="处理过期权益（全局）会处理所有已超过有效期的权益，不限于当前订单。"
+            type="warning"
+          />
+          {hasPastActiveGrant ? (
+            <Alert showIcon title="该订单存在已超过有效期但尚未处理的可用权益，建议先处理过期权益。" type="warning" />
           ) : null}
 
           <Table<OrderEntitlementGrant>
@@ -1748,6 +1959,160 @@ function EntitlementGrantBalance({ grant }: { grant: OrderEntitlementGrant }) {
       </Typography.Text>
       {percent === null ? null : <Progress percent={percent} size="small" />}
       <Typography.Text type="secondary">最近消耗：{formatTime(grant.latestUsageAt)}</Typography.Text>
+    </Space>
+  );
+}
+
+function EntitlementOperationResultView({
+  result,
+  type
+}: {
+  result: EntitlementRenewalResponse | ExpireEntitlementsResponse | null;
+  type: "expire" | "renewal";
+}) {
+  if (!result) {
+    return null;
+  }
+
+  const isRenewal = type === "renewal";
+  const renewalResult = isRenewal ? (result as EntitlementRenewalResponse) : null;
+  const expireResult = isRenewal ? null : (result as ExpireEntitlementsResponse);
+  const items = normalizeEntitlementOperationItems(result);
+  const firstAction = isRenewal ? safeText(items[0]?.action ?? renewalResult?.action) : safeText(items[0]?.action);
+  const hasFailure = items.some((item) => safeText(item.action).includes("FAILED") || safeText(item.action) === "FAILED");
+  const isSkipped = firstAction.startsWith("SKIPPED") || firstAction === "DRY_RUN_SKIP";
+  const resultMessage = isRenewal ? getRenewalResultText(renewalResult) : getExpireResultText(expireResult);
+  const alertType = hasFailure ? "error" : isSkipped ? "warning" : result.dryRun ? "info" : "success";
+  const summaryItems = [
+    { label: "执行模式", children: result.dryRun ? "试算" : "正式执行" },
+    ...(renewalResult?.generatedCount !== undefined
+      ? [{ label: "生成订单数", children: formatOperationCount(renewalResult.generatedCount) }]
+      : []),
+    ...(expireResult?.expiredCount !== undefined
+      ? [{ label: "将过期 / 已过期", children: formatOperationCount(expireResult.expiredCount) }]
+      : []),
+    ...(result.skippedCount !== undefined
+      ? [{ label: "跳过数量", children: formatOperationCount(result.skippedCount) }]
+      : []),
+    ...(renewalResult?.failedCount !== undefined
+      ? [{ label: "失败数量", children: formatOperationCount(renewalResult.failedCount) }]
+      : []),
+    ...(renewalResult?.periodStart || renewalResult?.periodEnd
+      ? [{ label: "账期", children: formatEntitlementPeriod(renewalResult.periodStart, renewalResult.periodEnd) }]
+      : []),
+    ...(renewalResult?.grantCount !== undefined
+      ? [{ label: "权益数量", children: formatOperationCount(renewalResult.grantCount) }]
+      : [])
+  ];
+  const previewGrants = renewalResult?.grants ?? [];
+  const previewGrantRows = previewGrants.map((grant, index) => ({
+    ...grant,
+    rowKey: [
+      safeText(grant.entitlementType),
+      safeText(grant.entitlementName),
+      safeText(grant.unit),
+      safeText(grant.totalAmount),
+      index
+    ].join("-")
+  }));
+  const itemRows = items.map((item, index) => ({
+    ...item,
+    rowKey:
+      safeText(item.grantId) !== "-"
+        ? safeText(item.grantId)
+        : [
+            safeText(item.orderId),
+            safeText(item.action),
+            safeText(item.periodStart),
+            safeText(item.periodEnd),
+            index
+          ].join("-")
+  }));
+  const previewColumns: ColumnsType<EntitlementRenewalGrantPreview> = [
+    {
+      dataIndex: "entitlementType",
+      render: (value: string | null) => labelOf(ENTITLEMENT_TYPE_LABELS, safeText(value)),
+      title: "权益类型",
+      width: 120
+    },
+    { dataIndex: "entitlementName", render: safeText, title: "权益名称", width: 180 },
+    {
+      render: (_, record) => formatEntitlementAmount(record.totalAmount, record.unit),
+      title: "总量",
+      width: 120
+    },
+    {
+      render: (_, record) => formatEntitlementAmount(record.usedAmount, record.unit),
+      title: "已用",
+      width: 120
+    },
+    {
+      render: (_, record) => formatEntitlementAmount(record.remainingAmount, record.unit),
+      title: "剩余",
+      width: 120
+    },
+    {
+      dataIndex: "unit",
+      render: (value: string | null) => labelOf(ENTITLEMENT_UNIT_LABELS, safeText(value)),
+      title: "单位",
+      width: 100
+    }
+  ];
+  const itemColumns: ColumnsType<EntitlementOperationItem> = [
+    { dataIndex: "orderNo", render: safeText, title: "订单编号", width: 170 },
+    { dataIndex: "grantNo", render: safeText, title: "权益编号", width: 170 },
+    {
+      dataIndex: "entitlementType",
+      render: (value: string | null) => {
+        const text = safeText(value);
+        return text === "-" ? "-" : labelOf(ENTITLEMENT_TYPE_LABELS, text);
+      },
+      title: "权益类型",
+      width: 120
+    },
+    { dataIndex: "entitlementName", render: safeText, title: "权益名称", width: 180 },
+    {
+      render: (_, record) => {
+        const action = record.action ?? (isRenewal ? undefined : result.dryRun ? "DRY_RUN_EXPIRE" : "EXPIRED");
+        return formatOperationAction(action);
+      },
+      title: "动作",
+      width: 130
+    },
+    { dataIndex: "periodStart", render: formatDate, title: "账期开始", width: 120 },
+    { dataIndex: "periodEnd", render: formatDate, title: "账期结束", width: 120 },
+    {
+      render: (_, record) => formatOperationCount(record.grantCount ?? (isRenewal ? undefined : 1)),
+      title: "权益数量",
+      width: 100
+    },
+    { dataIndex: "reason", render: safeText, title: "原因", width: 220 }
+  ];
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <Alert showIcon title={resultMessage} type={alertType} />
+      <Descriptions bordered column={3} items={summaryItems} size="small" />
+      {previewGrants.length > 0 ? (
+        <Table<EntitlementRenewalGrantPreview>
+          columns={previewColumns}
+          dataSource={previewGrantRows}
+          pagination={false}
+          rowKey="rowKey"
+          scroll={{ x: 760 }}
+          size="small"
+        />
+      ) : null}
+      {items.length > 0 ? (
+        <Table<EntitlementOperationItem>
+          columns={itemColumns}
+          dataSource={itemRows}
+          pagination={false}
+          rowKey="rowKey"
+          scroll={{ x: 1260 }}
+          size="small"
+        />
+      ) : null}
     </Space>
   );
 }
@@ -2558,16 +2923,18 @@ export default function OrderDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [changeForm] = Form.useForm<ChangeFormValues>();
   const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
   const [confirmReturnForm] = Form.useForm<ConfirmReturnFormValues>();
   const [creditForm] = Form.useForm<{ customerGrade: string }>();
   const [deductDepositForm] = Form.useForm<DeductDepositFormValues>();
   const [consumeEntitlementForm] = Form.useForm<ConsumeEntitlementFormValues>();
+  const [expireEntitlementForm] = Form.useForm<EntitlementOperationFormValues>();
   const [paymentForm] = Form.useForm<PaymentFormValues>();
   const [prepareDeliveryForm] = Form.useForm<PrepareDeliveryFormValues>();
   const [prepareReturnForm] = Form.useForm<PrepareReturnFormValues>();
+  const [renewEntitlementForm] = Form.useForm<EntitlementOperationFormValues>();
   const [refundDepositForm] = Form.useForm<RefundDepositFormValues>();
   const [changeModalOpen, setChangeModalOpen] = useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
@@ -2590,6 +2957,9 @@ export default function OrderDetailPage() {
   const [entitlementUsageTotal, setEntitlementUsageTotal] = useState(0);
   const [entitlementUsages, setEntitlementUsages] = useState<OrderEntitlementUsage[]>([]);
   const [entitlements, setEntitlements] = useState<OrderEntitlementsResponse>({ account: null, grants: [] });
+  const [expireEntitlementModalOpen, setExpireEntitlementModalOpen] = useState(false);
+  const [expireEntitlementResult, setExpireEntitlementResult] = useState<ExpireEntitlementsResponse | null>(null);
+  const [expiringEntitlements, setExpiringEntitlements] = useState(false);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeSummary, setFinanceSummary] = useState<FinanceSummary | null>(null);
   const [generatingEntitlements, setGeneratingEntitlements] = useState(false);
@@ -2606,6 +2976,9 @@ export default function OrderDetailPage() {
   const [receivableBills, setReceivableBills] = useState<ReceivableBillRow[]>([]);
   const [refundDepositModalOpen, setRefundDepositModalOpen] = useState(false);
   const [refundingDeposit, setRefundingDeposit] = useState(false);
+  const [renewEntitlementModalOpen, setRenewEntitlementModalOpen] = useState(false);
+  const [renewEntitlementResult, setRenewEntitlementResult] = useState<EntitlementRenewalResponse | null>(null);
+  const [renewingEntitlements, setRenewingEntitlements] = useState(false);
   const [returnCheck, setReturnCheck] = useState<ReturnCheck | null>(null);
   const [vehicleReturn, setVehicleReturn] = useState<VehicleReturn | null>(null);
   const [autoOpenChangeModalDone, setAutoOpenChangeModalDone] = useState(false);
@@ -3180,6 +3553,137 @@ export default function OrderDetailPage() {
     }
   }
 
+  function openRenewEntitlementModal() {
+    const disabledReason = getRenewMonthlyEntitlementDisabledReason(order, entitlements.account);
+    if (disabledReason) {
+      void message.error(disabledReason);
+      return;
+    }
+    renewEntitlementForm.setFieldsValue({
+      asOfDate: todayBusinessDate(),
+      dryRun: true
+    });
+    setRenewEntitlementResult(null);
+    setRenewEntitlementModalOpen(true);
+  }
+
+  function closeRenewEntitlementModal() {
+    setRenewEntitlementModalOpen(false);
+    setRenewEntitlementResult(null);
+    renewEntitlementForm.resetFields();
+  }
+
+  async function executeRenewEntitlements(dryRun: boolean) {
+    if (!order) {
+      return;
+    }
+    let values: EntitlementOperationFormValues;
+    try {
+      values = await renewEntitlementForm.validateFields();
+    } catch {
+      return;
+    }
+    const asOfDate = (values.asOfDate ?? todayBusinessDate()).format("YYYY-MM-DD");
+    renewEntitlementForm.setFieldsValue({ dryRun });
+    setRenewingEntitlements(true);
+    try {
+      const result = await apiFetch<EntitlementRenewalResponse>(`/orders/${order.id}/entitlements/renew-monthly`, {
+        body: JSON.stringify({ asOfDate, dryRun }),
+        method: "POST"
+      });
+      setRenewEntitlementResult(result);
+      const text = getRenewalResultText(result);
+      if (dryRun) {
+        void message.info(text);
+        return;
+      }
+      if (result.action === "GENERATED") {
+        void message.success("下一期权益已生成。");
+      } else {
+        void message.info(text);
+      }
+      await refreshEntitlementData(entitlementUsagePage, entitlementUsagePageSize);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setRenewingEntitlements(false);
+    }
+  }
+
+  function submitRenewEntitlements(dryRun: boolean) {
+    if (dryRun) {
+      void executeRenewEntitlements(true);
+      return;
+    }
+    modal.confirm({
+      content: "本操作将为该订单创建 MONTHLY_RENEWAL 权益发放记录。",
+      okText: "确认生成",
+      onOk: () => executeRenewEntitlements(false),
+      title: "确认正式生成下一期权益？"
+    });
+  }
+
+  function openExpireEntitlementModal() {
+    if (!permissions.has("entitlement:adjust")) {
+      void message.error("无权益过期处理权限");
+      return;
+    }
+    expireEntitlementForm.setFieldsValue({
+      asOfDate: todayBusinessDate(),
+      dryRun: true
+    });
+    setExpireEntitlementResult(null);
+    setExpireEntitlementModalOpen(true);
+  }
+
+  function closeExpireEntitlementModal() {
+    setExpireEntitlementModalOpen(false);
+    setExpireEntitlementResult(null);
+    expireEntitlementForm.resetFields();
+  }
+
+  async function executeExpireEntitlements(dryRun: boolean) {
+    let values: EntitlementOperationFormValues;
+    try {
+      values = await expireEntitlementForm.validateFields();
+    } catch {
+      return;
+    }
+    const asOfDate = (values.asOfDate ?? todayBusinessDate()).format("YYYY-MM-DD");
+    expireEntitlementForm.setFieldsValue({ dryRun });
+    setExpiringEntitlements(true);
+    try {
+      const result = await apiFetch<ExpireEntitlementsResponse>("/entitlements/expire", {
+        body: JSON.stringify({ asOfDate, dryRun }),
+        method: "POST"
+      });
+      setExpireEntitlementResult(result);
+      if (dryRun) {
+        void message.info(getExpireResultText(result));
+        return;
+      }
+      void message.success("过期权益处理完成。");
+      await refreshEntitlementData(entitlementUsagePage, entitlementUsagePageSize);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setExpiringEntitlements(false);
+    }
+  }
+
+  function submitExpireEntitlements(dryRun: boolean) {
+    if (dryRun) {
+      void executeExpireEntitlements(true);
+      return;
+    }
+    modal.confirm({
+      content: "本操作将把所有已超过有效期的可用权益标记为已过期。",
+      okText: "确认处理",
+      onOk: () => executeExpireEntitlements(false),
+      title: "确认正式处理过期权益？"
+    });
+  }
+
   function openConsumeEntitlementModal(grant: OrderEntitlementGrant) {
     if (!order) {
       return;
@@ -3216,6 +3720,11 @@ export default function OrderDetailPage() {
     }
     if (usedAmount > remainingAmount) {
       void message.error("本次消耗数量不能超过当前剩余");
+      return;
+    }
+    const occurredAtError = getConsumeOccurredAtError(consumingGrant, values.occurredAt);
+    if (occurredAtError) {
+      void message.error(occurredAtError);
       return;
     }
     setConsumeEntitlementSubmitting(true);
@@ -3958,12 +4467,16 @@ export default function OrderDetailPage() {
           <EntitlementPanel
             entitlements={entitlements}
             entitlementLoading={entitlementLoading}
+            expiringEntitlements={expiringEntitlements}
             generatingEntitlements={generatingEntitlements}
             onGenerateEntitlements={generateOrderEntitlements}
+            onOpenExpireEntitlements={openExpireEntitlementModal}
             onOpenConsume={openConsumeEntitlementModal}
+            onOpenMonthlyRenewal={openRenewEntitlementModal}
             onUsagePageChange={handleEntitlementUsagePageChange}
             order={order}
             permissions={permissions}
+            renewingEntitlements={renewingEntitlements}
             usageLoading={entitlementUsageLoading}
             usagePage={entitlementUsagePage}
             usagePageSize={entitlementUsagePageSize}
@@ -4101,6 +4614,19 @@ export default function OrderDetailPage() {
                 }
               />
             </Form.Item>
+            <Form.Item label="权益有效期">
+              <Input
+                disabled
+                value={
+                  consumingGrant
+                    ? formatEntitlementPeriod(consumingGrant.grantPeriodStart, consumingGrant.grantPeriodEnd)
+                    : "-"
+                }
+              />
+            </Form.Item>
+            {consumingGrant && isGrantPastEffectivePeriod(consumingGrant) ? (
+              <Alert showIcon title="该权益已超过有效期，建议先处理过期权益。" type="warning" />
+            ) : null}
             <Form.Item
               label="本次消耗数量"
               name="usedAmount"
@@ -4131,7 +4657,17 @@ export default function OrderDetailPage() {
             <Form.Item
               label="发生时间"
               name="occurredAt"
-              rules={[{ required: true, message: "请选择发生时间" }]}
+              rules={[
+                { required: true, message: "请选择发生时间" },
+                {
+                  validator: async (_, value: Dayjs | undefined) => {
+                    const error = getConsumeOccurredAtError(consumingGrant, value);
+                    if (error) {
+                      throw new Error(error);
+                    }
+                  }
+                }
+              ]}
             >
               <DatePicker showTime style={{ width: "100%" }} />
             </Form.Item>
@@ -4152,6 +4688,111 @@ export default function OrderDetailPage() {
               <Input.TextArea rows={3} />
             </Form.Item>
           </Form>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          footer={[
+            <Button key="cancel" onClick={closeRenewEntitlementModal}>
+              取消
+            </Button>,
+            <Button
+              icon={<ReloadOutlined />}
+              key="dryRun"
+              loading={renewingEntitlements}
+              onClick={() => submitRenewEntitlements(true)}
+            >
+              试算
+            </Button>,
+            <Button
+              key="submit"
+              loading={renewingEntitlements}
+              onClick={() => submitRenewEntitlements(false)}
+              type="primary"
+            >
+              正式生成
+            </Button>
+          ]}
+          onCancel={closeRenewEntitlementModal}
+          open={renewEntitlementModalOpen}
+          title="生成下一期权益"
+          width={900}
+        >
+          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              showIcon
+              title="试算模式不会写入数据库，仅展示该订单下一期权益是否可生成。正式生成会创建 MONTHLY_RENEWAL 权益发放记录，并写入审计日志。"
+              type="info"
+            />
+            <Form form={renewEntitlementForm} layout="vertical">
+              <Form.Item
+                label="处理日期"
+                name="asOfDate"
+                rules={[{ required: true, message: "请选择处理日期" }]}
+              >
+                <DatePicker style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item name="dryRun" valuePropName="checked">
+                <Checkbox>试算模式</Checkbox>
+              </Form.Item>
+            </Form>
+            <EntitlementOperationResultView result={renewEntitlementResult} type="renewal" />
+          </Space>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          footer={[
+            <Button key="cancel" onClick={closeExpireEntitlementModal}>
+              取消
+            </Button>,
+            <Button
+              icon={<ReloadOutlined />}
+              key="dryRun"
+              loading={expiringEntitlements}
+              onClick={() => submitExpireEntitlements(true)}
+            >
+              试算
+            </Button>,
+            <Button
+              key="submit"
+              loading={expiringEntitlements}
+              onClick={() => submitExpireEntitlements(false)}
+              type="primary"
+            >
+              正式处理
+            </Button>
+          ]}
+          onCancel={closeExpireEntitlementModal}
+          open={expireEntitlementModalOpen}
+          title="处理过期权益（全局）"
+          width={900}
+        >
+          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              showIcon
+              title="该操作会处理所有已超过有效期的权益，不限于当前订单。"
+              type="warning"
+            />
+            <Alert
+              showIcon
+              title="试算模式不会写入数据库，仅展示将被过期处理的权益。正式处理会将所有满足条件的 ACTIVE 权益改为 EXPIRED，并写入审计日志。"
+              type="info"
+            />
+            <Form form={expireEntitlementForm} layout="vertical">
+              <Form.Item
+                label="处理日期"
+                name="asOfDate"
+                rules={[{ required: true, message: "请选择处理日期" }]}
+              >
+                <DatePicker style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item name="dryRun" valuePropName="checked">
+                <Checkbox>试算模式</Checkbox>
+              </Form.Item>
+            </Form>
+            <EntitlementOperationResultView result={expireEntitlementResult} type="expire" />
+          </Space>
         </Modal>
 
         <Modal

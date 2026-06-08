@@ -72,6 +72,17 @@ export const VEHICLE_STATUS_LABELS: Record<string, string> = {
   SOLD: "已出售"
 };
 
+export const VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  INACTIVE: "已停用"
+};
+
+export const VEHICLE_DEPRECIATION_METHOD_LABELS: Record<string, string> = {
+  MANUAL: "手工口径",
+  NONE: "不计提",
+  STRAIGHT_LINE: "直线法"
+};
+
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "在租",
   CANCELLED: "已取消",

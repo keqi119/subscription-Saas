@@ -14,7 +14,9 @@ import {
   Space,
   Statistic,
   Table,
+  Tabs,
   Tag,
+  Tooltip,
   Typography
 } from "antd";
 import type { ColumnsType, TableProps } from "antd/es/table";
@@ -30,10 +32,12 @@ import {
   ORDER_STATUS_LABELS,
   SALE_PRICE_REVIEW_TYPE_LABELS,
   STATUS_LABELS,
+  VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   VEHICLE_DAMAGE_LEVEL_LABELS,
   VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS,
   VEHICLE_DAMAGE_TYPE_LABELS,
+  VEHICLE_DEPRECIATION_METHOD_LABELS,
   VEHICLE_RETURN_DAMAGE_STATUS_LABELS,
   VEHICLE_RETURN_STATUS_LABELS,
   VEHICLE_STATUS_LABELS,
@@ -56,6 +60,17 @@ const assetSortFields = [
 
 type AssetSortField = (typeof assetSortFields)[number];
 type BackendSortOrder = "asc" | "desc";
+
+const assetReturnSortFields = [
+  "trialRoa",
+  "annualizedTrialRoa",
+  "trialNetOperatingIncomeAmount",
+  "operatingRevenueAmount",
+  "operatingCostAmount",
+  "rentalPaidAmount"
+] as const;
+
+type AssetReturnSortField = (typeof assetReturnSortFields)[number];
 
 interface DateRangeResponse {
   endDate?: string | null;
@@ -83,6 +98,33 @@ interface PagedResult<TItem> {
   page: number;
   pageSize: number;
   total: number;
+}
+
+interface AssetReturnTrialSummary {
+  annualizedTrialRoa?: number | null;
+  capitalCostAmount?: number | null;
+  costCalculatedVehicleCount?: number | null;
+  costUnavailableVehicleCount?: number | null;
+  currentSalePriceAmount?: number | null;
+  damagePaidAmount?: number | null;
+  dateRange?: DateRangeResponse;
+  depositCollectedAmount?: number | null;
+  depreciationCostAmount?: number | null;
+  insuranceCostAmount?: number | null;
+  maintenanceReserveCostAmount?: number | null;
+  operatingCostAmount?: number | null;
+  operatingRevenueAmount?: number | null;
+  otherCostAmount?: number | null;
+  otherPaidAmount?: number | null;
+  purchasePriceAmount?: number | null;
+  rentalPaidAmount?: number | null;
+  roeTrial?: number | null;
+  roeUnavailableReason?: string | null;
+  trialNetOperatingIncomeAmount?: number | null;
+  trialRoa?: number | null;
+  vehicleCount?: number | null;
+  vehicleMissingCostProfileCount?: number | null;
+  vehicleWithCostProfileCount?: number | null;
 }
 
 interface AssetProfitabilityVehicleRow {
@@ -115,6 +157,27 @@ interface AssetProfitabilityVehicleRow {
   vin?: string | null;
 }
 
+interface AssetReturnTrialVehicleRow extends AssetProfitabilityVehicleRow {
+  annualizedTrialRoa?: number | null;
+  capitalCostAmount?: number | null;
+  costDays?: number | null;
+  costProfileMissing?: boolean | null;
+  costProfileStatus?: string | null;
+  costUnavailableReason?: string | null;
+  depreciationCostAmount?: number | null;
+  insuranceCostAmount?: number | null;
+  maintenanceReserveCostAmount?: number | null;
+  manualDepreciationUnsupported?: boolean | null;
+  operatingCostAmount?: number | null;
+  operatingRevenueAmount?: number | null;
+  otherCostAmount?: number | null;
+  otherPaidAmount?: number | null;
+  roeTrial?: number | null;
+  roeUnavailableReason?: string | null;
+  trialNetOperatingIncomeAmount?: number | null;
+  trialRoa?: number | null;
+}
+
 interface AssetProfitabilityVehicleDetail {
   assetValue?: AssetValueInfo | null;
   bills?: BillDetailRow[];
@@ -125,6 +188,18 @@ interface AssetProfitabilityVehicleDetail {
   salePriceHistory?: SalePriceHistoryRow[];
   summary?: VehicleSummaryInfo | null;
   vehicle?: VehicleBaseInfo | null;
+}
+
+interface AssetReturnTrialVehicleDetail {
+  bills?: ReturnTrialBillRow[];
+  costBreakdown?: ReturnTrialCostBreakdown | null;
+  costPreview?: VehicleAssetCostPreview | null;
+  costProfile?: VehicleAssetCostProfileInfo | null;
+  dateRange?: DateRangeResponse;
+  incomeBreakdown?: ReturnTrialIncomeBreakdown | null;
+  orderCycles?: ReturnTrialOrderCycleRow[];
+  returns?: ReturnTrialMetrics | null;
+  vehicle?: ReturnTrialVehicleInfo | null;
 }
 
 interface VehicleBaseInfo {
@@ -140,6 +215,11 @@ interface VehicleBaseInfo {
   vehicleNo?: string | null;
   vehicleStatus?: string | null;
   vin?: string | null;
+}
+
+interface ReturnTrialVehicleInfo extends VehicleBaseInfo {
+  currentSalePriceAmount?: number | null;
+  purchasePriceAmount?: number | null;
 }
 
 interface AssetValueInfo {
@@ -174,6 +254,10 @@ interface OrderCycleRow {
   returnedAt?: string | null;
 }
 
+interface ReturnTrialOrderCycleRow extends OrderCycleRow {
+  otherPaidAmount?: number | null;
+}
+
 interface BillDetailRow {
   amount?: number | null;
   billId?: string | null;
@@ -187,6 +271,67 @@ interface BillDetailRow {
   periodEnd?: string | null;
   periodStart?: string | null;
   remainingAmount?: number | null;
+}
+
+interface ReturnTrialBillRow extends BillDetailRow {
+  includedInOperatingRevenue?: boolean | null;
+}
+
+interface VehicleAssetCostProfileInfo {
+  annualInsuranceCostAmount?: number | null;
+  annualMaintenanceReserveAmount?: number | null;
+  capitalCostRateBps?: number | null;
+  depreciationMethod?: string | null;
+  depreciationStartDate?: string | null;
+  id?: string | null;
+  otherMonthlyCostAmount?: number | null;
+  profileStatus?: string | null;
+  remark?: string | null;
+  residualValueAmount?: number | null;
+  usefulLifeMonths?: number | null;
+}
+
+interface VehicleAssetCostPreview {
+  annualCapitalCostAmount?: number | null;
+  depreciableAmount?: number | null;
+  estimatedMonthlyCostAmount?: number | null;
+  monthlyCapitalCostAmount?: number | null;
+  monthlyDepreciationAmount?: number | null;
+  monthlyInsuranceCostAmount?: number | null;
+  monthlyMaintenanceReserveAmount?: number | null;
+  otherMonthlyCostAmount?: number | null;
+  purchasePriceAmount?: number | null;
+  residualValueAmount?: number | null;
+}
+
+interface ReturnTrialIncomeBreakdown {
+  damagePaidAmount?: number | null;
+  depositCollectedAmount?: number | null;
+  depositIncludedInOperatingRevenue?: boolean | null;
+  operatingRevenueAmount?: number | null;
+  otherPaidAmount?: number | null;
+  rentalPaidAmount?: number | null;
+}
+
+interface ReturnTrialCostBreakdown {
+  capitalCostAmount?: number | null;
+  costDays?: number | null;
+  costProfileMissing?: boolean | null;
+  costUnavailableReason?: string | null;
+  depreciationCostAmount?: number | null;
+  insuranceCostAmount?: number | null;
+  maintenanceReserveCostAmount?: number | null;
+  manualDepreciationUnsupported?: boolean | null;
+  operatingCostAmount?: number | null;
+  otherCostAmount?: number | null;
+}
+
+interface ReturnTrialMetrics {
+  annualizedTrialRoa?: number | null;
+  roeTrial?: number | null;
+  roeUnavailableReason?: string | null;
+  trialNetOperatingIncomeAmount?: number | null;
+  trialRoa?: number | null;
 }
 
 interface LifecycleNodeRow {
@@ -303,6 +448,28 @@ export default function AssetProfitabilityPage() {
   const [summaryExporting, setSummaryExporting] = useState(false);
   const [vehiclesExporting, setVehiclesExporting] = useState(false);
   const [detailExporting, setDetailExporting] = useState(false);
+  const [activeTab, setActiveTab] = useState<"asset" | "returns">("asset");
+  const [returnSummary, setReturnSummary] = useState<AssetReturnTrialSummary | null>(null);
+  const [returnSummaryError, setReturnSummaryError] = useState<string | null>(null);
+  const [returnSummaryLoading, setReturnSummaryLoading] = useState(false);
+  const [returnVehiclePage, setReturnVehiclePage] = useState<PagedResult<AssetReturnTrialVehicleRow>>({
+    items: [],
+    page: 1,
+    pageSize: 20,
+    total: 0
+  });
+  const [returnVehicleError, setReturnVehicleError] = useState<string | null>(null);
+  const [returnVehiclesLoading, setReturnVehiclesLoading] = useState(false);
+  const [returnPage, setReturnPage] = useState(1);
+  const [returnPageSize, setReturnPageSize] = useState(20);
+  const [returnSortBy, setReturnSortBy] = useState<AssetReturnSortField | undefined>();
+  const [returnSortOrder, setReturnSortOrder] = useState<BackendSortOrder | undefined>();
+  const [returnDetailOpen, setReturnDetailOpen] = useState(false);
+  const [selectedReturnVehicle, setSelectedReturnVehicle] =
+    useState<AssetReturnTrialVehicleRow | null>(null);
+  const [returnDetail, setReturnDetail] = useState<AssetReturnTrialVehicleDetail | null>(null);
+  const [returnDetailError, setReturnDetailError] = useState<string | null>(null);
+  const [returnDetailLoading, setReturnDetailLoading] = useState(false);
 
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
   const canViewAssetReport = permissions.has("report:asset");
@@ -374,6 +541,59 @@ export default function AssetProfitabilityPage() {
     }
   }, [baseQuery, canViewAssetReport, page, pageSize, sortBy, sortOrder]);
 
+  const loadReturnSummary = useCallback(async () => {
+    if (!canViewAssetReport) {
+      return;
+    }
+
+    setReturnSummaryError(null);
+    setReturnSummaryLoading(true);
+    try {
+      setReturnSummary(
+        await apiFetch<AssetReturnTrialSummary>(
+          `/reports/asset-profitability/returns/summary${buildQuery(baseQuery())}`
+        )
+      );
+    } catch (error) {
+      setReturnSummaryError(normalizeErrorMessage(error));
+    } finally {
+      setReturnSummaryLoading(false);
+    }
+  }, [baseQuery, canViewAssetReport]);
+
+  const loadReturnVehicles = useCallback(async () => {
+    if (!canViewAssetReport) {
+      return;
+    }
+
+    setReturnVehicleError(null);
+    setReturnVehiclesLoading(true);
+    try {
+      setReturnVehiclePage(
+        await apiFetch<PagedResult<AssetReturnTrialVehicleRow>>(
+          `/reports/asset-profitability/returns/vehicles${buildQuery({
+            ...baseQuery(),
+            page: returnPage,
+            pageSize: returnPageSize,
+            sortBy: returnSortBy,
+            sortOrder: returnSortOrder
+          })}`
+        )
+      );
+    } catch (error) {
+      setReturnVehicleError(normalizeErrorMessage(error));
+    } finally {
+      setReturnVehiclesLoading(false);
+    }
+  }, [
+    baseQuery,
+    canViewAssetReport,
+    returnPage,
+    returnPageSize,
+    returnSortBy,
+    returnSortOrder
+  ]);
+
   useEffect(() => {
     if (authLoading || !canViewAssetReport) {
       return;
@@ -383,9 +603,29 @@ export default function AssetProfitabilityPage() {
     void loadVehicles();
   }, [authLoading, canViewAssetReport, loadSummary, loadVehicles]);
 
+  useEffect(() => {
+    if (authLoading || !canViewAssetReport || activeTab !== "returns") {
+      return;
+    }
+
+    void loadReturnSummary();
+    void loadReturnVehicles();
+  }, [
+    activeTab,
+    authLoading,
+    canViewAssetReport,
+    loadReturnSummary,
+    loadReturnVehicles
+  ]);
+
   const refresh = useCallback(async () => {
+    if (activeTab === "returns") {
+      await Promise.all([loadReturnSummary(), loadReturnVehicles()]);
+      return;
+    }
+
     await Promise.all([loadSummary(), loadVehicles()]);
-  }, [loadSummary, loadVehicles]);
+  }, [activeTab, loadReturnSummary, loadReturnVehicles, loadSummary, loadVehicles]);
 
   const exportSummaryCsv = useCallback(async () => {
     if (!canViewAssetReport) {
@@ -474,6 +714,32 @@ export default function AssetProfitabilityPage() {
     }
   }, [canViewAssetReport, dateRange]);
 
+  const openReturnDetail = useCallback(async (record: AssetReturnTrialVehicleRow) => {
+    if (!canViewAssetReport) {
+      return;
+    }
+
+    setSelectedReturnVehicle(record);
+    setReturnDetail(null);
+    setReturnDetailError(null);
+    setReturnDetailOpen(true);
+    setReturnDetailLoading(true);
+    try {
+      setReturnDetail(
+        await apiFetch<AssetReturnTrialVehicleDetail>(
+          `/reports/asset-profitability/returns/vehicles/${record.vehicleId}${buildQuery({
+            endDate: dateRange[1].format("YYYY-MM-DD"),
+            startDate: dateRange[0].format("YYYY-MM-DD")
+          })}`
+        )
+      );
+    } catch (error) {
+      setReturnDetailError(normalizeErrorMessage(error));
+    } finally {
+      setReturnDetailLoading(false);
+    }
+  }, [canViewAssetReport, dateRange]);
+
   const handleTableChange: TableProps<AssetProfitabilityVehicleRow>["onChange"] = (
     nextPagination,
     _filters,
@@ -492,6 +758,26 @@ export default function AssetProfitabilityPage() {
 
     setSortBy(undefined);
     setSortOrder(undefined);
+  };
+
+  const handleReturnTableChange: TableProps<AssetReturnTrialVehicleRow>["onChange"] = (
+    nextPagination,
+    _filters,
+    sorter
+  ) => {
+    setReturnPage(nextPagination.current ?? 1);
+    setReturnPageSize(nextPagination.pageSize ?? 20);
+
+    const sortResult = Array.isArray(sorter) ? sorter[0] : sorter;
+    const field = sortResult?.field;
+    if (sortResult?.order && typeof field === "string" && isAssetReturnSortField(field)) {
+      setReturnSortBy(field);
+      setReturnSortOrder(sortResult.order === "ascend" ? "asc" : "desc");
+      return;
+    }
+
+    setReturnSortBy(undefined);
+    setReturnSortOrder(undefined);
   };
 
   const columns = useMemo<ColumnsType<AssetProfitabilityVehicleRow>>(
@@ -587,6 +873,100 @@ export default function AssetProfitabilityPage() {
     [openDetail, sortBy, sortOrder]
   );
 
+  const returnColumns = useMemo<ColumnsType<AssetReturnTrialVehicleRow>>(
+    () => [
+      { dataIndex: "vehicleNo", fixed: "left", render: safeText, title: "车辆编号", width: 130 },
+      { dataIndex: "vin", render: safeText, title: "VIN", width: 180 },
+      { dataIndex: "plateNo", render: safeText, title: "车牌号", width: 110 },
+      { dataIndex: "vehicleModel", render: safeText, title: "车型", width: 90 },
+      {
+        dataIndex: "vehicleStatus",
+        render: renderVehicleStatus,
+        title: "车辆状态",
+        width: 120
+      },
+      { dataIndex: "purchasePriceAmount", render: formatYuan, title: "采购价", width: 130 },
+      { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 140 },
+      {
+        dataIndex: "rentalPaidAmount",
+        render: formatYuan,
+        sortOrder: sortOrderForReturn("rentalPaidAmount", returnSortBy, returnSortOrder),
+        sorter: true,
+        title: "租金实收",
+        width: 130
+      },
+      { dataIndex: "damagePaidAmount", render: formatYuan, title: "损伤实收", width: 130 },
+      { dataIndex: "otherPaidAmount", render: formatYuan, title: "其他实收", width: 130 },
+      {
+        dataIndex: "operatingRevenueAmount",
+        render: formatYuan,
+        sortOrder: sortOrderForReturn("operatingRevenueAmount", returnSortBy, returnSortOrder),
+        sorter: true,
+        title: "经营收入",
+        width: 130
+      },
+      { dataIndex: "depositCollectedAmount", render: formatYuan, title: "押金收取", width: 130 },
+      { dataIndex: "depreciationCostAmount", render: formatYuan, title: "折旧成本", width: 130 },
+      { dataIndex: "capitalCostAmount", render: formatYuan, title: "资金成本", width: 130 },
+      { dataIndex: "insuranceCostAmount", render: formatYuan, title: "保险成本", width: 130 },
+      { dataIndex: "maintenanceReserveCostAmount", render: formatYuan, title: "维修准备金", width: 140 },
+      { dataIndex: "otherCostAmount", render: formatYuan, title: "其他成本", width: 130 },
+      {
+        dataIndex: "operatingCostAmount",
+        render: formatYuan,
+        sortOrder: sortOrderForReturn("operatingCostAmount", returnSortBy, returnSortOrder),
+        sorter: true,
+        title: "经营成本",
+        width: 130
+      },
+      {
+        dataIndex: "trialNetOperatingIncomeAmount",
+        render: formatYuan,
+        sortOrder: sortOrderForReturn("trialNetOperatingIncomeAmount", returnSortBy, returnSortOrder),
+        sorter: true,
+        title: "试算经营净收益",
+        width: 150
+      },
+      {
+        dataIndex: "trialRoa",
+        render: formatPercent,
+        sortOrder: sortOrderForReturn("trialRoa", returnSortBy, returnSortOrder),
+        sorter: true,
+        title: "试算 ROA",
+        width: 120
+      },
+      {
+        dataIndex: "annualizedTrialRoa",
+        render: formatPercent,
+        sortOrder: sortOrderForReturn("annualizedTrialRoa", returnSortBy, returnSortOrder),
+        sorter: true,
+        title: "年化试算 ROA",
+        width: 140
+      },
+      {
+        render: (_value, record) => renderCostProfileStatus(record),
+        title: "成本参数状态",
+        width: 170
+      },
+      {
+        render: (_value, record) => renderCostUnavailableReason(record),
+        title: "不可计算原因",
+        width: 240
+      },
+      {
+        fixed: "right",
+        render: (_value, record) => (
+          <Button icon={<EyeOutlined />} onClick={() => void openReturnDetail(record)} size="small" type="link">
+            查看收益详情
+          </Button>
+        ),
+        title: "操作",
+        width: 130
+      }
+    ],
+    [openReturnDetail, returnSortBy, returnSortOrder]
+  );
+
   const content = authLoading ? (
     <Skeleton active />
   ) : !canViewAssetReport ? (
@@ -595,54 +975,114 @@ export default function AssetProfitabilityPage() {
     <Space orientation="vertical" size={16} style={{ width: "100%" }}>
       <FilterBar
         dateRange={dateRange}
-        loading={summaryLoading || vehiclesLoading}
+        loading={
+          activeTab === "returns"
+            ? returnSummaryLoading || returnVehiclesLoading
+            : summaryLoading || vehiclesLoading
+        }
         onExportSummary={() => void exportSummaryCsv()}
         onExportVehicles={() => void exportVehiclesCsv()}
         onDateRangeChange={(nextRange) => {
           setDateRange(nextRange);
           setPage(1);
+          setReturnPage(1);
         }}
         onRefresh={() => void refresh()}
         onVehicleModelChange={(value) => {
           setVehicleModel(value);
           setPage(1);
+          setReturnPage(1);
         }}
         onVehicleStatusChange={(value) => {
           setVehicleStatus(value);
           setPage(1);
+          setReturnPage(1);
         }}
         summaryExporting={summaryExporting}
         vehicleModel={vehicleModel}
         vehiclesExporting={vehiclesExporting}
         vehicleStatus={vehicleStatus}
       />
-      <Alert
-        title="口径说明"
-        showIcon
-        type="info"
-        description="租金实收仅统计 FIRST_MONTHLY_FEE 和 MONTHLY_RENT 的 paidAmount；损伤费用单独列示；押金收取单独列示，不计入租金收入；简化经营回报率 = 租金实收 / 车辆采购价，不是会计 ROA / ROE。ROA / ROE 后续需要引入折旧、资金成本、残值和费用模型。"
+      <Tabs
+        activeKey={activeTab}
+        items={[
+          {
+            children: (
+              <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+                <Alert
+                  title="口径说明"
+                  showIcon
+                  type="info"
+                  description="租金实收仅统计 FIRST_MONTHLY_FEE 和 MONTHLY_RENT 的 paidAmount；损伤费用单独列示；押金收取单独列示，不计入租金收入；简化经营回报率 = 租金实收 / 车辆采购价，不是会计 ROA / ROE。ROA / ROE 后续需要引入折旧、资金成本、残值和费用模型。"
+                />
+                {summaryError ? <Alert showIcon title={summaryError} type="error" /> : null}
+                <SummaryMetrics loading={summaryLoading} summary={summary} />
+                {vehicleError ? <Alert showIcon title={vehicleError} type="error" /> : null}
+                <Card title="单车经营列表">
+                  <Table
+                    columns={columns}
+                    dataSource={vehiclePage.items}
+                    loading={vehiclesLoading}
+                    locale={{ emptyText: "暂无数据" }}
+                    onChange={handleTableChange}
+                    pagination={{
+                      current: vehiclePage.page,
+                      pageSize: vehiclePage.pageSize,
+                      showSizeChanger: true,
+                      showTotal: (total) => `共 ${total.toLocaleString("zh-CN")} 台车`,
+                      total: vehiclePage.total
+                    }}
+                    rowKey="vehicleId"
+                    scroll={{ x: 3100 }}
+                  />
+                </Card>
+              </Space>
+            ),
+            key: "asset",
+            label: "资产经营"
+          },
+          {
+            children: (
+              <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+                <Alert
+                  title="收益试算口径"
+                  showIcon
+                  type="info"
+                  description="本页为经营分析试算口径，不构成会计凭证或正式财务报表。试算 ROA = 试算经营净收益 / 车辆采购价；年化试算 ROA 基于查询天数折算；押金不计入经营收入；ROE 当前缺少债务 / 自有资本拆分模型，暂不输出正式值。"
+                />
+                {returnSummaryError ? (
+                  <Alert showIcon title={returnSummaryError} type="error" />
+                ) : null}
+                <ReturnTrialSummaryMetrics loading={returnSummaryLoading} summary={returnSummary} />
+                {returnVehicleError ? (
+                  <Alert showIcon title={returnVehicleError} type="error" />
+                ) : null}
+                <Card title="单车收益试算列表">
+                  <Table
+                    columns={returnColumns}
+                    dataSource={returnVehiclePage.items}
+                    loading={returnVehiclesLoading}
+                    locale={{ emptyText: "暂无数据" }}
+                    onChange={handleReturnTableChange}
+                    pagination={{
+                      current: returnVehiclePage.page,
+                      pageSize: returnVehiclePage.pageSize,
+                      showSizeChanger: true,
+                      showTotal: (total) => `共 ${total.toLocaleString("zh-CN")} 台车`,
+                      total: returnVehiclePage.total
+                    }}
+                    rowKey="vehicleId"
+                    scroll={{ x: 3600 }}
+                  />
+                </Card>
+              </Space>
+            ),
+            key: "returns",
+            label: "收益试算"
+          }
+        ]}
+        onChange={(key) => setActiveTab(key === "returns" ? "returns" : "asset")}
       />
-      {summaryError ? <Alert showIcon title={summaryError} type="error" /> : null}
-      <SummaryMetrics loading={summaryLoading} summary={summary} />
-      {vehicleError ? <Alert showIcon title={vehicleError} type="error" /> : null}
-      <Card title="单车经营列表">
-        <Table
-          columns={columns}
-          dataSource={vehiclePage.items}
-          loading={vehiclesLoading}
-          locale={{ emptyText: "暂无数据" }}
-          onChange={handleTableChange}
-          pagination={{
-            current: vehiclePage.page,
-            pageSize: vehiclePage.pageSize,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total.toLocaleString("zh-CN")} 台车`,
-            total: vehiclePage.total
-          }}
-          rowKey="vehicleId"
-          scroll={{ x: 3100 }}
-        />
-      </Card>
     </Space>
   );
 
@@ -681,6 +1121,20 @@ export default function AssetProfitabilityPage() {
         title={`${safeText(selectedVehicle?.vehicleNo)} 单车经营详情`}
       >
         <VehicleDetailContent detail={detail} error={detailError} loading={detailLoading} />
+      </Drawer>
+
+      <Drawer
+        destroyOnClose
+        onClose={() => setReturnDetailOpen(false)}
+        open={returnDetailOpen}
+        size="min(1120px, calc(100vw - 32px))"
+        title={`${safeText(selectedReturnVehicle?.vehicleNo)} 单车收益试算详情`}
+      >
+        <ReturnTrialDetailContent
+          detail={returnDetail}
+          error={returnDetailError}
+          loading={returnDetailLoading}
+        />
       </Drawer>
     </ProtectedShell>
   );
@@ -798,6 +1252,60 @@ function SummaryMetrics({
           <Statistic title={item.title} value={item.value} styles={{ content: { fontSize: 20 } }} />
         </Card>
       ))}
+    </div>
+  );
+}
+
+function ReturnTrialSummaryMetrics({
+  loading,
+  summary
+}: {
+  loading: boolean;
+  summary: AssetReturnTrialSummary | null;
+}) {
+  const items = [
+    { title: "车辆总数", value: formatInteger(summary?.vehicleCount) },
+    { title: "已有成本参数车辆数", value: formatInteger(summary?.vehicleWithCostProfileCount) },
+    { title: "缺少成本参数车辆数", value: formatInteger(summary?.vehicleMissingCostProfileCount) },
+    { title: "成本可计算车辆数", value: formatInteger(summary?.costCalculatedVehicleCount) },
+    { title: "成本不可计算车辆数", value: formatInteger(summary?.costUnavailableVehicleCount) },
+    { title: "采购价合计", value: formatYuan(summary?.purchasePriceAmount) },
+    { title: "当前销售价合计", value: formatYuan(summary?.currentSalePriceAmount) },
+    { title: "租金实收", value: formatYuan(summary?.rentalPaidAmount) },
+    { title: "损伤实收", value: formatYuan(summary?.damagePaidAmount) },
+    { title: "其他实收", value: formatYuan(summary?.otherPaidAmount) },
+    { title: "经营收入合计", value: formatYuan(summary?.operatingRevenueAmount) },
+    { title: "押金收取", value: formatYuan(summary?.depositCollectedAmount) },
+    { title: "折旧成本", value: formatYuan(summary?.depreciationCostAmount) },
+    { title: "资金成本", value: formatYuan(summary?.capitalCostAmount) },
+    { title: "保险成本", value: formatYuan(summary?.insuranceCostAmount) },
+    { title: "维修准备金", value: formatYuan(summary?.maintenanceReserveCostAmount) },
+    { title: "其他成本", value: formatYuan(summary?.otherCostAmount) },
+    { title: "经营成本合计", value: formatYuan(summary?.operatingCostAmount) },
+    { title: "试算经营净收益", value: formatYuan(summary?.trialNetOperatingIncomeAmount) },
+    { title: "试算 ROA", value: formatPercent(summary?.trialRoa) },
+    { title: "年化试算 ROA", value: formatPercent(summary?.annualizedTrialRoa) }
+  ];
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 12,
+        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))"
+      }}
+    >
+      {items.map((item) => (
+        <Card key={item.title} loading={loading} size="small">
+          <Statistic title={item.title} value={item.value} styles={{ content: { fontSize: 20 } }} />
+        </Card>
+      ))}
+      <Card loading={loading} size="small">
+        <Statistic title="ROE" value="暂不可用" styles={{ content: { fontSize: 20 } }} />
+        <Typography.Text type="secondary">
+          {safeText(summary?.roeUnavailableReason)}
+        </Typography.Text>
+      </Card>
     </div>
   );
 }
@@ -955,6 +1463,218 @@ function VehicleDetailContent({
   );
 }
 
+function ReturnTrialDetailContent({
+  detail,
+  error,
+  loading
+}: {
+  detail: AssetReturnTrialVehicleDetail | null;
+  error: string | null;
+  loading: boolean;
+}) {
+  if (loading) {
+    return <Skeleton active />;
+  }
+
+  if (error) {
+    return <Alert showIcon title={error} type="error" />;
+  }
+
+  if (!detail) {
+    return <Alert showIcon title="暂无数据" type="info" />;
+  }
+
+  const vehicle = detail.vehicle ?? {};
+  const costProfile = detail.costProfile ?? null;
+  const costPreview = detail.costPreview ?? null;
+  const income = detail.incomeBreakdown ?? {};
+  const cost = detail.costBreakdown ?? {};
+  const returns = detail.returns ?? {};
+
+  return (
+    <Space orientation="vertical" size={18} style={{ width: "100%" }}>
+      <DetailSection title="车辆基础信息">
+        <Descriptions
+          bordered
+          column={2}
+          items={[
+            { label: "车辆编号", children: safeText(vehicle.vehicleNo) },
+            { label: "VIN", children: safeText(vehicle.vin) },
+            { label: "车牌号", children: safeText(vehicle.plateNo) },
+            { label: "品牌", children: safeText(vehicle.brand) },
+            { label: "车系", children: safeText(vehicle.series) },
+            { label: "车型", children: safeText(vehicle.vehicleModel ?? vehicle.model) },
+            { label: "车辆状态", children: renderVehicleStatus(vehicle.vehicleStatus) },
+            { label: "采购价", children: formatYuan(vehicle.purchasePriceAmount) },
+            { label: "当前销售价", children: formatYuan(vehicle.currentSalePriceAmount) }
+          ]}
+          size="small"
+        />
+      </DetailSection>
+
+      <DetailSection title="成本参数">
+        {costProfile ? (
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              {
+                label: "成本参数状态",
+                children: labelOf(
+                  VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS,
+                  costProfile.profileStatus
+                )
+              },
+              {
+                label: "折旧方法",
+                children: labelOf(VEHICLE_DEPRECIATION_METHOD_LABELS, costProfile.depreciationMethod)
+              },
+              { label: "折旧起算日", children: formatDate(costProfile.depreciationStartDate) },
+              { label: "预计使用月数", children: formatInteger(costProfile.usefulLifeMonths) },
+              { label: "预计残值", children: formatYuan(costProfile.residualValueAmount) },
+              { label: "资金成本率", children: formatBps(costProfile.capitalCostRateBps) },
+              { label: "年度保险成本", children: formatYuan(costProfile.annualInsuranceCostAmount) },
+              {
+                label: "年度维修准备金",
+                children: formatYuan(costProfile.annualMaintenanceReserveAmount)
+              },
+              { label: "其他月度成本", children: formatYuan(costProfile.otherMonthlyCostAmount) },
+              { label: "备注", children: safeText(costProfile.remark) }
+            ]}
+            size="small"
+          />
+        ) : (
+          <Alert showIcon title="该车辆尚未配置资产成本参数。" type="warning" />
+        )}
+      </DetailSection>
+
+      <DetailSection title="成本 preview">
+        {costPreview ? (
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "采购价", children: formatYuan(costPreview.purchasePriceAmount) },
+              { label: "预计残值", children: formatYuan(costPreview.residualValueAmount) },
+              { label: "可折旧金额", children: formatYuan(costPreview.depreciableAmount) },
+              { label: "月折旧", children: formatYuan(costPreview.monthlyDepreciationAmount) },
+              { label: "年度资金成本", children: formatYuan(costPreview.annualCapitalCostAmount) },
+              { label: "月资金成本", children: formatYuan(costPreview.monthlyCapitalCostAmount) },
+              { label: "月保险成本", children: formatYuan(costPreview.monthlyInsuranceCostAmount) },
+              {
+                label: "月维修准备金",
+                children: formatYuan(costPreview.monthlyMaintenanceReserveAmount)
+              },
+              { label: "其他月度成本", children: formatYuan(costPreview.otherMonthlyCostAmount) },
+              { label: "预估月成本", children: formatYuan(costPreview.estimatedMonthlyCostAmount) }
+            ]}
+            size="small"
+          />
+        ) : (
+          <Alert showIcon title="暂无成本 preview。" type="info" />
+        )}
+      </DetailSection>
+
+      <DetailSection title="收入明细">
+        <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+          <Alert showIcon type="info" message="押金收取单独列示，不计入经营收入。" />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "租金实收", children: formatYuan(income.rentalPaidAmount) },
+              { label: "损伤实收", children: formatYuan(income.damagePaidAmount) },
+              { label: "其他实收", children: formatYuan(income.otherPaidAmount) },
+              { label: "押金收取", children: formatYuan(income.depositCollectedAmount) },
+              { label: "经营收入合计", children: formatYuan(income.operatingRevenueAmount) }
+            ]}
+            size="small"
+          />
+        </Space>
+      </DetailSection>
+
+      <DetailSection title="成本拆分">
+        <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+          {cost.costProfileMissing ? (
+            <Alert
+              showIcon
+              title="缺少成本参数"
+              description="该车辆尚未配置资产成本参数，无法试算 ROA。"
+              type="warning"
+            />
+          ) : null}
+          {cost.manualDepreciationUnsupported ? (
+            <Alert
+              showIcon
+              title="手工折旧暂不支持试算"
+              description={
+                safeText(cost.costUnavailableReason) === "-"
+                  ? "MANUAL 折旧方法暂未配置手工折旧明细，无法试算 ROA。"
+                  : safeText(cost.costUnavailableReason)
+              }
+              type="warning"
+            />
+          ) : null}
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "成本分摊天数", children: formatInteger(cost.costDays) },
+              { label: "折旧成本", children: formatYuan(cost.depreciationCostAmount) },
+              { label: "资金成本", children: formatYuan(cost.capitalCostAmount) },
+              { label: "保险成本", children: formatYuan(cost.insuranceCostAmount) },
+              { label: "维修准备金", children: formatYuan(cost.maintenanceReserveCostAmount) },
+              { label: "其他成本", children: formatYuan(cost.otherCostAmount) },
+              { label: "经营成本合计", children: formatYuan(cost.operatingCostAmount) },
+              { label: "不可计算原因", children: safeText(cost.costUnavailableReason) }
+            ]}
+            size="small"
+          />
+        </Space>
+      </DetailSection>
+
+      <DetailSection title="收益试算">
+        <Descriptions
+          bordered
+          column={2}
+          items={[
+            { label: "试算经营净收益", children: formatYuan(returns.trialNetOperatingIncomeAmount) },
+            { label: "试算 ROA", children: formatPercent(returns.trialRoa) },
+            { label: "年化试算 ROA", children: formatPercent(returns.annualizedTrialRoa) },
+            { label: "ROE", children: "暂不可用" },
+            { label: "ROE 不可用原因", children: safeText(returns.roeUnavailableReason) }
+          ]}
+          size="small"
+        />
+      </DetailSection>
+
+      <DetailSection title="订单周期明细">
+        <Table
+          columns={returnOrderCycleColumns}
+          dataSource={detail.orderCycles ?? []}
+          locale={{ emptyText: "暂无数据" }}
+          pagination={false}
+          rowKey={(record) => record.orderId ?? record.orderNo ?? "return-order-cycle"}
+          scroll={{ x: 1120 }}
+          size="small"
+        />
+      </DetailSection>
+
+      <DetailSection title="账单明细">
+        <Table
+          columns={returnBillColumns}
+          dataSource={detail.bills ?? []}
+          locale={{ emptyText: "暂无数据" }}
+          pagination={false}
+          rowKey={(record) => record.billId ?? record.billNo ?? "return-bill"}
+          scroll={{ x: 1080 }}
+          size="small"
+        />
+      </DetailSection>
+    </Space>
+  );
+}
+
 function DetailSection({ children, title }: { children: ReactNode; title: string }) {
   return (
     <Space orientation="vertical" size={8} style={{ width: "100%" }}>
@@ -988,6 +1708,11 @@ const orderCycleColumns: ColumnsType<OrderCycleRow> = [
   { dataIndex: "damagePaidAmount", render: formatYuan, title: "损伤费用", width: 130 }
 ];
 
+const returnOrderCycleColumns: ColumnsType<ReturnTrialOrderCycleRow> = [
+  ...orderCycleColumns,
+  { dataIndex: "otherPaidAmount", render: formatYuan, title: "其他实收", width: 130 }
+];
+
 const billColumns: ColumnsType<BillDetailRow> = [
   { dataIndex: "billNo", render: safeText, title: "账单编号", width: 150 },
   {
@@ -1005,6 +1730,17 @@ const billColumns: ColumnsType<BillDetailRow> = [
     render: (value?: string | null) => labelOf(BILL_STATUS_LABELS, value),
     title: "状态",
     width: 110
+  }
+];
+
+const returnBillColumns: ColumnsType<ReturnTrialBillRow> = [
+  ...billColumns,
+  {
+    dataIndex: "includedInOperatingRevenue",
+    render: (value?: boolean | null) =>
+      value ? <Tag color="green">计入经营收入</Tag> : <Tag>不计入经营收入</Tag>,
+    title: "收益口径",
+    width: 150
   }
 ];
 
@@ -1073,6 +1809,65 @@ function renderVehicleStatus(value?: string | null) {
   return <Tag color={vehicleStatusColors[value] ?? "default"}>{labelOf(VEHICLE_STATUS_LABELS, value)}</Tag>;
 }
 
+function renderCostProfileStatus(record: Pick<
+  AssetReturnTrialVehicleRow,
+  "costProfileMissing" | "costProfileStatus" | "manualDepreciationUnsupported"
+>) {
+  if (record.costProfileMissing) {
+    return (
+      <Tooltip title="该车辆尚未配置资产成本参数，无法试算 ROA。">
+        <Tag color="warning">缺少成本参数</Tag>
+      </Tooltip>
+    );
+  }
+
+  if (record.manualDepreciationUnsupported) {
+    return (
+      <Tooltip title="MANUAL 折旧方法暂未配置手工折旧明细，无法试算 ROA。">
+        <Tag color="orange">手工折旧暂不支持试算</Tag>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <Tooltip
+      title={`成本参数状态：${labelOf(
+        VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS,
+        record.costProfileStatus
+      )}`}
+    >
+      <Tag color="green">可试算</Tag>
+    </Tooltip>
+  );
+}
+
+function renderCostUnavailableReason(
+  record: Pick<
+    AssetReturnTrialVehicleRow,
+    "costProfileMissing" | "costUnavailableReason" | "manualDepreciationUnsupported"
+  >
+) {
+  if (record.costProfileMissing) {
+    return (
+      <Tooltip title="该车辆尚未配置资产成本参数，无法试算 ROA。">
+        <Typography.Text type="secondary">缺少成本参数</Typography.Text>
+      </Tooltip>
+    );
+  }
+
+  if (record.manualDepreciationUnsupported) {
+    const reason =
+      record.costUnavailableReason ?? "MANUAL 折旧方法暂未配置手工折旧明细，无法试算 ROA。";
+    return (
+      <Tooltip title={reason}>
+        <Typography.Text type="secondary">{reason}</Typography.Text>
+      </Tooltip>
+    );
+  }
+
+  return safeText(record.costUnavailableReason);
+}
+
 function renderOrderLink(orderId?: string | null, orderNo?: unknown) {
   const label = safeText(orderNo);
   if (!orderId || label === "-") {
@@ -1132,7 +1927,22 @@ function isAssetSortField(value: string): value is AssetSortField {
   return assetSortFields.includes(value as AssetSortField);
 }
 
+function isAssetReturnSortField(value: string): value is AssetReturnSortField {
+  return assetReturnSortFields.includes(value as AssetReturnSortField);
+}
+
 function sortOrderFor(field: AssetSortField, sortBy?: AssetSortField, sortOrder?: BackendSortOrder) {
+  if (sortBy !== field || !sortOrder) {
+    return undefined;
+  }
+  return sortOrder === "asc" ? "ascend" : "descend";
+}
+
+function sortOrderForReturn(
+  field: AssetReturnSortField,
+  sortBy?: AssetReturnSortField,
+  sortOrder?: BackendSortOrder
+) {
   if (sortBy !== field || !sortOrder) {
     return undefined;
   }
@@ -1197,6 +2007,18 @@ function formatKwh(value?: number | null) {
     maximumFractionDigits: 2,
     minimumFractionDigits: 0
   })} kWh`;
+}
+
+function formatBps(value?: number | null) {
+  const numberValue = safeNumber(value);
+  if (numberValue === null) {
+    return "-";
+  }
+
+  return `${(numberValue / 100).toLocaleString("zh-CN", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2
+  })}%`;
 }
 
 function formatDate(value?: unknown) {

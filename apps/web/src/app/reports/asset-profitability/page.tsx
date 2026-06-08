@@ -590,9 +590,9 @@ export default function AssetProfitabilityPage() {
   const content = authLoading ? (
     <Skeleton active />
   ) : !canViewAssetReport ? (
-    <Alert message="无权限查看资产经营分析" showIcon type="warning" />
+    <Alert showIcon title="无权限查看资产经营分析" type="warning" />
   ) : (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={16} style={{ width: "100%" }}>
       <FilterBar
         dateRange={dateRange}
         loading={summaryLoading || vehiclesLoading}
@@ -617,14 +617,14 @@ export default function AssetProfitabilityPage() {
         vehicleStatus={vehicleStatus}
       />
       <Alert
-        message="口径说明"
+        title="口径说明"
         showIcon
         type="info"
         description="租金实收仅统计 FIRST_MONTHLY_FEE 和 MONTHLY_RENT 的 paidAmount；损伤费用单独列示；押金收取单独列示，不计入租金收入；简化经营回报率 = 租金实收 / 车辆采购价，不是会计 ROA / ROE。ROA / ROE 后续需要引入折旧、资金成本、残值和费用模型。"
       />
-      {summaryError ? <Alert message={summaryError} showIcon type="error" /> : null}
+      {summaryError ? <Alert showIcon title={summaryError} type="error" /> : null}
       <SummaryMetrics loading={summaryLoading} summary={summary} />
-      {vehicleError ? <Alert message={vehicleError} showIcon type="error" /> : null}
+      {vehicleError ? <Alert showIcon title={vehicleError} type="error" /> : null}
       <Card title="单车经营列表">
         <Table
           columns={columns}
@@ -648,7 +648,7 @@ export default function AssetProfitabilityPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Space align="start" style={{ justifyContent: "space-between", width: "100%" }}>
           <div>
             <Typography.Title level={3} style={{ marginBottom: 4 }}>
@@ -677,8 +677,8 @@ export default function AssetProfitabilityPage() {
         }
         onClose={() => setDetailOpen(false)}
         open={detailOpen}
+        size="min(960px, calc(100vw - 32px))"
         title={`${safeText(selectedVehicle?.vehicleNo)} 单车经营详情`}
-        width="min(960px, calc(100vw - 32px))"
       >
         <VehicleDetailContent detail={detail} error={detailError} loading={detailLoading} />
       </Drawer>
@@ -716,7 +716,7 @@ function FilterBar({
   return (
     <Card>
       <Space align="end" size={16} wrap>
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           <Typography.Text type="secondary">日期范围</Typography.Text>
           <RangePicker
             allowClear={false}
@@ -728,7 +728,7 @@ function FilterBar({
             value={dateRange}
           />
         </Space>
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           <Typography.Text type="secondary">车型</Typography.Text>
           <Select
             allowClear
@@ -739,7 +739,7 @@ function FilterBar({
             value={vehicleModel}
           />
         </Space>
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           <Typography.Text type="secondary">车辆状态</Typography.Text>
           <Select
             allowClear
@@ -795,7 +795,7 @@ function SummaryMetrics({
     >
       {items.map((item) => (
         <Card key={item.title} loading={loading} size="small">
-          <Statistic title={item.title} value={item.value} valueStyle={{ fontSize: 20 }} />
+          <Statistic title={item.title} value={item.value} styles={{ content: { fontSize: 20 } }} />
         </Card>
       ))}
     </div>
@@ -816,11 +816,11 @@ function VehicleDetailContent({
   }
 
   if (error) {
-    return <Alert message={error} showIcon type="error" />;
+    return <Alert showIcon title={error} type="error" />;
   }
 
   if (!detail) {
-    return <Alert message="暂无数据" showIcon type="info" />;
+    return <Alert showIcon title="暂无数据" type="info" />;
   }
 
   const latestSalePriceHistory = latestByDate(detail.salePriceHistory ?? [], (item) => item.createdAt);
@@ -829,7 +829,7 @@ function VehicleDetailContent({
   const summary = detail.summary ?? {};
 
   return (
-    <Space direction="vertical" size={18} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={18} style={{ width: "100%" }}>
       <DetailSection title="车辆基础信息">
         <Descriptions
           bordered
@@ -957,7 +957,7 @@ function VehicleDetailContent({
 
 function DetailSection({ children, title }: { children: ReactNode; title: string }) {
   return (
-    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={8} style={{ width: "100%" }}>
       <Typography.Title level={5} style={{ margin: 0 }}>
         {title}
       </Typography.Title>

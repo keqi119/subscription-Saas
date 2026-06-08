@@ -152,7 +152,22 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
     icon: "dashboard",
     label: "经营看板",
     path: "/reports",
-    permissionCode: PermissionCode.REPORT_VIEW
+    children: [
+      {
+        code: "reports.overview",
+        icon: "dashboard",
+        label: "经营总览",
+        path: "/reports",
+        permissionCode: PermissionCode.REPORT_VIEW
+      },
+      {
+        code: "reports.asset_profitability",
+        icon: "car",
+        label: "资产经营分析",
+        path: "/reports/asset-profitability",
+        permissionCode: PermissionCode.REPORT_ASSET
+      }
+    ]
   },
   {
     code: "billing",

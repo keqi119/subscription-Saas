@@ -723,12 +723,27 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       '...(roleCode === "FI" ? reportFinancePermissions : reportAssetPermissions)'
     );
+    expect(seedSource).toContain('const reportOverviewMenuCodes = ["reports", "reports.overview"]');
+    expect(seedSource).toContain('const reportAssetMenuCodes = ["reports", "reports.asset_profitability"]');
     expect(seedSource).toContain(
-      '["reports", "经营看板", "/reports", "dashboard", 75, "report:view", null]'
+      '["reports", "经营看板", "/reports", "dashboard", 75, null, null]'
+    );
+    expect(seedSource).toContain(
+      '["reports.overview", "经营总览", "/reports", "dashboard", 10, "report:view", "reports"]'
+    );
+    expect(seedSource).toContain(
+      '["reports.asset_profitability", "资产经营分析", "/reports/asset-profitability", "car", 20, "report:asset", "reports"]'
     );
     expect(roleHasMenu(roleMenuArray("OP"), "reports")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("OP"), "reports.overview")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("OP"), "reports.asset_profitability")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "reports")).toBe(true);
-    expect(seedSource).toContain('...(roleCode === "FI" ? ["reports", ...financeMenuCodes] : [])');
+    expect(roleHasMenu(roleMenuArray("GM"), "reports.overview")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "reports.asset_profitability")).toBe(true);
+    expect(seedSource).toContain(
+      '...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : [])'
+    );
+    expect(seedSource).toContain('...(roleCode === "AS" ? reportAssetMenuCodes : [])');
     expect(roleHasPermission(rolePermissionArray("SA"), "report:view")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "report:finance")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "report:finance")).toBe(false);
@@ -768,11 +783,15 @@ describe("seed permission calibration", () => {
   }
 
   function roleHasMenu(source: string, menuCode: string) {
-    return containsQuotedValue(source, menuCode);
+    return sourceHasValue(source, menuCode);
   }
 
   function roleHasPermission(source: string, permissionCode: string, seen = new Set<string>()) {
-    if (containsQuotedValue(source, permissionCode)) {
+    return sourceHasValue(source, permissionCode, seen);
+  }
+
+  function sourceHasValue(source: string, value: string, seen = new Set<string>()) {
+    if (containsQuotedValue(source, value)) {
       return true;
     }
 
@@ -783,7 +802,7 @@ describe("seed permission calibration", () => {
 
       seen.add(identifier);
 
-      if (roleHasPermission(permissionConstantSource(identifier), permissionCode, seen)) {
+      if (sourceHasValue(permissionConstantSource(identifier), value, seen)) {
         return true;
       }
     }

@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 
 describe("default seed baseline customer and catalog data", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
+  const verifySource = fs.readFileSync(
+    path.resolve(__dirname, "../prisma/verify-seed-baseline.mjs"),
+    "utf8"
+  );
 
   it("does not create default application, quote, order, or contract scenarios", () => {
     for (const oldFunctionName of [
@@ -15,20 +19,31 @@ describe("default seed baseline customer and catalog data", () => {
       expect(seedSource).not.toContain(oldFunctionName);
     }
 
-    for (const forbiddenCreate of [
-      "prisma.application.upsert",
-      "prisma.subscriptionQuote.upsert",
-      "prisma.subscriptionOrder.upsert",
-      "prisma.contract.upsert",
-      "prisma.vehicleDelivery.upsert",
-      "prisma.vehicleReturn.upsert",
-      "prisma.receivableBill.upsert",
-      "prisma.paymentRecord.upsert",
-      "prisma.paymentWriteOff.upsert",
-      "prisma.collectionCase.upsert",
-      "prisma.orderEntitlementAccount.upsert"
+    for (const delegate of [
+      "application",
+      "applicationMaterial",
+      "applicationActionLog",
+      "subscriptionQuote",
+      "subscriptionOrder",
+      "orderChange",
+      "contract",
+      "vehicleDelivery",
+      "vehicleReturn",
+      "vehicleReturnDamage",
+      "receivableBill",
+      "paymentRecord",
+      "paymentWriteOff",
+      "depositLedger",
+      "collectionCase",
+      "collectionCaseBill",
+      "collectionAction",
+      "orderEntitlementAccount",
+      "orderEntitlementGrant",
+      "orderEntitlementUsage"
     ]) {
-      expect(seedSource).not.toContain(forbiddenCreate);
+      for (const operation of ["create", "createMany", "upsert"]) {
+        expect(seedSource).not.toContain(`prisma.${delegate}.${operation}`);
+      }
     }
   });
 
@@ -45,7 +60,10 @@ describe("default seed baseline customer and catalog data", () => {
   });
 
   it("keeps clean customer leads without binding applications or orders", () => {
-    const leadSource = sourceBetween("const baselineCustomerLeads = [", "const oldDefaultFlowSeedData = {");
+    const leadSource = sourceBetween(
+      "const baselineCustomerLeads = [",
+      "const oldDefaultFlowSeedData = {"
+    );
     const seedLeadsFunction = functionSourceFor("seedBaselineCustomerLeads");
 
     for (const marker of [
@@ -111,6 +129,26 @@ describe("default seed baseline customer and catalog data", () => {
       "seedDemoVehicles"
     ]) {
       expect(functionSourceFor(functionName)).toContain(".upsert");
+    }
+  });
+
+  it("provides a post-seed baseline verifier for master data and old flow markers", () => {
+    for (const marker of [
+      "seedVehicleVins",
+      "seedCustomerNos",
+      "baselineCatalog",
+      "oldDefaultFlowSeedData",
+      "seed vehicles are AVAILABLE",
+      "seed vehicles have currentSalePriceAmount",
+      "seed vehicles have EFFECTIVE sale price",
+      "baseline customer leads exist",
+      "old default seed applications are absent",
+      "old default seed orders are absent",
+      "old default seed bills are absent",
+      "old default seed collection cases are absent",
+      "old default seed entitlement accounts are absent"
+    ]) {
+      expect(verifySource).toContain(marker);
     }
   });
 

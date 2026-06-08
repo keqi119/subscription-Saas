@@ -20,6 +20,7 @@
     "prisma:generate": "pnpm --filter @subscription-saas/api prisma:generate",
     "prisma:migrate": "pnpm --filter @subscription-saas/api prisma:migrate",
     "prisma:seed": "pnpm --filter @subscription-saas/api prisma:seed",
+    "prisma:seed:verify": "pnpm --filter @subscription-saas/api prisma:seed:verify",
     "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate"
   },
   "devDependencies": {

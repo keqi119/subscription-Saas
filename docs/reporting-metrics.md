@@ -341,6 +341,69 @@ TEXT 权益口径：
 - 权益调整审批。
 - 权益取消 / 冲正。
 
+## 车辆资产经营分析口径
+
+查看 API：
+
+- `GET /api/reports/asset-profitability/summary`
+- `GET /api/reports/asset-profitability/vehicles`
+- `GET /api/reports/asset-profitability/vehicles/:id`
+
+第一版只做经营分析口径，不计算会计 ROA / ROE。
+
+资产价值：
+
+1. 车辆投入成本 = `Vehicle.purchasePriceAmount`。
+2. 当前估值 / 当前销售价 = `Vehicle.currentSalePriceAmount`。
+3. 缺失金额按 0 返回或在明细中保留 null，不因缺失数据报 500。
+
+收入与账务：
+
+1. 租金实收 = `ReceivableBill.billType in (FIRST_MONTHLY_FEE, MONTHLY_RENT)` 的 `paidAmount`。
+2. 损伤费用实收 = `ReceivableBill.billType = DAMAGE_FEE` 的 `paidAmount`。
+3. 其他实收 = `ReceivableBill.billType = OTHER` 的 `paidAmount`。
+4. 押金不计入租金收入，不参与回报率。
+5. 押金收取金额单独列示，第一版按 `DepositLedger.transactionType = COLLECT` 且 `transactionStatus = CONFIRMED` 统计。
+6. 应收合计 = `ReceivableBill.amount`。
+7. 已收合计 = `ReceivableBill.paidAmount`。
+8. 未收合计 = `ReceivableBill.remainingAmount`。
+9. 账单通过 `ReceivableBill.orderId -> SubscriptionOrder.vehicleId` 归属到车辆。
+
+出租天数：
+
+1. 只统计 `SubscriptionOrder.actualDeliveryAt` 不为空的订单。
+2. 订单出租开始日 = `actualDeliveryAt` 对应业务日期。
+3. 订单出租结束日 = `actualReturnAt`，如为空则使用 `SubscriptionOrder.endDate`，仍为空则使用查询 `endDate` / 今天。
+4. 统计时按查询日期范围裁剪。
+5. 出租天数 = 结束日 - 开始日 + 1。
+
+可运营天数：
+
+1. 车辆可运营起点优先取最早 `VehicleSalePriceHistory.reviewType = INITIAL_POOL` 的 `effectiveFrom`。
+2. 如无 `INITIAL_POOL`，使用 `Vehicle.createdAt` 对应业务日期。
+3. 第一版按查询日期范围裁剪。
+4. 可运营天数 = 统计结束日 - 统计开始日 + 1。
+
+出租率：
+
+```text
+utilizationRate = leasedDays / operatingDays
+```
+
+返回小数，例如 `0.8325`，前端后续显示为 `83.25%`。
+
+简化经营回报率：
+
+```text
+simpleReturnRate = rentalPaidAmount / purchasePriceAmount
+```
+
+`purchasePriceAmount <= 0` 时返回 `null`。
+
+`simpleReturnRate` 是简化经营回报率，不是会计 ROA / ROE。
+
+完整 ROA / ROE 后续需要引入折旧、资金成本、残值、保险、维修、人工和其他费用分摊模型。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

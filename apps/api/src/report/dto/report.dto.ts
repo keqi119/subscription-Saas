@@ -16,7 +16,17 @@ import {
   VehicleStatus
 } from "@prisma/client";
 import { Type } from "class-transformer";
-import { IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, Min } from "class-validator";
+import {
+  IsDateString,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  Min
+} from "class-validator";
 
 export class ReportDateRangeQueryDto {
   @IsOptional()
@@ -188,6 +198,52 @@ export class VehicleDetailQueryDto extends ReportDetailQueryDto {
   @IsString()
   series?: string;
 }
+
+export const assetProfitabilitySortFields = [
+  "rentalPaidAmount",
+  "utilizationRate",
+  "simpleReturnRate",
+  "currentSalePriceAmount",
+  "purchasePriceAmount",
+  "leasedDays"
+] as const;
+
+export const sortOrders = ["asc", "desc"] as const;
+
+export class AssetProfitabilityQueryDto extends ReportDateRangeQueryDto {
+  @IsOptional()
+  @IsEnum(VehicleModel)
+  vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsEnum(VehicleStatus)
+  vehicleStatus?: VehicleStatus;
+}
+
+export class AssetProfitabilityVehicleListQueryDto extends AssetProfitabilityQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+
+  @IsOptional()
+  @IsIn(assetProfitabilitySortFields)
+  sortBy?: (typeof assetProfitabilitySortFields)[number];
+
+  @IsOptional()
+  @IsIn(sortOrders)
+  sortOrder?: (typeof sortOrders)[number];
+}
+
+export class AssetProfitabilityVehicleDetailQueryDto extends ReportDateRangeQueryDto {}
 
 export class EntitlementReportQueryDto extends ReportDateRangeQueryDto {
   @IsOptional()

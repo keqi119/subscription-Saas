@@ -112,9 +112,11 @@ describe("reporting dashboard APIs", () => {
     expect(findBy(result.bySource, "orderSource", OrderSource.SALES_ASSISTED)).toMatchObject({
       count: 2
     });
-    expect(findBy(result.bySource, "orderSource", OrderSource.CUSTOMER_SELF_SERVICE)).toMatchObject({
-      count: 1
-    });
+    expect(findBy(result.bySource, "orderSource", OrderSource.CUSTOMER_SELF_SERVICE)).toMatchObject(
+      {
+        count: 1
+      }
+    );
     expect(result.byVehicleModel).toEqual([
       { count: 2, vehicleModel: VehicleModel.ET5 },
       { count: 1, vehicleModel: VehicleModel.ES6 }
@@ -141,9 +143,7 @@ describe("reporting dashboard APIs", () => {
     prisma.receivableBill.aggregate.mockResolvedValue(
       sumResult({ amount: 5000n, paidAmount: 3200n, remainingAmount: 1800n })
     );
-    prisma.receivableBill.groupBy
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    prisma.receivableBill.groupBy.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const result = await service.getFinanceReport({
       endDate: "2026-06-30",
@@ -234,7 +234,9 @@ describe("reporting dashboard APIs", () => {
       releasedAmount: 500,
       transactionCount: 6
     });
-    expect(findBy(result.byTransactionType, "transactionType", DepositTransactionType.FREEZE)).toMatchObject({
+    expect(
+      findBy(result.byTransactionType, "transactionType", DepositTransactionType.FREEZE)
+    ).toMatchObject({
       amount: 900,
       count: 1
     });
@@ -331,6 +333,236 @@ describe("reporting dashboard APIs", () => {
     expect(result.rentalRate).toBeCloseTo(2 / 6);
   });
 
+  it("asset-profitability summary returns asset amounts and excludes deposits from rental income", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetProfitability(prisma);
+
+    const result = await service.getAssetProfitabilitySummary({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result).toMatchObject({
+      damagePaidAmount: 30000,
+      depositCollectedAmount: 500000,
+      rentalPaidAmount: 250000,
+      totalCurrentSalePriceAmount: 2300000,
+      totalLeasedDays: 17,
+      totalPaidAmount: 780000,
+      totalPurchasePriceAmount: 3000000,
+      totalReceivableAmount: 800000,
+      totalRemainingAmount: 20000,
+      totalVehicles: 2
+    });
+    expect(result.averageUtilizationRate).toBeCloseTo((6 / 30 + 11 / 21) / 2);
+    expect(result.averageSimpleReturnRate).toBeCloseTo((100000 / 1000000 + 150000 / 2000000) / 2);
+  });
+
+  it("asset-profitability vehicles returns paged rows with filters, utilization, and simplified return rate", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetProfitability(prisma);
+
+    const result = await service.getAssetProfitabilityVehicles({
+      endDate: "2026-06-30",
+      page: 1,
+      pageSize: 1,
+      sortBy: "rentalPaidAmount",
+      sortOrder: "desc",
+      startDate: "2026-06-01",
+      vehicleModel: VehicleModel.ET5,
+      vehicleStatus: VehicleStatus.LEASED
+    });
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 1,
+      total: 2,
+      items: [
+        {
+          currentCustomerName: "李四",
+          currentOrderNo: "SO-002",
+          leasedDays: 11,
+          operatingDays: 21,
+          rentalPaidAmount: 150000,
+          simpleReturnRate: 150000 / 2000000,
+          vehicleId: "vehicle-2",
+          vehicleNo: "VH-002"
+        }
+      ]
+    });
+    expect(result.items[0]?.utilizationRate).toBeCloseTo(11 / 21);
+    expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: VehicleStatus.LEASED,
+          vehicleModel: VehicleModel.ET5
+        })
+      })
+    );
+  });
+
+  it("asset-profitability vehicles clips days to date range and returns null simpleReturnRate for zero cost", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findMany.mockResolvedValue([
+      assetVehicle({
+        currentSalePriceAmount: 0n,
+        id: "vehicle-zero",
+        purchasePriceAmount: 0n,
+        salePriceHistories: [
+          salePriceHistory({ effectiveFrom: new Date("2026-06-01T00:00:00.000Z") })
+        ],
+        vehicleNo: "VH-ZERO"
+      })
+    ]);
+    prisma.subscriptionOrder.findMany.mockResolvedValue([
+      assetOrder({
+        actualDeliveryAt: new Date("2026-06-01T02:00:00.000Z"),
+        actualReturnAt: new Date("2026-07-10T02:00:00.000Z"),
+        id: "order-zero",
+        vehicleId: "vehicle-zero"
+      })
+    ]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({
+        billType: BillType.MONTHLY_RENT,
+        orderId: "order-zero",
+        orderNo: "SO-ZERO",
+        paidAmount: 88000n,
+        vehicleId: "vehicle-zero"
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+
+    const result = await service.getAssetProfitabilityVehicles({
+      endDate: "2026-06-20",
+      startDate: "2026-06-10"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      leasedDays: 11,
+      operatingDays: 11,
+      simpleReturnRate: null,
+      vehicleId: "vehicle-zero"
+    });
+    expect(result.items[0]?.utilizationRate).toBe(1);
+    expect(prisma.receivableBill.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          dueDate: expect.objectContaining({
+            gte: new Date("2026-06-09T16:00:00.000Z"),
+            lt: new Date("2026-06-20T16:00:00.000Z")
+          })
+        })
+      })
+    );
+  });
+
+  it("asset-profitability vehicle detail returns order cycles, bills, lifecycle nodes, and sale price history", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(
+      assetVehicleDetail({
+        deliveries: [
+          {
+            deliveredAt: new Date("2026-06-05T02:00:00.000Z"),
+            deliveryNo: "DLV-001",
+            deliveryStatus: "COMPLETED",
+            id: "delivery-1",
+            orderId: "order-1",
+            scheduledAt: new Date("2026-06-05T02:00:00.000Z")
+          }
+        ],
+        returnDamages: [
+          {
+            createdAt: new Date("2026-06-12T02:00:00.000Z"),
+            damageLevel: "MINOR",
+            damageType: "SCRATCH",
+            description: "rear bumper",
+            estimatedRepairAmount: 30000n,
+            id: "damage-1",
+            orderId: "order-1",
+            responsibleParty: "CUSTOMER",
+            status: "RECORDED"
+          }
+        ],
+        returns: [
+          {
+            id: "return-1",
+            orderId: "order-1",
+            returnedAt: new Date("2026-06-10T02:00:00.000Z"),
+            returnNo: "RET-001",
+            returnStatus: "COMPLETED",
+            scheduledAt: new Date("2026-06-10T02:00:00.000Z")
+          }
+        ]
+      })
+    );
+    prisma.subscriptionOrder.findMany.mockResolvedValue([
+      assetOrder({
+        actualDeliveryAt: new Date("2026-06-05T02:00:00.000Z"),
+        actualReturnAt: new Date("2026-06-10T02:00:00.000Z"),
+        id: "order-1",
+        orderNo: "SO-001",
+        vehicleId: "vehicle-1"
+      })
+    ]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({
+        billType: BillType.MONTHLY_RENT,
+        orderId: "order-1",
+        paidAmount: 100000n,
+        vehicleId: "vehicle-1"
+      }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        orderId: "order-1",
+        paidAmount: 30000n,
+        vehicleId: "vehicle-1"
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([
+      { amount: 500000n, order: { vehicleId: "vehicle-1" } }
+    ]);
+
+    const result = await service.getAssetProfitabilityVehicleDetail("vehicle-1", {
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.vehicle).toMatchObject({ vehicleId: "vehicle-1", vehicleNo: "VH-001" });
+    expect(result.summary).toMatchObject({
+      damagePaidAmount: 30000,
+      depositCollectedAmount: 500000,
+      leasedDays: 6,
+      rentalPaidAmount: 100000,
+      simpleReturnRate: 100000 / 1000000
+    });
+    expect(result.orderCycles).toEqual([
+      expect.objectContaining({
+        damagePaidAmount: 30000,
+        leasedDays: 6,
+        orderNo: "SO-001",
+        rentalPaidAmount: 100000
+      })
+    ]);
+    expect(result.bills).toEqual([
+      expect.objectContaining({ billNo: "BILL-001", billType: BillType.MONTHLY_RENT }),
+      expect.objectContaining({ billNo: "BILL-DAMAGE", billType: BillType.DAMAGE_FEE })
+    ]);
+    expect(result.salePriceHistory).toEqual([
+      expect.objectContaining({ reviewType: "INITIAL_POOL" })
+    ]);
+    expect(result.lifecycleNodes.map((node) => node.type)).toEqual([
+      "INITIAL_POOL",
+      "DELIVERY",
+      "RETURN"
+    ]);
+    expect(result.damageRecords).toEqual([
+      expect.objectContaining({ damageId: "damage-1", estimatedRepairAmount: 30000 })
+    ]);
+  });
+
   it("entitlements report returns account, grant, usage, and exhausted summaries", async () => {
     const { prisma, service } = createReportHarness();
     mockEntitlementReport(prisma);
@@ -411,11 +643,15 @@ describe("reporting dashboard APIs", () => {
       startDate: "2026-06-01"
     });
 
-    expect(findBy(result.usageOverview.bySource, "usageSource", EntitlementUsageSource.MANUAL)).toMatchObject({
+    expect(
+      findBy(result.usageOverview.bySource, "usageSource", EntitlementUsageSource.MANUAL)
+    ).toMatchObject({
       count: 2,
       usedAmount: 101
     });
-    expect(findBy(result.usageOverview.byStatus, "usageStatus", EntitlementUsageStatus.CONFIRMED)).toMatchObject({
+    expect(
+      findBy(result.usageOverview.byStatus, "usageStatus", EntitlementUsageStatus.CONFIRMED)
+    ).toMatchObject({
       count: 3,
       usedAmount: 121
     });
@@ -444,7 +680,9 @@ describe("reporting dashboard APIs", () => {
       page: 2,
       pageSize: 10,
       total: 1,
-      items: [{ entitlementType: EntitlementType.ENERGY, grantNo: "EG-001", unit: EntitlementUnit.KWH }]
+      items: [
+        { entitlementType: EntitlementType.ENERGY, grantNo: "EG-001", unit: EntitlementUnit.KWH }
+      ]
     });
     expect(prisma.orderEntitlementGrant.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -526,7 +764,9 @@ describe("reporting dashboard APIs", () => {
     vi.setSystemTime(new Date("2026-06-07T02:00:00.000Z"));
     const { prisma, service } = createReportHarness();
 
-    prisma.receivableBill.aggregate.mockResolvedValue(sumResult({ amount: 0n, paidAmount: 0n, remainingAmount: 0n }));
+    prisma.receivableBill.aggregate.mockResolvedValue(
+      sumResult({ amount: 0n, paidAmount: 0n, remainingAmount: 0n })
+    );
     prisma.receivableBill.groupBy.mockResolvedValue([]);
 
     const result = await service.getFinanceReport({});
@@ -681,16 +921,32 @@ describe("reporting dashboard APIs", () => {
   it("export controller returns text/csv headers and attachment filenames", async () => {
     const controller = new ReportController({
       exportBillDetails: vi.fn().mockResolvedValue(csvFile("bills-detail-20260601-20260630.csv")),
-      exportCollectionReport: vi.fn().mockResolvedValue(csvFile("collections-report-20260601-20260630.csv")),
-      exportCollectionCaseDetails: vi.fn().mockResolvedValue(csvFile("collection-cases-detail-20260601-20260630.csv")),
-      exportDepositLedgerDetails: vi.fn().mockResolvedValue(csvFile("deposit-ledgers-detail-20260601-20260630.csv")),
-      exportDepositPoolReport: vi.fn().mockResolvedValue(csvFile("deposit-pool-report-20260601-20260630.csv")),
-      exportFinanceReport: vi.fn().mockResolvedValue(csvFile("finance-report-20260601-20260630.csv")),
+      exportCollectionReport: vi
+        .fn()
+        .mockResolvedValue(csvFile("collections-report-20260601-20260630.csv")),
+      exportCollectionCaseDetails: vi
+        .fn()
+        .mockResolvedValue(csvFile("collection-cases-detail-20260601-20260630.csv")),
+      exportDepositLedgerDetails: vi
+        .fn()
+        .mockResolvedValue(csvFile("deposit-ledgers-detail-20260601-20260630.csv")),
+      exportDepositPoolReport: vi
+        .fn()
+        .mockResolvedValue(csvFile("deposit-pool-report-20260601-20260630.csv")),
+      exportFinanceReport: vi
+        .fn()
+        .mockResolvedValue(csvFile("finance-report-20260601-20260630.csv")),
       exportOrderDetails: vi.fn().mockResolvedValue(csvFile("orders-detail-20260601-20260630.csv")),
       exportOrderReport: vi.fn().mockResolvedValue(csvFile("orders-report-20260601-20260630.csv")),
-      exportOverdueBillDetails: vi.fn().mockResolvedValue(csvFile("overdue-bills-detail-20260601-20260630.csv")),
-      exportVehicleDetails: vi.fn().mockResolvedValue(csvFile("vehicles-detail-20260601-20260630.csv")),
-      exportVehicleAssetReport: vi.fn().mockResolvedValue(csvFile("vehicle-assets-report-20260601-20260630.csv"))
+      exportOverdueBillDetails: vi
+        .fn()
+        .mockResolvedValue(csvFile("overdue-bills-detail-20260601-20260630.csv")),
+      exportVehicleDetails: vi
+        .fn()
+        .mockResolvedValue(csvFile("vehicles-detail-20260601-20260630.csv")),
+      exportVehicleAssetReport: vi
+        .fn()
+        .mockResolvedValue(csvFile("vehicle-assets-report-20260601-20260630.csv"))
     } as never);
 
     const ordersResponse = mockResponse();
@@ -853,7 +1109,14 @@ describe("reporting dashboard APIs", () => {
       page: 1,
       pageSize: 20,
       total: 1,
-      items: [{ amount: 123456, billNo: "BILL-001", billStatus: BillStatus.PAID, billType: BillType.MONTHLY_RENT }]
+      items: [
+        {
+          amount: 123456,
+          billNo: "BILL-001",
+          billStatus: BillStatus.PAID,
+          billType: BillType.MONTHLY_RENT
+        }
+      ]
     });
     expect(prisma.receivableBill.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -943,7 +1206,14 @@ describe("reporting dashboard APIs", () => {
       page: 1,
       pageSize: 20,
       total: 1,
-      items: [{ billNo: "BILL-OD-001", collectionLevel: CollectionLevel.D3, overdueDays: 8, remainingAmount: 80000 }]
+      items: [
+        {
+          billNo: "BILL-OD-001",
+          collectionLevel: CollectionLevel.D3,
+          overdueDays: 8,
+          remainingAmount: 80000
+        }
+      ]
     });
     expect(prisma.receivableBill.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -990,7 +1260,9 @@ describe("reporting dashboard APIs", () => {
       page: 1,
       pageSize: 20,
       total: 1,
-      items: [{ caseNo: "CC-001", caseStatus: CollectionCaseStatus.CLOSED, totalOverdueAmount: 60000 }]
+      items: [
+        { caseNo: "CC-001", caseStatus: CollectionCaseStatus.CLOSED, totalOverdueAmount: 60000 }
+      ]
     });
     expect(prisma.collectionCase.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1347,6 +1619,7 @@ function createReportHarness() {
     vehicle: {
       aggregate: vi.fn(),
       count: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       groupBy: vi.fn()
     }
@@ -1434,6 +1707,168 @@ function mockVehicleAssetReport(prisma: ReportPrismaMock) {
     { order: { vehicleModel: VehicleModel.ET5 }, paidAmount: 1000n },
     { order: { vehicleModel: VehicleModel.ES6 }, paidAmount: 500n }
   ]);
+}
+
+function mockAssetProfitability(prisma: ReportPrismaMock) {
+  prisma.vehicle.findMany.mockResolvedValue([
+    assetVehicle(),
+    assetVehicle({
+      currentSalePriceAmount: 1500000n,
+      id: "vehicle-2",
+      purchasePriceAmount: 2000000n,
+      salePriceHistories: [
+        salePriceHistory({ effectiveFrom: new Date("2026-06-10T00:00:00.000Z") })
+      ],
+      vehicleNo: "VH-002"
+    })
+  ]);
+  prisma.subscriptionOrder.findMany.mockResolvedValue([
+    assetOrder({
+      actualDeliveryAt: new Date("2026-06-05T02:00:00.000Z"),
+      actualReturnAt: new Date("2026-06-10T02:00:00.000Z"),
+      customer: { name: "张三" },
+      id: "order-1",
+      orderNo: "SO-001",
+      vehicleId: "vehicle-1"
+    }),
+    assetOrder({
+      actualDeliveryAt: new Date("2026-06-20T02:00:00.000Z"),
+      actualReturnAt: null,
+      customer: { name: "李四" },
+      endDate: new Date("2026-06-30T00:00:00.000Z"),
+      id: "order-2",
+      orderNo: "SO-002",
+      vehicleId: "vehicle-2"
+    })
+  ]);
+  prisma.receivableBill.findMany.mockResolvedValue([
+    assetBill({
+      amount: 120000n,
+      billType: BillType.MONTHLY_RENT,
+      orderId: "order-1",
+      paidAmount: 100000n,
+      remainingAmount: 20000n,
+      vehicleId: "vehicle-1"
+    }),
+    assetBill({
+      amount: 500000n,
+      billNo: "BILL-DEPOSIT",
+      billType: BillType.DEPOSIT,
+      id: "bill-deposit",
+      orderId: "order-1",
+      paidAmount: 500000n,
+      remainingAmount: 0n,
+      vehicleId: "vehicle-1"
+    }),
+    assetBill({
+      amount: 30000n,
+      billNo: "BILL-DAMAGE",
+      billType: BillType.DAMAGE_FEE,
+      id: "bill-damage",
+      orderId: "order-1",
+      paidAmount: 30000n,
+      remainingAmount: 0n,
+      vehicleId: "vehicle-1"
+    }),
+    assetBill({
+      amount: 150000n,
+      billNo: "BILL-FIRST",
+      billType: BillType.FIRST_MONTHLY_FEE,
+      id: "bill-first",
+      orderId: "order-2",
+      orderNo: "SO-002",
+      paidAmount: 150000n,
+      remainingAmount: 0n,
+      vehicleId: "vehicle-2"
+    })
+  ]);
+  prisma.depositLedger.findMany.mockResolvedValue([
+    { amount: 500000n, order: { vehicleId: "vehicle-1" } }
+  ]);
+}
+
+function assetVehicle(overrides: Record<string, unknown> = {}) {
+  return {
+    batteryCapacityKwh: decimalLike(75),
+    batteryUsageType: "BUYOUT",
+    brand: "NIO",
+    createdAt: new Date("2026-06-01T02:00:00.000Z"),
+    currentSalePriceAmount: 800000n,
+    id: "vehicle-1",
+    model: "ET5 75kWh",
+    plateNo: "沪A10001",
+    purchasePriceAmount: 1000000n,
+    salePriceHistories: [salePriceHistory()],
+    series: "ET",
+    status: VehicleStatus.LEASED,
+    vehicleModel: VehicleModel.ET5,
+    vehicleNo: "VH-001",
+    vin: "VIN001",
+    ...overrides
+  };
+}
+
+function assetVehicleDetail(overrides: Record<string, unknown> = {}) {
+  return {
+    ...assetVehicle(),
+    deliveries: [],
+    returnDamages: [],
+    returns: [],
+    ...overrides
+  };
+}
+
+function salePriceHistory(overrides: Record<string, unknown> = {}) {
+  return {
+    afterSalePriceAmount: 800000n,
+    beforeSalePriceAmount: null,
+    createdAt: new Date("2026-06-01T02:00:00.000Z"),
+    effectiveFrom: new Date("2026-06-01T00:00:00.000Z"),
+    effectiveTo: null,
+    id: "sale-price-1",
+    reason: "initial pool",
+    remark: null,
+    reviewType: "INITIAL_POOL",
+    ...overrides
+  };
+}
+
+function assetOrder(overrides: Record<string, unknown> = {}) {
+  return {
+    actualDeliveryAt: new Date("2026-06-05T02:00:00.000Z"),
+    actualReturnAt: new Date("2026-06-10T02:00:00.000Z"),
+    createdAt: new Date("2026-06-04T02:00:00.000Z"),
+    customer: { name: "张三" },
+    endDate: new Date("2026-06-30T00:00:00.000Z"),
+    id: "order-1",
+    monthlyFeeAmount: 300000n,
+    orderNo: "SO-001",
+    orderStatus: OrderStatus.ACTIVE,
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetBill(overrides: Record<string, unknown> = {}) {
+  const orderId = String(overrides.orderId ?? "order-1");
+  const orderNo = String(overrides.orderNo ?? "SO-001");
+  const vehicleId = String(overrides.vehicleId ?? "vehicle-1");
+
+  return {
+    amount: 100000n,
+    billNo: "BILL-001",
+    billPeriodEnd: new Date("2026-06-30T00:00:00.000Z"),
+    billPeriodStart: new Date("2026-06-01T00:00:00.000Z"),
+    billStatus: BillStatus.PAID,
+    billType: BillType.MONTHLY_RENT,
+    dueDate: new Date("2026-06-15T02:00:00.000Z"),
+    id: "bill-1",
+    orderId,
+    paidAmount: 100000n,
+    remainingAmount: 0n,
+    ...overrides,
+    order: { orderNo, vehicleId }
+  };
 }
 
 function mockEntitlementReport(prisma: ReportPrismaMock) {

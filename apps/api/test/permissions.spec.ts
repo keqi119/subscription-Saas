@@ -6,7 +6,10 @@ import path from "node:path";
 import { PermissionCode } from "@subscription-saas/shared";
 import { describe, expect, it } from "vitest";
 
-import { REQUIRED_ANY_PERMISSIONS_KEY, REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
+import {
+  REQUIRED_ANY_PERMISSIONS_KEY,
+  REQUIRED_PERMISSIONS_KEY
+} from "../src/auth/auth.decorators";
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
 import { CustomerController } from "../src/customer/customer.controller";
 import { FinanceController } from "../src/finance/finance.controller";
@@ -46,12 +49,18 @@ describe("vehicle availability permissions", () => {
       PermissionCode.VEHICLE_VIEW,
       PermissionCode.QUOTE_CREATE
     ]);
-    expect(hasAnyRequiredPermission([PermissionCode.VEHICLE_VIEW], requiredAnyPermissions)).toBe(true);
-    expect(hasAnyRequiredPermission([PermissionCode.QUOTE_CREATE], requiredAnyPermissions)).toBe(true);
+    expect(hasAnyRequiredPermission([PermissionCode.VEHICLE_VIEW], requiredAnyPermissions)).toBe(
+      true
+    );
+    expect(hasAnyRequiredPermission([PermissionCode.QUOTE_CREATE], requiredAnyPermissions)).toBe(
+      true
+    );
   });
 
   it("denies /vehicles/available without either permission", () => {
-    expect(hasAnyRequiredPermission([PermissionCode.QUOTE_VIEW], requiredAnyPermissions)).toBe(false);
+    expect(hasAnyRequiredPermission([PermissionCode.QUOTE_VIEW], requiredAnyPermissions)).toBe(
+      false
+    );
   });
 
   it("keeps available subscription plans gated by quote:create", () => {
@@ -129,11 +138,21 @@ describe("order entitlement permissions", () => {
     expect(expirePermissions).toEqual([PermissionCode.ENTITLEMENT_ADJUST]);
     expect(consumePermissions).toEqual([PermissionCode.ENTITLEMENT_CONSUME]);
     expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], viewPermissions)).toBe(true);
-    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], usageListPermissions)).toBe(true);
-    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], generatePermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], renewMonthlyPermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], expirePermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], consumePermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], usageListPermissions)).toBe(
+      true
+    );
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], generatePermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], renewMonthlyPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], expirePermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], consumePermissions)).toBe(
+      false
+    );
   });
 });
 
@@ -148,8 +167,12 @@ describe("self-service application permissions", () => {
       PermissionCode.APPLICATION_MANAGE,
       PermissionCode.APPLICATION_SUBMIT
     ]);
-    expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_SUBMIT], requiredAnyPermissions)).toBe(true);
-    expect(hasAnyRequiredPermission([PermissionCode.APPLICATION_REVIEW], requiredAnyPermissions)).toBe(false);
+    expect(
+      hasAnyRequiredPermission([PermissionCode.APPLICATION_SUBMIT], requiredAnyPermissions)
+    ).toBe(true);
+    expect(
+      hasAnyRequiredPermission([PermissionCode.APPLICATION_REVIEW], requiredAnyPermissions)
+    ).toBe(false);
   });
 
   it("gates application review workflow behind review and order-create permissions", () => {
@@ -185,7 +208,9 @@ describe("self-service application permissions", () => {
       PermissionCode.APPLICATION_MANAGE,
       PermissionCode.APPLICATION_REVIEW
     ]);
-    expect(hasRequiredPermissions([PermissionCode.APPLICATION_VIEW], reviewPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.APPLICATION_VIEW], reviewPermissions)).toBe(
+      false
+    );
   });
 });
 
@@ -235,10 +260,18 @@ describe("billing finance permissions", () => {
     expect(settlementPermissions).toEqual([PermissionCode.DEPOSIT_LEDGER_VIEW]);
     expect(deductPermissions).toEqual([PermissionCode.DEPOSIT_LEDGER_DEDUCT]);
     expect(refundPermissions).toEqual([PermissionCode.DEPOSIT_LEDGER_REFUND]);
-    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_VIEW], deductPermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_DEDUCT], deductPermissions)).toBe(true);
-    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_VIEW], refundPermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_REFUND], refundPermissions)).toBe(true);
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_VIEW], deductPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_DEDUCT], deductPermissions)).toBe(
+      true
+    );
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_VIEW], refundPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.DEPOSIT_LEDGER_REFUND], refundPermissions)).toBe(
+      true
+    );
     expect(createPaymentPermissions).toEqual([PermissionCode.PAYMENT_CREATE]);
     expect(writeOffPermissions).toEqual([PermissionCode.PAYMENT_WRITE_OFF]);
   });
@@ -338,6 +371,18 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.exportVehicleDetails
     );
+    const assetProfitabilitySummaryPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getAssetProfitabilitySummary
+    );
+    const assetProfitabilityVehiclesPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getAssetProfitabilityVehicles
+    );
+    const assetProfitabilityVehicleDetailPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getAssetProfitabilityVehicleDetail
+    );
     const entitlementReportPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getEntitlementReport
@@ -392,6 +437,12 @@ describe("report permissions", () => {
     expect(vehicleAssetExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(vehicleDetailsPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(vehicleDetailsExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetProfitabilitySummaryPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetProfitabilityVehiclesPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetProfitabilityVehicleDetailPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(
+      hasRequiredPermissions([PermissionCode.REPORT_VIEW], assetProfitabilitySummaryPermissions)
+    ).toBe(false);
     expect(entitlementReportPermissions).toEqual([
       PermissionCode.REPORT_VIEW,
       PermissionCode.ENTITLEMENT_VIEW
@@ -405,17 +456,48 @@ describe("report permissions", () => {
       PermissionCode.ENTITLEMENT_VIEW
     ]);
     expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financePermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financeExportPermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], billDetailsPermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], billDetailsExportPermissions)).toBe(false);
-    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionAnyPermissions)).toBe(true);
-    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionExportAnyPermissions)).toBe(true);
-    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], overdueBillDetailsAnyPermissions)).toBe(true);
-    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], overdueBillDetailsExportAnyPermissions)).toBe(true);
-    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionCaseDetailsAnyPermissions)).toBe(true);
-    expect(hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionCaseDetailsExportAnyPermissions)).toBe(true);
-    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], entitlementReportPermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], entitlementReportPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], financeExportPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], billDetailsPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], billDetailsExportPermissions)).toBe(
+      false
+    );
+    expect(
+      hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionAnyPermissions)
+    ).toBe(true);
+    expect(
+      hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], collectionExportAnyPermissions)
+    ).toBe(true);
+    expect(
+      hasAnyRequiredPermission([PermissionCode.COLLECTION_VIEW], overdueBillDetailsAnyPermissions)
+    ).toBe(true);
+    expect(
+      hasAnyRequiredPermission(
+        [PermissionCode.COLLECTION_VIEW],
+        overdueBillDetailsExportAnyPermissions
+      )
+    ).toBe(true);
+    expect(
+      hasAnyRequiredPermission(
+        [PermissionCode.COLLECTION_VIEW],
+        collectionCaseDetailsAnyPermissions
+      )
+    ).toBe(true);
+    expect(
+      hasAnyRequiredPermission(
+        [PermissionCode.COLLECTION_VIEW],
+        collectionCaseDetailsExportAnyPermissions
+      )
+    ).toBe(true);
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], entitlementReportPermissions)).toBe(
+      false
+    );
+    expect(
+      hasRequiredPermissions([PermissionCode.ENTITLEMENT_VIEW], entitlementReportPermissions)
+    ).toBe(false);
     expect(
       hasRequiredPermissions(
         [PermissionCode.REPORT_VIEW, PermissionCode.ENTITLEMENT_VIEW],
@@ -504,16 +586,18 @@ describe("seed permission calibration", () => {
       ]);
     }
 
-    expect(seedSource).toContain("\"quote:create\"");
-    expect(seedSource).toContain("\"subscription_plan:view\"");
-    expect(seedSource).toContain("const vehicleViewPermissions = [\"vehicle:view\"");
+    expect(seedSource).toContain('"quote:create"');
+    expect(seedSource).toContain('"subscription_plan:view"');
+    expect(seedSource).toContain('const vehicleViewPermissions = ["vehicle:view"');
   });
 
   it("gives AS the vehicle management permission set", () => {
-    expect(seedSource).toContain("for (const roleCode of [\"FI\", \"AS\"])");
-    expect(seedSource).toContain("roleCode === \"AS\" ? vehicleManagementPermissions : vehicleViewPermissions");
-    expect(seedSource).toContain("\"vehicle:initialize_sale_price\"");
-    expect(seedSource).toContain("\"vehicle:review_sale_price\"");
+    expect(seedSource).toContain('for (const roleCode of ["FI", "AS"])');
+    expect(seedSource).toContain(
+      'roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions'
+    );
+    expect(seedSource).toContain('"vehicle:initialize_sale_price"');
+    expect(seedSource).toContain('"vehicle:review_sale_price"');
   });
 
   it("calibrates A-line order review permissions by role", () => {
@@ -523,8 +607,8 @@ describe("seed permission calibration", () => {
 
     expectRolePermissions("OP", ["order:review", "order:confirm_final_plan", "order:reject"]);
     expectRolePermissions("RC", ["order:review", "order:reject"]);
-    expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"order:review\", \"order:reject\"] : [])");
-    expect(seedSource).toContain("...(roleCode === \"AS\" ? [\"orders.review\"] : [])");
+    expect(seedSource).toContain('...(roleCode === "AS" ? ["order:review", "order:reject"] : [])');
+    expect(seedSource).toContain('...(roleCode === "AS" ? ["orders.review"] : [])');
     expect(roleHasPermission(rolePermissionArray("SA"), "order:review")).toBe(false);
     expect(roleHasMenu(roleMenuArray("SA"), "orders.review")).toBe(false);
   });
@@ -536,7 +620,9 @@ describe("seed permission calibration", () => {
 
     expectRolePermissions("OP", ["delivery:view", "delivery:prepare", "delivery:confirm"]);
     expectRolePermissions("SA", ["delivery:view"]);
-    expect(seedSource).toContain("roleCode === \"AS\" ? [\"delivery:view\", \"delivery:prepare\", \"delivery:confirm\"] : []");
+    expect(seedSource).toContain(
+      'roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []'
+    );
     expect(roleHasPermission(rolePermissionArray("SA"), "delivery:prepare")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "delivery:confirm")).toBe(false);
   });
@@ -558,12 +644,12 @@ describe("seed permission calibration", () => {
       "vehicle_return:damage_record"
     ]);
     expectRolePermissions("SA", ["vehicle_return:view"]);
-    expect(seedSource).toContain("for (const roleCode of [\"FI\", \"AS\"])");
-    expect(seedSource).toContain("roleCode === \"AS\"");
-    expect(seedSource).toContain("\"vehicle_return:view\"");
-    expect(seedSource).toContain("\"vehicle_return:prepare\"");
-    expect(seedSource).toContain("\"vehicle_return:confirm\"");
-    expect(seedSource).toContain("\"vehicle_return:damage_record\"");
+    expect(seedSource).toContain('for (const roleCode of ["FI", "AS"])');
+    expect(seedSource).toContain('roleCode === "AS"');
+    expect(seedSource).toContain('"vehicle_return:view"');
+    expect(seedSource).toContain('"vehicle_return:prepare"');
+    expect(seedSource).toContain('"vehicle_return:confirm"');
+    expect(seedSource).toContain('"vehicle_return:damage_record"');
     expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_return:prepare")).toBe(false);
   });
 
@@ -582,7 +668,7 @@ describe("seed permission calibration", () => {
     }
 
     expect(seedSource).toContain("const financeManagementPermissions = [");
-    expect(seedSource).toContain("...(roleCode === \"FI\" ? financeManagementPermissions : [])");
+    expect(seedSource).toContain('...(roleCode === "FI" ? financeManagementPermissions : [])');
     expectRolePermissions("OP", ["billing:view", "deposit_ledger:view", "deposit_ledger:deduct"]);
     expectRolePermissions("SA", ["billing:view"]);
     expectRolePermissions("GM", ["billing:view", "payment:view", "deposit_ledger:view"]);
@@ -601,12 +687,19 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain("const entitlementViewPermissions = [\"entitlement:view\"]");
-    expect(seedSource).toContain("const entitlementGeneratePermissions = [\"entitlement:view\", \"entitlement:generate\"]");
+    expect(seedSource).toContain('const entitlementViewPermissions = ["entitlement:view"]');
     expect(seedSource).toContain(
-      "const entitlementOperationPermissions = [\"entitlement:view\", \"entitlement:generate\", \"entitlement:adjust\", \"entitlement:consume\"]"
+      'const entitlementGeneratePermissions = ["entitlement:view", "entitlement:generate"]'
     );
-    expectRolePermissions("OP", ["entitlement:view", "entitlement:generate", "entitlement:adjust", "entitlement:consume"]);
+    expect(seedSource).toContain(
+      'const entitlementOperationPermissions = ["entitlement:view", "entitlement:generate", "entitlement:adjust", "entitlement:consume"]'
+    );
+    expectRolePermissions("OP", [
+      "entitlement:view",
+      "entitlement:generate",
+      "entitlement:adjust",
+      "entitlement:consume"
+    ]);
     expectRolePermissions("SA", ["entitlement:view"]);
     expectRolePermissions("GM", ["entitlement:view"]);
     expect(roleHasPermission(rolePermissionArray("SA"), "entitlement:generate")).toBe(false);
@@ -623,17 +716,25 @@ describe("seed permission calibration", () => {
 
     expectRolePermissions("OP", ["report:view", "report:asset"]);
     expectRolePermissions("GM", ["report:view", "report:finance", "report:asset"]);
-    expect(seedSource).toContain("const reportFinancePermissions = [\"report:view\", \"report:finance\"]");
-    expect(seedSource).toContain("const reportAssetPermissions = [\"report:asset\"]");
-    expect(seedSource).toContain("...(roleCode === \"FI\" ? reportFinancePermissions : reportAssetPermissions)");
-    expect(seedSource).toContain("[\"reports\", \"经营看板\", \"/reports\", \"dashboard\", 75, \"report:view\", null]");
+    expect(seedSource).toContain(
+      'const reportFinancePermissions = ["report:view", "report:finance"]'
+    );
+    expect(seedSource).toContain('const reportAssetPermissions = ["report:asset"]');
+    expect(seedSource).toContain(
+      '...(roleCode === "FI" ? reportFinancePermissions : reportAssetPermissions)'
+    );
+    expect(seedSource).toContain(
+      '["reports", "经营看板", "/reports", "dashboard", 75, "report:view", null]'
+    );
     expect(roleHasMenu(roleMenuArray("OP"), "reports")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "reports")).toBe(true);
-    expect(seedSource).toContain("...(roleCode === \"FI\" ? [\"reports\", ...financeMenuCodes] : [])");
+    expect(seedSource).toContain('...(roleCode === "FI" ? ["reports", ...financeMenuCodes] : [])');
     expect(roleHasPermission(rolePermissionArray("SA"), "report:view")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "report:finance")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "report:finance")).toBe(false);
-    expect(roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:view")).toBe(false);
+    expect(
+      roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:view")
+    ).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

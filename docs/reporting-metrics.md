@@ -595,6 +595,27 @@ ROE 当前不输出正式值：
 
 正式 ROE 需要后续引入债务本金、融资比例、自有资金、贷款利率、资本结构和股东权益模型。
 
+### 资产收益试算导出说明
+
+Stage 8.2D 新增资产收益试算 CSV 导出 API：
+
+- `GET /api/reports/asset-profitability/returns/summary/export`
+- `GET /api/reports/asset-profitability/returns/vehicles/export`
+- `GET /api/reports/asset-profitability/returns/vehicles/:id/export`
+
+导出内容：
+
+1. 收益汇总导出包含覆盖车辆数、成本参数覆盖情况、收入指标、成本指标、试算经营净收益、试算 ROA、年化试算 ROA 和 ROE 不可用原因。
+2. 车辆收益列表导出包含当前筛选条件下的全部车辆收益试算明细，不受页面分页影响；导出上限为 5000 行。
+3. 单车收益详情导出包含车辆基础信息、成本参数、成本 preview、收入明细、成本拆分、收益试算、订单周期明细和账单明细。
+4. 导出金额单位为元，保留 2 位小数；试算 ROA 和年化试算 ROA 按百分比展示。
+5. `trialRoa` 是经营分析试算 ROA，不是正式会计 ROA。
+6. `annualizedTrialRoa` 按查询天数折算年化，不代表完整生命周期收益率。
+7. ROE 当前导出为“暂不可用”，并导出 `roeUnavailableReason`。
+8. 正式 ROE 需要后续债务 / 自有资本拆分模型后才能输出。
+9. `MANUAL` 折旧方法第一版不参与试算；导出会列示不可计算原因。
+10. 试算导出只复用现有收益试算 API 口径，不改变页面和 API 统计口径，不构成会计凭证或正式财务报表。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

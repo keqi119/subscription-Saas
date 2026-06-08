@@ -1333,6 +1333,169 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
   });
 
+  it("asset return trial summary export returns BOM CSV with yuan amounts, percentages, and ROE reason", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma);
+
+    const result = await service.exportAssetReturnTrialSummary({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.filename).toBe("asset-return-trial-summary-20260101-20261231.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("资产收益试算汇总");
+    expect(result.content).toContain("覆盖情况");
+    expect(result.content).toContain("收入指标");
+    expect(result.content).toContain("经营收入合计,6500.00");
+    expect(result.content).toContain("经营成本合计,13215.00");
+    expect(result.content).toContain("试算经营净收益（元）,-6715.00");
+    expect(result.content).toContain("试算 ROA,-55.96%");
+    expect(result.content).toContain("ROE,暂不可用");
+    expect(result.content).toContain("ROE 不可用原因,缺少债务 / 自有资本拆分模型");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+  });
+
+  it("asset return trial vehicles export returns all filtered rows with localized labels and escaped cells", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma);
+    prisma.vehicle.findMany.mockResolvedValueOnce([
+      assetReturnVehicle({
+        brand: 'NIO, "Premium"\nLine',
+        vehicleNo: "VH-CSV",
+        vin: "VIN-CSV"
+      })
+    ]);
+
+    const result = await service.exportAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      sortBy: "trialNetOperatingIncomeAmount",
+      sortOrder: "desc",
+      startDate: "2026-01-01",
+      vehicleModel: VehicleModel.ET5,
+      vehicleStatus: VehicleStatus.LEASED
+    });
+
+    expect(result.filename).toBe("asset-return-trial-vehicles-20260101-20261231.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("资产收益试算车辆列表");
+    expect(result.content).toContain("车辆编号,VIN,车牌号");
+    expect(result.content).toContain('"NIO, ""Premium""\nLine"');
+    expect(result.content).toContain("已出租");
+    expect(result.content).toContain("生效中");
+    expect(result.content).toContain("暂不可用");
+    expect(result.content).toContain("6500.00");
+    expect(result.content).toContain("-55.96%");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+    expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: VehicleStatus.LEASED,
+          vehicleModel: VehicleModel.ET5
+        })
+      })
+    );
+  });
+
+  it("asset return trial vehicles export rejects more than 5000 rows", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findMany.mockResolvedValue(
+      Array.from({ length: 5001 }, (_value, index) =>
+        assetReturnVehicle({ id: `vehicle-${index}`, vehicleNo: `VH-${index}` })
+      )
+    );
+    prisma.subscriptionOrder.findMany.mockResolvedValue([]);
+    prisma.receivableBill.findMany.mockResolvedValue([]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.exportAssetReturnTrialVehicles({
+        endDate: "2026-12-31",
+        startDate: "2026-01-01"
+      })
+    ).rejects.toThrow("明细数据超过 5000 行，请缩小筛选范围后再导出。");
+  });
+
+  it("asset return trial vehicle detail export contains profile, preview, income, costs, orders, and bills", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        paidAmount: 100000n
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([
+      { amount: 500000n, order: { vehicleId: "vehicle-1" } }
+    ]);
+
+    const result = await service.exportAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.filename).toBe("asset-return-trial-vehicle-detail-20260101-20261231.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("单车收益试算详情");
+    expect(result.content).toContain("车辆基础信息");
+    expect(result.content).toContain("成本参数");
+    expect(result.content).toContain("折旧方法,直线法");
+    expect(result.content).toContain("成本 Preview");
+    expect(result.content).toContain("月折旧（元）,900.00");
+    expect(result.content).toContain("收入明细");
+    expect(result.content).toContain("经营收入合计,6000.00");
+    expect(result.content).toContain("成本拆分");
+    expect(result.content).toContain("经营成本合计,13215.00");
+    expect(result.content).toContain("收益试算");
+    expect(result.content).toContain("ROE,暂不可用");
+    expect(result.content).toContain("订单周期明细");
+    expect(result.content).toContain("账单明细");
+    expect(result.content).toContain("在租");
+    expect(result.content).toContain("月租账单");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+  });
+
+  it("asset return trial vehicle detail export includes missing and MANUAL depreciation reasons", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(
+      assetReturnVehicleDetail({
+        assetCostProfiles: [
+          assetCostProfile({
+            depreciationMethod: VehicleDepreciationMethod.MANUAL
+          })
+        ]
+      })
+    );
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+
+    const manualResult = await service.exportAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(manualResult.content).toContain("折旧方法,手工口径");
+    expect(manualResult.content).toContain("MANUAL 折旧方法暂未配置手工折旧明细");
+    expect(manualResult.content).toContain("试算 ROA,-");
+
+    prisma.vehicle.findFirst.mockResolvedValueOnce(assetReturnVehicleDetail({ assetCostProfiles: [] }));
+    const missingResult = await service.exportAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(missingResult.content).toContain("成本参数,未配置");
+    expect(missingResult.content).toContain("该车辆尚未配置资产成本参数，无法试算 ROA。");
+    expect(missingResult.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+  });
+
   it("orders export applies date range parameters", async () => {
     const { prisma, service } = createReportHarness();
     mockOrderReport(prisma);
@@ -1389,6 +1552,15 @@ describe("reporting dashboard APIs", () => {
       exportAssetProfitabilityVehicleDetail: vi
         .fn()
         .mockResolvedValue(csvFile("asset-profitability-vehicle-detail-20260601-20260630.csv")),
+      exportAssetReturnTrialSummary: vi
+        .fn()
+        .mockResolvedValue(csvFile("asset-return-trial-summary-20260601-20260630.csv")),
+      exportAssetReturnTrialVehicles: vi
+        .fn()
+        .mockResolvedValue(csvFile("asset-return-trial-vehicles-20260601-20260630.csv")),
+      exportAssetReturnTrialVehicleDetail: vi
+        .fn()
+        .mockResolvedValue(csvFile("asset-return-trial-vehicle-detail-20260601-20260630.csv")),
       exportVehicleDetails: vi
         .fn()
         .mockResolvedValue(csvFile("vehicles-detail-20260601-20260630.csv")),
@@ -1447,6 +1619,28 @@ describe("reporting dashboard APIs", () => {
         "vehicle-1",
         {},
         assetProfitabilityVehicleDetailResponse as never
+      )
+    );
+    const assetReturnTrialSummaryResponse = mockResponse();
+    await expectCsvResponse(
+      "asset-return-trial-summary-20260601-20260630.csv",
+      assetReturnTrialSummaryResponse,
+      controller.exportAssetReturnTrialSummary({}, assetReturnTrialSummaryResponse as never)
+    );
+    const assetReturnTrialVehiclesResponse = mockResponse();
+    await expectCsvResponse(
+      "asset-return-trial-vehicles-20260601-20260630.csv",
+      assetReturnTrialVehiclesResponse,
+      controller.exportAssetReturnTrialVehicles({}, assetReturnTrialVehiclesResponse as never)
+    );
+    const assetReturnTrialVehicleDetailResponse = mockResponse();
+    await expectCsvResponse(
+      "asset-return-trial-vehicle-detail-20260601-20260630.csv",
+      assetReturnTrialVehicleDetailResponse,
+      controller.exportAssetReturnTrialVehicleDetail(
+        "vehicle-1",
+        {},
+        assetReturnTrialVehicleDetailResponse as never
       )
     );
     const orderDetailsResponse = mockResponse();

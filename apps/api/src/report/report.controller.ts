@@ -199,10 +199,41 @@ export class ReportController {
     return this.reportService.getAssetReturnTrialSummary(query);
   }
 
+  @Get("asset-profitability/returns/summary/export")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  async exportAssetReturnTrialSummary(
+    @Query() query: AssetReturnTrialQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    return csvResponse(response, await this.reportService.exportAssetReturnTrialSummary(query));
+  }
+
   @Get("asset-profitability/returns/vehicles")
   @RequirePermissions(PermissionCode.REPORT_ASSET)
   getAssetReturnTrialVehicles(@Query() query: AssetReturnTrialVehicleListQueryDto) {
     return this.reportService.getAssetReturnTrialVehicles(query);
+  }
+
+  @Get("asset-profitability/returns/vehicles/export")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  async exportAssetReturnTrialVehicles(
+    @Query() query: AssetReturnTrialVehicleListQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    return csvResponse(response, await this.reportService.exportAssetReturnTrialVehicles(query));
+  }
+
+  @Get("asset-profitability/returns/vehicles/:id/export")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  async exportAssetReturnTrialVehicleDetail(
+    @Param("id") id: string,
+    @Query() query: AssetReturnTrialVehicleDetailQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    return csvResponse(
+      response,
+      await this.reportService.exportAssetReturnTrialVehicleDetail(id, query)
+    );
   }
 
   @Get("asset-profitability/returns/vehicles/:id")

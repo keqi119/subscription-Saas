@@ -68,9 +68,11 @@ import {
   orderSourceLabels,
   orderStatusLabels,
   salePriceStatusLabels,
+  vehicleAssetCostProfileStatusLabels,
   vehicleDamageLevelLabels,
   vehicleDamageResponsiblePartyLabels,
   vehicleDamageTypeLabels,
+  vehicleDepreciationMethodLabels,
   vehicleReturnDamageStatusLabels,
   vehicleBatteryUsageTypeLabels,
   vehicleSalePriceReviewTypeLabels,
@@ -774,6 +776,268 @@ export class ReportService {
         vin: vehicle.vin
       }
     };
+  }
+
+  async exportAssetReturnTrialSummary(query: AssetReturnTrialQueryDto) {
+    const report = await this.getAssetReturnTrialSummary(query);
+    const rows: CsvRow[] = [
+      ["资产收益试算汇总"],
+      ["统计周期", dateRangeText(report.dateRange)],
+      [],
+      ["覆盖情况"],
+      ["指标", "值"],
+      ["车辆总数", report.vehicleCount],
+      ["已有成本参数车辆数", report.vehicleWithCostProfileCount],
+      ["缺少成本参数车辆数", report.vehicleMissingCostProfileCount],
+      ["成本可计算车辆数", report.costCalculatedVehicleCount],
+      ["成本不可计算车辆数", report.costUnavailableVehicleCount],
+      [],
+      ["收入指标"],
+      ["指标", "金额（元）"],
+      ["租金实收", formatMoneyYuan(report.rentalPaidAmount)],
+      ["损伤实收", formatMoneyYuan(report.damagePaidAmount)],
+      ["其他实收", formatMoneyYuan(report.otherPaidAmount)],
+      ["经营收入合计", formatMoneyYuan(report.operatingRevenueAmount)],
+      ["押金收取", formatMoneyYuan(report.depositCollectedAmount)],
+      [],
+      ["成本指标"],
+      ["指标", "金额（元）"],
+      ["折旧成本", formatMoneyYuan(report.depreciationCostAmount)],
+      ["资金成本", formatMoneyYuan(report.capitalCostAmount)],
+      ["保险成本", formatMoneyYuan(report.insuranceCostAmount)],
+      ["维修准备金", formatMoneyYuan(report.maintenanceReserveCostAmount)],
+      ["其他成本", formatMoneyYuan(report.otherCostAmount)],
+      ["经营成本合计", formatMoneyYuan(report.operatingCostAmount)],
+      [],
+      ["收益指标"],
+      ["指标", "值"],
+      ["试算经营净收益（元）", formatMoneyYuan(report.trialNetOperatingIncomeAmount)],
+      ["试算 ROA", formatPercent(report.trialRoa)],
+      ["年化试算 ROA", formatPercent(report.annualizedTrialRoa)],
+      ["ROE", roeExportValue(report.roeTrial)],
+      ["ROE 不可用原因", report.roeUnavailableReason]
+    ];
+
+    return csvExport("asset-return-trial-summary", report.dateRange, rows);
+  }
+
+  async exportAssetReturnTrialVehicles(query: AssetReturnTrialVehicleListQueryDto) {
+    const { dateRange, rows: vehicles } = await this.buildAssetReturnTrialVehicleRows(query);
+
+    if (vehicles.length > MAX_DETAIL_EXPORT_ROWS) {
+      throw new BadRequestException(
+        `明细数据超过 ${MAX_DETAIL_EXPORT_ROWS} 行，请缩小筛选范围后再导出。`
+      );
+    }
+
+    const rows: CsvRow[] = [
+      ["资产收益试算车辆列表"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "车辆编号",
+        "VIN",
+        "车牌号",
+        "品牌",
+        "车系",
+        "车型",
+        "车辆状态",
+        "采购价（元）",
+        "当前销售价（元）",
+        "租金实收（元）",
+        "损伤实收（元）",
+        "其他实收（元）",
+        "经营收入（元）",
+        "押金收取（元）",
+        "折旧成本（元）",
+        "资金成本（元）",
+        "保险成本（元）",
+        "维修准备金（元）",
+        "其他成本（元）",
+        "经营成本（元）",
+        "试算经营净收益（元）",
+        "试算 ROA",
+        "年化试算 ROA",
+        "成本参数状态",
+        "不可计算原因",
+        "ROE",
+        "ROE 不可用原因"
+      ],
+      ...vehicles.map((vehicle) => [
+        vehicle.vehicleNo,
+        vehicle.vin,
+        vehicle.plateNo,
+        vehicle.brand,
+        vehicle.series,
+        vehicle.model ?? vehicle.vehicleModel,
+        labelOf(vehicleStatusLabels, vehicle.vehicleStatus),
+        formatMoneyYuan(vehicle.purchasePriceAmount),
+        formatMoneyYuan(vehicle.currentSalePriceAmount),
+        formatMoneyYuan(vehicle.rentalPaidAmount),
+        formatMoneyYuan(vehicle.damagePaidAmount),
+        formatMoneyYuan(vehicle.otherPaidAmount),
+        formatMoneyYuan(vehicle.operatingRevenueAmount),
+        formatMoneyYuan(vehicle.depositCollectedAmount),
+        formatMoneyYuan(vehicle.depreciationCostAmount),
+        formatMoneyYuan(vehicle.capitalCostAmount),
+        formatMoneyYuan(vehicle.insuranceCostAmount),
+        formatMoneyYuan(vehicle.maintenanceReserveCostAmount),
+        formatMoneyYuan(vehicle.otherCostAmount),
+        formatMoneyYuan(vehicle.operatingCostAmount),
+        formatMoneyYuan(vehicle.trialNetOperatingIncomeAmount),
+        formatPercent(vehicle.trialRoa),
+        formatPercent(vehicle.annualizedTrialRoa),
+        assetReturnTrialCostProfileStatusText(vehicle),
+        assetReturnTrialUnavailableReasonText(vehicle),
+        roeExportValue(vehicle.roeTrial),
+        vehicle.roeUnavailableReason
+      ])
+    ];
+
+    return csvExport("asset-return-trial-vehicles", dateRange, rows);
+  }
+
+  async exportAssetReturnTrialVehicleDetail(
+    id: string,
+    query: AssetReturnTrialVehicleDetailQueryDto
+  ) {
+    const detail = await this.getAssetReturnTrialVehicleDetail(id, query);
+    const vehicle = detail.vehicle;
+    const costProfile = detail.costProfile;
+    const costPreview = detail.costPreview;
+    const income = detail.incomeBreakdown;
+    const cost = detail.costBreakdown;
+    const returns = detail.returns;
+    const rows: CsvRow[] = [
+      ["单车收益试算详情"],
+      ["统计周期", dateRangeText(detail.dateRange)],
+      [],
+      ["车辆基础信息"],
+      ["字段", "值"],
+      ["车辆编号", vehicle.vehicleNo],
+      ["VIN", vehicle.vin],
+      ["车牌号", vehicle.plateNo],
+      ["品牌", vehicle.brand],
+      ["车系", vehicle.series],
+      ["车型", vehicle.model ?? vehicle.vehicleModel],
+      ["车辆状态", labelOf(vehicleStatusLabels, vehicle.vehicleStatus)],
+      [],
+      ["成本参数"],
+      ["字段", "值"],
+      ...(costProfile
+        ? ([
+            ["成本参数状态", labelOf(vehicleAssetCostProfileStatusLabels, costProfile.profileStatus)],
+            ["折旧方法", labelOf(vehicleDepreciationMethodLabels, costProfile.depreciationMethod)],
+            ["折旧起算日", formatDate(costProfile.depreciationStartDate)],
+            ["预计使用月数", costProfile.usefulLifeMonths],
+            ["预计残值（元）", formatMoneyYuan(costProfile.residualValueAmount)],
+            ["资金成本率", formatBps(costProfile.capitalCostRateBps)],
+            ["年度保险成本（元）", formatMoneyYuan(costProfile.annualInsuranceCostAmount)],
+            [
+              "年度维修准备金（元）",
+              formatMoneyYuan(costProfile.annualMaintenanceReserveAmount)
+            ],
+            ["其他月度成本（元）", formatMoneyYuan(costProfile.otherMonthlyCostAmount)],
+            ["备注", costProfile.remark]
+          ] satisfies CsvRow[])
+        : ([
+            ["成本参数", "未配置"],
+            ["不可计算原因", assetReturnTrialUnavailableReasonText(cost)]
+          ] satisfies CsvRow[])),
+      [],
+      ["成本 Preview"],
+      ["字段", "值"],
+      ...(costPreview
+        ? ([
+            ["采购价（元）", formatMoneyYuan(costPreview.purchasePriceAmount)],
+            ["预计残值（元）", formatMoneyYuan(costPreview.residualValueAmount)],
+            ["可折旧金额（元）", formatMoneyYuan(costPreview.depreciableAmount)],
+            ["月折旧（元）", formatMoneyYuan(costPreview.monthlyDepreciationAmount)],
+            ["年度资金成本（元）", formatMoneyYuan(costPreview.annualCapitalCostAmount)],
+            ["月资金成本（元）", formatMoneyYuan(costPreview.monthlyCapitalCostAmount)],
+            ["月保险成本（元）", formatMoneyYuan(costPreview.monthlyInsuranceCostAmount)],
+            [
+              "月维修准备金（元）",
+              formatMoneyYuan(costPreview.monthlyMaintenanceReserveAmount)
+            ],
+            ["其他月度成本（元）", formatMoneyYuan(costPreview.otherMonthlyCostAmount)],
+            ["预估月成本（元）", formatMoneyYuan(costPreview.estimatedMonthlyCostAmount)]
+          ] satisfies CsvRow[])
+        : ([["成本 Preview", "-"]] satisfies CsvRow[])),
+      [],
+      ["收入明细"],
+      ["指标", "金额（元）"],
+      ["租金实收", formatMoneyYuan(income.rentalPaidAmount)],
+      ["损伤实收", formatMoneyYuan(income.damagePaidAmount)],
+      ["其他实收", formatMoneyYuan(income.otherPaidAmount)],
+      ["经营收入合计", formatMoneyYuan(income.operatingRevenueAmount)],
+      ["押金收取", formatMoneyYuan(income.depositCollectedAmount)],
+      [],
+      ["成本拆分"],
+      ["指标", "金额（元）"],
+      ["成本分摊天数", cost.costDays],
+      ["折旧成本", formatMoneyYuan(cost.depreciationCostAmount)],
+      ["资金成本", formatMoneyYuan(cost.capitalCostAmount)],
+      ["保险成本", formatMoneyYuan(cost.insuranceCostAmount)],
+      ["维修准备金", formatMoneyYuan(cost.maintenanceReserveCostAmount)],
+      ["其他成本", formatMoneyYuan(cost.otherCostAmount)],
+      ["经营成本合计", formatMoneyYuan(cost.operatingCostAmount)],
+      ["不可计算原因", assetReturnTrialUnavailableReasonText(cost)],
+      [],
+      ["收益试算"],
+      ["指标", "值"],
+      ["试算经营净收益（元）", formatMoneyYuan(returns.trialNetOperatingIncomeAmount)],
+      ["试算 ROA", formatPercent(returns.trialRoa)],
+      ["年化试算 ROA", formatPercent(returns.annualizedTrialRoa)],
+      ["ROE", roeExportValue(returns.roeTrial)],
+      ["ROE 不可用原因", returns.roeUnavailableReason],
+      [],
+      ["订单周期明细"],
+      [
+        "订单编号",
+        "客户",
+        "订单状态",
+        "交付时间",
+        "退车时间",
+        "出租天数",
+        "套餐月费（元）",
+        "实收租金（元）",
+        "损伤费用（元）"
+      ],
+      ...detail.orderCycles.map((order) => [
+        order.orderNo,
+        order.customerName,
+        labelOf(orderStatusLabels, order.orderStatus),
+        formatDate(order.deliveredAt),
+        formatDate(order.returnedAt),
+        order.leasedDays,
+        formatMoneyYuan(order.monthlyFeeAmount),
+        formatMoneyYuan(order.rentalPaidAmount),
+        formatMoneyYuan(order.damagePaidAmount)
+      ]),
+      [],
+      ["账单明细"],
+      [
+        "账单编号",
+        "账单类型",
+        "应收（元）",
+        "已收（元）",
+        "未收（元）",
+        "账期",
+        "状态"
+      ],
+      ...detail.bills.map((bill) => [
+        bill.billNo,
+        labelOf(billTypeLabels, bill.billType),
+        formatMoneyYuan(bill.amount),
+        formatMoneyYuan(bill.paidAmount),
+        formatMoneyYuan(bill.remainingAmount),
+        billPeriodText(bill),
+        labelOf(billStatusLabels, bill.billStatus)
+      ])
+    ];
+
+    return csvExport("asset-return-trial-vehicle-detail", detail.dateRange, rows);
   }
 
   async exportAssetProfitabilitySummary(query: AssetProfitabilityQueryDto) {
@@ -2418,6 +2682,46 @@ function billPeriodText(bill: {
   }
 
   return formatDate(bill.dueDate);
+}
+
+function formatBps(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? `${(value / 100).toFixed(2)}%` : "-";
+}
+
+function roeExportValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? formatPercent(value) : "暂不可用";
+}
+
+function assetReturnTrialCostProfileStatusText(row: {
+  costProfileMissing?: boolean | null;
+  costProfileStatus?: string | null;
+  manualDepreciationUnsupported?: boolean | null;
+}) {
+  if (row.costProfileMissing) {
+    return "缺少成本参数";
+  }
+
+  if (row.manualDepreciationUnsupported) {
+    return "手工折旧暂不支持试算";
+  }
+
+  return labelOf(vehicleAssetCostProfileStatusLabels, row.costProfileStatus);
+}
+
+function assetReturnTrialUnavailableReasonText(row: {
+  costProfileMissing?: boolean | null;
+  costUnavailableReason?: string | null;
+  manualDepreciationUnsupported?: boolean | null;
+}) {
+  if (row.costProfileMissing) {
+    return "该车辆尚未配置资产成本参数，无法试算 ROA。";
+  }
+
+  if (row.manualDepreciationUnsupported) {
+    return row.costUnavailableReason ?? MANUAL_DEPRECIATION_UNSUPPORTED_REASON;
+  }
+
+  return row.costUnavailableReason ?? "-";
 }
 
 function lifecycleNodeDescription(node: {

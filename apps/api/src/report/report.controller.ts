@@ -181,10 +181,41 @@ export class ReportController {
     return this.reportService.getAssetProfitabilitySummary(query);
   }
 
+  @Get("asset-profitability/summary/export")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  async exportAssetProfitabilitySummary(
+    @Query() query: AssetProfitabilityQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    return csvResponse(response, await this.reportService.exportAssetProfitabilitySummary(query));
+  }
+
   @Get("asset-profitability/vehicles")
   @RequirePermissions(PermissionCode.REPORT_ASSET)
   getAssetProfitabilityVehicles(@Query() query: AssetProfitabilityVehicleListQueryDto) {
     return this.reportService.getAssetProfitabilityVehicles(query);
+  }
+
+  @Get("asset-profitability/vehicles/export")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  async exportAssetProfitabilityVehicles(
+    @Query() query: AssetProfitabilityVehicleListQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    return csvResponse(response, await this.reportService.exportAssetProfitabilityVehicles(query));
+  }
+
+  @Get("asset-profitability/vehicles/:id/export")
+  @RequirePermissions(PermissionCode.REPORT_ASSET)
+  async exportAssetProfitabilityVehicleDetail(
+    @Param("id") id: string,
+    @Query() query: AssetProfitabilityVehicleDetailQueryDto,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    return csvResponse(
+      response,
+      await this.reportService.exportAssetProfitabilityVehicleDetail(id, query)
+    );
   }
 
   @Get("asset-profitability/vehicles/:id")

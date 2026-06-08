@@ -375,13 +375,25 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getAssetProfitabilitySummary
     );
+    const assetProfitabilitySummaryExportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.exportAssetProfitabilitySummary
+    );
     const assetProfitabilityVehiclesPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getAssetProfitabilityVehicles
     );
+    const assetProfitabilityVehiclesExportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.exportAssetProfitabilityVehicles
+    );
     const assetProfitabilityVehicleDetailPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getAssetProfitabilityVehicleDetail
+    );
+    const assetProfitabilityVehicleDetailExportPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.exportAssetProfitabilityVehicleDetail
     );
     const entitlementReportPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
@@ -438,10 +450,21 @@ describe("report permissions", () => {
     expect(vehicleDetailsPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(vehicleDetailsExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetProfitabilitySummaryPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetProfitabilitySummaryExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetProfitabilityVehiclesPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetProfitabilityVehiclesExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetProfitabilityVehicleDetailPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetProfitabilityVehicleDetailExportPermissions).toEqual([
+      PermissionCode.REPORT_ASSET
+    ]);
     expect(
       hasRequiredPermissions([PermissionCode.REPORT_VIEW], assetProfitabilitySummaryPermissions)
+    ).toBe(false);
+    expect(
+      hasRequiredPermissions(
+        [PermissionCode.REPORT_VIEW],
+        assetProfitabilitySummaryExportPermissions
+      )
     ).toBe(false);
     expect(entitlementReportPermissions).toEqual([
       PermissionCode.REPORT_VIEW,

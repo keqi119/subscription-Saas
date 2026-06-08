@@ -123,6 +123,59 @@ export const vehicleStatusLabels: Record<string, string> = {
   SOLD: "已出售"
 };
 
+export const salePriceStatusLabels: Record<string, string> = {
+  EFFECTIVE: "生效中",
+  EXPIRED: "已过期",
+  PENDING_INITIALIZE: "待初始化",
+  REVIEW_DUE: "待复核"
+};
+
+export const vehicleSalePriceReviewTypeLabels: Record<string, string> = {
+  INITIAL_POOL: "新入池初始化",
+  MANUAL_ADJUST: "手工调整",
+  QUARTERLY_REVIEW: "季度复核",
+  RETURN_REINIT: "退车再入池重新定价"
+};
+
+export const vehicleDamageTypeLabels: Record<string, string> = {
+  BATTERY: "电池",
+  CHASSIS: "底盘",
+  EQUIPMENT: "随车设备",
+  EXTERIOR: "外观",
+  GLASS: "玻璃",
+  INTERIOR: "内饰",
+  OTHER: "其他",
+  TIRE: "轮胎"
+};
+
+export const vehicleDamageLevelLabels: Record<string, string> = {
+  MEDIUM: "中等",
+  MINOR: "轻微",
+  SEVERE: "严重"
+};
+
+export const vehicleDamageResponsiblePartyLabels: Record<string, string> = {
+  CUSTOMER: "客户",
+  PLATFORM: "平台",
+  THIRD_PARTY: "第三方",
+  UNKNOWN: "未确认"
+};
+
+export const vehicleReturnDamageStatusLabels: Record<string, string> = {
+  CONFIRMED: "已确认",
+  RECORDED: "已记录",
+  SETTLED: "已结算",
+  WAIVED: "已豁免"
+};
+
+export const assetProfitabilityLifecycleNodeLabels: Record<string, string> = {
+  DELIVERY: "交付",
+  INITIAL_POOL: "首次入池",
+  RETURN: "退车",
+  RETURN_REINIT: "再入池",
+  SALE_PRICE_REVIEW: "重新定价"
+};
+
 export function labelOf(labels: Record<string, string>, value: unknown) {
   return typeof value === "string" && value ? (labels[value] ?? value) : "-";
 }

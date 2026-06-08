@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChartOutlined, DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -1679,11 +1679,6 @@ export default function ReportsPage() {
             <Button icon={<ReloadOutlined />} loading={Object.values(loading).some(Boolean)} onClick={loadVisibleReports}>
               刷新
             </Button>
-            {canViewAssetReport ? (
-              <Button href="/reports/asset-profitability" icon={<BarChartOutlined />} type="primary">
-                资产经营分析
-              </Button>
-            ) : null}
           </Space>
         </Space>
 

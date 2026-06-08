@@ -9,7 +9,6 @@ import {
   DatePicker,
   Drawer,
   Empty,
-  Form,
   Select,
   Space,
   Skeleton,
@@ -585,10 +584,10 @@ function metric(title: string, value: string | number, onClick?: () => void) {
 
 export default function ReportsPage() {
   const { message } = App.useApp();
-  const [orderFilterForm] = Form.useForm<OrderFilterValues>();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [loadingMe, setLoadingMe] = useState(true);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>(() => defaultDateRange());
+  const [orderFilters, setOrderFilters] = useState<OrderFilterValues>({});
   const [activeTab, setActiveTab] = useState<ReportKey>("summary");
   const [loading, setLoading] = useState<Record<ReportKey, boolean>>({
     assets: false,
@@ -681,7 +680,7 @@ export default function ReportsPage() {
     }
   }, [canViewReports, dateRange, setReportError, setReportLoading]);
 
-  const loadOrderReport = useCallback(async () => {
+  const loadOrderReport = useCallback(async (filters: OrderFilterValues = orderFilters) => {
     if (!canViewReports) {
       return;
     }
@@ -692,7 +691,7 @@ export default function ReportsPage() {
         await apiFetch<OrderReport>(
           `/reports/orders${buildQuery({
             ...dateRangeParams(dateRange),
-            ...orderFilterForm.getFieldsValue()
+            ...filters
           })}`
         )
       );
@@ -701,7 +700,7 @@ export default function ReportsPage() {
     } finally {
       setReportLoading("orders", false);
     }
-  }, [canViewReports, dateRange, orderFilterForm, setReportError, setReportLoading]);
+  }, [canViewReports, dateRange, orderFilters, setReportError, setReportLoading]);
 
   const loadFinanceReport = useCallback(async () => {
     if (!canViewReports || !canViewFinanceReports) {
@@ -813,7 +812,7 @@ export default function ReportsPage() {
       setExporting((current) => ({ ...current, [key]: true }));
       try {
         await downloadCsv(
-          exportReportPath(key, dateRange, orderFilterForm.getFieldsValue()),
+          exportReportPath(key, dateRange, orderFilters),
           exportDefaultFilename(key, dateRange)
         );
       } catch (error) {
@@ -822,7 +821,7 @@ export default function ReportsPage() {
         setExporting((current) => ({ ...current, [key]: false }));
       }
     },
-    [dateRange, message, orderFilterForm]
+    [dateRange, message, orderFilters]
   );
 
   const exportCurrentDetailCsv = useCallback(async () => {
@@ -1047,7 +1046,7 @@ export default function ReportsPage() {
 
   function currentOrderFilters(extra: Record<string, unknown> = {}) {
     return {
-      ...orderFilterForm.getFieldsValue(),
+      ...orderFilters,
       ...extra
     };
   }
@@ -1195,32 +1194,59 @@ export default function ReportsPage() {
         <ReportPanel data={orderReport} error={errors.orders} loading={loading.orders}>
           <Space orientation="vertical" size={16} style={{ width: "100%" }}>
             <ExportButton loading={exporting.orders} onClick={() => void exportReportCsv("orders")} />
-            <Form form={orderFilterForm} layout="inline" onFinish={loadOrderReport}>
-              <Form.Item label="订单来源" name="orderSource">
-                <Select allowClear options={optionsFromLabels(orderSourceLabels)} style={{ width: 150 }} />
-              </Form.Item>
-              <Form.Item label="订单状态" name="orderStatus">
-                <Select allowClear options={optionsFromLabels(ORDER_STATUS_LABELS)} style={{ width: 170 }} />
-              </Form.Item>
-              <Form.Item label="车型" name="vehicleModel">
-                <Select allowClear options={vehicleModelOptions} style={{ width: 120 }} />
-              </Form.Item>
-              <Form.Item>
-                <Space>
-                  <Button icon={<ReloadOutlined />} loading={loading.orders} onClick={loadOrderReport}>
-                    查询
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      orderFilterForm.resetFields();
-                      void loadOrderReport();
-                    }}
-                  >
-                    重置
-                  </Button>
-                </Space>
-              </Form.Item>
-            </Form>
+            <Space align="end" size={16} wrap>
+              <Space orientation="vertical" size={4}>
+                <Typography.Text type="secondary">订单来源</Typography.Text>
+                <Select
+                  allowClear
+                  onChange={(value) =>
+                    setOrderFilters((current) => ({ ...current, orderSource: value }))
+                  }
+                  options={optionsFromLabels(orderSourceLabels)}
+                  style={{ width: 150 }}
+                  value={orderFilters.orderSource}
+                />
+              </Space>
+              <Space orientation="vertical" size={4}>
+                <Typography.Text type="secondary">订单状态</Typography.Text>
+                <Select
+                  allowClear
+                  onChange={(value) =>
+                    setOrderFilters((current) => ({ ...current, orderStatus: value }))
+                  }
+                  options={optionsFromLabels(ORDER_STATUS_LABELS)}
+                  style={{ width: 170 }}
+                  value={orderFilters.orderStatus}
+                />
+              </Space>
+              <Space orientation="vertical" size={4}>
+                <Typography.Text type="secondary">车型</Typography.Text>
+                <Select
+                  allowClear
+                  onChange={(value) =>
+                    setOrderFilters((current) => ({ ...current, vehicleModel: value }))
+                  }
+                  options={vehicleModelOptions}
+                  style={{ width: 120 }}
+                  value={orderFilters.vehicleModel}
+                />
+              </Space>
+              <Button
+                icon={<ReloadOutlined />}
+                loading={loading.orders}
+                onClick={() => void loadOrderReport()}
+              >
+                查询
+              </Button>
+              <Button
+                onClick={() => {
+                  setOrderFilters({});
+                  void loadOrderReport({});
+                }}
+              >
+                重置
+              </Button>
+            </Space>
             <MetricGrid
               items={[
                 metric("订单总数", formatInteger(orderReport?.totalOrders), () =>

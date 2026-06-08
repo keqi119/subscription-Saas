@@ -476,6 +476,125 @@ estimatedMonthlyCostAmount =
 
 `estimatedMonthlyCostAmount` 只是经营分析预估成本，不构成会计凭证，不产生财务入账。本阶段不计算正式 ROA / ROE。
 
+## Stage 8.2 ROA / ROE 试算口径
+
+Stage 8.2B 新增资产收益试算 API：
+
+- `GET /api/reports/asset-profitability/returns/summary`
+- `GET /api/reports/asset-profitability/returns/vehicles`
+- `GET /api/reports/asset-profitability/returns/vehicles/:id`
+
+以上 API 只提供经营分析试算口径，不构成会计凭证、正式财务报表或正式 ROA / ROE。
+
+收入试算口径：
+
+```text
+operatingRevenueAmount =
+  rentalPaidAmount
+  + damagePaidAmount
+  + otherPaidAmount
+```
+
+其中：
+
+1. `rentalPaidAmount` = `FIRST_MONTHLY_FEE.paidAmount + MONTHLY_RENT.paidAmount`。
+2. `damagePaidAmount` = `DAMAGE_FEE.paidAmount`。
+3. `otherPaidAmount` = `OTHER.paidAmount`。
+4. `depositCollectedAmount` 单独列示，不计入 `operatingRevenueAmount`，不作为收益率分子。
+
+成本试算口径来自当前 ACTIVE 且未删除的 `VehicleAssetCostProfile`。车辆没有 ACTIVE 成本参数时：
+
+```text
+costProfileMissing = true
+operatingCostAmount = null
+trialNetOperatingIncomeAmount = null
+trialRoa = null
+annualizedTrialRoa = null
+```
+
+成本按查询日期范围日折算：
+
+```text
+costStart = max(startDate, profile.depreciationStartDate)
+costEnd = endDate
+costDays = costEnd - costStart + 1
+```
+
+如果 `costStart > costEnd`，本期成本天数为 0。
+
+成本拆分：
+
+```text
+depreciationCostAmount =
+  STRAIGHT_LINE: round(monthlyDepreciationAmount * 12 / 365 * costDays)
+  NONE: 0
+  MANUAL: null
+
+capitalCostAmount = round(annualCapitalCostAmount / 365 * costDays)
+insuranceCostAmount = round(annualInsuranceCostAmount / 365 * costDays)
+maintenanceReserveCostAmount = round(annualMaintenanceReserveAmount / 365 * costDays)
+otherCostAmount = round(otherMonthlyCostAmount * 12 / 365 * costDays)
+```
+
+`MANUAL` 折旧第一版暂不参与 ROA 试算：
+
+```text
+manualDepreciationUnsupported = true
+trialRoa = null
+```
+
+原因：
+
+```text
+MANUAL 折旧方法暂未配置手工折旧明细，无法试算 ROA。
+```
+
+经营成本：
+
+```text
+operatingCostAmount =
+  depreciationCostAmount
+  + capitalCostAmount
+  + insuranceCostAmount
+  + maintenanceReserveCostAmount
+  + otherCostAmount
+```
+
+如果折旧成本等核心成本不可计算，`operatingCostAmount = null`。
+
+试算经营净收益：
+
+```text
+trialNetOperatingIncomeAmount =
+  operatingRevenueAmount - operatingCostAmount
+```
+
+试算 ROA：
+
+```text
+trialRoa = trialNetOperatingIncomeAmount / purchasePriceAmount
+```
+
+当 `purchasePriceAmount <= 0` 或 `trialNetOperatingIncomeAmount = null` 时，`trialRoa = null`。
+
+年化试算 ROA：
+
+```text
+annualizedTrialRoa = trialRoa * 365 / analysisDays
+analysisDays = endDate - startDate + 1
+```
+
+ROE 当前不输出正式值：
+
+```json
+{
+  "roeTrial": null,
+  "roeUnavailableReason": "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。"
+}
+```
+
+正式 ROE 需要后续引入债务本金、融资比例、自有资金、贷款利率、资本结构和股东权益模型。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

@@ -423,6 +423,18 @@ describe("report permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.exportAssetProfitabilityVehicleDetail
     );
+    const assetReturnTrialSummaryPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getAssetReturnTrialSummary
+    );
+    const assetReturnTrialVehiclesPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getAssetReturnTrialVehicles
+    );
+    const assetReturnTrialVehicleDetailPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ReportController.prototype.getAssetReturnTrialVehicleDetail
+    );
     const entitlementReportPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       ReportController.prototype.getEntitlementReport
@@ -485,6 +497,10 @@ describe("report permissions", () => {
     expect(assetProfitabilityVehicleDetailExportPermissions).toEqual([
       PermissionCode.REPORT_ASSET
     ]);
+    expect(assetReturnTrialSummaryPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetReturnTrialVehiclesPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(assetReturnTrialVehicleDetailPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], assetReturnTrialSummaryPermissions)).toBe(false);
     expect(
       hasRequiredPermissions([PermissionCode.REPORT_VIEW], assetProfitabilitySummaryPermissions)
     ).toBe(false);

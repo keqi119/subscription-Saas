@@ -17,6 +17,7 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
+import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
   CreateVehicleDto,
   InitializeSalePriceDto,
@@ -453,7 +454,7 @@ export class VehicleService {
     }
 
     return {
-      preview: buildAssetCostProfilePreview(vehicle, profile),
+      preview: buildVehicleAssetCostProfilePreview(vehicle, profile),
       profile: toAssetCostProfileView(profile)
     };
   }
@@ -896,57 +897,6 @@ function buildAssetCostProfileSnapshot(
   };
 }
 
-function buildAssetCostProfilePreview(
-  vehicle: Pick<VehicleWithHistory, "purchasePriceAmount">,
-  profile: VehicleAssetCostProfile
-) {
-  const purchasePriceAmount = Number(vehicle.purchasePriceAmount);
-  const residualValueAmount = Number(profile.residualValueAmount);
-  const depreciableAmount = Math.max(purchasePriceAmount - residualValueAmount, 0);
-  const monthlyDepreciationAmount = monthlyDepreciation(profile, depreciableAmount);
-  const capitalCostRateBps = profile.capitalCostRateBps ?? 0;
-  const annualCapitalCostAmount = Math.round((purchasePriceAmount * capitalCostRateBps) / 10000);
-  const monthlyCapitalCostAmount = Math.round(annualCapitalCostAmount / 12);
-  const monthlyInsuranceCostAmount = Math.round(
-    amountOrZero(profile.annualInsuranceCostAmount) / 12
-  );
-  const monthlyMaintenanceReserveAmount = Math.round(
-    amountOrZero(profile.annualMaintenanceReserveAmount) / 12
-  );
-  const otherMonthlyCostAmount = amountOrZero(profile.otherMonthlyCostAmount);
-  const estimatedMonthlyCostAmount =
-    monthlyDepreciationAmount === null
-      ? null
-      : monthlyDepreciationAmount +
-        monthlyCapitalCostAmount +
-        monthlyInsuranceCostAmount +
-        monthlyMaintenanceReserveAmount +
-        otherMonthlyCostAmount;
-
-  return {
-    annualCapitalCostAmount,
-    depreciableAmount,
-    estimatedMonthlyCostAmount,
-    monthlyCapitalCostAmount,
-    monthlyDepreciationAmount,
-    monthlyInsuranceCostAmount,
-    monthlyMaintenanceReserveAmount,
-    otherMonthlyCostAmount,
-    purchasePriceAmount,
-    residualValueAmount
-  };
-}
-
-function monthlyDepreciation(profile: VehicleAssetCostProfile, depreciableAmount: number) {
-  if (profile.depreciationMethod === VehicleDepreciationMethod.NONE) {
-    return 0;
-  }
-  if (profile.depreciationMethod === VehicleDepreciationMethod.MANUAL) {
-    return null;
-  }
-  return Math.round(depreciableAmount / profile.usefulLifeMonths);
-}
-
 function defaultDepreciationStartDate(vehicle: VehicleWithHistory) {
   const initialPoolDate = vehicle.salePriceHistories
     ?.filter((history) => history.reviewType === VehicleSalePriceReviewType.INITIAL_POOL)
@@ -1016,10 +966,6 @@ function optionalBigInt(value: number | null | undefined) {
 
 function optionalInteger(value: number | null | undefined) {
   return value === undefined || value === null ? null : value;
-}
-
-function amountOrZero(value: bigint | number | null | undefined) {
-  return value === null || value === undefined ? 0 : Number(value);
 }
 
 function numberOrNull(value: bigint | number | null | undefined) {

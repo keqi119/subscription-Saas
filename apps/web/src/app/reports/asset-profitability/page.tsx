@@ -1045,13 +1045,21 @@ export default function AssetProfitabilityPage() {
     <Space orientation="vertical" size={16} style={{ width: "100%" }}>
       <FilterBar
         dateRange={dateRange}
+        exportSummaryLabel={activeTab === "returns" ? "导出收益汇总 CSV" : "导出汇总 CSV"}
+        exportVehiclesLabel={
+          activeTab === "returns" ? "导出车辆收益列表 CSV" : "导出车辆列表 CSV"
+        }
         loading={
           activeTab === "returns"
             ? returnSummaryLoading || returnVehiclesLoading
             : summaryLoading || vehiclesLoading
         }
-        onExportSummary={() => void exportSummaryCsv()}
-        onExportVehicles={() => void exportVehiclesCsv()}
+        onExportSummary={() =>
+          void (activeTab === "returns" ? exportReturnSummaryCsv() : exportSummaryCsv())
+        }
+        onExportVehicles={() =>
+          void (activeTab === "returns" ? exportReturnVehiclesCsv() : exportVehiclesCsv())
+        }
         onDateRangeChange={(nextRange) => {
           setDateRange(nextRange);
           setPage(1);
@@ -1068,9 +1076,9 @@ export default function AssetProfitabilityPage() {
           setPage(1);
           setReturnPage(1);
         }}
-        summaryExporting={summaryExporting}
+        summaryExporting={activeTab === "returns" ? returnSummaryExporting : summaryExporting}
         vehicleModel={vehicleModel}
-        vehiclesExporting={vehiclesExporting}
+        vehiclesExporting={activeTab === "returns" ? returnVehiclesExporting : vehiclesExporting}
         vehicleStatus={vehicleStatus}
       />
       <Tabs
@@ -1120,22 +1128,6 @@ export default function AssetProfitabilityPage() {
                   type="info"
                   description="本页为经营分析试算口径，不构成会计凭证或正式财务报表。试算 ROA = 试算经营净收益 / 车辆采购价；年化试算 ROA 基于查询天数折算；押金不计入经营收入；ROE 当前缺少债务 / 自有资本拆分模型，暂不输出正式值。"
                 />
-                <Space wrap>
-                  <Button
-                    icon={<DownloadOutlined />}
-                    loading={returnSummaryExporting}
-                    onClick={() => void exportReturnSummaryCsv()}
-                  >
-                    导出收益汇总 CSV
-                  </Button>
-                  <Button
-                    icon={<DownloadOutlined />}
-                    loading={returnVehiclesExporting}
-                    onClick={() => void exportReturnVehiclesCsv()}
-                  >
-                    导出车辆收益列表 CSV
-                  </Button>
-                </Space>
                 {returnSummaryError ? (
                   <Alert showIcon title={returnSummaryError} type="error" />
                 ) : null}
@@ -1239,6 +1231,8 @@ export default function AssetProfitabilityPage() {
 
 function FilterBar({
   dateRange,
+  exportSummaryLabel,
+  exportVehiclesLabel,
   loading,
   onExportSummary,
   onExportVehicles,
@@ -1252,6 +1246,8 @@ function FilterBar({
   vehicleStatus
 }: {
   dateRange: [Dayjs, Dayjs];
+  exportSummaryLabel: string;
+  exportVehiclesLabel: string;
   loading: boolean;
   onExportSummary: () => void;
   onExportVehicles: () => void;
@@ -1305,10 +1301,10 @@ function FilterBar({
           刷新
         </Button>
         <Button icon={<DownloadOutlined />} loading={summaryExporting} onClick={onExportSummary}>
-          导出汇总 CSV
+          {exportSummaryLabel}
         </Button>
         <Button icon={<DownloadOutlined />} loading={vehiclesExporting} onClick={onExportVehicles}>
-          导出车辆列表 CSV
+          {exportVehiclesLabel}
         </Button>
       </Space>
     </Card>

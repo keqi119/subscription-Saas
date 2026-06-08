@@ -894,6 +894,160 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("ET5,3,2,1,10.00");
   });
 
+  it("asset-profitability summary export returns BOM CSV with yuan amounts and percentages", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetProfitability(prisma);
+
+    const result = await service.exportAssetProfitabilitySummary({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("asset-profitability-summary-20260601-20260630.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("资产经营汇总");
+    expect(result.content).toContain("采购成本合计（元）,30000.00");
+    expect(result.content).toContain("押金收取合计（元）,5000.00");
+    expect(result.content).toContain("平均出租率,36.19%");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN/);
+  });
+
+  it("asset-profitability vehicles export returns all filtered rows with localized labels", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetProfitability(prisma);
+    prisma.vehicle.findMany.mockResolvedValueOnce([
+      assetVehicle({
+        brand: 'NIO, "Premium"\nLine',
+        vehicleNo: "VH-CSV",
+        vin: "VIN-CSV"
+      })
+    ]);
+
+    const result = await service.exportAssetProfitabilityVehicles({
+      endDate: "2026-06-30",
+      sortBy: "rentalPaidAmount",
+      sortOrder: "desc",
+      startDate: "2026-06-01",
+      vehicleModel: VehicleModel.ET5,
+      vehicleStatus: VehicleStatus.LEASED
+    });
+
+    expect(result.filename).toBe("asset-profitability-vehicles-20260601-20260630.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("车辆编号,VIN,车牌号");
+    expect(result.content).toContain('"NIO, ""Premium""\nLine"');
+    expect(result.content).toContain("已出租");
+    expect(result.content).toContain("买断");
+    expect(result.content).toContain("10000.00");
+    expect(result.content).toContain("20.00%");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+    expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: VehicleStatus.LEASED,
+          vehicleModel: VehicleModel.ET5
+        })
+      })
+    );
+  });
+
+  it("asset-profitability vehicles export rejects more than 5000 rows", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findMany.mockResolvedValue(
+      Array.from({ length: 5001 }, (_value, index) =>
+        assetVehicle({ id: `vehicle-${index}`, vehicleNo: `VH-${index}` })
+      )
+    );
+    prisma.subscriptionOrder.findMany.mockResolvedValue([]);
+    prisma.receivableBill.findMany.mockResolvedValue([]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.exportAssetProfitabilityVehicles({
+        endDate: "2026-06-30",
+        startDate: "2026-06-01"
+      })
+    ).rejects.toThrow("明细数据超过 5000 行，请缩小筛选范围后再导出。");
+  });
+
+  it("asset-profitability vehicle detail export contains all sections and localized statuses", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(
+      assetVehicleDetail({
+        returnDamages: [
+          {
+            createdAt: new Date("2026-06-12T02:00:00.000Z"),
+            damageLevel: "MINOR",
+            damageType: "EXTERIOR",
+            description: "rear bumper",
+            estimatedRepairAmount: 30000n,
+            id: "damage-1",
+            orderId: "order-1",
+            responsibleParty: "CUSTOMER",
+            status: "RECORDED",
+            vehicleReturn: { returnNo: "RET-001" }
+          }
+        ],
+        salePriceHistories: [
+          salePriceHistory({
+            reviewQuarter: "2026Q2",
+            reviewType: "RETURN_REINIT"
+          })
+        ]
+      })
+    );
+    prisma.subscriptionOrder.findMany.mockResolvedValue([
+      assetOrder({
+        actualDeliveryAt: new Date("2026-06-05T02:00:00.000Z"),
+        actualReturnAt: new Date("2026-06-10T02:00:00.000Z"),
+        id: "order-1",
+        orderNo: "SO-001",
+        vehicleId: "vehicle-1"
+      })
+    ]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({
+        billType: BillType.MONTHLY_RENT,
+        orderId: "order-1",
+        paidAmount: 100000n,
+        vehicleId: "vehicle-1"
+      }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        orderId: "order-1",
+        paidAmount: 30000n,
+        vehicleId: "vehicle-1"
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([
+      { amount: 500000n, order: { vehicleId: "vehicle-1" } }
+    ]);
+
+    const result = await service.exportAssetProfitabilityVehicleDetail("vehicle-1", {
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.filename).toBe("asset-profitability-vehicle-detail-20260601-20260630.csv");
+    expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("单车经营详情");
+    expect(result.content).toContain("车辆基础信息");
+    expect(result.content).toContain("资产价值信息");
+    expect(result.content).toContain("经营汇总");
+    expect(result.content).toContain("订单周期明细");
+    expect(result.content).toContain("账单明细");
+    expect(result.content).toContain("生命周期节点");
+    expect(result.content).toContain("损伤记录");
+    expect(result.content).toContain("销售价历史");
+    expect(result.content).toContain("在租");
+    expect(result.content).toContain("月租账单");
+    expect(result.content).toContain("退车再入池重新定价");
+    expect(result.content).toContain("RET-001,外观,轻微,客户,300.00,已记录,rear bumper");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+  });
+
   it("orders export applies date range parameters", async () => {
     const { prisma, service } = createReportHarness();
     mockOrderReport(prisma);
@@ -941,6 +1095,15 @@ describe("reporting dashboard APIs", () => {
       exportOverdueBillDetails: vi
         .fn()
         .mockResolvedValue(csvFile("overdue-bills-detail-20260601-20260630.csv")),
+      exportAssetProfitabilitySummary: vi
+        .fn()
+        .mockResolvedValue(csvFile("asset-profitability-summary-20260601-20260630.csv")),
+      exportAssetProfitabilityVehicles: vi
+        .fn()
+        .mockResolvedValue(csvFile("asset-profitability-vehicles-20260601-20260630.csv")),
+      exportAssetProfitabilityVehicleDetail: vi
+        .fn()
+        .mockResolvedValue(csvFile("asset-profitability-vehicle-detail-20260601-20260630.csv")),
       exportVehicleDetails: vi
         .fn()
         .mockResolvedValue(csvFile("vehicles-detail-20260601-20260630.csv")),
@@ -978,6 +1141,28 @@ describe("reporting dashboard APIs", () => {
       "vehicle-assets-report-20260601-20260630.csv",
       assetsResponse,
       controller.exportVehicleAssetReport({}, assetsResponse as never)
+    );
+    const assetProfitabilitySummaryResponse = mockResponse();
+    await expectCsvResponse(
+      "asset-profitability-summary-20260601-20260630.csv",
+      assetProfitabilitySummaryResponse,
+      controller.exportAssetProfitabilitySummary({}, assetProfitabilitySummaryResponse as never)
+    );
+    const assetProfitabilityVehiclesResponse = mockResponse();
+    await expectCsvResponse(
+      "asset-profitability-vehicles-20260601-20260630.csv",
+      assetProfitabilityVehiclesResponse,
+      controller.exportAssetProfitabilityVehicles({}, assetProfitabilityVehiclesResponse as never)
+    );
+    const assetProfitabilityVehicleDetailResponse = mockResponse();
+    await expectCsvResponse(
+      "asset-profitability-vehicle-detail-20260601-20260630.csv",
+      assetProfitabilityVehicleDetailResponse,
+      controller.exportAssetProfitabilityVehicleDetail(
+        "vehicle-1",
+        {},
+        assetProfitabilityVehicleDetailResponse as never
+      )
     );
     const orderDetailsResponse = mockResponse();
     await expectCsvResponse(
@@ -1794,10 +1979,12 @@ function assetVehicle(overrides: Record<string, unknown> = {}) {
     brand: "NIO",
     createdAt: new Date("2026-06-01T02:00:00.000Z"),
     currentSalePriceAmount: 800000n,
+    currentSalePriceReviewedAt: new Date("2026-06-01T02:00:00.000Z"),
     id: "vehicle-1",
     model: "ET5 75kWh",
     plateNo: "沪A10001",
     purchasePriceAmount: 1000000n,
+    salePriceStatus: "EFFECTIVE",
     salePriceHistories: [salePriceHistory()],
     series: "ET",
     status: VehicleStatus.LEASED,
@@ -1828,6 +2015,7 @@ function salePriceHistory(overrides: Record<string, unknown> = {}) {
     id: "sale-price-1",
     reason: "initial pool",
     remark: null,
+    reviewQuarter: "2026Q2",
     reviewType: "INITIAL_POOL",
     ...overrides
   };

@@ -404,6 +404,24 @@ simpleReturnRate = rentalPaidAmount / purchasePriceAmount
 
 完整 ROA / ROE 后续需要引入折旧、资金成本、残值、保险、维修、人工和其他费用分摊模型。
 
+### 车辆资产经营分析导出说明
+
+导出 API：
+
+- `GET /api/reports/asset-profitability/summary/export`
+- `GET /api/reports/asset-profitability/vehicles/export`
+- `GET /api/reports/asset-profitability/vehicles/:id/export`
+
+导出内容：
+
+1. 汇总导出包含车辆总数、采购成本合计、当前销售价合计、租金实收、损伤费用实收、押金收取、应收、未收、总出租天数、平均出租率和平均简化经营回报率。
+2. 车辆列表导出包含当前筛选条件下的全部车辆经营明细，不受页面分页影响；导出上限为 5000 行。
+3. 单车详情导出包含车辆基础信息、资产价值信息、经营汇总、订单周期、账单明细、生命周期节点、损伤记录和销售价历史。
+4. 导出金额单位为元，出租率和简化经营回报率按百分比展示。
+5. 导出使用与页面 API 相同的统计口径，不改变资产经营分析计算逻辑。
+6. `simpleReturnRate` 仍是简化经营回报率，不是会计 ROA / ROE。
+7. ROA / ROE 后续需要引入折旧、资金成本、残值和费用模型后再单独定义。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

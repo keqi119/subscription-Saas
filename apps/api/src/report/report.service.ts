@@ -47,6 +47,7 @@ import {
   VehicleDetailQueryDto
 } from "./dto/report.dto";
 import {
+  assetProfitabilityLifecycleNodeLabels,
   billStatusLabels,
   billTypeLabels,
   collectionCaseStatusLabels,
@@ -57,7 +58,13 @@ import {
   labelOf,
   orderSourceLabels,
   orderStatusLabels,
+  salePriceStatusLabels,
+  vehicleDamageLevelLabels,
+  vehicleDamageResponsiblePartyLabels,
+  vehicleDamageTypeLabels,
+  vehicleReturnDamageStatusLabels,
   vehicleBatteryUsageTypeLabels,
+  vehicleSalePriceReviewTypeLabels,
   vehicleStatusLabels
 } from "./report-labels";
 
@@ -452,25 +459,13 @@ export class ReportService {
   }
 
   async getAssetProfitabilitySummary(query: AssetProfitabilityQueryDto) {
-    const range = resolveReportDateRange(query);
-    const vehicles = await this.prisma.vehicle.findMany({
-      orderBy: { createdAt: "desc" },
-      select: assetProfitabilityVehicleSelect,
-      where: assetProfitabilityVehicleWhere(query)
-    });
-    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
-    const rows = vehicles.map((vehicle) =>
-      assetProfitabilityVehicleRow(
-        vehicle,
-        metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics()
-      )
-    );
+    const { dateRange, rows } = await this.buildAssetProfitabilityVehicleRows(query);
     const simpleReturnRates = rows
       .map((row) => row.simpleReturnRate)
       .filter((value): value is number => value !== null);
 
     return {
-      dateRange: range.output,
+      dateRange,
       totalVehicles: rows.length,
       totalPurchasePriceAmount: sumNumbers(rows.map((row) => row.purchasePriceAmount)),
       totalCurrentSalePriceAmount: sumNumbers(rows.map((row) => row.currentSalePriceAmount)),
@@ -488,24 +483,8 @@ export class ReportService {
   }
 
   async getAssetProfitabilityVehicles(query: AssetProfitabilityVehicleListQueryDto) {
-    const range = resolveReportDateRange(query);
     const pagination = resolvePagination(query);
-    const vehicles = await this.prisma.vehicle.findMany({
-      orderBy: { createdAt: "desc" },
-      select: assetProfitabilityVehicleSelect,
-      where: assetProfitabilityVehicleWhere(query)
-    });
-    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
-    const rows = vehicles.map((vehicle) =>
-      assetProfitabilityVehicleRow(
-        vehicle,
-        metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics()
-      )
-    );
-
-    if (query.sortBy) {
-      rows.sort(assetProfitabilityComparator(query.sortBy, query.sortOrder ?? "desc"));
-    }
+    const { rows } = await this.buildAssetProfitabilityVehicleRows(query);
 
     return pagedResult(
       rows.slice(pagination.skip, pagination.skip + pagination.pageSize),
@@ -545,11 +524,14 @@ export class ReportService {
         vehicleModel: vehicle.vehicleModel,
         batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
         batteryUsageType: vehicle.batteryUsageType,
+        salePriceStatus: vehicle.salePriceStatus,
         vehicleStatus: vehicle.status
       },
       assetValue: {
         purchasePriceAmount: baseRow.purchasePriceAmount,
-        currentSalePriceAmount: baseRow.currentSalePriceAmount
+        currentSalePriceAmount: baseRow.currentSalePriceAmount,
+        currentSalePriceReviewedAt: vehicle.currentSalePriceReviewedAt,
+        currentSalePriceStatus: vehicle.salePriceStatus
       },
       summary: {
         rentalPaidAmount: baseRow.rentalPaidAmount,
@@ -605,6 +587,7 @@ export class ReportService {
         description: damage.description,
         estimatedRepairAmount: toNumber(damage.estimatedRepairAmount),
         responsibleParty: damage.responsibleParty,
+        returnNo: damage.vehicleReturn?.returnNo ?? null,
         status: damage.status,
         createdAt: damage.createdAt
       })),
@@ -616,10 +599,229 @@ export class ReportService {
         effectiveFrom: history.effectiveFrom,
         effectiveTo: history.effectiveTo,
         reason: history.reason,
+        reviewQuarter: history.reviewQuarter,
         remark: history.remark,
         createdAt: history.createdAt
       }))
     };
+  }
+
+  async exportAssetProfitabilitySummary(query: AssetProfitabilityQueryDto) {
+    const report = await this.getAssetProfitabilitySummary(query);
+    const rows: CsvRow[] = [
+      ["资产经营汇总"],
+      ["统计周期", dateRangeText(report.dateRange)],
+      [],
+      ["指标", "值"],
+      ["车辆总数", report.totalVehicles],
+      ["采购成本合计（元）", formatMoneyYuan(report.totalPurchasePriceAmount)],
+      ["当前销售价合计（元）", formatMoneyYuan(report.totalCurrentSalePriceAmount)],
+      ["租金实收合计（元）", formatMoneyYuan(report.rentalPaidAmount)],
+      ["损伤费用实收合计（元）", formatMoneyYuan(report.damagePaidAmount)],
+      ["押金收取合计（元）", formatMoneyYuan(report.depositCollectedAmount)],
+      ["应收合计（元）", formatMoneyYuan(report.totalReceivableAmount)],
+      ["未收合计（元）", formatMoneyYuan(report.totalRemainingAmount)],
+      ["总出租天数", report.totalLeasedDays],
+      ["平均出租率", formatPercent(report.averageUtilizationRate)],
+      ["平均简化经营回报率", formatPercent(report.averageSimpleReturnRate)]
+    ];
+
+    return csvExport("asset-profitability-summary", report.dateRange, rows);
+  }
+
+  async exportAssetProfitabilityVehicles(query: AssetProfitabilityVehicleListQueryDto) {
+    const { dateRange, rows: vehicles } = await this.buildAssetProfitabilityVehicleRows(query);
+
+    if (vehicles.length > MAX_DETAIL_EXPORT_ROWS) {
+      throw new BadRequestException(
+        `明细数据超过 ${MAX_DETAIL_EXPORT_ROWS} 行，请缩小筛选范围后再导出。`
+      );
+    }
+
+    const rows: CsvRow[] = [
+      ["资产经营车辆列表"],
+      ["统计周期", dateRangeText(dateRange)],
+      [],
+      [
+        "车辆编号",
+        "VIN",
+        "车牌号",
+        "品牌",
+        "车系",
+        "车型",
+        "车辆状态",
+        "电池容量（kWh）",
+        "电池使用方式",
+        "采购价（元）",
+        "当前销售价（元）",
+        "租金实收（元）",
+        "损伤实收（元）",
+        "押金收取（元）",
+        "总应收（元）",
+        "总已收（元）",
+        "总未收（元）",
+        "出租天数",
+        "可运营天数",
+        "出租率",
+        "简化经营回报率",
+        "当前订单",
+        "当前客户",
+        "最近交付时间",
+        "最近退车时间"
+      ],
+      ...vehicles.map((vehicle) => [
+        vehicle.vehicleNo,
+        vehicle.vin,
+        vehicle.plateNo,
+        vehicle.brand,
+        vehicle.series,
+        vehicle.model ?? vehicle.vehicleModel,
+        labelOf(vehicleStatusLabels, vehicle.vehicleStatus),
+        vehicle.batteryCapacityKwh,
+        labelOf(vehicleBatteryUsageTypeLabels, vehicle.batteryUsageType),
+        formatMoneyYuan(vehicle.purchasePriceAmount),
+        formatMoneyYuan(vehicle.currentSalePriceAmount),
+        formatMoneyYuan(vehicle.rentalPaidAmount),
+        formatMoneyYuan(vehicle.damagePaidAmount),
+        formatMoneyYuan(vehicle.depositCollectedAmount),
+        formatMoneyYuan(vehicle.totalReceivableAmount),
+        formatMoneyYuan(vehicle.totalPaidAmount),
+        formatMoneyYuan(vehicle.totalRemainingAmount),
+        vehicle.leasedDays,
+        vehicle.operatingDays,
+        formatPercent(vehicle.utilizationRate),
+        formatPercent(vehicle.simpleReturnRate),
+        vehicle.currentOrderNo,
+        vehicle.currentCustomerName,
+        formatDate(vehicle.lastDeliveryAt),
+        formatDate(vehicle.lastReturnAt)
+      ])
+    ];
+
+    return csvExport("asset-profitability-vehicles", dateRange, rows);
+  }
+
+  async exportAssetProfitabilityVehicleDetail(
+    id: string,
+    query: AssetProfitabilityVehicleDetailQueryDto
+  ) {
+    const detail = await this.getAssetProfitabilityVehicleDetail(id, query);
+    const vehicle = detail.vehicle;
+    const assetValue = detail.assetValue;
+    const summary = detail.summary;
+    const latestSalePriceHistory = latestByDate(
+      detail.salePriceHistory,
+      (history) => history.createdAt ?? history.effectiveFrom
+    );
+    const rows: CsvRow[] = [
+      ["单车经营详情"],
+      ["统计周期", dateRangeText(detail.dateRange)],
+      [],
+      ["车辆基础信息"],
+      ["字段", "值"],
+      ["车辆编号", vehicle.vehicleNo],
+      ["VIN", vehicle.vin],
+      ["车牌号", vehicle.plateNo],
+      ["品牌", vehicle.brand],
+      ["车系", vehicle.series],
+      ["车型", vehicle.model ?? vehicle.vehicleModel],
+      ["电池容量（kWh）", vehicle.batteryCapacityKwh],
+      ["电池使用方式", labelOf(vehicleBatteryUsageTypeLabels, vehicle.batteryUsageType)],
+      ["车辆状态", labelOf(vehicleStatusLabels, vehicle.vehicleStatus)],
+      [],
+      ["资产价值信息"],
+      ["字段", "值"],
+      ["采购价（元）", formatMoneyYuan(assetValue.purchasePriceAmount)],
+      ["当前销售价（元）", formatMoneyYuan(assetValue.currentSalePriceAmount)],
+      [
+        "当前销售价最近复核时间",
+        formatDate(assetValue.currentSalePriceReviewedAt ?? latestSalePriceHistory?.createdAt)
+      ],
+      ["当前销售价状态", labelOf(salePriceStatusLabels, assetValue.currentSalePriceStatus)],
+      [],
+      ["经营汇总"],
+      ["指标", "值"],
+      ["租金实收（元）", formatMoneyYuan(summary.rentalPaidAmount)],
+      ["损伤费用实收（元）", formatMoneyYuan(summary.damagePaidAmount)],
+      ["押金收取（元）", formatMoneyYuan(summary.depositCollectedAmount)],
+      ["总应收（元）", formatMoneyYuan(summary.totalReceivableAmount)],
+      ["总已收（元）", formatMoneyYuan(summary.totalPaidAmount)],
+      ["总未收（元）", formatMoneyYuan(summary.totalRemainingAmount)],
+      ["出租天数", summary.leasedDays],
+      ["可运营天数", summary.operatingDays],
+      ["出租率", formatPercent(summary.utilizationRate)],
+      ["简化经营回报率", formatPercent(summary.simpleReturnRate)],
+      [],
+      ["订单周期明细"],
+      [
+        "订单编号",
+        "客户",
+        "订单状态",
+        "交付时间",
+        "退车时间",
+        "出租天数",
+        "套餐月费（元）",
+        "实收租金（元）",
+        "损伤费用（元）"
+      ],
+      ...detail.orderCycles.map((order) => [
+        order.orderNo,
+        order.customerName,
+        labelOf(orderStatusLabels, order.orderStatus),
+        formatDate(order.deliveredAt),
+        formatDate(order.returnedAt),
+        order.leasedDays,
+        formatMoneyYuan(order.monthlyFeeAmount),
+        formatMoneyYuan(order.rentalPaidAmount),
+        formatMoneyYuan(order.damagePaidAmount)
+      ]),
+      [],
+      ["账单明细"],
+      ["账单编号", "账单类型", "应收（元）", "已收（元）", "未收（元）", "账期", "状态"],
+      ...detail.bills.map((bill) => [
+        bill.billNo,
+        labelOf(billTypeLabels, bill.billType),
+        formatMoneyYuan(bill.amount),
+        formatMoneyYuan(bill.paidAmount),
+        formatMoneyYuan(bill.remainingAmount),
+        billPeriodText(bill),
+        labelOf(billStatusLabels, bill.billStatus)
+      ]),
+      [],
+      ["生命周期节点"],
+      ["节点类型", "发生时间", "说明"],
+      ...detail.lifecycleNodes.map((node) => [
+        labelOf(assetProfitabilityLifecycleNodeLabels, node.type),
+        formatDate(node.occurredAt),
+        lifecycleNodeDescription(node)
+      ]),
+      [],
+      ["损伤记录"],
+      ["退车单号", "损伤类型", "损伤等级", "责任方", "预估维修金额（元）", "状态", "描述"],
+      ...detail.damageRecords.map((damage) => [
+        damage.returnNo,
+        labelOf(vehicleDamageTypeLabels, damage.damageType),
+        labelOf(vehicleDamageLevelLabels, damage.damageLevel),
+        labelOf(vehicleDamageResponsiblePartyLabels, damage.responsibleParty),
+        formatMoneyYuan(damage.estimatedRepairAmount),
+        labelOf(vehicleReturnDamageStatusLabels, damage.status),
+        damage.description
+      ]),
+      [],
+      ["销售价历史"],
+      ["复核类型", "调整前价格（元）", "调整后价格（元）", "生效日期", "复核季度", "原因", "创建时间"],
+      ...detail.salePriceHistory.map((history) => [
+        labelOf(vehicleSalePriceReviewTypeLabels, history.reviewType),
+        formatMoneyYuan(history.beforeSalePriceAmount),
+        formatMoneyYuan(history.afterSalePriceAmount),
+        formatDate(history.effectiveFrom),
+        history.reviewQuarter,
+        history.reason ?? history.remark,
+        formatDate(history.createdAt)
+      ])
+    ];
+
+    return csvExport("asset-profitability-vehicle-detail", detail.dateRange, rows);
   }
 
   async getEntitlementReport(query: EntitlementReportQueryDto) {
@@ -1774,6 +1976,33 @@ export class ReportService {
     return { dateRange, items };
   }
 
+  private async buildAssetProfitabilityVehicleRows(
+    query: AssetProfitabilityQueryDto & Partial<Pick<AssetProfitabilityVehicleListQueryDto, "sortBy" | "sortOrder">>
+  ) {
+    const range = resolveReportDateRange(query);
+    const vehicles = await this.prisma.vehicle.findMany({
+      orderBy: { createdAt: "desc" },
+      select: assetProfitabilityVehicleSelect,
+      where: assetProfitabilityVehicleWhere(query)
+    });
+    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
+    const rows = vehicles.map((vehicle) =>
+      assetProfitabilityVehicleRow(
+        vehicle,
+        metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics()
+      )
+    );
+
+    if (query.sortBy) {
+      rows.sort(assetProfitabilityComparator(query.sortBy, query.sortOrder ?? "desc"));
+    }
+
+    return {
+      dateRange: range.output,
+      rows
+    };
+  }
+
   private async buildAssetProfitabilityMetrics(
     vehicles: AssetProfitabilityVehicleRecord[],
     range: ReturnType<typeof resolveReportDateRange>
@@ -1979,6 +2208,53 @@ function csvExport(prefix: string, dateRange: ReportDateRangeOutput, rows: CsvRo
 
 function dateRangeText(dateRange: ReportDateRangeOutput) {
   return `${dateRange.startDate} 至 ${dateRange.endDate}`;
+}
+
+function billPeriodText(bill: {
+  dueDate?: Date | null;
+  periodEnd?: Date | null;
+  periodStart?: Date | null;
+}) {
+  if (bill.periodStart || bill.periodEnd) {
+    return `${formatDate(bill.periodStart)} 至 ${formatDate(bill.periodEnd)}`;
+  }
+
+  return formatDate(bill.dueDate);
+}
+
+function lifecycleNodeDescription(node: {
+  amount?: number | null;
+  label?: string | null;
+  status?: string | null;
+  type?: string | null;
+}) {
+  const label =
+    node.type === "INITIAL_POOL" ||
+    node.type === "RETURN_REINIT" ||
+    node.type === "SALE_PRICE_REVIEW"
+      ? labelOf(vehicleSalePriceReviewTypeLabels, node.label)
+      : safeCell(node.label);
+  const value =
+    node.amount !== undefined && node.amount !== null
+      ? formatMoneyYuan(node.amount)
+      : safeCell(node.status);
+
+  if (label === "-") {
+    return value;
+  }
+  if (value === "-") {
+    return label;
+  }
+
+  return `${label} / ${value}`;
+}
+
+function latestByDate<TItem>(items: TItem[], getValue: (item: TItem) => Date | null | undefined) {
+  return [...items].sort((left, right) => {
+    const leftTime = getValue(left)?.getTime() ?? 0;
+    const rightTime = getValue(right)?.getTime() ?? 0;
+    return rightTime - leftTime;
+  })[0];
 }
 
 function resolvePagination(query: PaginationQuery): ResolvedPagination {
@@ -2319,10 +2595,12 @@ const assetProfitabilityVehicleSelect = {
   brand: true,
   createdAt: true,
   currentSalePriceAmount: true,
+  currentSalePriceReviewedAt: true,
   id: true,
   model: true,
   plateNo: true,
   purchasePriceAmount: true,
+  salePriceStatus: true,
   salePriceHistories: {
     orderBy: { effectiveFrom: "asc" as const },
     select: {
@@ -2334,6 +2612,7 @@ const assetProfitabilityVehicleSelect = {
       id: true,
       reason: true,
       remark: true,
+      reviewQuarter: true,
       reviewType: true
     },
     where: {}
@@ -2370,6 +2649,7 @@ const assetProfitabilityVehicleDetailSelect = {
       id: true,
       orderId: true,
       responsibleParty: true,
+      vehicleReturn: { select: { returnNo: true } },
       status: true
     },
     where: { deletedAt: null }

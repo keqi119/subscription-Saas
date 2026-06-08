@@ -1,6 +1,6 @@
 "use client";
 
-import { EyeOutlined, ReloadOutlined } from "@ant-design/icons";
+import { DownloadOutlined, EyeOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -41,6 +41,7 @@ import {
 } from "../../../constants/labels";
 import { ApiError, apiFetch } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
+import { downloadCsv } from "../../../lib/csv-download";
 
 const { RangePicker } = DatePicker;
 
@@ -260,6 +261,18 @@ const lifecycleNodeLabels: Record<string, string> = {
 
 const defaultDateRange = (): [Dayjs, Dayjs] => [dayjs().subtract(29, "day"), dayjs()];
 
+function exportDefaultFilename(kind: "detail" | "summary" | "vehicles", dateRange: [Dayjs, Dayjs]) {
+  const prefixByKind = {
+    detail: "asset-profitability-vehicle-detail",
+    summary: "asset-profitability-summary",
+    vehicles: "asset-profitability-vehicles"
+  };
+  const startDate = dateRange[0].format("YYYYMMDD");
+  const endDate = dateRange[1].format("YYYYMMDD");
+
+  return `${prefixByKind[kind]}-${startDate}-${endDate}.csv`;
+}
+
 export default function AssetProfitabilityPage() {
   const { message } = App.useApp();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
@@ -287,6 +300,9 @@ export default function AssetProfitabilityPage() {
   const [detail, setDetail] = useState<AssetProfitabilityVehicleDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [summaryExporting, setSummaryExporting] = useState(false);
+  const [vehiclesExporting, setVehiclesExporting] = useState(false);
+  const [detailExporting, setDetailExporting] = useState(false);
 
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
   const canViewAssetReport = permissions.has("report:asset");
@@ -370,6 +386,67 @@ export default function AssetProfitabilityPage() {
   const refresh = useCallback(async () => {
     await Promise.all([loadSummary(), loadVehicles()]);
   }, [loadSummary, loadVehicles]);
+
+  const exportSummaryCsv = useCallback(async () => {
+    if (!canViewAssetReport) {
+      return;
+    }
+
+    setSummaryExporting(true);
+    try {
+      await downloadCsv(
+        `/reports/asset-profitability/summary/export${buildQuery(baseQuery())}`,
+        exportDefaultFilename("summary", dateRange)
+      );
+    } catch (error) {
+      void message.error(normalizeErrorMessage(error));
+    } finally {
+      setSummaryExporting(false);
+    }
+  }, [baseQuery, canViewAssetReport, dateRange, message]);
+
+  const exportVehiclesCsv = useCallback(async () => {
+    if (!canViewAssetReport) {
+      return;
+    }
+
+    setVehiclesExporting(true);
+    try {
+      await downloadCsv(
+        `/reports/asset-profitability/vehicles/export${buildQuery({
+          ...baseQuery(),
+          sortBy,
+          sortOrder
+        })}`,
+        exportDefaultFilename("vehicles", dateRange)
+      );
+    } catch (error) {
+      void message.error(normalizeErrorMessage(error));
+    } finally {
+      setVehiclesExporting(false);
+    }
+  }, [baseQuery, canViewAssetReport, dateRange, message, sortBy, sortOrder]);
+
+  const exportVehicleDetailCsv = useCallback(async () => {
+    if (!canViewAssetReport || !selectedVehicle) {
+      return;
+    }
+
+    setDetailExporting(true);
+    try {
+      await downloadCsv(
+        `/reports/asset-profitability/vehicles/${selectedVehicle.vehicleId}/export${buildQuery({
+          endDate: dateRange[1].format("YYYY-MM-DD"),
+          startDate: dateRange[0].format("YYYY-MM-DD")
+        })}`,
+        exportDefaultFilename("detail", dateRange)
+      );
+    } catch (error) {
+      void message.error(normalizeErrorMessage(error));
+    } finally {
+      setDetailExporting(false);
+    }
+  }, [canViewAssetReport, dateRange, message, selectedVehicle]);
 
   const openDetail = useCallback(async (record: AssetProfitabilityVehicleRow) => {
     if (!canViewAssetReport) {
@@ -519,6 +596,8 @@ export default function AssetProfitabilityPage() {
       <FilterBar
         dateRange={dateRange}
         loading={summaryLoading || vehiclesLoading}
+        onExportSummary={() => void exportSummaryCsv()}
+        onExportVehicles={() => void exportVehiclesCsv()}
         onDateRangeChange={(nextRange) => {
           setDateRange(nextRange);
           setPage(1);
@@ -532,7 +611,9 @@ export default function AssetProfitabilityPage() {
           setVehicleStatus(value);
           setPage(1);
         }}
+        summaryExporting={summaryExporting}
         vehicleModel={vehicleModel}
+        vehiclesExporting={vehiclesExporting}
         vehicleStatus={vehicleStatus}
       />
       <Alert
@@ -583,6 +664,17 @@ export default function AssetProfitabilityPage() {
 
       <Drawer
         destroyOnClose
+        extra={
+          selectedVehicle ? (
+            <Button
+              icon={<DownloadOutlined />}
+              loading={detailExporting}
+              onClick={() => void exportVehicleDetailCsv()}
+            >
+              导出单车详情 CSV
+            </Button>
+          ) : null
+        }
         onClose={() => setDetailOpen(false)}
         open={detailOpen}
         title={`${safeText(selectedVehicle?.vehicleNo)} 单车经营详情`}
@@ -597,20 +689,28 @@ export default function AssetProfitabilityPage() {
 function FilterBar({
   dateRange,
   loading,
+  onExportSummary,
+  onExportVehicles,
   onDateRangeChange,
   onRefresh,
   onVehicleModelChange,
   onVehicleStatusChange,
+  summaryExporting,
   vehicleModel,
+  vehiclesExporting,
   vehicleStatus
 }: {
   dateRange: [Dayjs, Dayjs];
   loading: boolean;
+  onExportSummary: () => void;
+  onExportVehicles: () => void;
   onDateRangeChange: (value: [Dayjs, Dayjs]) => void;
   onRefresh: () => void;
   onVehicleModelChange: (value?: string) => void;
   onVehicleStatusChange: (value?: string) => void;
+  summaryExporting: boolean;
   vehicleModel?: string;
+  vehiclesExporting: boolean;
   vehicleStatus?: string;
 }) {
   return (
@@ -652,6 +752,12 @@ function FilterBar({
         </Space>
         <Button icon={<ReloadOutlined />} loading={loading} onClick={onRefresh}>
           刷新
+        </Button>
+        <Button icon={<DownloadOutlined />} loading={summaryExporting} onClick={onExportSummary}>
+          导出汇总 CSV
+        </Button>
+        <Button icon={<DownloadOutlined />} loading={vehiclesExporting} onClick={onExportVehicles}>
+          导出车辆列表 CSV
         </Button>
       </Space>
     </Card>

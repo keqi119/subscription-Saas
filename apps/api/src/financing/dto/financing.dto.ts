@@ -5,7 +5,7 @@ import {
   FinancingInstrumentType,
   FinancingRepaymentMethod
 } from "@prisma/client";
-import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
+import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, Min } from "class-validator";
 
 export class FinancingInstrumentsQueryDto {
   @IsOptional()
@@ -150,6 +150,7 @@ export class SettleFinancingInstrumentDto {
 
 export class AllocateFinancingInstrumentVehicleDto {
   @IsString()
+  @IsUUID("4", { message: "vehicleId 必须是系统车辆 ID，请在车辆下拉中选择车辆" })
   vehicleId!: string;
 
   @Type(() => Number)

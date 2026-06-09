@@ -69,6 +69,8 @@ export enum PermissionCode {
   CAPITAL_STRUCTURE_MANAGE = "capital_structure:manage",
   FINANCING_VIEW = "financing:view",
   FINANCING_MANAGE = "financing:manage",
+  VEHICLE_ASSET_POOL_VIEW = "vehicle_asset_pool:view",
+  VEHICLE_ASSET_POOL_MANAGE = "vehicle_asset_pool:manage",
   REVENUE_RIGHT_VIEW = "revenue_right:view",
   REVENUE_RIGHT_MANAGE = "revenue_right:manage",
   REVENUE_SHARE_VIEW = "revenue_share:view",

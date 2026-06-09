@@ -156,6 +156,8 @@ permissionRows.push(
   ["capital_structure:manage", "管理车辆资本结构", "capital_structure", "manage"],
   ["financing:view", "查看融资工具", "financing", "view"],
   ["financing:manage", "管理融资工具", "financing", "manage"],
+  ["vehicle_asset_pool:view", "查看车辆资产池", "vehicle_asset_pool", "view"],
+  ["vehicle_asset_pool:manage", "管理车辆资产池", "vehicle_asset_pool", "manage"],
   ["revenue_right:view", "查看收益权归属", "revenue_right", "view"],
   ["revenue_right:manage", "管理收益权归属", "revenue_right", "manage"],
   ["revenue_share:view", "查看托管分润规则", "revenue_share", "view"],
@@ -553,6 +555,10 @@ const financingViewPermissions = ["financing:view"];
 
 const financingManagementPermissions = ["financing:view", "financing:manage"];
 
+const vehicleAssetPoolViewPermissions = ["vehicle_asset_pool:view"];
+
+const vehicleAssetPoolManagementPermissions = ["vehicle_asset_pool:view", "vehicle_asset_pool:manage"];
+
 const revenueRightViewPermissions = ["revenue_right:view"];
 
 const revenueRightManagementPermissions = ["revenue_right:view", "revenue_right:manage"];
@@ -671,6 +677,7 @@ async function main() {
       ...reportAssetPermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
+      ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
       "billing:view",
@@ -740,6 +747,9 @@ async function main() {
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         ...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions),
         ...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions),
+        ...(roleCode === "FI" || roleCode === "AS"
+          ? vehicleAssetPoolManagementPermissions
+          : vehicleAssetPoolViewPermissions),
         ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
         ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
         "quote:view",
@@ -786,6 +796,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
+      ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
       "quote:view",

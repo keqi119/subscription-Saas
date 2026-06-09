@@ -616,6 +616,163 @@ Stage 8.2D 新增资产收益试算 CSV 导出 API：
 9. `MANUAL` 折旧方法第一版不参与试算；导出会列示不可计算原因。
 10. 试算导出只复用现有收益试算 API 口径，不改变页面和 API 统计口径，不构成会计凭证或正式财务报表。
 
+## Stage 8.3A 资本结构与融资工具口径
+
+Stage 8.3A 新增车辆资本结构事实数据层，用于记录车辆取得方式、车辆生命周期资本事件、外部融资工具和融资工具到车辆的分摊关系。
+
+本阶段只建立 ROE 数据基础，不计算正式 ROE，不接入资产收益试算 API，不改变现有资产经营分析、CSV 导出、订单、账务或车辆状态机口径。
+
+新增模型：
+
+- `Vehicle.acquisitionMode`：车辆取得方式。
+- `VehicleCapitalEvent`：车辆资本事件时间轴。
+- `FinancingInstrument`：融资工具主数据。
+- `FinancingInstrumentVehicle`：融资工具与车辆分摊关系。
+
+`VehicleAcquisitionMode` 含义：
+
+- `OWNED_CASH`：自有资金购入。
+- `OWNED_FINANCED`：自有资金 + 外部融资购入。
+- `LONG_TERM_LEASED`：外部长租取得。
+- `MANAGED_REVENUE_SHARE`：托管收益分成取得。
+
+`VehicleCapitalEvent` 记录车辆生命周期内资本结构变化，包括初始自有资金购入、新增债务融资、再融资、提前结清、融资解除、外部长租接入/终止、托管接入/终止和其他事件。金额字段单位均为分。
+
+`FinancingInstrument` 记录外部融资合同或资金工具。第一版支持保存融资租赁、银行车贷、银行项目贷款、个人借款、应收账款权益质押融资、ABS / SPV 资产池融资和其他融资工具类型。
+
+`FinancingInstrumentVehicle` 记录融资工具覆盖车辆及分摊金额。同一融资工具与同一车辆同一时间只能存在一条 `ACTIVE` 分摊。分摊金额合计不得超过融资工具 `principalAmount`。
+
+单车资本结构预览 API：
+
+- `GET /api/vehicles/:id/capital-structure`
+
+第一版 preview 口径：
+
+```text
+debtPrincipalAmount =
+  当前 ACTIVE financing allocations 的 allocatedPrincipalAmount 合计
+
+equityCapitalAmount =
+  当前 ACTIVE capital events 中可识别的 equityCapitalAmount 合计
+
+capitalCoverageAmount =
+  equityCapitalAmount + debtPrincipalAmount
+
+capitalCoverageRatio =
+  capitalCoverageAmount / Vehicle.purchasePriceAmount
+
+annualDebtInterestAmount =
+  sum(allocatedPrincipalAmount * instrument.annualRateBps / 10000)
+
+monthlyDebtInterestAmount =
+  annualDebtInterestAmount / 12
+```
+
+如果车辆没有融资分摊或资本事件，preview 可按 `OWNED_CASH` 给出自有资金购入的默认展示，但必须返回：
+
+```text
+roeDataReady = false
+missingReasons 包含“尚未录入资本事件。”
+```
+
+preview 只是 ROE 数据准备度检查。`roeDataReady = true` 只代表车辆采购价、资本事件、资本覆盖和基础融资利率等第一版数据已满足后续试算前置条件，不代表已经输出正式 ROE。
+
+第一版不处理：
+
+- 订单收入收益权质押到具体订单 / 账单。
+- 托管车辆分润结算。
+- 外部长租固定成本结算。
+- 融资还款计划、利息台账、财务入账和会计凭证。
+- 市场残值样本、残值曲线、AI / ML 残值预测。
+- 正式 ROE、残值敏感性分析或收益试算 API 接入。
+
+## Stage 8.3B 收益权与托管分润口径
+
+Stage 8.3B 新增收益权归属、质押、转让和托管/长租车辆分润规则事实数据层，用于记录订单收入或账单应收的收益权归属关系，以及托管车辆、外部长租车辆在指定期间内的分润或固定成本规则。
+
+本阶段只做后端事实记录和 preview，不计算正式 ROE，不接入资产收益试算 API，不生成真实分润账单，不触发财务入账或会计凭证，不改变订单、车辆、账务状态机。
+
+新增模型：
+
+- `RevenueRightAssignment`：收益权归属、质押、转让或资产池归集记录。
+- `RevenueShareRule`：托管车辆分润、外部长租车辆固定租金或固定成本规则。
+
+`RevenueRightAssignment.targetType` 口径：
+
+- `ORDER`：订单整体收入收益权。
+- `RECEIVABLE_BILL`：具体应收账单收益权。
+- `VEHICLE`：车辆维度收益权或合作归属。
+- `VEHICLE_POOL`：车辆池收益权预留枚举，第一版不实现复杂车辆池模型。
+
+`RevenueRightAssignment.assignmentType` 口径：
+
+- `PLEDGE`：收益权质押，通常需关联 `FinancingInstrument`。
+- `TRANSFER`：收益权转让，通常需关联 `FinancingInstrument`。
+- `SPV_POOL`：SPV / 资产池归集，通常需关联 `FinancingInstrument`。
+- `REVENUE_SHARE`：收益分成归属，主要用于托管或合作车辆。
+- `OTHER`：其他手工口径。
+
+`RevenueShareRule` 用于描述单车分润或固定成本：
+
+- `REVENUE_SHARE`：按收益基数和 `ownerShareBps` 计算外部车主分成。
+- `FIXED_RENT`：按 `fixedMonthlyAmount` 记录外部长租固定成本。
+- `MIXED`：固定成本加收益分成。
+
+分润 preview API：
+
+- `GET /api/vehicles/:id/revenue-share-preview`
+
+第一版支持的 `shareBasis`：
+
+```text
+RENTAL_PAID =
+  FIRST_MONTHLY_FEE.paidAmount
+  + MONTHLY_RENT.paidAmount
+
+OPERATING_REVENUE =
+  FIRST_MONTHLY_FEE.paidAmount
+  + MONTHLY_RENT.paidAmount
+  + DAMAGE_FEE.paidAmount
+  + OTHER.paidAmount
+```
+
+`DEPOSIT` 不参与分润 preview，也不计入 `shareBaseAmount`。
+
+固定成本折算：
+
+```text
+fixedCostAmount =
+  round(fixedMonthlyAmount * 12 / 365 * days)
+```
+
+分润金额：
+
+```text
+ownerShareAmount =
+  shareBaseAmount * ownerShareBps / 10000
+  + fixedCostAmount
+
+platformShareAmount =
+  shareBaseAmount
+  - shareBaseAmount * ownerShareBps / 10000
+  - fixedCostAmount
+```
+
+如果 `platformShareAmount < 0`，preview 返回 warning，提示检查固定成本或分成规则。
+
+暂不支持自动 preview 的 `shareBasis`：
+
+- `GROSS_RECEIVABLE`：应收总额分润口径第一版暂未实现。
+- `MANUAL`：手工分润口径需人工结算，暂不支持自动 preview。
+
+本阶段不处理：
+
+- 收益权现金流归集。
+- 分润账单和真实付款。
+- 应收账款融资还款计划。
+- 托管分润结算台账。
+- 正式 ROE 或收益试算 API 接入。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

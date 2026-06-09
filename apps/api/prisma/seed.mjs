@@ -151,7 +151,15 @@ permissionRows.push(
   ["vehicle:initialize_sale_price", "初始化车辆销售价", "vehicle", "initialize_sale_price"],
   ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
-  ["vehicle:manage", "管理车辆资产", "vehicle", "manage"]
+  ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
+  ["capital_structure:view", "查看车辆资本结构", "capital_structure", "view"],
+  ["capital_structure:manage", "管理车辆资本结构", "capital_structure", "manage"],
+  ["financing:view", "查看融资工具", "financing", "view"],
+  ["financing:manage", "管理融资工具", "financing", "manage"],
+  ["revenue_right:view", "查看收益权归属", "revenue_right", "view"],
+  ["revenue_right:manage", "管理收益权归属", "revenue_right", "manage"],
+  ["revenue_share:view", "查看托管分润规则", "revenue_share", "view"],
+  ["revenue_share:manage", "管理托管分润规则", "revenue_share", "manage"]
 );
 
 permissionRows.push(
@@ -194,6 +202,8 @@ const menuRows = [
   ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
   ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
   ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
+  ["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"],
+  ["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
   ["system.users", "用户管理", "/system/users", "team", 10, "user:view", "system"],
   ["system.roles", "角色管理", "/system/roles", "safety", 20, "role:view", "system"],
@@ -495,6 +505,10 @@ const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collection
 
 const collectionMenuCodes = ["billing", "billing.collections"];
 
+const financingMenuCodes = ["billing.financing_instruments"];
+
+const revenueRightMenuCodes = ["billing.revenue_rights"];
+
 const productMenuCodes = [
   "products",
   "products.subscription",
@@ -527,6 +541,25 @@ const vehicleManagementPermissions = [
   "vehicle:manage"
 ];
 const vehicleMenuCodes = ["vehicles"];
+
+const capitalStructureViewPermissions = ["capital_structure:view"];
+
+const capitalStructureManagementPermissions = [
+  "capital_structure:view",
+  "capital_structure:manage"
+];
+
+const financingViewPermissions = ["financing:view"];
+
+const financingManagementPermissions = ["financing:view", "financing:manage"];
+
+const revenueRightViewPermissions = ["revenue_right:view"];
+
+const revenueRightManagementPermissions = ["revenue_right:view", "revenue_right:manage"];
+
+const revenueShareViewPermissions = ["revenue_share:view"];
+
+const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"];
 
 async function main() {
   for (const [code, name, description] of roleRows) {
@@ -636,6 +669,10 @@ async function main() {
       ...entitlementOperationPermissions,
       ...reportViewPermissions,
       ...reportAssetPermissions,
+      ...capitalStructureViewPermissions,
+      ...financingViewPermissions,
+      ...revenueRightViewPermissions,
+      ...revenueShareViewPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -658,6 +695,8 @@ async function main() {
       "orders.contract_templates",
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
+      ...financingMenuCodes,
+      ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
   );
@@ -699,6 +738,10 @@ async function main() {
         "product_price_rule:view",
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
+        ...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions),
+        ...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions),
+        ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
+        ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -723,6 +766,8 @@ async function main() {
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
         ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : []),
+        ...financingMenuCodes,
+        ...revenueRightMenuCodes,
         ...(roleCode === "AS" ? reportAssetMenuCodes : [])
       ]
     );
@@ -739,6 +784,10 @@ async function main() {
       "risk:manage",
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
+      ...capitalStructureViewPermissions,
+      ...financingViewPermissions,
+      ...revenueRightViewPermissions,
+      ...revenueShareViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,
@@ -762,6 +811,8 @@ async function main() {
       "orders.contract_templates",
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
+      ...financingMenuCodes,
+      ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
   );

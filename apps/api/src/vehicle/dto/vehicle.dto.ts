@@ -1,6 +1,8 @@
 import { Type } from "class-transformer";
 import {
+  VehicleAcquisitionMode,
   VehicleBatteryUsageType,
+  VehicleCapitalEventType,
   VehicleDepreciationMethod,
   VehicleModel,
   VehicleSalePriceReviewType,
@@ -38,6 +40,10 @@ export class CreateVehicleDto {
   @IsOptional()
   @IsEnum(VehicleBatteryUsageType)
   batteryUsageType?: VehicleBatteryUsageType;
+
+  @IsOptional()
+  @IsEnum(VehicleAcquisitionMode)
+  acquisitionMode?: VehicleAcquisitionMode;
 
   @IsString()
   vin!: string;
@@ -116,6 +122,10 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsEnum(VehicleBatteryUsageType)
   batteryUsageType?: VehicleBatteryUsageType;
+
+  @IsOptional()
+  @IsEnum(VehicleAcquisitionMode)
+  acquisitionMode?: VehicleAcquisitionMode;
 
   @IsOptional()
   @IsString()
@@ -253,6 +263,54 @@ export class UpsertVehicleAssetCostProfileDto {
   @IsInt()
   @Min(0)
   otherMonthlyCostAmount?: number | null;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class CreateVehicleCapitalEventDto {
+  @IsEnum(VehicleCapitalEventType)
+  eventType!: VehicleCapitalEventType;
+
+  @IsString()
+  effectiveFrom!: string;
+
+  @IsOptional()
+  @IsString()
+  effectiveTo?: string | null;
+
+  @IsOptional()
+  @IsEnum(VehicleAcquisitionMode)
+  acquisitionMode?: VehicleAcquisitionMode | null;
+
+  @IsOptional()
+  @IsString()
+  financingInstrumentId?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  equityCapitalAmount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  debtPrincipalAmount?: number | null;
+
+  @IsOptional()
+  @IsString()
+  externalOwnerName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  lessorName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  managedOwnerName?: string | null;
 
   @IsOptional()
   @IsString()

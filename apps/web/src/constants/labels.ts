@@ -77,6 +77,128 @@ export const VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS: Record<string, string> = 
   INACTIVE: "已停用"
 };
 
+export const VEHICLE_ACQUISITION_MODE_LABELS: Record<string, string> = {
+  LONG_TERM_LEASED: "外部长租取得",
+  MANAGED_REVENUE_SHARE: "托管收益分成取得",
+  OWNED_CASH: "自有资金购入",
+  OWNED_FINANCED: "自有资金 + 外部融资购入"
+};
+
+export const VEHICLE_CAPITAL_EVENT_TYPE_LABELS: Record<string, string> = {
+  ADD_DEBT_FINANCING: "新增债务融资",
+  EARLY_SETTLEMENT: "提前结清",
+  FINANCING_RELEASE: "融资解除",
+  INITIAL_EQUITY_PURCHASE: "初始自有资金购入",
+  LEASE_IN: "外部长租接入",
+  LEASE_TERMINATION: "外部长租终止",
+  MANAGED_IN: "托管车辆接入",
+  MANAGED_TERMINATION: "托管终止",
+  OTHER: "其他",
+  REFINANCE: "再融资"
+};
+
+export const VEHICLE_CAPITAL_EVENT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  ENDED: "已结束"
+};
+
+export const FINANCING_INSTRUMENT_TYPE_LABELS: Record<string, string> = {
+  ABS_OR_SPV: "ABS / SPV 资产池融资",
+  BANK_AUTO_LOAN: "银行车贷分期",
+  BANK_PROJECT_LOAN: "银行项目贷款",
+  FINANCE_LEASE: "融资租赁",
+  OTHER: "其他",
+  PERSONAL_LOAN: "个人借款",
+  RECEIVABLE_PLEDGE: "应收账款权益质押融资"
+};
+
+export const FINANCING_INSTRUMENT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  SETTLED: "已结清"
+};
+
+export const FINANCING_REPAYMENT_METHOD_LABELS: Record<string, string> = {
+  BULLET: "到期还本付息",
+  EQUAL_PRINCIPAL: "等额本金",
+  EQUAL_PRINCIPAL_INTEREST: "等额本息",
+  INTEREST_ONLY: "先息后本",
+  MANUAL: "手工口径"
+};
+
+export const FINANCING_COLLATERAL_TYPE_LABELS: Record<string, string> = {
+  BILL_RECEIVABLE: "账单应收",
+  MIXED: "混合担保",
+  NONE: "无担保",
+  ORDER_RECEIVABLE: "订单应收",
+  OTHER: "其他",
+  VEHICLE: "单车抵押 / 融资",
+  VEHICLE_POOL: "车辆池"
+};
+
+export const FINANCING_ALLOCATION_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  RELEASED: "已解除"
+};
+
+export const REVENUE_RIGHT_ASSIGNMENT_TYPE_LABELS: Record<string, string> = {
+  OTHER: "其他",
+  PLEDGE: "收益权质押",
+  REVENUE_SHARE: "收益分成",
+  SPV_POOL: "SPV / 资产池归集",
+  TRANSFER: "收益权转让"
+};
+
+export const REVENUE_RIGHT_ASSIGNMENT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  RELEASED: "已解除"
+};
+
+export const REVENUE_RIGHT_TARGET_TYPE_LABELS: Record<string, string> = {
+  ORDER: "订单",
+  RECEIVABLE_BILL: "应收账单",
+  VEHICLE: "车辆",
+  VEHICLE_POOL: "车辆池"
+};
+
+export const REVENUE_RIGHT_ASSIGNEE_TYPE_LABELS: Record<string, string> = {
+  FINANCIER: "资方",
+  LESSOR: "出租方",
+  MANAGED_OWNER: "托管车主",
+  OTHER: "其他",
+  PLATFORM: "平台",
+  SPV: "SPV / 资产池"
+};
+
+export const REVENUE_SHARE_RULE_TYPE_LABELS: Record<string, string> = {
+  FIXED_RENT: "固定租金 / 固定成本",
+  MIXED: "固定 + 分成",
+  REVENUE_SHARE: "收益分成"
+};
+
+export const REVENUE_SHARE_RULE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  INACTIVE: "已停用"
+};
+
+export const REVENUE_SHARE_BASIS_LABELS: Record<string, string> = {
+  GROSS_RECEIVABLE: "应收金额",
+  MANUAL: "手工口径",
+  OPERATING_REVENUE: "经营收入",
+  RENTAL_PAID: "租金实收"
+};
+
+export const REVENUE_SHARE_SETTLEMENT_CYCLE_LABELS: Record<string, string> = {
+  MANUAL: "手工结算",
+  MONTHLY: "月结",
+  ON_RETURN: "退车结算",
+  QUARTERLY: "季结"
+};
+
 export const VEHICLE_DEPRECIATION_METHOD_LABELS: Record<string, string> = {
   MANUAL: "手工口径",
   NONE: "不计提",
@@ -484,6 +606,14 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "report:asset": "查看资产报表",
   "report:finance": "查看财务报表",
   "report:view": "查看经营报表",
+  "financing:manage": "管理融资工具",
+  "financing:view": "查看融资工具",
+  "revenue_right:manage": "管理收益权归属",
+  "revenue_right:view": "查看收益权归属",
+  "revenue_share:manage": "管理托管分润规则",
+  "revenue_share:view": "查看托管分润规则",
+  "capital_structure:manage": "管理车辆资本结构",
+  "capital_structure:view": "查看车辆资本结构",
   "risk:manage": "管理押金规则",
   "risk:view": "查看风控",
   "role:manage": "管理角色",
@@ -606,7 +736,9 @@ export const MENU_LABELS: Record<string, string> = {
   applications: "进件管理",
   billing: "财务管理",
   "billing.collections": "逾期催收",
+  "billing.financing_instruments": "融资工具",
   "billing.monthly_rent": "月租账单生成",
+  "billing.revenue_rights": "收益权管理",
   customers: "客户中心",
   dashboard: "首页驾驶舱",
   orders: "订单中心",

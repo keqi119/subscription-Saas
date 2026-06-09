@@ -189,6 +189,20 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "逾期催收",
         path: "/billing/collections",
         permissionCode: PermissionCode.COLLECTION_VIEW
+      },
+      {
+        code: "billing.financing_instruments",
+        icon: "money",
+        label: "融资工具",
+        path: "/financing-instruments",
+        permissionCode: PermissionCode.FINANCING_VIEW
+      },
+      {
+        code: "billing.revenue_rights",
+        icon: "file",
+        label: "收益权管理",
+        path: "/revenue-rights",
+        permissionCode: PermissionCode.REVENUE_RIGHT_VIEW
       }
     ]
   },

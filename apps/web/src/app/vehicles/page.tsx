@@ -18,6 +18,7 @@ import {
   Descriptions,
   Empty,
   Form,
+  type FormInstance,
   Input,
   InputNumber,
   Modal,
@@ -34,7 +35,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
-import { SALE_PRICE_REVIEW_TYPE_LABELS, STATUS_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../constants/labels";
+import {
+  REVENUE_SHARE_BASIS_LABELS,
+  REVENUE_SHARE_RULE_STATUS_LABELS,
+  REVENUE_SHARE_RULE_TYPE_LABELS,
+  REVENUE_SHARE_SETTLEMENT_CYCLE_LABELS,
+  SALE_PRICE_REVIEW_TYPE_LABELS,
+  STATUS_LABELS,
+  VEHICLE_ACQUISITION_MODE_LABELS,
+  VEHICLE_BATTERY_USAGE_TYPE_LABELS,
+  VEHICLE_CAPITAL_EVENT_STATUS_LABELS,
+  VEHICLE_CAPITAL_EVENT_TYPE_LABELS,
+  labelOf
+} from "../../constants/labels";
 import {
   actionAvailability,
   canInitializeVehicleSalePrice,
@@ -43,8 +56,17 @@ import {
 } from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
 import type { AuthMeResponse } from "../../lib/auth";
+import {
+  formatPercentFromBps,
+  formatRatio,
+  formatYuan as formatCapitalYuan,
+  optionsFromLabels,
+  percentToBps,
+  toCentAmount
+} from "../../lib/capital-format";
 
 interface Vehicle {
+  acquisitionMode?: string | null;
   assetLocation?: string | null;
   batteryCapacityKwh?: number | null;
   batteryUsageType?: string | null;
@@ -129,6 +151,133 @@ interface StatusValues {
   status: string;
 }
 
+interface FinancingInstrumentSummary {
+  annualRateBps?: number | null;
+  contractNo?: string | null;
+  id: string;
+  instrumentNo?: string | null;
+  instrumentStatus?: string | null;
+  instrumentType?: string | null;
+  lenderName?: string | null;
+  principalAmount?: number | null;
+  repaymentMethod?: string | null;
+}
+
+interface CapitalEvent {
+  acquisitionMode?: string | null;
+  debtPrincipalAmount?: number | null;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  equityCapitalAmount?: number | null;
+  eventNo: string;
+  eventStatus: string;
+  eventType: string;
+  externalOwnerName?: string | null;
+  financingInstrument?: FinancingInstrumentSummary | null;
+  financingInstrumentId?: string | null;
+  id: string;
+  lessorName?: string | null;
+  managedOwnerName?: string | null;
+  remark?: string | null;
+}
+
+interface FinancingAllocation {
+  allocatedPrincipalAmount: number;
+  allocationRatioBps?: number | null;
+  allocationStatus: string;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  financingInstrument?: FinancingInstrumentSummary | null;
+  id: string;
+  remark?: string | null;
+}
+
+interface CapitalStructurePreview {
+  acquisitionMode?: string | null;
+  activeCapitalEvents?: CapitalEvent[];
+  activeFinancingAllocations?: FinancingAllocation[];
+  annualDebtInterestAmount?: number | null;
+  capitalCoverageAmount?: number | null;
+  capitalCoverageIncomplete?: boolean;
+  capitalCoverageRatio?: number | null;
+  debtPrincipalAmount?: number | null;
+  equityCapitalAmount?: number | null;
+  financingInstruments?: FinancingInstrumentSummary[];
+  missingReasons?: string[];
+  monthlyDebtInterestAmount?: number | null;
+  purchasePriceAmount?: number | null;
+  roeDataReady?: boolean;
+}
+
+interface CapitalEventValues {
+  acquisitionMode?: string | null;
+  debtPrincipalAmountYuan?: number | null;
+  effectiveFrom: Dayjs;
+  effectiveTo?: Dayjs | null;
+  equityCapitalAmountYuan?: number | null;
+  eventType: string;
+  externalOwnerName?: string | null;
+  financingInstrumentId?: string | null;
+  lessorName?: string | null;
+  managedOwnerName?: string | null;
+  remark?: string | null;
+}
+
+interface RevenueShareRule {
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  fixedMonthlyAmount?: number | null;
+  id: string;
+  minimumGuaranteeAmount?: number | null;
+  ownerContact?: string | null;
+  ownerName?: string | null;
+  ownerShareBps?: number | null;
+  platformShareBps?: number | null;
+  remark?: string | null;
+  ruleNo: string;
+  ruleStatus: string;
+  ruleType: string;
+  settlementCycle: string;
+  shareBasis: string;
+}
+
+interface RevenueShareRuleValues {
+  effectiveFrom: Dayjs;
+  fixedMonthlyAmountYuan?: number | null;
+  minimumGuaranteeAmountYuan?: number | null;
+  ownerContact?: string | null;
+  ownerName?: string | null;
+  ownerSharePercent?: number | null;
+  platformSharePercent?: number | null;
+  remark?: string | null;
+  ruleType: string;
+  settlementCycle?: string | null;
+  shareBasis: string;
+}
+
+interface DeactivateRevenueShareRuleValues {
+  effectiveTo: Dayjs;
+  remark?: string | null;
+}
+
+interface RevenueSharePreviewValues {
+  endDate: Dayjs;
+  startDate: Dayjs;
+}
+
+interface RevenueSharePreview {
+  preview: {
+    fixedCostAmount?: number | null;
+    ownerShareAmount?: number | null;
+    platformShareAmount?: number | null;
+    previewSupported: boolean;
+    shareBaseAmount?: number | null;
+    unsupportedReason?: string | null;
+    warnings?: string[];
+  } | null;
+  rule?: RevenueShareRule | null;
+}
+
 const salePriceStatusColors: Record<string, string> = {
   EFFECTIVE: "green",
   EXPIRED: "default",
@@ -165,6 +314,18 @@ const batteryUsageTypeOptions = [
   { label: "电池买断", value: "BUYOUT" },
   { label: "BaaS / 电池租用", value: "BAAS" }
 ];
+
+const acquisitionModeOptions = optionsFromLabels(VEHICLE_ACQUISITION_MODE_LABELS);
+const capitalEventTypeOptions = optionsFromLabels(VEHICLE_CAPITAL_EVENT_TYPE_LABELS);
+const revenueShareRuleTypeOptions = optionsFromLabels(REVENUE_SHARE_RULE_TYPE_LABELS);
+const revenueShareBasisOptions = optionsFromLabels(REVENUE_SHARE_BASIS_LABELS);
+const revenueShareSettlementCycleOptions = optionsFromLabels(REVENUE_SHARE_SETTLEMENT_CYCLE_LABELS);
+const financingCapitalEventTypes = new Set([
+  "ADD_DEBT_FINANCING",
+  "REFINANCE",
+  "EARLY_SETTLEMENT",
+  "FINANCING_RELEASE"
+]);
 
 const returnReinitSourceStatuses = new Set(["RETURNED", "MAINTENANCE"]);
 
@@ -269,8 +430,16 @@ export default function VehiclesPage() {
   const [initializeForm] = Form.useForm<InitializeSalePriceValues>();
   const [reviewForm] = Form.useForm<ReviewSalePriceValues>();
   const [statusForm] = Form.useForm<StatusValues>();
+  const [capitalEventForm] = Form.useForm<CapitalEventValues>();
+  const [revenueShareRuleForm] = Form.useForm<RevenueShareRuleValues>();
+  const [deactivateShareRuleForm] = Form.useForm<DeactivateRevenueShareRuleValues>();
+  const [revenueSharePreviewForm] = Form.useForm<RevenueSharePreviewValues>();
   const [activeTab, setActiveTab] = useState("vehicles");
+  const [capitalEvents, setCapitalEvents] = useState<CapitalEvent[]>([]);
+  const [capitalEventOpen, setCapitalEventOpen] = useState(false);
+  const [capitalStructure, setCapitalStructure] = useState<CapitalStructurePreview | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [deactivatingShareRule, setDeactivatingShareRule] = useState<RevenueShareRule | null>(null);
   const [detailVehicle, setDetailVehicle] = useState<Vehicle | null>(null);
   const [dueReviews, setDueReviews] = useState<Vehicle[]>([]);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
@@ -280,10 +449,19 @@ export default function VehiclesPage() {
   const [initializingVehicle, setInitializingVehicle] = useState<Vehicle | null>(null);
   const [loading, setLoading] = useState(false);
   const [reviewingVehicle, setReviewingVehicle] = useState<Vehicle | null>(null);
+  const [revenueSharePreview, setRevenueSharePreview] = useState<RevenueSharePreview | null>(null);
+  const [revenueShareRules, setRevenueShareRules] = useState<RevenueShareRule[]>([]);
+  const [revenueShareRuleOpen, setRevenueShareRuleOpen] = useState(false);
   const [statusVehicle, setStatusVehicle] = useState<Vehicle | null>(null);
+  const [vehicleFinancialLoading, setVehicleFinancialLoading] = useState(false);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const capitalEventType = Form.useWatch("eventType", capitalEventForm);
+  const revenueShareRuleType = Form.useWatch("ruleType", revenueShareRuleForm);
+  const canViewCapitalStructure = permissions.has("capital_structure:view") || permissions.has("vehicle:view") || permissions.has("report:asset");
+  const canViewRevenueShareRules = permissions.has("revenue_share:view") || permissions.has("vehicle:view");
+  const canViewRevenueSharePreview = permissions.has("revenue_share:view") || permissions.has("report:asset");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -306,6 +484,52 @@ export default function VehiclesPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const loadVehicleFinancialData = useCallback(
+    async (vehicleId: string) => {
+      setVehicleFinancialLoading(true);
+      try {
+        const previewValues = revenueSharePreviewForm.getFieldsValue();
+        const startDate = previewValues.startDate ?? dayjs().startOf("month");
+        const endDate = previewValues.endDate ?? dayjs().endOf("month");
+        revenueSharePreviewForm.setFieldsValue({ endDate, startDate });
+
+        const [nextCapitalStructure, nextCapitalEvents, nextRevenueShareRules, nextRevenueSharePreview] =
+          await Promise.all([
+            canViewCapitalStructure
+              ? apiFetch<CapitalStructurePreview>(`/vehicles/${vehicleId}/capital-structure`)
+              : Promise.resolve(null),
+            canViewCapitalStructure
+              ? apiFetch<CapitalEvent[]>(`/vehicles/${vehicleId}/capital-events`)
+              : Promise.resolve([]),
+            canViewRevenueShareRules
+              ? apiFetch<RevenueShareRule[]>(`/vehicles/${vehicleId}/revenue-share-rules`)
+              : Promise.resolve([]),
+            canViewRevenueSharePreview
+              ? apiFetch<RevenueSharePreview>(
+                  `/vehicles/${vehicleId}/revenue-share-preview?startDate=${startDate.format("YYYY-MM-DD")}&endDate=${endDate.format("YYYY-MM-DD")}`
+                )
+              : Promise.resolve(null)
+          ]);
+
+        setCapitalStructure(nextCapitalStructure);
+        setCapitalEvents(nextCapitalEvents);
+        setRevenueShareRules(nextRevenueShareRules);
+        setRevenueSharePreview(nextRevenueSharePreview);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+      } finally {
+        setVehicleFinancialLoading(false);
+      }
+    },
+    [
+      canViewCapitalStructure,
+      canViewRevenueSharePreview,
+      canViewRevenueShareRules,
+      message,
+      revenueSharePreviewForm
+    ]
+  );
 
   const columns = useMemo(
     () => buildVehicleColumns(openDetail, openEditVehicle, openInitialize, openReview, openHistory, openStatus, relistVehicle, permissions),
@@ -358,6 +582,15 @@ export default function VehiclesPage() {
 
   function openDetail(vehicle: Vehicle) {
     setDetailVehicle(vehicle);
+    setCapitalStructure(null);
+    setCapitalEvents([]);
+    setRevenueShareRules([]);
+    setRevenueSharePreview(null);
+    revenueSharePreviewForm.setFieldsValue({
+      endDate: dayjs().endOf("month"),
+      startDate: dayjs().startOf("month")
+    });
+    void loadVehicleFinancialData(vehicle.id);
   }
 
   function openEditVehicle(vehicle: Vehicle) {
@@ -525,6 +758,146 @@ export default function VehiclesPage() {
     }
   }
 
+  function openCapitalEventModal() {
+    capitalEventForm.resetFields();
+    capitalEventForm.setFieldsValue({
+      eventType: "INITIAL_EQUITY_PURCHASE",
+      effectiveFrom: dayjs()
+    });
+    setCapitalEventOpen(true);
+  }
+
+  async function saveCapitalEvent(values: CapitalEventValues) {
+    if (!detailVehicle) {
+      return;
+    }
+
+    try {
+      await apiFetch(`/vehicles/${detailVehicle.id}/capital-events`, {
+        body: JSON.stringify({
+          acquisitionMode: values.acquisitionMode,
+          debtPrincipalAmount: toCentAmount(values.debtPrincipalAmountYuan),
+          effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
+          effectiveTo: values.effectiveTo?.format("YYYY-MM-DD"),
+          equityCapitalAmount: toCentAmount(values.equityCapitalAmountYuan),
+          eventType: values.eventType,
+          externalOwnerName: values.externalOwnerName,
+          financingInstrumentId: values.financingInstrumentId,
+          lessorName: values.lessorName,
+          managedOwnerName: values.managedOwnerName,
+          remark: values.remark
+        }),
+        method: "POST"
+      });
+      void message.success("资本事件已新增");
+      setCapitalEventOpen(false);
+      capitalEventForm.resetFields();
+      await loadVehicleFinancialData(detailVehicle.id);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  function openRevenueShareRuleModal() {
+    revenueShareRuleForm.resetFields();
+    revenueShareRuleForm.setFieldsValue({
+      effectiveFrom: dayjs(),
+      ownerSharePercent: 30,
+      platformSharePercent: 70,
+      ruleType: "REVENUE_SHARE",
+      settlementCycle: "MONTHLY",
+      shareBasis: "RENTAL_PAID"
+    });
+    setRevenueShareRuleOpen(true);
+  }
+
+  async function saveRevenueShareRule(values: RevenueShareRuleValues) {
+    if (!detailVehicle) {
+      return;
+    }
+
+    try {
+      await apiFetch(`/vehicles/${detailVehicle.id}/revenue-share-rules`, {
+        body: JSON.stringify({
+          effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
+          fixedMonthlyAmount: toCentAmount(values.fixedMonthlyAmountYuan),
+          minimumGuaranteeAmount: toCentAmount(values.minimumGuaranteeAmountYuan),
+          ownerContact: values.ownerContact,
+          ownerName: values.ownerName,
+          ownerShareBps: percentToBps(values.ownerSharePercent),
+          platformShareBps: percentToBps(values.platformSharePercent),
+          remark: values.remark,
+          ruleType: values.ruleType,
+          settlementCycle: values.settlementCycle,
+          shareBasis: values.shareBasis
+        }),
+        method: "POST"
+      });
+      void message.success("分润规则已新增");
+      setRevenueShareRuleOpen(false);
+      revenueShareRuleForm.resetFields();
+      await loadVehicleFinancialData(detailVehicle.id);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  function openDeactivateShareRule(rule: RevenueShareRule) {
+    setDeactivatingShareRule(rule);
+    deactivateShareRuleForm.resetFields();
+    deactivateShareRuleForm.setFieldsValue({ effectiveTo: dayjs() });
+  }
+
+  async function deactivateRevenueShareRule() {
+    if (!detailVehicle || !deactivatingShareRule) {
+      return;
+    }
+
+    const values = await deactivateShareRuleForm.validateFields();
+    Modal.confirm({
+      cancelText: "取消",
+      content: "确认停用该分润规则？",
+      okText: "确认停用",
+      onOk: async () => {
+        try {
+          await apiFetch(`/vehicles/${detailVehicle.id}/revenue-share-rules/${deactivatingShareRule.id}/deactivate`, {
+            body: JSON.stringify({
+              effectiveTo: values.effectiveTo.format("YYYY-MM-DD"),
+              remark: values.remark
+            }),
+            method: "POST"
+          });
+          void message.success("分润规则已停用");
+          setDeactivatingShareRule(null);
+          deactivateShareRuleForm.resetFields();
+          await loadVehicleFinancialData(detailVehicle.id);
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        }
+      },
+      title: "停用分润规则"
+    });
+  }
+
+  async function refreshRevenueSharePreview() {
+    if (!detailVehicle) {
+      return;
+    }
+
+    const values = await revenueSharePreviewForm.validateFields();
+    try {
+      setVehicleFinancialLoading(true);
+      const nextPreview = await apiFetch<RevenueSharePreview>(
+        `/vehicles/${detailVehicle.id}/revenue-share-preview?startDate=${values.startDate.format("YYYY-MM-DD")}&endDate=${values.endDate.format("YYYY-MM-DD")}`
+      );
+      setRevenueSharePreview(nextPreview);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setVehicleFinancialLoading(false);
+    }
+  }
+
   async function relistVehicle(vehicle: Vehicle) {
     try {
       await apiFetch<Vehicle>(`/vehicles/${vehicle.id}/update-status`, {
@@ -664,7 +1037,7 @@ export default function VehiclesPage() {
         onCancel={() => setDetailVehicle(null)}
         open={Boolean(detailVehicle)}
         title={detailVehicle ? `${detailVehicle.vehicleNo} 车辆详情` : "车辆详情"}
-        width={760}
+        width={1120}
       >
         {detailVehicle ? (
           <Space orientation="vertical" size={12} style={{ width: "100%" }}>
@@ -688,6 +1061,7 @@ export default function VehiclesPage() {
                 { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
                 { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
                 { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
+                { label: "取得方式", children: labelOf(VEHICLE_ACQUISITION_MODE_LABELS, detailVehicle.acquisitionMode) },
                 { label: "保险有效期", children: formatInsurancePeriod(detailVehicle) },
                 { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
                 { label: "当前里程", children: `${detailVehicle.currentMileageKm.toLocaleString("zh-CN")} km` },
@@ -697,8 +1071,154 @@ export default function VehiclesPage() {
                 { label: "备注", children: detailVehicle.remark ?? "-" }
               ]}
             />
+            <VehicleCapitalStructureBlock
+              capitalStructure={capitalStructure}
+              loading={vehicleFinancialLoading}
+            />
+            <VehicleCapitalEventsBlock
+              capitalEvents={capitalEvents}
+              loading={vehicleFinancialLoading}
+              onCreate={openCapitalEventModal}
+              permissions={permissions}
+            />
+            <VehicleRevenueShareRulesBlock
+              loading={vehicleFinancialLoading}
+              onCreate={openRevenueShareRuleModal}
+              onDeactivate={openDeactivateShareRule}
+              permissions={permissions}
+              rules={revenueShareRules}
+            />
+            <VehicleRevenueSharePreviewBlock
+              form={revenueSharePreviewForm}
+              loading={vehicleFinancialLoading}
+              onRefresh={refreshRevenueSharePreview}
+              permissions={permissions}
+              preview={revenueSharePreview}
+            />
           </Space>
         ) : null}
+      </Modal>
+
+      <Modal
+        destroyOnHidden
+        okText="保存"
+        onCancel={() => setCapitalEventOpen(false)}
+        onOk={() => capitalEventForm.submit()}
+        open={capitalEventOpen}
+        title="新增资本事件"
+        width={720}
+      >
+        <Form<CapitalEventValues> form={capitalEventForm} layout="vertical" onFinish={saveCapitalEvent}>
+          <Form.Item label="事件类型" name="eventType" rules={[{ required: true, message: "请选择事件类型" }]}>
+            <Select options={capitalEventTypeOptions} />
+          </Form.Item>
+          <Form.Item label="生效日期" name="effectiveFrom" rules={[{ required: true, message: "请选择生效日期" }]}>
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="结束日期" name="effectiveTo">
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="取得方式" name="acquisitionMode">
+            <Select allowClear options={acquisitionModeOptions} />
+          </Form.Item>
+          <Form.Item
+            label="融资工具 ID"
+            name="financingInstrumentId"
+            rules={[{ required: financingCapitalEventTypes.has(capitalEventType ?? ""), message: "请输入融资工具 ID" }]}
+          >
+            <Input placeholder="融资类事件必填" />
+          </Form.Item>
+          <Form.Item label="自有资金金额（元）" name="equityCapitalAmountYuan">
+            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="债务本金金额（元）" name="debtPrincipalAmountYuan">
+            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="外部车主名称" name="externalOwnerName">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item label="出租方名称" name="lessorName">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item label="托管方名称" name="managedOwnerName">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        destroyOnHidden
+        okText="保存"
+        onCancel={() => setRevenueShareRuleOpen(false)}
+        onOk={() => revenueShareRuleForm.submit()}
+        open={revenueShareRuleOpen}
+        title="新增分润规则"
+        width={720}
+      >
+        <Form<RevenueShareRuleValues> form={revenueShareRuleForm} layout="vertical" onFinish={saveRevenueShareRule}>
+          <Form.Item label="规则类型" name="ruleType" rules={[{ required: true, message: "请选择规则类型" }]}>
+            <Select options={revenueShareRuleTypeOptions} />
+          </Form.Item>
+          <Form.Item label="分润基础" name="shareBasis" rules={[{ required: true, message: "请选择分润基础" }]}>
+            <Select options={revenueShareBasisOptions} />
+          </Form.Item>
+          <Form.Item label="外部车主名称" name="ownerName">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item label="外部车主联系方式" name="ownerContact">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item
+            label="车主分成比例（%）"
+            name="ownerSharePercent"
+            rules={[{ required: revenueShareRuleType === "REVENUE_SHARE", message: "请输入车主分成比例" }]}
+          >
+            <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="平台分成比例（%）" name="platformSharePercent">
+            <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            label="固定月金额（元）"
+            name="fixedMonthlyAmountYuan"
+            rules={[{ required: revenueShareRuleType === "FIXED_RENT", message: "请输入固定月金额" }]}
+          >
+            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="最低保底金额（元）" name="minimumGuaranteeAmountYuan">
+            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="结算周期" name="settlementCycle">
+            <Select options={revenueShareSettlementCycleOptions} />
+          </Form.Item>
+          <Form.Item label="生效日期" name="effectiveFrom" rules={[{ required: true, message: "请选择生效日期" }]}>
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        destroyOnHidden
+        okText="停用"
+        onCancel={() => setDeactivatingShareRule(null)}
+        onOk={deactivateRevenueShareRule}
+        open={Boolean(deactivatingShareRule)}
+        title="停用分润规则"
+      >
+        <Form<DeactivateRevenueShareRuleValues> form={deactivateShareRuleForm} layout="vertical">
+          <Form.Item label="停用日期" name="effectiveTo" rules={[{ required: true, message: "请选择停用日期" }]}>
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
       </Modal>
 
       <Modal
@@ -892,7 +1412,7 @@ function VehicleTable({
       dataSource={rows}
       loading={loading}
       rowKey="id"
-      scroll={{ x: 1640 }}
+      scroll={{ x: 1830 }}
     />
   );
 }
@@ -930,6 +1450,262 @@ function HistoryTable({
   );
 }
 
+function statusTag(labels: Record<string, string>, value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  const color = value === "ACTIVE" ? "green" : value === "RELEASED" || value === "INACTIVE" ? "blue" : "default";
+  return <Tag color={color}>{labelOf(labels, value)}</Tag>;
+}
+
+function financingInstrumentText(instrument?: FinancingInstrumentSummary | null, instrumentId?: string | null) {
+  if (!instrument) {
+    return instrumentId ?? "-";
+  }
+
+  return [instrument.instrumentNo, instrument.lenderName].filter(Boolean).join(" / ") || instrument.id;
+}
+
+function VehicleCapitalStructureBlock({
+  capitalStructure,
+  loading
+}: Readonly<{
+  capitalStructure: CapitalStructurePreview | null;
+  loading: boolean;
+}>) {
+  if (!capitalStructure) {
+    return <Alert showIcon title={loading ? "正在加载资本结构" : "尚未录入资本结构数据"} type="info" />;
+  }
+
+  const missingReasons = capitalStructure.missingReasons ?? [];
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <Typography.Title level={5} style={{ margin: 0 }}>
+        资本结构
+      </Typography.Title>
+      {missingReasons.length > 0 ? (
+        <Alert message={missingReasons.join("；")} showIcon type="warning" />
+      ) : null}
+      <Descriptions
+        bordered
+        column={3}
+        items={[
+          { label: "取得方式", children: labelOf(VEHICLE_ACQUISITION_MODE_LABELS, capitalStructure.acquisitionMode) },
+          { label: "自有资金金额", children: formatCapitalYuan(capitalStructure.equityCapitalAmount) },
+          { label: "债务本金金额", children: formatCapitalYuan(capitalStructure.debtPrincipalAmount) },
+          { label: "资本覆盖金额", children: formatCapitalYuan(capitalStructure.capitalCoverageAmount) },
+          { label: "资本覆盖率", children: formatRatio(capitalStructure.capitalCoverageRatio) },
+          { label: "年化债务利息试算", children: formatCapitalYuan(capitalStructure.annualDebtInterestAmount) },
+          { label: "月度债务利息试算", children: formatCapitalYuan(capitalStructure.monthlyDebtInterestAmount) },
+          { label: "ROE 数据是否完整", children: capitalStructure.roeDataReady ? <Tag color="green">完整</Tag> : <Tag color="orange">待补充</Tag> },
+          {
+            label: "融资工具列表",
+            children:
+              capitalStructure.financingInstruments?.map((instrument) => instrument.instrumentNo).filter(Boolean).join("，") || "-"
+          }
+        ]}
+      />
+    </Space>
+  );
+}
+
+function VehicleCapitalEventsBlock({
+  capitalEvents,
+  loading,
+  onCreate,
+  permissions
+}: Readonly<{
+  capitalEvents: CapitalEvent[];
+  loading: boolean;
+  onCreate: () => void;
+  permissions: ReadonlySet<string>;
+}>) {
+  const columns: ColumnsType<CapitalEvent> = [
+    { dataIndex: "eventNo", title: "事件编号", width: 190 },
+    {
+      dataIndex: "eventType",
+      render: (value: string) => labelOf(VEHICLE_CAPITAL_EVENT_TYPE_LABELS, value),
+      title: "事件类型",
+      width: 150
+    },
+    {
+      dataIndex: "eventStatus",
+      render: (value: string) => statusTag(VEHICLE_CAPITAL_EVENT_STATUS_LABELS, value),
+      title: "状态",
+      width: 100
+    },
+    { dataIndex: "effectiveFrom", render: formatDate, title: "生效日期", width: 120 },
+    { dataIndex: "effectiveTo", render: formatDate, title: "结束日期", width: 120 },
+    { render: (_, record) => financingInstrumentText(record.financingInstrument, record.financingInstrumentId), title: "关联融资工具", width: 220 },
+    { dataIndex: "equityCapitalAmount", render: formatCapitalYuan, title: "自有资金金额", width: 140 },
+    { dataIndex: "debtPrincipalAmount", render: formatCapitalYuan, title: "债务本金金额", width: 140 },
+    { dataIndex: "remark", render: (value: string | null) => value ?? "-", title: "备注", width: 180 }
+  ];
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <Space align="center" style={{ justifyContent: "space-between", width: "100%" }}>
+        <Typography.Title level={5} style={{ margin: 0 }}>
+          资本事件
+        </Typography.Title>
+        <ActionButton onClick={onCreate} permission="capital_structure:manage" permissions={permissions} size="small">
+          新增资本事件
+        </ActionButton>
+      </Space>
+      <Table columns={columns} dataSource={capitalEvents} loading={loading} pagination={false} rowKey="id" scroll={{ x: 1260 }} size="small" />
+    </Space>
+  );
+}
+
+function VehicleRevenueShareRulesBlock({
+  loading,
+  onCreate,
+  onDeactivate,
+  permissions,
+  rules
+}: Readonly<{
+  loading: boolean;
+  onCreate: () => void;
+  onDeactivate: (rule: RevenueShareRule) => void;
+  permissions: ReadonlySet<string>;
+  rules: RevenueShareRule[];
+}>) {
+  const columns: ColumnsType<RevenueShareRule> = [
+    { dataIndex: "ruleNo", title: "规则编号", width: 190 },
+    {
+      dataIndex: "ruleType",
+      render: (value: string) => labelOf(REVENUE_SHARE_RULE_TYPE_LABELS, value),
+      title: "规则类型",
+      width: 150
+    },
+    {
+      dataIndex: "ruleStatus",
+      render: (value: string) => statusTag(REVENUE_SHARE_RULE_STATUS_LABELS, value),
+      title: "状态",
+      width: 100
+    },
+    {
+      dataIndex: "shareBasis",
+      render: (value: string) => labelOf(REVENUE_SHARE_BASIS_LABELS, value),
+      title: "分润基础",
+      width: 130
+    },
+    { dataIndex: "ownerName", render: (value: string | null) => value ?? "-", title: "外部车主", width: 150 },
+    { dataIndex: "ownerShareBps", render: formatPercentFromBps, title: "车主分成比例", width: 130 },
+    { dataIndex: "platformShareBps", render: formatPercentFromBps, title: "平台分成比例", width: 130 },
+    { dataIndex: "fixedMonthlyAmount", render: formatCapitalYuan, title: "固定月金额", width: 130 },
+    { dataIndex: "minimumGuaranteeAmount", render: formatCapitalYuan, title: "最低保底金额", width: 140 },
+    {
+      dataIndex: "settlementCycle",
+      render: (value: string) => labelOf(REVENUE_SHARE_SETTLEMENT_CYCLE_LABELS, value),
+      title: "结算周期",
+      width: 120
+    },
+    { dataIndex: "effectiveFrom", render: formatDate, title: "生效日期", width: 120 },
+    { dataIndex: "effectiveTo", render: formatDate, title: "结束日期", width: 120 },
+    { dataIndex: "remark", render: (value: string | null) => value ?? "-", title: "备注", width: 180 },
+    {
+      fixed: "right",
+      render: (_, record) => (
+        <ActionButton
+          allowed={record.ruleStatus === "ACTIVE"}
+          disabledReason="仅生效中的分润规则可以停用"
+          onClick={() => onDeactivate(record)}
+          permission="revenue_share:manage"
+          permissions={permissions}
+          size="small"
+        >
+          停用
+        </ActionButton>
+      ),
+      title: "操作",
+      width: 100
+    }
+  ];
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <Space align="center" style={{ justifyContent: "space-between", width: "100%" }}>
+        <Typography.Title level={5} style={{ margin: 0 }}>
+          分润规则
+        </Typography.Title>
+        <ActionButton onClick={onCreate} permission="revenue_share:manage" permissions={permissions} size="small">
+          新增分润规则
+        </ActionButton>
+      </Space>
+      <Table columns={columns} dataSource={rules} loading={loading} pagination={false} rowKey="id" scroll={{ x: 1800 }} size="small" />
+    </Space>
+  );
+}
+
+function VehicleRevenueSharePreviewBlock({
+  form,
+  loading,
+  onRefresh,
+  permissions,
+  preview
+}: Readonly<{
+  form: FormInstance<RevenueSharePreviewValues>;
+  loading: boolean;
+  onRefresh: () => void;
+  permissions: ReadonlySet<string>;
+  preview: RevenueSharePreview | null;
+}>) {
+  const previewData = preview?.preview;
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <Space align="center" style={{ justifyContent: "space-between", width: "100%" }}>
+        <Typography.Title level={5} style={{ margin: 0 }}>
+          分润试算
+        </Typography.Title>
+        <Form form={form} layout="inline">
+          <Form.Item label="开始日期" name="startDate" rules={[{ required: true, message: "请选择开始日期" }]}>
+            <DatePicker />
+          </Form.Item>
+          <Form.Item label="结束日期" name="endDate" rules={[{ required: true, message: "请选择结束日期" }]}>
+            <DatePicker />
+          </Form.Item>
+          <Form.Item>
+            <ActionButton
+              allowed={permissions.has("revenue_share:view") || permissions.has("report:asset")}
+              disabledReason="无分润试算查看权限"
+              loading={loading}
+              onClick={onRefresh}
+              size="small"
+            >
+              刷新试算
+            </ActionButton>
+          </Form.Item>
+        </Form>
+      </Space>
+      {previewData ? (
+        <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+          {!previewData.previewSupported && previewData.unsupportedReason ? (
+            <Alert message={previewData.unsupportedReason} showIcon type="warning" />
+          ) : null}
+          {previewData.warnings?.length ? <Alert message={previewData.warnings.join("；")} showIcon type="warning" /> : null}
+          <Descriptions
+            bordered
+            column={3}
+            items={[
+              { label: "是否支持试算", children: previewData.previewSupported ? <Tag color="green">支持</Tag> : <Tag color="orange">暂不支持</Tag> },
+              { label: "分润基础金额", children: formatCapitalYuan(previewData.shareBaseAmount) },
+              { label: "固定成本金额", children: formatCapitalYuan(previewData.fixedCostAmount) },
+              { label: "车主分润金额", children: formatCapitalYuan(previewData.ownerShareAmount) },
+              { label: "平台留存金额", children: formatCapitalYuan(previewData.platformShareAmount) },
+              { label: "不支持原因", children: previewData.unsupportedReason ?? "-" }
+            ]}
+          />
+        </Space>
+      ) : (
+        <Alert showIcon title="尚无可展示的分润试算" type="info" />
+      )}
+    </Space>
+  );
+}
+
 function buildVehicleColumns(
   openDetail: (vehicle: Vehicle) => void,
   openEdit: (vehicle: Vehicle) => void,
@@ -946,6 +1722,7 @@ function buildVehicleColumns(
     { render: (_, record) => vehicleModelText(record), title: "车型", width: 220 },
     { dataIndex: "batteryCapacityKwh", render: formatKwh, title: "电池容量", width: 120 },
     { render: (_, record) => batteryUsageTypeLabel(record), title: "电池使用方式", width: 140 },
+    { dataIndex: "acquisitionMode", render: (value: string | null) => labelOf(VEHICLE_ACQUISITION_MODE_LABELS, value), title: "取得方式", width: 190 },
     { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 140 },
     { render: (_, record) => formatInsurancePeriod(record), title: "保险有效期", width: 230 },
     { dataIndex: "currentSalePriceReviewedAt", render: formatDateTime, title: "最近复核时间", width: 170 },

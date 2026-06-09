@@ -155,7 +155,11 @@ permissionRows.push(
   ["capital_structure:view", "查看车辆资本结构", "capital_structure", "view"],
   ["capital_structure:manage", "管理车辆资本结构", "capital_structure", "manage"],
   ["financing:view", "查看融资工具", "financing", "view"],
-  ["financing:manage", "管理融资工具", "financing", "manage"]
+  ["financing:manage", "管理融资工具", "financing", "manage"],
+  ["revenue_right:view", "查看收益权归属", "revenue_right", "view"],
+  ["revenue_right:manage", "管理收益权归属", "revenue_right", "manage"],
+  ["revenue_share:view", "查看托管分润规则", "revenue_share", "view"],
+  ["revenue_share:manage", "管理托管分润规则", "revenue_share", "manage"]
 );
 
 permissionRows.push(
@@ -543,6 +547,14 @@ const financingViewPermissions = ["financing:view"];
 
 const financingManagementPermissions = ["financing:view", "financing:manage"];
 
+const revenueRightViewPermissions = ["revenue_right:view"];
+
+const revenueRightManagementPermissions = ["revenue_right:view", "revenue_right:manage"];
+
+const revenueShareViewPermissions = ["revenue_share:view"];
+
+const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"];
+
 async function main() {
   for (const [code, name, description] of roleRows) {
     await prisma.role.upsert({
@@ -653,6 +665,8 @@ async function main() {
       ...reportAssetPermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
+      ...revenueRightViewPermissions,
+      ...revenueShareViewPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -718,6 +732,8 @@ async function main() {
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         ...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions),
         ...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions),
+        ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
+        ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -760,6 +776,8 @@ async function main() {
       ...vehicleManagementPermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
+      ...revenueRightViewPermissions,
+      ...revenueShareViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,

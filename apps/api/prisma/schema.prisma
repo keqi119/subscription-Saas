@@ -646,6 +646,78 @@ enum FinancingAllocationStatus {
   @@map("financing_allocation_status")
 }
 
+enum RevenueRightAssignmentType {
+  PLEDGE
+  TRANSFER
+  SPV_POOL
+  REVENUE_SHARE
+  OTHER
+
+  @@map("revenue_right_assignment_type")
+}
+
+enum RevenueRightAssignmentStatus {
+  ACTIVE
+  RELEASED
+  CANCELLED
+
+  @@map("revenue_right_assignment_status")
+}
+
+enum RevenueRightTargetType {
+  VEHICLE
+  ORDER
+  RECEIVABLE_BILL
+  VEHICLE_POOL
+
+  @@map("revenue_right_target_type")
+}
+
+enum RevenueRightAssigneeType {
+  FINANCIER
+  SPV
+  MANAGED_OWNER
+  LESSOR
+  PLATFORM
+  OTHER
+
+  @@map("revenue_right_assignee_type")
+}
+
+enum RevenueShareRuleType {
+  REVENUE_SHARE
+  FIXED_RENT
+  MIXED
+
+  @@map("revenue_share_rule_type")
+}
+
+enum RevenueShareRuleStatus {
+  ACTIVE
+  INACTIVE
+  CANCELLED
+
+  @@map("revenue_share_rule_status")
+}
+
+enum RevenueShareBasis {
+  RENTAL_PAID
+  OPERATING_REVENUE
+  GROSS_RECEIVABLE
+  MANUAL
+
+  @@map("revenue_share_basis")
+}
+
+enum RevenueShareSettlementCycle {
+  MONTHLY
+  QUARTERLY
+  ON_RETURN
+  MANUAL
+
+  @@map("revenue_share_settlement_cycle")
+}
+
 enum SalePriceStatus {
   PENDING_INITIALIZE
   EFFECTIVE
@@ -1490,6 +1562,8 @@ model Vehicle {
   assetCostProfiles             VehicleAssetCostProfile[]
   capitalEvents                 VehicleCapitalEvent[]
   financingAllocations          FinancingInstrumentVehicle[]
+  revenueRightAssignments       RevenueRightAssignment[]
+  revenueShareRules             RevenueShareRule[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                   @map("created_by") @db.Uuid
@@ -1611,6 +1685,7 @@ model FinancingInstrument {
 
   vehicles         FinancingInstrumentVehicle[]
   capitalEvents    VehicleCapitalEvent[]
+  revenueRightAssignments RevenueRightAssignment[]
 
   @@index([instrumentType])
   @@index([instrumentStatus])
@@ -1645,6 +1720,80 @@ model FinancingInstrumentVehicle {
   @@index([effectiveFrom])
   @@index([deletedAt])
   @@map("financing_instrument_vehicle")
+}
+
+model RevenueRightAssignment {
+  id                    String                       @id @default(uuid()) @db.Uuid
+  assignmentNo          String                       @unique @map("assignment_no") @db.VarChar(64)
+  assignmentType        RevenueRightAssignmentType   @map("assignment_type")
+  assignmentStatus      RevenueRightAssignmentStatus @default(ACTIVE) @map("assignment_status")
+  targetType            RevenueRightTargetType       @map("target_type")
+  vehicleId             String?                      @map("vehicle_id") @db.Uuid
+  vehicle               Vehicle?                     @relation(fields: [vehicleId], references: [id])
+  orderId               String?                      @map("order_id") @db.Uuid
+  order                 SubscriptionOrder?           @relation(fields: [orderId], references: [id])
+  billId                String?                      @map("bill_id") @db.Uuid
+  bill                  ReceivableBill?              @relation(fields: [billId], references: [id])
+  financingInstrumentId String?                      @map("financing_instrument_id") @db.Uuid
+  financingInstrument   FinancingInstrument?         @relation(fields: [financingInstrumentId], references: [id])
+  assigneeType          RevenueRightAssigneeType     @map("assignee_type")
+  assigneeName          String?                      @map("assignee_name") @db.VarChar(128)
+  priority              Int?
+  shareRatioBps         Int?                         @map("share_ratio_bps")
+  effectiveFrom         DateTime                     @map("effective_from") @db.Date
+  effectiveTo           DateTime?                    @map("effective_to") @db.Date
+  releasedAt            DateTime?                    @map("released_at") @db.Date
+  releaseReason         String?                      @map("release_reason") @db.Text
+  remark                String?                      @db.Text
+  snapshot              Json?
+  createdAt             DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy             String?                      @map("created_by") @db.Uuid
+  updatedBy             String?                      @map("updated_by") @db.Uuid
+  deletedAt             DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([assignmentType])
+  @@index([assignmentStatus])
+  @@index([targetType])
+  @@index([vehicleId])
+  @@index([orderId])
+  @@index([billId])
+  @@index([financingInstrumentId])
+  @@index([deletedAt])
+  @@map("revenue_right_assignment")
+}
+
+model RevenueShareRule {
+  id                     String                       @id @default(uuid()) @db.Uuid
+  ruleNo                 String                       @unique @map("rule_no") @db.VarChar(64)
+  vehicleId              String                       @map("vehicle_id") @db.Uuid
+  vehicle                Vehicle                      @relation(fields: [vehicleId], references: [id])
+  ruleType               RevenueShareRuleType         @map("rule_type")
+  ruleStatus             RevenueShareRuleStatus       @default(ACTIVE) @map("rule_status")
+  shareBasis             RevenueShareBasis            @map("share_basis")
+  ownerName              String?                      @map("owner_name") @db.VarChar(128)
+  ownerContact           String?                      @map("owner_contact") @db.VarChar(128)
+  ownerShareBps          Int?                         @map("owner_share_bps")
+  platformShareBps       Int?                         @map("platform_share_bps")
+  fixedMonthlyAmount     BigInt?                      @map("fixed_monthly_amount")
+  minimumGuaranteeAmount BigInt?                      @map("minimum_guarantee_amount")
+  settlementCycle        RevenueShareSettlementCycle  @default(MONTHLY) @map("settlement_cycle")
+  effectiveFrom          DateTime                     @map("effective_from") @db.Date
+  effectiveTo            DateTime?                    @map("effective_to") @db.Date
+  remark                 String?                      @db.Text
+  snapshot               Json?
+  createdAt              DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                      @map("created_by") @db.Uuid
+  updatedBy              String?                      @map("updated_by") @db.Uuid
+  deletedAt              DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([ruleType])
+  @@index([ruleStatus])
+  @@index([effectiveFrom])
+  @@index([deletedAt])
+  @@map("revenue_share_rule")
 }
 
 model SubscriptionQuote {
@@ -1783,6 +1932,7 @@ model SubscriptionOrder {
   entitlementUsages          OrderEntitlementUsage[]
   contracts                  Contract[]            @relation("OrderContracts")
   changes                    OrderChange[]
+  revenueRightAssignments    RevenueRightAssignment[]
   createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?               @map("created_by") @db.Uuid
@@ -1934,6 +2084,7 @@ model ReceivableBill {
   writeOffs       PaymentWriteOff[]
   depositLedgers  DepositLedger[]
   collectionCaseBills CollectionCaseBill[]
+  revenueRightAssignments RevenueRightAssignment[]
   createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy       String?           @map("created_by") @db.Uuid

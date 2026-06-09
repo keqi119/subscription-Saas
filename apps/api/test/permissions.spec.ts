@@ -17,12 +17,17 @@ import { FinancingController } from "../src/financing/financing.controller";
 import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { ReportController } from "../src/report/report.controller";
+import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
 const CAPITAL_STRUCTURE_VIEW_PERMISSION = "capital_structure:view";
 const CAPITAL_STRUCTURE_MANAGE_PERMISSION = "capital_structure:manage";
 const FINANCING_VIEW_PERMISSION = "financing:view";
 const FINANCING_MANAGE_PERMISSION = "financing:manage";
+const REVENUE_RIGHT_VIEW_PERMISSION = "revenue_right:view";
+const REVENUE_RIGHT_MANAGE_PERMISSION = "revenue_right:manage";
+const REVENUE_SHARE_VIEW_PERMISSION = "revenue_share:view";
+const REVENUE_SHARE_MANAGE_PERMISSION = "revenue_share:manage";
 
 describe("hasRequiredPermissions", () => {
   it("allows requests with every required permission", () => {
@@ -162,6 +167,56 @@ describe("financing instrument permissions", () => {
     ]) {
       expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
         FINANCING_MANAGE_PERMISSION
+      ]);
+    }
+  });
+});
+
+describe("revenue right and sharing permissions", () => {
+  it("requires revenue_right:view for assignment reads", () => {
+    for (const handler of [
+      RevenueRightController.prototype.listAssignments,
+      RevenueRightController.prototype.getAssignment
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        REVENUE_RIGHT_VIEW_PERMISSION
+      ]);
+    }
+  });
+
+  it("requires revenue_right:manage for assignment mutations", () => {
+    for (const handler of [
+      RevenueRightController.prototype.createAssignment,
+      RevenueRightController.prototype.releaseAssignment
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        REVENUE_RIGHT_MANAGE_PERMISSION
+      ]);
+    }
+  });
+
+  it("allows revenue_share:view or vehicle/report permissions for share rule reads and preview", () => {
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_ANY_PERMISSIONS_KEY,
+        RevenueRightController.prototype.listVehicleRevenueShareRules
+      )
+    ).toEqual([REVENUE_SHARE_VIEW_PERMISSION, PermissionCode.VEHICLE_VIEW]);
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_ANY_PERMISSIONS_KEY,
+        RevenueRightController.prototype.getVehicleRevenueSharePreview
+      )
+    ).toEqual([REVENUE_SHARE_VIEW_PERMISSION, PermissionCode.REPORT_ASSET]);
+  });
+
+  it("requires revenue_share:manage for share rule mutations", () => {
+    for (const handler of [
+      RevenueRightController.prototype.createVehicleRevenueShareRule,
+      RevenueRightController.prototype.deactivateVehicleRevenueShareRule
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        REVENUE_SHARE_MANAGE_PERMISSION
       ]);
     }
   });
@@ -705,7 +760,11 @@ describe("seed permission calibration", () => {
       "capital_structure:view",
       "capital_structure:manage",
       "financing:view",
-      "financing:manage"
+      "financing:manage",
+      "revenue_right:view",
+      "revenue_right:manage",
+      "revenue_share:view",
+      "revenue_share:manage"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -895,7 +954,11 @@ describe("seed permission calibration", () => {
       "capital_structure:view",
       "capital_structure:manage",
       "financing:view",
-      "financing:manage"
+      "financing:manage",
+      "revenue_right:view",
+      "revenue_right:manage",
+      "revenue_share:view",
+      "revenue_share:manage"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -904,19 +967,44 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const capitalStructureManagementPermissions = [");
     expect(seedSource).toContain('const financingViewPermissions = ["financing:view"]');
     expect(seedSource).toContain('const financingManagementPermissions = ["financing:view", "financing:manage"]');
+    expect(seedSource).toContain('const revenueRightViewPermissions = ["revenue_right:view"]');
+    expect(seedSource).toContain("const revenueRightManagementPermissions = [");
+    expect(seedSource).toContain('const revenueShareViewPermissions = ["revenue_share:view"]');
+    expect(seedSource).toContain('const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"]');
     expect(seedSource).toContain(
       '...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions)'
     );
     expect(seedSource).toContain(
       '...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions)'
     );
-    expectRolePermissions("OP", ["capital_structure:view", "financing:view"]);
-    expectRolePermissions("GM", ["capital_structure:view", "financing:view"]);
+    expect(seedSource).toContain(
+      '...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions)'
+    );
+    expect(seedSource).toContain(
+      '...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions)'
+    );
+    expectRolePermissions("OP", [
+      "capital_structure:view",
+      "financing:view",
+      "revenue_right:view",
+      "revenue_share:view"
+    ]);
+    expectRolePermissions("GM", [
+      "capital_structure:view",
+      "financing:view",
+      "revenue_right:view",
+      "revenue_share:view"
+    ]);
     expect(roleHasPermission(permissionConstantSource("capitalStructureManagementPermissions"), "capital_structure:manage")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("financingManagementPermissions"), "financing:manage")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("revenueRightManagementPermissions"), "revenue_right:manage")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("revenueShareManagementPermissions"), "revenue_share:manage")).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "capital_structure:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "financing:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "revenue_right:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "revenue_share:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "capital_structure:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "revenue_right:manage")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

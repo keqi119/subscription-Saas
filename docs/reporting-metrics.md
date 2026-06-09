@@ -686,6 +686,93 @@ preview 只是 ROE 数据准备度检查。`roeDataReady = true` 只代表车辆
 - 市场残值样本、残值曲线、AI / ML 残值预测。
 - 正式 ROE、残值敏感性分析或收益试算 API 接入。
 
+## Stage 8.3B 收益权与托管分润口径
+
+Stage 8.3B 新增收益权归属、质押、转让和托管/长租车辆分润规则事实数据层，用于记录订单收入或账单应收的收益权归属关系，以及托管车辆、外部长租车辆在指定期间内的分润或固定成本规则。
+
+本阶段只做后端事实记录和 preview，不计算正式 ROE，不接入资产收益试算 API，不生成真实分润账单，不触发财务入账或会计凭证，不改变订单、车辆、账务状态机。
+
+新增模型：
+
+- `RevenueRightAssignment`：收益权归属、质押、转让或资产池归集记录。
+- `RevenueShareRule`：托管车辆分润、外部长租车辆固定租金或固定成本规则。
+
+`RevenueRightAssignment.targetType` 口径：
+
+- `ORDER`：订单整体收入收益权。
+- `RECEIVABLE_BILL`：具体应收账单收益权。
+- `VEHICLE`：车辆维度收益权或合作归属。
+- `VEHICLE_POOL`：车辆池收益权预留枚举，第一版不实现复杂车辆池模型。
+
+`RevenueRightAssignment.assignmentType` 口径：
+
+- `PLEDGE`：收益权质押，通常需关联 `FinancingInstrument`。
+- `TRANSFER`：收益权转让，通常需关联 `FinancingInstrument`。
+- `SPV_POOL`：SPV / 资产池归集，通常需关联 `FinancingInstrument`。
+- `REVENUE_SHARE`：收益分成归属，主要用于托管或合作车辆。
+- `OTHER`：其他手工口径。
+
+`RevenueShareRule` 用于描述单车分润或固定成本：
+
+- `REVENUE_SHARE`：按收益基数和 `ownerShareBps` 计算外部车主分成。
+- `FIXED_RENT`：按 `fixedMonthlyAmount` 记录外部长租固定成本。
+- `MIXED`：固定成本加收益分成。
+
+分润 preview API：
+
+- `GET /api/vehicles/:id/revenue-share-preview`
+
+第一版支持的 `shareBasis`：
+
+```text
+RENTAL_PAID =
+  FIRST_MONTHLY_FEE.paidAmount
+  + MONTHLY_RENT.paidAmount
+
+OPERATING_REVENUE =
+  FIRST_MONTHLY_FEE.paidAmount
+  + MONTHLY_RENT.paidAmount
+  + DAMAGE_FEE.paidAmount
+  + OTHER.paidAmount
+```
+
+`DEPOSIT` 不参与分润 preview，也不计入 `shareBaseAmount`。
+
+固定成本折算：
+
+```text
+fixedCostAmount =
+  round(fixedMonthlyAmount * 12 / 365 * days)
+```
+
+分润金额：
+
+```text
+ownerShareAmount =
+  shareBaseAmount * ownerShareBps / 10000
+  + fixedCostAmount
+
+platformShareAmount =
+  shareBaseAmount
+  - shareBaseAmount * ownerShareBps / 10000
+  - fixedCostAmount
+```
+
+如果 `platformShareAmount < 0`，preview 返回 warning，提示检查固定成本或分成规则。
+
+暂不支持自动 preview 的 `shareBasis`：
+
+- `GROSS_RECEIVABLE`：应收总额分润口径第一版暂未实现。
+- `MANUAL`：手工分润口径需人工结算，暂不支持自动 preview。
+
+本阶段不处理：
+
+- 收益权现金流归集。
+- 分润账单和真实付款。
+- 应收账款融资还款计划。
+- 托管分润结算台账。
+- 正式 ROE 或收益试算 API 接入。
+
 ## ROA / ROE
 
 当前阶段不计算完整 ROA / ROE。

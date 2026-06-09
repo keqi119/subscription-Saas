@@ -5,11 +5,13 @@ import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorato
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
+  CancelVehicleCapitalEventDto,
   CreateVehicleCapitalEventDto,
   CreateVehicleDto,
   InitializeSalePriceDto,
   ReviewSalePriceDto,
   UpdateVehicleDto,
+  UpdateVehicleCapitalEventDto,
   UpdateVehicleStatusDto,
   UpsertVehicleAssetCostProfileDto
 } from "./dto/vehicle.dto";
@@ -93,6 +95,28 @@ export class VehicleController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.vehicleService.createCapitalEvent(id, dto, request.user, requestContext(request));
+  }
+
+  @Patch("vehicles/:id/capital-events/:eventId")
+  @RequirePermissions(CAPITAL_STRUCTURE_MANAGE_PERMISSION)
+  updateCapitalEvent(
+    @Param("id") id: string,
+    @Param("eventId") eventId: string,
+    @Body() dto: UpdateVehicleCapitalEventDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleService.updateCapitalEvent(id, eventId, dto, request.user, requestContext(request));
+  }
+
+  @Post("vehicles/:id/capital-events/:eventId/cancel")
+  @RequirePermissions(CAPITAL_STRUCTURE_MANAGE_PERMISSION)
+  cancelCapitalEvent(
+    @Param("id") id: string,
+    @Param("eventId") eventId: string,
+    @Body() dto: CancelVehicleCapitalEventDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleService.cancelCapitalEvent(id, eventId, dto, request.user, requestContext(request));
   }
 
   @Get("vehicles/:id/capital-structure")

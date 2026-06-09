@@ -404,7 +404,7 @@ export default function FinancingInstrumentsPage() {
       return;
     }
 
-    try {
+    const saveAllocation = async () => {
       await apiFetch(`/financing-instruments/${detail.id}/vehicles`, {
         body: JSON.stringify({
           allocatedPrincipalAmount,
@@ -419,6 +419,28 @@ export default function FinancingInstrumentsPage() {
       setAllocationModalOpen(false);
       allocationForm.resetFields();
       await Promise.all([loadData(), loadDetail(detail.id)]);
+    };
+
+    const purchasePriceAmount = selectedAllocationVehicle?.purchasePriceAmount;
+    if (purchasePriceAmount && allocatedPrincipalAmount > purchasePriceAmount) {
+      modal.confirm({
+        cancelText: "返回修改",
+        content: "本次分摊本金已超过车辆采购价，请确认是否包含手续费、补充融资、再融资、项目池融资或其他特殊安排。",
+        okText: "确认保存",
+        onOk: async () => {
+          try {
+            await saveAllocation();
+          } catch (error) {
+            void message.error(getErrorMessage(error));
+          }
+        },
+        title: "分摊本金超过车辆采购价"
+      });
+      return;
+    }
+
+    try {
+      await saveAllocation();
     } catch (error) {
       void message.error(getErrorMessage(error));
     }
@@ -822,6 +844,7 @@ export default function FinancingInstrumentsPage() {
             <Alert
               description={
                 <Space orientation="vertical" size={4}>
+                  <Typography.Text>车辆采购价：{formatYuan(selectedAllocationVehicle?.purchasePriceAmount)}</Typography.Text>
                   <Typography.Text>融资工具占用比例：{allocationInstrumentRatioText}</Typography.Text>
                   <Typography.Text>单车融资覆盖率：{allocationVehicleCoverageText}</Typography.Text>
                 </Space>

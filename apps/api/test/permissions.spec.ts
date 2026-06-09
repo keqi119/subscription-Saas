@@ -124,6 +124,14 @@ describe("vehicle capital structure permissions", () => {
     REQUIRED_PERMISSIONS_KEY,
     VehicleController.prototype.createCapitalEvent
   );
+  const updateEventPermissions = Reflect.getMetadata(
+    REQUIRED_PERMISSIONS_KEY,
+    VehicleController.prototype.updateCapitalEvent
+  );
+  const cancelEventPermissions = Reflect.getMetadata(
+    REQUIRED_PERMISSIONS_KEY,
+    VehicleController.prototype.cancelCapitalEvent
+  );
 
   it("allows capital_structure:view, vehicle:view, or report:asset to read capital structure data", () => {
     const expected = [
@@ -138,10 +146,12 @@ describe("vehicle capital structure permissions", () => {
     expect(hasAnyRequiredPermission([PermissionCode.REPORT_ASSET], previewPermissions)).toBe(true);
   });
 
-  it("requires capital_structure:manage to create capital events", () => {
-    expect(createEventPermissions).toEqual([CAPITAL_STRUCTURE_MANAGE_PERMISSION]);
-    expect(hasRequiredPermissions([CAPITAL_STRUCTURE_VIEW_PERMISSION], createEventPermissions)).toBe(false);
-    expect(hasRequiredPermissions([CAPITAL_STRUCTURE_MANAGE_PERMISSION], createEventPermissions)).toBe(true);
+  it("requires capital_structure:manage to create, update, and cancel capital events", () => {
+    for (const permissions of [createEventPermissions, updateEventPermissions, cancelEventPermissions]) {
+      expect(permissions).toEqual([CAPITAL_STRUCTURE_MANAGE_PERMISSION]);
+      expect(hasRequiredPermissions([CAPITAL_STRUCTURE_VIEW_PERMISSION], permissions)).toBe(false);
+      expect(hasRequiredPermissions([CAPITAL_STRUCTURE_MANAGE_PERMISSION], permissions)).toBe(true);
+    }
   });
 });
 

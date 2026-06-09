@@ -224,6 +224,74 @@ describe("VehicleService capital event and capital-structure preview", () => {
     expect(result[0]?.eventNo).toBe(event.eventNo);
   });
 
+  it("updates a vehicle capital event and writes audit log", async () => {
+    const event = makeCapitalEvent();
+    const harness = createVehicleCapitalHarness({ events: [event] });
+
+    const result = await harness.service.updateCapitalEvent(
+      "vehicle-1",
+      event.id,
+      {
+        effectiveFrom: "2026-08-01",
+        equityCapitalAmount: 6000000,
+        eventType: VehicleCapitalEventType.INITIAL_EQUITY_PURCHASE,
+        remark: "更正自有资金金额"
+      },
+      user,
+      context
+    );
+
+    expect(result.effectiveFrom).toEqual(new Date("2026-08-01T00:00:00.000Z"));
+    expect(result.equityCapitalAmount).toBe(6000000);
+    expect(result.remark).toBe("更正自有资金金额");
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ action: AuditAction.UPDATE, entityType: "vehicle_capital_event" })
+    );
+  });
+
+  it("rejects editing a cancelled capital event", async () => {
+    const event = makeCapitalEvent({ eventStatus: VehicleCapitalEventStatus.CANCELLED });
+    const harness = createVehicleCapitalHarness({ events: [event] });
+
+    await expect(
+      harness.service.updateCapitalEvent(
+        "vehicle-1",
+        event.id,
+        { effectiveFrom: "2026-08-01" },
+        user,
+        context
+      )
+    ).rejects.toThrow("不能编辑");
+  });
+
+  it("cancels a vehicle capital event", async () => {
+    const event = makeCapitalEvent();
+    const harness = createVehicleCapitalHarness({ events: [event] });
+
+    const result = await harness.service.cancelCapitalEvent(
+      "vehicle-1",
+      event.id,
+      { remark: "录入错误，作废" },
+      user,
+      context
+    );
+
+    expect(result.eventStatus).toBe(VehicleCapitalEventStatus.CANCELLED);
+    expect(result.remark).toBe("录入错误，作废");
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ action: AuditAction.UPDATE, entityType: "vehicle_capital_event" })
+    );
+  });
+
+  it("does not cancel a vehicle capital event twice", async () => {
+    const event = makeCapitalEvent({ eventStatus: VehicleCapitalEventStatus.CANCELLED });
+    const harness = createVehicleCapitalHarness({ events: [event] });
+
+    await expect(
+      harness.service.cancelCapitalEvent("vehicle-1", event.id, { remark: "重复作废" }, user, context)
+    ).rejects.toThrow("不能重复作废");
+  });
+
   it("returns capital structure preview with acquisition mode and debt basis", async () => {
     const instrument = makeInstrument({ annualRateBps: 600 });
     const allocation = makeAllocation({
@@ -253,6 +321,18 @@ describe("VehicleService capital event and capital-structure preview", () => {
     expect(preview.monthlyDebtInterestAmount).toBe(50000);
     expect(preview.roeDataReady).toBe(false);
     expect(preview.missingReasons).toContain("资本覆盖金额小于车辆采购价。");
+  });
+
+  it("ignores cancelled capital events in capital structure preview", async () => {
+    const harness = createVehicleCapitalHarness({
+      events: [makeCapitalEvent({ equityCapitalAmount: 5000000n, eventStatus: VehicleCapitalEventStatus.CANCELLED })]
+    });
+
+    const preview = await harness.service.getCapitalStructure("vehicle-1");
+
+    expect(preview.activeCapitalEvents).toHaveLength(0);
+    expect(preview.equityCapitalAmount).toBe(16800000);
+    expect(preview.missingReasons).toContain("尚未录入资本事件。");
   });
 
   it("uses OWNED_CASH fallback but marks missing capital event", async () => {
@@ -325,7 +405,35 @@ function createVehicleCapitalHarness(seed: {
         state.events.push(event);
         return event;
       }),
-      findMany: vi.fn(async () => state.events)
+      findFirst: vi.fn(
+        async ({ where }: { where: { deletedAt?: null; id?: string; vehicleId?: string } }) =>
+          state.events.find(
+            (event) =>
+              (where.id === undefined || event.id === where.id) &&
+              (where.vehicleId === undefined || event.vehicleId === where.vehicleId) &&
+              (where.deletedAt === undefined || event.deletedAt === where.deletedAt)
+          ) ?? null
+      ),
+      findMany: vi.fn(async ({ where }: { where?: { deletedAt?: null; eventStatus?: VehicleCapitalEventStatus; vehicleId?: string } } = {}) =>
+        state.events.filter(
+          (event) =>
+            (where?.vehicleId === undefined || event.vehicleId === where.vehicleId) &&
+            (where?.eventStatus === undefined || event.eventStatus === where.eventStatus) &&
+            (where?.deletedAt === undefined || event.deletedAt === where.deletedAt)
+        )
+      ),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+        const index = state.events.findIndex((event) => event.id === where.id);
+        const instrument = state.instruments.find((item) => item.id === data.financingInstrumentId) ?? null;
+        const next = makeCapitalEvent({
+          ...state.events[index],
+          ...data,
+          financingInstrument: instrument,
+          updatedAt: now
+        } as Partial<ReturnType<typeof makeCapitalEvent>>);
+        state.events[index] = next;
+        return next;
+      })
     }
   };
   const auditService = { write: vi.fn(async () => undefined) };

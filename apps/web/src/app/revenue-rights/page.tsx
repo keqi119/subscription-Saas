@@ -25,8 +25,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import {
+  BILL_STATUS_LABELS,
+  BILL_TYPE_LABELS,
   FINANCING_INSTRUMENT_STATUS_LABELS,
   FINANCING_INSTRUMENT_TYPE_LABELS,
+  ORDER_STATUS_LABELS,
   REVENUE_RIGHT_ASSIGNEE_TYPE_LABELS,
   REVENUE_RIGHT_ASSIGNMENT_STATUS_LABELS,
   REVENUE_RIGHT_ASSIGNMENT_TYPE_LABELS,
@@ -60,12 +63,25 @@ interface AssignmentOrder {
   vehicleId?: string | null;
 }
 
+interface OrderOptionRow extends AssignmentOrder {
+  customer?: { mobile?: string | null; name?: string | null } | null;
+  orderStatus?: string | null;
+  vehicleModel?: string | null;
+}
+
 interface AssignmentBill {
   billNo?: string | null;
   billType?: string | null;
   id: string;
   paidAmount?: number | null;
   remainingAmount?: number | null;
+}
+
+interface BillOptionRow extends AssignmentBill {
+  amount?: number | null;
+  billStatus?: string | null;
+  dueDate?: string | null;
+  orderId?: string | null;
 }
 
 interface AssignmentInstrument {
@@ -209,6 +225,23 @@ function vehicleOptionLabel(vehicle: VehicleOptionRow) {
     .join(" / ");
 }
 
+function orderOptionLabel(order: OrderOptionRow) {
+  const statusLabel = order.orderStatus ? labelOf(ORDER_STATUS_LABELS, order.orderStatus) : null;
+  const label = [order.orderNo, order.customer?.name, order.customer?.mobile, order.vehicleModel, statusLabel]
+    .filter(Boolean)
+    .join(" / ");
+  return label || order.id;
+}
+
+function billOptionLabel(bill: BillOptionRow) {
+  const typeLabel = bill.billType ? labelOf(BILL_TYPE_LABELS, bill.billType) : null;
+  const statusLabel = bill.billStatus ? labelOf(BILL_STATUS_LABELS, bill.billStatus) : null;
+  const label = [bill.billNo, typeLabel, statusLabel, formatYuan(bill.amount), formatDate(bill.dueDate)]
+    .filter((value) => value && value !== "-")
+    .join(" / ");
+  return label || bill.id;
+}
+
 function targetObjectText(record: RevenueRightAssignmentRow) {
   if (record.targetType === "ORDER") {
     return `订单：${orderText(record.order, record.orderId)}`;
@@ -246,12 +279,22 @@ export default function RevenueRightsPage() {
   const [releaseTarget, setReleaseTarget] = useState<RevenueRightAssignmentRow | null>(null);
   const [vehicleRows, setVehicleRows] = useState<VehicleOptionRow[]>([]);
   const [vehiclesLoading, setVehiclesLoading] = useState(false);
+  const [orderRows, setOrderRows] = useState<OrderOptionRow[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [filterBillRows, setFilterBillRows] = useState<BillOptionRow[]>([]);
+  const [filterBillsLoading, setFilterBillsLoading] = useState(false);
+  const [assignmentBillRows, setAssignmentBillRows] = useState<BillOptionRow[]>([]);
+  const [assignmentBillsLoading, setAssignmentBillsLoading] = useState(false);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("revenue_right:view");
   const canViewFinancing = permissions.has("financing:view");
   const canViewVehicles = permissions.has("vehicle:view");
+  const canViewOrders = permissions.has("order:view");
+  const canViewBills = permissions.has("billing:view");
   const selectedTargetType = Form.useWatch("targetType", assignmentForm);
   const selectedAssignmentType = Form.useWatch("assignmentType", assignmentForm);
+  const selectedAssignmentOrderId = Form.useWatch("orderId", assignmentForm);
+  const selectedFilterOrderId = Form.useWatch("orderId", filterForm);
   const assignmentNeedsFinancing = financingRequiredTypes.has(selectedAssignmentType ?? "");
   const assignmentShowsShareRatio = assignmentNeedsFinancing || selectedAssignmentType === "REVENUE_SHARE";
   const assignmentShowsPriority = assignmentNeedsFinancing;
@@ -270,6 +313,30 @@ export default function RevenueRightsPage() {
         value: vehicle.id
       })),
     [vehicleRows]
+  );
+  const orderOptions = useMemo(
+    () =>
+      orderRows.map((order) => ({
+        label: orderOptionLabel(order),
+        value: order.id
+      })),
+    [orderRows]
+  );
+  const filterBillOptions = useMemo(
+    () =>
+      filterBillRows.map((bill) => ({
+        label: billOptionLabel(bill),
+        value: bill.id
+      })),
+    [filterBillRows]
+  );
+  const assignmentBillOptions = useMemo(
+    () =>
+      assignmentBillRows.map((bill) => ({
+        label: billOptionLabel(bill),
+        value: bill.id
+      })),
+    [assignmentBillRows]
   );
 
   const loadData = useCallback(async () => {
@@ -328,6 +395,51 @@ export default function RevenueRightsPage() {
     }
   }, [message]);
 
+  const loadOrders = useCallback(async () => {
+    setOrdersLoading(true);
+    try {
+      const result = await apiFetch<OrderOptionRow[]>("/orders");
+      setOrderRows(result);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+      setOrderRows([]);
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, [message]);
+
+  const loadFilterBills = useCallback(
+    async (orderId: string) => {
+      setFilterBillsLoading(true);
+      try {
+        const result = await apiFetch<BillOptionRow[]>(`/orders/${orderId}/bills`);
+        setFilterBillRows(result);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+        setFilterBillRows([]);
+      } finally {
+        setFilterBillsLoading(false);
+      }
+    },
+    [message]
+  );
+
+  const loadAssignmentBills = useCallback(
+    async (orderId: string) => {
+      setAssignmentBillsLoading(true);
+      try {
+        const result = await apiFetch<BillOptionRow[]>(`/orders/${orderId}/bills`);
+        setAssignmentBillRows(result);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+        setAssignmentBillRows([]);
+      } finally {
+        setAssignmentBillsLoading(false);
+      }
+    },
+    [message]
+  );
+
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
       .then(setMe)
@@ -353,13 +465,52 @@ export default function RevenueRightsPage() {
   }, [canViewVehicles, loadVehicles]);
 
   useEffect(() => {
+    if (canViewOrders) {
+      void loadOrders();
+    }
+  }, [canViewOrders, loadOrders]);
+
+  useEffect(() => {
+    filterForm.setFieldValue("billId", undefined);
+    setFilterBillRows([]);
+
+    if (selectedFilterOrderId && canViewBills) {
+      void loadFilterBills(selectedFilterOrderId);
+    }
+  }, [canViewBills, filterForm, loadFilterBills, selectedFilterOrderId]);
+
+  useEffect(() => {
+    if (!assignmentModalOpen || selectedTargetType !== "RECEIVABLE_BILL") {
+      setAssignmentBillRows([]);
+      return;
+    }
+
+    assignmentForm.setFieldValue("billId", undefined);
+    setAssignmentBillRows([]);
+
+    if (selectedAssignmentOrderId && canViewBills) {
+      void loadAssignmentBills(selectedAssignmentOrderId);
+    }
+  }, [
+    assignmentForm,
+    assignmentModalOpen,
+    canViewBills,
+    loadAssignmentBills,
+    selectedAssignmentOrderId,
+    selectedTargetType
+  ]);
+
+  useEffect(() => {
     if (!assignmentModalOpen) {
       return;
     }
 
     assignmentForm.setFieldsValue({
       billId: selectedTargetType === "RECEIVABLE_BILL" ? assignmentForm.getFieldValue("billId") : undefined,
-      orderId: selectedTargetType === "ORDER" ? assignmentForm.getFieldValue("orderId") : undefined,
+      orderId:
+        selectedTargetType === "ORDER" || selectedTargetType === "RECEIVABLE_BILL"
+          ? assignmentForm.getFieldValue("orderId")
+          : undefined,
       vehicleId: selectedTargetType === "VEHICLE" ? assignmentForm.getFieldValue("vehicleId") : undefined
     });
   }, [assignmentForm, assignmentModalOpen, selectedTargetType]);
@@ -557,17 +708,59 @@ export default function RevenueRightsPage() {
           <Form.Item label="目标类型" name="targetType">
             <Select allowClear options={optionsFromLabels(REVENUE_RIGHT_TARGET_TYPE_LABELS)} style={{ width: 150 }} />
           </Form.Item>
-          <Form.Item label="车辆 ID" name="vehicleId">
-            <Input allowClear placeholder="vehicleId" />
+          <Form.Item label="车辆" name="vehicleId">
+            <Select
+              allowClear
+              disabled={!canViewVehicles}
+              loading={vehiclesLoading}
+              optionFilterProp="label"
+              options={vehicleOptions}
+              placeholder={canViewVehicles ? "搜索车辆编号 / 车牌 / VIN / 车型" : "当前账号缺少车辆查看权限"}
+              showSearch
+              style={{ width: 240 }}
+            />
           </Form.Item>
-          <Form.Item label="订单 ID" name="orderId">
-            <Input allowClear placeholder="orderId" />
+          <Form.Item label="订单" name="orderId">
+            <Select
+              allowClear
+              disabled={!canViewOrders}
+              loading={ordersLoading}
+              optionFilterProp="label"
+              options={orderOptions}
+              placeholder={canViewOrders ? "搜索订单号 / 客户 / 车型" : "当前账号缺少订单查看权限"}
+              showSearch
+              style={{ width: 260 }}
+            />
           </Form.Item>
-          <Form.Item label="账单 ID" name="billId">
-            <Input allowClear placeholder="billId" />
+          <Form.Item label="账单" name="billId">
+            <Select
+              allowClear
+              disabled={!canViewBills || !selectedFilterOrderId}
+              loading={filterBillsLoading}
+              optionFilterProp="label"
+              options={filterBillOptions}
+              placeholder={
+                canViewBills
+                  ? selectedFilterOrderId
+                    ? "搜索账单编号 / 类型 / 状态"
+                    : "请先选择订单"
+                  : "当前账号缺少账单查看权限"
+              }
+              showSearch
+              style={{ width: 260 }}
+            />
           </Form.Item>
-          <Form.Item label="融资工具 ID" name="financingInstrumentId">
-            <Input allowClear placeholder="financingInstrumentId" />
+          <Form.Item label="融资工具" name="financingInstrumentId">
+            <Select
+              allowClear
+              disabled={!canViewFinancing}
+              loading={financingInstrumentsLoading}
+              optionFilterProp="label"
+              options={financingInstrumentOptions}
+              placeholder={canViewFinancing ? "搜索融资工具编号 / 资金方 / 合同编号" : "当前账号缺少融资工具查看权限"}
+              showSearch
+              style={{ width: 260 }}
+            />
           </Form.Item>
           <Form.Item label="受让方类型" name="assigneeType">
             <Select allowClear options={optionsFromLabels(REVENUE_RIGHT_ASSIGNEE_TYPE_LABELS)} style={{ width: 150 }} />
@@ -659,29 +852,88 @@ export default function RevenueRightsPage() {
               <Select options={optionsFromLabels(REVENUE_RIGHT_TARGET_TYPE_LABELS)} />
             </Form.Item>
             {selectedTargetType === "VEHICLE" ? (
-              <Form.Item label="车辆" name="vehicleId" rules={[{ required: true, message: "请选择车辆" }]}>
-                {vehicleOptions.length > 0 ? (
+              <>
+                {!canViewVehicles ? (
+                  <Alert
+                    message="当前账号缺少车辆查看权限，无法选择车辆。请使用具备 vehicle:view 权限的账号。"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    type="warning"
+                  />
+                ) : null}
+                <Form.Item label="车辆" name="vehicleId" rules={[{ required: true, message: "请选择车辆" }]}>
                   <Select
+                    disabled={!canViewVehicles}
                     loading={vehiclesLoading}
                     optionFilterProp="label"
                     options={vehicleOptions}
                     placeholder="搜索车辆编号 / 车牌 / VIN / 车型"
                     showSearch
                   />
-                ) : (
-                  <Input placeholder="系统车辆 ID（UUID）" />
-                )}
-              </Form.Item>
+                </Form.Item>
+              </>
             ) : null}
             {selectedTargetType === "ORDER" ? (
-              <Form.Item label="订单 ID" name="orderId" rules={[{ required: true, message: "请输入订单 ID" }]}>
-                <Input placeholder="订单 ID" />
-              </Form.Item>
+              <>
+                {!canViewOrders ? (
+                  <Alert
+                    message="当前账号缺少订单查看权限，无法选择订单。请使用具备 order:view 权限的账号。"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    type="warning"
+                  />
+                ) : null}
+                <Form.Item label="订单" name="orderId" rules={[{ required: true, message: "请选择订单" }]}>
+                  <Select
+                    disabled={!canViewOrders}
+                    loading={ordersLoading}
+                    optionFilterProp="label"
+                    options={orderOptions}
+                    placeholder="搜索订单号 / 客户 / 车型 / 状态"
+                    showSearch
+                  />
+                </Form.Item>
+              </>
             ) : null}
             {selectedTargetType === "RECEIVABLE_BILL" ? (
-              <Form.Item label="账单 ID" name="billId" rules={[{ required: true, message: "请输入账单 ID" }]}>
-                <Input placeholder="账单 ID" />
-              </Form.Item>
+              <>
+                {!canViewOrders ? (
+                  <Alert
+                    message="当前账号缺少订单查看权限，无法先选择账单所属订单。请使用具备 order:view 权限的账号。"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    type="warning"
+                  />
+                ) : null}
+                {!canViewBills ? (
+                  <Alert
+                    message="当前账号缺少账单查看权限，无法选择应收账单。请使用具备 billing:view 权限的账号。"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    type="warning"
+                  />
+                ) : null}
+                <Form.Item label="账单所属订单" name="orderId" rules={[{ required: true, message: "请选择账单所属订单" }]}>
+                  <Select
+                    disabled={!canViewOrders}
+                    loading={ordersLoading}
+                    optionFilterProp="label"
+                    options={orderOptions}
+                    placeholder="搜索订单号 / 客户 / 车型 / 状态"
+                    showSearch
+                  />
+                </Form.Item>
+                <Form.Item label="账单" name="billId" rules={[{ required: true, message: "请选择账单" }]}>
+                  <Select
+                    disabled={!canViewBills || !selectedAssignmentOrderId}
+                    loading={assignmentBillsLoading}
+                    optionFilterProp="label"
+                    options={assignmentBillOptions}
+                    placeholder={selectedAssignmentOrderId ? "搜索账单编号 / 类型 / 状态" : "请先选择账单所属订单"}
+                    showSearch
+                  />
+                </Form.Item>
+              </>
             ) : null}
             {selectedTargetType === "VEHICLE_POOL" ? (
               <Alert
@@ -699,6 +951,7 @@ export default function RevenueRightsPage() {
               >
                 {financingInstrumentOptions.length > 0 ? (
                   <Select
+                    disabled={!canViewFinancing}
                     loading={financingInstrumentsLoading}
                     optionFilterProp="label"
                     options={financingInstrumentOptions}
@@ -706,7 +959,12 @@ export default function RevenueRightsPage() {
                     showSearch
                   />
                 ) : (
-                  <Input placeholder="系统融资工具 ID（UUID）" />
+                  <Select
+                    disabled={!canViewFinancing}
+                    loading={financingInstrumentsLoading}
+                    options={[]}
+                    placeholder={canViewFinancing ? "暂无可选融资工具" : "当前账号缺少融资工具查看权限"}
+                  />
                 )}
               </Form.Item>
             ) : null}

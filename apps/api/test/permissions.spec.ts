@@ -1020,8 +1020,12 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const revenueRightManagementPermissions = [");
     expect(seedSource).toContain('const revenueShareViewPermissions = ["revenue_share:view"]');
     expect(seedSource).toContain('const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"]');
+    expect(seedSource).toContain('["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"]');
+    expect(seedSource).toContain('["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"]');
     expect(seedSource).toContain('["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"]');
     expect(seedSource).toContain('["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"]');
+    expect(seedSource).toContain('const vehicleMenuCodes = ["vehicles", "vehicles.assets"]');
+    expect(seedSource).toContain('const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"]');
     expect(seedSource).toContain('const financingMenuCodes = ["billing.financing_instruments"]');
     expect(seedSource).toContain('const revenueRightMenuCodes = ["billing.revenue_rights"]');
     expect(seedSource).toContain(
@@ -1052,6 +1056,7 @@ describe("seed permission calibration", () => {
     ]);
     for (const roleCode of ["OP", "GM"]) {
       expect(roleHasMenu(roleMenuArray(roleCode), "billing.financing_instruments")).toBe(true);
+      expect(roleHasMenu(roleMenuArray(roleCode), "vehicles.asset_pools")).toBe(true);
       expect(roleHasMenu(roleMenuArray(roleCode), "billing.revenue_rights")).toBe(true);
     }
     expect(roleHasPermission(permissionConstantSource("capitalStructureManagementPermissions"), "capital_structure:manage")).toBe(true);

@@ -101,7 +101,23 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
     icon: "car",
     label: "车辆资产",
     path: "/vehicles",
-    permissionCode: PermissionCode.VEHICLE_VIEW
+    permissionCode: PermissionCode.VEHICLE_VIEW,
+    children: [
+      {
+        code: "vehicles.assets",
+        icon: "car",
+        label: "车辆资产台账",
+        path: "/vehicles",
+        permissionCode: PermissionCode.VEHICLE_VIEW
+      },
+      {
+        code: "vehicles.asset_pools",
+        icon: "car",
+        label: "车辆资产池",
+        path: "/vehicle-asset-pools",
+        permissionCode: PermissionCode.VEHICLE_ASSET_POOL_VIEW
+      }
+    ]
   },
   {
     code: "quotes",

@@ -143,6 +143,39 @@ export const FINANCING_ALLOCATION_STATUS_LABELS: Record<string, string> = {
   RELEASED: "已解除"
 };
 
+export const VEHICLE_ASSET_POOL_TYPE_LABELS: Record<string, string> = {
+  ASSET_MANAGEMENT: "资产管理车辆池",
+  FINANCING: "融资车辆池",
+  OPERATION: "运营车辆池",
+  OTHER: "其他",
+  REPORTING: "报表统计车辆池"
+};
+
+export const VEHICLE_ASSET_POOL_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  ARCHIVED: "已归档",
+  INACTIVE: "已停用"
+};
+
+export const VEHICLE_ASSET_POOL_VEHICLE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  REMOVED: "已移出"
+};
+
+export const VEHICLE_POOL_ALLOCATION_METHOD_LABELS: Record<string, string> = {
+  EQUAL_AMOUNT: "等额分摊",
+  MANUAL_AMOUNT: "手工金额",
+  UNIFORM_CURRENT_SALE_PRICE_COVERAGE: "按当前销售价统一覆盖率",
+  UNIFORM_PURCHASE_PRICE_COVERAGE: "按车辆采购价统一覆盖率"
+};
+
+export const VEHICLE_POOL_ALLOCATION_ACTION_LABELS: Record<string, string> = {
+  CREATE: "将创建",
+  FAILED: "失败",
+  SKIP: "跳过"
+};
+
 export const REVENUE_RIGHT_ASSIGNMENT_TYPE_LABELS: Record<string, string> = {
   OTHER: "其他",
   PLEDGE: "收益权质押",
@@ -608,6 +641,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "report:view": "查看经营报表",
   "financing:manage": "管理融资工具",
   "financing:view": "查看融资工具",
+  "vehicle_asset_pool:manage": "管理车辆资产池",
+  "vehicle_asset_pool:view": "查看车辆资产池",
   "revenue_right:manage": "管理收益权归属",
   "revenue_right:view": "查看收益权归属",
   "revenue_share:manage": "管理托管分润规则",
@@ -758,7 +793,9 @@ export const MENU_LABELS: Record<string, string> = {
   "system.permissions": "权限管理",
   "system.roles": "角色管理",
   "system.users": "用户管理",
-  vehicles: "车辆资产"
+  vehicles: "车辆资产",
+  "vehicles.asset_pools": "车辆资产池",
+  "vehicles.assets": "车辆资产台账"
 };
 
 export function labelOf(labels: Record<string, string>, value?: string | null) {

@@ -88,6 +88,10 @@ interface VehicleBrief {
   vin?: string | null;
 }
 
+interface VehicleOptionRow extends VehicleBrief {
+  vehicleModel?: string | null;
+}
+
 interface FinancingAllocationRow {
   allocatedPrincipalAmount: number;
   allocationNo?: string | null;
@@ -164,6 +168,12 @@ const statusColors: Record<string, string> = {
   SETTLED: "blue"
 };
 
+function vehicleOptionLabel(vehicle: VehicleOptionRow) {
+  return [vehicle.vehicleNo, vehicle.plateNo, vehicle.vin, vehicle.vehicleModel ?? vehicle.model]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function formatTag(labels: Record<string, string>, value?: string | null) {
   if (!value) {
     return "-";
@@ -194,10 +204,21 @@ export default function FinancingInstrumentsPage() {
   const [instrumentModalOpen, setInstrumentModalOpen] = useState(false);
   const [editingInstrument, setEditingInstrument] = useState<FinancingInstrumentRow | null>(null);
   const [allocationModalOpen, setAllocationModalOpen] = useState(false);
+  const [vehicleRows, setVehicleRows] = useState<VehicleOptionRow[]>([]);
+  const [vehiclesLoading, setVehiclesLoading] = useState(false);
   const [releaseTarget, setReleaseTarget] = useState<FinancingAllocationRow | null>(null);
   const [settleTarget, setSettleTarget] = useState<FinancingInstrumentRow | null>(null);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("financing:view");
+  const canViewVehicles = permissions.has("vehicle:view");
+  const vehicleOptions = useMemo(
+    () =>
+      vehicleRows.map((vehicle) => ({
+        label: vehicleOptionLabel(vehicle),
+        value: vehicle.id
+      })),
+    [vehicleRows]
+  );
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -229,6 +250,19 @@ export default function FinancingInstrumentsPage() {
     [message]
   );
 
+  const loadVehicles = useCallback(async () => {
+    setVehiclesLoading(true);
+    try {
+      const result = await apiFetch<VehicleOptionRow[]>("/vehicles");
+      setVehicleRows(result);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+      setVehicleRows([]);
+    } finally {
+      setVehiclesLoading(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
       .then(setMe)
@@ -240,6 +274,12 @@ export default function FinancingInstrumentsPage() {
       void loadData();
     }
   }, [canView, loadData]);
+
+  useEffect(() => {
+    if (canViewVehicles) {
+      void loadVehicles();
+    }
+  }, [canViewVehicles, loadVehicles]);
 
   function openCreate() {
     setEditingInstrument(null);
@@ -491,6 +531,7 @@ export default function FinancingInstrumentsPage() {
   ];
 
   const allocationColumns: ColumnsType<FinancingAllocationRow> = [
+    { dataIndex: ["vehicle", "vehicleNo"], render: safeText, title: "车辆编号", width: 180 },
     { dataIndex: ["vehicle", "vin"], render: safeText, title: "车辆 VIN", width: 180 },
     { dataIndex: ["vehicle", "plateNo"], render: safeText, title: "车牌号", width: 120 },
     { render: (_, record) => vehicleModelText(record.vehicle), title: "车型", width: 180 },
@@ -604,7 +645,14 @@ export default function FinancingInstrumentsPage() {
           destroyOnHidden
           extra={
             detail ? (
-              <ActionButton icon={<ToolOutlined />} onClick={openAllocationModal} permission="financing:manage" permissions={permissions}>
+              <ActionButton
+                allowed={detail.instrumentStatus === "ACTIVE"}
+                disabledReason="仅生效中的融资工具可以新增车辆分摊"
+                icon={<ToolOutlined />}
+                onClick={openAllocationModal}
+                permission="financing:manage"
+                permissions={permissions}
+              >
                 添加车辆分摊
               </ActionButton>
             ) : null
@@ -718,8 +766,23 @@ export default function FinancingInstrumentsPage() {
           width={620}
         >
           <Form<AllocationFormValues> form={allocationForm} layout="vertical" onFinish={submitAllocation}>
-            <Form.Item label="车辆 ID" name="vehicleId" rules={[{ required: true, message: "请输入车辆 ID" }]}>
-              <Input placeholder="vehicleId" />
+            <Form.Item
+              extra={vehicleOptions.length > 0 ? "请选择系统车辆，提交时会自动使用数据库车辆 ID。" : "当前无法加载车辆列表，请填写系统车辆 ID（UUID），不要填写 VEH 开头的车辆编号。"}
+              label="车辆"
+              name="vehicleId"
+              rules={[{ required: true, message: "请选择车辆" }]}
+            >
+              {vehicleOptions.length > 0 ? (
+                <Select
+                  loading={vehiclesLoading}
+                  optionFilterProp="label"
+                  options={vehicleOptions}
+                  placeholder="搜索车辆编号 / 车牌 / VIN / 车型"
+                  showSearch
+                />
+              ) : (
+                <Input placeholder="系统车辆 ID（UUID）" />
+              )}
             </Form.Item>
             <Form.Item label="分摊本金（元）" name="allocatedPrincipalAmountYuan" rules={[{ required: true, message: "请输入分摊本金" }]}>
               <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />

@@ -336,6 +336,10 @@ const financingCapitalEventTypes = new Set([
   "EARLY_SETTLEMENT",
   "FINANCING_RELEASE"
 ]);
+const debtFinancingCapitalEventTypes = new Set(["ADD_DEBT_FINANCING", "REFINANCE"]);
+const financingReleaseCapitalEventTypes = new Set(["EARLY_SETTLEMENT", "FINANCING_RELEASE"]);
+const leaseCapitalEventTypes = new Set(["LEASE_IN", "LEASE_TERMINATION"]);
+const managedCapitalEventTypes = new Set(["MANAGED_IN", "MANAGED_TERMINATION"]);
 
 const returnReinitSourceStatuses = new Set(["RETURNED", "MAINTENANCE"]);
 
@@ -470,6 +474,8 @@ export default function VehiclesPage() {
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const capitalEventType = Form.useWatch("eventType", capitalEventForm);
+  const ownerSharePercent = Form.useWatch("ownerSharePercent", revenueShareRuleForm);
+  const platformSharePercent = Form.useWatch("platformSharePercent", revenueShareRuleForm);
   const revenueShareRuleType = Form.useWatch("ruleType", revenueShareRuleForm);
   const canViewCapitalStructure = permissions.has("capital_structure:view") || permissions.has("vehicle:view") || permissions.has("report:asset");
   const canViewFinancing = permissions.has("financing:view");
@@ -538,6 +544,111 @@ export default function VehiclesPage() {
       void loadFinancingInstruments();
     }
   }, [canViewFinancing, loadFinancingInstruments]);
+
+  useEffect(() => {
+    if (!capitalEventOpen || !capitalEventType) {
+      return;
+    }
+
+    if (capitalEventType === "INITIAL_EQUITY_PURCHASE") {
+      capitalEventForm.setFieldsValue({
+        acquisitionMode: "OWNED_CASH",
+        debtPrincipalAmountYuan: undefined,
+        effectiveTo: undefined,
+        externalOwnerName: undefined,
+        financingInstrumentId: undefined,
+        lessorName: undefined,
+        managedOwnerName: undefined
+      });
+      return;
+    }
+
+    if (debtFinancingCapitalEventTypes.has(capitalEventType)) {
+      capitalEventForm.setFieldsValue({
+        acquisitionMode: undefined,
+        effectiveTo: undefined,
+        equityCapitalAmountYuan: undefined,
+        externalOwnerName: undefined,
+        lessorName: undefined,
+        managedOwnerName: undefined
+      });
+      return;
+    }
+
+    if (financingReleaseCapitalEventTypes.has(capitalEventType)) {
+      capitalEventForm.setFieldsValue({
+        acquisitionMode: undefined,
+        debtPrincipalAmountYuan: undefined,
+        effectiveTo: undefined,
+        equityCapitalAmountYuan: undefined,
+        externalOwnerName: undefined,
+        lessorName: undefined,
+        managedOwnerName: undefined
+      });
+      return;
+    }
+
+    if (leaseCapitalEventTypes.has(capitalEventType)) {
+      capitalEventForm.setFieldsValue({
+        acquisitionMode: "LONG_TERM_LEASED",
+        debtPrincipalAmountYuan: undefined,
+        effectiveTo: undefined,
+        equityCapitalAmountYuan: undefined,
+        externalOwnerName: undefined,
+        financingInstrumentId: undefined,
+        managedOwnerName: undefined
+      });
+      return;
+    }
+
+    if (managedCapitalEventTypes.has(capitalEventType)) {
+      capitalEventForm.setFieldsValue({
+        acquisitionMode: "MANAGED_REVENUE_SHARE",
+        debtPrincipalAmountYuan: undefined,
+        effectiveTo: undefined,
+        equityCapitalAmountYuan: undefined,
+        financingInstrumentId: undefined,
+        lessorName: undefined
+      });
+      return;
+    }
+
+    capitalEventForm.setFieldsValue({ effectiveTo: undefined });
+  }, [capitalEventForm, capitalEventOpen, capitalEventType]);
+
+  useEffect(() => {
+    if (!revenueShareRuleOpen || !revenueShareRuleType) {
+      return;
+    }
+
+    if (revenueShareRuleType === "REVENUE_SHARE") {
+      revenueShareRuleForm.setFieldsValue({
+        fixedMonthlyAmountYuan: undefined,
+        minimumGuaranteeAmountYuan: undefined,
+        shareBasis: revenueShareRuleForm.getFieldValue("shareBasis") ?? "RENTAL_PAID"
+      });
+      return;
+    }
+
+    if (revenueShareRuleType === "FIXED_RENT") {
+      revenueShareRuleForm.setFieldsValue({
+        fixedMonthlyAmountYuan: revenueShareRuleForm.getFieldValue("fixedMonthlyAmountYuan"),
+        minimumGuaranteeAmountYuan: undefined,
+        ownerSharePercent: undefined,
+        platformSharePercent: undefined,
+        shareBasis: "MANUAL"
+      });
+      return;
+    }
+
+    if (revenueShareRuleType === "MIXED") {
+      revenueShareRuleForm.setFieldsValue({
+        shareBasis: revenueShareRuleForm.getFieldValue("shareBasis") === "MANUAL"
+          ? "RENTAL_PAID"
+          : revenueShareRuleForm.getFieldValue("shareBasis") ?? "RENTAL_PAID"
+      });
+    }
+  }, [revenueShareRuleForm, revenueShareRuleOpen, revenueShareRuleType]);
 
   const loadVehicleFinancialData = useCallback(
     async (vehicleId: string) => {
@@ -837,7 +948,6 @@ export default function VehiclesPage() {
           acquisitionMode: values.acquisitionMode,
           debtPrincipalAmount: toCentAmount(values.debtPrincipalAmountYuan),
           effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
-          effectiveTo: values.effectiveTo?.format("YYYY-MM-DD"),
           equityCapitalAmount: toCentAmount(values.equityCapitalAmountYuan),
           eventType: values.eventType,
           externalOwnerName: values.externalOwnerName,
@@ -875,20 +985,33 @@ export default function VehiclesPage() {
       return;
     }
 
+    const isFixedRent = values.ruleType === "FIXED_RENT";
+    const isMixed = values.ruleType === "MIXED";
+    const shouldSubmitShareRatio = values.ruleType === "REVENUE_SHARE" || isMixed;
+    const shouldSubmitFixedAmount = isFixedRent || isMixed;
+    if (
+      shouldSubmitShareRatio &&
+      typeof values.ownerSharePercent === "number" &&
+      typeof values.platformSharePercent === "number" &&
+      Math.abs(values.ownerSharePercent + values.platformSharePercent - 100) > 0.0001
+    ) {
+      void message.warning("车主分成与平台分成合计不等于 100%，请确认。");
+    }
+
     try {
       await apiFetch(`/vehicles/${detailVehicle.id}/revenue-share-rules`, {
         body: JSON.stringify({
           effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
-          fixedMonthlyAmount: toCentAmount(values.fixedMonthlyAmountYuan),
-          minimumGuaranteeAmount: toCentAmount(values.minimumGuaranteeAmountYuan),
+          fixedMonthlyAmount: shouldSubmitFixedAmount ? toCentAmount(values.fixedMonthlyAmountYuan) : undefined,
+          minimumGuaranteeAmount: isMixed ? toCentAmount(values.minimumGuaranteeAmountYuan) : undefined,
           ownerContact: values.ownerContact,
           ownerName: values.ownerName,
-          ownerShareBps: percentToBps(values.ownerSharePercent),
-          platformShareBps: percentToBps(values.platformSharePercent),
+          ownerShareBps: shouldSubmitShareRatio ? percentToBps(values.ownerSharePercent) : undefined,
+          platformShareBps: shouldSubmitShareRatio ? percentToBps(values.platformSharePercent) : undefined,
           remark: values.remark,
           ruleType: values.ruleType,
           settlementCycle: values.settlementCycle,
-          shareBasis: values.shareBasis
+          shareBasis: isFixedRent ? "MANUAL" : values.shareBasis
         }),
         method: "POST"
       });
@@ -972,6 +1095,33 @@ export default function VehiclesPage() {
       void message.error(getErrorMessage(error));
     }
   }
+
+  const isInitialCapitalEvent = capitalEventType === "INITIAL_EQUITY_PURCHASE";
+  const isDebtFinancingCapitalEvent = debtFinancingCapitalEventTypes.has(capitalEventType ?? "");
+  const isFinancingReleaseCapitalEvent = financingReleaseCapitalEventTypes.has(capitalEventType ?? "");
+  const isLeaseCapitalEvent = leaseCapitalEventTypes.has(capitalEventType ?? "");
+  const isManagedCapitalEvent = managedCapitalEventTypes.has(capitalEventType ?? "");
+  const isOtherCapitalEvent = capitalEventType === "OTHER";
+  const showCapitalAcquisitionMode =
+    isInitialCapitalEvent || isLeaseCapitalEvent || isManagedCapitalEvent || isOtherCapitalEvent;
+  const showCapitalFinancingInstrument =
+    isDebtFinancingCapitalEvent || isFinancingReleaseCapitalEvent || isOtherCapitalEvent;
+  const showCapitalEquityAmount = isInitialCapitalEvent || isOtherCapitalEvent;
+  const showCapitalDebtAmount = isDebtFinancingCapitalEvent || isOtherCapitalEvent;
+  const showCapitalLessor = isLeaseCapitalEvent;
+  const showCapitalManagedOwner = isManagedCapitalEvent;
+  const showRevenueShareBasis = revenueShareRuleType !== "FIXED_RENT";
+  const showRevenueShareRatio = revenueShareRuleType === "REVENUE_SHARE" || revenueShareRuleType === "MIXED";
+  const showRevenueShareFixedAmount = revenueShareRuleType === "FIXED_RENT" || revenueShareRuleType === "MIXED";
+  const showRevenueShareMinimumGuarantee = revenueShareRuleType === "MIXED";
+  const revenueShareRatioTotal =
+    typeof ownerSharePercent === "number" && typeof platformSharePercent === "number"
+      ? ownerSharePercent + platformSharePercent
+      : null;
+  const showRevenueShareRatioWarning =
+    showRevenueShareRatio &&
+    revenueShareRatioTotal !== null &&
+    Math.abs(revenueShareRatioTotal - 100) > 0.0001;
 
   return (
     <ProtectedShell>
@@ -1173,48 +1323,59 @@ export default function VehiclesPage() {
           <Form.Item label="事件类型" name="eventType" rules={[{ required: true, message: "请选择事件类型" }]}>
             <Select options={capitalEventTypeOptions} />
           </Form.Item>
-          <Form.Item label="生效日期" name="effectiveFrom" rules={[{ required: true, message: "请选择生效日期" }]}>
+          <Form.Item label="事件时间" name="effectiveFrom" rules={[{ required: true, message: "请选择事件时间" }]}>
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item label="结束日期" name="effectiveTo">
-            <DatePicker style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="取得方式" name="acquisitionMode">
-            <Select allowClear options={acquisitionModeOptions} />
-          </Form.Item>
-          <Form.Item
-            extra={financingInstrumentOptions.length > 0 ? "请选择融资工具，提交时会自动使用系统融资工具 ID。" : "当前无法加载融资工具列表，请填写系统融资工具 ID（UUID），不要填写 FI 开头的融资工具编号。"}
-            label="融资工具"
-            name="financingInstrumentId"
-            rules={[{ required: financingCapitalEventTypes.has(capitalEventType ?? ""), message: "请选择融资工具" }]}
-          >
-            {financingInstrumentOptions.length > 0 ? (
-              <Select
-                loading={financingInstrumentsLoading}
-                optionFilterProp="label"
-                options={financingInstrumentOptions}
-                placeholder="搜索融资工具编号 / 类型 / 资金方 / 合同编号"
-                showSearch
-              />
-            ) : (
-              <Input placeholder="系统融资工具 ID（UUID）" />
-            )}
-          </Form.Item>
-          <Form.Item label="自有资金金额（元）" name="equityCapitalAmountYuan">
-            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="债务本金金额（元）" name="debtPrincipalAmountYuan">
-            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="外部车主名称" name="externalOwnerName">
-            <Input maxLength={128} />
-          </Form.Item>
-          <Form.Item label="出租方名称" name="lessorName">
-            <Input maxLength={128} />
-          </Form.Item>
-          <Form.Item label="托管方名称" name="managedOwnerName">
-            <Input maxLength={128} />
-          </Form.Item>
+          {showCapitalAcquisitionMode ? (
+            <Form.Item label="取得方式" name="acquisitionMode">
+              <Select allowClear options={acquisitionModeOptions} />
+            </Form.Item>
+          ) : null}
+          {showCapitalFinancingInstrument ? (
+            <Form.Item
+              extra={financingInstrumentOptions.length > 0 ? "请选择融资工具，提交时会自动使用系统融资工具 ID。" : "当前无法加载融资工具列表，请填写系统融资工具 ID（UUID），不要填写 FI 开头的融资工具编号。"}
+              label="融资工具"
+              name="financingInstrumentId"
+              rules={[{ required: financingCapitalEventTypes.has(capitalEventType ?? ""), message: "请选择融资工具" }]}
+            >
+              {financingInstrumentOptions.length > 0 ? (
+                <Select
+                  loading={financingInstrumentsLoading}
+                  optionFilterProp="label"
+                  options={financingInstrumentOptions}
+                  placeholder="搜索融资工具编号 / 类型 / 资金方 / 合同编号"
+                  showSearch
+                />
+              ) : (
+                <Input placeholder="系统融资工具 ID（UUID）" />
+              )}
+            </Form.Item>
+          ) : null}
+          {showCapitalEquityAmount ? (
+            <Form.Item label="自有资金金额（元）" name="equityCapitalAmountYuan">
+              <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+            </Form.Item>
+          ) : null}
+          {showCapitalDebtAmount ? (
+            <Form.Item label="债务本金金额（元）" name="debtPrincipalAmountYuan">
+              <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+            </Form.Item>
+          ) : null}
+          {showCapitalLessor ? (
+            <Form.Item label="出租方名称" name="lessorName">
+              <Input maxLength={128} />
+            </Form.Item>
+          ) : null}
+          {showCapitalManagedOwner ? (
+            <>
+              <Form.Item label="外部车主名称" name="externalOwnerName">
+                <Input maxLength={128} />
+              </Form.Item>
+              <Form.Item label="托管方名称" name="managedOwnerName">
+                <Input maxLength={128} />
+              </Form.Item>
+            </>
+          ) : null}
           <Form.Item label="备注" name="remark">
             <Input.TextArea rows={3} />
           </Form.Item>
@@ -1234,35 +1395,53 @@ export default function VehiclesPage() {
           <Form.Item label="规则类型" name="ruleType" rules={[{ required: true, message: "请选择规则类型" }]}>
             <Select options={revenueShareRuleTypeOptions} />
           </Form.Item>
-          <Form.Item label="分润基础" name="shareBasis" rules={[{ required: true, message: "请选择分润基础" }]}>
-            <Select options={revenueShareBasisOptions} />
-          </Form.Item>
+          {showRevenueShareBasis ? (
+            <Form.Item label="分润基础" name="shareBasis" rules={[{ required: true, message: "请选择分润基础" }]}>
+              <Select options={revenueShareBasisOptions} />
+            </Form.Item>
+          ) : null}
           <Form.Item label="外部车主名称" name="ownerName">
             <Input maxLength={128} />
           </Form.Item>
           <Form.Item label="外部车主联系方式" name="ownerContact">
             <Input maxLength={128} />
           </Form.Item>
-          <Form.Item
-            label="车主分成比例（%）"
-            name="ownerSharePercent"
-            rules={[{ required: revenueShareRuleType === "REVENUE_SHARE", message: "请输入车主分成比例" }]}
-          >
-            <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="平台分成比例（%）" name="platformSharePercent">
-            <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item
-            label="固定月金额（元）"
-            name="fixedMonthlyAmountYuan"
-            rules={[{ required: revenueShareRuleType === "FIXED_RENT", message: "请输入固定月金额" }]}
-          >
-            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="最低保底金额（元）" name="minimumGuaranteeAmountYuan">
-            <InputNumber min={0} precision={2} style={{ width: "100%" }} />
-          </Form.Item>
+          {showRevenueShareRatio ? (
+            <>
+              <Form.Item
+                label="车主分成比例（%）"
+                name="ownerSharePercent"
+                rules={[{ required: revenueShareRuleType === "REVENUE_SHARE", message: "请输入车主分成比例" }]}
+              >
+                <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item label="平台分成比例（%）" name="platformSharePercent">
+                <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
+              </Form.Item>
+              {showRevenueShareRatioWarning ? (
+                <Alert
+                  message="车主分成与平台分成合计不等于 100%，请确认。"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  type="warning"
+                />
+              ) : null}
+            </>
+          ) : null}
+          {showRevenueShareFixedAmount ? (
+            <Form.Item
+              label="固定月金额（元）"
+              name="fixedMonthlyAmountYuan"
+              rules={[{ required: revenueShareRuleType === "FIXED_RENT", message: "请输入固定月金额" }]}
+            >
+              <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+            </Form.Item>
+          ) : null}
+          {showRevenueShareMinimumGuarantee ? (
+            <Form.Item label="最低保底金额（元）" name="minimumGuaranteeAmountYuan">
+              <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+            </Form.Item>
+          ) : null}
           <Form.Item label="结算周期" name="settlementCycle">
             <Select options={revenueShareSettlementCycleOptions} />
           </Form.Item>
@@ -1650,8 +1829,7 @@ function VehicleCapitalEventsBlock({
       title: "状态",
       width: 100
     },
-    { dataIndex: "effectiveFrom", render: formatDate, title: "生效日期", width: 120 },
-    { dataIndex: "effectiveTo", render: formatDate, title: "结束日期", width: 120 },
+    { dataIndex: "effectiveFrom", render: formatDate, title: "事件时间", width: 120 },
     { render: (_, record) => financingInstrumentText(record.financingInstrument, record.financingInstrumentId), title: "关联融资工具", width: 220 },
     { dataIndex: "equityCapitalAmount", render: formatCapitalYuan, title: "自有资金金额", width: 140 },
     { dataIndex: "debtPrincipalAmount", render: formatCapitalYuan, title: "债务本金金额", width: 140 },

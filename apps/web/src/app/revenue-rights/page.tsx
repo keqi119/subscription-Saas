@@ -3,6 +3,7 @@
 import { EyeOutlined, PlusOutlined, ReloadOutlined, StopOutlined } from "@ant-design/icons";
 import {
   App,
+  Alert,
   Button,
   DatePicker,
   Descriptions,
@@ -24,6 +25,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import {
+  FINANCING_INSTRUMENT_STATUS_LABELS,
   FINANCING_INSTRUMENT_TYPE_LABELS,
   REVENUE_RIGHT_ASSIGNEE_TYPE_LABELS,
   REVENUE_RIGHT_ASSIGNMENT_STATUS_LABELS,
@@ -47,7 +49,9 @@ import {
 interface AssignmentVehicle {
   acquisitionMode?: string | null;
   id: string;
+  plateNo?: string | null;
   vehicleNo?: string | null;
+  vin?: string | null;
 }
 
 interface AssignmentOrder {
@@ -65,10 +69,24 @@ interface AssignmentBill {
 }
 
 interface AssignmentInstrument {
+  contractNo?: string | null;
   id: string;
   instrumentNo?: string | null;
+  instrumentStatus?: string | null;
   instrumentType?: string | null;
   lenderName?: string | null;
+}
+
+interface FinancingInstrumentListResponse {
+  items: AssignmentInstrument[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+interface VehicleOptionRow extends AssignmentVehicle {
+  model?: string | null;
+  vehicleModel?: string | null;
 }
 
 interface RevenueRightAssignmentRow {
@@ -151,7 +169,10 @@ function formatTag(labels: Record<string, string>, value?: string | null) {
 }
 
 function vehicleText(vehicle?: AssignmentVehicle | null, vehicleId?: string | null) {
-  return vehicle?.vehicleNo ?? vehicleId ?? "-";
+  if (!vehicle) {
+    return vehicleId ?? "-";
+  }
+  return [vehicle.vehicleNo, vehicle.plateNo, vehicle.vin].filter(Boolean).join(" / ") || vehicle.id;
 }
 
 function orderText(order?: AssignmentOrder | null, orderId?: string | null) {
@@ -169,6 +190,45 @@ function instrumentText(instrument?: AssignmentInstrument | null, instrumentId?:
   return [instrument.instrumentNo, instrument.lenderName].filter(Boolean).join(" / ") || instrument.id;
 }
 
+function instrumentOptionLabel(instrument: AssignmentInstrument) {
+  const typeLabel = instrument.instrumentType
+    ? labelOf(FINANCING_INSTRUMENT_TYPE_LABELS, instrument.instrumentType)
+    : null;
+  const statusLabel = instrument.instrumentStatus
+    ? labelOf(FINANCING_INSTRUMENT_STATUS_LABELS, instrument.instrumentStatus)
+    : null;
+
+  return [instrument.instrumentNo, typeLabel, instrument.lenderName, instrument.contractNo, statusLabel]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function vehicleOptionLabel(vehicle: VehicleOptionRow) {
+  return [vehicle.vehicleNo, vehicle.plateNo, vehicle.vin, vehicle.vehicleModel ?? vehicle.model]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function targetObjectText(record: RevenueRightAssignmentRow) {
+  if (record.targetType === "ORDER") {
+    return `订单：${orderText(record.order, record.orderId)}`;
+  }
+
+  if (record.targetType === "RECEIVABLE_BILL") {
+    return `账单：${billText(record.bill, record.billId)}`;
+  }
+
+  if (record.targetType === "VEHICLE") {
+    return `车辆：${vehicleText(record.vehicle, record.vehicleId)}`;
+  }
+
+  if (record.targetType === "VEHICLE_POOL") {
+    return "车辆池：暂未绑定明细";
+  }
+
+  return "-";
+}
+
 export default function RevenueRightsPage() {
   const { message, modal } = App.useApp();
   const [filterForm] = Form.useForm<AssignmentFilterValues>();
@@ -181,11 +241,36 @@ export default function RevenueRightsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<RevenueRightAssignmentRow | null>(null);
   const [assignmentModalOpen, setAssignmentModalOpen] = useState(false);
+  const [financingInstruments, setFinancingInstruments] = useState<AssignmentInstrument[]>([]);
+  const [financingInstrumentsLoading, setFinancingInstrumentsLoading] = useState(false);
   const [releaseTarget, setReleaseTarget] = useState<RevenueRightAssignmentRow | null>(null);
+  const [vehicleRows, setVehicleRows] = useState<VehicleOptionRow[]>([]);
+  const [vehiclesLoading, setVehiclesLoading] = useState(false);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("revenue_right:view");
+  const canViewFinancing = permissions.has("financing:view");
+  const canViewVehicles = permissions.has("vehicle:view");
   const selectedTargetType = Form.useWatch("targetType", assignmentForm);
   const selectedAssignmentType = Form.useWatch("assignmentType", assignmentForm);
+  const assignmentNeedsFinancing = financingRequiredTypes.has(selectedAssignmentType ?? "");
+  const assignmentShowsShareRatio = assignmentNeedsFinancing || selectedAssignmentType === "REVENUE_SHARE";
+  const assignmentShowsPriority = assignmentNeedsFinancing;
+  const financingInstrumentOptions = useMemo(
+    () =>
+      financingInstruments.map((instrument) => ({
+        label: instrumentOptionLabel(instrument),
+        value: instrument.id
+      })),
+    [financingInstruments]
+  );
+  const vehicleOptions = useMemo(
+    () =>
+      vehicleRows.map((vehicle) => ({
+        label: vehicleOptionLabel(vehicle),
+        value: vehicle.id
+      })),
+    [vehicleRows]
+  );
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -217,6 +302,32 @@ export default function RevenueRightsPage() {
     [message]
   );
 
+  const loadFinancingInstruments = useCallback(async () => {
+    setFinancingInstrumentsLoading(true);
+    try {
+      const result = await apiFetch<FinancingInstrumentListResponse>("/financing-instruments?pageSize=100");
+      setFinancingInstruments(result.items);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+      setFinancingInstruments([]);
+    } finally {
+      setFinancingInstrumentsLoading(false);
+    }
+  }, [message]);
+
+  const loadVehicles = useCallback(async () => {
+    setVehiclesLoading(true);
+    try {
+      const result = await apiFetch<VehicleOptionRow[]>("/vehicles");
+      setVehicleRows(result);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+      setVehicleRows([]);
+    } finally {
+      setVehiclesLoading(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
       .then(setMe)
@@ -228,6 +339,47 @@ export default function RevenueRightsPage() {
       void loadData();
     }
   }, [canView, loadData]);
+
+  useEffect(() => {
+    if (canViewFinancing) {
+      void loadFinancingInstruments();
+    }
+  }, [canViewFinancing, loadFinancingInstruments]);
+
+  useEffect(() => {
+    if (canViewVehicles) {
+      void loadVehicles();
+    }
+  }, [canViewVehicles, loadVehicles]);
+
+  useEffect(() => {
+    if (!assignmentModalOpen) {
+      return;
+    }
+
+    assignmentForm.setFieldsValue({
+      billId: selectedTargetType === "RECEIVABLE_BILL" ? assignmentForm.getFieldValue("billId") : undefined,
+      orderId: selectedTargetType === "ORDER" ? assignmentForm.getFieldValue("orderId") : undefined,
+      vehicleId: selectedTargetType === "VEHICLE" ? assignmentForm.getFieldValue("vehicleId") : undefined
+    });
+  }, [assignmentForm, assignmentModalOpen, selectedTargetType]);
+
+  useEffect(() => {
+    if (!assignmentModalOpen) {
+      return;
+    }
+
+    if (!assignmentNeedsFinancing) {
+      assignmentForm.setFieldsValue({
+        financingInstrumentId: undefined,
+        priority: undefined
+      });
+    }
+
+    if (!assignmentShowsShareRatio) {
+      assignmentForm.setFieldsValue({ shareRatioPercent: undefined });
+    }
+  }, [assignmentForm, assignmentModalOpen, assignmentNeedsFinancing, assignmentShowsShareRatio]);
 
   function openCreate() {
     assignmentForm.resetFields();
@@ -242,21 +394,25 @@ export default function RevenueRightsPage() {
   }
 
   async function submitAssignment(values: AssignmentFormValues) {
+    const needsFinancing = financingRequiredTypes.has(values.assignmentType);
+    const showsShareRatio = needsFinancing || values.assignmentType === "REVENUE_SHARE";
+    const showsPriority = needsFinancing;
+
     try {
       await apiFetch("/revenue-right-assignments", {
         body: JSON.stringify({
           assigneeName: values.assigneeName,
           assigneeType: values.assigneeType,
           assignmentType: values.assignmentType,
-          billId: values.billId,
+          billId: values.targetType === "RECEIVABLE_BILL" ? values.billId : undefined,
           effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
-          financingInstrumentId: values.financingInstrumentId,
-          orderId: values.orderId,
-          priority: values.priority,
+          financingInstrumentId: needsFinancing ? values.financingInstrumentId : undefined,
+          orderId: values.targetType === "ORDER" ? values.orderId : undefined,
+          priority: showsPriority ? values.priority : undefined,
           remark: values.remark,
-          shareRatioBps: percentToBps(values.shareRatioPercent),
+          shareRatioBps: showsShareRatio ? percentToBps(values.shareRatioPercent) : undefined,
           targetType: values.targetType,
-          vehicleId: values.vehicleId
+          vehicleId: values.targetType === "VEHICLE" ? values.vehicleId : undefined
         }),
         method: "POST"
       });
@@ -335,9 +491,7 @@ export default function RevenueRightsPage() {
       title: "目标类型",
       width: 120
     },
-    { render: (_, record) => vehicleText(record.vehicle, record.vehicleId), title: "车辆", width: 160 },
-    { render: (_, record) => orderText(record.order, record.orderId), title: "订单", width: 170 },
-    { render: (_, record) => billText(record.bill, record.billId), title: "账单", width: 170 },
+    { render: (_, record) => targetObjectText(record), title: "目标对象", width: 230 },
     { render: (_, record) => instrumentText(record.financingInstrument, record.financingInstrumentId), title: "融资工具", width: 210 },
     {
       dataIndex: "assigneeType",
@@ -504,39 +658,74 @@ export default function RevenueRightsPage() {
             <Form.Item label="目标类型" name="targetType" rules={[{ required: true, message: "请选择目标类型" }]}>
               <Select options={optionsFromLabels(REVENUE_RIGHT_TARGET_TYPE_LABELS)} />
             </Form.Item>
-            <Form.Item label="车辆 ID" name="vehicleId" rules={[{ required: selectedTargetType === "VEHICLE", message: "请输入车辆 ID" }]}>
-              <Input placeholder="targetType = VEHICLE 时必填" />
-            </Form.Item>
-            <Form.Item label="订单 ID" name="orderId" rules={[{ required: selectedTargetType === "ORDER", message: "请输入订单 ID" }]}>
-              <Input placeholder="targetType = ORDER 时必填" />
-            </Form.Item>
-            <Form.Item label="账单 ID" name="billId" rules={[{ required: selectedTargetType === "RECEIVABLE_BILL", message: "请输入账单 ID" }]}>
-              <Input placeholder="targetType = RECEIVABLE_BILL 时必填" />
-            </Form.Item>
-            <Form.Item
-              label="融资工具 ID"
-              name="financingInstrumentId"
-              rules={[
-                {
-                  required: financingRequiredTypes.has(selectedAssignmentType ?? ""),
-                  message: "请输入融资工具 ID"
-                }
-              ]}
-            >
-              <Input placeholder="PLEDGE / TRANSFER / SPV_POOL 时必填" />
-            </Form.Item>
+            {selectedTargetType === "VEHICLE" ? (
+              <Form.Item label="车辆" name="vehicleId" rules={[{ required: true, message: "请选择车辆" }]}>
+                {vehicleOptions.length > 0 ? (
+                  <Select
+                    loading={vehiclesLoading}
+                    optionFilterProp="label"
+                    options={vehicleOptions}
+                    placeholder="搜索车辆编号 / 车牌 / VIN / 车型"
+                    showSearch
+                  />
+                ) : (
+                  <Input placeholder="系统车辆 ID（UUID）" />
+                )}
+              </Form.Item>
+            ) : null}
+            {selectedTargetType === "ORDER" ? (
+              <Form.Item label="订单 ID" name="orderId" rules={[{ required: true, message: "请输入订单 ID" }]}>
+                <Input placeholder="订单 ID" />
+              </Form.Item>
+            ) : null}
+            {selectedTargetType === "RECEIVABLE_BILL" ? (
+              <Form.Item label="账单 ID" name="billId" rules={[{ required: true, message: "请输入账单 ID" }]}>
+                <Input placeholder="账单 ID" />
+              </Form.Item>
+            ) : null}
+            {selectedTargetType === "VEHICLE_POOL" ? (
+              <Alert
+                message="车辆池目标第一版暂未开放明细选择，请在备注中记录车辆池范围。"
+                showIcon
+                style={{ marginBottom: 16 }}
+                type="info"
+              />
+            ) : null}
+            {assignmentNeedsFinancing ? (
+              <Form.Item
+                label="融资工具"
+                name="financingInstrumentId"
+                rules={[{ required: true, message: "请选择融资工具" }]}
+              >
+                {financingInstrumentOptions.length > 0 ? (
+                  <Select
+                    loading={financingInstrumentsLoading}
+                    optionFilterProp="label"
+                    options={financingInstrumentOptions}
+                    placeholder="搜索融资工具编号 / 类型 / 资金方 / 合同编号 / 状态"
+                    showSearch
+                  />
+                ) : (
+                  <Input placeholder="系统融资工具 ID（UUID）" />
+                )}
+              </Form.Item>
+            ) : null}
             <Form.Item label="受让 / 质押方类型" name="assigneeType" rules={[{ required: true, message: "请选择受让 / 质押方类型" }]}>
               <Select options={optionsFromLabels(REVENUE_RIGHT_ASSIGNEE_TYPE_LABELS)} />
             </Form.Item>
             <Form.Item label="受让 / 质押方名称" name="assigneeName">
               <Input maxLength={128} />
             </Form.Item>
-            <Form.Item label="优先级" name="priority">
-              <InputNumber min={0} precision={0} style={{ width: "100%" }} />
-            </Form.Item>
-            <Form.Item label="分配比例（%）" name="shareRatioPercent">
-              <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
-            </Form.Item>
+            {assignmentShowsPriority ? (
+              <Form.Item label="优先级" name="priority">
+                <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+              </Form.Item>
+            ) : null}
+            {assignmentShowsShareRatio ? (
+              <Form.Item label="分配比例（%）" name="shareRatioPercent">
+                <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
+              </Form.Item>
+            ) : null}
             <Form.Item label="生效日期" name="effectiveFrom" rules={[{ required: true, message: "请选择生效日期" }]}>
               <DatePicker style={{ width: "100%" }} />
             </Form.Item>

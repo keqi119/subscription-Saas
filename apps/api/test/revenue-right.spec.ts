@@ -77,6 +77,23 @@ describe("RevenueRightService assignments", () => {
     expect(result.vehicleId).toBe("vehicle-1");
   });
 
+  it("serializes assignment views without leaking nested bigint values", async () => {
+    const harness = createRevenueHarness({
+      assignments: [makeAssignment({ billId: "bill-rent", targetType: RevenueRightTargetType.RECEIVABLE_BILL })]
+    });
+
+    const result = await harness.service.listAssignments({});
+
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(result.items[0]?.bill?.paidAmount).toBe(500000);
+    expect(result.items[0]?.financingInstrument).toEqual({
+      id: "instrument-1",
+      instrumentNo: "FI20260602000000A1B2",
+      instrumentType: FinancingInstrumentType.RECEIVABLE_PLEDGE,
+      lenderName: "某银行"
+    });
+  });
+
   it("rejects ORDER target without orderId", async () => {
     const harness = createRevenueHarness();
 
@@ -345,7 +362,13 @@ describe("RevenueRightService revenue share rules", () => {
 
   it("returns unsupportedReason for MANUAL shareBasis", async () => {
     const harness = createRevenueHarness({
-      rules: [makeShareRule({ shareBasis: RevenueShareBasis.MANUAL })]
+      rules: [
+        makeShareRule({
+          fixedMonthlyAmount: 36500n,
+          ruleType: RevenueShareRuleType.FIXED_RENT,
+          shareBasis: RevenueShareBasis.MANUAL
+        })
+      ]
     });
 
     const result = await harness.service.getVehicleRevenueSharePreview("vehicle-1", {
@@ -354,7 +377,9 @@ describe("RevenueRightService revenue share rules", () => {
     });
 
     expect(result.preview?.previewSupported).toBe(false);
+    expect(result.preview?.fixedCostAmount).toBe(37200);
     expect(result.preview?.unsupportedReason).toContain("MANUAL");
+    expect(() => JSON.stringify(result)).not.toThrow();
   });
 });
 

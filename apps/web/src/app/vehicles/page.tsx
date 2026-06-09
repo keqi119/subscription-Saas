@@ -343,6 +343,62 @@ const managedCapitalEventTypes = new Set(["MANAGED_IN", "MANAGED_TERMINATION"]);
 
 const returnReinitSourceStatuses = new Set(["RETURNED", "MAINTENANCE"]);
 
+function capitalEventVisibility(eventType?: string | null) {
+  const isInitial = eventType === "INITIAL_EQUITY_PURCHASE";
+  const isDebtFinancing = debtFinancingCapitalEventTypes.has(eventType ?? "");
+  const isFinancingRelease = financingReleaseCapitalEventTypes.has(eventType ?? "");
+  const isLease = leaseCapitalEventTypes.has(eventType ?? "");
+  const isManaged = managedCapitalEventTypes.has(eventType ?? "");
+  const isOther = eventType === "OTHER";
+
+  return {
+    showAcquisitionMode: isInitial || isLease || isManaged || isOther,
+    showDebtAmount: isDebtFinancing || isOther,
+    showEquityAmount: isInitial || isOther,
+    showFinancingInstrument: isDebtFinancing || isFinancingRelease || isOther,
+    showLessor: isLease,
+    showManagedOwner: isManaged
+  };
+}
+
+function buildCapitalEventPayload(values: CapitalEventValues) {
+  const visibility = capitalEventVisibility(values.eventType);
+
+  return {
+    acquisitionMode: visibility.showAcquisitionMode ? values.acquisitionMode : null,
+    debtPrincipalAmount: visibility.showDebtAmount ? toCentAmount(values.debtPrincipalAmountYuan) : null,
+    effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
+    equityCapitalAmount: visibility.showEquityAmount ? toCentAmount(values.equityCapitalAmountYuan) : null,
+    eventType: values.eventType,
+    externalOwnerName: visibility.showManagedOwner ? values.externalOwnerName : null,
+    financingInstrumentId: visibility.showFinancingInstrument ? values.financingInstrumentId : null,
+    lessorName: visibility.showLessor ? values.lessorName : null,
+    managedOwnerName: visibility.showManagedOwner ? values.managedOwnerName : null,
+    remark: values.remark
+  };
+}
+
+function capitalEventFormValues(event: CapitalEvent): CapitalEventValues {
+  return {
+    acquisitionMode: event.acquisitionMode,
+    debtPrincipalAmountYuan:
+      event.debtPrincipalAmount === undefined || event.debtPrincipalAmount === null
+        ? undefined
+        : event.debtPrincipalAmount / 100,
+    effectiveFrom: dayjs(event.effectiveFrom),
+    equityCapitalAmountYuan:
+      event.equityCapitalAmount === undefined || event.equityCapitalAmount === null
+        ? undefined
+        : event.equityCapitalAmount / 100,
+    eventType: event.eventType,
+    externalOwnerName: event.externalOwnerName,
+    financingInstrumentId: event.financingInstrument?.id ?? event.financingInstrumentId ?? undefined,
+    lessorName: event.lessorName,
+    managedOwnerName: event.managedOwnerName,
+    remark: event.remark
+  };
+}
+
 function formatYuan(value?: number | null) {
   return value === undefined || value === null ? "-" : `¥${(value / 100).toFixed(2)}`;
 }
@@ -456,6 +512,7 @@ export default function VehiclesPage() {
   const [deactivatingShareRule, setDeactivatingShareRule] = useState<RevenueShareRule | null>(null);
   const [detailVehicle, setDetailVehicle] = useState<Vehicle | null>(null);
   const [dueReviews, setDueReviews] = useState<Vehicle[]>([]);
+  const [editingCapitalEvent, setEditingCapitalEvent] = useState<CapitalEvent | null>(null);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [financingInstruments, setFinancingInstruments] = useState<FinancingInstrumentSummary[]>([]);
   const [financingInstrumentsLoading, setFinancingInstrumentsLoading] = useState(false);
@@ -924,6 +981,7 @@ export default function VehiclesPage() {
   }
 
   function openCapitalEventModal(allocation?: FinancingAllocation) {
+    setEditingCapitalEvent(null);
     capitalEventForm.resetFields();
     capitalEventForm.setFieldsValue({
       debtPrincipalAmountYuan: allocation ? allocation.allocatedPrincipalAmount / 100 : undefined,
@@ -937,34 +995,60 @@ export default function VehiclesPage() {
     setCapitalEventOpen(true);
   }
 
+  function openEditCapitalEvent(event: CapitalEvent) {
+    setEditingCapitalEvent(event);
+    capitalEventForm.resetFields();
+    capitalEventForm.setFieldsValue(capitalEventFormValues(event));
+    setCapitalEventOpen(true);
+  }
+
   async function saveCapitalEvent(values: CapitalEventValues) {
     if (!detailVehicle) {
       return;
     }
 
     try {
-      await apiFetch(`/vehicles/${detailVehicle.id}/capital-events`, {
-        body: JSON.stringify({
-          acquisitionMode: values.acquisitionMode,
-          debtPrincipalAmount: toCentAmount(values.debtPrincipalAmountYuan),
-          effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
-          equityCapitalAmount: toCentAmount(values.equityCapitalAmountYuan),
-          eventType: values.eventType,
-          externalOwnerName: values.externalOwnerName,
-          financingInstrumentId: values.financingInstrumentId,
-          lessorName: values.lessorName,
-          managedOwnerName: values.managedOwnerName,
-          remark: values.remark
-        }),
-        method: "POST"
+      const payload = buildCapitalEventPayload(values);
+      const url = editingCapitalEvent
+        ? `/vehicles/${detailVehicle.id}/capital-events/${editingCapitalEvent.id}`
+        : `/vehicles/${detailVehicle.id}/capital-events`;
+      await apiFetch(url, {
+        body: JSON.stringify(payload),
+        method: editingCapitalEvent ? "PATCH" : "POST"
       });
-      void message.success("资本事件已新增");
+      void message.success(editingCapitalEvent ? "资本事件已更新" : "资本事件已新增");
       setCapitalEventOpen(false);
+      setEditingCapitalEvent(null);
       capitalEventForm.resetFields();
       await loadVehicleFinancialData(detailVehicle.id);
     } catch (error) {
       void message.error(getErrorMessage(error));
     }
+  }
+
+  function cancelCapitalEvent(event: CapitalEvent) {
+    if (!detailVehicle) {
+      return;
+    }
+
+    Modal.confirm({
+      cancelText: "取消",
+      content: "确认作废该资本事件？作废后该事件不会再参与资本结构 preview，但会保留审计记录。",
+      okText: "确认作废",
+      onOk: async () => {
+        try {
+          await apiFetch(`/vehicles/${detailVehicle.id}/capital-events/${event.id}/cancel`, {
+            body: JSON.stringify({ remark: "人工作废资本事件" }),
+            method: "POST"
+          });
+          void message.success("资本事件已作废");
+          await loadVehicleFinancialData(detailVehicle.id);
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        }
+      },
+      title: "作废资本事件"
+    });
   }
 
   function openRevenueShareRuleModal() {
@@ -1288,8 +1372,10 @@ export default function VehiclesPage() {
               activeFinancingAllocations={capitalStructure?.activeFinancingAllocations ?? []}
               capitalEvents={capitalEvents}
               loading={vehicleFinancialLoading}
+              onCancel={cancelCapitalEvent}
               onCreate={openCapitalEventModal}
               onCreateFromAllocation={openCapitalEventModal}
+              onEdit={openEditCapitalEvent}
               permissions={permissions}
             />
             <VehicleRevenueShareRulesBlock
@@ -1313,10 +1399,13 @@ export default function VehiclesPage() {
       <Modal
         destroyOnHidden
         okText="保存"
-        onCancel={() => setCapitalEventOpen(false)}
+        onCancel={() => {
+          setCapitalEventOpen(false);
+          setEditingCapitalEvent(null);
+        }}
         onOk={() => capitalEventForm.submit()}
         open={capitalEventOpen}
-        title="新增资本事件"
+        title={editingCapitalEvent ? "编辑资本事件" : "新增资本事件"}
         width={720}
       >
         <Form<CapitalEventValues> form={capitalEventForm} layout="vertical" onFinish={saveCapitalEvent}>
@@ -1775,15 +1864,19 @@ function VehicleCapitalEventsBlock({
   activeFinancingAllocations,
   capitalEvents,
   loading,
+  onCancel,
   onCreate,
   onCreateFromAllocation,
+  onEdit,
   permissions
 }: Readonly<{
   activeFinancingAllocations: FinancingAllocation[];
   capitalEvents: CapitalEvent[];
   loading: boolean;
+  onCancel: (event: CapitalEvent) => void;
   onCreate: () => void;
   onCreateFromAllocation: (allocation: FinancingAllocation) => void;
+  onEdit: (event: CapitalEvent) => void;
   permissions: ReadonlySet<string>;
 }>) {
   const allocationColumns: ColumnsType<FinancingAllocation> = [
@@ -1833,7 +1926,36 @@ function VehicleCapitalEventsBlock({
     { render: (_, record) => financingInstrumentText(record.financingInstrument, record.financingInstrumentId), title: "关联融资工具", width: 220 },
     { dataIndex: "equityCapitalAmount", render: formatCapitalYuan, title: "自有资金金额", width: 140 },
     { dataIndex: "debtPrincipalAmount", render: formatCapitalYuan, title: "债务本金金额", width: 140 },
-    { dataIndex: "remark", render: (value: string | null) => value ?? "-", title: "备注", width: 180 }
+    { dataIndex: "remark", render: (value: string | null) => value ?? "-", title: "备注", width: 180 },
+    {
+      fixed: "right",
+      render: (_, record) =>
+        record.eventStatus === "CANCELLED" ? (
+          "-"
+        ) : (
+          <Space size={8}>
+            <ActionButton
+              onClick={() => onEdit(record)}
+              permission="capital_structure:manage"
+              permissions={permissions}
+              size="small"
+            >
+              编辑
+            </ActionButton>
+            <ActionButton
+              danger
+              onClick={() => onCancel(record)}
+              permission="capital_structure:manage"
+              permissions={permissions}
+              size="small"
+            >
+              作废
+            </ActionButton>
+          </Space>
+        ),
+      title: "操作",
+      width: 140
+    }
   ];
 
   return (
@@ -1858,7 +1980,7 @@ function VehicleCapitalEventsBlock({
           title={() => "当前融资分摊（来自融资工具车辆分摊）"}
         />
       ) : null}
-      <Table columns={columns} dataSource={capitalEvents} loading={loading} pagination={false} rowKey="id" scroll={{ x: 1260 }} size="small" />
+      <Table columns={columns} dataSource={capitalEvents} loading={loading} pagination={false} rowKey="id" scroll={{ x: 1400 }} size="small" />
     </Space>
   );
 }

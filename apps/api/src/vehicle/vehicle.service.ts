@@ -24,11 +24,13 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { PrismaService } from "../prisma/prisma.service";
 import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
+  CancelVehicleCapitalEventDto,
   CreateVehicleCapitalEventDto,
   CreateVehicleDto,
   InitializeSalePriceDto,
   ReviewSalePriceDto,
   UpdateVehicleDto,
+  UpdateVehicleCapitalEventDto,
   UpdateVehicleStatusDto,
   UpsertVehicleAssetCostProfileDto
 } from "./dto/vehicle.dto";
@@ -509,14 +511,7 @@ export class VehicleService {
     const vehicle = await this.findVehicleOrThrow(id);
     assertCapitalEventInput(dto);
 
-    const financingInstrument = dto.financingInstrumentId
-      ? await this.prisma.financingInstrument.findUnique({ where: { id: dto.financingInstrumentId } })
-      : null;
-
-    if (dto.financingInstrumentId && (!financingInstrument || financingInstrument.deletedAt)) {
-      throw new NotFoundException("融资工具不存在");
-    }
-
+    const financingInstrument = await this.resolveCapitalEventFinancingInstrument(dto.financingInstrumentId);
     const data = buildCapitalEventData(dto, vehicle, financingInstrument);
     const event = await withUniqueBusinessNoRetry(() =>
       this.prisma.vehicleCapitalEvent.create({
@@ -534,6 +529,91 @@ export class VehicleService {
     await this.auditService.write({
       action: AuditAction.CREATE,
       after: toCapitalEventAuditSnapshot(event, dto.remark),
+      entityId: event.id,
+      entityType: "vehicle_capital_event",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toCapitalEventView(event);
+  }
+
+  async updateCapitalEvent(
+    id: string,
+    eventId: string,
+    dto: UpdateVehicleCapitalEventDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const vehicle = await this.findVehicleOrThrow(id);
+    const before = await this.findCapitalEventOrThrow(id, eventId);
+    if (before.eventStatus === VehicleCapitalEventStatus.CANCELLED) {
+      throw new BadRequestException("已作废的资本事件不能编辑");
+    }
+
+    const nextDto = mergeCapitalEventUpdateInput(dto, before);
+    assertCapitalEventInput(nextDto);
+    const financingInstrument = await this.resolveCapitalEventFinancingInstrument(nextDto.financingInstrumentId);
+    const data = buildCapitalEventData(nextDto, vehicle, financingInstrument, before.eventStatus);
+    const event = await this.prisma.vehicleCapitalEvent.update({
+      data: {
+        ...data,
+        updatedBy: user.id
+      },
+      include: capitalEventInclude,
+      where: { id: eventId }
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toCapitalEventAuditSnapshot(event, dto.remark),
+      before: toCapitalEventAuditSnapshot(before, dto.remark),
+      entityId: event.id,
+      entityType: "vehicle_capital_event",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toCapitalEventView(event);
+  }
+
+  async cancelCapitalEvent(
+    id: string,
+    eventId: string,
+    dto: CancelVehicleCapitalEventDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const vehicle = await this.findVehicleOrThrow(id);
+    const before = await this.findCapitalEventOrThrow(id, eventId);
+    if (before.eventStatus === VehicleCapitalEventStatus.CANCELLED) {
+      throw new BadRequestException("资本事件已作废，不能重复作废");
+    }
+
+    const remark = dto.remark ?? before.remark;
+    const snapshotFields = capitalEventSnapshotFieldsFromRecord(before, {
+      eventStatus: VehicleCapitalEventStatus.CANCELLED,
+      remark
+    });
+    const event = await this.prisma.vehicleCapitalEvent.update({
+      data: {
+        eventStatus: VehicleCapitalEventStatus.CANCELLED,
+        remark,
+        snapshot: buildCapitalEventSnapshot(vehicle, snapshotFields, before.financingInstrument),
+        updatedBy: user.id
+      },
+      include: capitalEventInclude,
+      where: { id: eventId }
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: toCapitalEventAuditSnapshot(event, dto.remark),
+      before: toCapitalEventAuditSnapshot(before, dto.remark),
       entityId: event.id,
       entityType: "vehicle_capital_event",
       ipAddress: context.ipAddress,
@@ -575,6 +655,39 @@ export class VehicleService {
     }
 
     return vehicle;
+  }
+
+  private async findCapitalEventOrThrow(vehicleId: string, eventId: string) {
+    const event = await this.prisma.vehicleCapitalEvent.findFirst({
+      include: capitalEventInclude,
+      where: {
+        deletedAt: null,
+        id: eventId,
+        vehicleId
+      }
+    });
+
+    if (!event) {
+      throw new NotFoundException("资本事件不存在");
+    }
+
+    return event;
+  }
+
+  private async resolveCapitalEventFinancingInstrument(financingInstrumentId: string | null | undefined) {
+    if (!financingInstrumentId) {
+      return null;
+    }
+
+    const financingInstrument = await this.prisma.financingInstrument.findUnique({
+      where: { id: financingInstrumentId }
+    });
+
+    if (!financingInstrument || financingInstrument.deletedAt) {
+      throw new NotFoundException("融资工具不存在");
+    }
+
+    return financingInstrument;
   }
 }
 
@@ -972,13 +1085,40 @@ function assertCapitalEventInput(dto: CreateVehicleCapitalEventDto) {
 
   assertOptionalNonNegativeInteger(dto.equityCapitalAmount, "自有资金金额必须大于等于 0");
   assertOptionalNonNegativeInteger(dto.debtPrincipalAmount, "债务本金金额必须大于等于 0");
-  assertAcquisitionMode(dto.acquisitionMode);
+  if (dto.acquisitionMode !== null) {
+    assertAcquisitionMode(dto.acquisitionMode);
+  }
+}
+
+function mergeCapitalEventUpdateInput(
+  dto: UpdateVehicleCapitalEventDto,
+  before: VehicleCapitalEventWithInstrument
+): CreateVehicleCapitalEventDto {
+  return {
+    acquisitionMode: valueOrExisting(dto.acquisitionMode, before.acquisitionMode),
+    debtPrincipalAmount: valueOrExisting(dto.debtPrincipalAmount, numberOrNull(before.debtPrincipalAmount)),
+    effectiveFrom: dto.effectiveFrom ?? formatDateOnly(before.effectiveFrom),
+    effectiveTo:
+      dto.effectiveTo === undefined
+        ? before.effectiveTo
+          ? formatDateOnly(before.effectiveTo)
+          : null
+        : dto.effectiveTo,
+    equityCapitalAmount: valueOrExisting(dto.equityCapitalAmount, numberOrNull(before.equityCapitalAmount)),
+    eventType: dto.eventType ?? before.eventType,
+    externalOwnerName: valueOrExisting(dto.externalOwnerName, before.externalOwnerName),
+    financingInstrumentId: valueOrExisting(dto.financingInstrumentId, before.financingInstrumentId),
+    lessorName: valueOrExisting(dto.lessorName, before.lessorName),
+    managedOwnerName: valueOrExisting(dto.managedOwnerName, before.managedOwnerName),
+    remark: valueOrExisting(dto.remark, before.remark)
+  };
 }
 
 function buildCapitalEventData(
   dto: CreateVehicleCapitalEventDto,
   vehicle: VehicleWithHistory,
-  financingInstrument: FinancingInstrument | null
+  financingInstrument: FinancingInstrument | null,
+  eventStatus: VehicleCapitalEventStatus = VehicleCapitalEventStatus.ACTIVE
 ): Omit<Prisma.VehicleCapitalEventUncheckedCreateInput, "createdBy" | "eventNo" | "updatedBy" | "vehicleId"> {
   const effectiveFrom = parseDateOnly(dto.effectiveFrom, "effectiveFrom");
   const effectiveTo = parseOptionalDateOnly(dto.effectiveTo, "effectiveTo") ?? null;
@@ -993,7 +1133,7 @@ function buildCapitalEventData(
     effectiveFrom,
     effectiveTo,
     equityCapitalAmount: optionalBigInt(dto.equityCapitalAmount),
-    eventStatus: VehicleCapitalEventStatus.ACTIVE,
+    eventStatus,
     eventType: dto.eventType,
     externalOwnerName: dto.externalOwnerName ?? null,
     financingInstrumentId: financingInstrument?.id ?? null,
@@ -1005,6 +1145,29 @@ function buildCapitalEventData(
   return {
     ...fields,
     snapshot: buildCapitalEventSnapshot(vehicle, fields, financingInstrument)
+  };
+}
+
+function capitalEventSnapshotFieldsFromRecord(
+  event: VehicleCapitalEventWithInstrument,
+  overrides: Partial<{
+    eventStatus: VehicleCapitalEventStatus;
+    remark: string | null;
+  }> = {}
+) {
+  return {
+    acquisitionMode: event.acquisitionMode,
+    debtPrincipalAmount: event.debtPrincipalAmount,
+    effectiveFrom: event.effectiveFrom,
+    effectiveTo: event.effectiveTo,
+    equityCapitalAmount: event.equityCapitalAmount,
+    eventStatus: overrides.eventStatus ?? event.eventStatus,
+    eventType: event.eventType,
+    externalOwnerName: event.externalOwnerName,
+    financingInstrumentId: event.financingInstrumentId,
+    lessorName: event.lessorName,
+    managedOwnerName: event.managedOwnerName,
+    remark: overrides.remark ?? event.remark
   };
 }
 
@@ -1379,6 +1542,10 @@ function ratioOrNull(numerator: bigint, denominator: bigint) {
 
 function numberOrNull(value: bigint | number | null | undefined) {
   return value === null || value === undefined ? null : Number(value);
+}
+
+function valueOrExisting<T>(value: T | undefined, existing: T) {
+  return value === undefined ? existing : value;
 }
 
 function dateOnly(date: Date) {

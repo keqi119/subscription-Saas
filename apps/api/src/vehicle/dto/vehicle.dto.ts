@@ -316,3 +316,59 @@ export class CreateVehicleCapitalEventDto {
   @IsString()
   remark?: string | null;
 }
+
+export class UpdateVehicleCapitalEventDto {
+  @IsOptional()
+  @IsEnum(VehicleCapitalEventType)
+  eventType?: VehicleCapitalEventType;
+
+  @IsOptional()
+  @IsString()
+  effectiveFrom?: string;
+
+  @IsOptional()
+  @IsString()
+  effectiveTo?: string | null;
+
+  @IsOptional()
+  @IsEnum(VehicleAcquisitionMode)
+  acquisitionMode?: VehicleAcquisitionMode | null;
+
+  @IsOptional()
+  @IsString()
+  financingInstrumentId?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  equityCapitalAmount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  debtPrincipalAmount?: number | null;
+
+  @IsOptional()
+  @IsString()
+  externalOwnerName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  lessorName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  managedOwnerName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class CancelVehicleCapitalEventDto {
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}

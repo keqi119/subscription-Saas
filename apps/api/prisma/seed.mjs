@@ -202,6 +202,8 @@ const menuRows = [
   ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
   ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
   ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
+  ["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"],
+  ["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
   ["system.users", "用户管理", "/system/users", "team", 10, "user:view", "system"],
   ["system.roles", "角色管理", "/system/roles", "safety", 20, "role:view", "system"],
@@ -503,6 +505,10 @@ const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collection
 
 const collectionMenuCodes = ["billing", "billing.collections"];
 
+const financingMenuCodes = ["billing.financing_instruments"];
+
+const revenueRightMenuCodes = ["billing.revenue_rights"];
+
 const productMenuCodes = [
   "products",
   "products.subscription",
@@ -689,6 +695,8 @@ async function main() {
       "orders.contract_templates",
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
+      ...financingMenuCodes,
+      ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
   );
@@ -758,6 +766,8 @@ async function main() {
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
         ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : []),
+        ...financingMenuCodes,
+        ...revenueRightMenuCodes,
         ...(roleCode === "AS" ? reportAssetMenuCodes : [])
       ]
     );
@@ -801,6 +811,8 @@ async function main() {
       "orders.contract_templates",
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
+      ...financingMenuCodes,
+      ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
   );

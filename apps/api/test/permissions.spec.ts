@@ -971,6 +971,10 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const revenueRightManagementPermissions = [");
     expect(seedSource).toContain('const revenueShareViewPermissions = ["revenue_share:view"]');
     expect(seedSource).toContain('const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"]');
+    expect(seedSource).toContain('["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"]');
+    expect(seedSource).toContain('["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"]');
+    expect(seedSource).toContain('const financingMenuCodes = ["billing.financing_instruments"]');
+    expect(seedSource).toContain('const revenueRightMenuCodes = ["billing.revenue_rights"]');
     expect(seedSource).toContain(
       '...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions)'
     );
@@ -995,6 +999,10 @@ describe("seed permission calibration", () => {
       "revenue_right:view",
       "revenue_share:view"
     ]);
+    for (const roleCode of ["OP", "GM"]) {
+      expect(roleHasMenu(roleMenuArray(roleCode), "billing.financing_instruments")).toBe(true);
+      expect(roleHasMenu(roleMenuArray(roleCode), "billing.revenue_rights")).toBe(true);
+    }
     expect(roleHasPermission(permissionConstantSource("capitalStructureManagementPermissions"), "capital_structure:manage")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("financingManagementPermissions"), "financing:manage")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("revenueRightManagementPermissions"), "revenue_right:manage")).toBe(true);

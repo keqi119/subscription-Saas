@@ -36,6 +36,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import {
+  FINANCING_INSTRUMENT_TYPE_LABELS,
   REVENUE_SHARE_BASIS_LABELS,
   REVENUE_SHARE_RULE_STATUS_LABELS,
   REVENUE_SHARE_RULE_TYPE_LABELS,
@@ -163,6 +164,13 @@ interface FinancingInstrumentSummary {
   repaymentMethod?: string | null;
 }
 
+interface FinancingInstrumentListResponse {
+  items: FinancingInstrumentSummary[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
 interface CapitalEvent {
   acquisitionMode?: string | null;
   debtPrincipalAmount?: number | null;
@@ -182,6 +190,7 @@ interface CapitalEvent {
 }
 
 interface FinancingAllocation {
+  allocationNo?: string | null;
   allocatedPrincipalAmount: number;
   allocationRatioBps?: number | null;
   allocationStatus: string;
@@ -189,6 +198,7 @@ interface FinancingAllocation {
   effectiveTo?: string | null;
   financingInstrument?: FinancingInstrumentSummary | null;
   id: string;
+  instrumentId?: string | null;
   remark?: string | null;
 }
 
@@ -443,6 +453,8 @@ export default function VehiclesPage() {
   const [detailVehicle, setDetailVehicle] = useState<Vehicle | null>(null);
   const [dueReviews, setDueReviews] = useState<Vehicle[]>([]);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
+  const [financingInstruments, setFinancingInstruments] = useState<FinancingInstrumentSummary[]>([]);
+  const [financingInstrumentsLoading, setFinancingInstrumentsLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyRows, setHistoryRows] = useState<SalePriceHistory[]>([]);
   const [historyVehicle, setHistoryVehicle] = useState<Vehicle | null>(null);
@@ -460,8 +472,31 @@ export default function VehiclesPage() {
   const capitalEventType = Form.useWatch("eventType", capitalEventForm);
   const revenueShareRuleType = Form.useWatch("ruleType", revenueShareRuleForm);
   const canViewCapitalStructure = permissions.has("capital_structure:view") || permissions.has("vehicle:view") || permissions.has("report:asset");
+  const canViewFinancing = permissions.has("financing:view");
   const canViewRevenueShareRules = permissions.has("revenue_share:view") || permissions.has("vehicle:view");
   const canViewRevenueSharePreview = permissions.has("revenue_share:view") || permissions.has("report:asset");
+  const financingInstrumentOptions = useMemo(() => {
+    const instrumentMap = new Map<string, FinancingInstrumentSummary>();
+
+    for (const instrument of capitalStructure?.financingInstruments ?? []) {
+      instrumentMap.set(instrument.id, instrument);
+    }
+
+    for (const allocation of capitalStructure?.activeFinancingAllocations ?? []) {
+      if (allocation.financingInstrument) {
+        instrumentMap.set(allocation.financingInstrument.id, allocation.financingInstrument);
+      }
+    }
+
+    for (const instrument of financingInstruments) {
+      instrumentMap.set(instrument.id, instrument);
+    }
+
+    return Array.from(instrumentMap.values()).map((instrument) => ({
+      label: financingInstrumentOptionLabel(instrument),
+      value: instrument.id
+    }));
+  }, [capitalStructure, financingInstruments]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -484,6 +519,25 @@ export default function VehiclesPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const loadFinancingInstruments = useCallback(async () => {
+    setFinancingInstrumentsLoading(true);
+    try {
+      const result = await apiFetch<FinancingInstrumentListResponse>("/financing-instruments?instrumentStatus=ACTIVE&pageSize=100");
+      setFinancingInstruments(result.items);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+      setFinancingInstruments([]);
+    } finally {
+      setFinancingInstrumentsLoading(false);
+    }
+  }, [message]);
+
+  useEffect(() => {
+    if (canViewFinancing) {
+      void loadFinancingInstruments();
+    }
+  }, [canViewFinancing, loadFinancingInstruments]);
 
   const loadVehicleFinancialData = useCallback(
     async (vehicleId: string) => {
@@ -758,11 +812,16 @@ export default function VehiclesPage() {
     }
   }
 
-  function openCapitalEventModal() {
+  function openCapitalEventModal(allocation?: FinancingAllocation) {
     capitalEventForm.resetFields();
     capitalEventForm.setFieldsValue({
-      eventType: "INITIAL_EQUITY_PURCHASE",
-      effectiveFrom: dayjs()
+      debtPrincipalAmountYuan: allocation ? allocation.allocatedPrincipalAmount / 100 : undefined,
+      effectiveFrom: allocation ? dayjs(allocation.effectiveFrom) : dayjs(),
+      eventType: allocation ? "ADD_DEBT_FINANCING" : "INITIAL_EQUITY_PURCHASE",
+      financingInstrumentId: allocation?.financingInstrument?.id ?? allocation?.instrumentId ?? undefined,
+      remark: allocation
+        ? `根据融资分摊${allocation.allocationNo ? ` ${allocation.allocationNo}` : ""}补录资本事件`
+        : undefined
     });
     setCapitalEventOpen(true);
   }
@@ -1076,9 +1135,11 @@ export default function VehiclesPage() {
               loading={vehicleFinancialLoading}
             />
             <VehicleCapitalEventsBlock
+              activeFinancingAllocations={capitalStructure?.activeFinancingAllocations ?? []}
               capitalEvents={capitalEvents}
               loading={vehicleFinancialLoading}
               onCreate={openCapitalEventModal}
+              onCreateFromAllocation={openCapitalEventModal}
               permissions={permissions}
             />
             <VehicleRevenueShareRulesBlock
@@ -1122,11 +1183,22 @@ export default function VehiclesPage() {
             <Select allowClear options={acquisitionModeOptions} />
           </Form.Item>
           <Form.Item
-            label="融资工具 ID"
+            extra={financingInstrumentOptions.length > 0 ? "请选择融资工具，提交时会自动使用系统融资工具 ID。" : "当前无法加载融资工具列表，请填写系统融资工具 ID（UUID），不要填写 FI 开头的融资工具编号。"}
+            label="融资工具"
             name="financingInstrumentId"
-            rules={[{ required: financingCapitalEventTypes.has(capitalEventType ?? ""), message: "请输入融资工具 ID" }]}
+            rules={[{ required: financingCapitalEventTypes.has(capitalEventType ?? ""), message: "请选择融资工具" }]}
           >
-            <Input placeholder="融资类事件必填" />
+            {financingInstrumentOptions.length > 0 ? (
+              <Select
+                loading={financingInstrumentsLoading}
+                optionFilterProp="label"
+                options={financingInstrumentOptions}
+                placeholder="搜索融资工具编号 / 类型 / 资金方 / 合同编号"
+                showSearch
+              />
+            ) : (
+              <Input placeholder="系统融资工具 ID（UUID）" />
+            )}
           </Form.Item>
           <Form.Item label="自有资金金额（元）" name="equityCapitalAmountYuan">
             <InputNumber min={0} precision={2} style={{ width: "100%" }} />
@@ -1466,6 +1538,16 @@ function financingInstrumentText(instrument?: FinancingInstrumentSummary | null,
   return [instrument.instrumentNo, instrument.lenderName].filter(Boolean).join(" / ") || instrument.id;
 }
 
+function financingInstrumentOptionLabel(instrument: FinancingInstrumentSummary) {
+  const typeLabel = instrument.instrumentType
+    ? labelOf(FINANCING_INSTRUMENT_TYPE_LABELS, instrument.instrumentType)
+    : null;
+
+  return [instrument.instrumentNo, typeLabel, instrument.lenderName, instrument.contractNo]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function VehicleCapitalStructureBlock({
   capitalStructure,
   loading
@@ -1511,16 +1593,49 @@ function VehicleCapitalStructureBlock({
 }
 
 function VehicleCapitalEventsBlock({
+  activeFinancingAllocations,
   capitalEvents,
   loading,
   onCreate,
+  onCreateFromAllocation,
   permissions
 }: Readonly<{
+  activeFinancingAllocations: FinancingAllocation[];
   capitalEvents: CapitalEvent[];
   loading: boolean;
   onCreate: () => void;
+  onCreateFromAllocation: (allocation: FinancingAllocation) => void;
   permissions: ReadonlySet<string>;
 }>) {
+  const allocationColumns: ColumnsType<FinancingAllocation> = [
+    { dataIndex: "allocationNo", render: (value: string | null) => value ?? "-", title: "分摊编号", width: 190 },
+    {
+      render: (_, record) => financingInstrumentText(record.financingInstrument, record.instrumentId),
+      title: "融资工具",
+      width: 240
+    },
+    { dataIndex: "allocatedPrincipalAmount", render: formatCapitalYuan, title: "分摊本金金额", width: 140 },
+    { dataIndex: "allocationRatioBps", render: formatPercentFromBps, title: "分摊比例", width: 110 },
+    { dataIndex: "effectiveFrom", render: formatDate, title: "生效日期", width: 120 },
+    { dataIndex: "effectiveTo", render: formatDate, title: "解除日期", width: 120 },
+    { dataIndex: "remark", render: (value: string | null) => value ?? "-", title: "备注", width: 180 },
+    {
+      fixed: "right",
+      render: (_, record) => (
+        <ActionButton
+          onClick={() => onCreateFromAllocation(record)}
+          permission="capital_structure:manage"
+          permissions={permissions}
+          size="small"
+        >
+          补录资本事件
+        </ActionButton>
+      ),
+      title: "操作",
+      width: 130
+    }
+  ];
+
   const columns: ColumnsType<CapitalEvent> = [
     { dataIndex: "eventNo", title: "事件编号", width: 190 },
     {
@@ -1553,6 +1668,18 @@ function VehicleCapitalEventsBlock({
           新增资本事件
         </ActionButton>
       </Space>
+      {activeFinancingAllocations.length > 0 ? (
+        <Table
+          columns={allocationColumns}
+          dataSource={activeFinancingAllocations}
+          loading={loading}
+          pagination={false}
+          rowKey="id"
+          scroll={{ x: 1230 }}
+          size="small"
+          title={() => "当前融资分摊（来自融资工具车辆分摊）"}
+        />
+      ) : null}
       <Table columns={columns} dataSource={capitalEvents} loading={loading} pagination={false} rowKey="id" scroll={{ x: 1260 }} size="small" />
     </Space>
   );

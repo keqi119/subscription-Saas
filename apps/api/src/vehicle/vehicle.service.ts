@@ -1,12 +1,17 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import {
   AuditAction,
+  FinancingAllocationStatus,
+  FinancingInstrument,
   Prisma,
   SalePriceStatus,
   Vehicle,
+  VehicleAcquisitionMode,
   VehicleAssetCostProfile,
   VehicleAssetCostProfileStatus,
   VehicleBatteryUsageType,
+  VehicleCapitalEventStatus,
+  VehicleCapitalEventType,
   VehicleDepreciationMethod,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
@@ -19,6 +24,7 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { PrismaService } from "../prisma/prisma.service";
 import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
+  CreateVehicleCapitalEventDto,
   CreateVehicleDto,
   InitializeSalePriceDto,
   ReviewSalePriceDto,
@@ -35,11 +41,33 @@ const vehicleInclude = {
 
 type VehicleWithHistory = Vehicle & { salePriceHistories?: VehicleSalePriceHistory[] };
 
+const capitalEventInclude = {
+  financingInstrument: true
+} satisfies Prisma.VehicleCapitalEventInclude;
+
+const financingAllocationInclude = {
+  instrument: true
+} satisfies Prisma.FinancingInstrumentVehicleInclude;
+
+type VehicleCapitalEventWithInstrument = Prisma.VehicleCapitalEventGetPayload<{
+  include: typeof capitalEventInclude;
+}>;
+type FinancingAllocationWithInstrument = Prisma.FinancingInstrumentVehicleGetPayload<{
+  include: typeof financingAllocationInclude;
+}>;
+
 const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<VehicleBatteryUsageType, string> = {
   BAAS: "BaaS / 电池租用",
   BUYOUT: "电池买断"
 };
 const VEHICLE_BATTERY_USAGE_TYPES = new Set<string>(Object.values(VehicleBatteryUsageType));
+const VEHICLE_ACQUISITION_MODES = new Set<string>(Object.values(VehicleAcquisitionMode));
+const FINANCING_CAPITAL_EVENT_TYPES = new Set<VehicleCapitalEventType>([
+  VehicleCapitalEventType.ADD_DEBT_FINANCING,
+  VehicleCapitalEventType.REFINANCE,
+  VehicleCapitalEventType.EARLY_SETTLEMENT,
+  VehicleCapitalEventType.FINANCING_RELEASE
+]);
 
 const INITIALIZE_BEFORE_AVAILABLE_MESSAGE = "请先初始化当前车辆销售价后再入池";
 const RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE = "退回车辆需重新初始化当前销售价后才能入池";
@@ -110,6 +138,7 @@ export class VehicleService {
     assertPositiveAmount(dto.purchasePriceAmount, "车辆采购价必须大于 0");
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
+    assertAcquisitionMode(dto.acquisitionMode);
     assertCanCreateAsAvailable(dto.status ?? VehicleStatus.DRAFT);
 
     const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id);
@@ -141,6 +170,7 @@ export class VehicleService {
     const before = await this.findVehicleOrThrow(id);
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
+    assertAcquisitionMode(dto.acquisitionMode);
     const data = updateVehicleData(dto, user.id);
 
     if (dto.status) {
@@ -459,6 +489,81 @@ export class VehicleService {
     };
   }
 
+  async listCapitalEvents(id: string) {
+    await this.findVehicleOrThrow(id);
+    const events = await this.prisma.vehicleCapitalEvent.findMany({
+      include: capitalEventInclude,
+      orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+      where: { deletedAt: null, vehicleId: id }
+    });
+
+    return events.map(toCapitalEventView);
+  }
+
+  async createCapitalEvent(
+    id: string,
+    dto: CreateVehicleCapitalEventDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const vehicle = await this.findVehicleOrThrow(id);
+    assertCapitalEventInput(dto);
+
+    const financingInstrument = dto.financingInstrumentId
+      ? await this.prisma.financingInstrument.findUnique({ where: { id: dto.financingInstrumentId } })
+      : null;
+
+    if (dto.financingInstrumentId && (!financingInstrument || financingInstrument.deletedAt)) {
+      throw new NotFoundException("融资工具不存在");
+    }
+
+    const data = buildCapitalEventData(dto, vehicle, financingInstrument);
+    const event = await withUniqueBusinessNoRetry(() =>
+      this.prisma.vehicleCapitalEvent.create({
+        data: {
+          ...data,
+          createdBy: user.id,
+          eventNo: createBusinessNo("VCE"),
+          updatedBy: user.id,
+          vehicleId: id
+        },
+        include: capitalEventInclude
+      })
+    );
+
+    await this.auditService.write({
+      action: AuditAction.CREATE,
+      after: toCapitalEventAuditSnapshot(event, dto.remark),
+      entityId: event.id,
+      entityType: "vehicle_capital_event",
+      ipAddress: context.ipAddress,
+      module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+
+    return toCapitalEventView(event);
+  }
+
+  async getCapitalStructure(id: string) {
+    const vehicle = await this.findVehicleOrThrow(id);
+    const today = todayDateOnly();
+    const [capitalEvents, financingAllocations] = await Promise.all([
+      this.prisma.vehicleCapitalEvent.findMany({
+        include: capitalEventInclude,
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        where: activeCapitalEventWhere(id, today)
+      }),
+      this.prisma.financingInstrumentVehicle.findMany({
+        include: financingAllocationInclude,
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        where: activeFinancingAllocationWhere(id, today)
+      })
+    ]);
+
+    return buildCapitalStructurePreview(vehicle, capitalEvents, financingAllocations);
+  }
+
   private async findVehicleOrThrow(id: string) {
     const vehicle = await this.prisma.vehicle.findUnique({
       include: vehicleInclude,
@@ -497,6 +602,7 @@ function createVehicleData(dto: CreateVehicleDto): Omit<Prisma.VehicleCreateInpu
         ? undefined
         : new Prisma.Decimal(dto.batteryCapacityKwh),
     batteryUsageType: dto.batteryUsageType ?? VehicleBatteryUsageType.BUYOUT,
+    acquisitionMode: dto.acquisitionMode ?? VehicleAcquisitionMode.OWNED_CASH,
     brand: dto.brand,
     currentMileageKm: dto.currentMileageKm ?? 0,
     insuranceEndDate: parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"),
@@ -529,6 +635,7 @@ function updateVehicleData(dto: UpdateVehicleDto, operatorId: string): Prisma.Ve
       : new Prisma.Decimal(dto.batteryCapacityKwh)
   );
   assignIfDefined(data, "batteryUsageType", dto.batteryUsageType);
+  assignIfDefined(data, "acquisitionMode", dto.acquisitionMode);
   assignIfDefined(data, "brand", dto.brand);
   assignIfDefined(data, "currentMileageKm", dto.currentMileageKm);
   assignIfDefined(data, "insuranceEndDate", parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"));
@@ -665,6 +772,15 @@ function assertBatteryUsageType(value: VehicleBatteryUsageType | null | undefine
   }
 }
 
+function assertAcquisitionMode(value: VehicleAcquisitionMode | null | undefined) {
+  if (value === undefined) {
+    return;
+  }
+  if (value === null || !VEHICLE_ACQUISITION_MODES.has(value)) {
+    throw new BadRequestException("车辆取得方式不合法");
+  }
+}
+
 function isPositiveBigInt(value: bigint | null | undefined) {
   return value !== null && value !== undefined && value > 0n;
 }
@@ -743,6 +859,7 @@ function toReviewQuarter(date: Date) {
 
 function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
   return {
+    acquisitionMode: vehicle.acquisitionMode,
     assetLocation: vehicle.assetLocation,
     batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,
@@ -822,6 +939,286 @@ function activeAssetCostProfileWhere(vehicleId: string): Prisma.VehicleAssetCost
     profileStatus: VehicleAssetCostProfileStatus.ACTIVE,
     vehicleId
   };
+}
+
+function activeCapitalEventWhere(vehicleId: string, today: Date): Prisma.VehicleCapitalEventWhereInput {
+  return {
+    deletedAt: null,
+    effectiveFrom: { lte: today },
+    eventStatus: VehicleCapitalEventStatus.ACTIVE,
+    OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }],
+    vehicleId
+  };
+}
+
+function activeFinancingAllocationWhere(
+  vehicleId: string,
+  today: Date
+): Prisma.FinancingInstrumentVehicleWhereInput {
+  return {
+    allocationStatus: FinancingAllocationStatus.ACTIVE,
+    deletedAt: null,
+    effectiveFrom: { lte: today },
+    instrument: { deletedAt: null },
+    OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }],
+    vehicleId
+  };
+}
+
+function assertCapitalEventInput(dto: CreateVehicleCapitalEventDto) {
+  if (FINANCING_CAPITAL_EVENT_TYPES.has(dto.eventType) && !dto.financingInstrumentId) {
+    throw new BadRequestException("融资类资本事件必须关联融资工具");
+  }
+
+  assertOptionalNonNegativeInteger(dto.equityCapitalAmount, "自有资金金额必须大于等于 0");
+  assertOptionalNonNegativeInteger(dto.debtPrincipalAmount, "债务本金金额必须大于等于 0");
+  assertAcquisitionMode(dto.acquisitionMode);
+}
+
+function buildCapitalEventData(
+  dto: CreateVehicleCapitalEventDto,
+  vehicle: VehicleWithHistory,
+  financingInstrument: FinancingInstrument | null
+): Omit<Prisma.VehicleCapitalEventUncheckedCreateInput, "createdBy" | "eventNo" | "updatedBy" | "vehicleId"> {
+  const effectiveFrom = parseDateOnly(dto.effectiveFrom, "effectiveFrom");
+  const effectiveTo = parseOptionalDateOnly(dto.effectiveTo, "effectiveTo") ?? null;
+
+  if (effectiveTo && effectiveTo.getTime() < effectiveFrom.getTime()) {
+    throw new BadRequestException("effectiveTo 不能早于 effectiveFrom");
+  }
+
+  const fields = {
+    acquisitionMode: dto.acquisitionMode ?? null,
+    debtPrincipalAmount: optionalBigInt(dto.debtPrincipalAmount),
+    effectiveFrom,
+    effectiveTo,
+    equityCapitalAmount: optionalBigInt(dto.equityCapitalAmount),
+    eventStatus: VehicleCapitalEventStatus.ACTIVE,
+    eventType: dto.eventType,
+    externalOwnerName: dto.externalOwnerName ?? null,
+    financingInstrumentId: financingInstrument?.id ?? null,
+    lessorName: dto.lessorName ?? null,
+    managedOwnerName: dto.managedOwnerName ?? null,
+    remark: dto.remark ?? null
+  };
+
+  return {
+    ...fields,
+    snapshot: buildCapitalEventSnapshot(vehicle, fields, financingInstrument)
+  };
+}
+
+function buildCapitalEventSnapshot(
+  vehicle: VehicleWithHistory,
+  fields: {
+    acquisitionMode: VehicleAcquisitionMode | null;
+    debtPrincipalAmount: bigint | null;
+    effectiveFrom: Date;
+    effectiveTo: Date | null;
+    equityCapitalAmount: bigint | null;
+    eventStatus: VehicleCapitalEventStatus;
+    eventType: VehicleCapitalEventType;
+    externalOwnerName: string | null;
+    financingInstrumentId: string | null;
+    lessorName: string | null;
+    managedOwnerName: string | null;
+    remark: string | null;
+  },
+  financingInstrument: FinancingInstrument | null
+): Prisma.InputJsonObject {
+  return {
+    acquisitionMode: fields.acquisitionMode,
+    debtPrincipalAmount: numberOrNull(fields.debtPrincipalAmount),
+    effectiveFrom: formatDateOnly(fields.effectiveFrom),
+    effectiveTo: fields.effectiveTo ? formatDateOnly(fields.effectiveTo) : null,
+    equityCapitalAmount: numberOrNull(fields.equityCapitalAmount),
+    eventStatus: fields.eventStatus,
+    eventType: fields.eventType,
+    externalOwnerName: fields.externalOwnerName,
+    financingInstrumentId: fields.financingInstrumentId,
+    financingInstrumentNo: financingInstrument?.instrumentNo ?? null,
+    lessorName: fields.lessorName,
+    managedOwnerName: fields.managedOwnerName,
+    purchasePriceAmount: Number(vehicle.purchasePriceAmount),
+    remark: fields.remark,
+    vehicleId: vehicle.id,
+    vehicleNo: vehicle.vehicleNo
+  };
+}
+
+function buildCapitalStructurePreview(
+  vehicle: VehicleWithHistory,
+  capitalEvents: VehicleCapitalEventWithInstrument[],
+  financingAllocations: FinancingAllocationWithInstrument[]
+) {
+  const debtPrincipalAmount = sumBigInt(
+    financingAllocations.map((allocation) => allocation.allocatedPrincipalAmount)
+  );
+  const capitalEventEquityAmount = sumBigInt(
+    capitalEvents.map((event) => event.equityCapitalAmount ?? 0n)
+  );
+  const hasCapitalEvents = capitalEvents.length > 0;
+  const fallbackOwnedCashEquityAmount =
+    !hasCapitalEvents &&
+    debtPrincipalAmount === 0n &&
+    vehicle.acquisitionMode === VehicleAcquisitionMode.OWNED_CASH &&
+    vehicle.purchasePriceAmount > 0n
+      ? vehicle.purchasePriceAmount
+      : 0n;
+  const equityCapitalAmount = capitalEventEquityAmount + fallbackOwnedCashEquityAmount;
+  const capitalCoverageAmount = equityCapitalAmount + debtPrincipalAmount;
+  const purchasePriceAmount = vehicle.purchasePriceAmount;
+  const annualDebtInterestAmount = sumBigInt(
+    financingAllocations.map((allocation) =>
+      calculateInterestAmount(allocation.allocatedPrincipalAmount, allocation.instrument?.annualRateBps ?? 0)
+    )
+  );
+  const missingReasons = buildCapitalStructureMissingReasons(
+    vehicle,
+    hasCapitalEvents,
+    capitalCoverageAmount,
+    financingAllocations
+  );
+
+  return {
+    acquisitionMode: vehicle.acquisitionMode,
+    activeCapitalEvents: capitalEvents.map(toCapitalEventView),
+    activeFinancingAllocations: financingAllocations.map(toFinancingAllocationView),
+    annualDebtInterestAmount: Number(annualDebtInterestAmount),
+    capitalCoverageAmount: Number(capitalCoverageAmount),
+    capitalCoverageIncomplete: purchasePriceAmount > 0n && capitalCoverageAmount < purchasePriceAmount,
+    capitalCoverageRatio: ratioOrNull(capitalCoverageAmount, purchasePriceAmount),
+    debtPrincipalAmount: Number(debtPrincipalAmount),
+    debtRatio: ratioOrNull(debtPrincipalAmount, purchasePriceAmount),
+    equityCapitalAmount: Number(equityCapitalAmount),
+    equityRatio: ratioOrNull(equityCapitalAmount, purchasePriceAmount),
+    financingInstruments: uniqueFinancingInstruments(financingAllocations),
+    missingReasons,
+    monthlyDebtInterestAmount: Number(annualDebtInterestAmount / 12n),
+    purchasePriceAmount: Number(purchasePriceAmount),
+    roeDataReady: missingReasons.length === 0,
+    vehicleId: vehicle.id,
+    vehicleNo: vehicle.vehicleNo
+  };
+}
+
+function buildCapitalStructureMissingReasons(
+  vehicle: VehicleWithHistory,
+  hasCapitalEvents: boolean,
+  capitalCoverageAmount: bigint,
+  financingAllocations: FinancingAllocationWithInstrument[]
+) {
+  const missingReasons: string[] = [];
+
+  if (!isPositiveBigInt(vehicle.purchasePriceAmount)) {
+    missingReasons.push("车辆采购价缺失。");
+  }
+
+  if (!hasCapitalEvents) {
+    missingReasons.push("尚未录入资本事件。");
+  }
+
+  if (vehicle.purchasePriceAmount > 0n && capitalCoverageAmount < vehicle.purchasePriceAmount) {
+    missingReasons.push("资本覆盖金额小于车辆采购价。");
+  }
+
+  if (financingAllocations.some((allocation) => allocation.instrument?.annualRateBps === null)) {
+    missingReasons.push("存在缺少年化利率的融资工具。");
+  }
+
+  if (vehicle.acquisitionMode === VehicleAcquisitionMode.LONG_TERM_LEASED) {
+    missingReasons.push("外部长租固定成本模型待补充。");
+  }
+
+  if (vehicle.acquisitionMode === VehicleAcquisitionMode.MANAGED_REVENUE_SHARE) {
+    missingReasons.push("托管分润模型待补充。");
+  }
+
+  return missingReasons;
+}
+
+function toCapitalEventView(event: VehicleCapitalEventWithInstrument) {
+  return {
+    acquisitionMode: event.acquisitionMode,
+    createdAt: event.createdAt,
+    createdBy: event.createdBy,
+    debtPrincipalAmount: numberOrNull(event.debtPrincipalAmount),
+    deletedAt: event.deletedAt,
+    effectiveFrom: event.effectiveFrom,
+    effectiveTo: event.effectiveTo,
+    equityCapitalAmount: numberOrNull(event.equityCapitalAmount),
+    eventNo: event.eventNo,
+    eventStatus: event.eventStatus,
+    eventType: event.eventType,
+    externalOwnerName: event.externalOwnerName,
+    financingInstrument: event.financingInstrument ? toFinancingInstrumentSummaryView(event.financingInstrument) : null,
+    financingInstrumentId: event.financingInstrumentId,
+    id: event.id,
+    lessorName: event.lessorName,
+    managedOwnerName: event.managedOwnerName,
+    remark: event.remark,
+    snapshot: event.snapshot,
+    updatedAt: event.updatedAt,
+    updatedBy: event.updatedBy,
+    vehicleId: event.vehicleId
+  };
+}
+
+function toCapitalEventAuditSnapshot(event: VehicleCapitalEventWithInstrument, remark: string | null | undefined) {
+  return {
+    event: toCapitalEventView(event),
+    eventId: event.id,
+    financingInstrumentId: event.financingInstrumentId,
+    remark: remark ?? event.remark,
+    vehicleId: event.vehicleId
+  };
+}
+
+function toFinancingAllocationView(allocation: FinancingAllocationWithInstrument) {
+  return {
+    allocatedPrincipalAmount: Number(allocation.allocatedPrincipalAmount),
+    allocationNo: allocation.allocationNo,
+    allocationRatioBps: allocation.allocationRatioBps,
+    allocationStatus: allocation.allocationStatus,
+    createdAt: allocation.createdAt,
+    deletedAt: allocation.deletedAt,
+    effectiveFrom: allocation.effectiveFrom,
+    effectiveTo: allocation.effectiveTo,
+    financingInstrument: toFinancingInstrumentSummaryView(allocation.instrument),
+    id: allocation.id,
+    instrumentId: allocation.instrumentId,
+    remark: allocation.remark,
+    snapshot: allocation.snapshot,
+    updatedAt: allocation.updatedAt,
+    vehicleId: allocation.vehicleId
+  };
+}
+
+function toFinancingInstrumentSummaryView(instrument: FinancingInstrument) {
+  return {
+    annualRateBps: instrument.annualRateBps,
+    collateralType: instrument.collateralType,
+    contractNo: instrument.contractNo,
+    id: instrument.id,
+    instrumentNo: instrument.instrumentNo,
+    instrumentStatus: instrument.instrumentStatus,
+    instrumentType: instrument.instrumentType,
+    lenderName: instrument.lenderName,
+    principalAmount: Number(instrument.principalAmount),
+    repaymentMethod: instrument.repaymentMethod,
+    startDate: instrument.startDate,
+    termMonths: instrument.termMonths
+  };
+}
+
+function uniqueFinancingInstruments(financingAllocations: FinancingAllocationWithInstrument[]) {
+  const instruments = new Map<string, ReturnType<typeof toFinancingInstrumentSummaryView>>();
+
+  for (const allocation of financingAllocations) {
+    instruments.set(allocation.instrument.id, toFinancingInstrumentSummaryView(allocation.instrument));
+  }
+
+  return Array.from(instruments.values());
 }
 
 function assertAssetCostProfileInput(
@@ -966,6 +1363,18 @@ function optionalBigInt(value: number | null | undefined) {
 
 function optionalInteger(value: number | null | undefined) {
   return value === undefined || value === null ? null : value;
+}
+
+function sumBigInt(values: bigint[]) {
+  return values.reduce((total, value) => total + value, 0n);
+}
+
+function calculateInterestAmount(amount: bigint, annualRateBps: number) {
+  return (amount * BigInt(annualRateBps)) / 10000n;
+}
+
+function ratioOrNull(numerator: bigint, denominator: bigint) {
+  return denominator > 0n ? Number(numerator) / Number(denominator) : null;
 }
 
 function numberOrNull(value: bigint | number | null | undefined) {

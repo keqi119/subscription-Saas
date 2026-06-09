@@ -564,6 +564,88 @@ enum VehicleBatteryUsageType {
   @@map("vehicle_battery_usage_type")
 }
 
+enum VehicleAcquisitionMode {
+  OWNED_CASH
+  OWNED_FINANCED
+  LONG_TERM_LEASED
+  MANAGED_REVENUE_SHARE
+
+  @@map("vehicle_acquisition_mode")
+}
+
+enum VehicleCapitalEventType {
+  INITIAL_EQUITY_PURCHASE
+  ADD_DEBT_FINANCING
+  REFINANCE
+  EARLY_SETTLEMENT
+  FINANCING_RELEASE
+  LEASE_IN
+  LEASE_TERMINATION
+  MANAGED_IN
+  MANAGED_TERMINATION
+  OTHER
+
+  @@map("vehicle_capital_event_type")
+}
+
+enum VehicleCapitalEventStatus {
+  ACTIVE
+  ENDED
+  CANCELLED
+
+  @@map("vehicle_capital_event_status")
+}
+
+enum FinancingInstrumentType {
+  FINANCE_LEASE
+  BANK_AUTO_LOAN
+  BANK_PROJECT_LOAN
+  PERSONAL_LOAN
+  RECEIVABLE_PLEDGE
+  ABS_OR_SPV
+  OTHER
+
+  @@map("financing_instrument_type")
+}
+
+enum FinancingInstrumentStatus {
+  ACTIVE
+  SETTLED
+  CANCELLED
+
+  @@map("financing_instrument_status")
+}
+
+enum FinancingRepaymentMethod {
+  INTEREST_ONLY
+  EQUAL_PRINCIPAL_INTEREST
+  EQUAL_PRINCIPAL
+  BULLET
+  MANUAL
+
+  @@map("financing_repayment_method")
+}
+
+enum FinancingCollateralType {
+  VEHICLE
+  VEHICLE_POOL
+  ORDER_RECEIVABLE
+  BILL_RECEIVABLE
+  MIXED
+  NONE
+  OTHER
+
+  @@map("financing_collateral_type")
+}
+
+enum FinancingAllocationStatus {
+  ACTIVE
+  RELEASED
+  CANCELLED
+
+  @@map("financing_allocation_status")
+}
+
 enum SalePriceStatus {
   PENDING_INITIALIZE
   EFFECTIVE
@@ -1383,6 +1465,7 @@ model Vehicle {
   vehicleModel                  VehicleModel?             @map("vehicle_model")
   batteryCapacityKwh            Decimal?                  @map("battery_capacity_kwh") @db.Decimal(6, 2)
   batteryUsageType              VehicleBatteryUsageType   @default(BUYOUT) @map("battery_usage_type")
+  acquisitionMode               VehicleAcquisitionMode    @default(OWNED_CASH) @map("acquisition_mode")
   purchasePriceAmount           BigInt                    @map("purchase_price_amount")
   purchaseDate                  DateTime?                 @map("purchase_date") @db.Date
   currentSalePriceAmount        BigInt?                   @map("current_sale_price_amount")
@@ -1405,6 +1488,8 @@ model Vehicle {
   returnDamages                 VehicleReturnDamage[]
   salePriceHistories            VehicleSalePriceHistory[]
   assetCostProfiles             VehicleAssetCostProfile[]
+  capitalEvents                 VehicleCapitalEvent[]
+  financingAllocations          FinancingInstrumentVehicle[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                   @map("created_by") @db.Uuid
@@ -1466,6 +1551,100 @@ model VehicleAssetCostProfile {
   @@index([profileStatus])
   @@index([deletedAt])
   @@map("vehicle_asset_cost_profile")
+}
+
+model VehicleCapitalEvent {
+  id                    String                     @id @default(uuid()) @db.Uuid
+  eventNo               String                     @unique @map("event_no") @db.VarChar(64)
+  vehicleId             String                     @map("vehicle_id") @db.Uuid
+  vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id])
+  eventType             VehicleCapitalEventType    @map("event_type")
+  eventStatus           VehicleCapitalEventStatus  @default(ACTIVE) @map("event_status")
+  effectiveFrom         DateTime                   @map("effective_from") @db.Date
+  effectiveTo           DateTime?                  @map("effective_to") @db.Date
+  acquisitionMode       VehicleAcquisitionMode?    @map("acquisition_mode")
+  financingInstrumentId String?                    @map("financing_instrument_id") @db.Uuid
+  financingInstrument   FinancingInstrument?       @relation(fields: [financingInstrumentId], references: [id])
+  equityCapitalAmount   BigInt?                    @map("equity_capital_amount")
+  debtPrincipalAmount   BigInt?                    @map("debt_principal_amount")
+  externalOwnerName     String?                    @map("external_owner_name") @db.VarChar(128)
+  lessorName            String?                    @map("lessor_name") @db.VarChar(128)
+  managedOwnerName      String?                    @map("managed_owner_name") @db.VarChar(128)
+  remark                String?                    @db.Text
+  snapshot              Json?
+  createdAt             DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy             String?                    @map("created_by") @db.Uuid
+  updatedBy             String?                    @map("updated_by") @db.Uuid
+  deletedAt             DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([eventType])
+  @@index([eventStatus])
+  @@index([effectiveFrom])
+  @@index([financingInstrumentId])
+  @@index([deletedAt])
+  @@map("vehicle_capital_event")
+}
+
+model FinancingInstrument {
+  id               String                         @id @default(uuid()) @db.Uuid
+  instrumentNo     String                         @unique @map("instrument_no") @db.VarChar(64)
+  instrumentType   FinancingInstrumentType        @map("instrument_type")
+  instrumentStatus FinancingInstrumentStatus      @default(ACTIVE) @map("instrument_status")
+  lenderName       String?                        @map("lender_name") @db.VarChar(128)
+  contractNo       String?                        @map("contract_no") @db.VarChar(128)
+  principalAmount  BigInt                         @map("principal_amount")
+  annualRateBps    Int?                           @map("annual_rate_bps")
+  startDate        DateTime                       @map("start_date") @db.Date
+  maturityDate     DateTime?                      @map("maturity_date") @db.Date
+  termMonths       Int?                           @map("term_months")
+  repaymentMethod  FinancingRepaymentMethod?      @map("repayment_method")
+  collateralType   FinancingCollateralType?       @map("collateral_type")
+  remark           String?                        @db.Text
+  snapshot         Json?
+  createdAt        DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?                        @map("created_by") @db.Uuid
+  updatedBy        String?                        @map("updated_by") @db.Uuid
+  deletedAt        DateTime?                      @map("deleted_at") @db.Timestamptz(6)
+
+  vehicles         FinancingInstrumentVehicle[]
+  capitalEvents    VehicleCapitalEvent[]
+
+  @@index([instrumentType])
+  @@index([instrumentStatus])
+  @@index([startDate])
+  @@index([deletedAt])
+  @@map("financing_instrument")
+}
+
+model FinancingInstrumentVehicle {
+  id                       String                     @id @default(uuid()) @db.Uuid
+  allocationNo             String                     @unique @map("allocation_no") @db.VarChar(64)
+  instrumentId             String                     @map("instrument_id") @db.Uuid
+  instrument               FinancingInstrument        @relation(fields: [instrumentId], references: [id])
+  vehicleId                String                     @map("vehicle_id") @db.Uuid
+  vehicle                  Vehicle                    @relation(fields: [vehicleId], references: [id])
+  allocatedPrincipalAmount BigInt                     @map("allocated_principal_amount")
+  allocationRatioBps       Int?                       @map("allocation_ratio_bps")
+  allocationStatus         FinancingAllocationStatus  @default(ACTIVE) @map("allocation_status")
+  effectiveFrom            DateTime                   @map("effective_from") @db.Date
+  effectiveTo              DateTime?                  @map("effective_to") @db.Date
+  remark                   String?                    @db.Text
+  snapshot                 Json?
+  createdAt                DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                String?                    @map("created_by") @db.Uuid
+  updatedBy                String?                    @map("updated_by") @db.Uuid
+  deletedAt                DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([instrumentId])
+  @@index([vehicleId])
+  @@index([allocationStatus])
+  @@index([effectiveFrom])
+  @@index([deletedAt])
+  @@map("financing_instrument_vehicle")
 }
 
 model SubscriptionQuote {

@@ -6,6 +6,7 @@ import {
   Prisma,
   SalePriceStatus,
   Vehicle,
+  VehicleAcquisitionMode,
   VehicleAssetCostProfile,
   VehicleAssetCostProfileStatus,
   VehicleBatteryUsageType,
@@ -945,6 +946,7 @@ function makeVehicleBase(): VehicleFixture {
 
   return {
     assetLocation: null,
+    acquisitionMode: VehicleAcquisitionMode.OWNED_CASH,
     batteryCapacityKwh: new Prisma.Decimal(75),
     batteryUsageType: VehicleBatteryUsageType.BUYOUT,
     brand: "NIO",

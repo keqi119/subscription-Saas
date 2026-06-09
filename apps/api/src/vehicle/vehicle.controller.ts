@@ -5,6 +5,7 @@ import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorato
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
+  CreateVehicleCapitalEventDto,
   CreateVehicleDto,
   InitializeSalePriceDto,
   ReviewSalePriceDto,
@@ -13,6 +14,9 @@ import {
   UpsertVehicleAssetCostProfileDto
 } from "./dto/vehicle.dto";
 import { VehicleService } from "./vehicle.service";
+
+const CAPITAL_STRUCTURE_VIEW_PERMISSION = "capital_structure:view";
+const CAPITAL_STRUCTURE_MANAGE_PERMISSION = "capital_structure:manage";
 
 @Controller()
 @UseGuards(AuthGuard, PermissionsGuard)
@@ -69,6 +73,36 @@ export class VehicleController {
   @RequireAnyPermissions(PermissionCode.VEHICLE_VIEW, PermissionCode.REPORT_ASSET)
   getAssetCostProfilePreview(@Param("id") id: string) {
     return this.vehicleService.getAssetCostProfilePreview(id);
+  }
+
+  @Get("vehicles/:id/capital-events")
+  @RequireAnyPermissions(
+    CAPITAL_STRUCTURE_VIEW_PERMISSION,
+    PermissionCode.VEHICLE_VIEW,
+    PermissionCode.REPORT_ASSET
+  )
+  listCapitalEvents(@Param("id") id: string) {
+    return this.vehicleService.listCapitalEvents(id);
+  }
+
+  @Post("vehicles/:id/capital-events")
+  @RequirePermissions(CAPITAL_STRUCTURE_MANAGE_PERMISSION)
+  createCapitalEvent(
+    @Param("id") id: string,
+    @Body() dto: CreateVehicleCapitalEventDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleService.createCapitalEvent(id, dto, request.user, requestContext(request));
+  }
+
+  @Get("vehicles/:id/capital-structure")
+  @RequireAnyPermissions(
+    CAPITAL_STRUCTURE_VIEW_PERMISSION,
+    PermissionCode.VEHICLE_VIEW,
+    PermissionCode.REPORT_ASSET
+  )
+  getCapitalStructure(@Param("id") id: string) {
+    return this.vehicleService.getCapitalStructure(id);
   }
 
   @Get("vehicles/:id")

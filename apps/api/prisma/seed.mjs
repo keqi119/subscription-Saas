@@ -151,7 +151,11 @@ permissionRows.push(
   ["vehicle:initialize_sale_price", "初始化车辆销售价", "vehicle", "initialize_sale_price"],
   ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
-  ["vehicle:manage", "管理车辆资产", "vehicle", "manage"]
+  ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
+  ["capital_structure:view", "查看车辆资本结构", "capital_structure", "view"],
+  ["capital_structure:manage", "管理车辆资本结构", "capital_structure", "manage"],
+  ["financing:view", "查看融资工具", "financing", "view"],
+  ["financing:manage", "管理融资工具", "financing", "manage"]
 );
 
 permissionRows.push(
@@ -528,6 +532,17 @@ const vehicleManagementPermissions = [
 ];
 const vehicleMenuCodes = ["vehicles"];
 
+const capitalStructureViewPermissions = ["capital_structure:view"];
+
+const capitalStructureManagementPermissions = [
+  "capital_structure:view",
+  "capital_structure:manage"
+];
+
+const financingViewPermissions = ["financing:view"];
+
+const financingManagementPermissions = ["financing:view", "financing:manage"];
+
 async function main() {
   for (const [code, name, description] of roleRows) {
     await prisma.role.upsert({
@@ -636,6 +651,8 @@ async function main() {
       ...entitlementOperationPermissions,
       ...reportViewPermissions,
       ...reportAssetPermissions,
+      ...capitalStructureViewPermissions,
+      ...financingViewPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -699,6 +716,8 @@ async function main() {
         "product_price_rule:view",
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
+        ...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions),
+        ...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -739,6 +758,8 @@ async function main() {
       "risk:manage",
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
+      ...capitalStructureViewPermissions,
+      ...financingViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,

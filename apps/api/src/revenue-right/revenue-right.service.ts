@@ -450,9 +450,11 @@ export class RevenueRightService {
     const warnings = shareRuleWarnings(vehicle);
 
     if (!SUPPORTED_REVENUE_SHARE_BASIS.has(rule.shareBasis)) {
+      const fixedCostAmount = calculateFixedCostAmount(rule, days);
+
       return {
         billCount: 0,
-        fixedCostAmount: calculateFixedCostAmount(rule, days),
+        fixedCostAmount: Number(fixedCostAmount),
         ownerShareAmount: 0,
         platformShareAmount: 0,
         previewSupported: false,
@@ -764,10 +766,23 @@ function toAssignmentView(assignment: RevenueRightAssignmentWithRelations) {
     createdAt: assignment.createdAt,
     effectiveFrom: assignment.effectiveFrom,
     effectiveTo: assignment.effectiveTo,
-    financingInstrument: assignment.financingInstrument,
+    financingInstrument: assignment.financingInstrument
+      ? {
+          id: assignment.financingInstrument.id,
+          instrumentNo: assignment.financingInstrument.instrumentNo,
+          instrumentType: assignment.financingInstrument.instrumentType,
+          lenderName: assignment.financingInstrument.lenderName
+        }
+      : null,
     financingInstrumentId: assignment.financingInstrumentId,
     id: assignment.id,
-    order: assignment.order,
+    order: assignment.order
+      ? {
+          id: assignment.order.id,
+          orderNo: assignment.order.orderNo,
+          vehicleId: assignment.order.vehicleId
+        }
+      : null,
     orderId: assignment.orderId,
     priority: assignment.priority,
     releaseReason: assignment.releaseReason,
@@ -777,7 +792,7 @@ function toAssignmentView(assignment: RevenueRightAssignmentWithRelations) {
     snapshot: assignment.snapshot,
     targetType: assignment.targetType,
     updatedAt: assignment.updatedAt,
-    vehicle: assignment.vehicle,
+    vehicle: assignment.vehicle ? toVehicleSummary(assignment.vehicle) : null,
     vehicleId: assignment.vehicleId
   };
 }
@@ -818,7 +833,7 @@ function toRevenueShareRuleView(rule: RevenueShareRuleWithVehicle) {
     shareBasis: rule.shareBasis,
     snapshot: rule.snapshot,
     updatedAt: rule.updatedAt,
-    vehicle: rule.vehicle,
+    vehicle: rule.vehicle ? toVehicleSummary(rule.vehicle) : null,
     vehicleId: rule.vehicleId
   };
 }
@@ -832,7 +847,7 @@ function toRevenueShareRuleAuditSnapshot(rule: RevenueShareRuleWithVehicle, rema
   };
 }
 
-function toVehicleSummary(vehicle: Vehicle) {
+function toVehicleSummary(vehicle: Pick<Vehicle, "acquisitionMode" | "id" | "vehicleNo">) {
   return {
     acquisitionMode: vehicle.acquisitionMode,
     id: vehicle.id,

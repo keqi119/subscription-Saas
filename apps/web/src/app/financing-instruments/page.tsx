@@ -14,6 +14,7 @@ import {
   Descriptions,
   Drawer,
   Form,
+  Alert,
   Input,
   InputNumber,
   Modal,
@@ -89,6 +90,7 @@ interface VehicleBrief {
 }
 
 interface VehicleOptionRow extends VehicleBrief {
+  purchasePriceAmount?: number | null;
   vehicleModel?: string | null;
 }
 
@@ -145,7 +147,6 @@ interface InstrumentFormValues {
 
 interface AllocationFormValues {
   allocatedPrincipalAmountYuan: number;
-  allocationRatioPercent?: number | null;
   effectiveFrom: Dayjs;
   remark?: string | null;
   vehicleId: string;
@@ -188,6 +189,17 @@ function vehicleModelText(vehicle?: VehicleBrief | null) {
   return [vehicle.brand, vehicle.model].filter(Boolean).join(" / ") || "-";
 }
 
+function formatPercentFromRatio(numerator?: number | null, denominator?: number | null) {
+  if (!numerator || !denominator || denominator <= 0) {
+    return "-";
+  }
+  return `${((numerator / denominator) * 100).toFixed(2)}%`;
+}
+
+function ratioToBps(numerator: number, denominator: number) {
+  return Math.round((numerator / denominator) * 10000);
+}
+
 export default function FinancingInstrumentsPage() {
   const { message, modal } = App.useApp();
   const [filterForm] = Form.useForm<InstrumentFilterValues>();
@@ -208,9 +220,21 @@ export default function FinancingInstrumentsPage() {
   const [vehiclesLoading, setVehiclesLoading] = useState(false);
   const [releaseTarget, setReleaseTarget] = useState<FinancingAllocationRow | null>(null);
   const [settleTarget, setSettleTarget] = useState<FinancingInstrumentRow | null>(null);
+  const allocationVehicleId = Form.useWatch("vehicleId", allocationForm);
+  const allocationPrincipalYuan = Form.useWatch("allocatedPrincipalAmountYuan", allocationForm);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("financing:view");
   const canViewVehicles = permissions.has("vehicle:view");
+  const selectedAllocationVehicle = useMemo(
+    () => vehicleRows.find((vehicle) => vehicle.id === allocationVehicleId) ?? null,
+    [allocationVehicleId, vehicleRows]
+  );
+  const allocationPrincipalAmount = toCentAmount(allocationPrincipalYuan);
+  const allocationInstrumentRatioText = formatPercentFromRatio(allocationPrincipalAmount, detail?.principalAmount);
+  const allocationVehicleCoverageText = formatPercentFromRatio(
+    allocationPrincipalAmount,
+    selectedAllocationVehicle?.purchasePriceAmount
+  );
   const vehicleOptions = useMemo(
     () =>
       vehicleRows.map((vehicle) => ({
@@ -360,7 +384,6 @@ export default function FinancingInstrumentsPage() {
   function openAllocationModal() {
     allocationForm.resetFields();
     allocationForm.setFieldsValue({
-      allocationRatioPercent: 100,
       effectiveFrom: dayjs()
     });
     setAllocationModalOpen(true);
@@ -371,11 +394,21 @@ export default function FinancingInstrumentsPage() {
       return;
     }
 
+    const allocatedPrincipalAmount = toCentAmount(values.allocatedPrincipalAmountYuan);
+    if (!allocatedPrincipalAmount) {
+      void message.error("请输入分摊本金");
+      return;
+    }
+    if (!detail.principalAmount || detail.principalAmount <= 0) {
+      void message.error("融资工具本金缺失，无法计算分摊比例。");
+      return;
+    }
+
     try {
       await apiFetch(`/financing-instruments/${detail.id}/vehicles`, {
         body: JSON.stringify({
-          allocatedPrincipalAmount: toCentAmount(values.allocatedPrincipalAmountYuan),
-          allocationRatioBps: percentToBps(values.allocationRatioPercent),
+          allocatedPrincipalAmount,
+          allocationRatioBps: ratioToBps(allocatedPrincipalAmount, detail.principalAmount),
           effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
           remark: values.remark,
           vehicleId: values.vehicleId
@@ -580,8 +613,7 @@ export default function FinancingInstrumentsPage() {
       title: "状态",
       width: 100
     },
-    { dataIndex: "effectiveFrom", render: formatDate, title: "生效日期", width: 120 },
-    { dataIndex: "effectiveTo", render: formatDate, title: "结束日期", width: 120 },
+    { dataIndex: "effectiveFrom", render: formatDate, title: "事件时间", width: 120 },
     { dataIndex: "equityCapitalAmount", render: formatYuan, title: "自有资金金额", width: 140 },
     { dataIndex: "debtPrincipalAmount", render: formatYuan, title: "债务本金金额", width: 140 },
     { dataIndex: "remark", render: safeText, title: "备注", width: 180 }
@@ -787,9 +819,17 @@ export default function FinancingInstrumentsPage() {
             <Form.Item label="分摊本金（元）" name="allocatedPrincipalAmountYuan" rules={[{ required: true, message: "请输入分摊本金" }]}>
               <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item label="分摊比例（%）" name="allocationRatioPercent">
-              <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
-            </Form.Item>
+            <Alert
+              description={
+                <Space orientation="vertical" size={4}>
+                  <Typography.Text>融资工具占用比例：{allocationInstrumentRatioText}</Typography.Text>
+                  <Typography.Text>单车融资覆盖率：{allocationVehicleCoverageText}</Typography.Text>
+                </Space>
+              }
+              showIcon
+              style={{ marginBottom: 16 }}
+              type="info"
+            />
             <Form.Item label="生效日期" name="effectiveFrom" rules={[{ required: true, message: "请选择生效日期" }]}>
               <DatePicker style={{ width: "100%" }} />
             </Form.Item>

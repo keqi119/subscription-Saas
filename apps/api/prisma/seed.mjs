@@ -161,7 +161,10 @@ permissionRows.push(
   ["revenue_right:view", "查看收益权归属", "revenue_right", "view"],
   ["revenue_right:manage", "管理收益权归属", "revenue_right", "manage"],
   ["revenue_share:view", "查看托管分润规则", "revenue_share", "view"],
-  ["revenue_share:manage", "管理托管分润规则", "revenue_share", "manage"]
+  ["revenue_share:manage", "管理托管分润规则", "revenue_share", "manage"],
+  ["residual_market:view", "查看市场残值样本", "residual_market", "view"],
+  ["residual_market:manage", "管理市场残值样本", "residual_market", "manage"],
+  ["residual_market:import", "导入市场残值样本", "residual_market", "import"]
 );
 
 permissionRows.push(
@@ -194,6 +197,7 @@ const menuRows = [
   ["vehicles", "车辆资产", "/vehicles", "car", 55, "vehicle:view", null],
   ["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"],
   ["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"],
+  ["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"],
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
@@ -546,6 +550,7 @@ const vehicleManagementPermissions = [
 ];
 const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
+const residualMarketMenuCodes = ["vehicles.residual_market"];
 
 const capitalStructureViewPermissions = ["capital_structure:view"];
 
@@ -569,6 +574,16 @@ const revenueRightManagementPermissions = ["revenue_right:view", "revenue_right:
 const revenueShareViewPermissions = ["revenue_share:view"];
 
 const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"];
+
+const residualMarketViewPermissions = ["residual_market:view"];
+
+const residualMarketImportPermissions = ["residual_market:view", "residual_market:import"];
+
+const residualMarketManagementPermissions = [
+  "residual_market:view",
+  "residual_market:manage",
+  "residual_market:import"
+];
 
 async function main() {
   for (const [code, name, description] of roleRows) {
@@ -683,6 +698,7 @@ async function main() {
       ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
+      ...residualMarketImportPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -707,6 +723,7 @@ async function main() {
       ...reportAssetMenuCodes,
       ...financingMenuCodes,
       ...vehicleAssetPoolMenuCodes,
+      ...residualMarketMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
@@ -756,6 +773,7 @@ async function main() {
           : vehicleAssetPoolViewPermissions),
         ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
         ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
+        ...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -782,6 +800,7 @@ async function main() {
         ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : []),
         ...financingMenuCodes,
         ...vehicleAssetPoolMenuCodes,
+        ...residualMarketMenuCodes,
         ...revenueRightMenuCodes,
         ...(roleCode === "AS" ? reportAssetMenuCodes : [])
       ]
@@ -804,6 +823,7 @@ async function main() {
       ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
+      ...residualMarketViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,
@@ -829,6 +849,7 @@ async function main() {
       ...reportAssetMenuCodes,
       ...financingMenuCodes,
       ...vehicleAssetPoolMenuCodes,
+      ...residualMarketMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]

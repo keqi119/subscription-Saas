@@ -753,6 +753,56 @@ enum RevenueShareSettlementCycle {
   @@map("revenue_share_settlement_cycle")
 }
 
+enum MarketPriceImportStatus {
+  COMPLETED
+  PARTIAL_FAILED
+  FAILED
+
+  @@map("market_price_import_status")
+}
+
+enum MarketPriceSource {
+  MANUAL
+  CSV_IMPORT
+  INTERNAL_DISPOSAL
+  DEALER_QUOTE
+  AUCTION
+  USED_CAR_PLATFORM
+  OTHER
+
+  @@map("market_price_source")
+}
+
+enum MarketPriceType {
+  LISTING
+  TRANSACTION
+  AUCTION
+  DEALER_QUOTE
+  INTERNAL_SALE
+  ESTIMATE
+
+  @@map("market_price_type")
+}
+
+enum MarketSellerType {
+  INDIVIDUAL
+  DEALER
+  PLATFORM
+  AUCTION_HOUSE
+  INTERNAL
+  UNKNOWN
+
+  @@map("market_seller_type")
+}
+
+enum MarketPriceObservationStatus {
+  ACTIVE
+  IGNORED
+  VOIDED
+
+  @@map("market_price_observation_status")
+}
+
 enum SalePriceStatus {
   PENDING_INITIALIZE
   EFFECTIVE
@@ -1661,6 +1711,83 @@ model VehicleAssetCostProfile {
   @@index([profileStatus])
   @@index([deletedAt])
   @@map("vehicle_asset_cost_profile")
+}
+
+model MarketPriceImportBatch {
+  id           String                    @id @default(uuid()) @db.Uuid
+  batchNo      String                    @unique @map("batch_no") @db.VarChar(64)
+  source       MarketPriceSource
+  fileName     String?                   @map("file_name") @db.VarChar(255)
+  importedBy   String?                   @map("imported_by") @db.Uuid
+  totalRows    Int                       @default(0) @map("total_rows")
+  importedRows Int                       @default(0) @map("imported_rows")
+  skippedRows  Int                       @default(0) @map("skipped_rows")
+  failedRows   Int                       @default(0) @map("failed_rows")
+  importStatus MarketPriceImportStatus   @default(COMPLETED) @map("import_status")
+  remark       String?                   @db.Text
+  errorSnapshot Json?                    @map("error_snapshot")
+  snapshot     Json?
+  observations VehicleMarketPriceObservation[]
+  createdAt    DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([source])
+  @@index([importStatus])
+  @@index([createdAt])
+  @@map("market_price_import_batch")
+}
+
+model VehicleMarketPriceObservation {
+  id                     String                       @id @default(uuid()) @db.Uuid
+  observationNo          String                       @unique @map("observation_no") @db.VarChar(64)
+  batchId                String?                      @map("batch_id") @db.Uuid
+  batch                  MarketPriceImportBatch?      @relation(fields: [batchId], references: [id])
+  source                 MarketPriceSource
+  sourceListingId        String?                      @map("source_listing_id") @db.VarChar(128)
+  observedAt             DateTime                     @map("observed_at") @db.Date
+  brand                  String                       @db.VarChar(64)
+  series                 String?                      @db.VarChar(64)
+  model                  String                       @db.VarChar(64)
+  modelYear              Int?                         @map("model_year")
+  trim                   String?                      @db.VarChar(128)
+  batteryCapacityKwh     Decimal?                     @map("battery_capacity_kwh") @db.Decimal(8, 2)
+  batteryUsageType       VehicleBatteryUsageType?     @map("battery_usage_type")
+  mileageKm              Int?                         @map("mileage_km")
+  registrationDate       DateTime?                    @map("registration_date") @db.Date
+  vehicleAgeMonths       Int?                         @map("vehicle_age_months")
+  province               String?                      @db.VarChar(64)
+  city                   String?                      @db.VarChar(64)
+  priceType              MarketPriceType              @map("price_type")
+  priceAmount            BigInt                       @map("price_amount")
+  listingPriceAmount     BigInt?                      @map("listing_price_amount")
+  transactionPriceAmount BigInt?                      @map("transaction_price_amount")
+  listingDays            Int?                         @map("listing_days")
+  sellerType             MarketSellerType?            @map("seller_type")
+  conditionGrade         String?                      @map("condition_grade") @db.VarChar(64)
+  batteryHealthPercent   Decimal?                     @map("battery_health_percent") @db.Decimal(5, 2)
+  accidentFlag           Boolean?                     @map("accident_flag")
+  sourceUrlHash          String?                      @map("source_url_hash") @db.VarChar(128)
+  dedupeKey              String                       @map("dedupe_key") @db.VarChar(512)
+  confidenceScore        Int?                         @map("confidence_score")
+  observationStatus      MarketPriceObservationStatus @default(ACTIVE) @map("observation_status")
+  rawSnapshot            Json?                        @map("raw_snapshot")
+  remark                 String?                      @db.Text
+  createdAt              DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                      @map("created_by") @db.Uuid
+  updatedBy              String?                      @map("updated_by") @db.Uuid
+  deletedAt              DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([source])
+  @@index([observedAt])
+  @@index([brand, series, model])
+  @@index([modelYear])
+  @@index([city])
+  @@index([priceType])
+  @@index([observationStatus])
+  @@index([dedupeKey])
+  @@map("vehicle_market_price_observation")
 }
 
 model VehicleCapitalEvent {

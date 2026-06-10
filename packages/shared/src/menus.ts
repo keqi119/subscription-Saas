@@ -116,6 +116,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "车辆资产池",
         path: "/vehicle-asset-pools",
         permissionCode: PermissionCode.VEHICLE_ASSET_POOL_VIEW
+      },
+      {
+        code: "vehicles.residual_market",
+        icon: "car",
+        label: "市场残值样本",
+        path: "/residual-market",
+        permissionCode: PermissionCode.RESIDUAL_MARKET_VIEW
       }
     ]
   },

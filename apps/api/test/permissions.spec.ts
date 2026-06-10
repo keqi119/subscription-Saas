@@ -17,6 +17,7 @@ import { FinancingController } from "../src/financing/financing.controller";
 import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { ReportController } from "../src/report/report.controller";
+import { ResidualMarketController } from "../src/residual-market/residual-market.controller";
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
@@ -31,6 +32,9 @@ const REVENUE_RIGHT_VIEW_PERMISSION = "revenue_right:view";
 const REVENUE_RIGHT_MANAGE_PERMISSION = "revenue_right:manage";
 const REVENUE_SHARE_VIEW_PERMISSION = "revenue_share:view";
 const REVENUE_SHARE_MANAGE_PERMISSION = "revenue_share:manage";
+const RESIDUAL_MARKET_VIEW_PERMISSION = "residual_market:view";
+const RESIDUAL_MARKET_MANAGE_PERMISSION = "residual_market:manage";
+const RESIDUAL_MARKET_IMPORT_PERMISSION = "residual_market:import";
 
 describe("hasRequiredPermissions", () => {
   it("allows requests with every required permission", () => {
@@ -262,6 +266,38 @@ describe("revenue right and sharing permissions", () => {
         REVENUE_SHARE_MANAGE_PERMISSION
       ]);
     }
+  });
+});
+
+describe("residual market permissions", () => {
+  it("requires residual_market:view for observation and import batch reads", () => {
+    for (const handler of [
+      ResidualMarketController.prototype.listObservations,
+      ResidualMarketController.prototype.getObservation,
+      ResidualMarketController.prototype.listImportBatches,
+      ResidualMarketController.prototype.getImportBatch
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_MARKET_VIEW_PERMISSION
+      ]);
+    }
+  });
+
+  it("requires residual_market:manage for manual mutation and void actions", () => {
+    for (const handler of [
+      ResidualMarketController.prototype.createObservation,
+      ResidualMarketController.prototype.voidObservation
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_MARKET_MANAGE_PERMISSION
+      ]);
+    }
+  });
+
+  it("requires residual_market:import for CSV imports", () => {
+    expect(
+      Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, ResidualMarketController.prototype.importCsv)
+    ).toEqual([RESIDUAL_MARKET_IMPORT_PERMISSION]);
   });
 });
 
@@ -809,7 +845,10 @@ describe("seed permission calibration", () => {
       "revenue_right:view",
       "revenue_right:manage",
       "revenue_share:view",
-      "revenue_share:manage"
+      "revenue_share:manage",
+      "residual_market:view",
+      "residual_market:manage",
+      "residual_market:import"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -1072,6 +1111,35 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(rolePermissionArray("GM"), "capital_structure:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "vehicle_asset_pool:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "revenue_right:manage")).toBe(false);
+  });
+
+  it("calibrates residual market permissions by role", () => {
+    for (const permission of [
+      "residual_market:view",
+      "residual_market:manage",
+      "residual_market:import"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const residualMarketViewPermissions = ["residual_market:view"]');
+    expect(seedSource).toContain("const residualMarketImportPermissions = [");
+    expect(seedSource).toContain("const residualMarketManagementPermissions = [");
+    expect(seedSource).toContain('["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"]');
+    expect(seedSource).toContain('const residualMarketMenuCodes = ["vehicles.residual_market"]');
+    expect(seedSource).toContain(
+      '...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions)'
+    );
+    expect(seedSource).toContain("...residualMarketMenuCodes");
+    expectRolePermissions("OP", ["residual_market:view", "residual_market:import"]);
+    expectRolePermissions("GM", ["residual_market:view"]);
+    expect(roleHasMenu(roleMenuArray("OP"), "vehicles.residual_market")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "vehicles.residual_market")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualMarketViewPermissions"), "residual_market:view")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualMarketImportPermissions"), "residual_market:import")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualMarketManagementPermissions"), "residual_market:manage")).toBe(true);
+    expect(roleHasPermission(rolePermissionArray("OP"), "residual_market:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "residual_market:manage")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

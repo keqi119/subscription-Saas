@@ -895,6 +895,138 @@ annualizedRoeTrial =
 
 当成本、债务利息、分润规则或权益资本基数不可计算时，`roeTrial = null`，并通过 `roeMissingReasons` 返回原因；非阻断性假设通过 `roeWarnings` 返回。
 
+## Stage 8.4A 市场残值样本库口径
+
+Stage 8.4A 新增市场价格样本库后端，用于沉淀外部市场挂牌价、成交价、拍卖价、经销商报价、内部处置成交价和人工调研样本。本阶段只建立样本事实表和 CSV 文本导入能力，不生成残值曲线，不做爬虫，不接第三方平台 API，不做 AI / ML，不接入 ROA / ROE 试算。
+
+### 与 Vehicle.currentSalePriceAmount 的区别
+
+`Vehicle.currentSalePriceAmount` 是内部运营当前销售价 / 当前估值，继续用于报价上限、车辆入池、再入池定价和资产经营分析。
+
+`VehicleMarketPriceObservation` 是外部市场价格样本，记录某一来源、日期、车型、里程、车龄、地区和价格类型下的一条市场观测事实。
+
+市场价格样本不会自动覆盖 `Vehicle.currentSalePriceAmount`。后续即使生成残值曲线或残值预测，也必须通过独立审核或定价流程接入内部估值。
+
+### 数据模型
+
+- `MarketPriceImportBatch`：一次 CSV 文本导入批次，记录来源、文件名、导入人、总行数、成功行、跳过行、失败行、导入状态、失败摘要和导入配置快照。
+- `VehicleMarketPriceObservation`：一条市场价格样本，记录来源、外部 listing ID、观测日期、品牌、车系、车型、年款、配置、电池、里程、上牌日期、车龄、地区、价格类型、价格金额、卖家类型、车况、电池健康度、事故标识、URL hash、去重 key、质量评分和样本状态。
+
+金额单位：
+
+- 后端 API 手工创建金额字段使用分。
+- CSV 导入文件中的金额字段使用元，后端入库时转为分。
+- 数据库存储金额统一为分。
+
+### CSV 文本导入字段
+
+必填英文表头：
+
+```text
+observedAt
+brand
+model
+priceType
+priceAmount
+```
+
+可选英文表头：
+
+```text
+sourceListingId
+series
+modelYear
+trim
+batteryCapacityKwh
+batteryUsageType
+mileageKm
+registrationDate
+vehicleAgeMonths
+province
+city
+listingPriceAmount
+transactionPriceAmount
+listingDays
+sellerType
+conditionGrade
+batteryHealthPercent
+accidentFlag
+sourceUrl
+remark
+```
+
+日期格式为 `YYYY-MM-DD`。`accidentFlag` 支持 `true / false`、`1 / 0`、`yes / no`、`是 / 否`。CSV parser 支持 UTF-8 BOM、逗号、双引号、字段内换行和空值。
+
+### 去重口径
+
+第一优先级：存在 `sourceListingId` 时：
+
+```text
+dedupeKey = source + ":" + normalized(sourceListingId)
+```
+
+第二优先级：不存在 `sourceListingId` 时：
+
+```text
+dedupeKey =
+  source
+  + observedAt 业务日期
+  + brand
+  + series
+  + model
+  + modelYear
+  + mileageKm
+  + city
+  + priceType
+  + priceAmount
+```
+
+归一化规则为 trim、lowercase、空值使用 `-`、日期使用 `YYYY-MM-DD`、金额使用分。数据库对 active 样本增加 partial unique index：`deleted_at IS NULL AND observation_status = 'ACTIVE'`。CSV 导入遇到重复样本跳过；手工创建遇到重复样本返回中文错误。
+
+### confidenceScore 口径
+
+第一版质量评分范围为 0-100：
+
+```text
+基础 40 分
+有 brand + model：+10
+有 observedAt：+10
+有 priceAmount：+10
+有 mileageKm：+10
+有 registrationDate 或 vehicleAgeMonths：+10
+有 batteryCapacityKwh：+5
+有 city：+5
+```
+
+`priceAmount <= 0` 或必填字段缺失时，样本无效，不入库。
+
+### 当前阶段不做
+
+Stage 8.4A 不做前端页面、不做爬虫、不做定时采集、不接第三方平台 API、不做 AI / ML、不生成残值曲线、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`、不修改资产经营分析口径、不做 Excel xlsx、不做 multipart 文件上传。
+
+后续 Stage 8.4B 建设市场价格样本库前端页面；Stage 8.4C 再基于样本库生成残值曲线。
+
+## Stage 8.4B 市场残值样本库前端使用说明
+
+Stage 8.4B 新增 `/residual-market` 前端页面，并在“车辆资产 -> 市场残值样本”菜单下展示。页面只调用 Stage 8.4A 已有后端 API，不新增模型、不新增 migration、不生成残值曲线，不接入 ROE。
+
+页面包含两个页签：
+
+- 市场价格样本：查看样本列表、按来源/价格类型/状态/品牌/车系/车型/年款/城市/观测日期/里程/价格筛选、查看详情、手工录入样本、CSV 文本导入、作废样本。
+- 导入批次：查看 CSV 导入批次列表、按来源/导入状态/创建日期筛选、查看批次详情、错误摘要和导入配置快照。
+
+CSV 模板字段：
+
+```text
+observedAt,sourceListingId,brand,series,model,modelYear,trim,batteryCapacityKwh,batteryUsageType,mileageKm,registrationDate,vehicleAgeMonths,province,city,priceType,priceAmount,listingPriceAmount,transactionPriceAmount,listingDays,sellerType,conditionGrade,batteryHealthPercent,accidentFlag,sourceUrl,remark
+```
+
+前端页面金额输入统一按元填写；CSV 导入金额字段也按元填写。后端 API 手工创建和数据库入库仍按分处理，前端提交前会转换为分。必填字段为 `observedAt`、`brand`、`model`、`priceType`、`priceAmount`。
+
+作废样本不会物理删除记录，状态更新为 `VOIDED`。作废后的样本后续不参与残值曲线统计，但仍保留导入批次、原始快照、去重 key 和审计记录。
+
+当前阶段仍不做爬虫、不做定时采集、不接第三方平台 API、不做 AI / ML、不生成残值曲线、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`，也不做 multipart 文件上传或 Excel xlsx 导入。
+
 ## Stage 8.3F ROE 试算导出说明
 
 Stage 8.3F 将 Stage 8.3D / 8.3E 的 ROE 试算字段同步到收益试算 CSV 导出。导出仍为经营分析试算口径，不构成会计凭证、正式财务报表或正式会计 ROE。

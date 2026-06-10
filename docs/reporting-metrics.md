@@ -1084,6 +1084,46 @@ Stage 8.4C-A 新增残值曲线后端生成能力。曲线基于 `VehicleMarketP
 
 当前阶段不做 AI / ML，不做 `ResidualModelRun`，不做单车残值预测，不接入 ROE，不修改 `Vehicle.currentSalePriceAmount`，不修改资产经营分析口径，不做爬虫、定时采集或第三方平台 API。
 
+## Stage 8.4D-A 单车残值预测口径
+
+Stage 8.4D-A 新增单车残值预测后端能力。预测基于具体 `Vehicle` 和已启用的 `VehicleResidualCurve` / `VehicleResidualCurvePoint`，第一版只使用统计残值曲线，不使用 AI / ML，也不生成 `ResidualModelRun`。
+
+曲线匹配：
+
+- 默认只匹配 `curveStatus = ACTIVE` 且 `deletedAt IS NULL` 的残值曲线。
+- 车辆必须至少能提供 `brand` 和 `model`，并按 `series`、`modelYear`、`batteryCapacityKwh`、`batteryUsageType` 等维度计算匹配分。
+- 如请求显式传入 `curveId`，dryRun 可使用 `DRAFT` 或 `ACTIVE` 曲线；正式生成只允许使用 `ACTIVE` 曲线。
+- 找不到匹配的生效曲线时，不生成预测记录。
+
+车辆车龄和 horizon：
+
+- 车辆必须有 `registrationDate`；单车残值预测不会用 `purchaseDate` 代替上牌日期。
+- `vehicleAgeMonths` 由 `asOfDate` 与 `registrationDate` 的月份差计算。
+- 默认预测 horizon 为 `0 / 6 / 12 / 24 / 36` 月；请求可传入最多 10 个非负整数 horizon。
+- 每个预测点的 `targetAgeMonth = vehicleAgeMonths + horizonMonth`，`targetDate = asOfDate + horizonMonth`。
+
+曲线点匹配和插值：
+
+- 若曲线存在同 `targetAgeMonth` 点，使用 `EXACT` 精确匹配。
+- 若不存在精确点，但目标月龄两侧都有曲线点，则使用 `LINEAR_INTERPOLATION` 对预测残值、上下界和置信度做线性插值。
+- 若目标月龄超出曲线范围，状态为 `UNSUPPORTED`，第一版不做外推，避免给出误导性残值。
+
+金额和残值率：
+
+- 所有后端金额字段仍以分为单位。
+- 单车预测点的 `predictedResidualRateBps` 使用 `predictedResidualAmount / Vehicle.purchasePriceAmount * 10000` 计算。
+- 如果车辆采购价为空或小于等于 0，或预测残值为空，则单车残值率为空。
+- 不直接使用曲线点上的 `predictedResidualRateBps`，因为曲线残值率可能基于曲线生成时的 `referencePriceAmount`。
+
+人工采用：
+
+- 可对支持的预测点记录 `adoptedResidualAmount`、`adoptedBy`、`adoptedAt` 和 `adoptRemark`。
+- 采用预测点只更新 `VehicleResidualForecastPoint` 和预测记录状态，不覆盖 `Vehicle.currentSalePriceAmount`。
+- `UNSUPPORTED` 点不能被采用。
+- 本阶段不修改 `VehicleSalePriceHistory`，不自动进入资产经营分析或 ROE。
+
+当前阶段仍不做前端页面、不做 AI / ML、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`、不修改 `VehicleSalePriceHistory`、不改资产收益试算口径、不做爬虫、定时采集或第三方平台 API。
+
 ## Stage 8.3F ROE 试算导出说明
 
 Stage 8.3F 将 Stage 8.3D / 8.3E 的 ROE 试算字段同步到收益试算 CSV 导出。导出仍为经营分析试算口径，不构成会计凭证、正式财务报表或正式会计 ROE。

@@ -17,7 +17,10 @@ import { FinancingController } from "../src/financing/financing.controller";
 import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { ReportController } from "../src/report/report.controller";
-import { ResidualMarketController } from "../src/residual-market/residual-market.controller";
+import {
+  ResidualMarketController,
+  VehicleResidualForecastController
+} from "../src/residual-market/residual-market.controller";
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
@@ -38,6 +41,9 @@ const RESIDUAL_MARKET_IMPORT_PERMISSION = "residual_market:import";
 const RESIDUAL_CURVE_VIEW_PERMISSION = "residual_curve:view";
 const RESIDUAL_CURVE_GENERATE_PERMISSION = "residual_curve:generate";
 const RESIDUAL_CURVE_MANAGE_PERMISSION = "residual_curve:manage";
+const RESIDUAL_FORECAST_VIEW_PERMISSION = "residual_forecast:view";
+const RESIDUAL_FORECAST_GENERATE_PERMISSION = "residual_forecast:generate";
+const RESIDUAL_FORECAST_MANAGE_PERMISSION = "residual_forecast:manage";
 
 describe("hasRequiredPermissions", () => {
   it("allows requests with every required permission", () => {
@@ -329,6 +335,40 @@ describe("residual curve permissions", () => {
     ]) {
       expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
         RESIDUAL_CURVE_MANAGE_PERMISSION
+      ]);
+    }
+  });
+});
+
+describe("vehicle residual forecast permissions", () => {
+  it("requires residual_forecast:view for forecast reads", () => {
+    for (const handler of [
+      VehicleResidualForecastController.prototype.listVehicleForecasts,
+      VehicleResidualForecastController.prototype.getLatestVehicleForecast,
+      ResidualMarketController.prototype.getVehicleForecast
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_FORECAST_VIEW_PERMISSION
+      ]);
+    }
+  });
+
+  it("requires residual_forecast:generate for forecast generation", () => {
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        VehicleResidualForecastController.prototype.generateVehicleForecast
+      )
+    ).toEqual([RESIDUAL_FORECAST_GENERATE_PERMISSION]);
+  });
+
+  it("requires residual_forecast:manage for forecast adoption and void", () => {
+    for (const handler of [
+      ResidualMarketController.prototype.adoptVehicleForecastPoint,
+      ResidualMarketController.prototype.voidVehicleForecast
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_FORECAST_MANAGE_PERMISSION
       ]);
     }
   });
@@ -884,7 +924,10 @@ describe("seed permission calibration", () => {
       "residual_market:import",
       "residual_curve:view",
       "residual_curve:generate",
-      "residual_curve:manage"
+      "residual_curve:manage",
+      "residual_forecast:view",
+      "residual_forecast:generate",
+      "residual_forecast:manage"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -1202,6 +1245,32 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(permissionConstantSource("residualCurveManagementPermissions"), "residual_curve:manage")).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_curve:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_curve:generate")).toBe(false);
+  });
+
+  it("calibrates vehicle residual forecast permissions by role", () => {
+    for (const permission of [
+      "residual_forecast:view",
+      "residual_forecast:generate",
+      "residual_forecast:manage"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const residualForecastViewPermissions = ["residual_forecast:view"]');
+    expect(seedSource).toContain(
+      'const residualForecastGeneratePermissions = ["residual_forecast:view", "residual_forecast:generate"]'
+    );
+    expect(seedSource).toContain("const residualForecastManagementPermissions = [");
+    expect(seedSource).toContain(
+      '...(roleCode === "AS" ? residualForecastManagementPermissions : residualForecastViewPermissions)'
+    );
+    expectRolePermissions("OP", ["residual_forecast:view", "residual_forecast:generate"]);
+    expectRolePermissions("GM", ["residual_forecast:view"]);
+    expect(roleHasPermission(permissionConstantSource("residualForecastViewPermissions"), "residual_forecast:view")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualForecastGeneratePermissions"), "residual_forecast:generate")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualForecastManagementPermissions"), "residual_forecast:manage")).toBe(true);
+    expect(roleHasPermission(rolePermissionArray("OP"), "residual_forecast:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "residual_forecast:generate")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

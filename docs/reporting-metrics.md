@@ -584,7 +584,7 @@ annualizedTrialRoa = trialRoa * 365 / analysisDays
 analysisDays = endDate - startDate + 1
 ```
 
-ROE 当前不输出正式值：
+Stage 8.2 阶段 ROE 不输出试算值：
 
 ```json
 {
@@ -593,7 +593,7 @@ ROE 当前不输出正式值：
 }
 ```
 
-正式 ROE 需要后续引入债务本金、融资比例、自有资金、贷款利率、资本结构和股东权益模型。
+Stage 8.3D 已在数据足够时接入经营分析试算 ROE；正式会计 ROE 仍需后续财务入账、日均权益资本和残值预测等能力。
 
 ### 资产收益试算导出说明
 
@@ -611,8 +611,8 @@ Stage 8.2D 新增资产收益试算 CSV 导出 API：
 4. 导出金额单位为元，保留 2 位小数；试算 ROA 和年化试算 ROA 按百分比展示。
 5. `trialRoa` 是经营分析试算 ROA，不是正式会计 ROA。
 6. `annualizedTrialRoa` 按查询天数折算年化，不代表完整生命周期收益率。
-7. ROE 当前导出为“暂不可用”，并导出 `roeUnavailableReason`。
-8. 正式 ROE 需要后续债务 / 自有资本拆分模型后才能输出。
+7. Stage 8.3D 之后，ROE 在数据足够时导出试算值；不可计算时继续导出 `roeUnavailableReason`。
+8. 正式会计 ROE 需要后续财务入账、日均权益资本、融资还款计划和残值预测后才能输出。
 9. `MANUAL` 折旧方法第一版不参与试算；导出会列示不可计算原因。
 10. 试算导出只复用现有收益试算 API 口径，不改变页面和 API 统计口径，不构成会计凭证或正式财务报表。
 
@@ -773,11 +773,133 @@ platformShareAmount =
 - 托管分润结算台账。
 - 正式 ROE 或收益试算 API 接入。
 
+## Stage 8.3D ROE 试算口径
+
+Stage 8.3D 将资本结构、融资工具车辆分摊、收益权 assignment 和分润规则接入资产收益试算 API。输出仍为经营分析试算 ROE，不构成会计凭证、正式财务报表或正式会计 ROE。
+
+增强 API：
+
+- `GET /api/reports/asset-profitability/returns/summary`
+- `GET /api/reports/asset-profitability/returns/vehicles`
+- `GET /api/reports/asset-profitability/returns/vehicles/:id`
+
+收入基础继续复用 Stage 8.2B 经营收入聚合：
+
+```text
+rentalPaidAmount =
+  FIRST_MONTHLY_FEE.paidAmount
+  + MONTHLY_RENT.paidAmount
+
+damagePaidAmount =
+  DAMAGE_FEE.paidAmount
+
+otherPaidAmount =
+  OTHER.paidAmount
+
+operatingRevenueAmount =
+  rentalPaidAmount
+  + damagePaidAmount
+  + otherPaidAmount
+```
+
+`DEPOSIT` 单独列示，不计入经营收入，也不进入 ROE 分子。
+
+收益权 assignment 对收入的处理：
+
+- `PLEDGE`：收益权质押不代表收入所有权转移，不扣减平台经营收入；计入 `pledgedRevenueAmount` / `pledgedRevenueRatio`，作为现金流受限或质押风险提示。
+- `TRANSFER`：收益权转让视为该部分收入不再归平台自由留存，按 `shareRatioBps` 扣减 `platformRetainedRevenueAmount`。
+- `SPV_POOL`：SPV / 资产池归集按 `shareRatioBps` 扣减平台留存收入。
+- `REVENUE_SHARE`：优先使用 `RevenueShareRule` 计算；如果只有 assignment 而没有对应分润规则，第一版只返回 warning，不自动扣减，避免重复计算。
+
+assignment target 第一版支持：
+
+- `RECEIVABLE_BILL`：按对应账单在查询范围内的 `paidAmount` 计算。
+- `ORDER`：按该订单在查询范围内的经营类账单 `paidAmount` 计算。
+- `VEHICLE`：按该车辆在查询范围内所有经营类账单 `paidAmount` 计算。
+- `VEHICLE_POOL`：车辆池收益权归集暂未接入 ROE 试算，仅返回 warning。
+
+托管分润 / 外部长租规则：
+
+- `REVENUE_SHARE`：按 `shareBasis` 计算 `ownerShareAmount`，并从平台留存经营收入中扣减。
+- `FIXED_RENT`：按查询期重叠天数折算 `externalLeaseCostAmount`，作为外部长租固定成本扣除，不从收入中扣除。
+- `MIXED`：同时计算车主分成和外部长租固定成本。
+
+分润基础：
+
+```text
+RENTAL_PAID =
+  rentalPaidAmount
+
+OPERATING_REVENUE =
+  rentalPaidAmount
+  + damagePaidAmount
+  + otherPaidAmount
+```
+
+`GROSS_RECEIVABLE` 和 `MANUAL` 暂不支持自动 ROE 试算，会使 `roeTrial = null` 并返回 `roeMissingReasons`。
+
+债务利息成本来自 `FinancingInstrumentVehicle` 与 `FinancingInstrument`：
+
+```text
+debtInterestCostAmount =
+  allocatedPrincipalAmount
+  * annualRateBps / 10000
+  * overlapDays / 365
+```
+
+第一版只支持 `INTEREST_ONLY` 和 `BULLET` 的简化利息试算。`EQUAL_PRINCIPAL_INTEREST`、`EQUAL_PRINCIPAL`、`MANUAL` 暂未实现精确利息试算，会使 `roeTrial = null` 并返回原因。
+
+资金成本避免重复计算：
+
+- 车辆存在 ACTIVE 融资分摊时，`capitalCostSource = FINANCING_INSTRUMENT`，资金成本使用 `debtInterestCostAmount`。
+- 车辆没有融资分摊时，`capitalCostSource = COST_PROFILE`，继续使用 `VehicleAssetCostProfile.capitalCostRateBps` 计算的 `capitalCostAmount`。
+
+平台留存经营收入：
+
+```text
+platformRetainedRevenueAmount =
+  operatingRevenueAmount
+  - assignedOutRevenueAmount
+  - ownerShareAmount
+```
+
+平台权益净收益：
+
+```text
+platformNetIncomeAmount =
+  platformRetainedRevenueAmount
+  - depreciationCostAmount
+  - capitalCostAmount
+  - insuranceCostAmount
+  - maintenanceReserveCostAmount
+  - otherCostAmount
+  - externalLeaseCostAmount
+```
+
+权益资本基数第一版使用查询期末有效或估算口径，不做日均权益资本：
+
+1. 如果存在有效资本事件 `equityCapitalAmount`，使用最近一条有效值。
+2. 无资本事件、无融资分摊且车辆取得方式为 `OWNED_CASH` 时，按 `purchasePriceAmount` 作为全自有资金假设，并返回 warning。
+3. 有融资分摊但缺少显式自有资金资本事件时，按 `max(purchasePriceAmount - debtPrincipalAmount, 0)` 估算权益资本，并返回 warning。
+4. 权益资本基数缺失或小于等于 0 时，`roeTrial = null`。
+
+ROE 试算：
+
+```text
+roeTrial =
+  platformNetIncomeAmount / roeEquityBaseAmount
+
+annualizedRoeTrial =
+  roeTrial * 365 / analysisDays
+```
+
+当成本、债务利息、分润规则或权益资本基数不可计算时，`roeTrial = null`，并通过 `roeMissingReasons` 返回原因；非阻断性假设通过 `roeWarnings` 返回。
+
 ## ROA / ROE
 
-当前阶段不计算完整 ROA / ROE。
+当前阶段不计算正式会计 ROA / ROE。
 
-ROA / ROE 后续需要引入：
+正式 ROA / ROE 后续需要引入：
 
 - 资金成本
 - 折旧

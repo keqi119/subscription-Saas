@@ -12,10 +12,21 @@ import {
   EntitlementUnit,
   EntitlementUsageSource,
   EntitlementUsageStatus,
+  FinancingAllocationStatus,
+  FinancingInstrumentStatus,
+  FinancingRepaymentMethod,
   OrderSource,
   OrderStatus,
   Prisma,
+  RevenueRightAssignmentStatus,
+  RevenueRightAssignmentType,
+  RevenueRightTargetType,
+  RevenueShareBasis,
+  RevenueShareRuleStatus,
+  RevenueShareRuleType,
   VehicleAssetCostProfileStatus,
+  VehicleAcquisitionMode,
+  VehicleCapitalEventStatus,
   VehicleModel,
   VehicleStatus
 } from "@prisma/client";
@@ -635,20 +646,40 @@ export class ReportService {
         ? null
         : trialNetOperatingIncomeAmount / roaPurchasePriceAmount;
     const analysisDays = inclusiveBusinessDays(dateRange.startDate, dateRange.endDate);
+    const roeCalculatedRows = rows.filter(
+      (row) => row.roeTrial !== null && row.platformNetIncomeAmount !== null && row.roeEquityBaseAmount !== null
+    );
+    const platformNetIncomeAmount =
+      roeCalculatedRows.length === 0
+        ? null
+        : sumNumbers(roeCalculatedRows.map((row) => row.platformNetIncomeAmount ?? 0));
+    const roeEquityBaseAmount = sumNumbers(
+      roeCalculatedRows.map((row) => row.roeEquityBaseAmount ?? 0)
+    );
+    const roeTrial =
+      platformNetIncomeAmount === null || roeEquityBaseAmount <= 0
+        ? null
+        : platformNetIncomeAmount / roeEquityBaseAmount;
 
     return {
       annualizedTrialRoa:
         trialRoa === null || analysisDays <= 0 ? null : (trialRoa * 365) / analysisDays,
+      annualizedRoeTrial:
+        roeTrial === null || analysisDays <= 0 ? null : (roeTrial * 365) / analysisDays,
+      assignedOutRevenueAmount: sumNumbers(rows.map((row) => row.assignedOutRevenueAmount)),
       capitalCostAmount: sumNullable(costCalculatedRows.map((row) => row.capitalCostAmount)),
       costCalculatedVehicleCount: costCalculatedRows.length,
       costUnavailableVehicleCount: rows.length - costCalculatedRows.length,
       currentSalePriceAmount: sumNumbers(rows.map((row) => row.currentSalePriceAmount)),
       damagePaidAmount: sumNumbers(rows.map((row) => row.damagePaidAmount)),
       dateRange,
+      debtInterestCostAmount: sumNullable(rows.map((row) => row.debtInterestCostAmount)),
+      debtPrincipalAmount: sumNumbers(rows.map((row) => row.debtPrincipalAmount)),
       depositCollectedAmount: sumNumbers(rows.map((row) => row.depositCollectedAmount)),
       depreciationCostAmount: sumNullable(
         costCalculatedRows.map((row) => row.depreciationCostAmount)
       ),
+      externalLeaseCostAmount: sumNumbers(rows.map((row) => row.externalLeaseCostAmount)),
       insuranceCostAmount: sumNullable(costCalculatedRows.map((row) => row.insuranceCostAmount)),
       maintenanceReserveCostAmount: sumNullable(
         costCalculatedRows.map((row) => row.maintenanceReserveCostAmount)
@@ -657,10 +688,20 @@ export class ReportService {
       operatingRevenueAmount: sumNumbers(rows.map((row) => row.operatingRevenueAmount)),
       otherCostAmount: sumNullable(costCalculatedRows.map((row) => row.otherCostAmount)),
       otherPaidAmount: sumNumbers(rows.map((row) => row.otherPaidAmount)),
+      ownerShareAmount: sumNumbers(rows.map((row) => row.ownerShareAmount)),
+      platformNetIncomeAmount,
+      platformRetainedRevenueAmount: sumNumbers(rows.map((row) => row.platformRetainedRevenueAmount)),
+      pledgedRevenueAmount: sumNumbers(rows.map((row) => row.pledgedRevenueAmount)),
       purchasePriceAmount: sumNumbers(rows.map((row) => row.purchasePriceAmount)),
       rentalPaidAmount: sumNumbers(rows.map((row) => row.rentalPaidAmount)),
-      roeTrial: null,
-      roeUnavailableReason: ROE_UNAVAILABLE_REASON,
+      roeCalculatedVehicleCount: roeCalculatedRows.length,
+      roeDataReady: roeTrial !== null,
+      roeEquityBaseAmount,
+      roeMissingReasons: uniqueStrings(rows.flatMap((row) => row.roeMissingReasons)),
+      roeTrial,
+      roeUnavailableReason: roeTrial === null ? uniqueStrings(rows.flatMap((row) => row.roeMissingReasons)).join("；") || ROE_UNAVAILABLE_REASON : null,
+      roeUnavailableVehicleCount: rows.length - roeCalculatedRows.length,
+      roeWarnings: uniqueStrings(rows.flatMap((row) => row.roeWarnings)),
       trialNetOperatingIncomeAmount,
       trialRoa,
       vehicleCount: rows.length,
@@ -694,9 +735,13 @@ export class ReportService {
       throw new NotFoundException("Vehicle not found.");
     }
 
-    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics([vehicle], range);
+    const [metricsByVehicleId, roeContextsByVehicleId] = await Promise.all([
+      this.buildAssetProfitabilityMetrics([vehicle], range),
+      this.buildAssetReturnRoeContexts([vehicle], range)
+    ]);
     const metrics = metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics();
-    const row = assetReturnTrialVehicleRow(vehicle, metrics, range);
+    const roeContext = roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id);
+    const row = assetReturnTrialVehicleRow(vehicle, metrics, range, roeContext);
     const profile = activeCostProfileFor(vehicle);
 
     return {
@@ -728,13 +773,30 @@ export class ReportService {
       },
       costPreview: profile ? buildVehicleAssetCostProfilePreview(vehicle, profile) : null,
       costProfile: profile ? assetCostProfileView(profile) : null,
+      capitalEvents: roeContext.capitalEvents.map(assetReturnTrialCapitalEventView),
+      capitalStructureSummary: {
+        capitalCostSource: row.capitalCostSource,
+        debtInterestCostAmount: row.debtInterestCostAmount,
+        debtPrincipalAmount: row.debtPrincipalAmount,
+        equityCapitalAmount: row.roeEquityBaseAmount,
+        roeDataReady: row.roeDataReady,
+        roeMissingReasons: row.roeMissingReasons,
+        roeWarnings: row.roeWarnings
+      },
       dateRange: range.output,
+      financingAllocations: roeContext.financingAllocations.map(
+        assetReturnTrialFinancingAllocationView
+      ),
       incomeBreakdown: {
+        assignedOutRevenueAmount: row.assignedOutRevenueAmount,
         damagePaidAmount: row.damagePaidAmount,
         depositCollectedAmount: row.depositCollectedAmount,
         depositIncludedInOperatingRevenue: false,
         operatingRevenueAmount: row.operatingRevenueAmount,
         otherPaidAmount: row.otherPaidAmount,
+        ownerShareAmount: row.ownerShareAmount,
+        platformRetainedRevenueAmount: row.platformRetainedRevenueAmount,
+        pledgedRevenueAmount: row.pledgedRevenueAmount,
         rentalPaidAmount: row.rentalPaidAmount
       },
       orderCycles: metrics.orders.map((order) => {
@@ -757,12 +819,38 @@ export class ReportService {
       }),
       returns: {
         annualizedTrialRoa: row.annualizedTrialRoa,
+        annualizedRoeTrial: row.annualizedRoeTrial,
+        capitalCostSource: row.capitalCostSource,
+        debtInterestCostAmount: row.debtInterestCostAmount,
+        externalLeaseCostAmount: row.externalLeaseCostAmount,
+        platformNetIncomeAmount: row.platformNetIncomeAmount,
+        roeDataReady: row.roeDataReady,
+        roeEquityBaseAmount: row.roeEquityBaseAmount,
+        roeMissingReasons: row.roeMissingReasons,
         roeTrial: row.roeTrial,
         roeUnavailableReason: row.roeUnavailableReason,
+        roeWarnings: row.roeWarnings,
         trialNetOperatingIncomeAmount: row.trialNetOperatingIncomeAmount,
         trialRoa: row.trialRoa
       },
+      revenueRightAssignments: roeContext.revenueRightAssignments.map(
+        assetReturnTrialRevenueRightAssignmentView
+      ),
+      revenueShareRules: roeContext.revenueShareRules.map(assetReturnTrialRevenueShareRuleView),
+      roeBreakdown: {
+        assignedOutRevenueAmount: row.assignedOutRevenueAmount,
+        debtInterestCostAmount: row.debtInterestCostAmount,
+        debtPrincipalAmount: row.debtPrincipalAmount,
+        externalLeaseCostAmount: row.externalLeaseCostAmount,
+        operatingRevenueAmount: row.operatingRevenueAmount,
+        ownerShareAmount: row.ownerShareAmount,
+        platformNetIncomeAmount: row.platformNetIncomeAmount,
+        platformRetainedRevenueAmount: row.platformRetainedRevenueAmount,
+        pledgedRevenueAmount: row.pledgedRevenueAmount,
+        roeEquityBaseAmount: row.roeEquityBaseAmount
+      },
       vehicle: {
+        acquisitionMode: vehicle.acquisitionMode,
         brand: vehicle.brand,
         currentSalePriceAmount: row.currentSalePriceAmount,
         model: vehicle.model,
@@ -2446,12 +2534,16 @@ export class ReportService {
       select: assetReturnTrialVehicleSelect,
       where: assetProfitabilityVehicleWhere(query)
     });
-    const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
+    const [metricsByVehicleId, roeContextsByVehicleId] = await Promise.all([
+      this.buildAssetProfitabilityMetrics(vehicles, range),
+      this.buildAssetReturnRoeContexts(vehicles, range)
+    ]);
     const rows = vehicles.map((vehicle) =>
       assetReturnTrialVehicleRow(
         vehicle,
         metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics(),
-        range
+        range,
+        roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id)
       )
     );
 
@@ -2591,6 +2683,118 @@ export class ReportService {
     }
 
     return metricsByVehicleId;
+  }
+
+  private async buildAssetReturnRoeContexts(
+    vehicles: Pick<AssetReturnTrialVehicleRecord, "id">[],
+    range: ReturnType<typeof resolveReportDateRange>
+  ) {
+    const vehicleIds = vehicles.map((vehicle) => vehicle.id);
+    const contextsByVehicleId = new Map(
+      vehicleIds.map((vehicleId) => [vehicleId, emptyAssetReturnRoeContext(vehicleId)])
+    );
+
+    if (vehicleIds.length === 0) {
+      return contextsByVehicleId;
+    }
+
+    const startDate = dateOnlyUtc(range.output.startDate);
+    const endDate = dateOnlyUtc(range.output.endDate);
+    const overlapWhere = dateRangeOverlapWhere(startDate, endDate);
+
+    const [
+      capitalEvents,
+      financingAllocations,
+      revenueAssignments,
+      vehiclePoolAssignments,
+      revenueShareRules
+    ] = await Promise.all([
+      this.prisma.vehicleCapitalEvent.findMany({
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        select: assetReturnTrialCapitalEventSelect,
+        where: {
+          ...overlapWhere,
+          deletedAt: null,
+          eventStatus: VehicleCapitalEventStatus.ACTIVE,
+          vehicleId: { in: vehicleIds }
+        }
+      }),
+      this.prisma.financingInstrumentVehicle.findMany({
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        select: assetReturnTrialFinancingAllocationSelect,
+        where: {
+          ...overlapWhere,
+          allocationStatus: FinancingAllocationStatus.ACTIVE,
+          deletedAt: null,
+          instrument: {
+            deletedAt: null,
+            instrumentStatus: FinancingInstrumentStatus.ACTIVE
+          },
+          vehicleId: { in: vehicleIds }
+        }
+      }),
+      this.prisma.revenueRightAssignment.findMany({
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        select: assetReturnTrialRevenueRightAssignmentSelect,
+        where: {
+          deletedAt: null,
+          assignmentStatus: RevenueRightAssignmentStatus.ACTIVE,
+          AND: [
+            revenueRightAssignmentOverlapWhere(startDate, endDate),
+            {
+              OR: [
+                { vehicleId: { in: vehicleIds } },
+                { order: { vehicleId: { in: vehicleIds } } },
+                { bill: { order: { vehicleId: { in: vehicleIds } } } }
+              ]
+            }
+          ]
+        }
+      }),
+      this.prisma.revenueRightAssignment.findMany({
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        select: assetReturnTrialRevenueRightAssignmentSelect,
+        where: {
+          assignmentStatus: RevenueRightAssignmentStatus.ACTIVE,
+          AND: [revenueRightAssignmentOverlapWhere(startDate, endDate)],
+          deletedAt: null,
+          targetType: RevenueRightTargetType.VEHICLE_POOL
+        }
+      }),
+      this.prisma.revenueShareRule.findMany({
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        select: assetReturnTrialRevenueShareRuleSelect,
+        where: {
+          ...overlapWhere,
+          deletedAt: null,
+          ruleStatus: RevenueShareRuleStatus.ACTIVE,
+          vehicleId: { in: vehicleIds }
+        }
+      })
+    ]);
+
+    for (const event of capitalEvents) {
+      contextsByVehicleId.get(event.vehicleId)?.capitalEvents.push(event);
+    }
+    for (const allocation of financingAllocations) {
+      contextsByVehicleId.get(allocation.vehicleId)?.financingAllocations.push(allocation);
+    }
+    for (const assignment of revenueAssignments) {
+      const vehicleId = vehicleIdForRevenueAssignment(assignment);
+      if (vehicleId) {
+        contextsByVehicleId.get(vehicleId)?.revenueRightAssignments.push(assignment);
+      }
+    }
+    for (const rule of revenueShareRules) {
+      contextsByVehicleId.get(rule.vehicleId)?.revenueShareRules.push(rule);
+    }
+    if (vehiclePoolAssignments.length > 0) {
+      for (const context of contextsByVehicleId.values()) {
+        context.vehiclePoolRevenueRightWarning = true;
+      }
+    }
+
+    return contextsByVehicleId;
   }
 
   private async paidAmountByVehicle(
@@ -3092,6 +3296,7 @@ function subscriptionPlanRows(
 }
 
 const assetProfitabilityVehicleSelect = {
+  acquisitionMode: true,
   batteryCapacityKwh: true,
   batteryUsageType: true,
   brand: true,
@@ -3239,6 +3444,103 @@ const assetProfitabilityBillSelect = {
   remainingAmount: true
 } satisfies Prisma.ReceivableBillSelect;
 
+const assetReturnTrialCapitalEventSelect = {
+  debtPrincipalAmount: true,
+  effectiveFrom: true,
+  effectiveTo: true,
+  equityCapitalAmount: true,
+  eventNo: true,
+  eventStatus: true,
+  eventType: true,
+  financingInstrumentId: true,
+  id: true,
+  remark: true,
+  vehicleId: true
+} satisfies Prisma.VehicleCapitalEventSelect;
+
+const assetReturnTrialFinancingAllocationSelect = {
+  allocatedPrincipalAmount: true,
+  allocationNo: true,
+  allocationRatioBps: true,
+  allocationStatus: true,
+  effectiveFrom: true,
+  effectiveTo: true,
+  id: true,
+  instrument: {
+    select: {
+      annualRateBps: true,
+      id: true,
+      instrumentNo: true,
+      instrumentStatus: true,
+      instrumentType: true,
+      lenderName: true,
+      principalAmount: true,
+      repaymentMethod: true
+    }
+  },
+  instrumentId: true,
+  remark: true,
+  vehicleId: true
+} satisfies Prisma.FinancingInstrumentVehicleSelect;
+
+const assetReturnTrialRevenueRightAssignmentSelect = {
+  assigneeName: true,
+  assigneeType: true,
+  assignmentNo: true,
+  assignmentStatus: true,
+  assignmentType: true,
+  bill: {
+    select: {
+      billNo: true,
+      billType: true,
+      id: true,
+      order: { select: { orderNo: true, vehicleId: true } },
+      orderId: true,
+      paidAmount: true
+    }
+  },
+  billId: true,
+  effectiveFrom: true,
+  effectiveTo: true,
+  financingInstrument: {
+    select: {
+      id: true,
+      instrumentNo: true,
+      instrumentType: true,
+      lenderName: true
+    }
+  },
+  financingInstrumentId: true,
+  id: true,
+  order: { select: { id: true, orderNo: true, vehicleId: true } },
+  orderId: true,
+  priority: true,
+  releasedAt: true,
+  releaseReason: true,
+  remark: true,
+  shareRatioBps: true,
+  targetType: true,
+  vehicleId: true
+} satisfies Prisma.RevenueRightAssignmentSelect;
+
+const assetReturnTrialRevenueShareRuleSelect = {
+  effectiveFrom: true,
+  effectiveTo: true,
+  fixedMonthlyAmount: true,
+  id: true,
+  minimumGuaranteeAmount: true,
+  ownerName: true,
+  ownerShareBps: true,
+  platformShareBps: true,
+  remark: true,
+  ruleNo: true,
+  ruleStatus: true,
+  ruleType: true,
+  settlementCycle: true,
+  shareBasis: true,
+  vehicleId: true
+} satisfies Prisma.RevenueShareRuleSelect;
+
 type AssetProfitabilityVehicleRecord = Prisma.VehicleGetPayload<{
   select: typeof assetProfitabilityVehicleSelect;
 }>;
@@ -3255,8 +3557,31 @@ type AssetProfitabilityOrderRecord = Prisma.SubscriptionOrderGetPayload<{
 type AssetProfitabilityBillRecord = Prisma.ReceivableBillGetPayload<{
   select: typeof assetProfitabilityBillSelect;
 }>;
+type AssetReturnTrialCapitalEventRecord = Prisma.VehicleCapitalEventGetPayload<{
+  select: typeof assetReturnTrialCapitalEventSelect;
+}>;
+type AssetReturnTrialFinancingAllocationRecord =
+  Prisma.FinancingInstrumentVehicleGetPayload<{
+    select: typeof assetReturnTrialFinancingAllocationSelect;
+  }>;
+type AssetReturnTrialRevenueRightAssignmentRecord =
+  Prisma.RevenueRightAssignmentGetPayload<{
+    select: typeof assetReturnTrialRevenueRightAssignmentSelect;
+  }>;
+type AssetReturnTrialRevenueShareRuleRecord = Prisma.RevenueShareRuleGetPayload<{
+  select: typeof assetReturnTrialRevenueShareRuleSelect;
+}>;
 type AssetProfitabilitySortField = NonNullable<AssetProfitabilityVehicleListQueryDto["sortBy"]>;
 type AssetReturnTrialSortField = NonNullable<AssetReturnTrialVehicleListQueryDto["sortBy"]>;
+
+type AssetReturnRoeContext = {
+  capitalEvents: AssetReturnTrialCapitalEventRecord[];
+  financingAllocations: AssetReturnTrialFinancingAllocationRecord[];
+  revenueRightAssignments: AssetReturnTrialRevenueRightAssignmentRecord[];
+  revenueShareRules: AssetReturnTrialRevenueShareRuleRecord[];
+  vehicleId: string;
+  vehiclePoolRevenueRightWarning: boolean;
+};
 
 const ROE_UNAVAILABLE_REASON = "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。";
 const MISSING_COST_PROFILE_REASON = "缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。";
@@ -3309,6 +3634,7 @@ function assetProfitabilityVehicleRow(
   const currentOrder = metrics.currentOrder;
 
   return {
+    acquisitionMode: vehicle.acquisitionMode,
     vehicleId: vehicle.id,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin,
@@ -3345,7 +3671,8 @@ function assetProfitabilityVehicleRow(
 function assetReturnTrialVehicleRow(
   vehicle: AssetReturnTrialVehicleRecord,
   metrics: AssetProfitabilityMetrics,
-  range: ReturnType<typeof resolveReportDateRange>
+  range: ReturnType<typeof resolveReportDateRange>,
+  roeContext: AssetReturnRoeContext = emptyAssetReturnRoeContext(vehicle.id)
 ) {
   const baseRow = assetProfitabilityVehicleRow(vehicle, metrics);
   const profile = activeCostProfileFor(vehicle);
@@ -3354,10 +3681,20 @@ function assetReturnTrialVehicleRow(
   const analysisDays = inclusiveBusinessDays(range.output.startDate, range.output.endDate);
 
   if (!profile) {
+    const roeFields = buildAssetReturnRoeTrialFields({
+      analysisDays,
+      baseRow,
+      metrics,
+      operatingRevenueAmount,
+      periodCost: null,
+      range,
+      roeContext,
+      vehicle
+    });
+
     return {
       ...baseRow,
-      annualizedTrialRoa: null,
-      capitalCostAmount: null,
+      ...roeFields,
       costDays: 0,
       costProfileMissing: true,
       costProfileStatus: null,
@@ -3366,44 +3703,443 @@ function assetReturnTrialVehicleRow(
       insuranceCostAmount: null,
       maintenanceReserveCostAmount: null,
       manualDepreciationUnsupported: false,
-      operatingCostAmount: null,
       operatingRevenueAmount,
-      otherCostAmount: null,
-      roeTrial: null,
-      roeUnavailableReason: ROE_UNAVAILABLE_REASON,
-      trialNetOperatingIncomeAmount: null,
-      trialRoa: null
+      otherCostAmount: null
     };
   }
 
   const costDays = costDaysForProfile(profile, range);
   const periodCost = buildVehicleAssetPeriodCost(vehicle, profile, costDays);
-  const trialNetOperatingIncomeAmount =
-    periodCost.operatingCostAmount === null
-      ? null
-      : operatingRevenueAmount - periodCost.operatingCostAmount;
-  const trialRoa =
-    trialNetOperatingIncomeAmount === null || baseRow.purchasePriceAmount <= 0
-      ? null
-      : trialNetOperatingIncomeAmount / baseRow.purchasePriceAmount;
+  const roeFields = buildAssetReturnRoeTrialFields({
+    analysisDays,
+    baseRow,
+    metrics,
+    operatingRevenueAmount,
+    periodCost,
+    range,
+    roeContext,
+    vehicle
+  });
 
   return {
     ...baseRow,
     ...periodCost,
-    annualizedTrialRoa:
-      trialRoa === null || analysisDays <= 0 ? null : (trialRoa * 365) / analysisDays,
+    ...roeFields,
     costDays,
     costProfileMissing: false,
     costProfileStatus: profile.profileStatus,
     costUnavailableReason: periodCost.manualDepreciationUnsupported
       ? MANUAL_DEPRECIATION_UNSUPPORTED_REASON
       : null,
+    operatingRevenueAmount
+  };
+}
+
+function buildAssetReturnRoeTrialFields({
+  analysisDays,
+  baseRow,
+  metrics,
+  operatingRevenueAmount,
+  periodCost,
+  range,
+  roeContext,
+  vehicle
+}: {
+  analysisDays: number;
+  baseRow: ReturnType<typeof assetProfitabilityVehicleRow>;
+  metrics: AssetProfitabilityMetrics;
+  operatingRevenueAmount: number;
+  periodCost: ReturnType<typeof buildVehicleAssetPeriodCost> | null;
+  range: ReturnType<typeof resolveReportDateRange>;
+  roeContext: AssetReturnRoeContext;
+  vehicle: AssetReturnTrialVehicleRecord;
+}) {
+  const missingReasons: string[] = [];
+  const warnings: string[] = [];
+
+  if (!periodCost) {
+    missingReasons.push(MISSING_COST_PROFILE_REASON);
+  } else if (periodCost.manualDepreciationUnsupported) {
+    missingReasons.push(MANUAL_DEPRECIATION_UNSUPPORTED_REASON);
+  }
+
+  if (roeContext.vehiclePoolRevenueRightWarning) {
+    warnings.push("车辆池收益权归集暂未接入 ROE 试算。");
+  }
+
+  const revenueRightImpact = calculateRevenueRightImpact(
+    roeContext.revenueRightAssignments,
+    metrics,
     operatingRevenueAmount,
-    roeTrial: null,
-    roeUnavailableReason: ROE_UNAVAILABLE_REASON,
+    warnings
+  );
+  const revenueShareImpact = calculateRevenueShareImpact(
+    roeContext.revenueShareRules,
+    baseRow,
+    operatingRevenueAmount,
+    range,
+    missingReasons,
+    warnings
+  );
+  const debtImpact = calculateDebtImpact(roeContext.financingAllocations, range, missingReasons);
+  const equityImpact = calculateRoeEquityBaseAmount(
+    vehicle,
+    roeContext.capitalEvents,
+    debtImpact.debtPrincipalAmount,
+    warnings
+  );
+
+  if (equityImpact.roeEquityBaseAmount === null || equityImpact.roeEquityBaseAmount <= 0) {
+    missingReasons.push("权益资本基数缺失或小于等于 0。");
+  }
+
+  const hasFinancingAllocation = roeContext.financingAllocations.length > 0;
+  const capitalCostSource = hasFinancingAllocation
+    ? "FINANCING_INSTRUMENT"
+    : periodCost
+      ? "COST_PROFILE"
+      : null;
+  const capitalCostAmount = hasFinancingAllocation
+    ? debtImpact.debtInterestCostAmount
+    : periodCost?.capitalCostAmount ?? null;
+  const operatingCostAmount =
+    periodCost &&
+    periodCost.depreciationCostAmount !== null &&
+    capitalCostAmount !== null
+      ? periodCost.depreciationCostAmount +
+        capitalCostAmount +
+        periodCost.insuranceCostAmount +
+        periodCost.maintenanceReserveCostAmount +
+        periodCost.otherCostAmount
+      : null;
+  const trialNetOperatingIncomeAmount =
+    operatingCostAmount === null ? null : operatingRevenueAmount - operatingCostAmount;
+  const trialRoa =
+    trialNetOperatingIncomeAmount === null || baseRow.purchasePriceAmount <= 0
+      ? null
+      : trialNetOperatingIncomeAmount / baseRow.purchasePriceAmount;
+  const platformRetainedRevenueAmount =
+    operatingRevenueAmount -
+    revenueRightImpact.assignedOutRevenueAmount -
+    revenueShareImpact.ownerShareAmount;
+  const platformNetIncomeAmount =
+    operatingCostAmount === null
+      ? null
+      : platformRetainedRevenueAmount -
+        operatingCostAmount -
+        revenueShareImpact.externalLeaseCostAmount;
+
+  if (operatingCostAmount === null && !periodCost?.manualDepreciationUnsupported) {
+    missingReasons.push("经营成本无法完整计算，暂不输出 ROE。");
+  }
+
+  const uniqueMissingReasons = uniqueStrings(missingReasons);
+  const roeTrial =
+    uniqueMissingReasons.length > 0 ||
+    platformNetIncomeAmount === null ||
+    equityImpact.roeEquityBaseAmount === null ||
+    equityImpact.roeEquityBaseAmount <= 0
+      ? null
+      : platformNetIncomeAmount / equityImpact.roeEquityBaseAmount;
+
+  return {
+    annualizedRoeTrial:
+      roeTrial === null || analysisDays <= 0 ? null : (roeTrial * 365) / analysisDays,
+    annualizedTrialRoa:
+      trialRoa === null || analysisDays <= 0 ? null : (trialRoa * 365) / analysisDays,
+    assignedOutRevenueAmount: revenueRightImpact.assignedOutRevenueAmount,
+    capitalCostAmount,
+    capitalCostSource,
+    debtInterestCostAmount: debtImpact.debtInterestCostAmount,
+    debtPrincipalAmount: debtImpact.debtPrincipalAmount,
+    externalLeaseCostAmount: revenueShareImpact.externalLeaseCostAmount,
+    operatingCostAmount,
+    ownerShareAmount: revenueShareImpact.ownerShareAmount,
+    platformNetIncomeAmount,
+    platformRetainedRevenueAmount,
+    pledgedRevenueAmount: revenueRightImpact.pledgedRevenueAmount,
+    pledgedRevenueRatio:
+      operatingRevenueAmount <= 0
+        ? null
+        : revenueRightImpact.pledgedRevenueAmount / operatingRevenueAmount,
+    roeDataReady: roeTrial !== null,
+    roeEquityBaseAmount: equityImpact.roeEquityBaseAmount,
+    roeMissingReasons: uniqueMissingReasons,
+    roeTrial,
+    roeUnavailableReason:
+      roeTrial === null ? uniqueMissingReasons.join("；") || ROE_UNAVAILABLE_REASON : null,
+    roeWarnings: uniqueStrings(warnings),
     trialNetOperatingIncomeAmount,
     trialRoa
   };
+}
+
+function calculateRevenueRightImpact(
+  assignments: AssetReturnTrialRevenueRightAssignmentRecord[],
+  metrics: AssetProfitabilityMetrics,
+  operatingRevenueAmount: number,
+  warnings: string[]
+) {
+  let assignedOutRevenueAmount = 0;
+  let pledgedRevenueAmount = 0;
+  const hasRevenueShareRule = assignments.some(
+    (assignment) => assignment.assignmentType === RevenueRightAssignmentType.REVENUE_SHARE
+  );
+
+  for (const assignment of assignments) {
+    const baseAmount = revenueRightAssignmentBaseAmount(
+      assignment,
+      metrics,
+      operatingRevenueAmount,
+      warnings
+    );
+    const shareAmount = amountByBps(baseAmount, assignment.shareRatioBps ?? 10000);
+
+    if (assignment.assignmentType === RevenueRightAssignmentType.PLEDGE) {
+      pledgedRevenueAmount += shareAmount;
+    } else if (
+      assignment.assignmentType === RevenueRightAssignmentType.TRANSFER ||
+      assignment.assignmentType === RevenueRightAssignmentType.SPV_POOL
+    ) {
+      assignedOutRevenueAmount += shareAmount;
+    }
+  }
+
+  if (hasRevenueShareRule) {
+    warnings.push("收益权 REVENUE_SHARE assignment 暂不直接扣减收入，请以分润规则计算为准。");
+  }
+
+  return {
+    assignedOutRevenueAmount,
+    pledgedRevenueAmount
+  };
+}
+
+function revenueRightAssignmentBaseAmount(
+  assignment: AssetReturnTrialRevenueRightAssignmentRecord,
+  metrics: AssetProfitabilityMetrics,
+  operatingRevenueAmount: number,
+  warnings: string[]
+) {
+  if (assignment.targetType === RevenueRightTargetType.RECEIVABLE_BILL) {
+    const bill = metrics.bills.find((candidate) => candidate.id === assignment.billId);
+    return bill && operatingRevenueBillTypes.includes(bill.billType)
+      ? toNumber(bill.paidAmount)
+      : 0;
+  }
+
+  if (assignment.targetType === RevenueRightTargetType.ORDER) {
+    return sumNumbers(
+      metrics.bills
+        .filter(
+          (bill) =>
+            bill.orderId === assignment.orderId && operatingRevenueBillTypes.includes(bill.billType)
+        )
+        .map((bill) => toNumber(bill.paidAmount))
+    );
+  }
+
+  if (assignment.targetType === RevenueRightTargetType.VEHICLE) {
+    return operatingRevenueAmount;
+  }
+
+  if (assignment.targetType === RevenueRightTargetType.VEHICLE_POOL) {
+    warnings.push("车辆池收益权归集暂未接入 ROE 试算。");
+  }
+
+  return 0;
+}
+
+function calculateRevenueShareImpact(
+  rules: AssetReturnTrialRevenueShareRuleRecord[],
+  baseRow: ReturnType<typeof assetProfitabilityVehicleRow>,
+  operatingRevenueAmount: number,
+  range: ReturnType<typeof resolveReportDateRange>,
+  missingReasons: string[],
+  warnings: string[]
+) {
+  let externalLeaseCostAmount = 0;
+  let ownerShareAmount = 0;
+
+  if (rules.length > 1) {
+    warnings.push("存在多条生效分润规则，ROE 试算按规则叠加，请确认口径。");
+  }
+
+  for (const rule of rules) {
+    if (rule.shareBasis === RevenueShareBasis.GROSS_RECEIVABLE) {
+      missingReasons.push("GROSS_RECEIVABLE 分润口径暂未接入 ROE 试算。");
+      continue;
+    }
+    if (rule.shareBasis === RevenueShareBasis.MANUAL) {
+      missingReasons.push("MANUAL 分润口径需人工结算，暂未接入 ROE 试算。");
+      continue;
+    }
+
+    const shareBaseAmount =
+      rule.shareBasis === RevenueShareBasis.RENTAL_PAID
+        ? baseRow.rentalPaidAmount
+        : operatingRevenueAmount;
+
+    if (
+      rule.ruleType === RevenueShareRuleType.REVENUE_SHARE ||
+      rule.ruleType === RevenueShareRuleType.MIXED
+    ) {
+      if (rule.ownerShareBps === null || rule.ownerShareBps === undefined) {
+        missingReasons.push("分润规则缺少车主分成比例，暂未接入 ROE 试算。");
+      } else {
+        ownerShareAmount += amountByBps(shareBaseAmount, rule.ownerShareBps);
+      }
+    }
+
+    if (
+      rule.ruleType === RevenueShareRuleType.FIXED_RENT ||
+      rule.ruleType === RevenueShareRuleType.MIXED
+    ) {
+      const fixedMonthlyAmount = toNullableNumber(rule.fixedMonthlyAmount);
+      if (fixedMonthlyAmount === null) {
+        missingReasons.push("固定租金规则缺少固定月金额，暂未接入 ROE 试算。");
+      } else {
+        const overlapDays = overlapDaysForRange(rule.effectiveFrom, rule.effectiveTo, range);
+        externalLeaseCostAmount += Math.round((fixedMonthlyAmount * 12 * overlapDays) / 365);
+      }
+    }
+  }
+
+  return {
+    externalLeaseCostAmount,
+    ownerShareAmount
+  };
+}
+
+function calculateDebtImpact(
+  allocations: AssetReturnTrialFinancingAllocationRecord[],
+  range: ReturnType<typeof resolveReportDateRange>,
+  missingReasons: string[]
+) {
+  let debtPrincipalAmount = 0;
+  let debtInterestCostAmount = 0;
+  let debtInterestUnavailable = false;
+
+  for (const allocation of allocations) {
+    const allocatedPrincipalAmount = toNumber(allocation.allocatedPrincipalAmount);
+    debtPrincipalAmount += allocatedPrincipalAmount;
+    const instrument = allocation.instrument;
+
+    if (instrument.annualRateBps === null || instrument.annualRateBps === undefined) {
+      missingReasons.push(`融资工具 ${instrument.instrumentNo} 缺少年化利率，无法计算债务利息。`);
+      debtInterestUnavailable = true;
+      continue;
+    }
+
+    if (
+      instrument.repaymentMethod !== FinancingRepaymentMethod.INTEREST_ONLY &&
+      instrument.repaymentMethod !== FinancingRepaymentMethod.BULLET
+    ) {
+      missingReasons.push("当前还款方式暂未实现精确利息试算。");
+      debtInterestUnavailable = true;
+      continue;
+    }
+
+    const overlapDays = overlapDaysForRange(allocation.effectiveFrom, allocation.effectiveTo, range);
+    debtInterestCostAmount += Math.round(
+      (allocatedPrincipalAmount * instrument.annualRateBps * overlapDays) / 10000 / 365
+    );
+  }
+
+  return {
+    debtInterestCostAmount: debtInterestUnavailable ? null : debtInterestCostAmount,
+    debtPrincipalAmount
+  };
+}
+
+function calculateRoeEquityBaseAmount(
+  vehicle: AssetReturnTrialVehicleRecord,
+  capitalEvents: AssetReturnTrialCapitalEventRecord[],
+  debtPrincipalAmount: number,
+  warnings: string[]
+) {
+  const explicitEquityEvent = capitalEvents.find(
+    (event) => toNullableNumber(event.equityCapitalAmount) !== null
+  );
+  const explicitEquityAmount = explicitEquityEvent
+    ? toNullableNumber(explicitEquityEvent.equityCapitalAmount)
+    : null;
+
+  if (explicitEquityAmount !== null) {
+    return {
+      roeEquityBaseAmount: explicitEquityAmount,
+    };
+  }
+
+  const purchasePriceAmount = toNumber(vehicle.purchasePriceAmount);
+  if (debtPrincipalAmount > 0) {
+    warnings.push("未录入自有资金资本事件，按采购价扣除债务本金估算权益资本。");
+    return {
+      roeEquityBaseAmount: Math.max(purchasePriceAmount - debtPrincipalAmount, 0),
+    };
+  }
+
+  if (vehicle.acquisitionMode === VehicleAcquisitionMode.OWNED_CASH) {
+    warnings.push("未录入资本事件，按全自有资金假设试算 ROE。");
+    return {
+      roeEquityBaseAmount: purchasePriceAmount,
+    };
+  }
+
+  return {
+    roeEquityBaseAmount: null
+  };
+}
+
+function amountByBps(amount: number, bps: number) {
+  return Math.round((amount * bps) / 10000);
+}
+
+function vehicleIdForRevenueAssignment(
+  assignment: AssetReturnTrialRevenueRightAssignmentRecord
+) {
+  if (assignment.targetType === RevenueRightTargetType.VEHICLE) {
+    return assignment.vehicleId;
+  }
+  if (assignment.targetType === RevenueRightTargetType.ORDER) {
+    return assignment.order?.vehicleId ?? null;
+  }
+  if (assignment.targetType === RevenueRightTargetType.RECEIVABLE_BILL) {
+    return assignment.bill?.order.vehicleId ?? null;
+  }
+  return null;
+}
+
+function dateOnlyUtc(value: string) {
+  return businessDateStartUtc(value, "date");
+}
+
+function dateRangeOverlapWhere(startDate: Date, endDate: Date) {
+  return {
+    effectiveFrom: { lte: endDate },
+    OR: [{ effectiveTo: null }, { effectiveTo: { gte: startDate } }]
+  };
+}
+
+function revenueRightAssignmentOverlapWhere(startDate: Date, endDate: Date) {
+  return {
+    AND: [{ OR: [{ releasedAt: null }, { releasedAt: { gte: startDate } }] }],
+    effectiveFrom: { lte: endDate },
+    OR: [{ effectiveTo: null }, { effectiveTo: { gte: startDate } }]
+  };
+}
+
+function overlapDaysForRange(
+  effectiveFrom: Date,
+  effectiveTo: Date | null | undefined,
+  range: ReturnType<typeof resolveReportDateRange>
+) {
+  const startDate = maxBusinessDate(range.output.startDate, formatDateOnly(effectiveFrom));
+  const endDate = minBusinessDate(
+    range.output.endDate,
+    effectiveTo ? formatDateOnly(effectiveTo) : range.output.endDate
+  );
+  return inclusiveBusinessDays(startDate, endDate);
 }
 
 function activeCostProfileFor(
@@ -3451,6 +4187,107 @@ function assetCostProfileView(profile: AssetCostProfileRecord) {
   };
 }
 
+function assetReturnTrialCapitalEventView(event: AssetReturnTrialCapitalEventRecord) {
+  return {
+    debtPrincipalAmount: toNullableNumber(event.debtPrincipalAmount),
+    effectiveFrom: event.effectiveFrom,
+    effectiveTo: event.effectiveTo,
+    equityCapitalAmount: toNullableNumber(event.equityCapitalAmount),
+    eventNo: event.eventNo,
+    eventStatus: event.eventStatus,
+    eventType: event.eventType,
+    financingInstrumentId: event.financingInstrumentId,
+    id: event.id,
+    remark: event.remark,
+    vehicleId: event.vehicleId
+  };
+}
+
+function assetReturnTrialFinancingAllocationView(
+  allocation: AssetReturnTrialFinancingAllocationRecord
+) {
+  return {
+    allocatedPrincipalAmount: toNumber(allocation.allocatedPrincipalAmount),
+    allocationNo: allocation.allocationNo,
+    allocationRatioBps: allocation.allocationRatioBps,
+    allocationStatus: allocation.allocationStatus,
+    effectiveFrom: allocation.effectiveFrom,
+    effectiveTo: allocation.effectiveTo,
+    id: allocation.id,
+    instrument: {
+      annualRateBps: allocation.instrument.annualRateBps,
+      id: allocation.instrument.id,
+      instrumentNo: allocation.instrument.instrumentNo,
+      instrumentStatus: allocation.instrument.instrumentStatus,
+      instrumentType: allocation.instrument.instrumentType,
+      lenderName: allocation.instrument.lenderName,
+      principalAmount: toNumber(allocation.instrument.principalAmount),
+      repaymentMethod: allocation.instrument.repaymentMethod
+    },
+    instrumentId: allocation.instrumentId,
+    remark: allocation.remark,
+    vehicleId: allocation.vehicleId
+  };
+}
+
+function assetReturnTrialRevenueRightAssignmentView(
+  assignment: AssetReturnTrialRevenueRightAssignmentRecord
+) {
+  return {
+    assigneeName: assignment.assigneeName,
+    assigneeType: assignment.assigneeType,
+    assignmentNo: assignment.assignmentNo,
+    assignmentStatus: assignment.assignmentStatus,
+    assignmentType: assignment.assignmentType,
+    bill: assignment.bill
+      ? {
+          billNo: assignment.bill.billNo,
+          billType: assignment.bill.billType,
+          id: assignment.bill.id,
+          orderId: assignment.bill.orderId,
+          orderNo: assignment.bill.order.orderNo,
+          paidAmount: toNumber(assignment.bill.paidAmount),
+          vehicleId: assignment.bill.order.vehicleId
+        }
+      : null,
+    billId: assignment.billId,
+    effectiveFrom: assignment.effectiveFrom,
+    effectiveTo: assignment.effectiveTo,
+    financingInstrument: assignment.financingInstrument,
+    financingInstrumentId: assignment.financingInstrumentId,
+    id: assignment.id,
+    order: assignment.order,
+    orderId: assignment.orderId,
+    priority: assignment.priority,
+    releasedAt: assignment.releasedAt,
+    releaseReason: assignment.releaseReason,
+    remark: assignment.remark,
+    shareRatioBps: assignment.shareRatioBps,
+    targetType: assignment.targetType,
+    vehicleId: assignment.vehicleId
+  };
+}
+
+function assetReturnTrialRevenueShareRuleView(rule: AssetReturnTrialRevenueShareRuleRecord) {
+  return {
+    effectiveFrom: rule.effectiveFrom,
+    effectiveTo: rule.effectiveTo,
+    fixedMonthlyAmount: toNullableNumber(rule.fixedMonthlyAmount),
+    id: rule.id,
+    minimumGuaranteeAmount: toNullableNumber(rule.minimumGuaranteeAmount),
+    ownerName: rule.ownerName,
+    ownerShareBps: rule.ownerShareBps,
+    platformShareBps: rule.platformShareBps,
+    remark: rule.remark,
+    ruleNo: rule.ruleNo,
+    ruleStatus: rule.ruleStatus,
+    ruleType: rule.ruleType,
+    settlementCycle: rule.settlementCycle,
+    shareBasis: rule.shareBasis,
+    vehicleId: rule.vehicleId
+  };
+}
+
 function emptyAssetProfitabilityMetrics(): AssetProfitabilityMetrics {
   return {
     bills: [],
@@ -3468,6 +4305,17 @@ function emptyAssetProfitabilityMetrics(): AssetProfitabilityMetrics {
     totalPaidAmount: 0,
     totalReceivableAmount: 0,
     totalRemainingAmount: 0
+  };
+}
+
+function emptyAssetReturnRoeContext(vehicleId: string): AssetReturnRoeContext {
+  return {
+    capitalEvents: [],
+    financingAllocations: [],
+    revenueRightAssignments: [],
+    revenueShareRules: [],
+    vehicleId,
+    vehiclePoolRevenueRightWarning: false
   };
 }
 
@@ -3711,6 +4559,10 @@ function sumNullable(values: Array<number | null>) {
     return null;
   }
   return sumNumbers(values as number[]);
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
 function average(values: number[]) {

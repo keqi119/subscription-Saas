@@ -11,9 +11,21 @@ import {
   EntitlementUnit,
   EntitlementUsageSource,
   EntitlementUsageStatus,
+  FinancingAllocationStatus,
+  FinancingInstrumentStatus,
+  FinancingRepaymentMethod,
   OrderSource,
   OrderStatus,
+  RevenueRightAssignmentStatus,
+  RevenueRightAssignmentType,
+  RevenueRightAssigneeType,
+  RevenueRightTargetType,
+  RevenueShareBasis,
+  RevenueShareRuleStatus,
+  RevenueShareRuleType,
   VehicleAssetCostProfileStatus,
+  VehicleAcquisitionMode,
+  VehicleCapitalEventStatus,
   VehicleDepreciationMethod,
   VehicleModel,
   VehicleStatus
@@ -627,6 +639,183 @@ describe("reporting dashboard APIs", () => {
     });
     expect(result.items[0]?.trialRoa).toBeCloseTo(-671500 / 1200000);
     expect(result.items[0]?.annualizedTrialRoa).toBeCloseTo(-671500 / 1200000);
+    expect(result.items[0]?.roeTrial).toBeCloseTo(-671500 / 1200000);
+    expect(result.items[0]?.roeWarnings).toContain("未录入资本事件，按全自有资金假设试算 ROE。");
+  });
+
+  it("asset return trial uses financing allocation interest instead of cost profile capital cost", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      financingAllocations: [assetFinancingAllocation()]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      capitalCostAmount: 72000,
+      capitalCostSource: "FINANCING_INSTRUMENT",
+      debtInterestCostAmount: 72000,
+      debtPrincipalAmount: 600000,
+      operatingCostAmount: 1273500,
+      platformNetIncomeAmount: -623500,
+      roeEquityBaseAmount: 600000,
+      trialNetOperatingIncomeAmount: -623500
+    });
+    expect(result.items[0]?.roeTrial).toBeCloseTo(-623500 / 600000);
+    expect(result.items[0]?.roeWarnings).toContain(
+      "未录入自有资金资本事件，按采购价扣除债务本金估算权益资本。"
+    );
+  });
+
+  it("asset return trial keeps PLEDGE revenue in platform revenue but tracks pledged amount", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      revenueRightAssignments: [assetRevenueRightAssignment()]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      assignedOutRevenueAmount: 0,
+      operatingRevenueAmount: 650000,
+      platformRetainedRevenueAmount: 650000,
+      pledgedRevenueAmount: 650000
+    });
+  });
+
+  it("asset return trial deducts TRANSFER and SPV_POOL revenue from platform retained revenue", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      revenueRightAssignments: [
+        assetRevenueRightAssignment({
+          assignmentType: RevenueRightAssignmentType.TRANSFER,
+          shareRatioBps: 5000
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      assignedOutRevenueAmount: 325000,
+      platformNetIncomeAmount: -996500,
+      platformRetainedRevenueAmount: 325000,
+      pledgedRevenueAmount: 0
+    });
+    expect(result.items[0]?.roeTrial).toBeCloseTo(-996500 / 1200000);
+  });
+
+  it("asset return trial applies RENTAL_PAID and OPERATING_REVENUE revenue share rules", async () => {
+    const rentalHarness = createReportHarness();
+    mockAssetReturnTrial(rentalHarness.prisma, {
+      revenueShareRules: [assetRevenueShareRule()]
+    });
+    const rentalResult = await rentalHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(rentalResult.items[0]).toMatchObject({
+      ownerShareAmount: 150000,
+      platformRetainedRevenueAmount: 500000
+    });
+
+    const operatingHarness = createReportHarness();
+    mockAssetReturnTrial(operatingHarness.prisma, {
+      revenueShareRules: [
+        assetRevenueShareRule({ shareBasis: RevenueShareBasis.OPERATING_REVENUE })
+      ]
+    });
+    const operatingResult = await operatingHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(operatingResult.items[0]).toMatchObject({
+      ownerShareAmount: 195000,
+      platformRetainedRevenueAmount: 455000
+    });
+  });
+
+  it("asset return trial applies FIXED_RENT as external lease cost", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      revenueShareRules: [
+        assetRevenueShareRule({
+          fixedMonthlyAmount: 100000n,
+          ownerShareBps: null,
+          ruleType: RevenueShareRuleType.FIXED_RENT,
+          shareBasis: RevenueShareBasis.RENTAL_PAID
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      externalLeaseCostAmount: 1200000,
+      ownerShareAmount: 0,
+      platformNetIncomeAmount: -1871500
+    });
+  });
+
+  it("asset return trial returns missing reasons for unsupported share basis and repayment method", async () => {
+    const shareHarness = createReportHarness();
+    mockAssetReturnTrial(shareHarness.prisma, {
+      revenueShareRules: [
+        assetRevenueShareRule({ shareBasis: RevenueShareBasis.GROSS_RECEIVABLE })
+      ]
+    });
+    const shareResult = await shareHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(shareResult.items[0]?.roeTrial).toBeNull();
+    expect(shareResult.items[0]?.roeMissingReasons).toContain(
+      "GROSS_RECEIVABLE 分润口径暂未接入 ROE 试算。"
+    );
+
+    const debtHarness = createReportHarness();
+    mockAssetReturnTrial(debtHarness.prisma, {
+      financingAllocations: [
+        assetFinancingAllocation({
+          instrument: {
+            annualRateBps: 1200,
+            id: "financing-instrument-1",
+            instrumentNo: "FI202601010001",
+            instrumentStatus: FinancingInstrumentStatus.ACTIVE,
+            instrumentType: "BANK_PROJECT_LOAN",
+            lenderName: "测试银行",
+            principalAmount: 600000n,
+            repaymentMethod: FinancingRepaymentMethod.EQUAL_PRINCIPAL
+          }
+        })
+      ]
+    });
+    const debtResult = await debtHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(debtResult.items[0]).toMatchObject({
+      capitalCostSource: "FINANCING_INSTRUMENT",
+      debtInterestCostAmount: null,
+      roeTrial: null
+    });
+    expect(debtResult.items[0]?.roeMissingReasons).toContain("当前还款方式暂未实现精确利息试算。");
   });
 
   it("asset return trial supports NONE and MANUAL depreciation methods", async () => {
@@ -712,7 +901,7 @@ describe("reporting dashboard APIs", () => {
     expect(result.items[0]?.annualizedTrialRoa).toBeNull();
   });
 
-  it("asset return trial summary aggregates income, costs, counts, and ROE unavailability", async () => {
+  it("asset return trial summary aggregates income, costs, counts, and ROE availability", async () => {
     const { prisma, service } = createReportHarness();
     mockAssetReturnTrial(prisma, {
       vehicles: [
@@ -746,14 +935,17 @@ describe("reporting dashboard APIs", () => {
       costUnavailableVehicleCount: 1,
       operatingRevenueAmount: 600000,
       rentalPaidAmount: 600000,
-      roeTrial: null,
+      roeCalculatedVehicleCount: 1,
+      roeUnavailableReason: null,
+      roeUnavailableVehicleCount: 1,
       vehicleCount: 2,
       vehicleMissingCostProfileCount: 1,
       vehicleWithCostProfileCount: 1
     });
     expect(result.operatingCostAmount).toBe(1321500);
     expect(result.trialRoa).toBeCloseTo((500000 - 1321500) / 1200000);
-    expect(result.roeUnavailableReason).toContain("缺少债务 / 自有资本拆分模型");
+    expect(result.roeTrial).toBeCloseTo((500000 - 1321500) / 1200000);
+    expect(result.roeMissingReasons).toContain("缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。");
   });
 
   it("asset return trial vehicle list supports pagination, sorting, and date-range cost allocation", async () => {
@@ -833,9 +1025,10 @@ describe("reporting dashboard APIs", () => {
       operatingCostAmount: 1321500
     });
     expect(result.returns).toMatchObject({
-      roeTrial: null,
-      roeUnavailableReason: "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。"
+      platformNetIncomeAmount: -721500,
+      roeUnavailableReason: null
     });
+    expect(result.returns.roeTrial).toBeCloseTo(-721500 / 1200000);
     expect(result.bills).toEqual([
       expect.objectContaining({
         billType: BillType.MONTHLY_RENT,
@@ -846,6 +1039,49 @@ describe("reporting dashboard APIs", () => {
         includedInOperatingRevenue: true
       })
     ]);
+  });
+
+  it("asset return trial vehicle detail returns capital, financing, revenue right, and sharing details", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+    prisma.vehicleCapitalEvent.findMany.mockResolvedValue([assetCapitalEvent()]);
+    prisma.financingInstrumentVehicle.findMany.mockResolvedValue([assetFinancingAllocation()]);
+    prisma.revenueRightAssignment.findMany
+      .mockResolvedValueOnce([
+        assetRevenueRightAssignment({ assignmentType: RevenueRightAssignmentType.TRANSFER })
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.revenueShareRule.findMany.mockResolvedValue([assetRevenueShareRule()]);
+
+    const result = await service.getAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.capitalEvents).toEqual([
+      expect.objectContaining({ eventNo: "VCE202601010001", equityCapitalAmount: 600000 })
+    ]);
+    expect(result.financingAllocations).toEqual([
+      expect.objectContaining({ allocatedPrincipalAmount: 600000 })
+    ]);
+    expect(result.revenueRightAssignments).toEqual([
+      expect.objectContaining({ assignmentType: RevenueRightAssignmentType.TRANSFER })
+    ]);
+    expect(result.revenueShareRules).toEqual([
+      expect.objectContaining({ ruleType: RevenueShareRuleType.REVENUE_SHARE })
+    ]);
+    expect(result.roeBreakdown).toMatchObject({
+      assignedOutRevenueAmount: 500000,
+      debtInterestCostAmount: 72000,
+      debtPrincipalAmount: 600000,
+      ownerShareAmount: 150000,
+      roeEquityBaseAmount: 600000
+    });
   });
 
   it("entitlements report returns account, grant, usage, and exhausted summaries", async () => {
@@ -1351,8 +1587,8 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("经营成本合计,13215.00");
     expect(result.content).toContain("试算经营净收益（元）,-6715.00");
     expect(result.content).toContain("试算 ROA,-55.96%");
-    expect(result.content).toContain("ROE,暂不可用");
-    expect(result.content).toContain("ROE 不可用原因,缺少债务 / 自有资本拆分模型");
+    expect(result.content).toContain("ROE,-55.96%");
+    expect(result.content).toContain("ROE 不可用原因,-");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
   });
 
@@ -1383,7 +1619,6 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain('"NIO, ""Premium""\nLine"');
     expect(result.content).toContain("已出租");
     expect(result.content).toContain("生效中");
-    expect(result.content).toContain("暂不可用");
     expect(result.content).toContain("6500.00");
     expect(result.content).toContain("-55.96%");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
@@ -1451,7 +1686,7 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("成本拆分");
     expect(result.content).toContain("经营成本合计,13215.00");
     expect(result.content).toContain("收益试算");
-    expect(result.content).toContain("ROE,暂不可用");
+    expect(result.content).toContain("ROE,-60.12%");
     expect(result.content).toContain("订单周期明细");
     expect(result.content).toContain("账单明细");
     expect(result.content).toContain("在租");
@@ -2256,6 +2491,9 @@ function createReportHarness() {
       findMany: vi.fn(),
       groupBy: vi.fn()
     },
+    financingInstrumentVehicle: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
     orderEntitlementAccount: {
       groupBy: vi.fn()
     },
@@ -2275,10 +2513,19 @@ function createReportHarness() {
       findMany: vi.fn(),
       groupBy: vi.fn()
     },
+    revenueRightAssignment: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    revenueShareRule: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
     subscriptionOrder: {
       count: vi.fn(),
       findMany: vi.fn(),
       groupBy: vi.fn()
+    },
+    vehicleCapitalEvent: {
+      findMany: vi.fn().mockResolvedValue([])
     },
     vehicle: {
       aggregate: vi.fn(),
@@ -2455,8 +2702,12 @@ function mockAssetReturnTrial(
   prisma: ReportPrismaMock,
   overrides: {
     bills?: Array<Record<string, unknown>>;
+    capitalEvents?: Array<Record<string, unknown>>;
+    financingAllocations?: Array<Record<string, unknown>>;
     orders?: Array<Record<string, unknown>>;
     profiles?: Array<Record<string, unknown>>;
+    revenueRightAssignments?: Array<Record<string, unknown>>;
+    revenueShareRules?: Array<Record<string, unknown>>;
     vehicles?: Array<Record<string, unknown>>;
   } = {}
 ) {
@@ -2493,10 +2744,19 @@ function mockAssetReturnTrial(
   prisma.depositLedger.findMany.mockResolvedValue([
     { amount: 500000n, order: { vehicleId: "vehicle-1" } }
   ]);
+  prisma.vehicleCapitalEvent.findMany.mockResolvedValue(overrides.capitalEvents ?? []);
+  prisma.financingInstrumentVehicle.findMany.mockResolvedValue(
+    overrides.financingAllocations ?? []
+  );
+  prisma.revenueRightAssignment.findMany
+    .mockResolvedValueOnce(overrides.revenueRightAssignments ?? [])
+    .mockResolvedValueOnce([]);
+  prisma.revenueShareRule.findMany.mockResolvedValue(overrides.revenueShareRules ?? []);
 }
 
 function assetVehicle(overrides: Record<string, unknown> = {}) {
   return {
+    acquisitionMode: VehicleAcquisitionMode.OWNED_CASH,
     batteryCapacityKwh: decimalLike(75),
     batteryUsageType: "BUYOUT",
     brand: "NIO",
@@ -2571,6 +2831,102 @@ function assetCostProfile(overrides: Record<string, unknown> = {}) {
     updatedAt: now,
     updatedBy: "user-1",
     usefulLifeMonths: 12,
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetCapitalEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    debtPrincipalAmount: null,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    equityCapitalAmount: 600000n,
+    eventNo: "VCE202601010001",
+    eventStatus: VehicleCapitalEventStatus.ACTIVE,
+    eventType: "INITIAL_EQUITY_PURCHASE",
+    financingInstrumentId: null,
+    id: "capital-event-1",
+    remark: null,
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetFinancingAllocation(overrides: Record<string, unknown> = {}) {
+  return {
+    allocatedPrincipalAmount: 600000n,
+    allocationNo: "FIA202601010001",
+    allocationRatioBps: 5000,
+    allocationStatus: FinancingAllocationStatus.ACTIVE,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    id: "allocation-1",
+    instrument: {
+      annualRateBps: 1200,
+      id: "financing-instrument-1",
+      instrumentNo: "FI202601010001",
+      instrumentStatus: FinancingInstrumentStatus.ACTIVE,
+      instrumentType: "BANK_PROJECT_LOAN",
+      lenderName: "测试银行",
+      principalAmount: 600000n,
+      repaymentMethod: FinancingRepaymentMethod.INTEREST_ONLY
+    },
+    instrumentId: "financing-instrument-1",
+    remark: null,
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetRevenueRightAssignment(overrides: Record<string, unknown> = {}) {
+  return {
+    assigneeName: "测试资方",
+    assigneeType: RevenueRightAssigneeType.FINANCIER,
+    assignmentNo: "RRA202601010001",
+    assignmentStatus: RevenueRightAssignmentStatus.ACTIVE,
+    assignmentType: RevenueRightAssignmentType.PLEDGE,
+    bill: null,
+    billId: null,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    financingInstrument: {
+      id: "financing-instrument-1",
+      instrumentNo: "FI202601010001",
+      instrumentType: "BANK_PROJECT_LOAN",
+      lenderName: "测试银行"
+    },
+    financingInstrumentId: "financing-instrument-1",
+    id: "revenue-right-assignment-1",
+    order: { id: "order-1", orderNo: "SO-001", vehicleId: "vehicle-1" },
+    orderId: "order-1",
+    priority: 1,
+    releasedAt: null,
+    releaseReason: null,
+    remark: null,
+    shareRatioBps: 10000,
+    targetType: RevenueRightTargetType.ORDER,
+    vehicleId: null,
+    ...overrides
+  };
+}
+
+function assetRevenueShareRule(overrides: Record<string, unknown> = {}) {
+  return {
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    fixedMonthlyAmount: null,
+    id: "revenue-share-rule-1",
+    minimumGuaranteeAmount: null,
+    ownerName: "外部车主",
+    ownerShareBps: 3000,
+    platformShareBps: 7000,
+    remark: null,
+    ruleNo: "RSR202601010001",
+    ruleStatus: RevenueShareRuleStatus.ACTIVE,
+    ruleType: RevenueShareRuleType.REVENUE_SHARE,
+    settlementCycle: "MONTHLY",
+    shareBasis: RevenueShareBasis.RENTAL_PAID,
     vehicleId: "vehicle-1",
     ...overrides
   };

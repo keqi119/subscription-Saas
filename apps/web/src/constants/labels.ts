@@ -176,6 +176,11 @@ export const VEHICLE_POOL_ALLOCATION_ACTION_LABELS: Record<string, string> = {
   SKIP: "跳过"
 };
 
+export const CAPITAL_COST_SOURCE_LABELS: Record<string, string> = {
+  COST_PROFILE: "成本参数",
+  FINANCING_INSTRUMENT: "融资工具"
+};
+
 export const REVENUE_RIGHT_ASSIGNMENT_TYPE_LABELS: Record<string, string> = {
   OTHER: "其他",
   PLEDGE: "收益权质押",

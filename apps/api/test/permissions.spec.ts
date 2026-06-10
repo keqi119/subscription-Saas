@@ -35,6 +35,9 @@ const REVENUE_SHARE_MANAGE_PERMISSION = "revenue_share:manage";
 const RESIDUAL_MARKET_VIEW_PERMISSION = "residual_market:view";
 const RESIDUAL_MARKET_MANAGE_PERMISSION = "residual_market:manage";
 const RESIDUAL_MARKET_IMPORT_PERMISSION = "residual_market:import";
+const RESIDUAL_CURVE_VIEW_PERMISSION = "residual_curve:view";
+const RESIDUAL_CURVE_GENERATE_PERMISSION = "residual_curve:generate";
+const RESIDUAL_CURVE_MANAGE_PERMISSION = "residual_curve:manage";
 
 describe("hasRequiredPermissions", () => {
   it("allows requests with every required permission", () => {
@@ -298,6 +301,36 @@ describe("residual market permissions", () => {
     expect(
       Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, ResidualMarketController.prototype.importCsv)
     ).toEqual([RESIDUAL_MARKET_IMPORT_PERMISSION]);
+  });
+});
+
+describe("residual curve permissions", () => {
+  it("requires residual_curve:view for curve reads", () => {
+    for (const handler of [
+      ResidualMarketController.prototype.listCurves,
+      ResidualMarketController.prototype.getCurve
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_CURVE_VIEW_PERMISSION
+      ]);
+    }
+  });
+
+  it("requires residual_curve:generate for curve generation", () => {
+    expect(
+      Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, ResidualMarketController.prototype.generateCurve)
+    ).toEqual([RESIDUAL_CURVE_GENERATE_PERMISSION]);
+  });
+
+  it("requires residual_curve:manage for curve activation and archive", () => {
+    for (const handler of [
+      ResidualMarketController.prototype.activateCurve,
+      ResidualMarketController.prototype.archiveCurve
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_CURVE_MANAGE_PERMISSION
+      ]);
+    }
   });
 });
 
@@ -848,7 +881,10 @@ describe("seed permission calibration", () => {
       "revenue_share:manage",
       "residual_market:view",
       "residual_market:manage",
-      "residual_market:import"
+      "residual_market:import",
+      "residual_curve:view",
+      "residual_curve:generate",
+      "residual_curve:manage"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -1140,6 +1176,32 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(permissionConstantSource("residualMarketManagementPermissions"), "residual_market:manage")).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_market:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_market:manage")).toBe(false);
+  });
+
+  it("calibrates residual curve permissions by role", () => {
+    for (const permission of [
+      "residual_curve:view",
+      "residual_curve:generate",
+      "residual_curve:manage"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const residualCurveViewPermissions = ["residual_curve:view"]');
+    expect(seedSource).toContain(
+      'const residualCurveGeneratePermissions = ["residual_curve:view", "residual_curve:generate"]'
+    );
+    expect(seedSource).toContain("const residualCurveManagementPermissions = [");
+    expect(seedSource).toContain(
+      '...(roleCode === "AS" ? residualCurveManagementPermissions : residualCurveViewPermissions)'
+    );
+    expectRolePermissions("OP", ["residual_curve:view", "residual_curve:generate"]);
+    expectRolePermissions("GM", ["residual_curve:view"]);
+    expect(roleHasPermission(permissionConstantSource("residualCurveViewPermissions"), "residual_curve:view")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualCurveGeneratePermissions"), "residual_curve:generate")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualCurveManagementPermissions"), "residual_curve:manage")).toBe(true);
+    expect(roleHasPermission(rolePermissionArray("OP"), "residual_curve:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "residual_curve:generate")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

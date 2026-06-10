@@ -5,9 +5,11 @@ import {
   MarketPriceSource,
   MarketPriceType,
   MarketSellerType,
-  VehicleBatteryUsageType
+  VehicleBatteryUsageType,
+  VehicleResidualCurveMethod,
+  VehicleResidualCurveStatus
 } from "@prisma/client";
-import { IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from "class-validator";
+import { IsArray, IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from "class-validator";
 
 export class MarketPriceObservationsQueryDto {
   @IsOptional()
@@ -264,4 +266,138 @@ export class MarketPriceImportBatchesQueryDto {
   @Min(1)
   @Max(100)
   pageSize?: number;
+}
+
+export class GenerateResidualCurveDto {
+  @IsOptional()
+  @IsString()
+  curveName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  curveVersion?: string | null;
+
+  @IsString()
+  @IsNotEmpty()
+  brand!: string;
+
+  @IsOptional()
+  @IsString()
+  series?: string | null;
+
+  @IsString()
+  @IsNotEmpty()
+  model!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  modelYear?: number | null;
+
+  @IsOptional()
+  @IsString()
+  trim?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @Min(0)
+  batteryCapacityKwh?: number | null;
+
+  @IsOptional()
+  @IsEnum(VehicleBatteryUsageType)
+  batteryUsageType?: VehicleBatteryUsageType | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsEnum(MarketPriceType, { each: true })
+  priceTypes?: MarketPriceType[];
+
+  @IsOptional()
+  @IsString()
+  sampleStartDate?: string | null;
+
+  @IsOptional()
+  @IsString()
+  sampleEndDate?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  referencePriceAmount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  minSamplePerPoint?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class ResidualCurveQueryDto {
+  @IsOptional()
+  @IsEnum(VehicleResidualCurveStatus)
+  curveStatus?: VehicleResidualCurveStatus;
+
+  @IsOptional()
+  @IsEnum(VehicleResidualCurveMethod)
+  curveMethod?: VehicleResidualCurveMethod;
+
+  @IsOptional()
+  @IsString()
+  brand?: string;
+
+  @IsOptional()
+  @IsString()
+  series?: string;
+
+  @IsOptional()
+  @IsString()
+  model?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  modelYear?: number;
+
+  @IsOptional()
+  @IsEnum(VehicleBatteryUsageType)
+  batteryUsageType?: VehicleBatteryUsageType;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+}
+
+export class ActivateResidualCurveDto {
+  @IsString()
+  @IsNotEmpty()
+  effectiveFrom!: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class ArchiveResidualCurveDto {
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
 }

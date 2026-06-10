@@ -957,6 +957,14 @@ remark
 
 日期格式为 `YYYY-MM-DD`。`accidentFlag` 支持 `true / false`、`1 / 0`、`yes / no`、`是 / 否`。CSV parser 支持 UTF-8 BOM、逗号、双引号、字段内换行和空值。
 
+CSV 枚举字段需填写英文枚举值：
+
+- `batteryUsageType`：`BUYOUT`（买断）、`BAAS`（BaaS）。
+- `priceType`：`LISTING`（挂牌价）、`TRANSACTION`（成交价）、`AUCTION`（拍卖价）、`DEALER_QUOTE`（经销商报价）、`INTERNAL_SALE`（内部成交价）、`ESTIMATE`（估算价）。
+- `sellerType`：`INDIVIDUAL`（个人）、`DEALER`（经销商）、`PLATFORM`（平台）、`AUCTION_HOUSE`（拍卖机构）、`INTERNAL`（内部）、`UNKNOWN`（未知）。
+
+CSV 文件是纯文本格式，不能像 xlsx 一样内置下拉选项或单元格校验。前端 CSV 导入弹窗会展示并支持复制上述枚举取值，降低人工填写错误。
+
 ### 去重口径
 
 第一优先级：存在 `sourceListingId` 时：
@@ -1026,6 +1034,55 @@ observedAt,sourceListingId,brand,series,model,modelYear,trim,batteryCapacityKwh,
 作废样本不会物理删除记录，状态更新为 `VOIDED`。作废后的样本后续不参与残值曲线统计，但仍保留导入批次、原始快照、去重 key 和审计记录。
 
 当前阶段仍不做爬虫、不做定时采集、不接第三方平台 API、不做 AI / ML、不生成残值曲线、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`，也不做 multipart 文件上传或 Excel xlsx 导入。
+
+## Stage 8.4C-A 残值曲线生成口径
+
+Stage 8.4C-A 新增残值曲线后端生成能力。曲线基于 `VehicleMarketPriceObservation` 市场价格样本生成，属于外部市场观测数据的统计结果，不是内部运营当前销售价，也不会自动覆盖 `Vehicle.currentSalePriceAmount`。
+
+样本范围：
+
+- 只使用 `observationStatus = ACTIVE` 且 `deletedAt IS NULL` 的市场样本。
+- `VOIDED` / `IGNORED` 样本不参与残值曲线统计。
+- 默认价格类型包含 `TRANSACTION`、`AUCTION`、`DEALER_QUOTE`、`INTERNAL_SALE`、`LISTING`，生成请求可显式传入 `priceTypes`。
+- 维度必须包含 `brand`、`model`，可选匹配 `series`、`modelYear`、`trim`、`batteryCapacityKwh`、`batteryUsageType`。
+
+聚合口径：
+
+- 第一版按 `ageMonth` 聚合生成曲线点。
+- `ageMonth` 优先使用样本的 `vehicleAgeMonths`；为空时由 `observedAt` 与 `registrationDate` 推算月份差。
+- 无法得到有效 `ageMonth` 的样本会被跳过，并进入 skipped reason。
+- 第一版不按里程桶生成曲线，`mileageBucketStartKm` / `mileageBucketEndKm` 为空；曲线点快照保留该月龄样本的里程分布。
+- 每个 `ageMonth` 的样本数低于 `minSamplePerPoint` 时不生成曲线点。
+
+统计指标：
+
+- `medianPriceAmount`：价格中位数。
+- `p25PriceAmount` / `p75PriceAmount`：简单 percentile 计算的 P25 / P75。
+- `averagePriceAmount`：样本价格平均值，四舍五入到整数分。
+- `predictedResidualAmount` 第一版等于 `medianPriceAmount`。
+- `lowerBoundAmount` 第一版等于 `p25PriceAmount`。
+- `upperBoundAmount` 第一版等于 `p75PriceAmount`。
+- `referencePriceAmount` 仅用于计算 `predictedResidualRateBps = medianPriceAmount / referencePriceAmount * 10000`；未传入时残值率为空，不阻止曲线生成。
+- 曲线点 `confidenceScore` 基于样本 confidence 平均值和样本数计算；曲线整体 confidence 为各曲线点 confidence 平均值。
+
+版本和状态：
+
+- 正式生成的曲线初始状态为 `DRAFT`。
+- `dryRun = true` 时只返回预览，不写入数据库，也不写审计日志。
+- 启用曲线时，同一 `brand + series + model + modelYear + trim + batteryCapacityKwh + batteryUsageType` 维度下旧 `ACTIVE` 曲线会改为 `SUPERSEDED`。
+- 归档曲线只更新状态为 `ARCHIVED` 并写入 `effectiveTo`，不物理删除曲线和曲线点。
+
+前端使用说明：
+
+- 残值曲线在 `/residual-market` 市场残值样本页面的“残值曲线”Tab 中查看和生成。
+- 生成前可先执行 dryRun 试算，预览匹配样本数、生成点数、跳过样本数和曲线点统计。
+- 正式生成只创建 `DRAFT` 曲线和曲线点，不会自动启用。
+- 曲线启用后才会成为 `ACTIVE`；启用时同维度旧 `ACTIVE` 会变为 `SUPERSEDED`。
+- 归档曲线不会物理删除记录，也不会删除曲线点。
+- 前端参考价格按元输入，提交给后端时转换为分。
+- 当前前端只展示统计中位数曲线，不做 AI / ML，不覆盖 `Vehicle.currentSalePriceAmount`，不接入 ROE。
+
+当前阶段不做 AI / ML，不做 `ResidualModelRun`，不做单车残值预测，不接入 ROE，不修改 `Vehicle.currentSalePriceAmount`，不修改资产经营分析口径，不做爬虫、定时采集或第三方平台 API。
 
 ## Stage 8.3F ROE 试算导出说明
 

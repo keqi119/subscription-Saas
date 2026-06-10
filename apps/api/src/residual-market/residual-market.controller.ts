@@ -5,10 +5,14 @@ import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
+  ActivateResidualCurveDto,
+  ArchiveResidualCurveDto,
   CreateMarketPriceObservationDto,
+  GenerateResidualCurveDto,
   ImportMarketPriceCsvDto,
   MarketPriceImportBatchesQueryDto,
   MarketPriceObservationsQueryDto,
+  ResidualCurveQueryDto,
   VoidMarketPriceObservationDto
 } from "./dto/residual-market.dto";
 import { ResidualMarketService } from "./residual-market.service";
@@ -62,6 +66,44 @@ export class ResidualMarketController {
   @RequirePermissions(PermissionCode.RESIDUAL_MARKET_VIEW)
   getImportBatch(@Param("id") id: string) {
     return this.residualMarketService.getImportBatch(id);
+  }
+
+  @Post("curves/generate")
+  @RequirePermissions(PermissionCode.RESIDUAL_CURVE_GENERATE)
+  generateCurve(@Body() dto: GenerateResidualCurveDto, @Req() request: AuthenticatedRequest) {
+    return this.residualMarketService.generateCurve(dto, request.user, requestContext(request));
+  }
+
+  @Get("curves")
+  @RequirePermissions(PermissionCode.RESIDUAL_CURVE_VIEW)
+  listCurves(@Query() query: ResidualCurveQueryDto) {
+    return this.residualMarketService.listCurves(query);
+  }
+
+  @Get("curves/:id")
+  @RequirePermissions(PermissionCode.RESIDUAL_CURVE_VIEW)
+  getCurve(@Param("id") id: string) {
+    return this.residualMarketService.getCurve(id);
+  }
+
+  @Post("curves/:id/activate")
+  @RequirePermissions(PermissionCode.RESIDUAL_CURVE_MANAGE)
+  activateCurve(
+    @Param("id") id: string,
+    @Body() dto: ActivateResidualCurveDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.activateCurve(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("curves/:id/archive")
+  @RequirePermissions(PermissionCode.RESIDUAL_CURVE_MANAGE)
+  archiveCurve(
+    @Param("id") id: string,
+    @Body() dto: ArchiveResidualCurveDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.archiveCurve(id, dto, request.user, requestContext(request));
   }
 }
 

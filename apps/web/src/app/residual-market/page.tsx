@@ -36,7 +36,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
-import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import {
@@ -619,6 +619,7 @@ export default function ResidualMarketPage() {
   const [csvOpen, setCsvOpen] = useState(false);
   const [csvSubmitting, setCsvSubmitting] = useState(false);
   const [csvResult, setCsvResult] = useState<CsvImportResult | null>(null);
+  const csvImportInFlightRef = useRef(false);
   const [voidTarget, setVoidTarget] = useState<ObservationRow | null>(null);
   const [voidSubmitting, setVoidSubmitting] = useState(false);
   const [batches, setBatches] = useState<ImportBatchRow[]>([]);
@@ -825,6 +826,7 @@ export default function ResidualMarketPage() {
       source: "CSV_IMPORT"
     });
     setCsvResult(null);
+    csvImportInFlightRef.current = false;
     setCsvOpen(true);
   }
 
@@ -840,6 +842,7 @@ export default function ResidualMarketPage() {
         csvText: String(reader.result ?? ""),
         fileName: file.name
       });
+      setCsvResult(null);
       void message.success("CSV 文件已读取");
     };
     reader.onerror = () => {
@@ -849,6 +852,10 @@ export default function ResidualMarketPage() {
   }
 
   async function submitCsvImport(values: CsvImportFormValues) {
+    if (csvImportInFlightRef.current || csvResult) {
+      return;
+    }
+    csvImportInFlightRef.current = true;
     setCsvSubmitting(true);
     try {
       const result = await apiFetch<CsvImportResult>("/residual-market/observations/import-csv", {
@@ -862,6 +869,7 @@ export default function ResidualMarketPage() {
       void message.error(getErrorMessage(error));
     } finally {
       setCsvSubmitting(false);
+      csvImportInFlightRef.current = false;
     }
   }
 
@@ -2107,6 +2115,7 @@ export default function ResidualMarketPage() {
           okText="执行导入"
           onCancel={() => setCsvOpen(false)}
           onOk={() => csvImportForm.submit()}
+          okButtonProps={{ disabled: Boolean(csvResult) || csvSubmitting }}
           open={csvOpen}
           confirmLoading={csvSubmitting}
           title="导入 CSV"
@@ -2133,6 +2142,13 @@ export default function ResidualMarketPage() {
               size="small"
               title="CSV 枚举字段取值说明"
             />
+            {csvResult ? (
+              <Alert
+                description="本次 CSV 已导入完成。为避免同一文件重复生成导入批次，当前弹窗已禁用再次执行导入；如需导入新内容，请重新选择文件或编辑 CSV 文本。"
+                showIcon
+                type="success"
+              />
+            ) : null}
             <Space wrap>
               <Button icon={<DownloadOutlined />} onClick={downloadCsvTemplate}>
                 下载 CSV 模板
@@ -2144,7 +2160,16 @@ export default function ResidualMarketPage() {
                 复制枚举取值
               </Button>
             </Space>
-            <Form<CsvImportFormValues> form={csvImportForm} layout="vertical" onFinish={submitCsvImport}>
+            <Form<CsvImportFormValues>
+              form={csvImportForm}
+              layout="vertical"
+              onFinish={submitCsvImport}
+              onValuesChange={(changedValues) => {
+                if ("csvText" in changedValues) {
+                  setCsvResult(null);
+                }
+              }}
+            >
               <Row gutter={12}>
                 <Col md={8} xs={24}>
                   <Form.Item label="来源" name="source" rules={[{ required: true, message: "请选择来源" }]}>

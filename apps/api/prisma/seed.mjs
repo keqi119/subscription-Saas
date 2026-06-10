@@ -161,7 +161,10 @@ permissionRows.push(
   ["revenue_right:view", "查看收益权归属", "revenue_right", "view"],
   ["revenue_right:manage", "管理收益权归属", "revenue_right", "manage"],
   ["revenue_share:view", "查看托管分润规则", "revenue_share", "view"],
-  ["revenue_share:manage", "管理托管分润规则", "revenue_share", "manage"]
+  ["revenue_share:manage", "管理托管分润规则", "revenue_share", "manage"],
+  ["residual_market:view", "查看市场残值样本", "residual_market", "view"],
+  ["residual_market:manage", "管理市场残值样本", "residual_market", "manage"],
+  ["residual_market:import", "导入市场残值样本", "residual_market", "import"]
 );
 
 permissionRows.push(
@@ -570,6 +573,16 @@ const revenueShareViewPermissions = ["revenue_share:view"];
 
 const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"];
 
+const residualMarketViewPermissions = ["residual_market:view"];
+
+const residualMarketImportPermissions = ["residual_market:view", "residual_market:import"];
+
+const residualMarketManagementPermissions = [
+  "residual_market:view",
+  "residual_market:manage",
+  "residual_market:import"
+];
+
 async function main() {
   for (const [code, name, description] of roleRows) {
     await prisma.role.upsert({
@@ -683,6 +696,7 @@ async function main() {
       ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
+      ...residualMarketImportPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -756,6 +770,7 @@ async function main() {
           : vehicleAssetPoolViewPermissions),
         ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
         ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
+        ...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -804,6 +819,7 @@ async function main() {
       ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
+      ...residualMarketViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,

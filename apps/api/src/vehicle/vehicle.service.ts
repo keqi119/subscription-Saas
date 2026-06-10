@@ -513,6 +513,7 @@ export class VehicleService {
 
     const financingInstrument = await this.resolveCapitalEventFinancingInstrument(dto.financingInstrumentId);
     const data = buildCapitalEventData(dto, vehicle, financingInstrument);
+    await this.assertNoDuplicateActiveCapitalEvent(id, data);
     const event = await withUniqueBusinessNoRetry(() =>
       this.prisma.vehicleCapitalEvent.create({
         data: {
@@ -557,6 +558,7 @@ export class VehicleService {
     assertCapitalEventInput(nextDto);
     const financingInstrument = await this.resolveCapitalEventFinancingInstrument(nextDto.financingInstrumentId);
     const data = buildCapitalEventData(nextDto, vehicle, financingInstrument, before.eventStatus);
+    await this.assertNoDuplicateActiveCapitalEvent(id, data, eventId);
     const event = await this.prisma.vehicleCapitalEvent.update({
       data: {
         ...data,
@@ -672,6 +674,35 @@ export class VehicleService {
     }
 
     return event;
+  }
+
+  private async assertNoDuplicateActiveCapitalEvent(
+    vehicleId: string,
+    data: Omit<Prisma.VehicleCapitalEventUncheckedCreateInput, "createdBy" | "eventNo" | "updatedBy" | "vehicleId">,
+    excludeEventId?: string
+  ) {
+    const duplicate = await this.prisma.vehicleCapitalEvent.findFirst({
+      where: {
+        acquisitionMode: data.acquisitionMode ?? null,
+        debtPrincipalAmount: data.debtPrincipalAmount ?? null,
+        deletedAt: null,
+        effectiveFrom: data.effectiveFrom,
+        effectiveTo: data.effectiveTo ?? null,
+        equityCapitalAmount: data.equityCapitalAmount ?? null,
+        eventStatus: VehicleCapitalEventStatus.ACTIVE,
+        eventType: data.eventType,
+        externalOwnerName: data.externalOwnerName ?? null,
+        financingInstrumentId: data.financingInstrumentId ?? null,
+        id: excludeEventId ? { not: excludeEventId } : undefined,
+        lessorName: data.lessorName ?? null,
+        managedOwnerName: data.managedOwnerName ?? null,
+        vehicleId
+      }
+    });
+
+    if (duplicate) {
+      throw new BadRequestException("已存在相同融资工具、事件类型、事件时间和金额的生效资本事件，请勿重复补录。");
+    }
   }
 
   private async resolveCapitalEventFinancingInstrument(financingInstrumentId: string | null | undefined) {

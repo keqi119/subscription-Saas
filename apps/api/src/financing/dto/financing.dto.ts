@@ -3,7 +3,8 @@ import {
   FinancingCollateralType,
   FinancingInstrumentStatus,
   FinancingInstrumentType,
-  FinancingRepaymentMethod
+  FinancingRepaymentMethod,
+  VehiclePoolAllocationMethod
 } from "@prisma/client";
 import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, Min } from "class-validator";
 
@@ -177,6 +178,31 @@ export class ReleaseFinancingAllocationDto {
   @IsString()
   releasedAt!: string;
 
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class VehiclePoolAllocationPreviewDto {
+  @IsString()
+  @IsUUID("4")
+  poolId!: string;
+
+  @IsEnum(VehiclePoolAllocationMethod)
+  allocationMethod!: VehiclePoolAllocationMethod;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(10000)
+  coverageRateBps?: number | null;
+
+  @IsString()
+  effectiveFrom!: string;
+}
+
+export class ExecuteVehiclePoolAllocationDto extends VehiclePoolAllocationPreviewDto {
   @IsOptional()
   @IsString()
   remark?: string | null;

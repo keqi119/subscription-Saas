@@ -6,10 +6,12 @@ import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   AllocateFinancingInstrumentVehicleDto,
   CreateFinancingInstrumentDto,
+  ExecuteVehiclePoolAllocationDto,
   FinancingInstrumentsQueryDto,
   ReleaseFinancingAllocationDto,
   SettleFinancingInstrumentDto,
-  UpdateFinancingInstrumentDto
+  UpdateFinancingInstrumentDto,
+  VehiclePoolAllocationPreviewDto
 } from "./dto/financing.dto";
 import { FinancingService } from "./financing.service";
 
@@ -78,6 +80,22 @@ export class FinancingController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.financingService.releaseAllocation(id, allocationId, dto, request.user, requestContext(request));
+  }
+
+  @Post(":id/vehicle-pool-allocation-preview")
+  @RequirePermissions(FINANCING_MANAGE_PERMISSION)
+  previewVehiclePoolAllocation(@Param("id") id: string, @Body() dto: VehiclePoolAllocationPreviewDto) {
+    return this.financingService.previewVehiclePoolAllocation(id, dto);
+  }
+
+  @Post(":id/vehicle-pool-allocations")
+  @RequirePermissions(FINANCING_MANAGE_PERMISSION)
+  executeVehiclePoolAllocation(
+    @Param("id") id: string,
+    @Body() dto: ExecuteVehiclePoolAllocationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.financingService.executeVehiclePoolAllocation(id, dto, request.user, requestContext(request));
   }
 }
 

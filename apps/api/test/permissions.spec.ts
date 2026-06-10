@@ -18,12 +18,15 @@ import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { ReportController } from "../src/report/report.controller";
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
+import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
 const CAPITAL_STRUCTURE_VIEW_PERMISSION = "capital_structure:view";
 const CAPITAL_STRUCTURE_MANAGE_PERMISSION = "capital_structure:manage";
 const FINANCING_VIEW_PERMISSION = "financing:view";
 const FINANCING_MANAGE_PERMISSION = "financing:manage";
+const VEHICLE_ASSET_POOL_VIEW_PERMISSION = "vehicle_asset_pool:view";
+const VEHICLE_ASSET_POOL_MANAGE_PERMISSION = "vehicle_asset_pool:manage";
 const REVENUE_RIGHT_VIEW_PERMISSION = "revenue_right:view";
 const REVENUE_RIGHT_MANAGE_PERMISSION = "revenue_right:manage";
 const REVENUE_SHARE_VIEW_PERMISSION = "revenue_share:view";
@@ -173,10 +176,40 @@ describe("financing instrument permissions", () => {
       FinancingController.prototype.updateInstrument,
       FinancingController.prototype.settleInstrument,
       FinancingController.prototype.allocateVehicle,
-      FinancingController.prototype.releaseAllocation
+      FinancingController.prototype.releaseAllocation,
+      FinancingController.prototype.previewVehiclePoolAllocation,
+      FinancingController.prototype.executeVehiclePoolAllocation
     ]) {
       expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
         FINANCING_MANAGE_PERMISSION
+      ]);
+    }
+  });
+});
+
+describe("vehicle asset pool permissions", () => {
+  it("requires vehicle_asset_pool:view for pool reads", () => {
+    for (const handler of [
+      VehicleAssetPoolController.prototype.listPools,
+      VehicleAssetPoolController.prototype.getPool
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        VEHICLE_ASSET_POOL_VIEW_PERMISSION
+      ]);
+    }
+  });
+
+  it("requires vehicle_asset_pool:manage for pool mutations", () => {
+    for (const handler of [
+      VehicleAssetPoolController.prototype.createPool,
+      VehicleAssetPoolController.prototype.updatePool,
+      VehicleAssetPoolController.prototype.archivePool,
+      VehicleAssetPoolController.prototype.addVehicleToPool,
+      VehicleAssetPoolController.prototype.batchAddVehiclesToPool,
+      VehicleAssetPoolController.prototype.removeVehicleFromPool
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        VEHICLE_ASSET_POOL_MANAGE_PERMISSION
       ]);
     }
   });
@@ -771,6 +804,8 @@ describe("seed permission calibration", () => {
       "capital_structure:manage",
       "financing:view",
       "financing:manage",
+      "vehicle_asset_pool:view",
+      "vehicle_asset_pool:manage",
       "revenue_right:view",
       "revenue_right:manage",
       "revenue_share:view",
@@ -965,6 +1000,8 @@ describe("seed permission calibration", () => {
       "capital_structure:manage",
       "financing:view",
       "financing:manage",
+      "vehicle_asset_pool:view",
+      "vehicle_asset_pool:manage",
       "revenue_right:view",
       "revenue_right:manage",
       "revenue_share:view",
@@ -977,12 +1014,18 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const capitalStructureManagementPermissions = [");
     expect(seedSource).toContain('const financingViewPermissions = ["financing:view"]');
     expect(seedSource).toContain('const financingManagementPermissions = ["financing:view", "financing:manage"]');
+    expect(seedSource).toContain('const vehicleAssetPoolViewPermissions = ["vehicle_asset_pool:view"]');
+    expect(seedSource).toContain('const vehicleAssetPoolManagementPermissions = ["vehicle_asset_pool:view", "vehicle_asset_pool:manage"]');
     expect(seedSource).toContain('const revenueRightViewPermissions = ["revenue_right:view"]');
     expect(seedSource).toContain("const revenueRightManagementPermissions = [");
     expect(seedSource).toContain('const revenueShareViewPermissions = ["revenue_share:view"]');
     expect(seedSource).toContain('const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"]');
+    expect(seedSource).toContain('["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"]');
+    expect(seedSource).toContain('["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"]');
     expect(seedSource).toContain('["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"]');
     expect(seedSource).toContain('["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"]');
+    expect(seedSource).toContain('const vehicleMenuCodes = ["vehicles", "vehicles.assets"]');
+    expect(seedSource).toContain('const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"]');
     expect(seedSource).toContain('const financingMenuCodes = ["billing.financing_instruments"]');
     expect(seedSource).toContain('const revenueRightMenuCodes = ["billing.revenue_rights"]');
     expect(seedSource).toContain(
@@ -1000,28 +1043,34 @@ describe("seed permission calibration", () => {
     expectRolePermissions("OP", [
       "capital_structure:view",
       "financing:view",
+      "vehicle_asset_pool:view",
       "revenue_right:view",
       "revenue_share:view"
     ]);
     expectRolePermissions("GM", [
       "capital_structure:view",
       "financing:view",
+      "vehicle_asset_pool:view",
       "revenue_right:view",
       "revenue_share:view"
     ]);
     for (const roleCode of ["OP", "GM"]) {
       expect(roleHasMenu(roleMenuArray(roleCode), "billing.financing_instruments")).toBe(true);
+      expect(roleHasMenu(roleMenuArray(roleCode), "vehicles.asset_pools")).toBe(true);
       expect(roleHasMenu(roleMenuArray(roleCode), "billing.revenue_rights")).toBe(true);
     }
     expect(roleHasPermission(permissionConstantSource("capitalStructureManagementPermissions"), "capital_structure:manage")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("financingManagementPermissions"), "financing:manage")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("vehicleAssetPoolManagementPermissions"), "vehicle_asset_pool:manage")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("revenueRightManagementPermissions"), "revenue_right:manage")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("revenueShareManagementPermissions"), "revenue_share:manage")).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "capital_structure:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "financing:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("OP"), "vehicle_asset_pool:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "revenue_right:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "revenue_share:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "capital_structure:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "vehicle_asset_pool:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "revenue_right:manage")).toBe(false);
   });
 

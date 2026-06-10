@@ -156,6 +156,8 @@ permissionRows.push(
   ["capital_structure:manage", "管理车辆资本结构", "capital_structure", "manage"],
   ["financing:view", "查看融资工具", "financing", "view"],
   ["financing:manage", "管理融资工具", "financing", "manage"],
+  ["vehicle_asset_pool:view", "查看车辆资产池", "vehicle_asset_pool", "view"],
+  ["vehicle_asset_pool:manage", "管理车辆资产池", "vehicle_asset_pool", "manage"],
   ["revenue_right:view", "查看收益权归属", "revenue_right", "view"],
   ["revenue_right:manage", "管理收益权归属", "revenue_right", "manage"],
   ["revenue_share:view", "查看托管分润规则", "revenue_share", "view"],
@@ -190,6 +192,8 @@ const menuRows = [
   ["risk.deposit_rules", "押金规则", "/risk/deposit-rules", "money", 10, "risk:view", "risk"],
   ["products", "产品中心", "/products", "product", 50, "product:view", null],
   ["vehicles", "车辆资产", "/vehicles", "car", 55, "vehicle:view", null],
+  ["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"],
+  ["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"],
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
@@ -540,7 +544,8 @@ const vehicleManagementPermissions = [
   "vehicle:review_sale_price",
   "vehicle:manage"
 ];
-const vehicleMenuCodes = ["vehicles"];
+const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
+const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
 
 const capitalStructureViewPermissions = ["capital_structure:view"];
 
@@ -552,6 +557,10 @@ const capitalStructureManagementPermissions = [
 const financingViewPermissions = ["financing:view"];
 
 const financingManagementPermissions = ["financing:view", "financing:manage"];
+
+const vehicleAssetPoolViewPermissions = ["vehicle_asset_pool:view"];
+
+const vehicleAssetPoolManagementPermissions = ["vehicle_asset_pool:view", "vehicle_asset_pool:manage"];
 
 const revenueRightViewPermissions = ["revenue_right:view"];
 
@@ -671,6 +680,7 @@ async function main() {
       ...reportAssetPermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
+      ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
       "billing:view",
@@ -696,6 +706,7 @@ async function main() {
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
       ...financingMenuCodes,
+      ...vehicleAssetPoolMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
@@ -740,6 +751,9 @@ async function main() {
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         ...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions),
         ...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions),
+        ...(roleCode === "FI" || roleCode === "AS"
+          ? vehicleAssetPoolManagementPermissions
+          : vehicleAssetPoolViewPermissions),
         ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
         ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
         "quote:view",
@@ -767,6 +781,7 @@ async function main() {
         "orders.contracts",
         ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : []),
         ...financingMenuCodes,
+        ...vehicleAssetPoolMenuCodes,
         ...revenueRightMenuCodes,
         ...(roleCode === "AS" ? reportAssetMenuCodes : [])
       ]
@@ -786,6 +801,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
+      ...vehicleAssetPoolViewPermissions,
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
       "quote:view",
@@ -812,6 +828,7 @@ async function main() {
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
       ...financingMenuCodes,
+      ...vehicleAssetPoolMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]

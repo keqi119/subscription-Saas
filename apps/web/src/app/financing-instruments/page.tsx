@@ -36,8 +36,11 @@ import {
   FINANCING_INSTRUMENT_STATUS_LABELS,
   FINANCING_INSTRUMENT_TYPE_LABELS,
   FINANCING_REPAYMENT_METHOD_LABELS,
+  VEHICLE_ASSET_POOL_TYPE_LABELS,
   VEHICLE_CAPITAL_EVENT_STATUS_LABELS,
   VEHICLE_CAPITAL_EVENT_TYPE_LABELS,
+  VEHICLE_POOL_ALLOCATION_ACTION_LABELS,
+  VEHICLE_POOL_ALLOCATION_METHOD_LABELS,
   labelOf
 } from "../../constants/labels";
 import { apiFetch } from "../../lib/api";
@@ -121,7 +124,9 @@ interface CapitalEventRow {
 }
 
 interface FinancingInstrumentDetail extends FinancingInstrumentRow {
+  activeAllocatedPrincipalAmount: number;
   capitalEvents: CapitalEventRow[];
+  remainingPrincipalAmount: number;
   vehicles: FinancingAllocationRow[];
 }
 
@@ -162,9 +167,74 @@ interface SettleInstrumentFormValues {
   settledAt: Dayjs;
 }
 
+interface VehicleAssetPoolOptionRow {
+  activeVehicleCount: number;
+  id: string;
+  poolName: string;
+  poolNo: string;
+  poolStatus: string;
+  poolType: string;
+}
+
+interface VehicleAssetPoolListResponse {
+  items: VehicleAssetPoolOptionRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+interface PoolAllocationFormValues {
+  allocationMethod: string;
+  coverageRatePercent: number;
+  effectiveFrom: Dayjs;
+  poolId: string;
+  remark?: string | null;
+}
+
+interface PoolAllocationPreviewItem {
+  action: string;
+  allocatedPrincipalAmount: number;
+  allocationRatioBps?: number | null;
+  currentSalePriceAmount?: number | null;
+  plateNo?: string | null;
+  purchasePriceAmount?: number | null;
+  reason?: string | null;
+  vehicleCoverageBps?: number | null;
+  vehicleId: string;
+  vehicleModel?: string | null;
+  vehicleNo?: string | null;
+  vin?: string | null;
+}
+
+interface PoolAllocationPreview {
+  activeAllocatedPrincipalAmount: number;
+  allocationMethod: string;
+  allocatableVehicleCount: number;
+  coverageRateBps: number;
+  exceedsRemainingPrincipalAmount: boolean;
+  items: PoolAllocationPreviewItem[];
+  plannedAllocatedPrincipalAmount: number;
+  poolVehicleCount: number;
+  principalAmount: number;
+  remainingPrincipalAmount: number;
+}
+
+interface PoolAllocationExecuteResult {
+  created?: FinancingAllocationRow[];
+  createdCount: number;
+  failed?: PoolAllocationPreviewItem[];
+  failedCount: number;
+  skipped?: PoolAllocationPreviewItem[];
+  skippedCount: number;
+  totalAllocatedPrincipalAmount: number;
+}
+
 const statusColors: Record<string, string> = {
   ACTIVE: "green",
   CANCELLED: "default",
+  CREATE: "green",
+  FAILED: "red",
+  SKIP: "orange",
   RELEASED: "default",
   SETTLED: "blue"
 };
@@ -205,6 +275,7 @@ export default function FinancingInstrumentsPage() {
   const [filterForm] = Form.useForm<InstrumentFilterValues>();
   const [instrumentForm] = Form.useForm<InstrumentFormValues>();
   const [allocationForm] = Form.useForm<AllocationFormValues>();
+  const [poolAllocationForm] = Form.useForm<PoolAllocationFormValues>();
   const [releaseForm] = Form.useForm<ReleaseAllocationFormValues>();
   const [settleForm] = Form.useForm<SettleInstrumentFormValues>();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
@@ -216,8 +287,16 @@ export default function FinancingInstrumentsPage() {
   const [instrumentModalOpen, setInstrumentModalOpen] = useState(false);
   const [editingInstrument, setEditingInstrument] = useState<FinancingInstrumentRow | null>(null);
   const [allocationModalOpen, setAllocationModalOpen] = useState(false);
+  const [poolAllocationModalOpen, setPoolAllocationModalOpen] = useState(false);
+  const [poolAllocationPreview, setPoolAllocationPreview] = useState<PoolAllocationPreview | null>(null);
+  const [poolAllocationResult, setPoolAllocationResult] = useState<PoolAllocationExecuteResult | null>(null);
+  const [poolAllocationPreviewLoading, setPoolAllocationPreviewLoading] = useState(false);
+  const [poolAllocationExecuting, setPoolAllocationExecuting] = useState(false);
   const [vehicleRows, setVehicleRows] = useState<VehicleOptionRow[]>([]);
   const [vehiclesLoading, setVehiclesLoading] = useState(false);
+  const [poolRows, setPoolRows] = useState<VehicleAssetPoolOptionRow[]>([]);
+  const [poolLoadError, setPoolLoadError] = useState<string | null>(null);
+  const [poolsLoading, setPoolsLoading] = useState(false);
   const [releaseTarget, setReleaseTarget] = useState<FinancingAllocationRow | null>(null);
   const [settleTarget, setSettleTarget] = useState<FinancingInstrumentRow | null>(null);
   const allocationVehicleId = Form.useWatch("vehicleId", allocationForm);
@@ -225,6 +304,7 @@ export default function FinancingInstrumentsPage() {
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("financing:view");
   const canViewVehicles = permissions.has("vehicle:view");
+  const canViewPools = permissions.has("vehicle_asset_pool:view");
   const selectedAllocationVehicle = useMemo(
     () => vehicleRows.find((vehicle) => vehicle.id === allocationVehicleId) ?? null,
     [allocationVehicleId, vehicleRows]
@@ -242,6 +322,16 @@ export default function FinancingInstrumentsPage() {
         value: vehicle.id
       })),
     [vehicleRows]
+  );
+  const poolOptions = useMemo(
+    () =>
+      poolRows
+        .filter((pool) => pool.poolStatus === "ACTIVE" && pool.poolType === "FINANCING")
+        .map((pool) => ({
+          label: `${pool.poolNo} / ${pool.poolName} / ${labelOf(VEHICLE_ASSET_POOL_TYPE_LABELS, pool.poolType)} / 生效车辆 ${pool.activeVehicleCount}`,
+          value: pool.id
+        })),
+    [poolRows]
   );
 
   const loadData = useCallback(async () => {
@@ -287,6 +377,24 @@ export default function FinancingInstrumentsPage() {
     }
   }, [message]);
 
+  const loadPools = useCallback(async () => {
+    setPoolsLoading(true);
+    setPoolLoadError(null);
+    try {
+      const result = await apiFetch<VehicleAssetPoolListResponse>(
+        "/vehicle-asset-pools?poolType=FINANCING&poolStatus=ACTIVE&pageSize=100"
+      );
+      setPoolRows(result.items);
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      setPoolLoadError(errorMessage);
+      void message.error(errorMessage);
+      setPoolRows([]);
+    } finally {
+      setPoolsLoading(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
       .then(setMe)
@@ -304,6 +412,12 @@ export default function FinancingInstrumentsPage() {
       void loadVehicles();
     }
   }, [canViewVehicles, loadVehicles]);
+
+  useEffect(() => {
+    if (canViewPools) {
+      void loadPools();
+    }
+  }, [canViewPools, loadPools]);
 
   function openCreate() {
     setEditingInstrument(null);
@@ -387,6 +501,93 @@ export default function FinancingInstrumentsPage() {
       effectiveFrom: dayjs()
     });
     setAllocationModalOpen(true);
+  }
+
+  function openPoolAllocationModal() {
+    poolAllocationForm.resetFields();
+    poolAllocationForm.setFieldsValue({
+      allocationMethod: "UNIFORM_PURCHASE_PRICE_COVERAGE",
+      coverageRatePercent: 90,
+      effectiveFrom: dayjs()
+    });
+    setPoolAllocationPreview(null);
+    setPoolAllocationResult(null);
+    setPoolAllocationModalOpen(true);
+    if (canViewPools) {
+      void loadPools();
+    }
+  }
+
+  async function previewPoolAllocation() {
+    if (!detail) {
+      return;
+    }
+    const values = await poolAllocationForm.validateFields();
+    setPoolAllocationPreviewLoading(true);
+    setPoolAllocationResult(null);
+    try {
+      const preview = await apiFetch<PoolAllocationPreview>(
+        `/financing-instruments/${detail.id}/vehicle-pool-allocation-preview`,
+        {
+          body: JSON.stringify({
+            allocationMethod: values.allocationMethod,
+            coverageRateBps: percentToBps(values.coverageRatePercent),
+            effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
+            poolId: values.poolId
+          }),
+          method: "POST"
+        }
+      );
+      setPoolAllocationPreview(preview);
+      void message.success("池化分摊预览已生成");
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setPoolAllocationPreviewLoading(false);
+    }
+  }
+
+  async function executePoolAllocation() {
+    if (!detail || !poolAllocationPreview) {
+      return;
+    }
+    if (poolAllocationPreview.exceedsRemainingPrincipalAmount) {
+      void message.error("预计分摊本金超过融资工具剩余可分摊本金，请调整覆盖率或车辆池。");
+      return;
+    }
+    const values = await poolAllocationForm.validateFields();
+    modal.confirm({
+      cancelText: "取消",
+      content:
+        "本操作将为可分摊车辆创建 FinancingInstrumentVehicle 记录。车辆池变化不会自动重算历史分摊，本操作也不会自动创建资本事件。",
+      okText: "确认执行",
+      onOk: async () => {
+        setPoolAllocationExecuting(true);
+        try {
+          const result = await apiFetch<PoolAllocationExecuteResult>(
+            `/financing-instruments/${detail.id}/vehicle-pool-allocations`,
+            {
+              body: JSON.stringify({
+                allocationMethod: values.allocationMethod,
+                coverageRateBps: percentToBps(values.coverageRatePercent),
+                effectiveFrom: values.effectiveFrom.format("YYYY-MM-DD"),
+                poolId: values.poolId,
+                remark: values.remark
+              }),
+              method: "POST"
+            }
+          );
+          setPoolAllocationResult(result);
+          void message.success("池化融资分摊已执行");
+          await Promise.all([loadData(), loadDetail(detail.id)]);
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setPoolAllocationExecuting(false);
+        }
+      },
+      title: "确认按车辆池批量生成融资分摊？"
+    });
   }
 
   async function submitAllocation(values: AllocationFormValues) {
@@ -641,9 +842,47 @@ export default function FinancingInstrumentsPage() {
     { dataIndex: "remark", render: safeText, title: "备注", width: 180 }
   ];
 
+  const poolAllocationPreviewColumns: ColumnsType<PoolAllocationPreviewItem> = [
+    { dataIndex: "vehicleNo", render: safeText, title: "车辆编号", width: 180 },
+    { dataIndex: "vin", render: safeText, title: "VIN", width: 180 },
+    { dataIndex: "plateNo", render: safeText, title: "车牌号", width: 120 },
+    { dataIndex: "vehicleModel", render: safeText, title: "车型", width: 130 },
+    { dataIndex: "purchasePriceAmount", render: formatYuan, title: "采购价", width: 130 },
+    { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 130 },
+    { dataIndex: "allocatedPrincipalAmount", render: formatYuan, title: "预计分摊本金", width: 150 },
+    { dataIndex: "allocationRatioBps", render: formatPercentFromBps, title: "融资工具占用比例", width: 150 },
+    { dataIndex: "vehicleCoverageBps", render: formatPercentFromBps, title: "单车融资覆盖率", width: 150 },
+    {
+      dataIndex: "action",
+      render: (value: string) => formatTag(VEHICLE_POOL_ALLOCATION_ACTION_LABELS, value),
+      title: "动作",
+      width: 100
+    },
+    { dataIndex: "reason", render: safeText, title: "原因", width: 240 }
+  ];
+
+  const poolAllocationCreatedColumns: ColumnsType<FinancingAllocationRow> = [
+    { dataIndex: "allocationNo", render: safeText, title: "分摊编号", width: 190 },
+    { dataIndex: "vehicleId", render: safeText, title: "车辆", width: 220 },
+    { dataIndex: "allocatedPrincipalAmount", render: formatYuan, title: "创建本金", width: 140 },
+    { dataIndex: "allocationRatioBps", render: formatPercentFromBps, title: "融资工具占用比例", width: 150 },
+    {
+      dataIndex: "allocationStatus",
+      render: (value: string) => formatTag(FINANCING_ALLOCATION_STATUS_LABELS, value),
+      title: "状态",
+      width: 110
+    }
+  ];
+
+  const poolAllocationExecuteAllowed =
+    Boolean(poolAllocationPreview) && !poolAllocationPreview?.exceedsRemainingPrincipalAmount;
+  const poolAllocationExecuteDisabledReason = poolAllocationPreview
+    ? "预计分摊本金超过融资工具剩余可分摊本金，请调整覆盖率或车辆池。"
+    : "请先生成池化分摊预览。";
+
   return (
     <ProtectedShell>
-      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <Space align="center" style={{ justifyContent: "space-between", width: "100%" }}>
           <Typography.Title level={3} style={{ margin: 0 }}>
             融资工具管理
@@ -699,16 +938,28 @@ export default function FinancingInstrumentsPage() {
           destroyOnHidden
           extra={
             detail ? (
-              <ActionButton
-                allowed={detail.instrumentStatus === "ACTIVE"}
-                disabledReason="仅生效中的融资工具可以新增车辆分摊"
-                icon={<ToolOutlined />}
-                onClick={openAllocationModal}
-                permission="financing:manage"
-                permissions={permissions}
-              >
-                添加车辆分摊
-              </ActionButton>
+              <Space>
+                <ActionButton
+                  allowed={detail.instrumentStatus === "ACTIVE"}
+                  disabledReason="仅生效中的融资工具可以新增车辆分摊"
+                  icon={<ToolOutlined />}
+                  onClick={openAllocationModal}
+                  permission="financing:manage"
+                  permissions={permissions}
+                >
+                  添加车辆分摊
+                </ActionButton>
+                <ActionButton
+                  allowed={detail.instrumentStatus === "ACTIVE"}
+                  disabledReason="当前融资工具不是生效中，不能执行池化分摊。"
+                  icon={<ToolOutlined />}
+                  onClick={openPoolAllocationModal}
+                  permission={["financing:manage", "vehicle_asset_pool:view"]}
+                  permissions={permissions}
+                >
+                  按车辆池批量分摊
+                </ActionButton>
+              </Space>
             ) : null
           }
           loading={detailLoading}
@@ -721,7 +972,7 @@ export default function FinancingInstrumentsPage() {
           title={detail ? `${detail.instrumentNo} 融资工具详情` : "融资工具详情"}
         >
           {detail ? (
-            <Space orientation="vertical" size={20} style={{ width: "100%" }}>
+            <Space direction="vertical" size={20} style={{ width: "100%" }}>
               <Descriptions
                 bordered
                 column={2}
@@ -732,6 +983,8 @@ export default function FinancingInstrumentsPage() {
                   { label: "资金方", children: safeText(detail.lenderName) },
                   { label: "合同编号", children: safeText(detail.contractNo) },
                   { label: "本金金额", children: formatYuan(detail.principalAmount) },
+                  { label: "已生效分摊本金", children: formatYuan(detail.activeAllocatedPrincipalAmount) },
+                  { label: "剩余可分摊本金", children: formatYuan(detail.remainingPrincipalAmount) },
                   { label: "年化利率", children: formatPercentFromBps(detail.annualRateBps) },
                   { label: "开始日期", children: formatDate(detail.startDate) },
                   { label: "到期日期", children: formatDate(detail.maturityDate) },
@@ -843,7 +1096,7 @@ export default function FinancingInstrumentsPage() {
             </Form.Item>
             <Alert
               description={
-                <Space orientation="vertical" size={4}>
+                <Space direction="vertical" size={4}>
                   <Typography.Text>车辆采购价：{formatYuan(selectedAllocationVehicle?.purchasePriceAmount)}</Typography.Text>
                   <Typography.Text>融资工具占用比例：{allocationInstrumentRatioText}</Typography.Text>
                   <Typography.Text>单车融资覆盖率：{allocationVehicleCoverageText}</Typography.Text>
@@ -860,6 +1113,188 @@ export default function FinancingInstrumentsPage() {
               <Input.TextArea rows={3} />
             </Form.Item>
           </Form>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          footer={
+            <Space>
+              <Button onClick={() => setPoolAllocationModalOpen(false)}>关闭</Button>
+              <Button loading={poolAllocationPreviewLoading} onClick={previewPoolAllocation}>
+                预览分摊
+              </Button>
+              <ActionButton
+                allowed={poolAllocationExecuteAllowed}
+                disabledReason={poolAllocationExecuteDisabledReason}
+                loading={poolAllocationExecuting}
+                onClick={executePoolAllocation}
+                permission="financing:manage"
+                permissions={permissions}
+                type="primary"
+              >
+                正式执行分摊
+              </ActionButton>
+            </Space>
+          }
+          onCancel={() => setPoolAllocationModalOpen(false)}
+          open={poolAllocationModalOpen}
+          title="按车辆池批量分摊"
+          width={1120}
+        >
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              description="当前分摊方法为按车辆采购价统一覆盖率。每台车分摊本金 = 车辆采购价 × 覆盖率；融资工具占用比例 = 分摊本金 / 融资工具本金。池化分摊不会自动创建资本事件，池内车辆后续变化也不会自动重算历史分摊。"
+              showIcon
+              type="info"
+            />
+            {poolLoadError ? (
+              <Alert
+                action={
+                  <Button loading={poolsLoading} onClick={loadPools} size="small">
+                    刷新车辆池
+                  </Button>
+                }
+                message={`车辆池加载失败：${poolLoadError}`}
+                showIcon
+                type="error"
+              />
+            ) : !poolsLoading && poolOptions.length === 0 ? (
+              <Alert
+                action={
+                  <Button loading={poolsLoading} onClick={loadPools} size="small">
+                    刷新车辆池
+                  </Button>
+                }
+                message="暂无生效中的融资车辆池，请先在车辆资产池页面创建或启用 FINANCING 类型车辆池。"
+                showIcon
+                type="warning"
+              />
+            ) : null}
+            <Form<PoolAllocationFormValues> form={poolAllocationForm} layout="vertical">
+              <Form.Item label="车辆资产池" name="poolId" rules={[{ required: true, message: "请选择车辆资产池" }]}>
+                <Select
+                  loading={poolsLoading}
+                  notFoundContent={
+                    poolLoadError
+                      ? "车辆池加载失败，请点击刷新车辆池"
+                      : "暂无生效中的融资车辆池"
+                  }
+                  optionFilterProp="label"
+                  options={poolOptions}
+                  placeholder="请选择生效中的融资车辆池"
+                  showSearch
+                />
+              </Form.Item>
+              <Form.Item
+                label="分摊方法"
+                name="allocationMethod"
+                rules={[{ required: true, message: "请选择分摊方法" }]}
+              >
+                <Select
+                  options={[
+                    {
+                      label: labelOf(VEHICLE_POOL_ALLOCATION_METHOD_LABELS, "UNIFORM_PURCHASE_PRICE_COVERAGE"),
+                      value: "UNIFORM_PURCHASE_PRICE_COVERAGE"
+                    }
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item
+                label="统一融资覆盖率（%）"
+                name="coverageRatePercent"
+                rules={[{ required: true, message: "请输入统一融资覆盖率" }]}
+              >
+                <InputNumber max={100} min={0.01} precision={2} style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item label="生效日期" name="effectiveFrom" rules={[{ required: true, message: "请选择生效日期" }]}>
+                <DatePicker style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item label="备注" name="remark">
+                <Input.TextArea rows={3} />
+              </Form.Item>
+            </Form>
+
+            {poolAllocationPreview ? (
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Descriptions
+                  bordered
+                  column={3}
+                  items={[
+                    { label: "融资工具本金", children: formatYuan(poolAllocationPreview.principalAmount) },
+                    { label: "已分摊本金", children: formatYuan(poolAllocationPreview.activeAllocatedPrincipalAmount) },
+                    { label: "剩余可分摊本金", children: formatYuan(poolAllocationPreview.remainingPrincipalAmount) },
+                    { label: "车辆池车辆数", children: poolAllocationPreview.poolVehicleCount },
+                    { label: "可分摊车辆数", children: poolAllocationPreview.allocatableVehicleCount },
+                    { label: "预计分摊本金合计", children: formatYuan(poolAllocationPreview.plannedAllocatedPrincipalAmount) },
+                    {
+                      label: "是否超过剩余额度",
+                      children: poolAllocationPreview.exceedsRemainingPrincipalAmount ? (
+                        <Tag color="red">是</Tag>
+                      ) : (
+                        <Tag color="green">否</Tag>
+                      )
+                    }
+                  ]}
+                  size="small"
+                  title="分摊预览汇总"
+                />
+                {poolAllocationPreview.exceedsRemainingPrincipalAmount ? (
+                  <Alert
+                    message="预计分摊本金超过融资工具剩余可分摊本金，请调整覆盖率或车辆池。"
+                    showIcon
+                    type="error"
+                  />
+                ) : null}
+                {poolAllocationPreview.items.some((item) => item.action === "SKIP") ? (
+                  <Alert message="部分车辆将被跳过，请确认明细。" showIcon type="warning" />
+                ) : null}
+                <Table
+                  columns={poolAllocationPreviewColumns}
+                  dataSource={poolAllocationPreview.items}
+                  pagination={false}
+                  rowKey="vehicleId"
+                  scroll={{ x: 1650 }}
+                  size="small"
+                  title={() => "预览明细"}
+                />
+              </Space>
+            ) : null}
+
+            {poolAllocationResult ? (
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Descriptions
+                  bordered
+                  column={4}
+                  items={[
+                    { label: "创建数量", children: poolAllocationResult.createdCount },
+                    { label: "跳过数量", children: poolAllocationResult.skippedCount },
+                    { label: "失败数量", children: poolAllocationResult.failedCount },
+                    { label: "创建本金合计", children: formatYuan(poolAllocationResult.totalAllocatedPrincipalAmount) }
+                  ]}
+                  size="small"
+                  title="执行结果"
+                />
+                <Table
+                  columns={poolAllocationCreatedColumns}
+                  dataSource={poolAllocationResult.created ?? []}
+                  pagination={false}
+                  rowKey="id"
+                  scroll={{ x: 900 }}
+                  size="small"
+                  title={() => "已创建分摊"}
+                />
+                <Table
+                  columns={poolAllocationPreviewColumns}
+                  dataSource={[...(poolAllocationResult.skipped ?? []), ...(poolAllocationResult.failed ?? [])]}
+                  pagination={false}
+                  rowKey={(record) => `${record.vehicleId}-${record.action}-${record.reason ?? ""}`}
+                  scroll={{ x: 1650 }}
+                  size="small"
+                  title={() => "跳过 / 失败明细"}
+                />
+              </Space>
+            ) : null}
+          </Space>
         </Modal>
 
         <Modal

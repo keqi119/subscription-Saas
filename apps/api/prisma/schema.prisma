@@ -646,6 +646,41 @@ enum FinancingAllocationStatus {
   @@map("financing_allocation_status")
 }
 
+enum VehicleAssetPoolType {
+  FINANCING
+  OPERATION
+  ASSET_MANAGEMENT
+  REPORTING
+  OTHER
+
+  @@map("vehicle_asset_pool_type")
+}
+
+enum VehicleAssetPoolStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+
+  @@map("vehicle_asset_pool_status")
+}
+
+enum VehicleAssetPoolVehicleStatus {
+  ACTIVE
+  REMOVED
+  CANCELLED
+
+  @@map("vehicle_asset_pool_vehicle_status")
+}
+
+enum VehiclePoolAllocationMethod {
+  UNIFORM_PURCHASE_PRICE_COVERAGE
+  UNIFORM_CURRENT_SALE_PRICE_COVERAGE
+  EQUAL_AMOUNT
+  MANUAL_AMOUNT
+
+  @@map("vehicle_pool_allocation_method")
+}
+
 enum RevenueRightAssignmentType {
   PLEDGE
   TRANSFER
@@ -1562,6 +1597,7 @@ model Vehicle {
   assetCostProfiles             VehicleAssetCostProfile[]
   capitalEvents                 VehicleCapitalEvent[]
   financingAllocations          FinancingInstrumentVehicle[]
+  assetPoolMemberships          VehicleAssetPoolVehicle[]
   revenueRightAssignments       RevenueRightAssignment[]
   revenueShareRules             RevenueShareRule[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1720,6 +1756,54 @@ model FinancingInstrumentVehicle {
   @@index([effectiveFrom])
   @@index([deletedAt])
   @@map("financing_instrument_vehicle")
+}
+
+model VehicleAssetPool {
+  id         String                 @id @default(uuid()) @db.Uuid
+  poolNo     String                 @unique @map("pool_no") @db.VarChar(64)
+  poolName   String                 @map("pool_name") @db.VarChar(128)
+  poolType   VehicleAssetPoolType   @map("pool_type")
+  poolStatus VehicleAssetPoolStatus @default(ACTIVE) @map("pool_status")
+  purpose    String?                @db.Text
+  remark     String?                @db.Text
+  snapshot   Json?
+  createdAt  DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy  String?                @map("created_by") @db.Uuid
+  updatedBy  String?                @map("updated_by") @db.Uuid
+  deletedAt  DateTime?              @map("deleted_at") @db.Timestamptz(6)
+
+  vehicles   VehicleAssetPoolVehicle[]
+
+  @@index([poolType])
+  @@index([poolStatus])
+  @@index([deletedAt])
+  @@map("vehicle_asset_pool")
+}
+
+model VehicleAssetPoolVehicle {
+  id               String                        @id @default(uuid()) @db.Uuid
+  poolId           String                        @map("pool_id") @db.Uuid
+  pool             VehicleAssetPool              @relation(fields: [poolId], references: [id])
+  vehicleId        String                        @map("vehicle_id") @db.Uuid
+  vehicle          Vehicle                       @relation(fields: [vehicleId], references: [id])
+  membershipStatus VehicleAssetPoolVehicleStatus @default(ACTIVE) @map("membership_status")
+  effectiveFrom    DateTime                      @map("effective_from") @db.Date
+  effectiveTo      DateTime?                     @map("effective_to") @db.Date
+  remark           String?                       @db.Text
+  snapshot         Json?
+  createdAt        DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?                       @map("created_by") @db.Uuid
+  updatedBy        String?                       @map("updated_by") @db.Uuid
+  deletedAt        DateTime?                     @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([poolId])
+  @@index([vehicleId])
+  @@index([membershipStatus])
+  @@index([effectiveFrom])
+  @@index([deletedAt])
+  @@map("vehicle_asset_pool_vehicle")
 }
 
 model RevenueRightAssignment {

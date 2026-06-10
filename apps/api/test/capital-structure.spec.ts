@@ -8,15 +8,20 @@ import {
   Prisma,
   SalePriceStatus,
   VehicleAcquisitionMode,
+  VehicleAssetPoolStatus,
+  VehicleAssetPoolType,
+  VehicleAssetPoolVehicleStatus,
   VehicleBatteryUsageType,
   VehicleCapitalEventStatus,
   VehicleCapitalEventType,
   VehicleModel,
+  VehiclePoolAllocationMethod,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { FinancingService } from "../src/financing/financing.service";
+import { VehicleAssetPoolService } from "../src/vehicle-asset-pool/vehicle-asset-pool.service";
 import { VehicleService } from "../src/vehicle/vehicle.service";
 
 describe("FinancingService vehicle capital structure backend", () => {
@@ -141,6 +146,27 @@ describe("FinancingService vehicle capital structure backend", () => {
     ).rejects.toThrow("已存在生效分摊");
   });
 
+  it("returns financing instrument allocation balances in detail", async () => {
+    const instrument = makeInstrument({ principalAmount: 10000000n });
+    const activeAllocation = makeAllocation({ allocatedPrincipalAmount: 8000000n, instrumentId: instrument.id });
+    const releasedAllocation = makeAllocation({
+      allocatedPrincipalAmount: 1000000n,
+      allocationStatus: FinancingAllocationStatus.RELEASED,
+      id: "allocation-2",
+      instrumentId: instrument.id,
+      vehicleId: "vehicle-2"
+    });
+    const harness = createFinancingHarness({
+      allocations: [activeAllocation, releasedAllocation],
+      instruments: [instrument]
+    });
+
+    const detail = await harness.service.getInstrument(instrument.id);
+
+    expect(detail.activeAllocatedPrincipalAmount).toBe(8000000);
+    expect(detail.remainingPrincipalAmount).toBe(2000000);
+  });
+
   it("releases a vehicle allocation", async () => {
     const instrument = makeInstrument();
     const allocation = makeAllocation({ instrumentId: instrument.id });
@@ -170,6 +196,273 @@ describe("FinancingService vehicle capital structure backend", () => {
 
     expect(detail.vehicles).toHaveLength(1);
     expect(detail.vehicles[0]?.vehicle.vehicleNo).toBe("VEH20260602000000A1B2");
+  });
+
+  it("previews vehicle pool allocation by purchase price coverage without writing allocations", async () => {
+    const instrument = makeInstrument({ principalAmount: 40000000n });
+    const pool = makeAssetPool();
+    const memberships = [
+      makeAssetPoolMembership({ poolId: pool.id, vehicleId: "vehicle-1" }),
+      makeAssetPoolMembership({ id: "membership-2", poolId: pool.id, vehicleId: "vehicle-2" })
+    ];
+    const harness = createFinancingHarness({ instruments: [instrument], poolMemberships: memberships, pools: [pool] });
+
+    const preview = await harness.service.previewVehiclePoolAllocation(instrument.id, {
+      allocationMethod: VehiclePoolAllocationMethod.UNIFORM_PURCHASE_PRICE_COVERAGE,
+      coverageRateBps: 9000,
+      effectiveFrom: "2026-07-01",
+      poolId: pool.id
+    });
+
+    expect(preview.poolVehicleCount).toBe(2);
+    expect(preview.allocatableVehicleCount).toBe(2);
+    expect(preview.plannedAllocatedPrincipalAmount).toBe(24120000);
+    expect(preview.exceedsRemainingPrincipalAmount).toBe(false);
+    expect(harness.state.allocations).toHaveLength(0);
+  });
+
+  it("skips pool vehicles without purchase price in preview", async () => {
+    const instrument = makeInstrument({ principalAmount: 40000000n });
+    const pool = makeAssetPool();
+    const vehicle = makeVehicle({ purchasePriceAmount: 0n });
+    const harness = createFinancingHarness({
+      instruments: [instrument],
+      poolMemberships: [makeAssetPoolMembership({ poolId: pool.id, vehicleId: vehicle.id })],
+      pools: [pool],
+      vehicles: [vehicle]
+    });
+
+    const preview = await harness.service.previewVehiclePoolAllocation(instrument.id, {
+      allocationMethod: VehiclePoolAllocationMethod.UNIFORM_PURCHASE_PRICE_COVERAGE,
+      coverageRateBps: 9000,
+      effectiveFrom: "2026-07-01",
+      poolId: pool.id
+    });
+
+    expect(preview.allocatableVehicleCount).toBe(0);
+    expect(preview.items[0]?.reason).toContain("采购价");
+  });
+
+  it("skips vehicles that already have active allocation under same instrument", async () => {
+    const instrument = makeInstrument({ principalAmount: 40000000n });
+    const pool = makeAssetPool();
+    const allocation = makeAllocation({ instrumentId: instrument.id, vehicleId: "vehicle-1" });
+    const harness = createFinancingHarness({
+      allocations: [allocation],
+      instruments: [instrument],
+      poolMemberships: [makeAssetPoolMembership({ poolId: pool.id, vehicleId: "vehicle-1" })],
+      pools: [pool]
+    });
+
+    const preview = await harness.service.previewVehiclePoolAllocation(instrument.id, {
+      allocationMethod: VehiclePoolAllocationMethod.UNIFORM_PURCHASE_PRICE_COVERAGE,
+      coverageRateBps: 9000,
+      effectiveFrom: "2026-07-01",
+      poolId: pool.id
+    });
+
+    expect(preview.allocatableVehicleCount).toBe(0);
+    expect(preview.items[0]?.reason).toContain("生效分摊");
+  });
+
+  it("executes vehicle pool allocation and keeps capital events untouched", async () => {
+    const instrument = makeInstrument({ principalAmount: 40000000n });
+    const pool = makeAssetPool();
+    const memberships = [
+      makeAssetPoolMembership({ poolId: pool.id, vehicleId: "vehicle-1" }),
+      makeAssetPoolMembership({ id: "membership-2", poolId: pool.id, vehicleId: "vehicle-2" })
+    ];
+    const harness = createFinancingHarness({ instruments: [instrument], poolMemberships: memberships, pools: [pool] });
+
+    const result = await harness.service.executeVehiclePoolAllocation(
+      instrument.id,
+      {
+        allocationMethod: VehiclePoolAllocationMethod.UNIFORM_PURCHASE_PRICE_COVERAGE,
+        coverageRateBps: 9000,
+        effectiveFrom: "2026-07-01",
+        poolId: pool.id,
+        remark: "pool allocation"
+      },
+      user,
+      context
+    );
+
+    expect(result.createdCount).toBe(2);
+    expect(harness.state.allocations).toHaveLength(2);
+    expect(harness.state.capitalEvents).toHaveLength(0);
+    expect(harness.state.allocations[0]?.snapshot).toMatchObject({
+      vehicleAssetPoolAllocation: expect.objectContaining({ poolId: pool.id })
+    });
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ entityType: "financing_vehicle_pool_allocation" })
+    );
+  });
+
+  it("rejects formal pool allocation when total exceeds remaining principal", async () => {
+    const instrument = makeInstrument({ principalAmount: 10000000n });
+    const pool = makeAssetPool();
+    const harness = createFinancingHarness({
+      allocations: [makeAllocation({ allocatedPrincipalAmount: 9000000n, instrumentId: instrument.id })],
+      instruments: [instrument],
+      poolMemberships: [makeAssetPoolMembership({ poolId: pool.id, vehicleId: "vehicle-2" })],
+      pools: [pool]
+    });
+
+    await expect(
+      harness.service.executeVehiclePoolAllocation(
+        instrument.id,
+        {
+          allocationMethod: VehiclePoolAllocationMethod.UNIFORM_PURCHASE_PRICE_COVERAGE,
+          coverageRateBps: 9000,
+          effectiveFrom: "2026-07-01",
+          poolId: pool.id
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("剩余可分摊本金");
+  });
+
+  it("rejects unsupported vehicle pool allocation methods", async () => {
+    const instrument = makeInstrument({ principalAmount: 40000000n });
+    const pool = makeAssetPool();
+    const harness = createFinancingHarness({ instruments: [instrument], pools: [pool] });
+
+    await expect(
+      harness.service.previewVehiclePoolAllocation(instrument.id, {
+        allocationMethod: VehiclePoolAllocationMethod.EQUAL_AMOUNT,
+        coverageRateBps: 9000,
+        effectiveFrom: "2026-07-01",
+        poolId: pool.id
+      })
+    ).rejects.toThrow("暂未实现");
+  });
+});
+
+describe("VehicleAssetPoolService backend", () => {
+  it("creates a vehicle asset pool and writes audit log", async () => {
+    const harness = createAssetPoolHarness();
+
+    const result = await harness.service.createPool(
+      { poolName: "2026 ET5 financing pool", poolType: VehicleAssetPoolType.FINANCING },
+      user,
+      context
+    );
+
+    expect(result.poolNo).toMatch(/^VPOOL\d{14}[A-Z0-9]{4}$/);
+    expect(harness.state.pools).toHaveLength(1);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ action: AuditAction.CREATE, entityType: "vehicle_asset_pool" })
+    );
+  });
+
+  it("updates a vehicle asset pool", async () => {
+    const pool = makeAssetPool();
+    const harness = createAssetPoolHarness({ pools: [pool] });
+
+    const result = await harness.service.updatePool(pool.id, { poolName: "updated pool" }, user, context);
+
+    expect(result.poolName).toBe("updated pool");
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ action: AuditAction.UPDATE, entityType: "vehicle_asset_pool" })
+    );
+  });
+
+  it("archives a vehicle asset pool", async () => {
+    const pool = makeAssetPool();
+    const harness = createAssetPoolHarness({ pools: [pool] });
+
+    const result = await harness.service.archivePool(pool.id, { remark: "archive" }, user, context);
+
+    expect(result.poolStatus).toBe(VehicleAssetPoolStatus.ARCHIVED);
+  });
+
+  it("does not add vehicles to archived pools", async () => {
+    const pool = makeAssetPool({ poolStatus: VehicleAssetPoolStatus.ARCHIVED });
+    const harness = createAssetPoolHarness({ pools: [pool] });
+
+    await expect(
+      harness.service.addVehicleToPool(
+        pool.id,
+        { effectiveFrom: "2026-07-01", vehicleId: "vehicle-1" },
+        user,
+        context
+      )
+    ).rejects.toThrow("车辆池不是生效中状态");
+  });
+
+  it("adds a vehicle to pool and rejects duplicate active membership", async () => {
+    const pool = makeAssetPool();
+    const harness = createAssetPoolHarness({ pools: [pool] });
+
+    await harness.service.addVehicleToPool(
+      pool.id,
+      { effectiveFrom: "2026-07-01", vehicleId: "vehicle-1" },
+      user,
+      context
+    );
+
+    await expect(
+      harness.service.addVehicleToPool(
+        pool.id,
+        { effectiveFrom: "2026-07-01", vehicleId: "vehicle-1" },
+        user,
+        context
+      )
+    ).rejects.toThrow("重复加入");
+  });
+
+  it("batch adds vehicles and skips duplicates", async () => {
+    const pool = makeAssetPool();
+    const harness = createAssetPoolHarness({
+      memberships: [makeAssetPoolMembership({ poolId: pool.id, vehicleId: "vehicle-1" })],
+      pools: [pool]
+    });
+
+    const result = await harness.service.batchAddVehiclesToPool(
+      pool.id,
+      { effectiveFrom: "2026-07-01", vehicleIds: ["vehicle-1", "vehicle-2", "vehicle-2"] },
+      user,
+      context
+    );
+
+    expect(result.addedCount).toBe(1);
+    expect(result.skippedCount).toBe(2);
+    expect(harness.state.memberships).toHaveLength(2);
+  });
+
+  it("removes active pool membership", async () => {
+    const pool = makeAssetPool();
+    const membership = makeAssetPoolMembership({ poolId: pool.id });
+    const harness = createAssetPoolHarness({ memberships: [membership], pools: [pool] });
+
+    const result = await harness.service.removeVehicleFromPool(
+      pool.id,
+      membership.id,
+      { effectiveTo: "2026-12-31" },
+      user,
+      context
+    );
+
+    expect(result.membershipStatus).toBe(VehicleAssetPoolVehicleStatus.REMOVED);
+    expect(result.effectiveTo).toEqual(new Date("2026-12-31T00:00:00.000Z"));
+  });
+
+  it("returns pool detail with active vehicle totals", async () => {
+    const pool = makeAssetPool();
+    const harness = createAssetPoolHarness({
+      memberships: [
+        makeAssetPoolMembership({ poolId: pool.id, vehicleId: "vehicle-1" }),
+        makeAssetPoolMembership({ id: "membership-2", poolId: pool.id, vehicleId: "vehicle-2" })
+      ],
+      pools: [pool]
+    });
+
+    const detail = await harness.service.getPool(pool.id);
+
+    expect(detail.activeVehicleCount).toBe(2);
+    expect(detail.purchasePriceAmountTotal).toBe(26800000);
+    expect(detail.vehicles).toHaveLength(2);
   });
 });
 
@@ -212,6 +505,33 @@ describe("VehicleService capital event and capital-structure preview", () => {
         context
       )
     ).rejects.toThrow("融资类资本事件必须关联融资工具");
+  });
+
+  it("rejects duplicate active vehicle capital events", async () => {
+    const instrument = makeInstrument();
+    const event = makeCapitalEvent({
+      debtPrincipalAmount: 10000000n,
+      equityCapitalAmount: null,
+      eventType: VehicleCapitalEventType.ADD_DEBT_FINANCING,
+      financingInstrument: instrument,
+      financingInstrumentId: instrument.id
+    });
+    const harness = createVehicleCapitalHarness({ events: [event], instruments: [instrument] });
+
+    await expect(
+      harness.service.createCapitalEvent(
+        "vehicle-1",
+        {
+          debtPrincipalAmount: 10000000,
+          effectiveFrom: "2026-07-01",
+          eventType: VehicleCapitalEventType.ADD_DEBT_FINANCING,
+          financingInstrumentId: instrument.id,
+          remark: "重复补录"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("请勿重复补录");
   });
 
   it("lists vehicle capital events", async () => {
@@ -351,13 +671,20 @@ describe("VehicleService capital event and capital-structure preview", () => {
 function createFinancingHarness(seed: {
   allocations?: ReturnType<typeof makeAllocation>[];
   instruments?: ReturnType<typeof makeInstrument>[];
+  poolMemberships?: ReturnType<typeof makeAssetPoolMembership>[];
+  pools?: ReturnType<typeof makeAssetPool>[];
   vehicles?: ReturnType<typeof makeVehicle>[];
 } = {}) {
   const state = {
     allocations: seed.allocations ?? [],
     capitalEvents: [] as ReturnType<typeof makeCapitalEvent>[],
     instruments: seed.instruments ?? [],
-    vehicles: seed.vehicles ?? [makeVehicle(), makeVehicle({ id: "vehicle-2", vehicleNo: "VEH20260602000000C3D4" })]
+    poolMemberships: seed.poolMemberships ?? [],
+    pools: seed.pools ?? [],
+    vehicles: seed.vehicles ?? [
+      makeVehicle(),
+      makeVehicle({ id: "vehicle-2", purchasePriceAmount: 10000000n, vehicleNo: "VEH20260602000000C3D4" })
+    ]
   };
   const prisma = financingPrismaMock(state);
   const auditService = { write: vi.fn(async () => undefined) };
@@ -406,13 +733,8 @@ function createVehicleCapitalHarness(seed: {
         return event;
       }),
       findFirst: vi.fn(
-        async ({ where }: { where: { deletedAt?: null; id?: string; vehicleId?: string } }) =>
-          state.events.find(
-            (event) =>
-              (where.id === undefined || event.id === where.id) &&
-              (where.vehicleId === undefined || event.vehicleId === where.vehicleId) &&
-              (where.deletedAt === undefined || event.deletedAt === where.deletedAt)
-          ) ?? null
+        async ({ where }: { where: Record<string, unknown> }) =>
+          state.events.find((event) => capitalEventMatchesWhere(event, where)) ?? null
       ),
       findMany: vi.fn(async ({ where }: { where?: { deletedAt?: null; eventStatus?: VehicleCapitalEventStatus; vehicleId?: string } } = {}) =>
         state.events.filter(
@@ -446,10 +768,33 @@ function createVehicleCapitalHarness(seed: {
   };
 }
 
+function createAssetPoolHarness(seed: {
+  memberships?: ReturnType<typeof makeAssetPoolMembership>[];
+  pools?: ReturnType<typeof makeAssetPool>[];
+  vehicles?: ReturnType<typeof makeVehicle>[];
+} = {}) {
+  const state = {
+    memberships: seed.memberships ?? [],
+    pools: seed.pools ?? [],
+    vehicles: seed.vehicles ?? [makeVehicle(), makeVehicle({ id: "vehicle-2", purchasePriceAmount: 10000000n, vehicleNo: "VEH20260602000000C3D4" })]
+  };
+  const prisma = assetPoolPrismaMock(state);
+  const auditService = { write: vi.fn(async () => undefined) };
+
+  return {
+    auditService,
+    prisma,
+    service: new VehicleAssetPoolService(auditService as never, prisma as never),
+    state
+  };
+}
+
 function financingPrismaMock(state: {
   allocations: ReturnType<typeof makeAllocation>[];
   capitalEvents: ReturnType<typeof makeCapitalEvent>[];
   instruments: ReturnType<typeof makeInstrument>[];
+  poolMemberships: ReturnType<typeof makeAssetPoolMembership>[];
+  pools: ReturnType<typeof makeAssetPool>[];
   vehicles: ReturnType<typeof makeVehicle>[];
 }) {
   const prisma = {
@@ -549,10 +894,136 @@ function financingPrismaMock(state: {
         return { count };
       })
     },
+    vehicleAssetPool: {
+      findUnique: vi.fn(async ({ include, where }: { include?: unknown; where: { id: string } }) => {
+        const pool = state.pools.find((item) => item.id === where.id) ?? null;
+        if (!pool || !include) {
+          return pool;
+        }
+        return {
+          ...pool,
+          vehicles: state.poolMemberships
+            .filter(
+              (membership) =>
+                membership.poolId === pool.id &&
+                membership.membershipStatus === VehicleAssetPoolVehicleStatus.ACTIVE &&
+                !membership.deletedAt
+            )
+            .map((membership) => ({
+              ...membership,
+              vehicle: state.vehicles.find((vehicle) => vehicle.id === membership.vehicleId) ?? makeVehicle()
+            }))
+        };
+      })
+    },
     vehicle: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         state.vehicles.find((vehicle) => vehicle.id === where.id) ?? null
       )
+    }
+  };
+
+  return prisma;
+}
+
+function assetPoolPrismaMock(state: {
+  memberships: ReturnType<typeof makeAssetPoolMembership>[];
+  pools: ReturnType<typeof makeAssetPool>[];
+  vehicles: ReturnType<typeof makeVehicle>[];
+}) {
+  const prisma = {
+    vehicle: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        state.vehicles.find((vehicle) => vehicle.id === where.id) ?? null
+      )
+    },
+    vehicleAssetPool: {
+      count: vi.fn(async () => state.pools.filter((pool) => !pool.deletedAt).length),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const pool = makeAssetPool({
+          ...data,
+          id: `pool-${state.pools.length + 1}`
+        } as Partial<ReturnType<typeof makeAssetPool>>);
+        state.pools.push(pool);
+        return pool;
+      }),
+      findMany: vi.fn(async () =>
+        state.pools
+          .filter((pool) => !pool.deletedAt)
+          .map((pool) => ({
+            ...pool,
+            vehicles: state.memberships
+              .filter((membership) => membership.poolId === pool.id && !membership.deletedAt)
+              .map((membership) => ({ membershipStatus: membership.membershipStatus }))
+          }))
+      ),
+      findUnique: vi.fn(async ({ include, where }: { include?: unknown; where: { id: string } }) => {
+        const pool = state.pools.find((item) => item.id === where.id) ?? null;
+        if (!pool || !include) {
+          return pool;
+        }
+        return {
+          ...pool,
+          vehicles: state.memberships
+            .filter((membership) => membership.poolId === pool.id && !membership.deletedAt)
+            .map((membership) => ({
+              ...membership,
+              vehicle: state.vehicles.find((vehicle) => vehicle.id === membership.vehicleId) ?? makeVehicle()
+            }))
+        };
+      }),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+        const index = state.pools.findIndex((pool) => pool.id === where.id);
+        const next = { ...state.pools[index], ...data, updatedAt: now } as ReturnType<typeof makeAssetPool>;
+        state.pools[index] = next;
+        return next;
+      })
+    },
+    vehicleAssetPoolVehicle: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const membership = makeAssetPoolMembership({
+          ...data,
+          id: `membership-${state.memberships.length + 1}`
+        } as Partial<ReturnType<typeof makeAssetPoolMembership>>);
+        state.memberships.push(membership);
+        return membership;
+      }),
+      findFirst: vi.fn(
+        async ({
+          include,
+          where
+        }: {
+          include?: unknown;
+          where: { id?: string; membershipStatus?: VehicleAssetPoolVehicleStatus; poolId: string; vehicleId?: string };
+        }) => {
+          const membership =
+            state.memberships.find(
+              (item) =>
+                item.poolId === where.poolId &&
+                (where.id === undefined || item.id === where.id) &&
+                (where.vehicleId === undefined || item.vehicleId === where.vehicleId) &&
+                (where.membershipStatus === undefined || item.membershipStatus === where.membershipStatus) &&
+                !item.deletedAt
+            ) ?? null;
+          if (!membership || !include) {
+            return membership;
+          }
+          return {
+            ...membership,
+            vehicle: state.vehicles.find((vehicle) => vehicle.id === membership.vehicleId) ?? makeVehicle()
+          };
+        }
+      ),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+        const index = state.memberships.findIndex((membership) => membership.id === where.id);
+        const next = {
+          ...state.memberships[index],
+          ...data,
+          updatedAt: now
+        } as ReturnType<typeof makeAssetPoolMembership>;
+        state.memberships[index] = next;
+        return next;
+      })
     }
   };
 
@@ -578,6 +1049,55 @@ function validInstrumentDto() {
 const now = new Date("2026-06-02T00:00:00.000Z");
 const user = { id: "user-1", menus: [], name: "运营", permissions: [], roles: [], username: "op" };
 const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
+
+function capitalEventMatchesWhere(event: ReturnType<typeof makeCapitalEvent>, where: Record<string, unknown>) {
+  const eventRecord = event as unknown as Record<string, unknown>;
+
+  for (const [key, value] of Object.entries(where)) {
+    if (value === undefined) {
+      continue;
+    }
+
+    if (key === "OR") {
+      const conditions = Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+      if (!conditions.some((condition) => capitalEventMatchesWhere(event, condition))) {
+        return false;
+      }
+      continue;
+    }
+
+    if (!matchesWhereValue(eventRecord[key], value)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function matchesWhereValue(actual: unknown, expected: unknown): boolean {
+  if (isObjectWithKey(expected, "not")) {
+    return !valuesEqual(actual, expected.not);
+  }
+  if (isObjectWithKey(expected, "lte")) {
+    return actual instanceof Date && expected.lte instanceof Date && actual.getTime() <= expected.lte.getTime();
+  }
+  if (isObjectWithKey(expected, "gte")) {
+    return actual instanceof Date && expected.gte instanceof Date && actual.getTime() >= expected.gte.getTime();
+  }
+
+  return valuesEqual(actual, expected);
+}
+
+function valuesEqual(actual: unknown, expected: unknown): boolean {
+  if (actual instanceof Date && expected instanceof Date) {
+    return actual.getTime() === expected.getTime();
+  }
+  return actual === expected;
+}
+
+function isObjectWithKey<T extends string>(value: unknown, key: T): value is Record<T, unknown> {
+  return Boolean(value && typeof value === "object" && key in value);
+}
 
 function makeInstrument(overrides: Partial<Prisma.FinancingInstrumentGetPayload<Record<string, never>>> = {}) {
   return {
@@ -622,6 +1142,46 @@ function makeAllocation(overrides: Partial<Prisma.FinancingInstrumentVehicleGetP
     id: "allocation-1",
     instrument,
     instrumentId: instrument.id,
+    remark: null,
+    snapshot: {},
+    updatedAt: now,
+    updatedBy: "user-1",
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function makeAssetPool(overrides: Partial<Prisma.VehicleAssetPoolGetPayload<Record<string, never>>> = {}) {
+  return {
+    createdAt: now,
+    createdBy: "user-1",
+    deletedAt: null,
+    id: "pool-1",
+    poolName: "2026 ET5 financing pool",
+    poolNo: "VPOOL20260602000000A1B2",
+    poolStatus: VehicleAssetPoolStatus.ACTIVE,
+    poolType: VehicleAssetPoolType.FINANCING,
+    purpose: "project financing",
+    remark: null,
+    snapshot: {},
+    updatedAt: now,
+    updatedBy: "user-1",
+    ...overrides
+  };
+}
+
+function makeAssetPoolMembership(
+  overrides: Partial<Prisma.VehicleAssetPoolVehicleGetPayload<Record<string, never>>> = {}
+) {
+  return {
+    createdAt: now,
+    createdBy: "user-1",
+    deletedAt: null,
+    effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+    effectiveTo: null,
+    id: "membership-1",
+    membershipStatus: VehicleAssetPoolVehicleStatus.ACTIVE,
+    poolId: "pool-1",
     remark: null,
     snapshot: {},
     updatedAt: now,

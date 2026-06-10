@@ -15,6 +15,7 @@ import { ReportModule } from "./report/report.module";
 import { RevenueRightModule } from "./revenue-right/revenue-right.module";
 import { RiskModule } from "./risk/risk.module";
 import { SystemModule } from "./system/system.module";
+import { VehicleAssetPoolModule } from "./vehicle-asset-pool/vehicle-asset-pool.module";
 import { VehicleModule } from "./vehicle/vehicle.module";
 
 @Module({
@@ -35,6 +36,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     RevenueRightModule,
     RiskModule,
     SystemModule,
+    VehicleAssetPoolModule,
     VehicleModule
   ],
   controllers: [AppController],

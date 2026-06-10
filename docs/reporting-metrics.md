@@ -1006,6 +1006,27 @@ Stage 8.4A 不做前端页面、不做爬虫、不做定时采集、不接第三
 
 后续 Stage 8.4B 建设市场价格样本库前端页面；Stage 8.4C 再基于样本库生成残值曲线。
 
+## Stage 8.4B 市场残值样本库前端使用说明
+
+Stage 8.4B 新增 `/residual-market` 前端页面，并在“车辆资产 -> 市场残值样本”菜单下展示。页面只调用 Stage 8.4A 已有后端 API，不新增模型、不新增 migration、不生成残值曲线，不接入 ROE。
+
+页面包含两个页签：
+
+- 市场价格样本：查看样本列表、按来源/价格类型/状态/品牌/车系/车型/年款/城市/观测日期/里程/价格筛选、查看详情、手工录入样本、CSV 文本导入、作废样本。
+- 导入批次：查看 CSV 导入批次列表、按来源/导入状态/创建日期筛选、查看批次详情、错误摘要和导入配置快照。
+
+CSV 模板字段：
+
+```text
+observedAt,sourceListingId,brand,series,model,modelYear,trim,batteryCapacityKwh,batteryUsageType,mileageKm,registrationDate,vehicleAgeMonths,province,city,priceType,priceAmount,listingPriceAmount,transactionPriceAmount,listingDays,sellerType,conditionGrade,batteryHealthPercent,accidentFlag,sourceUrl,remark
+```
+
+前端页面金额输入统一按元填写；CSV 导入金额字段也按元填写。后端 API 手工创建和数据库入库仍按分处理，前端提交前会转换为分。必填字段为 `observedAt`、`brand`、`model`、`priceType`、`priceAmount`。
+
+作废样本不会物理删除记录，状态更新为 `VOIDED`。作废后的样本后续不参与残值曲线统计，但仍保留导入批次、原始快照、去重 key 和审计记录。
+
+当前阶段仍不做爬虫、不做定时采集、不接第三方平台 API、不做 AI / ML、不生成残值曲线、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`，也不做 multipart 文件上传或 Excel xlsx 导入。
+
 ## ROA / ROE
 
 当前阶段不计算正式会计 ROA / ROE。

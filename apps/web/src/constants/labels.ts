@@ -521,6 +521,46 @@ export const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<string, string> = {
   BUYOUT: "买断"
 };
 
+export const MARKET_PRICE_SOURCE_LABELS: Record<string, string> = {
+  AUCTION: "拍卖",
+  CSV_IMPORT: "CSV 导入",
+  DEALER_QUOTE: "经销商报价",
+  INTERNAL_DISPOSAL: "内部处置成交",
+  MANUAL: "手工录入",
+  OTHER: "其他",
+  USED_CAR_PLATFORM: "二手车平台"
+};
+
+export const MARKET_PRICE_TYPE_LABELS: Record<string, string> = {
+  AUCTION: "拍卖价",
+  DEALER_QUOTE: "经销商报价",
+  ESTIMATE: "估算价",
+  INTERNAL_SALE: "内部成交价",
+  LISTING: "挂牌价",
+  TRANSACTION: "成交价"
+};
+
+export const MARKET_SELLER_TYPE_LABELS: Record<string, string> = {
+  AUCTION_HOUSE: "拍卖机构",
+  DEALER: "经销商",
+  INDIVIDUAL: "个人",
+  INTERNAL: "内部",
+  PLATFORM: "平台",
+  UNKNOWN: "未知"
+};
+
+export const MARKET_PRICE_OBSERVATION_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "有效",
+  IGNORED: "已忽略",
+  VOIDED: "已作废"
+};
+
+export const MARKET_PRICE_IMPORT_STATUS_LABELS: Record<string, string> = {
+  COMPLETED: "已完成",
+  FAILED: "失败",
+  PARTIAL_FAILED: "部分失败"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",
@@ -567,6 +607,7 @@ export const MODULE_LABELS: Record<string, string> = {
   order_change: "订单变更",
   product: "产品中心",
   quote: "报价中心",
+  residual_market: "市场残值样本",
   risk: "风控中心",
   system: "系统管理",
   vehicle: "车辆资产"
@@ -652,6 +693,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "revenue_right:view": "查看收益权归属",
   "revenue_share:manage": "管理托管分润规则",
   "revenue_share:view": "查看托管分润规则",
+  "residual_market:import": "导入市场残值样本",
+  "residual_market:manage": "管理市场残值样本",
+  "residual_market:view": "查看市场残值样本",
   "capital_structure:manage": "管理车辆资本结构",
   "capital_structure:view": "查看车辆资本结构",
   "risk:manage": "管理押金规则",
@@ -769,7 +813,10 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "vehicle:review_sale_price": "允许复核车辆当前销售价",
   "vehicle:update": "允许编辑车辆资产",
   "vehicle:update_status": "允许更新车辆状态",
-  "vehicle:view": "允许查看车辆资产和销售价历史"
+  "vehicle:view": "允许查看车辆资产和销售价历史",
+  "residual_market:import": "允许通过 CSV 文本导入市场残值样本",
+  "residual_market:manage": "允许手工创建和作废市场残值样本",
+  "residual_market:view": "允许查看市场残值样本列表、详情和导入批次"
 };
 
 export const MENU_LABELS: Record<string, string> = {
@@ -800,7 +847,8 @@ export const MENU_LABELS: Record<string, string> = {
   "system.users": "用户管理",
   vehicles: "车辆资产",
   "vehicles.asset_pools": "车辆资产池",
-  "vehicles.assets": "车辆资产台账"
+  "vehicles.assets": "车辆资产台账",
+  "vehicles.residual_market": "市场残值样本"
 };
 
 export function labelOf(labels: Record<string, string>, value?: string | null) {

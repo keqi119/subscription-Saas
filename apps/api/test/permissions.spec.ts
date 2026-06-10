@@ -1125,11 +1125,16 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain('const residualMarketViewPermissions = ["residual_market:view"]');
     expect(seedSource).toContain("const residualMarketImportPermissions = [");
     expect(seedSource).toContain("const residualMarketManagementPermissions = [");
+    expect(seedSource).toContain('["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"]');
+    expect(seedSource).toContain('const residualMarketMenuCodes = ["vehicles.residual_market"]');
     expect(seedSource).toContain(
       '...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions)'
     );
+    expect(seedSource).toContain("...residualMarketMenuCodes");
     expectRolePermissions("OP", ["residual_market:view", "residual_market:import"]);
     expectRolePermissions("GM", ["residual_market:view"]);
+    expect(roleHasMenu(roleMenuArray("OP"), "vehicles.residual_market")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "vehicles.residual_market")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("residualMarketViewPermissions"), "residual_market:view")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("residualMarketImportPermissions"), "residual_market:import")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("residualMarketManagementPermissions"), "residual_market:manage")).toBe(true);

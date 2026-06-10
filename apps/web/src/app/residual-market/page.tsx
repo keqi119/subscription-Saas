@@ -62,6 +62,45 @@ const CSV_TEMPLATE = `${CSV_HEADER}
 
 const DEFAULT_CURVE_PRICE_TYPES = ["TRANSACTION", "AUCTION", "DEALER_QUOTE", "INTERNAL_SALE", "LISTING"];
 
+const CSV_ENUM_FIELD_GUIDES = [
+  {
+    field: "batteryUsageType",
+    label: "电池使用方式",
+    values: [
+      ["BUYOUT", "买断"],
+      ["BAAS", "BaaS"]
+    ]
+  },
+  {
+    field: "priceType",
+    label: "价格类型",
+    values: [
+      ["LISTING", "挂牌价"],
+      ["TRANSACTION", "成交价"],
+      ["AUCTION", "拍卖价"],
+      ["DEALER_QUOTE", "经销商报价"],
+      ["INTERNAL_SALE", "内部成交价"],
+      ["ESTIMATE", "估算价"]
+    ]
+  },
+  {
+    field: "sellerType",
+    label: "卖家类型",
+    values: [
+      ["INDIVIDUAL", "个人"],
+      ["DEALER", "经销商"],
+      ["PLATFORM", "平台"],
+      ["AUCTION_HOUSE", "拍卖机构"],
+      ["INTERNAL", "内部"],
+      ["UNKNOWN", "未知"]
+    ]
+  }
+];
+
+const CSV_ENUM_GUIDE_TEXT = CSV_ENUM_FIELD_GUIDES.map(
+  (item) => `${item.field}（${item.label}）：${item.values.map(([value, label]) => `${value} = ${label}`).join("；")}`
+).join("\n");
+
 const csvImportActionLabels: Record<string, string> = {
   FAILED: "失败",
   IMPORTED: "已导入",
@@ -832,6 +871,15 @@ export default function ResidualMarketPage() {
       void message.success("CSV 表头已复制");
     } catch {
       void message.error("CSV 表头复制失败");
+    }
+  }
+
+  async function copyCsvEnumGuide() {
+    try {
+      await navigator.clipboard.writeText(CSV_ENUM_GUIDE_TEXT);
+      void message.success("CSV 枚举取值已复制");
+    } catch {
+      void message.error("CSV 枚举取值复制失败");
     }
   }
 
@@ -2070,12 +2118,30 @@ export default function ResidualMarketPage() {
               showIcon
               type="info"
             />
+            <Alert
+              description="CSV 是纯文本格式，不能内置下拉选项或单元格校验；batteryUsageType、priceType、sellerType 请严格填写下方英文枚举值。"
+              showIcon
+              type="warning"
+            />
+            <Descriptions
+              bordered
+              column={1}
+              items={CSV_ENUM_FIELD_GUIDES.map((item) => ({
+                children: item.values.map(([value, label]) => `${value} = ${label}`).join("；"),
+                label: `${item.field}（${item.label}）`
+              }))}
+              size="small"
+              title="CSV 枚举字段取值说明"
+            />
             <Space wrap>
               <Button icon={<DownloadOutlined />} onClick={downloadCsvTemplate}>
                 下载 CSV 模板
               </Button>
               <Button icon={<CopyOutlined />} onClick={copyCsvHeader}>
                 复制 CSV 表头
+              </Button>
+              <Button icon={<CopyOutlined />} onClick={copyCsvEnumGuide}>
+                复制枚举取值
               </Button>
             </Space>
             <Form<CsvImportFormValues> form={csvImportForm} layout="vertical" onFinish={submitCsvImport}>

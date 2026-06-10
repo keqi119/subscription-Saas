@@ -957,6 +957,14 @@ remark
 
 日期格式为 `YYYY-MM-DD`。`accidentFlag` 支持 `true / false`、`1 / 0`、`yes / no`、`是 / 否`。CSV parser 支持 UTF-8 BOM、逗号、双引号、字段内换行和空值。
 
+CSV 枚举字段需填写英文枚举值：
+
+- `batteryUsageType`：`BUYOUT`（买断）、`BAAS`（BaaS）。
+- `priceType`：`LISTING`（挂牌价）、`TRANSACTION`（成交价）、`AUCTION`（拍卖价）、`DEALER_QUOTE`（经销商报价）、`INTERNAL_SALE`（内部成交价）、`ESTIMATE`（估算价）。
+- `sellerType`：`INDIVIDUAL`（个人）、`DEALER`（经销商）、`PLATFORM`（平台）、`AUCTION_HOUSE`（拍卖机构）、`INTERNAL`（内部）、`UNKNOWN`（未知）。
+
+CSV 文件是纯文本格式，不能像 xlsx 一样内置下拉选项或单元格校验。前端 CSV 导入弹窗会展示并支持复制上述枚举取值，降低人工填写错误。
+
 ### 去重口径
 
 第一优先级：存在 `sourceListingId` 时：

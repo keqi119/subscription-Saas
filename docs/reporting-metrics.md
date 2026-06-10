@@ -1064,6 +1064,16 @@ Stage 8.4C-A 新增残值曲线后端生成能力。曲线基于 `VehicleMarketP
 - 启用曲线时，同一 `brand + series + model + modelYear + trim + batteryCapacityKwh + batteryUsageType` 维度下旧 `ACTIVE` 曲线会改为 `SUPERSEDED`。
 - 归档曲线只更新状态为 `ARCHIVED` 并写入 `effectiveTo`，不物理删除曲线和曲线点。
 
+前端使用说明：
+
+- 残值曲线在 `/residual-market` 市场残值样本页面的“残值曲线”Tab 中查看和生成。
+- 生成前可先执行 dryRun 试算，预览匹配样本数、生成点数、跳过样本数和曲线点统计。
+- 正式生成只创建 `DRAFT` 曲线和曲线点，不会自动启用。
+- 曲线启用后才会成为 `ACTIVE`；启用时同维度旧 `ACTIVE` 会变为 `SUPERSEDED`。
+- 归档曲线不会物理删除记录，也不会删除曲线点。
+- 前端参考价格按元输入，提交给后端时转换为分。
+- 当前前端只展示统计中位数曲线，不做 AI / ML，不覆盖 `Vehicle.currentSalePriceAmount`，不接入 ROE。
+
 当前阶段不做 AI / ML，不做 `ResidualModelRun`，不做单车残值预测，不接入 ROE，不修改 `Vehicle.currentSalePriceAmount`，不修改资产经营分析口径，不做爬虫、定时采集或第三方平台 API。
 
 ## Stage 8.3F ROE 试算导出说明

@@ -561,6 +561,19 @@ export const MARKET_PRICE_IMPORT_STATUS_LABELS: Record<string, string> = {
   PARTIAL_FAILED: "部分失败"
 };
 
+export const VEHICLE_RESIDUAL_CURVE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  ARCHIVED: "已归档",
+  DRAFT: "草稿",
+  SUPERSEDED: "已被替代"
+};
+
+export const VEHICLE_RESIDUAL_CURVE_METHOD_LABELS: Record<string, string> = {
+  MANUAL: "手工曲线",
+  ML_MODEL: "机器学习模型",
+  STATISTICAL_MEDIAN: "统计中位数"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",
@@ -607,6 +620,7 @@ export const MODULE_LABELS: Record<string, string> = {
   order_change: "订单变更",
   product: "产品中心",
   quote: "报价中心",
+  residual_curve: "残值曲线",
   residual_market: "市场残值样本",
   risk: "风控中心",
   system: "系统管理",
@@ -693,6 +707,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "revenue_right:view": "查看收益权归属",
   "revenue_share:manage": "管理托管分润规则",
   "revenue_share:view": "查看托管分润规则",
+  "residual_curve:generate": "生成残值曲线",
+  "residual_curve:manage": "管理残值曲线",
+  "residual_curve:view": "查看残值曲线",
   "residual_market:import": "导入市场残值样本",
   "residual_market:manage": "管理市场残值样本",
   "residual_market:view": "查看市场残值样本",
@@ -814,6 +831,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "vehicle:update": "允许编辑车辆资产",
   "vehicle:update_status": "允许更新车辆状态",
   "vehicle:view": "允许查看车辆资产和销售价历史",
+  "residual_curve:generate": "允许试算和正式生成残值曲线",
+  "residual_curve:manage": "允许启用和归档残值曲线",
+  "residual_curve:view": "允许查看残值曲线列表和详情",
   "residual_market:import": "允许通过 CSV 文本导入市场残值样本",
   "residual_market:manage": "允许手工创建和作废市场残值样本",
   "residual_market:view": "允许查看市场残值样本列表、详情和导入批次"

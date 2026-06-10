@@ -1816,6 +1816,26 @@ function financingInstrumentOptionLabel(instrument: FinancingInstrumentSummary) 
     .join(" / ");
 }
 
+function hasCapitalEventForAllocation(allocation: FinancingAllocation, capitalEvents: CapitalEvent[]) {
+  const instrumentId = allocation.financingInstrument?.id ?? allocation.instrumentId ?? null;
+  if (!instrumentId) {
+    return false;
+  }
+
+  return capitalEvents.some(
+    (event) =>
+      event.eventStatus === "ACTIVE" &&
+      event.eventType === "ADD_DEBT_FINANCING" &&
+      event.financingInstrumentId === instrumentId &&
+      event.debtPrincipalAmount === allocation.allocatedPrincipalAmount &&
+      dateKey(event.effectiveFrom) === dateKey(allocation.effectiveFrom)
+  );
+}
+
+function dateKey(value?: string | null) {
+  return value ? String(value).slice(0, 10) : "";
+}
+
 function VehicleCapitalStructureBlock({
   capitalStructure,
   loading
@@ -1893,16 +1913,21 @@ function VehicleCapitalEventsBlock({
     { dataIndex: "remark", render: (value: string | null) => value ?? "-", title: "备注", width: 180 },
     {
       fixed: "right",
-      render: (_, record) => (
-        <ActionButton
-          onClick={() => onCreateFromAllocation(record)}
-          permission="capital_structure:manage"
-          permissions={permissions}
-          size="small"
-        >
-          补录资本事件
-        </ActionButton>
-      ),
+      render: (_, record) => {
+        const alreadyRecorded = hasCapitalEventForAllocation(record, capitalEvents);
+        return (
+          <ActionButton
+            allowed={!alreadyRecorded}
+            disabledReason="该融资分摊已补录资本事件，如需更正请编辑或作废对应资本事件。"
+            onClick={() => onCreateFromAllocation(record)}
+            permission="capital_structure:manage"
+            permissions={permissions}
+            size="small"
+          >
+            {alreadyRecorded ? "已补录" : "补录资本事件"}
+          </ActionButton>
+        );
+      },
       title: "操作",
       width: 130
     }

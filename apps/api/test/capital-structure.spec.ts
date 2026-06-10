@@ -146,6 +146,27 @@ describe("FinancingService vehicle capital structure backend", () => {
     ).rejects.toThrow("已存在生效分摊");
   });
 
+  it("returns financing instrument allocation balances in detail", async () => {
+    const instrument = makeInstrument({ principalAmount: 10000000n });
+    const activeAllocation = makeAllocation({ allocatedPrincipalAmount: 8000000n, instrumentId: instrument.id });
+    const releasedAllocation = makeAllocation({
+      allocatedPrincipalAmount: 1000000n,
+      allocationStatus: FinancingAllocationStatus.RELEASED,
+      id: "allocation-2",
+      instrumentId: instrument.id,
+      vehicleId: "vehicle-2"
+    });
+    const harness = createFinancingHarness({
+      allocations: [activeAllocation, releasedAllocation],
+      instruments: [instrument]
+    });
+
+    const detail = await harness.service.getInstrument(instrument.id);
+
+    expect(detail.activeAllocatedPrincipalAmount).toBe(8000000);
+    expect(detail.remainingPrincipalAmount).toBe(2000000);
+  });
+
   it("releases a vehicle allocation", async () => {
     const instrument = makeInstrument();
     const allocation = makeAllocation({ instrumentId: instrument.id });
@@ -486,6 +507,33 @@ describe("VehicleService capital event and capital-structure preview", () => {
     ).rejects.toThrow("融资类资本事件必须关联融资工具");
   });
 
+  it("rejects duplicate active vehicle capital events", async () => {
+    const instrument = makeInstrument();
+    const event = makeCapitalEvent({
+      debtPrincipalAmount: 10000000n,
+      equityCapitalAmount: null,
+      eventType: VehicleCapitalEventType.ADD_DEBT_FINANCING,
+      financingInstrument: instrument,
+      financingInstrumentId: instrument.id
+    });
+    const harness = createVehicleCapitalHarness({ events: [event], instruments: [instrument] });
+
+    await expect(
+      harness.service.createCapitalEvent(
+        "vehicle-1",
+        {
+          debtPrincipalAmount: 10000000,
+          effectiveFrom: "2026-07-01",
+          eventType: VehicleCapitalEventType.ADD_DEBT_FINANCING,
+          financingInstrumentId: instrument.id,
+          remark: "重复补录"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("请勿重复补录");
+  });
+
   it("lists vehicle capital events", async () => {
     const event = makeCapitalEvent();
     const harness = createVehicleCapitalHarness({ events: [event] });
@@ -685,13 +733,8 @@ function createVehicleCapitalHarness(seed: {
         return event;
       }),
       findFirst: vi.fn(
-        async ({ where }: { where: { deletedAt?: null; id?: string; vehicleId?: string } }) =>
-          state.events.find(
-            (event) =>
-              (where.id === undefined || event.id === where.id) &&
-              (where.vehicleId === undefined || event.vehicleId === where.vehicleId) &&
-              (where.deletedAt === undefined || event.deletedAt === where.deletedAt)
-          ) ?? null
+        async ({ where }: { where: Record<string, unknown> }) =>
+          state.events.find((event) => capitalEventMatchesWhere(event, where)) ?? null
       ),
       findMany: vi.fn(async ({ where }: { where?: { deletedAt?: null; eventStatus?: VehicleCapitalEventStatus; vehicleId?: string } } = {}) =>
         state.events.filter(
@@ -1006,6 +1049,55 @@ function validInstrumentDto() {
 const now = new Date("2026-06-02T00:00:00.000Z");
 const user = { id: "user-1", menus: [], name: "运营", permissions: [], roles: [], username: "op" };
 const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
+
+function capitalEventMatchesWhere(event: ReturnType<typeof makeCapitalEvent>, where: Record<string, unknown>) {
+  const eventRecord = event as unknown as Record<string, unknown>;
+
+  for (const [key, value] of Object.entries(where)) {
+    if (value === undefined) {
+      continue;
+    }
+
+    if (key === "OR") {
+      const conditions = Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+      if (!conditions.some((condition) => capitalEventMatchesWhere(event, condition))) {
+        return false;
+      }
+      continue;
+    }
+
+    if (!matchesWhereValue(eventRecord[key], value)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function matchesWhereValue(actual: unknown, expected: unknown): boolean {
+  if (isObjectWithKey(expected, "not")) {
+    return !valuesEqual(actual, expected.not);
+  }
+  if (isObjectWithKey(expected, "lte")) {
+    return actual instanceof Date && expected.lte instanceof Date && actual.getTime() <= expected.lte.getTime();
+  }
+  if (isObjectWithKey(expected, "gte")) {
+    return actual instanceof Date && expected.gte instanceof Date && actual.getTime() >= expected.gte.getTime();
+  }
+
+  return valuesEqual(actual, expected);
+}
+
+function valuesEqual(actual: unknown, expected: unknown): boolean {
+  if (actual instanceof Date && expected instanceof Date) {
+    return actual.getTime() === expected.getTime();
+  }
+  return actual === expected;
+}
+
+function isObjectWithKey<T extends string>(value: unknown, key: T): value is Record<T, unknown> {
+  return Boolean(value && typeof value === "object" && key in value);
+}
 
 function makeInstrument(overrides: Partial<Prisma.FinancingInstrumentGetPayload<Record<string, never>>> = {}) {
   return {

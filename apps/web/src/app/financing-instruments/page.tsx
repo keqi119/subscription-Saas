@@ -124,7 +124,9 @@ interface CapitalEventRow {
 }
 
 interface FinancingInstrumentDetail extends FinancingInstrumentRow {
+  activeAllocatedPrincipalAmount: number;
   capitalEvents: CapitalEventRow[];
+  remainingPrincipalAmount: number;
   vehicles: FinancingAllocationRow[];
 }
 
@@ -293,6 +295,7 @@ export default function FinancingInstrumentsPage() {
   const [vehicleRows, setVehicleRows] = useState<VehicleOptionRow[]>([]);
   const [vehiclesLoading, setVehiclesLoading] = useState(false);
   const [poolRows, setPoolRows] = useState<VehicleAssetPoolOptionRow[]>([]);
+  const [poolLoadError, setPoolLoadError] = useState<string | null>(null);
   const [poolsLoading, setPoolsLoading] = useState(false);
   const [releaseTarget, setReleaseTarget] = useState<FinancingAllocationRow | null>(null);
   const [settleTarget, setSettleTarget] = useState<FinancingInstrumentRow | null>(null);
@@ -376,13 +379,16 @@ export default function FinancingInstrumentsPage() {
 
   const loadPools = useCallback(async () => {
     setPoolsLoading(true);
+    setPoolLoadError(null);
     try {
       const result = await apiFetch<VehicleAssetPoolListResponse>(
         "/vehicle-asset-pools?poolType=FINANCING&poolStatus=ACTIVE&pageSize=100"
       );
       setPoolRows(result.items);
     } catch (error) {
-      void message.error(getErrorMessage(error));
+      const errorMessage = getErrorMessage(error);
+      setPoolLoadError(errorMessage);
+      void message.error(errorMessage);
       setPoolRows([]);
     } finally {
       setPoolsLoading(false);
@@ -977,6 +983,8 @@ export default function FinancingInstrumentsPage() {
                   { label: "资金方", children: safeText(detail.lenderName) },
                   { label: "合同编号", children: safeText(detail.contractNo) },
                   { label: "本金金额", children: formatYuan(detail.principalAmount) },
+                  { label: "已生效分摊本金", children: formatYuan(detail.activeAllocatedPrincipalAmount) },
+                  { label: "剩余可分摊本金", children: formatYuan(detail.remainingPrincipalAmount) },
                   { label: "年化利率", children: formatPercentFromBps(detail.annualRateBps) },
                   { label: "开始日期", children: formatDate(detail.startDate) },
                   { label: "到期日期", children: formatDate(detail.maturityDate) },
@@ -1139,10 +1147,38 @@ export default function FinancingInstrumentsPage() {
               showIcon
               type="info"
             />
+            {poolLoadError ? (
+              <Alert
+                action={
+                  <Button loading={poolsLoading} onClick={loadPools} size="small">
+                    刷新车辆池
+                  </Button>
+                }
+                message={`车辆池加载失败：${poolLoadError}`}
+                showIcon
+                type="error"
+              />
+            ) : !poolsLoading && poolOptions.length === 0 ? (
+              <Alert
+                action={
+                  <Button loading={poolsLoading} onClick={loadPools} size="small">
+                    刷新车辆池
+                  </Button>
+                }
+                message="暂无生效中的融资车辆池，请先在车辆资产池页面创建或启用 FINANCING 类型车辆池。"
+                showIcon
+                type="warning"
+              />
+            ) : null}
             <Form<PoolAllocationFormValues> form={poolAllocationForm} layout="vertical">
               <Form.Item label="车辆资产池" name="poolId" rules={[{ required: true, message: "请选择车辆资产池" }]}>
                 <Select
                   loading={poolsLoading}
+                  notFoundContent={
+                    poolLoadError
+                      ? "车辆池加载失败，请点击刷新车辆池"
+                      : "暂无生效中的融资车辆池"
+                  }
                   optionFilterProp="label"
                   options={poolOptions}
                   placeholder="请选择生效中的融资车辆池"

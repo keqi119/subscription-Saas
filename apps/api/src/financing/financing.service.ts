@@ -932,8 +932,13 @@ function toVehiclePoolAllocationItemView(item: VehiclePoolAllocationItem) {
 }
 
 function toInstrumentDetailView(instrument: FinancingInstrumentDetail) {
+  const activeAllocatedPrincipalAmount = instrument.vehicles
+    .filter((allocation) => allocation.allocationStatus === FinancingAllocationStatus.ACTIVE && !allocation.deletedAt)
+    .reduce((total, allocation) => total + allocation.allocatedPrincipalAmount, 0n);
+
   return {
     ...toInstrumentView(instrument),
+    activeAllocatedPrincipalAmount: Number(activeAllocatedPrincipalAmount),
     capitalEvents: instrument.capitalEvents.map((event) => ({
       debtPrincipalAmount: numberOrNull(event.debtPrincipalAmount),
       effectiveFrom: event.effectiveFrom,
@@ -951,7 +956,8 @@ function toInstrumentDetailView(instrument: FinancingInstrumentDetail) {
         ...allocation.vehicle,
         purchasePriceAmount: Number(allocation.vehicle.purchasePriceAmount)
       }
-    }))
+    })),
+    remainingPrincipalAmount: Number(instrument.principalAmount - activeAllocatedPrincipalAmount)
   };
 }
 

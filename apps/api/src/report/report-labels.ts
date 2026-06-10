@@ -134,6 +134,78 @@ export const vehicleDepreciationMethodLabels: Record<string, string> = {
   STRAIGHT_LINE: "直线法"
 };
 
+export const capitalCostSourceLabels: Record<string, string> = {
+  COST_PROFILE: "成本参数",
+  FINANCING_INSTRUMENT: "融资工具"
+};
+
+export const financingInstrumentTypeLabels: Record<string, string> = {
+  ABS_OR_SPV: "ABS / SPV 资产池融资",
+  BANK_AUTO_LOAN: "银行车贷分期",
+  BANK_PROJECT_LOAN: "银行项目贷款",
+  FINANCE_LEASE: "融资租赁",
+  OTHER: "其他",
+  PERSONAL_LOAN: "个人借款",
+  RECEIVABLE_PLEDGE: "应收账款权益质押融资"
+};
+
+export const financingAllocationStatusLabels: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  RELEASED: "已解除"
+};
+
+export const financingRepaymentMethodLabels: Record<string, string> = {
+  BULLET: "到期还本付息",
+  EQUAL_PRINCIPAL: "等额本金",
+  EQUAL_PRINCIPAL_INTEREST: "等额本息",
+  INTEREST_ONLY: "先息后本",
+  MANUAL: "手工口径"
+};
+
+export const revenueRightAssignmentTypeLabels: Record<string, string> = {
+  OTHER: "其他",
+  PLEDGE: "收益权质押",
+  REVENUE_SHARE: "收益分成",
+  SPV_POOL: "SPV / 资产池归集",
+  TRANSFER: "收益权转让"
+};
+
+export const revenueRightAssignmentStatusLabels: Record<string, string> = {
+  ACTIVE: "生效中",
+  CANCELLED: "已取消",
+  RELEASED: "已解除"
+};
+
+export const revenueRightTargetTypeLabels: Record<string, string> = {
+  ORDER: "订单",
+  RECEIVABLE_BILL: "应收账单",
+  VEHICLE: "车辆",
+  VEHICLE_POOL: "车辆池"
+};
+
+export const revenueRightAssigneeTypeLabels: Record<string, string> = {
+  FINANCIER: "资方",
+  LESSOR: "出租方",
+  MANAGED_OWNER: "托管车主",
+  OTHER: "其他",
+  PLATFORM: "平台",
+  SPV: "SPV / 资产池"
+};
+
+export const revenueShareRuleTypeLabels: Record<string, string> = {
+  FIXED_RENT: "固定租金 / 固定成本",
+  MIXED: "固定 + 分成",
+  REVENUE_SHARE: "收益分成"
+};
+
+export const revenueShareBasisLabels: Record<string, string> = {
+  GROSS_RECEIVABLE: "应收金额",
+  MANUAL: "手工口径",
+  OPERATING_REVENUE: "经营收入",
+  RENTAL_PAID: "租金实收"
+};
+
 export const salePriceStatusLabels: Record<string, string> = {
   EFFECTIVE: "生效中",
   EXPIRED: "已过期",

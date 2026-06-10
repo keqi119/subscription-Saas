@@ -87,6 +87,7 @@ interface Vehicle {
   id: string;
   insuranceEndDate?: string | null;
   insuranceStartDate?: string | null;
+  latestRegistrationDate?: string | null;
   model?: string | null;
   modelYear?: number | null;
   nextSalePriceReviewAt?: string | null;
@@ -131,6 +132,8 @@ interface CreateVehicleValues {
   insuranceStartDate?: Dayjs | null;
   purchaseDate?: Dayjs | null;
   purchasePriceAmountYuan: number;
+  registrationDate?: Dayjs | null;
+  latestRegistrationDate?: Dayjs | null;
   remark?: string | null;
   series?: string | null;
   vehicleModel: "ET5" | "ET7" | "ES6";
@@ -1081,11 +1084,13 @@ export default function VehiclesPage() {
           currentMileageKm: values.currentMileageKm ?? 0,
           insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
           insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
+          latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
           purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
           purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
+          registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
           remark: values.remark,
           series: values.series,
           vehicleModel: values.vehicleModel,
@@ -1327,8 +1332,10 @@ export default function VehiclesPage() {
       plateNo: vehicle.plateNo,
       insuranceEndDate: vehicle.insuranceEndDate ? dayjs(vehicle.insuranceEndDate) : null,
       insuranceStartDate: vehicle.insuranceStartDate ? dayjs(vehicle.insuranceStartDate) : null,
+      latestRegistrationDate: vehicle.latestRegistrationDate ? dayjs(vehicle.latestRegistrationDate) : null,
       purchaseDate: vehicle.purchaseDate ? dayjs(vehicle.purchaseDate) : null,
       purchasePriceAmountYuan: vehicle.purchasePriceAmount / 100,
+      registrationDate: vehicle.registrationDate ? dayjs(vehicle.registrationDate) : null,
       remark: vehicle.remark,
       series: vehicle.series,
       vehicleModel: (vehicle.vehicleModel ?? "ET5") as "ET5" | "ET7" | "ES6",
@@ -1350,11 +1357,13 @@ export default function VehiclesPage() {
           currentMileageKm: values.currentMileageKm ?? 0,
           insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
           insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
+          latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
           purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
           purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
+          registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
           remark: values.remark,
           series: values.series,
           vehicleModel: values.vehicleModel,
@@ -1806,6 +1815,20 @@ export default function VehiclesPage() {
           <Form.Item label="采购日期" name="purchaseDate">
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
+          <Form.Item
+            extra="用于残值预测车龄计算，请填写车辆首次登记上牌日期。"
+            label="初次上牌日期"
+            name="registrationDate"
+          >
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            extra="用于记录过户、换牌等最近一次登记上牌日期，不参与当前残值预测车龄计算。"
+            label="最近一次上牌日期"
+            name="latestRegistrationDate"
+          >
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
           <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
@@ -1853,7 +1876,8 @@ export default function VehiclesPage() {
                 { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
                 { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
                 { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
-                { label: "上牌日期", children: formatDate(detailVehicle.registrationDate) },
+                { label: "初次上牌日期", children: formatDate(detailVehicle.registrationDate) },
+                { label: "最近一次上牌日期", children: formatDate(detailVehicle.latestRegistrationDate) },
                 { label: "取得方式", children: labelOf(VEHICLE_ACQUISITION_MODE_LABELS, detailVehicle.acquisitionMode) },
                 { label: "保险有效期", children: formatInsurancePeriod(detailVehicle) },
                 { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
@@ -2206,6 +2230,20 @@ export default function VehiclesPage() {
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="采购日期" name="purchaseDate">
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            extra="用于残值预测车龄计算，请填写车辆首次登记上牌日期。"
+            label="初次上牌日期"
+            name="registrationDate"
+          >
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            extra="用于记录过户、换牌等最近一次登记上牌日期，不参与当前残值预测车龄计算。"
+            label="最近一次上牌日期"
+            name="latestRegistrationDate"
+          >
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
@@ -2590,7 +2628,7 @@ function VehicleResidualForecastBlock({
         type="info"
       />
       {!vehicle.registrationDate ? (
-        <Alert message="车辆缺少上牌日期时无法生成残值预测。" showIcon type="warning" />
+        <Alert message="车辆缺少初次上牌日期时无法生成残值预测。" showIcon type="warning" />
       ) : null}
       {latest ? (
         <>

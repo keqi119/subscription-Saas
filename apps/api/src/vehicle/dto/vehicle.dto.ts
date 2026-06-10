@@ -66,6 +66,10 @@ export class CreateVehicleDto {
 
   @IsOptional()
   @IsString()
+  latestRegistrationDate?: string | null;
+
+  @IsOptional()
+  @IsString()
   insuranceStartDate?: string | null;
 
   @IsOptional()
@@ -147,6 +151,10 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsString()
   registrationDate?: string | null;
+
+  @IsOptional()
+  @IsString()
+  latestRegistrationDate?: string | null;
 
   @IsOptional()
   @IsString()

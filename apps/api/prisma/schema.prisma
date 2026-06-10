@@ -1682,6 +1682,7 @@ model Vehicle {
   salePriceReinitRequiredAt     DateTime?                 @map("sale_price_reinit_required_at") @db.Timestamptz(6)
   salePriceStatus               SalePriceStatus           @default(PENDING_INITIALIZE) @map("sale_price_status")
   registrationDate              DateTime?                 @map("registration_date") @db.Date
+  latestRegistrationDate        DateTime?                 @map("latest_registration_date") @db.Date
   insuranceStartDate            DateTime?                 @map("insurance_start_date") @db.Date
   insuranceEndDate              DateTime?                 @map("insurance_end_date") @db.Date
   status                        VehicleStatus             @default(DRAFT)

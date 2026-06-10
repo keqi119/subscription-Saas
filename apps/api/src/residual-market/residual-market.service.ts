@@ -803,7 +803,7 @@ export class ResidualMarketService {
     }
 
     if (!vehicle.registrationDate) {
-      throw new BadRequestException("车辆缺少上牌日期，无法计算车龄。");
+      throw new BadRequestException("车辆缺少初次上牌日期，无法计算车龄。");
     }
 
     const vehicleAgeMonths = diffMonths(input.asOfDate, vehicle.registrationDate);

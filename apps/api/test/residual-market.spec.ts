@@ -1482,6 +1482,7 @@ function makeVehicle(overrides: Partial<Vehicle> = {}): Vehicle {
     purchaseDate: new Date("2024-06-01T00:00:00.000Z"),
     purchasePriceAmount: 20000000n,
     registrationDate: new Date("2024-06-01T00:00:00.000Z"),
+    latestRegistrationDate: null,
     remark: null,
     salePriceReinitRequiredAt: null,
     salePriceStatus: SalePriceStatus.EFFECTIVE,

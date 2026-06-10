@@ -967,6 +967,7 @@ function makeVehicleBase(): VehicleFixture {
     purchaseDate: null,
     purchasePriceAmount: 16800000n,
     registrationDate: null,
+    latestRegistrationDate: null,
     remark: null,
     salePriceHistories: [],
     salePriceReinitRequiredAt: null,

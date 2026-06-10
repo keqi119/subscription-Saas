@@ -751,6 +751,7 @@ function createVehicleData(dto: CreateVehicleDto): Omit<Prisma.VehicleCreateInpu
     currentMileageKm: dto.currentMileageKm ?? 0,
     insuranceEndDate: parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"),
     insuranceStartDate: parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"),
+    latestRegistrationDate: parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"),
     model: dto.model,
     modelYear: dto.modelYear,
     plateNo: dto.plateNo,
@@ -784,6 +785,7 @@ function updateVehicleData(dto: UpdateVehicleDto, operatorId: string): Prisma.Ve
   assignIfDefined(data, "currentMileageKm", dto.currentMileageKm);
   assignIfDefined(data, "insuranceEndDate", parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"));
   assignIfDefined(data, "insuranceStartDate", parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"));
+  assignIfDefined(data, "latestRegistrationDate", parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"));
   assignIfDefined(data, "model", dto.model);
   assignIfDefined(data, "modelYear", dto.modelYear);
   assignIfDefined(data, "plateNo", dto.plateNo);
@@ -1019,6 +1021,7 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     id: vehicle.id,
     insuranceEndDate: vehicle.insuranceEndDate,
     insuranceStartDate: vehicle.insuranceStartDate,
+    latestRegistrationDate: vehicle.latestRegistrationDate,
     model: vehicle.model,
     modelYear: vehicle.modelYear,
     nextSalePriceReviewAt: vehicle.nextSalePriceReviewAt,

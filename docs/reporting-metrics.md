@@ -1097,7 +1097,9 @@ Stage 8.4D-A 新增单车残值预测后端能力。预测基于具体 `Vehicle`
 
 车辆车龄和 horizon：
 
-- 车辆必须有 `registrationDate`；单车残值预测不会用 `purchaseDate` 代替上牌日期。
+- `Vehicle.registrationDate` 在车辆台账中定义为“初次上牌日期”，用于单车残值预测车龄计算。
+- `Vehicle.latestRegistrationDate` 定义为“最近一次上牌日期”，用于记录过户、换牌等最近登记时间；当前不参与残值预测车龄计算。
+- 车辆必须有 `registrationDate`；单车残值预测不会用 `purchaseDate` 或 `latestRegistrationDate` 代替初次上牌日期。
 - `vehicleAgeMonths` 由 `asOfDate` 与 `registrationDate` 的月份差计算。
 - 默认预测 horizon 为 `0 / 6 / 12 / 24 / 36` 月；请求可传入最多 10 个非负整数 horizon。
 - 每个预测点的 `targetAgeMonth = vehicleAgeMonths + horizonMonth`，`targetDate = asOfDate + horizonMonth`。
@@ -1125,6 +1127,7 @@ Stage 8.4D-A 新增单车残值预测后端能力。预测基于具体 `Vehicle`
 Stage 8.4D-B 前端使用说明：
 
 - 车辆详情页在有 `residual_forecast:view` 权限时展示“残值预测”区块，加载最新预测和预测历史。
+- 车辆新增 / 编辑表单维护“初次上牌日期”和“最近一次上牌日期”；生成预测前请先补齐初次上牌日期。
 - 生成预测支持 dryRun 试算；试算只展示匹配曲线、车辆快照和预测点预览，不保存预测记录。
 - 正式生成会保存预测记录和预测点，但不会覆盖 `Vehicle.currentSalePriceAmount`，也不会写入 `VehicleSalePriceHistory`。
 - 人工采用预测点时，页面按元输入采用残值，提交给后端按分保存；采用值只保存在预测点上。

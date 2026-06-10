@@ -1583,12 +1583,23 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("资产收益试算汇总");
     expect(result.content).toContain("覆盖情况");
     expect(result.content).toContain("收入指标");
+    expect(result.content).toContain("ROE 可计算车辆数,1");
     expect(result.content).toContain("经营收入合计,6500.00");
+    expect(result.content).toContain("质押收入金额,0.00");
+    expect(result.content).toContain("平台留存经营收入,6500.00");
+    expect(result.content).toContain("债务利息成本,0.00");
+    expect(result.content).toContain("资本结构指标");
+    expect(result.content).toContain("债务本金,0.00");
+    expect(result.content).toContain("权益资本基数,12000.00");
     expect(result.content).toContain("经营成本合计,13215.00");
     expect(result.content).toContain("试算经营净收益（元）,-6715.00");
+    expect(result.content).toContain("平台权益净收益（元）,-6715.00");
     expect(result.content).toContain("试算 ROA,-55.96%");
-    expect(result.content).toContain("ROE,-55.96%");
-    expect(result.content).toContain("ROE 不可用原因,-");
+    expect(result.content).toContain("试算 ROE,-55.96%");
+    expect(result.content).toContain("年化试算 ROE,-55.96%");
+    expect(result.content).toContain("ROE 不可用原因");
+    expect(result.content).toContain("ROE 试算提示");
+    expect(result.content).toContain("未录入资本事件，按全自有资金假设试算 ROE。");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
   });
 
@@ -1616,11 +1627,16 @@ describe("reporting dashboard APIs", () => {
     expect(result.content.charCodeAt(0)).toBe(0xfeff);
     expect(result.content).toContain("资产收益试算车辆列表");
     expect(result.content).toContain("车辆编号,VIN,车牌号");
+    expect(result.content).toContain("平台留存经营收入（元）");
+    expect(result.content).toContain("债务利息成本（元）");
+    expect(result.content).toContain("权益资本基数（元）");
+    expect(result.content).toContain("ROE 状态");
     expect(result.content).toContain('"NIO, ""Premium""\nLine"');
     expect(result.content).toContain("已出租");
-    expect(result.content).toContain("生效中");
     expect(result.content).toContain("6500.00");
     expect(result.content).toContain("-55.96%");
+    expect(result.content).toContain("可试算");
+    expect(result.content).toContain("未录入资本事件，按全自有资金假设试算 ROE。");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1681,16 +1697,72 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("折旧方法,直线法");
     expect(result.content).toContain("成本 Preview");
     expect(result.content).toContain("月折旧（元）,900.00");
-    expect(result.content).toContain("收入明细");
+    expect(result.content).toContain("平台留存收入");
     expect(result.content).toContain("经营收入合计,6000.00");
+    expect(result.content).toContain("质押收入金额,0.00");
+    expect(result.content).toContain("平台留存经营收入,6000.00");
     expect(result.content).toContain("成本拆分");
     expect(result.content).toContain("经营成本合计,13215.00");
+    expect(result.content).toContain("资本结构摘要");
+    expect(result.content).toContain("债务本金（元）,0.00");
+    expect(result.content).toContain("融资工具分摊明细");
+    expect(result.content).toContain("收益权 assignment 明细");
+    expect(result.content).toContain("PLEDGE = 质押，不扣减平台收入");
+    expect(result.content).toContain("分润规则摘要");
     expect(result.content).toContain("收益试算");
-    expect(result.content).toContain("ROE,-60.12%");
+    expect(result.content).toContain("平台权益净收益（元）,-7215.00");
+    expect(result.content).toContain("试算 ROE,-60.12%");
+    expect(result.content).toContain("ROE 状态,可试算");
     expect(result.content).toContain("订单周期明细");
     expect(result.content).toContain("账单明细");
     expect(result.content).toContain("在租");
     expect(result.content).toContain("月租账单");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+  });
+
+  it("asset return trial vehicle detail export includes financing, revenue right, and sharing sections", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        paidAmount: 100000n
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+    prisma.vehicleCapitalEvent.findMany.mockResolvedValue([assetCapitalEvent()]);
+    prisma.financingInstrumentVehicle.findMany.mockResolvedValue([assetFinancingAllocation()]);
+    prisma.revenueRightAssignment.findMany
+      .mockResolvedValueOnce([
+        assetRevenueRightAssignment({
+          assignmentType: RevenueRightAssignmentType.TRANSFER,
+          shareRatioBps: 5000
+        })
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.revenueShareRule.findMany.mockResolvedValue([assetRevenueShareRule()]);
+
+    const result = await service.exportAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.content).toContain("资本结构摘要");
+    expect(result.content).toContain("债务本金（元）,6000.00");
+    expect(result.content).toContain("资金成本来源,融资工具");
+    expect(result.content).toContain("融资工具分摊明细");
+    expect(result.content).toContain("FI202601010001,银行项目贷款,测试银行,6000.00,12.00%,720.00");
+    expect(result.content).toContain("收益权 assignment 明细");
+    expect(result.content).toContain("收益权转让");
+    expect(result.content).toContain("资方：测试资方");
+    expect(result.content).toContain("PLEDGE = 质押，不扣减平台收入");
+    expect(result.content).toContain("分润规则摘要");
+    expect(result.content).toContain("收益分成,租金实收,30.00%");
+    expect(result.content).toContain("支持试算");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
   });
 

@@ -70,14 +70,22 @@ import {
   assetProfitabilityLifecycleNodeLabels,
   billStatusLabels,
   billTypeLabels,
+  capitalCostSourceLabels,
   collectionCaseStatusLabels,
   collectionLevelLabels,
   contractStatusLabels,
   depositTransactionStatusLabels,
   depositTransactionTypeLabels,
+  financingInstrumentTypeLabels,
   labelOf,
   orderSourceLabels,
   orderStatusLabels,
+  revenueRightAssigneeTypeLabels,
+  revenueRightAssignmentStatusLabels,
+  revenueRightAssignmentTypeLabels,
+  revenueRightTargetTypeLabels,
+  revenueShareBasisLabels,
+  revenueShareRuleTypeLabels,
   salePriceStatusLabels,
   vehicleAssetCostProfileStatusLabels,
   vehicleDamageLevelLabels,
@@ -879,6 +887,8 @@ export class ReportService {
       ["缺少成本参数车辆数", report.vehicleMissingCostProfileCount],
       ["成本可计算车辆数", report.costCalculatedVehicleCount],
       ["成本不可计算车辆数", report.costUnavailableVehicleCount],
+      ["ROE 可计算车辆数", report.roeCalculatedVehicleCount],
+      ["ROE 不可计算车辆数", report.roeUnavailableVehicleCount],
       [],
       ["收入指标"],
       ["指标", "金额（元）"],
@@ -887,23 +897,47 @@ export class ReportService {
       ["其他实收", formatMoneyYuan(report.otherPaidAmount)],
       ["经营收入合计", formatMoneyYuan(report.operatingRevenueAmount)],
       ["押金收取", formatMoneyYuan(report.depositCollectedAmount)],
+      ["转让 / 入池外流收入", formatMoneyYuan(report.assignedOutRevenueAmount)],
+      ["质押收入金额", formatMoneyYuan(report.pledgedRevenueAmount)],
+      ["车主分润金额", formatMoneyYuan(report.ownerShareAmount)],
+      ["平台留存经营收入", formatMoneyYuan(report.platformRetainedRevenueAmount)],
       [],
       ["成本指标"],
       ["指标", "金额（元）"],
       ["折旧成本", formatMoneyYuan(report.depreciationCostAmount)],
       ["资金成本", formatMoneyYuan(report.capitalCostAmount)],
+      ["债务利息成本", formatMoneyYuan(report.debtInterestCostAmount)],
       ["保险成本", formatMoneyYuan(report.insuranceCostAmount)],
       ["维修准备金", formatMoneyYuan(report.maintenanceReserveCostAmount)],
       ["其他成本", formatMoneyYuan(report.otherCostAmount)],
+      ["外部长租固定成本", formatMoneyYuan(report.externalLeaseCostAmount)],
       ["经营成本合计", formatMoneyYuan(report.operatingCostAmount)],
+      [],
+      ["资本结构指标"],
+      ["指标", "金额（元）/比例"],
+      ["债务本金", formatMoneyYuan(report.debtPrincipalAmount)],
+      ["权益资本基数", formatMoneyYuan(report.roeEquityBaseAmount)],
+      [
+        "资金成本来源",
+        capitalCostSourceText((report as { capitalCostSource?: unknown }).capitalCostSource)
+      ],
       [],
       ["收益指标"],
       ["指标", "值"],
       ["试算经营净收益（元）", formatMoneyYuan(report.trialNetOperatingIncomeAmount)],
+      ["平台权益净收益（元）", formatMoneyYuan(report.platformNetIncomeAmount)],
       ["试算 ROA", formatPercent(report.trialRoa)],
       ["年化试算 ROA", formatPercent(report.annualizedTrialRoa)],
-      ["ROE", roeExportValue(report.roeTrial)],
-      ["ROE 不可用原因", report.roeUnavailableReason]
+      ["试算 ROE", roeExportValue(report.roeTrial)],
+      ["年化试算 ROE", roeExportValue(report.annualizedRoeTrial)],
+      [],
+      ["ROE 不可用原因"],
+      ["原因"],
+      ...csvTextListRows(report.roeMissingReasons),
+      [],
+      ["ROE 试算提示"],
+      ["提示"],
+      ...csvTextListRows(report.roeWarnings)
     ];
 
     return csvExport("asset-return-trial-summary", report.dateRange, rows);
@@ -937,19 +971,30 @@ export class ReportService {
         "其他实收（元）",
         "经营收入（元）",
         "押金收取（元）",
+        "转让 / 入池外流收入（元）",
+        "质押收入金额（元）",
+        "车主分润金额（元）",
+        "平台留存经营收入（元）",
         "折旧成本（元）",
         "资金成本（元）",
+        "债务利息成本（元）",
         "保险成本（元）",
         "维修准备金（元）",
         "其他成本（元）",
+        "外部长租固定成本（元）",
         "经营成本（元）",
         "试算经营净收益（元）",
+        "平台权益净收益（元）",
         "试算 ROA",
         "年化试算 ROA",
-        "成本参数状态",
+        "试算 ROE",
+        "年化试算 ROE",
+        "债务本金（元）",
+        "权益资本基数（元）",
+        "资金成本来源",
+        "ROE 状态",
         "不可计算原因",
-        "ROE",
-        "ROE 不可用原因"
+        "提示信息"
       ],
       ...vehicles.map((vehicle) => [
         vehicle.vehicleNo,
@@ -966,19 +1011,30 @@ export class ReportService {
         formatMoneyYuan(vehicle.otherPaidAmount),
         formatMoneyYuan(vehicle.operatingRevenueAmount),
         formatMoneyYuan(vehicle.depositCollectedAmount),
+        formatMoneyYuan(vehicle.assignedOutRevenueAmount),
+        formatMoneyYuan(vehicle.pledgedRevenueAmount),
+        formatMoneyYuan(vehicle.ownerShareAmount),
+        formatMoneyYuan(vehicle.platformRetainedRevenueAmount),
         formatMoneyYuan(vehicle.depreciationCostAmount),
         formatMoneyYuan(vehicle.capitalCostAmount),
+        formatMoneyYuan(vehicle.debtInterestCostAmount),
         formatMoneyYuan(vehicle.insuranceCostAmount),
         formatMoneyYuan(vehicle.maintenanceReserveCostAmount),
         formatMoneyYuan(vehicle.otherCostAmount),
+        formatMoneyYuan(vehicle.externalLeaseCostAmount),
         formatMoneyYuan(vehicle.operatingCostAmount),
         formatMoneyYuan(vehicle.trialNetOperatingIncomeAmount),
+        formatMoneyYuan(vehicle.platformNetIncomeAmount),
         formatPercent(vehicle.trialRoa),
         formatPercent(vehicle.annualizedTrialRoa),
-        assetReturnTrialCostProfileStatusText(vehicle),
-        assetReturnTrialUnavailableReasonText(vehicle),
         roeExportValue(vehicle.roeTrial),
-        vehicle.roeUnavailableReason
+        roeExportValue(vehicle.annualizedRoeTrial),
+        formatMoneyYuan(vehicle.debtPrincipalAmount),
+        formatMoneyYuan(vehicle.roeEquityBaseAmount),
+        capitalCostSourceText(vehicle.capitalCostSource),
+        roeStatusText(vehicle),
+        csvTextList(vehicle.roeMissingReasons),
+        csvTextList(vehicle.roeWarnings)
       ])
     ];
 
@@ -1053,12 +1109,13 @@ export class ReportService {
           ] satisfies CsvRow[])
         : ([["成本 Preview", "-"]] satisfies CsvRow[])),
       [],
-      ["收入明细"],
+      ["平台留存收入"],
       ["指标", "金额（元）"],
-      ["租金实收", formatMoneyYuan(income.rentalPaidAmount)],
-      ["损伤实收", formatMoneyYuan(income.damagePaidAmount)],
-      ["其他实收", formatMoneyYuan(income.otherPaidAmount)],
       ["经营收入合计", formatMoneyYuan(income.operatingRevenueAmount)],
+      ["转让 / 入池外流收入", formatMoneyYuan(income.assignedOutRevenueAmount)],
+      ["质押收入金额", formatMoneyYuan(income.pledgedRevenueAmount)],
+      ["车主分润金额", formatMoneyYuan(income.ownerShareAmount)],
+      ["平台留存经营收入", formatMoneyYuan(income.platformRetainedRevenueAmount)],
       ["押金收取", formatMoneyYuan(income.depositCollectedAmount)],
       [],
       ["成本拆分"],
@@ -1066,19 +1123,43 @@ export class ReportService {
       ["成本分摊天数", cost.costDays],
       ["折旧成本", formatMoneyYuan(cost.depreciationCostAmount)],
       ["资金成本", formatMoneyYuan(cost.capitalCostAmount)],
+      ["债务利息成本", formatMoneyYuan(returns.debtInterestCostAmount)],
       ["保险成本", formatMoneyYuan(cost.insuranceCostAmount)],
       ["维修准备金", formatMoneyYuan(cost.maintenanceReserveCostAmount)],
       ["其他成本", formatMoneyYuan(cost.otherCostAmount)],
+      ["外部长租固定成本", formatMoneyYuan(returns.externalLeaseCostAmount)],
       ["经营成本合计", formatMoneyYuan(cost.operatingCostAmount)],
+      ["资金成本来源", capitalCostSourceText(returns.capitalCostSource)],
       ["不可计算原因", assetReturnTrialUnavailableReasonText(cost)],
+      [],
+      ["资本结构摘要"],
+      ["字段", "值"],
+      ["债务本金（元）", formatMoneyYuan(detail.roeBreakdown.debtPrincipalAmount)],
+      ["债务利息成本（元）", formatMoneyYuan(returns.debtInterestCostAmount)],
+      ["权益资本基数（元）", formatMoneyYuan(returns.roeEquityBaseAmount)],
+      ["资金成本来源", capitalCostSourceText(returns.capitalCostSource)],
+      [],
+      ["融资工具分摊明细"],
+      ...financingAllocationCsvRows(detail.financingAllocations, detail.dateRange),
+      [],
+      ["收益权 assignment 明细"],
+      ["说明", "PLEDGE = 质押，不扣减平台收入；TRANSFER / SPV_POOL = 扣减平台留存收入"],
+      ...revenueRightAssignmentCsvRows(detail.revenueRightAssignments),
+      [],
+      ["分润规则摘要"],
+      ...revenueShareRuleCsvRows(detail.revenueShareRules, income, detail.dateRange),
       [],
       ["收益试算"],
       ["指标", "值"],
       ["试算经营净收益（元）", formatMoneyYuan(returns.trialNetOperatingIncomeAmount)],
+      ["平台权益净收益（元）", formatMoneyYuan(returns.platformNetIncomeAmount)],
       ["试算 ROA", formatPercent(returns.trialRoa)],
       ["年化试算 ROA", formatPercent(returns.annualizedTrialRoa)],
-      ["ROE", roeExportValue(returns.roeTrial)],
-      ["ROE 不可用原因", returns.roeUnavailableReason],
+      ["试算 ROE", roeExportValue(returns.roeTrial)],
+      ["年化试算 ROE", roeExportValue(returns.annualizedRoeTrial)],
+      ["ROE 状态", roeStatusText(returns)],
+      ["不可计算原因", csvTextList(returns.roeMissingReasons)],
+      ["提示信息", csvTextList(returns.roeWarnings)],
       [],
       ["订单周期明细"],
       [
@@ -2893,23 +2974,237 @@ function formatBps(value: unknown) {
 }
 
 function roeExportValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? formatPercent(value) : "暂不可用";
+  return formatPercent(value);
 }
 
-function assetReturnTrialCostProfileStatusText(row: {
-  costProfileMissing?: boolean | null;
-  costProfileStatus?: string | null;
-  manualDepreciationUnsupported?: boolean | null;
-}) {
-  if (row.costProfileMissing) {
-    return "缺少成本参数";
+function capitalCostSourceText(value: unknown) {
+  return labelOf(capitalCostSourceLabels, value);
+}
+
+function csvTextList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return "-";
   }
 
-  if (row.manualDepreciationUnsupported) {
-    return "手工折旧暂不支持试算";
+  const items = value.map((item) => safeCell(item)).filter((item) => item !== "-");
+  return items.length > 0 ? items.join("；") : "-";
+}
+
+function csvTextListRows(value: unknown): CsvRow[] {
+  const text = csvTextList(value);
+  return text === "-" ? [["-"]] : text.split("；").map((item) => [item]);
+}
+
+function roeStatusText(row: { roeTrial?: unknown }) {
+  return typeof row.roeTrial === "number" && Number.isFinite(row.roeTrial) ? "可试算" : "暂不可用";
+}
+
+function financingAllocationCsvRows(
+  allocations: ReturnType<typeof assetReturnTrialFinancingAllocationView>[],
+  dateRange: ReportDateRangeOutput
+): CsvRow[] {
+  if (allocations.length === 0) {
+    return [["暂无数据"]];
   }
 
-  return labelOf(vehicleAssetCostProfileStatusLabels, row.costProfileStatus);
+  return [
+    [
+      "融资工具编号",
+      "融资类型",
+      "资金方",
+      "分摊本金（元）",
+      "年化利率",
+      "债务利息成本（元）",
+      "生效日期"
+    ],
+    ...allocations.map((allocation) => [
+      allocation.instrument.instrumentNo,
+      labelOf(financingInstrumentTypeLabels, allocation.instrument.instrumentType),
+      allocation.instrument.lenderName,
+      formatMoneyYuan(allocation.allocatedPrincipalAmount),
+      formatBps(allocation.instrument.annualRateBps),
+      formatMoneyYuan(allocationDebtInterestAmount(allocation, dateRange)),
+      formatDate(allocation.effectiveFrom)
+    ])
+  ];
+}
+
+function revenueRightAssignmentCsvRows(
+  assignments: ReturnType<typeof assetReturnTrialRevenueRightAssignmentView>[]
+): CsvRow[] {
+  if (assignments.length === 0) {
+    return [["暂无数据"]];
+  }
+
+  return [
+    [
+      "收益权编号",
+      "类型",
+      "状态",
+      "目标类型",
+      "融资工具",
+      "受让方",
+      "分配比例",
+      "生效日期",
+      "解除日期"
+    ],
+    ...assignments.map((assignment) => [
+      assignment.assignmentNo,
+      labelOf(revenueRightAssignmentTypeLabels, assignment.assignmentType),
+      labelOf(revenueRightAssignmentStatusLabels, assignment.assignmentStatus),
+      labelOf(revenueRightTargetTypeLabels, assignment.targetType),
+      assignment.financingInstrument?.instrumentNo ?? "-",
+      revenueRightAssigneeText(assignment),
+      formatBps(assignment.shareRatioBps),
+      formatDate(assignment.effectiveFrom),
+      formatDate(assignment.releasedAt ?? assignment.effectiveTo)
+    ])
+  ];
+}
+
+function revenueShareRuleCsvRows(
+  rules: ReturnType<typeof assetReturnTrialRevenueShareRuleView>[],
+  income: {
+    operatingRevenueAmount?: number | null;
+    rentalPaidAmount?: number | null;
+  },
+  dateRange: ReportDateRangeOutput
+): CsvRow[] {
+  if (rules.length === 0) {
+    return [["暂无数据"]];
+  }
+
+  return [
+    [
+      "规则类型",
+      "分润基础",
+      "车主分成比例",
+      "固定月金额（元）",
+      "车主分润金额（元）",
+      "平台留存金额（元）",
+      "是否支持试算",
+      "不支持原因"
+    ],
+    ...rules.map((rule) => {
+      const support = revenueShareRuleSupport(rule);
+      const shareBaseAmount = revenueShareRuleBaseAmount(rule, income);
+      const ownerShareAmount =
+        shareBaseAmount !== null &&
+        rule.ownerShareBps !== null &&
+        rule.ownerShareBps !== undefined &&
+        (rule.ruleType === RevenueShareRuleType.REVENUE_SHARE ||
+          rule.ruleType === RevenueShareRuleType.MIXED)
+          ? amountByBps(shareBaseAmount, rule.ownerShareBps)
+          : null;
+      const fixedCostAmount =
+        rule.fixedMonthlyAmount !== null &&
+        rule.fixedMonthlyAmount !== undefined &&
+        (rule.ruleType === RevenueShareRuleType.FIXED_RENT ||
+          rule.ruleType === RevenueShareRuleType.MIXED)
+          ? Math.round(
+              (rule.fixedMonthlyAmount *
+                12 *
+                overlapDaysForOutputRange(rule.effectiveFrom, rule.effectiveTo, dateRange)) /
+                365
+            )
+          : 0;
+      const platformRetainedAmount =
+        shareBaseAmount !== null && ownerShareAmount !== null
+          ? shareBaseAmount - ownerShareAmount - fixedCostAmount
+          : null;
+
+      return [
+        labelOf(revenueShareRuleTypeLabels, rule.ruleType),
+        labelOf(revenueShareBasisLabels, rule.shareBasis),
+        formatBps(rule.ownerShareBps),
+        formatMoneyYuan(rule.fixedMonthlyAmount),
+        formatMoneyYuan(ownerShareAmount),
+        formatMoneyYuan(platformRetainedAmount),
+        support.supported ? "支持试算" : "暂不支持",
+        support.reason
+      ];
+    })
+  ];
+}
+
+function allocationDebtInterestAmount(
+  allocation: ReturnType<typeof assetReturnTrialFinancingAllocationView>,
+  dateRange: ReportDateRangeOutput
+) {
+  const annualRateBps = allocation.instrument.annualRateBps;
+
+  if (
+    annualRateBps === null ||
+    annualRateBps === undefined ||
+    (allocation.instrument.repaymentMethod !== FinancingRepaymentMethod.INTEREST_ONLY &&
+      allocation.instrument.repaymentMethod !== FinancingRepaymentMethod.BULLET)
+  ) {
+    return null;
+  }
+
+  const overlapDays = overlapDaysForOutputRange(
+    allocation.effectiveFrom,
+    allocation.effectiveTo,
+    dateRange
+  );
+  return Math.round((allocation.allocatedPrincipalAmount * annualRateBps * overlapDays) / 10000 / 365);
+}
+
+function revenueRightAssigneeText(
+  assignment: ReturnType<typeof assetReturnTrialRevenueRightAssignmentView>
+) {
+  const assigneeType = labelOf(revenueRightAssigneeTypeLabels, assignment.assigneeType);
+  const assigneeName = safeCell(assignment.assigneeName);
+  return assigneeName === "-" ? assigneeType : `${assigneeType}：${assigneeName}`;
+}
+
+function revenueShareRuleSupport(rule: ReturnType<typeof assetReturnTrialRevenueShareRuleView>) {
+  if (rule.shareBasis === RevenueShareBasis.GROSS_RECEIVABLE) {
+    return {
+      reason: "GROSS_RECEIVABLE 分润口径暂未接入 ROE 试算。",
+      supported: false
+    };
+  }
+
+  if (rule.shareBasis === RevenueShareBasis.MANUAL) {
+    return {
+      reason: "MANUAL 分润口径需人工结算，暂未接入 ROE 试算。",
+      supported: false
+    };
+  }
+
+  return { reason: "-", supported: true };
+}
+
+function revenueShareRuleBaseAmount(
+  rule: ReturnType<typeof assetReturnTrialRevenueShareRuleView>,
+  income: {
+    operatingRevenueAmount?: number | null;
+    rentalPaidAmount?: number | null;
+  }
+) {
+  if (rule.shareBasis === RevenueShareBasis.RENTAL_PAID) {
+    return income.rentalPaidAmount ?? null;
+  }
+
+  if (rule.shareBasis === RevenueShareBasis.OPERATING_REVENUE) {
+    return income.operatingRevenueAmount ?? null;
+  }
+
+  return null;
+}
+
+function overlapDaysForOutputRange(
+  effectiveFrom: Date,
+  effectiveTo: Date | null | undefined,
+  dateRange: ReportDateRangeOutput
+) {
+  const startDate = maxBusinessDate(dateRange.startDate, formatDateOnly(effectiveFrom));
+  const endDate = minBusinessDate(
+    dateRange.endDate,
+    effectiveTo ? formatDateOnly(effectiveTo) : dateRange.endDate
+  );
+  return inclusiveBusinessDays(startDate, endDate);
 }
 
 function assetReturnTrialUnavailableReasonText(row: {

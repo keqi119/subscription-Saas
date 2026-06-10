@@ -10,7 +10,11 @@ import {
   MarketSellerType,
   Prisma,
   VehicleBatteryUsageType,
-  VehicleMarketPriceObservation
+  VehicleMarketPriceObservation,
+  VehicleResidualCurve,
+  VehicleResidualCurveMethod,
+  VehicleResidualCurvePoint,
+  VehicleResidualCurveStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -19,10 +23,14 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { PrismaService } from "../prisma/prisma.service";
 import { parseCsvRecords } from "./csv-parser";
 import {
+  ActivateResidualCurveDto,
+  ArchiveResidualCurveDto,
   CreateMarketPriceObservationDto,
+  GenerateResidualCurveDto,
   ImportMarketPriceCsvDto,
   MarketPriceImportBatchesQueryDto,
   MarketPriceObservationsQueryDto,
+  ResidualCurveQueryDto,
   VoidMarketPriceObservationDto
 } from "./dto/residual-market.dto";
 
@@ -99,10 +107,91 @@ type BuiltObservation = {
   fields: ObservationFields;
 };
 
+type CurveGenerationInput = {
+  batteryCapacityKwh: Prisma.Decimal | null;
+  batteryUsageType: VehicleBatteryUsageType | null;
+  brand: string;
+  curveName: string | null;
+  curveVersion: string | null;
+  dryRun: boolean;
+  minSamplePerPoint: number;
+  model: string;
+  modelYear: number | null;
+  priceTypes: MarketPriceType[];
+  referencePriceAmount: bigint | null;
+  remark: string | null;
+  sampleEndDate: Date | null;
+  sampleStartDate: Date | null;
+  series: string | null;
+  trim: string | null;
+};
+
+type BuiltResidualCurvePoint = {
+  ageMonth: number;
+  averagePriceAmount: bigint;
+  confidenceScore: number;
+  lowerBoundAmount: bigint;
+  maxPriceAmount: bigint;
+  medianPriceAmount: bigint;
+  mileageBucketEndKm: null;
+  mileageBucketStartKm: null;
+  minPriceAmount: bigint;
+  p25PriceAmount: bigint;
+  p75PriceAmount: bigint;
+  pointSnapshot: Prisma.InputJsonObject;
+  predictedResidualAmount: bigint;
+  predictedResidualRateBps: number | null;
+  sampleCount: number;
+  upperBoundAmount: bigint;
+};
+
+type BuiltResidualCurve = {
+  batteryCapacityKwh: Prisma.Decimal | null;
+  batteryUsageType: VehicleBatteryUsageType | null;
+  brand: string;
+  confidenceScore: number | null;
+  curveMethod: VehicleResidualCurveMethod;
+  curveName: string | null;
+  curveStatus: VehicleResidualCurveStatus;
+  curveVersion: string | null;
+  metrics: Prisma.InputJsonObject;
+  model: string;
+  modelYear: number | null;
+  pointCount: number;
+  priceTypes: Prisma.InputJsonArray;
+  referencePriceAmount: bigint | null;
+  remark: string | null;
+  sampleCount: number;
+  sampleEndDate: Date | null;
+  sampleFilterSnapshot: Prisma.InputJsonObject;
+  sampleStartDate: Date | null;
+  series: string | null;
+  snapshot: Prisma.InputJsonObject;
+  trim: string | null;
+};
+
+type BuiltResidualCurvePreview = {
+  curve: BuiltResidualCurve;
+  pointCount: number;
+  points: BuiltResidualCurvePoint[];
+  sampleCount: number;
+  skippedReasons: Prisma.InputJsonObject[];
+  skippedSampleCount: number;
+};
+
 const OBSERVATION_ENTITY_TYPE = "vehicle_market_price_observation";
 const BATCH_ENTITY_TYPE = "market_price_import_batch";
+const CURVE_ENTITY_TYPE = "vehicle_residual_curve";
 const RESIDUAL_MARKET_MODULE = "residual_market";
 const DUPLICATE_MESSAGE = "该市场价格样本已存在，不能重复创建。";
+
+const DEFAULT_CURVE_PRICE_TYPES = [
+  MarketPriceType.TRANSACTION,
+  MarketPriceType.AUCTION,
+  MarketPriceType.DEALER_QUOTE,
+  MarketPriceType.INTERNAL_SALE,
+  MarketPriceType.LISTING
+];
 
 @Injectable()
 export class ResidualMarketService {
@@ -405,6 +494,212 @@ export class ResidualMarketService {
     return toBatchView(batch, observationCount);
   }
 
+  async generateCurve(dto: GenerateResidualCurveDto, user: RequestUser, context: RequestContext) {
+    const input = buildCurveGenerationInput(dto);
+    const observations = await this.prisma.vehicleMarketPriceObservation.findMany({
+      orderBy: [{ observedAt: "asc" }, { createdAt: "asc" }],
+      where: buildCurveObservationWhere(input)
+    });
+    const preview = buildResidualCurvePreview(input, observations);
+
+    if (preview.pointCount === 0) {
+      throw new BadRequestException("符合条件的样本不足，无法生成残值曲线。");
+    }
+
+    if (input.dryRun) {
+      return curveGenerationResponse(true, toCurvePreviewView(preview.curve), preview.points, preview);
+    }
+
+    const curve = await withUniqueBusinessNoRetry(() =>
+      this.prisma.vehicleResidualCurve.create({
+        data: {
+          batteryCapacityKwh: preview.curve.batteryCapacityKwh,
+          batteryUsageType: preview.curve.batteryUsageType,
+          brand: preview.curve.brand,
+          confidenceScore: preview.curve.confidenceScore,
+          createdBy: user.id,
+          curveMethod: preview.curve.curveMethod,
+          curveName: preview.curve.curveName,
+          curveNo: createBusinessNo("RVC"),
+          curveStatus: VehicleResidualCurveStatus.DRAFT,
+          curveVersion: preview.curve.curveVersion,
+          metrics: preview.curve.metrics,
+          model: preview.curve.model,
+          modelYear: preview.curve.modelYear,
+          pointCount: preview.curve.pointCount,
+          points: { create: preview.points.map(toCurvePointCreateInput) },
+          priceTypes: preview.curve.priceTypes,
+          referencePriceAmount: preview.curve.referencePriceAmount,
+          remark: preview.curve.remark,
+          sampleCount: preview.curve.sampleCount,
+          sampleEndDate: preview.curve.sampleEndDate,
+          sampleFilterSnapshot: preview.curve.sampleFilterSnapshot,
+          sampleStartDate: preview.curve.sampleStartDate,
+          series: preview.curve.series,
+          snapshot: preview.curve.snapshot,
+          trim: preview.curve.trim,
+          updatedBy: user.id
+        },
+        include: {
+          points: { orderBy: { ageMonth: "asc" } }
+        }
+      })
+    );
+
+    await this.writeCurveAudit(
+      AuditAction.CREATE,
+      curve.id,
+      undefined,
+      toCurveView(curve),
+      user,
+      context,
+      curveAuditPayload(curve, { remark: dto.remark })
+    );
+
+    return curveGenerationResponse(false, toCurveView(curve), curve.points, preview);
+  }
+
+  async listCurves(query: ResidualCurveQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const where = buildCurveWhere(query);
+
+    const [total, curves] = await Promise.all([
+      this.prisma.vehicleResidualCurve.count({ where }),
+      this.prisma.vehicleResidualCurve.findMany({
+        orderBy: [{ generatedAt: "desc" }, { createdAt: "desc" }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        where
+      })
+    ]);
+
+    return {
+      items: curves.map(toCurveView),
+      page,
+      pageSize,
+      total
+    };
+  }
+
+  async getCurve(id: string) {
+    const curve = await this.prisma.vehicleResidualCurve.findFirst({
+      include: {
+        points: { orderBy: { ageMonth: "asc" } }
+      },
+      where: { deletedAt: null, id }
+    });
+
+    if (!curve) {
+      throw new NotFoundException("残值曲线不存在。");
+    }
+
+    return toCurveView(curve);
+  }
+
+  async activateCurve(
+    id: string,
+    dto: ActivateResidualCurveDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.prisma.vehicleResidualCurve.findFirst({
+      where: { deletedAt: null, id }
+    });
+
+    if (!before) {
+      throw new NotFoundException("残值曲线不存在。");
+    }
+
+    if (before.curveStatus === VehicleResidualCurveStatus.ARCHIVED) {
+      throw new BadRequestException("已归档的残值曲线不能启用。");
+    }
+
+    const effectiveFrom = parseDateOnly(dto.effectiveFrom, "effectiveFrom");
+    const curve = await this.prisma.$transaction(async (tx) => {
+      await tx.vehicleResidualCurve.updateMany({
+        data: {
+          curveStatus: VehicleResidualCurveStatus.SUPERSEDED,
+          updatedBy: user.id
+        },
+        where: {
+          ...sameCurveDimensionWhere(before),
+          curveStatus: VehicleResidualCurveStatus.ACTIVE,
+          id: { not: id }
+        }
+      });
+
+      return tx.vehicleResidualCurve.update({
+        data: {
+          curveStatus: VehicleResidualCurveStatus.ACTIVE,
+          effectiveFrom,
+          remark: mergeOperationRemark(before.remark, dto.remark),
+          updatedBy: user.id
+        },
+        include: {
+          points: { orderBy: { ageMonth: "asc" } }
+        },
+        where: { id }
+      });
+    });
+
+    await this.writeCurveAudit(
+      AuditAction.UPDATE,
+      curve.id,
+      toCurveView(before),
+      toCurveView(curve),
+      user,
+      context,
+      curveAuditPayload(curve, { remark: dto.remark })
+    );
+
+    return toCurveView(curve);
+  }
+
+  async archiveCurve(
+    id: string,
+    dto: ArchiveResidualCurveDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.prisma.vehicleResidualCurve.findFirst({
+      where: { deletedAt: null, id }
+    });
+
+    if (!before) {
+      throw new NotFoundException("残值曲线不存在。");
+    }
+
+    if (before.curveStatus === VehicleResidualCurveStatus.ARCHIVED) {
+      throw new BadRequestException("该残值曲线已归档，不能重复归档。");
+    }
+
+    const curve = await this.prisma.vehicleResidualCurve.update({
+      data: {
+        curveStatus: VehicleResidualCurveStatus.ARCHIVED,
+        effectiveTo: todayDateOnly(),
+        remark: mergeOperationRemark(before.remark, dto.remark),
+        updatedBy: user.id
+      },
+      include: {
+        points: { orderBy: { ageMonth: "asc" } }
+      },
+      where: { id }
+    });
+
+    await this.writeCurveAudit(
+      AuditAction.UPDATE,
+      curve.id,
+      toCurveView(before),
+      toCurveView(curve),
+      user,
+      context,
+      curveAuditPayload(curve, { remark: dto.remark })
+    );
+
+    return toCurveView(curve);
+  }
+
   private findActiveDuplicate(dedupeKey: string) {
     return this.prisma.vehicleMarketPriceObservation.findFirst({
       where: {
@@ -451,6 +746,28 @@ export class ResidualMarketService {
       before,
       entityId,
       entityType: BATCH_ENTITY_TYPE,
+      ipAddress: context.ipAddress,
+      module: RESIDUAL_MARKET_MODULE,
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+  }
+
+  private async writeCurveAudit(
+    action: AuditAction,
+    entityId: string,
+    before: unknown,
+    after: unknown,
+    user: RequestUser,
+    context: RequestContext,
+    payload: Record<string, unknown>
+  ) {
+    await this.auditService.write({
+      action,
+      after: { ...payload, after },
+      before: before === undefined ? undefined : { ...payload, before },
+      entityId,
+      entityType: CURVE_ENTITY_TYPE,
       ipAddress: context.ipAddress,
       module: RESIDUAL_MARKET_MODULE,
       operatorId: user.id,
@@ -564,6 +881,331 @@ function buildBatchWhere(query: MarketPriceImportBatchesQueryDto): Prisma.Market
     importStatus: query.importStatus,
     source: query.source
   };
+}
+
+function buildCurveGenerationInput(dto: GenerateResidualCurveDto): CurveGenerationInput {
+  const priceTypes = (dto.priceTypes && dto.priceTypes.length > 0 ? dto.priceTypes : DEFAULT_CURVE_PRICE_TYPES).map(
+    (priceType) => parseEnumValue(MarketPriceType, priceType, "priceTypes")
+  );
+  const sampleStartDate = parseOptionalDateOnly(dto.sampleStartDate, "sampleStartDate");
+  const sampleEndDate = parseOptionalDateOnly(dto.sampleEndDate, "sampleEndDate");
+
+  if (sampleStartDate && sampleEndDate && sampleStartDate > sampleEndDate) {
+    throw new BadRequestException("sampleStartDate 不能晚于 sampleEndDate。");
+  }
+
+  const referencePriceAmount = optionalFenAmount(dto.referencePriceAmount, "referencePriceAmount");
+  if (referencePriceAmount !== null && referencePriceAmount <= 0n) {
+    throw new BadRequestException("referencePriceAmount 必须大于 0。");
+  }
+
+  return {
+    batteryCapacityKwh: optionalDecimal(dto.batteryCapacityKwh, "batteryCapacityKwh", 0),
+    batteryUsageType: parseOptionalEnumValue(VehicleBatteryUsageType, dto.batteryUsageType, "batteryUsageType"),
+    brand: requiredText(dto.brand, "brand"),
+    curveName: normalizeOptionalText(dto.curveName),
+    curveVersion: normalizeOptionalText(dto.curveVersion),
+    dryRun: dto.dryRun ?? false,
+    minSamplePerPoint: optionalInteger(dto.minSamplePerPoint, "minSamplePerPoint", 1) ?? 3,
+    model: requiredText(dto.model, "model"),
+    modelYear: optionalInteger(dto.modelYear, "modelYear", 0),
+    priceTypes,
+    referencePriceAmount,
+    remark: normalizeOptionalText(dto.remark),
+    sampleEndDate,
+    sampleStartDate,
+    series: normalizeOptionalText(dto.series),
+    trim: normalizeOptionalText(dto.trim)
+  };
+}
+
+function buildCurveObservationWhere(input: CurveGenerationInput): Prisma.VehicleMarketPriceObservationWhereInput {
+  const observedAt: Prisma.DateTimeFilter = {};
+  if (input.sampleStartDate) {
+    observedAt.gte = input.sampleStartDate;
+  }
+  if (input.sampleEndDate) {
+    observedAt.lte = input.sampleEndDate;
+  }
+
+  return {
+    batteryCapacityKwh: input.batteryCapacityKwh ?? undefined,
+    batteryUsageType: input.batteryUsageType ?? undefined,
+    brand: exactTextFilter(input.brand),
+    deletedAt: null,
+    model: exactTextFilter(input.model),
+    modelYear: input.modelYear ?? undefined,
+    observationStatus: MarketPriceObservationStatus.ACTIVE,
+    observedAt: hasFilter(observedAt) ? observedAt : undefined,
+    priceType: { in: input.priceTypes },
+    series: input.series ? exactTextFilter(input.series) : undefined,
+    trim: input.trim ? exactTextFilter(input.trim) : undefined
+  };
+}
+
+function buildCurveWhere(query: ResidualCurveQueryDto): Prisma.VehicleResidualCurveWhereInput {
+  return {
+    batteryUsageType: query.batteryUsageType,
+    brand: query.brand ? { contains: query.brand, mode: "insensitive" } : undefined,
+    curveMethod: query.curveMethod,
+    curveStatus: query.curveStatus,
+    deletedAt: null,
+    model: query.model ? { contains: query.model, mode: "insensitive" } : undefined,
+    modelYear: query.modelYear,
+    series: query.series ? { contains: query.series, mode: "insensitive" } : undefined
+  };
+}
+
+function buildResidualCurvePreview(
+  input: CurveGenerationInput,
+  observations: VehicleMarketPriceObservation[]
+): BuiltResidualCurvePreview {
+  const groups = new Map<number, VehicleMarketPriceObservation[]>();
+  const skippedReasons: Prisma.InputJsonObject[] = [];
+  let skippedSampleCount = 0;
+  let missingAgeCount = 0;
+
+  for (const observation of observations) {
+    const ageMonth = resolveAgeMonth(observation);
+
+    if (ageMonth === null) {
+      missingAgeCount += 1;
+      skippedSampleCount += 1;
+      continue;
+    }
+
+    const group = groups.get(ageMonth) ?? [];
+    group.push(observation);
+    groups.set(ageMonth, group);
+  }
+
+  if (missingAgeCount > 0) {
+    skippedReasons.push({
+      count: missingAgeCount,
+      reason: "AGE_MONTH_MISSING"
+    });
+  }
+
+  const points: BuiltResidualCurvePoint[] = [];
+
+  for (const [ageMonth, samples] of [...groups.entries()].sort(([left], [right]) => left - right)) {
+    if (samples.length < input.minSamplePerPoint) {
+      skippedSampleCount += samples.length;
+      skippedReasons.push({
+        ageMonth,
+        count: samples.length,
+        minSamplePerPoint: input.minSamplePerPoint,
+        reason: "MIN_SAMPLE_PER_POINT"
+      });
+      continue;
+    }
+
+    points.push(buildResidualCurvePoint(ageMonth, samples, input.referencePriceAmount));
+  }
+
+  const confidenceScore = points.length > 0
+    ? Math.round(points.reduce((sum, point) => sum + point.confidenceScore, 0) / points.length)
+    : null;
+  const sampleFilterSnapshot = curveFilterSnapshot(input);
+  const curve: BuiltResidualCurve = {
+    batteryCapacityKwh: input.batteryCapacityKwh,
+    batteryUsageType: input.batteryUsageType,
+    brand: input.brand,
+    confidenceScore,
+    curveMethod: VehicleResidualCurveMethod.STATISTICAL_MEDIAN,
+    curveName: input.curveName ?? defaultCurveName(input),
+    curveStatus: VehicleResidualCurveStatus.DRAFT,
+    curveVersion: input.curveVersion,
+    metrics: {
+      ageMonthPointCount: points.length,
+      amountUnit: "fen",
+      method: VehicleResidualCurveMethod.STATISTICAL_MEDIAN,
+      minSamplePerPoint: input.minSamplePerPoint,
+      residualRateUnit: "bps",
+      skippedReasons,
+      skippedSampleCount
+    },
+    model: input.model,
+    modelYear: input.modelYear,
+    pointCount: points.length,
+    priceTypes: input.priceTypes,
+    referencePriceAmount: input.referencePriceAmount,
+    remark: input.remark,
+    sampleCount: observations.length,
+    sampleEndDate: input.sampleEndDate,
+    sampleFilterSnapshot,
+    sampleStartDate: input.sampleStartDate,
+    series: input.series,
+    snapshot: {
+      curveBasis: "VehicleMarketPriceObservation ACTIVE observations",
+      firstVersionScope: "ageMonth aggregation without mileage buckets",
+      sampleFilterSnapshot,
+      statisticFields: ["medianPriceAmount", "p25PriceAmount", "p75PriceAmount", "averagePriceAmount"]
+    },
+    trim: input.trim
+  };
+
+  return {
+    curve,
+    pointCount: points.length,
+    points,
+    sampleCount: observations.length,
+    skippedReasons,
+    skippedSampleCount
+  };
+}
+
+function buildResidualCurvePoint(
+  ageMonth: number,
+  samples: VehicleMarketPriceObservation[],
+  referencePriceAmount: bigint | null
+): BuiltResidualCurvePoint {
+  const prices = samples.map((sample) => Number(sample.priceAmount)).sort((left, right) => left - right);
+  const medianPriceAmount = BigInt(percentile(prices, 0.5));
+  const p25PriceAmount = BigInt(percentile(prices, 0.25));
+  const p75PriceAmount = BigInt(percentile(prices, 0.75));
+  const averagePriceAmount = BigInt(Math.round(prices.reduce((sum, price) => sum + price, 0) / prices.length));
+  const minPriceAmount = BigInt(prices[0] ?? 0);
+  const maxPriceAmount = BigInt(prices[prices.length - 1] ?? 0);
+  const predictedResidualRateBps =
+    referencePriceAmount && referencePriceAmount > 0n
+      ? Math.round(Number(medianPriceAmount) / Number(referencePriceAmount) * 10000)
+      : null;
+  const averageObservationConfidence =
+    samples.reduce((sum, sample) => sum + (sample.confidenceScore ?? 50), 0) / samples.length;
+  const confidenceScore = Math.min(
+    100,
+    Math.round(averageObservationConfidence * 0.6 + Math.min(samples.length * 5, 40))
+  );
+
+  return {
+    ageMonth,
+    averagePriceAmount,
+    confidenceScore,
+    lowerBoundAmount: p25PriceAmount,
+    maxPriceAmount,
+    medianPriceAmount,
+    mileageBucketEndKm: null,
+    mileageBucketStartKm: null,
+    minPriceAmount,
+    p25PriceAmount,
+    p75PriceAmount,
+    pointSnapshot: {
+      mileageStats: mileageStats(samples),
+      sampleObservationIds: samples.map((sample) => sample.id),
+      sourcePriceAmounts: prices
+    },
+    predictedResidualAmount: medianPriceAmount,
+    predictedResidualRateBps,
+    sampleCount: samples.length,
+    upperBoundAmount: p75PriceAmount
+  };
+}
+
+function resolveAgeMonth(observation: VehicleMarketPriceObservation) {
+  if (observation.vehicleAgeMonths !== null && observation.vehicleAgeMonths !== undefined) {
+    return observation.vehicleAgeMonths >= 0 ? observation.vehicleAgeMonths : null;
+  }
+
+  if (!observation.registrationDate || !observation.observedAt) {
+    return null;
+  }
+
+  const ageMonth =
+    (observation.observedAt.getUTCFullYear() - observation.registrationDate.getUTCFullYear()) * 12 +
+    (observation.observedAt.getUTCMonth() - observation.registrationDate.getUTCMonth());
+
+  return ageMonth >= 0 ? ageMonth : null;
+}
+
+function percentile(sortedValues: number[], ratio: number) {
+  if (sortedValues.length === 0) {
+    return 0;
+  }
+  if (sortedValues.length === 1) {
+    return sortedValues[0] ?? 0;
+  }
+
+  const index = (sortedValues.length - 1) * ratio;
+  const lowerIndex = Math.floor(index);
+  const upperIndex = Math.ceil(index);
+  const lower = sortedValues[lowerIndex] ?? 0;
+  const upper = sortedValues[upperIndex] ?? lower;
+
+  if (lowerIndex === upperIndex) {
+    return lower;
+  }
+
+  return Math.round(lower + (upper - lower) * (index - lowerIndex));
+}
+
+function mileageStats(samples: VehicleMarketPriceObservation[]) {
+  const mileages = samples
+    .map((sample) => sample.mileageKm)
+    .filter((mileage): mileage is number => mileage !== null && mileage !== undefined);
+
+  if (mileages.length === 0) {
+    return {
+      averageMileageKm: null,
+      maxMileageKm: null,
+      minMileageKm: null,
+      sampleCount: 0
+    };
+  }
+
+  return {
+    averageMileageKm: Math.round(mileages.reduce((sum, mileage) => sum + mileage, 0) / mileages.length),
+    maxMileageKm: Math.max(...mileages),
+    minMileageKm: Math.min(...mileages),
+    sampleCount: mileages.length
+  };
+}
+
+function curveFilterSnapshot(input: CurveGenerationInput): Prisma.InputJsonObject {
+  return {
+    batteryCapacityKwh: decimalToNumber(input.batteryCapacityKwh),
+    batteryUsageType: input.batteryUsageType,
+    brand: input.brand,
+    model: input.model,
+    modelYear: input.modelYear,
+    priceTypes: input.priceTypes,
+    referencePriceAmount: numberOrNull(input.referencePriceAmount),
+    sampleEndDate: input.sampleEndDate ? formatDateOnly(input.sampleEndDate) : null,
+    sampleStartDate: input.sampleStartDate ? formatDateOnly(input.sampleStartDate) : null,
+    series: input.series,
+    trim: input.trim
+  };
+}
+
+function defaultCurveName(input: CurveGenerationInput) {
+  return [input.brand, input.series, input.model, input.modelYear, decimalToNumber(input.batteryCapacityKwh), input.batteryUsageType]
+    .filter((part) => part !== null && part !== undefined && part !== "")
+    .join(" ");
+}
+
+function exactTextFilter(value: string): Prisma.StringFilter {
+  return { equals: value, mode: "insensitive" };
+}
+
+function sameCurveDimensionWhere(curve: Pick<
+  VehicleResidualCurve,
+  "batteryCapacityKwh" | "batteryUsageType" | "brand" | "model" | "modelYear" | "series" | "trim"
+>): Prisma.VehicleResidualCurveWhereInput {
+  return {
+    batteryCapacityKwh: curve.batteryCapacityKwh,
+    batteryUsageType: curve.batteryUsageType,
+    brand: curve.brand,
+    deletedAt: null,
+    model: curve.model,
+    modelYear: curve.modelYear,
+    series: curve.series,
+    trim: curve.trim
+  };
+}
+
+function todayDateOnly() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
 function assignDateFilter(filter: Prisma.DateTimeFilter, key: "gte" | "lte", value: string | undefined) {
@@ -803,6 +1445,192 @@ function toBatchView(
   };
 }
 
+function toCurvePointCreateInput(point: BuiltResidualCurvePoint) {
+  return {
+    ageMonth: point.ageMonth,
+    averagePriceAmount: point.averagePriceAmount,
+    confidenceScore: point.confidenceScore,
+    lowerBoundAmount: point.lowerBoundAmount,
+    maxPriceAmount: point.maxPriceAmount,
+    medianPriceAmount: point.medianPriceAmount,
+    mileageBucketEndKm: point.mileageBucketEndKm,
+    mileageBucketStartKm: point.mileageBucketStartKm,
+    minPriceAmount: point.minPriceAmount,
+    p25PriceAmount: point.p25PriceAmount,
+    p75PriceAmount: point.p75PriceAmount,
+    pointSnapshot: point.pointSnapshot,
+    predictedResidualAmount: point.predictedResidualAmount,
+    predictedResidualRateBps: point.predictedResidualRateBps,
+    sampleCount: point.sampleCount,
+    upperBoundAmount: point.upperBoundAmount
+  };
+}
+
+function curveGenerationResponse(
+  dryRun: boolean,
+  curve: ReturnType<typeof toCurvePreviewView> | ReturnType<typeof toCurveView>,
+  points: BuiltResidualCurvePoint[] | VehicleResidualCurvePoint[],
+  preview: BuiltResidualCurvePreview
+) {
+  return {
+    curve,
+    dryRun,
+    pointCount: preview.pointCount,
+    points: points.map((point) => ("id" in point ? toCurvePointView(point) : toBuiltCurvePointView(point))),
+    sampleCount: preview.sampleCount,
+    skippedReasons: preview.skippedReasons,
+    skippedSampleCount: preview.skippedSampleCount
+  };
+}
+
+function toCurvePreviewView(curve: BuiltResidualCurve) {
+  return {
+    batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
+    batteryUsageType: curve.batteryUsageType,
+    brand: curve.brand,
+    confidenceScore: curve.confidenceScore,
+    curveMethod: curve.curveMethod,
+    curveName: curve.curveName,
+    curveNo: null,
+    curveStatus: curve.curveStatus,
+    curveVersion: curve.curveVersion,
+    effectiveFrom: null,
+    effectiveTo: null,
+    generatedAt: null,
+    id: null,
+    metrics: curve.metrics,
+    model: curve.model,
+    modelYear: curve.modelYear,
+    pointCount: curve.pointCount,
+    priceTypes: curve.priceTypes,
+    referencePriceAmount: numberOrNull(curve.referencePriceAmount),
+    remark: curve.remark,
+    sampleCount: curve.sampleCount,
+    sampleEndDate: curve.sampleEndDate ? formatDateOnly(curve.sampleEndDate) : null,
+    sampleFilterSnapshot: curve.sampleFilterSnapshot,
+    sampleStartDate: curve.sampleStartDate ? formatDateOnly(curve.sampleStartDate) : null,
+    series: curve.series,
+    snapshot: curve.snapshot,
+    trim: curve.trim
+  };
+}
+
+function toCurveView(curve: VehicleResidualCurve & { points?: VehicleResidualCurvePoint[] }) {
+  return {
+    batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
+    batteryUsageType: curve.batteryUsageType,
+    brand: curve.brand,
+    confidenceScore: curve.confidenceScore,
+    createdAt: curve.createdAt.toISOString(),
+    createdBy: curve.createdBy,
+    curveMethod: curve.curveMethod,
+    curveName: curve.curveName,
+    curveNo: curve.curveNo,
+    curveStatus: curve.curveStatus,
+    curveVersion: curve.curveVersion,
+    effectiveFrom: curve.effectiveFrom ? formatDateOnly(curve.effectiveFrom) : null,
+    effectiveTo: curve.effectiveTo ? formatDateOnly(curve.effectiveTo) : null,
+    generatedAt: curve.generatedAt.toISOString(),
+    id: curve.id,
+    metrics: curve.metrics,
+    model: curve.model,
+    modelYear: curve.modelYear,
+    pointCount: curve.pointCount,
+    points: curve.points?.map(toCurvePointView),
+    priceTypes: curve.priceTypes,
+    referencePriceAmount: numberOrNull(curve.referencePriceAmount),
+    remark: curve.remark,
+    sampleCount: curve.sampleCount,
+    sampleEndDate: curve.sampleEndDate ? formatDateOnly(curve.sampleEndDate) : null,
+    sampleFilterSnapshot: curve.sampleFilterSnapshot,
+    sampleStartDate: curve.sampleStartDate ? formatDateOnly(curve.sampleStartDate) : null,
+    series: curve.series,
+    snapshot: curve.snapshot,
+    trim: curve.trim,
+    updatedAt: curve.updatedAt.toISOString(),
+    updatedBy: curve.updatedBy
+  };
+}
+
+function toBuiltCurvePointView(point: BuiltResidualCurvePoint) {
+  return {
+    ageMonth: point.ageMonth,
+    averagePriceAmount: Number(point.averagePriceAmount),
+    confidenceScore: point.confidenceScore,
+    curveId: null,
+    id: null,
+    lowerBoundAmount: Number(point.lowerBoundAmount),
+    maxPriceAmount: Number(point.maxPriceAmount),
+    medianPriceAmount: Number(point.medianPriceAmount),
+    mileageBucketEndKm: point.mileageBucketEndKm,
+    mileageBucketStartKm: point.mileageBucketStartKm,
+    minPriceAmount: Number(point.minPriceAmount),
+    p25PriceAmount: Number(point.p25PriceAmount),
+    p75PriceAmount: Number(point.p75PriceAmount),
+    pointSnapshot: point.pointSnapshot,
+    predictedResidualAmount: Number(point.predictedResidualAmount),
+    predictedResidualRateBps: point.predictedResidualRateBps,
+    sampleCount: point.sampleCount,
+    upperBoundAmount: Number(point.upperBoundAmount)
+  };
+}
+
+function toCurvePointView(point: VehicleResidualCurvePoint) {
+  return {
+    ageMonth: point.ageMonth,
+    averagePriceAmount: numberOrNull(point.averagePriceAmount),
+    confidenceScore: point.confidenceScore,
+    createdAt: point.createdAt.toISOString(),
+    curveId: point.curveId,
+    id: point.id,
+    lowerBoundAmount: numberOrNull(point.lowerBoundAmount),
+    maxPriceAmount: numberOrNull(point.maxPriceAmount),
+    medianPriceAmount: numberOrNull(point.medianPriceAmount),
+    mileageBucketEndKm: point.mileageBucketEndKm,
+    mileageBucketStartKm: point.mileageBucketStartKm,
+    minPriceAmount: numberOrNull(point.minPriceAmount),
+    p25PriceAmount: numberOrNull(point.p25PriceAmount),
+    p75PriceAmount: numberOrNull(point.p75PriceAmount),
+    pointSnapshot: point.pointSnapshot,
+    predictedResidualAmount: numberOrNull(point.predictedResidualAmount),
+    predictedResidualRateBps: point.predictedResidualRateBps,
+    sampleCount: point.sampleCount,
+    updatedAt: point.updatedAt.toISOString(),
+    upperBoundAmount: numberOrNull(point.upperBoundAmount)
+  };
+}
+
+function curveAuditPayload(
+  curve: Pick<
+    VehicleResidualCurve,
+    | "batteryCapacityKwh"
+    | "batteryUsageType"
+    | "brand"
+    | "curveNo"
+    | "id"
+    | "model"
+    | "modelYear"
+    | "pointCount"
+    | "sampleCount"
+    | "series"
+  >,
+  extra: { remark?: string | null }
+) {
+  return {
+    batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
+    batteryUsageType: curve.batteryUsageType,
+    brand: curve.brand,
+    curveId: curve.id,
+    curveNo: curve.curveNo,
+    model: curve.model,
+    modelYear: curve.modelYear,
+    pointCount: curve.pointCount,
+    remark: extra.remark ?? null,
+    sampleCount: curve.sampleCount,
+    series: curve.series
+  };
+}
+
 function requiredText(value: string | null | undefined, fieldName: string) {
   const text = normalizeOptionalText(value);
   if (!text) {
@@ -986,6 +1814,14 @@ function mergeRemark(before: string | null, remark: string | null | undefined) {
     return before;
   }
   return before ? `${before}\n作废备注：${nextRemark}` : nextRemark;
+}
+
+function mergeOperationRemark(before: string | null, remark: string | null | undefined) {
+  const nextRemark = normalizeOptionalText(remark);
+  if (!nextRemark) {
+    return before;
+  }
+  return before ? `${before}\n${nextRemark}` : nextRemark;
 }
 
 function isUniqueConstraintError(error: unknown) {

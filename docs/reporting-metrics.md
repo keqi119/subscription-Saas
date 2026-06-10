@@ -1027,6 +1027,45 @@ observedAt,sourceListingId,brand,series,model,modelYear,trim,batteryCapacityKwh,
 
 当前阶段仍不做爬虫、不做定时采集、不接第三方平台 API、不做 AI / ML、不生成残值曲线、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`，也不做 multipart 文件上传或 Excel xlsx 导入。
 
+## Stage 8.4C-A 残值曲线生成口径
+
+Stage 8.4C-A 新增残值曲线后端生成能力。曲线基于 `VehicleMarketPriceObservation` 市场价格样本生成，属于外部市场观测数据的统计结果，不是内部运营当前销售价，也不会自动覆盖 `Vehicle.currentSalePriceAmount`。
+
+样本范围：
+
+- 只使用 `observationStatus = ACTIVE` 且 `deletedAt IS NULL` 的市场样本。
+- `VOIDED` / `IGNORED` 样本不参与残值曲线统计。
+- 默认价格类型包含 `TRANSACTION`、`AUCTION`、`DEALER_QUOTE`、`INTERNAL_SALE`、`LISTING`，生成请求可显式传入 `priceTypes`。
+- 维度必须包含 `brand`、`model`，可选匹配 `series`、`modelYear`、`trim`、`batteryCapacityKwh`、`batteryUsageType`。
+
+聚合口径：
+
+- 第一版按 `ageMonth` 聚合生成曲线点。
+- `ageMonth` 优先使用样本的 `vehicleAgeMonths`；为空时由 `observedAt` 与 `registrationDate` 推算月份差。
+- 无法得到有效 `ageMonth` 的样本会被跳过，并进入 skipped reason。
+- 第一版不按里程桶生成曲线，`mileageBucketStartKm` / `mileageBucketEndKm` 为空；曲线点快照保留该月龄样本的里程分布。
+- 每个 `ageMonth` 的样本数低于 `minSamplePerPoint` 时不生成曲线点。
+
+统计指标：
+
+- `medianPriceAmount`：价格中位数。
+- `p25PriceAmount` / `p75PriceAmount`：简单 percentile 计算的 P25 / P75。
+- `averagePriceAmount`：样本价格平均值，四舍五入到整数分。
+- `predictedResidualAmount` 第一版等于 `medianPriceAmount`。
+- `lowerBoundAmount` 第一版等于 `p25PriceAmount`。
+- `upperBoundAmount` 第一版等于 `p75PriceAmount`。
+- `referencePriceAmount` 仅用于计算 `predictedResidualRateBps = medianPriceAmount / referencePriceAmount * 10000`；未传入时残值率为空，不阻止曲线生成。
+- 曲线点 `confidenceScore` 基于样本 confidence 平均值和样本数计算；曲线整体 confidence 为各曲线点 confidence 平均值。
+
+版本和状态：
+
+- 正式生成的曲线初始状态为 `DRAFT`。
+- `dryRun = true` 时只返回预览，不写入数据库，也不写审计日志。
+- 启用曲线时，同一 `brand + series + model + modelYear + trim + batteryCapacityKwh + batteryUsageType` 维度下旧 `ACTIVE` 曲线会改为 `SUPERSEDED`。
+- 归档曲线只更新状态为 `ARCHIVED` 并写入 `effectiveTo`，不物理删除曲线和曲线点。
+
+当前阶段不做 AI / ML，不做 `ResidualModelRun`，不做单车残值预测，不接入 ROE，不修改 `Vehicle.currentSalePriceAmount`，不修改资产经营分析口径，不做爬虫、定时采集或第三方平台 API。
+
 ## Stage 8.3F ROE 试算导出说明
 
 Stage 8.3F 将 Stage 8.3D / 8.3E 的 ROE 试算字段同步到收益试算 CSV 导出。导出仍为经营分析试算口径，不构成会计凭证、正式财务报表或正式会计 ROE。

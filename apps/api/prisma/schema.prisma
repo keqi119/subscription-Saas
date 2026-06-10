@@ -803,6 +803,23 @@ enum MarketPriceObservationStatus {
   @@map("market_price_observation_status")
 }
 
+enum VehicleResidualCurveStatus {
+  DRAFT
+  ACTIVE
+  SUPERSEDED
+  ARCHIVED
+
+  @@map("vehicle_residual_curve_status")
+}
+
+enum VehicleResidualCurveMethod {
+  STATISTICAL_MEDIAN
+  MANUAL
+  ML_MODEL
+
+  @@map("vehicle_residual_curve_method")
+}
+
 enum SalePriceStatus {
   PENDING_INITIALIZE
   EFFECTIVE
@@ -1788,6 +1805,79 @@ model VehicleMarketPriceObservation {
   @@index([observationStatus])
   @@index([dedupeKey])
   @@map("vehicle_market_price_observation")
+}
+
+model VehicleResidualCurve {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  curveNo              String                     @unique @map("curve_no") @db.VarChar(64)
+  curveName            String?                    @map("curve_name") @db.VarChar(128)
+  curveStatus          VehicleResidualCurveStatus @default(DRAFT) @map("curve_status")
+  curveMethod          VehicleResidualCurveMethod @default(STATISTICAL_MEDIAN) @map("curve_method")
+  brand                String                     @db.VarChar(64)
+  series               String?                    @db.VarChar(64)
+  model                String                     @db.VarChar(64)
+  modelYear            Int?                       @map("model_year")
+  trim                 String?                    @db.VarChar(128)
+  batteryCapacityKwh   Decimal?                   @map("battery_capacity_kwh") @db.Decimal(8, 2)
+  batteryUsageType     VehicleBatteryUsageType?   @map("battery_usage_type")
+  referencePriceAmount BigInt?                    @map("reference_price_amount")
+  sampleStartDate      DateTime?                  @map("sample_start_date") @db.Date
+  sampleEndDate        DateTime?                  @map("sample_end_date") @db.Date
+  priceTypes           Json?                      @map("price_types")
+  sampleFilterSnapshot Json?                      @map("sample_filter_snapshot")
+  sampleCount          Int                        @default(0) @map("sample_count")
+  pointCount           Int                        @default(0) @map("point_count")
+  confidenceScore      Int?                       @map("confidence_score")
+  curveVersion         String?                    @map("curve_version") @db.VarChar(64)
+  generatedAt          DateTime                   @default(now()) @map("generated_at") @db.Timestamptz(6)
+  effectiveFrom        DateTime?                  @map("effective_from") @db.Date
+  effectiveTo          DateTime?                  @map("effective_to") @db.Date
+  metrics              Json?
+  snapshot             Json?
+  remark               String?                    @db.Text
+  createdAt            DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?                    @map("created_by") @db.Uuid
+  updatedBy            String?                    @map("updated_by") @db.Uuid
+  deletedAt            DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+
+  points               VehicleResidualCurvePoint[]
+
+  @@index([curveStatus])
+  @@index([curveMethod])
+  @@index([brand, series, model])
+  @@index([modelYear])
+  @@index([batteryUsageType])
+  @@index([generatedAt])
+  @@map("vehicle_residual_curve")
+}
+
+model VehicleResidualCurvePoint {
+  id                       String               @id @default(uuid()) @db.Uuid
+  curveId                  String               @map("curve_id") @db.Uuid
+  curve                    VehicleResidualCurve @relation(fields: [curveId], references: [id])
+  ageMonth                 Int                  @map("age_month")
+  mileageBucketStartKm     Int?                 @map("mileage_bucket_start_km")
+  mileageBucketEndKm       Int?                 @map("mileage_bucket_end_km")
+  sampleCount              Int                  @default(0) @map("sample_count")
+  medianPriceAmount        BigInt?              @map("median_price_amount")
+  p25PriceAmount           BigInt?              @map("p25_price_amount")
+  p75PriceAmount           BigInt?              @map("p75_price_amount")
+  averagePriceAmount       BigInt?              @map("average_price_amount")
+  minPriceAmount           BigInt?              @map("min_price_amount")
+  maxPriceAmount           BigInt?              @map("max_price_amount")
+  predictedResidualAmount  BigInt?              @map("predicted_residual_amount")
+  predictedResidualRateBps Int?                 @map("predicted_residual_rate_bps")
+  lowerBoundAmount         BigInt?              @map("lower_bound_amount")
+  upperBoundAmount         BigInt?              @map("upper_bound_amount")
+  confidenceScore          Int?                 @map("confidence_score")
+  pointSnapshot            Json?                @map("point_snapshot")
+  createdAt                DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([curveId])
+  @@index([ageMonth])
+  @@map("vehicle_residual_curve_point")
 }
 
 model VehicleCapitalEvent {

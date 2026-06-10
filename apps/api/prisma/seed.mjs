@@ -168,6 +168,12 @@ permissionRows.push(
 );
 
 permissionRows.push(
+  ["residual_curve:view", "查看残值曲线", "residual_curve", "view"],
+  ["residual_curve:generate", "生成残值曲线", "residual_curve", "generate"],
+  ["residual_curve:manage", "管理残值曲线", "residual_curve", "manage"]
+);
+
+permissionRows.push(
   ["collection:view", "查看催收案件", "collection", "view"],
   ["collection:refresh_overdue", "刷新逾期账单", "collection", "refresh_overdue"],
   ["collection:action_create", "新增催收动作", "collection", "action_create"],
@@ -585,6 +591,16 @@ const residualMarketManagementPermissions = [
   "residual_market:import"
 ];
 
+const residualCurveViewPermissions = ["residual_curve:view"];
+
+const residualCurveGeneratePermissions = ["residual_curve:view", "residual_curve:generate"];
+
+const residualCurveManagementPermissions = [
+  "residual_curve:view",
+  "residual_curve:generate",
+  "residual_curve:manage"
+];
+
 async function main() {
   for (const [code, name, description] of roleRows) {
     await prisma.role.upsert({
@@ -699,6 +715,7 @@ async function main() {
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
       ...residualMarketImportPermissions,
+      ...residualCurveGeneratePermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -774,6 +791,7 @@ async function main() {
         ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
         ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
         ...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions),
+        ...(roleCode === "AS" ? residualCurveManagementPermissions : residualCurveViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -824,6 +842,7 @@ async function main() {
       ...revenueRightViewPermissions,
       ...revenueShareViewPermissions,
       ...residualMarketViewPermissions,
+      ...residualCurveViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,

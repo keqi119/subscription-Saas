@@ -1122,7 +1122,17 @@ Stage 8.4D-A 新增单车残值预测后端能力。预测基于具体 `Vehicle`
 - `UNSUPPORTED` 点不能被采用。
 - 本阶段不修改 `VehicleSalePriceHistory`，不自动进入资产经营分析或 ROE。
 
-当前阶段仍不做前端页面、不做 AI / ML、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`、不修改 `VehicleSalePriceHistory`、不改资产收益试算口径、不做爬虫、定时采集或第三方平台 API。
+Stage 8.4D-B 前端使用说明：
+
+- 车辆详情页在有 `residual_forecast:view` 权限时展示“残值预测”区块，加载最新预测和预测历史。
+- 生成预测支持 dryRun 试算；试算只展示匹配曲线、车辆快照和预测点预览，不保存预测记录。
+- 正式生成会保存预测记录和预测点，但不会覆盖 `Vehicle.currentSalePriceAmount`，也不会写入 `VehicleSalePriceHistory`。
+- 人工采用预测点时，页面按元输入采用残值，提交给后端按分保存；采用值只保存在预测点上。
+- 作废预测不会物理删除记录，只把预测记录标记为不可作为有效预测参考。
+- 页面展示金额时按元展示，残值率按 bps 转百分比展示，缺失值统一显示为 `-`。
+- 当前不接入 ROE，不使用 AI / ML，不修改资产收益试算口径。
+
+当前阶段仍不做 AI / ML、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`、不修改 `VehicleSalePriceHistory`、不改资产收益试算口径、不做爬虫、定时采集或第三方平台 API。
 
 ## Stage 8.3F ROE 试算导出说明
 

@@ -1027,6 +1027,57 @@ observedAt,sourceListingId,brand,series,model,modelYear,trim,batteryCapacityKwh,
 
 当前阶段仍不做爬虫、不做定时采集、不接第三方平台 API、不做 AI / ML、不生成残值曲线、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`，也不做 multipart 文件上传或 Excel xlsx 导入。
 
+## Stage 8.3F ROE 试算导出说明
+
+Stage 8.3F 将 Stage 8.3D / 8.3E 的 ROE 试算字段同步到收益试算 CSV 导出。导出仍为经营分析试算口径，不构成会计凭证、正式财务报表或正式会计 ROE。
+
+更新的导出 API：
+
+- `GET /api/reports/asset-profitability/returns/summary/export`
+- `GET /api/reports/asset-profitability/returns/vehicles/export`
+- `GET /api/reports/asset-profitability/returns/vehicles/:id/export`
+
+汇总导出新增内容：
+
+- ROE 覆盖情况：`roeCalculatedVehicleCount`、`roeUnavailableVehicleCount`。
+- 平台留存收入：`assignedOutRevenueAmount`、`pledgedRevenueAmount`、`ownerShareAmount`、`platformRetainedRevenueAmount`。
+- 债务和资本结构：`debtPrincipalAmount`、`debtInterestCostAmount`、`roeEquityBaseAmount`、`capitalCostSource`。
+- ROE 收益指标：`platformNetIncomeAmount`、`roeTrial`、`annualizedRoeTrial`。
+- `roeMissingReasons` 和 `roeWarnings` 会逐条导出。
+
+车辆列表导出新增内容：
+
+- 平台留存经营收入、转让 / 入池外流收入、质押收入金额、车主分润金额。
+- 债务利息成本、外部长租固定成本、债务本金、权益资本基数、资金成本来源。
+- 平台权益净收益、试算 ROE、年化试算 ROE。
+- ROE 状态、不可计算原因、提示信息。
+
+单车详情导出新增内容：
+
+- 平台留存收入分段。
+- 资本结构摘要。
+- 融资工具分摊明细。
+- 收益权 assignment 明细。
+- 分润规则摘要。
+- ROE 试算明细中的平台权益净收益、ROE 状态、不可计算原因和提示信息。
+
+导出口径说明：
+
+- `PLEDGE` 不扣减平台收入，只导出为质押收入金额 / 受限现金流提示。
+- `TRANSFER` / `SPV_POOL` 扣减平台留存收入，并进入转让 / 入池外流收入。
+- `REVENUE_SHARE` 通过 `RevenueShareRule` 扣减车主分润。
+- `FIXED_RENT` 作为外部长租固定成本导出，不从收入中扣减。
+- `DEPOSIT` 继续单独列示，不计入经营收入或 ROE 分子。
+- 有真实融资分摊时，资金成本来源为融资工具，导出债务利息成本，避免重复使用成本参数资金成本。
+- `GROSS_RECEIVABLE`、`MANUAL` 分润以及暂不支持的还款方式会使 ROE 状态为暂不可用，并在不可计算原因中列示。
+
+CSV 格式约定：
+
+- 金额按元导出，保留两位小数。
+- ROA / ROE 按百分比导出。
+- 状态和枚举中文化。
+- 缺失值导出为 `-`。
+
 ## ROA / ROE
 
 当前阶段不计算正式会计 ROA / ROE。

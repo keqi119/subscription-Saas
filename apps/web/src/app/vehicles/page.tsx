@@ -14,6 +14,7 @@ import {
   App,
   Alert,
   Button,
+  Collapse,
   DatePicker,
   Descriptions,
   Drawer,
@@ -54,6 +55,8 @@ import {
   VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS,
   VEHICLE_RESIDUAL_FORECAST_POINT_STATUS_LABELS,
   VEHICLE_RESIDUAL_FORECAST_STATUS_LABELS,
+  VEHICLE_VALUATION_REVIEW_SOURCE_LABELS,
+  VEHICLE_VALUATION_REVIEW_STATUS_LABELS,
   labelOf
 } from "../../constants/labels";
 import {
@@ -388,6 +391,87 @@ interface VehicleResidualForecastGenerationResult {
   points?: VehicleResidualForecastPoint[];
 }
 
+interface VehicleValuationReviewVehicleSummary {
+  brand?: string | null;
+  currentSalePriceAmount?: number | null;
+  currentSalePriceReviewedAt?: string | null;
+  id: string;
+  model?: string | null;
+  nextSalePriceReviewAt?: string | null;
+  plateNo?: string | null;
+  salePriceStatus?: string | null;
+  series?: string | null;
+  status?: string | null;
+  vehicleNo?: string | null;
+  vin?: string | null;
+}
+
+interface VehicleValuationReviewForecastSummary {
+  asOfDate?: string | null;
+  forecastNo?: string | null;
+  forecastStatus?: string | null;
+  id: string;
+  vehicleId?: string | null;
+}
+
+interface VehicleValuationReviewForecastPointSummary {
+  adoptedResidualAmount?: number | null;
+  confidenceScore?: number | null;
+  horizonMonth?: number | null;
+  id: string;
+  pointStatus?: string | null;
+  predictedResidualAmount?: number | null;
+  targetDate?: string | null;
+}
+
+interface VehicleValuationReview {
+  adoptedResidualAmount?: number | null;
+  approvalSnapshot?: unknown;
+  approvedAt?: string | null;
+  approvedSalePriceAmount?: number | null;
+  beforeSnapshot?: unknown;
+  cancelReason?: string | null;
+  cancelledAt?: string | null;
+  createdAt?: string | null;
+  createdBy?: string | null;
+  forecast?: VehicleValuationReviewForecastSummary | null;
+  forecastAmountSource?: string | null;
+  forecastConfidenceScore?: number | null;
+  forecastHorizonMonth?: number | null;
+  forecastId?: string | null;
+  forecastPoint?: VehicleValuationReviewForecastPointSummary | null;
+  forecastPointId?: string | null;
+  forecastResidualAmount?: number | null;
+  forecastSnapshot?: unknown;
+  forecastTargetDate?: string | null;
+  id: string;
+  originalSalePriceAmount?: number | null;
+  reason?: string | null;
+  rejectReason?: string | null;
+  rejectedAt?: string | null;
+  requestedAt?: string | null;
+  requestedBy?: string | null;
+  requestedSalePriceAmount: number;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  reviewNo: string;
+  reviewRemark?: string | null;
+  reviewSource: string;
+  reviewStatus: string;
+  snapshot?: unknown;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+  vehicle?: VehicleValuationReviewVehicleSummary | null;
+  vehicleId: string;
+}
+
+interface VehicleValuationReviewListResponse {
+  items: VehicleValuationReview[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
 interface GenerateResidualForecastValues {
   asOfDate: Dayjs;
   curveId?: string | null;
@@ -402,6 +486,16 @@ interface AdoptResidualForecastPointValues {
 
 interface VoidResidualForecastValues {
   remark?: string | null;
+}
+
+interface CreateValuationReviewValues {
+  reason?: string | null;
+  requestedSalePriceAmountYuan: number;
+  reviewRemark?: string | null;
+}
+
+interface CancelValuationReviewValues {
+  cancelReason: string;
 }
 
 const salePriceStatusColors: Record<string, string> = {
@@ -473,6 +567,26 @@ const residualForecastPointStatusColors: Record<string, string> = {
   UNSUPPORTED: "orange"
 };
 
+const valuationReviewStatusColors: Record<string, string> = {
+  APPROVED: "green",
+  CANCELLED: "default",
+  PENDING: "orange",
+  REJECTED: "red"
+};
+
+const valuationReviewSourceColors: Record<string, string> = {
+  MANUAL: "default",
+  OTHER: "default",
+  QUARTERLY_REVIEW: "blue",
+  RESIDUAL_FORECAST: "purple",
+  RETURN_REINIT: "cyan"
+};
+
+const valuationReviewAmountSourceLabels: Record<string, string> = {
+  ADOPTED_RESIDUAL: "人工采用残值",
+  PREDICTED_RESIDUAL: "预测残值"
+};
+
 function capitalEventVisibility(eventType?: string | null) {
   const isInitial = eventType === "INITIAL_EQUITY_PURCHASE";
   const isDebtFinancing = debtFinancingCapitalEventTypes.has(eventType ?? "");
@@ -542,7 +656,11 @@ function batteryUsageTypeLabel(vehicle: Pick<Vehicle, "batteryUsageType" | "batt
 }
 
 function formatDate(value?: string | null) {
-  return value ? dayjs(value).format("YYYY-MM-DD") : "-";
+  if (!value) {
+    return "-";
+  }
+  const parsed = dayjs(value);
+  return parsed.isValid() ? parsed.format("YYYY-MM-DD") : "-";
 }
 
 function formatInsurancePeriod(vehicle: Pick<Vehicle, "insuranceEndDate" | "insuranceStartDate">) {
@@ -553,11 +671,24 @@ function formatInsurancePeriod(vehicle: Pick<Vehicle, "insuranceEndDate" | "insu
 }
 
 function formatDateTime(value?: string | null) {
-  return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+  if (!value) {
+    return "-";
+  }
+  const parsed = dayjs(value);
+  return parsed.isValid() ? parsed.format("YYYY-MM-DD HH:mm") : "-";
 }
 
 function toCents(value: number) {
   return Math.round(value * 100);
+}
+
+function positiveYuanRule(message: string) {
+  return {
+    validator: (_: unknown, value?: number | null) =>
+      typeof value === "number" && Number.isFinite(value) && value > 0
+        ? Promise.resolve()
+        : Promise.reject(new Error(message))
+  };
 }
 
 function formatScore(value?: number | null) {
@@ -584,6 +715,61 @@ function snapshotValue(snapshot: Record<string, unknown> | null | undefined, key
     return String(value);
   }
   return "-";
+}
+
+function formatSnapshot(value?: unknown) {
+  if (value === undefined || value === null) {
+    return "-";
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "-";
+  }
+}
+
+function snapshotPanel(key: string, label: string, value?: unknown) {
+  const content = formatSnapshot(value);
+
+  return {
+    children:
+      content === "-" ? (
+        "-"
+      ) : (
+        <pre style={{ margin: 0, maxHeight: 320, overflow: "auto", whiteSpace: "pre-wrap" }}>
+          {content}
+        </pre>
+      ),
+    key,
+    label
+  };
+}
+
+function valuationReviewStatusTag(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  return <Tag color={valuationReviewStatusColors[value] ?? "default"}>{labelOf(VEHICLE_VALUATION_REVIEW_STATUS_LABELS, value)}</Tag>;
+}
+
+function valuationReviewSourceTag(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  return <Tag color={valuationReviewSourceColors[value] ?? "default"}>{labelOf(VEHICLE_VALUATION_REVIEW_SOURCE_LABELS, value)}</Tag>;
+}
+
+function canCreateValuationReviewFromPoint(point: VehicleResidualForecastPoint) {
+  return point.pointStatus !== "UNSUPPORTED" && Boolean(point.id) && suggestedValuationReviewAmount(point) !== null;
+}
+
+function suggestedValuationReviewAmount(point: VehicleResidualForecastPoint) {
+  return point.adoptedResidualAmount ?? point.predictedResidualAmount ?? null;
+}
+
+function vehicleValuationReviewTitle(review: VehicleValuationReview | null) {
+  return review ? `${review.reviewNo} 估值复核详情` : "估值复核详情";
 }
 
 function parseHorizonMonths(value?: string | null) {
@@ -740,6 +926,8 @@ export default function VehiclesPage() {
   const [residualForecastGenerateForm] = Form.useForm<GenerateResidualForecastValues>();
   const [residualForecastAdoptForm] = Form.useForm<AdoptResidualForecastPointValues>();
   const [residualForecastVoidForm] = Form.useForm<VoidResidualForecastValues>();
+  const [valuationReviewCreateForm] = Form.useForm<CreateValuationReviewValues>();
+  const [valuationReviewCancelForm] = Form.useForm<CancelValuationReviewValues>();
   const [activeTab, setActiveTab] = useState("vehicles");
   const [capitalEvents, setCapitalEvents] = useState<CapitalEvent[]>([]);
   const [capitalEventOpen, setCapitalEventOpen] = useState(false);
@@ -779,6 +967,18 @@ export default function VehiclesPage() {
   const [residualForecastTotal, setResidualForecastTotal] = useState(0);
   const [residualForecastVoidSubmitting, setResidualForecastVoidSubmitting] = useState(false);
   const [residualForecastVoidTarget, setResidualForecastVoidTarget] = useState<VehicleResidualForecast | null>(null);
+  const [valuationReviewCancelSubmitting, setValuationReviewCancelSubmitting] = useState(false);
+  const [valuationReviewCancelTarget, setValuationReviewCancelTarget] = useState<VehicleValuationReview | null>(null);
+  const [valuationReviewCreateSubmitting, setValuationReviewCreateSubmitting] = useState(false);
+  const [valuationReviewCreateTarget, setValuationReviewCreateTarget] = useState<VehicleResidualForecastPoint | null>(null);
+  const [valuationReviewDetail, setValuationReviewDetail] = useState<VehicleValuationReview | null>(null);
+  const [valuationReviewDetailLoading, setValuationReviewDetailLoading] = useState(false);
+  const [valuationReviewDetailOpen, setValuationReviewDetailOpen] = useState(false);
+  const [valuationReviewLoading, setValuationReviewLoading] = useState(false);
+  const [valuationReviewPage, setValuationReviewPage] = useState(1);
+  const [valuationReviewPageSize, setValuationReviewPageSize] = useState(5);
+  const [valuationReviewRows, setValuationReviewRows] = useState<VehicleValuationReview[]>([]);
+  const [valuationReviewTotal, setValuationReviewTotal] = useState(0);
   const [statusVehicle, setStatusVehicle] = useState<Vehicle | null>(null);
   const [vehicleFinancialLoading, setVehicleFinancialLoading] = useState(false);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -794,6 +994,8 @@ export default function VehiclesPage() {
   const canViewRevenueSharePreview = permissions.has("revenue_share:view") || permissions.has("report:asset");
   const canViewResidualForecast = permissions.has("residual_forecast:view");
   const canGenerateResidualForecast = permissions.has("residual_forecast:generate");
+  const canViewValuationReview = permissions.has("vehicle_valuation_review:view");
+  const canCreateValuationReview = permissions.has("vehicle_valuation_review:create");
   const financingInstrumentOptions = useMemo(() => {
     const instrumentMap = new Map<string, FinancingInstrumentSummary>();
 
@@ -1037,6 +1239,30 @@ export default function VehiclesPage() {
     [canViewResidualForecast, message, residualForecastPage, residualForecastPageSize]
   );
 
+  const loadVehicleValuationReviews = useCallback(
+    async (vehicleId: string, page = valuationReviewPage, pageSize = valuationReviewPageSize) => {
+      if (!canViewValuationReview) {
+        return;
+      }
+
+      setValuationReviewLoading(true);
+      try {
+        const result = await apiFetch<VehicleValuationReviewListResponse>(
+          `/vehicles/${vehicleId}/valuation-reviews?page=${page}&pageSize=${pageSize}`
+        );
+        setValuationReviewRows(result.items);
+        setValuationReviewTotal(result.total);
+        setValuationReviewPage(result.page);
+        setValuationReviewPageSize(result.pageSize);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+      } finally {
+        setValuationReviewLoading(false);
+      }
+    },
+    [canViewValuationReview, message, valuationReviewPage, valuationReviewPageSize]
+  );
+
   const loadResidualCurveOptions = useCallback(async () => {
     if (!canGenerateResidualForecast) {
       return;
@@ -1120,6 +1346,13 @@ export default function VehiclesPage() {
     setResidualForecastPageSize(5);
     setResidualForecastPreview(null);
     setResidualForecastDetail(null);
+    setValuationReviewRows([]);
+    setValuationReviewTotal(0);
+    setValuationReviewPage(1);
+    setValuationReviewPageSize(5);
+    setValuationReviewDetail(null);
+    setValuationReviewCreateTarget(null);
+    setValuationReviewCancelTarget(null);
     revenueSharePreviewForm.setFieldsValue({
       endDate: dayjs().endOf("month"),
       startDate: dayjs().startOf("month")
@@ -1128,6 +1361,9 @@ export default function VehiclesPage() {
     if (canViewResidualForecast) {
       void loadVehicleResidualForecastData(vehicle.id, 1, 5);
     }
+    if (canViewValuationReview) {
+      void loadVehicleValuationReviews(vehicle.id, 1, 5);
+    }
   }
 
   function refreshResidualForecastData(page = residualForecastPage, pageSize = residualForecastPageSize) {
@@ -1135,6 +1371,13 @@ export default function VehiclesPage() {
       return Promise.resolve();
     }
     return loadVehicleResidualForecastData(detailVehicle.id, page, pageSize);
+  }
+
+  function refreshValuationReviews(page = valuationReviewPage, pageSize = valuationReviewPageSize) {
+    if (!detailVehicle || !canViewValuationReview) {
+      return Promise.resolve();
+    }
+    return loadVehicleValuationReviews(detailVehicle.id, page, pageSize);
   }
 
   function openResidualForecastGenerate() {
@@ -1316,6 +1559,121 @@ export default function VehiclesPage() {
         }
       },
       title: "确认作废该预测记录？"
+    });
+  }
+
+  function openValuationReviewCreate(point: VehicleResidualForecastPoint) {
+    if (!detailVehicle || !point.id) {
+      return;
+    }
+    if (!canCreateValuationReview) {
+      void message.error("无车辆估值复核发起权限。");
+      return;
+    }
+
+    const requestedAmount = suggestedValuationReviewAmount(point);
+    if (requestedAmount === null || point.pointStatus === "UNSUPPORTED") {
+      void message.warning(
+        point.pointStatus === "UNSUPPORTED"
+          ? "暂不支持的预测点不能发起估值复核。"
+          : "预测点缺少可用的预测或采用残值金额，不能发起估值复核。"
+      );
+      return;
+    }
+
+    setValuationReviewCreateTarget(point);
+    valuationReviewCreateForm.setFieldsValue({
+      reason: `采用 ${point.horizonMonth} 个月残值预测作为当前估值复核参考`,
+      requestedSalePriceAmountYuan: requestedAmount / 100,
+      reviewRemark: undefined
+    });
+  }
+
+  async function submitValuationReviewCreate(values: CreateValuationReviewValues) {
+    if (!detailVehicle || !valuationReviewCreateTarget?.id) {
+      return;
+    }
+
+    Modal.confirm({
+      content: "本操作只会创建待审核复核记录，不会修改车辆当前销售价，也不会写入销售价历史。",
+      okText: "确认发起",
+      onOk: async () => {
+        setValuationReviewCreateSubmitting(true);
+        try {
+          await apiFetch<VehicleValuationReview>(
+            `/vehicles/${detailVehicle.id}/valuation-reviews/from-residual-forecast`,
+            {
+              body: JSON.stringify({
+                forecastPointId: valuationReviewCreateTarget.id,
+                reason: values.reason,
+                requestedSalePriceAmount: toCents(values.requestedSalePriceAmountYuan),
+                reviewRemark: values.reviewRemark
+              }),
+              method: "POST"
+            }
+          );
+          void message.success("车辆估值复核已发起");
+          setValuationReviewCreateTarget(null);
+          valuationReviewCreateForm.resetFields();
+          await refreshValuationReviews(1, valuationReviewPageSize);
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setValuationReviewCreateSubmitting(false);
+        }
+      },
+      title: "确认发起车辆估值复核？"
+    });
+  }
+
+  async function openValuationReviewDetail(review: VehicleValuationReview) {
+    setValuationReviewDetailOpen(true);
+    setValuationReviewDetailLoading(true);
+    try {
+      const detail = await apiFetch<VehicleValuationReview>(`/vehicle-valuation-reviews/${review.id}`);
+      setValuationReviewDetail(detail);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setValuationReviewDetailLoading(false);
+    }
+  }
+
+  function openValuationReviewCancel(review: VehicleValuationReview) {
+    setValuationReviewCancelTarget(review);
+    valuationReviewCancelForm.resetFields();
+  }
+
+  async function submitValuationReviewCancel(values: CancelValuationReviewValues) {
+    if (!valuationReviewCancelTarget) {
+      return;
+    }
+
+    Modal.confirm({
+      content: "取消后不会修改车辆当前销售价，也不会写入销售价历史。",
+      okText: "确认取消",
+      onOk: async () => {
+        setValuationReviewCancelSubmitting(true);
+        try {
+          await apiFetch<VehicleValuationReview>(`/vehicle-valuation-reviews/${valuationReviewCancelTarget.id}/cancel`, {
+            body: JSON.stringify({ cancelReason: values.cancelReason }),
+            method: "POST"
+          });
+          void message.success("估值复核已取消");
+          const cancelledReviewId = valuationReviewCancelTarget.id;
+          setValuationReviewCancelTarget(null);
+          valuationReviewCancelForm.resetFields();
+          await refreshValuationReviews();
+          if (valuationReviewDetailOpen && valuationReviewDetail?.id === cancelledReviewId) {
+            await openValuationReviewDetail(valuationReviewDetail);
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setValuationReviewCancelSubmitting(false);
+        }
+      },
+      title: "确认取消该车辆估值复核？"
     });
   }
 
@@ -1894,6 +2252,7 @@ export default function VehiclesPage() {
                 latest={residualForecastLatest}
                 loading={residualForecastLoading}
                 onAdoptPoint={openResidualForecastAdopt}
+                onCreateValuationReview={openValuationReviewCreate}
                 onGenerate={openResidualForecastGenerate}
                 onOpenDetail={openResidualForecastDetail}
                 onPageChange={(page, pageSize) => {
@@ -1905,6 +2264,21 @@ export default function VehiclesPage() {
                 permissions={permissions}
                 total={residualForecastTotal}
                 vehicle={detailVehicle}
+              />
+            ) : null}
+            {canViewValuationReview ? (
+              <VehicleValuationReviewRecordsBlock
+                loading={valuationReviewLoading}
+                onCancel={openValuationReviewCancel}
+                onOpenDetail={openValuationReviewDetail}
+                onPageChange={(page, pageSize) => {
+                  void refreshValuationReviews(page, pageSize);
+                }}
+                page={valuationReviewPage}
+                pageSize={valuationReviewPageSize}
+                permissions={permissions}
+                rows={valuationReviewRows}
+                total={valuationReviewTotal}
               />
             ) : null}
             <VehicleCapitalStructureBlock
@@ -1958,10 +2332,101 @@ export default function VehiclesPage() {
         forecast={residualForecastDetail}
         loading={residualForecastDetailLoading}
         onAdoptPoint={openResidualForecastAdopt}
+        onCreateValuationReview={openValuationReviewCreate}
         onClose={() => setResidualForecastDetailOpen(false)}
         open={residualForecastDetailOpen}
         permissions={permissions}
       />
+
+      <VehicleValuationReviewDetailDrawer
+        loading={valuationReviewDetailLoading}
+        onCancel={openValuationReviewCancel}
+        onClose={() => setValuationReviewDetailOpen(false)}
+        open={valuationReviewDetailOpen}
+        permissions={permissions}
+        review={valuationReviewDetail}
+      />
+
+      <Modal
+        destroyOnHidden
+        okButtonProps={{ loading: valuationReviewCreateSubmitting }}
+        okText="发起复核"
+        onCancel={() => setValuationReviewCreateTarget(null)}
+        onOk={() => valuationReviewCreateForm.submit()}
+        open={Boolean(valuationReviewCreateTarget)}
+        title="发起车辆估值复核"
+        width={760}
+      >
+        <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+          <Alert
+            message="本操作只会创建待审核复核记录，不会修改车辆当前销售价，也不会写入销售价历史。"
+            showIcon
+            type="info"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "预测点", children: valuationReviewCreateTarget?.id ?? "-" },
+              { label: "预测周期", children: formatHorizon(valuationReviewCreateTarget?.horizonMonth) },
+              { label: "目标日期", children: formatDate(valuationReviewCreateTarget?.targetDate) },
+              { label: "当前车辆销售价", children: formatYuan(detailVehicle?.currentSalePriceAmount) },
+              { label: "预测残值", children: formatYuan(valuationReviewCreateTarget?.predictedResidualAmount) },
+              { label: "人工采用残值", children: formatYuan(valuationReviewCreateTarget?.adoptedResidualAmount) }
+            ]}
+            size="small"
+          />
+          <Form<CreateValuationReviewValues>
+            form={valuationReviewCreateForm}
+            layout="vertical"
+            onFinish={submitValuationReviewCreate}
+          >
+            <Form.Item
+              label="建议复核销售价（元）"
+              name="requestedSalePriceAmountYuan"
+              rules={[{ required: true, message: "请输入建议复核销售价" }, positiveYuanRule("建议复核销售价必须大于 0")]}
+            >
+              <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item label="复核原因" name="reason">
+              <Input.TextArea rows={2} />
+            </Form.Item>
+            <Form.Item label="复核备注" name="reviewRemark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Space>
+      </Modal>
+
+      <Modal
+        destroyOnHidden
+        okButtonProps={{ danger: true, loading: valuationReviewCancelSubmitting }}
+        okText="取消复核"
+        onCancel={() => setValuationReviewCancelTarget(null)}
+        onOk={() => valuationReviewCancelForm.submit()}
+        open={Boolean(valuationReviewCancelTarget)}
+        title="取消车辆估值复核"
+      >
+        <Alert
+          message="取消后不会修改车辆当前销售价，也不会写入销售价历史。"
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="warning"
+        />
+        <Form<CancelValuationReviewValues>
+          form={valuationReviewCancelForm}
+          layout="vertical"
+          onFinish={submitValuationReviewCancel}
+        >
+          <Form.Item
+            label="取消原因"
+            name="cancelReason"
+            rules={[{ required: true, message: "请输入取消原因" }]}
+          >
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         destroyOnHidden
@@ -2479,7 +2944,8 @@ function dateKey(value?: string | null) {
 function vehicleResidualForecastPointColumns(
   onAdoptPoint: (point: VehicleResidualForecastPoint) => void,
   permissions: ReadonlySet<string>,
-  showActions = true
+  showActions = true,
+  onCreateValuationReview?: (point: VehicleResidualForecastPoint) => void
 ): ColumnsType<VehicleResidualForecastPoint> {
   const columns: ColumnsType<VehicleResidualForecastPoint> = [
     { dataIndex: "horizonMonth", render: formatHorizon, title: "预测周期", width: 120 },
@@ -2508,23 +2974,41 @@ function vehicleResidualForecastPointColumns(
     columns.push({
       fixed: "right",
       render: (_, record) => (
-        <ActionButton
-          allowed={record.pointStatus !== "UNSUPPORTED" && Boolean(record.id)}
-          disabledReason={
-            record.pointStatus === "UNSUPPORTED"
-              ? "暂不支持的预测点不能采用。"
-              : "试算结果尚未保存，不能采用。"
-          }
-          onClick={() => onAdoptPoint(record)}
-          permission="residual_forecast:manage"
-          permissions={permissions}
-          size="small"
-        >
-          采用
-        </ActionButton>
+        <Space size={8}>
+          <ActionButton
+            allowed={record.pointStatus !== "UNSUPPORTED" && Boolean(record.id)}
+            disabledReason={
+              record.pointStatus === "UNSUPPORTED"
+                ? "暂不支持的预测点不能采用。"
+                : "试算结果尚未保存，不能采用。"
+            }
+            onClick={() => onAdoptPoint(record)}
+            permission="residual_forecast:manage"
+            permissions={permissions}
+            size="small"
+          >
+            采用
+          </ActionButton>
+          {onCreateValuationReview ? (
+            <ActionButton
+              allowed={canCreateValuationReviewFromPoint(record)}
+              disabledReason={
+                record.pointStatus === "UNSUPPORTED"
+                  ? "暂不支持的预测点不能发起估值复核。"
+                  : "预测点缺少可用的预测或采用残值金额，不能发起估值复核。"
+              }
+              onClick={() => onCreateValuationReview(record)}
+              permission="vehicle_valuation_review:create"
+              permissions={permissions}
+              size="small"
+            >
+              发起估值复核
+            </ActionButton>
+          ) : null}
+        </Space>
       ),
       title: "操作",
-      width: 90
+      width: onCreateValuationReview ? 210 : 90
     });
   }
 
@@ -2536,6 +3020,7 @@ function VehicleResidualForecastBlock({
   latest,
   loading,
   onAdoptPoint,
+  onCreateValuationReview,
   onGenerate,
   onOpenDetail,
   onPageChange,
@@ -2550,6 +3035,7 @@ function VehicleResidualForecastBlock({
   latest: VehicleResidualForecast | null;
   loading: boolean;
   onAdoptPoint: (point: VehicleResidualForecastPoint) => void;
+  onCreateValuationReview: (point: VehicleResidualForecastPoint) => void;
   onGenerate: () => void;
   onOpenDetail: (forecast: VehicleResidualForecast) => void;
   onPageChange: (page: number, pageSize: number) => void;
@@ -2560,7 +3046,7 @@ function VehicleResidualForecastBlock({
   total: number;
   vehicle: Vehicle;
 }>) {
-  const pointColumns = vehicleResidualForecastPointColumns(onAdoptPoint, permissions);
+  const pointColumns = vehicleResidualForecastPointColumns(onAdoptPoint, permissions, true, onCreateValuationReview);
   const historyColumns: ColumnsType<VehicleResidualForecast> = [
     { dataIndex: "forecastNo", render: (value: string | null) => value ?? "-", title: "预测编号", width: 190 },
     { dataIndex: "forecastStatus", render: residualForecastStatusTag, title: "状态", width: 110 },
@@ -2801,6 +3287,7 @@ function ResidualForecastDetailDrawer({
   forecast,
   loading,
   onAdoptPoint,
+  onCreateValuationReview,
   onClose,
   open,
   permissions
@@ -2808,6 +3295,7 @@ function ResidualForecastDetailDrawer({
   forecast: VehicleResidualForecast | null;
   loading: boolean;
   onAdoptPoint: (point: VehicleResidualForecastPoint) => void;
+  onCreateValuationReview: (point: VehicleResidualForecastPoint) => void;
   onClose: () => void;
   open: boolean;
   permissions: ReadonlySet<string>;
@@ -2871,7 +3359,7 @@ function ResidualForecastDetailDrawer({
             title="曲线快照"
           />
           <Table
-            columns={vehicleResidualForecastPointColumns(onAdoptPoint, permissions)}
+            columns={vehicleResidualForecastPointColumns(onAdoptPoint, permissions, true, onCreateValuationReview)}
             dataSource={forecast.points ?? []}
             loading={loading}
             pagination={false}
@@ -2883,6 +3371,217 @@ function ResidualForecastDetailDrawer({
         </Space>
       ) : (
         <Empty description={loading ? "正在加载预测详情" : "暂无预测详情"} />
+      )}
+    </Drawer>
+  );
+}
+
+function VehicleValuationReviewRecordsBlock({
+  loading,
+  onCancel,
+  onOpenDetail,
+  onPageChange,
+  page,
+  pageSize,
+  permissions,
+  rows,
+  total
+}: Readonly<{
+  loading: boolean;
+  onCancel: (review: VehicleValuationReview) => void;
+  onOpenDetail: (review: VehicleValuationReview) => void;
+  onPageChange: (page: number, pageSize: number) => void;
+  page: number;
+  pageSize: number;
+  permissions: ReadonlySet<string>;
+  rows: VehicleValuationReview[];
+  total: number;
+}>) {
+  const columns: ColumnsType<VehicleValuationReview> = [
+    { dataIndex: "reviewNo", render: (value: string | null) => value ?? "-", title: "复核编号", width: 190 },
+    { dataIndex: "reviewSource", render: valuationReviewSourceTag, title: "来源", width: 120 },
+    { dataIndex: "reviewStatus", render: valuationReviewStatusTag, title: "状态", width: 110 },
+    { dataIndex: "originalSalePriceAmount", render: formatYuan, title: "原销售价", width: 130 },
+    { dataIndex: "forecastResidualAmount", render: formatYuan, title: "预测残值", width: 130 },
+    { dataIndex: "adoptedResidualAmount", render: formatYuan, title: "人工采用残值", width: 140 },
+    { dataIndex: "requestedSalePriceAmount", render: formatYuan, title: "请求销售价", width: 130 },
+    { dataIndex: "approvedSalePriceAmount", render: formatYuan, title: "审核通过销售价", width: 150 },
+    { dataIndex: "requestedAt", render: formatDateTime, title: "发起时间", width: 160 },
+    { dataIndex: "reviewedAt", render: formatDateTime, title: "审核时间", width: 160 },
+    { dataIndex: "reason", render: (value: string | null) => value ?? "-", title: "原因", width: 220 },
+    {
+      fixed: "right",
+      render: (_, record) => (
+        <Space size={8}>
+          <ActionButton
+            onClick={() => onOpenDetail(record)}
+            permission="vehicle_valuation_review:view"
+            permissions={permissions}
+            size="small"
+          >
+            查看详情
+          </ActionButton>
+          <ActionButton
+            allowed={record.reviewStatus === "PENDING"}
+            danger
+            disabledReason="只有待审核复核可以取消。"
+            onClick={() => onCancel(record)}
+            permission="vehicle_valuation_review:create"
+            permissions={permissions}
+            size="small"
+          >
+            取消
+          </ActionButton>
+        </Space>
+      ),
+      title: "操作",
+      width: 160
+    }
+  ];
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <Typography.Title level={5} style={{ margin: 0 }}>
+        估值复核记录
+      </Typography.Title>
+      <Alert
+        message="发起估值复核只会创建待审核记录，不会修改车辆当前销售价；只有审核通过后才会更新当前销售价并写入销售价历史。"
+        showIcon
+        type="info"
+      />
+      <Table
+        columns={columns}
+        dataSource={rows}
+        loading={loading}
+        pagination={{
+          current: page,
+          onChange: onPageChange,
+          pageSize,
+          showSizeChanger: true,
+          total
+        }}
+        rowKey="id"
+        scroll={{ x: 1780 }}
+        size="small"
+      />
+    </Space>
+  );
+}
+
+function VehicleValuationReviewDetailDrawer({
+  loading,
+  onCancel,
+  onClose,
+  open,
+  permissions,
+  review
+}: Readonly<{
+  loading: boolean;
+  onCancel: (review: VehicleValuationReview) => void;
+  onClose: () => void;
+  open: boolean;
+  permissions: ReadonlySet<string>;
+  review: VehicleValuationReview | null;
+}>) {
+  return (
+    <Drawer
+      extra={
+        review ? (
+          <ActionButton
+            allowed={review.reviewStatus === "PENDING"}
+            danger
+            disabledReason="只有待审核复核可以取消。"
+            onClick={() => onCancel(review)}
+            permission="vehicle_valuation_review:create"
+            permissions={permissions}
+            size="small"
+          >
+            取消
+          </ActionButton>
+        ) : null
+      }
+      onClose={onClose}
+      open={open}
+      title={vehicleValuationReviewTitle(review)}
+      width={1000}
+    >
+      {review ? (
+        <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "复核编号", children: review.reviewNo },
+              { label: "复核来源", children: valuationReviewSourceTag(review.reviewSource) },
+              { label: "复核状态", children: valuationReviewStatusTag(review.reviewStatus) },
+              { label: "发起人", children: review.requestedBy ?? "-" },
+              { label: "发起时间", children: formatDateTime(review.requestedAt) },
+              { label: "审核人", children: review.reviewedBy ?? "-" },
+              { label: "审核时间", children: formatDateTime(review.reviewedAt) },
+              { label: "原因", children: review.reason ?? "-" },
+              { label: "复核备注", children: review.reviewRemark ?? "-" },
+              { label: "拒绝原因", children: review.rejectReason ?? "-" },
+              { label: "取消原因", children: review.cancelReason ?? "-" }
+            ]}
+            size="small"
+            title="复核基础信息"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "车辆编号", children: review.vehicle?.vehicleNo ?? "-" },
+              { label: "VIN", children: review.vehicle?.vin ?? "-" },
+              { label: "车牌号", children: review.vehicle?.plateNo ?? "-" },
+              { label: "品牌", children: review.vehicle?.brand ?? "-" },
+              { label: "车系", children: review.vehicle?.series ?? "-" },
+              { label: "车型", children: review.vehicle?.model ?? "-" },
+              { label: "当前销售价", children: formatYuan(review.vehicle?.currentSalePriceAmount) },
+              { label: "原销售价", children: formatYuan(review.originalSalePriceAmount) }
+            ]}
+            size="small"
+            title="车辆摘要"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "预测编号", children: review.forecast?.forecastNo ?? "-" },
+              { label: "预测点", children: review.forecastPointId ?? "-" },
+              { label: "预测周期", children: formatHorizon(review.forecastHorizonMonth ?? review.forecastPoint?.horizonMonth) },
+              { label: "目标日期", children: formatDate(review.forecastTargetDate ?? review.forecastPoint?.targetDate) },
+              { label: "预测残值", children: formatYuan(review.forecastResidualAmount ?? review.forecastPoint?.predictedResidualAmount) },
+              { label: "人工采用残值", children: formatYuan(review.adoptedResidualAmount ?? review.forecastPoint?.adoptedResidualAmount) },
+              { label: "置信度", children: formatScore(review.forecastConfidenceScore ?? review.forecastPoint?.confidenceScore) },
+              { label: "预测值来源", children: labelOf(valuationReviewAmountSourceLabels, review.forecastAmountSource) }
+            ]}
+            size="small"
+            title="残值预测摘要"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "原销售价", children: formatYuan(review.originalSalePriceAmount) },
+              { label: "预测残值", children: formatYuan(review.forecastResidualAmount) },
+              { label: "人工采用残值", children: formatYuan(review.adoptedResidualAmount) },
+              { label: "请求销售价", children: formatYuan(review.requestedSalePriceAmount) },
+              { label: "审核通过销售价", children: formatYuan(review.approvedSalePriceAmount) }
+            ]}
+            size="small"
+            title="价格复核信息"
+          />
+          <Collapse
+            items={[
+              snapshotPanel("beforeSnapshot", "beforeSnapshot", review.beforeSnapshot),
+              snapshotPanel("forecastSnapshot", "forecastSnapshot", review.forecastSnapshot),
+              snapshotPanel("approvalSnapshot", "approvalSnapshot", review.approvalSnapshot),
+              snapshotPanel("snapshot", "snapshot", review.snapshot)
+            ]}
+          />
+        </Space>
+      ) : (
+        <Empty description={loading ? "正在加载估值复核详情" : "暂无估值复核详情"} />
       )}
     </Drawer>
   );

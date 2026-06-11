@@ -507,7 +507,23 @@ export const SALE_PRICE_REVIEW_TYPE_LABELS: Record<string, string> = {
   INITIAL_POOL: "新入池初始化",
   MANUAL_ADJUST: "手工调整",
   QUARTERLY_REVIEW: "季度复核",
+  RESIDUAL_FORECAST_ADOPTION: "残值预测采用复核",
   RETURN_REINIT: "退车再入池重新定价"
+};
+
+export const VEHICLE_VALUATION_REVIEW_SOURCE_LABELS: Record<string, string> = {
+  MANUAL: "手工发起",
+  OTHER: "其他",
+  QUARTERLY_REVIEW: "季度复核",
+  RESIDUAL_FORECAST: "残值预测",
+  RETURN_REINIT: "退车再入池"
+};
+
+export const VEHICLE_VALUATION_REVIEW_STATUS_LABELS: Record<string, string> = {
+  APPROVED: "已通过",
+  CANCELLED: "已取消",
+  PENDING: "待审核",
+  REJECTED: "已拒绝"
 };
 
 export const VEHICLE_BASE_FEE_MODE_LABELS: Record<string, string> = {
@@ -704,7 +720,8 @@ export const MODULE_LABELS: Record<string, string> = {
   residual_model_run: "残值模型运行",
   risk: "风控中心",
   system: "系统管理",
-  vehicle: "车辆资产"
+  vehicle: "车辆资产",
+  vehicle_valuation_review: "车辆估值复核"
 };
 
 export const PERMISSION_LABELS: Record<string, string> = {
@@ -798,6 +815,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "residual_market:view": "查看市场残值样本",
   "residual_model_run:manage": "管理残值模型运行记录",
   "residual_model_run:view": "查看残值模型运行记录",
+  "vehicle_valuation_review:approve": "审核车辆估值复核",
+  "vehicle_valuation_review:create": "发起车辆估值复核",
+  "vehicle_valuation_review:view": "查看车辆估值复核",
   "capital_structure:manage": "管理车辆资本结构",
   "capital_structure:view": "查看车辆资本结构",
   "risk:manage": "管理押金规则",
@@ -926,7 +946,10 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "residual_market:manage": "允许手工创建和作废市场残值样本",
   "residual_market:view": "允许查看市场残值样本列表、详情和导入批次",
   "residual_model_run:manage": "允许创建模型运行记录并标记完成、失败或取消",
-  "residual_model_run:view": "允许查看残值模型运行记录列表和详情"
+  "residual_model_run:view": "允许查看残值模型运行记录列表和详情",
+  "vehicle_valuation_review:approve": "允许审核通过或拒绝车辆估值复核",
+  "vehicle_valuation_review:create": "允许从残值预测点发起车辆估值复核并取消待审核复核",
+  "vehicle_valuation_review:view": "允许查看车辆估值复核列表和详情"
 };
 
 export const MENU_LABELS: Record<string, string> = {
@@ -958,7 +981,8 @@ export const MENU_LABELS: Record<string, string> = {
   vehicles: "车辆资产",
   "vehicles.asset_pools": "车辆资产池",
   "vehicles.assets": "车辆资产台账",
-  "vehicles.residual_market": "市场残值样本"
+  "vehicles.residual_market": "市场残值样本",
+  "vehicles.valuation_reviews": "估值复核"
 };
 
 export function labelOf(labels: Record<string, string>, value?: string | null) {

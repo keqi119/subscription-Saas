@@ -1355,6 +1355,21 @@ Stage 8.5A 建立从单车残值预测点到车辆当前销售价的受控复核
 - `vehicle_valuation_review:approve`：审核通过或拒绝待审核复核。
 - seed 更新权限后，用户需要退出登录并重新登录，以刷新 access_token 中的 permissions。
 
+## Stage 8.5B 车辆估值复核前端使用说明
+
+Stage 8.5B 只接入前端页面和交互，不改变 Stage 8.5A 后端 API、Prisma schema、ROE 主口径或残值敏感性口径。
+
+- 车辆详情的残值预测点支持发起车辆估值复核。可发起的预测点必须不是 `UNSUPPORTED`，且存在预测残值或人工采用残值。
+- 发起复核时，建议复核销售价默认取 `adoptedResidualAmount`；如未采用，则取 `predictedResidualAmount`。页面按元输入，提交后端时按分传递。
+- 发起复核前会二次确认：该动作只创建待审核 `VehicleValuationReview`，不会修改车辆当前销售价，也不会写入销售价历史。
+- 车辆详情新增估值复核记录区块，用于查看当前车辆下的复核编号、来源、状态、原销售价、预测残值、请求销售价和审核结果。
+- `/vehicle-valuation-reviews` 车辆估值复核工作台支持按状态、来源、车辆 ID、车辆编号、VIN 和发起日期筛选，并支持查看详情、审核通过、审核拒绝和取消。
+- 详情 Drawer 展示复核基础信息、车辆摘要、残值预测摘要、价格复核信息和折叠的快照 JSON；有车辆销售价历史权限时，也会展示销售价历史。
+- 审核通过前会二次确认。只有审核通过才会更新 `Vehicle.currentSalePriceAmount`，并写入 `VehicleSalePriceHistory`，其中 `reviewType = RESIDUAL_FORECAST_ADOPTION`。
+- 审核拒绝和取消前也会二次确认；拒绝 / 取消不会修改车辆当前销售价，也不会写入 `VehicleSalePriceHistory`。
+- 前端菜单位于“车辆资产 -> 估值复核”，由 `vehicle_valuation_review:view` 控制；创建 / 取消由 `vehicle_valuation_review:create` 控制；通过 / 拒绝由 `vehicle_valuation_review:approve` 控制。
+- 该流程用于受控地将预测残值纳入内部车辆估值复核，仍不构成自动定价。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

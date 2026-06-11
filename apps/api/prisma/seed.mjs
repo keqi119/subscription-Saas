@@ -218,6 +218,7 @@ const menuRows = [
   ["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"],
   ["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"],
   ["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"],
+  ["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"],
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
@@ -585,6 +586,7 @@ const vehicleValuationReviewManagementPermissions = [
 const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
 const residualMarketMenuCodes = ["vehicles.residual_market"];
+const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"];
 
 const capitalStructureViewPermissions = ["capital_structure:view"];
 
@@ -789,6 +791,7 @@ async function main() {
       ...financingMenuCodes,
       ...vehicleAssetPoolMenuCodes,
       ...residualMarketMenuCodes,
+      ...vehicleValuationReviewMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
@@ -872,6 +875,7 @@ async function main() {
         ...financingMenuCodes,
         ...vehicleAssetPoolMenuCodes,
         ...residualMarketMenuCodes,
+        ...vehicleValuationReviewMenuCodes,
         ...revenueRightMenuCodes,
         ...(roleCode === "AS" ? reportAssetMenuCodes : [])
       ]
@@ -925,6 +929,7 @@ async function main() {
       ...financingMenuCodes,
       ...vehicleAssetPoolMenuCodes,
       ...residualMarketMenuCodes,
+      ...vehicleValuationReviewMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]

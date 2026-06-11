@@ -1049,6 +1049,8 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const vehicleValuationReviewCreatePermissions = [");
     expect(seedSource).toContain("const vehicleValuationReviewApprovePermissions = [");
     expect(seedSource).toContain("const vehicleValuationReviewManagementPermissions = [");
+    expect(seedSource).toContain('["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"]');
+    expect(seedSource).toContain('const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"]');
     expect(seedSource).toContain(
       '...(roleCode === "AS"'
     );
@@ -1070,6 +1072,10 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewCreatePermissions"), "vehicle_valuation_review:create")).toBe(true);
     expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewCreatePermissions"), "vehicle_valuation_review:approve")).toBe(false);
     expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewViewPermissions"), "vehicle_valuation_review:view")).toBe(true);
+    expect(seedSource).toContain("...vehicleValuationReviewMenuCodes");
+    for (const roleCode of ["OP", "GM"]) {
+      expect(roleHasMenu(roleMenuArray(roleCode), "vehicles.valuation_reviews")).toBe(true);
+    }
     expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_valuation_review:view")).toBe(false);
   });
 

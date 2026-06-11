@@ -123,6 +123,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "市场残值样本",
         path: "/residual-market",
         permissionCode: PermissionCode.RESIDUAL_MARKET_VIEW
+      },
+      {
+        code: "vehicles.valuation_reviews",
+        icon: "audit",
+        label: "估值复核",
+        path: "/vehicle-valuation-reviews",
+        permissionCode: PermissionCode.VEHICLE_VALUATION_REVIEW_VIEW
       }
     ]
   },

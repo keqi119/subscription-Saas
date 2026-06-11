@@ -33,7 +33,9 @@ import {
   FINANCING_ALLOCATION_STATUS_LABELS,
   FINANCING_INSTRUMENT_TYPE_LABELS,
   FINANCING_REPAYMENT_METHOD_LABELS,
+  FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS,
   ORDER_STATUS_LABELS,
+  RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS,
   REVENUE_RIGHT_ASSIGNEE_TYPE_LABELS,
   REVENUE_RIGHT_ASSIGNMENT_STATUS_LABELS,
   REVENUE_RIGHT_ASSIGNMENT_TYPE_LABELS,
@@ -49,6 +51,11 @@ import {
   VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS,
   VEHICLE_DAMAGE_TYPE_LABELS,
   VEHICLE_DEPRECIATION_METHOD_LABELS,
+  VEHICLE_RESIDUAL_CURVE_METHOD_LABELS,
+  VEHICLE_RESIDUAL_CURVE_STATUS_LABELS,
+  VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS,
+  VEHICLE_RESIDUAL_FORECAST_POINT_STATUS_LABELS,
+  VEHICLE_RESIDUAL_FORECAST_STATUS_LABELS,
   VEHICLE_RETURN_DAMAGE_STATUS_LABELS,
   VEHICLE_RETURN_STATUS_LABELS,
   VEHICLE_STATUS_LABELS,
@@ -139,6 +146,19 @@ interface AssetReturnTrialSummary {
   pledgedRevenueAmount?: number | null;
   purchasePriceAmount?: number | null;
   rentalPaidAmount?: number | null;
+  forecastLowerBoundAmount?: number | null;
+  forecastResidualAmount?: number | null;
+  forecastUpperBoundAmount?: number | null;
+  residualDeltaToCostProfileAmount?: number | null;
+  residualDeltaToCurrentSalePriceAmount?: number | null;
+  residualForecastAdoptedVehicleCount?: number | null;
+  residualForecastMissingVehicleCount?: number | null;
+  residualForecastUnsupportedVehicleCount?: number | null;
+  residualForecastVehicleCount?: number | null;
+  residualForecastWarnings?: string[];
+  residualSensitivityAnnualizedRoeTrial?: number | null;
+  residualSensitivityNetIncomeAmount?: number | null;
+  residualSensitivityRoeTrial?: number | null;
   roeCalculatedVehicleCount?: number | null;
   roeDataReady?: boolean | null;
   roeEquityBaseAmount?: number | null;
@@ -210,6 +230,29 @@ interface AssetReturnTrialVehicleRow extends AssetProfitabilityVehicleRow {
   platformRetainedRevenueAmount?: number | null;
   pledgedRevenueAmount?: number | null;
   pledgedRevenueRatio?: number | null;
+  costProfileResidualValueAmount?: number | null;
+  forecastConfidenceScore?: number | null;
+  forecastLowerBoundAmount?: number | null;
+  forecastResidualAmount?: number | null;
+  forecastResidualAmountSource?: string | null;
+  forecastResidualRateBps?: number | null;
+  forecastUpperBoundAmount?: number | null;
+  residualDeltaToCostProfileAmount?: number | null;
+  residualDeltaToCurrentSalePriceAmount?: number | null;
+  residualForecastAsOfDate?: string | null;
+  residualForecastAvailable?: boolean | null;
+  residualForecastCurveNo?: string | null;
+  residualForecastHorizonMonth?: number | null;
+  residualForecastMethod?: string | null;
+  residualForecastNo?: string | null;
+  residualForecastStatus?: string | null;
+  residualForecastTargetAgeMonth?: number | null;
+  residualForecastTargetDate?: string | null;
+  residualForecastUnavailableReason?: string | null;
+  residualForecastWarnings?: string[];
+  residualSensitivityAnnualizedRoeTrial?: number | null;
+  residualSensitivityNetIncomeAmount?: number | null;
+  residualSensitivityRoeTrial?: number | null;
   roeDataReady?: boolean | null;
   roeEquityBaseAmount?: number | null;
   roeMissingReasons?: string[];
@@ -245,9 +288,57 @@ interface AssetReturnTrialVehicleDetail {
   orderCycles?: ReturnTrialOrderCycleRow[];
   revenueRightAssignments?: ReturnTrialRevenueRightAssignmentRow[];
   revenueShareRules?: ReturnTrialRevenueShareRuleRow[];
+  residualForecastCurveSummary?: ResidualForecastCurveSummary | null;
+  residualForecastPoint?: ResidualForecastPoint | null;
+  residualForecastSummary?: ResidualForecastSummary | null;
   roeBreakdown?: ReturnTrialRoeBreakdown | null;
   returns?: ReturnTrialMetrics | null;
   vehicle?: ReturnTrialVehicleInfo | null;
+}
+
+interface ResidualForecastSummary {
+  amountSource?: string | null;
+  asOfDate?: string | null;
+  available?: boolean | null;
+  curveNo?: string | null;
+  forecastMethod?: string | null;
+  forecastNo?: string | null;
+  forecastStatus?: string | null;
+  horizonMonth?: number | null;
+  targetDate?: string | null;
+  unavailableReason?: string | null;
+  warnings?: string[];
+}
+
+interface ResidualForecastPoint {
+  adoptedResidualAmount?: number | null;
+  confidenceScore?: number | null;
+  forecastResidualAmount?: number | null;
+  interpolationMethod?: string | null;
+  lowerBoundAmount?: number | null;
+  matchedCurvePointAgeMonth?: number | null;
+  pointId?: string | null;
+  pointStatus?: string | null;
+  predictedResidualAmount?: number | null;
+  predictedResidualRateBps?: number | null;
+  targetAgeMonth?: number | null;
+  targetDate?: string | null;
+  upperBoundAmount?: number | null;
+}
+
+interface ResidualForecastCurveSummary {
+  batteryCapacityKwh?: number | null;
+  batteryUsageType?: string | null;
+  brand?: string | null;
+  confidenceScore?: number | null;
+  curveId?: string | null;
+  curveMethod?: string | null;
+  curveNo?: string | null;
+  curveStatus?: string | null;
+  model?: string | null;
+  modelYear?: number | null;
+  series?: string | null;
+  trim?: string | null;
 }
 
 interface VehicleBaseInfo {
@@ -392,6 +483,14 @@ interface ReturnTrialMetrics {
   roeTrial?: number | null;
   roeUnavailableReason?: string | null;
   roeWarnings?: string[];
+  residualDeltaToCostProfileAmount?: number | null;
+  residualDeltaToCurrentSalePriceAmount?: number | null;
+  residualForecastAvailable?: boolean | null;
+  residualForecastUnavailableReason?: string | null;
+  residualForecastWarnings?: string[];
+  residualSensitivityAnnualizedRoeTrial?: number | null;
+  residualSensitivityNetIncomeAmount?: number | null;
+  residualSensitivityRoeTrial?: number | null;
   trialNetOperatingIncomeAmount?: number | null;
   trialRoa?: number | null;
 }
@@ -550,6 +649,13 @@ interface SalePriceHistoryRow {
 }
 
 const vehicleModelOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+const residualHorizonMonthOptions = [
+  { label: "当前", value: 0 },
+  { label: "未来 6 个月", value: 6 },
+  { label: "未来 12 个月", value: 12 },
+  { label: "未来 24 个月", value: 24 },
+  { label: "未来 36 个月", value: 36 }
+];
 const vehicleStatusFilterOptions = [
   "AVAILABLE",
   "REVIEW_RESERVED",
@@ -636,6 +742,7 @@ export default function AssetProfitabilityPage() {
   const [vehiclesExporting, setVehiclesExporting] = useState(false);
   const [detailExporting, setDetailExporting] = useState(false);
   const [activeTab, setActiveTab] = useState<"asset" | "returns">("asset");
+  const [residualHorizonMonth, setResidualHorizonMonth] = useState(12);
   const [returnSummary, setReturnSummary] = useState<AssetReturnTrialSummary | null>(null);
   const [returnSummaryError, setReturnSummaryError] = useState<string | null>(null);
   const [returnSummaryLoading, setReturnSummaryLoading] = useState(false);
@@ -684,6 +791,13 @@ export default function AssetProfitabilityPage() {
       vehicleStatus
     };
   }, [dateRange, vehicleModel, vehicleStatus]);
+
+  const returnQuery = useCallback(() => {
+    return {
+      ...baseQuery(),
+      residualHorizonMonth
+    };
+  }, [baseQuery, residualHorizonMonth]);
 
   const loadSummary = useCallback(async () => {
     if (!canViewAssetReport) {
@@ -741,7 +855,7 @@ export default function AssetProfitabilityPage() {
     try {
       setReturnSummary(
         await apiFetch<AssetReturnTrialSummary>(
-          `/reports/asset-profitability/returns/summary${buildQuery(baseQuery())}`
+          `/reports/asset-profitability/returns/summary${buildQuery(returnQuery())}`
         )
       );
     } catch (error) {
@@ -749,7 +863,7 @@ export default function AssetProfitabilityPage() {
     } finally {
       setReturnSummaryLoading(false);
     }
-  }, [baseQuery, canViewAssetReport]);
+  }, [canViewAssetReport, returnQuery]);
 
   const loadReturnVehicles = useCallback(async () => {
     if (!canViewAssetReport) {
@@ -762,7 +876,7 @@ export default function AssetProfitabilityPage() {
       setReturnVehiclePage(
         await apiFetch<PagedResult<AssetReturnTrialVehicleRow>>(
           `/reports/asset-profitability/returns/vehicles${buildQuery({
-            ...baseQuery(),
+            ...returnQuery(),
             page: returnPage,
             pageSize: returnPageSize,
             sortBy: returnSortBy,
@@ -776,10 +890,10 @@ export default function AssetProfitabilityPage() {
       setReturnVehiclesLoading(false);
     }
   }, [
-    baseQuery,
     canViewAssetReport,
     returnPage,
     returnPageSize,
+    returnQuery,
     returnSortBy,
     returnSortOrder
   ]);
@@ -980,6 +1094,7 @@ export default function AssetProfitabilityPage() {
         await apiFetch<AssetReturnTrialVehicleDetail>(
           `/reports/asset-profitability/returns/vehicles/${record.vehicleId}${buildQuery({
             endDate: dateRange[1].format("YYYY-MM-DD"),
+            residualHorizonMonth,
             startDate: dateRange[0].format("YYYY-MM-DD")
           })}`
         )
@@ -989,7 +1104,7 @@ export default function AssetProfitabilityPage() {
     } finally {
       setReturnDetailLoading(false);
     }
-  }, [canViewAssetReport, dateRange]);
+  }, [canViewAssetReport, dateRange, residualHorizonMonth]);
 
   const handleTableChange: TableProps<AssetProfitabilityVehicleRow>["onChange"] = (
     nextPagination,
@@ -1206,6 +1321,36 @@ export default function AssetProfitabilityPage() {
       { dataIndex: "roeTrial", render: formatTrialRoe, title: "试算 ROE", width: 120 },
       { dataIndex: "annualizedRoeTrial", render: formatPercent, title: "年化试算 ROE", width: 150 },
       {
+        render: (_value, record) => renderResidualForecastStatus(record),
+        title: "残值预测状态",
+        width: 150
+      },
+      {
+        dataIndex: "residualForecastHorizonMonth",
+        render: formatHorizonMonth,
+        title: "预测周期",
+        width: 120
+      },
+      { dataIndex: "forecastResidualAmount", render: formatYuan, title: "预测残值", width: 130 },
+      {
+        dataIndex: "forecastResidualAmountSource",
+        render: (value?: string | null) => labelOf(FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS, value),
+        title: "预测值来源",
+        width: 120
+      },
+      {
+        dataIndex: "residualDeltaToCostProfileAmount",
+        render: renderSignedYuan,
+        title: "相对成本残值差异",
+        width: 170
+      },
+      {
+        dataIndex: "residualSensitivityRoeTrial",
+        render: formatPercent,
+        title: "残值敏感性 ROE",
+        width: 150
+      },
+      {
         render: (_value, record) => renderRoeStatus(record),
         title: "ROE 状态",
         width: 150
@@ -1273,6 +1418,15 @@ export default function AssetProfitabilityPage() {
           setPage(1);
           setReturnPage(1);
         }}
+        onResidualHorizonMonthChange={
+          activeTab === "returns"
+            ? (value) => {
+                setResidualHorizonMonth(value);
+                setReturnPage(1);
+              }
+            : undefined
+        }
+        residualHorizonMonth={activeTab === "returns" ? residualHorizonMonth : undefined}
         summaryExporting={activeTab === "returns" ? returnSummaryExporting : summaryExporting}
         vehicleModel={vehicleModel}
         vehiclesExporting={activeTab === "returns" ? returnVehiclesExporting : vehiclesExporting}
@@ -1323,7 +1477,7 @@ export default function AssetProfitabilityPage() {
                   title="收益试算口径"
                   showIcon
                   type="info"
-                  description="本页为经营分析试算口径，不构成会计凭证或正式财务报表。PLEDGE 收益权不扣减平台收入，仅作为质押金额 / 受限现金流提示；TRANSFER / SPV_POOL 会从平台留存收入中扣减；REVENUE_SHARE 会扣减托管车主分润；FIXED_RENT 作为外部长租固定成本；有真实融资分摊时，资金成本使用融资工具债务利息，不重复使用成本参数资金成本；试算 ROE = 平台权益净收益 / 权益资本基数。"
+                  description="本页为经营分析试算口径，不构成会计凭证或正式财务报表。试算 ROE 使用 Stage 8.3D 主口径；残值敏感性 ROE 读取单车残值预测，优先使用人工采用值，其次使用曲线预测值，并在主口径基础上叠加预测残值相对成本参数预计残值的差异。残值预测不会自动覆盖车辆当前销售价，也不会写入销售价历史。"
                 />
                 {returnSummaryError ? (
                   <Alert showIcon title={returnSummaryError} type="error" />
@@ -1347,7 +1501,7 @@ export default function AssetProfitabilityPage() {
                       total: returnVehiclePage.total
                     }}
                     rowKey="vehicleId"
-                    scroll={{ x: 4500 }}
+                    scroll={{ x: 5400 }}
                   />
                 </Card>
               </Space>
@@ -1435,8 +1589,10 @@ function FilterBar({
   onExportVehicles,
   onDateRangeChange,
   onRefresh,
+  onResidualHorizonMonthChange,
   onVehicleModelChange,
   onVehicleStatusChange,
+  residualHorizonMonth,
   summaryExporting,
   vehicleModel,
   vehiclesExporting,
@@ -1450,8 +1606,10 @@ function FilterBar({
   onExportVehicles: () => void;
   onDateRangeChange: (value: [Dayjs, Dayjs]) => void;
   onRefresh: () => void;
+  onResidualHorizonMonthChange?: (value: number) => void;
   onVehicleModelChange: (value?: string) => void;
   onVehicleStatusChange: (value?: string) => void;
+  residualHorizonMonth?: number;
   summaryExporting: boolean;
   vehicleModel?: string;
   vehiclesExporting: boolean;
@@ -1494,6 +1652,22 @@ function FilterBar({
             value={vehicleStatus}
           />
         </Space>
+        {onResidualHorizonMonthChange ? (
+          <Space orientation="vertical" size={4}>
+            <Typography.Text type="secondary">
+              残值预测周期{" "}
+              <Tooltip title="选择用于残值敏感性分析的预测周期。系统会读取该周期对应的单车残值预测点；如该周期没有预测点，将显示不可用原因。">
+                <InfoCircleOutlined />
+              </Tooltip>
+            </Typography.Text>
+            <Select
+              onChange={onResidualHorizonMonthChange}
+              options={residualHorizonMonthOptions}
+              style={{ width: 150 }}
+              value={residualHorizonMonth ?? 12}
+            />
+          </Space>
+        ) : null}
         <Button icon={<ReloadOutlined />} loading={loading} onClick={onRefresh}>
           刷新
         </Button>
@@ -1588,13 +1762,26 @@ function ReturnTrialSummaryMetrics({
     { title: "年化试算 ROA", value: formatPercent(summary?.annualizedTrialRoa) },
     { title: "平台权益净收益", value: formatYuan(summary?.platformNetIncomeAmount) },
     { title: "试算 ROE", value: formatTrialRoe(summary?.roeTrial) },
-    { title: "年化试算 ROE", value: formatPercent(summary?.annualizedRoeTrial) }
+    { title: "年化试算 ROE", value: formatPercent(summary?.annualizedRoeTrial) },
+    { title: "可用残值预测车辆数", value: formatInteger(summary?.residualForecastVehicleCount) },
+    { title: "缺少残值预测车辆数", value: formatInteger(summary?.residualForecastMissingVehicleCount) },
+    { title: "暂不支持残值预测车辆数", value: formatInteger(summary?.residualForecastUnsupportedVehicleCount) },
+    { title: "已采用残值预测车辆数", value: formatInteger(summary?.residualForecastAdoptedVehicleCount) },
+    { title: "预测残值合计", value: formatYuan(summary?.forecastResidualAmount) },
+    { title: "预测下界合计", value: formatYuan(summary?.forecastLowerBoundAmount) },
+    { title: "预测上界合计", value: formatYuan(summary?.forecastUpperBoundAmount) },
+    { title: "相对当前销售价差异", value: formatSignedYuan(summary?.residualDeltaToCurrentSalePriceAmount) },
+    { title: "相对成本参数残值差异", value: formatSignedYuan(summary?.residualDeltaToCostProfileAmount) },
+    { title: "残值敏感性净收益", value: formatYuan(summary?.residualSensitivityNetIncomeAmount) },
+    { title: "残值敏感性 ROE", value: formatPercent(summary?.residualSensitivityRoeTrial) },
+    { title: "年化残值敏感性 ROE", value: formatPercent(summary?.residualSensitivityAnnualizedRoeTrial) }
   ];
   const missingReasons = normalizeReasonList(summary?.roeMissingReasons);
   if (missingReasons.length === 0 && summary?.roeUnavailableReason) {
     missingReasons.push(summary.roeUnavailableReason);
   }
   const warnings = normalizeReasonList(summary?.roeWarnings);
+  const residualWarnings = normalizeReasonList(summary?.residualForecastWarnings);
 
   return (
     <Space orientation="vertical" size={12} style={{ width: "100%" }}>
@@ -1624,6 +1811,9 @@ function ReturnTrialSummaryMetrics({
       ) : null}
       {warnings.length > 0 ? (
         <ReasonAlert items={warnings} title="ROE 试算提示" type="info" />
+      ) : null}
+      {residualWarnings.length > 0 ? (
+        <ReasonAlert items={residualWarnings} title="残值预测敏感性提示" type="info" />
       ) : null}
     </Space>
   );
@@ -1816,6 +2006,14 @@ function ReturnTrialDetailContent({
     roeMissingReasons.push(returns.roeUnavailableReason);
   }
   const roeWarnings = normalizeReasonList(returns.roeWarnings);
+  const residualForecastSummary = detail.residualForecastSummary ?? null;
+  const residualForecastPoint = detail.residualForecastPoint ?? null;
+  const residualForecastCurveSummary = detail.residualForecastCurveSummary ?? null;
+  const residualForecastWarnings = normalizeReasonList(
+    returns.residualForecastWarnings?.length
+      ? returns.residualForecastWarnings
+      : residualForecastSummary?.warnings
+  );
 
   return (
     <Space orientation="vertical" size={18} style={{ width: "100%" }}>
@@ -2061,6 +2259,179 @@ function ReturnTrialDetailContent({
         {roeWarnings.length > 0 ? (
           <ReasonAlert items={roeWarnings} title="ROE 试算提示" type="info" />
         ) : null}
+      </DetailSection>
+
+      <DetailSection title="残值预测敏感性">
+        <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+          <Alert
+            showIcon
+            type="info"
+            message="残值敏感性 ROE 只作为收益试算补充分析，不替换主试算 ROE；预测残值不会自动覆盖车辆当前销售价，也不会写入销售价历史。"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              {
+                label: "是否有可用预测",
+                children: renderResidualForecastAvailabilityValue(
+                  residualForecastSummary?.available ?? returns.residualForecastAvailable,
+                  residualForecastSummary?.unavailableReason ?? returns.residualForecastUnavailableReason
+                )
+              },
+              {
+                label: "不可用原因",
+                children: safeText(
+                  residualForecastSummary?.unavailableReason ?? returns.residualForecastUnavailableReason
+                )
+              },
+              { label: "预测编号", children: safeText(residualForecastSummary?.forecastNo) },
+              {
+                label: "预测状态",
+                children: labelOf(
+                  VEHICLE_RESIDUAL_FORECAST_STATUS_LABELS,
+                  residualForecastSummary?.forecastStatus
+                )
+              },
+              {
+                label: "预测方法",
+                children: labelOf(
+                  VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS,
+                  residualForecastSummary?.forecastMethod
+                )
+              },
+              { label: "预测基准日", children: formatDate(residualForecastSummary?.asOfDate) },
+              { label: "预测周期", children: formatHorizonMonth(residualForecastSummary?.horizonMonth) },
+              { label: "目标日期", children: formatDate(residualForecastSummary?.targetDate) },
+              { label: "目标车龄（月）", children: formatInteger(residualForecastPoint?.targetAgeMonth) },
+              { label: "引用曲线编号", children: safeText(residualForecastSummary?.curveNo) },
+              {
+                label: "预测值来源",
+                children: labelOf(FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS, residualForecastSummary?.amountSource)
+              },
+              { label: "预测残值", children: formatYuan(residualForecastPoint?.forecastResidualAmount) },
+              { label: "预测残值率", children: formatBps(residualForecastPoint?.predictedResidualRateBps) },
+              { label: "预测下界", children: formatYuan(residualForecastPoint?.lowerBoundAmount) },
+              { label: "预测上界", children: formatYuan(residualForecastPoint?.upperBoundAmount) },
+              { label: "置信度", children: formatScore(residualForecastPoint?.confidenceScore) }
+            ]}
+            size="small"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "当前内部销售价", children: formatYuan(vehicle.currentSalePriceAmount) },
+              { label: "成本参数预计残值", children: formatYuan(costProfile?.residualValueAmount) },
+              { label: "预测残值", children: formatYuan(residualForecastPoint?.forecastResidualAmount) },
+              {
+                label: "相对当前销售价差异",
+                children: renderSignedYuan(returns.residualDeltaToCurrentSalePriceAmount)
+              },
+              {
+                label: "相对成本参数残值差异",
+                children: renderSignedYuan(returns.residualDeltaToCostProfileAmount)
+              },
+              {
+                label: "说明",
+                children: "相对成本参数残值差异用于残值敏感性 ROE 试算。"
+              }
+            ]}
+            size="small"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "主平台权益净收益", children: formatYuan(returns.platformNetIncomeAmount) },
+              {
+                label: "残值敏感性净收益",
+                children: formatYuan(returns.residualSensitivityNetIncomeAmount)
+              },
+              { label: "主试算 ROE", children: formatTrialRoe(returns.roeTrial) },
+              { label: "残值敏感性 ROE", children: formatPercent(returns.residualSensitivityRoeTrial) },
+              { label: "主年化试算 ROE", children: formatPercent(returns.annualizedRoeTrial) },
+              {
+                label: "年化残值敏感性 ROE",
+                children: formatPercent(returns.residualSensitivityAnnualizedRoeTrial)
+              }
+            ]}
+            size="small"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "曲线编号", children: safeText(residualForecastCurveSummary?.curveNo) },
+              { label: "品牌", children: safeText(residualForecastCurveSummary?.brand) },
+              { label: "车系", children: safeText(residualForecastCurveSummary?.series) },
+              { label: "车型", children: safeText(residualForecastCurveSummary?.model) },
+              { label: "年款", children: safeText(residualForecastCurveSummary?.modelYear) },
+              { label: "电池容量", children: formatKwh(residualForecastCurveSummary?.batteryCapacityKwh) },
+              {
+                label: "电池使用方式",
+                children: labelOf(
+                  VEHICLE_BATTERY_USAGE_TYPE_LABELS,
+                  residualForecastCurveSummary?.batteryUsageType
+                )
+              },
+              {
+                label: "曲线状态",
+                children: labelOf(
+                  VEHICLE_RESIDUAL_CURVE_STATUS_LABELS,
+                  residualForecastCurveSummary?.curveStatus
+                )
+              },
+              {
+                label: "曲线方法",
+                children: labelOf(
+                  VEHICLE_RESIDUAL_CURVE_METHOD_LABELS,
+                  residualForecastCurveSummary?.curveMethod
+                )
+              },
+              { label: "曲线置信度", children: formatScore(residualForecastCurveSummary?.confidenceScore) }
+            ]}
+            size="small"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "曲线预测残值", children: formatYuan(residualForecastPoint?.predictedResidualAmount) },
+              { label: "人工采用值", children: formatYuan(residualForecastPoint?.adoptedResidualAmount) },
+              {
+                label: "预测值来源",
+                children: labelOf(FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS, residualForecastSummary?.amountSource)
+              },
+              { label: "下界", children: formatYuan(residualForecastPoint?.lowerBoundAmount) },
+              { label: "上界", children: formatYuan(residualForecastPoint?.upperBoundAmount) },
+              { label: "残值率", children: formatBps(residualForecastPoint?.predictedResidualRateBps) },
+              { label: "置信度", children: formatScore(residualForecastPoint?.confidenceScore) },
+              {
+                label: "插值方法",
+                children: labelOf(
+                  RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS,
+                  residualForecastPoint?.interpolationMethod
+                )
+              },
+              {
+                label: "预测点状态",
+                children: labelOf(
+                  VEHICLE_RESIDUAL_FORECAST_POINT_STATUS_LABELS,
+                  residualForecastPoint?.pointStatus
+                )
+              },
+              {
+                label: "匹配曲线点车龄",
+                children: formatInteger(residualForecastPoint?.matchedCurvePointAgeMonth)
+              }
+            ]}
+            size="small"
+          />
+          {residualForecastWarnings.length > 0 ? (
+            <ReasonAlert items={residualForecastWarnings} title="残值预测敏感性提示" type="info" />
+          ) : null}
+        </Space>
       </DetailSection>
 
       <DetailSection title="订单周期明细">
@@ -2403,6 +2774,50 @@ function renderRoeStatus(
   );
 }
 
+function renderResidualForecastStatus(
+  record: Pick<
+    AssetReturnTrialVehicleRow,
+    "residualForecastAvailable" | "residualForecastUnavailableReason" | "residualForecastWarnings"
+  >
+) {
+  const warnings = normalizeReasonList(record.residualForecastWarnings);
+  const available = record.residualForecastAvailable === true;
+  const unavailableReason = safeText(record.residualForecastUnavailableReason);
+  const tooltip = (
+    <Space orientation="vertical" size={4}>
+      <span>{available ? "该车辆有可用于本周期的残值预测点。" : unavailableReason}</span>
+      {warnings.length > 0 ? <span>提示：{warnings.join("；")}</span> : null}
+    </Space>
+  );
+
+  return (
+    <Space size={4}>
+      <Tooltip title={tooltip}>
+        <Tag color={available ? "green" : "orange"}>{available ? "可用" : "不可用"}</Tag>
+      </Tooltip>
+      {warnings.length > 0 ? (
+        <Tooltip title={warnings.join("；")}>
+          <Tag color="blue" icon={<InfoCircleOutlined />}>
+            有提示
+          </Tag>
+        </Tooltip>
+      ) : null}
+    </Space>
+  );
+}
+
+function renderResidualForecastAvailabilityValue(available?: boolean | null, reason?: string | null) {
+  if (available === true) {
+    return <Tag color="green">可用</Tag>;
+  }
+
+  return (
+    <Tooltip title={safeText(reason)}>
+      <Tag color="orange">不可用</Tag>
+    </Tooltip>
+  );
+}
+
 function renderCostProfileStatus(record: Pick<
   AssetReturnTrialVehicleRow,
   "costProfileMissing" | "costProfileStatus" | "manualDepreciationUnsupported"
@@ -2631,6 +3046,29 @@ function formatYuan(value?: number | null) {
   })} 元`;
 }
 
+function formatSignedYuan(value?: number | null) {
+  const numberValue = safeNumber(value);
+  if (numberValue === null) {
+    return "-";
+  }
+
+  const sign = numberValue > 0 ? "+" : numberValue < 0 ? "-" : "";
+  return `${sign}${formatYuan(Math.abs(numberValue))}`;
+}
+
+function renderSignedYuan(value?: number | null) {
+  const numberValue = safeNumber(value);
+  if (numberValue === null) {
+    return "-";
+  }
+
+  return (
+    <Typography.Text type={numberValue > 0 ? "success" : numberValue < 0 ? "danger" : undefined}>
+      {formatSignedYuan(numberValue)}
+    </Typography.Text>
+  );
+}
+
 function formatPercent(value?: number | null) {
   const numberValue = safeNumber(value);
   if (numberValue === null) {
@@ -2645,6 +3083,25 @@ function formatPercent(value?: number | null) {
 
 function formatTrialRoe(value?: number | null) {
   return value === null ? "暂不可用" : formatPercent(value);
+}
+
+function formatHorizonMonth(value?: number | null) {
+  const numberValue = safeNumber(value);
+  if (numberValue === null) {
+    return "-";
+  }
+
+  const horizonMonth = Math.trunc(numberValue);
+  return horizonMonth === 0 ? "当前" : `未来 ${horizonMonth} 个月`;
+}
+
+function formatScore(value?: number | null) {
+  const numberValue = safeNumber(value);
+  if (numberValue === null) {
+    return "-";
+  }
+
+  return `${Math.round(numberValue)} 分`;
 }
 
 function formatKwh(value?: number | null) {

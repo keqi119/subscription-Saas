@@ -599,6 +599,11 @@ export const VEHICLE_RESIDUAL_FORECAST_POINT_STATUS_LABELS: Record<string, strin
   UNSUPPORTED: "暂不支持"
 };
 
+export const FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS: Record<string, string> = {
+  ADOPTED: "人工采用",
+  PREDICTED: "曲线预测"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",

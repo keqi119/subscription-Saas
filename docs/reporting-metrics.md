@@ -1288,6 +1288,40 @@ Stage 8.4E-B 前端使用说明：
 - JSON 快照在前端以折叠区展示，提交前会校验 JSON 格式，避免非法快照进入后端。
 - 本阶段不调用 AI / ML，不调用 Python 或第三方模型 API，不修改 `Vehicle.currentSalePriceAmount`，不写入 `VehicleSalePriceHistory`，也不接入 ROE。
 
+## Stage 8.4E-C ResidualModelRun 与残值曲线生成联动口径
+
+Stage 8.4E-C-A 将统计残值曲线正式生成纳入 `ResidualModelRun` 治理链路。统计中位数曲线生成可以被登记为一次 `STATISTICAL_BASELINE` 模型运行，但这仍然不是 AI / ML 训练，也不会调用 Python、第三方模型或外部模型服务。
+
+曲线生成与模型运行记录：
+
+- `POST /api/residual-market/curves/generate` 在 `dryRun = false` 时可传入 `modelRunId` 关联已有 `ResidualModelRun`。
+- 关联已有运行记录时，只允许 `CREATED` / `RUNNING` 状态；成功生成曲线后，该运行记录会更新为 `COMPLETED`，写入 `finishedAt`、`metricsSnapshot`、`outputSnapshot`、`filterSnapshot` 和 `parameterSnapshot`。
+- 已有运行记录如果填写了目标品牌、车系、车型、年款、版本、电池容量或电池使用方式，则这些目标维度必须与本次曲线生成条件一致。
+- `dryRun = false` 且 `autoCreateModelRun = true` 时，系统会自动创建一条 `STATISTICAL_BASELINE` / `STATISTICAL_MEDIAN` 的 `ResidualModelRun`，并立即标记为 `COMPLETED`。
+- 自动创建模型运行记录时，`modelVersion` 可由请求传入；未传时使用 `statistical-baseline-YYYYMMDDHHmmss`。
+- 自动创建模型运行记录时，`modelProvider` 默认 `internal`，`artifactUri` 只记录引用地址，不上传模型文件。
+
+输出关联：
+
+- 正式生成曲线并关联或自动创建模型运行记录时，会创建一条 `ResidualModelRunOutput`。
+- 输出记录使用 `outputType = RESIDUAL_CURVE`、`outputStatus = ACTIVE`，并关联新生成的 `VehicleResidualCurve`。
+- `outputNo` 使用曲线编号，`outputSnapshot` 记录曲线 ID、曲线编号、状态、方法、目标维度、样本数、点数和置信度。
+- `ResidualModelRunOutput` 只表示治理层追溯关系，不会自动启用曲线，也不会自动生成单车预测。
+
+dryRun 与未关联行为：
+
+- `dryRun = true` 时不会创建或更新 `VehicleResidualCurve`、`VehicleResidualCurvePoint`、`ResidualModelRun`、`ResidualModelRunOutput`，也不会写审计日志。
+- `dryRun = true` 时即使传入 `modelRunId`，也只做存在性和目标维度校验，不修改该运行记录。
+- `dryRun = true` 时即使传入 `autoCreateModelRun = true`，也只返回试算预览，不创建模型运行记录。
+- 不传 `modelRunId` 且不启用 `autoCreateModelRun` 时，正式生成曲线仍保持原行为，允许创建 `DRAFT` 曲线和曲线点，但返回“本次残值曲线未关联模型运行记录”的 warning。
+
+权限和边界：
+
+- 仅生成残值曲线仍使用 `residual_curve:generate`。
+- 关联已有模型运行记录或自动创建模型运行记录时，需要同时具备 `residual_model_run:manage`。
+- 本阶段不做真实 AI / ML，不调用 Python，不调用第三方模型 API，不做爬虫或定时采集。
+- 本阶段不自动生成单车预测，不接入 ROE，不修改 `Vehicle.currentSalePriceAmount`，不写入 `VehicleSalePriceHistory`。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

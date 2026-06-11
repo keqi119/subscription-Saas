@@ -358,6 +358,30 @@ export class GenerateResidualCurveDto {
 
   @IsOptional()
   @IsString()
+  modelRunId?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  autoCreateModelRun?: boolean;
+
+  @IsOptional()
+  @IsString()
+  modelRunName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  modelVersion?: string | null;
+
+  @IsOptional()
+  @IsString()
+  modelProvider?: string | null;
+
+  @IsOptional()
+  @IsString()
+  artifactUri?: string | null;
+
+  @IsOptional()
+  @IsString()
   remark?: string | null;
 }
 

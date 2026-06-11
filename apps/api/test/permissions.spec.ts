@@ -1094,6 +1094,20 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       '["reports.asset_profitability", "资产经营分析", "/reports/asset-profitability", "car", 20, "report:asset", "reports"]'
     );
+    for (const handler of [
+      ReportController.prototype.exportAssetReturnTrialSummary,
+      ReportController.prototype.exportAssetReturnTrialVehicles,
+      ReportController.prototype.exportAssetReturnTrialVehicleDetail
+    ]) {
+      const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(requiredPermissions).toEqual([PermissionCode.REPORT_ASSET]);
+      expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], requiredPermissions)).toBe(
+        false
+      );
+      expect(hasRequiredPermissions([PermissionCode.REPORT_ASSET], requiredPermissions)).toBe(
+        true
+      );
+    }
     expect(roleHasMenu(roleMenuArray("OP"), "reports")).toBe(true);
     expect(roleHasMenu(roleMenuArray("OP"), "reports.overview")).toBe(true);
     expect(roleHasMenu(roleMenuArray("OP"), "reports.asset_profitability")).toBe(true);

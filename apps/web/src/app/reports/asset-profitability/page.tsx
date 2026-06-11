@@ -1001,7 +1001,7 @@ export default function AssetProfitabilityPage() {
     setReturnSummaryExporting(true);
     try {
       await downloadCsv(
-        `/reports/asset-profitability/returns/summary/export${buildQuery(baseQuery())}`,
+        `/reports/asset-profitability/returns/summary/export${buildQuery(returnQuery())}`,
         exportDefaultFilename("returnSummary", dateRange)
       );
     } catch (error) {
@@ -1009,7 +1009,7 @@ export default function AssetProfitabilityPage() {
     } finally {
       setReturnSummaryExporting(false);
     }
-  }, [baseQuery, canViewAssetReport, dateRange, message]);
+  }, [canViewAssetReport, dateRange, message, returnQuery]);
 
   const exportReturnVehiclesCsv = useCallback(async () => {
     if (!canViewAssetReport) {
@@ -1020,7 +1020,7 @@ export default function AssetProfitabilityPage() {
     try {
       await downloadCsv(
         `/reports/asset-profitability/returns/vehicles/export${buildQuery({
-          ...baseQuery(),
+          ...returnQuery(),
           sortBy: returnSortBy,
           sortOrder: returnSortOrder
         })}`,
@@ -1031,7 +1031,7 @@ export default function AssetProfitabilityPage() {
     } finally {
       setReturnVehiclesExporting(false);
     }
-  }, [baseQuery, canViewAssetReport, dateRange, message, returnSortBy, returnSortOrder]);
+  }, [canViewAssetReport, dateRange, message, returnQuery, returnSortBy, returnSortOrder]);
 
   const exportReturnVehicleDetailCsv = useCallback(async () => {
     if (!canViewAssetReport || !selectedReturnVehicle) {
@@ -1043,6 +1043,7 @@ export default function AssetProfitabilityPage() {
       await downloadCsv(
         `/reports/asset-profitability/returns/vehicles/${selectedReturnVehicle.vehicleId}/export${buildQuery({
           endDate: dateRange[1].format("YYYY-MM-DD"),
+          residualHorizonMonth,
           startDate: dateRange[0].format("YYYY-MM-DD")
         })}`,
         exportDefaultFilename("returnDetail", dateRange)
@@ -1052,7 +1053,7 @@ export default function AssetProfitabilityPage() {
     } finally {
       setReturnDetailExporting(false);
     }
-  }, [canViewAssetReport, dateRange, message, selectedReturnVehicle]);
+  }, [canViewAssetReport, dateRange, message, residualHorizonMonth, selectedReturnVehicle]);
 
   const openDetail = useCallback(async (record: AssetProfitabilityVehicleRow) => {
     if (!canViewAssetReport) {

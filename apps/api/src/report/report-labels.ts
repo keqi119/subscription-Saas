@@ -139,6 +139,49 @@ export const capitalCostSourceLabels: Record<string, string> = {
   FINANCING_INSTRUMENT: "融资工具"
 };
 
+export const forecastResidualAmountSourceLabels: Record<string, string> = {
+  ADOPTED: "人工采用",
+  PREDICTED: "曲线预测"
+};
+
+export const residualForecastInterpolationMethodLabels: Record<string, string> = {
+  EXACT: "精确匹配",
+  LINEAR_INTERPOLATION: "线性插值",
+  UNSUPPORTED_OUT_OF_RANGE: "超出曲线范围"
+};
+
+export const vehicleResidualCurveMethodLabels: Record<string, string> = {
+  MANUAL: "手工曲线",
+  ML_MODEL: "机器学习模型",
+  STATISTICAL_MEDIAN: "统计中位数"
+};
+
+export const vehicleResidualCurveStatusLabels: Record<string, string> = {
+  ACTIVE: "生效中",
+  ARCHIVED: "已归档",
+  DRAFT: "草稿",
+  SUPERSEDED: "已被替代"
+};
+
+export const vehicleResidualForecastMethodLabels: Record<string, string> = {
+  CURVE_STATISTICAL: "统计曲线",
+  MANUAL: "手工预测",
+  ML_MODEL: "机器学习模型"
+};
+
+export const vehicleResidualForecastPointStatusLabels: Record<string, string> = {
+  ADOPTED: "已采用",
+  GENERATED: "已生成",
+  UNSUPPORTED: "暂不支持"
+};
+
+export const vehicleResidualForecastStatusLabels: Record<string, string> = {
+  ADOPTED: "已采用",
+  ARCHIVED: "已归档",
+  GENERATED: "已生成",
+  VOIDED: "已作废"
+};
+
 export const financingInstrumentTypeLabels: Record<string, string> = {
   ABS_OR_SPV: "ABS / SPV 资产池融资",
   BANK_AUTO_LOAN: "银行车贷分期",

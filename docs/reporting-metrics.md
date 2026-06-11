@@ -1278,6 +1278,16 @@ Stage 8.4E-A 新增 `ResidualModelRun` 与 `ResidualModelRunOutput`，用于记�
 - 模型运行记录不会接入 ROE 计算，也不改变资产收益试算口径。
 - 后续阶段可以在该治理底座上接入真实训练脚本、第三方模型或模型文件管理。
 
+Stage 8.4E-B 前端使用说明：
+
+- 模型运行记录在 `/residual-market` 的“模型运行记录”Tab 中查看，与市场价格样本、导入批次和残值曲线放在同一业务链路下。
+- `residual_model_run:view` 控制 Tab、列表和详情访问；`residual_model_run:manage` 控制新增运行记录、标记完成、标记失败和取消运行。
+- 新增模型运行记录只登记运行批次、模型版本、样本范围、特征快照、参数快照和筛选快照，不会触发真实训练。
+- 标记完成只记录 `metricsSnapshot`、`outputSnapshot` 和输出关联，输出关联只是治理关系，不会自动生成残值曲线或单车预测。
+- 标记失败记录 `errorSnapshot`；取消运行只改变运行状态，不物理删除记录。
+- JSON 快照在前端以折叠区展示，提交前会校验 JSON 格式，避免非法快照进入后端。
+- 本阶段不调用 AI / ML，不调用 Python 或第三方模型 API，不修改 `Vehicle.currentSalePriceAmount`，不写入 `VehicleSalePriceHistory`，也不接入 ROE。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

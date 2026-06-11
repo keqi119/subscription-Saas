@@ -45,6 +45,12 @@ import {
   MARKET_PRICE_SOURCE_LABELS,
   MARKET_PRICE_TYPE_LABELS,
   MARKET_SELLER_TYPE_LABELS,
+  RESIDUAL_MODEL_ALGORITHM_LABELS,
+  RESIDUAL_MODEL_RUN_OUTPUT_STATUS_LABELS,
+  RESIDUAL_MODEL_RUN_OUTPUT_TYPE_LABELS,
+  RESIDUAL_MODEL_RUN_STATUS_LABELS,
+  RESIDUAL_MODEL_RUN_TYPE_LABELS,
+  RESIDUAL_MODEL_TARGET_TYPE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   VEHICLE_RESIDUAL_CURVE_METHOD_LABELS,
   VEHICLE_RESIDUAL_CURVE_STATUS_LABELS,
@@ -110,18 +116,28 @@ const csvImportActionLabels: Record<string, string> = {
 const tagColors: Record<string, string> = {
   ACTIVE: "green",
   ARCHIVED: "default",
+  CANCELLED: "default",
   COMPLETED: "green",
+  CREATED: "blue",
   CSV_IMPORT: "blue",
   DRAFT: "blue",
+  EXTERNAL_MODEL: "magenta",
   FAILED: "red",
   IGNORED: "orange",
   IMPORTED: "green",
   MANUAL: "cyan",
+  MANUAL_IMPORT: "orange",
+  ML_INFERENCE: "cyan",
+  ML_TRAINING: "purple",
   ML_MODEL: "purple",
   PARTIAL_FAILED: "orange",
+  RESIDUAL_CURVE: "blue",
+  RUNNING: "processing",
   STATISTICAL_MEDIAN: "geekblue",
+  STATISTICAL_BASELINE: "geekblue",
   SKIPPED_DUPLICATE: "orange",
   SUPERSEDED: "orange",
+  VEHICLE_FORECAST: "cyan",
   VOIDED: "red"
 };
 
@@ -287,6 +303,91 @@ interface ResidualCurveGenerateResult {
   skippedSampleCount: number;
 }
 
+interface ResidualModelRunOutputRow {
+  createdAt: string;
+  curve?: {
+    brand?: string | null;
+    curveMethod?: string | null;
+    curveNo?: string | null;
+    curveStatus?: string | null;
+    id?: string | null;
+    model?: string | null;
+  } | null;
+  curveId?: string | null;
+  forecast?: {
+    asOfDate?: string | null;
+    forecastMethod?: string | null;
+    forecastNo?: string | null;
+    forecastStatus?: string | null;
+    id?: string | null;
+    model?: string | null;
+    vehicleId?: string | null;
+  } | null;
+  forecastId?: string | null;
+  id: string;
+  outputNo?: string | null;
+  outputSnapshot?: unknown;
+  outputStatus: string;
+  outputType: string;
+  remark?: string | null;
+  runId: string;
+  updatedAt: string;
+  vehicle?: {
+    brand?: string | null;
+    id?: string | null;
+    model?: string | null;
+    series?: string | null;
+    vehicleNo?: string | null;
+  } | null;
+  vehicleId?: string | null;
+}
+
+interface ResidualModelRunRow {
+  algorithm?: string | null;
+  artifactUri?: string | null;
+  createdAt: string;
+  createdBy?: string | null;
+  errorSnapshot?: unknown;
+  featureSnapshot?: unknown;
+  filterSnapshot?: unknown;
+  finishedAt?: string | null;
+  id: string;
+  metricsSnapshot?: unknown;
+  modelName?: string | null;
+  modelProvider?: string | null;
+  modelVersion?: string | null;
+  outputCount?: number | null;
+  outputs?: ResidualModelRunOutputRow[];
+  outputSnapshot?: unknown;
+  parameterSnapshot?: unknown;
+  remark?: string | null;
+  runName?: string | null;
+  runNo: string;
+  runStatus: string;
+  runType: string;
+  sampleCount?: number | null;
+  startedAt?: string | null;
+  targetBatteryCapacityKwh?: number | null;
+  targetBatteryUsageType?: string | null;
+  targetBrand?: string | null;
+  targetModel?: string | null;
+  targetModelYear?: number | null;
+  targetSeries?: string | null;
+  targetTrim?: string | null;
+  targetType: string;
+  trainingDataEndDate?: string | null;
+  trainingDataStartDate?: string | null;
+  updatedAt: string;
+  updatedBy?: string | null;
+}
+
+interface ResidualModelRunListResponse {
+  items: ResidualModelRunRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
 interface ObservationFilterValues {
   brand?: string;
   city?: string;
@@ -319,6 +420,18 @@ interface CurveFilterValues {
   model?: string;
   modelYear?: number | null;
   series?: string;
+}
+
+interface ModelRunFilterValues {
+  endDate?: Dayjs | null;
+  modelVersion?: string;
+  runStatus?: string;
+  runType?: string;
+  startDate?: Dayjs | null;
+  targetBrand?: string;
+  targetModel?: string;
+  targetSeries?: string;
+  targetType?: string;
 }
 
 interface ObservationFormValues {
@@ -383,6 +496,47 @@ interface CurveActivateFormValues {
 }
 
 interface CurveArchiveFormValues {
+  remark?: string;
+}
+
+interface ModelRunCreateFormValues {
+  algorithm?: string;
+  featureSnapshotText?: string;
+  filterSnapshotText?: string;
+  modelName?: string;
+  modelProvider?: string;
+  modelVersion?: string;
+  parameterSnapshotText?: string;
+  remark?: string;
+  runName?: string;
+  runStatus: string;
+  runType: string;
+  sampleCount?: number | null;
+  targetBatteryCapacityKwh?: number | null;
+  targetBatteryUsageType?: string;
+  targetBrand?: string;
+  targetModel?: string;
+  targetModelYear?: number | null;
+  targetSeries?: string;
+  targetTrim?: string;
+  targetType: string;
+  trainingDataEndDate?: Dayjs | null;
+  trainingDataStartDate?: Dayjs | null;
+}
+
+interface ModelRunCompleteFormValues {
+  metricsSnapshotText?: string;
+  outputSnapshotText?: string;
+  outputsText?: string;
+  remark?: string;
+}
+
+interface ModelRunFailFormValues {
+  errorSnapshotText?: string;
+  remark?: string;
+}
+
+interface ModelRunCancelFormValues {
   remark?: string;
 }
 
@@ -541,6 +695,54 @@ function buildCurveQuery(values: CurveFilterValues, page: number, pageSize: numb
   });
 }
 
+function buildModelRunQuery(values: ModelRunFilterValues, page: number, pageSize: number) {
+  return buildQuery({
+    endDate: values.endDate?.format("YYYY-MM-DD"),
+    modelVersion: values.modelVersion,
+    page,
+    pageSize,
+    runStatus: values.runStatus,
+    runType: values.runType,
+    startDate: values.startDate?.format("YYYY-MM-DD"),
+    targetBrand: values.targetBrand,
+    targetModel: values.targetModel,
+    targetSeries: values.targetSeries,
+    targetType: values.targetType
+  });
+}
+
+function parseJsonObjectText(value: string | undefined, fieldName: string) {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+      throw new Error();
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new Error(`${fieldName} JSON 格式不正确`);
+  }
+}
+
+function parseJsonArrayText(value: string | undefined, fieldName: string) {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      throw new Error();
+    }
+    return parsed as Record<string, unknown>[];
+  } catch {
+    throw new Error(`${fieldName} 必须是合法 JSON 数组`);
+  }
+}
+
 function curveGeneratePayload(values: CurveGenerateFormValues, dryRun: boolean) {
   return {
     batteryCapacityKwh: values.batteryCapacityKwh,
@@ -558,6 +760,46 @@ function curveGeneratePayload(values: CurveGenerateFormValues, dryRun: boolean) 
     series: values.series,
     trim: values.trim
   };
+}
+
+function modelRunCreatePayload(values: ModelRunCreateFormValues) {
+  return {
+    algorithm: values.algorithm,
+    featureSnapshot: parseJsonObjectText(values.featureSnapshotText, "featureSnapshot"),
+    filterSnapshot: parseJsonObjectText(values.filterSnapshotText, "filterSnapshot"),
+    modelName: values.modelName,
+    modelProvider: values.modelProvider,
+    modelVersion: values.modelVersion,
+    parameterSnapshot: parseJsonObjectText(values.parameterSnapshotText, "parameterSnapshot"),
+    remark: values.remark,
+    runName: values.runName,
+    runStatus: values.runStatus,
+    runType: values.runType,
+    sampleCount: values.sampleCount,
+    targetBatteryCapacityKwh: values.targetBatteryCapacityKwh,
+    targetBatteryUsageType: values.targetBatteryUsageType,
+    targetBrand: values.targetBrand,
+    targetModel: values.targetModel,
+    targetModelYear: values.targetModelYear,
+    targetSeries: values.targetSeries,
+    targetTrim: values.targetTrim,
+    targetType: values.targetType,
+    trainingDataEndDate: values.trainingDataEndDate?.format("YYYY-MM-DD"),
+    trainingDataStartDate: values.trainingDataStartDate?.format("YYYY-MM-DD")
+  };
+}
+
+function modelRunCompletePayload(values: ModelRunCompleteFormValues) {
+  return {
+    metricsSnapshot: parseJsonObjectText(values.metricsSnapshotText, "metricsSnapshot"),
+    outputSnapshot: parseJsonObjectText(values.outputSnapshotText, "outputSnapshot"),
+    outputs: parseJsonArrayText(values.outputsText, "outputs"),
+    remark: values.remark
+  };
+}
+
+function isModelRunActionable(record?: ResidualModelRunRow | null) {
+  return record ? ["CREATED", "RUNNING"].includes(record.runStatus) : false;
 }
 
 function formPayload(values: ObservationFormValues) {
@@ -597,11 +839,16 @@ export default function ResidualMarketPage() {
   const [observationFilterForm] = Form.useForm<ObservationFilterValues>();
   const [batchFilterForm] = Form.useForm<BatchFilterValues>();
   const [curveFilterForm] = Form.useForm<CurveFilterValues>();
+  const [modelRunFilterForm] = Form.useForm<ModelRunFilterValues>();
   const [observationForm] = Form.useForm<ObservationFormValues>();
   const [csvImportForm] = Form.useForm<CsvImportFormValues>();
   const [curveGenerateForm] = Form.useForm<CurveGenerateFormValues>();
   const [curveActivateForm] = Form.useForm<CurveActivateFormValues>();
   const [curveArchiveForm] = Form.useForm<CurveArchiveFormValues>();
+  const [modelRunCreateForm] = Form.useForm<ModelRunCreateFormValues>();
+  const [modelRunCompleteForm] = Form.useForm<ModelRunCompleteFormValues>();
+  const [modelRunFailForm] = Form.useForm<ModelRunFailFormValues>();
+  const [modelRunCancelForm] = Form.useForm<ModelRunCancelFormValues>();
   const [voidForm] = Form.useForm<VoidFormValues>();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -646,6 +893,22 @@ export default function ResidualMarketPage() {
   const [curveActivateSubmitting, setCurveActivateSubmitting] = useState(false);
   const [curveArchiveTarget, setCurveArchiveTarget] = useState<ResidualCurveRow | null>(null);
   const [curveArchiveSubmitting, setCurveArchiveSubmitting] = useState(false);
+  const [modelRuns, setModelRuns] = useState<ResidualModelRunRow[]>([]);
+  const [modelRunLoading, setModelRunLoading] = useState(false);
+  const [modelRunPage, setModelRunPage] = useState(1);
+  const [modelRunPageSize, setModelRunPageSize] = useState(20);
+  const [modelRunTotal, setModelRunTotal] = useState(0);
+  const [modelRunDetailOpen, setModelRunDetailOpen] = useState(false);
+  const [modelRunDetailLoading, setModelRunDetailLoading] = useState(false);
+  const [modelRunDetail, setModelRunDetail] = useState<ResidualModelRunRow | null>(null);
+  const [modelRunCreateOpen, setModelRunCreateOpen] = useState(false);
+  const [modelRunCreateSubmitting, setModelRunCreateSubmitting] = useState(false);
+  const [modelRunCompleteTarget, setModelRunCompleteTarget] = useState<ResidualModelRunRow | null>(null);
+  const [modelRunCompleteSubmitting, setModelRunCompleteSubmitting] = useState(false);
+  const [modelRunFailTarget, setModelRunFailTarget] = useState<ResidualModelRunRow | null>(null);
+  const [modelRunFailSubmitting, setModelRunFailSubmitting] = useState(false);
+  const [modelRunCancelTarget, setModelRunCancelTarget] = useState<ResidualModelRunRow | null>(null);
+  const [modelRunCancelSubmitting, setModelRunCancelSubmitting] = useState(false);
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("residual_market:view");
   const canManage = permissions.has("residual_market:manage");
@@ -653,6 +916,8 @@ export default function ResidualMarketPage() {
   const canViewCurve = permissions.has("residual_curve:view");
   const canGenerateCurve = permissions.has("residual_curve:generate");
   const canManageCurve = permissions.has("residual_curve:manage");
+  const canViewModelRun = permissions.has("residual_model_run:view");
+  const canManageModelRun = permissions.has("residual_model_run:manage");
 
   const loadObservations = useCallback(
     async (page = 1, pageSize = 20) => {
@@ -756,6 +1021,40 @@ export default function ResidualMarketPage() {
     [message]
   );
 
+  const loadModelRuns = useCallback(
+    async (page = 1, pageSize = 20) => {
+      setModelRunLoading(true);
+      try {
+        const query = buildModelRunQuery(modelRunFilterForm.getFieldsValue(), page, pageSize);
+        const result = await apiFetch<ResidualModelRunListResponse>(`/residual-market/model-runs${query}`);
+        setModelRuns(result.items);
+        setModelRunPage(result.page);
+        setModelRunPageSize(result.pageSize);
+        setModelRunTotal(result.total);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+      } finally {
+        setModelRunLoading(false);
+      }
+    },
+    [message, modelRunFilterForm]
+  );
+
+  const loadModelRunDetail = useCallback(
+    async (id: string) => {
+      setModelRunDetailLoading(true);
+      try {
+        const result = await apiFetch<ResidualModelRunRow>(`/residual-market/model-runs/${id}`);
+        setModelRunDetail(result);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+      } finally {
+        setModelRunDetailLoading(false);
+      }
+    },
+    [message]
+  );
+
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
       .then(setMe)
@@ -784,6 +1083,11 @@ export default function ResidualMarketPage() {
   function resetCurveFilters() {
     curveFilterForm.resetFields();
     void loadCurves(1, curvePageSize);
+  }
+
+  function resetModelRunFilters() {
+    modelRunFilterForm.resetFields();
+    void loadModelRuns(1, modelRunPageSize);
   }
 
   async function openDetail(record: ObservationRow) {
@@ -1082,6 +1386,180 @@ export default function ResidualMarketPage() {
     });
   }
 
+  async function openModelRunDetail(record: ResidualModelRunRow) {
+    setModelRunDetailOpen(true);
+    setModelRunDetail(null);
+    await loadModelRunDetail(record.id);
+  }
+
+  function openModelRunCreate() {
+    modelRunCreateForm.resetFields();
+    modelRunCreateForm.setFieldsValue({
+      algorithm: "STATISTICAL_MEDIAN",
+      featureSnapshotText: "{}",
+      filterSnapshotText: "{}",
+      parameterSnapshotText: "{}",
+      runStatus: "CREATED",
+      runType: "STATISTICAL_BASELINE",
+      targetType: "RESIDUAL_CURVE"
+    });
+    setModelRunCreateOpen(true);
+  }
+
+  async function submitModelRunCreate(values: ModelRunCreateFormValues) {
+    setModelRunCreateSubmitting(true);
+    try {
+      await apiFetch<ResidualModelRunRow>("/residual-market/model-runs", {
+        body: JSON.stringify(modelRunCreatePayload(values)),
+        method: "POST"
+      });
+      void message.success("模型运行记录已创建");
+      setModelRunCreateOpen(false);
+      modelRunCreateForm.resetFields();
+      await loadModelRuns(1, modelRunPageSize);
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : getErrorMessage(error));
+    } finally {
+      setModelRunCreateSubmitting(false);
+    }
+  }
+
+  function openModelRunComplete(record: ResidualModelRunRow) {
+    modelRunCompleteForm.resetFields();
+    modelRunCompleteForm.setFieldsValue({
+      metricsSnapshotText: "{}",
+      outputSnapshotText: "{}",
+      outputsText: "[]"
+    });
+    setModelRunCompleteTarget(record);
+  }
+
+  async function submitModelRunComplete() {
+    if (!modelRunCompleteTarget) {
+      return;
+    }
+    const values = await modelRunCompleteForm.validateFields();
+    let payload: ReturnType<typeof modelRunCompletePayload>;
+    try {
+      payload = modelRunCompletePayload(values);
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : "JSON 格式不正确");
+      return;
+    }
+
+    modal.confirm({
+      cancelText: "取消",
+      content: "本操作只记录运行状态、指标快照和输出关联，不会自动生成残值曲线或单车预测。",
+      okText: "确认完成",
+      onOk: async () => {
+        setModelRunCompleteSubmitting(true);
+        try {
+          const updated = await apiFetch<ResidualModelRunRow>(`/residual-market/model-runs/${modelRunCompleteTarget.id}/complete`, {
+            body: JSON.stringify(payload),
+            method: "POST"
+          });
+          void message.success("模型运行记录已标记完成");
+          setModelRunCompleteTarget(null);
+          await loadModelRuns(modelRunPage, modelRunPageSize);
+          if (modelRunDetail?.id === updated.id) {
+            setModelRunDetail(updated);
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setModelRunCompleteSubmitting(false);
+        }
+      },
+      title: "确认标记该模型运行记录为已完成？"
+    });
+  }
+
+  function openModelRunFail(record: ResidualModelRunRow) {
+    modelRunFailForm.resetFields();
+    modelRunFailForm.setFieldsValue({ errorSnapshotText: "{}" });
+    setModelRunFailTarget(record);
+  }
+
+  async function submitModelRunFail() {
+    if (!modelRunFailTarget) {
+      return;
+    }
+    const values = await modelRunFailForm.validateFields();
+    let errorSnapshot: Record<string, unknown> | undefined;
+    try {
+      errorSnapshot = parseJsonObjectText(values.errorSnapshotText, "errorSnapshot");
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : "JSON 格式不正确");
+      return;
+    }
+
+    modal.confirm({
+      cancelText: "取消",
+      content: "失败状态只记录本次运行结果和错误快照，不会触发其他业务动作。",
+      okText: "确认失败",
+      okType: "danger",
+      onOk: async () => {
+        setModelRunFailSubmitting(true);
+        try {
+          const updated = await apiFetch<ResidualModelRunRow>(`/residual-market/model-runs/${modelRunFailTarget.id}/fail`, {
+            body: JSON.stringify({ errorSnapshot, remark: values.remark }),
+            method: "POST"
+          });
+          void message.success("模型运行记录已标记失败");
+          setModelRunFailTarget(null);
+          await loadModelRuns(modelRunPage, modelRunPageSize);
+          if (modelRunDetail?.id === updated.id) {
+            setModelRunDetail(updated);
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setModelRunFailSubmitting(false);
+        }
+      },
+      title: "确认标记该模型运行记录为失败？"
+    });
+  }
+
+  function openModelRunCancel(record: ResidualModelRunRow) {
+    modelRunCancelForm.resetFields();
+    setModelRunCancelTarget(record);
+  }
+
+  async function submitModelRunCancel() {
+    if (!modelRunCancelTarget) {
+      return;
+    }
+    const values = await modelRunCancelForm.validateFields();
+
+    modal.confirm({
+      cancelText: "取消",
+      content: "取消只改变模型运行记录状态，不会删除记录。",
+      okText: "确认取消",
+      okType: "danger",
+      onOk: async () => {
+        setModelRunCancelSubmitting(true);
+        try {
+          const updated = await apiFetch<ResidualModelRunRow>(`/residual-market/model-runs/${modelRunCancelTarget.id}/cancel`, {
+            body: JSON.stringify(values),
+            method: "POST"
+          });
+          void message.success("模型运行记录已取消");
+          setModelRunCancelTarget(null);
+          await loadModelRuns(modelRunPage, modelRunPageSize);
+          if (modelRunDetail?.id === updated.id) {
+            setModelRunDetail(updated);
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setModelRunCancelSubmitting(false);
+        }
+      },
+      title: "确认取消该模型运行记录？"
+    });
+  }
+
   const observationColumns: ColumnsType<ObservationRow> = [
     { dataIndex: "observationNo", fixed: "left", title: "样本编号", width: 170 },
     {
@@ -1260,6 +1738,104 @@ export default function ResidualMarketPage() {
     }
   ];
 
+  const modelRunColumns: ColumnsType<ResidualModelRunRow> = [
+    { dataIndex: "runNo", fixed: "left", title: "运行编号", width: 180 },
+    { dataIndex: "runName", render: text, title: "运行名称", width: 220 },
+    {
+      dataIndex: "runType",
+      render: (value) => enumTag(RESIDUAL_MODEL_RUN_TYPE_LABELS, value),
+      title: "运行类型",
+      width: 140
+    },
+    {
+      dataIndex: "runStatus",
+      render: (value) => enumTag(RESIDUAL_MODEL_RUN_STATUS_LABELS, value),
+      title: "运行状态",
+      width: 120
+    },
+    { dataIndex: "modelName", render: text, title: "模型名称", width: 180 },
+    { dataIndex: "modelVersion", render: text, title: "模型版本", width: 150 },
+    {
+      dataIndex: "algorithm",
+      render: (value) => enumTag(RESIDUAL_MODEL_ALGORITHM_LABELS, value),
+      title: "算法",
+      width: 150
+    },
+    {
+      dataIndex: "targetType",
+      render: (value) => enumTag(RESIDUAL_MODEL_TARGET_TYPE_LABELS, value),
+      title: "目标类型",
+      width: 130
+    },
+    { dataIndex: "targetBrand", render: text, title: "目标品牌", width: 110 },
+    { dataIndex: "targetSeries", render: text, title: "目标车系", width: 120 },
+    { dataIndex: "targetModel", render: text, title: "目标车型", width: 150 },
+    { dataIndex: "targetModelYear", render: text, title: "年款", width: 90 },
+    { dataIndex: "sampleCount", render: text, title: "样本数", width: 100 },
+    { dataIndex: "startedAt", render: formatDateTime, title: "开始时间", width: 150 },
+    { dataIndex: "finishedAt", render: formatDateTime, title: "完成时间", width: 150 },
+    { dataIndex: "createdAt", render: formatDateTime, title: "创建时间", width: 150 },
+    { dataIndex: "remark", render: text, title: "备注", width: 220 },
+    {
+      fixed: "right",
+      render: (_, record) => (
+        <Space>
+          <Button icon={<EyeOutlined />} onClick={() => openModelRunDetail(record)} size="small">
+            查看详情
+          </Button>
+          {canManageModelRun && isModelRunActionable(record) ? (
+            <>
+              <Button icon={<CheckCircleOutlined />} onClick={() => openModelRunComplete(record)} size="small">
+                标记完成
+              </Button>
+              <Button danger onClick={() => openModelRunFail(record)} size="small">
+                标记失败
+              </Button>
+              <Button danger icon={<StopOutlined />} onClick={() => openModelRunCancel(record)} size="small">
+                取消运行
+              </Button>
+            </>
+          ) : null}
+        </Space>
+      ),
+      title: "操作",
+      width: 340
+    }
+  ];
+
+  const modelRunOutputColumns: ColumnsType<ResidualModelRunOutputRow> = [
+    {
+      dataIndex: "outputType",
+      render: (value) => enumTag(RESIDUAL_MODEL_RUN_OUTPUT_TYPE_LABELS, value),
+      title: "输出类型",
+      width: 130
+    },
+    {
+      dataIndex: "outputStatus",
+      render: (value) => enumTag(RESIDUAL_MODEL_RUN_OUTPUT_STATUS_LABELS, value),
+      title: "输出状态",
+      width: 120
+    },
+    {
+      render: (_, record) => text(record.curve?.curveNo ?? record.curveId),
+      title: "曲线",
+      width: 180
+    },
+    {
+      render: (_, record) => text(record.forecast?.forecastNo ?? record.forecastId),
+      title: "预测",
+      width: 180
+    },
+    {
+      render: (_, record) => text(record.vehicle?.vehicleNo ?? record.vehicleId),
+      title: "车辆",
+      width: 180
+    },
+    { dataIndex: "outputNo", render: text, title: "输出编号", width: 170 },
+    { dataIndex: "remark", render: text, title: "备注", width: 220 },
+    { dataIndex: "createdAt", render: formatDateTime, title: "创建时间", width: 150 }
+  ];
+
   const importResultColumns: ColumnsType<CsvImportItem> = [
     { dataIndex: "rowNumber", title: "行号", width: 90 },
     {
@@ -1310,6 +1886,9 @@ export default function ResidualMarketPage() {
             }
             if (key === "curves" && canViewCurve) {
               void loadCurves(1, curvePageSize);
+            }
+            if (key === "model-runs" && canViewModelRun) {
+              void loadModelRuns(1, modelRunPageSize);
             }
           }}
           items={[
@@ -1590,6 +2169,113 @@ export default function ResidualMarketPage() {
                     )
                   }
                 ]
+              : []),
+            ...(canViewModelRun
+              ? [
+                  {
+                    key: "model-runs",
+                    label: "模型运行记录",
+                    children: (
+                      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                        <Alert
+                          description="模型运行记录用于记录残值预测模型的版本、样本范围、特征、参数、指标和输出关联。本阶段只记录模型运行过程，不执行真实 AI / ML 训练，也不会自动生成残值曲线或单车预测。"
+                          showIcon
+                          type="info"
+                        />
+                        <Form<ModelRunFilterValues>
+                          form={modelRunFilterForm}
+                          layout="vertical"
+                          onFinish={() => loadModelRuns(1, modelRunPageSize)}
+                        >
+                          <Row gutter={12}>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="运行类型" name="runType">
+                                <Select allowClear options={optionsFromLabels(RESIDUAL_MODEL_RUN_TYPE_LABELS)} />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="运行状态" name="runStatus">
+                                <Select allowClear options={optionsFromLabels(RESIDUAL_MODEL_RUN_STATUS_LABELS)} />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="目标类型" name="targetType">
+                                <Select allowClear options={optionsFromLabels(RESIDUAL_MODEL_TARGET_TYPE_LABELS)} />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="模型版本" name="modelVersion">
+                                <Input allowClear />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="目标品牌" name="targetBrand">
+                                <Input allowClear />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="目标车系" name="targetSeries">
+                                <Input allowClear />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="目标车型" name="targetModel">
+                                <Input allowClear />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="开始日期" name="startDate">
+                                <DatePicker style={{ width: "100%" }} />
+                              </Form.Item>
+                            </Col>
+                            <Col lg={4} md={8} sm={12} xs={24}>
+                              <Form.Item label="结束日期" name="endDate">
+                                <DatePicker style={{ width: "100%" }} />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                          <Space>
+                            <Button htmlType="submit" icon={<SearchOutlined />} type="primary">
+                              查询
+                            </Button>
+                            <Button onClick={resetModelRunFilters}>重置</Button>
+                            <Button
+                              icon={<ReloadOutlined />}
+                              loading={modelRunLoading}
+                              onClick={() => loadModelRuns(modelRunPage, modelRunPageSize)}
+                            >
+                              刷新
+                            </Button>
+                          </Space>
+                        </Form>
+
+                        <Space wrap>
+                          {canManageModelRun ? (
+                            <Button icon={<PlusOutlined />} onClick={openModelRunCreate} type="primary">
+                              新增模型运行记录
+                            </Button>
+                          ) : null}
+                        </Space>
+
+                        <Table
+                          columns={modelRunColumns}
+                          dataSource={modelRuns}
+                          loading={modelRunLoading}
+                          pagination={{
+                            current: modelRunPage,
+                            onChange: (page, pageSize) => loadModelRuns(page, pageSize),
+                            pageSize: modelRunPageSize,
+                            showSizeChanger: true,
+                            total: modelRunTotal
+                          }}
+                          rowKey="id"
+                          scroll={{ x: 3000 }}
+                          size="small"
+                        />
+                      </Space>
+                    )
+                  }
+                ]
               : [])
           ]}
         />
@@ -1788,6 +2474,304 @@ export default function ResidualMarketPage() {
             </Space>
           ) : null}
         </Drawer>
+
+        <Drawer
+          destroyOnHidden
+          loading={modelRunDetailLoading}
+          onClose={() => {
+            setModelRunDetailOpen(false);
+            setModelRunDetail(null);
+          }}
+          open={modelRunDetailOpen}
+          size="80vw"
+          title={modelRunDetail ? `${modelRunDetail.runNo} 模型运行详情` : "模型运行详情"}
+        >
+          {modelRunDetail ? (
+            <Space direction="vertical" size={18} style={{ width: "100%" }}>
+              <Descriptions
+                bordered
+                column={2}
+                items={[
+                  { label: "运行编号", children: text(modelRunDetail.runNo) },
+                  { label: "运行名称", children: text(modelRunDetail.runName) },
+                  { label: "运行类型", children: enumTag(RESIDUAL_MODEL_RUN_TYPE_LABELS, modelRunDetail.runType) },
+                  { label: "运行状态", children: enumTag(RESIDUAL_MODEL_RUN_STATUS_LABELS, modelRunDetail.runStatus) },
+                  { label: "模型名称", children: text(modelRunDetail.modelName) },
+                  { label: "模型版本", children: text(modelRunDetail.modelVersion) },
+                  { label: "模型提供方", children: text(modelRunDetail.modelProvider) },
+                  { label: "算法", children: enumTag(RESIDUAL_MODEL_ALGORITHM_LABELS, modelRunDetail.algorithm) },
+                  { label: "目标类型", children: enumTag(RESIDUAL_MODEL_TARGET_TYPE_LABELS, modelRunDetail.targetType) },
+                  { label: "开始时间", children: formatDateTime(modelRunDetail.startedAt) },
+                  { label: "完成时间", children: formatDateTime(modelRunDetail.finishedAt) },
+                  { label: "创建时间", children: formatDateTime(modelRunDetail.createdAt) },
+                  { label: "备注", children: text(modelRunDetail.remark) }
+                ]}
+                size="small"
+                title="基础信息"
+              />
+              <Descriptions
+                bordered
+                column={2}
+                items={[
+                  { label: "目标品牌", children: text(modelRunDetail.targetBrand) },
+                  { label: "目标车系", children: text(modelRunDetail.targetSeries) },
+                  { label: "目标车型", children: text(modelRunDetail.targetModel) },
+                  { label: "目标年款", children: text(modelRunDetail.targetModelYear) },
+                  { label: "目标版本", children: text(modelRunDetail.targetTrim) },
+                  { label: "目标电池容量", children: kwh(modelRunDetail.targetBatteryCapacityKwh) },
+                  {
+                    label: "目标电池使用方式",
+                    children: labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, modelRunDetail.targetBatteryUsageType)
+                  }
+                ]}
+                size="small"
+                title="目标维度"
+              />
+              <Descriptions
+                bordered
+                column={3}
+                items={[
+                  { label: "训练数据开始日期", children: formatDate(modelRunDetail.trainingDataStartDate) },
+                  { label: "训练数据结束日期", children: formatDate(modelRunDetail.trainingDataEndDate) },
+                  { label: "样本数", children: text(modelRunDetail.sampleCount) }
+                ]}
+                size="small"
+                title="样本范围"
+              />
+              <Collapse
+                items={[
+                  { children: jsonBlock(modelRunDetail.featureSnapshot), key: "featureSnapshot", label: "featureSnapshot" },
+                  { children: jsonBlock(modelRunDetail.parameterSnapshot), key: "parameterSnapshot", label: "parameterSnapshot" },
+                  { children: jsonBlock(modelRunDetail.filterSnapshot), key: "filterSnapshot", label: "filterSnapshot" },
+                  { children: jsonBlock(modelRunDetail.metricsSnapshot), key: "metricsSnapshot", label: "metricsSnapshot" },
+                  { children: jsonBlock(modelRunDetail.outputSnapshot), key: "outputSnapshot", label: "outputSnapshot" },
+                  { children: jsonBlock(modelRunDetail.errorSnapshot), key: "errorSnapshot", label: "errorSnapshot" }
+                ]}
+              />
+              <Table
+                columns={modelRunOutputColumns}
+                dataSource={modelRunDetail.outputs ?? []}
+                locale={{ emptyText: "暂无输出关联" }}
+                pagination={false}
+                rowKey="id"
+                scroll={{ x: 1400 }}
+                size="small"
+                title={() => "输出关联"}
+              />
+            </Space>
+          ) : null}
+        </Drawer>
+
+        <Modal
+          destroyOnHidden
+          okText="保存"
+          onCancel={() => setModelRunCreateOpen(false)}
+          onOk={() => modelRunCreateForm.submit()}
+          open={modelRunCreateOpen}
+          confirmLoading={modelRunCreateSubmitting}
+          title="新增模型运行记录"
+          width={1040}
+        >
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              description="创建运行记录不会触发真实模型训练。本阶段只记录模型版本、样本范围、特征、参数和筛选快照。"
+              showIcon
+              type="info"
+            />
+            <Form<ModelRunCreateFormValues> form={modelRunCreateForm} layout="vertical" onFinish={submitModelRunCreate}>
+              <Row gutter={12}>
+                <Col md={8} xs={24}>
+                  <Form.Item label="运行名称" name="runName">
+                    <Input maxLength={128} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="运行类型" name="runType" rules={[{ required: true, message: "请选择运行类型" }]}>
+                    <Select options={optionsFromLabels(RESIDUAL_MODEL_RUN_TYPE_LABELS)} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="初始状态" name="runStatus" rules={[{ required: true, message: "请选择初始状态" }]}>
+                    <Select
+                      options={[
+                        { label: labelOf(RESIDUAL_MODEL_RUN_STATUS_LABELS, "CREATED"), value: "CREATED" },
+                        { label: labelOf(RESIDUAL_MODEL_RUN_STATUS_LABELS, "RUNNING"), value: "RUNNING" }
+                      ]}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="模型名称" name="modelName">
+                    <Input maxLength={128} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="模型版本" name="modelVersion">
+                    <Input maxLength={64} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="模型提供方" name="modelProvider">
+                    <Input maxLength={64} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="算法" name="algorithm">
+                    <Select allowClear options={optionsFromLabels(RESIDUAL_MODEL_ALGORITHM_LABELS)} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标类型" name="targetType" rules={[{ required: true, message: "请选择目标类型" }]}>
+                    <Select options={optionsFromLabels(RESIDUAL_MODEL_TARGET_TYPE_LABELS)} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标品牌" name="targetBrand">
+                    <Input maxLength={64} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标车系" name="targetSeries">
+                    <Input maxLength={64} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标车型" name="targetModel">
+                    <Input maxLength={128} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标年款" name="targetModelYear">
+                    <InputNumber min={1990} max={2100} precision={0} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标版本 / trim" name="targetTrim">
+                    <Input maxLength={128} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标电池容量（kWh）" name="targetBatteryCapacityKwh">
+                    <InputNumber min={0} precision={2} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="目标电池使用方式" name="targetBatteryUsageType">
+                    <Select allowClear options={optionsFromLabels(VEHICLE_BATTERY_USAGE_TYPE_LABELS)} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="训练数据开始日期" name="trainingDataStartDate">
+                    <DatePicker style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="训练数据结束日期" name="trainingDataEndDate">
+                    <DatePicker style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col md={8} xs={24}>
+                  <Form.Item label="样本数" name="sampleCount">
+                    <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col span={24}>
+                  <Form.Item label="featureSnapshot" name="featureSnapshotText">
+                    <Input.TextArea rows={4} />
+                  </Form.Item>
+                </Col>
+                <Col span={24}>
+                  <Form.Item label="parameterSnapshot" name="parameterSnapshotText">
+                    <Input.TextArea rows={4} />
+                  </Form.Item>
+                </Col>
+                <Col span={24}>
+                  <Form.Item label="filterSnapshot" name="filterSnapshotText">
+                    <Input.TextArea rows={4} />
+                  </Form.Item>
+                </Col>
+                <Col span={24}>
+                  <Form.Item label="备注" name="remark">
+                    <Input.TextArea rows={3} />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </Form>
+          </Space>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          okText="提交完成"
+          okButtonProps={{ loading: modelRunCompleteSubmitting }}
+          onCancel={() => setModelRunCompleteTarget(null)}
+          onOk={submitModelRunComplete}
+          open={Boolean(modelRunCompleteTarget)}
+          title="标记模型运行完成"
+          width={900}
+        >
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              description="标记完成只记录运行结果和输出关联，不会自动生成曲线或预测。如需生成残值曲线，请使用“残值曲线”Tab 的生成功能。"
+              showIcon
+              type="info"
+            />
+            <Form<ModelRunCompleteFormValues> form={modelRunCompleteForm} layout="vertical">
+              <Form.Item label="metricsSnapshot" name="metricsSnapshotText">
+                <Input.TextArea rows={5} />
+              </Form.Item>
+              <Form.Item label="outputSnapshot" name="outputSnapshotText">
+                <Input.TextArea rows={5} />
+              </Form.Item>
+              <Form.Item
+                extra='示例：[{"outputType":"RESIDUAL_CURVE","curveId":"xxx","outputSnapshot":{"curveNo":"RVC..."}}]'
+                label="outputs"
+                name="outputsText"
+              >
+                <Input.TextArea rows={6} />
+              </Form.Item>
+              <Form.Item label="备注" name="remark">
+                <Input.TextArea rows={3} />
+              </Form.Item>
+            </Form>
+          </Space>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          okText="提交失败"
+          okButtonProps={{ danger: true, loading: modelRunFailSubmitting }}
+          onCancel={() => setModelRunFailTarget(null)}
+          onOk={submitModelRunFail}
+          open={Boolean(modelRunFailTarget)}
+          title="标记模型运行失败"
+          width={760}
+        >
+          <Form<ModelRunFailFormValues> form={modelRunFailForm} layout="vertical">
+            <Form.Item label="errorSnapshot" name="errorSnapshotText">
+              <Input.TextArea rows={6} />
+            </Form.Item>
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          okText="提交取消"
+          okButtonProps={{ danger: true, loading: modelRunCancelSubmitting }}
+          onCancel={() => setModelRunCancelTarget(null)}
+          onOk={submitModelRunCancel}
+          open={Boolean(modelRunCancelTarget)}
+          title="取消模型运行"
+        >
+          <Form<ModelRunCancelFormValues> form={modelRunCancelForm} layout="vertical">
+            <Form.Item label="备注" name="remark">
+              <Input.TextArea rows={4} />
+            </Form.Item>
+          </Form>
+        </Modal>
 
         <Modal
           destroyOnHidden

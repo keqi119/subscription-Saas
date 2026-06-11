@@ -1725,7 +1725,11 @@ function MetricCardGrid({
     >
       {items.map((item) => (
         <Card key={item.title} size="small">
-          <Statistic title={item.title} value={item.value} styles={{ content: { fontSize: 20 } }} />
+          <Statistic
+            title={item.title}
+            value={item.value}
+            styles={{ content: { fontSize: 20, whiteSpace: "nowrap" } }}
+          />
         </Card>
       ))}
     </div>
@@ -3235,7 +3239,7 @@ function formatYuan(value?: number | null) {
   return `${(numberValue / 100).toLocaleString("zh-CN", {
     maximumFractionDigits: 2,
     minimumFractionDigits: 2
-  })} 元`;
+  })}\u00A0元`;
 }
 
 function formatSignedYuan(value?: number | null) {

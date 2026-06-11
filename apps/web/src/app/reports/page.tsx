@@ -443,7 +443,7 @@ function formatYuan(value?: number | null) {
   return `${(numberValue / 100).toLocaleString("zh-CN", {
     maximumFractionDigits: 2,
     minimumFractionDigits: 2
-  })} 元`;
+  })}\u00A0元`;
 }
 
 function formatEntitlementAmount(value?: number | null) {
@@ -2162,7 +2162,7 @@ function DashboardSummaryContent({
         <DashboardBlock title="订单与履约链路">
           <Descriptions
             bordered
-            column={2}
+            column={1}
             items={[
               { label: "订单总数", children: formatInteger(summary?.totalOrders) },
               { label: "新增订单", children: formatInteger(summary?.newOrders) },
@@ -2177,7 +2177,7 @@ function DashboardSummaryContent({
         <DashboardBlock title="车辆运营状态">
           <Descriptions
             bordered
-            column={2}
+            column={1}
             items={[
               { label: "车辆总数", children: formatInteger(summary?.totalVehicles) },
               { label: "可租用", children: formatInteger(summary?.availableVehicles) },
@@ -2195,7 +2195,7 @@ function DashboardSummaryContent({
         <DashboardBlock title="财务收款">
           <Descriptions
             bordered
-            column={2}
+            column={1}
             items={[
               { label: "应收合计", children: formatYuan(summary?.totalReceivableAmount) },
               { label: "实收合计", children: formatYuan(summary?.totalPaidAmount) },
@@ -2210,7 +2210,7 @@ function DashboardSummaryContent({
         <DashboardBlock title="押金与保证金">
           <Descriptions
             bordered
-            column={2}
+            column={1}
             items={[
               { label: "押金余额", children: formatYuan(summary?.depositBalanceAmount) },
               { label: "说明", children: "押金余额单独列示，不计入经营收入。" }
@@ -2222,7 +2222,7 @@ function DashboardSummaryContent({
         <DashboardBlock title="逾期与催收风险">
           <Descriptions
             bordered
-            column={2}
+            column={1}
             items={[
               { label: "逾期金额", children: formatYuan(summary?.overdueAmount) },
               { label: "逾期订单数", children: formatInteger(summary?.overdueOrderCount) },
@@ -2340,7 +2340,11 @@ function MetricGrid({
             }
           }}
         >
-          <Statistic title={item.title} value={item.value} />
+          <Statistic
+            title={item.title}
+            value={item.value}
+            styles={{ content: { whiteSpace: "nowrap" } }}
+          />
         </Card>
       ))}
     </div>

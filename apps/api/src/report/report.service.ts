@@ -28,6 +28,8 @@ import {
   VehicleAcquisitionMode,
   VehicleCapitalEventStatus,
   VehicleModel,
+  VehicleResidualForecastPointStatus,
+  VehicleResidualForecastStatus,
   VehicleStatus
 } from "@prisma/client";
 
@@ -668,6 +670,29 @@ export class ReportService {
       platformNetIncomeAmount === null || roeEquityBaseAmount <= 0
         ? null
         : platformNetIncomeAmount / roeEquityBaseAmount;
+    const residualForecastRows = rows.filter((row) => row.forecastResidualAmount !== null);
+    const residualForecastUnsupportedVehicleCount = rows.filter(
+      (row) => row.residualForecastUnavailableReason === RESIDUAL_FORECAST_UNSUPPORTED_REASON
+    ).length;
+    const residualSensitivityRows = residualForecastRows.filter(
+      (row) =>
+        row.residualSensitivityNetIncomeAmount !== null &&
+        row.roeEquityBaseAmount !== null &&
+        row.roeEquityBaseAmount > 0
+    );
+    const residualSensitivityNetIncomeAmount =
+      residualSensitivityRows.length === 0
+        ? null
+        : sumNumbers(
+            residualSensitivityRows.map((row) => row.residualSensitivityNetIncomeAmount ?? 0)
+          );
+    const residualSensitivityEquityBaseAmount = sumNumbers(
+      residualSensitivityRows.map((row) => row.roeEquityBaseAmount ?? 0)
+    );
+    const residualSensitivityRoeTrial =
+      residualSensitivityNetIncomeAmount === null || residualSensitivityEquityBaseAmount <= 0
+        ? null
+        : residualSensitivityNetIncomeAmount / residualSensitivityEquityBaseAmount;
 
     return {
       annualizedTrialRoa:
@@ -702,6 +727,37 @@ export class ReportService {
       pledgedRevenueAmount: sumNumbers(rows.map((row) => row.pledgedRevenueAmount)),
       purchasePriceAmount: sumNumbers(rows.map((row) => row.purchasePriceAmount)),
       rentalPaidAmount: sumNumbers(rows.map((row) => row.rentalPaidAmount)),
+      forecastResidualAmount: sumNullable(
+        residualForecastRows.map((row) => row.forecastResidualAmount)
+      ),
+      forecastLowerBoundAmount: sumNullable(
+        residualForecastRows.map((row) => row.forecastLowerBoundAmount)
+      ),
+      forecastUpperBoundAmount: sumNullable(
+        residualForecastRows.map((row) => row.forecastUpperBoundAmount)
+      ),
+      residualDeltaToCostProfileAmount: sumNullable(
+        residualForecastRows.map((row) => row.residualDeltaToCostProfileAmount)
+      ),
+      residualDeltaToCurrentSalePriceAmount: sumNullable(
+        residualForecastRows.map((row) => row.residualDeltaToCurrentSalePriceAmount)
+      ),
+      residualForecastAdoptedVehicleCount: residualForecastRows.filter(
+        (row) => row.forecastResidualAmountSource === "ADOPTED"
+      ).length,
+      residualForecastMissingVehicleCount:
+        rows.length - residualForecastRows.length - residualForecastUnsupportedVehicleCount,
+      residualForecastUnsupportedVehicleCount,
+      residualForecastVehicleCount: residualForecastRows.length,
+      residualForecastWarnings: uniqueStrings(
+        rows.flatMap((row) => row.residualForecastWarnings)
+      ),
+      residualSensitivityAnnualizedRoeTrial:
+        residualSensitivityRoeTrial === null || analysisDays <= 0
+          ? null
+          : (residualSensitivityRoeTrial * 365) / analysisDays,
+      residualSensitivityNetIncomeAmount,
+      residualSensitivityRoeTrial,
       roeCalculatedVehicleCount: roeCalculatedRows.length,
       roeDataReady: roeTrial !== null,
       roeEquityBaseAmount,
@@ -743,13 +799,18 @@ export class ReportService {
       throw new NotFoundException("Vehicle not found.");
     }
 
-    const [metricsByVehicleId, roeContextsByVehicleId] = await Promise.all([
+    const residualHorizonMonth = resolveResidualHorizonMonth(query);
+    const [metricsByVehicleId, roeContextsByVehicleId, residualContextsByVehicleId] = await Promise.all([
       this.buildAssetProfitabilityMetrics([vehicle], range),
-      this.buildAssetReturnRoeContexts([vehicle], range)
+      this.buildAssetReturnRoeContexts([vehicle], range),
+      this.buildAssetReturnResidualForecastContexts([vehicle], residualHorizonMonth)
     ]);
     const metrics = metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics();
     const roeContext = roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id);
-    const row = assetReturnTrialVehicleRow(vehicle, metrics, range, roeContext);
+    const residualContext =
+      residualContextsByVehicleId.get(vehicle.id) ??
+      emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth);
+    const row = assetReturnTrialVehicleRow(vehicle, metrics, range, roeContext, residualContext);
     const profile = activeCostProfileFor(vehicle);
 
     return {
@@ -838,9 +899,20 @@ export class ReportService {
         roeTrial: row.roeTrial,
         roeUnavailableReason: row.roeUnavailableReason,
         roeWarnings: row.roeWarnings,
+        residualDeltaToCostProfileAmount: row.residualDeltaToCostProfileAmount,
+        residualDeltaToCurrentSalePriceAmount: row.residualDeltaToCurrentSalePriceAmount,
+        residualForecastAvailable: row.residualForecastAvailable,
+        residualForecastUnavailableReason: row.residualForecastUnavailableReason,
+        residualForecastWarnings: row.residualForecastWarnings,
+        residualSensitivityAnnualizedRoeTrial: row.residualSensitivityAnnualizedRoeTrial,
+        residualSensitivityNetIncomeAmount: row.residualSensitivityNetIncomeAmount,
+        residualSensitivityRoeTrial: row.residualSensitivityRoeTrial,
         trialNetOperatingIncomeAmount: row.trialNetOperatingIncomeAmount,
         trialRoa: row.trialRoa
       },
+      residualForecastSummary: row.residualForecastSummary,
+      residualForecastPoint: row.residualForecastPoint,
+      residualForecastCurveSummary: row.residualForecastCurveSummary,
       revenueRightAssignments: roeContext.revenueRightAssignments.map(
         assetReturnTrialRevenueRightAssignmentView
       ),
@@ -2615,16 +2687,20 @@ export class ReportService {
       select: assetReturnTrialVehicleSelect,
       where: assetProfitabilityVehicleWhere(query)
     });
-    const [metricsByVehicleId, roeContextsByVehicleId] = await Promise.all([
+    const residualHorizonMonth = resolveResidualHorizonMonth(query);
+    const [metricsByVehicleId, roeContextsByVehicleId, residualContextsByVehicleId] = await Promise.all([
       this.buildAssetProfitabilityMetrics(vehicles, range),
-      this.buildAssetReturnRoeContexts(vehicles, range)
+      this.buildAssetReturnRoeContexts(vehicles, range),
+      this.buildAssetReturnResidualForecastContexts(vehicles, residualHorizonMonth)
     ]);
     const rows = vehicles.map((vehicle) =>
       assetReturnTrialVehicleRow(
         vehicle,
         metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics(),
         range,
-        roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id)
+        roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id),
+        residualContextsByVehicleId.get(vehicle.id) ??
+          emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth)
       )
     );
 
@@ -2873,6 +2949,65 @@ export class ReportService {
       for (const context of contextsByVehicleId.values()) {
         context.vehiclePoolRevenueRightWarning = true;
       }
+    }
+
+    return contextsByVehicleId;
+  }
+
+  private async buildAssetReturnResidualForecastContexts(
+    vehicles: Pick<AssetReturnTrialVehicleRecord, "id">[],
+    horizonMonth: number
+  ) {
+    const vehicleIds = vehicles.map((vehicle) => vehicle.id);
+    const contextsByVehicleId = new Map(
+      vehicleIds.map((vehicleId) => [
+        vehicleId,
+        emptyAssetReturnResidualForecastContext(vehicleId, horizonMonth)
+      ])
+    );
+
+    if (vehicleIds.length === 0) {
+      return contextsByVehicleId;
+    }
+
+    const forecasts = await this.prisma.vehicleResidualForecast.findMany({
+      orderBy: [{ createdAt: "desc" }, { asOfDate: "desc" }],
+      select: assetReturnResidualForecastSelect,
+      where: {
+        deletedAt: null,
+        forecastStatus: {
+          in: [VehicleResidualForecastStatus.ADOPTED, VehicleResidualForecastStatus.GENERATED]
+        },
+        vehicleId: { in: vehicleIds }
+      }
+    });
+
+    const forecastsByVehicleId = new Map<string, AssetReturnResidualForecastRecord[]>();
+    for (const forecast of forecasts) {
+      forecastsByVehicleId.set(forecast.vehicleId, [
+        ...(forecastsByVehicleId.get(forecast.vehicleId) ?? []),
+        forecast
+      ]);
+    }
+
+    for (const vehicleId of vehicleIds) {
+      const selectedForecast = selectAssetReturnResidualForecast(
+        forecastsByVehicleId.get(vehicleId) ?? []
+      );
+      if (!selectedForecast) {
+        continue;
+      }
+
+      const point =
+        selectedForecast.points.find((candidate) => candidate.horizonMonth === horizonMonth) ??
+        null;
+      contextsByVehicleId.set(vehicleId, {
+        forecast: selectedForecast,
+        horizonMonth,
+        point,
+        unavailableReason: point ? null : RESIDUAL_FORECAST_POINT_MISSING_REASON,
+        vehicleId
+      });
     }
 
     return contextsByVehicleId;
@@ -3276,6 +3411,10 @@ function pagedResult<T>(items: T[], total: number, pagination: ResolvedPaginatio
     page: pagination.page,
     pageSize: pagination.pageSize
   };
+}
+
+function resolveResidualHorizonMonth(query: Pick<AssetReturnTrialQueryDto, "residualHorizonMonth">) {
+  return query.residualHorizonMonth ?? DEFAULT_RESIDUAL_HORIZON_MONTH;
 }
 
 function clampInteger(value: unknown, min: number, max: number, fallback: number) {
@@ -3836,6 +3975,50 @@ const assetReturnTrialRevenueShareRuleSelect = {
   vehicleId: true
 } satisfies Prisma.RevenueShareRuleSelect;
 
+const assetReturnResidualForecastSelect = {
+  asOfDate: true,
+  createdAt: true,
+  curve: {
+    select: {
+      batteryCapacityKwh: true,
+      batteryUsageType: true,
+      brand: true,
+      confidenceScore: true,
+      curveMethod: true,
+      curveNo: true,
+      curveStatus: true,
+      id: true,
+      model: true,
+      modelYear: true,
+      series: true,
+      trim: true
+    }
+  },
+  curveId: true,
+  forecastMethod: true,
+  forecastNo: true,
+  forecastStatus: true,
+  id: true,
+  points: {
+    select: {
+      adoptedResidualAmount: true,
+      confidenceScore: true,
+      horizonMonth: true,
+      id: true,
+      interpolationMethod: true,
+      lowerBoundAmount: true,
+      matchedCurvePointAgeMonth: true,
+      pointStatus: true,
+      predictedResidualAmount: true,
+      predictedResidualRateBps: true,
+      targetAgeMonth: true,
+      targetDate: true,
+      upperBoundAmount: true
+    }
+  },
+  vehicleId: true
+} satisfies Prisma.VehicleResidualForecastSelect;
+
 type AssetProfitabilityVehicleRecord = Prisma.VehicleGetPayload<{
   select: typeof assetProfitabilityVehicleSelect;
 }>;
@@ -3866,6 +4049,10 @@ type AssetReturnTrialRevenueRightAssignmentRecord =
 type AssetReturnTrialRevenueShareRuleRecord = Prisma.RevenueShareRuleGetPayload<{
   select: typeof assetReturnTrialRevenueShareRuleSelect;
 }>;
+type AssetReturnResidualForecastRecord = Prisma.VehicleResidualForecastGetPayload<{
+  select: typeof assetReturnResidualForecastSelect;
+}>;
+type AssetReturnResidualForecastPointRecord = AssetReturnResidualForecastRecord["points"][number];
 type AssetProfitabilitySortField = NonNullable<AssetProfitabilityVehicleListQueryDto["sortBy"]>;
 type AssetReturnTrialSortField = NonNullable<AssetReturnTrialVehicleListQueryDto["sortBy"]>;
 
@@ -3878,8 +4065,23 @@ type AssetReturnRoeContext = {
   vehiclePoolRevenueRightWarning: boolean;
 };
 
+type AssetReturnResidualForecastContext = {
+  forecast: AssetReturnResidualForecastRecord | null;
+  horizonMonth: number;
+  point: AssetReturnResidualForecastPointRecord | null;
+  unavailableReason: string | null;
+  vehicleId: string;
+};
+
 const ROE_UNAVAILABLE_REASON = "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。";
 const MISSING_COST_PROFILE_REASON = "缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。";
+const DEFAULT_RESIDUAL_HORIZON_MONTH = 12;
+const RESIDUAL_FORECAST_MISSING_REASON = "未找到有效残值预测记录。";
+const RESIDUAL_FORECAST_POINT_MISSING_REASON = "未找到指定预测周期的残值预测点。";
+const RESIDUAL_FORECAST_UNSUPPORTED_REASON = "该预测点暂不支持，可能超出残值曲线范围。";
+const RESIDUAL_FORECAST_AMOUNT_MISSING_REASON = "预测点缺少预测残值金额。";
+const RESIDUAL_CURRENT_SALE_PRICE_MISSING_WARNING = "车辆缺少当前销售价，无法计算相对当前销售价差异。";
+const RESIDUAL_COST_PROFILE_MISSING_WARNING = "车辆成本参数缺少预计残值，无法计算相对成本参数残值差异。";
 const operatingRevenueBillTypes: BillType[] = [
   BillType.FIRST_MONTHLY_FEE,
   BillType.MONTHLY_RENT,
@@ -3967,7 +4169,11 @@ function assetReturnTrialVehicleRow(
   vehicle: AssetReturnTrialVehicleRecord,
   metrics: AssetProfitabilityMetrics,
   range: ReturnType<typeof resolveReportDateRange>,
-  roeContext: AssetReturnRoeContext = emptyAssetReturnRoeContext(vehicle.id)
+  roeContext: AssetReturnRoeContext = emptyAssetReturnRoeContext(vehicle.id),
+  residualContext: AssetReturnResidualForecastContext = emptyAssetReturnResidualForecastContext(
+    vehicle.id,
+    DEFAULT_RESIDUAL_HORIZON_MONTH
+  )
 ) {
   const baseRow = assetProfitabilityVehicleRow(vehicle, metrics);
   const profile = activeCostProfileFor(vehicle);
@@ -3986,10 +4192,19 @@ function assetReturnTrialVehicleRow(
       roeContext,
       vehicle
     });
+    const residualFields = buildAssetReturnResidualForecastFields({
+      analysisDays,
+      baseRow,
+      profile: null,
+      residualContext,
+      roeFields,
+      vehicle
+    });
 
     return {
       ...baseRow,
       ...roeFields,
+      ...residualFields,
       costDays: 0,
       costProfileMissing: true,
       costProfileStatus: null,
@@ -4015,11 +4230,20 @@ function assetReturnTrialVehicleRow(
     roeContext,
     vehicle
   });
+  const residualFields = buildAssetReturnResidualForecastFields({
+    analysisDays,
+    baseRow,
+    profile,
+    residualContext,
+    roeFields,
+    vehicle
+  });
 
   return {
     ...baseRow,
     ...periodCost,
     ...roeFields,
+    ...residualFields,
     costDays,
     costProfileMissing: false,
     costProfileStatus: profile.profileStatus,
@@ -4166,6 +4390,213 @@ function buildAssetReturnRoeTrialFields({
     roeWarnings: uniqueStrings(warnings),
     trialNetOperatingIncomeAmount,
     trialRoa
+  };
+}
+
+function buildAssetReturnResidualForecastFields({
+  analysisDays,
+  baseRow,
+  profile,
+  residualContext,
+  roeFields,
+  vehicle
+}: {
+  analysisDays: number;
+  baseRow: ReturnType<typeof assetProfitabilityVehicleRow>;
+  profile: AssetCostProfileRecord | null;
+  residualContext: AssetReturnResidualForecastContext;
+  roeFields: ReturnType<typeof buildAssetReturnRoeTrialFields>;
+  vehicle: AssetReturnTrialVehicleRecord;
+}) {
+  const forecast = residualContext.forecast;
+  const point = residualContext.point;
+  const warnings: string[] = [];
+  const costProfileResidualValueAmount = profile
+    ? toNullableNumber(profile.residualValueAmount)
+    : null;
+
+  const baseFields = {
+    costProfileResidualValueAmount,
+    residualDeltaToCostProfileAmount: null as number | null,
+    residualDeltaToCurrentSalePriceAmount: null as number | null,
+    residualForecastAsOfDate: forecast?.asOfDate ?? null,
+    residualForecastAvailable: false,
+    residualForecastCurveNo: forecast?.curve?.curveNo ?? null,
+    residualForecastHorizonMonth: residualContext.horizonMonth,
+    residualForecastMethod: forecast?.forecastMethod ?? null,
+    residualForecastNo: forecast?.forecastNo ?? null,
+    residualForecastPoint: point ? residualForecastPointView(point, null) : null,
+    residualForecastStatus: forecast?.forecastStatus ?? null,
+    residualForecastSummary: null as ReturnType<typeof residualForecastSummaryView> | null,
+    residualForecastTargetAgeMonth: point?.targetAgeMonth ?? null,
+    residualForecastTargetDate: point?.targetDate ?? null,
+    residualForecastUnavailableReason: residualContext.unavailableReason,
+    residualForecastWarnings: warnings,
+    residualForecastCurveSummary: forecast?.curve
+      ? residualForecastCurveSummaryView(forecast.curve)
+      : null,
+    forecastConfidenceScore: point?.confidenceScore ?? null,
+    forecastLowerBoundAmount: point ? toNullableNumber(point.lowerBoundAmount) : null,
+    forecastResidualAmount: null as number | null,
+    forecastResidualAmountSource: null as "ADOPTED" | "PREDICTED" | null,
+    forecastResidualRateBps: null as number | null,
+    forecastUpperBoundAmount: point ? toNullableNumber(point.upperBoundAmount) : null,
+    residualSensitivityAnnualizedRoeTrial: null as number | null,
+    residualSensitivityNetIncomeAmount: null as number | null,
+    residualSensitivityRoeTrial: null as number | null
+  };
+
+  if (!forecast || !point) {
+    return {
+      ...baseFields,
+      residualForecastSummary: residualForecastSummaryView(baseFields)
+    };
+  }
+
+  if (point.pointStatus === VehicleResidualForecastPointStatus.UNSUPPORTED) {
+    const unavailableFields = {
+      ...baseFields,
+      residualForecastUnavailableReason: RESIDUAL_FORECAST_UNSUPPORTED_REASON
+    };
+    return {
+      ...unavailableFields,
+      residualForecastSummary: residualForecastSummaryView(unavailableFields)
+    };
+  }
+
+  const adoptedResidualAmount = toNullableNumber(point.adoptedResidualAmount);
+  const predictedResidualAmount = toNullableNumber(point.predictedResidualAmount);
+  const forecastResidualAmount = adoptedResidualAmount ?? predictedResidualAmount;
+  if (forecastResidualAmount === null) {
+    const unavailableFields = {
+      ...baseFields,
+      residualForecastUnavailableReason: RESIDUAL_FORECAST_AMOUNT_MISSING_REASON
+    };
+    return {
+      ...unavailableFields,
+      residualForecastSummary: residualForecastSummaryView(unavailableFields)
+    };
+  }
+
+  const residualDeltaToCurrentSalePriceAmount =
+    vehicle.currentSalePriceAmount === null
+      ? null
+      : forecastResidualAmount - Number(vehicle.currentSalePriceAmount);
+  if (residualDeltaToCurrentSalePriceAmount === null) {
+    warnings.push(RESIDUAL_CURRENT_SALE_PRICE_MISSING_WARNING);
+  }
+
+  const residualDeltaToCostProfileAmount =
+    costProfileResidualValueAmount === null
+      ? null
+      : forecastResidualAmount - costProfileResidualValueAmount;
+  if (residualDeltaToCostProfileAmount === null) {
+    warnings.push(RESIDUAL_COST_PROFILE_MISSING_WARNING);
+  }
+
+  const residualSensitivityNetIncomeAmount =
+    roeFields.platformNetIncomeAmount === null || residualDeltaToCostProfileAmount === null
+      ? null
+      : roeFields.platformNetIncomeAmount + residualDeltaToCostProfileAmount;
+  const residualSensitivityRoeTrial =
+    residualSensitivityNetIncomeAmount === null ||
+    roeFields.roeEquityBaseAmount === null ||
+    roeFields.roeEquityBaseAmount <= 0
+      ? null
+      : residualSensitivityNetIncomeAmount / roeFields.roeEquityBaseAmount;
+  const availableFields = {
+    ...baseFields,
+    forecastResidualAmount,
+    forecastResidualAmountSource:
+      adoptedResidualAmount === null ? "PREDICTED" as const : "ADOPTED" as const,
+    forecastResidualRateBps:
+      baseRow.purchasePriceAmount <= 0
+        ? null
+        : Math.round((forecastResidualAmount / baseRow.purchasePriceAmount) * 10000),
+    residualDeltaToCostProfileAmount,
+    residualDeltaToCurrentSalePriceAmount,
+    residualForecastAvailable: true,
+    residualForecastPoint: residualForecastPointView(point, forecastResidualAmount),
+    residualForecastUnavailableReason: null,
+    residualSensitivityAnnualizedRoeTrial:
+      residualSensitivityRoeTrial === null || analysisDays <= 0
+        ? null
+        : (residualSensitivityRoeTrial * 365) / analysisDays,
+    residualSensitivityNetIncomeAmount,
+    residualSensitivityRoeTrial
+  };
+
+  return {
+    ...availableFields,
+    residualForecastSummary: residualForecastSummaryView(availableFields)
+  };
+}
+
+function residualForecastSummaryView(fields: {
+  forecastResidualAmountSource: "ADOPTED" | "PREDICTED" | null;
+  residualForecastAsOfDate: Date | null;
+  residualForecastAvailable: boolean;
+  residualForecastCurveNo: string | null;
+  residualForecastHorizonMonth: number;
+  residualForecastMethod: string | null;
+  residualForecastNo: string | null;
+  residualForecastStatus: string | null;
+  residualForecastTargetDate: Date | null;
+  residualForecastUnavailableReason: string | null;
+  residualForecastWarnings: string[];
+}) {
+  return {
+    amountSource: fields.forecastResidualAmountSource,
+    asOfDate: fields.residualForecastAsOfDate,
+    available: fields.residualForecastAvailable,
+    curveNo: fields.residualForecastCurveNo,
+    forecastMethod: fields.residualForecastMethod,
+    forecastNo: fields.residualForecastNo,
+    forecastStatus: fields.residualForecastStatus,
+    horizonMonth: fields.residualForecastHorizonMonth,
+    targetDate: fields.residualForecastTargetDate,
+    unavailableReason: fields.residualForecastUnavailableReason,
+    warnings: fields.residualForecastWarnings
+  };
+}
+
+function residualForecastPointView(
+  point: AssetReturnResidualForecastPointRecord,
+  forecastResidualAmount: number | null
+) {
+  return {
+    adoptedResidualAmount: toNullableNumber(point.adoptedResidualAmount),
+    confidenceScore: point.confidenceScore,
+    forecastResidualAmount,
+    interpolationMethod: point.interpolationMethod,
+    lowerBoundAmount: toNullableNumber(point.lowerBoundAmount),
+    matchedCurvePointAgeMonth: point.matchedCurvePointAgeMonth,
+    pointId: point.id,
+    pointStatus: point.pointStatus,
+    predictedResidualAmount: toNullableNumber(point.predictedResidualAmount),
+    predictedResidualRateBps: point.predictedResidualRateBps,
+    targetAgeMonth: point.targetAgeMonth,
+    targetDate: point.targetDate,
+    upperBoundAmount: toNullableNumber(point.upperBoundAmount)
+  };
+}
+
+function residualForecastCurveSummaryView(
+  curve: NonNullable<AssetReturnResidualForecastRecord["curve"]>
+) {
+  return {
+    batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
+    batteryUsageType: curve.batteryUsageType,
+    brand: curve.brand,
+    confidenceScore: curve.confidenceScore,
+    curveId: curve.id,
+    curveMethod: curve.curveMethod,
+    curveNo: curve.curveNo,
+    curveStatus: curve.curveStatus,
+    model: curve.model,
+    modelYear: curve.modelYear,
+    series: curve.series,
+    trim: curve.trim
   };
 }
 
@@ -4612,6 +5043,36 @@ function emptyAssetReturnRoeContext(vehicleId: string): AssetReturnRoeContext {
     vehicleId,
     vehiclePoolRevenueRightWarning: false
   };
+}
+
+function emptyAssetReturnResidualForecastContext(
+  vehicleId: string,
+  horizonMonth: number
+): AssetReturnResidualForecastContext {
+  return {
+    forecast: null,
+    horizonMonth,
+    point: null,
+    unavailableReason: RESIDUAL_FORECAST_MISSING_REASON,
+    vehicleId
+  };
+}
+
+function selectAssetReturnResidualForecast(forecasts: AssetReturnResidualForecastRecord[]) {
+  return [...forecasts].sort((left, right) => {
+    const leftPriority =
+      left.forecastStatus === VehicleResidualForecastStatus.ADOPTED ? 0 : 1;
+    const rightPriority =
+      right.forecastStatus === VehicleResidualForecastStatus.ADOPTED ? 0 : 1;
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+    const createdDiff = right.createdAt.getTime() - left.createdAt.getTime();
+    if (createdDiff !== 0) {
+      return createdDiff;
+    }
+    return right.asOfDate.getTime() - left.asOfDate.getTime();
+  })[0] ?? null;
 }
 
 function emptyOrderProfitabilityMetrics(): OrderProfitabilityMetrics {

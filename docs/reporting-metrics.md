@@ -1137,6 +1137,54 @@ Stage 8.4D-B 前端使用说明：
 
 当前阶段仍不做 AI / ML、不接入 ROE、不修改 `Vehicle.currentSalePriceAmount`、不修改 `VehicleSalePriceHistory`、不改资产收益试算口径、不做爬虫、定时采集或第三方平台 API。
 
+## Stage 8.4D-C 残值预测接入资产收益试算口径
+
+Stage 8.4D-C-A 将单车残值预测接入资产收益试算 API，作为残值敏感性分析输入。该能力服务于经营分析试算，不构成正式会计估值、正式减值测试、正式 ROE 或会计凭证。
+
+增强 API：
+
+- `GET /api/reports/asset-profitability/returns/summary`
+- `GET /api/reports/asset-profitability/returns/vehicles`
+- `GET /api/reports/asset-profitability/returns/vehicles/:id`
+
+查询参数：
+
+- `residualHorizonMonth`：选择未来 N 个月预测点用于残值敏感性展示，默认 `12`，范围 `0 - 120`。
+
+残值预测选择规则：
+
+- 来源为 `VehicleResidualForecast` 和 `VehicleResidualForecastPoint`。
+- 只使用 `forecastStatus IN (GENERATED, ADOPTED)` 且未删除的预测记录，排除 `VOIDED` / `ARCHIVED`。
+- 优先选择最新 `ADOPTED` forecast；没有时选择最新 `GENERATED` forecast。
+- 在选中的 forecast 中只查找 `horizonMonth = residualHorizonMonth` 的预测点；本阶段不对预测点再次插值。
+- 预测点金额优先使用 `adoptedResidualAmount`，否则使用 `predictedResidualAmount`。
+
+新增残值字段口径：
+
+- `forecastResidualAmount`：本次试算展示的预测残值，来源为人工采用值或曲线预测值。
+- `forecastResidualAmountSource`：`ADOPTED` 表示人工采用值，`PREDICTED` 表示曲线预测值。
+- `residualDeltaToCurrentSalePriceAmount = forecastResidualAmount - Vehicle.currentSalePriceAmount`。
+- `costProfileResidualValueAmount` 来自当前 ACTIVE `VehicleAssetCostProfile.residualValueAmount`。
+- `residualDeltaToCostProfileAmount = forecastResidualAmount - costProfileResidualValueAmount`。
+- `residualSensitivityNetIncomeAmount = platformNetIncomeAmount + residualDeltaToCostProfileAmount`。
+- `residualSensitivityRoeTrial = residualSensitivityNetIncomeAmount / roeEquityBaseAmount`。
+- `residualSensitivityAnnualizedRoeTrial = residualSensitivityRoeTrial * 365 / analysisDays`。
+
+主口径不变：
+
+- `platformNetIncomeAmount`、`roeTrial`、`annualizedRoeTrial`、`trialRoa`、`annualizedTrialRoa` 仍保持 Stage 8.3D 主口径。
+- `residualSensitivityRoeTrial` 只是残值敏感性分析，不是主 ROE。
+- 本阶段不修改 `Vehicle.currentSalePriceAmount`，不写 `VehicleSalePriceHistory`，不自动采用预测点，不自动修改 `VehicleAssetCostProfile.residualValueAmount`，不做 AI / ML。
+
+前端展示口径：
+
+- `/reports/asset-profitability` 的“收益试算”Tab 可选择 `residualHorizonMonth`，默认展示未来 `12` 个月预测点。
+- 页面同时展示主 `roeTrial` / `annualizedRoeTrial` 与 `residualSensitivityRoeTrial` / `residualSensitivityAnnualizedRoeTrial`。
+- 残值敏感性 ROE 不改变主 ROE，仅用于观察采用残值预测后对收益试算的影响。
+- 车辆列表展示残值预测可用状态、预测残值、预测值来源、相对成本参数残值差异和残值敏感性 ROE；不可用车辆展示不可用原因。
+- 单车收益详情展示残值预测摘要、预测点、曲线摘要、残值差异和残值敏感性 ROE。
+- 页面展示预测残值不会覆盖车辆当前销售价，也不会写入销售价历史。
+
 ## Stage 8.3F ROE 试算导出说明
 
 Stage 8.3F 将 Stage 8.3D / 8.3E 的 ROE 试算字段同步到收益试算 CSV 导出。导出仍为经营分析试算口径，不构成会计凭证、正式财务报表或正式会计 ROE。

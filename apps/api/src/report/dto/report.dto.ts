@@ -254,7 +254,14 @@ export class AssetProfitabilityVehicleListQueryDto extends AssetProfitabilityQue
 
 export class AssetProfitabilityVehicleDetailQueryDto extends ReportDateRangeQueryDto {}
 
-export class AssetReturnTrialQueryDto extends AssetProfitabilityQueryDto {}
+export class AssetReturnTrialQueryDto extends AssetProfitabilityQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(120)
+  residualHorizonMonth?: number;
+}
 
 export class AssetReturnTrialVehicleListQueryDto extends AssetReturnTrialQueryDto {
   @IsOptional()

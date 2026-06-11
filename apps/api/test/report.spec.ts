@@ -28,6 +28,11 @@ import {
   VehicleCapitalEventStatus,
   VehicleDepreciationMethod,
   VehicleModel,
+  VehicleResidualCurveMethod,
+  VehicleResidualCurveStatus,
+  VehicleResidualForecastMethod,
+  VehicleResidualForecastPointStatus,
+  VehicleResidualForecastStatus,
   VehicleStatus
 } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -643,6 +648,162 @@ describe("reporting dashboard APIs", () => {
     expect(result.items[0]?.roeWarnings).toContain("未录入资本事件，按全自有资金假设试算 ROE。");
   });
 
+  it("asset return trial exposes default 12-month residual forecast sensitivity without changing main ROE", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      forecasts: [assetResidualForecast()]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    const row = result.items[0];
+
+    expect(row).toMatchObject({
+      costProfileResidualValueAmount: 120000,
+      forecastLowerBoundAmount: 130000,
+      forecastResidualAmount: 180000,
+      forecastResidualAmountSource: "PREDICTED",
+      forecastResidualRateBps: 1500,
+      forecastUpperBoundAmount: 220000,
+      residualDeltaToCostProfileAmount: 60000,
+      residualDeltaToCurrentSalePriceAmount: -820000,
+      residualForecastAvailable: true,
+      residualForecastHorizonMonth: 12,
+      residualSensitivityNetIncomeAmount: -611500
+    });
+    expect(row?.roeTrial).toBeCloseTo(-671500 / 1200000);
+    expect(row?.residualSensitivityRoeTrial).toBeCloseTo(-611500 / 1200000);
+    expect(row?.residualSensitivityAnnualizedRoeTrial).toBeCloseTo(-611500 / 1200000);
+    expect(JSON.stringify(row)).toContain("forecastResidualAmount");
+  });
+
+  it("asset return trial uses adopted residual amount before predicted amount", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      forecasts: [
+        assetResidualForecast({
+          createdAt: new Date("2026-06-05T00:00:00.000Z"),
+          forecastStatus: VehicleResidualForecastStatus.GENERATED,
+          id: "forecast-generated",
+          points: [assetResidualForecastPoint({ predictedResidualAmount: 180000n })]
+        }),
+        assetResidualForecast({
+          createdAt: new Date("2026-06-01T00:00:00.000Z"),
+          forecastNo: "VRF-ADOPTED",
+          forecastStatus: VehicleResidualForecastStatus.ADOPTED,
+          id: "forecast-adopted",
+          points: [
+            assetResidualForecastPoint({
+              adoptedResidualAmount: 210000n,
+              pointStatus: VehicleResidualForecastPointStatus.ADOPTED,
+              predictedResidualAmount: 180000n
+            })
+          ]
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      forecastResidualAmount: 210000,
+      forecastResidualAmountSource: "ADOPTED",
+      residualDeltaToCostProfileAmount: 90000,
+      residualForecastNo: "VRF-ADOPTED",
+      residualForecastStatus: VehicleResidualForecastStatus.ADOPTED,
+      residualSensitivityNetIncomeAmount: -581500
+    });
+    expect(result.items[0]?.roeTrial).toBeCloseTo(-671500 / 1200000);
+  });
+
+  it("asset return trial respects residualHorizonMonth and reports missing target points", async () => {
+    const missingHarness = createReportHarness();
+    mockAssetReturnTrial(missingHarness.prisma, {
+      forecasts: [assetResidualForecast()]
+    });
+
+    const missingResult = await missingHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      residualHorizonMonth: 24,
+      startDate: "2026-01-01"
+    });
+
+    expect(missingResult.items[0]).toMatchObject({
+      forecastResidualAmount: null,
+      residualForecastAvailable: false,
+      residualForecastHorizonMonth: 24,
+      residualForecastUnavailableReason: "未找到指定预测周期的残值预测点。"
+    });
+
+    const matchedHarness = createReportHarness();
+    mockAssetReturnTrial(matchedHarness.prisma, {
+      forecasts: [
+        assetResidualForecast({
+          points: [
+            assetResidualForecastPoint({
+              horizonMonth: 24,
+              id: "forecast-point-24",
+              predictedResidualAmount: 250000n
+            })
+          ]
+        })
+      ]
+    });
+
+    const matchedResult = await matchedHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      residualHorizonMonth: 24,
+      startDate: "2026-01-01"
+    });
+
+    expect(matchedResult.items[0]).toMatchObject({
+      forecastResidualAmount: 250000,
+      residualForecastAvailable: true,
+      residualForecastHorizonMonth: 24
+    });
+  });
+
+  it("asset return trial reports unavailable residual forecast states", async () => {
+    const missingHarness = createReportHarness();
+    mockAssetReturnTrial(missingHarness.prisma);
+    const missingResult = await missingHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    expect(missingResult.items[0]).toMatchObject({
+      residualForecastAvailable: false,
+      residualForecastUnavailableReason: "未找到有效残值预测记录。"
+    });
+
+    const unsupportedHarness = createReportHarness();
+    mockAssetReturnTrial(unsupportedHarness.prisma, {
+      forecasts: [
+        assetResidualForecast({
+          points: [
+            assetResidualForecastPoint({
+              pointStatus: VehicleResidualForecastPointStatus.UNSUPPORTED,
+              predictedResidualAmount: null
+            })
+          ]
+        })
+      ]
+    });
+    const unsupportedResult = await unsupportedHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    expect(unsupportedResult.items[0]).toMatchObject({
+      forecastResidualAmount: null,
+      residualForecastAvailable: false,
+      residualForecastUnavailableReason: "该预测点暂不支持，可能超出残值曲线范围。"
+    });
+  });
+
   it("asset return trial uses financing allocation interest instead of cost profile capital cost", async () => {
     const { prisma, service } = createReportHarness();
     mockAssetReturnTrial(prisma, {
@@ -946,6 +1107,93 @@ describe("reporting dashboard APIs", () => {
     expect(result.trialRoa).toBeCloseTo((500000 - 1321500) / 1200000);
     expect(result.roeTrial).toBeCloseTo((500000 - 1321500) / 1200000);
     expect(result.roeMissingReasons).toContain("缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。");
+  });
+
+  it("asset return trial summary aggregates residual forecast sensitivity", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      vehicles: [
+        assetReturnVehicle(),
+        assetReturnVehicle({ id: "vehicle-missing", vehicleNo: "VH-MISS" })
+      ],
+      bills: [
+        assetBill({ paidAmount: 500000n }),
+        assetBill({
+          billNo: "BILL-MISS",
+          id: "bill-miss",
+          orderId: "order-missing",
+          orderNo: "SO-MISS",
+          paidAmount: 100000n,
+          vehicleId: "vehicle-missing"
+        })
+      ],
+      forecasts: [assetResidualForecast()],
+      orders: [
+        assetOrder({ vehicleId: "vehicle-1" }),
+        assetOrder({ id: "order-missing", orderNo: "SO-MISS", vehicleId: "vehicle-missing" })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialSummary({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result).toMatchObject({
+      forecastResidualAmount: 180000,
+      residualDeltaToCostProfileAmount: 60000,
+      residualForecastAdoptedVehicleCount: 0,
+      residualForecastMissingVehicleCount: 1,
+      residualForecastUnsupportedVehicleCount: 0,
+      residualForecastVehicleCount: 1,
+      residualSensitivityNetIncomeAmount: -761500
+    });
+    expect(result.residualSensitivityRoeTrial).toBeCloseTo(-761500 / 1200000);
+  });
+
+  it("asset return trial detail returns residual forecast summary, point, and curve summary", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    mockAssetReturnTrial(prisma, {
+      forecasts: [
+        assetResidualForecast({
+          forecastStatus: VehicleResidualForecastStatus.ADOPTED,
+          points: [
+            assetResidualForecastPoint({
+              adoptedResidualAmount: 210000n,
+              pointStatus: VehicleResidualForecastPointStatus.ADOPTED
+            })
+          ]
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.residualForecastSummary).toMatchObject({
+      amountSource: "ADOPTED",
+      available: true,
+      curveNo: "VRC202606020001",
+      forecastStatus: VehicleResidualForecastStatus.ADOPTED,
+      horizonMonth: 12
+    });
+    expect(result.residualForecastPoint).toMatchObject({
+      adoptedResidualAmount: 210000,
+      forecastResidualAmount: 210000,
+      pointStatus: VehicleResidualForecastPointStatus.ADOPTED,
+      predictedResidualAmount: 180000
+    });
+    expect(result.residualForecastCurveSummary).toMatchObject({
+      curveNo: "VRC202606020001",
+      curveStatus: VehicleResidualCurveStatus.ACTIVE
+    });
+    expect(result.returns).toMatchObject({
+      residualDeltaToCostProfileAmount: 90000,
+      residualSensitivityNetIncomeAmount: -581500
+    });
   });
 
   it("asset return trial vehicle list supports pagination, sorting, and date-range cost allocation", async () => {
@@ -2605,6 +2853,9 @@ function createReportHarness() {
       findFirst: vi.fn(),
       findMany: vi.fn(),
       groupBy: vi.fn()
+    },
+    vehicleResidualForecast: {
+      findMany: vi.fn().mockResolvedValue([])
     }
   };
 
@@ -2776,6 +3027,7 @@ function mockAssetReturnTrial(
     bills?: Array<Record<string, unknown>>;
     capitalEvents?: Array<Record<string, unknown>>;
     financingAllocations?: Array<Record<string, unknown>>;
+    forecasts?: Array<Record<string, unknown>>;
     orders?: Array<Record<string, unknown>>;
     profiles?: Array<Record<string, unknown>>;
     revenueRightAssignments?: Array<Record<string, unknown>>;
@@ -2824,6 +3076,7 @@ function mockAssetReturnTrial(
     .mockResolvedValueOnce(overrides.revenueRightAssignments ?? [])
     .mockResolvedValueOnce([]);
   prisma.revenueShareRule.findMany.mockResolvedValue(overrides.revenueShareRules ?? []);
+  prisma.vehicleResidualForecast.findMany.mockResolvedValue(overrides.forecasts ?? []);
 }
 
 function assetVehicle(overrides: Record<string, unknown> = {}) {
@@ -2904,6 +3157,59 @@ function assetCostProfile(overrides: Record<string, unknown> = {}) {
     updatedBy: "user-1",
     usefulLifeMonths: 12,
     vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetResidualForecast(overrides: Record<string, unknown> = {}) {
+  return {
+    asOfDate: new Date("2026-06-01T00:00:00.000Z"),
+    createdAt: new Date("2026-06-02T00:00:00.000Z"),
+    curve: assetResidualCurve(),
+    curveId: "curve-1",
+    forecastMethod: VehicleResidualForecastMethod.CURVE_STATISTICAL,
+    forecastNo: "VRF202606020001",
+    forecastStatus: VehicleResidualForecastStatus.GENERATED,
+    id: "forecast-1",
+    points: [assetResidualForecastPoint()],
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetResidualForecastPoint(overrides: Record<string, unknown> = {}) {
+  return {
+    adoptedResidualAmount: null,
+    confidenceScore: 82,
+    horizonMonth: 12,
+    id: "forecast-point-12",
+    interpolationMethod: "EXACT",
+    lowerBoundAmount: 130000n,
+    matchedCurvePointAgeMonth: 36,
+    pointStatus: VehicleResidualForecastPointStatus.GENERATED,
+    predictedResidualAmount: 180000n,
+    predictedResidualRateBps: 1500,
+    targetAgeMonth: 36,
+    targetDate: new Date("2027-06-01T00:00:00.000Z"),
+    upperBoundAmount: 220000n,
+    ...overrides
+  };
+}
+
+function assetResidualCurve(overrides: Record<string, unknown> = {}) {
+  return {
+    batteryCapacityKwh: decimalLike(75),
+    batteryUsageType: "BUYOUT",
+    brand: "NIO",
+    confidenceScore: 78,
+    curveMethod: VehicleResidualCurveMethod.STATISTICAL_MEDIAN,
+    curveNo: "VRC202606020001",
+    curveStatus: VehicleResidualCurveStatus.ACTIVE,
+    id: "curve-1",
+    model: "ET5 75kWh",
+    modelYear: 2024,
+    series: "ET",
+    trim: null,
     ...overrides
   };
 }

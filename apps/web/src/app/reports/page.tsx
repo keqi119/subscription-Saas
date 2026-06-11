@@ -6,7 +6,9 @@ import {
   App,
   Button,
   Card,
+  Collapse,
   DatePicker,
+  Descriptions,
   Drawer,
   Empty,
   Select,
@@ -582,6 +584,16 @@ function metric(title: string, value: string | number, onClick?: () => void) {
   return { onClick, title, value };
 }
 
+function safeRatio(numerator?: number | null, denominator?: number | null) {
+  const numeratorValue = safeNumber(numerator);
+  const denominatorValue = safeNumber(denominator);
+  if (numeratorValue === null || denominatorValue === null || denominatorValue <= 0) {
+    return null;
+  }
+
+  return numeratorValue / denominatorValue;
+}
+
 export default function ReportsPage() {
   const { message } = App.useApp();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
@@ -1070,120 +1082,17 @@ export default function ReportsPage() {
     if (key === "summary") {
       return (
         <ReportPanel data={dashboardSummary} error={errors.summary} loading={loading.summary}>
-          <MetricGrid
-            items={[
-              metric("订单总数", formatInteger(dashboardSummary?.totalOrders), () => openOrderDetails("订单明细")),
-              metric("新增订单数", formatInteger(dashboardSummary?.newOrders), () => openOrderDetails("新增订单明细")),
-              metric("在租订单数", formatInteger(dashboardSummary?.activeOrders), () =>
-                openOrderDetails("在租订单明细", { orderStatus: "ACTIVE" }, [{ label: "订单状态", value: "在租" }])
-              ),
-              metric("已完成订单数", formatInteger(dashboardSummary?.completedOrders), () =>
-                openOrderDetails("已完成订单明细", { orderStatus: "COMPLETED" }, [{ label: "订单状态", value: "已完成" }])
-              ),
-              metric("已取消订单数", formatInteger(dashboardSummary?.cancelledOrders), () =>
-                openOrderDetails("已取消订单明细", { orderStatus: "CANCELLED" }, [{ label: "订单状态", value: "已取消" }])
-              ),
-              metric(
-                "车辆总数",
-                formatInteger(dashboardSummary?.totalVehicles),
-                canViewAssetReport ? () => openVehicleDetails("车辆明细") : undefined
-              ),
-              metric(
-                "可租车辆数",
-                formatInteger(dashboardSummary?.availableVehicles),
-                canViewAssetReport
-                  ? () =>
-                      openVehicleDetails("可租车辆明细", { vehicleStatus: "AVAILABLE" }, [
-                        { label: "车辆状态", value: "可用" }
-                      ])
-                  : undefined
-              ),
-              metric(
-                "审核占用车辆数",
-                formatInteger(dashboardSummary?.reviewReservedVehicles),
-                canViewAssetReport
-                  ? () =>
-                      openVehicleDetails("审核占用车辆明细", { vehicleStatus: "REVIEW_RESERVED" }, [
-                        { label: "车辆状态", value: "审核占用" }
-                      ])
-                  : undefined
-              ),
-              metric(
-                "签约锁定车辆数",
-                formatInteger(dashboardSummary?.signingLockedVehicles),
-                canViewAssetReport
-                  ? () =>
-                      openVehicleDetails("签约锁定车辆明细", { vehicleStatus: "RESERVED" }, [
-                        { label: "车辆状态", value: "签约锁定" }
-                      ])
-                  : undefined
-              ),
-              metric(
-                "在租车辆数",
-                formatInteger(dashboardSummary?.leasedVehicles),
-                canViewAssetReport
-                  ? () =>
-                      openVehicleDetails("在租车辆明细", { vehicleStatus: "LEASED" }, [
-                        { label: "车辆状态", value: "已出租" }
-                      ])
-                  : undefined
-              ),
-              metric(
-                "维修中车辆数",
-                formatInteger(dashboardSummary?.maintenanceVehicles),
-                canViewAssetReport
-                  ? () =>
-                      openVehicleDetails("维修中车辆明细", { vehicleStatus: "MAINTENANCE" }, [
-                        { label: "车辆状态", value: "维修 / 整备" }
-                      ])
-                  : undefined
-              ),
-              metric(
-                "已退回车辆数",
-                formatInteger(dashboardSummary?.returnedVehicles),
-                canViewAssetReport
-                  ? () =>
-                      openVehicleDetails("已退回车辆明细", { vehicleStatus: "RETURNED" }, [
-                        { label: "车辆状态", value: "已退回" }
-                      ])
-                  : undefined
-              ),
-              metric(
-                "总应收",
-                formatYuan(dashboardSummary?.totalReceivableAmount),
-                canViewFinanceReports ? () => openBillDetails("账单明细") : undefined
-              ),
-              metric(
-                "总实收",
-                formatYuan(dashboardSummary?.totalPaidAmount),
-                canViewFinanceReports ? () => openBillDetails("已收账单明细") : undefined
-              ),
-              metric(
-                "总欠收",
-                formatYuan(dashboardSummary?.totalUnpaidAmount),
-                canViewFinanceReports ? () => openBillDetails("欠收账单明细") : undefined
-              ),
-              metric(
-                "押金余额",
-                formatYuan(dashboardSummary?.depositBalanceAmount),
-                canViewFinanceReports ? () => openDepositLedgerDetails("保证金台账明细") : undefined
-              ),
-              metric(
-                "逾期金额",
-                formatYuan(dashboardSummary?.overdueAmount),
-                canViewCollectionReport ? () => openOverdueBillDetails("逾期账单明细") : undefined
-              ),
-              metric(
-                "逾期订单数",
-                formatInteger(dashboardSummary?.overdueOrderCount),
-                canViewCollectionReport ? () => openOverdueBillDetails("逾期订单账单明细") : undefined
-              ),
-              metric(
-                "催收案件数",
-                formatInteger(dashboardSummary?.collectionCaseCount),
-                canViewCollectionReport ? () => openCollectionCaseDetails("催收案件明细") : undefined
-              )
-            ]}
+          <DashboardSummaryContent
+            canViewAssetReport={canViewAssetReport}
+            canViewCollectionReport={canViewCollectionReport}
+            canViewFinanceReports={canViewFinanceReports}
+            onBillDetails={openBillDetails}
+            onCollectionCaseDetails={openCollectionCaseDetails}
+            onDepositLedgerDetails={openDepositLedgerDetails}
+            onOrderDetails={openOrderDetails}
+            onOverdueBillDetails={openOverdueBillDetails}
+            onVehicleDetails={openVehicleDetails}
+            summary={dashboardSummary}
           />
         </ReportPanel>
       );
@@ -2148,6 +2057,233 @@ function ExportButton({ loading, onClick }: Readonly<{ loading: boolean; onClick
         导出 CSV
       </Button>
     </div>
+  );
+}
+
+function DashboardSummaryContent({
+  canViewAssetReport,
+  canViewCollectionReport,
+  canViewFinanceReports,
+  onBillDetails,
+  onCollectionCaseDetails,
+  onDepositLedgerDetails,
+  onOrderDetails,
+  onOverdueBillDetails,
+  onVehicleDetails,
+  summary
+}: Readonly<{
+  canViewAssetReport: boolean;
+  canViewCollectionReport: boolean;
+  canViewFinanceReports: boolean;
+  onBillDetails: (title: string, query?: Record<string, unknown>, filters?: DrilldownState["filters"]) => void;
+  onCollectionCaseDetails: (title: string, query?: Record<string, unknown>, filters?: DrilldownState["filters"]) => void;
+  onDepositLedgerDetails: (title: string, query?: Record<string, unknown>, filters?: DrilldownState["filters"]) => void;
+  onOrderDetails: (title: string, query?: Record<string, unknown>, filters?: DrilldownState["filters"]) => void;
+  onOverdueBillDetails: (title: string, query?: Record<string, unknown>, filters?: DrilldownState["filters"]) => void;
+  onVehicleDetails: (title: string, query?: Record<string, unknown>, filters?: DrilldownState["filters"]) => void;
+  summary: DashboardSummaryReport | null;
+}>) {
+  const rentalRate = safeRatio(summary?.leasedVehicles, summary?.totalVehicles);
+  const collectionRate = safeRatio(summary?.totalPaidAmount, summary?.totalReceivableAmount);
+  const pendingItems = [
+    {
+      active: (summary?.overdueAmount ?? 0) > 0,
+      label: "有逾期账单",
+      onClick: canViewCollectionReport ? () => onOverdueBillDetails("逾期账单明细") : undefined
+    },
+    {
+      active: (summary?.collectionCaseCount ?? 0) > 0,
+      label: "有催收案件",
+      onClick: canViewCollectionReport ? () => onCollectionCaseDetails("催收案件明细") : undefined
+    },
+    {
+      active: (summary?.totalUnpaidAmount ?? 0) > 0,
+      label: "有未收账款",
+      onClick: canViewFinanceReports ? () => onBillDetails("欠收账单明细") : undefined
+    },
+    {
+      active: (summary?.maintenanceVehicles ?? 0) > 0,
+      label: "有维修车辆",
+      onClick: canViewAssetReport
+        ? () =>
+            onVehicleDetails("维修中车辆明细", { vehicleStatus: "MAINTENANCE" }, [
+              { label: "车辆状态", value: "维修 / 整备" }
+            ])
+        : undefined
+    }
+  ].filter((item) => item.active);
+
+  return (
+    <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+      <DashboardBlock
+        description="先看经营结果，再向下定位订单、车辆、收款、押金和风险来源。"
+        title="核心经营结果"
+      >
+        <MetricGrid
+          items={[
+            metric("在租订单", formatInteger(summary?.activeOrders), () =>
+              onOrderDetails("在租订单明细", { orderStatus: "ACTIVE" }, [{ label: "订单状态", value: "在租" }])
+            ),
+            metric(
+              "已出租车辆 / 出租率",
+              `${formatInteger(summary?.leasedVehicles)} / ${formatPercent(rentalRate)}`,
+              canViewAssetReport
+                ? () =>
+                    onVehicleDetails("在租车辆明细", { vehicleStatus: "LEASED" }, [
+                      { label: "车辆状态", value: "已出租" }
+                    ])
+                : undefined
+            ),
+            metric(
+              "实收金额",
+              formatYuan(summary?.totalPaidAmount),
+              canViewFinanceReports ? () => onBillDetails("已收账单明细") : undefined
+            ),
+            metric(
+              "未收 / 逾期金额",
+              `${formatYuan(summary?.totalUnpaidAmount)} / ${formatYuan(summary?.overdueAmount)}`,
+              canViewCollectionReport ? () => onOverdueBillDetails("逾期账单明细") : undefined
+            ),
+            metric(
+              "催收案件数",
+              formatInteger(summary?.collectionCaseCount),
+              canViewCollectionReport ? () => onCollectionCaseDetails("催收案件明细") : undefined
+            ),
+            metric(
+              "押金余额",
+              formatYuan(summary?.depositBalanceAmount),
+              canViewFinanceReports ? () => onDepositLedgerDetails("保证金台账明细") : undefined
+            )
+          ]}
+        />
+      </DashboardBlock>
+
+      <ReportTablesGrid>
+        <DashboardBlock title="订单与履约链路">
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "订单总数", children: formatInteger(summary?.totalOrders) },
+              { label: "新增订单", children: formatInteger(summary?.newOrders) },
+              { label: "在租订单", children: formatInteger(summary?.activeOrders) },
+              { label: "已完成订单", children: formatInteger(summary?.completedOrders) },
+              { label: "已取消订单", children: formatInteger(summary?.cancelledOrders) }
+            ]}
+            size="small"
+          />
+        </DashboardBlock>
+
+        <DashboardBlock title="车辆运营状态">
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "车辆总数", children: formatInteger(summary?.totalVehicles) },
+              { label: "可租用", children: formatInteger(summary?.availableVehicles) },
+              { label: "审核占用", children: formatInteger(summary?.reviewReservedVehicles) },
+              { label: "签约锁定", children: formatInteger(summary?.signingLockedVehicles) },
+              { label: "已出租", children: formatInteger(summary?.leasedVehicles) },
+              { label: "维修中", children: formatInteger(summary?.maintenanceVehicles) },
+              { label: "已退回", children: formatInteger(summary?.returnedVehicles) },
+              { label: "出租率", children: formatPercent(rentalRate) }
+            ]}
+            size="small"
+          />
+        </DashboardBlock>
+
+        <DashboardBlock title="财务收款">
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "应收合计", children: formatYuan(summary?.totalReceivableAmount) },
+              { label: "实收合计", children: formatYuan(summary?.totalPaidAmount) },
+              { label: "未收合计", children: formatYuan(summary?.totalUnpaidAmount) },
+              { label: "收款率", children: formatPercent(collectionRate) },
+              { label: "钩稽关系", children: "未收金额 = 应收合计 - 实收合计" }
+            ]}
+            size="small"
+          />
+        </DashboardBlock>
+
+        <DashboardBlock title="押金与保证金">
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "押金余额", children: formatYuan(summary?.depositBalanceAmount) },
+              { label: "说明", children: "押金余额单独列示，不计入经营收入。" }
+            ]}
+            size="small"
+          />
+        </DashboardBlock>
+
+        <DashboardBlock title="逾期与催收风险">
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "逾期金额", children: formatYuan(summary?.overdueAmount) },
+              { label: "逾期订单数", children: formatInteger(summary?.overdueOrderCount) },
+              { label: "催收案件数", children: formatInteger(summary?.collectionCaseCount) }
+            ]}
+            size="small"
+          />
+        </DashboardBlock>
+
+        <DashboardBlock title="待处理事项">
+          {pendingItems.length > 0 ? (
+            <Space size={[8, 8]} wrap>
+              {pendingItems.map((item) => (
+                <Tag
+                  color="orange"
+                  key={item.label}
+                  onClick={item.onClick}
+                  style={{ cursor: item.onClick ? "pointer" : "default" }}
+                >
+                  {item.label}
+                </Tag>
+              ))}
+            </Space>
+          ) : (
+            <Typography.Text type="secondary">暂无可由当前数据判断的待处理事项</Typography.Text>
+          )}
+        </DashboardBlock>
+      </ReportTablesGrid>
+
+      <Collapse
+        items={[
+          {
+            children:
+              "经营总览按核心结果、订单履约、车辆运营、财务收款、押金和逾期催收分区展示。押金不计入经营收入；未收金额来自应收与实收差额；出租率按已出租车辆 / 车辆总数展示，若分母缺失则显示 -。",
+            key: "summary-calculation",
+            label: "经营总览口径说明"
+          }
+        ]}
+        size="small"
+      />
+    </Space>
+  );
+}
+
+function DashboardBlock({
+  children,
+  description,
+  title
+}: Readonly<{ children: React.ReactNode; description?: string; title: string }>) {
+  return (
+    <Card
+      size="small"
+      title={
+        <Space orientation="vertical" size={0}>
+          <Typography.Text strong>{title}</Typography.Text>
+          {description ? <Typography.Text type="secondary">{description}</Typography.Text> : null}
+        </Space>
+      }
+    >
+      {children}
+    </Card>
   );
 }
 

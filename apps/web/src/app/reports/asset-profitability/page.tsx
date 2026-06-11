@@ -6,6 +6,7 @@ import {
   App,
   Button,
   Card,
+  Collapse,
   DatePicker,
   Descriptions,
   Drawer,
@@ -1682,27 +1683,38 @@ function FilterBar({
   );
 }
 
-function SummaryMetrics({
+function MetricGroupCard({
+  children,
+  description,
   loading,
-  summary
+  title
 }: {
+  children: ReactNode;
+  description?: string;
   loading: boolean;
-  summary: AssetProfitabilitySummary | null;
+  title: string;
 }) {
-  const items = [
-    { title: "车辆总数", value: formatInteger(summary?.totalVehicles) },
-    { title: "采购成本合计", value: formatYuan(summary?.totalPurchasePriceAmount) },
-    { title: "当前销售价合计", value: formatYuan(summary?.totalCurrentSalePriceAmount) },
-    { title: "租金实收合计", value: formatYuan(summary?.rentalPaidAmount) },
-    { title: "损伤费用实收合计", value: formatYuan(summary?.damagePaidAmount) },
-    { title: "押金收取合计", value: formatYuan(summary?.depositCollectedAmount) },
-    { title: "应收合计", value: formatYuan(summary?.totalReceivableAmount) },
-    { title: "未收合计", value: formatYuan(summary?.totalRemainingAmount) },
-    { title: "总出租天数", value: formatInteger(summary?.totalLeasedDays) },
-    { title: "平均出租率", value: formatPercent(summary?.averageUtilizationRate) },
-    { title: "平均简化回报率", value: formatPercent(summary?.averageSimpleReturnRate) }
-  ];
+  return (
+    <Card
+      loading={loading}
+      size="small"
+      title={
+        <Space orientation="vertical" size={0}>
+          <Typography.Text strong>{title}</Typography.Text>
+          {description ? <Typography.Text type="secondary">{description}</Typography.Text> : null}
+        </Space>
+      }
+    >
+      {children}
+    </Card>
+  );
+}
 
+function MetricCardGrid({
+  items
+}: {
+  items: Array<{ title: string; value: string | number }>;
+}) {
   return (
     <div
       style={{
@@ -1712,11 +1724,108 @@ function SummaryMetrics({
       }}
     >
       {items.map((item) => (
-        <Card key={item.title} loading={loading} size="small">
+        <Card key={item.title} size="small">
           <Statistic title={item.title} value={item.value} styles={{ content: { fontSize: 20 } }} />
         </Card>
       ))}
     </div>
+  );
+}
+
+function SummaryMetrics({
+  loading,
+  summary
+}: {
+  loading: boolean;
+  summary: AssetProfitabilitySummary | null;
+}) {
+  const valueDelta = calculateDelta(
+    summary?.totalCurrentSalePriceAmount,
+    summary?.totalPurchasePriceAmount
+  );
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <MetricGroupCard
+        description="先看资产规模、出租效率、现金回收和简化回报，不把该指标误读为 ROA / ROE。"
+        loading={loading}
+        title="核心资产经营结果"
+      >
+        <MetricCardGrid
+          items={[
+            { title: "车辆总数", value: formatInteger(summary?.totalVehicles) },
+            { title: "平均出租率", value: formatPercent(summary?.averageUtilizationRate) },
+            { title: "租金实收", value: formatYuan(summary?.rentalPaidAmount) },
+            { title: "当前销售价合计", value: formatYuan(summary?.totalCurrentSalePriceAmount) },
+            { title: "简化经营回报率", value: formatPercent(summary?.averageSimpleReturnRate) }
+          ]}
+        />
+      </MetricGroupCard>
+
+      <div
+        style={{
+          display: "grid",
+          gap: 12,
+          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))"
+        }}
+      >
+        <MetricGroupCard loading={loading} title="资产价值">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "采购成本合计", children: formatYuan(summary?.totalPurchasePriceAmount) },
+              { label: "当前销售价合计", children: formatYuan(summary?.totalCurrentSalePriceAmount) },
+              { label: "价值差异", children: renderSignedYuan(valueDelta) },
+              { label: "车辆数", children: formatInteger(summary?.totalVehicles) }
+            ]}
+            size="small"
+          />
+        </MetricGroupCard>
+
+        <MetricGroupCard loading={loading} title="出租与利用率">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "总出租天数", children: formatInteger(summary?.totalLeasedDays) },
+              { label: "平均出租率", children: formatPercent(summary?.averageUtilizationRate) },
+              { label: "出租率口径", children: "出租率 = 出租天数 / 可运营天数" }
+            ]}
+            size="small"
+          />
+        </MetricGroupCard>
+
+        <MetricGroupCard loading={loading} title="收入与应收">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "租金实收", children: formatYuan(summary?.rentalPaidAmount) },
+              { label: "损伤费用实收", children: formatYuan(summary?.damagePaidAmount) },
+              { label: "押金收取", children: formatYuan(summary?.depositCollectedAmount) },
+              { label: "总应收", children: formatYuan(summary?.totalReceivableAmount) },
+              { label: "总已收", children: formatYuan(summary?.totalPaidAmount) },
+              { label: "总未收", children: formatYuan(summary?.totalRemainingAmount) }
+            ]}
+            size="small"
+          />
+          <Typography.Text type="secondary">押金收取单独列示，不计入租金收入。</Typography.Text>
+        </MetricGroupCard>
+      </div>
+
+      <Collapse
+        items={[
+          {
+            children:
+              "简化经营回报率 = 租金实收 / 车辆采购价。该指标只用于快速观察资产经营表现，不是会计 ROA / ROE；正式收益分析请查看“收益试算”Tab。",
+            key: "simple-return-rate",
+            label: "简化回报率口径说明"
+          }
+        ]}
+        size="small"
+      />
+    </Space>
   );
 }
 
@@ -1727,85 +1836,158 @@ function ReturnTrialSummaryMetrics({
   loading: boolean;
   summary: AssetReturnTrialSummary | null;
 }) {
-  const items = [
-    { title: "车辆总数", value: formatInteger(summary?.vehicleCount) },
-    { title: "已有成本参数车辆数", value: formatInteger(summary?.vehicleWithCostProfileCount) },
-    { title: "缺少成本参数车辆数", value: formatInteger(summary?.vehicleMissingCostProfileCount) },
-    { title: "成本可计算车辆数", value: formatInteger(summary?.costCalculatedVehicleCount) },
-    { title: "成本不可计算车辆数", value: formatInteger(summary?.costUnavailableVehicleCount) },
-    { title: "可计算 ROE 车辆数", value: formatInteger(summary?.roeCalculatedVehicleCount) },
-    { title: "不可计算 ROE 车辆数", value: formatInteger(summary?.roeUnavailableVehicleCount) },
-    { title: "采购价合计", value: formatYuan(summary?.purchasePriceAmount) },
-    { title: "当前销售价合计", value: formatYuan(summary?.currentSalePriceAmount) },
-    { title: "租金实收", value: formatYuan(summary?.rentalPaidAmount) },
-    { title: "损伤实收", value: formatYuan(summary?.damagePaidAmount) },
-    { title: "其他实收", value: formatYuan(summary?.otherPaidAmount) },
-    { title: "经营收入合计", value: formatYuan(summary?.operatingRevenueAmount) },
-    { title: "转让 / 入池外流收入", value: formatYuan(summary?.assignedOutRevenueAmount) },
-    { title: "质押收入金额", value: formatYuan(summary?.pledgedRevenueAmount) },
-    { title: "车主分润金额", value: formatYuan(summary?.ownerShareAmount) },
-    { title: "平台留存经营收入", value: formatYuan(summary?.platformRetainedRevenueAmount) },
-    { title: "押金收取", value: formatYuan(summary?.depositCollectedAmount) },
-    { title: "折旧成本", value: formatYuan(summary?.depreciationCostAmount) },
-    { title: "资金成本", value: formatYuan(summary?.capitalCostAmount) },
-    { title: "债务本金", value: formatYuan(summary?.debtPrincipalAmount) },
-    { title: "债务利息成本", value: formatYuan(summary?.debtInterestCostAmount) },
-    { title: "权益资本基数", value: formatYuan(summary?.roeEquityBaseAmount) },
-    { title: "资金成本来源", value: labelOf(CAPITAL_COST_SOURCE_LABELS, summary?.capitalCostSource) },
-    { title: "保险成本", value: formatYuan(summary?.insuranceCostAmount) },
-    { title: "维修准备金", value: formatYuan(summary?.maintenanceReserveCostAmount) },
-    { title: "其他成本", value: formatYuan(summary?.otherCostAmount) },
-    { title: "外部长租成本", value: formatYuan(summary?.externalLeaseCostAmount) },
-    { title: "经营成本合计", value: formatYuan(summary?.operatingCostAmount) },
-    { title: "试算经营净收益", value: formatYuan(summary?.trialNetOperatingIncomeAmount) },
-    { title: "试算 ROA", value: formatPercent(summary?.trialRoa) },
-    { title: "年化试算 ROA", value: formatPercent(summary?.annualizedTrialRoa) },
-    { title: "平台权益净收益", value: formatYuan(summary?.platformNetIncomeAmount) },
-    { title: "试算 ROE", value: formatTrialRoe(summary?.roeTrial) },
-    { title: "年化试算 ROE", value: formatPercent(summary?.annualizedRoeTrial) },
-    { title: "可用残值预测车辆数", value: formatInteger(summary?.residualForecastVehicleCount) },
-    { title: "缺少残值预测车辆数", value: formatInteger(summary?.residualForecastMissingVehicleCount) },
-    { title: "暂不支持残值预测车辆数", value: formatInteger(summary?.residualForecastUnsupportedVehicleCount) },
-    { title: "已采用残值预测车辆数", value: formatInteger(summary?.residualForecastAdoptedVehicleCount) },
-    { title: "预测残值合计", value: formatYuan(summary?.forecastResidualAmount) },
-    { title: "预测下界合计", value: formatYuan(summary?.forecastLowerBoundAmount) },
-    { title: "预测上界合计", value: formatYuan(summary?.forecastUpperBoundAmount) },
-    { title: "相对当前销售价差异", value: formatSignedYuan(summary?.residualDeltaToCurrentSalePriceAmount) },
-    { title: "相对成本参数残值差异", value: formatSignedYuan(summary?.residualDeltaToCostProfileAmount) },
-    { title: "残值敏感性净收益", value: formatYuan(summary?.residualSensitivityNetIncomeAmount) },
-    { title: "残值敏感性 ROE", value: formatPercent(summary?.residualSensitivityRoeTrial) },
-    { title: "年化残值敏感性 ROE", value: formatPercent(summary?.residualSensitivityAnnualizedRoeTrial) }
-  ];
   const missingReasons = normalizeReasonList(summary?.roeMissingReasons);
   if (missingReasons.length === 0 && summary?.roeUnavailableReason) {
     missingReasons.push(summary.roeUnavailableReason);
   }
   const warnings = normalizeReasonList(summary?.roeWarnings);
   const residualWarnings = normalizeReasonList(summary?.residualForecastWarnings);
+  const roeStatus = summary?.roeTrial === null ? "ROE 暂不可用" : summary?.roeTrial === undefined ? "-" : "可试算";
 
   return (
     <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <MetricGroupCard
+        description="核心区只展示结论：主 ROE 与残值敏感性 ROE 并列，但口径互不替换。"
+        loading={loading}
+        title="核心结果"
+      >
+        <MetricCardGrid
+          items={[
+            { title: "平台权益净收益", value: formatYuan(summary?.platformNetIncomeAmount) },
+            { title: "试算 ROE", value: formatTrialRoe(summary?.roeTrial) },
+            { title: "年化试算 ROE", value: formatPercent(summary?.annualizedRoeTrial) },
+            { title: "残值敏感性 ROE", value: formatPercent(summary?.residualSensitivityRoeTrial) },
+            { title: "ROE 状态", value: roeStatus }
+          ]}
+        />
+        {missingReasons.length > 0 ? (
+          <Typography.Text type="secondary">主要原因：{missingReasons.slice(0, 2).join("；")}</Typography.Text>
+        ) : null}
+      </MetricGroupCard>
+
       <div
         style={{
           display: "grid",
           gap: 12,
-          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))"
+          gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))"
         }}
       >
-        {items.map((item) => (
-          <Card key={item.title} loading={loading} size="small">
-            <Statistic title={item.title} value={item.value} styles={{ content: { fontSize: 20 } }} />
-          </Card>
-        ))}
-        <Card loading={loading} size="small">
-          <Statistic
-            title="ROE 状态"
-            value={summary?.roeTrial === null ? "暂不可用" : summary?.roeTrial === undefined ? "-" : "可试算"}
-            styles={{ content: { fontSize: 20 } }}
+        <MetricGroupCard loading={loading} title="数据完整性 / 可计算性">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "车辆总数", children: formatInteger(summary?.vehicleCount) },
+              { label: "已有成本参数车辆数", children: formatInteger(summary?.vehicleWithCostProfileCount) },
+              { label: "缺少成本参数车辆数", children: formatInteger(summary?.vehicleMissingCostProfileCount) },
+              { label: "成本可计算车辆数", children: formatInteger(summary?.costCalculatedVehicleCount) },
+              { label: "成本不可计算车辆数", children: formatInteger(summary?.costUnavailableVehicleCount) },
+              { label: "可计算 ROE 车辆数", children: formatInteger(summary?.roeCalculatedVehicleCount) },
+              { label: "不可计算 ROE 车辆数", children: formatInteger(summary?.roeUnavailableVehicleCount) },
+              { label: "可用残值预测车辆数", children: formatInteger(summary?.residualForecastVehicleCount) },
+              { label: "缺少残值预测车辆数", children: formatInteger(summary?.residualForecastMissingVehicleCount) },
+              {
+                label: "不支持残值预测车辆数",
+                children: formatInteger(summary?.residualForecastUnsupportedVehicleCount)
+              },
+              { label: "已采用残值预测车辆数", children: formatInteger(summary?.residualForecastAdoptedVehicleCount) }
+            ]}
+            size="small"
           />
-          <Typography.Text type="secondary">试算 ROE 不是正式会计 ROE</Typography.Text>
-        </Card>
+        </MetricGroupCard>
+
+        <MetricGroupCard loading={loading} title="收入归属拆解">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "租金实收", children: formatYuan(summary?.rentalPaidAmount) },
+              { label: "损伤实收", children: formatYuan(summary?.damagePaidAmount) },
+              { label: "其他实收", children: formatYuan(summary?.otherPaidAmount) },
+              { label: "经营收入合计", children: formatYuan(summary?.operatingRevenueAmount) },
+              { label: "转让 / 入池外流收入", children: formatYuan(summary?.assignedOutRevenueAmount) },
+              { label: "质押收入金额", children: formatYuan(summary?.pledgedRevenueAmount) },
+              { label: "车主分润金额", children: formatYuan(summary?.ownerShareAmount) },
+              { label: "平台留存经营收入", children: formatYuan(summary?.platformRetainedRevenueAmount) },
+              { label: "押金收取", children: formatYuan(summary?.depositCollectedAmount) }
+            ]}
+            size="small"
+          />
+          <Typography.Text type="secondary">
+            质押收入金额不扣减平台收入；押金收取不计入经营收入。
+          </Typography.Text>
+        </MetricGroupCard>
+
+        <MetricGroupCard loading={loading} title="成本与资本结构拆解">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "折旧成本", children: formatYuan(summary?.depreciationCostAmount) },
+              { label: "资金成本", children: formatYuan(summary?.capitalCostAmount) },
+              { label: "债务利息成本", children: formatYuan(summary?.debtInterestCostAmount) },
+              { label: "保险成本", children: formatYuan(summary?.insuranceCostAmount) },
+              { label: "维修准备金", children: formatYuan(summary?.maintenanceReserveCostAmount) },
+              { label: "其他成本", children: formatYuan(summary?.otherCostAmount) },
+              { label: "外部长租成本", children: formatYuan(summary?.externalLeaseCostAmount) },
+              { label: "经营成本合计", children: formatYuan(summary?.operatingCostAmount) },
+              { label: "债务本金", children: formatYuan(summary?.debtPrincipalAmount) },
+              { label: "权益资本基数", children: formatYuan(summary?.roeEquityBaseAmount) },
+              { label: "资金成本来源", children: labelOf(CAPITAL_COST_SOURCE_LABELS, summary?.capitalCostSource) }
+            ]}
+            size="small"
+          />
+        </MetricGroupCard>
+
+        <MetricGroupCard loading={loading} title="资产价值与残值敏感性">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "采购价合计", children: formatYuan(summary?.purchasePriceAmount) },
+              { label: "当前销售价合计", children: formatYuan(summary?.currentSalePriceAmount) },
+              { label: "预测残值合计", children: formatYuan(summary?.forecastResidualAmount) },
+              { label: "预测下界合计", children: formatYuan(summary?.forecastLowerBoundAmount) },
+              { label: "预测上界合计", children: formatYuan(summary?.forecastUpperBoundAmount) },
+              { label: "相对当前销售价差异", children: renderSignedYuan(summary?.residualDeltaToCurrentSalePriceAmount) },
+              { label: "相对成本参数残值差异", children: renderSignedYuan(summary?.residualDeltaToCostProfileAmount) },
+              { label: "残值敏感性净收益", children: formatYuan(summary?.residualSensitivityNetIncomeAmount) },
+              { label: "残值敏感性 ROE", children: formatPercent(summary?.residualSensitivityRoeTrial) },
+              { label: "年化残值敏感性 ROE", children: formatPercent(summary?.residualSensitivityAnnualizedRoeTrial) }
+            ]}
+            size="small"
+          />
+          <Typography.Text type="secondary">残值敏感性 ROE 不改变主试算 ROE。</Typography.Text>
+        </MetricGroupCard>
       </div>
+
+      <Collapse
+        items={[
+          {
+            children: (
+              <Space orientation="vertical" size={4}>
+                <Typography.Text>经营收入合计 = 租金实收 + 损伤实收 + 其他实收</Typography.Text>
+                <Typography.Text>
+                  平台留存经营收入 = 经营收入合计 - 转让 / 入池外流收入 - 车主分润金额
+                </Typography.Text>
+                <Typography.Text>
+                  经营成本合计 = 折旧成本 + 资金成本 / 债务利息 + 保险成本 + 维修准备金 + 其他成本 +
+                  外部长租固定成本
+                </Typography.Text>
+                <Typography.Text>平台权益净收益 = 平台留存经营收入 - 经营成本合计</Typography.Text>
+                <Typography.Text>试算 ROE = 平台权益净收益 / 权益资本基数</Typography.Text>
+                <Typography.Text>
+                  残值敏感性净收益 = 平台权益净收益 + 预测残值相对成本参数预计残值的差异
+                </Typography.Text>
+                <Typography.Text>残值敏感性 ROE = 残值敏感性净收益 / 权益资本基数</Typography.Text>
+              </Space>
+            ),
+            key: "return-trial-chain",
+            label: "计算链路 / 钩稽关系"
+          }
+        ]}
+        size="small"
+      />
       {missingReasons.length > 0 ? (
         <ReasonAlert items={missingReasons} title="ROE 不可用原因" type="warning" />
       ) : null}
@@ -3027,6 +3209,16 @@ function dateValue(value: unknown) {
 
 function safeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function calculateDelta(left?: number | null, right?: number | null) {
+  const leftValue = safeNumber(left);
+  const rightValue = safeNumber(right);
+  if (leftValue === null || rightValue === null) {
+    return null;
+  }
+
+  return leftValue - rightValue;
 }
 
 function formatInteger(value?: number | null) {

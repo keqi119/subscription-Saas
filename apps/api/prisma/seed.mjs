@@ -180,6 +180,11 @@ permissionRows.push(
 );
 
 permissionRows.push(
+  ["residual_model_run:view", "查看残值模型运行记录", "residual_model_run", "view"],
+  ["residual_model_run:manage", "管理残值模型运行记录", "residual_model_run", "manage"]
+);
+
+permissionRows.push(
   ["collection:view", "查看催收案件", "collection", "view"],
   ["collection:refresh_overdue", "刷新逾期账单", "collection", "refresh_overdue"],
   ["collection:action_create", "新增催收动作", "collection", "action_create"],
@@ -617,6 +622,13 @@ const residualForecastManagementPermissions = [
   "residual_forecast:manage"
 ];
 
+const residualModelRunViewPermissions = ["residual_model_run:view"];
+
+const residualModelRunManagementPermissions = [
+  "residual_model_run:view",
+  "residual_model_run:manage"
+];
+
 async function main() {
   for (const [code, name, description] of roleRows) {
     await prisma.role.upsert({
@@ -733,6 +745,7 @@ async function main() {
       ...residualMarketImportPermissions,
       ...residualCurveGeneratePermissions,
       ...residualForecastGeneratePermissions,
+      ...residualModelRunViewPermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -810,6 +823,7 @@ async function main() {
         ...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions),
         ...(roleCode === "AS" ? residualCurveManagementPermissions : residualCurveViewPermissions),
         ...(roleCode === "AS" ? residualForecastManagementPermissions : residualForecastViewPermissions),
+        ...(roleCode === "AS" ? residualModelRunManagementPermissions : residualModelRunViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -862,6 +876,7 @@ async function main() {
       ...residualMarketViewPermissions,
       ...residualCurveViewPermissions,
       ...residualForecastViewPermissions,
+      ...residualModelRunViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,

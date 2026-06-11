@@ -44,6 +44,8 @@ const RESIDUAL_CURVE_MANAGE_PERMISSION = "residual_curve:manage";
 const RESIDUAL_FORECAST_VIEW_PERMISSION = "residual_forecast:view";
 const RESIDUAL_FORECAST_GENERATE_PERMISSION = "residual_forecast:generate";
 const RESIDUAL_FORECAST_MANAGE_PERMISSION = "residual_forecast:manage";
+const RESIDUAL_MODEL_RUN_VIEW_PERMISSION = "residual_model_run:view";
+const RESIDUAL_MODEL_RUN_MANAGE_PERMISSION = "residual_model_run:manage";
 
 describe("hasRequiredPermissions", () => {
   it("allows requests with every required permission", () => {
@@ -369,6 +371,32 @@ describe("vehicle residual forecast permissions", () => {
     ]) {
       expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
         RESIDUAL_FORECAST_MANAGE_PERMISSION
+      ]);
+    }
+  });
+});
+
+describe("residual model run permissions", () => {
+  it("requires residual_model_run:view for model run reads", () => {
+    for (const handler of [
+      ResidualMarketController.prototype.listModelRuns,
+      ResidualMarketController.prototype.getModelRun
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_MODEL_RUN_VIEW_PERMISSION
+      ]);
+    }
+  });
+
+  it("requires residual_model_run:manage for model run mutations", () => {
+    for (const handler of [
+      ResidualMarketController.prototype.createModelRun,
+      ResidualMarketController.prototype.completeModelRun,
+      ResidualMarketController.prototype.failModelRun,
+      ResidualMarketController.prototype.cancelModelRun
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        RESIDUAL_MODEL_RUN_MANAGE_PERMISSION
       ]);
     }
   });
@@ -927,7 +955,9 @@ describe("seed permission calibration", () => {
       "residual_curve:manage",
       "residual_forecast:view",
       "residual_forecast:generate",
-      "residual_forecast:manage"
+      "residual_forecast:manage",
+      "residual_model_run:view",
+      "residual_model_run:manage"
     ]) {
       expect(seedSource).toContain(`"${permission}"`);
     }
@@ -1285,6 +1315,24 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(permissionConstantSource("residualForecastManagementPermissions"), "residual_forecast:manage")).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_forecast:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_forecast:generate")).toBe(false);
+  });
+
+  it("calibrates residual model run permissions by role", () => {
+    for (const permission of ["residual_model_run:view", "residual_model_run:manage"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const residualModelRunViewPermissions = ["residual_model_run:view"]');
+    expect(seedSource).toContain("const residualModelRunManagementPermissions = [");
+    expect(seedSource).toContain(
+      '...(roleCode === "AS" ? residualModelRunManagementPermissions : residualModelRunViewPermissions)'
+    );
+    expectRolePermissions("OP", ["residual_model_run:view"]);
+    expectRolePermissions("GM", ["residual_model_run:view"]);
+    expect(roleHasPermission(permissionConstantSource("residualModelRunViewPermissions"), "residual_model_run:view")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("residualModelRunManagementPermissions"), "residual_model_run:manage")).toBe(true);
+    expect(roleHasPermission(rolePermissionArray("OP"), "residual_model_run:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "residual_model_run:manage")).toBe(false);
   });
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {

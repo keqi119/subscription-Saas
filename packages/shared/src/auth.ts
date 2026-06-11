@@ -84,6 +84,8 @@ export enum PermissionCode {
   RESIDUAL_FORECAST_VIEW = "residual_forecast:view",
   RESIDUAL_FORECAST_GENERATE = "residual_forecast:generate",
   RESIDUAL_FORECAST_MANAGE = "residual_forecast:manage",
+  RESIDUAL_MODEL_RUN_VIEW = "residual_model_run:view",
+  RESIDUAL_MODEL_RUN_MANAGE = "residual_model_run:manage",
   QUOTE_VIEW = "quote:view",
   QUOTE_CREATE = "quote:create",
   QUOTE_UPDATE = "quote:update",

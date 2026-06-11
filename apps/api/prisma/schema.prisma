@@ -853,6 +853,66 @@ enum VehicleResidualForecastPointStatus {
   @@map("vehicle_residual_forecast_point_status")
 }
 
+enum ResidualModelRunType {
+  STATISTICAL_BASELINE
+  ML_TRAINING
+  ML_INFERENCE
+  MANUAL_IMPORT
+  EXTERNAL_MODEL
+
+  @@map("residual_model_run_type")
+}
+
+enum ResidualModelRunStatus {
+  CREATED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+
+  @@map("residual_model_run_status")
+}
+
+enum ResidualModelAlgorithm {
+  STATISTICAL_MEDIAN
+  LINEAR_REGRESSION
+  RANDOM_FOREST
+  GRADIENT_BOOSTING
+  XGBOOST
+  LIGHTGBM
+  CATBOOST
+  CUSTOM
+  EXTERNAL
+  UNKNOWN
+
+  @@map("residual_model_algorithm")
+}
+
+enum ResidualModelTargetType {
+  RESIDUAL_CURVE
+  VEHICLE_FORECAST
+  CURVE_AND_FORECAST
+  MARKET_PRICE
+
+  @@map("residual_model_target_type")
+}
+
+enum ResidualModelRunOutputType {
+  RESIDUAL_CURVE
+  VEHICLE_FORECAST
+  METRIC_REPORT
+  OTHER
+
+  @@map("residual_model_run_output_type")
+}
+
+enum ResidualModelRunOutputStatus {
+  ACTIVE
+  VOIDED
+
+  @@map("residual_model_run_output_status")
+}
+
 enum SalePriceStatus {
   PENDING_INITIALIZE
   EFFECTIVE
@@ -1702,6 +1762,7 @@ model Vehicle {
   revenueRightAssignments       RevenueRightAssignment[]
   revenueShareRules             RevenueShareRule[]
   residualForecasts             VehicleResidualForecast[]
+  residualModelRunOutputs       ResidualModelRunOutput[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                   @map("created_by") @db.Uuid
@@ -1878,6 +1939,7 @@ model VehicleResidualCurve {
 
   points               VehicleResidualCurvePoint[]
   vehicleResidualForecasts VehicleResidualForecast[]
+  residualModelRunOutputs ResidualModelRunOutput[]
 
   @@index([curveStatus])
   @@index([curveMethod])
@@ -1949,6 +2011,7 @@ model VehicleResidualForecast {
   deletedAt              DateTime?                      @map("deleted_at") @db.Timestamptz(6)
 
   points                 VehicleResidualForecastPoint[]
+  residualModelRunOutputs ResidualModelRunOutput[]
 
   @@index([vehicleId])
   @@index([curveId])
@@ -1984,6 +2047,82 @@ model VehicleResidualForecastPoint {
   @@index([horizonMonth])
   @@index([targetAgeMonth])
   @@map("vehicle_residual_forecast_point")
+}
+
+model ResidualModelRun {
+  id                       String                     @id @default(uuid()) @db.Uuid
+  runNo                    String                     @unique @map("run_no") @db.VarChar(64)
+  runName                  String?                    @map("run_name") @db.VarChar(128)
+  runType                  ResidualModelRunType       @map("run_type")
+  runStatus                ResidualModelRunStatus     @default(CREATED) @map("run_status")
+  modelName                String?                    @map("model_name") @db.VarChar(128)
+  modelVersion             String?                    @map("model_version") @db.VarChar(64)
+  modelProvider            String?                    @map("model_provider") @db.VarChar(64)
+  algorithm                ResidualModelAlgorithm?
+  targetType               ResidualModelTargetType    @map("target_type")
+  targetBrand              String?                    @map("target_brand") @db.VarChar(64)
+  targetSeries             String?                    @map("target_series") @db.VarChar(64)
+  targetModel              String?                    @map("target_model") @db.VarChar(64)
+  targetModelYear          Int?                       @map("target_model_year")
+  targetTrim               String?                    @map("target_trim") @db.VarChar(128)
+  targetBatteryCapacityKwh Decimal?                   @map("target_battery_capacity_kwh") @db.Decimal(8, 2)
+  targetBatteryUsageType   VehicleBatteryUsageType?   @map("target_battery_usage_type")
+  trainingDataStartDate    DateTime?                  @map("training_data_start_date") @db.Date
+  trainingDataEndDate      DateTime?                  @map("training_data_end_date") @db.Date
+  sampleCount              Int?                       @map("sample_count")
+  featureSnapshot          Json?                      @map("feature_snapshot")
+  parameterSnapshot        Json?                      @map("parameter_snapshot")
+  filterSnapshot           Json?                      @map("filter_snapshot")
+  metricsSnapshot          Json?                      @map("metrics_snapshot")
+  outputSnapshot           Json?                      @map("output_snapshot")
+  errorSnapshot            Json?                      @map("error_snapshot")
+  artifactUri              String?                    @map("artifact_uri") @db.VarChar(512)
+  remark                   String?                    @db.Text
+  startedAt                DateTime?                  @map("started_at") @db.Timestamptz(6)
+  finishedAt               DateTime?                  @map("finished_at") @db.Timestamptz(6)
+  createdAt                DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                String?                    @map("created_by") @db.Uuid
+  updatedBy                String?                    @map("updated_by") @db.Uuid
+  deletedAt                DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+
+  outputs                  ResidualModelRunOutput[]
+
+  @@index([runType])
+  @@index([runStatus])
+  @@index([targetType])
+  @@index([modelVersion])
+  @@index([targetBrand, targetSeries, targetModel])
+  @@index([createdAt])
+  @@map("residual_model_run")
+}
+
+model ResidualModelRunOutput {
+  id             String                       @id @default(uuid()) @db.Uuid
+  runId          String                       @map("run_id") @db.Uuid
+  run            ResidualModelRun             @relation(fields: [runId], references: [id])
+  outputType     ResidualModelRunOutputType   @map("output_type")
+  outputStatus   ResidualModelRunOutputStatus @default(ACTIVE) @map("output_status")
+  curveId        String?                      @map("curve_id") @db.Uuid
+  curve          VehicleResidualCurve?        @relation(fields: [curveId], references: [id])
+  forecastId     String?                      @map("forecast_id") @db.Uuid
+  forecast       VehicleResidualForecast?     @relation(fields: [forecastId], references: [id])
+  vehicleId      String?                      @map("vehicle_id") @db.Uuid
+  vehicle        Vehicle?                     @relation(fields: [vehicleId], references: [id])
+  outputNo       String?                      @map("output_no") @db.VarChar(64)
+  outputSnapshot Json?                        @map("output_snapshot")
+  remark         String?                      @db.Text
+  createdAt      DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt      DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([runId])
+  @@index([outputType])
+  @@index([outputStatus])
+  @@index([curveId])
+  @@index([forecastId])
+  @@index([vehicleId])
+  @@map("residual_model_run_output")
 }
 
 model VehicleCapitalEvent {

@@ -1322,6 +1322,17 @@ dryRun 与未关联行为：
 - 本阶段不做真实 AI / ML，不调用 Python，不调用第三方模型 API，不做爬虫或定时采集。
 - 本阶段不自动生成单车预测，不接入 ROE，不修改 `Vehicle.currentSalePriceAmount`，不写入 `VehicleSalePriceHistory`。
 
+Stage 8.4E-D 前端使用说明：
+
+- 在 `/residual-market` 的“残值曲线”Tab 生成残值曲线时，前端提供“不关联模型运行记录 / 关联已有模型运行记录 / 自动创建模型运行记录”三种方式。
+- “不关联模型运行记录”保持原有曲线生成行为，只需要 `residual_curve:generate`；后端返回的未关联 warning 会作为提示展示，不视为失败。
+- “关联已有模型运行记录”只允许选择 `CREATED` / `RUNNING` 且目标类型为 `RESIDUAL_CURVE` 的运行记录，正式生成后该运行记录会完成并产生 `ResidualModelRunOutput`。
+- “自动创建模型运行记录”可填写运行名称、模型版本、模型提供方和产物地址；正式生成后由后端创建统计基线运行记录并关联输出曲线。
+- 用户缺少 `residual_model_run:manage` 时，前端置灰关联已有和自动创建选项，只允许不关联模型运行记录。
+- `dryRun` 会展示模型运行记录联动预期和 warning，但不会创建或更新 `ResidualModelRun` / `ResidualModelRunOutput`。
+- 正式生成成功后，页面展示 `modelRun` / `modelRunOutput` 摘要，并可跳转查看曲线或模型运行记录详情。
+- 该联动只是模型治理链路，不代表真实 AI / ML 训练，不自动生成单车预测，不修改 `Vehicle.currentSalePriceAmount`。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

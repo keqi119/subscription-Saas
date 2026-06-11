@@ -1333,6 +1333,28 @@ Stage 8.4E-D 前端使用说明：
 - 正式生成成功后，页面展示 `modelRun` / `modelRunOutput` 摘要，并可跳转查看曲线或模型运行记录详情。
 - 该联动只是模型治理链路，不代表真实 AI / ML 训练，不自动生成单车预测，不修改 `Vehicle.currentSalePriceAmount`。
 
+## Stage 8.5A 预测残值到车辆销售价复核口径
+
+Stage 8.5A 建立从单车残值预测点到车辆当前销售价的受控复核链路。该链路用于把市场残值预测纳入内部估值判断，但仍不构成自动定价。
+
+流程口径：
+
+- 单车残值预测不会自动覆盖 `Vehicle.currentSalePriceAmount`。
+- 人工采用预测点只会保存 `VehicleResidualForecastPoint.adoptedResidualAmount`，不会自动覆盖车辆当前销售价。
+- 发起车辆估值复核只会创建 `VehicleValuationReview`，不会修改车辆当前销售价，也不会写 `VehicleSalePriceHistory`。
+- 复核记录 `forecastResidualAmount`、`adoptedResidualAmount`、`requestedSalePriceAmount` 和 `originalSalePriceAmount`，用于后续审计追溯。
+- 只有车辆估值复核审核通过后，才会更新 `Vehicle.currentSalePriceAmount` 和 `Vehicle.currentSalePriceReviewedAt`。
+- 审核通过会按车辆销售价复核口径写入 `VehicleSalePriceHistory`，`reviewType = RESIDUAL_FORECAST_ADOPTION`。
+- 审核拒绝和取消复核不会修改车辆当前销售价，也不会写入 `VehicleSalePriceHistory`。
+- 该流程用于受控地把市场残值预测纳入内部估值复核，不改变 ROE 主口径，不改变残值敏感性口径，不代表系统自动定价。
+
+权限口径：
+
+- `vehicle_valuation_review:view`：查看车辆估值复核列表和详情。
+- `vehicle_valuation_review:create`：从残值预测点发起复核，以及取消待审核复核。
+- `vehicle_valuation_review:approve`：审核通过或拒绝待审核复核。
+- seed 更新权限后，用户需要退出登录并重新登录，以刷新 access_token 中的 permissions。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

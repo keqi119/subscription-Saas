@@ -152,6 +152,9 @@ permissionRows.push(
   ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
+  ["vehicle_valuation_review:view", "查看车辆估值复核", "vehicle_valuation_review", "view"],
+  ["vehicle_valuation_review:create", "发起车辆估值复核", "vehicle_valuation_review", "create"],
+  ["vehicle_valuation_review:approve", "审核车辆估值复核", "vehicle_valuation_review", "approve"],
   ["capital_structure:view", "查看车辆资本结构", "capital_structure", "view"],
   ["capital_structure:manage", "管理车辆资本结构", "capital_structure", "manage"],
   ["financing:view", "查看融资工具", "financing", "view"],
@@ -565,6 +568,20 @@ const vehicleManagementPermissions = [
   "vehicle:review_sale_price",
   "vehicle:manage"
 ];
+const vehicleValuationReviewViewPermissions = ["vehicle_valuation_review:view"];
+const vehicleValuationReviewCreatePermissions = [
+  "vehicle_valuation_review:view",
+  "vehicle_valuation_review:create"
+];
+const vehicleValuationReviewApprovePermissions = [
+  "vehicle_valuation_review:view",
+  "vehicle_valuation_review:approve"
+];
+const vehicleValuationReviewManagementPermissions = [
+  "vehicle_valuation_review:view",
+  "vehicle_valuation_review:create",
+  "vehicle_valuation_review:approve"
+];
 const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
 const residualMarketMenuCodes = ["vehicles.residual_market"];
@@ -732,6 +749,7 @@ async function main() {
       "application:material_delete",
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
+      ...vehicleValuationReviewManagementPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
       ...entitlementOperationPermissions,
@@ -813,6 +831,9 @@ async function main() {
         "product_price_rule:view",
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
+        ...(roleCode === "AS"
+          ? vehicleValuationReviewCreatePermissions
+          : vehicleValuationReviewViewPermissions),
         ...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions),
         ...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions),
         ...(roleCode === "FI" || roleCode === "AS"
@@ -868,6 +889,7 @@ async function main() {
       "risk:manage",
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
+      ...vehicleValuationReviewApprovePermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
       ...vehicleAssetPoolViewPermissions,

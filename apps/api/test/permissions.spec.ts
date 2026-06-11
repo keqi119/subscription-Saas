@@ -23,6 +23,7 @@ import {
 } from "../src/residual-market/residual-market.controller";
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
+import { VehicleValuationReviewController } from "../src/vehicle-valuation-review/vehicle-valuation-review.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
 const CAPITAL_STRUCTURE_VIEW_PERMISSION = "capital_structure:view";
@@ -46,6 +47,9 @@ const RESIDUAL_FORECAST_GENERATE_PERMISSION = "residual_forecast:generate";
 const RESIDUAL_FORECAST_MANAGE_PERMISSION = "residual_forecast:manage";
 const RESIDUAL_MODEL_RUN_VIEW_PERMISSION = "residual_model_run:view";
 const RESIDUAL_MODEL_RUN_MANAGE_PERMISSION = "residual_model_run:manage";
+const VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION = "vehicle_valuation_review:view";
+const VEHICLE_VALUATION_REVIEW_CREATE_PERMISSION = "vehicle_valuation_review:create";
+const VEHICLE_VALUATION_REVIEW_APPROVE_PERMISSION = "vehicle_valuation_review:approve";
 
 describe("hasRequiredPermissions", () => {
   it("allows requests with every required permission", () => {
@@ -398,6 +402,45 @@ describe("residual model run permissions", () => {
       expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
         RESIDUAL_MODEL_RUN_MANAGE_PERMISSION
       ]);
+    }
+  });
+});
+
+describe("vehicle valuation review permissions", () => {
+  it("requires vehicle_valuation_review:view for review reads", () => {
+    for (const handler of [
+      VehicleValuationReviewController.prototype.listVehicleReviews,
+      VehicleValuationReviewController.prototype.listReviews,
+      VehicleValuationReviewController.prototype.getReview
+    ]) {
+      const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(requiredPermissions).toEqual([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION]);
+      expect(hasRequiredPermissions([], requiredPermissions)).toBe(false);
+      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)).toBe(true);
+    }
+  });
+
+  it("requires vehicle_valuation_review:create for review creation and cancellation", () => {
+    for (const handler of [
+      VehicleValuationReviewController.prototype.createFromResidualForecast,
+      VehicleValuationReviewController.prototype.cancelReview
+    ]) {
+      const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(requiredPermissions).toEqual([VEHICLE_VALUATION_REVIEW_CREATE_PERMISSION]);
+      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)).toBe(false);
+      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_CREATE_PERMISSION], requiredPermissions)).toBe(true);
+    }
+  });
+
+  it("requires vehicle_valuation_review:approve for review approval and rejection", () => {
+    for (const handler of [
+      VehicleValuationReviewController.prototype.approveReview,
+      VehicleValuationReviewController.prototype.rejectReview
+    ]) {
+      const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(requiredPermissions).toEqual([VEHICLE_VALUATION_REVIEW_APPROVE_PERMISSION]);
+      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)).toBe(false);
+      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_APPROVE_PERMISSION], requiredPermissions)).toBe(true);
     }
   });
 });
@@ -909,6 +952,9 @@ describe("seed permission calibration", () => {
       "vehicle:initialize_sale_price",
       "vehicle:review_sale_price",
       "vehicle:history_view",
+      "vehicle_valuation_review:view",
+      "vehicle_valuation_review:create",
+      "vehicle_valuation_review:approve",
       "subscription_plan:view",
       "subscription_plan:create",
       "subscription_plan:update",
@@ -988,6 +1034,43 @@ describe("seed permission calibration", () => {
     );
     expect(seedSource).toContain('"vehicle:initialize_sale_price"');
     expect(seedSource).toContain('"vehicle:review_sale_price"');
+  });
+
+  it("calibrates vehicle valuation review permissions by role", () => {
+    for (const permission of [
+      "vehicle_valuation_review:view",
+      "vehicle_valuation_review:create",
+      "vehicle_valuation_review:approve"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const vehicleValuationReviewViewPermissions = ["vehicle_valuation_review:view"]');
+    expect(seedSource).toContain("const vehicleValuationReviewCreatePermissions = [");
+    expect(seedSource).toContain("const vehicleValuationReviewApprovePermissions = [");
+    expect(seedSource).toContain("const vehicleValuationReviewManagementPermissions = [");
+    expect(seedSource).toContain(
+      '...(roleCode === "AS"'
+    );
+    expect(seedSource).toContain(
+      "? vehicleValuationReviewCreatePermissions"
+    );
+    expect(seedSource).toContain(
+      ": vehicleValuationReviewViewPermissions)"
+    );
+    expectRolePermissions("OP", [
+      "vehicle_valuation_review:view",
+      "vehicle_valuation_review:create",
+      "vehicle_valuation_review:approve"
+    ]);
+    expectRolePermissions("GM", [
+      "vehicle_valuation_review:view",
+      "vehicle_valuation_review:approve"
+    ]);
+    expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewCreatePermissions"), "vehicle_valuation_review:create")).toBe(true);
+    expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewCreatePermissions"), "vehicle_valuation_review:approve")).toBe(false);
+    expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewViewPermissions"), "vehicle_valuation_review:view")).toBe(true);
+    expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_valuation_review:view")).toBe(false);
   });
 
   it("calibrates A-line order review permissions by role", () => {

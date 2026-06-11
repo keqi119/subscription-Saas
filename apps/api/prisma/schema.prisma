@@ -927,8 +927,28 @@ enum VehicleSalePriceReviewType {
   QUARTERLY_REVIEW
   RETURN_REINIT
   MANUAL_ADJUST
+  RESIDUAL_FORECAST_ADOPTION
 
   @@map("vehicle_sale_price_review_type")
+}
+
+enum VehicleValuationReviewSource {
+  RESIDUAL_FORECAST
+  MANUAL
+  QUARTERLY_REVIEW
+  RETURN_REINIT
+  OTHER
+
+  @@map("vehicle_valuation_review_source")
+}
+
+enum VehicleValuationReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+
+  @@map("vehicle_valuation_review_status")
 }
 
 enum VehicleAssetCostProfileStatus {
@@ -1763,6 +1783,7 @@ model Vehicle {
   revenueShareRules             RevenueShareRule[]
   residualForecasts             VehicleResidualForecast[]
   residualModelRunOutputs       ResidualModelRunOutput[]
+  valuationReviews              VehicleValuationReview[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                   @map("created_by") @db.Uuid
@@ -2012,6 +2033,7 @@ model VehicleResidualForecast {
 
   points                 VehicleResidualForecastPoint[]
   residualModelRunOutputs ResidualModelRunOutput[]
+  valuationReviews       VehicleValuationReview[]
 
   @@index([vehicleId])
   @@index([curveId])
@@ -2043,10 +2065,62 @@ model VehicleResidualForecastPoint {
   createdAt                 DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                 DateTime                              @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  valuationReviews          VehicleValuationReview[]
+
   @@index([forecastId])
   @@index([horizonMonth])
   @@index([targetAgeMonth])
   @@map("vehicle_residual_forecast_point")
+}
+
+model VehicleValuationReview {
+  id                       String                       @id @default(uuid()) @db.Uuid
+  reviewNo                 String                       @unique @map("review_no") @db.VarChar(64)
+  vehicleId                String                       @map("vehicle_id") @db.Uuid
+  vehicle                  Vehicle                      @relation(fields: [vehicleId], references: [id])
+  forecastId               String?                      @map("forecast_id") @db.Uuid
+  forecast                 VehicleResidualForecast?     @relation(fields: [forecastId], references: [id])
+  forecastPointId          String?                      @map("forecast_point_id") @db.Uuid
+  forecastPoint            VehicleResidualForecastPoint? @relation(fields: [forecastPointId], references: [id])
+  reviewSource             VehicleValuationReviewSource @map("review_source")
+  reviewStatus             VehicleValuationReviewStatus @default(PENDING) @map("review_status")
+  originalSalePriceAmount  BigInt?                      @map("original_sale_price_amount")
+  forecastResidualAmount   BigInt?                      @map("forecast_residual_amount")
+  adoptedResidualAmount    BigInt?                      @map("adopted_residual_amount")
+  requestedSalePriceAmount BigInt                       @map("requested_sale_price_amount")
+  approvedSalePriceAmount  BigInt?                      @map("approved_sale_price_amount")
+  forecastHorizonMonth     Int?                         @map("forecast_horizon_month")
+  forecastTargetDate       DateTime?                    @map("forecast_target_date") @db.Date
+  forecastConfidenceScore  Int?                         @map("forecast_confidence_score")
+  forecastAmountSource     String?                      @map("forecast_amount_source") @db.VarChar(64)
+  reason                   String?                      @db.Text
+  reviewRemark             String?                      @map("review_remark") @db.Text
+  rejectReason             String?                      @map("reject_reason") @db.Text
+  cancelReason             String?                      @map("cancel_reason") @db.Text
+  requestedBy              String?                      @map("requested_by") @db.Uuid
+  requestedAt              DateTime                     @default(now()) @map("requested_at") @db.Timestamptz(6)
+  reviewedBy               String?                      @map("reviewed_by") @db.Uuid
+  reviewedAt               DateTime?                    @map("reviewed_at") @db.Timestamptz(6)
+  approvedAt               DateTime?                    @map("approved_at") @db.Timestamptz(6)
+  rejectedAt               DateTime?                    @map("rejected_at") @db.Timestamptz(6)
+  cancelledAt              DateTime?                    @map("cancelled_at") @db.Timestamptz(6)
+  beforeSnapshot           Json?                        @map("before_snapshot")
+  forecastSnapshot         Json?                        @map("forecast_snapshot")
+  approvalSnapshot         Json?                        @map("approval_snapshot")
+  snapshot                 Json?
+  createdAt                DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                String?                      @map("created_by") @db.Uuid
+  updatedBy                String?                      @map("updated_by") @db.Uuid
+  deletedAt                DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([forecastId])
+  @@index([forecastPointId])
+  @@index([reviewStatus])
+  @@index([reviewSource])
+  @@index([requestedAt])
+  @@map("vehicle_valuation_review")
 }
 
 model ResidualModelRun {

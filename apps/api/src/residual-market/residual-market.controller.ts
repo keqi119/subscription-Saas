@@ -8,12 +8,17 @@ import {
   ActivateResidualCurveDto,
   AdoptVehicleResidualForecastPointDto,
   ArchiveResidualCurveDto,
+  CancelResidualModelRunDto,
+  CompleteResidualModelRunDto,
+  CreateResidualModelRunDto,
   CreateMarketPriceObservationDto,
+  FailResidualModelRunDto,
   GenerateResidualCurveDto,
   GenerateVehicleResidualForecastDto,
   ImportMarketPriceCsvDto,
   MarketPriceImportBatchesQueryDto,
   MarketPriceObservationsQueryDto,
+  ResidualModelRunQueryDto,
   ResidualCurveQueryDto,
   VehicleResidualForecastQueryDto,
   VoidVehicleResidualForecastDto,
@@ -134,6 +139,54 @@ export class ResidualMarketController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.residualMarketService.adoptVehicleForecastPoint(pointId, dto, request.user, requestContext(request));
+  }
+
+  @Get("model-runs")
+  @RequirePermissions(PermissionCode.RESIDUAL_MODEL_RUN_VIEW)
+  listModelRuns(@Query() query: ResidualModelRunQueryDto) {
+    return this.residualMarketService.listModelRuns(query);
+  }
+
+  @Get("model-runs/:id")
+  @RequirePermissions(PermissionCode.RESIDUAL_MODEL_RUN_VIEW)
+  getModelRun(@Param("id") id: string) {
+    return this.residualMarketService.getModelRun(id);
+  }
+
+  @Post("model-runs")
+  @RequirePermissions(PermissionCode.RESIDUAL_MODEL_RUN_MANAGE)
+  createModelRun(@Body() dto: CreateResidualModelRunDto, @Req() request: AuthenticatedRequest) {
+    return this.residualMarketService.createModelRun(dto, request.user, requestContext(request));
+  }
+
+  @Post("model-runs/:id/complete")
+  @RequirePermissions(PermissionCode.RESIDUAL_MODEL_RUN_MANAGE)
+  completeModelRun(
+    @Param("id") id: string,
+    @Body() dto: CompleteResidualModelRunDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.completeModelRun(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("model-runs/:id/fail")
+  @RequirePermissions(PermissionCode.RESIDUAL_MODEL_RUN_MANAGE)
+  failModelRun(
+    @Param("id") id: string,
+    @Body() dto: FailResidualModelRunDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.failModelRun(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("model-runs/:id/cancel")
+  @RequirePermissions(PermissionCode.RESIDUAL_MODEL_RUN_MANAGE)
+  cancelModelRun(
+    @Param("id") id: string,
+    @Body() dto: CancelResidualModelRunDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.cancelModelRun(id, dto, request.user, requestContext(request));
   }
 }
 

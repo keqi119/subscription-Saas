@@ -604,6 +604,54 @@ export const FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS: Record<string, string> = {
   PREDICTED: "曲线预测"
 };
 
+export const RESIDUAL_MODEL_RUN_TYPE_LABELS: Record<string, string> = {
+  EXTERNAL_MODEL: "外部模型",
+  MANUAL_IMPORT: "手工导入",
+  ML_INFERENCE: "机器学习推理",
+  ML_TRAINING: "机器学习训练",
+  STATISTICAL_BASELINE: "统计基线"
+};
+
+export const RESIDUAL_MODEL_RUN_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  COMPLETED: "已完成",
+  CREATED: "已创建",
+  FAILED: "失败",
+  RUNNING: "运行中"
+};
+
+export const RESIDUAL_MODEL_ALGORITHM_LABELS: Record<string, string> = {
+  CATBOOST: "CatBoost",
+  CUSTOM: "自定义",
+  EXTERNAL: "外部模型",
+  GRADIENT_BOOSTING: "梯度提升",
+  LIGHTGBM: "LightGBM",
+  LINEAR_REGRESSION: "线性回归",
+  RANDOM_FOREST: "随机森林",
+  STATISTICAL_MEDIAN: "统计中位数",
+  UNKNOWN: "未知",
+  XGBOOST: "XGBoost"
+};
+
+export const RESIDUAL_MODEL_TARGET_TYPE_LABELS: Record<string, string> = {
+  CURVE_AND_FORECAST: "曲线与单车预测",
+  MARKET_PRICE: "市场价格",
+  RESIDUAL_CURVE: "残值曲线",
+  VEHICLE_FORECAST: "单车预测"
+};
+
+export const RESIDUAL_MODEL_RUN_OUTPUT_TYPE_LABELS: Record<string, string> = {
+  METRIC_REPORT: "指标报告",
+  OTHER: "其他",
+  RESIDUAL_CURVE: "残值曲线",
+  VEHICLE_FORECAST: "单车预测"
+};
+
+export const RESIDUAL_MODEL_RUN_OUTPUT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "有效",
+  VOIDED: "已作废"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",
@@ -653,6 +701,7 @@ export const MODULE_LABELS: Record<string, string> = {
   residual_curve: "残值曲线",
   residual_forecast: "单车残值预测",
   residual_market: "市场残值样本",
+  residual_model_run: "残值模型运行",
   risk: "风控中心",
   system: "系统管理",
   vehicle: "车辆资产"
@@ -747,6 +796,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "residual_market:import": "导入市场残值样本",
   "residual_market:manage": "管理市场残值样本",
   "residual_market:view": "查看市场残值样本",
+  "residual_model_run:manage": "管理残值模型运行记录",
+  "residual_model_run:view": "查看残值模型运行记录",
   "capital_structure:manage": "管理车辆资本结构",
   "capital_structure:view": "查看车辆资本结构",
   "risk:manage": "管理押金规则",
@@ -873,7 +924,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "residual_forecast:view": "允许查看车辆残值预测和历史记录",
   "residual_market:import": "允许通过 CSV 文本导入市场残值样本",
   "residual_market:manage": "允许手工创建和作废市场残值样本",
-  "residual_market:view": "允许查看市场残值样本列表、详情和导入批次"
+  "residual_market:view": "允许查看市场残值样本列表、详情和导入批次",
+  "residual_model_run:manage": "允许创建模型运行记录并标记完成、失败或取消",
+  "residual_model_run:view": "允许查看残值模型运行记录列表和详情"
 };
 
 export const MENU_LABELS: Record<string, string> = {

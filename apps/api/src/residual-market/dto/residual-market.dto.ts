@@ -5,12 +5,30 @@ import {
   MarketPriceSource,
   MarketPriceType,
   MarketSellerType,
+  ResidualModelAlgorithm,
+  ResidualModelRunOutputType,
+  ResidualModelRunStatus,
+  ResidualModelRunType,
+  ResidualModelTargetType,
   VehicleResidualForecastStatus,
   VehicleBatteryUsageType,
   VehicleResidualCurveMethod,
   VehicleResidualCurveStatus
 } from "@prisma/client";
-import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from "class-validator";
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  ValidateNested
+} from "class-validator";
 
 export class MarketPriceObservationsQueryDto {
   @IsOptional()
@@ -460,6 +478,214 @@ export class AdoptVehicleResidualForecastPointDto {
 }
 
 export class VoidVehicleResidualForecastDto {
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class ResidualModelRunQueryDto {
+  @IsOptional()
+  @IsEnum(ResidualModelRunType)
+  runType?: ResidualModelRunType;
+
+  @IsOptional()
+  @IsEnum(ResidualModelRunStatus)
+  runStatus?: ResidualModelRunStatus;
+
+  @IsOptional()
+  @IsEnum(ResidualModelTargetType)
+  targetType?: ResidualModelTargetType;
+
+  @IsOptional()
+  @IsString()
+  modelVersion?: string;
+
+  @IsOptional()
+  @IsString()
+  targetBrand?: string;
+
+  @IsOptional()
+  @IsString()
+  targetSeries?: string;
+
+  @IsOptional()
+  @IsString()
+  targetModel?: string;
+
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @IsOptional()
+  @IsString()
+  endDate?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+}
+
+export class CreateResidualModelRunDto {
+  @IsOptional()
+  @IsString()
+  runName?: string | null;
+
+  @IsEnum(ResidualModelRunType)
+  runType!: ResidualModelRunType;
+
+  @IsOptional()
+  @IsEnum(ResidualModelRunStatus)
+  runStatus?: ResidualModelRunStatus;
+
+  @IsOptional()
+  @IsString()
+  modelName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  modelVersion?: string | null;
+
+  @IsOptional()
+  @IsString()
+  modelProvider?: string | null;
+
+  @IsOptional()
+  @IsEnum(ResidualModelAlgorithm)
+  algorithm?: ResidualModelAlgorithm | null;
+
+  @IsEnum(ResidualModelTargetType)
+  targetType!: ResidualModelTargetType;
+
+  @IsOptional()
+  @IsString()
+  targetBrand?: string | null;
+
+  @IsOptional()
+  @IsString()
+  targetSeries?: string | null;
+
+  @IsOptional()
+  @IsString()
+  targetModel?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  targetModelYear?: number | null;
+
+  @IsOptional()
+  @IsString()
+  targetTrim?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @Min(0)
+  targetBatteryCapacityKwh?: number | null;
+
+  @IsOptional()
+  @IsEnum(VehicleBatteryUsageType)
+  targetBatteryUsageType?: VehicleBatteryUsageType | null;
+
+  @IsOptional()
+  @IsString()
+  trainingDataStartDate?: string | null;
+
+  @IsOptional()
+  @IsString()
+  trainingDataEndDate?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sampleCount?: number | null;
+
+  @IsOptional()
+  @IsObject()
+  featureSnapshot?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsObject()
+  parameterSnapshot?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsObject()
+  filterSnapshot?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class CompleteResidualModelRunOutputDto {
+  @IsEnum(ResidualModelRunOutputType)
+  outputType!: ResidualModelRunOutputType;
+
+  @IsOptional()
+  @IsString()
+  curveId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  forecastId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  vehicleId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  outputNo?: string | null;
+
+  @IsOptional()
+  @IsObject()
+  outputSnapshot?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class CompleteResidualModelRunDto {
+  @IsOptional()
+  @IsObject()
+  metricsSnapshot?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsObject()
+  outputSnapshot?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CompleteResidualModelRunOutputDto)
+  outputs?: CompleteResidualModelRunOutputDto[];
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class FailResidualModelRunDto {
+  @IsOptional()
+  @IsObject()
+  errorSnapshot?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class CancelResidualModelRunDto {
   @IsOptional()
   @IsString()
   remark?: string | null;

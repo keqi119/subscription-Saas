@@ -1235,6 +1235,59 @@ CSV 格式约定：
 - 缺失值导出为 `-`，数组内容使用中文分号拼接。
 - 导出不会修改 `Vehicle.currentSalePriceAmount`，不会写入 `VehicleSalePriceHistory`，不会自动采用预测点，也不做 AI / ML。
 
+## Stage 8.4E-A 残值模型运行记录口径
+
+Stage 8.4E-A 新增 `ResidualModelRun` 与 `ResidualModelRunOutput`，用于记录残值预测模型、统计基线或外部模型的运行批次、版本、样本范围、特征快照、参数快照、指标快照和输出关联。本阶段只建设模型治理与追溯底座，不代表系统已经内置真实训练平台。
+
+模型运行记录定位：
+
+- `ResidualModelRun` 是模型运行批次 / 模型实验 / 模型推理 / 统计基线的治理记录。
+- 本阶段不执行真实 AI / ML 训练，不调用 Python 脚本，不调用第三方模型 API，不做爬虫或定时采集。
+- `runType` 用于区分统计基线、机器学习训练、机器学习推理、手工导入和外部模型。
+- `algorithm` 用于记录算法标签，例如统计中位数、线性回归、随机森林、梯度提升、外部模型或未知算法；这些枚举只做记录，不引入对应 ML 依赖。
+- `modelName` / `modelVersion` / `modelProvider` 用于标识模型名称、版本和提供方，方便后续追溯某条曲线或预测来自哪个版本。
+
+快照字段口径：
+
+- `featureSnapshot`：记录本次运行使用或声明的特征集合，例如车龄、里程、电池容量、地区、价格类型等。
+- `parameterSnapshot`：记录本次运行参数，例如最小样本数、价格类型范围、是否使用里程桶等。
+- `filterSnapshot`：记录样本筛选条件，例如品牌、车系、车型、年款、电池规格、训练样本日期范围等。
+- `metricsSnapshot`：记录运行完成后的指标快照，例如 MAE、RMSE、MAPE、样本覆盖率等。
+- `outputSnapshot`：记录输出汇总，例如输出曲线数、输出单车预测数、指标报告摘要等。
+- `errorSnapshot`：记录失败原因、错误码或异常摘要。
+
+输出关联口径：
+
+- `ResidualModelRunOutput` 用于关联某次运行产生或登记的输出。
+- 输出可以关联 `VehicleResidualCurve`、`VehicleResidualForecast` 或具体 `Vehicle`。
+- 输出记录只表示治理层面的关联，不会自动生成残值曲线，也不会自动生成单车残值预测。
+- 输出状态第一版只有 `ACTIVE` / `VOIDED`，用于保留历史追溯，不做物理删除。
+
+状态流转口径：
+
+- 创建运行记录时，初始状态只允许 `CREATED` 或 `RUNNING`。
+- `CREATED` / `RUNNING` 可以标记为 `COMPLETED`，完成时可写入指标快照、输出快照并创建输出关联。
+- 未完成且未取消的运行可以标记为 `FAILED`，失败时写入错误快照。
+- `CREATED` / `RUNNING` 可以取消为 `CANCELLED`。
+- 已完成的运行不能重复完成、失败或取消。
+
+边界说明：
+
+- 模型运行记录不会修改 `Vehicle.currentSalePriceAmount`。
+- 模型运行记录不会写入 `VehicleSalePriceHistory`。
+- 模型运行记录不会接入 ROE 计算，也不改变资产收益试算口径。
+- 后续阶段可以在该治理底座上接入真实训练脚本、第三方模型或模型文件管理。
+
+Stage 8.4E-B 前端使用说明：
+
+- 模型运行记录在 `/residual-market` 的“模型运行记录”Tab 中查看，与市场价格样本、导入批次和残值曲线放在同一业务链路下。
+- `residual_model_run:view` 控制 Tab、列表和详情访问；`residual_model_run:manage` 控制新增运行记录、标记完成、标记失败和取消运行。
+- 新增模型运行记录只登记运行批次、模型版本、样本范围、特征快照、参数快照和筛选快照，不会触发真实训练。
+- 标记完成只记录 `metricsSnapshot`、`outputSnapshot` 和输出关联，输出关联只是治理关系，不会自动生成残值曲线或单车预测。
+- 标记失败记录 `errorSnapshot`；取消运行只改变运行状态，不物理删除记录。
+- JSON 快照在前端以折叠区展示，提交前会校验 JSON 格式，避免非法快照进入后端。
+- 本阶段不调用 AI / ML，不调用 Python 或第三方模型 API，不修改 `Vehicle.currentSalePriceAmount`，不写入 `VehicleSalePriceHistory`，也不接入 ROE。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

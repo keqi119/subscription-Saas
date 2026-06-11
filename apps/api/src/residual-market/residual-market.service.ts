@@ -9,6 +9,14 @@ import {
   MarketPriceType,
   MarketSellerType,
   Prisma,
+  ResidualModelAlgorithm,
+  ResidualModelRun,
+  ResidualModelRunOutput,
+  ResidualModelRunOutputStatus,
+  ResidualModelRunOutputType,
+  ResidualModelRunStatus,
+  ResidualModelRunType,
+  ResidualModelTargetType,
   ResidualForecastInterpolationMethod,
   Vehicle,
   VehicleBatteryUsageType,
@@ -33,12 +41,18 @@ import {
   ActivateResidualCurveDto,
   AdoptVehicleResidualForecastPointDto,
   ArchiveResidualCurveDto,
+  CancelResidualModelRunDto,
+  CompleteResidualModelRunDto,
+  CompleteResidualModelRunOutputDto,
+  CreateResidualModelRunDto,
   CreateMarketPriceObservationDto,
+  FailResidualModelRunDto,
   GenerateResidualCurveDto,
   GenerateVehicleResidualForecastDto,
   ImportMarketPriceCsvDto,
   MarketPriceImportBatchesQueryDto,
   MarketPriceObservationsQueryDto,
+  ResidualModelRunQueryDto,
   ResidualCurveQueryDto,
   VehicleResidualForecastQueryDto,
   VoidVehicleResidualForecastDto,
@@ -263,11 +277,22 @@ type VehicleResidualForecastPointWithForecast = VehicleResidualForecastPoint & {
   forecast?: (VehicleResidualForecast & { curve?: VehicleResidualCurve | null; vehicle?: Vehicle | null }) | null;
 };
 
+type ResidualModelRunOutputWithRelations = ResidualModelRunOutput & {
+  curve?: VehicleResidualCurve | null;
+  forecast?: VehicleResidualForecast | null;
+  vehicle?: Vehicle | null;
+};
+
+type ResidualModelRunWithOutputs = ResidualModelRun & {
+  outputs?: ResidualModelRunOutputWithRelations[];
+};
+
 const OBSERVATION_ENTITY_TYPE = "vehicle_market_price_observation";
 const BATCH_ENTITY_TYPE = "market_price_import_batch";
 const CURVE_ENTITY_TYPE = "vehicle_residual_curve";
 const FORECAST_ENTITY_TYPE = "vehicle_residual_forecast";
 const FORECAST_POINT_ENTITY_TYPE = "vehicle_residual_forecast_point";
+const MODEL_RUN_ENTITY_TYPE = "residual_model_run";
 const RESIDUAL_MARKET_MODULE = "residual_market";
 const DUPLICATE_MESSAGE = "该市场价格样本已存在，不能重复创建。";
 
@@ -1055,6 +1080,232 @@ export class ResidualMarketService {
     return toForecastView(forecast);
   }
 
+  async listModelRuns(query: ResidualModelRunQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const where = buildModelRunWhere(query);
+
+    const [total, runs] = await Promise.all([
+      this.prisma.residualModelRun.count({ where }),
+      this.prisma.residualModelRun.findMany({
+        orderBy: [{ createdAt: "desc" }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        where
+      })
+    ]);
+
+    return {
+      items: runs.map(toModelRunView),
+      page,
+      pageSize,
+      total
+    };
+  }
+
+  async getModelRun(id: string) {
+    const run = await this.prisma.residualModelRun.findFirst({
+      include: modelRunInclude(),
+      where: { deletedAt: null, id }
+    });
+
+    if (!run) {
+      throw new NotFoundException("残值模型运行记录不存在。");
+    }
+
+    return toModelRunView(run);
+  }
+
+  async createModelRun(
+    dto: CreateResidualModelRunDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const data = buildModelRunCreateData(dto, user.id);
+    const run = await withUniqueBusinessNoRetry(() =>
+      this.prisma.residualModelRun.create({
+        data: {
+          ...data,
+          runNo: createBusinessNo("RMR")
+        }
+      })
+    );
+
+    await this.writeModelRunAudit(
+      AuditAction.CREATE,
+      run.id,
+      undefined,
+      toModelRunView(run),
+      user,
+      context,
+      modelRunAuditPayload(run, { remark: dto.remark })
+    );
+
+    return toModelRunView(run);
+  }
+
+  async completeModelRun(
+    id: string,
+    dto: CompleteResidualModelRunDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.prisma.residualModelRun.findFirst({
+      include: modelRunInclude(),
+      where: { deletedAt: null, id }
+    });
+
+    if (!before) {
+      throw new NotFoundException("残值模型运行记录不存在。");
+    }
+
+    const completableStatuses: ResidualModelRunStatus[] = [
+      ResidualModelRunStatus.CREATED,
+      ResidualModelRunStatus.RUNNING
+    ];
+    if (!completableStatuses.includes(before.runStatus)) {
+      throw new BadRequestException("只有已创建或运行中的模型运行记录可以标记完成。");
+    }
+
+    const outputCreates = await this.buildModelRunOutputCreates(dto.outputs ?? []);
+    const finishedAt = new Date();
+    const run = await this.prisma.$transaction(async (tx) => {
+      await tx.residualModelRun.update({
+        data: {
+          finishedAt,
+          metricsSnapshot: jsonObjectOrNull(dto.metricsSnapshot),
+          outputSnapshot: jsonObjectOrNull(dto.outputSnapshot),
+          remark: mergeOperationRemark(before.remark, dto.remark),
+          runStatus: ResidualModelRunStatus.COMPLETED,
+          updatedBy: user.id
+        },
+        where: { id }
+      });
+
+      if (outputCreates.length > 0) {
+        await tx.residualModelRunOutput.createMany({
+          data: outputCreates.map((output) => ({
+            ...output,
+            runId: id
+          }))
+        });
+      }
+
+      return tx.residualModelRun.findUniqueOrThrow({
+        include: modelRunInclude(),
+        where: { id }
+      });
+    });
+
+    await this.writeModelRunAudit(
+      AuditAction.UPDATE,
+      run.id,
+      toModelRunView(before),
+      toModelRunView(run),
+      user,
+      context,
+      modelRunAuditPayload(run, { outputs: dto.outputs ?? [], remark: dto.remark })
+    );
+
+    return toModelRunView(run);
+  }
+
+  async failModelRun(
+    id: string,
+    dto: FailResidualModelRunDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.prisma.residualModelRun.findFirst({
+      include: modelRunInclude(),
+      where: { deletedAt: null, id }
+    });
+
+    if (!before) {
+      throw new NotFoundException("残值模型运行记录不存在。");
+    }
+
+    const immutableForFailureStatuses: ResidualModelRunStatus[] = [
+      ResidualModelRunStatus.COMPLETED,
+      ResidualModelRunStatus.CANCELLED
+    ];
+    if (immutableForFailureStatuses.includes(before.runStatus)) {
+      throw new BadRequestException("已完成或已取消的模型运行记录不能标记失败。");
+    }
+
+    const run = await this.prisma.residualModelRun.update({
+      data: {
+        errorSnapshot: jsonObjectOrNull(dto.errorSnapshot),
+        finishedAt: new Date(),
+        remark: mergeOperationRemark(before.remark, dto.remark),
+        runStatus: ResidualModelRunStatus.FAILED,
+        updatedBy: user.id
+      },
+      include: modelRunInclude(),
+      where: { id }
+    });
+
+    await this.writeModelRunAudit(
+      AuditAction.UPDATE,
+      run.id,
+      toModelRunView(before),
+      toModelRunView(run),
+      user,
+      context,
+      modelRunAuditPayload(run, { remark: dto.remark })
+    );
+
+    return toModelRunView(run);
+  }
+
+  async cancelModelRun(
+    id: string,
+    dto: CancelResidualModelRunDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const before = await this.prisma.residualModelRun.findFirst({
+      include: modelRunInclude(),
+      where: { deletedAt: null, id }
+    });
+
+    if (!before) {
+      throw new NotFoundException("残值模型运行记录不存在。");
+    }
+
+    const immutableForCancelStatuses: ResidualModelRunStatus[] = [
+      ResidualModelRunStatus.COMPLETED,
+      ResidualModelRunStatus.FAILED,
+      ResidualModelRunStatus.CANCELLED
+    ];
+    if (immutableForCancelStatuses.includes(before.runStatus)) {
+      throw new BadRequestException("已完成、失败或已取消的模型运行记录不能取消。");
+    }
+
+    const run = await this.prisma.residualModelRun.update({
+      data: {
+        finishedAt: new Date(),
+        remark: mergeOperationRemark(before.remark, dto.remark),
+        runStatus: ResidualModelRunStatus.CANCELLED,
+        updatedBy: user.id
+      },
+      include: modelRunInclude(),
+      where: { id }
+    });
+
+    await this.writeModelRunAudit(
+      AuditAction.UPDATE,
+      run.id,
+      toModelRunView(before),
+      toModelRunView(run),
+      user,
+      context,
+      modelRunAuditPayload(run, { remark: dto.remark })
+    );
+
+    return toModelRunView(run);
+  }
+
   private findActiveDuplicate(dedupeKey: string) {
     return this.prisma.vehicleMarketPriceObservation.findFirst({
       where: {
@@ -1230,6 +1481,310 @@ export class ResidualMarketService {
       userAgent: context.userAgent
     });
   }
+
+  private async buildModelRunOutputCreates(outputs: CompleteResidualModelRunOutputDto[]) {
+    const data: Omit<Prisma.ResidualModelRunOutputUncheckedCreateInput, "runId">[] = [];
+
+    for (const output of outputs) {
+      const outputType = parseEnumValue(ResidualModelRunOutputType, output.outputType, "outputType");
+      const curveId = normalizeOptionalText(output.curveId);
+      const forecastId = normalizeOptionalText(output.forecastId);
+      const vehicleId = normalizeOptionalText(output.vehicleId);
+
+      if (outputType === ResidualModelRunOutputType.RESIDUAL_CURVE && !curveId) {
+        throw new BadRequestException("残值曲线输出必须提供 curveId。");
+      }
+
+      if (outputType === ResidualModelRunOutputType.VEHICLE_FORECAST && !forecastId) {
+        throw new BadRequestException("单车预测输出必须提供 forecastId。");
+      }
+
+      await this.assertModelRunOutputReferences({ curveId, forecastId, vehicleId });
+
+      data.push({
+        curveId,
+        forecastId,
+        outputNo: normalizeOptionalText(output.outputNo),
+        outputSnapshot: jsonObjectOrNull(output.outputSnapshot),
+        outputStatus: ResidualModelRunOutputStatus.ACTIVE,
+        outputType,
+        remark: normalizeOptionalText(output.remark),
+        vehicleId
+      });
+    }
+
+    return data;
+  }
+
+  private async assertModelRunOutputReferences(input: {
+    curveId: string | null;
+    forecastId: string | null;
+    vehicleId: string | null;
+  }) {
+    if (input.curveId) {
+      const curve = await this.prisma.vehicleResidualCurve.findFirst({
+        select: { id: true },
+        where: { deletedAt: null, id: input.curveId }
+      });
+
+      if (!curve) {
+        throw new BadRequestException("关联的残值曲线不存在。");
+      }
+    }
+
+    if (input.forecastId) {
+      const forecast = await this.prisma.vehicleResidualForecast.findFirst({
+        select: { id: true },
+        where: { deletedAt: null, id: input.forecastId }
+      });
+
+      if (!forecast) {
+        throw new BadRequestException("关联的单车残值预测不存在。");
+      }
+    }
+
+    if (input.vehicleId) {
+      const vehicle = await this.prisma.vehicle.findFirst({
+        select: { id: true },
+        where: { deletedAt: null, id: input.vehicleId }
+      });
+
+      if (!vehicle) {
+        throw new BadRequestException("关联车辆不存在。");
+      }
+    }
+  }
+
+  private async writeModelRunAudit(
+    action: AuditAction,
+    entityId: string,
+    before: unknown,
+    after: unknown,
+    user: RequestUser,
+    context: RequestContext,
+    payload: Record<string, unknown>
+  ) {
+    await this.auditService.write({
+      action,
+      after: { ...payload, after },
+      before: before === undefined ? undefined : { ...payload, before },
+      entityId,
+      entityType: MODEL_RUN_ENTITY_TYPE,
+      ipAddress: context.ipAddress,
+      module: RESIDUAL_MARKET_MODULE,
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+  }
+}
+
+function buildModelRunWhere(query: ResidualModelRunQueryDto): Prisma.ResidualModelRunWhereInput {
+  const createdAt: Prisma.DateTimeFilter = {};
+  const where: Prisma.ResidualModelRunWhereInput = {
+    deletedAt: null,
+    modelVersion: query.modelVersion ? exactTextFilter(query.modelVersion) : undefined,
+    runStatus: query.runStatus,
+    runType: query.runType,
+    targetBrand: query.targetBrand ? exactTextFilter(query.targetBrand) : undefined,
+    targetModel: query.targetModel ? exactTextFilter(query.targetModel) : undefined,
+    targetSeries: query.targetSeries ? exactTextFilter(query.targetSeries) : undefined,
+    targetType: query.targetType
+  };
+
+  if (query.startDate) {
+    createdAt.gte = parseDateOnly(query.startDate, "startDate");
+  }
+
+  if (query.endDate) {
+    createdAt.lt = addDaysDateOnly(parseDateOnly(query.endDate, "endDate"), 1);
+  }
+
+  if (hasFilter(createdAt)) {
+    where.createdAt = createdAt;
+  }
+
+  return where;
+}
+
+function buildModelRunCreateData(dto: CreateResidualModelRunDto, userId: string) {
+  const runType = parseEnumValue(ResidualModelRunType, dto.runType, "runType");
+  const runStatus = dto.runStatus
+    ? parseEnumValue(ResidualModelRunStatus, dto.runStatus, "runStatus")
+    : ResidualModelRunStatus.CREATED;
+
+  const allowedInitialStatuses: ResidualModelRunStatus[] = [
+    ResidualModelRunStatus.CREATED,
+    ResidualModelRunStatus.RUNNING
+  ];
+  if (!allowedInitialStatuses.includes(runStatus)) {
+    throw new BadRequestException("模型运行记录初始状态只能为 CREATED 或 RUNNING。");
+  }
+
+  const targetType = parseEnumValue(ResidualModelTargetType, dto.targetType, "targetType");
+  const trainingDataStartDate = parseOptionalDateOnly(dto.trainingDataStartDate, "trainingDataStartDate");
+  const trainingDataEndDate = parseOptionalDateOnly(dto.trainingDataEndDate, "trainingDataEndDate");
+
+  if (trainingDataStartDate && trainingDataEndDate && trainingDataEndDate < trainingDataStartDate) {
+    throw new BadRequestException("trainingDataEndDate 不能早于 trainingDataStartDate。");
+  }
+
+  return {
+    algorithm: parseOptionalEnumValue(ResidualModelAlgorithm, dto.algorithm, "algorithm"),
+    createdBy: userId,
+    featureSnapshot: jsonObjectOrNull(dto.featureSnapshot),
+    filterSnapshot: jsonObjectOrNull(dto.filterSnapshot),
+    modelName: normalizeOptionalText(dto.modelName),
+    modelProvider: normalizeOptionalText(dto.modelProvider),
+    modelVersion: normalizeOptionalText(dto.modelVersion),
+    parameterSnapshot: jsonObjectOrNull(dto.parameterSnapshot),
+    remark: normalizeOptionalText(dto.remark),
+    runName: normalizeOptionalText(dto.runName),
+    runStatus,
+    runType,
+    sampleCount: optionalInteger(dto.sampleCount, "sampleCount", 0),
+    startedAt: runStatus === ResidualModelRunStatus.RUNNING ? new Date() : null,
+    targetBatteryCapacityKwh: optionalDecimal(dto.targetBatteryCapacityKwh, "targetBatteryCapacityKwh", 0),
+    targetBatteryUsageType: parseOptionalEnumValue(
+      VehicleBatteryUsageType,
+      dto.targetBatteryUsageType,
+      "targetBatteryUsageType"
+    ),
+    targetBrand: normalizeOptionalText(dto.targetBrand),
+    targetModel: normalizeOptionalText(dto.targetModel),
+    targetModelYear: optionalInteger(dto.targetModelYear, "targetModelYear", 0),
+    targetSeries: normalizeOptionalText(dto.targetSeries),
+    targetTrim: normalizeOptionalText(dto.targetTrim),
+    targetType,
+    trainingDataEndDate,
+    trainingDataStartDate,
+    updatedBy: userId
+  } satisfies Omit<Prisma.ResidualModelRunUncheckedCreateInput, "runNo">;
+}
+
+function modelRunInclude() {
+  return {
+    outputs: {
+      include: {
+        curve: true,
+        forecast: true,
+        vehicle: true
+      },
+      orderBy: [{ createdAt: "asc" }]
+    }
+  } satisfies Prisma.ResidualModelRunInclude;
+}
+
+function toModelRunView(run: ResidualModelRunWithOutputs) {
+  return {
+    algorithm: run.algorithm,
+    artifactUri: run.artifactUri,
+    createdAt: run.createdAt.toISOString(),
+    createdBy: run.createdBy,
+    errorSnapshot: run.errorSnapshot,
+    featureSnapshot: run.featureSnapshot,
+    filterSnapshot: run.filterSnapshot,
+    finishedAt: run.finishedAt?.toISOString() ?? null,
+    id: run.id,
+    metricsSnapshot: run.metricsSnapshot,
+    modelName: run.modelName,
+    modelProvider: run.modelProvider,
+    modelVersion: run.modelVersion,
+    outputCount: run.outputs?.length,
+    outputs: run.outputs?.map(toModelRunOutputView),
+    outputSnapshot: run.outputSnapshot,
+    parameterSnapshot: run.parameterSnapshot,
+    remark: run.remark,
+    runName: run.runName,
+    runNo: run.runNo,
+    runStatus: run.runStatus,
+    runType: run.runType,
+    sampleCount: run.sampleCount,
+    startedAt: run.startedAt?.toISOString() ?? null,
+    targetBatteryCapacityKwh: decimalToNumber(run.targetBatteryCapacityKwh),
+    targetBatteryUsageType: run.targetBatteryUsageType,
+    targetBrand: run.targetBrand,
+    targetModel: run.targetModel,
+    targetModelYear: run.targetModelYear,
+    targetSeries: run.targetSeries,
+    targetTrim: run.targetTrim,
+    targetType: run.targetType,
+    trainingDataEndDate: run.trainingDataEndDate ? formatDateOnly(run.trainingDataEndDate) : null,
+    trainingDataStartDate: run.trainingDataStartDate ? formatDateOnly(run.trainingDataStartDate) : null,
+    updatedAt: run.updatedAt.toISOString(),
+    updatedBy: run.updatedBy
+  };
+}
+
+function toModelRunOutputView(output: ResidualModelRunOutputWithRelations) {
+  return {
+    createdAt: output.createdAt.toISOString(),
+    curve: output.curve ? toForecastCurveSummary(output.curve) : undefined,
+    curveId: output.curveId,
+    forecast: output.forecast ? toModelRunForecastSummary(output.forecast) : undefined,
+    forecastId: output.forecastId,
+    id: output.id,
+    outputNo: output.outputNo,
+    outputSnapshot: output.outputSnapshot,
+    outputStatus: output.outputStatus,
+    outputType: output.outputType,
+    remark: output.remark,
+    runId: output.runId,
+    updatedAt: output.updatedAt.toISOString(),
+    vehicle: output.vehicle ? toForecastVehicleSummary(output.vehicle) : undefined,
+    vehicleId: output.vehicleId
+  };
+}
+
+function toModelRunForecastSummary(forecast: VehicleResidualForecast) {
+  return {
+    asOfDate: formatDateOnly(forecast.asOfDate),
+    batteryCapacityKwh: decimalToNumber(forecast.batteryCapacityKwh),
+    batteryUsageType: forecast.batteryUsageType,
+    brand: forecast.brand,
+    curveId: forecast.curveId,
+    forecastMethod: forecast.forecastMethod,
+    forecastNo: forecast.forecastNo,
+    forecastStatus: forecast.forecastStatus,
+    id: forecast.id,
+    model: forecast.model,
+    modelYear: forecast.modelYear,
+    series: forecast.series,
+    trim: forecast.trim,
+    vehicleId: forecast.vehicleId
+  };
+}
+
+function modelRunAuditPayload(
+  run: Pick<
+    ResidualModelRun,
+    "id" | "modelName" | "modelVersion" | "runNo" | "runStatus" | "runType" | "targetType"
+  >,
+  extra: { outputs?: unknown; remark?: string | null }
+) {
+  return {
+    modelName: run.modelName,
+    modelVersion: run.modelVersion,
+    outputs: extra.outputs,
+    remark: extra.remark,
+    runId: run.id,
+    runNo: run.runNo,
+    runStatus: run.runStatus,
+    runType: run.runType,
+    targetType: run.targetType
+  };
+}
+
+function jsonObjectOrNull(
+  value: Record<string, unknown> | null | undefined
+): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput {
+  if (value == null) {
+    return Prisma.JsonNull;
+  }
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function addDaysDateOnly(date: Date, days: number) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
 }
 
 function buildObservationData(

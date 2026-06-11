@@ -5,11 +5,12 @@ import {
   MarketPriceSource,
   MarketPriceType,
   MarketSellerType,
+  VehicleResidualForecastStatus,
   VehicleBatteryUsageType,
   VehicleResidualCurveMethod,
   VehicleResidualCurveStatus
 } from "@prisma/client";
-import { IsArray, IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from "class-validator";
 
 export class MarketPriceObservationsQueryDto {
   @IsOptional()
@@ -397,6 +398,68 @@ export class ActivateResidualCurveDto {
 }
 
 export class ArchiveResidualCurveDto {
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class GenerateVehicleResidualForecastDto {
+  @IsOptional()
+  @IsString()
+  asOfDate?: string | null;
+
+  @IsOptional()
+  @IsString()
+  curveId?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  horizonMonths?: number[];
+
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+
+  @IsOptional()
+  @IsString()
+  remark?: string | null;
+}
+
+export class VehicleResidualForecastQueryDto {
+  @IsOptional()
+  @IsEnum(VehicleResidualForecastStatus)
+  forecastStatus?: VehicleResidualForecastStatus;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+}
+
+export class AdoptVehicleResidualForecastPointDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  adoptedResidualAmount!: number;
+
+  @IsOptional()
+  @IsString()
+  adoptRemark?: string | null;
+}
+
+export class VoidVehicleResidualForecastDto {
   @IsOptional()
   @IsString()
   remark?: string | null;

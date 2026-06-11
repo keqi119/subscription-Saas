@@ -16,6 +16,7 @@ import {
   Button,
   DatePicker,
   Descriptions,
+  Drawer,
   Empty,
   Form,
   type FormInstance,
@@ -43,10 +44,16 @@ import {
   REVENUE_SHARE_SETTLEMENT_CYCLE_LABELS,
   SALE_PRICE_REVIEW_TYPE_LABELS,
   STATUS_LABELS,
+  RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS,
   VEHICLE_ACQUISITION_MODE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   VEHICLE_CAPITAL_EVENT_STATUS_LABELS,
   VEHICLE_CAPITAL_EVENT_TYPE_LABELS,
+  VEHICLE_RESIDUAL_CURVE_METHOD_LABELS,
+  VEHICLE_RESIDUAL_CURVE_STATUS_LABELS,
+  VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS,
+  VEHICLE_RESIDUAL_FORECAST_POINT_STATUS_LABELS,
+  VEHICLE_RESIDUAL_FORECAST_STATUS_LABELS,
   labelOf
 } from "../../constants/labels";
 import {
@@ -80,12 +87,14 @@ interface Vehicle {
   id: string;
   insuranceEndDate?: string | null;
   insuranceStartDate?: string | null;
+  latestRegistrationDate?: string | null;
   model?: string | null;
   modelYear?: number | null;
   nextSalePriceReviewAt?: string | null;
   plateNo?: string | null;
   purchaseDate?: string | null;
   purchasePriceAmount: number;
+  registrationDate?: string | null;
   remark?: string | null;
   salePriceHistories?: SalePriceHistory[];
   salePriceReinitRequiredAt?: string | null;
@@ -123,6 +132,8 @@ interface CreateVehicleValues {
   insuranceStartDate?: Dayjs | null;
   purchaseDate?: Dayjs | null;
   purchasePriceAmountYuan: number;
+  registrationDate?: Dayjs | null;
+  latestRegistrationDate?: Dayjs | null;
   remark?: string | null;
   series?: string | null;
   vehicleModel: "ET5" | "ET7" | "ES6";
@@ -288,6 +299,111 @@ interface RevenueSharePreview {
   rule?: RevenueShareRule | null;
 }
 
+interface ResidualCurveSummary {
+  batteryCapacityKwh?: number | null;
+  batteryUsageType?: string | null;
+  brand?: string | null;
+  confidenceScore?: number | null;
+  curveMethod?: string | null;
+  curveNo?: string | null;
+  curveStatus?: string | null;
+  generatedAt?: string | null;
+  id: string;
+  model?: string | null;
+  modelYear?: number | null;
+  pointCount?: number | null;
+  sampleCount?: number | null;
+  series?: string | null;
+  trim?: string | null;
+}
+
+interface ResidualCurveListResponse {
+  items: ResidualCurveSummary[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+interface VehicleResidualForecastPoint {
+  adoptedAt?: string | null;
+  adoptedBy?: string | null;
+  adoptedResidualAmount?: number | null;
+  adoptRemark?: string | null;
+  confidenceScore?: number | null;
+  forecastId?: string | null;
+  horizonMonth: number;
+  id?: string | null;
+  interpolationMethod?: string | null;
+  lowerBoundAmount?: number | null;
+  matchedCurvePointAgeMonth?: number | null;
+  pointSnapshot?: Record<string, unknown> | null;
+  pointStatus: string;
+  predictedResidualAmount?: number | null;
+  predictedResidualRateBps?: number | null;
+  targetAgeMonth?: number | null;
+  targetDate: string;
+  upperBoundAmount?: number | null;
+}
+
+interface VehicleResidualForecast {
+  asOfDate: string;
+  batteryCapacityKwh?: number | null;
+  batteryUsageType?: string | null;
+  brand?: string | null;
+  createdAt?: string | null;
+  currentMileageKm?: number | null;
+  currentSalePriceAmount?: number | null;
+  curve?: ResidualCurveSummary | null;
+  curveId?: string | null;
+  curveSnapshot?: Record<string, unknown> | null;
+  forecastMethod: string;
+  forecastNo?: string | null;
+  forecastStatus: string;
+  id?: string | null;
+  inputSnapshot?: Record<string, unknown> | null;
+  metrics?: Record<string, unknown> | null;
+  model?: string | null;
+  modelYear?: number | null;
+  pointCount?: number | null;
+  points?: VehicleResidualForecastPoint[];
+  purchasePriceAmount?: number | null;
+  remark?: string | null;
+  series?: string | null;
+  trim?: string | null;
+  vehicleAgeMonths?: number | null;
+  vehicleSnapshot?: Record<string, unknown> | null;
+}
+
+interface VehicleResidualForecastListResponse {
+  items: VehicleResidualForecast[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+interface VehicleResidualForecastGenerationResult {
+  dryRun: boolean;
+  forecast: VehicleResidualForecast;
+  pointCount?: number | null;
+  points?: VehicleResidualForecastPoint[];
+}
+
+interface GenerateResidualForecastValues {
+  asOfDate: Dayjs;
+  curveId?: string | null;
+  horizonMonthsText: string;
+  remark?: string | null;
+}
+
+interface AdoptResidualForecastPointValues {
+  adoptedResidualAmountYuan: number;
+  adoptRemark?: string | null;
+}
+
+interface VoidResidualForecastValues {
+  remark?: string | null;
+}
+
 const salePriceStatusColors: Record<string, string> = {
   EFFECTIVE: "green",
   EXPIRED: "default",
@@ -342,6 +458,20 @@ const leaseCapitalEventTypes = new Set(["LEASE_IN", "LEASE_TERMINATION"]);
 const managedCapitalEventTypes = new Set(["MANAGED_IN", "MANAGED_TERMINATION"]);
 
 const returnReinitSourceStatuses = new Set(["RETURNED", "MAINTENANCE"]);
+const defaultResidualForecastHorizons = "0,6,12,24,36";
+
+const residualForecastStatusColors: Record<string, string> = {
+  ADOPTED: "green",
+  ARCHIVED: "default",
+  GENERATED: "blue",
+  VOIDED: "red"
+};
+
+const residualForecastPointStatusColors: Record<string, string> = {
+  ADOPTED: "green",
+  GENERATED: "blue",
+  UNSUPPORTED: "orange"
+};
 
 function capitalEventVisibility(eventType?: string | null) {
   const isInitial = eventType === "INITIAL_EQUITY_PURCHASE";
@@ -430,6 +560,109 @@ function toCents(value: number) {
   return Math.round(value * 100);
 }
 
+function formatScore(value?: number | null) {
+  return value === undefined || value === null ? "-" : `${value} / 100`;
+}
+
+function formatNumber(value?: number | null) {
+  return value === undefined || value === null ? "-" : value.toLocaleString("zh-CN");
+}
+
+function formatHorizon(value?: number | null) {
+  if (value === undefined || value === null) {
+    return "-";
+  }
+  return value === 0 ? "当前" : `未来 ${value} 个月`;
+}
+
+function snapshotValue(snapshot: Record<string, unknown> | null | undefined, key: string) {
+  const value = snapshot?.[key];
+  if (value === undefined || value === null || value === "") {
+    return "-";
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "-";
+}
+
+function parseHorizonMonths(value?: string | null) {
+  const values = String(value ?? "")
+    .split(/[\s,，]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (values.length === 0) {
+    throw new Error("请输入预测周期。");
+  }
+
+  const parsed = values.map((item) => {
+    const numberValue = Number(item);
+    if (!Number.isInteger(numberValue) || numberValue < 0) {
+      throw new Error("预测周期必须是不小于 0 的整数。");
+    }
+    return numberValue;
+  });
+
+  const uniqueValues = Array.from(new Set(parsed)).sort((a, b) => a - b);
+  if (uniqueValues.length !== parsed.length) {
+    throw new Error("预测周期不能重复。");
+  }
+  if (uniqueValues.length > 10) {
+    throw new Error("预测周期最多支持 10 个。");
+  }
+
+  return uniqueValues;
+}
+
+function buildResidualForecastPayload(values: GenerateResidualForecastValues, dryRun: boolean) {
+  return {
+    asOfDate: values.asOfDate.format("YYYY-MM-DD"),
+    curveId: values.curveId || undefined,
+    dryRun,
+    horizonMonths: parseHorizonMonths(values.horizonMonthsText),
+    remark: values.remark
+  };
+}
+
+function residualCurveOptionLabel(curve: ResidualCurveSummary) {
+  return [
+    curve.curveNo,
+    labelOf(VEHICLE_RESIDUAL_CURVE_STATUS_LABELS, curve.curveStatus),
+    curve.brand,
+    curve.series,
+    curve.model,
+    curve.modelYear,
+    formatKwh(curve.batteryCapacityKwh),
+    labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, curve.batteryUsageType),
+    curve.confidenceScore === undefined || curve.confidenceScore === null ? null : `置信度 ${curve.confidenceScore}`
+  ]
+    .filter((item) => item && item !== "-")
+    .join(" / ");
+}
+
+function residualForecastStatusTag(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  return (
+    <Tag color={residualForecastStatusColors[value] ?? "default"}>
+      {labelOf(VEHICLE_RESIDUAL_FORECAST_STATUS_LABELS, value)}
+    </Tag>
+  );
+}
+
+function residualForecastPointStatusTag(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  return (
+    <Tag color={residualForecastPointStatusColors[value] ?? "default"}>
+      {labelOf(VEHICLE_RESIDUAL_FORECAST_POINT_STATUS_LABELS, value)}
+    </Tag>
+  );
+}
+
 function isReturnReinitVehicle(vehicle: Pick<Vehicle, "status"> | null | undefined) {
   return Boolean(vehicle && returnReinitSourceStatuses.has(vehicle.status));
 }
@@ -504,6 +737,9 @@ export default function VehiclesPage() {
   const [revenueShareRuleForm] = Form.useForm<RevenueShareRuleValues>();
   const [deactivateShareRuleForm] = Form.useForm<DeactivateRevenueShareRuleValues>();
   const [revenueSharePreviewForm] = Form.useForm<RevenueSharePreviewValues>();
+  const [residualForecastGenerateForm] = Form.useForm<GenerateResidualForecastValues>();
+  const [residualForecastAdoptForm] = Form.useForm<AdoptResidualForecastPointValues>();
+  const [residualForecastVoidForm] = Form.useForm<VoidResidualForecastValues>();
   const [activeTab, setActiveTab] = useState("vehicles");
   const [capitalEvents, setCapitalEvents] = useState<CapitalEvent[]>([]);
   const [capitalEventOpen, setCapitalEventOpen] = useState(false);
@@ -525,6 +761,24 @@ export default function VehiclesPage() {
   const [revenueSharePreview, setRevenueSharePreview] = useState<RevenueSharePreview | null>(null);
   const [revenueShareRules, setRevenueShareRules] = useState<RevenueShareRule[]>([]);
   const [revenueShareRuleOpen, setRevenueShareRuleOpen] = useState(false);
+  const [residualCurveOptions, setResidualCurveOptions] = useState<ResidualCurveSummary[]>([]);
+  const [residualCurveOptionsLoading, setResidualCurveOptionsLoading] = useState(false);
+  const [residualForecastAdoptSubmitting, setResidualForecastAdoptSubmitting] = useState(false);
+  const [residualForecastAdoptTarget, setResidualForecastAdoptTarget] = useState<VehicleResidualForecastPoint | null>(null);
+  const [residualForecastDetail, setResidualForecastDetail] = useState<VehicleResidualForecast | null>(null);
+  const [residualForecastDetailLoading, setResidualForecastDetailLoading] = useState(false);
+  const [residualForecastDetailOpen, setResidualForecastDetailOpen] = useState(false);
+  const [residualForecastGenerateOpen, setResidualForecastGenerateOpen] = useState(false);
+  const [residualForecastGenerateSubmitting, setResidualForecastGenerateSubmitting] = useState(false);
+  const [residualForecastHistory, setResidualForecastHistory] = useState<VehicleResidualForecast[]>([]);
+  const [residualForecastLatest, setResidualForecastLatest] = useState<VehicleResidualForecast | null>(null);
+  const [residualForecastLoading, setResidualForecastLoading] = useState(false);
+  const [residualForecastPage, setResidualForecastPage] = useState(1);
+  const [residualForecastPageSize, setResidualForecastPageSize] = useState(5);
+  const [residualForecastPreview, setResidualForecastPreview] = useState<VehicleResidualForecastGenerationResult | null>(null);
+  const [residualForecastTotal, setResidualForecastTotal] = useState(0);
+  const [residualForecastVoidSubmitting, setResidualForecastVoidSubmitting] = useState(false);
+  const [residualForecastVoidTarget, setResidualForecastVoidTarget] = useState<VehicleResidualForecast | null>(null);
   const [statusVehicle, setStatusVehicle] = useState<Vehicle | null>(null);
   const [vehicleFinancialLoading, setVehicleFinancialLoading] = useState(false);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -538,6 +792,8 @@ export default function VehiclesPage() {
   const canViewFinancing = permissions.has("financing:view");
   const canViewRevenueShareRules = permissions.has("revenue_share:view") || permissions.has("vehicle:view");
   const canViewRevenueSharePreview = permissions.has("revenue_share:view") || permissions.has("report:asset");
+  const canViewResidualForecast = permissions.has("residual_forecast:view");
+  const canGenerateResidualForecast = permissions.has("residual_forecast:generate");
   const financingInstrumentOptions = useMemo(() => {
     const instrumentMap = new Map<string, FinancingInstrumentSummary>();
 
@@ -753,6 +1009,53 @@ export default function VehiclesPage() {
     ]
   );
 
+  const loadVehicleResidualForecastData = useCallback(
+    async (vehicleId: string, page = residualForecastPage, pageSize = residualForecastPageSize) => {
+      if (!canViewResidualForecast) {
+        return;
+      }
+
+      setResidualForecastLoading(true);
+      try {
+        const [latest, history] = await Promise.all([
+          apiFetch<VehicleResidualForecast | null>(`/vehicles/${vehicleId}/residual-forecasts/latest`),
+          apiFetch<VehicleResidualForecastListResponse>(
+            `/vehicles/${vehicleId}/residual-forecasts?page=${page}&pageSize=${pageSize}`
+          )
+        ]);
+        setResidualForecastLatest(latest);
+        setResidualForecastHistory(history.items);
+        setResidualForecastTotal(history.total);
+        setResidualForecastPage(history.page);
+        setResidualForecastPageSize(history.pageSize);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+      } finally {
+        setResidualForecastLoading(false);
+      }
+    },
+    [canViewResidualForecast, message, residualForecastPage, residualForecastPageSize]
+  );
+
+  const loadResidualCurveOptions = useCallback(async () => {
+    if (!canGenerateResidualForecast) {
+      return;
+    }
+
+    setResidualCurveOptionsLoading(true);
+    try {
+      const result = await apiFetch<ResidualCurveListResponse>(
+        "/residual-market/curves?curveStatus=ACTIVE&page=1&pageSize=100"
+      );
+      setResidualCurveOptions(result.items);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+      setResidualCurveOptions([]);
+    } finally {
+      setResidualCurveOptionsLoading(false);
+    }
+  }, [canGenerateResidualForecast, message]);
+
   const columns = useMemo(
     () => buildVehicleColumns(openDetail, openEditVehicle, openInitialize, openReview, openHistory, openStatus, relistVehicle, permissions),
     [permissions]
@@ -781,11 +1084,13 @@ export default function VehiclesPage() {
           currentMileageKm: values.currentMileageKm ?? 0,
           insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
           insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
+          latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
           purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
           purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
+          registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
           remark: values.remark,
           series: values.series,
           vehicleModel: values.vehicleModel,
@@ -808,11 +1113,210 @@ export default function VehiclesPage() {
     setCapitalEvents([]);
     setRevenueShareRules([]);
     setRevenueSharePreview(null);
+    setResidualForecastLatest(null);
+    setResidualForecastHistory([]);
+    setResidualForecastTotal(0);
+    setResidualForecastPage(1);
+    setResidualForecastPageSize(5);
+    setResidualForecastPreview(null);
+    setResidualForecastDetail(null);
     revenueSharePreviewForm.setFieldsValue({
       endDate: dayjs().endOf("month"),
       startDate: dayjs().startOf("month")
     });
     void loadVehicleFinancialData(vehicle.id);
+    if (canViewResidualForecast) {
+      void loadVehicleResidualForecastData(vehicle.id, 1, 5);
+    }
+  }
+
+  function refreshResidualForecastData(page = residualForecastPage, pageSize = residualForecastPageSize) {
+    if (!detailVehicle || !canViewResidualForecast) {
+      return Promise.resolve();
+    }
+    return loadVehicleResidualForecastData(detailVehicle.id, page, pageSize);
+  }
+
+  function openResidualForecastGenerate() {
+    if (!detailVehicle) {
+      return;
+    }
+    setResidualForecastPreview(null);
+    residualForecastGenerateForm.setFieldsValue({
+      asOfDate: dayjs(),
+      curveId: undefined,
+      horizonMonthsText: defaultResidualForecastHorizons,
+      remark: undefined
+    });
+    setResidualForecastGenerateOpen(true);
+    void loadResidualCurveOptions();
+  }
+
+  async function dryRunResidualForecast() {
+    if (!detailVehicle) {
+      return;
+    }
+    try {
+      const values = await residualForecastGenerateForm.validateFields();
+      const result = await apiFetch<VehicleResidualForecastGenerationResult>(
+        `/vehicles/${detailVehicle.id}/residual-forecasts/generate`,
+        {
+          body: JSON.stringify(buildResidualForecastPayload(values, true)),
+          method: "POST"
+        }
+      );
+      setResidualForecastPreview(result);
+      void message.success("残值预测试算已完成，当前结果尚未保存。");
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : getErrorMessage(error));
+    }
+  }
+
+  async function generateResidualForecast() {
+    if (!detailVehicle) {
+      return;
+    }
+
+    let values: GenerateResidualForecastValues;
+    try {
+      values = await residualForecastGenerateForm.validateFields();
+      buildResidualForecastPayload(values, false);
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : getErrorMessage(error));
+      return;
+    }
+
+    Modal.confirm({
+      content: "本操作会保存预测记录和预测点，但不会覆盖车辆当前销售价，也不会写入销售价历史。",
+      okText: "确认生成",
+      onOk: async () => {
+        setResidualForecastGenerateSubmitting(true);
+        try {
+          const result = await apiFetch<VehicleResidualForecastGenerationResult>(
+            `/vehicles/${detailVehicle.id}/residual-forecasts/generate`,
+            {
+              body: JSON.stringify(buildResidualForecastPayload(values, false)),
+              method: "POST"
+            }
+          );
+          void message.success("车辆残值预测已生成。");
+          setResidualForecastGenerateOpen(false);
+          setResidualForecastPreview(null);
+          await refreshResidualForecastData(1, residualForecastPageSize);
+          if (result.forecast?.id) {
+            await openResidualForecastDetail(result.forecast);
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setResidualForecastGenerateSubmitting(false);
+        }
+      },
+      title: "确认正式生成该车辆残值预测？"
+    });
+  }
+
+  async function openResidualForecastDetail(forecast: VehicleResidualForecast) {
+    if (!forecast.id) {
+      void message.error("该预测记录尚未保存，无法查看详情。");
+      return;
+    }
+    setResidualForecastDetailOpen(true);
+    setResidualForecastDetailLoading(true);
+    try {
+      const detail = await apiFetch<VehicleResidualForecast>(`/residual-market/vehicle-forecasts/${forecast.id}`);
+      setResidualForecastDetail(detail);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setResidualForecastDetailLoading(false);
+    }
+  }
+
+  function openResidualForecastAdopt(point: VehicleResidualForecastPoint) {
+    setResidualForecastAdoptTarget(point);
+    residualForecastAdoptForm.setFieldsValue({
+      adoptedResidualAmountYuan: point.predictedResidualAmount ? point.predictedResidualAmount / 100 : undefined,
+      adoptRemark: undefined
+    });
+  }
+
+  async function submitResidualForecastAdopt(values: AdoptResidualForecastPointValues) {
+    if (!residualForecastAdoptTarget?.id) {
+      return;
+    }
+
+    Modal.confirm({
+      content: "采用值只会记录在预测点上，不会覆盖车辆当前销售价，也不会写入销售价历史。",
+      okText: "确认采用",
+      onOk: async () => {
+        setResidualForecastAdoptSubmitting(true);
+        try {
+          await apiFetch<VehicleResidualForecastPoint>(
+            `/residual-market/vehicle-forecast-points/${residualForecastAdoptTarget.id}/adopt`,
+            {
+              body: JSON.stringify({
+                adoptedResidualAmount: toCents(values.adoptedResidualAmountYuan),
+                adoptRemark: values.adoptRemark
+              }),
+              method: "POST"
+            }
+          );
+          void message.success("预测点已采用。");
+          setResidualForecastAdoptTarget(null);
+          residualForecastAdoptForm.resetFields();
+          await refreshResidualForecastData();
+          if (residualForecastDetail?.id) {
+            await openResidualForecastDetail(residualForecastDetail);
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setResidualForecastAdoptSubmitting(false);
+        }
+      },
+      title: "确认采用该预测点？"
+    });
+  }
+
+  function openResidualForecastVoid(forecast: VehicleResidualForecast) {
+    setResidualForecastVoidTarget(forecast);
+    residualForecastVoidForm.setFieldsValue({ remark: undefined });
+  }
+
+  async function submitResidualForecastVoid(values: VoidResidualForecastValues) {
+    if (!residualForecastVoidTarget?.id) {
+      return;
+    }
+
+    Modal.confirm({
+      content: "作废后不会删除记录，但不再作为有效预测参考。",
+      okText: "确认作废",
+      onOk: async () => {
+        setResidualForecastVoidSubmitting(true);
+        try {
+          await apiFetch<VehicleResidualForecast>(
+            `/residual-market/vehicle-forecasts/${residualForecastVoidTarget.id}/void`,
+            {
+              body: JSON.stringify({ remark: values.remark }),
+              method: "POST"
+            }
+          );
+          void message.success("预测记录已作废。");
+          setResidualForecastVoidTarget(null);
+          residualForecastVoidForm.resetFields();
+          await refreshResidualForecastData();
+          if (residualForecastDetail?.id === residualForecastVoidTarget.id) {
+            await openResidualForecastDetail(residualForecastVoidTarget);
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        } finally {
+          setResidualForecastVoidSubmitting(false);
+        }
+      },
+      title: "确认作废该预测记录？"
+    });
   }
 
   function openEditVehicle(vehicle: Vehicle) {
@@ -828,8 +1332,10 @@ export default function VehiclesPage() {
       plateNo: vehicle.plateNo,
       insuranceEndDate: vehicle.insuranceEndDate ? dayjs(vehicle.insuranceEndDate) : null,
       insuranceStartDate: vehicle.insuranceStartDate ? dayjs(vehicle.insuranceStartDate) : null,
+      latestRegistrationDate: vehicle.latestRegistrationDate ? dayjs(vehicle.latestRegistrationDate) : null,
       purchaseDate: vehicle.purchaseDate ? dayjs(vehicle.purchaseDate) : null,
       purchasePriceAmountYuan: vehicle.purchasePriceAmount / 100,
+      registrationDate: vehicle.registrationDate ? dayjs(vehicle.registrationDate) : null,
       remark: vehicle.remark,
       series: vehicle.series,
       vehicleModel: (vehicle.vehicleModel ?? "ET5") as "ET5" | "ET7" | "ES6",
@@ -851,11 +1357,13 @@ export default function VehiclesPage() {
           currentMileageKm: values.currentMileageKm ?? 0,
           insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
           insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
+          latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
           purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
           purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
+          registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
           remark: values.remark,
           series: values.series,
           vehicleModel: values.vehicleModel,
@@ -1307,6 +1815,20 @@ export default function VehiclesPage() {
           <Form.Item label="采购日期" name="purchaseDate">
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
+          <Form.Item
+            extra="用于残值预测车龄计算，请填写车辆首次登记上牌日期。"
+            label="初次上牌日期"
+            name="registrationDate"
+          >
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            extra="用于记录过户、换牌等最近一次登记上牌日期，不参与当前残值预测车龄计算。"
+            label="最近一次上牌日期"
+            name="latestRegistrationDate"
+          >
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
           <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
@@ -1354,6 +1876,8 @@ export default function VehiclesPage() {
                 { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
                 { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
                 { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
+                { label: "初次上牌日期", children: formatDate(detailVehicle.registrationDate) },
+                { label: "最近一次上牌日期", children: formatDate(detailVehicle.latestRegistrationDate) },
                 { label: "取得方式", children: labelOf(VEHICLE_ACQUISITION_MODE_LABELS, detailVehicle.acquisitionMode) },
                 { label: "保险有效期", children: formatInsurancePeriod(detailVehicle) },
                 { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
@@ -1364,6 +1888,25 @@ export default function VehiclesPage() {
                 { label: "备注", children: detailVehicle.remark ?? "-" }
               ]}
             />
+            {canViewResidualForecast ? (
+              <VehicleResidualForecastBlock
+                history={residualForecastHistory}
+                latest={residualForecastLatest}
+                loading={residualForecastLoading}
+                onAdoptPoint={openResidualForecastAdopt}
+                onGenerate={openResidualForecastGenerate}
+                onOpenDetail={openResidualForecastDetail}
+                onPageChange={(page, pageSize) => {
+                  void refreshResidualForecastData(page, pageSize);
+                }}
+                onVoidForecast={openResidualForecastVoid}
+                page={residualForecastPage}
+                pageSize={residualForecastPageSize}
+                permissions={permissions}
+                total={residualForecastTotal}
+                vehicle={detailVehicle}
+              />
+            ) : null}
             <VehicleCapitalStructureBlock
               capitalStructure={capitalStructure}
               loading={vehicleFinancialLoading}
@@ -1394,6 +1937,89 @@ export default function VehiclesPage() {
             />
           </Space>
         ) : null}
+      </Modal>
+
+      <ResidualForecastGenerateModal
+        curveOptions={residualCurveOptions}
+        curveOptionsLoading={residualCurveOptionsLoading}
+        form={residualForecastGenerateForm}
+        onCancel={() => {
+          setResidualForecastGenerateOpen(false);
+          setResidualForecastPreview(null);
+        }}
+        onDryRun={dryRunResidualForecast}
+        onGenerate={generateResidualForecast}
+        open={residualForecastGenerateOpen}
+        preview={residualForecastPreview}
+        submitting={residualForecastGenerateSubmitting}
+      />
+
+      <ResidualForecastDetailDrawer
+        forecast={residualForecastDetail}
+        loading={residualForecastDetailLoading}
+        onAdoptPoint={openResidualForecastAdopt}
+        onClose={() => setResidualForecastDetailOpen(false)}
+        open={residualForecastDetailOpen}
+        permissions={permissions}
+      />
+
+      <Modal
+        destroyOnHidden
+        okButtonProps={{ loading: residualForecastAdoptSubmitting }}
+        okText="采用"
+        onCancel={() => setResidualForecastAdoptTarget(null)}
+        onOk={() => residualForecastAdoptForm.submit()}
+        open={Boolean(residualForecastAdoptTarget)}
+        title="采用预测点"
+      >
+        <Alert
+          message="采用值只记录在预测点上，不会覆盖车辆当前销售价，也不会写入销售价历史。"
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="info"
+        />
+        <Form<AdoptResidualForecastPointValues>
+          form={residualForecastAdoptForm}
+          layout="vertical"
+          onFinish={submitResidualForecastAdopt}
+        >
+          <Form.Item
+            label="采用残值金额（元）"
+            name="adoptedResidualAmountYuan"
+            rules={[{ required: true, message: "请输入采用残值金额" }]}
+          >
+            <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="采用备注" name="adoptRemark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        destroyOnHidden
+        okButtonProps={{ danger: true, loading: residualForecastVoidSubmitting }}
+        okText="作废"
+        onCancel={() => setResidualForecastVoidTarget(null)}
+        onOk={() => residualForecastVoidForm.submit()}
+        open={Boolean(residualForecastVoidTarget)}
+        title="作废预测记录"
+      >
+        <Alert
+          message="作废后不会删除记录，但不再作为有效预测参考。"
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="warning"
+        />
+        <Form<VoidResidualForecastValues>
+          form={residualForecastVoidForm}
+          layout="vertical"
+          onFinish={submitResidualForecastVoid}
+        >
+          <Form.Item label="作废备注" name="remark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
       </Modal>
 
       <Modal
@@ -1604,6 +2230,20 @@ export default function VehiclesPage() {
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="采购日期" name="purchaseDate">
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            extra="用于残值预测车龄计算，请填写车辆首次登记上牌日期。"
+            label="初次上牌日期"
+            name="registrationDate"
+          >
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            extra="用于记录过户、换牌等最近一次登记上牌日期，不参与当前残值预测车龄计算。"
+            label="最近一次上牌日期"
+            name="latestRegistrationDate"
+          >
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
@@ -1834,6 +2474,418 @@ function hasCapitalEventForAllocation(allocation: FinancingAllocation, capitalEv
 
 function dateKey(value?: string | null) {
   return value ? String(value).slice(0, 10) : "";
+}
+
+function vehicleResidualForecastPointColumns(
+  onAdoptPoint: (point: VehicleResidualForecastPoint) => void,
+  permissions: ReadonlySet<string>,
+  showActions = true
+): ColumnsType<VehicleResidualForecastPoint> {
+  const columns: ColumnsType<VehicleResidualForecastPoint> = [
+    { dataIndex: "horizonMonth", render: formatHorizon, title: "预测周期", width: 120 },
+    { dataIndex: "targetDate", render: formatDate, title: "目标日期", width: 120 },
+    { dataIndex: "targetAgeMonth", render: formatNumber, title: "目标车龄（月）", width: 130 },
+    { dataIndex: "matchedCurvePointAgeMonth", render: formatNumber, title: "匹配曲线点车龄", width: 140 },
+    {
+      dataIndex: "interpolationMethod",
+      render: (value: string | null) => labelOf(RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS, value),
+      title: "插值方法",
+      width: 150
+    },
+    { dataIndex: "predictedResidualAmount", render: formatYuan, title: "预测残值", width: 130 },
+    { dataIndex: "predictedResidualRateBps", render: formatPercentFromBps, title: "残值率", width: 100 },
+    { dataIndex: "lowerBoundAmount", render: formatYuan, title: "下界", width: 130 },
+    { dataIndex: "upperBoundAmount", render: formatYuan, title: "上界", width: 130 },
+    { dataIndex: "confidenceScore", render: formatScore, title: "置信度", width: 110 },
+    { dataIndex: "pointStatus", render: residualForecastPointStatusTag, title: "状态", width: 110 },
+    { dataIndex: "adoptedResidualAmount", render: formatYuan, title: "采用值", width: 130 },
+    { dataIndex: "adoptedBy", render: (value: string | null) => value ?? "-", title: "采用人", width: 180 },
+    { dataIndex: "adoptedAt", render: formatDateTime, title: "采用时间", width: 160 },
+    { dataIndex: "adoptRemark", render: (value: string | null) => value ?? "-", title: "采用备注", width: 180 },
+  ];
+
+  if (showActions) {
+    columns.push({
+      fixed: "right",
+      render: (_, record) => (
+        <ActionButton
+          allowed={record.pointStatus !== "UNSUPPORTED" && Boolean(record.id)}
+          disabledReason={
+            record.pointStatus === "UNSUPPORTED"
+              ? "暂不支持的预测点不能采用。"
+              : "试算结果尚未保存，不能采用。"
+          }
+          onClick={() => onAdoptPoint(record)}
+          permission="residual_forecast:manage"
+          permissions={permissions}
+          size="small"
+        >
+          采用
+        </ActionButton>
+      ),
+      title: "操作",
+      width: 90
+    });
+  }
+
+  return columns;
+}
+
+function VehicleResidualForecastBlock({
+  history,
+  latest,
+  loading,
+  onAdoptPoint,
+  onGenerate,
+  onOpenDetail,
+  onPageChange,
+  onVoidForecast,
+  page,
+  pageSize,
+  permissions,
+  total,
+  vehicle
+}: Readonly<{
+  history: VehicleResidualForecast[];
+  latest: VehicleResidualForecast | null;
+  loading: boolean;
+  onAdoptPoint: (point: VehicleResidualForecastPoint) => void;
+  onGenerate: () => void;
+  onOpenDetail: (forecast: VehicleResidualForecast) => void;
+  onPageChange: (page: number, pageSize: number) => void;
+  onVoidForecast: (forecast: VehicleResidualForecast) => void;
+  page: number;
+  pageSize: number;
+  permissions: ReadonlySet<string>;
+  total: number;
+  vehicle: Vehicle;
+}>) {
+  const pointColumns = vehicleResidualForecastPointColumns(onAdoptPoint, permissions);
+  const historyColumns: ColumnsType<VehicleResidualForecast> = [
+    { dataIndex: "forecastNo", render: (value: string | null) => value ?? "-", title: "预测编号", width: 190 },
+    { dataIndex: "forecastStatus", render: residualForecastStatusTag, title: "状态", width: 110 },
+    {
+      dataIndex: "forecastMethod",
+      render: (value: string) => labelOf(VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS, value),
+      title: "方法",
+      width: 120
+    },
+    {
+      render: (_, record) => record.curve?.curveNo ?? snapshotValue(record.curveSnapshot, "curveNo"),
+      title: "引用曲线",
+      width: 190
+    },
+    { dataIndex: "asOfDate", render: formatDate, title: "预测基准日", width: 120 },
+    { dataIndex: "vehicleAgeMonths", render: formatNumber, title: "车辆车龄（月）", width: 130 },
+    { dataIndex: "pointCount", render: formatNumber, title: "点数", width: 90 },
+    { dataIndex: "createdAt", render: formatDateTime, title: "创建时间", width: 160 },
+    { dataIndex: "remark", render: (value: string | null) => value ?? "-", title: "备注", width: 180 },
+    {
+      fixed: "right",
+      render: (_, record) => (
+        <Space size={8}>
+          <ActionButton
+            allowed={Boolean(record.id)}
+            disabledReason="该预测记录尚未保存，无法查看详情。"
+            onClick={() => onOpenDetail(record)}
+            permission="residual_forecast:view"
+            permissions={permissions}
+            size="small"
+          >
+            查看详情
+          </ActionButton>
+          <ActionButton
+            allowed={Boolean(record.id) && record.forecastStatus !== "VOIDED"}
+            danger
+            disabledReason="已作废的预测记录不能重复作废。"
+            onClick={() => onVoidForecast(record)}
+            permission="residual_forecast:manage"
+            permissions={permissions}
+            size="small"
+          >
+            作废
+          </ActionButton>
+        </Space>
+      ),
+      title: "操作",
+      width: 160
+    }
+  ];
+
+  return (
+    <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+      <Space align="center" style={{ justifyContent: "space-between", width: "100%" }}>
+        <Typography.Title level={5} style={{ margin: 0 }}>
+          残值预测
+        </Typography.Title>
+        <ActionButton onClick={onGenerate} permission="residual_forecast:generate" permissions={permissions} size="small">
+          生成残值预测
+        </ActionButton>
+      </Space>
+      <Alert
+        message="单车残值预测基于已启用的市场残值曲线生成。当前版本使用统计曲线，不使用 AI / ML；预测结果不会自动覆盖车辆当前销售价，也不会写入销售价历史。人工采用值只记录在预测点上，后续可用于资产收益测算。"
+        showIcon
+        type="info"
+      />
+      {!vehicle.registrationDate ? (
+        <Alert message="车辆缺少初次上牌日期时无法生成残值预测。" showIcon type="warning" />
+      ) : null}
+      {latest ? (
+        <>
+          <Descriptions
+            bordered
+            column={3}
+            items={[
+              { label: "预测编号", children: latest.forecastNo ?? "-" },
+              { label: "预测状态", children: residualForecastStatusTag(latest.forecastStatus) },
+              { label: "预测方法", children: labelOf(VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS, latest.forecastMethod) },
+              { label: "引用曲线", children: latest.curve?.curveNo ?? snapshotValue(latest.curveSnapshot, "curveNo") },
+              { label: "预测基准日", children: formatDate(latest.asOfDate) },
+              { label: "车辆当前车龄（月）", children: formatNumber(latest.vehicleAgeMonths) },
+              {
+                label: "当前里程",
+                children:
+                  latest.currentMileageKm === undefined || latest.currentMileageKm === null
+                    ? "-"
+                    : `${latest.currentMileageKm.toLocaleString("zh-CN")} km`
+              },
+              { label: "品牌", children: latest.brand ?? "-" },
+              { label: "车系", children: latest.series ?? "-" },
+              { label: "车型", children: latest.model ?? "-" },
+              { label: "年款", children: latest.modelYear ?? "-" },
+              { label: "电池容量", children: formatKwh(latest.batteryCapacityKwh) },
+              { label: "电池使用方式", children: labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, latest.batteryUsageType) },
+              { label: "创建时间", children: formatDateTime(latest.createdAt) },
+              { label: "备注", children: latest.remark ?? "-" }
+            ]}
+            size="small"
+          />
+          <Table
+            columns={pointColumns}
+            dataSource={latest.points ?? []}
+            pagination={false}
+            rowKey={(record, index) => record.id ?? `${record.horizonMonth}-${index}`}
+            scroll={{ x: 1900 }}
+            size="small"
+            title={() => "最新预测点"}
+          />
+        </>
+      ) : (
+        <Empty description={loading ? "正在加载残值预测" : "当前车辆暂无残值预测记录"} />
+      )}
+      <Table
+        columns={historyColumns}
+        dataSource={history}
+        loading={loading}
+        pagination={{
+          current: page,
+          onChange: onPageChange,
+          pageSize,
+          showSizeChanger: true,
+          total
+        }}
+        rowKey={(record, index) => record.id ?? `${record.forecastNo}-${index}`}
+        scroll={{ x: 1460 }}
+        size="small"
+        title={() => "预测历史记录"}
+      />
+    </Space>
+  );
+}
+
+function ResidualForecastGenerateModal({
+  curveOptions,
+  curveOptionsLoading,
+  form,
+  onCancel,
+  onDryRun,
+  onGenerate,
+  open,
+  preview,
+  submitting
+}: Readonly<{
+  curveOptions: ResidualCurveSummary[];
+  curveOptionsLoading: boolean;
+  form: FormInstance<GenerateResidualForecastValues>;
+  onCancel: () => void;
+  onDryRun: () => void;
+  onGenerate: () => void;
+  open: boolean;
+  preview: VehicleResidualForecastGenerationResult | null;
+  submitting: boolean;
+}>) {
+  const previewForecast = preview?.forecast;
+  const previewPoints = preview?.points ?? previewForecast?.points ?? [];
+
+  return (
+    <Modal
+      destroyOnHidden
+      footer={[
+        <Button key="cancel" onClick={onCancel}>
+          取消
+        </Button>,
+        <Button key="dryRun" onClick={onDryRun}>
+          试算
+        </Button>,
+        <Button key="generate" loading={submitting} onClick={onGenerate} type="primary">
+          正式生成
+        </Button>
+      ]}
+      onCancel={onCancel}
+      open={open}
+      title="生成残值预测"
+      width={980}
+    >
+      <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+        <Form<GenerateResidualForecastValues> form={form} layout="vertical">
+          <Form.Item label="预测基准日" name="asOfDate" rules={[{ required: true, message: "请选择预测基准日" }]}>
+            <DatePicker style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item label="指定残值曲线（可选）" name="curveId">
+            <Select
+              allowClear
+              loading={curveOptionsLoading}
+              optionFilterProp="label"
+              options={curveOptions.map((curve) => ({
+                label: residualCurveOptionLabel(curve),
+                value: curve.id
+              }))}
+              placeholder="不选择时由后端自动匹配生效曲线"
+              showSearch
+            />
+          </Form.Item>
+          <Form.Item
+            extra="多个周期可用逗号、空格或换行分隔，最多 10 个非负整数。"
+            label="预测周期（月）"
+            name="horizonMonthsText"
+            rules={[{ required: true, message: "请输入预测周期" }]}
+          >
+            <Input placeholder={defaultResidualForecastHorizons} />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+        {preview ? (
+          <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+            <Alert message="当前为试算结果，未保存预测记录。" showIcon type="success" />
+            <Descriptions
+              bordered
+              column={3}
+              items={[
+                { label: "匹配曲线", children: previewForecast?.curve?.curveNo ?? snapshotValue(previewForecast?.curveSnapshot, "curveNo") },
+                { label: "预测基准日", children: formatDate(previewForecast?.asOfDate) },
+                { label: "车辆车龄（月）", children: formatNumber(previewForecast?.vehicleAgeMonths) },
+                { label: "当前里程", children: formatNumber(previewForecast?.currentMileageKm) },
+                { label: "预测点数", children: formatNumber(preview.pointCount ?? previewPoints.length) },
+                { label: "备注", children: previewForecast?.remark ?? "-" }
+              ]}
+              size="small"
+            />
+            <Table
+              columns={vehicleResidualForecastPointColumns(() => undefined, new Set(), false)}
+              dataSource={previewPoints}
+              pagination={false}
+              rowKey={(record, index) => record.id ?? `${record.horizonMonth}-${index}`}
+              scroll={{ x: 1900 }}
+              size="small"
+            />
+          </Space>
+        ) : null}
+      </Space>
+    </Modal>
+  );
+}
+
+function ResidualForecastDetailDrawer({
+  forecast,
+  loading,
+  onAdoptPoint,
+  onClose,
+  open,
+  permissions
+}: Readonly<{
+  forecast: VehicleResidualForecast | null;
+  loading: boolean;
+  onAdoptPoint: (point: VehicleResidualForecastPoint) => void;
+  onClose: () => void;
+  open: boolean;
+  permissions: ReadonlySet<string>;
+}>) {
+  return (
+    <Drawer onClose={onClose} open={open} title="残值预测详情" width={1000}>
+      {forecast ? (
+        <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+          <Descriptions
+            bordered
+            column={3}
+            items={[
+              { label: "预测编号", children: forecast.forecastNo ?? "-" },
+              { label: "状态", children: residualForecastStatusTag(forecast.forecastStatus) },
+              { label: "方法", children: labelOf(VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS, forecast.forecastMethod) },
+              { label: "基准日", children: formatDate(forecast.asOfDate) },
+              { label: "车辆车龄", children: formatNumber(forecast.vehicleAgeMonths) },
+              {
+                label: "当前里程",
+                children:
+                  forecast.currentMileageKm === undefined || forecast.currentMileageKm === null
+                    ? "-"
+                    : `${forecast.currentMileageKm.toLocaleString("zh-CN")} km`
+              },
+              { label: "引用曲线", children: forecast.curve?.curveNo ?? snapshotValue(forecast.curveSnapshot, "curveNo") },
+              { label: "创建时间", children: formatDateTime(forecast.createdAt) },
+              { label: "备注", children: forecast.remark ?? "-" }
+            ]}
+            size="small"
+            title="预测基础信息"
+          />
+          <Descriptions
+            bordered
+            column={3}
+            items={[
+              { label: "品牌", children: forecast.brand ?? "-" },
+              { label: "车系", children: forecast.series ?? "-" },
+              { label: "车型", children: forecast.model ?? "-" },
+              { label: "年款", children: forecast.modelYear ?? "-" },
+              { label: "电池容量", children: formatKwh(forecast.batteryCapacityKwh) },
+              { label: "电池使用方式", children: labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, forecast.batteryUsageType) },
+              { label: "采购价", children: formatYuan(forecast.purchasePriceAmount) },
+              { label: "当前销售价", children: formatYuan(forecast.currentSalePriceAmount) }
+            ]}
+            size="small"
+            title="车辆快照"
+          />
+          <Descriptions
+            bordered
+            column={3}
+            items={[
+              { label: "曲线编号", children: forecast.curve?.curveNo ?? snapshotValue(forecast.curveSnapshot, "curveNo") },
+              { label: "曲线状态", children: labelOf(VEHICLE_RESIDUAL_CURVE_STATUS_LABELS, forecast.curve?.curveStatus) },
+              { label: "曲线方法", children: labelOf(VEHICLE_RESIDUAL_CURVE_METHOD_LABELS, forecast.curve?.curveMethod) },
+              { label: "样本数", children: formatNumber(forecast.curve?.sampleCount) },
+              { label: "曲线点数", children: formatNumber(forecast.curve?.pointCount) },
+              { label: "置信度", children: formatScore(forecast.curve?.confidenceScore) },
+              { label: "生成时间", children: formatDateTime(forecast.curve?.generatedAt) }
+            ]}
+            size="small"
+            title="曲线快照"
+          />
+          <Table
+            columns={vehicleResidualForecastPointColumns(onAdoptPoint, permissions)}
+            dataSource={forecast.points ?? []}
+            loading={loading}
+            pagination={false}
+            rowKey={(record, index) => record.id ?? `${record.horizonMonth}-${index}`}
+            scroll={{ x: 1900 }}
+            size="small"
+            title={() => "预测点列表"}
+          />
+        </Space>
+      ) : (
+        <Empty description={loading ? "正在加载预测详情" : "暂无预测详情"} />
+      )}
+    </Drawer>
+  );
 }
 
 function VehicleCapitalStructureBlock({

@@ -6,13 +6,17 @@ import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   ActivateResidualCurveDto,
+  AdoptVehicleResidualForecastPointDto,
   ArchiveResidualCurveDto,
   CreateMarketPriceObservationDto,
   GenerateResidualCurveDto,
+  GenerateVehicleResidualForecastDto,
   ImportMarketPriceCsvDto,
   MarketPriceImportBatchesQueryDto,
   MarketPriceObservationsQueryDto,
   ResidualCurveQueryDto,
+  VehicleResidualForecastQueryDto,
+  VoidVehicleResidualForecastDto,
   VoidMarketPriceObservationDto
 } from "./dto/residual-market.dto";
 import { ResidualMarketService } from "./residual-market.service";
@@ -104,6 +108,60 @@ export class ResidualMarketController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.residualMarketService.archiveCurve(id, dto, request.user, requestContext(request));
+  }
+
+  @Get("vehicle-forecasts/:id")
+  @RequirePermissions(PermissionCode.RESIDUAL_FORECAST_VIEW)
+  getVehicleForecast(@Param("id") id: string) {
+    return this.residualMarketService.getVehicleForecast(id);
+  }
+
+  @Post("vehicle-forecasts/:id/void")
+  @RequirePermissions(PermissionCode.RESIDUAL_FORECAST_MANAGE)
+  voidVehicleForecast(
+    @Param("id") id: string,
+    @Body() dto: VoidVehicleResidualForecastDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.voidVehicleForecast(id, dto, request.user, requestContext(request));
+  }
+
+  @Post("vehicle-forecast-points/:pointId/adopt")
+  @RequirePermissions(PermissionCode.RESIDUAL_FORECAST_MANAGE)
+  adoptVehicleForecastPoint(
+    @Param("pointId") pointId: string,
+    @Body() dto: AdoptVehicleResidualForecastPointDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.adoptVehicleForecastPoint(pointId, dto, request.user, requestContext(request));
+  }
+}
+
+@Controller("vehicles")
+@UseGuards(AuthGuard, PermissionsGuard)
+export class VehicleResidualForecastController {
+  constructor(private readonly residualMarketService: ResidualMarketService) {}
+
+  @Post(":id/residual-forecasts/generate")
+  @RequirePermissions(PermissionCode.RESIDUAL_FORECAST_GENERATE)
+  generateVehicleForecast(
+    @Param("id") id: string,
+    @Body() dto: GenerateVehicleResidualForecastDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.residualMarketService.generateVehicleForecast(id, dto, request.user, requestContext(request));
+  }
+
+  @Get(":id/residual-forecasts")
+  @RequirePermissions(PermissionCode.RESIDUAL_FORECAST_VIEW)
+  listVehicleForecasts(@Param("id") id: string, @Query() query: VehicleResidualForecastQueryDto) {
+    return this.residualMarketService.listVehicleForecasts(id, query);
+  }
+
+  @Get(":id/residual-forecasts/latest")
+  @RequirePermissions(PermissionCode.RESIDUAL_FORECAST_VIEW)
+  getLatestVehicleForecast(@Param("id") id: string) {
+    return this.residualMarketService.getLatestVehicleForecast(id);
   }
 }
 

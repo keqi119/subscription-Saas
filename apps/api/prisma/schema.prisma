@@ -820,6 +820,39 @@ enum VehicleResidualCurveMethod {
   @@map("vehicle_residual_curve_method")
 }
 
+enum VehicleResidualForecastStatus {
+  GENERATED
+  ADOPTED
+  ARCHIVED
+  VOIDED
+
+  @@map("vehicle_residual_forecast_status")
+}
+
+enum VehicleResidualForecastMethod {
+  CURVE_STATISTICAL
+  MANUAL
+  ML_MODEL
+
+  @@map("vehicle_residual_forecast_method")
+}
+
+enum ResidualForecastInterpolationMethod {
+  EXACT
+  LINEAR_INTERPOLATION
+  UNSUPPORTED_OUT_OF_RANGE
+
+  @@map("residual_forecast_interpolation_method")
+}
+
+enum VehicleResidualForecastPointStatus {
+  GENERATED
+  ADOPTED
+  UNSUPPORTED
+
+  @@map("vehicle_residual_forecast_point_status")
+}
+
 enum SalePriceStatus {
   PENDING_INITIALIZE
   EFFECTIVE
@@ -1649,6 +1682,7 @@ model Vehicle {
   salePriceReinitRequiredAt     DateTime?                 @map("sale_price_reinit_required_at") @db.Timestamptz(6)
   salePriceStatus               SalePriceStatus           @default(PENDING_INITIALIZE) @map("sale_price_status")
   registrationDate              DateTime?                 @map("registration_date") @db.Date
+  latestRegistrationDate        DateTime?                 @map("latest_registration_date") @db.Date
   insuranceStartDate            DateTime?                 @map("insurance_start_date") @db.Date
   insuranceEndDate              DateTime?                 @map("insurance_end_date") @db.Date
   status                        VehicleStatus             @default(DRAFT)
@@ -1667,6 +1701,7 @@ model Vehicle {
   assetPoolMemberships          VehicleAssetPoolVehicle[]
   revenueRightAssignments       RevenueRightAssignment[]
   revenueShareRules             RevenueShareRule[]
+  residualForecasts             VehicleResidualForecast[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                   @map("created_by") @db.Uuid
@@ -1842,6 +1877,7 @@ model VehicleResidualCurve {
   deletedAt            DateTime?                  @map("deleted_at") @db.Timestamptz(6)
 
   points               VehicleResidualCurvePoint[]
+  vehicleResidualForecasts VehicleResidualForecast[]
 
   @@index([curveStatus])
   @@index([curveMethod])
@@ -1878,6 +1914,76 @@ model VehicleResidualCurvePoint {
   @@index([curveId])
   @@index([ageMonth])
   @@map("vehicle_residual_curve_point")
+}
+
+model VehicleResidualForecast {
+  id                     String                         @id @default(uuid()) @db.Uuid
+  forecastNo             String                         @unique @map("forecast_no") @db.VarChar(64)
+  vehicleId              String                         @map("vehicle_id") @db.Uuid
+  vehicle                Vehicle                        @relation(fields: [vehicleId], references: [id])
+  curveId                String                         @map("curve_id") @db.Uuid
+  curve                  VehicleResidualCurve           @relation(fields: [curveId], references: [id])
+  forecastStatus         VehicleResidualForecastStatus  @default(GENERATED) @map("forecast_status")
+  forecastMethod         VehicleResidualForecastMethod  @default(CURVE_STATISTICAL) @map("forecast_method")
+  asOfDate               DateTime                       @map("as_of_date") @db.Date
+  vehicleAgeMonths       Int?                           @map("vehicle_age_months")
+  currentMileageKm       Int?                           @map("current_mileage_km")
+  brand                  String?                        @db.VarChar(64)
+  series                 String?                        @db.VarChar(64)
+  model                  String?                        @db.VarChar(64)
+  modelYear              Int?                           @map("model_year")
+  trim                   String?                        @db.VarChar(128)
+  batteryCapacityKwh     Decimal?                       @map("battery_capacity_kwh") @db.Decimal(8, 2)
+  batteryUsageType       VehicleBatteryUsageType?       @map("battery_usage_type")
+  purchasePriceAmount    BigInt?                        @map("purchase_price_amount")
+  currentSalePriceAmount BigInt?                        @map("current_sale_price_amount")
+  curveSnapshot          Json?                          @map("curve_snapshot")
+  vehicleSnapshot        Json?                          @map("vehicle_snapshot")
+  inputSnapshot          Json?                          @map("input_snapshot")
+  metrics                Json?
+  remark                 String?                        @db.Text
+  createdAt              DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                        @map("created_by") @db.Uuid
+  updatedBy              String?                        @map("updated_by") @db.Uuid
+  deletedAt              DateTime?                      @map("deleted_at") @db.Timestamptz(6)
+
+  points                 VehicleResidualForecastPoint[]
+
+  @@index([vehicleId])
+  @@index([curveId])
+  @@index([forecastStatus])
+  @@index([asOfDate])
+  @@map("vehicle_residual_forecast")
+}
+
+model VehicleResidualForecastPoint {
+  id                        String                                @id @default(uuid()) @db.Uuid
+  forecastId                String                                @map("forecast_id") @db.Uuid
+  forecast                  VehicleResidualForecast               @relation(fields: [forecastId], references: [id])
+  horizonMonth              Int                                   @map("horizon_month")
+  targetDate                DateTime                              @map("target_date") @db.Date
+  targetAgeMonth            Int?                                  @map("target_age_month")
+  matchedCurvePointAgeMonth Int?                                  @map("matched_curve_point_age_month")
+  interpolationMethod       ResidualForecastInterpolationMethod?  @map("interpolation_method")
+  predictedResidualAmount   BigInt?                               @map("predicted_residual_amount")
+  predictedResidualRateBps  Int?                                  @map("predicted_residual_rate_bps")
+  lowerBoundAmount          BigInt?                               @map("lower_bound_amount")
+  upperBoundAmount          BigInt?                               @map("upper_bound_amount")
+  confidenceScore           Int?                                  @map("confidence_score")
+  pointStatus               VehicleResidualForecastPointStatus    @default(GENERATED) @map("point_status")
+  adoptedResidualAmount     BigInt?                               @map("adopted_residual_amount")
+  adoptedBy                 String?                               @map("adopted_by") @db.Uuid
+  adoptedAt                 DateTime?                             @map("adopted_at") @db.Timestamptz(6)
+  adoptRemark               String?                               @map("adopt_remark") @db.Text
+  pointSnapshot             Json?                                 @map("point_snapshot")
+  createdAt                 DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([forecastId])
+  @@index([horizonMonth])
+  @@index([targetAgeMonth])
+  @@map("vehicle_residual_forecast_point")
 }
 
 model VehicleCapitalEvent {

@@ -6,12 +6,23 @@ import {
   MarketPriceSource,
   MarketPriceType,
   Prisma,
+  ResidualForecastInterpolationMethod,
+  SalePriceStatus,
+  Vehicle,
+  VehicleAcquisitionMode,
   VehicleBatteryUsageType,
   VehicleMarketPriceObservation,
+  VehicleModel,
   VehicleResidualCurve,
   VehicleResidualCurveMethod,
   VehicleResidualCurvePoint,
-  VehicleResidualCurveStatus
+  VehicleResidualCurveStatus,
+  VehicleResidualForecast,
+  VehicleResidualForecastMethod,
+  VehicleResidualForecastPoint,
+  VehicleResidualForecastPointStatus,
+  VehicleResidualForecastStatus,
+  VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -531,6 +542,246 @@ describe("ResidualMarketService", () => {
       harness.service.archiveCurve("curve-1", { remark: "again" }, user, context)
     ).rejects.toThrow("已归档");
   });
+  it("dry-runs vehicle residual forecast without writing database rows", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      points: makeForecastCurvePoints(),
+      vehicles: [makeVehicle()]
+    });
+
+    const result = await harness.service.generateVehicleForecast(
+      "vehicle-1",
+      { asOfDate: "2026-06-01", dryRun: true },
+      user,
+      context
+    );
+
+    expect(result.dryRun).toBe(true);
+    expect(result.pointCount).toBe(5);
+    expect(result.points.map((point) => point.horizonMonth)).toEqual([0, 6, 12, 24, 36]);
+    expect(result.points[0]?.interpolationMethod).toBe(ResidualForecastInterpolationMethod.EXACT);
+    expect(result.points[0]?.predictedResidualAmount).toBe(12000000);
+    expect(result.points[0]?.predictedResidualRateBps).toBe(6000);
+    expect(harness.state.forecasts).toHaveLength(0);
+    expect(harness.state.forecastPoints).toHaveLength(0);
+  });
+
+  it("formally creates vehicle residual forecast and points with audit log", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      points: makeForecastCurvePoints(),
+      vehicles: [makeVehicle()]
+    });
+
+    const result = await harness.service.generateVehicleForecast(
+      "vehicle-1",
+      { asOfDate: "2026-06-01", dryRun: false, horizonMonths: [0, 6], remark: "generate forecast" },
+      user,
+      context
+    );
+
+    expect(result.forecast.forecastNo).toMatch(/^VRF\d{14}[A-Z0-9]{4}$/);
+    expect(result.forecast.forecastStatus).toBe(VehicleResidualForecastStatus.GENERATED);
+    expect(harness.state.forecasts).toHaveLength(1);
+    expect(harness.state.forecastPoints).toHaveLength(2);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.CREATE,
+        entityType: "vehicle_residual_forecast",
+        module: "residual_market"
+      })
+    );
+  });
+
+  it("rejects vehicle residual forecast when vehicle is missing or lacks registrationDate", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      points: makeForecastCurvePoints(),
+      vehicles: [makeVehicle({ registrationDate: null })]
+    });
+
+    await expect(
+      harness.service.generateVehicleForecast("missing-vehicle", { dryRun: true }, user, context)
+    ).rejects.toThrow("车辆不存在");
+    await expect(
+      harness.service.generateVehicleForecast("vehicle-1", { dryRun: true }, user, context)
+    ).rejects.toThrow("上牌日期");
+  });
+
+  it("rejects vehicle residual forecast when no active curve matches", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.DRAFT })],
+      points: makeForecastCurvePoints(),
+      vehicles: [makeVehicle()]
+    });
+
+    await expect(
+      harness.service.generateVehicleForecast("vehicle-1", { dryRun: true }, user, context)
+    ).rejects.toThrow("未找到匹配的生效残值曲线");
+  });
+
+  it("selects the highest-scoring active curve by vehicle dimension", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [
+        makeCurve({
+          batteryCapacityKwh: null,
+          batteryUsageType: null,
+          curveStatus: VehicleResidualCurveStatus.ACTIVE,
+          id: "curve-broad",
+          modelYear: null,
+          series: null
+        }),
+        makeCurve({
+          curveNo: "RVC20260602000000A1B2",
+          curveStatus: VehicleResidualCurveStatus.ACTIVE,
+          generatedAt: new Date("2026-06-02T00:00:00.000Z"),
+          id: "curve-specific"
+        })
+      ],
+      points: [
+        makeCurvePoint({ curveId: "curve-broad", id: "broad-24", predictedResidualAmount: 12000000n }),
+        makeCurvePoint({ curveId: "curve-specific", id: "specific-24", predictedResidualAmount: 9000000n })
+      ],
+      vehicles: [makeVehicle()]
+    });
+
+    const result = await harness.service.generateVehicleForecast(
+      "vehicle-1",
+      { asOfDate: "2026-06-01", dryRun: true, horizonMonths: [0] },
+      user,
+      context
+    );
+
+    expect(result.forecast.curveId).toBe("curve-specific");
+    expect(result.points[0]?.predictedResidualAmount).toBe(9000000);
+    const inputSnapshot = result.forecast.inputSnapshot as { curveMatch: { score: number } };
+    expect(inputSnapshot.curveMatch.score).toBeGreaterThan(0);
+  });
+
+  it("linearly interpolates forecast points and marks out-of-range points unsupported", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      points: [
+        makeCurvePoint({ ageMonth: 24, id: "curve-point-24", predictedResidualAmount: 12000000n }),
+        makeCurvePoint({ ageMonth: 36, id: "curve-point-36", predictedResidualAmount: 9000000n })
+      ],
+      vehicles: [makeVehicle()]
+    });
+
+    const result = await harness.service.generateVehicleForecast(
+      "vehicle-1",
+      { asOfDate: "2026-06-01", dryRun: true, horizonMonths: [6, 36] },
+      user,
+      context
+    );
+
+    expect(result.points[0]).toMatchObject({
+      horizonMonth: 6,
+      interpolationMethod: ResidualForecastInterpolationMethod.LINEAR_INTERPOLATION,
+      predictedResidualAmount: 10500000
+    });
+    expect(result.points[1]).toMatchObject({
+      horizonMonth: 36,
+      interpolationMethod: ResidualForecastInterpolationMethod.UNSUPPORTED_OUT_OF_RANGE,
+      pointStatus: VehicleResidualForecastPointStatus.UNSUPPORTED,
+      predictedResidualAmount: null
+    });
+  });
+
+  it("leaves vehicle residualRateBps null when purchasePriceAmount is not positive", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      points: makeForecastCurvePoints(),
+      vehicles: [makeVehicle({ purchasePriceAmount: 0n })]
+    });
+
+    const result = await harness.service.generateVehicleForecast(
+      "vehicle-1",
+      { asOfDate: "2026-06-01", dryRun: true, horizonMonths: [0] },
+      user,
+      context
+    );
+
+    expect(result.points[0]?.predictedResidualRateBps).toBeNull();
+  });
+
+  it("lists latest and detailed vehicle residual forecasts without BigInt serialization failures", async () => {
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      forecastPoints: [makeForecastPoint()],
+      forecasts: [makeForecast()],
+      vehicles: [makeVehicle()]
+    });
+
+    const list = await harness.service.listVehicleForecasts("vehicle-1", {});
+    const latest = await harness.service.getLatestVehicleForecast("vehicle-1");
+    const detail = await harness.service.getVehicleForecast("forecast-1");
+
+    expect(list.total).toBe(1);
+    expect(latest?.forecastNo).toBe("VRF20260601000000A1B2");
+    expect(detail.points?.[0]?.predictedResidualAmount).toBe(12000000);
+    expect(() => JSON.stringify(detail)).not.toThrow();
+  });
+
+  it("adopts a supported forecast point without changing vehicle currentSalePriceAmount", async () => {
+    const vehicle = makeVehicle({ currentSalePriceAmount: 15000000n });
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      forecastPoints: [makeForecastPoint()],
+      forecasts: [makeForecast()],
+      vehicles: [vehicle]
+    });
+
+    const result = await harness.service.adoptVehicleForecastPoint(
+      "forecast-point-1",
+      { adoptedResidualAmount: 11800000, adoptRemark: "adopt" },
+      user,
+      context
+    );
+
+    expect(result.pointStatus).toBe(VehicleResidualForecastPointStatus.ADOPTED);
+    expect(result.adoptedResidualAmount).toBe(11800000);
+    expect(harness.state.forecasts[0]?.forecastStatus).toBe(VehicleResidualForecastStatus.ADOPTED);
+    expect(harness.state.vehicles[0]?.currentSalePriceAmount).toBe(15000000n);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.UPDATE,
+        entityType: "vehicle_residual_forecast_point"
+      })
+    );
+  });
+
+  it("rejects unsupported point adoption and non-positive adopted amount", async () => {
+    const harness = createResidualMarketHarness({
+      forecastPoints: [
+        makeForecastPoint({
+          pointStatus: VehicleResidualForecastPointStatus.UNSUPPORTED,
+          predictedResidualAmount: null
+        })
+      ],
+      forecasts: [makeForecast()],
+      vehicles: [makeVehicle()]
+    });
+
+    await expect(
+      harness.service.adoptVehicleForecastPoint(
+        "forecast-point-1",
+        { adoptedResidualAmount: 10000000 },
+        user,
+        context
+      )
+    ).rejects.toThrow("不能采用");
+
+    harness.state.forecastPoints[0] = makeForecastPoint();
+    await expect(
+      harness.service.adoptVehicleForecastPoint(
+        "forecast-point-1",
+        { adoptedResidualAmount: 0 },
+        user,
+        context
+      )
+    ).rejects.toThrow("adoptedResidualAmount");
+  });
 });
 
 describe("residual market CSV parser", () => {
@@ -577,8 +828,11 @@ function createResidualMarketHarness(seed: Partial<ResidualMarketState> = {}) {
   const state: ResidualMarketState = {
     batches: [...(seed.batches ?? [])],
     curves: [...(seed.curves ?? [])],
+    forecastPoints: [...(seed.forecastPoints ?? [])],
+    forecasts: [...(seed.forecasts ?? [])],
     observations: [...(seed.observations ?? [])],
-    points: [...(seed.points ?? [])]
+    points: [...(seed.points ?? [])],
+    vehicles: [...(seed.vehicles ?? [])]
   };
   const auditService = { write: vi.fn().mockResolvedValue(undefined) };
   const prisma = createResidualMarketPrisma(state);
@@ -590,12 +844,20 @@ function createResidualMarketHarness(seed: Partial<ResidualMarketState> = {}) {
 type ResidualMarketState = {
   batches: MarketPriceImportBatch[];
   curves: VehicleResidualCurve[];
+  forecastPoints: VehicleResidualForecastPoint[];
+  forecasts: VehicleResidualForecast[];
   observations: VehicleMarketPriceObservation[];
   points: VehicleResidualCurvePoint[];
+  vehicles: Vehicle[];
 };
 
 function createResidualMarketPrisma(state: ResidualMarketState) {
   const prisma = {
+    vehicle: {
+      findFirst: vi.fn(({ where }) =>
+        Promise.resolve(state.vehicles.find((vehicle) => matchesVehicleWhere(vehicle, where)) ?? null)
+      )
+    },
     marketPriceImportBatch: {
       count: vi.fn(({ where }) => Promise.resolve(state.batches.filter((batch) => matchesBatchWhere(batch, where)).length)),
       create: vi.fn(({ data }) => {
@@ -703,8 +965,13 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           )
         )
       ),
-      findMany: vi.fn(({ skip = 0, take = 20, where }) =>
-        Promise.resolve(state.curves.filter((curve) => matchesCurveWhere(curve, where)).slice(skip, skip + take))
+      findMany: vi.fn(({ include, skip = 0, take = 20, where }) =>
+        Promise.resolve(
+          state.curves
+            .filter((curve) => matchesCurveWhere(curve, where))
+            .slice(skip, skip + take)
+            .map((curve) => attachCurveInclude(curve, include, state))
+        )
       ),
       update: vi.fn(({ data, include, where }) => {
         const index = state.curves.findIndex((curve) => curve.id === where.id);
@@ -734,6 +1001,80 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           };
         });
         return Promise.resolve({ count });
+      })
+    },
+    vehicleResidualForecast: {
+      count: vi.fn(({ where }) =>
+        Promise.resolve(state.forecasts.filter((forecast) => matchesForecastWhere(forecast, where)).length)
+      ),
+      create: vi.fn(({ data, include }) => {
+        const { points, ...forecastData } = data;
+        const forecast = makeForecast({
+          ...forecastData,
+          id: `forecast-${state.forecasts.length + 1}`
+        });
+        const createdPoints = (points?.create ?? []).map(
+          (point: Partial<VehicleResidualForecastPoint>, index: number) =>
+            makeForecastPoint({
+              ...point,
+              forecastId: forecast.id,
+              id: `forecast-point-${state.forecastPoints.length + index + 1}`
+            })
+        );
+        state.forecasts.push(forecast);
+        state.forecastPoints.push(...createdPoints);
+        return Promise.resolve(attachForecastInclude(forecast, include, state));
+      }),
+      findFirst: vi.fn(({ include, orderBy, where }) => {
+        const forecasts = state.forecasts.filter((forecast) => matchesForecastWhere(forecast, where));
+        sortForecasts(forecasts, orderBy);
+        return Promise.resolve(attachForecastInclude(forecasts[0] ?? null, include, state));
+      }),
+      findMany: vi.fn(({ include, orderBy, skip = 0, take = 20, where }) => {
+        const forecasts = state.forecasts.filter((forecast) => matchesForecastWhere(forecast, where));
+        sortForecasts(forecasts, orderBy);
+        return Promise.resolve(
+          forecasts.slice(skip, skip + take).map((forecast) => attachForecastInclude(forecast, include, state))
+        );
+      }),
+      update: vi.fn(({ data, include, where }) => {
+        const index = state.forecasts.findIndex((forecast) => forecast.id === where.id);
+        const before = state.forecasts[index];
+        if (!before) {
+          throw new Error("Forecast not found.");
+        }
+        const updated = {
+          ...before,
+          ...data,
+          updatedAt: new Date("2026-06-01T00:10:00.000Z")
+        };
+        state.forecasts[index] = updated;
+        return Promise.resolve(attachForecastInclude(updated, include, state));
+      })
+    },
+    vehicleResidualForecastPoint: {
+      findFirst: vi.fn(({ include, where }) =>
+        Promise.resolve(
+          attachForecastPointInclude(
+            state.forecastPoints.find((point) => matchesForecastPointWhere(point, where)) ?? null,
+            include,
+            state
+          )
+        )
+      ),
+      update: vi.fn(({ data, include, where }) => {
+        const index = state.forecastPoints.findIndex((point) => point.id === where.id);
+        const before = state.forecastPoints[index];
+        if (!before) {
+          throw new Error("Forecast point not found.");
+        }
+        const updated = {
+          ...before,
+          ...data,
+          updatedAt: new Date("2026-06-01T00:10:00.000Z")
+        };
+        state.forecastPoints[index] = updated;
+        return Promise.resolve(attachForecastPointInclude(updated, include, state));
       })
     }
   };
@@ -846,6 +1187,42 @@ function matchesCurveWhere(curve: VehicleResidualCurve, where: Record<string, un
   return true;
 }
 
+function matchesVehicleWhere(vehicle: Vehicle, where: Record<string, unknown> = {}) {
+  if (where.id !== undefined && vehicle.id !== where.id) {
+    return false;
+  }
+  if (where.deletedAt === null && vehicle.deletedAt !== null) {
+    return false;
+  }
+  return true;
+}
+
+function matchesForecastWhere(forecast: VehicleResidualForecast, where: Record<string, unknown> = {}) {
+  if (where.id !== undefined && forecast.id !== where.id) {
+    return false;
+  }
+  if (where.vehicleId !== undefined && forecast.vehicleId !== where.vehicleId) {
+    return false;
+  }
+  if (where.deletedAt === null && forecast.deletedAt !== null) {
+    return false;
+  }
+  if (where.forecastStatus !== undefined && forecast.forecastStatus !== where.forecastStatus) {
+    return false;
+  }
+  return true;
+}
+
+function matchesForecastPointWhere(point: VehicleResidualForecastPoint, where: Record<string, unknown> = {}) {
+  if (where.id !== undefined && point.id !== where.id) {
+    return false;
+  }
+  if (where.forecastId !== undefined && point.forecastId !== where.forecastId) {
+    return false;
+  }
+  return true;
+}
+
 type RangeFilter<T> = {
   gte?: T;
   lte?: T;
@@ -929,6 +1306,56 @@ function attachCurveInclude(
       .filter((point) => point.curveId === curve.id)
       .sort((left, right) => left.ageMonth - right.ageMonth)
   };
+}
+
+function attachForecastInclude(
+  forecast: VehicleResidualForecast | null,
+  include: { curve?: unknown; points?: unknown; vehicle?: unknown } | undefined,
+  state: ResidualMarketState
+) {
+  if (!forecast) {
+    return null;
+  }
+
+  return {
+    ...forecast,
+    ...(include?.curve ? { curve: state.curves.find((curve) => curve.id === forecast.curveId) ?? null } : {}),
+    ...(include?.points
+      ? {
+          points: state.forecastPoints
+            .filter((point) => point.forecastId === forecast.id)
+            .sort((left, right) => left.horizonMonth - right.horizonMonth)
+        }
+      : {}),
+    ...(include?.vehicle ? { vehicle: state.vehicles.find((vehicle) => vehicle.id === forecast.vehicleId) ?? null } : {})
+  };
+}
+
+function attachForecastPointInclude(
+  point: VehicleResidualForecastPoint | null,
+  include: { forecast?: { include?: { curve?: unknown; vehicle?: unknown } } } | undefined,
+  state: ResidualMarketState
+) {
+  if (!point) {
+    return null;
+  }
+  const forecast = state.forecasts.find((candidate) => candidate.id === point.forecastId) ?? null;
+
+  return {
+    ...point,
+    ...(include?.forecast
+      ? {
+          forecast: attachForecastInclude(forecast, include.forecast.include, state)
+        }
+      : {})
+  };
+}
+
+function sortForecasts(forecasts: VehicleResidualForecast[], orderBy: unknown) {
+  if (!orderBy) {
+    return;
+  }
+  forecasts.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
 }
 
 function makeCurveSamples(
@@ -1015,6 +1442,117 @@ function makeCurvePoint(overrides: Partial<VehicleResidualCurvePoint> = {}): Veh
     predictedResidualAmount: 12000000n,
     predictedResidualRateBps: 6000,
     sampleCount: 3,
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    upperBoundAmount: 13000000n,
+    ...overrides
+  };
+}
+
+function makeForecastCurvePoints() {
+  return [
+    makeCurvePoint({ ageMonth: 24, id: "curve-point-24", predictedResidualAmount: 12000000n }),
+    makeCurvePoint({ ageMonth: 30, id: "curve-point-30", predictedResidualAmount: 11000000n }),
+    makeCurvePoint({ ageMonth: 36, id: "curve-point-36", predictedResidualAmount: 10000000n }),
+    makeCurvePoint({ ageMonth: 48, id: "curve-point-48", predictedResidualAmount: 8000000n }),
+    makeCurvePoint({ ageMonth: 60, id: "curve-point-60", predictedResidualAmount: 6000000n })
+  ];
+}
+
+function makeVehicle(overrides: Partial<Vehicle> = {}): Vehicle {
+  return {
+    acquisitionMode: VehicleAcquisitionMode.OWNED_CASH,
+    assetLocation: "Shanghai",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+    brand: "NIO",
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    createdBy: user.id,
+    currentMileageKm: 25000,
+    currentSalePriceAmount: 13000000n,
+    currentSalePriceInitializedAt: null,
+    currentSalePriceReviewedAt: null,
+    deletedAt: null,
+    id: "vehicle-1",
+    insuranceEndDate: null,
+    insuranceStartDate: null,
+    model: "ET5",
+    modelYear: 2024,
+    nextSalePriceReviewAt: null,
+    plateNo: "沪A12345",
+    purchaseDate: new Date("2024-06-01T00:00:00.000Z"),
+    purchasePriceAmount: 20000000n,
+    registrationDate: new Date("2024-06-01T00:00:00.000Z"),
+    latestRegistrationDate: null,
+    remark: null,
+    salePriceReinitRequiredAt: null,
+    salePriceStatus: SalePriceStatus.EFFECTIVE,
+    series: "ET5",
+    status: VehicleStatus.AVAILABLE,
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedBy: user.id,
+    vehicleModel: VehicleModel.ET5,
+    vehicleNo: "VH20260601000000A1B2",
+    vin: "LJ1TEST0000000001",
+    ...overrides
+  };
+}
+
+function makeForecast(overrides: Partial<VehicleResidualForecast> = {}): VehicleResidualForecast {
+  return {
+    asOfDate: new Date("2026-06-01T00:00:00.000Z"),
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+    brand: "NIO",
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    createdBy: user.id,
+    curveId: "curve-1",
+    curveSnapshot: null,
+    currentMileageKm: 25000,
+    currentSalePriceAmount: 13000000n,
+    deletedAt: null,
+    forecastMethod: VehicleResidualForecastMethod.CURVE_STATISTICAL,
+    forecastNo: "VRF20260601000000A1B2",
+    forecastStatus: VehicleResidualForecastStatus.GENERATED,
+    id: "forecast-1",
+    inputSnapshot: null,
+    metrics: null,
+    model: "ET5",
+    modelYear: 2024,
+    purchasePriceAmount: 20000000n,
+    remark: null,
+    series: "ET5",
+    trim: null,
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedBy: user.id,
+    vehicleAgeMonths: 24,
+    vehicleId: "vehicle-1",
+    vehicleSnapshot: null,
+    ...overrides
+  };
+}
+
+function makeForecastPoint(
+  overrides: Partial<VehicleResidualForecastPoint> = {}
+): VehicleResidualForecastPoint {
+  return {
+    adoptedAt: null,
+    adoptedBy: null,
+    adoptedResidualAmount: null,
+    adoptRemark: null,
+    confidenceScore: 80,
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    forecastId: "forecast-1",
+    horizonMonth: 0,
+    id: "forecast-point-1",
+    interpolationMethod: ResidualForecastInterpolationMethod.EXACT,
+    lowerBoundAmount: 11000000n,
+    matchedCurvePointAgeMonth: 24,
+    pointSnapshot: null,
+    pointStatus: VehicleResidualForecastPointStatus.GENERATED,
+    predictedResidualAmount: 12000000n,
+    predictedResidualRateBps: 6000,
+    targetAgeMonth: 24,
+    targetDate: new Date("2026-06-01T00:00:00.000Z"),
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     upperBoundAmount: 13000000n,
     ...overrides

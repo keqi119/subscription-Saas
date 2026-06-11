@@ -174,6 +174,12 @@ permissionRows.push(
 );
 
 permissionRows.push(
+  ["residual_forecast:view", "查看单车残值预测", "residual_forecast", "view"],
+  ["residual_forecast:generate", "生成单车残值预测", "residual_forecast", "generate"],
+  ["residual_forecast:manage", "管理单车残值预测", "residual_forecast", "manage"]
+);
+
+permissionRows.push(
   ["collection:view", "查看催收案件", "collection", "view"],
   ["collection:refresh_overdue", "刷新逾期账单", "collection", "refresh_overdue"],
   ["collection:action_create", "新增催收动作", "collection", "action_create"],
@@ -601,6 +607,16 @@ const residualCurveManagementPermissions = [
   "residual_curve:manage"
 ];
 
+const residualForecastViewPermissions = ["residual_forecast:view"];
+
+const residualForecastGeneratePermissions = ["residual_forecast:view", "residual_forecast:generate"];
+
+const residualForecastManagementPermissions = [
+  "residual_forecast:view",
+  "residual_forecast:generate",
+  "residual_forecast:manage"
+];
+
 async function main() {
   for (const [code, name, description] of roleRows) {
     await prisma.role.upsert({
@@ -716,6 +732,7 @@ async function main() {
       ...revenueShareViewPermissions,
       ...residualMarketImportPermissions,
       ...residualCurveGeneratePermissions,
+      ...residualForecastGeneratePermissions,
       "billing:view",
       "deposit_ledger:view",
       "deposit_ledger:deduct",
@@ -792,6 +809,7 @@ async function main() {
         ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
         ...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions),
         ...(roleCode === "AS" ? residualCurveManagementPermissions : residualCurveViewPermissions),
+        ...(roleCode === "AS" ? residualForecastManagementPermissions : residualForecastViewPermissions),
         "quote:view",
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
@@ -843,6 +861,7 @@ async function main() {
       ...revenueShareViewPermissions,
       ...residualMarketViewPermissions,
       ...residualCurveViewPermissions,
+      ...residualForecastViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
       ...financeViewPermissions,

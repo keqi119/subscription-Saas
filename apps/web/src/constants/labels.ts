@@ -574,6 +574,31 @@ export const VEHICLE_RESIDUAL_CURVE_METHOD_LABELS: Record<string, string> = {
   STATISTICAL_MEDIAN: "统计中位数"
 };
 
+export const VEHICLE_RESIDUAL_FORECAST_STATUS_LABELS: Record<string, string> = {
+  ADOPTED: "已采用",
+  ARCHIVED: "已归档",
+  GENERATED: "已生成",
+  VOIDED: "已作废"
+};
+
+export const VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS: Record<string, string> = {
+  CURVE_STATISTICAL: "统计曲线",
+  MANUAL: "手工预测",
+  ML_MODEL: "机器学习模型"
+};
+
+export const RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS: Record<string, string> = {
+  EXACT: "精确匹配",
+  LINEAR_INTERPOLATION: "线性插值",
+  UNSUPPORTED_OUT_OF_RANGE: "超出曲线范围"
+};
+
+export const VEHICLE_RESIDUAL_FORECAST_POINT_STATUS_LABELS: Record<string, string> = {
+  ADOPTED: "已采用",
+  GENERATED: "已生成",
+  UNSUPPORTED: "暂不支持"
+};
+
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ACTIVATE: "启用",
   APPROVE: "审批通过",
@@ -621,6 +646,7 @@ export const MODULE_LABELS: Record<string, string> = {
   product: "产品中心",
   quote: "报价中心",
   residual_curve: "残值曲线",
+  residual_forecast: "单车残值预测",
   residual_market: "市场残值样本",
   risk: "风控中心",
   system: "系统管理",
@@ -710,6 +736,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "residual_curve:generate": "生成残值曲线",
   "residual_curve:manage": "管理残值曲线",
   "residual_curve:view": "查看残值曲线",
+  "residual_forecast:generate": "生成单车残值预测",
+  "residual_forecast:manage": "管理单车残值预测",
+  "residual_forecast:view": "查看单车残值预测",
   "residual_market:import": "导入市场残值样本",
   "residual_market:manage": "管理市场残值样本",
   "residual_market:view": "查看市场残值样本",
@@ -834,6 +863,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "residual_curve:generate": "允许试算和正式生成残值曲线",
   "residual_curve:manage": "允许启用和归档残值曲线",
   "residual_curve:view": "允许查看残值曲线列表和详情",
+  "residual_forecast:generate": "允许试算和正式生成单车残值预测",
+  "residual_forecast:manage": "允许采用预测点和作废预测记录",
+  "residual_forecast:view": "允许查看车辆残值预测和历史记录",
   "residual_market:import": "允许通过 CSV 文本导入市场残值样本",
   "residual_market:manage": "允许手工创建和作废市场残值样本",
   "residual_market:view": "允许查看市场残值样本列表、详情和导入批次"

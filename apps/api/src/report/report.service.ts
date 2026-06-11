@@ -78,10 +78,12 @@ import {
   contractStatusLabels,
   depositTransactionStatusLabels,
   depositTransactionTypeLabels,
+  forecastResidualAmountSourceLabels,
   financingInstrumentTypeLabels,
   labelOf,
   orderSourceLabels,
   orderStatusLabels,
+  residualForecastInterpolationMethodLabels,
   revenueRightAssigneeTypeLabels,
   revenueRightAssignmentStatusLabels,
   revenueRightAssignmentTypeLabels,
@@ -94,6 +96,11 @@ import {
   vehicleDamageResponsiblePartyLabels,
   vehicleDamageTypeLabels,
   vehicleDepreciationMethodLabels,
+  vehicleResidualCurveMethodLabels,
+  vehicleResidualCurveStatusLabels,
+  vehicleResidualForecastMethodLabels,
+  vehicleResidualForecastPointStatusLabels,
+  vehicleResidualForecastStatusLabels,
   vehicleReturnDamageStatusLabels,
   vehicleBatteryUsageTypeLabels,
   vehicleSalePriceReviewTypeLabels,
@@ -951,8 +958,21 @@ export class ReportService {
     const rows: CsvRow[] = [
       ["资产收益试算汇总"],
       ["统计周期", dateRangeText(report.dateRange)],
+      ["残值预测周期", residualHorizonText(query.residualHorizonMonth)],
+      ["车型筛选", query.vehicleModel ?? "全部"],
+      ["车辆状态筛选", query.vehicleStatus ? labelOf(vehicleStatusLabels, query.vehicleStatus) : "全部"],
       [],
-      ["覆盖情况"],
+      ["核心结果"],
+      ["指标", "值"],
+      ["平台权益净收益（元）", formatMoneyYuan(report.platformNetIncomeAmount)],
+      ["试算 ROE", roeExportValue(report.roeTrial)],
+      ["年化试算 ROE", roeExportValue(report.annualizedRoeTrial)],
+      ["残值敏感性净收益（元）", formatMoneyYuan(report.residualSensitivityNetIncomeAmount)],
+      ["残值敏感性 ROE", formatPercent(report.residualSensitivityRoeTrial)],
+      ["年化残值敏感性 ROE", formatPercent(report.residualSensitivityAnnualizedRoeTrial)],
+      ["ROE 状态", returnTrialRoeCoverageStatus(report)],
+      [],
+      ["数据完整性 / 可计算性"],
       ["指标", "值"],
       ["车辆总数", report.vehicleCount],
       ["已有成本参数车辆数", report.vehicleWithCostProfileCount],
@@ -961,21 +981,25 @@ export class ReportService {
       ["成本不可计算车辆数", report.costUnavailableVehicleCount],
       ["ROE 可计算车辆数", report.roeCalculatedVehicleCount],
       ["ROE 不可计算车辆数", report.roeUnavailableVehicleCount],
+      ["可用残值预测车辆数", report.residualForecastVehicleCount],
+      ["缺少残值预测车辆数", report.residualForecastMissingVehicleCount],
+      ["不支持残值预测车辆数", report.residualForecastUnsupportedVehicleCount],
+      ["已采用残值预测车辆数", report.residualForecastAdoptedVehicleCount],
       [],
-      ["收入指标"],
+      ["收入归属"],
       ["指标", "金额（元）"],
       ["租金实收", formatMoneyYuan(report.rentalPaidAmount)],
       ["损伤实收", formatMoneyYuan(report.damagePaidAmount)],
       ["其他实收", formatMoneyYuan(report.otherPaidAmount)],
       ["经营收入合计", formatMoneyYuan(report.operatingRevenueAmount)],
-      ["押金收取", formatMoneyYuan(report.depositCollectedAmount)],
       ["转让 / 入池外流收入", formatMoneyYuan(report.assignedOutRevenueAmount)],
       ["质押收入金额", formatMoneyYuan(report.pledgedRevenueAmount)],
       ["车主分润金额", formatMoneyYuan(report.ownerShareAmount)],
       ["平台留存经营收入", formatMoneyYuan(report.platformRetainedRevenueAmount)],
+      ["押金收取", formatMoneyYuan(report.depositCollectedAmount)],
       [],
-      ["成本指标"],
-      ["指标", "金额（元）"],
+      ["成本与资本结构"],
+      ["指标", "金额（元）/值"],
       ["折旧成本", formatMoneyYuan(report.depreciationCostAmount)],
       ["资金成本", formatMoneyYuan(report.capitalCostAmount)],
       ["债务利息成本", formatMoneyYuan(report.debtInterestCostAmount)],
@@ -984,9 +1008,6 @@ export class ReportService {
       ["其他成本", formatMoneyYuan(report.otherCostAmount)],
       ["外部长租固定成本", formatMoneyYuan(report.externalLeaseCostAmount)],
       ["经营成本合计", formatMoneyYuan(report.operatingCostAmount)],
-      [],
-      ["资本结构指标"],
-      ["指标", "金额（元）/比例"],
       ["债务本金", formatMoneyYuan(report.debtPrincipalAmount)],
       ["权益资本基数", formatMoneyYuan(report.roeEquityBaseAmount)],
       [
@@ -994,14 +1015,38 @@ export class ReportService {
         capitalCostSourceText((report as { capitalCostSource?: unknown }).capitalCostSource)
       ],
       [],
-      ["收益指标"],
+      ["资产价值与残值敏感性"],
       ["指标", "值"],
-      ["试算经营净收益（元）", formatMoneyYuan(report.trialNetOperatingIncomeAmount)],
-      ["平台权益净收益（元）", formatMoneyYuan(report.platformNetIncomeAmount)],
-      ["试算 ROA", formatPercent(report.trialRoa)],
-      ["年化试算 ROA", formatPercent(report.annualizedTrialRoa)],
-      ["试算 ROE", roeExportValue(report.roeTrial)],
-      ["年化试算 ROE", roeExportValue(report.annualizedRoeTrial)],
+      ["预测残值合计（元）", formatMoneyYuan(report.forecastResidualAmount)],
+      ["预测下界合计（元）", formatMoneyYuan(report.forecastLowerBoundAmount)],
+      ["预测上界合计（元）", formatMoneyYuan(report.forecastUpperBoundAmount)],
+      ["相对当前销售价差异（元）", formatMoneyYuan(report.residualDeltaToCurrentSalePriceAmount)],
+      [
+        "相对成本参数预计残值差异（元）",
+        formatMoneyYuan(report.residualDeltaToCostProfileAmount)
+      ],
+      ["残值敏感性净收益（元）", formatMoneyYuan(report.residualSensitivityNetIncomeAmount)],
+      ["残值敏感性 ROE", formatPercent(report.residualSensitivityRoeTrial)],
+      ["年化残值敏感性 ROE", formatPercent(report.residualSensitivityAnnualizedRoeTrial)],
+      [],
+      ["计算链路 / 钩稽关系"],
+      ["公式", "说明"],
+      ["经营收入合计", "租金实收 + 损伤实收 + 其他实收"],
+      [
+        "平台留存经营收入",
+        "经营收入合计 - 转让 / 入池外流收入 - 车主分润金额"
+      ],
+      [
+        "经营成本合计",
+        "折旧成本 + 资金成本 / 债务利息 + 保险成本 + 维修准备金 + 其他成本 + 外部长租固定成本"
+      ],
+      ["平台权益净收益", "平台留存经营收入 - 经营成本合计"],
+      ["试算 ROE", "平台权益净收益 / 权益资本基数"],
+      [
+        "残值敏感性净收益",
+        "平台权益净收益 + 预测残值相对成本参数残值差异"
+      ],
+      ["残值敏感性 ROE", "残值敏感性净收益 / 权益资本基数"],
       [],
       ["ROE 不可用原因"],
       ["原因"],
@@ -1009,7 +1054,11 @@ export class ReportService {
       [],
       ["ROE 试算提示"],
       ["提示"],
-      ...csvTextListRows(report.roeWarnings)
+      ...csvTextListRows(report.roeWarnings),
+      [],
+      ["残值预测提示"],
+      ["提示"],
+      ...csvTextListRows(report.residualForecastWarnings)
     ];
 
     return csvExport("asset-return-trial-summary", report.dateRange, rows);
@@ -1061,6 +1110,18 @@ export class ReportService {
         "年化试算 ROA",
         "试算 ROE",
         "年化试算 ROE",
+        "残值预测状态",
+        "残值预测周期",
+        "预测值来源",
+        "预测残值（元）",
+        "预测下界（元）",
+        "预测上界（元）",
+        "预测残值率",
+        "相对当前销售价差异（元）",
+        "相对成本参数残值差异（元）",
+        "残值敏感性净收益（元）",
+        "残值敏感性 ROE",
+        "年化残值敏感性 ROE",
         "债务本金（元）",
         "权益资本基数（元）",
         "资金成本来源",
@@ -1101,12 +1162,30 @@ export class ReportService {
         formatPercent(vehicle.annualizedTrialRoa),
         roeExportValue(vehicle.roeTrial),
         roeExportValue(vehicle.annualizedRoeTrial),
+        residualForecastAvailabilityText(vehicle.residualForecastAvailable),
+        residualHorizonText(vehicle.residualForecastHorizonMonth),
+        residualForecastAmountSourceText(vehicle.forecastResidualAmountSource),
+        formatMoneyYuan(vehicle.forecastResidualAmount),
+        formatMoneyYuan(vehicle.forecastLowerBoundAmount),
+        formatMoneyYuan(vehicle.forecastUpperBoundAmount),
+        formatBps(vehicle.forecastResidualRateBps),
+        formatMoneyYuan(vehicle.residualDeltaToCurrentSalePriceAmount),
+        formatMoneyYuan(vehicle.residualDeltaToCostProfileAmount),
+        formatMoneyYuan(vehicle.residualSensitivityNetIncomeAmount),
+        formatPercent(vehicle.residualSensitivityRoeTrial),
+        formatPercent(vehicle.residualSensitivityAnnualizedRoeTrial),
         formatMoneyYuan(vehicle.debtPrincipalAmount),
         formatMoneyYuan(vehicle.roeEquityBaseAmount),
         capitalCostSourceText(vehicle.capitalCostSource),
         roeStatusText(vehicle),
-        csvTextList(vehicle.roeMissingReasons),
-        csvTextList(vehicle.roeWarnings)
+        csvTextList([
+          ...normalizeCsvTextItems(vehicle.roeMissingReasons),
+          ...normalizeCsvTextItems(vehicle.residualForecastUnavailableReason)
+        ]),
+        csvTextList([
+          ...normalizeCsvTextItems(vehicle.roeWarnings),
+          ...normalizeCsvTextItems(vehicle.residualForecastWarnings)
+        ])
       ])
     ];
 
@@ -1124,6 +1203,9 @@ export class ReportService {
     const income = detail.incomeBreakdown;
     const cost = detail.costBreakdown;
     const returns = detail.returns;
+    const residualForecastSummary = detail.residualForecastSummary;
+    const residualForecastPoint = detail.residualForecastPoint;
+    const residualForecastCurveSummary = detail.residualForecastCurveSummary;
     const rows: CsvRow[] = [
       ["单车收益试算详情"],
       ["统计周期", dateRangeText(detail.dateRange)],
@@ -1232,6 +1314,100 @@ export class ReportService {
       ["ROE 状态", roeStatusText(returns)],
       ["不可计算原因", csvTextList(returns.roeMissingReasons)],
       ["提示信息", csvTextList(returns.roeWarnings)],
+      [],
+      ["残值预测敏感性"],
+      ["字段", "值"],
+      [
+        "残值预测状态",
+        residualForecastAvailabilityText(residualForecastSummary?.available)
+      ],
+      [
+        "不可用原因",
+        residualForecastSummary?.unavailableReason ?? returns.residualForecastUnavailableReason
+      ],
+      ["预测编号", residualForecastSummary?.forecastNo],
+      [
+        "预测状态",
+        labelOf(vehicleResidualForecastStatusLabels, residualForecastSummary?.forecastStatus)
+      ],
+      [
+        "预测方法",
+        labelOf(vehicleResidualForecastMethodLabels, residualForecastSummary?.forecastMethod)
+      ],
+      ["预测基准日", formatDate(residualForecastSummary?.asOfDate)],
+      ["预测周期", residualHorizonText(residualForecastSummary?.horizonMonth)],
+      ["目标日期", formatDate(residualForecastSummary?.targetDate)],
+      ["目标车龄（月）", residualForecastPoint?.targetAgeMonth],
+      ["引用曲线编号", residualForecastSummary?.curveNo],
+      [
+        "预测值来源",
+        residualForecastAmountSourceText(residualForecastSummary?.amountSource)
+      ],
+      ["预测残值（元）", formatMoneyYuan(residualForecastPoint?.forecastResidualAmount)],
+      ["预测残值率", formatBps(residualForecastPoint?.predictedResidualRateBps)],
+      ["预测下界（元）", formatMoneyYuan(residualForecastPoint?.lowerBoundAmount)],
+      ["预测上界（元）", formatMoneyYuan(residualForecastPoint?.upperBoundAmount)],
+      ["置信度", scoreText(residualForecastPoint?.confidenceScore)],
+      [
+        "插值方法",
+        labelOf(
+          residualForecastInterpolationMethodLabels,
+          residualForecastPoint?.interpolationMethod
+        )
+      ],
+      [
+        "预测点状态",
+        labelOf(vehicleResidualForecastPointStatusLabels, residualForecastPoint?.pointStatus)
+      ],
+      ["曲线编号", residualForecastCurveSummary?.curveNo],
+      [
+        "曲线状态",
+        labelOf(vehicleResidualCurveStatusLabels, residualForecastCurveSummary?.curveStatus)
+      ],
+      [
+        "曲线方法",
+        labelOf(vehicleResidualCurveMethodLabels, residualForecastCurveSummary?.curveMethod)
+      ],
+      ["曲线置信度", scoreText(residualForecastCurveSummary?.confidenceScore)],
+      ["残值预测提示", csvTextList(residualForecastSummary?.warnings)],
+      [],
+      ["残值差异"],
+      ["指标", "金额（元）"],
+      ["当前内部销售价", formatMoneyYuan(vehicle.currentSalePriceAmount)],
+      ["成本参数预计残值", formatMoneyYuan(costProfile?.residualValueAmount)],
+      ["预测残值", formatMoneyYuan(residualForecastPoint?.forecastResidualAmount)],
+      [
+        "相对当前销售价差异",
+        formatMoneyYuan(returns.residualDeltaToCurrentSalePriceAmount)
+      ],
+      [
+        "相对成本参数残值差异",
+        formatMoneyYuan(returns.residualDeltaToCostProfileAmount)
+      ],
+      [],
+      ["残值敏感性收益"],
+      ["指标", "值"],
+      ["主平台权益净收益（元）", formatMoneyYuan(returns.platformNetIncomeAmount)],
+      [
+        "残值敏感性净收益（元）",
+        formatMoneyYuan(returns.residualSensitivityNetIncomeAmount)
+      ],
+      ["主试算 ROE", roeExportValue(returns.roeTrial)],
+      ["残值敏感性 ROE", formatPercent(returns.residualSensitivityRoeTrial)],
+      ["主年化试算 ROE", roeExportValue(returns.annualizedRoeTrial)],
+      [
+        "年化残值敏感性 ROE",
+        formatPercent(returns.residualSensitivityAnnualizedRoeTrial)
+      ],
+      [],
+      ["残值敏感性说明"],
+      ["项目", "说明"],
+      [
+        "残值敏感性净收益",
+        "平台权益净收益 + 预测残值相对成本参数残值差异"
+      ],
+      ["残值敏感性 ROE", "残值敏感性净收益 / 权益资本基数"],
+      ["注意", "残值敏感性 ROE 不改变主试算 ROE"],
       [],
       ["订单周期明细"],
       [
@@ -3116,6 +3292,29 @@ function capitalCostSourceText(value: unknown) {
   return labelOf(capitalCostSourceLabels, value);
 }
 
+function residualForecastAmountSourceText(value: unknown) {
+  return labelOf(forecastResidualAmountSourceLabels, value);
+}
+
+function residualForecastAvailabilityText(value: unknown) {
+  return value === true ? "可用" : "不可用";
+}
+
+function residualHorizonText(value: unknown) {
+  const month = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 12;
+  return month === 0 ? "当前" : `未来 ${month} 个月`;
+}
+
+function returnTrialRoeCoverageStatus(report: {
+  roeCalculatedVehicleCount?: number | null;
+}) {
+  return (report.roeCalculatedVehicleCount ?? 0) > 0 ? "部分或全部可试算" : "暂不可用";
+}
+
+function scoreText(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value)} 分` : "-";
+}
+
 function csvTextList(value: unknown) {
   if (!Array.isArray(value)) {
     return "-";
@@ -3128,6 +3327,15 @@ function csvTextList(value: unknown) {
 function csvTextListRows(value: unknown): CsvRow[] {
   const text = csvTextList(value);
   return text === "-" ? [["-"]] : text.split("；").map((item) => [item]);
+}
+
+function normalizeCsvTextItems(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => safeCell(item)).filter((item) => item !== "-");
+  }
+
+  const item = safeCell(value);
+  return item === "-" ? [] : [item];
 }
 
 function roeStatusText(row: { roeTrial?: unknown }) {

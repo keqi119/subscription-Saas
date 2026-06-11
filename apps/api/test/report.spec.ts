@@ -1819,41 +1819,54 @@ describe("reporting dashboard APIs", () => {
 
   it("asset return trial summary export returns BOM CSV with yuan amounts, percentages, and ROE reason", async () => {
     const { prisma, service } = createReportHarness();
-    mockAssetReturnTrial(prisma);
+    mockAssetReturnTrial(prisma, {
+      forecasts: [assetResidualForecast()]
+    });
 
     const result = await service.exportAssetReturnTrialSummary({
       endDate: "2026-12-31",
+      residualHorizonMonth: 12,
       startDate: "2026-01-01"
     });
 
     expect(result.filename).toBe("asset-return-trial-summary-20260101-20261231.csv");
     expect(result.content.charCodeAt(0)).toBe(0xfeff);
     expect(result.content).toContain("资产收益试算汇总");
-    expect(result.content).toContain("覆盖情况");
-    expect(result.content).toContain("收入指标");
+    expect(result.content).toContain("残值预测周期,未来 12 个月");
+    expect(result.content).toContain("核心结果");
+    expect(result.content).toContain("数据完整性 / 可计算性");
+    expect(result.content).toContain("收入归属");
     expect(result.content).toContain("ROE 可计算车辆数,1");
+    expect(result.content).toContain("可用残值预测车辆数,1");
+    expect(result.content).toContain("缺少残值预测车辆数,0");
     expect(result.content).toContain("经营收入合计,6500.00");
     expect(result.content).toContain("质押收入金额,0.00");
     expect(result.content).toContain("平台留存经营收入,6500.00");
     expect(result.content).toContain("债务利息成本,0.00");
-    expect(result.content).toContain("资本结构指标");
+    expect(result.content).toContain("成本与资本结构");
     expect(result.content).toContain("债务本金,0.00");
     expect(result.content).toContain("权益资本基数,12000.00");
     expect(result.content).toContain("经营成本合计,13215.00");
-    expect(result.content).toContain("试算经营净收益（元）,-6715.00");
     expect(result.content).toContain("平台权益净收益（元）,-6715.00");
-    expect(result.content).toContain("试算 ROA,-55.96%");
     expect(result.content).toContain("试算 ROE,-55.96%");
     expect(result.content).toContain("年化试算 ROE,-55.96%");
+    expect(result.content).toContain("资产价值与残值敏感性");
+    expect(result.content).toContain("预测残值合计（元）,1800.00");
+    expect(result.content).toContain("相对成本参数预计残值差异（元）,600.00");
+    expect(result.content).toContain("残值敏感性 ROE,-50.96%");
+    expect(result.content).toContain("计算链路 / 钩稽关系");
     expect(result.content).toContain("ROE 不可用原因");
     expect(result.content).toContain("ROE 试算提示");
+    expect(result.content).toContain("残值预测提示");
     expect(result.content).toContain("未录入资本事件，按全自有资金假设试算 ROE。");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
   });
 
   it("asset return trial vehicles export returns all filtered rows with localized labels and escaped cells", async () => {
     const { prisma, service } = createReportHarness();
-    mockAssetReturnTrial(prisma);
+    mockAssetReturnTrial(prisma, {
+      forecasts: [assetResidualForecast()]
+    });
     prisma.vehicle.findMany.mockResolvedValueOnce([
       assetReturnVehicle({
         brand: 'NIO, "Premium"\nLine',
@@ -1864,6 +1877,7 @@ describe("reporting dashboard APIs", () => {
 
     const result = await service.exportAssetReturnTrialVehicles({
       endDate: "2026-12-31",
+      residualHorizonMonth: 12,
       sortBy: "trialNetOperatingIncomeAmount",
       sortOrder: "desc",
       startDate: "2026-01-01",
@@ -1879,10 +1893,21 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("债务利息成本（元）");
     expect(result.content).toContain("权益资本基数（元）");
     expect(result.content).toContain("ROE 状态");
+    expect(result.content).toContain("残值预测状态");
+    expect(result.content).toContain("预测值来源");
+    expect(result.content).toContain("预测残值（元）");
+    expect(result.content).toContain("相对成本参数残值差异（元）");
+    expect(result.content).toContain("残值敏感性 ROE");
     expect(result.content).toContain('"NIO, ""Premium""\nLine"');
     expect(result.content).toContain("已出租");
     expect(result.content).toContain("6500.00");
     expect(result.content).toContain("-55.96%");
+    expect(result.content).toContain("可用");
+    expect(result.content).toContain("未来 12 个月");
+    expect(result.content).toContain("曲线预测");
+    expect(result.content).toContain("1800.00");
+    expect(result.content).toContain("600.00");
+    expect(result.content).toContain("-50.96%");
     expect(result.content).toContain("可试算");
     expect(result.content).toContain("未录入资本事件，按全自有资金假设试算 ROE。");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
@@ -1918,6 +1943,7 @@ describe("reporting dashboard APIs", () => {
   it("asset return trial vehicle detail export contains profile, preview, income, costs, orders, and bills", async () => {
     const { prisma, service } = createReportHarness();
     prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.vehicleResidualForecast.findMany.mockResolvedValue([assetResidualForecast()]);
     prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
     prisma.receivableBill.findMany.mockResolvedValue([
       assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n }),
@@ -1934,6 +1960,7 @@ describe("reporting dashboard APIs", () => {
 
     const result = await service.exportAssetReturnTrialVehicleDetail("vehicle-1", {
       endDate: "2026-12-31",
+      residualHorizonMonth: 12,
       startDate: "2026-01-01"
     });
 
@@ -1961,6 +1988,15 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("平台权益净收益（元）,-7215.00");
     expect(result.content).toContain("试算 ROE,-60.12%");
     expect(result.content).toContain("ROE 状态,可试算");
+    expect(result.content).toContain("残值预测敏感性");
+    expect(result.content).toContain("残值预测状态,可用");
+    expect(result.content).toContain("预测值来源,曲线预测");
+    expect(result.content).toContain("预测残值（元）,1800.00");
+    expect(result.content).toContain("残值差异");
+    expect(result.content).toContain("相对成本参数残值差异,600.00");
+    expect(result.content).toContain("残值敏感性收益");
+    expect(result.content).toContain("残值敏感性 ROE,-55.13%");
+    expect(result.content).toContain("残值敏感性说明");
     expect(result.content).toContain("订单周期明细");
     expect(result.content).toContain("账单明细");
     expect(result.content).toContain("在租");

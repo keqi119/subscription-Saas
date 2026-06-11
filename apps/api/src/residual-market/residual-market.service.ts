@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { PermissionCode } from "@subscription-saas/shared";
 import {
   AuditAction,
   MarketPriceImportStatus,
@@ -139,8 +140,14 @@ type CurveGenerationInput = {
   curveName: string | null;
   curveVersion: string | null;
   dryRun: boolean;
+  artifactUri: string | null;
+  autoCreateModelRun: boolean;
   minSamplePerPoint: number;
   model: string;
+  modelProvider: string | null;
+  modelRunId: string | null;
+  modelRunName: string | null;
+  modelVersion: string | null;
   modelYear: number | null;
   priceTypes: MarketPriceType[];
   referencePriceAmount: bigint | null;
@@ -608,6 +615,8 @@ export class ResidualMarketService {
 
   async generateCurve(dto: GenerateResidualCurveDto, user: RequestUser, context: RequestContext) {
     const input = buildCurveGenerationInput(dto);
+    this.ensureModelRunManagePermission(input, user);
+    const existingModelRun = input.modelRunId ? await this.findLinkableModelRun(input.modelRunId, input, input.dryRun) : null;
     const observations = await this.prisma.vehicleMarketPriceObservation.findMany({
       orderBy: [{ observedAt: "asc" }, { createdAt: "asc" }],
       where: buildCurveObservationWhere(input)
@@ -619,44 +628,89 @@ export class ResidualMarketService {
     }
 
     if (input.dryRun) {
-      return curveGenerationResponse(true, toCurvePreviewView(preview.curve), preview.points, preview);
+      return curveGenerationResponse(true, toCurvePreviewView(preview.curve), preview.points, preview, {
+        warnings: ["当前为试算，不会创建或更新模型运行记录。"]
+      });
     }
 
-    const curve = await withUniqueBusinessNoRetry(() =>
-      this.prisma.vehicleResidualCurve.create({
-        data: {
-          batteryCapacityKwh: preview.curve.batteryCapacityKwh,
-          batteryUsageType: preview.curve.batteryUsageType,
-          brand: preview.curve.brand,
-          confidenceScore: preview.curve.confidenceScore,
-          createdBy: user.id,
-          curveMethod: preview.curve.curveMethod,
-          curveName: preview.curve.curveName,
-          curveNo: createBusinessNo("RVC"),
-          curveStatus: VehicleResidualCurveStatus.DRAFT,
-          curveVersion: preview.curve.curveVersion,
-          metrics: preview.curve.metrics,
-          model: preview.curve.model,
-          modelYear: preview.curve.modelYear,
-          pointCount: preview.curve.pointCount,
-          points: { create: preview.points.map(toCurvePointCreateInput) },
-          priceTypes: preview.curve.priceTypes,
-          referencePriceAmount: preview.curve.referencePriceAmount,
-          remark: preview.curve.remark,
-          sampleCount: preview.curve.sampleCount,
-          sampleEndDate: preview.curve.sampleEndDate,
-          sampleFilterSnapshot: preview.curve.sampleFilterSnapshot,
-          sampleStartDate: preview.curve.sampleStartDate,
-          series: preview.curve.series,
-          snapshot: preview.curve.snapshot,
-          trim: preview.curve.trim,
-          updatedBy: user.id
-        },
-        include: {
-          points: { orderBy: { ageMonth: "asc" } }
+    const generationResult = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const curve = await tx.vehicleResidualCurve.create({
+          data: {
+            batteryCapacityKwh: preview.curve.batteryCapacityKwh,
+            batteryUsageType: preview.curve.batteryUsageType,
+            brand: preview.curve.brand,
+            confidenceScore: preview.curve.confidenceScore,
+            createdBy: user.id,
+            curveMethod: preview.curve.curveMethod,
+            curveName: preview.curve.curveName,
+            curveNo: createBusinessNo("RVC"),
+            curveStatus: VehicleResidualCurveStatus.DRAFT,
+            curveVersion: preview.curve.curveVersion,
+            metrics: preview.curve.metrics,
+            model: preview.curve.model,
+            modelYear: preview.curve.modelYear,
+            pointCount: preview.curve.pointCount,
+            points: { create: preview.points.map(toCurvePointCreateInput) },
+            priceTypes: preview.curve.priceTypes,
+            referencePriceAmount: preview.curve.referencePriceAmount,
+            remark: preview.curve.remark,
+            sampleCount: preview.curve.sampleCount,
+            sampleEndDate: preview.curve.sampleEndDate,
+            sampleFilterSnapshot: preview.curve.sampleFilterSnapshot,
+            sampleStartDate: preview.curve.sampleStartDate,
+            series: preview.curve.series,
+            snapshot: preview.curve.snapshot,
+            trim: preview.curve.trim,
+            updatedBy: user.id
+          },
+          include: {
+            points: { orderBy: { ageMonth: "asc" } }
+          }
+        });
+
+        if (existingModelRun) {
+          const finishedAt = new Date();
+          await tx.residualModelRun.update({
+            data: buildExistingModelRunCurveLinkUpdate(existingModelRun, input, preview, curve, user.id, finishedAt),
+            where: { id: existingModelRun.id }
+          });
+          const modelRunOutput = await tx.residualModelRunOutput.create({
+            data: buildCurveModelRunOutputCreate(existingModelRun.id, curve, dto.remark),
+            include: modelRunOutputInclude()
+          });
+          const modelRun = await tx.residualModelRun.findUniqueOrThrow({
+            include: modelRunInclude(),
+            where: { id: existingModelRun.id }
+          });
+
+          return { curve, modelRun, modelRunOutput };
         }
+
+        if (input.autoCreateModelRun) {
+          const finishedAt = new Date();
+          const modelRun = await tx.residualModelRun.create({
+            data: {
+              ...buildAutoModelRunCreateData(input, preview, curve, user.id, finishedAt),
+              runNo: createBusinessNo("RMR")
+            }
+          });
+          const modelRunOutput = await tx.residualModelRunOutput.create({
+            data: buildCurveModelRunOutputCreate(modelRun.id, curve, dto.remark),
+            include: modelRunOutputInclude()
+          });
+          const modelRunWithOutputs = await tx.residualModelRun.findUniqueOrThrow({
+            include: modelRunInclude(),
+            where: { id: modelRun.id }
+          });
+
+          return { curve, modelRun: modelRunWithOutputs, modelRunOutput };
+        }
+
+        return { curve, modelRun: null, modelRunOutput: null };
       })
     );
+    const { curve, modelRun, modelRunOutput } = generationResult;
 
     await this.writeCurveAudit(
       AuditAction.CREATE,
@@ -668,7 +722,54 @@ export class ResidualMarketService {
       curveAuditPayload(curve, { remark: dto.remark })
     );
 
-    return curveGenerationResponse(false, toCurveView(curve), curve.points, preview);
+    if (modelRun) {
+      await this.writeModelRunAudit(
+        input.autoCreateModelRun ? AuditAction.CREATE : AuditAction.UPDATE,
+        modelRun.id,
+        existingModelRun ? toModelRunView(existingModelRun) : undefined,
+        toModelRunView(modelRun),
+        user,
+        context,
+        modelRunAuditPayload(modelRun, {
+          outputs: modelRunOutput ? [toModelRunOutputView(modelRunOutput)] : [],
+          remark: dto.remark
+        })
+      );
+    }
+
+    return curveGenerationResponse(false, toCurveView(curve), curve.points, preview, {
+      modelRun: modelRun ? toModelRunView(modelRun) : null,
+      modelRunLinked: Boolean(modelRun),
+      modelRunOutput: modelRunOutput ? toModelRunOutputView(modelRunOutput) : null,
+      warnings: modelRun ? [] : ["本次残值曲线未关联模型运行记录。"]
+    });
+  }
+
+  private ensureModelRunManagePermission(input: CurveGenerationInput, user: RequestUser) {
+    if (!input.modelRunId && !input.autoCreateModelRun) {
+      return;
+    }
+    if (!user.permissions.includes(PermissionCode.RESIDUAL_MODEL_RUN_MANAGE)) {
+      throw new BadRequestException("缺少模型运行记录管理权限，不能关联或自动创建模型运行记录。");
+    }
+  }
+
+  private async findLinkableModelRun(id: string, input: CurveGenerationInput, dryRun: boolean) {
+    const run = await this.prisma.residualModelRun.findFirst({
+      include: modelRunInclude(),
+      where: { deletedAt: null, id }
+    });
+
+    if (!run) {
+      throw new NotFoundException("残值模型运行记录不存在。");
+    }
+
+    assertModelRunTargetMatchesCurveInput(run, input);
+    if (!dryRun) {
+      assertModelRunCanReceiveCurveOutput(run);
+    }
+
+    return run;
   }
 
   async listCurves(query: ResidualCurveQueryDto) {
@@ -1674,6 +1775,201 @@ function modelRunInclude() {
   } satisfies Prisma.ResidualModelRunInclude;
 }
 
+function modelRunOutputInclude() {
+  return {
+    curve: true,
+    forecast: true,
+    vehicle: true
+  } satisfies Prisma.ResidualModelRunOutputInclude;
+}
+
+function assertModelRunCanReceiveCurveOutput(run: Pick<ResidualModelRun, "runStatus">) {
+  const linkableStatuses: ResidualModelRunStatus[] = [ResidualModelRunStatus.CREATED, ResidualModelRunStatus.RUNNING];
+  if (!linkableStatuses.includes(run.runStatus)) {
+    throw new BadRequestException("当前模型运行记录状态不允许关联新的残值曲线输出。");
+  }
+}
+
+function assertModelRunTargetMatchesCurveInput(run: ResidualModelRun, input: CurveGenerationInput) {
+  const textFields: Array<[string | null, string | null, string]> = [
+    [run.targetBrand, input.brand, "targetBrand"],
+    [run.targetSeries, input.series, "targetSeries"],
+    [run.targetModel, input.model, "targetModel"],
+    [run.targetTrim, input.trim, "targetTrim"]
+  ];
+
+  for (const [runValue, inputValue] of textFields) {
+    if (runValue && (!inputValue || runValue.trim().toLowerCase() !== inputValue.trim().toLowerCase())) {
+      throw new BadRequestException("模型运行记录目标维度与本次残值曲线生成条件不一致。");
+    }
+  }
+
+  if (run.targetModelYear !== null && run.targetModelYear !== input.modelYear) {
+    throw new BadRequestException("模型运行记录目标维度与本次残值曲线生成条件不一致。");
+  }
+  if (run.targetBatteryCapacityKwh && !sameOptionalDecimal(run.targetBatteryCapacityKwh, input.batteryCapacityKwh)) {
+    throw new BadRequestException("模型运行记录目标维度与本次残值曲线生成条件不一致。");
+  }
+  if (run.targetBatteryUsageType && run.targetBatteryUsageType !== input.batteryUsageType) {
+    throw new BadRequestException("模型运行记录目标维度与本次残值曲线生成条件不一致。");
+  }
+}
+
+function buildExistingModelRunCurveLinkUpdate(
+  run: ResidualModelRun,
+  input: CurveGenerationInput,
+  preview: BuiltResidualCurvePreview,
+  curve: VehicleResidualCurve,
+  userId: string,
+  finishedAt: Date
+): Prisma.ResidualModelRunUncheckedUpdateInput {
+  return {
+    filterSnapshot: appendModelRunCurveGenerationSnapshot(run.filterSnapshot, buildCurveGenerationModelRunFilterSnapshot(input)),
+    finishedAt,
+    metricsSnapshot: appendModelRunCurveGenerationSnapshot(
+      run.metricsSnapshot,
+      buildCurveGenerationModelRunMetricsSnapshot(preview)
+    ),
+    outputSnapshot: appendModelRunCurveGenerationSnapshot(run.outputSnapshot, buildCurveGenerationModelRunOutputSnapshot(curve)),
+    parameterSnapshot: appendModelRunCurveGenerationSnapshot(run.parameterSnapshot, buildCurveGenerationModelRunParameterSnapshot()),
+    runStatus: ResidualModelRunStatus.COMPLETED,
+    sampleCount: preview.sampleCount,
+    startedAt: run.startedAt ?? finishedAt,
+    trainingDataEndDate: run.trainingDataEndDate ?? input.sampleEndDate,
+    trainingDataStartDate: run.trainingDataStartDate ?? input.sampleStartDate,
+    updatedBy: userId
+  };
+}
+
+function buildAutoModelRunCreateData(
+  input: CurveGenerationInput,
+  preview: BuiltResidualCurvePreview,
+  curve: VehicleResidualCurve,
+  userId: string,
+  finishedAt: Date
+): Omit<Prisma.ResidualModelRunUncheckedCreateInput, "runNo"> {
+  const modelVersion = input.modelVersion ?? `statistical-baseline-${compactTimestamp(finishedAt)}`;
+
+  return {
+    algorithm: ResidualModelAlgorithm.STATISTICAL_MEDIAN,
+    artifactUri: input.artifactUri,
+    createdBy: userId,
+    featureSnapshot: {
+      curveGeneration: {
+        features: ["ageMonth", "priceAmount", "confidenceScore", "mileageStats"],
+        source: "VehicleMarketPriceObservation"
+      }
+    },
+    filterSnapshot: { curveGeneration: buildCurveGenerationModelRunFilterSnapshot(input) },
+    finishedAt,
+    metricsSnapshot: { curveGeneration: buildCurveGenerationModelRunMetricsSnapshot(preview) },
+    modelName: "statistical_median_curve",
+    modelProvider: input.modelProvider ?? "internal",
+    modelVersion,
+    outputSnapshot: { curveGeneration: buildCurveGenerationModelRunOutputSnapshot(curve) },
+    parameterSnapshot: { curveGeneration: buildCurveGenerationModelRunParameterSnapshot() },
+    remark: input.remark,
+    runName: input.modelRunName ?? `${input.brand} ${input.model} 残值曲线统计基线 ${compactTimestamp(finishedAt)}`,
+    runStatus: ResidualModelRunStatus.COMPLETED,
+    runType: ResidualModelRunType.STATISTICAL_BASELINE,
+    sampleCount: preview.sampleCount,
+    startedAt: finishedAt,
+    targetBatteryCapacityKwh: input.batteryCapacityKwh,
+    targetBatteryUsageType: input.batteryUsageType,
+    targetBrand: input.brand,
+    targetModel: input.model,
+    targetModelYear: input.modelYear,
+    targetSeries: input.series,
+    targetTrim: input.trim,
+    targetType: ResidualModelTargetType.RESIDUAL_CURVE,
+    trainingDataEndDate: input.sampleEndDate,
+    trainingDataStartDate: input.sampleStartDate,
+    updatedBy: userId
+  };
+}
+
+function buildCurveModelRunOutputCreate(
+  runId: string,
+  curve: VehicleResidualCurve,
+  remark?: string | null
+): Prisma.ResidualModelRunOutputUncheckedCreateInput {
+  return {
+    curveId: curve.id,
+    outputNo: curve.curveNo,
+    outputSnapshot: buildCurveGenerationModelRunOutputSnapshot(curve),
+    outputStatus: ResidualModelRunOutputStatus.ACTIVE,
+    outputType: ResidualModelRunOutputType.RESIDUAL_CURVE,
+    remark: normalizeOptionalText(remark),
+    runId
+  };
+}
+
+function buildCurveGenerationModelRunFilterSnapshot(input: CurveGenerationInput): Prisma.InputJsonObject {
+  return {
+    ...curveFilterSnapshot(input),
+    minSamplePerPoint: input.minSamplePerPoint
+  };
+}
+
+function buildCurveGenerationModelRunMetricsSnapshot(preview: BuiltResidualCurvePreview): Prisma.InputJsonObject {
+  const ageMonths = preview.points.map((point) => point.ageMonth);
+  return {
+    ageMonthCount: ageMonths.length,
+    confidenceScore: preview.curve.confidenceScore,
+    maxAgeMonth: ageMonths.length > 0 ? Math.max(...ageMonths) : null,
+    minAgeMonth: ageMonths.length > 0 ? Math.min(...ageMonths) : null,
+    pointCount: preview.pointCount,
+    sampleCount: preview.sampleCount,
+    skippedSampleCount: preview.skippedSampleCount
+  };
+}
+
+function buildCurveGenerationModelRunOutputSnapshot(curve: VehicleResidualCurve): Prisma.InputJsonObject {
+  return {
+    batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
+    batteryUsageType: curve.batteryUsageType,
+    brand: curve.brand,
+    confidenceScore: curve.confidenceScore,
+    curveId: curve.id,
+    curveMethod: curve.curveMethod,
+    curveNo: curve.curveNo,
+    curveStatus: curve.curveStatus,
+    model: curve.model,
+    modelYear: curve.modelYear,
+    pointCount: curve.pointCount,
+    sampleCount: curve.sampleCount,
+    series: curve.series,
+    trim: curve.trim
+  };
+}
+
+function buildCurveGenerationModelRunParameterSnapshot(): Prisma.InputJsonObject {
+  return {
+    aggregation: "ageMonth",
+    curveMethod: VehicleResidualCurveMethod.STATISTICAL_MEDIAN,
+    lowerBound: "p25PriceAmount",
+    predictedResidualAmount: "medianPriceAmount",
+    upperBound: "p75PriceAmount"
+  };
+}
+
+function appendModelRunCurveGenerationSnapshot(
+  value: Prisma.JsonValue | null,
+  curveGeneration: Prisma.InputJsonObject
+): Prisma.InputJsonObject {
+  return {
+    ...jsonValueToObject(value),
+    curveGeneration
+  };
+}
+
+function jsonValueToObject(value: Prisma.JsonValue | null): Prisma.InputJsonObject {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return {};
+  }
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonObject;
+}
+
 function toModelRunView(run: ResidualModelRunWithOutputs) {
   return {
     algorithm: run.algorithm,
@@ -1906,11 +2202,18 @@ function buildCurveGenerationInput(dto: GenerateResidualCurveDto): CurveGenerati
   }
 
   const referencePriceAmount = optionalFenAmount(dto.referencePriceAmount, "referencePriceAmount");
+  const modelRunId = normalizeOptionalText(dto.modelRunId);
+  const autoCreateModelRun = dto.autoCreateModelRun ?? false;
+  if (modelRunId && autoCreateModelRun) {
+    throw new BadRequestException("不能同时指定已有模型运行记录和自动创建模型运行记录。");
+  }
   if (referencePriceAmount !== null && referencePriceAmount <= 0n) {
     throw new BadRequestException("referencePriceAmount 必须大于 0。");
   }
 
   return {
+    artifactUri: normalizeOptionalText(dto.artifactUri),
+    autoCreateModelRun,
     batteryCapacityKwh: optionalDecimal(dto.batteryCapacityKwh, "batteryCapacityKwh", 0),
     batteryUsageType: parseOptionalEnumValue(VehicleBatteryUsageType, dto.batteryUsageType, "batteryUsageType"),
     brand: requiredText(dto.brand, "brand"),
@@ -1919,6 +2222,10 @@ function buildCurveGenerationInput(dto: GenerateResidualCurveDto): CurveGenerati
     dryRun: dto.dryRun ?? false,
     minSamplePerPoint: optionalInteger(dto.minSamplePerPoint, "minSamplePerPoint", 1) ?? 3,
     model: requiredText(dto.model, "model"),
+    modelProvider: normalizeOptionalText(dto.modelProvider),
+    modelRunId,
+    modelRunName: normalizeOptionalText(dto.modelRunName),
+    modelVersion: normalizeOptionalText(dto.modelVersion),
     modelYear: optionalInteger(dto.modelYear, "modelYear", 0),
     priceTypes,
     referencePriceAmount,
@@ -2773,16 +3080,26 @@ function curveGenerationResponse(
   dryRun: boolean,
   curve: ReturnType<typeof toCurvePreviewView> | ReturnType<typeof toCurveView>,
   points: BuiltResidualCurvePoint[] | VehicleResidualCurvePoint[],
-  preview: BuiltResidualCurvePreview
+  preview: BuiltResidualCurvePreview,
+  options: {
+    modelRun?: ReturnType<typeof toModelRunView> | null;
+    modelRunLinked?: boolean;
+    modelRunOutput?: ReturnType<typeof toModelRunOutputView> | null;
+    warnings?: string[];
+  } = {}
 ) {
   return {
     curve,
     dryRun,
+    modelRun: options.modelRun ?? null,
+    modelRunLinked: options.modelRunLinked ?? false,
+    modelRunOutput: options.modelRunOutput ?? null,
     pointCount: preview.pointCount,
     points: points.map((point) => ("id" in point ? toCurvePointView(point) : toBuiltCurvePointView(point))),
     sampleCount: preview.sampleCount,
     skippedReasons: preview.skippedReasons,
-    skippedSampleCount: preview.skippedSampleCount
+    skippedSampleCount: preview.skippedSampleCount,
+    warnings: options.warnings ?? []
   };
 }
 
@@ -3265,6 +3582,17 @@ function formatDateOnly(date: Date) {
     String(date.getUTCMonth() + 1).padStart(2, "0"),
     String(date.getUTCDate()).padStart(2, "0")
   ].join("-");
+}
+
+function compactTimestamp(date: Date) {
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+    String(date.getUTCHours()).padStart(2, "0"),
+    String(date.getUTCMinutes()).padStart(2, "0"),
+    String(date.getUTCSeconds()).padStart(2, "0")
+  ].join("");
 }
 
 function optionalInteger(value: number | string | null | undefined, fieldName: string, min: number) {

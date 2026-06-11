@@ -24,6 +24,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Radio,
   Row,
   Col,
   Select,
@@ -32,6 +33,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -67,6 +69,8 @@ const CSV_TEMPLATE = `${CSV_HEADER}
 2026-06-01,ET5-SH-001,NIO,ET5,ET5 75kWh,2024,标准续航,75,BUYOUT,18000,2024-06-01,24,上海,上海,LISTING,168000,168000,,12,PLATFORM,A,92.5,false,https://example.com/listing/ET5-SH-001,示例样本`;
 
 const DEFAULT_CURVE_PRICE_TYPES = ["TRANSACTION", "AUCTION", "DEALER_QUOTE", "INTERNAL_SALE", "LISTING"];
+
+type CurveModelRunLinkMode = "NONE" | "EXISTING" | "AUTO_CREATE";
 
 const CSV_ENUM_FIELD_GUIDES = [
   {
@@ -296,11 +300,15 @@ interface ResidualCurveListResponse {
 interface ResidualCurveGenerateResult {
   curve: ResidualCurveRow;
   dryRun: boolean;
+  modelRun?: ResidualModelRunRow | null;
+  modelRunLinked?: boolean;
+  modelRunOutput?: ResidualModelRunOutputRow | null;
   pointCount: number;
   points: CurvePointRow[];
   sampleCount: number;
   skippedReasons?: unknown;
   skippedSampleCount: number;
+  warnings?: string[];
 }
 
 interface ResidualModelRunOutputRow {
@@ -475,11 +483,17 @@ interface VoidFormValues {
 }
 
 interface CurveGenerateFormValues {
+  artifactUri?: string;
   batteryCapacityKwh?: number | null;
   batteryUsageType?: string;
   brand: string;
   minSamplePerPoint?: number | null;
   model: string;
+  modelProvider?: string;
+  modelRunId?: string;
+  modelRunLinkMode?: CurveModelRunLinkMode;
+  modelRunName?: string;
+  modelVersion?: string;
   modelYear?: number | null;
   priceTypes?: string[];
   referencePriceYuan?: number | null;
@@ -744,7 +758,7 @@ function parseJsonArrayText(value: string | undefined, fieldName: string) {
 }
 
 function curveGeneratePayload(values: CurveGenerateFormValues, dryRun: boolean) {
-  return {
+  const payload: Record<string, unknown> = {
     batteryCapacityKwh: values.batteryCapacityKwh,
     batteryUsageType: values.batteryUsageType,
     brand: values.brand,
@@ -760,6 +774,20 @@ function curveGeneratePayload(values: CurveGenerateFormValues, dryRun: boolean) 
     series: values.series,
     trim: values.trim
   };
+
+  if (values.modelRunLinkMode === "EXISTING") {
+    payload.modelRunId = values.modelRunId;
+  }
+
+  if (values.modelRunLinkMode === "AUTO_CREATE") {
+    payload.autoCreateModelRun = true;
+    payload.artifactUri = values.artifactUri;
+    payload.modelProvider = values.modelProvider;
+    payload.modelRunName = values.modelRunName;
+    payload.modelVersion = values.modelVersion;
+  }
+
+  return payload;
 }
 
 function modelRunCreatePayload(values: ModelRunCreateFormValues) {
@@ -800,6 +828,22 @@ function modelRunCompletePayload(values: ModelRunCompleteFormValues) {
 
 function isModelRunActionable(record?: ResidualModelRunRow | null) {
   return record ? ["CREATED", "RUNNING"].includes(record.runStatus) : false;
+}
+
+function isLinkableCurveModelRun(record: ResidualModelRunRow) {
+  return isModelRunActionable(record) && record.targetType === "RESIDUAL_CURVE";
+}
+
+function modelRunSelectLabel(record: ResidualModelRunRow) {
+  const parts = [
+    record.runNo,
+    text(record.runName),
+    labelOf(RESIDUAL_MODEL_RUN_STATUS_LABELS, record.runStatus),
+    text(record.modelVersion),
+    `${text(record.targetBrand)} / ${text(record.targetModel)}`,
+    labelOf(RESIDUAL_MODEL_ALGORITHM_LABELS, record.algorithm)
+  ];
+  return parts.filter((part) => part !== "-").join(" | ");
 }
 
 function formPayload(values: ObservationFormValues) {
@@ -895,6 +939,8 @@ export default function ResidualMarketPage() {
   const [curveArchiveSubmitting, setCurveArchiveSubmitting] = useState(false);
   const [modelRuns, setModelRuns] = useState<ResidualModelRunRow[]>([]);
   const [modelRunLoading, setModelRunLoading] = useState(false);
+  const [linkableModelRuns, setLinkableModelRuns] = useState<ResidualModelRunRow[]>([]);
+  const [linkableModelRunLoading, setLinkableModelRunLoading] = useState(false);
   const [modelRunPage, setModelRunPage] = useState(1);
   const [modelRunPageSize, setModelRunPageSize] = useState(20);
   const [modelRunTotal, setModelRunTotal] = useState(0);
@@ -918,6 +964,17 @@ export default function ResidualMarketPage() {
   const canManageCurve = permissions.has("residual_curve:manage");
   const canViewModelRun = permissions.has("residual_model_run:view");
   const canManageModelRun = permissions.has("residual_model_run:manage");
+  const curveModelRunLinkMode =
+    (Form.useWatch("modelRunLinkMode", curveGenerateForm) as CurveModelRunLinkMode | undefined) ?? "NONE";
+  const selectedCurveModelRunId = Form.useWatch("modelRunId", curveGenerateForm) as string | undefined;
+  const selectedCurveModelRun = useMemo(
+    () => linkableModelRuns.find((record) => record.id === selectedCurveModelRunId) ?? null,
+    [linkableModelRuns, selectedCurveModelRunId]
+  );
+  const linkableModelRunOptions = useMemo(
+    () => linkableModelRuns.map((record) => ({ label: modelRunSelectLabel(record), value: record.id })),
+    [linkableModelRuns]
+  );
 
   const loadObservations = useCallback(
     async (page = 1, pageSize = 20) => {
@@ -1039,6 +1096,24 @@ export default function ResidualMarketPage() {
     },
     [message, modelRunFilterForm]
   );
+
+  const loadLinkableModelRuns = useCallback(async () => {
+    if (!canManageModelRun) {
+      setLinkableModelRuns([]);
+      return;
+    }
+
+    setLinkableModelRunLoading(true);
+    try {
+      const query = buildQuery({ page: 1, pageSize: 100, targetType: "RESIDUAL_CURVE" });
+      const result = await apiFetch<ResidualModelRunListResponse>(`/residual-market/model-runs${query}`);
+      setLinkableModelRuns(result.items.filter(isLinkableCurveModelRun));
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setLinkableModelRunLoading(false);
+    }
+  }, [canManageModelRun, message]);
 
   const loadModelRunDetail = useCallback(
     async (id: string) => {
@@ -1252,6 +1327,8 @@ export default function ResidualMarketPage() {
     curveGenerateForm.resetFields();
     curveGenerateForm.setFieldsValue({
       minSamplePerPoint: 3,
+      modelProvider: "internal",
+      modelRunLinkMode: "NONE",
       priceTypes: DEFAULT_CURVE_PRICE_TYPES
     });
     setCurveGenerateResult(null);
@@ -1260,6 +1337,10 @@ export default function ResidualMarketPage() {
 
   async function submitCurveDryRun() {
     const values = await curveGenerateForm.validateFields();
+    if (values.modelRunLinkMode !== "NONE" && !canManageModelRun) {
+      void message.error("缺少模型运行记录管理权限，不能关联或自动创建模型运行记录。");
+      return;
+    }
     setCurveDryRunLoading(true);
     try {
       const result = await apiFetch<ResidualCurveGenerateResult>("/residual-market/curves/generate", {
@@ -1277,9 +1358,13 @@ export default function ResidualMarketPage() {
 
   async function submitCurveGenerate() {
     const values = await curveGenerateForm.validateFields();
+    if (values.modelRunLinkMode !== "NONE" && !canManageModelRun) {
+      void message.error("缺少模型运行记录管理权限，不能关联或自动创建模型运行记录。");
+      return;
+    }
     modal.confirm({
       cancelText: "取消",
-      content: "正式生成会创建 DRAFT 曲线和曲线点，但不会自动启用，也不会覆盖车辆当前销售价。",
+      content: "正式生成会创建 DRAFT 曲线和曲线点；如选择关联模型运行记录，会同步写入治理链路。本操作不会自动启用曲线，也不会覆盖车辆当前销售价。",
       okText: "正式生成",
       onOk: async () => {
         setCurveGenerateSubmitting(true);
@@ -1289,13 +1374,13 @@ export default function ResidualMarketPage() {
             method: "POST"
           });
           setCurveGenerateResult(result);
-          setCurveGenerateOpen(false);
           void message.success("残值曲线已生成");
           await loadCurves(1, curvePageSize);
-          if (result.curve.id) {
-            setCurveDetailOpen(true);
-            setCurveDetail(result.curve);
-            await loadCurveDetail(result.curve.id);
+          if (canViewModelRun) {
+            await loadModelRuns(modelRunPage, modelRunPageSize);
+          }
+          if (canManageModelRun) {
+            await loadLinkableModelRuns();
           }
         } catch (error) {
           void message.error(getErrorMessage(error));
@@ -2178,7 +2263,7 @@ export default function ResidualMarketPage() {
                     children: (
                       <Space direction="vertical" size={16} style={{ width: "100%" }}>
                         <Alert
-                          description="模型运行记录用于记录残值预测模型的版本、样本范围、特征、参数、指标和输出关联。本阶段只记录模型运行过程，不执行真实 AI / ML 训练，也不会自动生成残值曲线或单车预测。"
+                          description="模型运行记录用于记录残值预测模型的版本、样本范围、特征、参数、指标和输出关联。本阶段只记录模型运行过程，不执行真实 AI / ML 训练，也不会自动生成残值曲线或单车预测。残值曲线正式生成时可以选择关联已有模型运行记录，或自动创建统计基线模型运行记录；关联后会生成输出记录，用于追踪曲线来源。"
                           showIcon
                           type="info"
                         />
@@ -2784,6 +2869,7 @@ export default function ResidualMarketPage() {
             </Button>,
             <Button
               icon={<LineChartOutlined />}
+              disabled={Boolean(curveGenerateResult && !curveGenerateResult.dryRun)}
               key="generate"
               loading={curveGenerateSubmitting}
               onClick={submitCurveGenerate}
@@ -2799,17 +2885,116 @@ export default function ResidualMarketPage() {
         >
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
             <Alert
-              description="先试算可预览匹配样本数和曲线点；正式生成只创建 DRAFT 曲线，不会自动启用，也不会覆盖车辆当前销售价。参考价格按元输入，提交后按分传给后端。"
+              description="先试算可预览匹配样本数、曲线点和模型运行记录联动预期；正式生成只创建 DRAFT 曲线，不会自动启用，也不会覆盖车辆当前销售价。参考价格按元输入，提交后按分传给后端。"
               showIcon
               type="info"
             />
-            <Form<CurveGenerateFormValues> form={curveGenerateForm} layout="vertical">
+            <Form<CurveGenerateFormValues> form={curveGenerateForm} layout="vertical" onValuesChange={() => setCurveGenerateResult(null)}>
               <Row gutter={12}>
                 <Col md={8} xs={24}>
                   <Form.Item label="方法">
                     <Input disabled value={labelOf(VEHICLE_RESIDUAL_CURVE_METHOD_LABELS, "STATISTICAL_MEDIAN")} />
                   </Form.Item>
                 </Col>
+                <Col span={24}>
+                  <Form.Item label="模型运行记录关联方式" name="modelRunLinkMode">
+                    <Radio.Group
+                      onChange={(event) => {
+                        const nextMode = event.target.value as CurveModelRunLinkMode;
+                        setCurveGenerateResult(null);
+                        if (nextMode === "EXISTING") {
+                          void loadLinkableModelRuns();
+                        }
+                        if (nextMode === "AUTO_CREATE" && !curveGenerateForm.getFieldValue("modelProvider")) {
+                          curveGenerateForm.setFieldValue("modelProvider", "internal");
+                        }
+                      }}
+                    >
+                      <Space wrap>
+                        <Radio value="NONE">不关联模型运行记录</Radio>
+                        <Tooltip title={canManageModelRun ? undefined : "缺少模型运行记录管理权限"}>
+                          <Radio disabled={!canManageModelRun} value="EXISTING">
+                            关联已有模型运行记录
+                          </Radio>
+                        </Tooltip>
+                        <Tooltip title={canManageModelRun ? undefined : "缺少模型运行记录管理权限"}>
+                          <Radio disabled={!canManageModelRun} value="AUTO_CREATE">
+                            自动创建模型运行记录
+                          </Radio>
+                        </Tooltip>
+                      </Space>
+                    </Radio.Group>
+                  </Form.Item>
+                  <Alert
+                    description="残值曲线生成可以选择关联模型运行记录，用于追踪曲线由哪个模型版本、样本范围和参数生成。本阶段关联模型运行记录不代表执行真实 AI / ML 训练；dryRun 不会创建或更新模型运行记录。"
+                    showIcon
+                    type="info"
+                  />
+                </Col>
+                {curveModelRunLinkMode === "EXISTING" ? (
+                  <Col span={24}>
+                    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                      <Alert
+                        description="正式生成残值曲线后，该模型运行记录会被标记为已完成，并生成一条输出关联记录；dryRun 不会更新模型运行记录。"
+                        showIcon
+                        type="warning"
+                      />
+                      <Form.Item
+                        label="模型运行记录"
+                        name="modelRunId"
+                        rules={[{ required: true, message: "请选择模型运行记录" }]}
+                      >
+                        <Select
+                          loading={linkableModelRunLoading}
+                          notFoundContent="暂无可关联的 CREATED / RUNNING 模型运行记录。"
+                          optionFilterProp="label"
+                          options={linkableModelRunOptions}
+                          placeholder="请选择 CREATED / RUNNING 的残值曲线模型运行记录"
+                          showSearch
+                        />
+                      </Form.Item>
+                      <Space wrap>
+                        <Button icon={<ReloadOutlined />} loading={linkableModelRunLoading} onClick={loadLinkableModelRuns}>
+                          刷新模型运行记录
+                        </Button>
+                        <Typography.Text type="secondary">
+                          可切换为“自动创建模型运行记录”，或先在“模型运行记录”Tab 创建。
+                        </Typography.Text>
+                      </Space>
+                    </Space>
+                  </Col>
+                ) : null}
+                {curveModelRunLinkMode === "AUTO_CREATE" ? (
+                  <>
+                    <Col span={24}>
+                      <Alert
+                        description="正式生成残值曲线后，系统会自动创建一条统计基线模型运行记录，并将生成的残值曲线作为输出关联。"
+                        showIcon
+                        type="info"
+                      />
+                    </Col>
+                    <Col md={8} xs={24}>
+                      <Form.Item label="运行名称" name="modelRunName">
+                        <Input maxLength={128} placeholder="可空，由后端默认生成" />
+                      </Form.Item>
+                    </Col>
+                    <Col md={8} xs={24}>
+                      <Form.Item label="模型版本" name="modelVersion">
+                        <Input maxLength={128} placeholder="可空，由后端默认生成" />
+                      </Form.Item>
+                    </Col>
+                    <Col md={8} xs={24}>
+                      <Form.Item label="模型提供方" name="modelProvider">
+                        <Input maxLength={128} placeholder="internal" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={24}>
+                      <Form.Item label="产物地址" name="artifactUri">
+                        <Input maxLength={512} placeholder="只记录引用地址，不上传文件" />
+                      </Form.Item>
+                    </Col>
+                  </>
+                ) : null}
                 <Col md={8} xs={24}>
                   <Form.Item label="品牌" name="brand" rules={[{ required: true, message: "请输入品牌" }]}>
                     <Input maxLength={64} />
@@ -2880,6 +3065,34 @@ export default function ResidualMarketPage() {
 
             {curveGenerateResult ? (
               <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                {curveGenerateResult.warnings?.length ? (
+                  <Alert
+                    description={
+                      <Space direction="vertical" size={4}>
+                        {curveGenerateResult.warnings.map((warning) => (
+                          <Typography.Text key={warning}>{warning}</Typography.Text>
+                        ))}
+                      </Space>
+                    }
+                    message="提示"
+                    showIcon
+                    type="warning"
+                  />
+                ) : null}
+                {curveGenerateResult.dryRun ? (
+                  <Alert
+                    description={
+                      curveModelRunLinkMode === "EXISTING"
+                        ? `正式生成时将关联模型运行记录：${selectedCurveModelRun ? modelRunSelectLabel(selectedCurveModelRun) : "已选择的模型运行记录"}。`
+                        : curveModelRunLinkMode === "AUTO_CREATE"
+                          ? "正式生成时将自动创建统计基线模型运行记录。"
+                          : "正式生成时不会关联模型运行记录。"
+                    }
+                    message="模型运行记录预期"
+                    showIcon
+                    type="info"
+                  />
+                ) : null}
                 <Descriptions
                   bordered
                   column={4}
@@ -2892,6 +3105,66 @@ export default function ResidualMarketPage() {
                   size="small"
                   title="生成结果"
                 />
+                {!curveGenerateResult.dryRun ? (
+                  <Descriptions
+                    bordered
+                    column={3}
+                    items={[
+                      { label: "关联状态", children: curveGenerateResult.modelRunLinked ? "已关联" : "未关联" },
+                      { label: "运行编号", children: text(curveGenerateResult.modelRun?.runNo) },
+                      {
+                        label: "运行状态",
+                        children: curveGenerateResult.modelRun?.runStatus
+                          ? labelOf(RESIDUAL_MODEL_RUN_STATUS_LABELS, curveGenerateResult.modelRun.runStatus)
+                          : "-"
+                      },
+                      {
+                        label: "运行类型",
+                        children: curveGenerateResult.modelRun?.runType
+                          ? labelOf(RESIDUAL_MODEL_RUN_TYPE_LABELS, curveGenerateResult.modelRun.runType)
+                          : "-"
+                      },
+                      { label: "模型版本", children: text(curveGenerateResult.modelRun?.modelVersion) },
+                      {
+                        label: "输出类型",
+                        children: curveGenerateResult.modelRunOutput?.outputType
+                          ? labelOf(RESIDUAL_MODEL_RUN_OUTPUT_TYPE_LABELS, curveGenerateResult.modelRunOutput.outputType)
+                          : "-"
+                      },
+                      { label: "输出编号", children: text(curveGenerateResult.modelRunOutput?.outputNo) },
+                      { label: "输出曲线", children: text(curveGenerateResult.modelRunOutput?.curve?.curveNo ?? curveGenerateResult.curve?.curveNo) }
+                    ]}
+                    size="small"
+                    title="模型运行记录结果"
+                  />
+                ) : null}
+                {!curveGenerateResult.dryRun && curveGenerateResult.curve?.id ? (
+                  <Space wrap>
+                    <Button
+                      icon={<EyeOutlined />}
+                      onClick={() => {
+                        setCurveGenerateOpen(false);
+                        void openCurveDetail(curveGenerateResult.curve);
+                      }}
+                    >
+                      查看生成曲线
+                    </Button>
+                    {curveGenerateResult.modelRunLinked && curveGenerateResult.modelRun?.id && canViewModelRun ? (
+                      <Button
+                        onClick={() => {
+                          setCurveGenerateOpen(false);
+                          setActiveTab("model-runs");
+                          void openModelRunDetail(curveGenerateResult.modelRun as ResidualModelRunRow);
+                        }}
+                      >
+                        查看模型运行记录
+                      </Button>
+                    ) : null}
+                    {curveGenerateResult.modelRunLinked ? (
+                      <Typography.Text type="secondary">可切换到“模型运行记录”Tab 查看治理链路和输出关联。</Typography.Text>
+                    ) : null}
+                  </Space>
+                ) : null}
                 <Collapse items={[{ children: jsonBlock(curveGenerateResult.skippedReasons), key: "skippedReasons", label: "跳过原因" }]} />
                 <Table
                   columns={curvePointColumns}

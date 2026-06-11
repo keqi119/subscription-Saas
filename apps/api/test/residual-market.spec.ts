@@ -46,6 +46,11 @@ const user = {
   username: "tester"
 };
 
+const modelRunManager = {
+  ...user,
+  permissions: ["residual_model_run:manage"]
+};
+
 const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
 
 describe("ResidualMarketService", () => {
@@ -346,6 +351,8 @@ describe("ResidualMarketService", () => {
     expect(result.curve.curveStatus).toBe(VehicleResidualCurveStatus.DRAFT);
     expect(harness.state.curves).toHaveLength(1);
     expect(harness.state.points).toHaveLength(1);
+    expect(result.modelRunLinked).toBe(false);
+    expect(result.warnings).toContain("本次残值曲线未关联模型运行记录。");
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
         action: AuditAction.CREATE,
@@ -353,6 +360,265 @@ describe("ResidualMarketService", () => {
         module: "residual_market"
       })
     );
+  });
+
+  it("keeps residual model run linkage read-only during dryRun", async () => {
+    const dryRunWithAutoCreate = createResidualMarketHarness({
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+    });
+
+    const autoCreateResult = await dryRunWithAutoCreate.service.generateCurve(
+      {
+        autoCreateModelRun: true,
+        brand: "NIO",
+        dryRun: true,
+        minSamplePerPoint: 3,
+        model: "ET5"
+      },
+      modelRunManager,
+      context
+    );
+
+    expect(autoCreateResult.modelRunLinked).toBe(false);
+    expect(autoCreateResult.warnings).toContain("当前为试算，不会创建或更新模型运行记录。");
+    expect(dryRunWithAutoCreate.state.curves).toHaveLength(0);
+    expect(dryRunWithAutoCreate.state.modelRuns).toHaveLength(0);
+    expect(dryRunWithAutoCreate.state.modelRunOutputs).toHaveLength(0);
+    expect(dryRunWithAutoCreate.auditService.write).not.toHaveBeenCalled();
+
+    const dryRunWithExistingRun = createResidualMarketHarness({
+      modelRuns: [makeModelRun({ runStatus: ResidualModelRunStatus.RUNNING })],
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+    });
+
+    await dryRunWithExistingRun.service.generateCurve(
+      {
+        batteryCapacityKwh: 75,
+        batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+        brand: "NIO",
+        dryRun: true,
+        minSamplePerPoint: 3,
+        model: "ET5",
+        modelRunId: "model-run-1",
+        modelYear: 2024,
+        series: "ET5"
+      },
+      modelRunManager,
+      context
+    );
+
+    expect(dryRunWithExistingRun.state.modelRuns[0]?.runStatus).toBe(ResidualModelRunStatus.RUNNING);
+    expect(dryRunWithExistingRun.state.curves).toHaveLength(0);
+    expect(dryRunWithExistingRun.state.modelRunOutputs).toHaveLength(0);
+    expect(dryRunWithExistingRun.auditService.write).not.toHaveBeenCalled();
+  });
+
+  it("auto-creates a completed residual model run and curve output on formal generation", async () => {
+    const harness = createResidualMarketHarness({
+      forecasts: [makeForecast()],
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n]),
+      vehicles: [makeVehicle()]
+    });
+
+    const result = await harness.service.generateCurve(
+      {
+        autoCreateModelRun: true,
+        batteryCapacityKwh: 75,
+        batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+        brand: "NIO",
+        minSamplePerPoint: 3,
+        model: "ET5",
+        modelProvider: "internal",
+        modelVersion: "v2026.06.link",
+        modelYear: 2024,
+        sampleEndDate: "2026-06-30",
+        sampleStartDate: "2026-01-01",
+        series: "ET5"
+      },
+      modelRunManager,
+      context
+    );
+
+    expect(result.modelRunLinked).toBe(true);
+    expect(result.modelRun?.runStatus).toBe(ResidualModelRunStatus.COMPLETED);
+    expect(result.modelRun?.runType).toBe(ResidualModelRunType.STATISTICAL_BASELINE);
+    expect(result.modelRun?.modelVersion).toBe("v2026.06.link");
+    expect(result.modelRunOutput?.outputType).toBe(ResidualModelRunOutputType.RESIDUAL_CURVE);
+    expect(result.modelRunOutput?.curveId).toBe(result.curve.id);
+    expect(harness.state.modelRuns).toHaveLength(1);
+    expect(harness.state.modelRunOutputs).toHaveLength(1);
+    expect(harness.state.modelRuns[0]).toMatchObject({
+      runStatus: ResidualModelRunStatus.COMPLETED,
+      targetBrand: "NIO",
+      targetModel: "ET5",
+      targetModelYear: 2024
+    });
+    expect(harness.state.modelRuns[0]?.metricsSnapshot).toEqual(
+      expect.objectContaining({
+        curveGeneration: expect.objectContaining({
+          pointCount: 1,
+          sampleCount: 3,
+          skippedSampleCount: 0
+        })
+      })
+    );
+    expect(harness.state.modelRuns[0]?.outputSnapshot).toEqual(
+      expect.objectContaining({
+        curveGeneration: expect.objectContaining({
+          curveId: result.curve.id,
+          curveNo: result.curve.curveNo
+        })
+      })
+    );
+    expect(harness.state.modelRuns[0]?.filterSnapshot).toEqual(
+      expect.objectContaining({
+        curveGeneration: expect.objectContaining({
+          brand: "NIO",
+          minSamplePerPoint: 3,
+          model: "ET5"
+        })
+      })
+    );
+    expect(harness.state.modelRuns[0]?.parameterSnapshot).toEqual(
+      expect.objectContaining({
+        curveGeneration: expect.objectContaining({
+          curveMethod: VehicleResidualCurveMethod.STATISTICAL_MEDIAN
+        })
+      })
+    );
+    expect(harness.state.modelRunOutputs[0]).toMatchObject({
+      curveId: result.curve.id,
+      outputNo: result.curve.curveNo,
+      outputStatus: ResidualModelRunOutputStatus.ACTIVE
+    });
+    expect(harness.state.vehicles[0]?.currentSalePriceAmount).toBe(13000000n);
+    expect(harness.state.forecasts).toHaveLength(1);
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.CREATE,
+        entityType: "residual_model_run"
+      })
+    );
+  });
+
+  it("links created and running residual model runs to generated curves", async () => {
+    for (const runStatus of [ResidualModelRunStatus.CREATED, ResidualModelRunStatus.RUNNING]) {
+      const harness = createResidualMarketHarness({
+        modelRuns: [makeModelRun({ runStatus })],
+        observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+      });
+
+      const result = await harness.service.generateCurve(
+        {
+          batteryCapacityKwh: 75,
+          batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+          brand: "NIO",
+          minSamplePerPoint: 3,
+          model: "ET5",
+          modelRunId: "model-run-1",
+          modelYear: 2024,
+          series: "ET5"
+        },
+        modelRunManager,
+        context
+      );
+
+      expect(result.modelRunLinked).toBe(true);
+      expect(harness.state.modelRuns[0]?.runStatus).toBe(ResidualModelRunStatus.COMPLETED);
+      expect(harness.state.modelRunOutputs[0]).toMatchObject({
+        curveId: result.curve.id,
+        outputType: ResidualModelRunOutputType.RESIDUAL_CURVE,
+        runId: "model-run-1"
+      });
+    }
+  });
+
+  it("rejects curve output linkage for immutable residual model run statuses", async () => {
+    for (const runStatus of [
+      ResidualModelRunStatus.COMPLETED,
+      ResidualModelRunStatus.FAILED,
+      ResidualModelRunStatus.CANCELLED
+    ]) {
+      const harness = createResidualMarketHarness({
+        modelRuns: [makeModelRun({ runStatus })],
+        observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+      });
+
+      await expect(
+        harness.service.generateCurve(
+          {
+            batteryCapacityKwh: 75,
+            batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+            brand: "NIO",
+            minSamplePerPoint: 3,
+            model: "ET5",
+            modelRunId: "model-run-1",
+            modelYear: 2024,
+            series: "ET5"
+          },
+          modelRunManager,
+          context
+        )
+      ).rejects.toThrow("状态");
+    }
+  });
+
+  it("rejects curve model run linkage when target dimensions mismatch", async () => {
+    const harness = createResidualMarketHarness({
+      modelRuns: [makeModelRun({ targetModel: "ES6" })],
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+    });
+
+    await expect(
+      harness.service.generateCurve(
+        {
+          batteryCapacityKwh: 75,
+          batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+          brand: "NIO",
+          minSamplePerPoint: 3,
+          model: "ET5",
+          modelRunId: "model-run-1",
+          modelYear: 2024,
+          series: "ET5"
+        },
+        modelRunManager,
+        context
+      )
+    ).rejects.toThrow("目标维度");
+  });
+
+  it("requires residual model run management permission for curve linkage", async () => {
+    const harness = createResidualMarketHarness({
+      modelRuns: [makeModelRun()],
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+    });
+
+    await expect(
+      harness.service.generateCurve(
+        {
+          autoCreateModelRun: true,
+          brand: "NIO",
+          minSamplePerPoint: 3,
+          model: "ET5"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("缺少模型运行记录管理权限");
+
+    await expect(
+      harness.service.generateCurve(
+        {
+          brand: "NIO",
+          minSamplePerPoint: 3,
+          model: "ET5",
+          modelRunId: "model-run-1"
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow("缺少模型运行记录管理权限");
   });
 
   it("rejects residual curve generation when brand or model is missing", async () => {
@@ -1343,8 +1609,10 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           ...before,
           ...data,
           errorSnapshot: data.errorSnapshot === Prisma.JsonNull ? null : data.errorSnapshot,
+          filterSnapshot: data.filterSnapshot === Prisma.JsonNull ? null : data.filterSnapshot,
           metricsSnapshot: data.metricsSnapshot === Prisma.JsonNull ? null : data.metricsSnapshot,
           outputSnapshot: data.outputSnapshot === Prisma.JsonNull ? null : data.outputSnapshot,
+          parameterSnapshot: data.parameterSnapshot === Prisma.JsonNull ? null : data.parameterSnapshot,
           updatedAt: new Date("2026-06-01T00:10:00.000Z")
         };
         state.modelRuns[index] = updated;
@@ -1352,6 +1620,24 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
       })
     },
     residualModelRunOutput: {
+      create: vi.fn(({ data, include }) => {
+        const created = makeModelRunOutput({
+          ...data,
+          id: `model-run-output-${state.modelRunOutputs.length + 1}`,
+          outputSnapshot: data.outputSnapshot === Prisma.JsonNull ? null : data.outputSnapshot
+        });
+        state.modelRunOutputs.push(created);
+        return Promise.resolve(
+          include
+            ? {
+                ...created,
+                curve: state.curves.find((curve) => curve.id === created.curveId) ?? null,
+                forecast: state.forecasts.find((forecast) => forecast.id === created.forecastId) ?? null,
+                vehicle: state.vehicles.find((vehicle) => vehicle.id === created.vehicleId) ?? null
+              }
+            : created
+        );
+      }),
       createMany: vi.fn(({ data }) => {
         const rows = Array.isArray(data) ? data : [data];
         const created = rows.map((row, index) =>

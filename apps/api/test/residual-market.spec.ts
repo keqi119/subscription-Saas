@@ -30,6 +30,7 @@ import {
   VehicleResidualForecastPoint,
   VehicleResidualForecastPointStatus,
   VehicleResidualForecastStatus,
+  VehicleSalePriceHistory,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -307,7 +308,8 @@ describe("ResidualMarketService", () => {
 
   it("dry-runs residual curve generation without writing database rows", async () => {
     const harness = createResidualMarketHarness({
-      observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n]),
+      vehicles: [makeVehicle()]
     });
 
     const result = await harness.service.generateCurve(
@@ -327,11 +329,16 @@ describe("ResidualMarketService", () => {
     expect(result.points[0]?.medianPriceAmount).toBe(12000000);
     expect(harness.state.curves).toHaveLength(0);
     expect(harness.state.points).toHaveLength(0);
+    expect(harness.state.modelRuns).toHaveLength(0);
+    expect(harness.state.modelRunOutputs).toHaveLength(0);
+    expect(harness.auditService.write).not.toHaveBeenCalled();
+    expectNoResidualMarketSalePriceWrites(harness);
   });
 
   it("formally generates a draft residual curve with points and audit log", async () => {
     const harness = createResidualMarketHarness({
-      observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n]),
+      vehicles: [makeVehicle()]
     });
 
     const result = await harness.service.generateCurve(
@@ -351,7 +358,10 @@ describe("ResidualMarketService", () => {
     expect(result.curve.curveStatus).toBe(VehicleResidualCurveStatus.DRAFT);
     expect(harness.state.curves).toHaveLength(1);
     expect(harness.state.points).toHaveLength(1);
+    expect(harness.state.modelRuns).toHaveLength(0);
+    expect(harness.state.modelRunOutputs).toHaveLength(0);
     expect(result.modelRunLinked).toBe(false);
+    expectNoResidualMarketSalePriceWrites(harness);
     expect(result.warnings).toContain("本次残值曲线未关联模型运行记录。");
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -384,6 +394,7 @@ describe("ResidualMarketService", () => {
     expect(dryRunWithAutoCreate.state.curves).toHaveLength(0);
     expect(dryRunWithAutoCreate.state.modelRuns).toHaveLength(0);
     expect(dryRunWithAutoCreate.state.modelRunOutputs).toHaveLength(0);
+    expect(dryRunWithAutoCreate.state.salePriceHistories).toHaveLength(0);
     expect(dryRunWithAutoCreate.auditService.write).not.toHaveBeenCalled();
 
     const dryRunWithExistingRun = createResidualMarketHarness({
@@ -410,6 +421,7 @@ describe("ResidualMarketService", () => {
     expect(dryRunWithExistingRun.state.modelRuns[0]?.runStatus).toBe(ResidualModelRunStatus.RUNNING);
     expect(dryRunWithExistingRun.state.curves).toHaveLength(0);
     expect(dryRunWithExistingRun.state.modelRunOutputs).toHaveLength(0);
+    expect(dryRunWithExistingRun.state.salePriceHistories).toHaveLength(0);
     expect(dryRunWithExistingRun.auditService.write).not.toHaveBeenCalled();
   });
 
@@ -491,7 +503,7 @@ describe("ResidualMarketService", () => {
       outputNo: result.curve.curveNo,
       outputStatus: ResidualModelRunOutputStatus.ACTIVE
     });
-    expect(harness.state.vehicles[0]?.currentSalePriceAmount).toBe(13000000n);
+    expectNoResidualMarketSalePriceWrites(harness);
     expect(harness.state.forecasts).toHaveLength(1);
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(harness.auditService.write).toHaveBeenCalledWith(
@@ -506,7 +518,8 @@ describe("ResidualMarketService", () => {
     for (const runStatus of [ResidualModelRunStatus.CREATED, ResidualModelRunStatus.RUNNING]) {
       const harness = createResidualMarketHarness({
         modelRuns: [makeModelRun({ runStatus })],
-        observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+        observations: makeCurveSamples([10000000n, 12000000n, 14000000n]),
+        vehicles: [makeVehicle()]
       });
 
       const result = await harness.service.generateCurve(
@@ -531,6 +544,7 @@ describe("ResidualMarketService", () => {
         outputType: ResidualModelRunOutputType.RESIDUAL_CURVE,
         runId: "model-run-1"
       });
+      expectNoResidualMarketSalePriceWrites(harness);
     }
   });
 
@@ -780,7 +794,8 @@ describe("ResidualMarketService", () => {
       curves: [
         makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE, id: "curve-old" }),
         makeCurve({ curveNo: "RVC20260602000000A1B2", curveStatus: VehicleResidualCurveStatus.DRAFT, id: "curve-new" })
-      ]
+      ],
+      vehicles: [makeVehicle()]
     });
 
     const result = await harness.service.activateCurve(
@@ -795,6 +810,7 @@ describe("ResidualMarketService", () => {
     expect(harness.state.curves.find((curve) => curve.id === "curve-old")?.curveStatus).toBe(
       VehicleResidualCurveStatus.SUPERSEDED
     );
+    expectNoResidualMarketSalePriceWrites(harness);
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
         action: AuditAction.UPDATE,
@@ -805,13 +821,15 @@ describe("ResidualMarketService", () => {
 
   it("archives a residual curve and rejects repeated archive actions", async () => {
     const harness = createResidualMarketHarness({
-      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })]
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
+      vehicles: [makeVehicle()]
     });
 
     const result = await harness.service.archiveCurve("curve-1", { remark: "archive" }, user, context);
 
     expect(result.curveStatus).toBe(VehicleResidualCurveStatus.ARCHIVED);
     expect(harness.state.curves[0]?.effectiveTo).toBeInstanceOf(Date);
+    expectNoResidualMarketSalePriceWrites(harness);
     await expect(
       harness.service.archiveCurve("curve-1", { remark: "again" }, user, context)
     ).rejects.toThrow("已归档");
@@ -838,6 +856,8 @@ describe("ResidualMarketService", () => {
     expect(result.points[0]?.predictedResidualRateBps).toBe(6000);
     expect(harness.state.forecasts).toHaveLength(0);
     expect(harness.state.forecastPoints).toHaveLength(0);
+    expect(harness.auditService.write).not.toHaveBeenCalled();
+    expectNoResidualMarketSalePriceWrites(harness);
   });
 
   it("formally creates vehicle residual forecast and points with audit log", async () => {
@@ -858,6 +878,7 @@ describe("ResidualMarketService", () => {
     expect(result.forecast.forecastStatus).toBe(VehicleResidualForecastStatus.GENERATED);
     expect(harness.state.forecasts).toHaveLength(1);
     expect(harness.state.forecastPoints).toHaveLength(2);
+    expectNoResidualMarketSalePriceWrites(harness);
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
         action: AuditAction.CREATE,
@@ -1016,7 +1037,7 @@ describe("ResidualMarketService", () => {
     expect(result.pointStatus).toBe(VehicleResidualForecastPointStatus.ADOPTED);
     expect(result.adoptedResidualAmount).toBe(11800000);
     expect(harness.state.forecasts[0]?.forecastStatus).toBe(VehicleResidualForecastStatus.ADOPTED);
-    expect(harness.state.vehicles[0]?.currentSalePriceAmount).toBe(15000000n);
+    expectNoResidualMarketSalePriceWrites(harness, 15000000n);
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
         action: AuditAction.UPDATE,
@@ -1055,6 +1076,29 @@ describe("ResidualMarketService", () => {
         context
       )
     ).rejects.toThrow("adoptedResidualAmount");
+  });
+
+  it("voids a vehicle residual forecast without changing sale price or writing sale price history", async () => {
+    const harness = createResidualMarketHarness({
+      forecasts: [makeForecast()],
+      vehicles: [makeVehicle()]
+    });
+
+    const result = await harness.service.voidVehicleForecast(
+      "forecast-1",
+      { remark: "void forecast" },
+      user,
+      context
+    );
+
+    expect(result.forecastStatus).toBe(VehicleResidualForecastStatus.VOIDED);
+    expectNoResidualMarketSalePriceWrites(harness);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.UPDATE,
+        entityType: "vehicle_residual_forecast"
+      })
+    );
   });
 
   it("creates a residual model run and writes audit log", async () => {
@@ -1316,13 +1360,14 @@ function createResidualMarketHarness(seed: Partial<ResidualMarketState> = {}) {
     modelRuns: [...(seed.modelRuns ?? [])],
     observations: [...(seed.observations ?? [])],
     points: [...(seed.points ?? [])],
+    salePriceHistories: [...(seed.salePriceHistories ?? [])],
     vehicles: [...(seed.vehicles ?? [])]
   };
   const auditService = { write: vi.fn().mockResolvedValue(undefined) };
   const prisma = createResidualMarketPrisma(state);
   const service = new ResidualMarketService(auditService as never, prisma as never);
 
-  return { auditService, service, state };
+  return { auditService, prisma, service, state };
 }
 
 type ResidualMarketState = {
@@ -1334,15 +1379,36 @@ type ResidualMarketState = {
   modelRuns: ResidualModelRun[];
   observations: VehicleMarketPriceObservation[];
   points: VehicleResidualCurvePoint[];
+  salePriceHistories: VehicleSalePriceHistory[];
   vehicles: Vehicle[];
 };
+
+function expectNoResidualMarketSalePriceWrites(
+  harness: ReturnType<typeof createResidualMarketHarness>,
+  expectedCurrentSalePriceAmount = 13000000n
+) {
+  expect(harness.state.vehicles[0]?.currentSalePriceAmount).toBe(expectedCurrentSalePriceAmount);
+  expect(harness.state.salePriceHistories).toHaveLength(0);
+  expect(harness.prisma.vehicle.update).not.toHaveBeenCalled();
+  expect(harness.prisma.vehicleSalePriceHistory.create).not.toHaveBeenCalled();
+}
 
 function createResidualMarketPrisma(state: ResidualMarketState) {
   const prisma = {
     vehicle: {
       findFirst: vi.fn(({ where }) =>
         Promise.resolve(state.vehicles.find((vehicle) => matchesVehicleWhere(vehicle, where)) ?? null)
+      ),
+      update: vi.fn(() =>
+        Promise.reject(new Error("Residual market service must not update Vehicle.currentSalePriceAmount."))
       )
+    },
+    vehicleSalePriceHistory: {
+      count: vi.fn(() => Promise.resolve(state.salePriceHistories.length)),
+      create: vi.fn(() =>
+        Promise.reject(new Error("Residual market service must not write VehicleSalePriceHistory."))
+      ),
+      findMany: vi.fn(() => Promise.resolve(state.salePriceHistories))
     },
     marketPriceImportBatch: {
       count: vi.fn(({ where }) => Promise.resolve(state.batches.filter((batch) => matchesBatchWhere(batch, where)).length)),

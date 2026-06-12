@@ -1505,6 +1505,47 @@ Stage 8.6B 只做 Stage 8 残值预测、估值复核和资产收益试算相关
 - 浏览器插件注入属性导致的 hydration mismatch，例如 `talentranslate-version`、`talentranslate-id`，不属于项目代码问题。
 - 数据库连接偶发 `Connection terminated unexpectedly` 不在本阶段处理，除非能明确定位为当前代码引入。
 
+## Stage 8.6C 数据一致性与审计收口
+
+Stage 8.6C 只做 Stage 8 残值预测与车辆估值复核主链路的数据一致性、审计日志和写入边界回归，不新增业务 API，不改变 Prisma schema，不改变 ROA / ROE 主口径、残值敏感性口径或车辆销售价更新规则。
+
+写入边界矩阵：
+
+- 手工创建市场残值样本只允许写 `VehicleMarketPriceObservation` 和 `AuditLog`，不得写 `Vehicle.currentSalePriceAmount`、`VehicleSalePriceHistory`、残值曲线、单车预测或估值复核。
+- CSV 导入市场残值样本只允许写 `MarketPriceImportBatch`、`VehicleMarketPriceObservation` 和批次级 `AuditLog`，不得更新车辆销售价或销售价历史。
+- 作废市场残值样本只允许更新样本状态为 `VOIDED` 并写 `AuditLog`，不得生成曲线、预测或销售价历史。
+- 残值曲线 dryRun 不允许写任何业务表，也不写 `AuditLog`。
+- 正式生成残值曲线只允许写 `VehicleResidualCurve`、`VehicleResidualCurvePoint` 和 `AuditLog`；关联或自动创建模型运行记录时，才允许写 `ResidualModelRun` / `ResidualModelRunOutput`。
+- 启用或归档残值曲线只允许更新曲线状态、有效期和 `AuditLog`，不得写单车预测、车辆当前销售价或销售价历史。
+- 单车残值预测 dryRun 不允许写 `VehicleResidualForecast`、`VehicleResidualForecastPoint` 或 `AuditLog`。
+- 正式生成单车残值预测只允许写 `VehicleResidualForecast`、`VehicleResidualForecastPoint` 和 `AuditLog`，不得修改 `Vehicle.currentSalePriceAmount`，不得写 `VehicleSalePriceHistory`。
+- 采用预测点只允许更新 `VehicleResidualForecastPoint`、`VehicleResidualForecast` 和 `AuditLog`，不会自动发起估值复核，也不会修改车辆当前销售价。
+- 作废预测只允许更新 `VehicleResidualForecast.forecastStatus = VOIDED` 并写 `AuditLog`，不得更新车辆销售价或销售价历史。
+- 从残值预测点发起车辆估值复核只允许写 `VehicleValuationReview(PENDING)` 和 `AuditLog`，不会修改车辆当前销售价，也不会写销售价历史。
+- 审核通过车辆估值复核是 Stage 8 残值链路中唯一允许更新 `Vehicle.currentSalePriceAmount` 的动作，同时会更新 `currentSalePriceReviewedAt`、按既有规则维护 `nextSalePriceReviewAt` / `salePriceStatus`，并写 `VehicleSalePriceHistory`。
+- 审核通过写入的 `VehicleSalePriceHistory.reviewType` 必须是 `RESIDUAL_FORECAST_ADOPTION`。
+- 审核拒绝和取消复核只允许更新 `VehicleValuationReview` 状态、原因、审核人 / 时间和 `AuditLog`，不得修改车辆当前销售价，不得写销售价历史。
+- 报表查询和 CSV export，包括资产收益试算 summary、车辆列表、单车详情及其导出，必须保持只读，不写任何业务表，也不写 `AuditLog`。
+
+dryRun 与只读规则：
+
+- 所有 dryRun 都只返回试算结果，不落库、不写审计、不更新模型运行输出、不触发销售价变化。
+- 所有 GET 查询和 CSV export 都只读，不能因为读取残值预测、估值复核、销售价历史或收益试算字段而产生任何写入副作用。
+- 残值敏感性只用于资产收益试算辅助分析，不改变主 ROA / ROE 口径，不写回车辆资产。
+
+审计日志规则：
+
+- 必须写审计日志的动作包括：市场样本创建、CSV 导入、样本作废；残值曲线生成、启用、归档；ResidualModelRun 创建、完成、失败、取消；正式生成单车残值预测、采用预测点、作废预测；发起、通过、拒绝、取消车辆估值复核。
+- 不应写审计日志的动作包括：所有 dryRun、所有 GET 查询和所有 CSV export。
+- 车辆估值复核审核通过的审计日志必须能追溯 `reviewId`、`reviewNo`、`vehicleId`、`forecastId`、`forecastPointId`、`originalSalePriceAmount`、`approvedSalePriceAmount`、`vehicleSalePriceHistoryId` 和审核备注。
+
+一致性结论口径：
+
+- `Vehicle.currentSalePriceAmount` 在 Stage 8 残值链路中的唯一写入口是车辆估值复核审核通过。
+- `VehicleSalePriceHistory.reviewType = RESIDUAL_FORECAST_ADOPTION` 的唯一写入条件是车辆估值复核审核通过。
+- 采用预测点、发起复核、拒绝复核、取消复核、曲线生成、单车预测生成、模型运行记录完成、报表查询和 CSV 导出都不得写入车辆当前销售价。
+- 若回归中发现其他路径更新 `Vehicle.currentSalePriceAmount` 或写入 `RESIDUAL_FORECAST_ADOPTION` 历史，应按高风险缺陷处理。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

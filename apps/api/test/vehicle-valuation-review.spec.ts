@@ -197,7 +197,17 @@ describe("VehicleValuationReviewService", () => {
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
         action: AuditAction.APPROVE,
-        after: expect.objectContaining({ vehicleSalePriceHistoryId: "history-1" }),
+        after: expect.objectContaining({
+          approvedSalePriceAmount: 12800000,
+          forecastId: "forecast-1",
+          forecastPointId: "forecast-point-1",
+          originalSalePriceAmount: 15000000,
+          reviewId: "review-1",
+          reviewNo: "VVR20260601000000A1B2",
+          reviewRemark: result.reviewRemark,
+          vehicleId: "vehicle-1",
+          vehicleSalePriceHistoryId: "history-1"
+        }),
         entityType: "vehicle_valuation_review"
       })
     );
@@ -255,6 +265,35 @@ describe("VehicleValuationReviewService", () => {
         entityType: "vehicle_valuation_review"
       })
     );
+  });
+
+  it("rejects repeated operations for terminal valuation reviews without side effects", async () => {
+    for (const reviewStatus of [
+      VehicleValuationReviewStatus.APPROVED,
+      VehicleValuationReviewStatus.REJECTED,
+      VehicleValuationReviewStatus.CANCELLED
+    ]) {
+      const localHarness = makeHarness({ reviews: [makeReview({ reviewStatus })] });
+
+      await expect(
+        localHarness.service.approveReview(
+          "review-1",
+          { approvedSalePriceAmount: 12800000 },
+          user,
+          context
+        )
+      ).rejects.toThrow();
+      await expect(
+        localHarness.service.rejectReview("review-1", { rejectReason: "terminal" }, user, context)
+      ).rejects.toThrow();
+      await expect(
+        localHarness.service.cancelReview("review-1", { cancelReason: "terminal" }, user, context)
+      ).rejects.toThrow();
+
+      expect(localHarness.state.vehicles[0]?.currentSalePriceAmount).toBe(15000000n);
+      expect(localHarness.state.histories).toHaveLength(0);
+      expect(localHarness.auditService.write).not.toHaveBeenCalled();
+    }
   });
 });
 

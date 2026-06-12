@@ -1370,6 +1370,98 @@ Stage 8.5B 只接入前端页面和交互，不改变 Stage 8.5A 后端 API、Pr
 - 前端菜单位于“车辆资产 -> 估值复核”，由 `vehicle_valuation_review:view` 控制；创建 / 取消由 `vehicle_valuation_review:create` 控制；通过 / 拒绝由 `vehicle_valuation_review:approve` 控制。
 - 该流程用于受控地将预测残值纳入内部车辆估值复核，仍不构成自动定价。
 
+## Stage 8.6A 残值预测与估值主链路回归收口
+
+Stage 8.6A 是对 Stage 8.4 和 Stage 8.5 已打通能力的稳定性收口，不新增定价功能，不改变后端 schema、ROA / ROE 主口径、残值敏感性口径或车辆状态机。
+
+主链路回归范围：
+
+```text
+市场残值样本导入
+  -> 残值曲线生成
+  -> 残值曲线启用 / 归档
+  -> 单车残值预测生成
+  -> 预测点人工采用
+  -> 发起车辆估值复核
+  -> 审核通过 / 拒绝 / 取消
+  -> 审核通过更新 Vehicle.currentSalePriceAmount
+  -> 审核通过写 VehicleSalePriceHistory
+  -> 资产收益试算残值敏感性展示
+  -> CSV 导出
+```
+
+数据一致性检查：
+
+- `Vehicle.currentSalePriceAmount` 只允许在车辆销售价初始化、销售价复核、退车再入池重新定价、车辆估值复核审核通过等受控动作中更新。
+- 单车残值预测生成不会修改 `Vehicle.currentSalePriceAmount`，不会写 `VehicleSalePriceHistory`。
+- 预测点人工采用只写 `VehicleResidualForecastPoint.adoptedResidualAmount`、采用人、采用时间和备注，不会修改车辆当前销售价。
+- 发起车辆估值复核只创建 `VehicleValuationReview(PENDING)`，记录 `originalSalePriceAmount`、`forecastResidualAmount`、`adoptedResidualAmount`、`requestedSalePriceAmount` 和快照，不会写销售价历史。
+- 审核通过车辆估值复核会更新 `Vehicle.currentSalePriceAmount`、`Vehicle.currentSalePriceReviewedAt`、`nextSalePriceReviewAt`、`salePriceStatus`，并新增 `VehicleSalePriceHistory`。
+- 估值复核审核通过写入的销售价历史必须使用 `reviewType = RESIDUAL_FORECAST_ADOPTION`，中文展示为“残值预测采用复核”。
+- 估值复核拒绝 / 取消只更新复核状态和原因，不修改车辆当前销售价，不写销售价历史。
+- `VehicleValuationReview`、`VehicleResidualForecast`、`VehicleResidualForecastPoint`、`VehicleResidualCurve`、`ResidualModelRun` 和 `ResidualModelRunOutput` 之间的引用需要能追溯到具体车辆、曲线、预测点和模型运行记录。
+
+资产收益与 CSV 回归口径：
+
+- 资产收益试算继续以当前车辆资产、订单、收入、资本结构和成本参数为准，不因为残值预测自动修改 ROA / ROE 主口径。
+- 残值敏感性展示可读取单车残值预测和采用预测点，用于收益试算辅助分析，但不回写车辆当前销售价。
+- CSV 导出金额按元输出并保留 2 位小数，比例按百分比输出，状态、来源、复核类型和残值枚举必须中文化。
+- CSV 导出缺失值统一输出 `-`，不得出现 `undefined`、`null`、`NaN`、`[object Object]` 或 `Invalid Date`。
+
+权限、菜单和标签检查：
+
+- `residual_market:view/manage/import` 控制市场残值样本查看、维护和导入。
+- `residual_curve:view/generate/manage` 控制残值曲线查看、生成、启用和归档。
+- `residual_forecast:view/generate/manage` 控制单车残值预测查看、生成、采用和作废。
+- `residual_model_run:view/manage` 控制模型运行记录查看和管理。
+- `vehicle_valuation_review:view/create/approve` 控制估值复核菜单、发起 / 取消、审核通过 / 拒绝。
+- `report:asset` 控制资产收益试算、残值敏感性展示和相关导出。
+- 菜单位于“车辆资产 -> 市场残值样本”“车辆资产 -> 估值复核”“经营看板 -> 资产经营分析”等既有入口，无权限时菜单不可见，按钮隐藏或置灰且不触发 API。
+- 前端中文标签需要覆盖残值曲线状态、预测状态、预测点状态、模型运行状态、估值复核来源、估值复核状态和 `RESIDUAL_FORECAST_ADOPTION`。
+
+审计日志检查：
+
+- 市场残值样本创建、作废和 CSV 导入需要保留操作审计。
+- 残值曲线生成、启用、归档需要保留操作审计。
+- 单车残值预测生成、预测点采用、预测记录作废需要保留操作审计。
+- 车辆估值复核发起、审核通过、审核拒绝、取消需要保留操作审计。
+- 审核通过车辆估值复核时，审计内容至少应能追溯 `reviewId`、`reviewNo`、`vehicleId`、`forecastId`、`forecastPointId`、原销售价、审核通过销售价和 `vehicleSalePriceHistoryId`。
+
+建议人工回归脚本：
+
+```text
+1. 执行 pnpm prisma:seed，并退出登录后重新登录 admin。
+2. 在市场残值样本页导入或确认已有样本。
+3. 生成残值曲线，并确认可启用 / 归档。
+4. 在车辆详情生成单车残值预测，确认 dryRun 不落库，正式生成会创建预测和预测点。
+5. 采用一个支持的预测点，确认车辆当前销售价和销售价历史不变化。
+6. 从预测点发起车辆估值复核，确认只新增 PENDING 复核记录。
+7. 在估值复核工作台审核通过一条复核，确认车辆当前销售价更新，销售价历史新增 RESIDUAL_FORECAST_ADOPTION。
+8. 分别新建复核并执行拒绝、取消，确认车辆当前销售价和销售价历史不变化。
+9. 打开资产收益试算和残值敏感性展示，确认数据、中文标签和缺失值展示正确。
+10. 导出 CSV，核对金额、比例、中文标签和缺失值口径。
+11. 检查 AuditLog，确认关键动作均有审计记录。
+```
+
+推荐质量门禁：
+
+```text
+pnpm -r lint
+pnpm prisma:validate
+pnpm prisma:generate
+pnpm prisma:seed
+pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json
+pnpm --filter @subscription-saas/web exec tsc --noEmit --incremental false
+pnpm --filter @subscription-saas/api test
+pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma
+```
+
+Stage 8.6A 收口结论口径：
+
+- 若上述回归链路、质量门禁、权限、审计、CSV 导出和文档口径均通过，可进入 Stage 8.5C。
+- Stage 8.5C 建议先做估值复核统计报表、批量拒绝、批量取消和批量通过 preview。
+- 在批量通过真正更新车辆当前销售价前，应先设计差异阈值、低置信度拦截、批量审计、部分成功 / 失败明细和二次确认保护。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

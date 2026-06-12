@@ -1951,8 +1951,8 @@ export default function ResidualMarketPage() {
 
   return (
     <ProtectedShell>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Space align="start" direction="vertical" size={4}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+        <Space align="start" orientation="vertical" size={4}>
           <Typography.Title level={3} style={{ margin: 0 }}>
             市场残值样本库
           </Typography.Title>
@@ -1981,7 +1981,7 @@ export default function ResidualMarketPage() {
               key: "observations",
               label: "市场价格样本",
               children: (
-                <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                <Space orientation="vertical" size={16} style={{ width: "100%" }}>
                   <Form<ObservationFilterValues>
                     form={observationFilterForm}
                     layout="vertical"
@@ -2109,7 +2109,7 @@ export default function ResidualMarketPage() {
               key: "batches",
               label: "导入批次",
               children: (
-                <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                <Space orientation="vertical" size={16} style={{ width: "100%" }}>
                   <Form<BatchFilterValues> form={batchFilterForm} layout="vertical" onFinish={() => loadBatches(1, batchPageSize)}>
                     <Row gutter={12}>
                       <Col lg={4} md={8} sm={12} xs={24}>
@@ -2172,7 +2172,7 @@ export default function ResidualMarketPage() {
                     key: "curves",
                     label: "残值曲线",
                     children: (
-                      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
                         <Alert
                           description="残值曲线基于市场价格样本生成，用于观察品牌 / 车系 / 车型 / 年款 / 电池规格维度下的市场残值变化趋势。当前版本使用统计中位数方法，不做 AI / ML，不会自动覆盖车辆当前销售价，也不会直接接入 ROE。"
                           showIcon
@@ -2261,7 +2261,7 @@ export default function ResidualMarketPage() {
                     key: "model-runs",
                     label: "模型运行记录",
                     children: (
-                      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
                         <Alert
                           description="模型运行记录用于记录残值预测模型的版本、样本范围、特征、参数、指标和输出关联。本阶段只记录模型运行过程，不执行真实 AI / ML 训练，也不会自动生成残值曲线或单车预测。残值曲线正式生成时可以选择关联已有模型运行记录，或自动创建统计基线模型运行记录；关联后会生成输出记录，用于追踪曲线来源。"
                           showIcon
@@ -2377,7 +2377,7 @@ export default function ResidualMarketPage() {
           title={detail ? `${detail.observationNo} 样本详情` : "样本详情"}
         >
           {detail ? (
-            <Space direction="vertical" size={18} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={18} style={{ width: "100%" }}>
               <Descriptions
                 bordered
                 column={2}
@@ -2466,7 +2466,7 @@ export default function ResidualMarketPage() {
           title={batchDetail ? `${batchDetail.batchNo} 导入批次详情` : "导入批次详情"}
         >
           {batchDetail ? (
-            <Space direction="vertical" size={18} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={18} style={{ width: "100%" }}>
               <Descriptions
                 bordered
                 column={2}
@@ -2508,7 +2508,7 @@ export default function ResidualMarketPage() {
           size="80vw"
         >
           {curveDetail ? (
-            <Space direction="vertical" size={18} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={18} style={{ width: "100%" }}>
               <Descriptions
                 bordered
                 column={2}
@@ -2572,7 +2572,7 @@ export default function ResidualMarketPage() {
           title={modelRunDetail ? `${modelRunDetail.runNo} 模型运行详情` : "模型运行详情"}
         >
           {modelRunDetail ? (
-            <Space direction="vertical" size={18} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={18} style={{ width: "100%" }}>
               <Descriptions
                 bordered
                 column={2}
@@ -2657,7 +2657,7 @@ export default function ResidualMarketPage() {
           title="新增模型运行记录"
           width={1040}
         >
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
             <Alert
               description="创建运行记录不会触发真实模型训练。本阶段只记录模型版本、样本范围、特征、参数和筛选快照。"
               showIcon
@@ -2795,7 +2795,7 @@ export default function ResidualMarketPage() {
           title="标记模型运行完成"
           width={900}
         >
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
             <Alert
               description="标记完成只记录运行结果和输出关联，不会自动生成曲线或预测。如需生成残值曲线，请使用“残值曲线”Tab 的生成功能。"
               showIcon
@@ -2883,7 +2883,7 @@ export default function ResidualMarketPage() {
           title="生成残值曲线"
           width={1080}
         >
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
             <Alert
               description="先试算可预览匹配样本数、曲线点和模型运行记录联动预期；正式生成只创建 DRAFT 曲线，不会自动启用，也不会覆盖车辆当前销售价。参考价格按元输入，提交后按分传给后端。"
               showIcon
@@ -2912,12 +2912,12 @@ export default function ResidualMarketPage() {
                     >
                       <Space wrap>
                         <Radio value="NONE">不关联模型运行记录</Radio>
-                        <Tooltip title={canManageModelRun ? undefined : "缺少模型运行记录管理权限"}>
+                        <Tooltip title={canManageModelRun ? undefined : "缺少模型运行记录管理权限。"}>
                           <Radio disabled={!canManageModelRun} value="EXISTING">
                             关联已有模型运行记录
                           </Radio>
                         </Tooltip>
-                        <Tooltip title={canManageModelRun ? undefined : "缺少模型运行记录管理权限"}>
+                        <Tooltip title={canManageModelRun ? undefined : "缺少模型运行记录管理权限。"}>
                           <Radio disabled={!canManageModelRun} value="AUTO_CREATE">
                             自动创建模型运行记录
                           </Radio>
@@ -2933,7 +2933,7 @@ export default function ResidualMarketPage() {
                 </Col>
                 {curveModelRunLinkMode === "EXISTING" ? (
                   <Col span={24}>
-                    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                    <Space orientation="vertical" size={8} style={{ width: "100%" }}>
                       <Alert
                         description="正式生成残值曲线后，该模型运行记录会被标记为已完成，并生成一条输出关联记录；dryRun 不会更新模型运行记录。"
                         showIcon
@@ -3064,11 +3064,11 @@ export default function ResidualMarketPage() {
             </Form>
 
             {curveGenerateResult ? (
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              <Space orientation="vertical" size={12} style={{ width: "100%" }}>
                 {curveGenerateResult.warnings?.length ? (
                   <Alert
                     description={
-                      <Space direction="vertical" size={4}>
+                      <Space orientation="vertical" size={4}>
                         {curveGenerateResult.warnings.map((warning) => (
                           <Typography.Text key={warning}>{warning}</Typography.Text>
                         ))}
@@ -3378,7 +3378,7 @@ export default function ResidualMarketPage() {
           title="导入 CSV"
           width={1040}
         >
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
             <Alert
               description="金额字段按元填写；日期格式为 YYYY-MM-DD；必填字段为 observedAt、brand、model、priceType、priceAmount。前端读取本地 CSV 为文本后提交，不使用 multipart 上传。"
               showIcon
@@ -3457,7 +3457,7 @@ export default function ResidualMarketPage() {
             </Form>
 
             {csvResult ? (
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              <Space orientation="vertical" size={12} style={{ width: "100%" }}>
                 <Descriptions
                   bordered
                   column={3}

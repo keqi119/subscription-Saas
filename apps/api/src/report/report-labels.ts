@@ -260,7 +260,23 @@ export const vehicleSalePriceReviewTypeLabels: Record<string, string> = {
   INITIAL_POOL: "新入池初始化",
   MANUAL_ADJUST: "手工调整",
   QUARTERLY_REVIEW: "季度复核",
+  RESIDUAL_FORECAST_ADOPTION: "残值预测采用复核",
   RETURN_REINIT: "退车再入池重新定价"
+};
+
+export const vehicleValuationReviewSourceLabels: Record<string, string> = {
+  MANUAL: "手工发起",
+  OTHER: "其他",
+  QUARTERLY_REVIEW: "季度复核",
+  RESIDUAL_FORECAST: "残值预测",
+  RETURN_REINIT: "退车再入池"
+};
+
+export const vehicleValuationReviewStatusLabels: Record<string, string> = {
+  APPROVED: "已通过",
+  CANCELLED: "已取消",
+  PENDING: "待审核",
+  REJECTED: "已拒绝"
 };
 
 export const vehicleDamageTypeLabels: Record<string, string> = {

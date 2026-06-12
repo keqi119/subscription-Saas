@@ -2995,8 +2995,9 @@ function vehicleResidualForecastPointColumns(
               disabledReason={
                 record.pointStatus === "UNSUPPORTED"
                   ? "暂不支持的预测点不能发起估值复核。"
-                  : "预测点缺少可用的预测或采用残值金额，不能发起估值复核。"
+                  : "预测点缺少预测残值金额，不能发起估值复核。"
               }
+              noPermissionReason="缺少车辆估值复核创建权限。"
               onClick={() => onCreateValuationReview(record)}
               permission="vehicle_valuation_review:create"
               permissions={permissions}

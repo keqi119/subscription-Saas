@@ -852,7 +852,7 @@ async function main() {
         "order:view",
         ...(roleCode === "FI" ? financeManagementPermissions : []),
         ...(roleCode === "FI" ? collectionManagementPermissions : []),
-        ...(roleCode === "FI" ? reportFinancePermissions : reportAssetPermissions),
+        ...(roleCode === "FI" ? [...reportFinancePermissions, ...reportAssetPermissions] : reportAssetPermissions),
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         "vehicle_return:view",
         ...(roleCode === "AS"
@@ -871,7 +871,7 @@ async function main() {
         "orders.subscription",
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
-        ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : []),
+        ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...reportAssetMenuCodes, ...financeMenuCodes] : []),
         ...financingMenuCodes,
         ...vehicleAssetPoolMenuCodes,
         ...residualMarketMenuCodes,

@@ -98,5 +98,17 @@ export function buildQuery(values: object) {
 }
 
 export function getErrorMessage(error: unknown) {
-  return error instanceof ApiError ? error.message : "操作失败，请稍后重试";
+  if (error instanceof ApiError) {
+    if (error.message === "Internal Server Error") {
+      return "后端服务异常，请稍后重试";
+    }
+
+    if (error.message === "Bad Request") {
+      return "请求参数不正确，请检查输入内容";
+    }
+
+    return error.message;
+  }
+
+  return "操作失败，请稍后重试";
 }

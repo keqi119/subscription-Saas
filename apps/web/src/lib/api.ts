@@ -40,13 +40,17 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
 async function readErrorMessage(response: Response) {
   try {
-    const body = (await response.json()) as { message?: string | string[] };
+    const body = (await response.json()) as { message?: unknown };
 
     if (Array.isArray(body.message)) {
-      return body.message.join(", ");
+      return body.message
+        .map((item) => (typeof item === "string" ? item : "请求参数不正确，请检查输入内容"))
+        .join(", ");
     }
 
-    return body.message ?? response.statusText;
+    return typeof body.message === "string" && body.message.trim()
+      ? body.message
+      : response.statusText;
   } catch {
     return response.statusText;
   }

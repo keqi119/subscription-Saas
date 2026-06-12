@@ -1200,7 +1200,7 @@ describe("seed permission calibration", () => {
     );
     expect(seedSource).toContain('const reportAssetPermissions = ["report:asset"]');
     expect(seedSource).toContain(
-      '...(roleCode === "FI" ? reportFinancePermissions : reportAssetPermissions)'
+      '...(roleCode === "FI" ? [...reportFinancePermissions, ...reportAssetPermissions] : reportAssetPermissions)'
     );
     expect(seedSource).toContain('const reportOverviewMenuCodes = ["reports", "reports.overview"]');
     expect(seedSource).toContain('const reportAssetMenuCodes = ["reports", "reports.asset_profitability"]');
@@ -1234,11 +1234,12 @@ describe("seed permission calibration", () => {
     expect(roleHasMenu(roleMenuArray("GM"), "reports.overview")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "reports.asset_profitability")).toBe(true);
     expect(seedSource).toContain(
-      '...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...financeMenuCodes] : [])'
+      '...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...reportAssetMenuCodes, ...financeMenuCodes] : [])'
     );
     expect(seedSource).toContain('...(roleCode === "AS" ? reportAssetMenuCodes : [])');
     expect(roleHasPermission(rolePermissionArray("SA"), "report:view")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "report:finance")).toBe(false);
+    expect(roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:asset")).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "report:finance")).toBe(false);
     expect(
       roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:view")

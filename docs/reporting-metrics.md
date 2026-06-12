@@ -1462,6 +1462,49 @@ Stage 8.6A 收口结论口径：
 - Stage 8.5C 建议先做估值复核统计报表、批量拒绝、批量取消和批量通过 preview。
 - 在批量通过真正更新车辆当前销售价前，应先设计差异阈值、低置信度拦截、批量审计、部分成功 / 失败明细和二次确认保护。
 
+## Stage 8.6B 权限 / 菜单 / 标签 / 错误提示统一收口
+
+Stage 8.6B 只做 Stage 8 残值预测、估值复核和资产收益试算相关功能的治理收口，不新增业务 API，不改变 Prisma schema，不改变残值预测模型、车辆销售价更新条件、销售价历史写入条件、ROA / ROE 主口径或残值敏感性口径。
+
+权限矩阵口径：
+
+- `ADMIN` 拥有全部权限。
+- `GM` 拥有 `residual_market:view`、`residual_curve:view`、`residual_forecast:view`、`residual_model_run:view`、`vehicle_valuation_review:view`、`vehicle_valuation_review:approve` 和 `report:asset`。
+- `OP` 拥有 `residual_market:view/import`、`residual_curve:view/generate`、`residual_forecast:view/generate`、`residual_model_run:view`、`vehicle_valuation_review:view/create/approve` 和 `report:asset`。
+- `AS` 拥有残值样本、残值曲线、单车预测和模型运行记录的 view / generate / manage 权限，拥有 `vehicle_valuation_review:view/create` 和 `report:asset`。
+- `FI` 拥有 `residual_market:view`、`residual_curve:view`、`residual_forecast:view`、`residual_model_run:view`、`vehicle_valuation_review:view` 和 `report:asset`。
+
+菜单与权限对应关系：
+
+- “车辆资产 -> 市场残值样本”由 `residual_market:view` 控制。
+- “车辆资产 -> 估值复核”由 `vehicle_valuation_review:view` 控制。
+- “经营看板 -> 资产经营分析”由 `report:asset` 控制。
+- `/residual-market` 内部 Tab 按 `residual_market:view`、`residual_curve:view`、`residual_model_run:view` 分别展示；无权限时不显示对应 Tab，也不发起对应 API 请求。
+- `/reports/asset-profitability` 和 CSV 导出统一由 `report:asset` 控制，残值敏感性展示属于资产报表汇总口径，不额外要求 `residual_forecast:view`。
+
+操作权限口径：
+
+- 新增 / 作废市场残值样本需要 `residual_market:manage`，CSV 导入需要 `residual_market:import`。
+- 生成残值曲线需要 `residual_curve:generate`，启用 / 归档曲线需要 `residual_curve:manage`。
+- 生成单车残值预测需要 `residual_forecast:generate`，采用预测点 / 作废预测需要 `residual_forecast:manage`。
+- 新增、完成、失败、取消模型运行记录需要 `residual_model_run:manage`。
+- 从残值预测点发起估值复核和取消待审核复核需要 `vehicle_valuation_review:create`。
+- 审核通过 / 审核拒绝估值复核需要 `vehicle_valuation_review:approve`。
+
+标签与错误提示口径：
+
+- 前端和 CSV 导出中的残值样本来源、价格类型、卖方类型、样本状态、导入状态、残值曲线状态 / 方法、预测状态 / 方法、预测点状态、插值方式、预测金额来源、模型运行类型 / 状态 / 算法 / 目标 / 输出、估值复核来源 / 状态、销售价复核类型均应中文化。
+- `VehicleSalePriceReviewType.RESIDUAL_FORECAST_ADOPTION` 中文展示为“残值预测采用复核”。
+- 缺失值展示为 `-`，不得出现 `undefined`、`null`、`NaN`、`[object Object]` 或 `Invalid Date`。
+- 前端错误提示优先展示后端中文错误；通用 `Internal Server Error` / `Bad Request` 应转换为中文兜底提示。
+- 无权限时菜单不可见，按钮隐藏或置灰，且前端不主动发起对应 API 请求。
+
+开发环境 warning 口径：
+
+- 项目代码内可控的 Ant Design deprecation warning 应在不大规模重构的前提下修复。
+- 浏览器插件注入属性导致的 hydration mismatch，例如 `talentranslate-version`、`talentranslate-id`，不属于项目代码问题。
+- 数据库连接偶发 `Connection terminated unexpectedly` 不在本阶段处理，除非能明确定位为当前代码引入。
+
 ## Stage 8.UI-F1 经营看板与资产收益页面信息架构
 
 Stage 8.UI-F1 只优化前端展示层级，不改变后端 API、统计口径、ROA / ROE 计算、残值敏感性计算或 CSV 导出口径。

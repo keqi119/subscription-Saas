@@ -545,8 +545,9 @@ export default function VehicleValuationReviewsPage() {
           </ActionButton>
           <ActionButton
             allowed={record.reviewStatus === "PENDING"}
-            disabledReason="只有待审核复核可以审核通过。"
+            disabledReason="只有待审核复核可以操作。"
             icon={<CheckCircleOutlined />}
+            noPermissionReason="缺少审核权限。"
             onClick={() => openApprove(record)}
             permission="vehicle_valuation_review:approve"
             permissions={permissions}
@@ -557,8 +558,9 @@ export default function VehicleValuationReviewsPage() {
           <ActionButton
             allowed={record.reviewStatus === "PENDING"}
             danger
-            disabledReason="只有待审核复核可以拒绝。"
+            disabledReason="只有待审核复核可以操作。"
             icon={<CloseCircleOutlined />}
+            noPermissionReason="缺少审核权限。"
             onClick={() => openReject(record)}
             permission="vehicle_valuation_review:approve"
             permissions={permissions}
@@ -569,8 +571,9 @@ export default function VehicleValuationReviewsPage() {
           <ActionButton
             allowed={record.reviewStatus === "PENDING"}
             danger
-            disabledReason="只有待审核复核可以取消。"
+            disabledReason="只有待审核复核可以操作。"
             icon={<StopOutlined />}
+            noPermissionReason="缺少取消权限。"
             onClick={() => openCancel(record)}
             permission="vehicle_valuation_review:create"
             permissions={permissions}
@@ -676,8 +679,9 @@ export default function VehicleValuationReviewsPage() {
             <Space size={8}>
               <ActionButton
                 allowed={detail.reviewStatus === "PENDING"}
-                disabledReason="只有待审核复核可以审核通过。"
+                disabledReason="只有待审核复核可以操作。"
                 icon={<CheckCircleOutlined />}
+                noPermissionReason="缺少审核权限。"
                 onClick={() => openApprove(detail)}
                 permission="vehicle_valuation_review:approve"
                 permissions={permissions}
@@ -688,8 +692,9 @@ export default function VehicleValuationReviewsPage() {
               <ActionButton
                 allowed={detail.reviewStatus === "PENDING"}
                 danger
-                disabledReason="只有待审核复核可以拒绝。"
+                disabledReason="只有待审核复核可以操作。"
                 icon={<CloseCircleOutlined />}
+                noPermissionReason="缺少审核权限。"
                 onClick={() => openReject(detail)}
                 permission="vehicle_valuation_review:approve"
                 permissions={permissions}
@@ -700,8 +705,9 @@ export default function VehicleValuationReviewsPage() {
               <ActionButton
                 allowed={detail.reviewStatus === "PENDING"}
                 danger
-                disabledReason="只有待审核复核可以取消。"
+                disabledReason="只有待审核复核可以操作。"
                 icon={<StopOutlined />}
+                noPermissionReason="缺少取消权限。"
                 onClick={() => openCancel(detail)}
                 permission="vehicle_valuation_review:create"
                 permissions={permissions}

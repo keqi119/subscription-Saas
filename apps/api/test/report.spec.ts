@@ -1332,6 +1332,52 @@ describe("reporting dashboard APIs", () => {
     });
   });
 
+  it("keeps asset return trial report and CSV export APIs read-only", async () => {
+    const query = {
+      endDate: "2026-12-31",
+      residualHorizonMonth: 12,
+      startDate: "2026-01-01"
+    };
+
+    const summaryHarness = createReportHarness();
+    mockAssetReturnTrial(summaryHarness.prisma, { forecasts: [assetResidualForecast()] });
+    const summary = await summaryHarness.service.getAssetReturnTrialSummary(query);
+    expect(() => JSON.stringify(summary)).not.toThrow();
+    expectReportWriteGuardsNotCalled(summaryHarness.prisma);
+
+    const vehiclesHarness = createReportHarness();
+    mockAssetReturnTrial(vehiclesHarness.prisma, { forecasts: [assetResidualForecast()] });
+    const vehicles = await vehiclesHarness.service.getAssetReturnTrialVehicles(query);
+    expect(vehicles.items[0]?.forecastResidualAmount).toBe(180000);
+    expectReportWriteGuardsNotCalled(vehiclesHarness.prisma);
+
+    const detailHarness = createReportHarness();
+    detailHarness.prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    mockAssetReturnTrial(detailHarness.prisma, { forecasts: [assetResidualForecast()] });
+    const detail = await detailHarness.service.getAssetReturnTrialVehicleDetail("vehicle-1", query);
+    expect(detail.residualForecastSummary?.available).toBe(true);
+    expectReportWriteGuardsNotCalled(detailHarness.prisma);
+
+    const summaryExportHarness = createReportHarness();
+    mockAssetReturnTrial(summaryExportHarness.prisma, { forecasts: [assetResidualForecast()] });
+    const summaryExport = await summaryExportHarness.service.exportAssetReturnTrialSummary(query);
+    expect(summaryExport.filename).toBe("asset-return-trial-summary-20260101-20261231.csv");
+    expectReportWriteGuardsNotCalled(summaryExportHarness.prisma);
+
+    const vehiclesExportHarness = createReportHarness();
+    mockAssetReturnTrial(vehiclesExportHarness.prisma, { forecasts: [assetResidualForecast()] });
+    const vehiclesExport = await vehiclesExportHarness.service.exportAssetReturnTrialVehicles(query);
+    expect(vehiclesExport.filename).toBe("asset-return-trial-vehicles-20260101-20261231.csv");
+    expectReportWriteGuardsNotCalled(vehiclesExportHarness.prisma);
+
+    const detailExportHarness = createReportHarness();
+    detailExportHarness.prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    mockAssetReturnTrial(detailExportHarness.prisma, { forecasts: [assetResidualForecast()] });
+    const detailExport = await detailExportHarness.service.exportAssetReturnTrialVehicleDetail("vehicle-1", query);
+    expect(detailExport.filename).toBe("asset-return-trial-vehicle-detail-20260101-20261231.csv");
+    expectReportWriteGuardsNotCalled(detailExportHarness.prisma);
+  });
+
   it("entitlements report returns account, grant, usage, and exhausted summaries", async () => {
     const { prisma, service } = createReportHarness();
     mockEntitlementReport(prisma);
@@ -2833,6 +2879,10 @@ describe("reporting dashboard APIs", () => {
 
 function createReportHarness() {
   const prisma = {
+    auditLog: {
+      create: reportWriteGuard("auditLog.create"),
+      createMany: reportWriteGuard("auditLog.createMany")
+    },
     collectionAction: {
       aggregate: vi.fn(),
       count: vi.fn()
@@ -2888,10 +2938,41 @@ function createReportHarness() {
       count: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
-      groupBy: vi.fn()
+      groupBy: vi.fn(),
+      update: reportWriteGuard("vehicle.update"),
+      updateMany: reportWriteGuard("vehicle.updateMany")
+    },
+    vehicleMarketPriceObservation: {
+      create: reportWriteGuard("vehicleMarketPriceObservation.create"),
+      update: reportWriteGuard("vehicleMarketPriceObservation.update")
+    },
+    vehicleResidualCurve: {
+      create: reportWriteGuard("vehicleResidualCurve.create"),
+      update: reportWriteGuard("vehicleResidualCurve.update"),
+      updateMany: reportWriteGuard("vehicleResidualCurve.updateMany")
     },
     vehicleResidualForecast: {
-      findMany: vi.fn().mockResolvedValue([])
+      create: reportWriteGuard("vehicleResidualForecast.create"),
+      findMany: vi.fn().mockResolvedValue([]),
+      update: reportWriteGuard("vehicleResidualForecast.update")
+    },
+    vehicleResidualForecastPoint: {
+      update: reportWriteGuard("vehicleResidualForecastPoint.update")
+    },
+    vehicleSalePriceHistory: {
+      create: reportWriteGuard("vehicleSalePriceHistory.create")
+    },
+    vehicleValuationReview: {
+      create: reportWriteGuard("vehicleValuationReview.create"),
+      update: reportWriteGuard("vehicleValuationReview.update")
+    },
+    residualModelRun: {
+      create: reportWriteGuard("residualModelRun.create"),
+      update: reportWriteGuard("residualModelRun.update")
+    },
+    residualModelRunOutput: {
+      create: reportWriteGuard("residualModelRunOutput.create"),
+      createMany: reportWriteGuard("residualModelRunOutput.createMany")
     }
   };
 
@@ -2902,6 +2983,23 @@ function createReportHarness() {
 }
 
 type ReportPrismaMock = ReturnType<typeof createReportHarness>["prisma"];
+
+function reportWriteGuard(methodName: string) {
+  return vi.fn(() => {
+    throw new Error(`Report APIs must stay read-only: ${methodName}`);
+  });
+}
+
+function expectReportWriteGuardsNotCalled(prisma: ReportPrismaMock) {
+  const writeMethods = new Set(["create", "createMany", "update", "updateMany", "delete", "deleteMany", "upsert"]);
+  for (const delegate of Object.values(prisma as Record<string, Record<string, unknown>>)) {
+    for (const [methodName, method] of Object.entries(delegate)) {
+      if (writeMethods.has(methodName) && typeof method === "function" && vi.isMockFunction(method)) {
+        expect(method).not.toHaveBeenCalled();
+      }
+    }
+  }
+}
 
 function mockOrderReport(prisma: ReportPrismaMock, planName = "Standard") {
   prisma.subscriptionOrder.count.mockResolvedValue(3);

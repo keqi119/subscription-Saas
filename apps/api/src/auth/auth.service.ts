@@ -147,7 +147,6 @@ export class AuthService {
 
     return jwt.sign(
       {
-        permissions: user.permissions,
         roles: user.roles,
         username: user.username
       },

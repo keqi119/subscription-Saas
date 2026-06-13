@@ -2,6 +2,8 @@
 
 本文档用于 Stage 9B 发布准备收口。验收按业务主线组织，而不是只按页面罗列。
 
+本手册是 `docs/release-checklist.md` 的人工验收部分。发布前必须结合 release checklist 使用，并将验收结论回填到 release 记录。
+
 通用规则：
 
 - 验收前执行 `pnpm prisma:seed`，然后退出并重新登录。

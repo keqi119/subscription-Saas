@@ -27,6 +27,7 @@
     "prisma:seed": "pnpm --filter @subscription-saas/api prisma:seed",
     "prisma:seed:verify": "pnpm --filter @subscription-saas/api prisma:seed:verify",
     "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate",
+    "release:check": "node scripts/release-check.mjs",
     "seed:scenario": "pnpm --filter @subscription-saas/api exec node prisma/seed-scenario.mjs"
   },
   "devDependencies": {

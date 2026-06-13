@@ -2,6 +2,8 @@
 
 本文档用于 Stage 9B Production Readiness Hardening，目标是把当前后台系统从“可本地运行”收口到“可按步骤部署、可回归、可回滚”的最小生产就绪状态。
 
+部署前必须完成 `docs/release-checklist.md`。生产发布应先确认 CI、备份、migration、seed 策略、smoke 和人工验收负责人，再执行本文档中的部署步骤。
+
 ## 1. 部署目标和架构
 
 当前系统是 pnpm workspace：

@@ -2,6 +2,8 @@
 
 本文档用于 Stage 9C。目标是让主线验收数据可重复创建、可定位清理、可被 smoke 脚本读取。
 
+scenario seed 是 release 前开发 / 验收 smoke 辅助工具，不用于生产环境。`pnpm release:check` 默认不会执行 scenario seed；只有显式设置 `RUN_RELEASE_SCENARIOS=1` 才会运行。
+
 ## 1. 默认 seed 与 scenario seed
 
 `pnpm prisma:seed` 只用于初始化 baseline master data：

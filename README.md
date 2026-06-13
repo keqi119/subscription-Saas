@@ -49,6 +49,8 @@ Stage 9 / Production readiness：
 - `docs/permission-matrix.md`：角色、权限域、菜单和 seed/re-login 说明
 - `docs/manual-acceptance.md`：全系统人工验收总清单
 - `docs/scenario-seeds.md`：Stage 9C 场景 seed、cleanup、JSON 输出和 smoke 配合说明
+- `docs/release-checklist.md`：Stage 9D 发布前、中、后检查与回滚清单
+- `docs/mainline-acceptance-freeze.md`：Stage 9D 主线验收冻结范围和发布阻断项
 - `docs/stage-9-launch-readiness-audit.zh-CN.md`：Stage 9A 中文审计报告
 - `docs/stage-9-launch-readiness-audit.md`：Stage 9A 英文审计报告
 
@@ -122,6 +124,18 @@ API smoke：
 pnpm smoke:api
 pnpm smoke:mainline
 pnpm smoke:residual
+```
+
+发布前本地门禁：
+
+```powershell
+pnpm release:check
+```
+
+可选执行 scenario seed 和 smoke 的完整本地 release gate：
+
+```powershell
+$env:RUN_RELEASE_SCENARIOS="1"; $env:RUN_RELEASE_SMOKE="1"; pnpm release:check
 ```
 
 ## SSH Tunnel / PostgreSQL 注意事项

@@ -121,6 +121,8 @@ CREATE INDEX "deposit_ledger_occurred_at_idx" ON "deposit_ledger"("occurred_at")
 ALTER TABLE "receivable_bill" ADD CONSTRAINT "receivable_bill_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "subscription_order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "receivable_bill" ADD CONSTRAINT "receivable_bill_customer_id_fkey" FOREIGN KEY ("customer_id") REFERENCES "customer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
+ALTER TABLE "collection_case_bill" ADD CONSTRAINT "collection_case_bill_bill_id_fkey" FOREIGN KEY ("bill_id") REFERENCES "receivable_bill"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
 ALTER TABLE "payment_record" ADD CONSTRAINT "payment_record_customer_id_fkey" FOREIGN KEY ("customer_id") REFERENCES "customer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "payment_record" ADD CONSTRAINT "payment_record_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "subscription_order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 

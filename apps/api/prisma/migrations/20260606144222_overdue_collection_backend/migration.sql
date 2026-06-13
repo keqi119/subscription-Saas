@@ -132,9 +132,6 @@ ALTER TABLE "collection_case" ADD CONSTRAINT "collection_case_order_id_fkey" FOR
 ALTER TABLE "collection_case_bill" ADD CONSTRAINT "collection_case_bill_case_id_fkey" FOREIGN KEY ("case_id") REFERENCES "collection_case"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "collection_case_bill" ADD CONSTRAINT "collection_case_bill_bill_id_fkey" FOREIGN KEY ("bill_id") REFERENCES "receivable_bill"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
 ALTER TABLE "collection_case_bill" ADD CONSTRAINT "collection_case_bill_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "subscription_order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey

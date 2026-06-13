@@ -67,16 +67,16 @@ jobs:
         run: pnpm -r lint
 
       - name: API typecheck
-        run: pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json
+        run: pnpm --filter @subscription-saas/api typecheck
 
       - name: Web typecheck
-        run: pnpm --filter @subscription-saas/web exec tsc --noEmit --incremental false
+        run: pnpm --filter @subscription-saas/web typecheck
 
       - name: Apply migrations
-        run: pnpm --filter @subscription-saas/api exec prisma migrate deploy --schema prisma/schema.prisma
+        run: pnpm --filter @subscription-saas/api prisma:migrate:deploy
 
       - name: Migration status
-        run: pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma
+        run: pnpm --filter @subscription-saas/api prisma:migrate:status
 
       - name: API tests
         run: pnpm --filter @subscription-saas/api test

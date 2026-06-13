@@ -7,22 +7,10 @@ const requiredSteps = [
   ["Prisma validate", "pnpm", ["prisma:validate"]],
   ["Prisma generate", "pnpm", ["prisma:generate"]],
   ["Workspace lint", "pnpm", ["-r", "lint"]],
-  [
-    "API typecheck",
-    "pnpm",
-    ["--filter", "@subscription-saas/api", "exec", "tsc", "--noEmit", "-p", "tsconfig.json"]
-  ],
-  [
-    "Web typecheck",
-    "pnpm",
-    ["--filter", "@subscription-saas/web", "exec", "tsc", "--noEmit", "--incremental", "false"]
-  ],
+  ["API typecheck", "pnpm", ["--filter", "@subscription-saas/api", "typecheck"]],
+  ["Web typecheck", "pnpm", ["--filter", "@subscription-saas/web", "typecheck"]],
   ["API tests", "pnpm", ["--filter", "@subscription-saas/api", "test"]],
-  [
-    "Prisma migrate status",
-    "pnpm",
-    ["--filter", "@subscription-saas/api", "exec", "prisma", "migrate", "status", "--schema", "prisma/schema.prisma"]
-  ],
+  ["Prisma migrate status", "pnpm", ["prisma:migrate:status"]],
   ["Smoke script syntax", "node", ["--check", "scripts/api-smoke.mjs"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];

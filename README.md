@@ -51,6 +51,8 @@ Stage 9 / Production readiness：
 - `docs/scenario-seeds.md`：Stage 9C 场景 seed、cleanup、JSON 输出和 smoke 配合说明
 - `docs/release-checklist.md`：Stage 9D 发布前、中、后检查与回滚清单
 - `docs/mainline-acceptance-freeze.md`：Stage 9D 主线验收冻结范围和发布阻断项
+- `docs/release-candidate-report.md`：Stage 9E Release Candidate 验收报告
+- `docs/release-notes-rc.md`：Stage 9 Release Notes 草稿
 - `docs/stage-9-launch-readiness-audit.zh-CN.md`：Stage 9A 中文审计报告
 - `docs/stage-9-launch-readiness-audit.md`：Stage 9A 英文审计报告
 

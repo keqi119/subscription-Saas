@@ -11,6 +11,8 @@
     "dev:api": "pnpm --filter @subscription-saas/api dev",
     "dev:web": "pnpm --filter @subscription-saas/web dev",
     "api:smoke": "node scripts/api-smoke.mjs",
+    "smoke": "node scripts/api-smoke.mjs",
+    "quality:gate": "pnpm -r lint && pnpm prisma:validate && pnpm prisma:generate && pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json && pnpm --filter @subscription-saas/web exec tsc --noEmit --incremental false && pnpm --filter @subscription-saas/api test && pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",

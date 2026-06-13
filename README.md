@@ -42,6 +42,15 @@ D:\Projects\auto-subscription-platform
 - `docs/reporting-metrics.md`：报表口径文档
 - `docs/aliyun-db-only.md`：阿里云方案 A，服务器只跑 PostgreSQL/Redis，本地跑应用
 
+Stage 9 / Production readiness：
+
+- `docs/deployment.md`：部署步骤、migration、seed、smoke 和回滚原则
+- `docs/backup-restore.md`：PostgreSQL 备份、恢复和恢复后校验
+- `docs/permission-matrix.md`：角色、权限域、菜单和 seed/re-login 说明
+- `docs/manual-acceptance.md`：全系统人工验收总清单
+- `docs/stage-9-launch-readiness-audit.zh-CN.md`：Stage 9A 中文审计报告
+- `docs/stage-9-launch-readiness-audit.md`：Stage 9A 英文审计报告
+
 ## 本地开发启动
 
 安装依赖：

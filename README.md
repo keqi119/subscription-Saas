@@ -48,6 +48,7 @@ Stage 9 / Production readiness：
 - `docs/backup-restore.md`：PostgreSQL 备份、恢复和恢复后校验
 - `docs/permission-matrix.md`：角色、权限域、菜单和 seed/re-login 说明
 - `docs/manual-acceptance.md`：全系统人工验收总清单
+- `docs/scenario-seeds.md`：Stage 9C 场景 seed、cleanup、JSON 输出和 smoke 配合说明
 - `docs/stage-9-launch-readiness-audit.zh-CN.md`：Stage 9A 中文审计报告
 - `docs/stage-9-launch-readiness-audit.md`：Stage 9A 英文审计报告
 
@@ -104,18 +105,24 @@ leads、产品/套餐、押金规则、车辆资产池和车辆销售价初始�
 创建测试进件、报价、订单、合同、账单、收款、交付、退车、催收或权益履约数据；
 seed 后车辆资产应处于 `AVAILABLE` 且销售价状态为 `EFFECTIVE`。
 
-复杂验收数据后续应拆到独立场景脚本，例如：
+复杂验收数据必须通过显式场景脚本创建，例如：
 
 ```powershell
-pnpm seed:scenario delivery
-pnpm seed:scenario return
-pnpm seed:scenario billing
-pnpm seed:scenario collection
-pnpm seed:scenario entitlement
+pnpm seed:scenario mainline
+pnpm seed:scenario residual
+pnpm seed:scenario all
+pnpm seed:scenario cleanup
 ```
 
-场景 seed 必须使用专用测试车辆，执行前清理同场景旧数据，并输出创建的进件、
-订单和车辆编号，避免污染默认车辆池。
+场景 seed 必须使用专用测试车辆，执行前清理同场景旧数据，并输出 `.tmp/scenarios/*.json`，避免污染默认车辆池。
+
+API smoke：
+
+```powershell
+pnpm smoke:api
+pnpm smoke:mainline
+pnpm smoke:residual
+```
 
 ## SSH Tunnel / PostgreSQL 注意事项
 

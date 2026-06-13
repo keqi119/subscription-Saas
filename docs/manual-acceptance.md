@@ -9,6 +9,45 @@
 - 复杂链路可人工创建，也可在后续 Stage 9C 使用 scenario seed。
 - 每个关键动作都应抽查 AuditLog。
 
+## Stage 9C 场景 Seed 与 Smoke
+
+可在开发 / 验收环境执行：
+
+```powershell
+pnpm seed:scenario cleanup
+pnpm seed:scenario mainline
+pnpm seed:scenario residual
+pnpm smoke:api
+```
+
+主线场景输出：
+
+```text
+.tmp/scenarios/mainline.json
+```
+
+残值场景输出：
+
+```text
+.tmp/scenarios/residual.json
+```
+
+验收时可从 JSON 中读取 `customerId`、`applicationId`、`vehicleId`、`curveId`、`forecastId`、`forecastPointId`、`valuationReviewId` 等标识，并在对应页面或详情 API 中定位数据。`mainline` 第一版只创建客户、进件、专用车辆和 active subscription plan 引用，报价、订单、合同、账单仍从进件继续人工推进。`residual` 第一版创建市场样本、残值曲线、单车预测和待审批估值复核。
+
+可选按场景追加 smoke：
+
+```powershell
+pnpm smoke:mainline
+pnpm smoke:residual
+```
+
+如需指定输出文件：
+
+```powershell
+$env:SMOKE_SCENARIO_FILE=".tmp/scenarios/mainline.json"
+pnpm smoke:api
+```
+
 ## 1. 登录与权限刷新
 
 入口页面：

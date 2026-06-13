@@ -11,6 +11,9 @@
     "dev:api": "pnpm --filter @subscription-saas/api dev",
     "dev:web": "pnpm --filter @subscription-saas/web dev",
     "api:smoke": "node scripts/api-smoke.mjs",
+    "smoke:api": "node scripts/api-smoke.mjs",
+    "smoke:mainline": "node scripts/api-smoke.mjs --scenario mainline",
+    "smoke:residual": "node scripts/api-smoke.mjs --scenario residual",
     "smoke": "node scripts/api-smoke.mjs",
     "quality:gate": "pnpm -r lint && pnpm prisma:validate && pnpm prisma:generate && pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json && pnpm --filter @subscription-saas/web exec tsc --noEmit --incremental false && pnpm --filter @subscription-saas/api test && pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma",
     "build": "pnpm -r build",
@@ -23,7 +26,8 @@
     "prisma:migrate": "pnpm --filter @subscription-saas/api prisma:migrate",
     "prisma:seed": "pnpm --filter @subscription-saas/api prisma:seed",
     "prisma:seed:verify": "pnpm --filter @subscription-saas/api prisma:seed:verify",
-    "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate"
+    "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate",
+    "seed:scenario": "pnpm --filter @subscription-saas/api exec node prisma/seed-scenario.mjs"
   },
   "devDependencies": {
     "@next/eslint-plugin-next": "^16.2.6",

@@ -11,6 +11,11 @@
     "dev:api": "pnpm --filter @subscription-saas/api dev",
     "dev:web": "pnpm --filter @subscription-saas/web dev",
     "api:smoke": "node scripts/api-smoke.mjs",
+    "smoke:api": "node scripts/api-smoke.mjs",
+    "smoke:mainline": "node scripts/api-smoke.mjs --scenario mainline",
+    "smoke:residual": "node scripts/api-smoke.mjs --scenario residual",
+    "smoke": "node scripts/api-smoke.mjs",
+    "quality:gate": "pnpm -r lint && pnpm prisma:validate && pnpm prisma:generate && pnpm --filter @subscription-saas/api typecheck && pnpm --filter @subscription-saas/web typecheck && pnpm --filter @subscription-saas/api test && pnpm prisma:migrate:status",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
@@ -19,9 +24,13 @@
     "format:check": "prettier --check .",
     "prisma:generate": "pnpm --filter @subscription-saas/api prisma:generate",
     "prisma:migrate": "pnpm --filter @subscription-saas/api prisma:migrate",
+    "prisma:migrate:deploy": "pnpm --filter @subscription-saas/api prisma:migrate:deploy",
+    "prisma:migrate:status": "pnpm --filter @subscription-saas/api prisma:migrate:status",
     "prisma:seed": "pnpm --filter @subscription-saas/api prisma:seed",
     "prisma:seed:verify": "pnpm --filter @subscription-saas/api prisma:seed:verify",
-    "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate"
+    "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate",
+    "release:check": "node scripts/release-check.mjs",
+    "seed:scenario": "pnpm --filter @subscription-saas/api exec node prisma/seed-scenario.mjs"
   },
   "devDependencies": {
     "@next/eslint-plugin-next": "^16.2.6",

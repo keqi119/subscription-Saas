@@ -9,7 +9,7 @@ Production cutover must not start until the staging dry run has been completed a
 
 - [ ] `staging-admin.subauto.keybox.cloud` resolves to `139.196.227.195`.
 - [ ] `staging-api.subauto.keybox.cloud` resolves to `139.196.227.195`.
-- [ ] Caddy issues valid HTTPS certificates for both staging domains.
+- [ ] BT / Nginx or the chosen edge proxy issues valid HTTPS certificates for both staging domains.
 - [ ] Staging `docker compose config` passes.
 - [ ] Staging API and Web containers start successfully.
 - [ ] Staging `migrate deploy` succeeds.
@@ -20,6 +20,13 @@ Production cutover must not start until the staging dry run has been completed a
 - [ ] Object storage readiness is documented in `docs/object-storage-readiness.md`.
 - [ ] Local uploads volume risk is accepted for staging.
 - [ ] 2 GB RAM resource limits and swap guidance have been verified.
+- [ ] Image build strategy is registry pull for the current 2 CPU / 2 GB server.
+- [ ] Server does not build the Web / Next.js image during cutover.
+- [ ] API image tag and Web image tag match the release commit or release tag.
+- [ ] Registry credentials are injected on the server only and are not committed to Git.
+- [ ] BT / Nginx reverse proxy config has been verified for staging domains.
+- [ ] API and Web host bindings are limited to `127.0.0.1`.
+- [ ] Caddy and BT / Nginx are not competing for `80` / `443`.
 - [ ] No admin IP allowlist is enabled; HTTPS, strong passwords, RBAC, CORS, secure cookies, and security groups are confirmed.
 - [ ] ICP filing is confirmed: `沪ICP备18045696号`.
 
@@ -87,6 +94,8 @@ Production cutover must not start until the staging dry run has been completed a
 - [ ] Reverse proxy healthy.
 - [ ] Upload volume mounted for API.
 - [ ] Container restart policy configured.
+- [ ] Registry image deployment path is documented in `docs/image-registry-deployment.md`.
+- [ ] If using image-based compose, API and Web publish only to `127.0.0.1`.
 
 ## 8. HTTPS
 

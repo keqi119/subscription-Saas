@@ -1,0 +1,107 @@
+# Stage 9F-C2 image-based staging deployment example.
+# The 2C/2G staging server should pull prebuilt images instead of building them.
+# BT/Nginx owns 80/443 and proxies to API/Web on 127.0.0.1.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.60
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=30
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-subscription_saas_staging}
+      POSTGRES_USER: ${POSTGRES_USER:-subscription_saas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: Asia/Shanghai
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.60
+    env_file:
+      - .env.staging.images
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      LOCAL_FILE_STORAGE_DIR: ${UPLOAD_LOCAL_DIR:-/app/uploads}
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-3001}:3001"
+    volumes:
+      - staging_api_uploads:${UPLOAD_LOCAL_DIR:-/app/uploads}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    image: ${WEB_IMAGE:?WEB_IMAGE is required}
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.60
+    env_file:
+      - .env.staging.images
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:3000').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))\""
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  staging_postgres_data:
+  staging_api_uploads:

@@ -184,6 +184,10 @@ pnpm prisma:seed
 - `docs/staging-deployment-runbook.md`: Stage 9F-B staging server deployment dry-run runbook
 - `docs/staging-dry-run-report.md`: Stage 9F-B staging dry-run evidence template
 - `docs/object-storage-readiness.md`: upload storage readiness and Stage 9G OSS blocker assessment
+- `docs/image-registry-deployment.md`: Stage 9F-C2 image build / registry deployment path
+- `docker-compose.staging.images.example.yml`: staging compose for prebuilt API/Web images
+- `.env.staging.images.example`: staging env template for registry pull deployment
+- `nginx/staging-subauto.example.conf`: BT / Nginx staging reverse proxy example
 - `docs/domain-dns-ssl.md`: `keybox.cloud` DNS, HTTPS, CORS, and cookie guidance
 - `docs/production-cutover-checklist.md`: Stage 9F-B production cutover checklist
 - `docs/backup-restore.md`: PostgreSQL backup and restore guidance

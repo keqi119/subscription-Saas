@@ -160,6 +160,56 @@ docker compose --env-file .env.staging -f docker-compose.staging.server.yml -p s
 
 Then continue with migration, baseline seed, HTTPS health checks, smoke, scenario seed, backup, restore drill, and resource checks.
 
+## 10.1 Stage 9F-C2 Fix Plan
+
+Root cause:
+
+```text
+The 2 CPU / 2 GB staging server cannot reliably build the Web / Next.js image.
+The build failed again after total swap was increased to 4 GB.
+```
+
+Fix plan:
+
+```text
+Use prebuilt API/Web images and registry deployment.
+Build images locally or in CI.
+Push images to a private registry.
+Let the staging server only run docker compose pull and docker compose up -d.
+```
+
+Image-based deployment assets:
+
+```text
+docker-compose.staging.images.example.yml
+.env.staging.images.example
+docs/image-registry-deployment.md
+.github/workflows/docker-images.yml
+```
+
+Nginx / Caddy decision:
+
+```text
+Existing BT / Nginx owns public HTTP/HTTPS ports on this server.
+Staging should use BT / Nginx as the edge HTTPS reverse proxy.
+Caddy is not used on this server unless BT / Nginx is intentionally removed or migrated.
+```
+
+Nginx proxy target:
+
+```text
+staging-admin.subauto.keybox.cloud -> http://127.0.0.1:3000
+staging-api.subauto.keybox.cloud   -> http://127.0.0.1:3001
+```
+
+Next action:
+
+```text
+Re-execute Stage 9F-C with docker-compose.staging.images.example.yml.
+Do not build the Web image on the staging server.
+Continue with migrate deploy, baseline seed, smoke, scenario seed, backup, restore drill, and resource checks after pull/up succeeds.
+```
+
 ## 11. Decision
 
 ```text

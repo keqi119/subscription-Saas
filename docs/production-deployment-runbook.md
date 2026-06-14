@@ -14,7 +14,7 @@ subauto.keybox.cloud
 Recommended first deployment shape:
 
 ```text
-Caddy HTTPS reverse proxy
+Edge HTTPS reverse proxy (Caddy, Nginx, or BT-managed Nginx)
   -> Web container :3000
   -> API container :3001
 API
@@ -55,12 +55,19 @@ staging-api.subauto.keybox.cloud
 ```
 
 The staging target server is `139.196.227.195` in mainland China Shanghai East China.
-Use `docker-compose.staging.example.yml`, `.env.staging.example`, `Caddyfile.staging.example`, and `docs/staging-deployment-runbook.md`.
+Use `docs/staging-deployment-runbook.md`.
+
+Stage 9F-C2 update:
+
+- the current 2 CPU / 2 GB server cannot reliably build the Web / Next.js image, even with 4 GB swap;
+- the current server already has BT / Nginx on `80` / `443`, so Caddy should not also bind public HTTPS ports;
+- the recommended staging path is registry pull with `docker-compose.staging.images.example.yml`;
+- BT / Nginx should proxy staging domains to `127.0.0.1:3000` and `127.0.0.1:3001`.
 
 Staging must prove:
 
 - DNS and HTTPS work for both staging domains;
-- PostgreSQL, API, Web, and Caddy start with resource limits on the 2 CPU / 2 GB RAM server;
+- PostgreSQL, API, and Web start with resource limits on the 2 CPU / 2 GB RAM server;
 - migration, baseline seed, smoke, backup, and restore drill are executable;
 - scenario seed remains isolated and can be cleaned up;
 - uploads use a local volume unless Stage 9G object storage support is implemented.
@@ -117,12 +124,38 @@ Dry run may use a temporary server IP, but production cutover must use the final
 
 ## 5. Build Images
 
+Option A: server-side build.
+
+Use this only on hosts with enough memory, typically 4 GB RAM or more:
+
 ```bash
 docker compose -f docker-compose.prod.example.yml --env-file .env.production build
 ```
 
 The Web image receives `NEXT_PUBLIC_API_BASE_URL` at build time.
 If the API domain changes, rebuild the Web image.
+
+Option B: registry pull.
+
+This is recommended for the current 2 CPU / 2 GB server. Build API/Web images outside the server,
+push them to a registry, and let the server pull:
+
+```bash
+docker build -f Dockerfile.api -t <REGISTRY>/<NAMESPACE>/subscription-api:<TAG> .
+docker build -f Dockerfile.web -t <REGISTRY>/<NAMESPACE>/subscription-web:<TAG> .
+docker push <REGISTRY>/<NAMESPACE>/subscription-api:<TAG>
+docker push <REGISTRY>/<NAMESPACE>/subscription-web:<TAG>
+```
+
+On the server:
+
+```bash
+docker login <REGISTRY>
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml pull
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d
+```
+
+See `docs/image-registry-deployment.md` for the full registry deployment path.
 
 ## 6. Start PostgreSQL
 
@@ -177,7 +210,7 @@ Production seed rules:
 - do not run scenario seed in production;
 - change the initial admin password after first login.
 
-## 10. Start API, Web, and Caddy
+## 10. Start API, Web, and Reverse Proxy
 
 ```bash
 docker compose -f docker-compose.prod.example.yml --env-file .env.production up -d

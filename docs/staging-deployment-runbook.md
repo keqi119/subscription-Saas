@@ -27,7 +27,7 @@ DNS
   -> PostgreSQL
   -> migrate deploy
   -> baseline seed
-  -> API/Web/Caddy
+  -> API/Web behind the chosen edge reverse proxy
   -> smoke
   -> backup / restore drill
   -> resource usage
@@ -44,7 +44,8 @@ Install:
 - Git or artifact delivery mechanism;
 - basic log and disk monitoring tools.
 
-Because the server has only 2 GB RAM, configure at least 2 GB swap before building images or running all containers:
+Because the server has only 2 GB RAM, configure at least 2 GB swap before running all containers.
+Do not rely on swap to build the Web / Next.js image on this server:
 
 ```bash
 sudo fallocate -l 2G /swapfile
@@ -80,6 +81,28 @@ Choose one staging reverse-proxy owner before continuing:
 3. or use a server-only compose override for a temporary dry run, and record that HTTPS / proxy validation is incomplete.
 
 The default `docker-compose.staging.example.yml` assumes Caddy owns `80` and `443`.
+
+Stage 9F-C showed that this server already has BT / Nginx on the edge and cannot reliably build
+the Web / Next.js image even after increasing total swap to 4 GB. For this server, use the
+Stage 9F-C2 image-based path:
+
+```text
+local or CI build
+  -> push API/Web images to registry
+  -> server docker login
+  -> docker compose pull
+  -> docker compose up -d
+  -> host BT / Nginx proxies staging domains to 127.0.0.1:3000 / 3001
+```
+
+Use:
+
+```text
+docker-compose.staging.images.example.yml
+.env.staging.images
+nginx/staging-subauto.example.conf
+docs/image-registry-deployment.md
+```
 
 ## 3. DNS
 
@@ -136,7 +159,17 @@ Security relies on HTTPS, strong secrets, login/RBAC, CORS, secure cookies, and 
 
 ## 5. Compose Config
 
-Validate before starting:
+Recommended image-based config for the current 2 CPU / 2 GB server:
+
+```bash
+cp .env.staging.images.example .env.staging.images
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml config
+```
+
+The `.env.staging.images` file is server-local and must not be committed. Fill real image names,
+secrets, and passwords on the server only.
+
+The source-build compose remains available for larger hosts:
 
 ```bash
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml config
@@ -153,24 +186,41 @@ If exit code is `0`, record it as a non-blocking warning.
 
 ## 6. Build
 
-On a 2 GB RAM server, server-side image build may fail with OOM.
+Do not build the Web image on the current 2 GB staging server. Stage 9F-C failed twice because the
+Next.js production build triggered OOM, including after total swap was increased to 4 GB.
 
-First try:
+Build and push outside the server:
 
 ```bash
-docker compose --env-file .env.staging -f docker-compose.staging.example.yml build
+docker build -f Dockerfile.api -t <REGISTRY>/<NAMESPACE>/subscription-api:<TAG> .
+docker build -f Dockerfile.web -t <REGISTRY>/<NAMESPACE>/subscription-web:<TAG> .
+docker push <REGISTRY>/<NAMESPACE>/subscription-api:<TAG>
+docker push <REGISTRY>/<NAMESPACE>/subscription-web:<TAG>
 ```
 
-If build fails due to memory:
+Then pull on the staging server:
 
-```text
-Build images in CI or a local build machine, push to a registry, and let the staging server pull images.
+```bash
+docker login <REGISTRY>
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml pull
 ```
 
 The Web image uses `NEXT_PUBLIC_API_BASE_URL` at build time.
 Rebuild Web if the API domain changes.
 
+Server-side build is only an option for larger hosts, typically 4 GB RAM or more, and should not be
+the default path for this staging server.
+
 ## 7. Start PostgreSQL
+
+Image-based path:
+
+```bash
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d postgres
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml ps
+```
+
+Source-build path on larger hosts:
 
 ```bash
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml up -d postgres
@@ -194,6 +244,15 @@ max_connections=30
 
 Run migration from the API container:
 
+Image-based path:
+
+```bash
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:deploy
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:status
+```
+
+Source-build path:
+
 ```bash
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml run --rm api pnpm prisma:migrate:deploy
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml run --rm api pnpm prisma:migrate:status
@@ -210,6 +269,14 @@ If migration fails, stop the dry run and keep logs.
 
 ## 9. Baseline Seed
 
+Image-based path:
+
+```bash
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:seed
+```
+
+Source-build path:
+
 ```bash
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml run --rm api pnpm prisma:seed
 ```
@@ -219,7 +286,16 @@ After first login, change the default admin password.
 Default seed must remain baseline master data only.
 Do not use scenario seed as production or staging baseline data.
 
-## 10. Start API / Web / Caddy
+## 10. Start API / Web
+
+Image-based path:
+
+```bash
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml ps
+```
+
+Source-build / Caddy path:
 
 ```bash
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml up -d
@@ -229,11 +305,29 @@ docker compose --env-file .env.staging -f docker-compose.staging.example.yml ps
 Logs:
 
 ```bash
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 api
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 web
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 postgres
+```
+
+If using the source-build / Caddy path:
+
+```bash
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml logs --tail=100 api
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml logs --tail=100 web
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml logs --tail=100 reverse-proxy
 docker compose --env-file .env.staging -f docker-compose.staging.example.yml logs --tail=100 postgres
 ```
+
+For the current server, configure BT / Nginx to terminate HTTPS and proxy:
+
+```text
+staging-admin.subauto.keybox.cloud -> http://127.0.0.1:3000
+staging-api.subauto.keybox.cloud   -> http://127.0.0.1:3001
+```
+
+Use `nginx/staging-subauto.example.conf` as a reference. Do not expose PostgreSQL, API, or Web
+container ports to the public internet.
 
 ## 11. Smoke
 
@@ -345,7 +439,8 @@ Minimum table:
 | --- | --- | --- | --- |
 | DNS | `<command / console>` | `<Passed / Failed>` |  |
 | compose config | `docker compose ... config` | `<Passed / Failed>` |  |
-| build | `docker compose ... build` | `<Passed / Failed>` |  |
+| image build / push | `<local or CI command>` | `<Passed / Failed / N/A>` |  |
+| pull | `docker compose ... pull` | `<Passed / Failed>` |  |
 | up | `docker compose ... up -d` | `<Passed / Failed>` |  |
 | migrate deploy | `pnpm prisma:migrate:deploy` | `<Passed / Failed>` |  |
 | seed | `pnpm prisma:seed` | `<Passed / Failed>` |  |
@@ -363,5 +458,6 @@ Do not enter production cutover until:
 - restore drill passes or has an approved waiver;
 - object storage readiness is explicitly accepted or Stage 9G is completed;
 - no IP allowlist decision is documented and accepted;
-- Docker build/pull strategy is confirmed;
+- Docker registry pull strategy is confirmed for the current 2 GB server;
+- BT / Nginx edge proxy is verified, or an alternate reverse proxy owner is explicitly approved;
 - 2 GB RAM resource behavior is observed and acceptable.

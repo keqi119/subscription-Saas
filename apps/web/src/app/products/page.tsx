@@ -263,7 +263,7 @@ function ProductsPageContent() {
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionProductLocked, setVersionProductLocked] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
   const activeTab = searchParams.get("tab") ?? "products";
   const selectedPackageProductId = Form.useWatch("productId", packageForm);

@@ -337,7 +337,7 @@ export default function CollectionsPage() {
   const [closeModalOpen, setCloseModalOpen] = useState(false);
   const [closeTarget, setCloseTarget] = useState<CollectionCaseRow | CollectionCaseDetail | null>(null);
   const [submittingClose, setSubmittingClose] = useState(false);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("collection:view");
   const refreshAvailability = actionAvailability({
     noPermissionReason: "无刷新逾期权限",

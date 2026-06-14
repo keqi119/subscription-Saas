@@ -46,7 +46,7 @@ export default function ContractVersionsPage() {
   const [loading, setLoading] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [versions, setVersions] = useState<ContractVersionRow[]>([]);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadVersions = useCallback(async () => {
     setLoading(true);

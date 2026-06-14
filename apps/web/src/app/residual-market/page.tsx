@@ -955,7 +955,7 @@ export default function ResidualMarketPage() {
   const [modelRunFailSubmitting, setModelRunFailSubmitting] = useState(false);
   const [modelRunCancelTarget, setModelRunCancelTarget] = useState<ResidualModelRunRow | null>(null);
   const [modelRunCancelSubmitting, setModelRunCancelSubmitting] = useState(false);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("residual_market:view");
   const canManage = permissions.has("residual_market:manage");
   const canImport = permissions.has("residual_market:import");

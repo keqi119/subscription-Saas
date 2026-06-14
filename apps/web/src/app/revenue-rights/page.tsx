@@ -285,7 +285,7 @@ export default function RevenueRightsPage() {
   const [filterBillsLoading, setFilterBillsLoading] = useState(false);
   const [assignmentBillRows, setAssignmentBillRows] = useState<BillOptionRow[]>([]);
   const [assignmentBillsLoading, setAssignmentBillsLoading] = useState(false);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("revenue_right:view");
   const canViewFinancing = permissions.has("financing:view");
   const canViewVehicles = permissions.has("vehicle:view");

@@ -316,7 +316,7 @@ export default function ContractDetailPage() {
   const [contract, setContract] = useState<ContractDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadContract = useCallback(async () => {
     setLoading(true);

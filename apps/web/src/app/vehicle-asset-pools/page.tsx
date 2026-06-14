@@ -201,7 +201,7 @@ export default function VehicleAssetPoolsPage() {
   const [vehicleRows, setVehicleRows] = useState<VehicleBrief[]>([]);
   const [vehiclesLoading, setVehiclesLoading] = useState(false);
 
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("vehicle_asset_pool:view");
   const canViewVehicles = permissions.has("vehicle:view");
 

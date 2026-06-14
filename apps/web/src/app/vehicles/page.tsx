@@ -983,7 +983,7 @@ export default function VehiclesPage() {
   const [vehicleFinancialLoading, setVehicleFinancialLoading] = useState(false);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const capitalEventType = Form.useWatch("eventType", capitalEventForm);
   const ownerSharePercent = Form.useWatch("ownerSharePercent", revenueShareRuleForm);
   const platformSharePercent = Form.useWatch("platformSharePercent", revenueShareRuleForm);

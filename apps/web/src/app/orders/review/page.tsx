@@ -302,7 +302,7 @@ export default function OrderReviewQueuePage() {
   const [selectedOrder, setSelectedOrder] = useState<ReviewOrderRow | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const isAdminOrOperator = roles.has("ADMIN") || roles.has("OP") || roles.has("GM");
   const hasReviewPermission = permissions.has("order:review");

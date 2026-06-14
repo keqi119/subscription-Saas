@@ -301,7 +301,7 @@ export default function FinancingInstrumentsPage() {
   const [settleTarget, setSettleTarget] = useState<FinancingInstrumentRow | null>(null);
   const allocationVehicleId = Form.useWatch("vehicleId", allocationForm);
   const allocationPrincipalYuan = Form.useWatch("allocatedPrincipalAmountYuan", allocationForm);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("financing:view");
   const canViewVehicles = permissions.has("vehicle:view");
   const canViewPools = permissions.has("vehicle_asset_pool:view");

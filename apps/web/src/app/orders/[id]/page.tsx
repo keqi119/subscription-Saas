@@ -2985,7 +2985,7 @@ export default function OrderDetailPage() {
   const paymentAmountYuan = Form.useWatch("paymentAmountYuan", paymentForm);
   const writeOffEnabled = Form.useWatch("writeOffEnabled", paymentForm);
   const writeOffItems = Form.useWatch("writeOffItems", paymentForm);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const hasBillingViewPermission = permissions.has("billing:view");
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");

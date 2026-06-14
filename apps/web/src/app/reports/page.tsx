@@ -630,7 +630,7 @@ export default function ReportsPage() {
   const [collectionReport, setCollectionReport] = useState<CollectionReport | null>(null);
   const [vehicleAssetReport, setVehicleAssetReport] = useState<VehicleAssetReport | null>(null);
   const [entitlementReport, setEntitlementReport] = useState<EntitlementReport | null>(null);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canViewReports = permissions.has("report:view");
   const canViewFinanceReports = permissions.has("report:finance");
   const canViewCollectionReport = canViewFinanceReports || permissions.has("collection:view");

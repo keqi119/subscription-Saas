@@ -101,7 +101,7 @@ export default function MonthlyRentBatchPage() {
   const [loadingMe, setLoadingMe] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<MonthlyRentBatchResult | null>(null);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("billing:view") || permissions.has("billing:generate");
   const generateAvailability = actionAvailability({
     allowed: canView,

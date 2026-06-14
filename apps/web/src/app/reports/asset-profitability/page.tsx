@@ -769,7 +769,7 @@ export default function AssetProfitabilityPage() {
   const [returnVehiclesExporting, setReturnVehiclesExporting] = useState(false);
   const [returnDetailExporting, setReturnDetailExporting] = useState(false);
 
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
   const canViewAssetReport = permissions.has("report:asset");
 
   useEffect(() => {

@@ -75,7 +75,7 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
       .finally(() => setLoading(false));
   }, [message, router]);
 
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
   const menuItems = useMemo(() => buildMenuItems(me?.menus ?? [], permissions), [me?.menus, permissions]);
 
   if (loading) {

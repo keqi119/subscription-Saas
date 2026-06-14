@@ -439,7 +439,7 @@ export default function QuoteDetailPage() {
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [quote, setQuote] = useState<QuoteDetail | null>(null);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadQuote = useCallback(async () => {
     setLoading(true);

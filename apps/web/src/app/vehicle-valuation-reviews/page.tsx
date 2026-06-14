@@ -297,7 +297,7 @@ export default function VehicleValuationReviewsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [total, setTotal] = useState(0);
 
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const canView = permissions.has("vehicle_valuation_review:view");
   const canViewHistory = permissions.has("vehicle:history_view");
 

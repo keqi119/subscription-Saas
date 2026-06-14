@@ -49,7 +49,7 @@ export default function OrdersPage() {
   const [loading, setLoading] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadOrders = useCallback(async () => {
     setLoading(true);

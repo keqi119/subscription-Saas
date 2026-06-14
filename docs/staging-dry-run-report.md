@@ -210,14 +210,94 @@ Do not build the Web image on the staging server.
 Continue with migrate deploy, baseline seed, smoke, scenario seed, backup, restore drill, and resource checks after pull/up succeeds.
 ```
 
+## 10.2 Stage 9F-C-R2 Registry Pull Deployment Result
+
+This section records the second staging actual deployment run using the registry pull path.
+It supersedes the blocked runtime result in sections 5 to 10 for the current staging state.
+
+| Item | Result |
+| --- | --- |
+| Deployment path | Registry pull, no server-side Web build |
+| GitHub Actions run | `27502166191` |
+| Server commit | `c028059` |
+| API image | `ghcr.io/keqi119/subscription-api:c028059` |
+| Web image | `ghcr.io/keqi119/subscription-web:c028059` |
+| Compose project | `subauto-staging-r2` |
+| Postgres image | `postgres:17-alpine` |
+| Upload storage | Local Docker volume, still a Stage 9G production blocker |
+
+### R2 Fixes Applied
+
+| Fix | Result |
+| --- | --- |
+| API image startup | Changed API image startup from runtime `pnpm` to direct `node apps/api/dist/src/main.js` |
+| Shared runtime dependencies | API image now copies `packages/shared/node_modules` so `zod` is available at runtime |
+| Docker bridge firewall | Added current staging bridge `br-f46259609cb5` to firewalld `docker` zone |
+| Nginx HTTP proxy | Added BT/Nginx HTTP proxy for staging domains to `127.0.0.1:3000` and `127.0.0.1:3001` |
+
+### R2 Runtime Result
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `docker compose config` | Passed | Image-based compose resolved API/Web/Postgres images |
+| `docker pull` | Passed with slow API pull | API image pull exceeded one SSH wait but image landed successfully |
+| `docker compose up -d` | Passed | API/Web/Postgres started from registry images |
+| Container health | Passed | API, Web, and Postgres are healthy |
+| API local health | Passed | `http://127.0.0.1:3001/api/health` returned 200 |
+| Web local health | Passed | `http://127.0.0.1:3000` returned 200 |
+| Nginx local proxy | Passed | Host-header checks for staging API/Admin returned 200 on server-local Nginx |
+| External public HTTP/HTTPS | Pending | Local external TCP checks to `139.196.227.195:80/443` failed; server-local Nginx and firewalld are OK, cloud/upstream path needs recheck |
+
+### R2 Database, Seed, Smoke, Backup
+
+| Step | Result | Notes |
+| --- | --- | --- |
+| `migrate deploy` | Passed | 35 migrations applied |
+| `migrate status` | Passed | Database schema is up to date |
+| Prisma OpenSSL warning | Non-blocking warning | CLI warned OpenSSL could not be detected in the image; migration still completed |
+| Baseline seed | Passed | `node prisma/seed.mjs` completed |
+| Baseline seed verification | Passed | Verified baseline vehicles, catalog, users, and absence of old complex flow data |
+| Admin smoke password | Staging-only reset | Existing admin password did not match smoke default; reset to `Admin@123456` for smoke, must be changed immediately after validation |
+| `smoke:api` equivalent | Passed | Ran through SSH tunnel against API/Web local ports |
+| `smoke:mainline` equivalent | Passed | Mainline scenario customer/application/vehicle checks passed; quote/order/contract skipped by scenario design |
+| `smoke:residual` equivalent | Passed | Residual vehicle/curve/forecast/valuation review checks passed |
+| Scenario cleanup after smoke | Passed | SCN9 scenario data was cleaned |
+| Backup | Passed | `backups/staging-20260614232549.sql`, size `404K` |
+| Restore drill | Not executed | Must be executed or explicitly waived before production cutover |
+
+### R2 Resource Snapshot
+
+| Item | Observation |
+| --- | --- |
+| API memory | `147.4MiB / 512MiB` |
+| Web memory | `59.73MiB / 512MiB` |
+| Postgres memory | `37.57MiB / 512MiB` |
+| Host memory | `1.8Gi total`, `564Mi available` |
+| Swap | `4.0Gi total`, `310Mi used` |
+| Disk | `/dev/vda3 40G total`, `19G used`, `19G available` |
+
+### R2 Remaining Gates
+
+| Gate | Status | Recommendation |
+| --- | --- | --- |
+| Public `80/443` reachability | Open | Recheck cloud security group / upstream path because server-local Nginx works but external TCP check failed |
+| HTTPS certificate | Open | Use BT panel or certbot to issue staging certificates, then rerun public Web route smoke |
+| Restore drill | Open | Run restore drill on staging or document explicit waiver before production cutover |
+| Upload object storage | Open | Complete Stage 9G Aliyun OSS adapter before production if uploads must be durable beyond single-server volume |
+| Default admin password | Open | Change `admin` password immediately after smoke; do not leave `Admin@123456` on staging |
+
 ## 11. Decision
 
 ```text
+Can enter Stage 9G: Yes
 Can enter Production Cutover: No
 
 Reason:
-Stage 9F-C actual staging deployment did not complete. DNS, server preparation, swap expansion to 4G,
-git installation, code checkout, env creation, and compose config passed, but server-side Web image
-build still failed due to OOM. Runtime, migration, seed, smoke, backup, and restore checks remain unverified.
-Production cutover must wait for an external image build / registry pull strategy and a completed staging deployment run.
+Stage 9F-C-R2 completed the registry-pull staging runtime path:
+containers are healthy, migration passed, baseline seed and seed verification passed,
+API/Web/mainline/residual smoke passed, scenario cleanup passed, and pg_dump backup passed.
+
+Production cutover is still blocked by public 80/443 reachability validation, HTTPS certificate completion,
+restore drill or waiver, and the upload storage decision. Since production requires object storage for uploads,
+Stage 9G Aliyun OSS Upload Storage Adapter remains the recommended next stage before production cutover.
 ```

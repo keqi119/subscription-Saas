@@ -72,6 +72,15 @@ Security group / firewall:
 - do not expose PostgreSQL `5432/tcp` to the public internet;
 - do not expose API `3001` or Web `3000` directly.
 
+If the server already runs BT / Nginx or another reverse proxy on `80` / `443`, do not stop it automatically.
+Choose one staging reverse-proxy owner before continuing:
+
+1. keep host Nginx and configure it to proxy staging domains to the API / Web containers;
+2. or migrate existing host sites away from Nginx and let Caddy own both `80` and `443`;
+3. or use a server-only compose override for a temporary dry run, and record that HTTPS / proxy validation is incomplete.
+
+The default `docker-compose.staging.example.yml` assumes Caddy owns `80` and `443`.
+
 ## 3. DNS
 
 In Aliyun DNS for `keybox.cloud`, create:

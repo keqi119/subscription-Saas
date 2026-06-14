@@ -1,0 +1,13 @@
+admin.subauto.keybox.cloud {
+	encode zstd gzip
+	reverse_proxy web:3000
+}
+
+api.subauto.keybox.cloud {
+	encode zstd gzip
+	reverse_proxy api:3001
+}
+
+subauto.keybox.cloud {
+	respond "subauto.keybox.cloud is reserved for the future customer-facing site." 200
+}

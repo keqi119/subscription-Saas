@@ -1,0 +1,146 @@
+# Stage 9F-B staging server deployment dry-run example.
+# Target server: 139.196.227.195, domains from .env.staging.
+# API/Web/PostgreSQL are internal only; Caddy exposes 80/443.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.60
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=30
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-subscription_saas_staging}
+      POSTGRES_USER: ${POSTGRES_USER:-subscription_saas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: Asia/Shanghai
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.60
+    env_file:
+      - .env.staging
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      LOCAL_FILE_STORAGE_DIR: ${UPLOAD_LOCAL_DIR:-/app/uploads}
+    expose:
+      - "3001"
+    volumes:
+      - staging_api_uploads:${UPLOAD_LOCAL_DIR:-/app/uploads}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://staging-api.subauto.keybox.cloud/api}
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.60
+    env_file:
+      - .env.staging
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:3000').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))\""
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  reverse-proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.20
+    environment:
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN:-staging-admin.subauto.keybox.cloud}
+      API_DOMAIN: ${API_DOMAIN:-staging-api.subauto.keybox.cloud}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.staging.example:/etc/caddy/Caddyfile:ro
+      - staging_caddy_data:/data
+      - staging_caddy_config:/config
+    depends_on:
+      api:
+        condition: service_started
+      web:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  staging_postgres_data:
+  staging_api_uploads:
+  staging_caddy_data:
+  staging_caddy_config:

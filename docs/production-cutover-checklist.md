@@ -3,6 +3,26 @@
 Stage 9F-B should start only after this Stage 9F-A dry run passes.
 This checklist is a release-time control document, not a new feature plan.
 
+Production cutover must not start until the staging dry run has been completed and recorded.
+
+## 0. Staging Gate
+
+- [ ] `staging-admin.subauto.keybox.cloud` resolves to `139.196.227.195`.
+- [ ] `staging-api.subauto.keybox.cloud` resolves to `139.196.227.195`.
+- [ ] Caddy issues valid HTTPS certificates for both staging domains.
+- [ ] Staging `docker compose config` passes.
+- [ ] Staging API and Web containers start successfully.
+- [ ] Staging `migrate deploy` succeeds.
+- [ ] Staging baseline seed succeeds.
+- [ ] Staging smoke checks pass.
+- [ ] Staging backup succeeds.
+- [ ] Staging restore drill is completed or formally waived.
+- [ ] Object storage readiness is documented in `docs/object-storage-readiness.md`.
+- [ ] Local uploads volume risk is accepted for staging.
+- [ ] 2 GB RAM resource limits and swap guidance have been verified.
+- [ ] No admin IP allowlist is enabled; HTTPS, strong passwords, RBAC, CORS, secure cookies, and security groups are confirmed.
+- [ ] ICP filing is confirmed: `沪ICP备18045696号`.
+
 ## 1. Release Identity
 
 | Item | Value |

@@ -181,6 +181,9 @@ pnpm prisma:seed
 
 - `docs/production-deployment-runbook.md`: Stage 9F-A production deployment dry-run runbook
 - `docs/production-deployment-runbook.zh-CN.md`: Stage 9F-A 中文生产部署演练 Runbook
+- `docs/staging-deployment-runbook.md`: Stage 9F-B staging server deployment dry-run runbook
+- `docs/staging-dry-run-report.md`: Stage 9F-B staging dry-run evidence template
+- `docs/object-storage-readiness.md`: upload storage readiness and Stage 9G OSS blocker assessment
 - `docs/domain-dns-ssl.md`: `keybox.cloud` DNS, HTTPS, CORS, and cookie guidance
 - `docs/production-cutover-checklist.md`: Stage 9F-B production cutover checklist
 - `docs/backup-restore.md`: PostgreSQL backup and restore guidance

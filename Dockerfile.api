@@ -41,4 +41,4 @@ RUN mkdir -p /app/apps/api/uploads
 
 EXPOSE 3001
 
-CMD ["pnpm", "--filter", "@subscription-saas/api", "start"]
+CMD ["node", "apps/api/dist/src/main.js"]

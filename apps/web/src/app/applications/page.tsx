@@ -246,7 +246,7 @@ export default function ApplicationsPage() {
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
   const [uploadTarget, setUploadTarget] = useState<ApplicationRow | null>(null);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<ReadonlySet<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadData = useCallback(async () => {
     setLoading(true);

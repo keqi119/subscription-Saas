@@ -411,7 +411,7 @@ export default function ApplicationDetailPage() {
   }, [loadDetail]);
 
   const availableActions = useMemo(() => new Set(detail?.availableActions ?? []), [detail]);
-  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
+  const permissions = useMemo<ReadonlySet<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const isSelfServiceApplication = detail?.applicationSource === "SELF_SERVICE";
   const canReviewApplication = permissions.has("application:review");
   const canCreateOrderChange = permissions.has("order_change:create");

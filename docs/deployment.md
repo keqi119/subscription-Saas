@@ -75,6 +75,17 @@ Copy-Item .env.example .env
 
 不要把真实 secret、生产数据库地址或云账号凭据提交到 Git。
 
+Upload storage variables added in Stage 9G-A:
+
+| Variable | Purpose | Notes |
+| --- | --- | --- |
+| `UPLOAD_STORAGE_DRIVER` | Upload storage driver | Default `local`; set `oss` after Aliyun OSS validation |
+| `UPLOAD_LOCAL_DIR` | Local upload directory | Used by local provider and as fallback temp storage |
+| `OSS_REGION` / `OSS_BUCKET` / `OSS_ENDPOINT` | Aliyun OSS target | Required only when `UPLOAD_STORAGE_DRIVER=oss` |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | Aliyun OSS credentials | Server secrets only; never commit to Git |
+| `OSS_PREFIX` | Aliyun OSS object key prefix | Example: `subscription-saas/staging` |
+| `OSS_INTERNAL_ENDPOINT` | Optional internal OSS endpoint | Use only when the server can reach OSS over an internal network |
+
 ## 4. 安装依赖
 
 ```powershell

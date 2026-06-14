@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import {
   ApplicationActionType,
   ApplicationMaterialType,
@@ -33,16 +32,14 @@ import {
   VehicleStatus
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
-import { randomUUID } from "node:crypto";
-import { createReadStream, type ReadStream } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import path from "node:path";
+import type { Readable } from "node:stream";
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
+import { StorageService } from "../storage/storage.service";
 import {
   ApproveApplicationDto,
   NeedMoreInfoDto,
@@ -273,16 +270,16 @@ export interface MaterialPreview {
   filename: string;
   mimeType?: string | null;
   sizeBytes: number;
-  stream: ReadStream;
+  stream: Readable;
 }
 
 @Injectable()
 export class CustomerService {
   constructor(
     private readonly auditService: AuditService,
-    private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
-    private readonly riskService: RiskService
+    private readonly riskService: RiskService,
+    private readonly storageService: StorageService
   ) {}
 
   async listCustomers(user: RequestUser) {
@@ -1333,7 +1330,15 @@ export class CustomerService {
     }
 
     const storedFiles = await Promise.all(
-      uploadFiles.map(async (file) => ({ file, storage: await this.saveLocalFile(file) }))
+      uploadFiles.map(async (file) => ({
+        file,
+        storage: await this.storageService.putApplicationMaterial({
+          applicationId: id,
+          buffer: file.buffer,
+          contentType: file.mimetype,
+          originalName: file.originalname
+        })
+      }))
     );
 
     const group = await this.prisma.$transaction(async (tx) => {
@@ -1428,23 +1433,16 @@ export class CustomerService {
       throw new NotFoundException("Application material not found.");
     }
 
-    const absolutePath = await this.resolveLocalFilePath(
+    const storedObject = await this.storageService.getObject(
       material.file.bucket,
       material.file.objectKey
     );
-    let fileStat: Awaited<ReturnType<typeof stat>>;
-
-    try {
-      fileStat = await stat(absolutePath);
-    } catch {
-      throw new NotFoundException("Material file is not available for preview.");
-    }
 
     return {
       filename: material.file.originalName,
-      mimeType: material.file.mimeType,
-      sizeBytes: fileStat.size,
-      stream: createReadStream(absolutePath)
+      mimeType: material.file.mimeType ?? storedObject.contentType,
+      sizeBytes: storedObject.contentLength ?? Number(material.file.sizeBytes),
+      stream: storedObject.stream
     };
   }
 
@@ -1465,23 +1463,16 @@ export class CustomerService {
       throw new NotFoundException("Application material file not found.");
     }
 
-    const absolutePath = await this.resolveLocalFilePath(
+    const storedObject = await this.storageService.getObject(
       materialFile.file.bucket,
       materialFile.file.objectKey
     );
-    let fileStat: Awaited<ReturnType<typeof stat>>;
-
-    try {
-      fileStat = await stat(absolutePath);
-    } catch {
-      throw new NotFoundException("Material file is not available for preview.");
-    }
 
     return {
       filename: materialFile.fileName,
-      mimeType: materialFile.mimeType,
-      sizeBytes: fileStat.size,
-      stream: createReadStream(absolutePath)
+      mimeType: materialFile.mimeType ?? storedObject.contentType,
+      sizeBytes: storedObject.contentLength ?? Number(materialFile.sizeBytes),
+      stream: storedObject.stream
     };
   }
 
@@ -2029,36 +2020,6 @@ export class CustomerService {
     });
   }
 
-  private async saveLocalFile(file: UploadedMaterialFile) {
-    const baseDir = path.resolve(
-      process.cwd(),
-      this.configService.get<string>("LOCAL_FILE_STORAGE_DIR") ?? "./uploads"
-    );
-    const bucket = "application-materials";
-    const directory = path.join(baseDir, bucket);
-    const safeName = sanitizeFilename(file.originalname);
-    const objectKey = `${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${safeName}`;
-    const absolutePath = path.join(directory, objectKey);
-
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, file.buffer);
-
-    return { bucket, objectKey };
-  }
-
-  private async resolveLocalFilePath(bucket: string, objectKey: string) {
-    const baseDir = path.resolve(
-      process.cwd(),
-      this.configService.get<string>("LOCAL_FILE_STORAGE_DIR") ?? "./uploads"
-    );
-    const absolutePath = path.resolve(baseDir, bucket, objectKey);
-
-    if (!absolutePath.startsWith(baseDir + path.sep)) {
-      throw new BadRequestException("Invalid file path.");
-    }
-
-    return absolutePath;
-  }
 }
 
 function applicationReviewDecision(dto: ReviewApplicationDto) {
@@ -2587,10 +2548,6 @@ function profileData(dto: CustomerProfileDto) {
     residenceAddress: dto.residenceAddress,
     socialSecurityMonths: dto.socialSecurityMonths
   };
-}
-
-function sanitizeFilename(filename: string) {
-  return filename.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "material";
 }
 
 const requiredMaterialTypes: ApplicationMaterialType[] = [

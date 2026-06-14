@@ -30,11 +30,21 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
-      LOCAL_FILE_STORAGE_DIR: /app/apps/api/uploads
+      UPLOAD_STORAGE_DRIVER: ${UPLOAD_STORAGE_DRIVER:-local}
+      UPLOAD_LOCAL_DIR: ${UPLOAD_LOCAL_DIR:-/app/uploads}
+      LOCAL_FILE_STORAGE_DIR: ${UPLOAD_LOCAL_DIR:-/app/uploads}
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_PREFIX: ${OSS_PREFIX:-subscription-saas/production}
+      OSS_INTERNAL_ENDPOINT: ${OSS_INTERNAL_ENDPOINT:-}
+      OSS_SIGNED_URL_EXPIRES_SECONDS: ${OSS_SIGNED_URL_EXPIRES_SECONDS:-300}
     expose:
       - "3001"
     volumes:
-      - api_uploads:/app/apps/api/uploads
+      - api_uploads:${UPLOAD_LOCAL_DIR:-/app/uploads}
     depends_on:
       postgres:
         condition: service_healthy

@@ -70,7 +70,7 @@ Staging must prove:
 - PostgreSQL, API, and Web start with resource limits on the 2 CPU / 2 GB RAM server;
 - migration, baseline seed, smoke, backup, and restore drill are executable;
 - scenario seed remains isolated and can be cleaned up;
-- uploads use a local volume unless Stage 9G object storage support is implemented.
+- uploads are validated with `UPLOAD_STORAGE_DRIVER=oss` before production cutover, unless local volume risk is explicitly accepted.
 
 ## 2. Server Preparation
 
@@ -109,6 +109,21 @@ CORS_ORIGIN=https://admin.subauto.keybox.cloud
 SMOKE_API_BASE_URL=https://api.subauto.keybox.cloud/api
 SMOKE_WEB_BASE_URL=https://admin.subauto.keybox.cloud
 ```
+
+If uploaded customer materials must survive container or server replacement, configure OSS in `.env.production`:
+
+```text
+UPLOAD_STORAGE_DRIVER=oss
+OSS_REGION=oss-cn-shanghai
+OSS_BUCKET=<private-bucket>
+OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com
+OSS_ACCESS_KEY_ID=<secret-manager-value>
+OSS_ACCESS_KEY_SECRET=<secret-manager-value>
+OSS_PREFIX=subscription-saas/production
+OSS_INTERNAL_ENDPOINT=<optional-internal-endpoint>
+```
+
+Keep the OSS bucket private. Upload downloads must continue through the authenticated API stream endpoints, not public bucket URLs.
 
 Never commit `.env.production`.
 

@@ -183,7 +183,7 @@ pnpm prisma:seed
 - `docs/production-deployment-runbook.zh-CN.md`: Stage 9F-A 中文生产部署演练 Runbook
 - `docs/staging-deployment-runbook.md`: Stage 9F-B staging server deployment dry-run runbook
 - `docs/staging-dry-run-report.md`: Stage 9F-B staging dry-run evidence template
-- `docs/object-storage-readiness.md`: upload storage readiness and Stage 9G OSS blocker assessment
+- `docs/object-storage-readiness.md`: Stage 9G OSS adapter status and real bucket validation gate
 - `docs/image-registry-deployment.md`: Stage 9F-C2 image build / registry deployment path
 - `docker-compose.staging.images.example.yml`: staging compose for prebuilt API/Web images
 - `.env.staging.images.example`: staging env template for registry pull deployment

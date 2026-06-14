@@ -328,7 +328,12 @@ function createSelfServiceApplicationHarness(overrides: {
     vehicle: { findUnique: vi.fn(async () => ({ ...vehicle, status: state.vehicleStatus })) }
   };
   const auditService = { write: vi.fn(async () => undefined) };
-  const service = new CustomerService(auditService as never, {} as never, prisma as never, {} as never);
+  const service = new CustomerService(
+    auditService as never,
+    prisma as never,
+    {} as never,
+    {} as never
+  );
 
   return { auditService, context, customer, plan, service, state, tx, user, vehicle };
 }

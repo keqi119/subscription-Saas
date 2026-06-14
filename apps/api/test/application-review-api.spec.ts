@@ -570,7 +570,12 @@ function createApplicationReviewHarness(overrides: {
       updatedAt: now
     }))
   };
-  const service = new CustomerService(auditService as never, {} as never, prisma as never, riskService as never);
+  const service = new CustomerService(
+    auditService as never,
+    prisma as never,
+    riskService as never,
+    {} as never
+  );
 
   return {
     application: state.application,

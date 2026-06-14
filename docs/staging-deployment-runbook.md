@@ -398,22 +398,52 @@ docs/staging-dry-run-report.md
 
 ## 14. Upload Storage
 
-Current code uses local file storage only.
-
-Staging uses:
+The API supports two upload storage drivers:
 
 ```text
+UPLOAD_STORAGE_DRIVER=local
+UPLOAD_STORAGE_DRIVER=oss
+```
+
+Local staging dry runs may use:
+
+```text
+UPLOAD_STORAGE_DRIVER=local
+UPLOAD_LOCAL_DIR=/app/uploads
 LOCAL_FILE_STORAGE_DIR=/app/uploads
 staging_api_uploads volume
 ```
 
-Object storage readiness is documented in:
+For OSS staging validation:
+
+1. Create an Aliyun OSS bucket in the target region.
+2. Keep the bucket private.
+3. Create a RAM AccessKey with minimum bucket read/write/delete scope.
+4. Configure `.env.staging.images` with:
+
+```text
+UPLOAD_STORAGE_DRIVER=oss
+OSS_REGION=oss-cn-shanghai
+OSS_BUCKET=<bucket>
+OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com
+OSS_ACCESS_KEY_ID=<from secret manager>
+OSS_ACCESS_KEY_SECRET=<from secret manager>
+OSS_PREFIX=subscription-saas/staging
+OSS_INTERNAL_ENDPOINT=<optional internal endpoint>
+```
+
+5. Restart the API container.
+6. Upload a customer/application material.
+7. Preview/download the material through the API.
+8. Confirm no public OSS URL is exposed to the browser.
+
+Object storage readiness and the Stage 9G-B validation gate are documented in:
 
 ```text
 docs/object-storage-readiness.md
 ```
 
-If production requires durable material uploads, Stage 9G must implement Aliyun OSS adapter before production cutover.
+Stage 9G-A implements the adapter. Stage 9G-B must validate a real staging bucket before production cutover.
 
 ## 15. Cleanup
 
@@ -456,7 +486,7 @@ Do not enter production cutover until:
 - staging smoke passes;
 - staging backup passes;
 - restore drill passes or has an approved waiver;
-- object storage readiness is explicitly accepted or Stage 9G is completed;
+- Stage 9G-B real OSS bucket upload/download validation passes, or production explicitly accepts local volume risk;
 - no IP allowlist decision is documented and accepted;
 - Docker registry pull strategy is confirmed for the current 2 GB server;
 - BT / Nginx edge proxy is verified, or an alternate reverse proxy owner is explicitly approved;

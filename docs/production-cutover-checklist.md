@@ -19,6 +19,11 @@ Production cutover must not start until the staging dry run has been completed a
 - [ ] Staging restore drill is completed or formally waived.
 - [ ] Object storage readiness is documented in `docs/object-storage-readiness.md`.
 - [ ] Local uploads volume risk is accepted for staging.
+- [ ] Stage 9G-A OSS adapter is included in the release build.
+- [ ] Real OSS bucket is configured for staging with `UPLOAD_STORAGE_DRIVER=oss`.
+- [ ] Upload / preview / download smoke passes against the private OSS bucket.
+- [ ] OSS bucket is not public-read.
+- [ ] API streams OSS downloads and does not expose permanent public bucket URLs.
 - [ ] 2 GB RAM resource limits and swap guidance have been verified.
 - [ ] Image build strategy is registry pull for the current 2 CPU / 2 GB server.
 - [ ] Server does not build the Web / Next.js image during cutover.
@@ -61,6 +66,9 @@ Production cutover must not start until the staging dry run has been completed a
 - [ ] `CORS_ORIGIN=https://admin.subauto.keybox.cloud`.
 - [ ] `NEXT_PUBLIC_API_BASE_URL=https://api.subauto.keybox.cloud/api`.
 - [ ] `NODE_ENV=production`.
+- [ ] If production uploads must be durable, `UPLOAD_STORAGE_DRIVER=oss`.
+- [ ] OSS bucket, endpoint, prefix, and RAM AccessKey are configured outside Git.
+- [ ] Historical local upload migration is completed or explicitly waived.
 
 ## 4. Backup
 

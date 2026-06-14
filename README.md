@@ -177,6 +177,22 @@ pnpm prisma:migrate
 pnpm prisma:seed
 ```
 
+## Production Deployment
+
+- `docs/production-deployment-runbook.md`: Stage 9F-A production deployment dry-run runbook
+- `docs/domain-dns-ssl.md`: `keybox.cloud` DNS, HTTPS, CORS, and cookie guidance
+- `docs/production-cutover-checklist.md`: Stage 9F-B production cutover checklist
+- `docs/backup-restore.md`: PostgreSQL backup and restore guidance
+- `docs/release-checklist.md`: release quality gate and rollback checklist
+- `docs/release-candidate-report.md`: Stage 9E RC validation evidence
+
+Dry-run and pre-cutover commands:
+
+```powershell
+pnpm release:check
+pnpm smoke:api
+```
+
 ## 质量门禁
 
 文档校准或代码修改完成后建议跑：

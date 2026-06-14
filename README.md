@@ -180,6 +180,7 @@ pnpm prisma:seed
 ## Production Deployment
 
 - `docs/production-deployment-runbook.md`: Stage 9F-A production deployment dry-run runbook
+- `docs/production-deployment-runbook.zh-CN.md`: Stage 9F-A 中文生产部署演练 Runbook
 - `docs/domain-dns-ssl.md`: `keybox.cloud` DNS, HTTPS, CORS, and cookie guidance
 - `docs/production-cutover-checklist.md`: Stage 9F-B production cutover checklist
 - `docs/backup-restore.md`: PostgreSQL backup and restore guidance

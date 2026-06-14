@@ -45,6 +45,26 @@ Current repository commands:
 The default seed must remain baseline master data only.
 Scenario seed is for development and acceptance environments, not production.
 
+## 1.1 Staging Server Dry Run
+
+Before production cutover, run Stage 9F-B against the staging domains:
+
+```text
+staging-admin.subauto.keybox.cloud
+staging-api.subauto.keybox.cloud
+```
+
+The staging target server is `139.196.227.195` in mainland China Shanghai East China.
+Use `docker-compose.staging.example.yml`, `.env.staging.example`, `Caddyfile.staging.example`, and `docs/staging-deployment-runbook.md`.
+
+Staging must prove:
+
+- DNS and HTTPS work for both staging domains;
+- PostgreSQL, API, Web, and Caddy start with resource limits on the 2 CPU / 2 GB RAM server;
+- migration, baseline seed, smoke, backup, and restore drill are executable;
+- scenario seed remains isolated and can be cleaned up;
+- uploads use a local volume unless Stage 9G object storage support is implemented.
+
 ## 2. Server Preparation
 
 Prepare a fresh server with:

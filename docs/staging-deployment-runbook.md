@@ -437,6 +437,34 @@ OSS_INTERNAL_ENDPOINT=<optional internal endpoint>
 7. Preview/download the material through the API.
 8. Confirm no public OSS URL is exposed to the browser.
 
+Upload storage smoke:
+
+```bash
+pnpm seed:scenario cleanup
+pnpm seed:scenario mainline
+
+SMOKE_API_BASE_URL=https://staging-api.subauto.keybox.cloud \
+SMOKE_ADMIN_USERNAME=admin \
+SMOKE_ADMIN_PASSWORD=<staging-admin-password> \
+SMOKE_SCENARIO_FILE=.tmp/scenarios/mainline.json \
+SMOKE_EXPECT_STORAGE_DRIVER=oss \
+pnpm smoke:upload
+```
+
+After the upload smoke passes, restart the API container and run the same download check again:
+
+```bash
+docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml restart api
+SMOKE_API_BASE_URL=https://staging-api.subauto.keybox.cloud \
+SMOKE_ADMIN_USERNAME=admin \
+SMOKE_ADMIN_PASSWORD=<staging-admin-password> \
+SMOKE_SCENARIO_FILE=.tmp/scenarios/mainline.json \
+SMOKE_EXPECT_STORAGE_DRIVER=oss \
+pnpm smoke:upload -- --download-only
+```
+
+The second command downloads the same uploaded material recorded in `.tmp/upload-storage-smoke.json`, verifying that the API still streams the OSS-backed object after restart.
+
 Object storage readiness and the Stage 9G-B validation gate are documented in:
 
 ```text

@@ -199,6 +199,7 @@ Dry-run and pre-cutover commands:
 ```powershell
 pnpm release:check
 pnpm smoke:api
+pnpm smoke:upload
 ```
 
 ## 质量门禁

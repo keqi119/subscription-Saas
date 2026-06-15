@@ -21,7 +21,8 @@ Production cutover must not start until the staging dry run has been completed a
 - [ ] Local uploads volume risk is accepted for staging.
 - [ ] Stage 9G-A OSS adapter is included in the release build.
 - [ ] Real OSS bucket is configured for staging with `UPLOAD_STORAGE_DRIVER=oss`.
-- [ ] Upload / preview / download smoke passes against the private OSS bucket.
+- [ ] `pnpm smoke:upload` passes against the private OSS bucket.
+- [ ] `pnpm smoke:upload -- --download-only` passes after API restart.
 - [ ] OSS bucket is not public-read.
 - [ ] API streams OSS downloads and does not expose permanent public bucket URLs.
 - [ ] 2 GB RAM resource limits and swap guidance have been verified.

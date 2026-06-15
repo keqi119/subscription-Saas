@@ -301,3 +301,61 @@ Production cutover is still blocked by public 80/443 reachability validation, HT
 restore drill or waiver, and the upload storage decision. Since production requires object storage for uploads,
 Stage 9G Aliyun OSS Upload Storage Adapter remains the recommended next stage before production cutover.
 ```
+
+## 12. Stage 9G-B Real OSS Bucket Validation
+
+This section records the real OSS bucket validation pass for upload storage.
+
+Current status:
+
+```text
+Prepared, not completed.
+```
+
+### 12.1 Prepared Assets
+
+| Item | Result |
+| --- | --- |
+| Stage 9G-A adapter | Included in `main` at `c40033a` |
+| Upload smoke script | Added `pnpm smoke:upload` |
+| Upload smoke result file | `.tmp/upload-storage-smoke.json` |
+| Restart validation mode | `pnpm smoke:upload -- --download-only` |
+| Real OSS secret handling | Must stay in server `.env.staging.images`; not committed |
+
+### 12.2 Current Staging State
+
+| Item | Observation |
+| --- | --- |
+| Server repository commit | `c028059` at time of check |
+| Current API image | `ghcr.io/keqi119/subscription-api:c028059` |
+| Current Web image | `ghcr.io/keqi119/subscription-web:c028059` |
+| Upload driver | `UPLOAD_STORAGE_DRIVER=local` |
+| Stage 9G-A API image rollout | Pending |
+| Real OSS bucket env | Pending server-only configuration |
+| GitHub Actions trigger | Blocked locally because `gh` token is invalid |
+
+### 12.3 Required Validation Steps
+
+| Step | Expected Result | Status |
+| --- | --- | --- |
+| Build/push API image for `c40033a` or newer | Registry image available | Pending |
+| Roll out API image on staging | API healthy with Stage 9G-A code | Pending |
+| Set `UPLOAD_STORAGE_DRIVER=oss` | `/api/health` reports `storage: "oss"` | Pending |
+| Configure private OSS bucket and RAM key | Server env configured, no secret in Git | Pending |
+| Run `pnpm seed:scenario mainline` | Scenario application available | Pending |
+| Run `pnpm smoke:upload` | Upload/download succeeds through API stream | Pending |
+| Inspect upload response and headers | No OSS public URL exposed | Pending |
+| Restart API and run `pnpm smoke:upload -- --download-only` | Same uploaded object still downloads | Pending |
+| Verify local upload volume | New OSS file is not dependent on local upload volume | Pending |
+| Run `pnpm seed:scenario cleanup` | Scenario data cleaned | Pending |
+
+### 12.4 Decision
+
+```text
+OSS blocker is not closed yet.
+
+Reason:
+Stage 9G-A code is merged, but staging has not yet been switched to an image containing
+the OSS adapter and has not been configured with a real private OSS bucket. Real upload,
+download, restart persistence, and public URL exposure checks remain pending.
+```

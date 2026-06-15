@@ -14,6 +14,7 @@
     "smoke:api": "node scripts/api-smoke.mjs",
     "smoke:mainline": "node scripts/api-smoke.mjs --scenario mainline",
     "smoke:residual": "node scripts/api-smoke.mjs --scenario residual",
+    "smoke:upload": "node scripts/upload-storage-smoke.mjs",
     "smoke": "node scripts/api-smoke.mjs",
     "quality:gate": "pnpm -r lint && pnpm prisma:validate && pnpm prisma:generate && pnpm --filter @subscription-saas/api typecheck && pnpm --filter @subscription-saas/web typecheck && pnpm --filter @subscription-saas/api test && pnpm prisma:migrate:status",
     "build": "pnpm -r build",

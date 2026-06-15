@@ -7,7 +7,7 @@ run production migrations, run production seed, or connect to a production datab
 Current decision:
 
 ```text
-GO / NO-GO: Pending
+GO / NO-GO: GO
 ```
 
 ## 1. Approval Information
@@ -15,25 +15,25 @@ GO / NO-GO: Pending
 | Field | Value |
 | --- | --- |
 | Approval name | Stage 9F-E Production Cutover Approval |
-| Approval date | Pending approval |
-| Approver | Pending approval |
-| Executor | Pending approval |
-| Rollback owner | Pending approval |
+| Approval date | `2026-06-15 22:12:29 +08:00` |
+| Approver | `keqi119` |
+| Executor | `keqi119` |
+| Rollback owner | `keqi119` |
 | Target environment | production |
 | Target server | `139.196.227.195` |
 | Server size | `2 CPU / 2 GB RAM / 40 GB disk` |
 | Production Web domain | `admin.subauto.keybox.cloud` |
 | Production API domain | `api.subauto.keybox.cloud` |
 | Approval baseline commit | `0bb470d1c146f642c0fac15fb582dcd421e54555` |
-| Target production commit | Pending approval |
-| Target API image tag | Pending approval |
-| Target Web image tag | Pending approval |
+| Target production commit | `d3cdc5e` for the validated API/Web images |
+| Target API image tag | `ghcr.io/keqi119/subscription-api:d3cdc5e` |
+| Target Web image tag | `ghcr.io/keqi119/subscription-web:d3cdc5e` |
 | Target RC tag | `rc-20260613-stage9` |
-| Includes migration | Pending approval |
-| Needs production seed | Pending approval |
+| Includes migration | Yes; `prisma migrate deploy` only |
+| Needs production seed | Yes; baseline seed only |
 | Needs scenario seed | No by default; requires explicit approval |
 | Needs backup | Yes |
-| Needs staging stop | Pending approval |
+| Needs staging stop | Yes; single-stack cutover on the 2 CPU / 2 GB server |
 | Recommended cutover strategy | single-stack cutover |
 
 ## 2. Staging Gate Conclusion
@@ -78,16 +78,16 @@ production defaults or production smoke credentials.
 | Production compose example completed | Passed | `docker-compose.production.images.example.yml` | No | Compose config passed in Stage 9F-D |
 | Production Nginx example completed | Passed | `nginx/production-subauto.example.conf` | No | BT/Nginx owns 80/443 |
 | Backup / restore plan completed | Passed | `docs/backup-restore.md`; `docs/production-cutover-plan.md` | No | Actual backup path is pending |
-| Manual acceptance completed | Passed for staging / Pending for production | `docs/manual-acceptance.md`; staging reports | Yes for production cutover | Production acceptance must run after cutover |
-| Release blockers | No known code blocker / Pending approval items remain | `docs/release-candidate-report.md`; this document | Yes if approval items remain pending | Do not execute while decision is Pending |
+| Manual acceptance completed | Passed for staging / production pending after cutover | `docs/manual-acceptance.md`; staging reports | No for execution | Production acceptance must run after cutover |
+| Release blockers | No known pre-execution blocker after approval | `docs/release-candidate-report.md`; this document | No | Stop if execution checks fail |
 | Deferred items confirmed | Passed | Section 5 | No | Deferred items are not cutover blockers |
-| Production image tag confirmed | Pending approval | To be recorded in Go / No-Go record | Yes | Must not use `latest` |
-| Production image digest confirmed | Pending approval | To be recorded in Go / No-Go record | No if registry cannot provide digest, but must be attempted | Prefer digest evidence |
-| Production OSS prefix confirmed | Pending approval | `.env.production.images` on server | Yes | Must be isolated from staging |
-| Production DB strategy confirmed | Pending approval | Go / No-Go record | Yes | Recommended: new `production_postgres_data` volume |
-| Production admin strategy confirmed | Pending approval | Go / No-Go record | Yes | Default admin password must change immediately |
-| Rollback owner confirmed | Pending approval | Go / No-Go record | Yes | Required before execution |
-| Cutover window confirmed | Pending approval | Go / No-Go record | Yes | Include downtime window |
+| Production image tag confirmed | Approved | Go / No-Go record | No | `d3cdc5e`, not `latest` |
+| Production image digest confirmed | Pending execution registry inspection | Go / No-Go record | No if registry cannot provide digest, but must be attempted | Prefer digest evidence |
+| Production OSS prefix confirmed | Approved | `.env.production.images` on server | No | Independent bucket and `subscription-saas/production` prefix |
+| Production DB strategy confirmed | Approved | Go / No-Go record | No | New `production_postgres_data` volume |
+| Production admin strategy confirmed | Approved | Go / No-Go record | No | Default admin password must change immediately |
+| Rollback owner confirmed | Approved | Go / No-Go record | No | `keqi119` |
+| Cutover window confirmed | Approved | Go / No-Go record | No | 60 minutes |
 
 ## 4. Production Cutover Decisions
 
@@ -105,7 +105,7 @@ staging and production dual-stack operation.
 Approval value:
 
 ```text
-Pending approval
+Yes
 ```
 
 ### 4.2 Stop Staging Before Production
@@ -119,7 +119,7 @@ Yes / No
 Approval value:
 
 ```text
-Pending approval
+Yes
 ```
 
 ### 4.3 Production Database Strategy
@@ -144,7 +144,7 @@ initial dataset by default.
 Approval value:
 
 ```text
-Pending approval
+A. Create a new production_postgres_data volume.
 ```
 
 ### 4.4 Production OSS Strategy
@@ -168,7 +168,7 @@ Required confirmations:
 Approval value:
 
 ```text
-Pending approval
+Independent production bucket with OSS_PREFIX=subscription-saas/production.
 ```
 
 ### 4.5 Production Image Tag
@@ -184,7 +184,9 @@ Requirements:
 Approval value:
 
 ```text
-Pending approval
+API_IMAGE=ghcr.io/keqi119/subscription-api:d3cdc5e
+WEB_IMAGE=ghcr.io/keqi119/subscription-web:d3cdc5e
+Image digests must be recorded during Stage 9F-F execution.
 ```
 
 ### 4.6 Production Admin Strategy
@@ -199,7 +201,8 @@ Required confirmations:
 Approval value:
 
 ```text
-Pending approval
+Rotate the default admin password immediately after production smoke. Create a
+production-only smoke account and do not reuse staging smoke credentials.
 ```
 
 ### 4.7 Production DNS And HTTPS Strategy
@@ -222,7 +225,8 @@ Required confirmations:
 Approval value:
 
 ```text
-Pending approval
+Set both production A records to 139.196.227.195 during the cutover window with
+TTL 600, then configure and verify BT/Nginx HTTPS.
 ```
 
 ### 4.8 Rollback Strategy
@@ -239,7 +243,10 @@ Required confirmations:
 Approval value:
 
 ```text
-Pending approval
+Rollback owner is keqi119. This is the first production cutover, so there is no
+previous production image tag. If cutover fails, stop production compose, restore
+from backup if database changes require it, and revert/remove production DNS or
+serve a maintenance page.
 ```
 
 ## 5. Deferred Items
@@ -262,10 +269,10 @@ current back-office release:
 Current outcome:
 
 ```text
-Decision: Pending
-Can enter Stage 9F-F Production Cutover Execution: No
+Decision: GO
+Can enter Stage 9F-F Production Cutover Execution: Yes
 ```
 
-The decision can become `GO` only after a human approver fills
-`docs/production-go-no-go-record.md` and confirms all required production
-decisions.
+The human approver filled `docs/production-go-no-go-record.md` for Stage 9F-F.
+No real secrets, passwords, OSS AccessKeys, or production env contents are
+recorded in this file.

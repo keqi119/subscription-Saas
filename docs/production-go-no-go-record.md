@@ -10,6 +10,10 @@ cutover window are confirmed.
 Decision: GO
 ```
 
+This GO decision is conditional on using the Stage 9F-F0 production image tag
+recorded below. The old `d3cdc5e` Web image is blocked for production because it
+contains `staging-api.subauto.keybox.cloud`.
+
 | Field | Value |
 | --- | --- |
 | Decision time | `2026-06-15 22:12:29 +08:00` |
@@ -21,12 +25,12 @@ Decision: GO
 | Production server | `139.196.227.195` |
 | Production Web domain | `admin.subauto.keybox.cloud` |
 | Production API domain | `api.subauto.keybox.cloud` |
-| Production Git commit | `d3cdc5e` for the validated API/Web images |
+| Production Git commit | `5e8d04a` for the rebuilt production API/Web images |
 | RC tag | `rc-20260613-stage9` |
-| API image tag | `ghcr.io/keqi119/subscription-api:d3cdc5e` |
-| API image digest | Pending execution registry inspection |
-| Web image tag | `ghcr.io/keqi119/subscription-web:d3cdc5e` |
-| Web image digest | Pending execution registry inspection |
+| API image tag | `ghcr.io/keqi119/subscription-api:prod-20260615-5e8d04a` |
+| API image digest | `ghcr.io/keqi119/subscription-api@sha256:af3908801186ddd2ca7cbbf69029bddd7613d77d4061173011ce6276603f9eb9` |
+| Web image tag | `ghcr.io/keqi119/subscription-web:prod-20260615-5e8d04a` |
+| Web image digest | `ghcr.io/keqi119/subscription-web@sha256:ad0db73e9d8ad3ba72ec6524d716f2b9e39546691d302bc7951d5dcec696b9c3` |
 | Production DB strategy | New `production_postgres_data` volume, `migrate deploy`, baseline seed |
 | Production OSS strategy | Independent production bucket, `OSS_PREFIX=subscription-saas/production` |
 | Production DNS status | Set `admin` / `api` A records to `139.196.227.195` during cutover; TTL 600 |
@@ -41,7 +45,7 @@ Decision: GO
 | `docs/production-cutover-approval.md` reviewed | Approved | Required before execution |
 | `docs/production-cutover-plan.md` reviewed | Approved | Required before execution |
 | `docs/production-cutover-checklist.md` reviewed | Approved | Required before execution |
-| Immutable production image tags recorded | Approved | `latest` is forbidden |
+| Immutable production image tags recorded | Approved | `prod-20260615-5e8d04a`; `latest` is forbidden |
 | Production database strategy approved | Approved | New `production_postgres_data` volume |
 | Production OSS bucket/prefix approved | Approved | Independent production bucket, `subscription-saas/production` prefix |
 | Production env prepared on server only | Approved for execution | Do not commit real env; create or verify on the server |
@@ -69,9 +73,10 @@ Decision: GO
 ## Open Blockers
 
 ```text
-None known before execution. Stop cutover if image pull, Web bundle inspection,
+None known after Stage 9F-F0. Stop cutover if image pull, Web bundle inspection,
 server env preparation, staging backup, production compose, migration, seed,
-HTTPS, health, CORS, or production smoke fails.
+HTTPS, health, CORS, or production smoke fails. The old d3cdc5e Web image remains
+blocked for production.
 ```
 
 ## Accepted Risks
@@ -102,6 +107,7 @@ keeps them in this record:
 
 ```text
 GO approval was provided by keqi119 for Stage 9F-F Production Cutover Execution.
+Stage 9F-F0 replaced the blocked d3cdc5e Web image with prod-20260615-5e8d04a.
 No real secrets, passwords, OSS AccessKeys, or production env contents are
 recorded in this file.
 ```

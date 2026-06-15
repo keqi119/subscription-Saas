@@ -67,10 +67,11 @@ Example commands:
 export REGISTRY="<REGISTRY>"
 export NAMESPACE="<NAMESPACE>"
 export TAG="rc-20260613-stage9"
+export WEB_API_BASE_URL="https://staging-api.subauto.keybox.cloud/api"
 
 docker build -f Dockerfile.api -t "$REGISTRY/$NAMESPACE/subscription-api:$TAG" .
 docker build -f Dockerfile.web \
-  --build-arg NEXT_PUBLIC_API_BASE_URL=https://staging-api.subauto.keybox.cloud/api \
+  --build-arg NEXT_PUBLIC_API_BASE_URL="$WEB_API_BASE_URL" \
   -t "$REGISTRY/$NAMESPACE/subscription-web:$TAG" .
 
 docker push "$REGISTRY/$NAMESPACE/subscription-api:$TAG"
@@ -145,8 +146,25 @@ The workflow inputs provide:
 ```text
 registry
 namespace
-image_tag
-next_public_api_base_url
+imageTag
+apiBaseUrl
+environment
 ```
+
+`apiBaseUrl` is always explicit. The workflow does not provide a staging API
+default because `NEXT_PUBLIC_API_BASE_URL` is baked into the Web bundle at build
+time. A production image build fails if `environment=production` and `apiBaseUrl`
+contains `staging`.
+
+Production Web image builds must use:
+
+```text
+apiBaseUrl=https://api.subauto.keybox.cloud/api
+environment=production
+```
+
+After the Web image is pushed, the workflow pulls the image and checks the
+extracted Next.js bundle with `scripts/check-web-bundle-api-base.mjs`. Production
+cutover must not use a Web image that contains `staging-api.subauto.keybox.cloud`.
 
 Do not add automatic image push on normal PR or `main` push until release ownership is settled.

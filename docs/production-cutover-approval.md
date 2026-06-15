@@ -25,9 +25,9 @@ GO / NO-GO: GO
 | Production Web domain | `admin.subauto.keybox.cloud` |
 | Production API domain | `api.subauto.keybox.cloud` |
 | Approval baseline commit | `0bb470d1c146f642c0fac15fb582dcd421e54555` |
-| Target production commit | `d3cdc5e` for the validated API/Web images |
-| Target API image tag | `ghcr.io/keqi119/subscription-api:d3cdc5e` |
-| Target Web image tag | `ghcr.io/keqi119/subscription-web:d3cdc5e` |
+| Target production commit | `5e8d04a` for the rebuilt production API/Web images |
+| Target API image tag | `ghcr.io/keqi119/subscription-api:prod-20260615-5e8d04a` |
+| Target Web image tag | `ghcr.io/keqi119/subscription-web:prod-20260615-5e8d04a` |
 | Target RC tag | `rc-20260613-stage9` |
 | Includes migration | Yes; `prisma migrate deploy` only |
 | Needs production seed | Yes; baseline seed only |
@@ -81,8 +81,8 @@ production defaults or production smoke credentials.
 | Manual acceptance completed | Passed for staging / production pending after cutover | `docs/manual-acceptance.md`; staging reports | No for execution | Production acceptance must run after cutover |
 | Release blockers | No known pre-execution blocker after approval | `docs/release-candidate-report.md`; this document | No | Stop if execution checks fail |
 | Deferred items confirmed | Passed | Section 5 | No | Deferred items are not cutover blockers |
-| Production image tag confirmed | Approved | Go / No-Go record | No | `d3cdc5e`, not `latest` |
-| Production image digest confirmed | Pending execution registry inspection | Go / No-Go record | No if registry cannot provide digest, but must be attempted | Prefer digest evidence |
+| Production image tag confirmed | Approved | Go / No-Go record; `docs/production-image-rebuild-report.md` | No | `prod-20260615-5e8d04a`, not `latest` |
+| Production image digest confirmed | Approved | Go / No-Go record; `docs/production-image-rebuild-report.md` | No | API/Web digests recorded |
 | Production OSS prefix confirmed | Approved | `.env.production.images` on server | No | Independent bucket and `subscription-saas/production` prefix |
 | Production DB strategy confirmed | Approved | Go / No-Go record | No | New `production_postgres_data` volume |
 | Production admin strategy confirmed | Approved | Go / No-Go record | No | Default admin password must change immediately |
@@ -184,9 +184,14 @@ Requirements:
 Approval value:
 
 ```text
-API_IMAGE=ghcr.io/keqi119/subscription-api:d3cdc5e
-WEB_IMAGE=ghcr.io/keqi119/subscription-web:d3cdc5e
-Image digests must be recorded during Stage 9F-F execution.
+API_IMAGE=ghcr.io/keqi119/subscription-api:prod-20260615-5e8d04a
+WEB_IMAGE=ghcr.io/keqi119/subscription-web:prod-20260615-5e8d04a
+
+API_DIGEST=ghcr.io/keqi119/subscription-api@sha256:af3908801186ddd2ca7cbbf69029bddd7613d77d4061173011ce6276603f9eb9
+WEB_DIGEST=ghcr.io/keqi119/subscription-web@sha256:ad0db73e9d8ad3ba72ec6524d716f2b9e39546691d302bc7951d5dcec696b9c3
+
+Old blocked Web image:
+ghcr.io/keqi119/subscription-web:d3cdc5e
 ```
 
 ### 4.6 Production Admin Strategy
@@ -274,5 +279,7 @@ Can enter Stage 9F-F Production Cutover Execution: Yes
 ```
 
 The human approver filled `docs/production-go-no-go-record.md` for Stage 9F-F.
-No real secrets, passwords, OSS AccessKeys, or production env contents are
-recorded in this file.
+Stage 9F-F0 rebuilt production images and changed the image condition for this
+GO decision to `prod-20260615-5e8d04a`. The old `d3cdc5e` Web image is blocked
+for production. No real secrets, passwords, OSS AccessKeys, or production env
+contents are recorded in this file.

@@ -11,19 +11,30 @@ on:
         description: "Registry namespace / organization"
         required: true
         type: string
-      image_tag:
+      imageTag:
         description: "Image tag, for example rc-20260613-stage9 or a short SHA"
         required: true
         type: string
-      next_public_api_base_url:
+      apiBaseUrl:
         description: "Build-time public API base URL for the Web image"
         required: true
-        default: "https://staging-api.subauto.keybox.cloud/api"
         type: string
+      environment:
+        description: "Deployment environment for the image build"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
+    env:
+      API_IMAGE: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-api:${{ inputs.imageTag }}
+      WEB_IMAGE: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-web:${{ inputs.imageTag }}
 
     permissions:
       contents: read
@@ -35,6 +46,38 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Validate image build inputs
+        shell: bash
+        env:
+          API_BASE_URL: ${{ inputs.apiBaseUrl }}
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE_TAG: ${{ inputs.imageTag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$IMAGE_TAG" ]; then
+            echo "imageTag is required"
+            exit 1
+          fi
+
+          if [ -z "$API_BASE_URL" ]; then
+            echo "apiBaseUrl is required"
+            exit 1
+          fi
+
+          case "$DEPLOYMENT_ENVIRONMENT" in
+            staging|production) ;;
+            *)
+              echo "environment must be staging or production"
+              exit 1
+              ;;
+          esac
+
+          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ] && echo "$API_BASE_URL" | grep -qi "staging"; then
+            echo "Production build cannot use staging API base URL"
+            exit 1
+          fi
 
       - name: Login to GitHub Container Registry
         if: inputs.registry == 'ghcr.io'
@@ -58,7 +101,7 @@ jobs:
           context: .
           file: Dockerfile.api
           push: true
-          tags: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-api:${{ inputs.image_tag }}
+          tags: ${{ env.API_IMAGE }}
 
       - name: Build and push Web image
         uses: docker/build-push-action@v6
@@ -67,5 +110,24 @@ jobs:
           file: Dockerfile.web
           push: true
           build-args: |
-            NEXT_PUBLIC_API_BASE_URL=${{ inputs.next_public_api_base_url }}
-          tags: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-web:${{ inputs.image_tag }}
+            NEXT_PUBLIC_API_BASE_URL=${{ inputs.apiBaseUrl }}
+          tags: ${{ env.WEB_IMAGE }}
+
+      - name: Check Web image API base
+        shell: bash
+        env:
+          API_BASE_URL: ${{ inputs.apiBaseUrl }}
+          WEB_IMAGE: ${{ env.WEB_IMAGE }}
+        run: |
+          set -euo pipefail
+
+          rm -rf tmp-web-next
+          docker pull "$WEB_IMAGE"
+          container="$(docker create "$WEB_IMAGE")"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/app/apps/web/.next" ./tmp-web-next
+
+          node scripts/check-web-bundle-api-base.mjs \
+            --dir ./tmp-web-next \
+            --must-contain "$API_BASE_URL" \
+            --must-not-contain "staging-api.subauto.keybox.cloud"

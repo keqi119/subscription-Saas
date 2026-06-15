@@ -64,6 +64,14 @@ Stage 9F-C2 update:
 - the recommended staging path is registry pull with `docker-compose.staging.images.example.yml`;
 - BT / Nginx should proxy staging domains to `127.0.0.1:3000` and `127.0.0.1:3001`.
 
+Stage 9F-D update:
+
+- production cutover planning is recorded in `docs/production-cutover-plan.md`;
+- the recommended production path on the current 2 CPU / 2 GB server is single-stack cutover, not long-running staging and production dual-stack;
+- the recommended production compose file is `docker-compose.production.images.example.yml`;
+- production uses `.env.production.images` on the server, copied from `.env.production.images.example`;
+- BT / Nginx should proxy production domains to `127.0.0.1:3000` and `127.0.0.1:3001` using `nginx/production-subauto.example.conf`.
+
 Staging must prove:
 
 - DNS and HTTPS work for both staging domains;
@@ -96,6 +104,14 @@ cp Caddyfile.example Caddyfile
 
 Edit `.env.production` on the server only.
 
+For the image-based production path on the current 2 CPU / 2 GB server, use:
+
+```bash
+cp .env.production.images.example .env.production.images
+```
+
+Edit `.env.production.images` on the server only. Do not commit it.
+
 Required values:
 
 ```text
@@ -110,7 +126,8 @@ SMOKE_API_BASE_URL=https://api.subauto.keybox.cloud/api
 SMOKE_WEB_BASE_URL=https://admin.subauto.keybox.cloud
 ```
 
-If uploaded customer materials must survive container or server replacement, configure OSS in `.env.production`:
+If uploaded customer materials must survive container or server replacement, configure OSS in `.env.production`
+or `.env.production.images`:
 
 ```text
 UPLOAD_STORAGE_DRIVER=oss
@@ -125,7 +142,7 @@ OSS_INTERNAL_ENDPOINT=<optional-internal-endpoint>
 
 Keep the OSS bucket private. Upload downloads must continue through the authenticated API stream endpoints, not public bucket URLs.
 
-Never commit `.env.production`.
+Never commit `.env.production` or `.env.production.images`.
 
 ## 4. Prepare DNS and HTTPS
 
@@ -166,11 +183,12 @@ On the server:
 
 ```bash
 docker login <REGISTRY>
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml pull
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml pull
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml up -d
 ```
 
 See `docs/image-registry-deployment.md` for the full registry deployment path.
+Record immutable API/Web tags and image digests before cutover. Do not deploy `latest`.
 
 ## 6. Start PostgreSQL
 
@@ -180,6 +198,13 @@ docker compose -f docker-compose.prod.example.yml --env-file .env.production ps
 ```
 
 Confirm PostgreSQL is healthy before migrations.
+
+For image-based production deployment:
+
+```bash
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml up -d postgres
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml ps
+```
 
 ## 7. Backup Before Migration
 
@@ -200,6 +225,13 @@ docker compose -f docker-compose.prod.example.yml --env-file .env.production run
 docker compose -f docker-compose.prod.example.yml --env-file .env.production run --rm api pnpm prisma:migrate:status
 ```
 
+For image-based production deployment:
+
+```bash
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml run --rm api pnpm prisma:migrate:deploy
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml run --rm api pnpm prisma:migrate:status
+```
+
 Production forbidden commands:
 
 ```text
@@ -218,6 +250,12 @@ Run baseline seed only after migration succeeds:
 docker compose -f docker-compose.prod.example.yml --env-file .env.production run --rm api pnpm prisma:seed
 ```
 
+For image-based production deployment:
+
+```bash
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml run --rm api pnpm prisma:seed
+```
+
 Production seed rules:
 
 - initialize baseline master data only;
@@ -232,6 +270,13 @@ docker compose -f docker-compose.prod.example.yml --env-file .env.production up 
 docker compose -f docker-compose.prod.example.yml --env-file .env.production ps
 ```
 
+For image-based production deployment:
+
+```bash
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml up -d
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml ps
+```
+
 Check container logs:
 
 ```bash
@@ -239,6 +284,9 @@ docker compose -f docker-compose.prod.example.yml logs --tail=100 api
 docker compose -f docker-compose.prod.example.yml logs --tail=100 web
 docker compose -f docker-compose.prod.example.yml logs --tail=100 reverse-proxy
 ```
+
+For the BT / Nginx image-based path, the reverse proxy is managed outside this compose file.
+Check API/Web logs with Docker Compose and check Nginx logs through BT / Nginx on the host.
 
 ## 11. Health and Smoke
 
@@ -320,6 +368,15 @@ docker compose -f docker-compose.prod.example.yml --env-file .env.production up 
 pnpm smoke:api
 ```
 
+Image-based application rollback:
+
+```bash
+# Restore the previous immutable API_IMAGE and WEB_IMAGE in .env.production.images.
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml pull
+docker compose --env-file .env.production.images -f docker-compose.production.images.example.yml up -d
+pnpm smoke:api
+```
+
 Database rollback:
 
 ```bash
@@ -336,6 +393,8 @@ Record the following before Stage 9F-B cutover:
 
 - release tag;
 - Git commit;
+- API image tag and digest;
+- Web image tag and digest;
 - server host name;
 - DNS records;
 - backup file name and timestamp;

@@ -1,7 +1,8 @@
 # Domain, DNS, and SSL Runbook
 
-This document covers the Stage 9F-A dry-run domain plan for `keybox.cloud`.
-It does not include real server IP addresses or production secrets.
+This document covers the domain plan for `keybox.cloud`.
+It does not include production secrets. It records the verified staging server IP
+and the planned production cutover records after Stage 9F-C-R3.
 
 ## 1. Domain Structure
 
@@ -46,14 +47,23 @@ Stage 9F-B uses staging subdomains on the Shanghai server:
 | `staging-admin.subauto.keybox.cloud` | `A` | `139.196.227.195` | Staging Web admin console |
 | `staging-api.subauto.keybox.cloud` | `A` | `139.196.227.195` | Staging API service |
 
-Production cutover can later point the production subdomains to the same server after staging dry run passes:
+Stage 9F-C-R3 verified these staging records, public `80` / `443`, BT / Nginx HTTPS,
+API health, CORS, and smoke.
+
+## 2.2 Production Cutover DNS Records
+
+Production cutover can point the production subdomains to the same server only during the
+approved cutover window:
 
 | Host | Type | Value | Purpose |
 | --- | --- | --- | --- |
 | `admin.subauto.keybox.cloud` | `A` | `139.196.227.195` | Production Web admin console |
 | `api.subauto.keybox.cloud` | `A` | `139.196.227.195` | Production API service |
 
-Alibaba Cloud DNS steps:
+Set TTL to `600` before cutover where supported. Do not enable production DNS traffic before
+Stage 9F-E approval and Stage 9F-F execution.
+
+Alibaba Cloud DNS steps for staging:
 
 1. Open Alibaba Cloud DNS console.
 2. Select `keybox.cloud`.
@@ -63,9 +73,17 @@ Alibaba Cloud DNS steps:
 6. Set TTL to `600` seconds for staging and pre-cutover testing.
 7. Repeat for `staging-api.subauto`.
 
+Alibaba Cloud DNS steps for production cutover:
+
+1. Wait for Stage 9F-E approval and the cutover window.
+2. Add or update `admin.subauto` with record value `139.196.227.195`.
+3. Add or update `api.subauto` with record value `139.196.227.195`.
+4. Set TTL to `600` seconds before cutover where supported.
+5. Do not change `subauto` or `www.subauto` unless the production plan explicitly includes them.
+
 Security group requirements:
 
-- allow public inbound `80` and `443` for Caddy HTTP/HTTPS;
+- allow public inbound `80` and `443` for BT / Nginx or the chosen HTTP/HTTPS edge;
 - restrict SSH `22` to management IPs or require key-based login;
 - do not expose PostgreSQL `5432` to the public internet;
 - do not expose API `3001` or Web `3000` directly to the public internet.
@@ -91,11 +109,18 @@ Alternative production option:
 Nginx + certbot
 ```
 
+Current production cutover planning prefers BT-managed Nginx on the 2 CPU / 2 GB server:
+
+```text
+nginx/production-subauto.example.conf
+docker-compose.production.images.example.yml
+```
+
 If Nginx is used later, keep the same routing rules:
 
 ```text
-admin.subauto.keybox.cloud -> web:3000
-api.subauto.keybox.cloud   -> api:3001
+admin.subauto.keybox.cloud -> 127.0.0.1:3000
+api.subauto.keybox.cloud   -> 127.0.0.1:3001
 ```
 
 ## 4. CORS

@@ -12,6 +12,14 @@ HTTPS certificates, BT/Nginx reverse proxy, API health, CORS, Web routes,
 and smoke:api/mainline/residual passed. The checklist boxes below remain
 operator confirmation items for the production cutover window.
 
+Stage 9F-D plan assets:
+
+- [ ] `docs/production-cutover-plan.md` reviewed and approved.
+- [ ] `docker-compose.production.images.example.yml` reviewed for the target server.
+- [ ] `.env.production.images.example` copied to a server-only `.env.production.images`.
+- [ ] `nginx/production-subauto.example.conf` adapted in BT / Nginx for production domains.
+- [ ] Single-stack cutover mode is approved, or a 2C4G+/managed database alternative is approved for dual-stack.
+
 - [ ] `staging-admin.subauto.keybox.cloud` resolves to `139.196.227.195`.
 - [ ] `staging-api.subauto.keybox.cloud` resolves to `139.196.227.195`.
 - [ ] Public TCP `80/443` reaches the staging edge from an external network.
@@ -68,6 +76,7 @@ operator confirmation items for the production cutover window.
 ## 3. Environment and Secrets
 
 - [ ] `.env.production` exists only on the server.
+- [ ] `.env.production.images` exists only on the server if using image-based deployment.
 - [ ] No real secret is committed to Git.
 - [ ] `DATABASE_URL` points to the intended production database.
 - [ ] `JWT_SECRET` is a long production secret.
@@ -78,6 +87,7 @@ operator confirmation items for the production cutover window.
 - [ ] If production uploads must be durable, `UPLOAD_STORAGE_DRIVER=oss`.
 - [ ] OSS bucket, endpoint, prefix, and RAM AccessKey are configured outside Git.
 - [ ] Production OSS bucket/env is verified separately from the staging bucket/env.
+- [ ] `OSS_PREFIX=subscription-saas/production` or an isolated production bucket is confirmed.
 - [ ] Historical local upload migration is completed or explicitly waived.
 
 ## 4. Backup
@@ -113,6 +123,7 @@ operator confirmation items for the production cutover window.
 - [ ] Upload volume mounted for API.
 - [ ] Container restart policy configured.
 - [ ] Registry image deployment path is documented in `docs/image-registry-deployment.md`.
+- [ ] Production image-based compose path is documented in `docs/production-cutover-plan.md`.
 - [ ] If using image-based compose, API and Web publish only to `127.0.0.1`.
 
 ## 8. HTTPS
@@ -169,6 +180,8 @@ operator confirmation items for the production cutover window.
 Cutover must stop or roll back if any item is true:
 
 - [ ] `release:check` fails.
+- [ ] production cutover plan is not approved.
+- [ ] immutable production image tags are not recorded.
 - [ ] migration fails.
 - [ ] `migrate status` is abnormal.
 - [ ] API or Web cannot start.

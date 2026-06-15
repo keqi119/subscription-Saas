@@ -522,3 +522,18 @@ Notes before Production Cutover:
 Can enter Stage 9F-D Production Cutover Plan: Yes.
 Can execute Production Cutover immediately: No.
 ```
+
+### 13.9 Stage 9F-D Handoff
+
+```text
+Stage 9F-D should produce the production cutover plan and production-specific
+deployment examples before any formal production approval.
+
+The staging success above must not be treated as permission to switch:
+- admin.subauto.keybox.cloud
+- api.subauto.keybox.cloud
+
+Production still needs explicit decisions for single-stack cutover, production
+database volume/env, OSS bucket or prefix, production admin/smoke account policy,
+DNS TTL, rollback owner, and cutover window.
+```

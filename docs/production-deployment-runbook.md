@@ -45,6 +45,24 @@ Current repository commands:
 The default seed must remain baseline master data only.
 Scenario seed is for development and acceptance environments, not production.
 
+## 1.0 Production Cutover Approval Gate
+
+Production cutover execution must follow these documents in order:
+
+1. `docs/production-cutover-approval.md`
+2. `docs/production-go-no-go-record.md`
+3. `docs/production-cutover-checklist.md`
+
+Stage 9F-E is approval only. It does not switch DNS, start production compose,
+run production migrations, run production seed, or connect to a production
+database.
+
+Do not proceed to execution unless `docs/production-go-no-go-record.md` records:
+
+```text
+Decision: GO
+```
+
 ## 1.1 Staging Server Dry Run
 
 Before production cutover, run Stage 9F-B against the staging domains:

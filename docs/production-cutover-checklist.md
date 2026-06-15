@@ -5,6 +5,20 @@ This checklist is a release-time control document, not a new feature plan.
 
 Production cutover must not start until the staging dry run has been completed and recorded.
 
+## Pre-Execution Approval
+
+Production cutover must not execute unless both approval documents are complete:
+
+- [ ] `docs/production-cutover-approval.md` reviewed.
+- [ ] `docs/production-go-no-go-record.md` completed by a human approver.
+- [ ] `Decision: GO` is explicitly recorded in `docs/production-go-no-go-record.md`.
+- [ ] Approver, executor, rollback owner, and cutover window are recorded.
+- [ ] Production image tags and, where available, digests are recorded.
+- [ ] Production DB, OSS, DNS, Nginx/HTTPS, admin, and smoke strategies are approved.
+
+If the Go / No-Go record decision is anything other than `GO`, production cutover
+must not execute.
+
 ## 0. Staging Gate
 
 Status note, 2026-06-15 Stage 9F-C-R3: staging public DNS, TCP 80/443,
@@ -181,6 +195,7 @@ Cutover must stop or roll back if any item is true:
 
 - [ ] `release:check` fails.
 - [ ] production cutover plan is not approved.
+- [ ] production Go / No-Go decision is not `GO`.
 - [ ] immutable production image tags are not recorded.
 - [ ] migration fails.
 - [ ] `migrate status` is abnormal.

@@ -451,6 +451,15 @@ SMOKE_EXPECT_STORAGE_DRIVER=oss \
 pnpm smoke:upload
 ```
 
+On the 2 CPU / 2 GB staging server, prefer running scenario seed inside the API container with `node` instead of invoking `pnpm` inside the runtime image if `pnpm` tries to perform dependency checks:
+
+```bash
+docker exec subauto-staging-r2-api-1 node apps/api/prisma/seed-scenario.mjs cleanup
+docker exec subauto-staging-r2-api-1 node apps/api/prisma/seed-scenario.mjs mainline
+```
+
+If the default `admin` password has already been rotated, use an explicitly approved staging-only smoke user for upload validation. Remove that user or rotate its password before production cutover.
+
 After the upload smoke passes, restart the API container and run the same download check again:
 
 ```bash

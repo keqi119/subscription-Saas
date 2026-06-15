@@ -1,6 +1,6 @@
 # Object Storage Readiness
 
-Stage 9G-A implements the backend storage abstraction and Aliyun OSS adapter needed for durable upload storage. Stage 9G-B must still validate a real staging OSS bucket before production cutover.
+Stage 9G-A implements the backend storage abstraction and Aliyun OSS adapter needed for durable upload storage. Stage 9G-B validated the adapter against a real private staging OSS bucket on 2026-06-15. Production cutover still needs production-specific OSS bucket and RAM credential verification.
 
 ## Current Status
 
@@ -8,10 +8,10 @@ Stage 9G-A implements the backend storage abstraction and Aliyun OSS adapter nee
 | --- | --- | --- |
 | Storage abstraction | Ready | `StorageService` routes uploads/downloads to local or OSS providers. |
 | Local provider | Ready | Default driver for local development and dry runs. |
-| Aliyun OSS provider | Ready for staging validation | Uses `ali-oss`; tests mock the client and do not connect to real OSS. |
+| Aliyun OSS provider | Ready | Uses `ali-oss`; tests mock the client in CI and staging validation used a real private bucket. |
 | Customer material upload | Ready | Existing upload API stores through `StorageService`. |
 | Customer material preview/download | Ready | Existing preview APIs stream from local disk or OSS through the API. |
-| Real OSS bucket validation | Stage 9G-B prepared / pending execution | Upload smoke exists; requires actual bucket, RAM credentials, image rollout, and staging env switch. |
+| Real OSS bucket validation | Passed for staging | `UPLOAD_STORAGE_DRIVER=oss`, upload smoke, API stream download, API restart download, and local volume dependency checks passed on staging. |
 | Historical local file migration | Not included | Existing local uploads need a separate migration plan if they must be retained. |
 
 ## Driver Modes
@@ -101,25 +101,31 @@ pnpm smoke:upload -- --download-only
 Current Stage 9G-B execution status:
 
 ```text
-Prepared, not completed.
+Completed for staging.
 ```
 
-Known blockers before marking Stage 9G-B as passed:
+Validated on staging:
 
-- staging server `.env.staging.images` is still `UPLOAD_STORAGE_DRIVER=local`;
-- real OSS bucket name, endpoint, and RAM credentials must be configured on the server only;
-- upload/download smoke must be run against the real private bucket.
+- staging server `.env.staging.images` was switched to `UPLOAD_STORAGE_DRIVER=oss`;
+- real OSS bucket, endpoint, RAM AccessKey ID, and RAM AccessKey Secret were configured only on the server;
+- `/api/health` reported `storage: "oss"`;
+- `pnpm smoke:upload` equivalent passed inside the API container;
+- uploaded customer material was saved with `FileObject.bucket = oss:<masked>` and an `oss:subscription-saas/staging/materials/...` object key;
+- API preview/download streamed the object content back without exposing a public OSS URL;
+- API restart followed by download-only smoke passed for the same uploaded object;
+- local upload directories contained no `stage9g-upload-smoke-*` file after OSS-mode upload.
 
 Current staging rollout note:
 
 - API/Web images `ghcr.io/keqi119/subscription-api:d3cdc5e` and `ghcr.io/keqi119/subscription-web:d3cdc5e` are running and healthy.
-- `/api/health` still reports `storage: "local"` until the server env is switched to OSS.
+- A staging-only smoke user `stage9_smoke_admin` was created with ADMIN role by explicit operator approval for validation. Remove it or rotate its password before production cutover.
+- Public HTTPS health for `staging-api.subauto.keybox.cloud` still belongs to the separate Stage 9F-C-R3 public 80/443 / BT-Nginx gate.
 
 ## Production Cutover Gate
 
 Production cutover remains blocked until:
 
-- real OSS bucket credentials are configured outside Git;
-- upload/download smoke passes against staging OSS;
+- production OSS bucket credentials are configured outside Git;
+- upload/download smoke passes against the target production OSS bucket or an approved production-equivalent bucket;
 - bucket lifecycle and backup expectations are documented;
 - any required historical local upload migration is either completed or explicitly waived.

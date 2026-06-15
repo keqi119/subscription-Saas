@@ -309,7 +309,8 @@ This section records the real OSS bucket validation pass for upload storage.
 Current status:
 
 ```text
-Prepared, not completed.
+Completed for staging on 2026-06-15.
+Production-specific OSS bucket/env verification is still required before production cutover.
 ```
 
 ### 12.1 Prepared Assets
@@ -329,12 +330,13 @@ Prepared, not completed.
 | Server repository commit | `d3cdc5e` |
 | Current API image | `ghcr.io/keqi119/subscription-api:d3cdc5e` |
 | Current Web image | `ghcr.io/keqi119/subscription-web:d3cdc5e` |
-| Upload driver | `UPLOAD_STORAGE_DRIVER=local` |
+| Upload driver | `UPLOAD_STORAGE_DRIVER=oss` |
 | Stage 9G-A API image rollout | Passed; API/Web/Postgres healthy in `subauto-staging-r2` |
-| Real OSS bucket env | Pending server-only configuration |
+| Real OSS bucket env | Configured server-side only; bucket/endpoint/AccessKey are not recorded in Git |
 | GitHub Actions run | `27521946812` passed |
-| API health | Passed; `storage` currently reports `local` |
+| API health | Passed; `storage` reports `oss` |
 | Web local health | Passed; `http://127.0.0.1:3000` returned 200 |
+| Staging smoke user | `stage9_smoke_admin`, created with ADMIN role by explicit operator approval |
 
 ### 12.3 Required Validation Steps
 
@@ -342,23 +344,46 @@ Prepared, not completed.
 | --- | --- | --- |
 | Build/push API image for `c40033a` or newer | Registry image available | Passed, image tag `d3cdc5e` |
 | Roll out API image on staging | API healthy with Stage 9G-A code | Passed |
-| Set `UPLOAD_STORAGE_DRIVER=oss` | `/api/health` reports `storage: "oss"` | Pending |
-| Configure private OSS bucket and RAM key | Server env configured, no secret in Git | Pending |
-| Run `pnpm seed:scenario mainline` | Scenario application available | Pending |
-| Run `pnpm smoke:upload` | Upload/download succeeds through API stream | Pending |
-| Inspect upload response and headers | No OSS public URL exposed | Pending |
-| Restart API and run `pnpm smoke:upload -- --download-only` | Same uploaded object still downloads | Pending |
-| Verify local upload volume | New OSS file is not dependent on local upload volume | Pending |
-| Run `pnpm seed:scenario cleanup` | Scenario data cleaned | Pending |
+| Set `UPLOAD_STORAGE_DRIVER=oss` | `/api/health` reports `storage: "oss"` | Passed |
+| Configure private OSS bucket and RAM key | Server env configured, no secret in Git | Passed, server-only |
+| Run scenario cleanup before validation | Existing SCN9 data removed before mainline seed | Passed |
+| Run `pnpm seed:scenario mainline` equivalent | Scenario application available | Passed, executed directly with `node apps/api/prisma/seed-scenario.mjs` inside API container |
+| Run `pnpm smoke:upload` equivalent | Upload/download succeeds through API stream | Passed |
+| Inspect upload response and headers | No OSS public URL exposed | Passed |
+| Verify DB storage record | `bucket=oss:<masked>`, object key under `oss:subscription-saas/staging/materials/...` | Passed |
+| Restart API and run `pnpm smoke:upload -- --download-only` equivalent | Same uploaded object still downloads | Passed |
+| Verify local upload volume | New OSS file is not dependent on local upload volume | Passed, zero `stage9g-upload-smoke-*` files under local upload dirs |
+| Run final scenario cleanup | Scenario cleanup after upload was intentionally not run | Deferred to avoid deleting DB material rows while leaving the real OSS test object orphaned |
 
-### 12.4 Decision
+### 12.4 Validation Evidence
+
+| Evidence | Result |
+| --- | --- |
+| API health after OSS switch | `{"service":"subscription-saas-api","status":"ok","storage":"oss"}` |
+| Upload smoke | Passed: login, upload material, preview/download, content match |
+| Uploaded file record | `12f147bf-8efc-488f-9a42-b5f4bbc080e1` |
+| Scenario application | `07e6c1f0-be67-4c99-b91a-9c83ea6bd340` |
+| DB bucket | `oss:<masked>` |
+| DB object key prefix | `oss:subscription-saas/staging/materials/07e6c1f0-be67-4c99-b91a-9c83ea6bd340/2026/06/...` |
+| MIME / size | `text/plain`, `100` bytes |
+| API restart | Passed; API restarted and `/api/health` still reported `storage: "oss"` |
+| Download-only smoke after restart | Passed |
+| Local upload volume dependency | Passed; no `stage9g-upload-smoke-*` file under `/app/uploads` or `/app/apps/api/uploads` |
+| Public HTTPS health | Still pending for Stage 9F-C-R3; server-side `curl https://staging-api.subauto.keybox.cloud/api/health` returned `000` |
+| Resource snapshot after restart | API `216.4MiB / 512MiB`; Web `49.86MiB / 512MiB`; Postgres `44.44MiB / 512MiB`; host swap `485Mi / 4.0Gi`; disk `/dev/vda3 57%` |
+
+### 12.5 Decision
 
 ```text
-OSS blocker is not closed yet.
+OSS blocker is closed at the staging functional layer.
 
 Reason:
-Stage 9G-A code is merged and the `d3cdc5e` image is running on staging, but the staging
-server has not been configured with a real private OSS bucket and still uses
-`UPLOAD_STORAGE_DRIVER=local`. Real upload, download, restart persistence, and public
-URL exposure checks against OSS remain pending.
+Stage 9G-A code is merged, the `d3cdc5e` API image is running on staging with
+`UPLOAD_STORAGE_DRIVER=oss`, real OSS upload/download passed, API restart persistence
+passed, API stream download did not expose a public OSS URL, and local upload directories
+did not receive the test file.
+
+Production cutover is still blocked by production-specific OSS configuration, public
+80/443 and HTTPS validation, restore drill or formal waiver, and removal/rotation of the
+staging-only smoke admin credential.
 ```

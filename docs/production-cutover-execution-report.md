@@ -125,10 +125,40 @@ The production image tag must remain immutable and must not be `latest`. Record
 the new API/Web tags and digests in the Go / No-Go record or the next execution
 report before retrying Stage 9F-F.
 
-## 8. Final Decision
+## 8. Stage 9F-F0 Image Rebuild Result
+
+Stage 9F-F0 completed the required image rebuild fix. The old `d3cdc5e` Web
+image remains blocked for production, and the next production cutover attempt
+must use the rebuilt production image tag:
+
+```text
+prod-20260615-5e8d04a
+```
+
+New production images:
+
+| Image | Tag | Digest |
+| --- | --- | --- |
+| API | `ghcr.io/keqi119/subscription-api:prod-20260615-5e8d04a` | `ghcr.io/keqi119/subscription-api@sha256:af3908801186ddd2ca7cbbf69029bddd7613d77d4061173011ce6276603f9eb9` |
+| Web | `ghcr.io/keqi119/subscription-web:prod-20260615-5e8d04a` | `ghcr.io/keqi119/subscription-web@sha256:ad0db73e9d8ad3ba72ec6524d716f2b9e39546691d302bc7951d5dcec696b9c3` |
+
+Bundle check result:
+
+```text
+Contains https://api.subauto.keybox.cloud/api: Yes
+Contains staging-api.subauto.keybox.cloud: No
+```
+
+Evidence:
+
+```text
+docs/production-image-rebuild-report.md
+```
+
+## 9. Final Decision
 
 ```text
 Production Cutover Complete: No
-Stage 9F-F Status: Blocked before execution
+Stage 9F-F Status: Ready to retry with prod-20260615-5e8d04a images
 Can announce production cutover complete: No
 ```

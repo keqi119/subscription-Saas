@@ -188,6 +188,8 @@ pnpm prisma:seed
 - `docs/production-cutover-plan.md`: Stage 9F-D production cutover plan and approval inputs
 - `docs/production-cutover-approval.md`: Stage 9F-E production Go / No-Go approval gate
 - `docs/production-go-no-go-record.md`: final production Go / No-Go decision record
+- `docs/production-cutover-execution-report.md`: Stage 9F-F production cutover execution / blocker report
+- `docs/production-image-rebuild-report.md`: Stage 9F-F0 production image rebuild evidence
 - `docker-compose.staging.images.example.yml`: staging compose for prebuilt API/Web images
 - `docker-compose.production.images.example.yml`: production compose for prebuilt API/Web images
 - `.env.staging.images.example`: staging env template for registry pull deployment

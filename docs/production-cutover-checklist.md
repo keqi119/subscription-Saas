@@ -9,6 +9,7 @@ Production cutover must not start until the staging dry run has been completed a
 
 - [ ] `staging-admin.subauto.keybox.cloud` resolves to `139.196.227.195`.
 - [ ] `staging-api.subauto.keybox.cloud` resolves to `139.196.227.195`.
+- [ ] Public TCP `80/443` reaches the staging edge from an external network.
 - [ ] BT / Nginx or the chosen edge proxy issues valid HTTPS certificates for both staging domains.
 - [ ] Staging `docker compose config` passes.
 - [ ] Staging API and Web containers start successfully.
@@ -33,6 +34,7 @@ Production cutover must not start until the staging dry run has been completed a
 - [ ] Registry credentials are injected on the server only and are not committed to Git.
 - [ ] BT / Nginx reverse proxy config has been verified for staging domains.
 - [ ] API and Web host bindings are limited to `127.0.0.1`.
+- [ ] PostgreSQL and other database ports are not exposed to the public internet by cloud security group, host firewall, or Docker publishing.
 - [ ] Caddy and BT / Nginx are not competing for `80` / `443`.
 - [ ] No admin IP allowlist is enabled; HTTPS, strong passwords, RBAC, CORS, secure cookies, and security groups are confirmed.
 - [ ] ICP filing is confirmed: `沪ICP备18045696号`.

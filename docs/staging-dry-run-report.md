@@ -387,3 +387,127 @@ Production cutover is still blocked by production-specific OSS configuration, pu
 80/443 and HTTPS validation, restore drill or formal waiver, and removal/rotation of the
 staging-only smoke admin credential.
 ```
+
+## 13. Stage 9F-C-R3 Public 80/443 / HTTPS Verification
+
+This section records the public-entry recheck for the staging domains.
+
+Current status:
+
+```text
+Executed on 2026-06-15.
+Public 80/443 / HTTPS gate is not closed.
+```
+
+### 13.1 Local Repository Baseline
+
+| Item | Result |
+| --- | --- |
+| Branch at start | `main` |
+| Required OSS validation commit | Present, `ab98904` |
+| Working tree | Clean |
+| Remote pull | Not completed from the sandbox; outbound GitHub access / approval timed out |
+| Local release check | Passed |
+
+### 13.2 DNS
+
+| Check | Result |
+| --- | --- |
+| Server-side resolution for `staging-admin.subauto.keybox.cloud` | `139.196.227.195` |
+| Server-side resolution for `staging-api.subauto.keybox.cloud` | `139.196.227.195` |
+| Local sandbox `nslookup` | Timed out for both Ali DNS `223.5.5.5` and default DNS |
+
+### 13.3 Runtime And Reverse Proxy
+
+| Item | Result |
+| --- | --- |
+| Docker containers | `subauto-staging-r2-api-1`, `subauto-staging-r2-web-1`, and `subauto-staging-r2-postgres-1` healthy |
+| Container image tags | API/Web still running `d3cdc5e` images |
+| API host binding | `127.0.0.1:3001->3001/tcp` |
+| Web host binding | `127.0.0.1:3000->3000/tcp` |
+| Postgres exposure for staging project | Container-internal, no staging Postgres public host port |
+| Nginx local Web proxy | Passed, `Host: staging-admin.subauto.keybox.cloud` on `http://127.0.0.1` returned 200 |
+| Nginx local API proxy | Passed, `Host: staging-api.subauto.keybox.cloud` on `http://127.0.0.1/api/health` returned 200 |
+| API health through local Nginx | Passed, `status:"ok"`, `storage:"oss"` |
+| CORS preflight through local Nginx | Passed, `Access-Control-Allow-Origin: https://staging-admin.subauto.keybox.cloud` and credentials enabled |
+
+### 13.4 Server Firewall And Nginx
+
+| Item | Result |
+| --- | --- |
+| Nginx syntax | Passed, `nginx -t` successful |
+| Nginx listen state | `0.0.0.0:80` listening |
+| HTTPS listen state | No `:443` listener found |
+| Staging Nginx config | Only HTTP `listen 80` server blocks exist for the two staging domains |
+| firewalld state | Running |
+| firewalld open ports | `80/tcp` and `443/tcp` are open; `5432/tcp` was removed during R3 |
+| Security note | Verify the Aliyun cloud security group also blocks public database access |
+
+### 13.5 Public Reachability And HTTPS
+
+| Check | Result |
+| --- | --- |
+| Local TCP to `139.196.227.195:80` | Failed from the sandbox environment |
+| Local TCP to `139.196.227.195:443` | Failed from the sandbox environment |
+| Server-side HTTP by domain | Passed for Web and API |
+| Server-side HTTPS by domain | Failed with connection refused for both staging domains |
+| Certificate files | No staging certificate files found under the checked BT certificate paths |
+| BT CLI | Not usable non-interactively in this session; command did not complete |
+| Aliyun CLI on server | Installed but no valid configured credential |
+
+### 13.6 Smoke Status
+
+| Smoke | Result |
+| --- | --- |
+| Public HTTPS `smoke:api` | Not run; HTTPS endpoint is not reachable |
+| Public HTTPS `smoke:mainline` | Not run; HTTPS endpoint is not reachable |
+| Public HTTPS `smoke:residual` | Not run; HTTPS endpoint is not reachable |
+| Web route smoke over public HTTPS | Not run; HTTPS endpoint is not reachable |
+| stage9_smoke_admin disposition | Still pending; remove or rotate the staging-only credential before any production cutover |
+
+### 13.7 Resource Snapshot
+
+| Item | Observation |
+| --- | --- |
+| API memory | `221.3MiB / 512MiB` |
+| Web memory | `58.23MiB / 512MiB` |
+| Staging Postgres memory | `31.45MiB / 512MiB` |
+| Host memory | `1.8GiB total`, `426MiB available` |
+| Swap | `4.0GiB total`, `405MiB used` |
+| Disk | `/dev/vda3 40G total`, `22G used`, `17G available`, `57%` |
+
+### 13.8 R3 Decision
+
+```text
+Stage 9F-C-R3 did not close the public 80/443 / HTTPS gate.
+
+Passed:
+- DNS resolves to the staging ECS public IP from the server.
+- Docker runtime is healthy.
+- API and Web are bound only to 127.0.0.1 host ports.
+- BT/Nginx HTTP reverse proxy works locally by Host header.
+- API health returns storage:"oss" through Nginx.
+- CORS preflight is correct through Nginx.
+- Resource usage remains acceptable on the 2C/2G staging server.
+
+Blocked:
+- Local external TCP checks to public 80/443 still failed.
+- Nginx is not listening on 443.
+- The staging Nginx config only has HTTP server blocks.
+- No staging HTTPS certificate is installed.
+- Public HTTPS smoke cannot run.
+- host firewalld was tightened by removing 5432/tcp; Aliyun cloud security group still needs confirmation.
+
+Required next actions:
+1. Confirm Aliyun ECS security group inbound rules allow TCP 80 and 443 from the intended public sources.
+2. Confirm Aliyun ECS security group does not expose PostgreSQL or other database ports publicly.
+3. Use BT Panel or an approved ACME workflow to issue HTTPS certificates for:
+   - staging-admin.subauto.keybox.cloud
+   - staging-api.subauto.keybox.cloud
+4. Add/reload Nginx 443 SSL server blocks for both staging domains.
+5. Re-run public HTTPS API health, CORS, Web route smoke, and smoke:api/mainline/residual.
+6. Remove or rotate the staging-only `stage9_smoke_admin` credential before production cutover.
+
+Can enter Production Cutover: No.
+Recommended next step: complete security group + BT/Nginx HTTPS setup, then rerun Stage 9F-C-R3.
+```

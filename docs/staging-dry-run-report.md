@@ -326,20 +326,22 @@ Prepared, not completed.
 
 | Item | Observation |
 | --- | --- |
-| Server repository commit | `c028059` at time of check |
-| Current API image | `ghcr.io/keqi119/subscription-api:c028059` |
-| Current Web image | `ghcr.io/keqi119/subscription-web:c028059` |
+| Server repository commit | `d3cdc5e` |
+| Current API image | `ghcr.io/keqi119/subscription-api:d3cdc5e` |
+| Current Web image | `ghcr.io/keqi119/subscription-web:d3cdc5e` |
 | Upload driver | `UPLOAD_STORAGE_DRIVER=local` |
-| Stage 9G-A API image rollout | Pending |
+| Stage 9G-A API image rollout | Passed; API/Web/Postgres healthy in `subauto-staging-r2` |
 | Real OSS bucket env | Pending server-only configuration |
-| GitHub Actions trigger | Blocked locally because `gh` token is invalid |
+| GitHub Actions run | `27521946812` passed |
+| API health | Passed; `storage` currently reports `local` |
+| Web local health | Passed; `http://127.0.0.1:3000` returned 200 |
 
 ### 12.3 Required Validation Steps
 
 | Step | Expected Result | Status |
 | --- | --- | --- |
-| Build/push API image for `c40033a` or newer | Registry image available | Pending |
-| Roll out API image on staging | API healthy with Stage 9G-A code | Pending |
+| Build/push API image for `c40033a` or newer | Registry image available | Passed, image tag `d3cdc5e` |
+| Roll out API image on staging | API healthy with Stage 9G-A code | Passed |
 | Set `UPLOAD_STORAGE_DRIVER=oss` | `/api/health` reports `storage: "oss"` | Pending |
 | Configure private OSS bucket and RAM key | Server env configured, no secret in Git | Pending |
 | Run `pnpm seed:scenario mainline` | Scenario application available | Pending |
@@ -355,7 +357,8 @@ Prepared, not completed.
 OSS blocker is not closed yet.
 
 Reason:
-Stage 9G-A code is merged, but staging has not yet been switched to an image containing
-the OSS adapter and has not been configured with a real private OSS bucket. Real upload,
-download, restart persistence, and public URL exposure checks remain pending.
+Stage 9G-A code is merged and the `d3cdc5e` image is running on staging, but the staging
+server has not been configured with a real private OSS bucket and still uses
+`UPLOAD_STORAGE_DRIVER=local`. Real upload, download, restart persistence, and public
+URL exposure checks against OSS remain pending.
 ```

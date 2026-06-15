@@ -106,11 +106,14 @@ Prepared, not completed.
 
 Known blockers before marking Stage 9G-B as passed:
 
-- staging server image is still `ghcr.io/keqi119/subscription-api:c028059`;
-- Stage 9G-A API image for commit `c40033a` must be built and rolled out;
 - staging server `.env.staging.images` is still `UPLOAD_STORAGE_DRIVER=local`;
 - real OSS bucket name, endpoint, and RAM credentials must be configured on the server only;
 - upload/download smoke must be run against the real private bucket.
+
+Current staging rollout note:
+
+- API/Web images `ghcr.io/keqi119/subscription-api:d3cdc5e` and `ghcr.io/keqi119/subscription-web:d3cdc5e` are running and healthy.
+- `/api/health` still reports `storage: "local"` until the server env is switched to OSS.
 
 ## Production Cutover Gate
 

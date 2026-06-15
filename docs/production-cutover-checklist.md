@@ -7,6 +7,11 @@ Production cutover must not start until the staging dry run has been completed a
 
 ## 0. Staging Gate
 
+Status note, 2026-06-15 Stage 9F-C-R3: staging public DNS, TCP 80/443,
+HTTPS certificates, BT/Nginx reverse proxy, API health, CORS, Web routes,
+and smoke:api/mainline/residual passed. The checklist boxes below remain
+operator confirmation items for the production cutover window.
+
 - [ ] `staging-admin.subauto.keybox.cloud` resolves to `139.196.227.195`.
 - [ ] `staging-api.subauto.keybox.cloud` resolves to `139.196.227.195`.
 - [ ] Public TCP `80/443` reaches the staging edge from an external network.

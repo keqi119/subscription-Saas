@@ -1,10 +1,16 @@
 node_modules
+**/node_modules
 .pnpm-store
 .next
+**/.next
 dist
+**/dist
 coverage
+**/coverage
 *.tsbuildinfo
+**/*.tsbuildinfo
 .tmp
+**/.tmp
 
 .env
 .env.*
@@ -20,6 +26,7 @@ coverage
 .codex-r4
 .codex-runtime
 .codex-ssh
+.codex-tmp
 reports
 backups
 *.log

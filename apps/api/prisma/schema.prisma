@@ -524,6 +524,45 @@ enum ContractTemplateType {
   @@map("contract_template_type")
 }
 
+enum ESignProviderType {
+  MOCK
+  FADADA
+  ESIGN
+  TENCENT_ESIGN
+  OTHER
+
+  @@map("esign_provider_type")
+}
+
+enum ESignTaskStatus {
+  CREATED
+  WAITING_CUSTOMER
+  SIGNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  EXPIRED
+
+  @@map("esign_task_status")
+}
+
+enum ESignSignerType {
+  CUSTOMER
+  PLATFORM
+
+  @@map("esign_signer_type")
+}
+
+enum ESignSignerStatus {
+  PENDING
+  SIGNING
+  SIGNED
+  REJECTED
+  EXPIRED
+
+  @@map("esign_signer_status")
+}
+
 enum OrderChangeType {
   PLAN_CHANGE
   RESTRUCTURE
@@ -3111,6 +3150,7 @@ model Contract {
   signedAt          DateTime?          @map("signed_at") @db.Timestamptz(6)
   archivedAt        DateTime?          @map("archived_at") @db.Timestamptz(6)
   fileId            String?            @map("file_id") @db.Uuid
+  esignTasks        ContractESignTask[]
   createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy         String?            @map("created_by") @db.Uuid
@@ -3123,6 +3163,96 @@ model Contract {
   @@index([contractVersionId])
   @@index([status])
   @@map("contract")
+}
+
+model ContractESignTask {
+  id                      String                     @id @default(uuid()) @db.Uuid
+  taskNo                  String                     @unique @map("task_no") @db.VarChar(64)
+  contractId              String                     @map("contract_id") @db.Uuid
+  contract                Contract                   @relation(fields: [contractId], references: [id])
+  orderId                 String?                    @map("order_id") @db.Uuid
+  customerId              String?                    @map("customer_id") @db.Uuid
+  provider                ESignProviderType
+  taskStatus              ESignTaskStatus            @default(CREATED) @map("task_status")
+  providerTaskId          String?                    @map("provider_task_id") @db.VarChar(128)
+  providerEnvelopeId      String?                    @map("provider_envelope_id") @db.VarChar(128)
+  signUrl                 String?                    @map("sign_url") @db.Text
+  signUrlExpiresAt        DateTime?                  @map("sign_url_expires_at") @db.Timestamptz(6)
+  documentName            String?                    @map("document_name") @db.VarChar(255)
+  documentObjectKey       String?                    @map("document_object_key") @db.VarChar(512)
+  signedDocumentObjectKey String?                    @map("signed_document_object_key") @db.VarChar(512)
+  evidenceObjectKey       String?                    @map("evidence_object_key") @db.VarChar(512)
+  requestSnapshot         Json?                      @map("request_snapshot")
+  responseSnapshot        Json?                      @map("response_snapshot")
+  callbackSnapshot        Json?                      @map("callback_snapshot")
+  errorSnapshot           Json?                      @map("error_snapshot")
+  createdAt               DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy               String?                    @map("created_by") @db.Uuid
+  updatedBy               String?                    @map("updated_by") @db.Uuid
+  deletedAt               DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+  startedAt               DateTime?                  @map("started_at") @db.Timestamptz(6)
+  completedAt             DateTime?                  @map("completed_at") @db.Timestamptz(6)
+  cancelledAt             DateTime?                  @map("cancelled_at") @db.Timestamptz(6)
+  failedAt                DateTime?                  @map("failed_at") @db.Timestamptz(6)
+  signers                 ContractESignSigner[]
+  callbacks               ContractESignCallbackLog[]
+
+  @@index([contractId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([provider])
+  @@index([taskStatus])
+  @@map("contract_esign_task")
+}
+
+model ContractESignSigner {
+  id               String              @id @default(uuid()) @db.Uuid
+  taskId           String              @map("task_id") @db.Uuid
+  task             ContractESignTask   @relation(fields: [taskId], references: [id])
+  signerType       ESignSignerType     @map("signer_type")
+  signerName       String?             @map("signer_name") @db.VarChar(128)
+  signerPhone      String?             @map("signer_phone") @db.VarChar(32)
+  signerIdNoMasked String?             @map("signer_id_no_masked") @db.VarChar(64)
+  customerId       String?             @map("customer_id") @db.Uuid
+  signerStatus     ESignSignerStatus   @default(PENDING) @map("signer_status")
+  providerSignerId String?             @map("provider_signer_id") @db.VarChar(128)
+  signUrl          String?             @map("sign_url") @db.Text
+  signUrlExpiresAt DateTime?           @map("sign_url_expires_at") @db.Timestamptz(6)
+  signedAt         DateTime?           @map("signed_at") @db.Timestamptz(6)
+  rejectedAt       DateTime?           @map("rejected_at") @db.Timestamptz(6)
+  rejectReason     String?             @map("reject_reason") @db.Text
+  snapshot         Json?
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt        DateTime?           @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([taskId])
+  @@index([customerId])
+  @@index([signerStatus])
+  @@map("contract_esign_signer")
+}
+
+model ContractESignCallbackLog {
+  id             String             @id @default(uuid()) @db.Uuid
+  taskId         String?            @map("task_id") @db.Uuid
+  task           ContractESignTask? @relation(fields: [taskId], references: [id])
+  provider       ESignProviderType
+  eventType      String?            @map("event_type") @db.VarChar(128)
+  providerTaskId String?            @map("provider_task_id") @db.VarChar(128)
+  payload        Json?
+  verified       Boolean            @default(false)
+  handled        Boolean            @default(false)
+  errorMessage   String?            @map("error_message") @db.Text
+  receivedAt     DateTime           @default(now()) @map("received_at") @db.Timestamptz(6)
+  handledAt      DateTime?          @map("handled_at") @db.Timestamptz(6)
+
+  @@index([taskId])
+  @@index([provider])
+  @@index([providerTaskId])
+  @@index([eventType])
+  @@index([receivedAt])
+  @@map("contract_esign_callback_log")
 }
 
 model OrderChange {

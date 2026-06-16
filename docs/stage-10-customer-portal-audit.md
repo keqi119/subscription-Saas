@@ -713,3 +713,36 @@ Remaining after Stage 10C:
 - WeChat OAuth/service account notification and real SMS provider.
 
 Next recommended stage: Stage 10D, focused on electronic signature after customer final plan confirmation.
+
+## 17. Stage 10D-A Status
+
+Stage 10D-A has implemented the electronic signature foundation on `feature/stage10-esign-foundation`.
+
+Implemented:
+
+- `ContractESignTask`, `ContractESignSigner`, and `ContractESignCallbackLog`.
+- `ESignProvider` abstraction and `MockESignProvider`.
+- Back-office APIs to start/query e-sign tasks.
+- Public callback endpoint with callback log and idempotent completion handling.
+- Protected Portal contract list/detail/signing-start APIs.
+- Protected Portal mock signing completion API.
+- H5 routes `/portal/contracts`, `/portal/contracts/[id]`, and `/portal/contracts/[id]/sign`.
+- Back-office contract detail e-sign task section.
+- Stage 10D-A documentation: `docs/stage-10d-esign-foundation.md`.
+
+Strategy:
+
+- Stage 10D-A does not connect a real e-sign provider.
+- Starting e-sign can move a generated contract to `SIGNING`.
+- Mock signing completion moves the contract to `SIGNED` and the order to `PENDING_PAYMENT`, matching the existing manual signing outcome.
+
+Remaining after Stage 10D-A:
+
+- Real provider adapter and signature verification rules.
+- Contract PDF/evidence archive through provider callback.
+- Online payment.
+- Customer bills, deposit, and entitlements.
+- Accident report and rescue service cases.
+- WeChat OAuth/service account notification and real SMS provider.
+
+Next recommended stage: Stage 10D-B if an e-sign provider is selected, otherwise Stage 10E-A for payment foundation.

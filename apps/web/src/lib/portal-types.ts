@@ -188,3 +188,67 @@ export interface PortalFinalPlanChange {
   message: string;
 }
 
+export interface PortalContractListItem {
+  contractNo: string;
+  contractStatus: string;
+  createdAt: string;
+  id: string;
+  orderNo: string;
+  signedAt: string | null;
+  signStatus: string | null;
+}
+
+export interface PortalContractDetail extends PortalContractListItem {
+  canSign: boolean;
+  customer: {
+    mobile: string;
+    name: string;
+  };
+  order: {
+    id: string;
+    orderNo: string;
+    orderStatus: string;
+  };
+  signTask: PortalContractESignTask | null;
+  vehicle: PortalContractVehicleSummary | null;
+}
+
+export interface PortalContractESignTask {
+  completedAt: string | null;
+  id: string;
+  provider: string;
+  signers: PortalContractESignSigner[];
+  signUrlExpiresAt: string | null;
+  taskNo: string;
+  taskStatus: string;
+}
+
+export interface PortalContractESignSigner {
+  signedAt: string | null;
+  signerName: string | null;
+  signerPhone: string | null;
+  signerStatus: string;
+  signerType: string;
+}
+
+export interface PortalContractVehicleSummary {
+  batteryCapacityKwh: number | null;
+  batteryUsageType: string | null;
+  brand: string | null;
+  city: string | null;
+  currentMileageKm: number | null;
+  displayName: string;
+  model: string | null;
+  modelYear: number | null;
+  series: string | null;
+}
+
+export interface PortalSigningStartResponse {
+  expiresAt: string | null;
+  mock: boolean;
+  provider: string;
+  signUrl: string;
+  taskId: string;
+  taskStatus: string;
+}
+

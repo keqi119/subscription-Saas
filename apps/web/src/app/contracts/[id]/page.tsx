@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeftOutlined } from "@ant-design/icons";
-import { App, Button, Card, Descriptions, Space, Spin, Tag, Typography } from "antd";
+import { App, Button, Card, Descriptions, Empty, List, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -9,7 +9,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
-import { ORDER_STATUS_LABELS, STATUS_LABELS, VEHICLE_BASE_FEE_MODE_LABELS, VEHICLE_BATTERY_USAGE_TYPE_LABELS, labelOf } from "../../../constants/labels";
+import {
+  ESIGN_PROVIDER_LABELS,
+  ESIGN_SIGNER_STATUS_LABELS,
+  ESIGN_TASK_STATUS_LABELS,
+  ORDER_STATUS_LABELS,
+  STATUS_LABELS,
+  VEHICLE_BASE_FEE_MODE_LABELS,
+  VEHICLE_BATTERY_USAGE_TYPE_LABELS,
+  labelOf
+} from "../../../constants/labels";
 import {
   canArchiveContract,
   canCancelContract,
@@ -30,6 +39,25 @@ interface ContractDetail {
   signedAt?: string | null;
   status: string;
   version?: { versionNo: string } | null;
+}
+
+interface ContractESignTask {
+  completedAt?: string | null;
+  createdAt: string;
+  documentName?: string | null;
+  id: string;
+  provider: string;
+  signers: Array<{
+    id: string;
+    signedAt?: string | null;
+    signerName?: string | null;
+    signerPhone?: string | null;
+    signerStatus: string;
+    signerType: string;
+  }>;
+  startedAt?: string | null;
+  taskNo: string;
+  taskStatus: string;
 }
 
 type SnapshotRecord = Record<string, unknown>;
@@ -314,18 +342,22 @@ export default function ContractDetailPage() {
   const router = useRouter();
   const { message } = App.useApp();
   const [contract, setContract] = useState<ContractDetail | null>(null);
+  const [esignTasks, setESignTasks] = useState<ContractESignTask[]>([]);
   const [loading, setLoading] = useState(true);
+  const [creatingESignTask, setCreatingESignTask] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
   const loadContract = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextContract, nextMe] = await Promise.all([
+      const [nextContract, nextESignTasks, nextMe] = await Promise.all([
         apiFetch<ContractDetail>(`/contracts/${params.id}`),
+        apiFetch<ContractESignTask[]>(`/contracts/${params.id}/esign-tasks`).catch(() => []),
         apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setContract(nextContract);
+      setESignTasks(nextESignTasks);
       setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -351,6 +383,22 @@ export default function ContractDetailPage() {
       await loadContract();
     } catch (error) {
       void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function createESignTask() {
+    if (!contract) {
+      return;
+    }
+    try {
+      setCreatingESignTask(true);
+      await apiFetch(`/contracts/${contract.id}/esign-tasks`, { method: "POST" });
+      void message.success("电子签任务已发起");
+      await loadContract();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setCreatingESignTask(false);
     }
   }
 
@@ -415,6 +463,50 @@ export default function ContractDetailPage() {
                 ]
               : []
           }
+            />
+          </Card>
+        ) : null}
+
+        {!loading && contract ? (
+          <Card
+            extra={
+              <ActionButton
+                availability={canSignContract(contract, permissions)}
+                loading={creatingESignTask}
+                onClick={createESignTask}
+                type="primary"
+              >
+                发起电子签
+              </ActionButton>
+            }
+            title="电子签任务"
+          >
+            <List
+              dataSource={esignTasks}
+              locale={{ emptyText: <Empty description="暂无电子签任务" /> }}
+              renderItem={(task) => (
+                <List.Item>
+                  <List.Item.Meta
+                    description={
+                      <Space direction="vertical" size={8}>
+                        <Space size={[6, 6]} wrap>
+                          <Tag color="blue">{labelOf(ESIGN_TASK_STATUS_LABELS, task.taskStatus)}</Tag>
+                          <Tag>{labelOf(ESIGN_PROVIDER_LABELS, task.provider)}</Tag>
+                          <Tag>创建于 {formatTime(task.createdAt)}</Tag>
+                        </Space>
+                        <Space size={[6, 6]} wrap>
+                          {task.signers.map((signer) => (
+                            <Tag key={signer.id}>
+                              {signer.signerName ?? "签署人"} / {labelOf(ESIGN_SIGNER_STATUS_LABELS, signer.signerStatus)}
+                            </Tag>
+                          ))}
+                        </Space>
+                      </Space>
+                    }
+                    title={`${task.taskNo} · ${task.documentName ?? "合同电子签"}`}
+                  />
+                </List.Item>
+              )}
             />
           </Card>
         ) : null}

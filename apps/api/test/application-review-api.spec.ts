@@ -290,10 +290,13 @@ describe("application self-service review APIs", () => {
       expect.objectContaining({
         finalPlanSnapshot: expect.objectContaining({
           depositAmount: 300000,
+          finalPlanConfirmedAt: null,
+          planConfirmStatus: PlanConfirmStatus.PENDING,
           subscriptionPlanId: harness.plan.id,
           vehicleId: harness.vehicle.id
         }),
-        planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+        finalPlanConfirmedAt: null,
+        planConfirmStatus: PlanConfirmStatus.PENDING,
         productReviewStatus: OrderReviewStatus.APPROVED,
         status: ApplicationStatus.APPROVED
       })

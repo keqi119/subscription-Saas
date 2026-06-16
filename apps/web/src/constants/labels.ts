@@ -475,6 +475,49 @@ export const PLAN_CONFIRM_STATUS_LABELS: Record<string, string> = {
   REJECTED: "已拒绝"
 };
 
+export const PORTAL_PROGRESS_STEP_LABELS: Record<string, string> = {
+  ACTIVE: "在租中",
+  CANCELLED: "已取消",
+  CONTRACT: "待签约",
+  CREDIT_REVIEW: "信用审核",
+  DELIVERY: "待交付",
+  DEPOSIT_CONFIRM: "押金确认",
+  FINAL_PLAN: "最终方案确认",
+  MATERIAL_REVIEW: "材料审核",
+  PAYMENT: "待支付",
+  PRODUCT_REVIEW: "产品方案审核",
+  REJECTED: "已拒绝",
+  SUBMITTED: "已提交",
+  VEHICLE_REVIEW: "车辆库存审核"
+};
+
+export const PORTAL_NEXT_ACTION_LABELS: Record<string, string> = {
+  CANCELLED: "申请已取消",
+  CONFIRM_FINAL_PLAN: "请确认最终方案",
+  GO_CONTRACT: "等待合同签署",
+  GO_CONTRACT_PENDING_BACKOFFICE: "已确认最终方案，等待平台生成合同",
+  GO_PAYMENT: "等待支付",
+  NONE: "无后续操作",
+  REJECTED: "方案或申请已拒绝",
+  UPLOAD_MATERIAL: "请补充材料",
+  WAIT_DELIVERY: "等待交付",
+  WAIT_REVIEW: "等待平台审核"
+};
+
+export const PORTAL_PROGRESS_STATUS_LABELS: Record<string, string> = {
+  CURRENT: "进行中",
+  DONE: "已完成",
+  FAILED: "未通过",
+  PENDING: "待处理"
+};
+
+export const PORTAL_FINAL_PLAN_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  NOT_READY: "暂未生成",
+  PENDING_CONFIRM: "待确认",
+  REJECTED: "已拒绝"
+};
+
 export const MATERIAL_STATUS_LABELS: Record<string, string> = {
   APPROVED: "已通过",
   NEED_MORE_INFO: "需补充资料",

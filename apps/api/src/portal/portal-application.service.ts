@@ -6,6 +6,11 @@ import {
   ApplicationSource,
   ApplicationStatus,
   AuditAction,
+  DepositStatus,
+  MaterialStatus,
+  OrderReviewStatus,
+  OrderStatus,
+  PlanConfirmStatus,
   Prisma,
   UserStatus
 } from "@prisma/client";
@@ -18,6 +23,7 @@ import { StorageService } from "../storage/storage.service";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
 import {
   CreatePortalSelfServiceApplicationDto,
+  RejectPortalFinalPlanDto,
   UploadPortalApplicationMaterialDto
 } from "./portal-application.dto";
 
@@ -127,6 +133,225 @@ export class PortalApplicationService {
   async getApplication(id: string, currentCustomer: CurrentCustomer) {
     const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
     return toPortalApplicationDetail(application);
+  }
+
+  async getApplicationProgress(id: string, currentCustomer: CurrentCustomer) {
+    const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
+    return toPortalApplicationProgress(application);
+  }
+
+  async getFinalPlan(id: string, currentCustomer: CurrentCustomer) {
+    const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
+    return toPortalFinalPlanView(application);
+  }
+
+  async confirmFinalPlan(
+    id: string,
+    currentCustomer: CurrentCustomer,
+    context: PortalRequestContext
+  ) {
+    const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
+    assertPortalFinalPlanPending(application);
+
+    const operator = await this.resolveApplicationSalesUser(application.salesUserId);
+    const confirmedAt = new Date();
+    const finalPlanSnapshot = withPortalFinalPlanDecision(application.finalPlanSnapshot, {
+      customerAccountId: currentCustomer.customerAccountId,
+      customerId: currentCustomer.customerId,
+      phone: currentCustomer.phone,
+      finalPlanConfirmedAt: confirmedAt.toISOString(),
+      planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+      source: "PORTAL"
+    });
+    const finalQuoteSnapshot = withPortalFinalPlanDecision(
+      application.finalQuoteSnapshot ?? application.finalPlanSnapshot,
+      {
+        customerAccountId: currentCustomer.customerAccountId,
+        customerId: currentCustomer.customerId,
+        phone: currentCustomer.phone,
+        finalPlanConfirmedAt: confirmedAt.toISOString(),
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+        source: "PORTAL"
+      }
+    );
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const updateResult = await tx.application.updateMany({
+        data: {
+          finalPlanConfirmedAt: confirmedAt,
+          finalPlanSnapshot,
+          finalQuoteSnapshot,
+          planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+          rejectedReason: null,
+          updatedBy: operator.id
+        },
+        where: {
+          applicationSource: ApplicationSource.SELF_SERVICE,
+          customerId: currentCustomer.customerId,
+          deletedAt: null,
+          id,
+          planConfirmStatus: PlanConfirmStatus.PENDING
+        }
+      });
+
+      if (updateResult.count !== 1) {
+        throw new BadRequestException("最终方案状态已变化，请刷新后重试。");
+      }
+
+      await tx.applicationActionLog.create({
+        data: {
+          actionType: ApplicationActionType.APPROVE,
+          applicationId: id,
+          comment: "客户确认最终方案",
+          createdBy: operator.id,
+          fromStatus: application.status,
+          operatorId: operator.id,
+          operatorName: `客户门户 ${maskPhone(currentCustomer.phone)}`,
+          toStatus: application.status,
+          updatedBy: operator.id
+        }
+      });
+
+      return tx.application.findFirstOrThrow({
+        include: portalApplicationInclude,
+        where: {
+          applicationSource: ApplicationSource.SELF_SERVICE,
+          customerId: currentCustomer.customerId,
+          deletedAt: null,
+          id
+        }
+      });
+    });
+
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: {
+        applicationId: id,
+        customerAccountId: currentCustomer.customerAccountId,
+        customerId: currentCustomer.customerId,
+        finalPlanConfirmedAt: confirmedAt.toISOString(),
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      },
+      before: {
+        planConfirmStatus: application.planConfirmStatus
+      },
+      entityId: id,
+      entityType: "portal_application_final_plan",
+      ipAddress: context.ipAddress,
+      module: "portal",
+      operatorId: currentCustomer.customerAccountId,
+      userAgent: context.userAgent
+    });
+
+    return {
+      ...toPortalFinalPlanView(updated),
+      nextAction: "GO_CONTRACT_PENDING_BACKOFFICE",
+      order: null
+    };
+  }
+
+  async rejectFinalPlan(
+    id: string,
+    dto: RejectPortalFinalPlanDto,
+    currentCustomer: CurrentCustomer,
+    context: PortalRequestContext
+  ) {
+    const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
+    assertPortalFinalPlanPending(application);
+
+    const reason = dto.reason.trim();
+    const operator = await this.resolveApplicationSalesUser(application.salesUserId);
+    const rejectedAt = new Date();
+    const finalPlanSnapshot = withPortalFinalPlanDecision(application.finalPlanSnapshot, {
+      customerAccountId: currentCustomer.customerAccountId,
+      customerId: currentCustomer.customerId,
+      phone: currentCustomer.phone,
+      planConfirmStatus: PlanConfirmStatus.REJECTED,
+      reason,
+      rejectedAt: rejectedAt.toISOString(),
+      source: "PORTAL"
+    });
+    const finalQuoteSnapshot = withPortalFinalPlanDecision(
+      application.finalQuoteSnapshot ?? application.finalPlanSnapshot,
+      {
+        customerAccountId: currentCustomer.customerAccountId,
+        customerId: currentCustomer.customerId,
+        phone: currentCustomer.phone,
+        planConfirmStatus: PlanConfirmStatus.REJECTED,
+        reason,
+        rejectedAt: rejectedAt.toISOString(),
+        source: "PORTAL"
+      }
+    );
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const updateResult = await tx.application.updateMany({
+        data: {
+          finalPlanSnapshot,
+          finalQuoteSnapshot,
+          planConfirmStatus: PlanConfirmStatus.REJECTED,
+          rejectedReason: reason,
+          updatedBy: operator.id
+        },
+        where: {
+          applicationSource: ApplicationSource.SELF_SERVICE,
+          customerId: currentCustomer.customerId,
+          deletedAt: null,
+          id,
+          planConfirmStatus: PlanConfirmStatus.PENDING
+        }
+      });
+
+      if (updateResult.count !== 1) {
+        throw new BadRequestException("最终方案状态已变化，请刷新后重试。");
+      }
+
+      await tx.applicationActionLog.create({
+        data: {
+          actionType: ApplicationActionType.REJECT,
+          applicationId: id,
+          comment: `客户拒绝最终方案：${reason}`,
+          createdBy: operator.id,
+          fromStatus: application.status,
+          operatorId: operator.id,
+          operatorName: `客户门户 ${maskPhone(currentCustomer.phone)}`,
+          toStatus: application.status,
+          updatedBy: operator.id
+        }
+      });
+
+      return tx.application.findFirstOrThrow({
+        include: portalApplicationInclude,
+        where: {
+          applicationSource: ApplicationSource.SELF_SERVICE,
+          customerId: currentCustomer.customerId,
+          deletedAt: null,
+          id
+        }
+      });
+    });
+
+    await this.auditService.write({
+      action: AuditAction.REJECT,
+      after: {
+        applicationId: id,
+        customerAccountId: currentCustomer.customerAccountId,
+        customerId: currentCustomer.customerId,
+        planConfirmStatus: PlanConfirmStatus.REJECTED,
+        reason
+      },
+      before: {
+        planConfirmStatus: application.planConfirmStatus
+      },
+      entityId: id,
+      entityType: "portal_application_final_plan",
+      ipAddress: context.ipAddress,
+      module: "portal",
+      operatorId: currentCustomer.customerAccountId,
+      userAgent: context.userAgent
+    });
+
+    return toPortalFinalPlanView(updated);
   }
 
   async cancelApplication(id: string, currentCustomer: CurrentCustomer, context: PortalRequestContext) {
@@ -463,6 +688,467 @@ function toPortalApplicationDetail(application: PortalApplication) {
       : null,
     softReservationExpiresAt: application.softReservationExpiresAt
   };
+}
+
+function toPortalApplicationProgress(application: PortalApplication) {
+  const nextAction = resolvePortalNextAction(application);
+  const steps = buildPortalProgressSteps(application);
+  const currentStep = steps.find((step) => step.status === "CURRENT")?.key ??
+    steps.find((step) => step.status === "FAILED")?.key ??
+    "SUBMITTED";
+
+  return {
+    applicationId: application.id,
+    applicationNo: application.applicationNo,
+    currentStep,
+    materialSupplementHints: buildMaterialSupplementHints(application),
+    nextAction,
+    overallStatus: resolvePortalOverallStatus(application, nextAction),
+    steps
+  };
+}
+
+function toPortalFinalPlanView(application: PortalApplication) {
+  if (!isPortalFinalPlanReady(application)) {
+    return {
+      applicationId: application.id,
+      applicationNo: application.applicationNo,
+      finalPlanStatus: "NOT_READY",
+      nextAction: resolvePortalNextAction(application)
+    };
+  }
+
+  const snapshot = asRecord(application.finalPlanSnapshot);
+  const pricing = asRecord(snapshot.pricing);
+  const vehicleSnapshot = asRecord(snapshot.vehicleSnapshot);
+  const subscriptionPlan = asRecord(snapshot.subscriptionPlan);
+  const packageSnapshot = asRecord(snapshot.packageSnapshot);
+  const periodMonths = numberOrNull(snapshot.periodMonths) ?? application.finalPeriodMonths;
+  const monthlyFeeAmount = numberOrNull(pricing.monthlyFeeAmount);
+  const finalDepositAmount =
+    numberOrNull(snapshot.depositAmount) ??
+    (application.finalDepositAmount === null ? null : Number(application.finalDepositAmount));
+
+  return {
+    applicationId: application.id,
+    applicationNo: application.applicationNo,
+    changes: buildFinalPlanChanges(application, {
+      finalDepositAmount,
+      monthlyFeeAmount,
+      periodMonths,
+      subscriptionPlanId: stringOrNull(snapshot.subscriptionPlanId),
+      vehicleId: stringOrNull(snapshot.vehicleId)
+    }),
+    finalPlanStatus: mapPortalFinalPlanStatus(application.planConfirmStatus),
+    importantNotes: buildFinalPlanImportantNotes(application),
+    nextAction: resolvePortalNextAction(application),
+    pricing: {
+      currency: "CNY",
+      finalDepositAmount,
+      monthlyFeeAmount
+    },
+    rejectedReason: application.rejectedReason,
+    subscriptionPlan: {
+      packageSummary: buildPackageSummary(packageSnapshot),
+      periodMonths,
+      planName: stringOrNull(subscriptionPlan.planName),
+      planNo: stringOrNull(subscriptionPlan.planNo)
+    },
+    vehicle: {
+      batteryCapacityKwh: numberOrNull(vehicleSnapshot.batteryCapacityKwh),
+      batteryUsageType: stringOrNull(vehicleSnapshot.batteryUsageType),
+      batteryUsageTypeLabel: stringOrNull(vehicleSnapshot.batteryUsageTypeLabel),
+      brand: stringOrNull(vehicleSnapshot.brand),
+      city: stringOrNull(vehicleSnapshot.assetLocation),
+      currentMileageKm: numberOrNull(vehicleSnapshot.currentMileageKm),
+      displayName: buildSnapshotVehicleDisplayName(vehicleSnapshot),
+      model: stringOrNull(vehicleSnapshot.vehicleModel),
+      modelYear: numberOrNull(vehicleSnapshot.modelYear),
+      series: stringOrNull(vehicleSnapshot.series)
+    }
+  };
+}
+
+function buildPortalProgressSteps(application: PortalApplication) {
+  const materialStatus = mapReviewStepStatus(application.materialReviewStatus, true);
+  const creditStatus = mapReviewStepStatus(
+    application.creditReviewStatus,
+    isStepDone(materialStatus)
+  );
+  const depositStatus = mapDepositStepStatus(
+    application.depositStatus,
+    isStepDone(materialStatus) && isStepDone(creditStatus)
+  );
+  const productStatus = mapReviewStepStatus(
+    application.productReviewStatus,
+    isStepDone(depositStatus)
+  );
+  const vehicleStatus = mapReviewStepStatus(
+    application.vehicleReviewStatus,
+    isStepDone(productStatus)
+  );
+  const finalPlanStatus = mapFinalPlanStepStatus(application, isStepDone(vehicleStatus));
+  const order = application.orders.find((row) => !row.deletedAt);
+  const contractStatus = mapContractStepStatus(order, isStepDone(finalPlanStatus));
+  const paymentStatus = mapPaymentStepStatus(order, isStepDone(contractStatus));
+  const deliveryStatus = mapDeliveryStepStatus(order, isStepDone(paymentStatus));
+  const activeStatus = mapActiveStepStatus(order, isStepDone(deliveryStatus));
+
+  if (application.status === ApplicationStatus.CANCELLED) {
+    return [
+      buildProgressStep("SUBMITTED", "已提交", "DONE", application.submittedAt ?? application.createdAt),
+      buildProgressStep("CANCELLED", "已取消", "CURRENT", application.updatedAt, "申请已取消。")
+    ];
+  }
+
+  if (application.status === ApplicationStatus.REJECTED) {
+    return [
+      buildProgressStep("SUBMITTED", "已提交", "DONE", application.submittedAt ?? application.createdAt),
+      buildProgressStep("REJECTED", "已拒绝", "FAILED", application.updatedAt, application.rejectedReason ?? "申请未通过。")
+    ];
+  }
+
+  return [
+    buildProgressStep("SUBMITTED", "已提交", "DONE", application.submittedAt ?? application.createdAt),
+    buildProgressStep("MATERIAL_REVIEW", "材料审核", materialStatus, null, buildMaterialStepMessage(application)),
+    buildProgressStep("CREDIT_REVIEW", "信用审核", creditStatus, null, "平台正在审核您的资质与信用情况。"),
+    buildProgressStep("DEPOSIT_CONFIRM", "押金确认", depositStatus, null, "押金金额将根据审核结果最终确认。"),
+    buildProgressStep("PRODUCT_REVIEW", "产品方案审核", productStatus, null, "平台正在确认订阅套餐与周期。"),
+    buildProgressStep("VEHICLE_REVIEW", "车辆库存审核", vehicleStatus, null, "平台正在确认车辆库存占用。"),
+    buildProgressStep("FINAL_PLAN", "最终方案确认", finalPlanStatus, application.finalPlanConfirmedAt, buildFinalPlanStepMessage(application)),
+    buildProgressStep("CONTRACT", "待签约", contractStatus, null, "确认最终方案后将进入合同签署流程。"),
+    buildProgressStep("PAYMENT", "待支付", paymentStatus, null, "合同签署后开放线上支付。"),
+    buildProgressStep("DELIVERY", "待交付", deliveryStatus, null, "支付完成后安排交付。"),
+    buildProgressStep("ACTIVE", "在租中", activeStatus, null)
+  ];
+}
+
+function buildProgressStep(
+  key: string,
+  label: string,
+  status: "DONE" | "CURRENT" | "FAILED" | "PENDING",
+  time?: Date | null,
+  message?: string
+  ) {
+  return {
+    key,
+    label,
+    message,
+    status,
+    time: time?.toISOString() ?? null
+  };
+}
+
+function resolvePortalNextAction(application: PortalApplication) {
+  if (application.status === ApplicationStatus.CANCELLED) {
+    return "CANCELLED";
+  }
+  if (application.status === ApplicationStatus.REJECTED || application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
+    return "REJECTED";
+  }
+  if (
+    application.status === ApplicationStatus.NEED_MORE_INFO ||
+    application.materialReviewStatus === OrderReviewStatus.NEED_MORE_INFO ||
+    application.materialGroups.some((group) => group.reviewStatus === MaterialStatus.NEED_MORE_INFO)
+  ) {
+    return "UPLOAD_MATERIAL";
+  }
+  if (isPortalFinalPlanReady(application) && application.planConfirmStatus === PlanConfirmStatus.PENDING) {
+    return "CONFIRM_FINAL_PLAN";
+  }
+  if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
+    const order = application.orders.find((row) => !row.deletedAt);
+    if (!order) {
+      return "GO_CONTRACT_PENDING_BACKOFFICE";
+    }
+    if (order.orderStatus === OrderStatus.PENDING_CONTRACT || order.orderStatus === OrderStatus.PENDING_SIGN) {
+      return "GO_CONTRACT";
+    }
+    if (order.orderStatus === OrderStatus.PENDING_PAYMENT) {
+      return "GO_PAYMENT";
+    }
+    if (order.orderStatus === OrderStatus.PENDING_DELIVERY) {
+      return "WAIT_DELIVERY";
+    }
+  }
+  return "WAIT_REVIEW";
+}
+
+function resolvePortalOverallStatus(application: PortalApplication, nextAction: string) {
+  if (nextAction === "CANCELLED") {
+    return "CANCELLED";
+  }
+  if (nextAction === "REJECTED") {
+    return "REJECTED";
+  }
+  if (nextAction === "CONFIRM_FINAL_PLAN") {
+    return "PENDING_CUSTOMER_CONFIRMATION";
+  }
+  if (nextAction === "GO_CONTRACT" || nextAction === "GO_CONTRACT_PENDING_BACKOFFICE") {
+    return "PENDING_CONTRACT";
+  }
+  if (nextAction === "GO_PAYMENT") {
+    return "PENDING_PAYMENT";
+  }
+  if (nextAction === "WAIT_DELIVERY") {
+    return "PENDING_DELIVERY";
+  }
+  return application.status === ApplicationStatus.APPROVED ? "APPROVED" : "UNDER_REVIEW";
+}
+
+function mapReviewStepStatus(status: OrderReviewStatus, reachable: boolean) {
+  if (status === OrderReviewStatus.APPROVED) {
+    return "DONE" as const;
+  }
+  if (status === OrderReviewStatus.REJECTED) {
+    return "FAILED" as const;
+  }
+  if (status === OrderReviewStatus.NEED_MORE_INFO || reachable) {
+    return "CURRENT" as const;
+  }
+  return "PENDING" as const;
+}
+
+function mapDepositStepStatus(status: DepositStatus, reachable: boolean) {
+  if (status === DepositStatus.CONFIRMED || status === DepositStatus.WAIVED) {
+    return "DONE" as const;
+  }
+  if (status === DepositStatus.REJECTED) {
+    return "FAILED" as const;
+  }
+  return reachable ? "CURRENT" as const : "PENDING" as const;
+}
+
+function mapFinalPlanStepStatus(application: PortalApplication, reachable: boolean) {
+  if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
+    return "DONE" as const;
+  }
+  if (application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
+    return "FAILED" as const;
+  }
+  if (isPortalFinalPlanReady(application)) {
+    return "CURRENT" as const;
+  }
+  return reachable ? "CURRENT" as const : "PENDING" as const;
+}
+
+function mapContractStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
+  if (!order) {
+    return reachable ? "CURRENT" as const : "PENDING" as const;
+  }
+  if (order.orderStatus === OrderStatus.PENDING_CONTRACT || order.orderStatus === OrderStatus.PENDING_SIGN) {
+    return "CURRENT" as const;
+  }
+  return "DONE" as const;
+}
+
+function mapPaymentStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
+  if (!order) {
+    return "PENDING" as const;
+  }
+  if (order.orderStatus === OrderStatus.PENDING_PAYMENT) {
+    return "CURRENT" as const;
+  }
+  if (
+    order.orderStatus === OrderStatus.PENDING_DELIVERY ||
+    order.orderStatus === OrderStatus.ACTIVE ||
+    order.orderStatus === OrderStatus.COMPLETED
+  ) {
+    return "DONE" as const;
+  }
+  return reachable ? "CURRENT" as const : "PENDING" as const;
+}
+
+function mapDeliveryStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
+  if (!order) {
+    return "PENDING" as const;
+  }
+  if (order.orderStatus === OrderStatus.PENDING_DELIVERY) {
+    return "CURRENT" as const;
+  }
+  if (order.orderStatus === OrderStatus.ACTIVE || order.orderStatus === OrderStatus.COMPLETED) {
+    return "DONE" as const;
+  }
+  return reachable ? "CURRENT" as const : "PENDING" as const;
+}
+
+function mapActiveStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
+  if (!order) {
+    return "PENDING" as const;
+  }
+  if (order.orderStatus === OrderStatus.ACTIVE) {
+    return "CURRENT" as const;
+  }
+  if (order.orderStatus === OrderStatus.COMPLETED) {
+    return "DONE" as const;
+  }
+  return reachable ? "CURRENT" as const : "PENDING" as const;
+}
+
+function isStepDone(status: "DONE" | "CURRENT" | "FAILED" | "PENDING") {
+  return status === "DONE";
+}
+
+function buildMaterialSupplementHints(application: PortalApplication) {
+  return application.materialGroups
+    .filter((group) => group.reviewStatus === MaterialStatus.NEED_MORE_INFO)
+    .map((group) => ({
+      materialGroupId: group.id,
+      materialName: group.materialName ?? MATERIAL_TYPE_LABELS[group.materialType],
+      materialType: group.materialType,
+      message: group.reviewComment ?? "请根据平台提示补充或重新上传材料。"
+    }));
+}
+
+function buildMaterialStepMessage(application: PortalApplication) {
+  if (
+    application.materialReviewStatus === OrderReviewStatus.NEED_MORE_INFO ||
+    application.materialGroups.some((group) => group.reviewStatus === MaterialStatus.NEED_MORE_INFO)
+  ) {
+    return "请补充平台要求的材料。";
+  }
+  if (application.materialReviewStatus === OrderReviewStatus.APPROVED) {
+    return "材料审核已通过。";
+  }
+  return "平台正在审核您提交的材料。";
+}
+
+function buildFinalPlanStepMessage(application: PortalApplication) {
+  if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
+    return "已确认最终方案，等待合同签署。";
+  }
+  if (application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
+    return application.rejectedReason ? `您已拒绝最终方案：${application.rejectedReason}` : "您已拒绝最终方案。";
+  }
+  if (isPortalFinalPlanReady(application)) {
+    return "请确认最终签约方案。";
+  }
+  return "平台审核完成后将展示最终方案。";
+}
+
+function isPortalFinalPlanReady(application: PortalApplication) {
+  return Boolean(application.finalPlanSnapshot) &&
+    application.status === ApplicationStatus.APPROVED &&
+    application.depositStatus === DepositStatus.CONFIRMED &&
+    application.finalDepositAmount !== null;
+}
+
+function assertPortalFinalPlanPending(application: PortalApplication) {
+  if (!isPortalFinalPlanReady(application)) {
+    throw new BadRequestException("最终方案暂未生成，请等待平台审核。");
+  }
+  if (application.orders.some((order) => !order.deletedAt)) {
+    throw new BadRequestException("该申请已生成正式订单，不能重复确认最终方案。");
+  }
+  if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
+    throw new BadRequestException("最终方案已确认，请勿重复确认。");
+  }
+  if (application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
+    throw new BadRequestException("最终方案已拒绝，请等待平台重新处理。");
+  }
+}
+
+function mapPortalFinalPlanStatus(status: PlanConfirmStatus) {
+  if (status === PlanConfirmStatus.PENDING) {
+    return "PENDING_CONFIRM";
+  }
+  return status;
+}
+
+function withPortalFinalPlanDecision(
+  snapshot: Prisma.JsonValue | null,
+  decision: Prisma.InputJsonObject
+) {
+  const base = asRecord(snapshot);
+  const planConfirmStatus = stringOrNull(decision.planConfirmStatus);
+  return {
+    ...base,
+    customerDecision: decision,
+    finalPlanConfirmedAt: stringOrNull(decision.finalPlanConfirmedAt) ?? stringOrNull(base.finalPlanConfirmedAt),
+    planConfirmStatus: planConfirmStatus ?? base.planConfirmStatus
+  } as Prisma.InputJsonValue;
+}
+
+function buildFinalPlanChanges(
+  application: PortalApplication,
+  finalPlan: {
+    finalDepositAmount: number | null;
+    monthlyFeeAmount: number | null;
+    periodMonths: number | null;
+    subscriptionPlanId: string | null;
+    vehicleId: string | null;
+  }
+) {
+  const intent = parseIntentSnapshot(application.intentSnapshot);
+  const changes = [
+    {
+      field: "deposit",
+      label: "押金",
+      message: "押金金额已根据审核结果确认。"
+    }
+  ];
+
+  if (intent.vehicle.id && finalPlan.vehicleId && intent.vehicle.id !== finalPlan.vehicleId) {
+    changes.push({
+      field: "vehicle",
+      label: "车辆",
+      message: "最终车辆与您提交审核时选择的意向车辆不同，请仔细核对。"
+    });
+  }
+  if (intent.plan.id && finalPlan.subscriptionPlanId && intent.plan.id !== finalPlan.subscriptionPlanId) {
+    changes.push({
+      field: "subscriptionPlan",
+      label: "订阅套餐",
+      message: "最终套餐与您提交审核时选择的意向套餐不同，请仔细核对。"
+    });
+  }
+  if (
+    intent.plan.subscriptionPeriodMonths !== null &&
+    finalPlan.periodMonths !== null &&
+    intent.plan.subscriptionPeriodMonths !== finalPlan.periodMonths
+  ) {
+    changes.push({
+      field: "period",
+      label: "订阅周期",
+      message: "订阅周期已根据最终方案调整。"
+    });
+  }
+  if (
+    intent.plan.monthlyFeeAmount !== null &&
+    finalPlan.monthlyFeeAmount !== null &&
+    intent.plan.monthlyFeeAmount !== finalPlan.monthlyFeeAmount
+  ) {
+    changes.push({
+      field: "monthlyFee",
+      label: "月租",
+      message: "月租金额已根据最终车辆与套餐重新计算。"
+    });
+  }
+
+  return changes;
+}
+
+function buildFinalPlanImportantNotes(application: PortalApplication) {
+  if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
+    return ["已确认最终方案，平台将继续处理合同签署流程。"];
+  }
+  if (application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
+    return ["您已拒绝当前最终方案，平台将联系您或重新处理方案。"];
+  }
+  return ["请确认最终签约方案。确认后将进入合同签署流程。"];
+}
+
+function buildPackageSummary(packageSnapshot: Record<string, unknown>) {
+  return [
+    packageName(asRecord(packageSnapshot.vehiclePackage)),
+    packageName(asRecord(packageSnapshot.mileagePackage)),
+    packageName(asRecord(packageSnapshot.energyPackage)),
+    packageName(asRecord(packageSnapshot.benefitPackage))
+  ].filter((text): text is string => Boolean(text));
+}
+
+function packageName(value: Record<string, unknown>) {
+  return stringOrNull(value.packageName) ?? stringOrNull(value.name);
 }
 
 function toPortalMaterialGroupView(group: PortalMaterialGroup) {

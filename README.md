@@ -58,6 +58,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10-customer-portal-audit.md`：Stage 10.0 客户门户 / A 线线上旅程接管审计
 - `docs/stage-10a-customer-account-portal.md`：Stage 10A 客户账号与门户基础
 - `docs/stage-10b-portal-catalog-application.md`：Stage 10B 商品浏览与自助申请
+- `docs/stage-10c-portal-application-progress-final-plan.md`：Stage 10C 申请进度与最终方案确认
 
 ## 本地开发启动
 

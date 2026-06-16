@@ -679,3 +679,37 @@ Remaining after Stage 10B:
 - WeChat OAuth/service account notification and real SMS provider.
 
 Next recommended stage: Stage 10C, focused on application progress refinement and customer final plan confirmation before order/contract/payment.
+
+## 16. Stage 10C Status
+
+Stage 10C has implemented customer application progress and final plan second confirmation on `feature/stage10-portal-application-progress-final-plan`.
+
+Implemented:
+
+- Protected `GET /api/portal/applications/:id/progress`.
+- Protected `GET /api/portal/applications/:id/final-plan`.
+- Protected `POST /api/portal/applications/:id/final-plan/confirm`.
+- Protected `POST /api/portal/applications/:id/final-plan/reject`.
+- Customer-readable progress timeline and `nextAction`.
+- Material supplement hints.
+- Customer-safe final plan DTO that redacts full VIN, full plate, purchase price, sale price, and internal cost fields.
+- Customer confirmation writes `planConfirmStatus = CONFIRMED` and `finalPlanConfirmedAt`.
+- Customer rejection writes `planConfirmStatus = REJECTED` and `rejectedReason`.
+- Back-office final plan generation now leaves `planConfirmStatus = PENDING` until customer confirmation.
+- H5 `/portal/applications/[id]` final plan card and confirm/reject actions.
+- Stage 10C documentation: `docs/stage-10c-portal-application-progress-final-plan.md`.
+
+Strategy:
+
+- Stage 10C uses Strategy B. Customer confirmation does not automatically create quote/order.
+- Existing back-office `createOrderFromApplication` remains the formal order creation action after customer confirmation.
+
+Remaining after Stage 10C:
+
+- Electronic signature provider and customer signing link.
+- Online payment.
+- Customer bills, deposit, and entitlements.
+- Accident report and rescue service cases.
+- WeChat OAuth/service account notification and real SMS provider.
+
+Next recommended stage: Stage 10D, focused on electronic signature after customer final plan confirmation.

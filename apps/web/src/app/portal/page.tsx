@@ -3,6 +3,7 @@
 import {
   AlertOutlined,
   AuditOutlined,
+  CarOutlined,
   FileTextOutlined,
   GiftOutlined,
   LogoutOutlined,
@@ -25,7 +26,8 @@ interface PortalMe {
 }
 
 const portalEntries = [
-  { icon: <AuditOutlined />, title: "我的申请" },
+  { href: "/portal/catalog", icon: <CarOutlined />, title: "订阅车辆" },
+  { href: "/portal/applications", icon: <AuditOutlined />, title: "我的申请" },
   { icon: <ProfileOutlined />, title: "我的订单" },
   { icon: <FileTextOutlined />, title: "我的账单" },
   { icon: <GiftOutlined />, title: "我的权益" },
@@ -104,7 +106,17 @@ export default function PortalHomePage() {
           dataSource={portalEntries}
           loading={loading}
           renderItem={(item) => (
-            <List.Item actions={[<Tag key="soon">即将上线</Tag>]}>
+            <List.Item
+              actions={[
+                item.href ? (
+                  <Button key="open" onClick={() => router.push(item.href)} type="link">
+                    进入
+                  </Button>
+                ) : (
+                  <Tag key="soon">即将上线</Tag>
+                )
+              ]}
+            >
               <List.Item.Meta avatar={item.icon} title={item.title} />
             </List.Item>
           )}

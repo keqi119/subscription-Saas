@@ -2,8 +2,8 @@
 
 import { MobileOutlined, SafetyCertificateOutlined, WechatOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Flex, Form, Input, Typography } from "antd";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
 
@@ -19,7 +19,16 @@ interface PortalLoginFormValues {
 }
 
 export default function PortalLoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <PortalLoginPageContent />
+    </Suspense>
+  );
+}
+
+function PortalLoginPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { message } = App.useApp();
   const [form] = Form.useForm<PortalLoginFormValues>();
   const [debugCode, setDebugCode] = useState<string>();
@@ -66,7 +75,7 @@ export default function PortalLoginPage() {
         body: JSON.stringify(values),
         method: "POST"
       });
-      router.replace("/portal");
+      router.replace(resolvePortalRedirect(searchParams.get("redirect")));
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -146,4 +155,8 @@ export default function PortalLoginPage() {
 
 function getErrorMessage(error: unknown) {
   return error instanceof PortalApiError ? error.message : "操作失败，请稍后重试";
+}
+
+function resolvePortalRedirect(value: string | null) {
+  return value?.startsWith("/portal") ? value : "/portal";
 }

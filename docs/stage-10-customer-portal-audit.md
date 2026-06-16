@@ -650,3 +650,32 @@ The implementation scope is intentionally limited to:
 - H5 routes `/portal/login`, `/portal`, and `/portal/me`.
 
 Product browsing, self-service application submission, payment, e-sign, bills/entitlements, accident/rescue, real SMS, and real WeChat OAuth remain deferred to later Stage 10B-10H work.
+
+## 15. Stage 10B Status
+
+Stage 10B has implemented the customer-facing catalog and self-service application minimum loop on `feature/stage10-portal-catalog-application`.
+
+Implemented:
+
+- Public portal catalog APIs for customer-safe available vehicles and active subscription plans.
+- Redacted catalog DTOs that do not expose purchase price, full VIN, full plate, financing, capital, residual, or sale-price review internals.
+- Protected `POST /api/portal/self-service-applications`, deriving `customerId` from `CustomerAuthGuard`.
+- Reuse of existing `SELF_SERVICE Application` creation logic, including `PENDING_CONFIRM` deposit, `REVIEW_RESERVED` vehicle state, and no formal order creation.
+- Protected customer application list/detail APIs filtered by `currentCustomer.customerId`.
+- Protected customer material upload/list/preview APIs using `StorageService` and API streaming instead of public OSS URLs.
+- Protected customer cancellation for mutable pending self-service applications.
+- H5 routes `/portal/catalog`, `/portal/catalog/[id]`, `/portal/applications`, and `/portal/applications/[id]`.
+- `/portal/login` redirect support and `/portal` links to catalog/applications.
+- Stage 10B documentation: `docs/stage-10b-portal-catalog-application.md`.
+
+Remaining after Stage 10B:
+
+- Product image/gallery publishing and customer publish status controls.
+- Customer final plan confirmation or rejection.
+- Electronic signature.
+- Online payment.
+- Customer bills, deposit, and entitlement center.
+- Accident report and rescue service cases.
+- WeChat OAuth/service account notification and real SMS provider.
+
+Next recommended stage: Stage 10C, focused on application progress refinement and customer final plan confirmation before order/contract/payment.

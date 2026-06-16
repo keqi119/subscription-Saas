@@ -636,3 +636,17 @@ Required rules:
 Stage 10.0 confirms that the existing system has a strong back-office operational core, but it does not yet have a production customer portal. The correct next step is Stage 10A: customer account and portal foundation.
 
 The customer-side architecture should be built as a new portal boundary over reusable domain services, not by directly exposing existing admin APIs.
+
+## 14. Stage 10A Status
+
+Stage 10A has implemented the customer account and portal foundation on `feature/stage10-customer-account-portal`.
+
+The implementation scope is intentionally limited to:
+
+- Customer account and verification-code models.
+- Customer JWT and `customer_access_token` cookie.
+- `CustomerAuthGuard` and `currentCustomer` request boundary.
+- `/api/portal/auth/*` and `/api/portal/me`.
+- H5 routes `/portal/login`, `/portal`, and `/portal/me`.
+
+Product browsing, self-service application submission, payment, e-sign, bills/entitlements, accident/rescue, real SMS, and real WeChat OAuth remain deferred to later Stage 10B-10H work.

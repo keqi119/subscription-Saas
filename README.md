@@ -55,6 +55,8 @@ Stage 9 / Production readiness：
 - `docs/release-notes-rc.md`：Stage 9 Release Notes 草稿
 - `docs/stage-9-launch-readiness-audit.zh-CN.md`：Stage 9A 中文审计报告
 - `docs/stage-9-launch-readiness-audit.md`：Stage 9A 英文审计报告
+- `docs/stage-10-customer-portal-audit.md`：Stage 10.0 客户门户 / A 线线上旅程接管审计
+- `docs/stage-10a-customer-account-portal.md`：Stage 10A 客户账号与门户基础
 
 ## 本地开发启动
 

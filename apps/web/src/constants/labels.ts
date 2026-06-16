@@ -318,6 +318,32 @@ export const PAYMENT_STATUS_LABELS: Record<string, string> = {
   PENDING_CONFIRM: "待确认"
 };
 
+export const PAYMENT_ORDER_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CLOSED: "已关闭",
+  CREATED: "已创建",
+  EXPIRED: "已过期",
+  FAILED: "支付失败",
+  PAID: "已支付",
+  PENDING: "待支付"
+};
+
+export const PAYMENT_CHANNEL_LABELS: Record<string, string> = {
+  ALIPAY_H5: "支付宝 H5",
+  BANK_TRANSFER: "银行转账",
+  MOCK: "模拟支付",
+  WECHAT_H5: "微信 H5",
+  WECHAT_JSAPI: "微信 JSAPI"
+};
+
+export const PAYMENT_PROVIDER_LABELS: Record<string, string> = {
+  ALIPAY: "支付宝",
+  BANK_TRANSFER: "银行转账",
+  MOCK: "Mock 支付",
+  OTHER: "其他",
+  WECHAT_PAY: "微信支付"
+};
+
 export const DEPOSIT_TRANSACTION_TYPE_LABELS: Record<string, string> = {
   COLLECT: "收取",
   DEDUCT: "扣减",

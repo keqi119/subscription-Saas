@@ -363,6 +363,38 @@ enum PaymentStatus {
   @@map("payment_status")
 }
 
+enum PaymentProviderType {
+  MOCK
+  WECHAT_PAY
+  ALIPAY
+  BANK_TRANSFER
+  OTHER
+
+  @@map("payment_provider_type")
+}
+
+enum PaymentChannel {
+  MOCK
+  WECHAT_JSAPI
+  WECHAT_H5
+  ALIPAY_H5
+  BANK_TRANSFER
+
+  @@map("payment_channel")
+}
+
+enum PaymentOrderStatus {
+  CREATED
+  PENDING
+  PAID
+  FAILED
+  CLOSED
+  CANCELLED
+  EXPIRED
+
+  @@map("payment_order_status")
+}
+
 enum DepositTransactionType {
   COLLECT
   FREEZE
@@ -1217,6 +1249,7 @@ model Customer {
   returns          VehicleReturn[]
   receivableBills  ReceivableBill[]
   paymentRecords   PaymentRecord[]
+  paymentOrders     PaymentOrder[]
   paymentWriteOffs PaymentWriteOff[]
   depositLedgers   DepositLedger[]
   collectionCases   CollectionCase[]
@@ -2643,6 +2676,7 @@ model SubscriptionOrder {
   returnDamages              VehicleReturnDamage[]
   receivableBills            ReceivableBill[]
   paymentRecords             PaymentRecord[]
+  paymentOrders              PaymentOrder[]
   paymentWriteOffs           PaymentWriteOff[]
   depositLedgers             DepositLedger[]
   collectionCases            CollectionCase[]
@@ -2803,6 +2837,7 @@ model ReceivableBill {
   snapshot        Json?
   remark          String?           @db.Text
   writeOffs       PaymentWriteOff[]
+  paymentOrderItems PaymentOrderItem[]
   depositLedgers  DepositLedger[]
   collectionCaseBills CollectionCaseBill[]
   revenueRightAssignments RevenueRightAssignment[]
@@ -2836,6 +2871,7 @@ model PaymentRecord {
   paymentProofUrls Json?             @map("payment_proof_urls")
   remark           String?           @db.Text
   writeOffs        PaymentWriteOff[]
+  paymentOrder     PaymentOrder?
   depositLedgers   DepositLedger[]
   createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -2848,6 +2884,95 @@ model PaymentRecord {
   @@index([paymentStatus])
   @@index([receivedAt])
   @@map("payment_record")
+}
+
+model PaymentOrder {
+  id                    String              @id @default(uuid()) @db.Uuid
+  paymentOrderNo        String              @unique @map("payment_order_no") @db.VarChar(64)
+  customerId            String?             @map("customer_id") @db.Uuid
+  customer              Customer?           @relation(fields: [customerId], references: [id])
+  orderId               String?             @map("order_id") @db.Uuid
+  order                 SubscriptionOrder?  @relation(fields: [orderId], references: [id])
+  paymentRecordId       String?             @unique @map("payment_record_id") @db.Uuid
+  paymentRecord         PaymentRecord?      @relation(fields: [paymentRecordId], references: [id])
+  provider              PaymentProviderType
+  paymentChannel        PaymentChannel      @map("payment_channel")
+  paymentStatus         PaymentOrderStatus  @default(CREATED) @map("payment_status")
+  amount                BigInt
+  paidAmount            BigInt              @default(0) @map("paid_amount")
+  subject               String?             @db.VarChar(255)
+  description           String?             @db.Text
+  providerTradeNo       String?             @map("provider_trade_no") @db.VarChar(128)
+  providerPrepayId      String?             @map("provider_prepay_id") @db.VarChar(128)
+  providerTransactionId String?             @map("provider_transaction_id") @db.VarChar(128)
+  cashierUrl            String?             @map("cashier_url") @db.Text
+  cashierUrlExpiresAt   DateTime?           @map("cashier_url_expires_at") @db.Timestamptz(6)
+  clientIp              String?             @map("client_ip") @db.VarChar(64)
+  userAgent             String?             @map("user_agent") @db.VarChar(255)
+  requestSnapshot       Json?               @map("request_snapshot")
+  responseSnapshot      Json?               @map("response_snapshot")
+  callbackSnapshot      Json?               @map("callback_snapshot")
+  errorSnapshot         Json?               @map("error_snapshot")
+  paidAt                DateTime?           @map("paid_at") @db.Timestamptz(6)
+  closedAt              DateTime?           @map("closed_at") @db.Timestamptz(6)
+  cancelledAt           DateTime?           @map("cancelled_at") @db.Timestamptz(6)
+  expiredAt             DateTime?           @map("expired_at") @db.Timestamptz(6)
+  createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy             String?             @map("created_by") @db.Uuid
+  updatedBy             String?             @map("updated_by") @db.Uuid
+  deletedAt             DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  items                 PaymentOrderItem[]
+  callbacks             PaymentCallbackLog[]
+
+  @@index([customerId])
+  @@index([orderId])
+  @@index([provider])
+  @@index([paymentChannel])
+  @@index([paymentStatus])
+  @@index([providerTransactionId])
+  @@index([createdAt])
+  @@map("payment_order")
+}
+
+model PaymentOrderItem {
+  id             String          @id @default(uuid()) @db.Uuid
+  paymentOrderId String          @map("payment_order_id") @db.Uuid
+  paymentOrder   PaymentOrder    @relation(fields: [paymentOrderId], references: [id])
+  billId         String          @map("bill_id") @db.Uuid
+  bill           ReceivableBill  @relation(fields: [billId], references: [id])
+  amount         BigInt
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt      DateTime?       @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([paymentOrderId])
+  @@index([billId])
+  @@map("payment_order_item")
+}
+
+model PaymentCallbackLog {
+  id                    String              @id @default(uuid()) @db.Uuid
+  paymentOrderId        String?             @map("payment_order_id") @db.Uuid
+  paymentOrder          PaymentOrder?       @relation(fields: [paymentOrderId], references: [id])
+  provider              PaymentProviderType
+  eventType             String?             @map("event_type") @db.VarChar(128)
+  providerTradeNo       String?             @map("provider_trade_no") @db.VarChar(128)
+  providerTransactionId String?             @map("provider_transaction_id") @db.VarChar(128)
+  payload               Json?
+  verified              Boolean             @default(false)
+  handled               Boolean             @default(false)
+  errorMessage          String?             @map("error_message") @db.Text
+  receivedAt            DateTime            @default(now()) @map("received_at") @db.Timestamptz(6)
+  handledAt             DateTime?           @map("handled_at") @db.Timestamptz(6)
+
+  @@index([paymentOrderId])
+  @@index([provider])
+  @@index([providerTradeNo])
+  @@index([providerTransactionId])
+  @@index([eventType])
+  @@index([receivedAt])
+  @@map("payment_callback_log")
 }
 
 model PaymentWriteOff {

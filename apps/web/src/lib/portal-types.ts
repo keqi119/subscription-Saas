@@ -252,3 +252,68 @@ export interface PortalSigningStartResponse {
   taskStatus: string;
 }
 
+export interface PortalPayableBill {
+  amount: number;
+  billId: string;
+  billNo: string;
+  billStatus: string;
+  billType: string;
+  dueDate: string | null;
+  orderId: string;
+  orderNo: string;
+  orderStatus: string;
+  paidAmount: number;
+  periodEnd: string | null;
+  periodStart: string | null;
+  remainingAmount: number;
+}
+
+export interface PortalPaymentOrder {
+  amount: number;
+  callbacks: PortalPaymentCallback[];
+  cashierUrl: string | null;
+  cashierUrlExpiresAt: string | null;
+  createdAt: string | null;
+  customerId: string | null;
+  id: string;
+  items: PortalPaymentOrderItem[];
+  orderId: string | null;
+  orderNo: string | null;
+  orderStatus: string | null;
+  paidAmount: number;
+  paidAt: string | null;
+  paymentChannel: string;
+  paymentOrderNo: string;
+  paymentRecord: {
+    id: string;
+    paymentNo: string;
+  } | null;
+  paymentStatus: string;
+  provider: string;
+  providerPrepayId: string | null;
+  providerTradeNo: string | null;
+  providerTransactionId: string | null;
+  subject: string | null;
+}
+
+export interface PortalPaymentOrderItem {
+  amount: number;
+  billId: string;
+  billNo: string;
+  billStatus: string;
+  billType: string;
+  dueDate: string | null;
+  id: string;
+  orderNo: string;
+  paidAmount: number;
+  remainingAmount: number;
+}
+
+export interface PortalPaymentCallback {
+  eventType: string | null;
+  handled: boolean;
+  id: string;
+  receivedAt: string | null;
+  verified: boolean;
+}
+

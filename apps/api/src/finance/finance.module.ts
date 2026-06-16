@@ -7,6 +7,7 @@ import { FinanceService } from "./finance.service";
 
 @Module({
   controllers: [FinanceController],
+  exports: [FinanceService],
   imports: [AuditModule, AuthModule],
   providers: [FinanceService]
 })

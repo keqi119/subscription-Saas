@@ -11,15 +11,19 @@ export class PortalApiError extends Error {
 
 export async function portalApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const { headers, ...restInit } = init ?? {};
 
   try {
     response = await fetch(`${PORTAL_API_BASE_URL}${path}`, {
+      ...restInit,
       credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        ...init?.headers
-      },
-      ...init
+      headers: isFormData
+        ? headers
+        : {
+            "Content-Type": "application/json",
+            ...headers
+          }
     });
   } catch {
     throw new PortalApiError("无法连接客户门户服务，请稍后重试。", 0);

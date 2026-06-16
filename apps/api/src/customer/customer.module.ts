@@ -10,6 +10,7 @@ import { CustomerService } from "./customer.service";
 
 @Module({
   controllers: [CustomerController],
+  exports: [CustomerService],
   imports: [PrismaModule, AuditModule, AuthModule, RiskModule, StorageModule],
   providers: [CustomerService]
 })

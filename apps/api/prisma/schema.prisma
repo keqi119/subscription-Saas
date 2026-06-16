@@ -74,6 +74,20 @@ enum CustomerStatus {
   @@map("customer_status")
 }
 
+enum CustomerAccountStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("customer_account_status")
+}
+
+enum CustomerVerificationCodePurpose {
+  LOGIN
+  BIND_PHONE
+
+  @@map("customer_verification_code_purpose")
+}
+
 enum FollowupType {
   PHONE
   WECHAT
@@ -1151,6 +1165,7 @@ model Customer {
   ownerUserId      String?             @map("owner_user_id") @db.Uuid
   ownerUser        User?               @relation("CustomerOwner", fields: [ownerUserId], references: [id])
   remark           String?             @db.Text
+  accounts         CustomerAccount[]
   identity         CustomerIdentity?
   profile          CustomerProfile?
   followups        CustomerFollowup[]
@@ -1181,6 +1196,53 @@ model Customer {
   @@index([ownerUserId])
   @@index([status])
   @@map("customer")
+}
+
+model CustomerAccount {
+  id              String                @id @default(uuid()) @db.Uuid
+  customerId      String                @map("customer_id") @db.Uuid
+  customer        Customer              @relation(fields: [customerId], references: [id])
+  phone           String                @unique @db.VarChar(32)
+  phoneVerifiedAt DateTime?             @map("phone_verified_at") @db.Timestamptz(6)
+  wechatOpenId    String?               @map("wechat_open_id") @db.VarChar(128)
+  wechatUnionId   String?               @map("wechat_union_id") @db.VarChar(128)
+  accountStatus   CustomerAccountStatus @default(ACTIVE) @map("account_status")
+  lastLoginAt     DateTime?             @map("last_login_at") @db.Timestamptz(6)
+  lastLoginIp     String?               @map("last_login_ip") @db.VarChar(64)
+  lastUserAgent   String?               @map("last_user_agent") @db.VarChar(255)
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?               @map("created_by") @db.Uuid
+  updatedBy       String?               @map("updated_by") @db.Uuid
+  deletedAt       DateTime?             @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([phone])
+  @@index([wechatOpenId])
+  @@index([wechatUnionId])
+  @@index([accountStatus])
+  @@map("customer_account")
+}
+
+model CustomerVerificationCode {
+  id           String                          @id @default(uuid()) @db.Uuid
+  phone        String                          @db.VarChar(32)
+  purpose      CustomerVerificationCodePurpose
+  codeHash     String                          @map("code_hash") @db.VarChar(128)
+  expiresAt    DateTime                        @map("expires_at") @db.Timestamptz(6)
+  consumedAt   DateTime?                       @map("consumed_at") @db.Timestamptz(6)
+  attemptCount Int                             @default(0) @map("attempt_count")
+  requestIp    String?                         @map("request_ip") @db.VarChar(64)
+  userAgent    String?                         @map("user_agent") @db.VarChar(255)
+  createdAt    DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime?                       @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([phone])
+  @@index([purpose])
+  @@index([expiresAt])
+  @@index([consumedAt])
+  @@map("customer_verification_code")
 }
 
 model CustomerIdentity {

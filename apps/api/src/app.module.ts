@@ -9,6 +9,7 @@ import { CustomerModule } from "./customer/customer.module";
 import { FinanceModule } from "./finance/finance.module";
 import { FinancingModule } from "./financing/financing.module";
 import { OrderModule } from "./order/order.module";
+import { PortalModule } from "./portal/portal.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { ProductModule } from "./product/product.module";
 import { ReportModule } from "./report/report.module";
@@ -33,6 +34,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     FinanceModule,
     FinancingModule,
     OrderModule,
+    PortalModule,
     ProductModule,
     ReportModule,
     ResidualMarketModule,

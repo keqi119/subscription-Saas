@@ -1,0 +1,116 @@
+"use client";
+
+import {
+  AlertOutlined,
+  AuditOutlined,
+  FileTextOutlined,
+  GiftOutlined,
+  LogoutOutlined,
+  ProfileOutlined,
+  SafetyOutlined,
+  ToolOutlined
+} from "@ant-design/icons";
+import { App, Button, Flex, List, Tag, Typography } from "antd";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+
+import { CUSTOMER_ACCOUNT_STATUS_LABELS } from "../../constants/labels";
+import { PortalApiError, portalApiFetch } from "../../lib/portal-api";
+
+interface PortalMe {
+  accountStatus: string;
+  customerAccountId: string;
+  customerId: string;
+  phone: string;
+}
+
+const portalEntries = [
+  { icon: <AuditOutlined />, title: "我的申请" },
+  { icon: <ProfileOutlined />, title: "我的订单" },
+  { icon: <FileTextOutlined />, title: "我的账单" },
+  { icon: <GiftOutlined />, title: "我的权益" },
+  { icon: <AlertOutlined />, title: "事故报案" },
+  { icon: <ToolOutlined />, title: "救援申请" }
+];
+
+export default function PortalHomePage() {
+  const router = useRouter();
+  const { message } = App.useApp();
+  const [me, setMe] = useState<PortalMe>();
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    portalApiFetch<PortalMe>("/portal/auth/me")
+      .then(setMe)
+      .catch((error) => {
+        if (error instanceof PortalApiError && error.status === 401) {
+          router.replace("/portal/login");
+          return;
+        }
+
+        void message.error(error instanceof PortalApiError ? error.message : "无法加载客户信息");
+      })
+      .finally(() => setLoading(false));
+  }, [message, router]);
+
+  async function logout() {
+    try {
+      await portalApiFetch("/portal/auth/logout", { method: "POST" });
+      router.replace("/portal/login");
+    } catch (error) {
+      void message.error(error instanceof PortalApiError ? error.message : "退出失败");
+    }
+  }
+
+  return (
+    <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "28px 18px" }}>
+      <section style={{ margin: "0 auto", maxWidth: 560 }}>
+        <Flex align="center" justify="space-between" style={{ marginBottom: 20 }}>
+          <div>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              客户门户
+            </Typography.Title>
+            <Typography.Text type="secondary">A 线线上订阅入口</Typography.Text>
+          </div>
+          <Button icon={<LogoutOutlined />} onClick={logout}>
+            退出
+          </Button>
+        </Flex>
+
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e5eaf2",
+            borderRadius: 8,
+            marginBottom: 16,
+            padding: 18
+          }}
+        >
+          <Flex align="center" gap={12}>
+            <SafetyOutlined style={{ color: "#1677ff", fontSize: 24 }} />
+            <div>
+              <Typography.Text strong>{loading ? "加载中" : me?.phone}</Typography.Text>
+              <div>
+                <Tag color="blue">
+                  {CUSTOMER_ACCOUNT_STATUS_LABELS[me?.accountStatus ?? ""] ?? "未登录"}
+                </Tag>
+              </div>
+            </div>
+          </Flex>
+        </section>
+
+        <List
+          bordered
+          dataSource={portalEntries}
+          loading={loading}
+          renderItem={(item) => (
+            <List.Item actions={[<Tag key="soon">即将上线</Tag>]}>
+              <List.Item.Meta avatar={item.icon} title={item.title} />
+            </List.Item>
+          )}
+          style={{ background: "#ffffff", borderRadius: 8 }}
+        />
+      </section>
+    </main>
+  );
+}

@@ -58,6 +58,16 @@ export const STATUS_LABELS: Record<string, string> = {
   UNDER_REVIEW: "审批中"
 };
 
+export const CUSTOMER_ACCOUNT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "正常",
+  DISABLED: "已禁用"
+};
+
+export const CUSTOMER_VERIFICATION_CODE_PURPOSE_LABELS: Record<string, string> = {
+  BIND_PHONE: "绑定手机号",
+  LOGIN: "登录"
+};
+
 export const VEHICLE_STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "可租用",
   DRAFT: "草稿",

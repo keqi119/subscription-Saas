@@ -1,6 +1,6 @@
 import { ApplicationMaterialType } from "@prisma/client";
 import { Type } from "class-transformer";
-import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Min } from "class-validator";
+import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength, Min } from "class-validator";
 
 export class CreatePortalSelfServiceApplicationDto {
   @IsUUID()
@@ -26,5 +26,12 @@ export class UploadPortalApplicationMaterialDto {
   @IsOptional()
   @IsString()
   remark?: string;
+}
+
+export class RejectPortalFinalPlanDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason!: string;
 }
 

@@ -21,6 +21,7 @@ import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
 import { PortalApplicationService } from "./portal-application.service";
 import {
   CreatePortalSelfServiceApplicationDto,
+  RejectPortalFinalPlanDto,
   UploadPortalApplicationMaterialDto
 } from "./portal-application.dto";
 
@@ -53,6 +54,50 @@ export class PortalApplicationController {
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer
   ) {
     return this.portalApplicationService.getApplication(id, currentCustomer);
+  }
+
+  @Get("applications/:id/progress")
+  getApplicationProgress(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
+  ) {
+    return this.portalApplicationService.getApplicationProgress(id, currentCustomer);
+  }
+
+  @Get("applications/:id/final-plan")
+  getFinalPlan(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
+  ) {
+    return this.portalApplicationService.getFinalPlan(id, currentCustomer);
+  }
+
+  @Post("applications/:id/final-plan/confirm")
+  confirmFinalPlan(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Req() request: Request
+  ) {
+    return this.portalApplicationService.confirmFinalPlan(
+      id,
+      currentCustomer,
+      requestContext(request)
+    );
+  }
+
+  @Post("applications/:id/final-plan/reject")
+  rejectFinalPlan(
+    @Param("id") id: string,
+    @Body() dto: RejectPortalFinalPlanDto,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Req() request: Request
+  ) {
+    return this.portalApplicationService.rejectFinalPlan(
+      id,
+      dto,
+      currentCustomer,
+      requestContext(request)
+    );
   }
 
   @Post("applications/:id/cancel")

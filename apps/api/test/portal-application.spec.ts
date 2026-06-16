@@ -1,4 +1,5 @@
 import {
+  ApplicationActionType,
   ApplicationSource,
   ApplicationStatus,
   DepositStatus,
@@ -212,6 +213,154 @@ describe("PortalApplicationService", () => {
       service.cancelApplication("application-1", currentCustomer("customer-1"), requestContext())
     ).rejects.toBeInstanceOf(BadRequestException);
   });
+
+  it("returns a customer-readable progress timeline for the owning customer", async () => {
+    const { service } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication()
+    });
+
+    const result = await service.getApplicationProgress("application-1", currentCustomer("customer-1"));
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        applicationId: "application-1",
+        currentStep: "FINAL_PLAN",
+        nextAction: "CONFIRM_FINAL_PLAN",
+        overallStatus: "PENDING_CUSTOMER_CONFIRMATION"
+      })
+    );
+    expect(result.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "FINAL_PLAN", status: "CURRENT" })
+      ])
+    );
+  });
+
+  it("blocks progress access to another customer's application", async () => {
+    const { service } = createPortalApplicationFixture();
+
+    await expect(
+      service.getApplicationProgress("application-1", currentCustomer("customer-other"))
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("returns NOT_READY before the final plan has been generated", async () => {
+    const { service } = createPortalApplicationFixture();
+
+    const result = await service.getFinalPlan("application-1", currentCustomer("customer-1"));
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        applicationId: "application-1",
+        finalPlanStatus: "NOT_READY",
+        nextAction: "WAIT_REVIEW"
+      })
+    );
+  });
+
+  it("returns a safe final plan view without internal vehicle fields", async () => {
+    const { service } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication()
+    });
+
+    const result = await service.getFinalPlan("application-1", currentCustomer("customer-1"));
+    const serialized = JSON.stringify(result);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        finalPlanStatus: "PENDING_CONFIRM",
+        pricing: expect.objectContaining({
+          finalDepositAmount: 300000,
+          monthlyFeeAmount: 735000
+        })
+      })
+    );
+    expect(serialized).not.toContain("VIN1234567890");
+    expect(serialized).not.toContain("沪A12345");
+    expect(serialized).not.toContain("purchasePriceAmount");
+    expect(serialized).not.toContain("currentSalePriceAmount");
+  });
+
+  it("confirms the customer's own final plan without creating an official order", async () => {
+    const { application, customerService, prisma, service, tx } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication()
+    });
+
+    const result = await service.confirmFinalPlan("application-1", currentCustomer("customer-1"), requestContext());
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        finalPlanStatus: PlanConfirmStatus.CONFIRMED,
+        nextAction: "GO_CONTRACT_PENDING_BACKOFFICE",
+        order: null
+      })
+    );
+    expect(application.planConfirmStatus).toBe(PlanConfirmStatus.CONFIRMED);
+    expect(application.finalPlanConfirmedAt).toBeInstanceOf(Date);
+    expect(customerService.createOrderFromApplication).not.toHaveBeenCalled();
+    expect(tx.applicationActionLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          actionType: ApplicationActionType.APPROVE,
+          comment: "客户确认最终方案"
+        })
+      })
+    );
+    expect(prisma.auditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityType: "portal_application_final_plan",
+        operatorId: "account-1"
+      })
+    );
+  });
+
+  it("rejects duplicate final plan confirmation", async () => {
+    const { service } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication({
+        finalPlanConfirmedAt: new Date("2026-06-16T11:00:00.000Z"),
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      })
+    });
+
+    await expect(
+      service.confirmFinalPlan("application-1", currentCustomer("customer-1"), requestContext())
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("blocks final plan confirmation for another customer's application", async () => {
+    const { service } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication()
+    });
+
+    await expect(
+      service.confirmFinalPlan("application-1", currentCustomer("customer-other"), requestContext())
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("records customer final plan rejection without creating an official order", async () => {
+    const { application, customerService, service } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication()
+    });
+
+    const result = await service.rejectFinalPlan(
+      "application-1",
+      { reason: "押金过高，暂不接受" },
+      currentCustomer("customer-1"),
+      requestContext()
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        finalPlanStatus: PlanConfirmStatus.REJECTED,
+        nextAction: "REJECTED",
+        rejectedReason: "押金过高，暂不接受"
+      })
+    );
+    expect(application.planConfirmStatus).toBe(PlanConfirmStatus.REJECTED);
+    expect(application.rejectedReason).toBe("押金过高，暂不接受");
+    expect(application.orders).toHaveLength(0);
+    expect(customerService.createOrderFromApplication).not.toHaveBeenCalled();
+  });
 });
 
 function createCatalogPrisma() {
@@ -285,6 +434,7 @@ function createPortalApplicationFixture(overrides: { application?: Record<string
       (application as { status: ApplicationStatus }).status = ApplicationStatus.CANCELLED;
       return application;
     }),
+    createOrderFromApplication: vi.fn(),
     createSelfServiceApplication: vi.fn(async () => ({
       applicationId: "application-created",
       applicationNo: "APP202606160001",
@@ -364,6 +514,26 @@ function createPortalTransaction(application: ReturnType<typeof createApplicatio
   };
 
   return {
+    application: {
+      findFirstOrThrow: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        if (where.id !== application.id || where.customerId !== application.customerId) {
+          throw new Error("Application not found");
+        }
+        return application;
+      }),
+      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+        if (
+          where.id !== application.id ||
+          where.customerId !== application.customerId ||
+          where.planConfirmStatus !== application.planConfirmStatus
+        ) {
+          return { count: 0 };
+        }
+
+        Object.assign(application, data);
+        return { count: 1 };
+      })
+    },
     applicationActionLog: {
       create: vi.fn(async () => ({}))
     },
@@ -381,6 +551,83 @@ function createPortalTransaction(application: ReturnType<typeof createApplicatio
         objectKey: "materials/application-1/file.txt",
         originalName: "id-card.txt"
       }))
+    }
+  };
+}
+
+function readyFinalPlanApplication(overrides: Record<string, unknown> = {}) {
+  return {
+    approvedAt: new Date("2026-06-16T10:30:00.000Z"),
+    creditReviewStatus: OrderReviewStatus.APPROVED,
+    depositStatus: DepositStatus.CONFIRMED,
+    finalDepositAmount: 300000n,
+    finalPeriodMonths: 12,
+    finalPlanSnapshot: createFinalPlanSnapshot(),
+    finalQuoteSnapshot: createFinalPlanSnapshot(),
+    finalSubscriptionPlanId: "plan-1",
+    finalVehicleBaseFeeAmount: 700000n,
+    finalVehicleId: "vehicle-1",
+    materialReviewStatus: OrderReviewStatus.APPROVED,
+    planConfirmStatus: PlanConfirmStatus.PENDING,
+    productReviewStatus: OrderReviewStatus.APPROVED,
+    status: ApplicationStatus.APPROVED,
+    vehicleReviewStatus: OrderReviewStatus.APPROVED,
+    ...overrides
+  };
+}
+
+function createFinalPlanSnapshot() {
+  return {
+    applicationId: "application-1",
+    applicationNo: "APP202606160001",
+    applicationSource: ApplicationSource.SELF_SERVICE,
+    customerId: "customer-1",
+    depositAmount: 300000,
+    depositStatus: DepositStatus.CONFIRMED,
+    finalPlanConfirmedAt: null,
+    packageSnapshot: {
+      benefitPackage: { packageName: "基础权益包" },
+      energyPackage: { packageName: "补能包" },
+      mileagePackage: { packageName: "1500 公里" },
+      pricing: {
+        currentSalePriceAmount: 20000000,
+        monthlyFeeAmount: 735000,
+        vehicleBaseFeeAmount: 700000
+      },
+      subscriptionPlan: {
+        planName: "安心订阅 12 个月",
+        planNo: "PLAN001"
+      },
+      vehiclePackage: { packageName: "ES6 基础车包" }
+    },
+    periodMonths: 12,
+    planConfirmStatus: PlanConfirmStatus.PENDING,
+    pricing: {
+      currentSalePriceAmount: 20000000,
+      monthlyFeeAmount: 735000,
+      vehicleBaseFeeAmount: 700000
+    },
+    subscriptionPlan: {
+      planName: "安心订阅 12 个月",
+      planNo: "PLAN001"
+    },
+    subscriptionPlanId: "plan-1",
+    vehicleId: "vehicle-1",
+    vehicleSnapshot: {
+      assetLocation: "上海",
+      batteryCapacityKwh: 75,
+      batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+      batteryUsageTypeLabel: "电池买断",
+      brand: "NIO",
+      currentMileageKm: 12000,
+      currentSalePriceAmount: 20000000,
+      modelYear: 2025,
+      plateNo: "沪A12345",
+      purchasePriceAmount: 26000000,
+      series: "ES6",
+      vehicleModel: VehicleModel.ES6,
+      vehicleNo: "VH001",
+      vin: "VIN1234567890"
     }
   };
 }

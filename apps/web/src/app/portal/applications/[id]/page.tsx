@@ -2,6 +2,7 @@
 
 import {
   ArrowLeftOutlined,
+  CheckCircleOutlined,
   FileAddOutlined,
   FileSearchOutlined,
   StopOutlined,
@@ -11,6 +12,7 @@ import {
   Alert,
   App,
   Button,
+  Descriptions,
   Divider,
   Empty,
   Flex,
@@ -18,17 +20,26 @@ import {
   Select,
   Space,
   Spin,
+  Steps,
   Tag,
   Typography
 } from "antd";
 import { useParams, useRouter } from "next/navigation";
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 
-import { STATUS_LABELS } from "../../../../constants/labels";
+import {
+  PORTAL_FINAL_PLAN_STATUS_LABELS,
+  PORTAL_NEXT_ACTION_LABELS,
+  PORTAL_PROGRESS_STATUS_LABELS,
+  STATUS_LABELS
+} from "../../../../constants/labels";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import {
   PortalApplicationDetail,
-  PortalApplicationMaterialGroup
+  PortalApplicationMaterialGroup,
+  PortalApplicationProgress,
+  PortalApplicationProgressStep,
+  PortalFinalPlan
 } from "../../../../lib/portal-types";
 
 const MATERIAL_TYPE_OPTIONS = [
@@ -47,9 +58,12 @@ export default function PortalApplicationDetailPage() {
   const { message, modal } = App.useApp();
   const inputRef = useRef<HTMLInputElement>(null);
   const [application, setApplication] = useState<PortalApplicationDetail>();
+  const [progress, setProgress] = useState<PortalApplicationProgress>();
+  const [finalPlan, setFinalPlan] = useState<PortalFinalPlan>();
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [canceling, setCanceling] = useState(false);
+  const [finalPlanSubmitting, setFinalPlanSubmitting] = useState(false);
   const [materialType, setMaterialType] = useState("ID_CARD");
   const [remark, setRemark] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -61,8 +75,14 @@ export default function PortalApplicationDetailPage() {
 
     setLoading(true);
     try {
-      const row = await portalApiFetch<PortalApplicationDetail>(`/portal/applications/${params.id}`);
+      const [row, progressRow, finalPlanRow] = await Promise.all([
+        portalApiFetch<PortalApplicationDetail>(`/portal/applications/${params.id}`),
+        portalApiFetch<PortalApplicationProgress>(`/portal/applications/${params.id}/progress`),
+        portalApiFetch<PortalFinalPlan>(`/portal/applications/${params.id}/final-plan`)
+      ]);
       setApplication(row);
+      setProgress(progressRow);
+      setFinalPlan(finalPlanRow);
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
         router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/applications/${params.id}`)}`);
@@ -142,6 +162,81 @@ export default function PortalApplicationDetailPage() {
     }
   }
 
+  function openConfirmFinalPlanModal() {
+    modal.confirm({
+      content: "确认后将进入合同签署流程。请仔细核对车辆、套餐、月租、押金和订阅周期。",
+      okText: "确认最终方案",
+      onOk: confirmFinalPlan,
+      title: "确认最终方案",
+      type: "confirm"
+    });
+  }
+
+  async function confirmFinalPlan() {
+    if (!params.id) {
+      return;
+    }
+
+    try {
+      setFinalPlanSubmitting(true);
+      await portalApiFetch(`/portal/applications/${params.id}/final-plan/confirm`, { method: "POST" });
+      void message.success("已确认最终方案，等待合同签署");
+      await loadApplication();
+    } catch (error) {
+      void message.error(error instanceof PortalApiError ? error.message : "确认最终方案失败");
+      throw error;
+    } finally {
+      setFinalPlanSubmitting(false);
+    }
+  }
+
+  function openRejectFinalPlanModal() {
+    let reason = "";
+    modal.confirm({
+      content: (
+        <Input.TextArea
+          autoSize={{ maxRows: 5, minRows: 3 }}
+          onChange={(event) => {
+            reason = event.target.value;
+          }}
+          placeholder="请填写暂不接受方案的原因"
+        />
+      ),
+      okButtonProps: { danger: true },
+      okText: "提交原因",
+      onOk: async () => {
+        if (!reason.trim()) {
+          void message.error("请填写拒绝原因");
+          throw new Error("reject reason required");
+        }
+        await rejectFinalPlan(reason.trim());
+      },
+      title: "暂不接受方案",
+      type: "warning"
+    });
+  }
+
+  async function rejectFinalPlan(reason: string) {
+    if (!params.id) {
+      return;
+    }
+
+    try {
+      setFinalPlanSubmitting(true);
+      await portalApiFetch(`/portal/applications/${params.id}/final-plan/reject`, {
+        body: JSON.stringify({ reason }),
+        method: "POST"
+      });
+      void message.success("已提交反馈，平台将继续处理");
+      await loadApplication();
+    } catch (error) {
+      void message.error(error instanceof PortalApiError ? error.message : "提交反馈失败");
+      throw error;
+    } finally {
+      setFinalPlanSubmitting(false);
+    }
+  }
+
   if (loading) {
     return (
       <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: 32 }}>
@@ -159,6 +254,10 @@ export default function PortalApplicationDetailPage() {
       </main>
     );
   }
+
+  const canConfirmFinalPlan = finalPlan?.finalPlanStatus === "PENDING_CONFIRM" &&
+    progress?.nextAction === "CONFIRM_FINAL_PLAN";
+  const canRejectFinalPlan = canConfirmFinalPlan;
 
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
@@ -181,10 +280,63 @@ export default function PortalApplicationDetailPage() {
             <Space size={[6, 6]} wrap>
               <Tag color="blue">{STATUS_LABELS[application.status] ?? application.status}</Tag>
               <Tag>{STATUS_LABELS[application.depositStatus] ?? application.depositStatus}</Tag>
+              <Tag>{PORTAL_NEXT_ACTION_LABELS[progress?.nextAction ?? "WAIT_REVIEW"] ?? progress?.nextAction}</Tag>
             </Space>
           </Flex>
           <Alert message={application.nextStepHint} showIcon style={{ marginTop: 16 }} type="info" />
+          {progress?.nextAction === "CONFIRM_FINAL_PLAN" ? (
+            <Alert
+              message="最终方案已生成，请确认车辆、套餐、月租、押金和订阅周期。"
+              showIcon
+              style={{ marginTop: 12 }}
+              type="warning"
+            />
+          ) : null}
+          {progress?.nextAction === "GO_CONTRACT_PENDING_BACKOFFICE" ? (
+            <Alert
+              message="已确认最终方案，等待平台生成合同。"
+              showIcon
+              style={{ marginTop: 12 }}
+              type="success"
+            />
+          ) : null}
         </section>
+
+        <section style={sectionStyle}>
+          <Typography.Title level={4} style={{ marginTop: 0 }}>
+            申请进度
+          </Typography.Title>
+          {progress ? (
+            <Steps
+              current={Math.max(0, progress.steps.findIndex((step) => step.status === "CURRENT"))}
+              direction="vertical"
+              items={progress.steps.map((step) => ({
+                description: <ProgressStepDescription step={step} />,
+                status: mapStepStatus(step.status),
+                title: step.label
+              }))}
+            />
+          ) : (
+            <Empty description="暂无进度" />
+          )}
+        </section>
+
+        {progress?.nextAction === "UPLOAD_MATERIAL" ? (
+          <section style={sectionStyle}>
+            <Typography.Title level={4} style={{ marginTop: 0 }}>
+              材料补充提示
+            </Typography.Title>
+            <Space direction="vertical" style={{ width: "100%" }}>
+              {progress.materialSupplementHints.length > 0 ? (
+                progress.materialSupplementHints.map((hint) => (
+                  <Alert key={hint.materialGroupId} message={hint.materialName} description={hint.message} showIcon type="warning" />
+                ))
+              ) : (
+                <Alert message="请根据平台提示补充材料。" showIcon type="warning" />
+              )}
+            </Space>
+          </section>
+        ) : null}
 
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -201,9 +353,100 @@ export default function PortalApplicationDetailPage() {
           </Space>
         </section>
 
+        {finalPlan && finalPlan.finalPlanStatus !== "NOT_READY" ? (
+          <section style={sectionStyle}>
+            <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+              <div>
+                <Typography.Title level={4} style={{ margin: 0 }}>
+                  最终方案
+                </Typography.Title>
+                <Typography.Text type="secondary">
+                  {PORTAL_FINAL_PLAN_STATUS_LABELS[finalPlan.finalPlanStatus] ?? finalPlan.finalPlanStatus}
+                </Typography.Text>
+              </div>
+              <Tag color={finalPlan.finalPlanStatus === "CONFIRMED" ? "green" : finalPlan.finalPlanStatus === "REJECTED" ? "red" : "gold"}>
+                {PORTAL_FINAL_PLAN_STATUS_LABELS[finalPlan.finalPlanStatus] ?? finalPlan.finalPlanStatus}
+              </Tag>
+            </Flex>
+            <Divider />
+            <Descriptions
+              column={1}
+              items={[
+                {
+                  label: "车辆",
+                  children: finalPlan.vehicle?.displayName || "待确认"
+                },
+                {
+                  label: "所在城市",
+                  children: finalPlan.vehicle?.city ?? "-"
+                },
+                {
+                  label: "套餐",
+                  children: finalPlan.subscriptionPlan?.planName ?? "-"
+                },
+                {
+                  label: "订阅周期",
+                  children: `${finalPlan.subscriptionPlan?.periodMonths ?? "-"} 个月`
+                },
+                {
+                  label: "月租",
+                  children: formatMoney(finalPlan.pricing?.monthlyFeeAmount)
+                },
+                {
+                  label: "押金",
+                  children: formatMoney(finalPlan.pricing?.finalDepositAmount)
+                }
+              ]}
+            />
+            {finalPlan.subscriptionPlan?.packageSummary.length ? (
+              <Space size={[6, 6]} style={{ marginTop: 12 }} wrap>
+                {finalPlan.subscriptionPlan.packageSummary.map((item) => (
+                  <Tag key={item}>{item}</Tag>
+                ))}
+              </Space>
+            ) : null}
+            {finalPlan.changes?.length ? (
+              <Space direction="vertical" style={{ marginTop: 14, width: "100%" }}>
+                {finalPlan.changes.map((change) => (
+                  <Alert key={change.field} message={change.label} description={change.message} showIcon type="info" />
+                ))}
+              </Space>
+            ) : null}
+            {finalPlan.importantNotes?.length ? (
+              <Space direction="vertical" style={{ marginTop: 14, width: "100%" }}>
+                {finalPlan.importantNotes.map((note) => (
+                  <Alert key={note} message={note} showIcon type={finalPlan.finalPlanStatus === "CONFIRMED" ? "success" : "warning"} />
+                ))}
+              </Space>
+            ) : null}
+            {finalPlan.rejectedReason ? (
+              <Alert message="拒绝原因" description={finalPlan.rejectedReason} showIcon style={{ marginTop: 14 }} type="warning" />
+            ) : null}
+            <Flex gap={10} justify="flex-end" style={{ marginTop: 16 }} wrap="wrap">
+              <Button
+                danger
+                disabled={!canRejectFinalPlan}
+                loading={finalPlanSubmitting}
+                onClick={openRejectFinalPlanModal}
+              >
+                暂不接受方案
+              </Button>
+              <Button
+                disabled={!canConfirmFinalPlan}
+                icon={<CheckCircleOutlined />}
+                loading={finalPlanSubmitting}
+                onClick={openConfirmFinalPlanModal}
+                type="primary"
+              >
+                确认最终方案
+              </Button>
+            </Flex>
+          </section>
+        ) : null}
+
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
-            审核进度
+            审核状态
           </Typography.Title>
           <Space size={[8, 8]} wrap>
             <ReviewTag label="材料" value={application.reviewStatus.material} />
@@ -259,7 +502,7 @@ export default function PortalApplicationDetailPage() {
               <Typography.Title level={4} style={{ margin: 0 }}>
                 申请操作
               </Typography.Title>
-              <Typography.Text type="secondary">当前阶段只支持取消待审核申请</Typography.Text>
+              <Typography.Text type="secondary">当前阶段支持取消待审核申请</Typography.Text>
             </div>
             <Button
               danger
@@ -274,6 +517,18 @@ export default function PortalApplicationDetailPage() {
         </section>
       </section>
     </main>
+  );
+}
+
+function ProgressStepDescription({ step }: { step: PortalApplicationProgressStep }) {
+  return (
+    <Space direction="vertical" size={4}>
+      <Typography.Text type="secondary">
+        {PORTAL_PROGRESS_STATUS_LABELS[step.status] ?? step.status}
+      </Typography.Text>
+      {step.message ? <Typography.Text type="secondary">{step.message}</Typography.Text> : null}
+      {step.time ? <Typography.Text type="secondary">{formatTime(step.time)}</Typography.Text> : null}
+    </Space>
   );
 }
 
@@ -315,6 +570,33 @@ function MaterialGroup({ group }: { group: PortalApplicationMaterialGroup }) {
       </Space>
     </div>
   );
+}
+
+function mapStepStatus(status: PortalApplicationProgressStep["status"]) {
+  if (status === "DONE") {
+    return "finish" as const;
+  }
+  if (status === "FAILED") {
+    return "error" as const;
+  }
+  if (status === "CURRENT") {
+    return "process" as const;
+  }
+  return "wait" as const;
+}
+
+function formatMoney(amount?: number | null) {
+  if (amount === null || amount === undefined) {
+    return "-";
+  }
+  return `¥${(amount / 100).toLocaleString("zh-CN", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2
+  })}`;
+}
+
+function formatTime(value: string) {
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
 function buildPreviewUrl(previewUrl: string) {

@@ -120,3 +120,71 @@ export interface PortalApplicationMaterialFile {
   uploadedAt: string;
 }
 
+export interface PortalApplicationProgress {
+  applicationId: string;
+  applicationNo: string;
+  currentStep: string;
+  materialSupplementHints: PortalApplicationMaterialSupplementHint[];
+  nextAction: string;
+  overallStatus: string;
+  steps: PortalApplicationProgressStep[];
+}
+
+export interface PortalApplicationProgressStep {
+  key: string;
+  label: string;
+  message?: string;
+  status: "DONE" | "CURRENT" | "FAILED" | "PENDING";
+  time: string | null;
+}
+
+export interface PortalApplicationMaterialSupplementHint {
+  materialGroupId: string;
+  materialName: string;
+  materialType: string;
+  message: string;
+}
+
+export interface PortalFinalPlan {
+  applicationId: string;
+  applicationNo: string;
+  changes?: PortalFinalPlanChange[];
+  finalPlanStatus: "NOT_READY" | "PENDING_CONFIRM" | "CONFIRMED" | "REJECTED";
+  importantNotes?: string[];
+  nextAction: string;
+  order?: null | {
+    orderId: string;
+    orderNo: string;
+  };
+  pricing?: {
+    currency: string;
+    finalDepositAmount: number | null;
+    monthlyFeeAmount: number | null;
+  };
+  rejectedReason?: string | null;
+  subscriptionPlan?: {
+    packageSummary: string[];
+    periodMonths: number | null;
+    planName: string | null;
+    planNo: string | null;
+  };
+  vehicle?: {
+    batteryCapacityKwh: number | null;
+    batteryUsageType: string | null;
+    batteryUsageTypeLabel: string | null;
+    brand: string | null;
+    city: string | null;
+    currentMileageKm: number | null;
+    displayName: string;
+    model: string | null;
+    modelYear: number | null;
+    series: string | null;
+  };
+}
+
+export interface PortalFinalPlanChange {
+  field: string;
+  label: string;
+  message: string;
+}
+

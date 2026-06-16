@@ -832,7 +832,7 @@ export default function ApplicationDetailPage() {
     setSubmitting(true);
     try {
       await apiFetch<ApplicationDetail>(`/applications/${detail.id}/finalize-plan`, { method: "POST" });
-      void message.success("后台已代客户确认最终方案（临时）");
+      void message.success("最终方案已生成，等待客户确认");
       await loadDetail();
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -1316,15 +1316,15 @@ export default function ApplicationDetailPage() {
                     items={[
                       { label: "资料审核", children: "使用资料清单逐项审核" },
                       { label: "客户资质 / 授信", children: "使用顶部通过打开风控审核弹窗" },
-                      { label: "产品匹配", children: "生成订阅报价 / 确认最终方案时自动校验" },
-                      { label: "车辆库存", children: "生成订阅报价 / 确认最终方案时自动校验审核占用" },
+                      { label: "产品匹配", children: "生成订阅报价 / 生成最终方案时自动校验" },
+                      { label: "车辆库存", children: "生成订阅报价 / 生成最终方案时自动校验审核占用" },
                       { label: "复购简易审核扩展", children: "保留历史评级参考，后续可在有效期内走简易审核通道" },
-                      { label: "最终方案确认", children: "正式流程由客户前端确认，当前仅用于阶段测试" }
+                      { label: "最终方案确认", children: "后台生成最终方案后，由客户在门户二次确认" }
                     ]}
                   />
                   {isSelfServiceApplication ? (
                     <Alert
-                      message="正式流程中，最终方案应由客户在小程序 / App 前端确认。当前后台按钮仅用于阶段测试和人工验收。"
+                      message="后台按钮仅生成最终方案并进入客户待确认状态；客户确认后，后台才能生成正式订单。"
                       showIcon
                       type="warning"
                     />
@@ -1336,7 +1336,7 @@ export default function ApplicationDetailPage() {
                       onClick={finalizeApplicationPlan}
                       type="primary"
                     >
-                      后台代客户确认最终方案（临时）
+                      生成最终方案并待客户确认
                     </ActionButton>
                     <ActionButton
                       availability={createOrderFromApplicationAvailability}

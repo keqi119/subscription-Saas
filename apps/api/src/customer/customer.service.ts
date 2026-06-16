@@ -750,18 +750,23 @@ export class CustomerService {
     const result = await this.prisma.$transaction(async (tx) => {
       const details = await loadApplicationFinalPlanDetails(tx, before);
       await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
+      const finalPlanSnapshot = {
+        ...(details.finalPlanSnapshot as Record<string, unknown>),
+        finalPlanConfirmedAt: null,
+        planConfirmStatus: PlanConfirmStatus.PENDING
+      } satisfies Prisma.InputJsonValue;
       const now = new Date();
       const application = await tx.application.update({
         data: {
           approvedAt: before.approvedAt ?? now,
           finalPeriodMonths: details.periodMonths,
-          finalPlanConfirmedAt: now,
-          finalPlanSnapshot: details.finalPlanSnapshot,
-          finalQuoteSnapshot: details.finalPlanSnapshot,
+          finalPlanConfirmedAt: null,
+          finalPlanSnapshot,
+          finalQuoteSnapshot: finalPlanSnapshot,
           finalSubscriptionPlanId: details.plan.id,
           finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
           finalVehicleId: details.vehicle.id,
-          planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+          planConfirmStatus: PlanConfirmStatus.PENDING,
           productReviewStatus: OrderReviewStatus.APPROVED,
           rejectedReason: null,
           status: ApplicationStatus.APPROVED,
@@ -775,7 +780,7 @@ export class CustomerService {
       await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.APPROVE,
         applicationId: id,
-        comment: "确认最终方案",
+        comment: "生成最终方案，待客户确认",
         fromStatus: before.status,
         operator: user,
         toStatus: ApplicationStatus.APPROVED

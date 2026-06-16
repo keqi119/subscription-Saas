@@ -6,6 +6,7 @@ import { AppService } from "./app.service";
 import { AuditModule } from "./audit/audit.module";
 import { AuthModule } from "./auth/auth.module";
 import { CustomerModule } from "./customer/customer.module";
+import { ESignModule } from "./esign/esign.module";
 import { FinanceModule } from "./finance/finance.module";
 import { FinancingModule } from "./financing/financing.module";
 import { OrderModule } from "./order/order.module";
@@ -31,6 +32,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     AuditModule,
     AuthModule,
     CustomerModule,
+    ESignModule,
     FinanceModule,
     FinancingModule,
     OrderModule,

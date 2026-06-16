@@ -28,6 +28,7 @@ interface PortalMe {
 const portalEntries = [
   { href: "/portal/catalog", icon: <CarOutlined />, title: "订阅车辆" },
   { href: "/portal/applications", icon: <AuditOutlined />, title: "我的申请" },
+  { href: "/portal/contracts", icon: <FileTextOutlined />, title: "我的合同" },
   { icon: <ProfileOutlined />, title: "我的订单" },
   { icon: <FileTextOutlined />, title: "我的账单" },
   { icon: <GiftOutlined />, title: "我的权益" },

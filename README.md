@@ -59,6 +59,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10a-customer-account-portal.md`：Stage 10A 客户账号与门户基础
 - `docs/stage-10b-portal-catalog-application.md`：Stage 10B 商品浏览与自助申请
 - `docs/stage-10c-portal-application-progress-final-plan.md`：Stage 10C 申请进度与最终方案确认
+- `docs/stage-10d-esign-foundation.md`：Stage 10D-A 电子签约基础与 Mock 签署闭环
 
 ## 本地开发启动
 

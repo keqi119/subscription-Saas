@@ -518,6 +518,32 @@ export const PORTAL_FINAL_PLAN_STATUS_LABELS: Record<string, string> = {
   REJECTED: "已拒绝"
 };
 
+export const ESIGN_TASK_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  COMPLETED: "已签署",
+  CREATED: "已创建",
+  EXPIRED: "已过期",
+  FAILED: "签署失败",
+  SIGNING: "签署中",
+  WAITING_CUSTOMER: "待客户签署"
+};
+
+export const ESIGN_SIGNER_STATUS_LABELS: Record<string, string> = {
+  EXPIRED: "已过期",
+  PENDING: "待签署",
+  REJECTED: "已拒签",
+  SIGNED: "已签署",
+  SIGNING: "签署中"
+};
+
+export const ESIGN_PROVIDER_LABELS: Record<string, string> = {
+  ESIGN: "e签宝",
+  FADADA: "法大大",
+  MOCK: "Mock 电子签",
+  OTHER: "其他",
+  TENCENT_ESIGN: "腾讯电子签"
+};
+
 export const MATERIAL_STATUS_LABELS: Record<string, string> = {
   APPROVED: "已通过",
   NEED_MORE_INFO: "需补充资料",

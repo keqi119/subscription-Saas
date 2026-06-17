@@ -746,3 +746,38 @@ Remaining after Stage 10D-A:
 - WeChat OAuth/service account notification and real SMS provider.
 
 Next recommended stage: Stage 10D-B if an e-sign provider is selected, otherwise Stage 10E-A for payment foundation.
+
+## 18. Stage 10E-A Status
+
+Stage 10E-A has implemented the payment foundation on `feature/stage10-payment-foundation`.
+
+Implemented:
+
+- `PaymentOrder`, `PaymentOrderItem`, and `PaymentCallbackLog`.
+- `PaymentProvider` abstraction and `MockPaymentProvider`.
+- Protected Portal payable-bill API.
+- Protected Portal payment order create/detail/pay/mock-pay APIs.
+- Public payment callback endpoint with callback log and idempotent paid handling.
+- Mock payment completion that creates `PaymentRecord` through existing `FinanceService.createPayment`.
+- Automatic write-off through existing `FinanceService.writeOffPayment`.
+- Existing finance service updates `ReceivableBill` and creates `DepositLedger.COLLECT` for fully paid deposit bills.
+- H5 routes `/portal/payment-orders/[id]` and `/portal/payment-orders/[id]/mock-pay`.
+- Portal contract detail payment entry after signed contract and `PENDING_PAYMENT` order.
+- Stage 10E-A documentation: `docs/stage-10e-payment-foundation.md`.
+
+Strategy:
+
+- Stage 10E-A does not connect real WeChat Pay.
+- Mock payment is only available when `PAYMENT_PROVIDER=mock` and `PAYMENT_MOCK_ENABLED=true`.
+- Production env examples keep Mock payment disabled by default.
+- Payment completion does not directly advance the order state from `PENDING_PAYMENT`; existing delivery preparation remains the safe order-state transition point.
+
+Remaining after Stage 10E-A:
+
+- Real WeChat Pay provider, merchant configuration, API v3 signing, certificate handling, JSAPI/H5 prepay, and callback signature verification.
+- Refunds, invoices, automatic debit, and reconciliation.
+- Customer bill/deposit/entitlement center.
+- Accident report and rescue service cases.
+- WeChat OAuth/service account notification and real SMS provider.
+
+Next recommended stage: Stage 10E-B for real WeChat Pay provider if merchant material is ready, otherwise Stage 10F for customer bill/deposit/entitlement center.

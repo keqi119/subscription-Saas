@@ -3,6 +3,7 @@ import { Module } from "@nestjs/common";
 import { AuditModule } from "../audit/audit.module";
 import { CustomerModule } from "../customer/customer.module";
 import { ESignModule } from "../esign/esign.module";
+import { PaymentModule } from "../payment/payment.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { StorageModule } from "../storage/storage.module";
 import { PortalApplicationController } from "./portal-application.controller";
@@ -14,6 +15,7 @@ import { PortalCatalogController } from "./portal-catalog.controller";
 import { PortalCatalogService } from "./portal-catalog.service";
 import { PortalContractController } from "./portal-contract.controller";
 import { PortalController } from "./portal.controller";
+import { PortalPaymentController } from "./portal-payment.controller";
 
 @Module({
   controllers: [
@@ -21,10 +23,11 @@ import { PortalController } from "./portal.controller";
     PortalAuthController,
     PortalCatalogController,
     PortalContractController,
+    PortalPaymentController,
     PortalController
   ],
   exports: [CustomerAuthGuard, PortalAuthService],
-  imports: [AuditModule, CustomerModule, ESignModule, PrismaModule, StorageModule],
+  imports: [AuditModule, CustomerModule, ESignModule, PaymentModule, PrismaModule, StorageModule],
   providers: [
     CustomerAuthGuard,
     PortalApplicationService,

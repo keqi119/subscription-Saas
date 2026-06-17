@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftOutlined, CheckCircleOutlined, FileTextOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, CheckCircleOutlined, FileTextOutlined, PayCircleOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
@@ -17,6 +17,8 @@ import {
 import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import {
   PortalContractDetail,
+  PortalPayableBill,
+  PortalPaymentOrder,
   PortalSigningStartResponse
 } from "../../../../lib/portal-types";
 
@@ -26,6 +28,7 @@ export default function PortalContractDetailPage() {
   const { message } = App.useApp();
   const [contract, setContract] = useState<PortalContractDetail>();
   const [loading, setLoading] = useState(true);
+  const [paying, setPaying] = useState(false);
   const [starting, setStarting] = useState(false);
 
   const loadContract = useCallback(async () => {
@@ -71,6 +74,35 @@ export default function PortalContractDetailPage() {
       void message.error(error instanceof PortalApiError ? error.message : "无法发起签署");
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function createPaymentOrder() {
+    if (!contract) {
+      return;
+    }
+
+    setPaying(true);
+    try {
+      const bills = await portalApiFetch<PortalPayableBill[]>(
+        `/portal/payment/payable-bills?orderId=${encodeURIComponent(contract.order.id)}`
+      );
+      if (!bills.length) {
+        void message.info("当前订单暂无待支付账单");
+        return;
+      }
+      const result = await portalApiFetch<PortalPaymentOrder>("/portal/payment-orders", {
+        body: JSON.stringify({
+          billIds: bills.map((bill) => bill.billId),
+          paymentChannel: "MOCK"
+        }),
+        method: "POST"
+      });
+      router.push(`/portal/payment-orders/${result.id}`);
+    } catch (error) {
+      void message.error(error instanceof PortalApiError ? error.message : "无法创建支付单");
+    } finally {
+      setPaying(false);
     }
   }
 
@@ -205,6 +237,24 @@ export default function PortalContractDetailPage() {
             </Space>
           ) : null}
         </section>
+
+        {contract.contractStatus === "SIGNED" && contract.order.orderStatus === "PENDING_PAYMENT" ? (
+          <section style={sectionStyle}>
+            <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+              <div>
+                <Typography.Title level={4} style={{ margin: 0 }}>
+                  待支付账单
+                </Typography.Title>
+                <Typography.Text type="secondary">
+                  合同已签署，请完成押金、首期月租或其他待付账单支付。
+                </Typography.Text>
+              </div>
+              <Button icon={<PayCircleOutlined />} loading={paying} onClick={createPaymentOrder} type="primary">
+                去支付
+              </Button>
+            </Flex>
+          </section>
+        ) : null}
       </section>
     </main>
   );

@@ -24,8 +24,9 @@ import { CreatePaymentDto, WriteOffPaymentDto } from "../finance/dto/finance.dto
 import { FinanceService } from "../finance/finance.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "../portal/portal-auth.types";
+import { WeChatOAuthService } from "../wechat/wechat-oauth.service";
 import { CreatePortalPaymentOrderDto, PortalPayableBillsQueryDto } from "./payment.dto";
-import { PAYMENT_PROVIDER_CLIENT, PaymentProvider } from "./payment-provider";
+import { PAYMENT_PROVIDER_CLIENT, PaymentProvider, WeChatJsapiPaymentParams } from "./payment-provider";
 
 const PAYABLE_BILL_STATUSES: BillStatus[] = [
   BillStatus.PENDING,
@@ -48,6 +49,7 @@ const CALLBACK_PAID_EVENTS = new Set([
   "PAYMENT_SUCCESS",
   "PAY_SUCCESS",
   "TRANSACTION_SUCCESS",
+  "SUCCESS",
   "MOCK_PAYMENT_SUCCESS",
   "mock.payment.success"
 ]);
@@ -93,6 +95,7 @@ export class PaymentOrderService {
     private readonly financeService: FinanceService,
     @Inject(PAYMENT_PROVIDER_CLIENT)
     private readonly provider: PaymentProvider,
+    private readonly wechatOAuthService: WeChatOAuthService,
     private readonly prisma: PrismaService
   ) {}
 
@@ -119,22 +122,19 @@ export class PaymentOrderService {
     currentCustomer: CurrentCustomer,
     context: RequestContext
   ) {
-    this.assertMockProviderAvailable();
     const billIds = uniqueStrings(dto.billIds);
-    const paymentChannel = dto.paymentChannel ?? PaymentChannel.MOCK;
-    if (paymentChannel !== PaymentChannel.MOCK) {
-      throw new BadRequestException("当前阶段仅开放 Mock 支付通道。");
-    }
+    const paymentChannel = dto.paymentChannel ?? this.defaultPaymentChannel;
+    this.assertPaymentProviderAvailable(paymentChannel);
 
     const bills = await this.loadPayableBillsForPayment(currentCustomer.customerId, billIds);
     this.assertBillsCanCreatePaymentOrder(bills, billIds);
 
-    const existing = await this.findReusablePaymentOrder(currentCustomer.customerId, billIds);
+    const existing = await this.findReusablePaymentOrder(currentCustomer.customerId, billIds, paymentChannel);
     if (existing) {
       if (existing.cashierUrl && isFuture(existing.cashierUrlExpiresAt)) {
         return toPaymentOrderView(existing);
       }
-      return this.refreshProviderPayment(existing.id, context);
+      return this.refreshProviderPayment(existing.id, context, currentCustomer);
     }
 
     const orderId = assertSingleOrder(bills);
@@ -183,7 +183,7 @@ export class PaymentOrderService {
       userAgent: context.userAgent
     });
 
-    return this.refreshProviderPayment(paymentOrder.id, context);
+    return this.refreshProviderPayment(paymentOrder.id, context, currentCustomer);
   }
 
   async getPortalPaymentOrder(id: string, currentCustomer: CurrentCustomer) {
@@ -192,8 +192,8 @@ export class PaymentOrderService {
   }
 
   async startPortalPayment(id: string, currentCustomer: CurrentCustomer, context: RequestContext) {
-    this.assertMockProviderAvailable();
     const paymentOrder = await this.findPortalPaymentOrderOrThrow(id, currentCustomer.customerId);
+    this.assertPaymentProviderAvailable(paymentOrder.paymentChannel);
     if (paymentOrder.paymentStatus === PaymentOrderStatus.PAID) {
       return toPaymentOrderView(paymentOrder);
     }
@@ -203,7 +203,7 @@ export class PaymentOrderService {
     if (paymentOrder.cashierUrl && isFuture(paymentOrder.cashierUrlExpiresAt)) {
       return toPaymentOrderView(paymentOrder);
     }
-    return this.refreshProviderPayment(paymentOrder.id, context);
+    return this.refreshProviderPayment(paymentOrder.id, context, currentCustomer);
   }
 
   async mockPay(id: string, currentCustomer: CurrentCustomer, context: RequestContext) {
@@ -227,7 +227,12 @@ export class PaymentOrderService {
     }, context);
   }
 
-  async handleCallback(provider: string, payload: unknown, headers?: Record<string, unknown>) {
+  async handleCallback(
+    provider: string,
+    payload: unknown,
+    headers?: Record<string, unknown>,
+    rawBody?: Buffer
+  ) {
     const providerType = parseProviderType(provider);
     const callbackLog = await this.prisma.paymentCallbackLog.create({
       data: {
@@ -237,7 +242,7 @@ export class PaymentOrderService {
     });
 
     try {
-      const result = await this.provider.verifyCallback(payload, headers);
+      const result = await this.provider.verifyCallback(payload, headers, rawBody);
       await this.prisma.paymentCallbackLog.update({
         data: {
           eventType: result.eventType,
@@ -290,17 +295,41 @@ export class PaymentOrderService {
     }
   }
 
-  private async refreshProviderPayment(paymentOrderId: string, context: RequestContext) {
+  private async refreshProviderPayment(
+    paymentOrderId: string,
+    context: RequestContext,
+    currentCustomer?: CurrentCustomer
+  ) {
     const paymentOrder = await this.findPaymentOrderOrThrow(paymentOrderId);
     if (paymentOrder.paymentStatus === PaymentOrderStatus.PAID) {
       return toPaymentOrderView(paymentOrder);
+    }
+
+    let openId: string | undefined;
+    if (paymentOrder.paymentChannel === PaymentChannel.WECHAT_JSAPI) {
+      if (!currentCustomer) {
+        throw new BadRequestException("WECHAT_OPENID_REQUIRED");
+      }
+      openId = await this.wechatOAuthService.getOpenId(currentCustomer) ?? undefined;
+      if (!openId) {
+        const binding = await this.wechatOAuthService.createOAuthUrl(
+          currentCustomer,
+          this.buildReturnUrl(paymentOrder.id)
+        );
+        return toPaymentOrderView(paymentOrder, {
+          requiresWechatBinding: true,
+          wechatAuthUrl: binding.authUrl,
+          wechatBindingExpiresIn: binding.expiresIn
+        });
+      }
     }
 
     const result = await this.provider.createPayment({
       amount: paymentOrder.amount,
       clientIp: context.ipAddress,
       description: paymentOrder.description ?? undefined,
-      notifyUrl: this.buildNotifyUrl(),
+      notifyUrl: this.buildNotifyUrl(paymentOrder.provider),
+      openId,
       paymentOrderId: paymentOrder.id,
       paymentOrderNo: paymentOrder.paymentOrderNo,
       returnUrl: this.buildReturnUrl(paymentOrder.id),
@@ -314,14 +343,14 @@ export class PaymentOrderService {
         providerPrepayId: result.providerPrepayId,
         providerTradeNo: result.providerTradeNo,
         paymentStatus: PaymentOrderStatus.PENDING,
-        responseSnapshot: toJsonValue(result.rawResponse),
+        responseSnapshot: result.rawResponse === undefined ? undefined : toJsonValue(result.rawResponse),
         updatedAt: new Date()
       },
       include: paymentOrderInclude,
       where: { id: paymentOrder.id }
     });
 
-    return toPaymentOrderView(updated);
+    return toPaymentOrderView(updated, { jsapiParams: result.jsapiParams });
   }
 
   private async completePaymentOrder(
@@ -486,7 +515,7 @@ export class PaymentOrderService {
     assertSingleOrder(bills);
   }
 
-  private async findReusablePaymentOrder(customerId: string, billIds: string[]) {
+  private async findReusablePaymentOrder(customerId: string, billIds: string[], paymentChannel: PaymentChannel) {
     const sortedBillIds = [...billIds].sort();
     const candidates = await this.prisma.paymentOrder.findMany({
       include: paymentOrderInclude,
@@ -494,6 +523,7 @@ export class PaymentOrderService {
       where: {
         customerId,
         deletedAt: null,
+        paymentChannel,
         paymentStatus: { in: REUSABLE_PAYMENT_ORDER_STATUSES }
       }
     });
@@ -512,6 +542,14 @@ export class PaymentOrderService {
       });
       if (byTradeNo) {
         return byTradeNo;
+      }
+
+      const byPaymentOrderNo = await this.prisma.paymentOrder.findFirst({
+        include: paymentOrderInclude,
+        where: { deletedAt: null, paymentOrderNo: result.providerTradeNo }
+      });
+      if (byPaymentOrderNo) {
+        return byPaymentOrderNo;
       }
     }
 
@@ -574,11 +612,33 @@ export class PaymentOrderService {
     }
   }
 
-  private buildNotifyUrl() {
+  private assertPaymentProviderAvailable(paymentChannel: PaymentChannel) {
+    if (paymentChannel === PaymentChannel.MOCK) {
+      this.assertMockProviderAvailable();
+      return;
+    }
+    if (paymentChannel === PaymentChannel.WECHAT_JSAPI) {
+      if (this.providerType !== PaymentProviderType.WECHAT_PAY || !this.wechatPayEnabled) {
+        throw new ForbiddenException("WECHAT_PAY_NOT_ENABLED");
+      }
+      return;
+    }
+    throw new BadRequestException("PAYMENT_CHANNEL_NOT_SUPPORTED");
+  }
+
+  private buildNotifyUrl(provider: PaymentProviderType) {
+    if (provider === PaymentProviderType.WECHAT_PAY) {
+      return this.configService.get<string>("WECHAT_PAY_NOTIFY_URL")
+        ?? `${this.apiBaseUrl}/payments/callback/wechat-pay`;
+    }
+    return `${this.apiBaseUrl}/payments/callback/mock`;
+  }
+
+  private get apiBaseUrl() {
     const apiBaseUrl = trimTrailingSlash(
       this.configService.get<string>("API_BASE_URL") ?? "http://localhost:3001/api"
     );
-    return `${apiBaseUrl}/payments/callback/mock`;
+    return apiBaseUrl;
   }
 
   private buildReturnUrl(paymentOrderId: string) {
@@ -592,12 +652,23 @@ export class PaymentOrderService {
     return (this.configService.get<string>("PAYMENT_MOCK_ENABLED") ?? "false").toLowerCase() === "true";
   }
 
+  private get wechatPayEnabled() {
+    return (this.configService.get<string>("WECHAT_PAY_ENABLED") ?? "false").toLowerCase() === "true";
+  }
+
+  private get defaultPaymentChannel() {
+    const channel = (this.configService.get<string>("PAYMENT_DEFAULT_CHANNEL") ?? "MOCK").toUpperCase();
+    return Object.values(PaymentChannel).includes(channel as PaymentChannel)
+      ? (channel as PaymentChannel)
+      : PaymentChannel.MOCK;
+  }
+
   private get providerType() {
     const provider = (this.configService.get<string>("PAYMENT_PROVIDER") ?? "mock").toLowerCase();
     if (provider === "mock") {
       return PaymentProviderType.MOCK;
     }
-    if (provider === "wechat_pay" || provider === "wechat" || provider === "wxpay") {
+    if (provider === "wechat_pay" || provider === "wechat-pay" || provider === "wechat" || provider === "wxpay") {
       return PaymentProviderType.WECHAT_PAY;
     }
     if (provider === "alipay") {
@@ -628,7 +699,15 @@ function toPayableBillView(bill: PayableBill) {
   };
 }
 
-function toPaymentOrderView(paymentOrder: PaymentOrderWithDetails) {
+function toPaymentOrderView(
+  paymentOrder: PaymentOrderWithDetails,
+  extra: {
+    jsapiParams?: WeChatJsapiPaymentParams;
+    requiresWechatBinding?: boolean;
+    wechatAuthUrl?: string;
+    wechatBindingExpiresIn?: number;
+  } = {}
+) {
   return {
     amount: Number(paymentOrder.amount),
     callbacks: paymentOrder.callbacks.map((callback) => ({
@@ -655,6 +734,7 @@ function toPaymentOrderView(paymentOrder: PaymentOrderWithDetails) {
       paidAmount: Number(item.bill.paidAmount),
       remainingAmount: Number(item.bill.remainingAmount)
     })),
+    jsapiParams: extra.jsapiParams,
     orderId: paymentOrder.orderId,
     orderNo: paymentOrder.order?.orderNo ?? null,
     orderStatus: paymentOrder.order?.orderStatus ?? null,
@@ -668,7 +748,10 @@ function toPaymentOrderView(paymentOrder: PaymentOrderWithDetails) {
     providerPrepayId: paymentOrder.providerPrepayId,
     providerTradeNo: paymentOrder.providerTradeNo,
     providerTransactionId: paymentOrder.providerTransactionId,
-    subject: paymentOrder.subject
+    requiresWechatBinding: extra.requiresWechatBinding ?? false,
+    subject: paymentOrder.subject,
+    wechatAuthUrl: extra.wechatAuthUrl,
+    wechatBindingExpiresIn: extra.wechatBindingExpiresIn
   };
 }
 
@@ -708,7 +791,7 @@ function parseProviderType(provider: string) {
   if (normalized === "mock") {
     return PaymentProviderType.MOCK;
   }
-  if (normalized === "wechat_pay" || normalized === "wechat" || normalized === "wxpay") {
+  if (normalized === "wechat_pay" || normalized === "wechat-pay" || normalized === "wechat" || normalized === "wxpay") {
     return PaymentProviderType.WECHAT_PAY;
   }
   if (normalized === "alipay") {

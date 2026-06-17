@@ -17,7 +17,19 @@ import {
   labelOf
 } from "../../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
-import { PortalPaymentOrder, PortalPaymentOrderItem } from "../../../../lib/portal-types";
+import { PortalPaymentOrder, PortalPaymentOrderItem, PortalWeChatJsapiParams } from "../../../../lib/portal-types";
+
+declare global {
+  interface Window {
+    WeixinJSBridge?: {
+      invoke: (
+        name: "getBrandWCPayRequest",
+        params: PortalWeChatJsapiParams,
+        callback: (response: { err_msg?: string }) => void
+      ) => void;
+    };
+  }
+}
 
 export default function PortalPaymentOrderPage() {
   const params = useParams<{ id: string }>();
@@ -68,6 +80,26 @@ export default function PortalPaymentOrderPage() {
       }
       if (result.paymentChannel === "MOCK") {
         router.push(`/portal/payment-orders/${result.id}/mock-pay`);
+        return;
+      }
+      if (result.requiresWechatBinding && result.wechatAuthUrl) {
+        window.location.assign(result.wechatAuthUrl);
+        return;
+      }
+      if (result.paymentChannel === "WECHAT_JSAPI") {
+        if (!isWeChatBrowser()) {
+          void message.warning("请在微信中打开页面完成支付。");
+          return;
+        }
+        if (!result.jsapiParams) {
+          void message.warning("微信支付参数暂不可用，请稍后重试。");
+          return;
+        }
+        await invokeWeChatPay(result.jsapiParams);
+        void message.success("微信支付已提交，请稍后查看支付结果。");
+        window.setTimeout(() => {
+          void loadPaymentOrder();
+        }, 1500);
         return;
       }
       if (result.cashierUrl) {
@@ -135,7 +167,11 @@ export default function PortalPaymentOrderPage() {
             />
           ) : (
             <Alert
-              message={paymentOrder.paymentChannel === "MOCK" ? "当前为模拟支付，用于测试客户线上支付闭环。" : "请在支付链接有效期内完成付款。"}
+              message={paymentOrder.paymentChannel === "MOCK"
+                ? "当前为模拟支付，用于测试客户线上支付闭环。"
+                : paymentOrder.paymentChannel === "WECHAT_JSAPI"
+                  ? "请在微信内置浏览器中完成 JSAPI 支付。"
+                  : "请在支付链接有效期内完成付款。"}
               showIcon
               style={{ marginTop: 16 }}
               type="info"
@@ -175,7 +211,11 @@ export default function PortalPaymentOrderPage() {
               onClick={startPayment}
               type="primary"
             >
-              {paymentOrder.paymentChannel === "MOCK" ? "模拟支付" : "去支付"}
+              {paymentOrder.paymentChannel === "MOCK"
+                ? "模拟支付"
+                : paymentOrder.paymentChannel === "WECHAT_JSAPI"
+                  ? "微信支付"
+                  : "去支付"}
             </Button>
           </Flex>
           <Table columns={columns} dataSource={paymentOrder.items} pagination={false} rowKey="id" size="small" />
@@ -216,6 +256,35 @@ const columns: ColumnsType<PortalPaymentOrderItem> = [
     title: "到期日"
   }
 ];
+
+function isWeChatBrowser() {
+  return /MicroMessenger/i.test(window.navigator.userAgent);
+}
+
+function invokeWeChatPay(params: PortalWeChatJsapiParams) {
+  return new Promise<void>((resolve, reject) => {
+    const invoke = () => {
+      if (!window.WeixinJSBridge) {
+        reject(new Error("WECHAT_BRIDGE_NOT_READY"));
+        return;
+      }
+      window.WeixinJSBridge.invoke("getBrandWCPayRequest", params, (response) => {
+        if (response.err_msg === "get_brand_wcpay_request:ok") {
+          resolve();
+          return;
+        }
+        reject(new Error(response.err_msg ?? "WECHAT_PAY_CANCELLED"));
+      });
+    };
+
+    if (window.WeixinJSBridge) {
+      invoke();
+      return;
+    }
+
+    document.addEventListener("WeixinJSBridgeReady", invoke, { once: true });
+  });
+}
 
 function formatMoney(amount?: number | null) {
   return amount === null || amount === undefined

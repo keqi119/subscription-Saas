@@ -107,9 +107,85 @@ describe("portal payment foundation", () => {
     expect(harness.financeService.writeOffPayment).toHaveBeenCalledTimes(1);
     expect(harness.state.callbacks.filter((callback) => callback.handled)).toHaveLength(2);
   });
+
+  it("returns a WeChat binding URL when JSAPI payment has no openid", async () => {
+    const provider = {
+      createPayment: vi.fn(),
+      verifyCallback: vi.fn()
+    };
+    const harness = createPaymentHarness({
+      config: {
+        PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_PROVIDER: "wechat_pay",
+        WECHAT_PAY_ENABLED: "true"
+      },
+      provider: provider as never
+    });
+    harness.addBill({ id: "bill_wechat", remainingAmount: 1000n });
+
+    const result = await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_wechat"] },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+
+    expect(result.requiresWechatBinding).toBe(true);
+    expect(result.wechatAuthUrl).toContain("open.weixin.qq.com");
+    expect(provider.createPayment).not.toHaveBeenCalled();
+  });
+
+  it("creates a WeChat JSAPI payment when openid is bound", async () => {
+    const provider = {
+      createPayment: vi.fn(async (input: AnyRecord) => ({
+        jsapiParams: {
+          appId: "wx_test_app",
+          nonceStr: "nonce",
+          package: "prepay_id=wx_prepay",
+          paySign: "signature",
+          signType: "RSA",
+          timeStamp: "1710000000"
+        },
+        providerPrepayId: "wx_prepay",
+        providerTradeNo: input.paymentOrderNo,
+        rawResponse: {
+          prepayId: "wx_prepay"
+        }
+      })),
+      verifyCallback: vi.fn()
+    };
+    const harness = createPaymentHarness({
+      config: {
+        PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_PROVIDER: "wechat_pay",
+        WECHAT_PAY_ENABLED: "true"
+      },
+      provider: provider as never,
+      wechatOpenId: "openid_customer_a"
+    });
+    harness.addBill({ id: "bill_wechat", remainingAmount: 1000n });
+
+    const result = await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_wechat"] },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+
+    expect(result.paymentChannel).toBe(PaymentChannel.WECHAT_JSAPI);
+    expect(result.paymentStatus).toBe(PaymentOrderStatus.PENDING);
+    expect(result.jsapiParams?.package).toBe("prepay_id=wx_prepay");
+    expect(JSON.stringify(result.jsapiParams)).not.toContain("secret");
+    expect(provider.createPayment).toHaveBeenCalledWith(expect.objectContaining({
+      amount: 1000n,
+      openId: "openid_customer_a"
+    }));
+  });
 });
 
-function createPaymentHarness() {
+function createPaymentHarness(options: {
+  config?: Record<string, string>;
+  provider?: MockPaymentProvider;
+  wechatOpenId?: string | null;
+} = {}) {
   const state = {
     bills: [] as AnyRecord[],
     callbacks: [] as AnyRecord[],
@@ -270,19 +346,30 @@ function createPaymentHarness() {
     get: vi.fn((key: string) => {
       const values: Record<string, string> = {
         API_BASE_URL: "http://localhost:3001/api",
+        PAYMENT_DEFAULT_CHANNEL: "MOCK",
         PAYMENT_MOCK_ENABLED: "true",
         PAYMENT_PROVIDER: "mock",
-        PORTAL_BASE_URL: "http://localhost:3000"
+        PORTAL_BASE_URL: "http://localhost:3000",
+        WECHAT_PAY_ENABLED: "false",
+        ...options.config
       };
       return values[key];
     })
+  };
+  const wechatOAuthService = {
+    createOAuthUrl: vi.fn(async () => ({
+      authUrl: "https://open.weixin.qq.com/connect/oauth2/authorize?mock=1",
+      expiresIn: 300
+    })),
+    getOpenId: vi.fn(async () => options.wechatOpenId ?? null)
   };
 
   const service = new PaymentOrderService(
     { write: vi.fn() } as never,
     configService as never,
     financeService as never,
-    new MockPaymentProvider(configService as never),
+    (options.provider ?? new MockPaymentProvider(configService as never)) as never,
+    wechatOAuthService as never,
     prisma as never
   );
 
@@ -322,7 +409,8 @@ function createPaymentHarness() {
     },
     financeService,
     service,
-    state
+    state,
+    wechatOAuthService
   };
 }
 
@@ -369,6 +457,9 @@ function matchesPaymentOrder(paymentOrder: AnyRecord, where: AnyRecord) {
     return false;
   }
   if (where.paymentStatus?.in && !where.paymentStatus.in.includes(paymentOrder.paymentStatus)) {
+    return false;
+  }
+  if (where.paymentChannel && paymentOrder.paymentChannel !== where.paymentChannel) {
     return false;
   }
   return true;

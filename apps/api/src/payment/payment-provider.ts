@@ -12,9 +12,19 @@ export interface CreatePaymentInput {
   subject?: string;
 }
 
+export interface WeChatJsapiPaymentParams {
+  appId: string;
+  timeStamp: string;
+  nonceStr: string;
+  package: string;
+  signType: "RSA";
+  paySign: string;
+}
+
 export interface CreatePaymentResult {
   cashierUrl?: string;
   cashierUrlExpiresAt?: Date;
+  jsapiParams?: WeChatJsapiPaymentParams;
   providerPrepayId?: string;
   providerTradeNo: string;
   rawResponse?: unknown;
@@ -32,5 +42,9 @@ export interface VerifyPaymentCallbackResult {
 
 export interface PaymentProvider {
   createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult>;
-  verifyCallback(payload: unknown, headers?: Record<string, unknown>): Promise<VerifyPaymentCallbackResult>;
+  verifyCallback(
+    payload: unknown,
+    headers?: Record<string, unknown>,
+    rawBody?: Buffer
+  ): Promise<VerifyPaymentCallbackResult>;
 }

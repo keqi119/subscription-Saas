@@ -75,6 +75,20 @@ Mock behavior:
 
 Production examples keep mock disabled by default.
 
+## 5.1 Stage 10E-B Update
+
+Stage 10E-B adds `WECHAT_JSAPI` support through `WeChatPayProvider`.
+
+Additional capabilities:
+
+- Minimal WeChat openid binding for logged-in Portal customers.
+- WeChat Pay API v3 JSAPI prepay creation.
+- JSAPI frontend parameters for `WeixinJSBridge`.
+- WeChat callback signature verification and encrypted resource decryption.
+- Callback paid handling reuses the same `PaymentOrder` completion path introduced in Stage 10E-A.
+
+WeChat browser H5 fallback remains deferred to Stage 10E-C.
+
 ## 6. Portal APIs
 
 Protected Portal APIs:

@@ -277,6 +277,7 @@ export interface PortalPaymentOrder {
   customerId: string | null;
   id: string;
   items: PortalPaymentOrderItem[];
+  jsapiParams?: PortalWeChatJsapiParams;
   orderId: string | null;
   orderNo: string | null;
   orderStatus: string | null;
@@ -293,7 +294,10 @@ export interface PortalPaymentOrder {
   providerPrepayId: string | null;
   providerTradeNo: string | null;
   providerTransactionId: string | null;
+  requiresWechatBinding?: boolean;
   subject: string | null;
+  wechatAuthUrl?: string;
+  wechatBindingExpiresIn?: number;
 }
 
 export interface PortalPaymentOrderItem {
@@ -315,5 +319,19 @@ export interface PortalPaymentCallback {
   id: string;
   receivedAt: string | null;
   verified: boolean;
+}
+
+export interface PortalWeChatBinding {
+  bound: boolean;
+  wechatOpenIdMasked: string | null;
+}
+
+export interface PortalWeChatJsapiParams {
+  appId: string;
+  timeStamp: string;
+  nonceStr: string;
+  package: string;
+  signType: "RSA";
+  paySign: string;
 }
 

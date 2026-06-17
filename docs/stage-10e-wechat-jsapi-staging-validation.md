@@ -8,6 +8,12 @@
 > HTTPS certificate, but the server-side vhost still returned the BT static
 > 404 page during validation and must be changed to proxy the Web container.
 
+> Update: 2026-06-18 second pass. The operator reported that the Docker image
+> workflow step was handled manually. Server deployment could not continue from
+> Codex because new SSH sessions to `139.196.227.195:22` returned network-level
+> `Permission denied` even after the tunnel was restarted and low-frequency
+> retries were attempted.
+
 ## 1. Scope
 
 This report records the pre-flight validation for a real small-amount WeChat Pay JSAPI test after Stage 10E-B.
@@ -211,7 +217,8 @@ Before retrying Stage 10E-B-Staging:
 - [ ] Configure server-only env with `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, and all `WECHAT_PAY_*` values.
 - [ ] Copy merchant private key, merchant cert, and platform cert/public key to `/opt/subscription-saas/secrets/wechatpay/` with `chmod 600`.
 - [ ] Mount `/opt/subscription-saas/secrets/wechatpay/` into the API container read-only.
-- [ ] Deploy API/Web images that include Stage 10E-B.
+- [ ] Deploy API/Web images that include Stage 10E-B. The image build workflow
+  was handled manually, but server pull/up was not verified in this pass.
 - [ ] Verify Web bundle contains `https://api.subauto.keybox.cloud/api` and does not contain staging API domains.
 - [ ] Re-run `pnpm release:check`.
 - [ ] Create a 1-fen test bill for a non-production test customer only.

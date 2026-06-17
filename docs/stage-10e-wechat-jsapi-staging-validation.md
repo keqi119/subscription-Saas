@@ -4,6 +4,10 @@
 > Branch: `feature/stage10-wechat-jsapi-staging-validation`  
 > Result: blocked before real payment. No real WeChat Pay charge was initiated.
 
+> Update: 2026-06-18. `app.subauto.keybox.cloud` now has DNS and a valid
+> HTTPS certificate, but the server-side vhost still returned the BT static
+> 404 page during validation and must be changed to proxy the Web container.
+
 ## 1. Scope
 
 This report records the pre-flight validation for a real small-amount WeChat Pay JSAPI test after Stage 10E-B.
@@ -78,13 +82,13 @@ Local public checks:
 
 | Check | Result |
 | --- | --- |
-| `app.subauto.keybox.cloud` DNS | failed to resolve |
+| `app.subauto.keybox.cloud` DNS | resolves to `139.196.227.195` after operator update |
 | `api.subauto.keybox.cloud` DNS | resolves to `139.196.227.195` |
 | `admin.subauto.keybox.cloud` DNS | resolves to `139.196.227.195` |
 | public TCP `139.196.227.195:80` | failed from local environment |
 | public TCP `139.196.227.195:443` | failed from local environment |
 | `https://api.subauto.keybox.cloud/api/health` | not reachable from local environment |
-| `https://app.subauto.keybox.cloud/portal` | blocked by DNS failure |
+| `https://app.subauto.keybox.cloud/portal` | not reachable from local environment |
 
 Server-side checks over SSH:
 
@@ -95,6 +99,9 @@ Server-side checks over SSH:
 | Web container on `127.0.0.1:3000` | yes |
 | API container on `127.0.0.1:3001` | yes |
 | Nginx syntax | passed |
+| server-local API health through HTTPS vhost | passed |
+| server-local app Portal through HTTPS vhost | failed with `HTTP/2 404` from BT static site |
+| `app.subauto.keybox.cloud` certificate | present and valid for `app.subauto.keybox.cloud` |
 | existing production Web image | `prod-20260615-5e8d04a` |
 | existing production API image | `prod-20260615-5e8d04a` |
 | contains Stage 10E-B | no, image predates Stage 10E-B |
@@ -105,15 +112,19 @@ Existing BT/Nginx vhosts include:
 
 - `admin.subauto.keybox.cloud`
 - `api.subauto.keybox.cloud`
+- `app.subauto.keybox.cloud`
 - `subauto.keybox.cloud`
 - staging admin/API domains
 
-`app.subauto.keybox.cloud` vhost was not present.
+`app.subauto.keybox.cloud` vhost now exists and has a valid HTTPS certificate,
+but it was still configured as a BT static site during validation. A
+server-local request to `/portal` returned `HTTP/2 404` instead of the Portal
+page from the Web container.
 
 Blocker:
 
 - JSAPI payment page must be opened from `https://app.subauto.keybox.cloud/portal/payment-orders/{id}`.
-- Current DNS and Nginx state cannot serve that URL.
+- Current Nginx state cannot serve that URL until the vhost proxies to `127.0.0.1:3000`.
 
 ## 7. Server Env Check
 
@@ -141,10 +152,14 @@ Required payment keys were missing in the checked files:
 - `WECHAT_PAY_OAUTH_REDIRECT_URI`
 - `PORTAL_BASE_URL`
 - `API_BASE_URL`
+- `WECHAT_PAY_SECRET_DIR`
 
 Blocker:
 
 - Real JSAPI prepay cannot be attempted until these are set server-side.
+- The API container must also mount `/opt/subscription-saas/secrets/wechatpay/`
+  read-only so the WeChat Pay provider can read the merchant private key and
+  platform certificate/public key.
 
 ## 8. Payment Execution
 
@@ -187,14 +202,15 @@ The following were not executed:
 
 Before retrying Stage 10E-B-Staging:
 
-- [ ] Add DNS record: `app.subauto.keybox.cloud -> 139.196.227.195`.
-- [ ] Add BT/Nginx HTTPS vhost for `app.subauto.keybox.cloud -> 127.0.0.1:3000`.
+- [x] Add DNS record: `app.subauto.keybox.cloud -> 139.196.227.195`.
+- [x] Configure a valid HTTPS certificate for `app.subauto.keybox.cloud`.
+- [ ] Change BT/Nginx HTTPS vhost for `app.subauto.keybox.cloud -> 127.0.0.1:3000`.
 - [ ] Ensure public `80/443` reachability from an external network.
-- [ ] Configure a valid HTTPS certificate for `app.subauto.keybox.cloud`.
 - [ ] Configure WeChat public-platform OAuth domain for `app.subauto.keybox.cloud`.
 - [ ] Configure JSAPI payment auth directory: `https://app.subauto.keybox.cloud/`.
 - [ ] Configure server-only env with `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, and all `WECHAT_PAY_*` values.
 - [ ] Copy merchant private key, merchant cert, and platform cert/public key to `/opt/subscription-saas/secrets/wechatpay/` with `chmod 600`.
+- [ ] Mount `/opt/subscription-saas/secrets/wechatpay/` into the API container read-only.
 - [ ] Deploy API/Web images that include Stage 10E-B.
 - [ ] Verify Web bundle contains `https://api.subauto.keybox.cloud/api` and does not contain staging API domains.
 - [ ] Re-run `pnpm release:check`.

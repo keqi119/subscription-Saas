@@ -96,6 +96,11 @@ Secret files should live outside Git, for example:
 /opt/subscription-saas/secrets/wechatpay/
 ```
 
+For image-based deployments, the API container must receive that directory as a
+read-only bind mount. `docker-compose.production.images.example.yml` uses
+`WECHAT_PAY_SECRET_DIR` for the host-side source and mounts it to
+`/opt/subscription-saas/secrets/wechatpay` inside the container.
+
 ## 6. Callback Security
 
 The callback handler stores raw JSON body for:
@@ -151,8 +156,7 @@ Report:
 
 Blocking items:
 
-- `app.subauto.keybox.cloud` DNS did not resolve from the local validation environment.
-- BT/Nginx did not have an `app.subauto.keybox.cloud` vhost.
+- `app.subauto.keybox.cloud` was not yet reachable from the customer Portal during the first pass.
 - Existing production-like API/Web images predated Stage 10E-B.
 - Checked server env files did not contain required `PAYMENT_*` / `WECHAT_PAY_*` values.
 - No real WeChat Pay charge was initiated.

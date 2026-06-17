@@ -175,6 +175,7 @@ Required production controls:
 - `WECHAT_PAY_NOTIFY_URL=https://api.subauto.keybox.cloud/api/payments/callback/wechat-pay`
 - `WECHAT_PAY_JSAPI_AUTH_DIR=https://app.subauto.keybox.cloud/`
 - merchant private key, merchant certificate, and WeChat Pay public key or platform certificate are readable by the API container but not committed to Git.
+- image-based production compose mounts `WECHAT_PAY_SECRET_DIR` read-only into the API container at `/opt/subscription-saas/secrets/wechatpay`.
 
 The WeChat Pay callback URL must be public HTTPS. BT / Nginx must forward `Wechatpay-*` headers to the API container.
 

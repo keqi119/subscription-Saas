@@ -103,6 +103,13 @@ Stage 9F-D plan assets:
 - [ ] Production OSS bucket/env is verified separately from the staging bucket/env.
 - [ ] `OSS_PREFIX=subscription-saas/production` or an isolated production bucket is confirmed.
 - [ ] Historical local upload migration is completed or explicitly waived.
+- [ ] If WeChat Pay JSAPI is enabled, `/opt/subscription-saas/secrets/wechatpay/` exists on the server and is not committed to Git.
+- [ ] `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, `PAYMENT_MOCK_ENABLED=false`, and `WECHAT_PAY_ENABLED=true` are set for production.
+- [ ] WeChat Pay merchant private key, merchant certificate, and WeChat Pay public key or platform certificate paths are configured and readable by the API container.
+- [ ] JSAPI payment authorization directory is configured in WeChat Pay merchant platform, for example `https://app.subauto.keybox.cloud/`.
+- [ ] WeChat OAuth domain/redirect URI is configured for the service account.
+- [ ] `WECHAT_PAY_NOTIFY_URL=https://api.subauto.keybox.cloud/api/payments/callback/wechat-pay` is public HTTPS reachable.
+- [ ] BT / Nginx forwards `Wechatpay-*` callback headers to the API container.
 
 ## 4. Backup
 

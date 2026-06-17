@@ -93,8 +93,7 @@ export default function PortalContractDetailPage() {
       }
       const result = await portalApiFetch<PortalPaymentOrder>("/portal/payment-orders", {
         body: JSON.stringify({
-          billIds: bills.map((bill) => bill.billId),
-          paymentChannel: "MOCK"
+          billIds: bills.map((bill) => bill.billId)
         }),
         method: "POST"
       });

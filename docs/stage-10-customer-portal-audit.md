@@ -781,3 +781,38 @@ Remaining after Stage 10E-A:
 - WeChat OAuth/service account notification and real SMS provider.
 
 Next recommended stage: Stage 10E-B for real WeChat Pay provider if merchant material is ready, otherwise Stage 10F for customer bill/deposit/entitlement center.
+
+## 19. Stage 10E-B Status
+
+Stage 10E-B implements the WeChat Pay JSAPI provider on `feature/stage10-wechat-jsapi-payment`.
+
+Implemented:
+
+- `WeChatPayProvider` for JSAPI prepay creation.
+- Merchant API v3 request signing through configured private key path and serial number.
+- JSAPI frontend payment parameter generation.
+- Minimal Portal WeChat openid binding after phone login.
+- Protected Portal WeChat OAuth URL and binding APIs plus public OAuth callback.
+- WeChat Pay callback raw body preservation.
+- Callback signature verification using configured WeChat Pay public key or platform certificate.
+- Callback `resource` decryption with API v3 key.
+- SUCCESS callback idempotency through `PaymentCallbackLog` and existing `PaymentOrder` completion.
+- Portal payment page support for `WeixinJSBridge`.
+- Stage 10E-B documentation: `docs/stage-10e-wechat-jsapi-payment.md`.
+
+Strategy:
+
+- Stage 10E-B only supports in-WeChat JSAPI payment.
+- WeChat H5 payment outside the WeChat client is deferred to Stage 10E-C.
+- No real WeChat merchant secret or certificate is committed.
+- No production deployment or real charge is executed in this stage.
+
+Remaining after Stage 10E-B:
+
+- Staging small-amount real WeChat Pay verification.
+- WeChat H5 fallback outside the WeChat client.
+- Refunds, invoices, reconciliation, and automatic debit.
+- Customer bill/deposit/entitlement center.
+- Accident report and rescue service cases.
+
+Next recommended stage: Stage 10E-B-Staging for a controlled small-amount real WeChat Pay verification.

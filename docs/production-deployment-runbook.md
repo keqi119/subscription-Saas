@@ -160,6 +160,24 @@ OSS_INTERNAL_ENDPOINT=<optional-internal-endpoint>
 
 Keep the OSS bucket private. Upload downloads must continue through the authenticated API stream endpoints, not public bucket URLs.
 
+If enabling WeChat Pay JSAPI, keep merchant material on the server only:
+
+```text
+/opt/subscription-saas/secrets/wechatpay/
+```
+
+Required production controls:
+
+- `PAYMENT_PROVIDER=wechat_pay`
+- `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`
+- `PAYMENT_MOCK_ENABLED=false`
+- `WECHAT_PAY_ENABLED=true`
+- `WECHAT_PAY_NOTIFY_URL=https://api.subauto.keybox.cloud/api/payments/callback/wechat-pay`
+- `WECHAT_PAY_JSAPI_AUTH_DIR=https://app.subauto.keybox.cloud/`
+- merchant private key, merchant certificate, and WeChat Pay public key or platform certificate are readable by the API container but not committed to Git.
+
+The WeChat Pay callback URL must be public HTTPS. BT / Nginx must forward `Wechatpay-*` headers to the API container.
+
 Never commit `.env.production` or `.env.production.images`.
 
 ## 4. Prepare DNS and HTTPS

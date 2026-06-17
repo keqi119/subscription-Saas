@@ -62,6 +62,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-esign-foundation.md`：Stage 10D-A 电子签约基础与 Mock 签署闭环
 - `docs/stage-10e-payment-foundation.md`：Stage 10E-A 支付基础与 Mock 支付闭环
 - `docs/stage-10e-wechat-jsapi-payment.md`：Stage 10E-B 微信支付 JSAPI Provider
+- `docs/stage-10e-wechat-jsapi-staging-validation.md`：Stage 10E-B-Staging 微信支付 JSAPI 小额联调预检
 
 ## 本地开发启动
 

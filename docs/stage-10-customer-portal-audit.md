@@ -816,3 +816,24 @@ Remaining after Stage 10E-B:
 - Accident report and rescue service cases.
 
 Next recommended stage: Stage 10E-B-Staging for a controlled small-amount real WeChat Pay verification.
+
+## 20. Stage 10E-B-Staging Pre-Flight Status
+
+Stage 10E-B-Staging pre-flight was recorded on `feature/stage10-wechat-jsapi-staging-validation`.
+
+Report:
+
+- `docs/stage-10e-wechat-jsapi-staging-validation.md`
+
+Result:
+
+- Blocked before real payment.
+- No real WeChat Pay connection or charge was initiated.
+- `app.subauto.keybox.cloud` was not resolvable from the local validation environment.
+- BT/Nginx did not yet contain an `app.subauto.keybox.cloud` customer Portal vhost.
+- Server-side production-like images still used `prod-20260615-5e8d04a`, which predates Stage 10E-B.
+- Checked server env files did not contain the required `PAYMENT_*` / `WECHAT_PAY_*` configuration.
+
+Next required action:
+
+- Close DNS, HTTPS, Nginx, server env, secret-file permission, image deployment, and 1-fen test-data gates, then retry Stage 10E-B-Staging.

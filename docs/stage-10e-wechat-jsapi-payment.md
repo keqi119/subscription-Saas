@@ -140,3 +140,21 @@ Recommended next step:
 Deferred:
 
 - `Stage 10E-C`: WeChat H5 payment fallback outside the WeChat client.
+
+## 10. Stage 10E-B-Staging Pre-Flight Result
+
+Stage 10E-B-Staging pre-flight was attempted on 2026-06-17 and blocked before real payment.
+
+Report:
+
+- `docs/stage-10e-wechat-jsapi-staging-validation.md`
+
+Blocking items:
+
+- `app.subauto.keybox.cloud` DNS did not resolve from the local validation environment.
+- BT/Nginx did not have an `app.subauto.keybox.cloud` vhost.
+- Existing production-like API/Web images predated Stage 10E-B.
+- Checked server env files did not contain required `PAYMENT_*` / `WECHAT_PAY_*` values.
+- No real WeChat Pay charge was initiated.
+
+Stage 10E-B-Staging remains open until the domain, HTTPS, env, image, and small-amount test data gates are closed.

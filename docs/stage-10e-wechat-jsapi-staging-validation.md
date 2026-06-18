@@ -24,6 +24,14 @@
 > `3d67658` wires `AuthModule` into `ESignModule` and adds an AppModule compile
 > test. A new image build is required before retrying deployment.
 
+> Update: 2026-06-18 hotfix deployment. The hotfix API image
+> `prod-20260618-530e5cc` was deployed with the already verified Stage 10E-B Web
+> image `prod-20260618-2fecf67`. API and Web containers are healthy, server-side
+> API health passed, `/portal` returns `200`, migrations are up to date, and the
+> Web bundle contains `https://api.subauto.keybox.cloud/api` with no staging API
+> domain found. Real WeChat Pay remains blocked because the PEM upload and
+> server-only `WECHAT_PAY_*` secret injection were not completed.
+
 ## 1. Scope
 
 This report records the pre-flight validation for a real small-amount WeChat Pay JSAPI test after Stage 10E-B.
@@ -118,10 +126,10 @@ Server-side checks over SSH:
 | server-local API health through HTTPS vhost | passed |
 | server-local app Portal through HTTPS vhost | passed with the new Web image during the deployment pass |
 | `app.subauto.keybox.cloud` certificate | present and valid for `app.subauto.keybox.cloud` |
-| existing production Web image | rolled back to `prod-20260615-5e8d04a` after API startup failure |
-| existing production API image | rolled back to `prod-20260615-5e8d04a` after API startup failure |
+| existing production Web image | `prod-20260618-2fecf67` |
+| existing production API image | `prod-20260618-530e5cc` |
 | pulled Stage 10E-B images | `prod-20260618-2fecf67` |
-| hotfix image needed | `prod-20260618-3d67658` or equivalent |
+| hotfix image deployed | `prod-20260618-530e5cc` |
 
 ## 6. Nginx / Customer Domain Check
 
@@ -215,6 +223,23 @@ Hotfix:
 - Build next immutable images from `3d67658`, for example
   `prod-20260618-3d67658`, before retrying deployment.
 
+Hotfix deployment:
+
+- Deployed API image:
+  `ghcr.io/keqi119/subscription-api:prod-20260618-530e5cc`
+- Deployed Web image:
+  `ghcr.io/keqi119/subscription-web:prod-20260618-2fecf67`
+- API container status: healthy.
+- Web container status: healthy.
+- API health: passed.
+- `/portal`: `HTTP/2 200`.
+- Prisma migrate status: database schema is up to date.
+- Web bundle API base: contains `https://api.subauto.keybox.cloud/api`; no
+  `staging-api.subauto.keybox.cloud` string found.
+- PEM directory status: `/opt/subscription-saas/secrets/wechatpay/` exists but
+  remained empty because automated PEM transfer was blocked by the available
+  execution channel.
+
 ## 8. Payment Execution
 
 Real WeChat Pay connection:
@@ -265,11 +290,9 @@ Before retrying Stage 10E-B-Staging:
 - [ ] Configure server-only env with `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, and all `WECHAT_PAY_*` values.
 - [ ] Copy merchant private key, merchant cert, and platform cert/public key to `/opt/subscription-saas/secrets/wechatpay/` with `chmod 600`.
 - [x] Mount `/opt/subscription-saas/secrets/wechatpay/` into the API container read-only.
-- [ ] Deploy API/Web images that include Stage 10E-B plus hotfix `3d67658`.
-  `prod-20260618-2fecf67` was pulled and attempted, then rolled back due to the
-  API startup blocker.
-- [ ] Verify Web bundle contains `https://api.subauto.keybox.cloud/api` and does not contain staging API domains.
-- [ ] Re-run `pnpm release:check`.
+- [x] Deploy API/Web images that include Stage 10E-B plus hotfix.
+- [x] Verify Web bundle contains `https://api.subauto.keybox.cloud/api` and does not contain staging API domains.
+- [x] Re-run `pnpm release:check`.
 - [ ] Create a 1-fen test bill for a non-production test customer only.
 
 ## 11. Decision

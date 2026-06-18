@@ -87,6 +87,8 @@ const permissionRows = [
   ["order_change:approve", "审批订单变更", "order", "change_approve"],
   ["order_change:reject", "拒绝订单变更", "order", "change_reject"],
   ["order_change:execute", "执行订单变更", "order", "change_execute"],
+  ["service_case:view", "查看服务工单", "service_case", "view"],
+  ["service_case:manage", "处理服务工单", "service_case", "manage"],
   ["delivery:view", "查看车辆交付", "delivery", "view"],
   ["delivery:prepare", "准备车辆交付", "delivery", "prepare"],
   ["delivery:confirm", "确认车辆交付", "delivery", "confirm"],
@@ -225,6 +227,7 @@ const menuRows = [
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
+  ["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"],
   ["reports", "经营看板", "/reports", "dashboard", 75, null, null],
   ["reports.overview", "经营总览", "/reports", "dashboard", 10, "report:view", "reports"],
   ["reports.asset_profitability", "资产经营分析", "/reports/asset-profitability", "car", 20, "report:asset", "reports"],
@@ -512,6 +515,10 @@ const collectionManagementPermissions = [
 
 const collectionActionPermissions = ["collection:view", "collection:action_create"];
 
+const serviceCaseViewPermissions = ["service_case:view"];
+
+const serviceCaseManagePermissions = ["service_case:view", "service_case:manage"];
+
 const entitlementViewPermissions = ["entitlement:view"];
 
 const entitlementGeneratePermissions = ["entitlement:view", "entitlement:generate"];
@@ -533,6 +540,8 @@ const reportAssetMenuCodes = ["reports", "reports.asset_profitability"];
 const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collections"];
 
 const collectionMenuCodes = ["billing", "billing.collections"];
+
+const serviceCaseMenuCodes = ["orders", "orders.service_cases"];
 
 const financingMenuCodes = ["billing.financing_instruments"];
 
@@ -731,13 +740,25 @@ async function main() {
       "order:create",
       "order_change:view",
       "order_change:create",
+      ...serviceCaseViewPermissions,
       ...entitlementViewPermissions,
       "billing:view",
       "delivery:view",
       "vehicle_return:view",
       "contract:view"
     ],
-    ["dashboard", "customers", "applications", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.contracts"]
+    [
+      "dashboard",
+      "customers",
+      "applications",
+      ...productMenuCodes,
+      ...vehicleMenuCodes,
+      "quotes",
+      "orders",
+      "orders.subscription",
+      "orders.contracts",
+      ...serviceCaseMenuCodes
+    ]
   );
 
   await assignRoleAccess(
@@ -770,6 +791,7 @@ async function main() {
       "deposit_ledger:view",
       "deposit_ledger:deduct",
       ...collectionActionPermissions,
+      ...serviceCaseManagePermissions,
       "order_change:approve",
       "order_change:reject",
       "order_change:execute"
@@ -786,6 +808,7 @@ async function main() {
       "orders.review",
       "orders.contracts",
       "orders.contract_templates",
+      ...serviceCaseMenuCodes,
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
       ...financingMenuCodes,
@@ -907,6 +930,7 @@ async function main() {
       ...orderManagementPermissions,
       ...financeViewPermissions,
       ...entitlementViewPermissions,
+      ...serviceCaseViewPermissions,
       "collection:view",
       ...reportAllPermissions
     ],
@@ -924,6 +948,7 @@ async function main() {
       "orders.review",
       "orders.contracts",
       "orders.contract_templates",
+      ...serviceCaseMenuCodes,
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
       ...financingMenuCodes,

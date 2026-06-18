@@ -33,6 +33,23 @@ export class StorageService {
     stored: StoredObject;
   }> {
     const key = this.buildApplicationMaterialKey(input.applicationId, input.originalName ?? "file");
+    return this.putPrivateObject(key, input);
+  }
+
+  async putServiceCaseAttachment(input: Omit<UploadObjectInput, "key"> & { serviceCaseId: string }): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildServiceCaseAttachmentKey(input.serviceCaseId, input.originalName ?? "file");
+    return this.putPrivateObject(key, input);
+  }
+
+  private async putPrivateObject(key: string, input: Omit<UploadObjectInput, "key">): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
     const driver = this.getDriver();
 
     if (driver === "oss") {
@@ -88,6 +105,13 @@ export class StorageService {
     const year = String(now.getUTCFullYear());
     const month = String(now.getUTCMonth() + 1).padStart(2, "0");
     return `materials/${sanitizeKeyPart(applicationId)}/${year}/${month}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildServiceCaseAttachmentKey(serviceCaseId: string, originalName: string) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    const month = String(now.getUTCMonth() + 1).padStart(2, "0");
+    return `service-cases/${sanitizeKeyPart(serviceCaseId)}/${year}/${month}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
   private withOssPrefix(key: string) {

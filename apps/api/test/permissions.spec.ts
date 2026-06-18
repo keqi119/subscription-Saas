@@ -22,6 +22,7 @@ import {
   VehicleResidualForecastController
 } from "../src/residual-market/residual-market.controller";
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
+import { ServiceCaseController } from "../src/service-case/service-case.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
 import { VehicleValuationReviewController } from "../src/vehicle-valuation-review/vehicle-valuation-review.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
@@ -650,6 +651,44 @@ describe("billing finance permissions", () => {
   });
 });
 
+describe("service case permissions", () => {
+  it("gates service-case view and management APIs behind service-case permissions", () => {
+    const listPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ServiceCaseController.prototype.listServiceCases
+    );
+    const detailPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ServiceCaseController.prototype.getServiceCase
+    );
+    const acceptPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ServiceCaseController.prototype.acceptServiceCase
+    );
+    const statusPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ServiceCaseController.prototype.updateServiceCaseStatus
+    );
+    const actionPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ServiceCaseController.prototype.addServiceCaseAction
+    );
+    const closePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      ServiceCaseController.prototype.closeServiceCase
+    );
+
+    expect(listPermissions).toEqual([PermissionCode.SERVICE_CASE_VIEW]);
+    expect(detailPermissions).toEqual([PermissionCode.SERVICE_CASE_VIEW]);
+    expect(acceptPermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
+    expect(statusPermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
+    expect(actionPermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
+    expect(closePermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
+    expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_VIEW], acceptPermissions)).toBe(false);
+    expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_MANAGE], acceptPermissions)).toBe(true);
+  });
+});
+
 describe("report permissions", () => {
   it("gates report APIs behind report permissions", () => {
     const dashboardPermissions = Reflect.getMetadata(
@@ -1154,6 +1193,23 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(rolePermissionArray("OP"), "payment:create")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "deposit_ledger:refund")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "payment:write_off")).toBe(false);
+  });
+
+  it("calibrates service case permissions and menu by role", () => {
+    for (const permission of ["service_case:view", "service_case:manage"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"]');
+    expect(seedSource).toContain('const serviceCaseViewPermissions = ["service_case:view"]');
+    expect(seedSource).toContain('const serviceCaseManagePermissions = ["service_case:view", "service_case:manage"]');
+    expectRolePermissions("OP", ["service_case:view", "service_case:manage"]);
+    expectRolePermissions("SA", ["service_case:view"]);
+    expectRolePermissions("GM", ["service_case:view"]);
+    expect(roleHasPermission(rolePermissionArray("SA"), "service_case:manage")).toBe(false);
+    expect(roleHasMenu(roleMenuArray("OP"), "orders.service_cases")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("SA"), "orders.service_cases")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "orders.service_cases")).toBe(true);
   });
 
   it("calibrates entitlement permissions by role", () => {

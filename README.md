@@ -63,6 +63,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10e-payment-foundation.md`：Stage 10E-A 支付基础与 Mock 支付闭环
 - `docs/stage-10e-wechat-jsapi-payment.md`：Stage 10E-B 微信支付 JSAPI Provider
 - `docs/stage-10f-portal-billing-entitlements.md`：Stage 10F 客户账单 / 押金 / 权益中心
+- `docs/stage-10g-service-case-portal.md`：Stage 10G-A 服务工单 / 事故报案 / 救援申请
 
 ## 本地开发启动
 

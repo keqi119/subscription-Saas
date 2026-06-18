@@ -860,3 +860,34 @@ Remaining after Stage 10F:
 - Refunds, invoices, reconciliation, and automatic debit.
 
 Next recommended stage: Stage 10G for accident report, rescue request, and service case foundation.
+
+## 21. Stage 10G-A Status
+
+Stage 10G-A implements the shared ServiceCase foundation on `feature/stage10-service-case-portal`.
+
+Implemented:
+
+- New `ServiceCase`, `ServiceCaseAttachment`, and `ServiceCaseAction` models.
+- Customer Portal accident report and rescue request creation.
+- Customer-owned service-case list, detail, progress timeline, cancellation, attachment upload, and attachment preview.
+- Back-office service-case list/detail plus accept, status update, note, and close operations.
+- RBAC permissions `service_case:view` and `service_case:manage`.
+- Back-office menu entry `订单中心 -> 服务工单`.
+- H5 routes `/portal/service-cases`, `/portal/service-cases/new`, and `/portal/service-cases/[id]`.
+- Back-office route `/service-cases`.
+- Stage 10G documentation: `docs/stage-10g-service-case-portal.md`.
+
+Strategy:
+
+- ServiceCase is independent from `VehicleReturnDamage` and `CollectionCase`.
+- Attachments reuse private `StorageService` and stream previews through ownership-checked APIs.
+- Creating or handling a ServiceCase does not change order/vehicle status and does not generate bills.
+- Insurance, rescue providers, dispatch, fees, WeChat notifications, and SMS notifications are deferred.
+
+Remaining after Stage 10G-A:
+
+- WeChat service account menu and notification center.
+- Accident/rescue dispatch and supplier integrations.
+- Service-case cost attribution, settlement, and customer evaluation.
+
+Next recommended stage: Stage 10H for WeChat service account and notification center.

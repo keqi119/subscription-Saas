@@ -122,6 +122,74 @@ export const SERVICE_CASE_ACTOR_TYPE_LABELS: Record<string, string> = {
   SYSTEM: "系统"
 };
 
+export const NOTIFICATION_CHANNEL_LABELS: Record<string, string> = {
+  EMAIL: "邮件",
+  IN_APP: "站内消息",
+  SMS: "短信",
+  WECHAT_OFFICIAL_ACCOUNT: "微信服务号"
+};
+
+export const NOTIFICATION_TEMPLATE_TYPE_LABELS: Record<string, string> = {
+  APPLICATION_PROGRESS: "申请进度",
+  BILL_DUE: "账单到期",
+  BILL_OVERDUE: "账单逾期",
+  CONTRACT_PENDING: "待签约",
+  FINAL_PLAN_PENDING: "最终方案待确认",
+  MATERIAL_REQUIRED: "待补件",
+  PAYMENT_PENDING: "待支付",
+  RESCUE_UPDATE: "救援进度",
+  SERVICE_CASE_UPDATE: "服务工单进度",
+  SYSTEM: "系统通知"
+};
+
+export const NOTIFICATION_TEMPLATE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "启用",
+  INACTIVE: "停用"
+};
+
+export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
+  APPLICATION_PROGRESS: "申请进度",
+  BILL_DUE: "账单到期",
+  BILL_OVERDUE: "账单逾期",
+  CONTRACT_PENDING: "待签约",
+  FINAL_PLAN_PENDING: "最终方案待确认",
+  MATERIAL_REQUIRED: "待补件",
+  PAYMENT_PENDING: "待支付",
+  RESCUE_UPDATE: "救援进度",
+  SERVICE_CASE_UPDATE: "服务工单进度",
+  SYSTEM: "系统通知"
+};
+
+export const NOTIFICATION_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  FAILED: "发送失败",
+  PENDING: "待发送",
+  READ: "已读",
+  SENT: "已发送",
+  SKIPPED: "已跳过"
+};
+
+export const NOTIFICATION_EVENT_TYPE_LABELS: Record<string, string> = {
+  APPLICATION_SUBMITTED: "申请已提交",
+  BILL_DUE: "账单到期",
+  BILL_OVERDUE: "账单逾期",
+  CONTRACT_PENDING: "合同待签署",
+  FINAL_PLAN_READY: "最终方案待确认",
+  MATERIAL_REQUIRED: "待补件",
+  PAYMENT_PENDING: "待支付",
+  RESCUE_UPDATED: "救援进度更新",
+  SERVICE_CASE_SUBMITTED: "服务工单已提交",
+  SERVICE_CASE_UPDATED: "服务工单更新"
+};
+
+export const NOTIFICATION_EVENT_STATUS_LABELS: Record<string, string> = {
+  FAILED: "处理失败",
+  PENDING: "待处理",
+  PROCESSED: "已处理",
+  PROCESSING: "处理中",
+  SKIPPED: "已跳过"
+};
+
 export const VEHICLE_STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "可租用",
   DRAFT: "草稿",
@@ -918,6 +986,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "vehicle_return:prepare": "准备退车验收",
   "vehicle_return:view": "查看退车验收",
   "menu:view": "查看菜单",
+  "notification:manage": "管理通知中心",
+  "notification:view": "查看通知中心",
   "order:cancel": "取消订单",
   "order:confirm_final_plan": "确认最终方案",
   "order:create": "创建订单",
@@ -1037,6 +1107,8 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "vehicle_return:prepare": "允许维护退车预约和验收准备信息",
   "vehicle_return:view": "允许查看订单退车验收信息",
   "menu:view": "允许查看菜单管理",
+  "notification:manage": "允许管理通知模板和发送记录",
+  "notification:view": "允许查看通知中心",
   "order:cancel": "允许取消订阅订单",
   "order:confirm_final_plan": "允许确认客户自助订单最终方案",
   "order:create": "允许从已确认报价创建订阅订单",
@@ -1123,6 +1195,7 @@ export const MENU_LABELS: Record<string, string> = {
   orders: "订单中心",
   "orders.contract_templates": "合同模板",
   "orders.contracts": "合同管理",
+  "orders.notifications": "通知中心",
   "orders.review": "旧版订单审核",
   "orders.subscription": "订阅订单",
   products: "产品中心",

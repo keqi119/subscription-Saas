@@ -2,7 +2,8 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
-  NotFoundException
+  NotFoundException,
+  Optional
 } from "@nestjs/common";
 import {
   ApplicationActionType,
@@ -16,6 +17,8 @@ import {
   DepositStatus,
   MaterialStatus,
   MonthlyFeeMode,
+  NotificationEventType,
+  NotificationType,
   OrderReviewStatus,
   OrderSource,
   OrderStatus,
@@ -37,6 +40,7 @@ import type { Readable } from "node:stream";
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
 import { StorageService } from "../storage/storage.service";
@@ -279,8 +283,42 @@ export class CustomerService {
     private readonly auditService: AuditService,
     private readonly prisma: PrismaService,
     private readonly riskService: RiskService,
-    private readonly storageService: StorageService
+    private readonly storageService: StorageService,
+    @Optional() private readonly notificationService?: NotificationService
   ) {}
+
+  private async safeNotifyCustomer(input: {
+    aggregateId: string;
+    aggregateNo: string;
+    aggregateType: string;
+    content: string;
+    customerId: string;
+    eventType: NotificationEventType;
+    notificationType: NotificationType;
+    status: string;
+    title: string;
+    url: string;
+  }) {
+    if (!this.notificationService) return;
+    try {
+      await this.notificationService.notifyCustomer({
+        aggregateId: input.aggregateId,
+        aggregateType: input.aggregateType,
+        content: input.content,
+        customerId: input.customerId,
+        data: {
+          aggregateNo: input.aggregateNo,
+          status: input.status
+        },
+        eventType: input.eventType,
+        notificationType: input.notificationType,
+        title: input.title,
+        url: input.url
+      });
+    } catch {
+      // Notification delivery must not block the primary application workflow.
+    }
+  }
 
   async listCustomers(user: RequestUser) {
     const customers = await this.prisma.customer.findMany({
@@ -790,6 +828,18 @@ export class CustomerService {
     });
 
     await this.auditApplicationChange(AuditAction.APPROVE, before, result.application, user, context);
+    await this.safeNotifyCustomer({
+      aggregateId: result.application.id,
+      aggregateNo: result.application.applicationNo,
+      aggregateType: "application",
+      content: "平台已生成最终方案，请登录客户门户确认。",
+      customerId: result.application.customerId,
+      eventType: NotificationEventType.FINAL_PLAN_READY,
+      notificationType: NotificationType.FINAL_PLAN_PENDING,
+      status: result.application.planConfirmStatus,
+      title: "最终方案待确认",
+      url: `/portal/applications/${result.application.id}`
+    });
     return toApplicationView(result.application, user);
   }
 
@@ -1208,6 +1258,19 @@ export class CustomerService {
       module: "vehicle",
       operatorId: user.id,
       userAgent: context.userAgent
+    });
+
+    await this.safeNotifyCustomer({
+      aggregateId: result.application.id,
+      aggregateNo: result.application.applicationNo,
+      aggregateType: "application",
+      content: "您的订阅申请已提交，平台将尽快完成审核。",
+      customerId: result.application.customerId,
+      eventType: NotificationEventType.APPLICATION_SUBMITTED,
+      notificationType: NotificationType.APPLICATION_PROGRESS,
+      status: result.application.status,
+      title: "申请已提交",
+      url: `/portal/applications/${result.application.id}`
     });
 
     return {

@@ -335,6 +335,86 @@ export interface PortalWeChatJsapiParams {
   paySign: string;
 }
 
+export interface PortalNotification {
+  channel: string;
+  content: string | null;
+  createdAt: string;
+  notificationId: string;
+  notificationNo: string;
+  notificationStatus: string;
+  notificationType: string;
+  readAt: string | null;
+  title: string | null;
+  url: string | null;
+}
+
+export interface PortalNotificationListResponse {
+  items: PortalNotification[];
+  page: number;
+  pageSize: number;
+  total: number;
+  unreadCount: number;
+}
+
+export interface AdminNotificationTemplate {
+  channel: string;
+  content: string | null;
+  createdAt: string;
+  description: string | null;
+  providerTemplateId: string | null;
+  templateCode: string;
+  templateId: string;
+  templateStatus: string;
+  templateType: string;
+  title: string;
+  updatedAt: string;
+  variables: unknown;
+}
+
+export interface AdminNotificationRecord {
+  channel: string;
+  content: string | null;
+  createdAt: string;
+  customer: {
+    customerNo: string;
+    mobile: string | null;
+    name: string;
+  } | null;
+  errorMessage: string | null;
+  failedAt: string | null;
+  notificationId: string;
+  notificationNo: string;
+  notificationStatus: string;
+  notificationType: string;
+  providerMessageId: string | null;
+  readAt: string | null;
+  recipientOpenIdMasked: string | null;
+  recipientPhone: string | null;
+  sentAt: string | null;
+  templateCode: string | null;
+  templateTitle: string | null;
+  title: string | null;
+  url: string | null;
+}
+
+export interface AdminNotificationEvent {
+  aggregateId: string | null;
+  aggregateType: string | null;
+  attempts: number;
+  createdAt: string;
+  customer: {
+    customerNo: string;
+    mobile: string | null;
+    name: string;
+  } | null;
+  eventId: string;
+  eventStatus: string;
+  eventType: string;
+  lastError: string | null;
+  notificationNo: string | null;
+  processedAt: string | null;
+}
+
 export interface PortalPagedResponse<T> {
   items: T[];
   page: number;

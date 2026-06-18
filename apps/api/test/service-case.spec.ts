@@ -52,6 +52,13 @@ describe("service case back office", () => {
     );
 
     expect(progress.caseStatus).toBe(ServiceCaseStatus.IN_PROGRESS);
+    expect(harness.notificationService.notifyCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aggregateId: "case-a",
+        eventType: "SERVICE_CASE_UPDATED",
+        notificationType: "SERVICE_CASE_UPDATE"
+      })
+    );
     await expect(
       harness.service.updateServiceCaseStatus(
         "case-a",

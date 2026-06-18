@@ -64,6 +64,8 @@ Stage 9 / Production readiness：
 - `docs/stage-10e-wechat-jsapi-payment.md`：Stage 10E-B 微信支付 JSAPI Provider
 - `docs/stage-10f-portal-billing-entitlements.md`：Stage 10F 客户账单 / 押金 / 权益中心
 - `docs/stage-10g-service-case-portal.md`：Stage 10G-A 服务工单 / 事故报案 / 救援申请
+- `docs/stage-10h-notification-wechat-foundation.md`：Stage 10H-A 通知中心与微信服务号基础
+- `docs/wechat-official-account-setup.md`：微信服务号菜单与域名配置建议
 
 ## 本地开发启动
 

@@ -3,6 +3,8 @@ import { Module } from "@nestjs/common";
 import { AuditModule } from "../audit/audit.module";
 import { CustomerModule } from "../customer/customer.module";
 import { ESignModule } from "../esign/esign.module";
+import { NotificationModule } from "../notification/notification.module";
+import { PortalNotificationController } from "../notification/notification.controller";
 import { PaymentModule } from "../payment/payment.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { ServiceCaseModule } from "../service-case/service-case.module";
@@ -30,6 +32,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalBillingController,
     PortalCatalogController,
     PortalContractController,
+    PortalNotificationController,
     PortalPaymentController,
     PortalServiceCaseController,
     PortalWechatCallbackController,
@@ -41,6 +44,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     AuditModule,
     CustomerModule,
     ESignModule,
+    NotificationModule,
     PaymentModule,
     PrismaModule,
     ServiceCaseModule,

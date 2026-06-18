@@ -605,6 +605,88 @@ enum ServiceCaseActorType {
   @@map("service_case_actor_type")
 }
 
+enum NotificationChannel {
+  IN_APP
+  WECHAT_OFFICIAL_ACCOUNT
+  SMS
+  EMAIL
+
+  @@map("notification_channel")
+}
+
+enum NotificationTemplateType {
+  APPLICATION_PROGRESS
+  MATERIAL_REQUIRED
+  FINAL_PLAN_PENDING
+  CONTRACT_PENDING
+  PAYMENT_PENDING
+  BILL_DUE
+  BILL_OVERDUE
+  SERVICE_CASE_UPDATE
+  RESCUE_UPDATE
+  SYSTEM
+
+  @@map("notification_template_type")
+}
+
+enum NotificationTemplateStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("notification_template_status")
+}
+
+enum NotificationType {
+  APPLICATION_PROGRESS
+  MATERIAL_REQUIRED
+  FINAL_PLAN_PENDING
+  CONTRACT_PENDING
+  PAYMENT_PENDING
+  BILL_DUE
+  BILL_OVERDUE
+  SERVICE_CASE_UPDATE
+  RESCUE_UPDATE
+  SYSTEM
+
+  @@map("notification_type")
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+  READ
+  CANCELLED
+
+  @@map("notification_status")
+}
+
+enum NotificationEventType {
+  APPLICATION_SUBMITTED
+  MATERIAL_REQUIRED
+  FINAL_PLAN_READY
+  CONTRACT_PENDING
+  PAYMENT_PENDING
+  BILL_DUE
+  BILL_OVERDUE
+  SERVICE_CASE_SUBMITTED
+  SERVICE_CASE_UPDATED
+  RESCUE_UPDATED
+
+  @@map("notification_event_type")
+}
+
+enum NotificationEventStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  SKIPPED
+
+  @@map("notification_event_status")
+}
+
 enum ContractStatus {
   DRAFT
   GENERATED
@@ -1331,6 +1413,8 @@ model Customer {
   collectionCaseBills CollectionCaseBill[]
   collectionActions CollectionAction[]
   serviceCases     ServiceCase[]
+  notificationRecords NotificationRecord[]
+  notificationEvents  NotificationEvent[]
   entitlementAccounts OrderEntitlementAccount[]
   entitlementGrants   OrderEntitlementGrant[]
   entitlementUsages   OrderEntitlementUsage[]
@@ -3291,6 +3375,98 @@ model ServiceCaseAction {
   @@index([actorType])
   @@index([createdAt])
   @@map("service_case_action")
+}
+
+model NotificationTemplate {
+  id                 String                     @id @default(uuid()) @db.Uuid
+  templateCode       String                     @unique @map("template_code") @db.VarChar(96)
+  channel            NotificationChannel
+  templateType       NotificationTemplateType   @map("template_type")
+  templateStatus     NotificationTemplateStatus @default(ACTIVE) @map("template_status")
+  title              String                     @db.VarChar(128)
+  description        String?                    @db.Text
+  providerTemplateId String?                    @map("provider_template_id") @db.VarChar(128)
+  content            String?                    @db.Text
+  variables          Json?
+  providerConfig     Json?                      @map("provider_config")
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?                    @map("created_by") @db.Uuid
+  updatedBy          String?                    @map("updated_by") @db.Uuid
+  deletedAt          DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+
+  records NotificationRecord[]
+
+  @@index([channel])
+  @@index([templateType])
+  @@index([templateStatus])
+  @@map("notification_template")
+}
+
+model NotificationRecord {
+  id                 String                @id @default(uuid()) @db.Uuid
+  notificationNo     String                @unique @map("notification_no") @db.VarChar(64)
+  customerId         String?               @map("customer_id") @db.Uuid
+  customer           Customer?             @relation(fields: [customerId], references: [id])
+  customerAccountId  String?               @map("customer_account_id") @db.Uuid
+  recipientPhone     String?               @map("recipient_phone") @db.VarChar(32)
+  recipientOpenId    String?               @map("recipient_open_id") @db.VarChar(128)
+  channel            NotificationChannel
+  templateCode       String?               @map("template_code") @db.VarChar(96)
+  templateId         String?               @map("template_id") @db.Uuid
+  template           NotificationTemplate? @relation(fields: [templateId], references: [id])
+  notificationType   NotificationType      @map("notification_type")
+  notificationStatus NotificationStatus    @default(PENDING) @map("notification_status")
+  title              String?               @db.VarChar(128)
+  content            String?               @db.Text
+  url                String?               @db.VarChar(512)
+  providerMessageId  String?               @map("provider_message_id") @db.VarChar(128)
+  providerResponse   Json?                 @map("provider_response")
+  payload            Json?
+  errorMessage       String?               @map("error_message") @db.Text
+  scheduledAt        DateTime?             @map("scheduled_at") @db.Timestamptz(6)
+  sentAt             DateTime?             @map("sent_at") @db.Timestamptz(6)
+  failedAt           DateTime?             @map("failed_at") @db.Timestamptz(6)
+  readAt             DateTime?             @map("read_at") @db.Timestamptz(6)
+  createdAt          DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt          DateTime?             @map("deleted_at") @db.Timestamptz(6)
+
+  events NotificationEvent[]
+
+  @@index([customerId])
+  @@index([customerAccountId])
+  @@index([channel])
+  @@index([notificationType])
+  @@index([notificationStatus])
+  @@index([createdAt])
+  @@map("notification_record")
+}
+
+model NotificationEvent {
+  id             String                  @id @default(uuid()) @db.Uuid
+  notificationId String?                 @map("notification_id") @db.Uuid
+  notification   NotificationRecord?     @relation(fields: [notificationId], references: [id])
+  eventType      NotificationEventType   @map("event_type")
+  aggregateType  String?                 @map("aggregate_type") @db.VarChar(64)
+  aggregateId    String?                 @map("aggregate_id") @db.Uuid
+  customerId     String?                 @map("customer_id") @db.Uuid
+  customer       Customer?               @relation(fields: [customerId], references: [id])
+  payload        Json?
+  eventStatus    NotificationEventStatus @default(PENDING) @map("event_status")
+  attempts       Int                     @default(0)
+  lastError      String?                 @map("last_error") @db.Text
+  nextRunAt      DateTime?               @map("next_run_at") @db.Timestamptz(6)
+  processedAt    DateTime?               @map("processed_at") @db.Timestamptz(6)
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([eventType])
+  @@index([aggregateType, aggregateId])
+  @@index([customerId])
+  @@index([eventStatus])
+  @@index([nextRunAt])
+  @@map("notification_event")
 }
 
 model VehicleDelivery {

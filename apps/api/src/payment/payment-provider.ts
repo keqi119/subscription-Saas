@@ -31,6 +31,7 @@ export interface CreatePaymentResult {
 }
 
 export interface VerifyPaymentCallbackResult {
+  errorMessage?: string;
   eventType?: string;
   paidAmount?: number;
   paidAt?: Date;

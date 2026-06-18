@@ -113,6 +113,18 @@ Verification requires:
 
 The encrypted `resource` is decrypted with AES-256-GCM and API v3 key. Only `SUCCESS` callbacks with matching appid, mchid, amount, and out_trade_no mark the payment order paid.
 
+### Platform Certificate Rotation
+
+Stage 10E-B certificate rotation support adds `WECHAT_PAY_PLATFORM_CERTS` for multiple WeChat Pay platform certificates:
+
+```env
+WECHAT_PAY_PLATFORM_CERTS=<OLD_SERIAL>:/opt/subscription-saas/secrets/wechatpay/platform-certs/old.pem,<NEW_SERIAL>:/opt/subscription-saas/secrets/wechatpay/platform-certs/new.pem
+```
+
+When configured, callback verification chooses the certificate by `Wechatpay-Serial`. Unknown serials are recorded as `WECHATPAY_SERIAL_NOT_CONFIGURED` and do not mark `PaymentOrder` as paid.
+
+See `docs/wechat-pay-certificate-rotation.md` before starting WeChat Pay platform certificate gray release.
+
 ## 7. Idempotency
 
 Payment completion reuses Stage 10E-A logic:

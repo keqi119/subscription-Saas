@@ -106,6 +106,7 @@ Stage 9F-D plan assets:
 - [ ] If WeChat Pay JSAPI is enabled, `/opt/subscription-saas/secrets/wechatpay/` exists on the server and is not committed to Git.
 - [ ] `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, `PAYMENT_MOCK_ENABLED=false`, and `WECHAT_PAY_ENABLED=true` are set for production.
 - [ ] WeChat Pay merchant private key, merchant certificate, and WeChat Pay public key or platform certificate paths are configured and readable by the API container.
+- [ ] Before WeChat Pay platform certificate gray release, `WECHAT_PAY_PLATFORM_CERTS` maps both old and new platform certificate serials to readable PEM files.
 - [ ] JSAPI payment authorization directory is configured in WeChat Pay merchant platform, for example `https://app.subauto.keybox.cloud/`.
 - [ ] WeChat OAuth domain/redirect URI is configured for the service account.
 - [ ] `WECHAT_PAY_NOTIFY_URL=https://api.subauto.keybox.cloud/api/payments/callback/wechat-pay` is public HTTPS reachable.

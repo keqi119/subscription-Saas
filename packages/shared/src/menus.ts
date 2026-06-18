@@ -174,6 +174,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "合同模板",
         path: "/contract-versions",
         permissionCode: PermissionCode.CONTRACT_TEMPLATE_VIEW
+      },
+      {
+        code: "orders.service_cases",
+        icon: "audit",
+        label: "服务工单",
+        path: "/service-cases",
+        permissionCode: PermissionCode.SERVICE_CASE_VIEW
       }
     ]
   },

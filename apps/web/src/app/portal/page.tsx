@@ -35,8 +35,8 @@ const portalEntries = [
   { href: "/portal/payment-orders", icon: <PayCircleOutlined />, title: "支付记录" },
   { href: "/portal/deposit", icon: <SafetyOutlined />, title: "我的押金" },
   { href: "/portal/entitlements", icon: <GiftOutlined />, title: "我的权益" },
-  { icon: <AlertOutlined />, title: "事故报案" },
-  { icon: <ToolOutlined />, title: "救援申请" }
+  { href: "/portal/service-cases/new?type=ACCIDENT_REPORT", icon: <AlertOutlined />, title: "事故报案" },
+  { href: "/portal/service-cases/new?type=RESCUE_REQUEST", icon: <ToolOutlined />, title: "救援申请" }
 ];
 
 export default function PortalHomePage() {

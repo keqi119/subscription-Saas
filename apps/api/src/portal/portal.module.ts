@@ -5,6 +5,7 @@ import { CustomerModule } from "../customer/customer.module";
 import { ESignModule } from "../esign/esign.module";
 import { PaymentModule } from "../payment/payment.module";
 import { PrismaModule } from "../prisma/prisma.module";
+import { ServiceCaseModule } from "../service-case/service-case.module";
 import { StorageModule } from "../storage/storage.module";
 import { WeChatModule } from "../wechat/wechat.module";
 import { PortalApplicationController } from "./portal-application.controller";
@@ -19,6 +20,7 @@ import { PortalCatalogService } from "./portal-catalog.service";
 import { PortalContractController } from "./portal-contract.controller";
 import { PortalController } from "./portal.controller";
 import { PortalPaymentController } from "./portal-payment.controller";
+import { PortalServiceCaseController } from "./portal-service-case.controller";
 import { PortalWechatCallbackController, PortalWechatController } from "./portal-wechat.controller";
 
 @Module({
@@ -29,12 +31,22 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalCatalogController,
     PortalContractController,
     PortalPaymentController,
+    PortalServiceCaseController,
     PortalWechatCallbackController,
     PortalWechatController,
     PortalController
   ],
   exports: [CustomerAuthGuard, PortalAuthService],
-  imports: [AuditModule, CustomerModule, ESignModule, PaymentModule, PrismaModule, StorageModule, WeChatModule],
+  imports: [
+    AuditModule,
+    CustomerModule,
+    ESignModule,
+    PaymentModule,
+    PrismaModule,
+    ServiceCaseModule,
+    StorageModule,
+    WeChatModule
+  ],
   providers: [
     CustomerAuthGuard,
     PortalApplicationService,

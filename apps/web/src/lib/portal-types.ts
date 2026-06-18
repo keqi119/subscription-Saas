@@ -549,3 +549,77 @@ export interface PortalEntitlementUsage {
   usageNo: string;
 }
 
+export interface PortalServiceCase {
+  acceptedAt: string | null;
+  actions: PortalServiceCaseAction[];
+  attachments: PortalServiceCaseAttachment[];
+  canCancel: boolean;
+  cancelReason: string | null;
+  cancelledAt: string | null;
+  caseNo: string;
+  caseSource: string;
+  caseStatus: string;
+  caseType: string;
+  closeRemark: string | null;
+  closedAt: string | null;
+  contactName: string | null;
+  contactPhone: string | null;
+  createdAt: string | null;
+  customer?: {
+    customerNo: string;
+    id: string;
+    mobile: string;
+    name: string;
+  };
+  description: string | null;
+  id: string;
+  insuranceReportNo: string | null;
+  locationText: string | null;
+  occurredAt: string | null;
+  order: {
+    id: string;
+    orderNo: string;
+    orderStatus: string;
+  } | null;
+  priority: string;
+  rescueAddress: string | null;
+  rescueType: string | null;
+  resolvedAt: string | null;
+  title: string | null;
+  updatedAt: string | null;
+  vehicle: {
+    assetLocation: string | null;
+    batteryCapacityKwh: number | null;
+    batteryUsageType: string | null;
+    brand: string | null;
+    currentMileageKm: number | null;
+    displayName: string;
+    id: string;
+    model: string | null;
+    modelYear: number | null;
+    series: string | null;
+    vehicleModel: string | null;
+  } | null;
+}
+
+export interface PortalServiceCaseAttachment {
+  attachmentType: string;
+  createdAt: string | null;
+  fileName: string;
+  fileSize: number | null;
+  id: string;
+  mimeType: string | null;
+  previewUrl: string;
+}
+
+export interface PortalServiceCaseAction {
+  actionType: string;
+  actorName: string | null;
+  actorType: string;
+  createdAt: string | null;
+  fromStatus: string | null;
+  id: string;
+  remark: string | null;
+  toStatus: string | null;
+}
+

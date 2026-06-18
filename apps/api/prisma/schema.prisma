@@ -530,6 +530,81 @@ enum VehicleReturnDamageStatus {
   @@map("vehicle_return_damage_status")
 }
 
+enum ServiceCaseType {
+  ACCIDENT_REPORT
+  RESCUE_REQUEST
+  CUSTOMER_SUPPORT
+
+  @@map("service_case_type")
+}
+
+enum ServiceCaseSource {
+  CUSTOMER_PORTAL
+  BACK_OFFICE
+
+  @@map("service_case_source")
+}
+
+enum ServiceCaseStatus {
+  SUBMITTED
+  ACCEPTED
+  IN_PROGRESS
+  WAITING_CUSTOMER
+  RESOLVED
+  CLOSED
+  CANCELLED
+
+  @@map("service_case_status")
+}
+
+enum ServiceCasePriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+
+  @@map("service_case_priority")
+}
+
+enum RescueType {
+  TOWING
+  JUMP_START
+  TIRE_CHANGE
+  ACCIDENT_RESCUE
+  OTHER
+
+  @@map("rescue_type")
+}
+
+enum ServiceCaseAttachmentType {
+  IMAGE
+  DOCUMENT
+  OTHER
+
+  @@map("service_case_attachment_type")
+}
+
+enum ServiceCaseActionType {
+  SUBMIT
+  ACCEPT
+  UPDATE_STATUS
+  ADD_NOTE
+  UPLOAD_ATTACHMENT
+  RESOLVE
+  CLOSE
+  CANCEL
+
+  @@map("service_case_action_type")
+}
+
+enum ServiceCaseActorType {
+  CUSTOMER
+  STAFF
+  SYSTEM
+
+  @@map("service_case_actor_type")
+}
+
 enum ContractStatus {
   DRAFT
   GENERATED
@@ -1255,6 +1330,7 @@ model Customer {
   collectionCases   CollectionCase[]
   collectionCaseBills CollectionCaseBill[]
   collectionActions CollectionAction[]
+  serviceCases     ServiceCase[]
   entitlementAccounts OrderEntitlementAccount[]
   entitlementGrants   OrderEntitlementGrant[]
   entitlementUsages   OrderEntitlementUsage[]
@@ -1908,6 +1984,7 @@ model Vehicle {
   deliveries                    VehicleDelivery[]
   returns                       VehicleReturn[]
   returnDamages                 VehicleReturnDamage[]
+  serviceCases                  ServiceCase[]
   salePriceHistories            VehicleSalePriceHistory[]
   assetCostProfiles             VehicleAssetCostProfile[]
   capitalEvents                 VehicleCapitalEvent[]
@@ -2682,6 +2759,7 @@ model SubscriptionOrder {
   collectionCases            CollectionCase[]
   collectionCaseBills        CollectionCaseBill[]
   collectionActions          CollectionAction[]
+  serviceCases               ServiceCase[]
   entitlementAccounts        OrderEntitlementAccount[]
   entitlementGrants          OrderEntitlementGrant[]
   entitlementUsages          OrderEntitlementUsage[]
@@ -3114,6 +3192,105 @@ model CollectionAction {
   @@index([actionType])
   @@index([createdAt])
   @@map("collection_action")
+}
+
+model ServiceCase {
+  id                     String                    @id @default(uuid()) @db.Uuid
+  caseNo                 String                    @unique @map("case_no") @db.VarChar(64)
+  customerId             String                    @map("customer_id") @db.Uuid
+  customer               Customer                  @relation(fields: [customerId], references: [id])
+  orderId                String?                   @map("order_id") @db.Uuid
+  order                  SubscriptionOrder?        @relation(fields: [orderId], references: [id])
+  vehicleId              String?                   @map("vehicle_id") @db.Uuid
+  vehicle                Vehicle?                  @relation(fields: [vehicleId], references: [id])
+  caseType               ServiceCaseType           @map("case_type")
+  caseSource             ServiceCaseSource         @default(CUSTOMER_PORTAL) @map("case_source")
+  caseStatus             ServiceCaseStatus         @default(SUBMITTED) @map("case_status")
+  priority               ServiceCasePriority       @default(NORMAL)
+  title                  String?                   @db.VarChar(128)
+  description            String?                   @db.Text
+  contactName            String?                   @map("contact_name") @db.VarChar(64)
+  contactPhone           String?                   @map("contact_phone") @db.VarChar(32)
+  occurredAt             DateTime?                 @map("occurred_at") @db.Timestamptz(6)
+  locationText           String?                   @map("location_text") @db.VarChar(255)
+  latitude               Decimal?                  @db.Decimal(10, 6)
+  longitude              Decimal?                  @db.Decimal(10, 6)
+  accidentHasInjury      Boolean?                  @map("accident_has_injury")
+  accidentPoliceReported Boolean?                  @map("accident_police_reported")
+  insuranceReportNo      String?                   @map("insurance_report_no") @db.VarChar(128)
+  rescueType             RescueType?               @map("rescue_type")
+  rescueAddress          String?                   @map("rescue_address") @db.VarChar(255)
+  assignedTo             String?                   @map("assigned_to") @db.Uuid
+  acceptedAt             DateTime?                 @map("accepted_at") @db.Timestamptz(6)
+  resolvedAt             DateTime?                 @map("resolved_at") @db.Timestamptz(6)
+  closedAt               DateTime?                 @map("closed_at") @db.Timestamptz(6)
+  cancelledAt            DateTime?                 @map("cancelled_at") @db.Timestamptz(6)
+  closeRemark            String?                   @map("close_remark") @db.Text
+  cancelReason           String?                   @map("cancel_reason") @db.Text
+  snapshot               Json?
+  customerSnapshot       Json?                     @map("customer_snapshot")
+  orderSnapshot          Json?                     @map("order_snapshot")
+  vehicleSnapshot        Json?                     @map("vehicle_snapshot")
+  attachments            ServiceCaseAttachment[]
+  actions                ServiceCaseAction[]
+  createdAt              DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                   @map("created_by") @db.Uuid
+  updatedBy              String?                   @map("updated_by") @db.Uuid
+  deletedAt              DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([orderId])
+  @@index([vehicleId])
+  @@index([caseType])
+  @@index([caseStatus])
+  @@index([priority])
+  @@index([createdAt])
+  @@map("service_case")
+}
+
+model ServiceCaseAttachment {
+  id             String                    @id @default(uuid()) @db.Uuid
+  serviceCaseId  String                    @map("service_case_id") @db.Uuid
+  serviceCase    ServiceCase               @relation(fields: [serviceCaseId], references: [id])
+  fileName       String                    @map("file_name") @db.VarChar(255)
+  originalName   String?                   @map("original_name") @db.VarChar(255)
+  mimeType       String?                   @map("mime_type") @db.VarChar(128)
+  fileSize       Int?                      @map("file_size")
+  bucket         String?                   @db.VarChar(64)
+  objectKey      String?                   @map("object_key") @db.VarChar(255)
+  attachmentType ServiceCaseAttachmentType @default(IMAGE) @map("attachment_type")
+  uploadedByType ServiceCaseActorType      @map("uploaded_by_type")
+  uploadedBy     String?                   @map("uploaded_by") @db.Uuid
+  snapshot       Json?
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt      DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([serviceCaseId])
+  @@index([attachmentType])
+  @@map("service_case_attachment")
+}
+
+model ServiceCaseAction {
+  id            String                @id @default(uuid()) @db.Uuid
+  serviceCaseId String                @map("service_case_id") @db.Uuid
+  serviceCase   ServiceCase           @relation(fields: [serviceCaseId], references: [id])
+  actionType    ServiceCaseActionType @map("action_type")
+  actorType     ServiceCaseActorType  @map("actor_type")
+  actorId       String?               @map("actor_id") @db.Uuid
+  actorName     String?               @map("actor_name") @db.VarChar(64)
+  fromStatus    ServiceCaseStatus?    @map("from_status")
+  toStatus      ServiceCaseStatus?    @map("to_status")
+  remark        String?               @db.Text
+  snapshot      Json?
+  createdAt     DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([serviceCaseId])
+  @@index([actionType])
+  @@index([actorType])
+  @@index([createdAt])
+  @@map("service_case_action")
 }
 
 model VehicleDelivery {

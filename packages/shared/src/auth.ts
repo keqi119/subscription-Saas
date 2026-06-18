@@ -106,6 +106,8 @@ export enum PermissionCode {
   ORDER_CHANGE_APPROVE = "order_change:approve",
   ORDER_CHANGE_REJECT = "order_change:reject",
   ORDER_CHANGE_EXECUTE = "order_change:execute",
+  SERVICE_CASE_VIEW = "service_case:view",
+  SERVICE_CASE_MANAGE = "service_case:manage",
   BILLING_VIEW = "billing:view",
   BILLING_GENERATE = "billing:generate",
   PAYMENT_VIEW = "payment:view",

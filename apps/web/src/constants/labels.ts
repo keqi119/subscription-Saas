@@ -68,6 +68,60 @@ export const CUSTOMER_VERIFICATION_CODE_PURPOSE_LABELS: Record<string, string> =
   LOGIN: "登录"
 };
 
+export const SERVICE_CASE_TYPE_LABELS: Record<string, string> = {
+  ACCIDENT_REPORT: "事故报案",
+  CUSTOMER_SUPPORT: "客户服务",
+  RESCUE_REQUEST: "救援申请"
+};
+
+export const SERVICE_CASE_STATUS_LABELS: Record<string, string> = {
+  ACCEPTED: "已受理",
+  CANCELLED: "已取消",
+  CLOSED: "已关闭",
+  IN_PROGRESS: "处理中",
+  RESOLVED: "已解决",
+  SUBMITTED: "已提交",
+  WAITING_CUSTOMER: "待客户补充"
+};
+
+export const SERVICE_CASE_PRIORITY_LABELS: Record<string, string> = {
+  HIGH: "高",
+  LOW: "低",
+  NORMAL: "普通",
+  URGENT: "紧急"
+};
+
+export const RESCUE_TYPE_LABELS: Record<string, string> = {
+  ACCIDENT_RESCUE: "事故救援",
+  JUMP_START: "搭电",
+  OTHER: "其他",
+  TIRE_CHANGE: "换胎",
+  TOWING: "拖车"
+};
+
+export const SERVICE_CASE_ATTACHMENT_TYPE_LABELS: Record<string, string> = {
+  DOCUMENT: "文件",
+  IMAGE: "图片",
+  OTHER: "其他"
+};
+
+export const SERVICE_CASE_ACTION_TYPE_LABELS: Record<string, string> = {
+  ACCEPT: "受理",
+  ADD_NOTE: "处理记录",
+  CANCEL: "取消",
+  CLOSE: "关闭",
+  RESOLVE: "解决",
+  SUBMIT: "提交",
+  UPDATE_STATUS: "更新状态",
+  UPLOAD_ATTACHMENT: "上传附件"
+};
+
+export const SERVICE_CASE_ACTOR_TYPE_LABELS: Record<string, string> = {
+  CUSTOMER: "客户",
+  STAFF: "员工",
+  SYSTEM: "系统"
+};
+
 export const VEHICLE_STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "可租用",
   DRAFT: "草稿",

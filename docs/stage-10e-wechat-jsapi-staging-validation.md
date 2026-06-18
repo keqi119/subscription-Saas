@@ -32,6 +32,15 @@
 > domain found. Real WeChat Pay remains blocked because the PEM upload and
 > server-only `WECHAT_PAY_*` secret injection were not completed.
 
+> Update: 2026-06-18 WeChat Pay config pass. The PEM files were uploaded by the
+> operator, API was force-recreated to reload `.env.production.images`, and the
+> API container now sees `PAYMENT_PROVIDER=wechat_pay`,
+> `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, `PAYMENT_MOCK_ENABLED=false`, and the
+> required `WECHAT_PAY_*` settings. Merchant private key and both certificates
+> parse successfully. API remains healthy. Real payment was still not executed;
+> the next step requires a logged-in customer in the WeChat in-app browser and a
+> dedicated 1-fen payable bill.
+
 ## 1. Scope
 
 This report records the pre-flight validation for a real small-amount WeChat Pay JSAPI test after Stage 10E-B.
@@ -240,6 +249,34 @@ Hotfix deployment:
   remained empty because automated PEM transfer was blocked by the available
   execution channel.
 
+## 7.2 WeChat Pay Secret And Runtime Config Result
+
+Completed after operator upload:
+
+- `/opt/subscription-saas/secrets/wechatpay/apiclient_key.pem`
+- `/opt/subscription-saas/secrets/wechatpay/apiclient_cert.pem`
+- `/opt/subscription-saas/secrets/wechatpay/wechatpay_platform_cert.pem`
+
+Server checks:
+
+- PEM directory permissions were `700` and PEM files were `600`.
+- Merchant private key parsed successfully with `openssl pkey -check`.
+- Merchant API certificate parsed successfully with `openssl x509`.
+- WeChat Pay platform certificate parsed successfully with `openssl x509`.
+- API container was force-recreated after env updates.
+- API container env includes:
+  - `PAYMENT_PROVIDER=wechat_pay`
+  - `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`
+  - `PAYMENT_MOCK_ENABLED=false`
+  - `WECHAT_PAY_ENABLED=true`
+  - `WECHAT_PAY_DEFAULT_CHANNEL=WECHAT_JSAPI`
+  - required `WECHAT_PAY_*` secrets and certificate paths, verified as present
+    without printing values.
+- `GET /api/portal/wechat/oauth-url` returned `401` for an unauthenticated
+  request, confirming the Portal customer guard is active.
+- API logs after recreate showed PostgreSQL connection and Nest application
+  startup success with no startup exception.
+
 ## 8. Payment Execution
 
 Real WeChat Pay connection:
@@ -287,13 +324,15 @@ Before retrying Stage 10E-B-Staging:
 - [ ] Ensure public `80/443` reachability from an external network.
 - [ ] Configure WeChat public-platform OAuth domain for `app.subauto.keybox.cloud`.
 - [ ] Configure JSAPI payment auth directory: `https://app.subauto.keybox.cloud/`.
-- [ ] Configure server-only env with `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, and all `WECHAT_PAY_*` values.
-- [ ] Copy merchant private key, merchant cert, and platform cert/public key to `/opt/subscription-saas/secrets/wechatpay/` with `chmod 600`.
+- [x] Configure server-only env with `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, and all `WECHAT_PAY_*` values.
+- [x] Copy merchant private key, merchant cert, and platform cert/public key to `/opt/subscription-saas/secrets/wechatpay/` with `chmod 600`.
 - [x] Mount `/opt/subscription-saas/secrets/wechatpay/` into the API container read-only.
 - [x] Deploy API/Web images that include Stage 10E-B plus hotfix.
 - [x] Verify Web bundle contains `https://api.subauto.keybox.cloud/api` and does not contain staging API domains.
 - [x] Re-run `pnpm release:check`.
 - [ ] Create a 1-fen test bill for a non-production test customer only.
+- [ ] Complete WeChat in-app customer login and openid binding.
+- [ ] Trigger JSAPI cashier in WeChat and pay the 1-fen test bill.
 
 ## 11. Decision
 

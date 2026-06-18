@@ -452,3 +452,7 @@ B 线销售下单：AVAILABLE -> RESERVED
 7. 在进件详情中打开报价，选择车辆和订阅套餐，输入车辆基础费。
 8. 确认报价后检查车辆是否从 `AVAILABLE` 进入 `RESERVED`。
 9. 从报价生成订单，生成并签署合同。
+
+## Additional Docs
+
+- `docs/wechat-pay-certificate-rotation.md`: WeChat Pay platform certificate rotation runbook.

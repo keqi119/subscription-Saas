@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { WeChatPayProvider } from "../src/payment/wechat-pay.provider";
+import { WeChatPayCertificateStore } from "../src/payment/wechat-pay-certificate-store";
 import {
   encryptWechatPayResourceForTest,
   signWechatPayMessage
@@ -107,9 +108,107 @@ describe("WeChatPayProvider", () => {
 
     fixture.cleanup();
   });
+
+  it("loads mapped platform certificates and verifies callbacks by serial", async () => {
+    const fixture = createWechatFixture({ mappedPlatformCerts: true });
+    const store = new WeChatPayCertificateStore(fixture.configService as never);
+    const provider = new WeChatPayProvider(fixture.configService as never);
+
+    expect(store.getMappedPlatformCertCount()).toBe(2);
+    expect(store.getVerifierPem(fixture.oldPlatformSerial).pem).toContain("PUBLIC KEY");
+    expect(store.getVerifierPem(fixture.newPlatformSerial).pem).toContain("PUBLIC KEY");
+
+    for (const platform of [
+      { privateKeyPem: fixture.oldPlatformPrivateKeyPem, serial: fixture.oldPlatformSerial },
+      { privateKeyPem: fixture.newPlatformPrivateKeyPem, serial: fixture.newPlatformSerial }
+    ]) {
+      const payload = fixture.createCallbackPayload({
+        amount: { payer_total: 100, total: 100 },
+        appid: "wx_test_app",
+        mchid: "1900000001",
+        out_trade_no: "PYO202606170001",
+        success_time: "2026-06-17T10:00:00+08:00",
+        trade_state: "SUCCESS",
+        transaction_id: `4200000001202606170000000001_${platform.serial}`
+      });
+      const body = JSON.stringify(payload);
+      const timestamp = "1710000000";
+      const nonce = "callback_nonce";
+      const signature = signWechatPayMessage(`${timestamp}\n${nonce}\n${body}\n`, platform.privateKeyPem);
+
+      const result = await provider.verifyCallback(payload, {
+        "Wechatpay-Nonce": nonce,
+        "Wechatpay-Serial": platform.serial,
+        "Wechatpay-Signature": signature,
+        "Wechatpay-Timestamp": timestamp
+      }, Buffer.from(body));
+
+      expect(result.verified).toBe(true);
+      expect(result.providerTradeNo).toBe("PYO202606170001");
+    }
+
+    fixture.cleanup();
+  });
+
+  it("rejects mapped certificate callbacks when the serial is not configured", async () => {
+    const fixture = createWechatFixture({ mappedPlatformCerts: true });
+    const provider = new WeChatPayProvider(fixture.configService as never);
+    const payload = fixture.createCallbackPayload({
+      amount: { payer_total: 100, total: 100 },
+      appid: "wx_test_app",
+      mchid: "1900000001",
+      out_trade_no: "PYO202606170001",
+      trade_state: "SUCCESS"
+    });
+    const body = JSON.stringify(payload);
+    const timestamp = "1710000000";
+    const nonce = "callback_nonce";
+    const signature = signWechatPayMessage(`${timestamp}\n${nonce}\n${body}\n`, fixture.oldPlatformPrivateKeyPem);
+
+    const result = await provider.verifyCallback(payload, {
+      "Wechatpay-Nonce": nonce,
+      "Wechatpay-Serial": "unknown_platform_serial",
+      "Wechatpay-Signature": signature,
+      "Wechatpay-Timestamp": timestamp
+    }, Buffer.from(body));
+
+    expect(result.verified).toBe(false);
+    expect(result.errorMessage).toBe("WECHATPAY_SERIAL_NOT_CONFIGURED");
+
+    fixture.cleanup();
+  });
+
+  it("keeps the legacy single platform certificate fallback", async () => {
+    const fixture = createWechatFixture({ legacyPlatformCert: true });
+    const provider = new WeChatPayProvider(fixture.configService as never);
+    const payload = fixture.createCallbackPayload({
+      amount: { payer_total: 100, total: 100 },
+      appid: "wx_test_app",
+      mchid: "1900000001",
+      out_trade_no: "PYO202606170001",
+      success_time: "2026-06-17T10:00:00+08:00",
+      trade_state: "SUCCESS",
+      transaction_id: "4200000001202606170000000001"
+    });
+    const body = JSON.stringify(payload);
+    const timestamp = "1710000000";
+    const nonce = "callback_nonce";
+    const signature = signWechatPayMessage(`${timestamp}\n${nonce}\n${body}\n`, fixture.privateKeyPem);
+
+    const result = await provider.verifyCallback(payload, {
+      "Wechatpay-Nonce": nonce,
+      "Wechatpay-Serial": "legacy_platform_serial",
+      "Wechatpay-Signature": signature,
+      "Wechatpay-Timestamp": timestamp
+    }, Buffer.from(body));
+
+    expect(result.verified).toBe(true);
+
+    fixture.cleanup();
+  });
 });
 
-function createWechatFixture() {
+function createWechatFixture(options?: { legacyPlatformCert?: boolean; mappedPlatformCerts?: boolean }) {
   const dir = mkdtempSync(join(tmpdir(), "wechat-pay-provider-"));
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
@@ -131,6 +230,38 @@ function createWechatFixture() {
     WECHAT_PAY_PUBLIC_KEY_ID: "platform_public_key_id",
     WECHAT_PAY_PUBLIC_KEY_PATH: publicKeyPath
   };
+
+  let oldPlatformPrivateKeyPem = privateKeyPem;
+  let newPlatformPrivateKeyPem = privateKeyPem;
+  let oldPlatformSerial = "old_platform_serial";
+  let newPlatformSerial = "new_platform_serial";
+
+  if (options?.legacyPlatformCert) {
+    delete values.WECHAT_PAY_PUBLIC_KEY_ID;
+    delete values.WECHAT_PAY_PUBLIC_KEY_PATH;
+    values.WECHAT_PAY_PLATFORM_CERT_PATH = publicKeyPath;
+  }
+
+  if (options?.mappedPlatformCerts) {
+    const oldPlatform = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const newPlatform = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    oldPlatformPrivateKeyPem = oldPlatform.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+    newPlatformPrivateKeyPem = newPlatform.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+    const oldPlatformPublicKeyPem = oldPlatform.publicKey.export({ format: "pem", type: "spki" }).toString();
+    const newPlatformPublicKeyPem = newPlatform.publicKey.export({ format: "pem", type: "spki" }).toString();
+    const oldPlatformPublicKeyPath = join(dir, "old_platform_cert.pem");
+    const newPlatformPublicKeyPath = join(dir, "new_platform_cert.pem");
+    oldPlatformSerial = "old_platform_serial";
+    newPlatformSerial = "new_platform_serial";
+
+    writeFileSync(oldPlatformPublicKeyPath, oldPlatformPublicKeyPem);
+    writeFileSync(newPlatformPublicKeyPath, newPlatformPublicKeyPem);
+
+    delete values.WECHAT_PAY_PUBLIC_KEY_ID;
+    delete values.WECHAT_PAY_PUBLIC_KEY_PATH;
+    values.WECHAT_PAY_PLATFORM_CERTS =
+      `${oldPlatformSerial}:${oldPlatformPublicKeyPath},${newPlatformSerial}:${newPlatformPublicKeyPath}`;
+  }
 
   return {
     apiV3Key,
@@ -156,6 +287,10 @@ function createWechatFixture() {
       },
       summary: "payment success"
     }),
+    newPlatformPrivateKeyPem,
+    newPlatformSerial,
+    oldPlatformPrivateKeyPem,
+    oldPlatformSerial,
     privateKeyPem
   };
 }

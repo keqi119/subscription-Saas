@@ -12,6 +12,7 @@ const requiredSteps = [
   ["API tests", "pnpm", ["--filter", "@subscription-saas/api", "test"]],
   ["Prisma migrate status", "pnpm", ["prisma:migrate:status"]],
   ["Smoke script syntax", "node", ["--check", "scripts/api-smoke.mjs"]],
+  ["WeChat Pay certificate downloader syntax", "node", ["--check", "scripts/wechat-pay-download-platform-certs.mjs"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

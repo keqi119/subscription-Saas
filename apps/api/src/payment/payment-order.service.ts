@@ -273,6 +273,7 @@ export class PaymentOrderService {
       const result = await this.provider.verifyCallback(payload, headers, rawBody);
       await this.prisma.paymentCallbackLog.update({
         data: {
+          errorMessage: result.errorMessage,
           eventType: result.eventType,
           providerTradeNo: result.providerTradeNo,
           providerTransactionId: result.providerTransactionId,

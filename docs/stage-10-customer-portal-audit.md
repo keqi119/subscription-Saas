@@ -816,3 +816,47 @@ Remaining after Stage 10E-B:
 - Accident report and rescue service cases.
 
 Next recommended stage: Stage 10E-B-Staging for a controlled small-amount real WeChat Pay verification.
+
+Post-merge staging validation update:
+
+- Real WeChat JSAPI small-amount validation has passed.
+- A `0.01 CNY` payment was completed in the WeChat client.
+- WeChat callback signature verification and `resource` decryption succeeded.
+- `PaymentOrder` moved to `PAID`.
+- `PaymentRecord` and `PaymentWriteOff` were created through the existing finance path.
+- `ReceivableBill` was updated to `PAID`.
+- Repeated SUCCESS callbacks were handled idempotently.
+
+## 20. Stage 10F Status
+
+Stage 10F implements the customer order, bill, deposit, and entitlement center on `feature/stage10-portal-billing-entitlements`.
+
+Implemented:
+
+- Protected Portal order list and order detail APIs.
+- Protected Portal bill list and bill detail APIs.
+- Protected Portal payment order list API.
+- Protected Portal deposit overview and deposit transaction APIs.
+- Protected Portal entitlement grant and usage APIs.
+- H5 routes `/portal/orders`, `/portal/orders/[id]`, `/portal/bills`, `/portal/bills/[id]`, `/portal/payment-orders`, `/portal/deposit`, and `/portal/entitlements`.
+- Portal home links for orders, bills, payment records, deposit, and entitlements.
+- Payment entry reuse from bills and order detail through existing Stage 10E `POST /api/portal/payment-orders`.
+- Stage 10F documentation: `docs/stage-10f-portal-billing-entitlements.md`.
+
+Strategy:
+
+- Stage 10F is read-only for finance, deposit, and entitlements.
+- It does not add a payment provider or change WeChat Pay.
+- It does not change bill generation, finance write-off, deposit ledger, or entitlement consume logic.
+- Every endpoint uses `CustomerAuthGuard` and filters by `currentCustomer.customerId`.
+- Portal responses redact vehicle purchase/current sale price, financing/capital structure, residual/cost data, full VIN, full plate number, internal review comments, and back-office operator-sensitive fields.
+
+Remaining after Stage 10F:
+
+- Accident report, rescue request, and shared `ServiceCase` foundation.
+- WeChat service account notification center.
+- Real SMS provider.
+- WeChat H5 fallback outside the WeChat client.
+- Refunds, invoices, reconciliation, and automatic debit.
+
+Next recommended stage: Stage 10G for accident report, rescue request, and service case foundation.

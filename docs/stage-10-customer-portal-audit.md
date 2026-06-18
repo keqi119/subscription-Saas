@@ -827,6 +827,15 @@ Post-merge staging validation update:
 - `ReceivableBill` was updated to `PAID`.
 - Repeated SUCCESS callbacks were handled idempotently.
 
+Stage 10E-B-CertRotation update:
+
+- WeChat Pay platform certificate gray release should be treated as platform-certificate rotation, not merchant API certificate rotation.
+- The system now supports `WECHAT_PAY_PLATFORM_CERTS` with multiple `serial:path` entries.
+- Callback verification selects the platform certificate by `Wechatpay-Serial`.
+- Unknown serials are recorded as `WECHATPAY_SERIAL_NOT_CONFIGURED` and do not mark `PaymentOrder` as paid.
+- Legacy single public key / platform certificate path configuration remains supported when no multi-certificate mapping is configured.
+- Runbook: `docs/wechat-pay-certificate-rotation.md`.
+
 ## 20. Stage 10F Status
 
 Stage 10F implements the customer order, bill, deposit, and entitlement center on `feature/stage10-portal-billing-entitlements`.

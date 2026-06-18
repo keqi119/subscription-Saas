@@ -16,7 +16,7 @@ import {
 import type { UploadFile } from "antd/es/upload/interface";
 import dayjs, { type Dayjs } from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 
 import { RESCUE_TYPE_LABELS, SERVICE_CASE_TYPE_LABELS, labelOf } from "../../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
@@ -39,7 +39,7 @@ interface ServiceCaseFormValues {
 
 const rescueTypeOptions = Object.entries(RESCUE_TYPE_LABELS).map(([value, label]) => ({ label, value }));
 
-export default function PortalNewServiceCasePage() {
+function PortalNewServiceCaseContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { message } = App.useApp();
@@ -238,5 +238,30 @@ export default function PortalNewServiceCasePage() {
         </section>
       </section>
     </main>
+  );
+}
+
+export default function PortalNewServiceCasePage() {
+  return (
+    <Suspense
+      fallback={
+        <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 40px" }}>
+          <section style={{ margin: "0 auto", maxWidth: 760 }}>
+            <section
+              style={{
+                background: "#ffffff",
+                border: "1px solid #e5eaf2",
+                borderRadius: 8,
+                padding: 18
+              }}
+            >
+              <Typography.Text type="secondary">正在加载...</Typography.Text>
+            </section>
+          </section>
+        </main>
+      }
+    >
+      <PortalNewServiceCaseContent />
+    </Suspense>
   );
 }

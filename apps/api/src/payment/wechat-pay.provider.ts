@@ -15,12 +15,17 @@ import {
   PaymentProvider,
   VerifyPaymentCallbackResult
 } from "./payment-provider";
+import { WeChatPayCertificateStore } from "./wechat-pay-certificate-store";
 
 const WECHAT_JSAPI_TRANSACTION_PATH = "/v3/pay/transactions/jsapi";
 const WECHAT_PAY_API_BASE_URL = "https://api.mch.weixin.qq.com";
 
 export class WeChatPayProvider implements PaymentProvider {
-  constructor(private readonly configService: ConfigService) {}
+  private readonly certificateStore: WeChatPayCertificateStore;
+
+  constructor(private readonly configService: ConfigService) {
+    this.certificateStore = new WeChatPayCertificateStore(configService);
+  }
 
   async createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {
     if (!this.enabled) {
@@ -129,27 +134,22 @@ export class WeChatPayProvider implements PaymentProvider {
     const serial = headerValue(headers, "wechatpay-serial");
 
     if (!timestamp || !nonce || !signature || !serial) {
-      return { payload, verified: false };
+      return { errorMessage: "WECHATPAY_CALLBACK_HEADERS_MISSING", payload, verified: false };
     }
-    const expectedPublicKeyId = this.configService.get<string>("WECHAT_PAY_PUBLIC_KEY_ID")?.trim();
-    if (expectedPublicKeyId && serial !== expectedPublicKeyId) {
-      return { payload, verified: false };
-    }
-
-    const publicKeyOrCertificatePem = this.readVerifierPem();
-    if (!publicKeyOrCertificatePem) {
-      return { payload, verified: false };
+    const verifier = this.certificateStore.getVerifierPem(serial);
+    if (!verifier.pem) {
+      return { errorMessage: verifier.errorMessage, payload, verified: false };
     }
 
     const verified = verifyWechatPaySignature({
       body,
       nonce,
-      publicKeyOrCertificatePem,
+      publicKeyOrCertificatePem: verifier.pem,
       signature,
       timestamp
     });
     if (!verified) {
-      return { payload, verified: false };
+      return { errorMessage: "WECHATPAY_SIGNATURE_VERIFY_FAILED", payload, verified: false };
     }
 
     const record = asRecord(payload);
@@ -197,14 +197,6 @@ export class WeChatPayProvider implements PaymentProvider {
   private readPrivateKey() {
     const privateKeyPath = this.requiredConfig("WECHAT_PAY_MERCHANT_PRIVATE_KEY_PATH");
     return readFileSync(privateKeyPath, "utf8");
-  }
-
-  private readVerifierPem() {
-    const publicKeyPath = this.configService.get<string>("WECHAT_PAY_PUBLIC_KEY_PATH")?.trim();
-    const platformCertPath = this.configService.get<string>("WECHAT_PAY_PLATFORM_CERT_PATH")?.trim();
-    const verifierPath = publicKeyPath || platformCertPath;
-
-    return verifierPath ? readFileSync(verifierPath, "utf8") : null;
   }
 }
 

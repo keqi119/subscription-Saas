@@ -175,8 +175,26 @@ Required production controls:
 - `WECHAT_PAY_NOTIFY_URL=https://api.subauto.keybox.cloud/api/payments/callback/wechat-pay`
 - `WECHAT_PAY_JSAPI_AUTH_DIR=https://app.subauto.keybox.cloud/`
 - merchant private key, merchant certificate, and WeChat Pay public key or platform certificate are readable by the API container but not committed to Git.
+- before WeChat Pay platform certificate gray release, configure `WECHAT_PAY_PLATFORM_CERTS` with both old and new platform certificate serial/path pairs.
 
 The WeChat Pay callback URL must be public HTTPS. BT / Nginx must forward `Wechatpay-*` headers to the API container.
+
+Platform certificate rotation uses:
+
+```env
+WECHAT_PAY_PLATFORM_CERTS=<OLD_SERIAL>:/opt/subscription-saas/secrets/wechatpay/platform-certs/old.pem,<NEW_SERIAL>:/opt/subscription-saas/secrets/wechatpay/platform-certs/new.pem
+```
+
+Keep the old and new platform certificates side by side. Do not overwrite the old platform certificate before gray release is complete.
+
+The platform certificates can be downloaded and decrypted with:
+
+```bash
+pnpm wechat-pay:download-platform-certs \
+  --env-file .env.production.images \
+  --output-dir /opt/subscription-saas/secrets/wechatpay/platform-certs \
+  --write-env-snippet /opt/subscription-saas/secrets/wechatpay/platform-certs/wechat-pay-platform-certs.env
+```
 
 Never commit `.env.production` or `.env.production.images`.
 

@@ -4,13 +4,13 @@ import { ArrowLeftOutlined, FileTextOutlined, PayCircleOutlined } from "@ant-des
 import { App, Button, Empty, Flex, List, Space, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 
 import { BILL_STATUS_LABELS, BILL_TYPE_LABELS, labelOf } from "../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
 import { PortalBillListItem, PortalPagedResponse, PortalPaymentOrder } from "../../../lib/portal-types";
 
-export default function PortalBillsPage() {
+function PortalBillsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { message } = App.useApp();
@@ -119,6 +119,22 @@ export default function PortalBillsPage() {
         />
       </section>
     </main>
+  );
+}
+
+export default function PortalBillsPage() {
+  return (
+    <Suspense
+      fallback={
+        <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 40px" }}>
+          <section style={{ margin: "0 auto", maxWidth: 860 }}>
+            <Typography.Text type="secondary">正在加载...</Typography.Text>
+          </section>
+        </main>
+      }
+    >
+      <PortalBillsContent />
+    </Suspense>
   );
 }
 

@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 import { AuditModule } from "../audit/audit.module";
+import { AuthModule } from "../auth/auth.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { ESignAdminController, ESignCallbackController } from "./esign.controller";
@@ -12,7 +13,7 @@ import { MockESignProvider } from "./mock-esign.provider";
 @Module({
   controllers: [ESignAdminController, ESignCallbackController],
   exports: [ESignService],
-  imports: [AuditModule, NotificationModule, PrismaModule],
+  imports: [AuditModule, AuthModule, NotificationModule, PrismaModule],
   providers: [
     ESignService,
     {

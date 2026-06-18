@@ -180,6 +180,54 @@ describe("portal payment foundation", () => {
     }));
   });
 
+  it("records WeChat callback verification errors without marking the payment paid", async () => {
+    const provider = {
+      createPayment: vi.fn(async (input: AnyRecord) => ({
+        jsapiParams: {
+          appId: "wx_test_app",
+          nonceStr: "nonce",
+          package: "prepay_id=wx_prepay",
+          paySign: "signature",
+          signType: "RSA",
+          timeStamp: "1710000000"
+        },
+        providerPrepayId: "wx_prepay",
+        providerTradeNo: input.paymentOrderNo
+      })),
+      verifyCallback: vi.fn(async () => ({
+        errorMessage: "WECHATPAY_SERIAL_NOT_CONFIGURED",
+        eventType: "SUCCESS",
+        payload: {},
+        providerTradeNo: "PYO_UNKNOWN",
+        verified: false
+      }))
+    };
+    const harness = createPaymentHarness({
+      config: {
+        PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_PROVIDER: "wechat_pay",
+        WECHAT_PAY_ENABLED: "true"
+      },
+      provider: provider as never,
+      wechatOpenId: "openid_customer_a"
+    });
+    harness.addBill({ id: "bill_wechat", remainingAmount: 1000n });
+    const paymentOrder = await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_wechat"] },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+
+    const result = await harness.service.handleCallback("wechat-pay", { resource: {} });
+
+    expect(result.verified).toBe(false);
+    expect(harness.state.callbacks[0]?.errorMessage).toBe("WECHATPAY_SERIAL_NOT_CONFIGURED");
+    expect(harness.state.paymentOrders.find((item) => item.id === paymentOrder.id)?.paymentStatus)
+      .toBe(PaymentOrderStatus.PENDING);
+    expect(harness.financeService.createPayment).not.toHaveBeenCalled();
+    expect(harness.financeService.writeOffPayment).not.toHaveBeenCalled();
+  });
+
   it("lists only payment orders owned by the current customer", async () => {
     const harness = createPaymentHarness();
     harness.addBill({ id: "bill_a", customerId: "customer_a", orderId: "order_a", remainingAmount: 1000n });

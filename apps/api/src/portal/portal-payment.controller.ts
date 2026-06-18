@@ -5,6 +5,7 @@ import { CreatePortalPaymentOrderDto, PortalPayableBillsQueryDto } from "../paym
 import { PaymentOrderService } from "../payment/payment-order.service";
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
+import { PortalPaymentOrdersQueryDto } from "./portal-billing.dto";
 import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
 
 @Controller("portal")
@@ -27,6 +28,14 @@ export class PortalPaymentController {
     @Req() request: Request
   ) {
     return this.paymentOrderService.createPortalPaymentOrder(dto, currentCustomer, requestContext(request));
+  }
+
+  @Get("payment-orders")
+  listPaymentOrders(
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Query() query: PortalPaymentOrdersQueryDto
+  ) {
+    return this.paymentOrderService.listPortalPaymentOrders(currentCustomer, query);
   }
 
   @Get("payment-orders/:id")

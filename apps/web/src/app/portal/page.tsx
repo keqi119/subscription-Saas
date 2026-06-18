@@ -7,6 +7,7 @@ import {
   FileTextOutlined,
   GiftOutlined,
   LogoutOutlined,
+  PayCircleOutlined,
   ProfileOutlined,
   SafetyOutlined,
   ToolOutlined
@@ -29,9 +30,11 @@ const portalEntries = [
   { href: "/portal/catalog", icon: <CarOutlined />, title: "订阅车辆" },
   { href: "/portal/applications", icon: <AuditOutlined />, title: "我的申请" },
   { href: "/portal/contracts", icon: <FileTextOutlined />, title: "我的合同" },
-  { icon: <ProfileOutlined />, title: "我的订单" },
-  { icon: <FileTextOutlined />, title: "我的账单" },
-  { icon: <GiftOutlined />, title: "我的权益" },
+  { href: "/portal/orders", icon: <ProfileOutlined />, title: "我的订单" },
+  { href: "/portal/bills", icon: <FileTextOutlined />, title: "我的账单" },
+  { href: "/portal/payment-orders", icon: <PayCircleOutlined />, title: "支付记录" },
+  { href: "/portal/deposit", icon: <SafetyOutlined />, title: "我的押金" },
+  { href: "/portal/entitlements", icon: <GiftOutlined />, title: "我的权益" },
   { icon: <AlertOutlined />, title: "事故报案" },
   { icon: <ToolOutlined />, title: "救援申请" }
 ];

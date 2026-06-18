@@ -24,6 +24,7 @@ import { CreatePaymentDto, WriteOffPaymentDto } from "../finance/dto/finance.dto
 import { FinanceService } from "../finance/finance.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "../portal/portal-auth.types";
+import { PortalPaymentOrdersQueryDto } from "../portal/portal-billing.dto";
 import { WeChatOAuthService } from "../wechat/wechat-oauth.service";
 import { CreatePortalPaymentOrderDto, PortalPayableBillsQueryDto } from "./payment.dto";
 import { PAYMENT_PROVIDER_CLIENT, PaymentProvider, WeChatJsapiPaymentParams } from "./payment-provider";
@@ -189,6 +190,33 @@ export class PaymentOrderService {
   async getPortalPaymentOrder(id: string, currentCustomer: CurrentCustomer) {
     const paymentOrder = await this.findPortalPaymentOrderOrThrow(id, currentCustomer.customerId);
     return toPaymentOrderView(paymentOrder);
+  }
+
+  async listPortalPaymentOrders(currentCustomer: CurrentCustomer, query: PortalPaymentOrdersQueryDto) {
+    const { page, pageSize, skip } = resolvePagination(query);
+    const where: Prisma.PaymentOrderWhereInput = {
+      customerId: currentCustomer.customerId,
+      deletedAt: null,
+      orderId: query.orderId,
+      paymentStatus: query.paymentStatus
+    };
+    const [paymentOrders, total] = await Promise.all([
+      this.prisma.paymentOrder.findMany({
+        include: paymentOrderInclude,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: pageSize,
+        where
+      }),
+      this.prisma.paymentOrder.count({ where })
+    ]);
+
+    return {
+      items: paymentOrders.map((paymentOrder) => toPaymentOrderView(paymentOrder)),
+      page,
+      pageSize,
+      total
+    };
   }
 
   async startPortalPayment(id: string, currentCustomer: CurrentCustomer, context: RequestContext) {
@@ -757,6 +785,16 @@ function toPaymentOrderView(
 
 function uniqueStrings(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function resolvePagination(query: { page?: number; pageSize?: number }) {
+  const page = Math.max(1, Number(query.page ?? 1));
+  const pageSize = Math.min(100, Math.max(1, Number(query.pageSize ?? 20)));
+  return {
+    page,
+    pageSize,
+    skip: (page - 1) * pageSize
+  };
 }
 
 function assertSingleOrder(bills: PayableBill[]) {

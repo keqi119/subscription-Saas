@@ -12,6 +12,8 @@ import { PortalApplicationService } from "./portal-application.service";
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { PortalAuthController } from "./portal-auth.controller";
 import { PortalAuthService } from "./portal-auth.service";
+import { PortalBillingController } from "./portal-billing.controller";
+import { PortalBillingService } from "./portal-billing.service";
 import { PortalCatalogController } from "./portal-catalog.controller";
 import { PortalCatalogService } from "./portal-catalog.service";
 import { PortalContractController } from "./portal-contract.controller";
@@ -23,6 +25,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
   controllers: [
     PortalApplicationController,
     PortalAuthController,
+    PortalBillingController,
     PortalCatalogController,
     PortalContractController,
     PortalPaymentController,
@@ -36,6 +39,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     CustomerAuthGuard,
     PortalApplicationService,
     PortalAuthService,
+    PortalBillingService,
     PortalCatalogService
   ]
 })

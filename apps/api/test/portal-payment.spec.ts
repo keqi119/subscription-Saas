@@ -179,6 +179,29 @@ describe("portal payment foundation", () => {
       openId: "openid_customer_a"
     }));
   });
+
+  it("lists only payment orders owned by the current customer", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_a", customerId: "customer_a", orderId: "order_a", remainingAmount: 1000n });
+    harness.addBill({ id: "bill_b", customerId: "customer_b", orderId: "order_b", remainingAmount: 2000n });
+    await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_a"], paymentChannel: PaymentChannel.MOCK },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_b"], paymentChannel: PaymentChannel.MOCK },
+      harness.currentCustomer("customer_b"),
+      harness.context
+    );
+
+    const result = await harness.service.listPortalPaymentOrders(harness.currentCustomer("customer_a"), {});
+
+    expect(result.total).toBe(1);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.customerId).toBe("customer_a");
+    expect(result.items[0]?.amount).toBe(1000);
+  });
 });
 
 function createPaymentHarness(options: {
@@ -231,6 +254,9 @@ function createPaymentHarness(options: {
       })
     },
     paymentOrder: {
+      count: vi.fn(async ({ where }: AnyRecord) =>
+        state.paymentOrders.filter((item) => matchesPaymentOrder(item, where)).length
+      ),
       create: vi.fn(async ({ data }: AnyRecord) => {
         const paymentOrder = {
           amount: data.amount,
@@ -459,7 +485,13 @@ function matchesPaymentOrder(paymentOrder: AnyRecord, where: AnyRecord) {
   if (where.paymentStatus?.in && !where.paymentStatus.in.includes(paymentOrder.paymentStatus)) {
     return false;
   }
+  if (where.paymentStatus && !where.paymentStatus.in && paymentOrder.paymentStatus !== where.paymentStatus) {
+    return false;
+  }
   if (where.paymentChannel && paymentOrder.paymentChannel !== where.paymentChannel) {
+    return false;
+  }
+  if (where.orderId && paymentOrder.orderId !== where.orderId) {
     return false;
   }
   return true;

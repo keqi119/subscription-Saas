@@ -69,7 +69,7 @@ export class WeChatOfficialAccountProvider implements NotificationProvider {
     }
 
     return {
-      providerMessageId: typeof body.msgid === "string" ? body.msgid : undefined,
+      providerMessageId: normalizeProviderMessageId(body.msgid),
       providerResponse: body,
       success: true
     };
@@ -137,4 +137,14 @@ function toWechatTemplateData(data: Record<string, unknown> | undefined) {
     };
   }
   return result;
+}
+
+function normalizeProviderMessageId(value: unknown) {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
 }

@@ -118,10 +118,31 @@ Menu guidance is documented in:
 Dry-run script:
 
 ```powershell
-node scripts/wechat-menu-dry-run.mjs
+pnpm wechat:menu:dry-run
 ```
 
-The script only prints JSON and does not call WeChat.
+The dry-run command only prints JSON and does not call WeChat. Stage 10H-B adds the guarded apply command:
+
+```powershell
+$env:WECHAT_MENU_APPLY="1"
+pnpm wechat:menu:apply -- --env-file .env
+```
+
+Real apply remains disabled unless `WECHAT_MENU_APPLY=1` is present.
+
+## Stage 10H-B Handoff
+
+Stage 10H-B validation tooling is documented in:
+
+- `docs/stage-10h-wechat-official-account-validation.md`
+
+New controlled scripts:
+
+- `pnpm wechat:oa:smoke`: token-only or single-openid template-message smoke.
+- `pnpm wechat:menu:dry-run`: print the proposed customer service-account menu.
+- `pnpm wechat:menu:apply`: apply the menu only when `WECHAT_MENU_APPLY=1`.
+
+The smoke tooling masks AppID/openid/template IDs, never prints access_token or AppSecret, and blocks wildcard or multi-openid sends.
 
 ## Not In Scope
 

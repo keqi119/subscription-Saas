@@ -926,3 +926,29 @@ Strategy:
 - SMS, email, mini-program subscribe messages, marketing messages, and complex orchestration remain out of scope.
 
 Next recommended stage: Stage 10H-B for real WeChat Official Account template-message and menu validation.
+
+## 23. Stage 10H-B Status
+
+Stage 10H-B adds the controlled real WeChat Official Account validation tooling on `feature/stage10-wechat-official-account-validation`.
+
+Implemented:
+
+- `scripts/wechat-official-account-smoke.mjs` for access-token smoke and single-openid template-message smoke.
+- `scripts/wechat-menu.mjs` for menu dry-run and explicit-env guarded apply.
+- Package commands `wechat:oa:smoke`, `wechat:menu:dry-run`, and `wechat:menu:apply`.
+- Release syntax checks for the new WeChat Official Account scripts.
+- Provider handling for numeric WeChat `msgid` values so `NotificationRecord.providerMessageId` is populated during real sends.
+- Stage 10H-B validation report/runbook: `docs/stage-10h-wechat-official-account-validation.md`.
+
+Safety posture:
+
+- No AppSecret, access_token, full openid, or real template ID values are committed.
+- Smoke sends are limited to one explicit test openid.
+- Batch and wildcard sends are blocked.
+- Menu apply requires `WECHAT_MENU_APPLY=1`.
+- WeChat Pay certificate rotation, callback verification, payment posting, write-off, and receivable bill logic remain untouched.
+
+Current validation state:
+
+- Code-level checks and dry-run tooling are ready.
+- Real WeChat access-token fetch, template send, menu apply, and WeChat-client click-through validation require operator-provided real environment values and are tracked in the Stage 10H-B report.

@@ -187,6 +187,15 @@ WECHAT_PAY_PLATFORM_CERTS=<OLD_SERIAL>:/opt/subscription-saas/secrets/wechatpay/
 
 Keep the old and new platform certificates side by side. Do not overwrite the old platform certificate before gray release is complete.
 
+The platform certificates can be downloaded and decrypted with:
+
+```bash
+pnpm wechat-pay:download-platform-certs \
+  --env-file .env.production.images \
+  --output-dir /opt/subscription-saas/secrets/wechatpay/platform-certs \
+  --write-env-snippet /opt/subscription-saas/secrets/wechatpay/platform-certs/wechat-pay-platform-certs.env
+```
+
 Never commit `.env.production` or `.env.production.images`.
 
 ## 4. Prepare DNS and HTTPS

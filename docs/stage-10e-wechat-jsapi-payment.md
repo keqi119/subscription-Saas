@@ -125,6 +125,12 @@ When configured, callback verification chooses the certificate by `Wechatpay-Ser
 
 See `docs/wechat-pay-certificate-rotation.md` before starting WeChat Pay platform certificate gray release.
 
+One-time download helper:
+
+```bash
+pnpm wechat-pay:download-platform-certs --env-file .env.production.images --output-dir /opt/subscription-saas/secrets/wechatpay/platform-certs
+```
+
 ## 7. Idempotency
 
 Payment completion reuses Stage 10E-A logic:

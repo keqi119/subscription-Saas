@@ -55,7 +55,41 @@ chmod 700 /opt/subscription-saas/secrets/wechatpay/platform-certs
 chmod 600 /opt/subscription-saas/secrets/wechatpay/platform-certs/*.pem
 ```
 
-## 5. Rotation Steps
+## 5. Download Platform Certificates
+
+Use the repository helper script to call WeChat Pay API v3 `/v3/certificates`, decrypt `encrypt_certificate` with `WECHAT_PAY_API_V3_KEY`, and save PEM certificates by serial.
+
+Example on the server:
+
+```bash
+cd /opt/subscription-saas
+pnpm wechat-pay:download-platform-certs \
+  --env-file .env.production.images \
+  --output-dir /opt/subscription-saas/secrets/wechatpay/platform-certs \
+  --write-env-snippet /opt/subscription-saas/secrets/wechatpay/platform-certs/wechat-pay-platform-certs.env
+```
+
+If only the new serial is needed:
+
+```bash
+pnpm wechat-pay:download-platform-certs \
+  --env-file .env.production.images \
+  --output-dir /opt/subscription-saas/secrets/wechatpay/platform-certs \
+  --serial <NEW_SERIAL>
+```
+
+The script requires:
+
+```text
+WECHAT_PAY_MCH_ID
+WECHAT_PAY_MERCHANT_SERIAL_NO
+WECHAT_PAY_MERCHANT_PRIVATE_KEY_PATH
+WECHAT_PAY_API_V3_KEY
+```
+
+The script masks serials in console output and never prints AppSecret, API v3 key, merchant private key, or certificate content.
+
+## 6. Rotation Steps
 
 1. Upload the old and new platform certificates to the server without overwriting either file.
 2. Configure `WECHAT_PAY_PLATFORM_CERTS` with old and new serial/path pairs.
@@ -68,7 +102,7 @@ chmod 600 /opt/subscription-saas/secrets/wechatpay/platform-certs/*.pem
 9. Keep the old platform certificate configured for 24-48 hours after 100% new certificate traffic is stable.
 10. Remove the old certificate in a later maintenance window only after no callbacks use the old serial.
 
-## 6. Failure Handling
+## 7. Failure Handling
 
 If any callback verification failure appears during gray release:
 
@@ -77,7 +111,7 @@ If any callback verification failure appears during gray release:
 - Check `Wechatpay-Serial`, certificate file path, file permissions, raw body handling, and proxy forwarding of `Wechatpay-*` headers.
 - Do not mark payment orders paid from unverified callbacks.
 
-## 7. Current Code Behavior
+## 8. Current Code Behavior
 
 - `WECHAT_PAY_PLATFORM_CERTS` supports multiple `serial:path` pairs.
 - Callback verification selects the configured certificate by `Wechatpay-Serial`.
@@ -86,8 +120,8 @@ If any callback verification failure appears during gray release:
 - Legacy `WECHAT_PAY_PUBLIC_KEY_PATH` and `WECHAT_PAY_PLATFORM_CERT_PATH` remain supported when no mapping is configured.
 - WeChat Pay API response signature verification is not currently implemented; this change covers callback verification.
 
-## 8. Deferred
+## 9. Deferred
 
-- Automatic platform certificate download is not implemented.
+- Scheduled platform certificate download is not implemented.
 - Real-time certificate refresh without API restart is not implemented.
 - Merchant API certificate rotation is out of scope.

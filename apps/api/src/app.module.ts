@@ -9,6 +9,7 @@ import { CustomerModule } from "./customer/customer.module";
 import { ESignModule } from "./esign/esign.module";
 import { FinanceModule } from "./finance/finance.module";
 import { FinancingModule } from "./financing/financing.module";
+import { NotificationModule } from "./notification/notification.module";
 import { OrderModule } from "./order/order.module";
 import { PaymentModule } from "./payment/payment.module";
 import { PortalModule } from "./portal/portal.module";
@@ -37,6 +38,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     ESignModule,
     FinanceModule,
     FinancingModule,
+    NotificationModule,
     OrderModule,
     PaymentModule,
     PortalModule,

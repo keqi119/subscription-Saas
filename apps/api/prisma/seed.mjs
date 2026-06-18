@@ -108,6 +108,11 @@ const permissionRows = [
 ];
 
 permissionRows.push(
+  ["notification:view", "查看通知中心", "notification", "view"],
+  ["notification:manage", "管理通知中心", "notification", "manage"]
+);
+
+permissionRows.push(
   ["billing:view", "查看应收账单", "billing", "view"],
   ["billing:generate", "生成应收账单", "billing", "generate"],
   ["payment:view", "查看收款记录", "payment", "view"],
@@ -244,6 +249,7 @@ const menuRows = [
 ];
 
 menuRows.push(
+  ["orders.notifications", "通知中心", "/notifications", "message", 50, "notification:view", "orders"],
   ["products.subscription", "订阅产品", "/products?tab=products", "product", 10, "product:view", "products"],
   ["products.versions", "产品版本", "/products?tab=versions", "file", 20, "product_version:view", "products"],
   ["products.vehicle_packages", "车型包", "/products?tab=vehicle-packages", "car", 30, "vehicle_package:view", "products"],
@@ -519,6 +525,10 @@ const serviceCaseViewPermissions = ["service_case:view"];
 
 const serviceCaseManagePermissions = ["service_case:view", "service_case:manage"];
 
+const notificationViewPermissions = ["notification:view"];
+
+const notificationManagePermissions = ["notification:view", "notification:manage"];
+
 const entitlementViewPermissions = ["entitlement:view"];
 
 const entitlementGeneratePermissions = ["entitlement:view", "entitlement:generate"];
@@ -542,6 +552,8 @@ const financeMenuCodes = ["billing", "billing.monthly_rent", "billing.collection
 const collectionMenuCodes = ["billing", "billing.collections"];
 
 const serviceCaseMenuCodes = ["orders", "orders.service_cases"];
+
+const notificationMenuCodes = ["orders", "orders.notifications"];
 
 const financingMenuCodes = ["billing.financing_instruments"];
 
@@ -741,6 +753,7 @@ async function main() {
       "order_change:view",
       "order_change:create",
       ...serviceCaseViewPermissions,
+      ...notificationViewPermissions,
       ...entitlementViewPermissions,
       "billing:view",
       "delivery:view",
@@ -757,7 +770,8 @@ async function main() {
       "orders",
       "orders.subscription",
       "orders.contracts",
-      ...serviceCaseMenuCodes
+      ...serviceCaseMenuCodes,
+      ...notificationMenuCodes
     ]
   );
 
@@ -792,6 +806,7 @@ async function main() {
       "deposit_ledger:deduct",
       ...collectionActionPermissions,
       ...serviceCaseManagePermissions,
+      ...notificationManagePermissions,
       "order_change:approve",
       "order_change:reject",
       "order_change:execute"
@@ -809,6 +824,7 @@ async function main() {
       "orders.contracts",
       "orders.contract_templates",
       ...serviceCaseMenuCodes,
+      ...notificationMenuCodes,
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
       ...financingMenuCodes,
@@ -931,6 +947,7 @@ async function main() {
       ...financeViewPermissions,
       ...entitlementViewPermissions,
       ...serviceCaseViewPermissions,
+      ...notificationViewPermissions,
       "collection:view",
       ...reportAllPermissions
     ],
@@ -949,6 +966,7 @@ async function main() {
       "orders.contracts",
       "orders.contract_templates",
       ...serviceCaseMenuCodes,
+      ...notificationMenuCodes,
       ...reportOverviewMenuCodes,
       ...reportAssetMenuCodes,
       ...financingMenuCodes,
@@ -967,6 +985,7 @@ async function main() {
   await seedBaselineSubscriptionCatalog(adminUser.id);
   await seedBaselineCustomerLeads(adminUser.id);
   await seedDemoVehicles(adminUser.id);
+  await seedNotificationTemplates(adminUser.id);
 
   const existingSeedAudit = await prisma.auditLog.findFirst({
     where: {
@@ -986,6 +1005,55 @@ async function main() {
         entityType: "user",
         module: "system"
       }
+    });
+  }
+}
+
+async function seedNotificationTemplates(adminUserId) {
+  const rows = [
+    ["APPLICATION_SUBMITTED_IN_APP", "IN_APP", "APPLICATION_PROGRESS", "申请已提交", "您的订阅申请已提交，平台将尽快审核。"],
+    ["APPLICATION_SUBMITTED_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "APPLICATION_PROGRESS", "申请已提交", "您的订阅申请已提交，点击查看进度。"],
+    ["FINAL_PLAN_READY_IN_APP", "IN_APP", "FINAL_PLAN_PENDING", "最终方案待确认", "平台已生成最终方案，请及时确认。"],
+    ["FINAL_PLAN_READY_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "FINAL_PLAN_PENDING", "最终方案待确认", "平台已生成最终方案，点击确认。"],
+    ["CONTRACT_PENDING_IN_APP", "IN_APP", "CONTRACT_PENDING", "合同待签署", "您的合同已生成，请完成电子签署。"],
+    ["CONTRACT_PENDING_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "CONTRACT_PENDING", "合同待签署", "您的合同已生成，点击签署。"],
+    ["PAYMENT_PENDING_IN_APP", "IN_APP", "PAYMENT_PENDING", "订单待支付", "合同已签署，请完成账单支付。"],
+    ["PAYMENT_PENDING_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "PAYMENT_PENDING", "订单待支付", "合同已签署，点击支付。"],
+    ["SERVICE_CASE_UPDATE_IN_APP", "IN_APP", "SERVICE_CASE_UPDATE", "服务工单更新", "您的服务工单有新的处理进度。"],
+    ["SERVICE_CASE_UPDATE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "SERVICE_CASE_UPDATE", "服务工单更新", "您的服务工单有新的处理进度，点击查看。"]
+  ];
+
+  for (const [templateCode, channel, templateType, title, content] of rows) {
+    await prisma.notificationTemplate.upsert({
+      create: {
+        channel,
+        content,
+        createdBy: adminUserId,
+        templateCode,
+        templateStatus: "ACTIVE",
+        templateType,
+        title,
+        updatedBy: adminUserId,
+        variables: {
+          aggregateNo: "业务编号",
+          status: "当前状态",
+          time: "时间"
+        }
+      },
+      update: {
+        channel,
+        content,
+        templateStatus: "ACTIVE",
+        templateType,
+        title,
+        updatedBy: adminUserId,
+        variables: {
+          aggregateNo: "业务编号",
+          status: "当前状态",
+          time: "时间"
+        }
+      },
+      where: { templateCode }
     });
   }
 }

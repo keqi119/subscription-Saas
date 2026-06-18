@@ -181,6 +181,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "服务工单",
         path: "/service-cases",
         permissionCode: PermissionCode.SERVICE_CASE_VIEW
+      },
+      {
+        code: "orders.notifications",
+        icon: "message",
+        label: "通知中心",
+        path: "/notifications",
+        permissionCode: PermissionCode.NOTIFICATION_VIEW
       }
     ]
   },

@@ -20,6 +20,7 @@ export interface ServiceCaseHarness {
   addCase(input: Partial<AnyRecord>): void;
   auditService: AnyRecord;
   cases: AnyRecord[];
+  notificationService: AnyRecord;
   prisma: AnyRecord;
   service: ServiceCaseService;
   storageService: AnyRecord;
@@ -53,6 +54,13 @@ describe("portal service cases", () => {
       actionType: "SUBMIT",
       actorType: ServiceCaseActorType.CUSTOMER
     });
+    expect(harness.notificationService.notifyCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aggregateId: result.id,
+        eventType: "SERVICE_CASE_SUBMITTED",
+        notificationType: "SERVICE_CASE_UPDATE"
+      })
+    );
   });
 
   it("creates a rescue request with rescue fields", async () => {
@@ -404,6 +412,9 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
       stored: { driver: "local", key: `service-cases/${serviceCaseId}/scene.png`, size: 5 }
     }))
   };
+  const notificationService = {
+    notifyCustomer: vi.fn(async () => [])
+  };
 
   return {
     addAttachment(input: Partial<AnyRecord>) {
@@ -458,8 +469,14 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
     },
     auditService,
     cases,
+    notificationService,
     prisma,
-    service: new ServiceCaseService(auditService as never, prisma as never, storageService as never),
+    service: new ServiceCaseService(
+      auditService as never,
+      prisma as never,
+      storageService as never,
+      notificationService as never
+    ),
     storageService
   };
 }

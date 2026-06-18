@@ -1,10 +1,13 @@
 import {
   BadRequestException,
   Injectable,
-  NotFoundException
+  NotFoundException,
+  Optional
 } from "@nestjs/common";
 import {
   AuditAction,
+  NotificationEventType,
+  NotificationType,
   Prisma,
   ServiceCaseActionType,
   ServiceCaseActorType,
@@ -18,6 +21,7 @@ import type { Readable } from "node:stream";
 import { AuditService } from "../audit/audit.service";
 import { RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
@@ -112,7 +116,8 @@ export class ServiceCaseService {
   constructor(
     private readonly auditService: AuditService,
     private readonly prisma: PrismaService,
-    private readonly storageService: StorageService
+    private readonly storageService: StorageService,
+    @Optional() private readonly notificationService?: NotificationService
   ) {}
 
   async createPortalServiceCase(
@@ -227,6 +232,19 @@ export class ServiceCaseService {
       module: "portal",
       operatorId: currentCustomer.customerAccountId,
       userAgent: context.userAgent
+    });
+
+    await this.safeNotifyCustomer({
+      aggregateId: created.id,
+      aggregateNo: created.caseNo,
+      aggregateType: "service_case",
+      content: "您的服务工单已提交，平台将尽快处理。",
+      customerId: created.customerId,
+      eventType: NotificationEventType.SERVICE_CASE_SUBMITTED,
+      notificationType: notificationTypeForCase(created.caseType),
+      status: created.caseStatus,
+      title: "服务工单已提交",
+      url: `/portal/service-cases/${created.id}`
     });
 
     return view;
@@ -675,7 +693,55 @@ export class ServiceCaseService {
       userAgent: context.userAgent
     });
 
+    await this.safeNotifyCustomer({
+      aggregateId: updated.id,
+      aggregateNo: updated.caseNo,
+      aggregateType: "service_case",
+      content: action.remark ?? "您的服务工单有新的处理进度。",
+      customerId: updated.customerId,
+      eventType: updated.caseType === ServiceCaseType.RESCUE_REQUEST
+        ? NotificationEventType.RESCUE_UPDATED
+        : NotificationEventType.SERVICE_CASE_UPDATED,
+      notificationType: notificationTypeForCase(updated.caseType),
+      status: updated.caseStatus,
+      title: "服务工单更新",
+      url: `/portal/service-cases/${updated.id}`
+    });
+
     return view;
+  }
+
+  private async safeNotifyCustomer(input: {
+    aggregateId: string;
+    aggregateNo: string;
+    aggregateType: string;
+    content: string;
+    customerId: string;
+    eventType: NotificationEventType;
+    notificationType: NotificationType;
+    status: string;
+    title: string;
+    url: string;
+  }) {
+    if (!this.notificationService) return;
+    try {
+      await this.notificationService.notifyCustomer({
+        aggregateId: input.aggregateId,
+        aggregateType: input.aggregateType,
+        content: input.content,
+        customerId: input.customerId,
+        data: {
+          aggregateNo: input.aggregateNo,
+          status: input.status
+        },
+        eventType: input.eventType,
+        notificationType: input.notificationType,
+        title: input.title,
+        url: input.url
+      });
+    } catch {
+      // Notification delivery must not block service-case handling.
+    }
   }
 
   private validatePortalCreateDto(dto: CreatePortalServiceCaseDto) {
@@ -897,6 +963,12 @@ function defaultTitle(caseType: ServiceCaseType) {
     return "救援申请";
   }
   return "客户服务工单";
+}
+
+function notificationTypeForCase(caseType: ServiceCaseType) {
+  return caseType === ServiceCaseType.RESCUE_REQUEST
+    ? NotificationType.RESCUE_UPDATE
+    : NotificationType.SERVICE_CASE_UPDATE;
 }
 
 function emptyToNull(value?: string) {

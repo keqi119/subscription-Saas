@@ -3,7 +3,8 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  NotFoundException
+  NotFoundException,
+  Optional
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -13,6 +14,8 @@ import {
   ESignSignerStatus,
   ESignSignerType,
   ESignTaskStatus,
+  NotificationEventType,
+  NotificationType,
   OrderStatus,
   Prisma
 } from "@prisma/client";
@@ -20,6 +23,7 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
 import { ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
@@ -111,7 +115,8 @@ export class ESignService {
     private readonly configService: ConfigService,
     @Inject(ESIGN_PROVIDER_CLIENT)
     private readonly provider: ESignProvider,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    @Optional() private readonly notificationService?: NotificationService
   ) {}
 
   async createTaskForContract(contractId: string, user: RequestUser, context: RequestContext) {
@@ -228,6 +233,19 @@ export class ESignService {
         module: "esign",
         operatorId: user.id,
         userAgent: context.userAgent
+      });
+
+      await this.safeNotifyCustomer({
+        aggregateId: updated.contractId,
+        aggregateNo: updated.contract.contractNo,
+        aggregateType: "contract",
+        content: "您的合同已生成，请完成电子签署。",
+        customerId: updated.customerId ?? contract.customerId,
+        eventType: NotificationEventType.CONTRACT_PENDING,
+        notificationType: NotificationType.CONTRACT_PENDING,
+        status: updated.taskStatus,
+        title: "合同待签署",
+        url: `/portal/contracts/${updated.contractId}`
       });
 
       return toESignTaskView(updated);
@@ -561,7 +579,53 @@ export class ESignService {
       userAgent: options.context?.userAgent
     });
 
+    await this.safeNotifyCustomer({
+      aggregateId: result.orderId ?? result.contract.orderId,
+      aggregateNo: result.contract.order.orderNo,
+      aggregateType: "order",
+      content: "合同已签署完成，订单进入待支付状态。",
+      customerId: result.customerId ?? result.contract.customerId,
+      eventType: NotificationEventType.PAYMENT_PENDING,
+      notificationType: NotificationType.PAYMENT_PENDING,
+      status: OrderStatus.PENDING_PAYMENT,
+      title: "订单待支付",
+      url: `/portal/orders/${result.orderId ?? result.contract.orderId}`
+    });
+
     return result;
+  }
+
+  private async safeNotifyCustomer(input: {
+    aggregateId: string;
+    aggregateNo: string;
+    aggregateType: string;
+    content: string;
+    customerId: string;
+    eventType: NotificationEventType;
+    notificationType: NotificationType;
+    status: string;
+    title: string;
+    url: string;
+  }) {
+    if (!this.notificationService) return;
+    try {
+      await this.notificationService.notifyCustomer({
+        aggregateId: input.aggregateId,
+        aggregateType: input.aggregateType,
+        content: input.content,
+        customerId: input.customerId,
+        data: {
+          aggregateNo: input.aggregateNo,
+          status: input.status
+        },
+        eventType: input.eventType,
+        notificationType: input.notificationType,
+        title: input.title,
+        url: input.url
+      });
+    } catch {
+      // Notification delivery must not block e-sign completion.
+    }
   }
 
   private assertContractCanStartESign(contract: ContractForESign) {

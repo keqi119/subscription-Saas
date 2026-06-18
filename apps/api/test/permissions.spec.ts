@@ -14,6 +14,7 @@ import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/pe
 import { CustomerController } from "../src/customer/customer.controller";
 import { FinanceController } from "../src/finance/finance.controller";
 import { FinancingController } from "../src/financing/financing.controller";
+import { NotificationAdminController } from "../src/notification/notification.controller";
 import { OrderController } from "../src/order/order.controller";
 import { ProductController } from "../src/product/product.controller";
 import { ReportController } from "../src/report/report.controller";
@@ -689,6 +690,21 @@ describe("service case permissions", () => {
   });
 });
 
+describe("notification permissions", () => {
+  it("gates back-office notification center APIs behind notification:view", () => {
+    for (const handler of [
+      NotificationAdminController.prototype.listTemplates,
+      NotificationAdminController.prototype.listRecords,
+      NotificationAdminController.prototype.listEvents
+    ]) {
+      const permissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(permissions).toEqual([PermissionCode.NOTIFICATION_VIEW]);
+      expect(hasRequiredPermissions([PermissionCode.NOTIFICATION_MANAGE], permissions)).toBe(false);
+      expect(hasRequiredPermissions([PermissionCode.NOTIFICATION_VIEW], permissions)).toBe(true);
+    }
+  });
+});
+
 describe("report permissions", () => {
   it("gates report APIs behind report permissions", () => {
     const dashboardPermissions = Reflect.getMetadata(
@@ -1210,6 +1226,23 @@ describe("seed permission calibration", () => {
     expect(roleHasMenu(roleMenuArray("OP"), "orders.service_cases")).toBe(true);
     expect(roleHasMenu(roleMenuArray("SA"), "orders.service_cases")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "orders.service_cases")).toBe(true);
+  });
+
+  it("calibrates notification center permissions and menu by role", () => {
+    for (const permission of ["notification:view", "notification:manage"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('["orders.notifications", "通知中心", "/notifications", "message", 50, "notification:view", "orders"]');
+    expect(seedSource).toContain('const notificationViewPermissions = ["notification:view"]');
+    expect(seedSource).toContain('const notificationManagePermissions = ["notification:view", "notification:manage"]');
+    expectRolePermissions("OP", ["notification:view", "notification:manage"]);
+    expectRolePermissions("SA", ["notification:view"]);
+    expectRolePermissions("GM", ["notification:view"]);
+    expect(roleHasPermission(rolePermissionArray("SA"), "notification:manage")).toBe(false);
+    expect(roleHasMenu(roleMenuArray("OP"), "orders.notifications")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("SA"), "orders.notifications")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "orders.notifications")).toBe(true);
   });
 
   it("calibrates entitlement permissions by role", () => {

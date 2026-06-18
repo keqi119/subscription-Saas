@@ -891,3 +891,29 @@ Remaining after Stage 10G-A:
 - Service-case cost attribution, settlement, and customer evaluation.
 
 Next recommended stage: Stage 10H for WeChat service account and notification center.
+
+## 22. Stage 10H-A Status
+
+Stage 10H-A implements the notification center foundation on `feature/stage10-notification-wechat-foundation`.
+
+Implemented:
+
+- New `NotificationTemplate`, `NotificationRecord`, and `NotificationEvent` models.
+- Notification provider abstraction.
+- Mock notification provider for dev, staging, and tests.
+- WeChat Official Account provider foundation with access-token cache and template-message send method.
+- Default no-real-send posture through `NOTIFICATION_PROVIDER=mock` and `NOTIFICATION_WECHAT_ENABLED=false`.
+- Business event hooks for application submitted, final plan ready, contract pending, payment pending, service case submitted, and service case updates.
+- Customer Portal notification APIs and `/portal/notifications`.
+- Back-office notification center APIs and `/notifications`.
+- RBAC permissions `notification:view` and `notification:manage`.
+- WeChat service account menu dry-run script and setup guide.
+- Stage 10H documentation: `docs/stage-10h-notification-wechat-foundation.md`.
+
+Strategy:
+
+- Notifications are best-effort and must not roll back the primary business workflow.
+- Real WeChat template messages are deferred to Stage 10H-B.
+- SMS, email, mini-program subscribe messages, marketing messages, and complex orchestration remain out of scope.
+
+Next recommended stage: Stage 10H-B for real WeChat Official Account template-message and menu validation.

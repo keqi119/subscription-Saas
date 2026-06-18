@@ -14,6 +14,16 @@
 > `Permission denied` even after the tunnel was restarted and low-frequency
 > retries were attempted.
 
+> Update: 2026-06-18 deployment pass. Server access was restored through an
+> escalated SSH path. The `prod-20260618-2fecf67` API/Web images were pulled,
+> `app.subauto.keybox.cloud` was changed to proxy the Web container, and Prisma
+> migrations were deployed after a server-side PostgreSQL backup. The new API
+> image failed at Nest startup because `ESignModule` used admin `AuthGuard`
+> without importing `AuthModule`; production containers were rolled back to
+> `prod-20260615-5e8d04a` immediately and API health recovered. Hotfix commit
+> `3d67658` wires `AuthModule` into `ESignModule` and adds an AppModule compile
+> test. A new image build is required before retrying deployment.
+
 ## 1. Scope
 
 This report records the pre-flight validation for a real small-amount WeChat Pay JSAPI test after Stage 10E-B.
@@ -106,11 +116,12 @@ Server-side checks over SSH:
 | API container on `127.0.0.1:3001` | yes |
 | Nginx syntax | passed |
 | server-local API health through HTTPS vhost | passed |
-| server-local app Portal through HTTPS vhost | failed with `HTTP/2 404` from BT static site |
+| server-local app Portal through HTTPS vhost | passed with the new Web image during the deployment pass |
 | `app.subauto.keybox.cloud` certificate | present and valid for `app.subauto.keybox.cloud` |
-| existing production Web image | `prod-20260615-5e8d04a` |
-| existing production API image | `prod-20260615-5e8d04a` |
-| contains Stage 10E-B | no, image predates Stage 10E-B |
+| existing production Web image | rolled back to `prod-20260615-5e8d04a` after API startup failure |
+| existing production API image | rolled back to `prod-20260615-5e8d04a` after API startup failure |
+| pulled Stage 10E-B images | `prod-20260618-2fecf67` |
+| hotfix image needed | `prod-20260618-3d67658` or equivalent |
 
 ## 6. Nginx / Customer Domain Check
 
@@ -123,14 +134,14 @@ Existing BT/Nginx vhosts include:
 - staging admin/API domains
 
 `app.subauto.keybox.cloud` vhost now exists and has a valid HTTPS certificate,
-but it was still configured as a BT static site during validation. A
-server-local request to `/portal` returned `HTTP/2 404` instead of the Portal
-page from the Web container.
+and was updated to proxy the Web container. With the `prod-20260618-2fecf67`
+Web image, server-local `/portal` and `/portal/login` checks returned `200`.
 
 Blocker:
 
-- JSAPI payment page must be opened from `https://app.subauto.keybox.cloud/portal/payment-orders/{id}`.
-- Current Nginx state cannot serve that URL until the vhost proxies to `127.0.0.1:3000`.
+- The Nginx customer Portal blocker is closed.
+- The API image blocker is reopened until the `ESignModule` startup hotfix is
+  built and redeployed.
 
 ## 7. Server Env Check
 
@@ -166,6 +177,43 @@ Blocker:
 - The API container must also mount `/opt/subscription-saas/secrets/wechatpay/`
   read-only so the WeChat Pay provider can read the merchant private key and
   platform certificate/public key.
+- During this deployment pass, `CORS_ORIGIN`, `PORTAL_CORS_ORIGIN`,
+  `PORTAL_BASE_URL`, and `API_BASE_URL` were updated server-side. The
+  `WECHAT_PAY_*` secrets and PEM upload still require completion; the PEM upload
+  path was blocked by the available file-transfer channel.
+
+## 7.1 Deployment Pass Result
+
+Completed:
+
+- PostgreSQL backup before migration:
+  `backups/pre-stage10e-b-20260618075427.sql.gz`
+- Pulled:
+  - `ghcr.io/keqi119/subscription-api:prod-20260618-2fecf67`
+  - `ghcr.io/keqi119/subscription-web:prod-20260618-2fecf67`
+- Applied migrations:
+  - `20260616160000_customer_account_portal_auth`
+  - `20260616190000_contract_esign_tasks`
+  - `20260616223000_portal_payment_orders`
+- Updated customer Portal vhost to proxy `127.0.0.1:3000`.
+- Verified `/portal` and `/portal/login` with the new Web image.
+
+Rollback:
+
+- `prod-20260618-2fecf67` API failed Nest startup with:
+  `Nest can't resolve dependencies of the AuthGuard ... in the ESignModule`.
+- Production containers were rolled back to `prod-20260615-5e8d04a`.
+- API health recovered after rollback.
+
+Hotfix:
+
+- Commit `3d67658` imports `AuthModule` in `ESignModule`.
+- Added `apps/api/test/app-module.spec.ts` so the production Nest module graph
+  compiles in tests.
+- Local `pnpm release:check` passed after the fix: 39 API test files / 585
+  tests.
+- Build next immutable images from `3d67658`, for example
+  `prod-20260618-3d67658`, before retrying deployment.
 
 ## 8. Payment Execution
 
@@ -210,15 +258,16 @@ Before retrying Stage 10E-B-Staging:
 
 - [x] Add DNS record: `app.subauto.keybox.cloud -> 139.196.227.195`.
 - [x] Configure a valid HTTPS certificate for `app.subauto.keybox.cloud`.
-- [ ] Change BT/Nginx HTTPS vhost for `app.subauto.keybox.cloud -> 127.0.0.1:3000`.
+- [x] Change BT/Nginx HTTPS vhost for `app.subauto.keybox.cloud -> 127.0.0.1:3000`.
 - [ ] Ensure public `80/443` reachability from an external network.
 - [ ] Configure WeChat public-platform OAuth domain for `app.subauto.keybox.cloud`.
 - [ ] Configure JSAPI payment auth directory: `https://app.subauto.keybox.cloud/`.
 - [ ] Configure server-only env with `PAYMENT_PROVIDER=wechat_pay`, `PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`, and all `WECHAT_PAY_*` values.
 - [ ] Copy merchant private key, merchant cert, and platform cert/public key to `/opt/subscription-saas/secrets/wechatpay/` with `chmod 600`.
-- [ ] Mount `/opt/subscription-saas/secrets/wechatpay/` into the API container read-only.
-- [ ] Deploy API/Web images that include Stage 10E-B. The image build workflow
-  was handled manually, but server pull/up was not verified in this pass.
+- [x] Mount `/opt/subscription-saas/secrets/wechatpay/` into the API container read-only.
+- [ ] Deploy API/Web images that include Stage 10E-B plus hotfix `3d67658`.
+  `prod-20260618-2fecf67` was pulled and attempted, then rolled back due to the
+  API startup blocker.
 - [ ] Verify Web bundle contains `https://api.subauto.keybox.cloud/api` and does not contain staging API domains.
 - [ ] Re-run `pnpm release:check`.
 - [ ] Create a 1-fen test bill for a non-production test customer only.

@@ -6,7 +6,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
@@ -2919,7 +2919,7 @@ function isContractSigned(status?: string | null) {
   return status === "SIGNED" || status === "ARCHIVED";
 }
 
-export default function OrderDetailPage() {
+function OrderDetailPageContent() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -5259,5 +5259,19 @@ export default function OrderDetailPage() {
         </Modal>
       </Space>
     </ProtectedShell>
+  );
+}
+
+export default function OrderDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <ProtectedShell>
+          <Spin />
+        </ProtectedShell>
+      }
+    >
+      <OrderDetailPageContent />
+    </Suspense>
   );
 }

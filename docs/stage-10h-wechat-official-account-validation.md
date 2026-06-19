@@ -163,6 +163,8 @@ R2 template smoke:
 - `NotificationRecord.providerMessageId` was populated from WeChat `msgid` and is reported only in masked form `4568****9000`.
 - Provider response had `errcode = 0`, `errmsg = ok`, and did not contain access_token.
 - The successful record URL was `https://app.subauto.keybox.cloud/portal/orders`.
+- Operator confirmed in the WeChat client that the service-account message was received.
+- Operator confirmed clicking the template message opened the Portal order page.
 
 R2 menu validation:
 
@@ -173,8 +175,9 @@ R2 menu validation:
 R2 gate decision:
 
 - Real access_token, single-openid template send, WeChat `msgid` persistence, and menu dry-run have passed.
-- Stage 10H-B should not be declared fully passed until the operator confirms the test WeChat client received the message and clicking it opens the expected Portal H5 URL.
+- WeChat-client receipt and click-through to the Portal order page have been manually confirmed.
 - Menu apply was not executed and remains gated by explicit manual confirmation plus `WECHAT_MENU_APPLY=1`.
+- Stage 10H-B real validation gate is closed for template-message validation and menu dry-run.
 
 ## Expected Database Checks After Real Smoke
 
@@ -205,7 +208,7 @@ Verify these URLs in the WeChat client before declaring Stage 10H-B complete:
 
 ## Completion Decision
 
-Stage 10H-B is partially validated by R2 real API calls, but cannot be declared fully passed until WeChat-client receipt and click-through are manually confirmed.
+Stage 10H-B can be declared passed for the real service-account template-message validation gate.
 
 Current product decision:
 
@@ -215,10 +218,10 @@ Current product decision:
 - Stage 10H-B real single-openid `PAYMENT_PENDING` template send is complete.
 - Stage 10H-B real WeChat `msgid` persistence is complete.
 - Stage 10H-B menu dry-run is complete.
-- Stage 10H-B WeChat-client receipt and click-through validation are pending operator confirmation.
-- Stage 10H-B menu apply is not executed and remains pending explicit manual confirmation.
+- Stage 10H-B WeChat-client receipt and click-through validation are complete.
+- Stage 10H-B menu apply was not executed; it remains pending explicit manual confirmation and is not required to close the current validation gate because it is recorded as deliberately deferred.
 
-It can be declared passed after a controlled operator run records:
+Passed evidence:
 
 - Real access_token success, masked.
 - At least one successful single-openid template send.
@@ -226,4 +229,4 @@ It can be declared passed after a controlled operator run records:
 - Manual receipt in the test WeChat account.
 - Template click-through to the expected Portal H5 URL.
 - Menu dry-run approved.
-- Menu apply success if and only if `WECHAT_MENU_APPLY=1` was explicitly set.
+- Menu apply recorded as not executed, pending explicit manual confirmation.

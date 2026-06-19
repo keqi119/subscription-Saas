@@ -152,6 +152,15 @@ Verify these URLs in the WeChat client before declaring Stage 10H-B complete:
 
 Stage 10H-B cannot be declared passed from this repository-only run because no real service account AppSecret, test openid, or template IDs were provided to the agent, and no real WeChat API call was executed.
 
+Current product decision:
+
+- Stage 10H-A is complete.
+- Stage 10H-B safety validation foundation is complete.
+- Stage 10H-B real service-account template-message validation is Pending.
+- Blocking reason: WeChat Official Account normal template-message capability is still under platform review.
+- Stage 10I Customer Portal Release Hardening may proceed while waiting for the WeChat review.
+- After the WeChat review passes, resume Stage 10H-B-R2 for token smoke, single-openid template send, click-through validation, and optional menu apply.
+
 It can be declared passed after a controlled operator run records:
 
 - Real access_token success, masked.

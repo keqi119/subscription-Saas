@@ -951,4 +951,30 @@ Safety posture:
 Current validation state:
 
 - Code-level checks and dry-run tooling are ready.
-- Real WeChat access-token fetch, template send, menu apply, and WeChat-client click-through validation require operator-provided real environment values and are tracked in the Stage 10H-B report.
+- Stage 10H-B real WeChat Official Account template-message validation is Pending.
+- Blocking reason: WeChat Official Account normal template-message capability is still under platform review.
+- Real WeChat access-token fetch, template send, menu apply, and WeChat-client click-through validation require operator-provided real environment values after the review passes, and are tracked in the Stage 10H-B report.
+
+## 24. Stage 10I Status
+
+Stage 10I hardens the customer Portal release path while the WeChat template-message review is pending.
+
+Implemented:
+
+- Portal route smoke script: `scripts/portal-route-smoke.mjs`.
+- Portal API smoke script: `scripts/portal-api-smoke.mjs`.
+- Package commands `portal:route-smoke` and `portal:api-smoke`.
+- Release-check syntax coverage for the new Portal smoke scripts.
+- Customer Portal privacy policy page at `/portal/privacy`.
+- Customer Portal terms page at `/portal/terms`.
+- Login agreement checkbox requiring customers to accept the terms and privacy policy before login.
+- Portal security and redaction audit: `docs/portal-security-audit.md`.
+- Customer Portal release checklist: `docs/customer-portal-release-checklist.md`.
+- Customer Portal manual acceptance guide: `docs/customer-portal-manual-acceptance.md`.
+
+Strategy:
+
+- Stage 10I does not depend on real WeChat template IDs or real template sends.
+- Stage 10I does not send WeChat template messages and does not apply WeChat menus.
+- Stage 10I does not modify WeChat Pay provider logic, certificate rotation, payment posting, write-off, receivable bill logic, Prisma schema, or migrations.
+- Real Stage 10H-B validation resumes as Stage 10H-B-R2 after WeChat template-message capability is approved.

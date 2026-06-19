@@ -66,6 +66,9 @@ Stage 9 / Production readiness：
 - `docs/stage-10g-service-case-portal.md`：Stage 10G-A 服务工单 / 事故报案 / 救援申请
 - `docs/stage-10h-notification-wechat-foundation.md`：Stage 10H-A 通知中心与微信服务号基础
 - `docs/stage-10h-wechat-official-account-validation.md`：Stage 10H-B 微信服务号真实联调报告
+- `docs/portal-security-audit.md`：Customer Portal 数据隔离与脱敏审计
+- `docs/customer-portal-release-checklist.md`：Customer Portal 发布前检查清单
+- `docs/customer-portal-manual-acceptance.md`：Customer Portal 全链路人工验收手册
 - `docs/wechat-official-account-setup.md`：微信服务号菜单与域名配置建议
 
 ## 本地开发启动

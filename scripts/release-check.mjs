@@ -12,6 +12,8 @@ const requiredSteps = [
   ["API tests", "pnpm", ["--filter", "@subscription-saas/api", "test"]],
   ["Prisma migrate status", "pnpm", ["prisma:migrate:status"]],
   ["Smoke script syntax", "node", ["--check", "scripts/api-smoke.mjs"]],
+  ["Portal route smoke syntax", "node", ["--check", "scripts/portal-route-smoke.mjs"]],
+  ["Portal API smoke syntax", "node", ["--check", "scripts/portal-api-smoke.mjs"]],
   ["WeChat Official Account smoke syntax", "node", ["--check", "scripts/wechat-official-account-smoke.mjs"]],
   ["WeChat Official Account menu syntax", "node", ["--check", "scripts/wechat-menu.mjs"]],
   ["WeChat Official Account menu dry-run syntax", "node", ["--check", "scripts/wechat-menu-dry-run.mjs"]],

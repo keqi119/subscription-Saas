@@ -16,6 +16,8 @@
     "smoke:residual": "node scripts/api-smoke.mjs --scenario residual",
     "smoke:upload": "node scripts/upload-storage-smoke.mjs",
     "smoke": "node scripts/api-smoke.mjs",
+    "portal:route-smoke": "node scripts/portal-route-smoke.mjs",
+    "portal:api-smoke": "node scripts/portal-api-smoke.mjs",
     "wechat-pay:download-platform-certs": "node scripts/wechat-pay-download-platform-certs.mjs",
     "wechat:menu:dry-run": "node scripts/wechat-menu.mjs --dry-run",
     "wechat:menu:apply": "node scripts/wechat-menu.mjs --apply",

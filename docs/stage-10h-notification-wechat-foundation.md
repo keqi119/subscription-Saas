@@ -148,9 +148,10 @@ R2 validation note on 2026-06-19:
 
 - WeChat normal template-message capability was reported approved.
 - Initial token smoke from the current calling source returned WeChat `40164`; after the Official Account IP whitelist was updated, token smoke passed without printing access_token.
-- The requested payment-test phone did not have a safely matched `CustomerAccount.wechatOpenId` in the current database, so a single test openid was supplied through ignored local env.
-- One controlled `PAYMENT_PENDING` template smoke was attempted and failed safely with WeChat `40003 invalid openid`.
-- Stage 10H-B remains pending until one followed test user openid belonging to the same service-account AppID is supplied and a template smoke returns WeChat `msgid`.
+- A production Portal customer account for `186****0212` had a bound service-account openid; the full value was copied into the ignored local env file without printing it.
+- One controlled `PAYMENT_PENDING` template smoke succeeded for a single openid.
+- `NotificationRecord.notificationStatus = SENT`, `NotificationEvent.eventStatus = PROCESSED`, and WeChat `msgid` was saved in `providerMessageId`.
+- Stage 10H-B remains pending only for manual WeChat-client receipt/click-through confirmation and optional explicit menu apply.
 
 ## Not In Scope
 

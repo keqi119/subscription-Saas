@@ -130,15 +130,16 @@ R2 local/server env handling:
 - `.env.wechat-official-account.local` is ignored by Git through `.gitignore` rule `.env.*`.
 - The file contains real AppID/AppSecret entries and the `PAYMENT_PENDING` / `SERVICE_CASE_UPDATE` template ID entries.
 - `WECHAT_TEMPLATE_FINAL_PLAN_PENDING`, `WECHAT_TEMPLATE_CONTRACT_PENDING`, and `WECHAT_TEMPLATE_APPLICATION_PROGRESS` are intentionally not supplied in this run.
-- `WECHAT_OA_TEST_OPENID` was updated to one single non-wildcard value and was used for one controlled `PAYMENT_PENDING` template smoke.
+- `WECHAT_OA_TEST_OPENID` was updated to one single non-wildcard value from the production customer account for `CUS20260618025459A7JV` / `186****0212`.
 - No AppSecret, access_token, full openid, or full template ID was printed or committed.
 
 R2 openid lookup:
 
-- The requested payment-test phone `18616570212` matched two `Customer` rows in the current database.
-- Neither matched customer had an associated `CustomerAccount`.
-- No active `CustomerAccount.wechatOpenId` values were present in the current database.
-- The agent therefore could not safely derive a real `WECHAT_OA_TEST_OPENID` value from the database; the test openid was later supplied through the ignored local env file.
+- The local tunnel database did not contain the production Portal customer/order that the user was testing.
+- The production API container database contained customer `CUS20260618025459A7JV` with an active account for `186****0212`.
+- That account had a bound `CustomerAccount.wechatOpenId`.
+- The full openid was copied directly into the ignored local env file without printing it; report output only used masked form `oOJh****-RKs`.
+- A 0.01 CNY production test bill was created on order `ORD-WX-PAY-TEST-20260618110103` as `BIL20260619152147Y2MW` to support the WeChat JSAPI/openid validation flow.
 
 R2 token smoke:
 
@@ -153,13 +154,15 @@ R2 template smoke:
 - Safety env used for this smoke only: `WECHAT_OA_CREATE_TEST_CUSTOMER=1`, `WECHAT_OA_BIND_OPENID=1`, `WECHAT_OA_SYNC_TEMPLATE_ID=1`.
 - Send object count: 1.
 - Mass send: No.
-- Result: WeChat returned `WECHAT_TEMPLATE_SEND_FAILED:40003`.
-- WeChat errmsg summary: `invalid openid`.
-- `NotificationRecord.notificationStatus = FAILED`.
-- `NotificationEvent.eventStatus = PROCESSED` with `lastError = WECHAT_TEMPLATE_SEND_FAILED:40003`.
-- `NotificationRecord.providerMessageId` was not recorded because WeChat did not return `msgid`.
-- Provider response did not contain access_token.
-- The failed record URL was `https://app.subauto.keybox.cloud/portal/orders`.
+- Initial attempts failed safely:
+  - `40003 invalid openid` for an earlier non-matching test openid.
+  - `47003` template data validation errors until the real template field set was supplied.
+- Final result: WeChat returned success for `PAYMENT_PENDING`.
+- `NotificationRecord.notificationStatus = SENT`.
+- `NotificationEvent.eventStatus = PROCESSED` with `lastError = null`.
+- `NotificationRecord.providerMessageId` was populated from WeChat `msgid` and is reported only in masked form `4568****9000`.
+- Provider response had `errcode = 0`, `errmsg = ok`, and did not contain access_token.
+- The successful record URL was `https://app.subauto.keybox.cloud/portal/orders`.
 
 R2 menu validation:
 
@@ -169,13 +172,9 @@ R2 menu validation:
 
 R2 gate decision:
 
-- Stage 10H-B real validation gate is still open.
-- Blocking reasons:
-  - The supplied single test openid was rejected by WeChat with `40003 invalid openid`.
-  - No successful WeChat `msgid` has been returned or saved.
-- Required next operator action:
-  - Bind or provide one real openid that belongs to the same `WECHAT_OFFICIAL_ACCOUNT_APP_ID` service account and a user who follows that service account.
-  - Re-run single-openid `PAYMENT_PENDING` or `SERVICE_CASE_UPDATE` template smoke.
+- Real access_token, single-openid template send, WeChat `msgid` persistence, and menu dry-run have passed.
+- Stage 10H-B should not be declared fully passed until the operator confirms the test WeChat client received the message and clicking it opens the expected Portal H5 URL.
+- Menu apply was not executed and remains gated by explicit manual confirmation plus `WECHAT_MENU_APPLY=1`.
 
 ## Expected Database Checks After Real Smoke
 
@@ -206,21 +205,23 @@ Verify these URLs in the WeChat client before declaring Stage 10H-B complete:
 
 ## Completion Decision
 
-Stage 10H-B cannot be declared passed from this repository-only run because no real service account AppSecret, test openid, or template IDs were provided to the agent, and no real WeChat API call was executed.
+Stage 10H-B is partially validated by R2 real API calls, but cannot be declared fully passed until WeChat-client receipt and click-through are manually confirmed.
 
 Current product decision:
 
 - Stage 10H-A is complete.
 - Stage 10H-B safety validation foundation is complete.
-- Stage 10H-B real service-account template-message validation is Pending.
-- Blocking reason: WeChat Official Account normal template-message capability is still under platform review.
-- Stage 10I Customer Portal Release Hardening may proceed while waiting for the WeChat review.
-- After the WeChat review passes, resume Stage 10H-B-R2 for token smoke, single-openid template send, click-through validation, and optional menu apply.
+- Stage 10H-B real service-account token smoke is complete.
+- Stage 10H-B real single-openid `PAYMENT_PENDING` template send is complete.
+- Stage 10H-B real WeChat `msgid` persistence is complete.
+- Stage 10H-B menu dry-run is complete.
+- Stage 10H-B WeChat-client receipt and click-through validation are pending operator confirmation.
+- Stage 10H-B menu apply is not executed and remains pending explicit manual confirmation.
 
 It can be declared passed after a controlled operator run records:
 
 - Real access_token success, masked.
-- At least two successful single-openid template sends, preferably three.
+- At least one successful single-openid template send.
 - Saved WeChat `msgid` in `NotificationRecord.providerMessageId`.
 - Manual receipt in the test WeChat account.
 - Template click-through to the expected Portal H5 URL.

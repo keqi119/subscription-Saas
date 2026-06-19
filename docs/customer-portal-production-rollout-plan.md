@@ -47,6 +47,14 @@ Before rollout:
 - CORS and cookies must support the H5/API domain combination.
 - Production route smoke must pass for `/portal/terms`, `/portal/privacy`, and `/portal/notifications`.
 
+Stage 10J-R1 status:
+
+- Production Web image was refreshed to `ghcr.io/keqi119/subscription-web:portal-rc-20260620-cf35dc7`.
+- Web image digest: `ghcr.io/keqi119/subscription-web@sha256:62a8ab9561494dbb0640c293789e260576cdba11e0dcd5191dba94388df128cc`.
+- Bundle API base check passed for `https://api.subauto.keybox.cloud/api`.
+- Production route smoke passed for `/portal/terms`, `/portal/privacy`, `/portal/notifications`, and all configured menu target pages.
+- Production API image was not changed during the Web-only refresh.
+
 ## WeChat Official Account Menu Strategy
 
 Menu dry-run has passed and points only to customer Portal URLs.
@@ -116,13 +124,13 @@ Release rules:
 - For internal RC: placeholders are acceptable only if operators know they are not final.
 - For invited beta: legal must explicitly approve temporary text.
 - For real customer launch: replace placeholders with formal legal-approved terms and privacy policy.
-- Production must actually serve both pages before release; the 2026-06-20 route smoke found both returning 404.
+- Production now serves both pages after the Stage 10J-R1 Web image refresh; final legal-approved text is still required before unrestricted customer launch.
 
 ## Rollout Steps
 
 1. Confirm latest `main` includes Stage 10A through Stage 10H-B and Stage 10J documentation.
-2. Build immutable Web/API images from the release commit.
-3. Deploy images to production using the documented image deployment path.
+2. Build immutable Web/API images from the release commit. For Web-only route fixes, build an immutable Web image and keep the API image unchanged.
+3. Deploy images to production using the documented image deployment path. For Web-only route fixes, use the production compose project and `--no-deps web`.
 4. Verify database migrations are up to date with `prisma migrate status`.
 5. Do not run `prisma migrate reset` or `prisma db push`.
 6. Verify H5 domain, API health, and admin domain.
@@ -181,7 +189,7 @@ Current recommendation: No-Go for unrestricted production launch.
 
 Proceed only with internal RC or invited beta after:
 
-- Latest Web image is deployed and route smoke passes.
+- Latest Web image is deployed and route smoke passes. Stage 10J-R1 has closed the route 404 blocker.
 - Legal explicitly accepts placeholder text or formal text is deployed.
 - Authenticated API smoke passes.
 - Business owner explicitly accepts Mock ESignProvider for the release scope.

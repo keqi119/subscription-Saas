@@ -4,8 +4,9 @@
 
 - RC name: Customer Portal RC 10J.
 - RC date: 2026-06-20.
-- Branch: `feature/stage10-customer-portal-release-candidate`.
-- Baseline commit: `18773b2` (`main`, after Stage 10H-B merge).
+- Branch: `feature/stage10-customer-portal-rc-deployment-fix`.
+- Baseline commit: `ff40bd1` (`main`, after Stage 10J merge).
+- R1 fix commit: `cf35dc7` (`fix: make portal legal pages production build safe`).
 - Target H5 domain: `https://app.subauto.keybox.cloud`.
 - Target API domain: `https://api.subauto.keybox.cloud/api`.
 - Back-office dependency: `https://admin.subauto.keybox.cloud`.
@@ -51,7 +52,7 @@ The current Stage 10 customer Portal codebase covers:
 
 ### Local Validation Results
 
-Executed on branch `feature/stage10-customer-portal-release-candidate`:
+Executed on branch `feature/stage10-customer-portal-release-candidate` during Stage 10J:
 
 - `pnpm -r lint`: passed.
 - `pnpm prisma:validate`: passed.
@@ -67,6 +68,23 @@ Executed on branch `feature/stage10-customer-portal-release-candidate`:
 
 No Prisma schema changes or migrations were added.
 
+Additional Stage 10J-R1 checks:
+
+- `pnpm -r lint`: passed.
+- `pnpm prisma:validate`: passed.
+- `pnpm prisma:generate`: passed.
+- `pnpm prisma:seed`: passed.
+- `pnpm --filter @subscription-saas/web build`: passed after the legal-page production build fix.
+- `pnpm --filter @subscription-saas/web lint`: passed.
+- `pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json`: passed.
+- `pnpm --filter @subscription-saas/web exec tsc --noEmit --incremental false`: passed.
+- `pnpm --filter @subscription-saas/api test`: passed, 42 test files / 630 tests.
+- `pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma`: passed, 40 migrations, database schema up to date.
+- `pnpm release:check`: passed.
+- `pnpm portal:route-smoke` against `https://app.subauto.keybox.cloud`: passed.
+- `pnpm portal:api-smoke` against `https://api.subauto.keybox.cloud/api`: passed for public endpoints; authenticated smoke skipped because no `PORTAL_CUSTOMER_COOKIE` was supplied.
+- `pnpm wechat:menu:dry-run`: passed; no WeChat API call was made.
+
 ### Environment Smoke Results
 
 #### Portal Route Smoke
@@ -78,31 +96,36 @@ $env:PORTAL_BASE_URL="https://app.subauto.keybox.cloud"
 pnpm portal:route-smoke
 ```
 
-Result: failed for the production H5 domain.
+Initial Stage 10J result: failed for the production H5 domain.
 
-Passing route groups:
-
-- `/portal/login`
-- `/portal/catalog`
-- `/portal`
-- `/portal/me`
-- `/portal/applications`
-- `/portal/contracts`
-- `/portal/payment-orders`
-- `/portal/bills`
-- `/portal/orders`
-- `/portal/deposit`
-- `/portal/entitlements`
-- `/portal/service-cases`
-- service-case menu target routes
-
-Failing production routes:
+Initial failing production routes:
 
 - `/portal/terms`: 404.
 - `/portal/privacy`: 404.
 - `/portal/notifications`: 404.
 
-Interpretation: the routes exist in the current repository, but the production H5 deployment appears to be running an older Web image that does not include Stage 10I legal pages and Stage 10H-A Portal notifications.
+Interpretation: the routes existed in the repository, but production was still running an older Web image that did not include Stage 10I legal pages and Stage 10H-A Portal notifications.
+
+Stage 10J-R1 deployment fix:
+
+- Previous production Web image: `ghcr.io/keqi119/subscription-web:stage10-cert-rotation-b5ced12-fix3`.
+- New production Web image: `ghcr.io/keqi119/subscription-web:portal-rc-20260620-cf35dc7`.
+- New Web image digest: `ghcr.io/keqi119/subscription-web@sha256:62a8ab9561494dbb0640c293789e260576cdba11e0dcd5191dba94388df128cc`.
+- Production API image remained unchanged: `ghcr.io/keqi119/subscription-api:stage10-cert-rotation-b5ced12-fix3`.
+- Bundle API base check passed: required `https://api.subauto.keybox.cloud/api` found; forbidden `staging-api.subauto.keybox.cloud` not found.
+- Production deploy used `docker compose -p subauto-production ... up -d --no-deps web` to avoid API/Postgres changes.
+- Web container status after deployment: `subauto-production-web-1` healthy.
+- Operator note: an initial compose command without `-p subauto-production` created temporary sidecar containers under the default project name; they were removed immediately and the real production API/Postgres containers remained healthy.
+
+Stage 10J-R1 route smoke retest result: passed.
+
+Previously failing routes now pass:
+
+- `/portal/terms`: 200.
+- `/portal/privacy`: 200.
+- `/portal/notifications`: 200.
+
+All Portal route smoke checks passed, including public pages, protected route shells, and WeChat menu target URLs.
 
 #### Portal API Smoke
 
@@ -185,7 +208,7 @@ Authenticated production API smoke still needs a controlled customer cookie befo
 
 ## Legal Text
 
-The repository contains `/portal/terms` and `/portal/privacy`, but both pages are placeholder "pending legal review" versions. Production currently returns 404 for both pages, likely because the deployed Web image predates Stage 10I.
+The repository contains `/portal/terms` and `/portal/privacy`, and Stage 10J-R1 production route smoke confirms both pages now return 200. Both pages are still placeholder "pending legal review" versions.
 
 Release requirement:
 
@@ -198,18 +221,19 @@ Current RC recommendation: No-Go for broad production customer rollout.
 
 Blockers:
 
-- Production H5 route smoke fails for `/portal/terms`.
-- Production H5 route smoke fails for `/portal/privacy`.
-- Production H5 route smoke fails for `/portal/notifications`.
 - Authenticated Portal API smoke was not executed because no controlled customer cookie was supplied.
 - Legal-approved final terms/privacy text is not yet in place.
 - Real e-sign provider is not integrated; Mock ESignProvider is still used.
+
+Closed in Stage 10J-R1:
+
+- Production H5 route 404 blocker for `/portal/terms`, `/portal/privacy`, and `/portal/notifications`.
 
 ## Go / No-Go Recommendation
 
 No-Go for unrestricted real-customer launch.
 
-Allowed next step: invited beta or internal RC validation after deploying the latest Web/API image and confirming the three missing production routes return 200.
+Allowed next step: Customer Portal RC manual acceptance, internal RC validation, or invited beta planning after route smoke passed with the refreshed Web image.
 
 Go criteria for customer-facing rollout:
 

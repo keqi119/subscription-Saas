@@ -216,6 +216,32 @@ describe("WeChatOfficialAccountProvider", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("records numeric WeChat msgid values as provider message IDs", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({
+      access_token: "token-a",
+      expires_in: 7200
+    })).mockResolvedValueOnce(jsonResponse({
+      errcode: 0,
+      errmsg: "ok",
+      msgid: 200228332
+    }));
+    const provider = new WeChatOfficialAccountProvider(
+      new ConfigService({
+        NOTIFICATION_WECHAT_ENABLED: "true",
+        WECHAT_OFFICIAL_ACCOUNT_APP_ID: "wx-test",
+        WECHAT_OFFICIAL_ACCOUNT_APP_SECRET: "secret-test"
+      })
+    );
+
+    const result = await provider.send({
+      channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+      providerTemplateId: "template-a",
+      recipientOpenId: "openid-a"
+    });
+
+    expect(result).toMatchObject({ providerMessageId: "200228332", success: true });
+  });
+
   it("throws a safe error when access token retrieval fails", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ errcode: 40013 }, false));
     const provider = new WeChatOfficialAccountProvider(

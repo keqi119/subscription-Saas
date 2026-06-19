@@ -1,17 +1,18 @@
 # WeChat Official Account Setup
 
-This document records the first-version WeChat service account menu plan for the customer H5 portal.
+This document records the WeChat service account menu plan for the customer H5 portal.
 
-Stage 10H-A only provides a dry-run menu JSON. It does not call the WeChat API or create the menu automatically.
+Stage 10H-A provided a dry-run menu payload. Stage 10H-B adds a guarded real apply path. Real menu creation is still disabled by default and requires an explicit environment switch.
 
 ## Required Platform Settings
 
-- JS interface secure domain: `app.subauto.keybox.cloud`
-- Web OAuth domain: `app.subauto.keybox.cloud`
-- Portal base URL: `https://app.subauto.keybox.cloud`
-- API callback base URL: `https://api.subauto.keybox.cloud/api`
-
-If the service account AppID/AppSecret is the same one used for WeChat Pay JSAPI openid binding, production can reuse the existing values through environment variables. Do not commit the AppSecret or access token.
+- Service account is verified.
+- Template message capability is enabled.
+- Required templates have been added in the WeChat Official Account console.
+- Web OAuth domain includes `app.subauto.keybox.cloud`.
+- Menu links use the customer portal domain, not the admin domain:
+  `https://app.subauto.keybox.cloud`.
+- Do not commit AppSecret, access_token, full openid, or real template ID mappings.
 
 ## Recommended Menu
 
@@ -36,26 +37,85 @@ Menu 3: 帮助
 Generate the proposed menu payload without calling WeChat:
 
 ```powershell
-node scripts/wechat-menu-dry-run.mjs
+pnpm wechat:menu:dry-run
+```
+
+Equivalent direct command:
+
+```powershell
+node scripts/wechat-menu.mjs --dry-run
 ```
 
 Override the portal base URL if needed:
 
 ```powershell
-$env:PORTAL_BASE_URL="https://app.subauto.keybox.cloud"; node scripts/wechat-menu-dry-run.mjs
+node scripts/wechat-menu.mjs --dry-run --portal-base-url https://app.subauto.keybox.cloud
 ```
 
-## Stage 10H-B Notes
+## Real Apply
 
-Real menu creation should call:
+Real menu creation requires both an apply command and the explicit environment switch:
+
+```powershell
+$env:WECHAT_MENU_APPLY="1"
+pnpm wechat:menu:apply -- --env-file .env
+```
+
+The script calls:
 
 ```text
 POST https://api.weixin.qq.com/cgi-bin/menu/create?access_token=ACCESS_TOKEN
 ```
 
-Stage 10H-B must first verify:
+Safety behavior:
 
-- The real access token can be obtained.
-- The service account menu quota and monthly update limits are acceptable.
-- H5 links open correctly in the WeChat client.
-- Customer login and openid binding work from each menu entry.
+- Defaults to dry-run.
+- Prints the menu JSON before applying.
+- Requires `WECHAT_MENU_APPLY=1`.
+- Never prints access_token or AppSecret.
+- Saves the masked apply result to `.tmp/stage10h-wechat-menu-apply-result.json` by default.
+- WeChat client menu refresh can be delayed by client-side cache.
+
+## Token and Template Smoke
+
+Token-only smoke:
+
+```powershell
+$env:WECHAT_OA_SMOKE_MODE="token"
+pnpm wechat:oa:smoke -- --env-file .env
+```
+
+Single-openid template smoke:
+
+```powershell
+$env:WECHAT_OA_SMOKE_MODE="template"
+$env:WECHAT_OA_TEST_OPENID="<single_test_openid>"
+$env:WECHAT_OA_TEMPLATE_TYPE="PAYMENT_PENDING"
+pnpm wechat:oa:smoke -- --env-file .env
+```
+
+The smoke script blocks wildcard and multi-openid inputs by default. It never reads all customers for batch sending.
+
+Optional local database setup for a controlled smoke customer:
+
+```powershell
+$env:WECHAT_OA_CREATE_TEST_CUSTOMER="1"
+$env:WECHAT_OA_BIND_OPENID="1"
+$env:WECHAT_OA_SYNC_TEMPLATE_ID="1"
+```
+
+These options create or update only the named smoke customer and store the selected template ID in `NotificationTemplate.providerTemplateId`. They do not write any secret to Git.
+
+## Template ID Mapping
+
+Set real values only in local, staging, or production environment variables:
+
+```env
+WECHAT_TEMPLATE_APPLICATION_PROGRESS=<real_template_id>
+WECHAT_TEMPLATE_FINAL_PLAN_PENDING=<real_template_id>
+WECHAT_TEMPLATE_CONTRACT_PENDING=<real_template_id>
+WECHAT_TEMPLATE_PAYMENT_PENDING=<real_template_id>
+WECHAT_TEMPLATE_SERVICE_CASE_UPDATE=<real_template_id>
+```
+
+Keep committed examples as `<CHANGE_ME>`.

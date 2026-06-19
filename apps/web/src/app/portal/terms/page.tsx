@@ -1,4 +1,3 @@
-import { Typography } from "antd";
 import Link from "next/link";
 
 const sections = [
@@ -28,19 +27,21 @@ export default function PortalTermsPage() {
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "28px 16px 48px" }}>
       <article style={{ margin: "0 auto", maxWidth: 760 }}>
-        <Typography.Title level={2}>用户协议</Typography.Title>
-        <Typography.Paragraph type="secondary">
+        <h1 style={{ color: "#121826", fontSize: 28, lineHeight: 1.25, margin: "0 0 8px" }}>用户协议</h1>
+        <p style={{ color: "#566273", fontSize: 15, lineHeight: 1.8, margin: "0 0 28px" }}>
           待法务确认版本。上线前请替换为正式文本。
-        </Typography.Paragraph>
+        </p>
         {sections.map((section) => (
           <section key={section.title} style={{ marginTop: 24 }}>
-            <Typography.Title level={4}>{section.title}</Typography.Title>
-            <Typography.Paragraph>{section.body}</Typography.Paragraph>
+            <h2 style={{ color: "#1d2636", fontSize: 18, lineHeight: 1.4, margin: "0 0 8px" }}>
+              {section.title}
+            </h2>
+            <p style={{ color: "#344154", fontSize: 15, lineHeight: 1.9, margin: 0 }}>{section.body}</p>
           </section>
         ))}
-        <Typography.Paragraph style={{ marginTop: 32 }}>
+        <p style={{ fontSize: 15, lineHeight: 1.8, marginTop: 32 }}>
           <Link href="/portal/login">返回登录</Link>
-        </Typography.Paragraph>
+        </p>
       </article>
     </main>
   );

@@ -121,6 +121,50 @@ The menu script builds this customer-facing menu:
 | Back-office notification center | Existing Stage 10H-A API/UI, pending manual validation |
 | Secret leakage | No committed secret values |
 
+## R2 Validation Attempt - 2026-06-19
+
+Stage 10H-B-R2 was resumed after the WeChat normal template-message review was reported as approved and after Stage 10I plus the NotificationModule DI fix had been merged to `main`.
+
+R2 local/server env handling:
+
+- `.env.wechat-official-account.local` is ignored by Git through `.gitignore` rule `.env.*`.
+- The file contains real AppID/AppSecret entries and the `PAYMENT_PENDING` / `SERVICE_CASE_UPDATE` template ID entries.
+- `WECHAT_TEMPLATE_FINAL_PLAN_PENDING`, `WECHAT_TEMPLATE_CONTRACT_PENDING`, and `WECHAT_TEMPLATE_APPLICATION_PROGRESS` are intentionally not supplied in this run.
+- `WECHAT_OA_TEST_OPENID` was present but still placeholder-like, so it was not used for a real send.
+- No AppSecret, access_token, full openid, or full template ID was printed or committed.
+
+R2 openid lookup:
+
+- The requested payment-test phone `18616570212` matched two `Customer` rows in the current database.
+- Neither matched customer had an associated `CustomerAccount`.
+- No active `CustomerAccount.wechatOpenId` values were present in the current database.
+- The agent therefore could not safely derive or write a real `WECHAT_OA_TEST_OPENID` value.
+
+R2 token smoke:
+
+- Command: `pnpm wechat:oa:smoke -- --mode token --env-file .env.wechat-official-account.local`
+- Result: WeChat returned `WECHAT_ACCESS_TOKEN_FAILED:40164`.
+- Interpretation: the current calling source is not accepted by the WeChat Official Account API, most likely because the local egress IP is not in the Official Account API whitelist.
+- No access_token was printed.
+- Real template-message smoke was not executed after this failure.
+
+R2 menu validation:
+
+- `pnpm wechat:menu:dry-run` passed and printed the customer-facing menu JSON only.
+- Menu dry-run did not call the WeChat API.
+- Menu apply was not executed.
+
+R2 gate decision:
+
+- Stage 10H-B real validation gate is still open.
+- Blocking reasons:
+  - No safely derived single test openid is available in `CustomerAccount.wechatOpenId`.
+  - WeChat token smoke failed with `40164` from the current calling source.
+- Required next operator action:
+  - Bind or provide one real service-account openid for a followed test user, preferably by completing Portal WeChat OAuth for the test customer.
+  - Run token/template smoke from a whitelisted server/IP, or add the current egress IP to the Official Account API whitelist.
+  - Re-run single-openid `PAYMENT_PENDING` or `SERVICE_CASE_UPDATE` template smoke.
+
 ## Expected Database Checks After Real Smoke
 
 After template smoke, verify:

@@ -144,6 +144,13 @@ New controlled scripts:
 
 The smoke tooling masks AppID/openid/template IDs, never prints access_token or AppSecret, and blocks wildcard or multi-openid sends.
 
+R2 validation note on 2026-06-19:
+
+- WeChat normal template-message capability was reported approved.
+- Real token smoke from the current calling source returned WeChat `40164`.
+- The requested payment-test phone did not have a safely matched `CustomerAccount.wechatOpenId` in the current database.
+- Stage 10H-B remains pending until one followed service-account test openid is bound/provided and smoke is run from an accepted Official Account API calling source.
+
 ## Not In Scope
 
 - Real WeChat template message sending in production.

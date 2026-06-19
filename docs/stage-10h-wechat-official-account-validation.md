@@ -130,7 +130,7 @@ R2 local/server env handling:
 - `.env.wechat-official-account.local` is ignored by Git through `.gitignore` rule `.env.*`.
 - The file contains real AppID/AppSecret entries and the `PAYMENT_PENDING` / `SERVICE_CASE_UPDATE` template ID entries.
 - `WECHAT_TEMPLATE_FINAL_PLAN_PENDING`, `WECHAT_TEMPLATE_CONTRACT_PENDING`, and `WECHAT_TEMPLATE_APPLICATION_PROGRESS` are intentionally not supplied in this run.
-- `WECHAT_OA_TEST_OPENID` was present but still placeholder-like, so it was not used for a real send.
+- `WECHAT_OA_TEST_OPENID` was updated to one single non-wildcard value and was used for one controlled `PAYMENT_PENDING` template smoke.
 - No AppSecret, access_token, full openid, or full template ID was printed or committed.
 
 R2 openid lookup:
@@ -138,15 +138,28 @@ R2 openid lookup:
 - The requested payment-test phone `18616570212` matched two `Customer` rows in the current database.
 - Neither matched customer had an associated `CustomerAccount`.
 - No active `CustomerAccount.wechatOpenId` values were present in the current database.
-- The agent therefore could not safely derive or write a real `WECHAT_OA_TEST_OPENID` value.
+- The agent therefore could not safely derive a real `WECHAT_OA_TEST_OPENID` value from the database; the test openid was later supplied through the ignored local env file.
 
 R2 token smoke:
 
-- Command: `pnpm wechat:oa:smoke -- --mode token --env-file .env.wechat-official-account.local`
-- Result: WeChat returned `WECHAT_ACCESS_TOKEN_FAILED:40164`.
-- Interpretation: the current calling source is not accepted by the WeChat Official Account API, most likely because the local egress IP is not in the Official Account API whitelist.
+- Initial result: WeChat returned `WECHAT_ACCESS_TOKEN_FAILED:40164`.
+- The WeChat errmsg identified the calling IP as not whitelisted.
+- After the IP whitelist was updated, command `pnpm wechat:oa:smoke -- --mode token --env-file .env.wechat-official-account.local` passed.
 - No access_token was printed.
-- Real template-message smoke was not executed after this failure.
+
+R2 template smoke:
+
+- Command: `pnpm wechat:oa:smoke -- --mode template --template-type PAYMENT_PENDING --env-file .env.wechat-official-account.local --env-file .env`
+- Safety env used for this smoke only: `WECHAT_OA_CREATE_TEST_CUSTOMER=1`, `WECHAT_OA_BIND_OPENID=1`, `WECHAT_OA_SYNC_TEMPLATE_ID=1`.
+- Send object count: 1.
+- Mass send: No.
+- Result: WeChat returned `WECHAT_TEMPLATE_SEND_FAILED:40003`.
+- WeChat errmsg summary: `invalid openid`.
+- `NotificationRecord.notificationStatus = FAILED`.
+- `NotificationEvent.eventStatus = PROCESSED` with `lastError = WECHAT_TEMPLATE_SEND_FAILED:40003`.
+- `NotificationRecord.providerMessageId` was not recorded because WeChat did not return `msgid`.
+- Provider response did not contain access_token.
+- The failed record URL was `https://app.subauto.keybox.cloud/portal/orders`.
 
 R2 menu validation:
 
@@ -158,11 +171,10 @@ R2 gate decision:
 
 - Stage 10H-B real validation gate is still open.
 - Blocking reasons:
-  - No safely derived single test openid is available in `CustomerAccount.wechatOpenId`.
-  - WeChat token smoke failed with `40164` from the current calling source.
+  - The supplied single test openid was rejected by WeChat with `40003 invalid openid`.
+  - No successful WeChat `msgid` has been returned or saved.
 - Required next operator action:
-  - Bind or provide one real service-account openid for a followed test user, preferably by completing Portal WeChat OAuth for the test customer.
-  - Run token/template smoke from a whitelisted server/IP, or add the current egress IP to the Official Account API whitelist.
+  - Bind or provide one real openid that belongs to the same `WECHAT_OFFICIAL_ACCOUNT_APP_ID` service account and a user who follows that service account.
   - Re-run single-openid `PAYMENT_PENDING` or `SERVICE_CASE_UPDATE` template smoke.
 
 ## Expected Database Checks After Real Smoke

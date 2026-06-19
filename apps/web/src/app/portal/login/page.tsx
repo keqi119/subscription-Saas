@@ -1,7 +1,8 @@
 "use client";
 
 import { MobileOutlined, SafetyCertificateOutlined, WechatOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Flex, Form, Input, Typography } from "antd";
+import { Alert, App, Button, Checkbox, Flex, Form, Input, Typography } from "antd";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
@@ -14,6 +15,7 @@ interface RequestCodeResponse {
 }
 
 interface PortalLoginFormValues {
+  agreement: boolean;
   code: string;
   phone: string;
 }
@@ -49,7 +51,7 @@ function PortalLoginPageContent() {
     try {
       const phone = form.getFieldValue("phone") as string | undefined;
       if (!phone || !/^1[3-9]\d{9}$/.test(phone)) {
-        void message.error("请输入正确的手机号");
+        void message.error("请输入正确的手机号码");
         return;
       }
 
@@ -72,7 +74,7 @@ function PortalLoginPageContent() {
     try {
       setSubmitting(true);
       await portalApiFetch("/portal/auth/login", {
-        body: JSON.stringify(values),
+        body: JSON.stringify({ code: values.code, phone: values.phone }),
         method: "POST"
       });
       router.replace(resolvePortalRedirect(searchParams.get("redirect")));
@@ -96,7 +98,7 @@ function PortalLoginPageContent() {
           客户门户
         </Typography.Title>
         <Typography.Paragraph style={{ color: "#566273", marginBottom: 28 }}>
-          使用手机号验证码登录，后续可从微信服务号菜单进入。
+          使用手机号验证码登录。后续可从微信服务号菜单进入客户 H5。
         </Typography.Paragraph>
 
         <Form<PortalLoginFormValues> form={form} layout="vertical" onFinish={login}>
@@ -132,9 +134,27 @@ function PortalLoginPageContent() {
             </Flex>
           </Form.Item>
 
+          <Form.Item
+            name="agreement"
+            rules={[
+              {
+                validator: (_, value: boolean | undefined) =>
+                  value ? Promise.resolve() : Promise.reject(new Error("请先阅读并同意用户协议和隐私政策"))
+              }
+            ]}
+            valuePropName="checked"
+          >
+            <Checkbox>
+              我已阅读并同意
+              <Link href="/portal/terms">《用户协议》</Link>
+              和
+              <Link href="/portal/privacy">《隐私政策》</Link>
+            </Checkbox>
+          </Form.Item>
+
           {debugCode ? (
             <Alert
-              message={`开发/测试验证码：${debugCode}`}
+              message={`开发 / 测试验证码：${debugCode}`}
               showIcon
               style={{ marginBottom: 16 }}
               type="info"
@@ -145,7 +165,7 @@ function PortalLoginPageContent() {
             登录
           </Button>
           <Button block disabled icon={<WechatOutlined />} style={{ marginTop: 12 }}>
-            微信登录，暂未开通
+            微信一键登录待开放
           </Button>
         </Form>
       </section>

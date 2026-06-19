@@ -144,6 +144,16 @@ New controlled scripts:
 
 The smoke tooling masks AppID/openid/template IDs, never prints access_token or AppSecret, and blocks wildcard or multi-openid sends.
 
+R2 validation note on 2026-06-19:
+
+- WeChat normal template-message capability was reported approved.
+- Initial token smoke from the current calling source returned WeChat `40164`; after the Official Account IP whitelist was updated, token smoke passed without printing access_token.
+- A production Portal customer account for `186****0212` had a bound service-account openid; the full value was copied into the ignored local env file without printing it.
+- One controlled `PAYMENT_PENDING` template smoke succeeded for a single openid.
+- `NotificationRecord.notificationStatus = SENT`, `NotificationEvent.eventStatus = PROCESSED`, and WeChat `msgid` was saved in `providerMessageId`.
+- WeChat-client receipt and click-through to the Portal order page were manually confirmed.
+- Stage 10H-B can be declared passed for the real template-message validation gate; menu apply remains deliberately deferred until explicit confirmation plus `WECHAT_MENU_APPLY=1`.
+
 ## Not In Scope
 
 - Real WeChat template message sending in production.

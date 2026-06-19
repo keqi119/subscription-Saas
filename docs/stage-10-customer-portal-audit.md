@@ -951,9 +951,14 @@ Safety posture:
 Current validation state:
 
 - Code-level checks and dry-run tooling are ready.
-- Stage 10H-B real WeChat Official Account template-message validation is Pending.
-- Blocking reason: WeChat Official Account normal template-message capability is still under platform review.
-- Real WeChat access-token fetch, template send, menu apply, and WeChat-client click-through validation require operator-provided real environment values after the review passes, and are tracked in the Stage 10H-B report.
+- Stage 10H-B real WeChat Official Account template-message validation is complete.
+- R1 blocking reason: WeChat Official Account normal template-message capability was still under platform review.
+- R2 update on 2026-06-19: template-message capability was reported approved.
+- R2 token smoke passed after the WeChat Official Account IP whitelist was updated.
+- R2 template smoke succeeded for one `PAYMENT_PENDING` single-openid send after a production Portal customer openid was copied into the ignored local env file without printing it.
+- `NotificationRecord` was `SENT`, `NotificationEvent` was `PROCESSED`, and WeChat `msgid` was saved in `providerMessageId`.
+- WeChat-client receipt and click-through to the Portal order page were manually confirmed.
+- Menu dry-run passed; menu apply was not executed and remains gated by explicit manual confirmation plus `WECHAT_MENU_APPLY=1`.
 
 ## 24. Stage 10I Status
 

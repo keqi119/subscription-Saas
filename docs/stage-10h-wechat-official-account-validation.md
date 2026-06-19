@@ -121,6 +121,64 @@ The menu script builds this customer-facing menu:
 | Back-office notification center | Existing Stage 10H-A API/UI, pending manual validation |
 | Secret leakage | No committed secret values |
 
+## R2 Validation Attempt - 2026-06-19
+
+Stage 10H-B-R2 was resumed after the WeChat normal template-message review was reported as approved and after Stage 10I plus the NotificationModule DI fix had been merged to `main`.
+
+R2 local/server env handling:
+
+- `.env.wechat-official-account.local` is ignored by Git through `.gitignore` rule `.env.*`.
+- The file contains real AppID/AppSecret entries and the `PAYMENT_PENDING` / `SERVICE_CASE_UPDATE` template ID entries.
+- `WECHAT_TEMPLATE_FINAL_PLAN_PENDING`, `WECHAT_TEMPLATE_CONTRACT_PENDING`, and `WECHAT_TEMPLATE_APPLICATION_PROGRESS` are intentionally not supplied in this run.
+- `WECHAT_OA_TEST_OPENID` was updated to one single non-wildcard value from the production customer account for `CUS20260618025459A7JV` / `186****0212`.
+- No AppSecret, access_token, full openid, or full template ID was printed or committed.
+
+R2 openid lookup:
+
+- The local tunnel database did not contain the production Portal customer/order that the user was testing.
+- The production API container database contained customer `CUS20260618025459A7JV` with an active account for `186****0212`.
+- That account had a bound `CustomerAccount.wechatOpenId`.
+- The full openid was copied directly into the ignored local env file without printing it; report output only used masked form `oOJh****-RKs`.
+- A 0.01 CNY production test bill was created on order `ORD-WX-PAY-TEST-20260618110103` as `BIL20260619152147Y2MW` to support the WeChat JSAPI/openid validation flow.
+
+R2 token smoke:
+
+- Initial result: WeChat returned `WECHAT_ACCESS_TOKEN_FAILED:40164`.
+- The WeChat errmsg identified the calling IP as not whitelisted.
+- After the IP whitelist was updated, command `pnpm wechat:oa:smoke -- --mode token --env-file .env.wechat-official-account.local` passed.
+- No access_token was printed.
+
+R2 template smoke:
+
+- Command: `pnpm wechat:oa:smoke -- --mode template --template-type PAYMENT_PENDING --env-file .env.wechat-official-account.local --env-file .env`
+- Safety env used for this smoke only: `WECHAT_OA_CREATE_TEST_CUSTOMER=1`, `WECHAT_OA_BIND_OPENID=1`, `WECHAT_OA_SYNC_TEMPLATE_ID=1`.
+- Send object count: 1.
+- Mass send: No.
+- Initial attempts failed safely:
+  - `40003 invalid openid` for an earlier non-matching test openid.
+  - `47003` template data validation errors until the real template field set was supplied.
+- Final result: WeChat returned success for `PAYMENT_PENDING`.
+- `NotificationRecord.notificationStatus = SENT`.
+- `NotificationEvent.eventStatus = PROCESSED` with `lastError = null`.
+- `NotificationRecord.providerMessageId` was populated from WeChat `msgid` and is reported only in masked form `4568****9000`.
+- Provider response had `errcode = 0`, `errmsg = ok`, and did not contain access_token.
+- The successful record URL was `https://app.subauto.keybox.cloud/portal/orders`.
+- Operator confirmed in the WeChat client that the service-account message was received.
+- Operator confirmed clicking the template message opened the Portal order page.
+
+R2 menu validation:
+
+- `pnpm wechat:menu:dry-run` passed and printed the customer-facing menu JSON only.
+- Menu dry-run did not call the WeChat API.
+- Menu apply was not executed.
+
+R2 gate decision:
+
+- Real access_token, single-openid template send, WeChat `msgid` persistence, and menu dry-run have passed.
+- WeChat-client receipt and click-through to the Portal order page have been manually confirmed.
+- Menu apply was not executed and remains gated by explicit manual confirmation plus `WECHAT_MENU_APPLY=1`.
+- Stage 10H-B real validation gate is closed for template-message validation and menu dry-run.
+
 ## Expected Database Checks After Real Smoke
 
 After template smoke, verify:
@@ -150,23 +208,25 @@ Verify these URLs in the WeChat client before declaring Stage 10H-B complete:
 
 ## Completion Decision
 
-Stage 10H-B cannot be declared passed from this repository-only run because no real service account AppSecret, test openid, or template IDs were provided to the agent, and no real WeChat API call was executed.
+Stage 10H-B can be declared passed for the real service-account template-message validation gate.
 
 Current product decision:
 
 - Stage 10H-A is complete.
 - Stage 10H-B safety validation foundation is complete.
-- Stage 10H-B real service-account template-message validation is Pending.
-- Blocking reason: WeChat Official Account normal template-message capability is still under platform review.
-- Stage 10I Customer Portal Release Hardening may proceed while waiting for the WeChat review.
-- After the WeChat review passes, resume Stage 10H-B-R2 for token smoke, single-openid template send, click-through validation, and optional menu apply.
+- Stage 10H-B real service-account token smoke is complete.
+- Stage 10H-B real single-openid `PAYMENT_PENDING` template send is complete.
+- Stage 10H-B real WeChat `msgid` persistence is complete.
+- Stage 10H-B menu dry-run is complete.
+- Stage 10H-B WeChat-client receipt and click-through validation are complete.
+- Stage 10H-B menu apply was not executed; it remains pending explicit manual confirmation and is not required to close the current validation gate because it is recorded as deliberately deferred.
 
-It can be declared passed after a controlled operator run records:
+Passed evidence:
 
 - Real access_token success, masked.
-- At least two successful single-openid template sends, preferably three.
+- At least one successful single-openid template send.
 - Saved WeChat `msgid` in `NotificationRecord.providerMessageId`.
 - Manual receipt in the test WeChat account.
 - Template click-through to the expected Portal H5 URL.
 - Menu dry-run approved.
-- Menu apply success if and only if `WECHAT_MENU_APPLY=1` was explicitly set.
+- Menu apply recorded as not executed, pending explicit manual confirmation.

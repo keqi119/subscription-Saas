@@ -69,6 +69,8 @@ Stage 9 / Production readiness：
 - `docs/portal-security-audit.md`：Customer Portal 数据隔离与脱敏审计
 - `docs/customer-portal-release-checklist.md`：Customer Portal 发布前检查清单
 - `docs/customer-portal-manual-acceptance.md`：Customer Portal 全链路人工验收手册
+- `docs/customer-portal-release-candidate-report.md`: Stage 10J Customer Portal RC report
+- `docs/customer-portal-production-rollout-plan.md`: Stage 10J Customer Portal production rollout plan
 - `docs/wechat-official-account-setup.md`：微信服务号菜单与域名配置建议
 
 ## 本地开发启动

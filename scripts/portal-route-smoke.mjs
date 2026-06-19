@@ -4,6 +4,8 @@ const DEFAULT_PORTAL_BASE_URL = "http://localhost:3000";
 
 const publicRoutes = [
   "/portal/login",
+  "/portal/terms",
+  "/portal/privacy",
   "/portal/catalog"
 ];
 

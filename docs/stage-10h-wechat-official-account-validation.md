@@ -121,6 +121,60 @@ The menu script builds this customer-facing menu:
 | Back-office notification center | Existing Stage 10H-A API/UI, pending manual validation |
 | Secret leakage | No committed secret values |
 
+## Stage 10H-B-R1 Run
+
+Date: 2026-06-19
+
+Branch: `feature/stage10-wechat-official-account-real-validation`
+
+Baseline:
+
+- `main` includes Stage 10H-A notification foundation.
+- `main` includes Stage 10H-B guarded smoke/menu tooling.
+- `main` includes Stage 10E-B-CertRotation.
+- Start gate passed: `pnpm release:check` and Prisma migration status both passed.
+
+Environment readiness:
+
+| Required key | Status |
+| --- | --- |
+| `NOTIFICATION_PROVIDER` | Missing in local `.env` |
+| `NOTIFICATION_WECHAT_ENABLED` | Missing in local `.env` |
+| `WECHAT_OFFICIAL_ACCOUNT_APP_ID` | Missing in local `.env` |
+| `WECHAT_OFFICIAL_ACCOUNT_APP_SECRET` | Missing in local `.env` |
+| `WECHAT_TEMPLATE_APPLICATION_PROGRESS` | Missing in local `.env` |
+| `WECHAT_TEMPLATE_FINAL_PLAN_PENDING` | Missing in local `.env` |
+| `WECHAT_TEMPLATE_CONTRACT_PENDING` | Missing in local `.env` |
+| `WECHAT_TEMPLATE_PAYMENT_PENDING` | Missing in local `.env` |
+| `WECHAT_TEMPLATE_SERVICE_CASE_UPDATE` | Missing in local `.env` |
+| `WECHAT_OA_TEST_OPENID` | Missing in local `.env` |
+| `DATABASE_URL` | Present, masked |
+
+Execution results:
+
+| Item | Result |
+| --- | --- |
+| Real access_token smoke | Not connected; script stopped before network call with `WECHAT_OFFICIAL_ACCOUNT_APP_ID is required.` |
+| access_token printed | No |
+| Real template message sent | No |
+| Send object count | 0 |
+| Mass send | No |
+| NotificationRecord / NotificationEvent status | Not generated in R1 because token smoke did not pass |
+| providerMessageId / msgid | Not generated in R1 |
+| Template click-through | Not tested; no template message sent |
+| Customer WeChat receipt | Not tested; no template message sent |
+| Menu dry-run | Passed with `pnpm wechat:menu:dry-run`; output points to `https://app.subauto.keybox.cloud/portal/...` |
+| Menu apply | Not executed; token/env gate failed and no explicit apply confirmation was provided |
+| Portal notification center | Not manually verified in R1 |
+| Back-office notification center | Not manually verified in R1 |
+| Secret leakage | No AppSecret, access_token, full openid, or full template ID committed or printed |
+
+R1 blocker:
+
+- Real service account env values were not available to the agent in `.env` or another local secret file.
+- Add the required values to an ignored local env file and rerun token smoke before attempting template smoke.
+- Menu apply remains pending explicit human confirmation and `WECHAT_MENU_APPLY=1`.
+
 ## Expected Database Checks After Real Smoke
 
 After template smoke, verify:

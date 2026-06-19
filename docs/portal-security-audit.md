@@ -4,7 +4,7 @@
 
 This audit covers customer-facing Portal H5 routes and `/api/portal/*` APIs for Stage 10I release hardening.
 
-Stage 10H-B real template-message validation remains pending because the WeChat Official Account normal template-message capability is still under platform review. Stage 10I does not depend on real template IDs.
+Stage 10H-B real template-message validation has passed. The remaining Stage 10J release-candidate concern is deployment readiness: the production H5 domain must serve the latest Portal routes before customer rollout.
 
 ## Route Inventory
 
@@ -149,8 +149,8 @@ pnpm portal:api-smoke
 
 ## Open Items Before Release
 
-- Run route smoke against production H5 domain.
-- Run public API smoke against production API domain.
+- Re-run route smoke against production H5 domain after deploying the latest Web image; the 2026-06-20 RC run returned 404 for `/portal/terms`, `/portal/privacy`, and `/portal/notifications`.
+- Public API smoke against production API domain passed on 2026-06-20.
 - Run authenticated API smoke with a controlled customer test account.
 - Replace `/portal/terms` and `/portal/privacy` placeholder text with legal-approved versions.
-- Resume Stage 10H-B-R2 after WeChat template-message capability review completes.
+- Keep WeChat Official Account menu apply behind explicit manual confirmation plus `WECHAT_MENU_APPLY=1`.

@@ -55,7 +55,7 @@ async function main() {
 }
 
 async function checkEndpoint(scope, endpoint, cookieHeader) {
-  const url = new URL(endpoint, `${apiBaseUrl}/`).toString();
+  const url = new URL(endpoint.replace(/^\/+/, ""), `${apiBaseUrl}/`).toString();
   try {
     const response = await fetchWithTimeout(url, cookieHeader);
     const bodyText = await response.text();

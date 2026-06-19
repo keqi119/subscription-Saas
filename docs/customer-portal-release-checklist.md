@@ -4,20 +4,20 @@
 
 - Stage 10H-A: complete.
 - Stage 10H-B safety validation foundation: complete.
-- Stage 10H-B real WeChat template-message validation: pending.
-- Pending reason: WeChat Official Account normal template-message capability is still under platform review.
-- Stage 10I does not depend on real template IDs and may proceed.
+- Stage 10H-B real WeChat template-message validation: complete.
+- Stage 10H-B evidence: access_token smoke passed, one `PAYMENT_PENDING` single-openid template message was sent, WeChat `msgid` was recorded, and the WeChat client receipt/click-through to the Portal order page was confirmed.
+- Stage 10J release-candidate evidence is tracked in `docs/customer-portal-release-candidate-report.md`.
 
 ## Checklist
 
 | Area | Check | Status |
 | --- | --- | --- |
-| H5 domain | `https://app.subauto.keybox.cloud` resolves and serves Portal H5 over HTTPS | Pending operator verification |
-| Portal route smoke | Run `pnpm portal:route-smoke` locally/staging/production | Script ready |
-| Portal API smoke | Run `pnpm portal:api-smoke` public checks | Script ready |
+| H5 domain | `https://app.subauto.keybox.cloud` resolves and serves Portal H5 over HTTPS | Production route smoke reached the domain; three RC routes returned 404 |
+| Portal route smoke | Run `pnpm portal:route-smoke` locally/staging/production | Production smoke failed on `/portal/terms`, `/portal/privacy`, and `/portal/notifications` |
+| Portal API smoke | Run `pnpm portal:api-smoke` public checks | Production public API smoke passed |
 | Authenticated Portal API smoke | Run with `PORTAL_CUSTOMER_COOKIE` for a controlled customer | Pending controlled cookie |
 | Customer login | Phone-code login works; login requires agreement checkbox | Ready for manual acceptance |
-| Terms/privacy | `/portal/terms` and `/portal/privacy` exist | Placeholder text, legal review pending |
+| Terms/privacy | `/portal/terms` and `/portal/privacy` exist in code | Placeholder text, legal review pending; production currently returns 404 until latest Web image is deployed |
 | Product browsing | Vehicle catalog list/detail load and do not expose internal cost fields | Pending smoke/manual acceptance |
 | Application submission | Customer can submit self-service application | Pending manual acceptance |
 | Material upload | Customer can upload required materials; preview is ownership-checked | Pending manual acceptance |
@@ -32,15 +32,15 @@
 | Entitlements | Customer can view own grants/usages | Pending manual acceptance |
 | Accident report | Customer can submit and track accident service case | Pending manual acceptance |
 | Rescue request | Customer can submit and track rescue service case | Pending manual acceptance |
-| Notifications | Portal notification center lists own in-app notifications | Pending manual acceptance |
+| Notifications | Portal notification center lists own in-app notifications | Implemented in code; production route currently returns 404 until latest Web image is deployed |
 | Back-office notifications | Back-office records/events are visible and openid is masked | Pending manual acceptance |
 | WeChat service account menu | Menu dry-run targets customer Portal pages | Dry-run ready |
 | WeChat menu apply | Requires explicit `WECHAT_MENU_APPLY=1` and human confirmation | Pending |
-| Template messages | Real single-openid template smoke | Pending WeChat review |
+| Template messages | Real single-openid template smoke | Passed in Stage 10H-B R2 |
 | Data redaction | No purchase price, cost, financing, residual internals, full VIN/plate, or storage internals in Portal DTOs | Audit documented |
 | File download | Material/service-case previews enforce parent ownership | Covered by implementation/tests |
 | Admin/customer token isolation | Admin token cannot replace customer session for protected Portal APIs | Audit documented |
-| Release notes | Customer-facing limitations include 10H-B template-message pending state | Pending final release notes |
+| Release notes | Customer-facing limitations include deferred real e-sign, H5 payment fallback, legal text, and menu apply status | Stage 10J RC docs added |
 
 ## Go / No-Go
 
@@ -49,10 +49,12 @@ Go only after:
 - Route smoke and API smoke pass for target environment.
 - Legal has approved or explicitly accepted placeholder terms/privacy for pilot.
 - Customer ownership checks pass for the controlled E2E account.
-- WeChat template-message pending state is communicated if the review is still open.
+- Latest production Web/API image includes Stage 10I and Stage 10H-A Portal routes.
+- WeChat service-account menu apply is explicitly approved or deliberately deferred for invited beta.
 
 No-go if:
 
+- Production route smoke returns 404 for `/portal/terms`, `/portal/privacy`, or `/portal/notifications`.
 - Any protected Portal endpoint can return another customer's data.
 - Portal H5 exposes storage internals, payment secrets, WeChat secrets, or back-office-only financial fields.
 - Login or payment paths show raw server errors to customers.

@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
+import { AuthModule } from "../auth/auth.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { MockNotificationProvider } from "./mock-notification.provider";
 import { NotificationAdminController } from "./notification.controller";
@@ -11,7 +12,7 @@ import { WeChatOfficialAccountProvider } from "./wechat-official-account.provide
 @Module({
   controllers: [NotificationAdminController],
   exports: [NotificationService],
-  imports: [PrismaModule],
+  imports: [AuthModule, PrismaModule],
   providers: [
     NotificationService,
     {

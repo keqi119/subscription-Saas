@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { BadRequestException, NotFoundException } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import { Test } from "@nestjs/testing";
 import {
   CustomerAccountStatus,
   NotificationChannel,
@@ -13,13 +14,30 @@ import {
 } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { NotificationService } from "../src/notification/notification.service";
+import { NotificationModule } from "../src/notification/notification.module";
 import { NotificationProvider } from "../src/notification/notification.provider";
+import { NotificationService } from "../src/notification/notification.service";
 import { WeChatOfficialAccountProvider } from "../src/notification/wechat-official-account.provider";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("NotificationModule", () => {
+  it("compiles with its admin guard dependencies", async () => {
+    process.env.CUSTOMER_JWT_SECRET ??= "notification-module-test-secret";
+    process.env.DATABASE_URL ??= "postgresql://test:test@127.0.0.1:5432/subscription_saas?schema=public";
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true }),
+        NotificationModule
+      ]
+    }).compile();
+
+    await moduleRef.close();
+  });
 });
 
 describe("NotificationService", () => {

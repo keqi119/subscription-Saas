@@ -8,6 +8,7 @@ import { PortalNotificationController } from "../notification/notification.contr
 import { PaymentModule } from "../payment/payment.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { ServiceCaseModule } from "../service-case/service-case.module";
+import { SmsModule } from "../sms/sms.module";
 import { StorageModule } from "../storage/storage.module";
 import { WeChatModule } from "../wechat/wechat.module";
 import { PortalApplicationController } from "./portal-application.controller";
@@ -48,6 +49,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PaymentModule,
     PrismaModule,
     ServiceCaseModule,
+    SmsModule,
     StorageModule,
     WeChatModule
   ],

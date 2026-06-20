@@ -4,7 +4,6 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
-  Logger,
   UnauthorizedException
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -20,6 +19,8 @@ import jwt, { JwtPayload, SignOptions } from "jsonwebtoken";
 
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
+import { PORTAL_BETA_GATE_MESSAGE, PORTAL_SMS_SEND_FAILURE_MESSAGE } from "../sms/sms.dto";
+import { SmsService } from "../sms/sms.service";
 import { PortalLoginDto, RequestPortalCodeDto } from "./portal-auth.dto";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
 
@@ -47,15 +48,16 @@ interface CustomerJwtPayload extends JwtPayload {
 
 @Injectable()
 export class PortalAuthService {
-  private readonly logger = new Logger(PortalAuthService.name);
-
   constructor(
     private readonly configService: ConfigService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    private readonly smsService: SmsService
   ) {}
 
   async requestCode(dto: RequestPortalCodeDto, context: PortalRequestContext) {
     const phone = normalizePhone(dto.phone);
+    this.assertBetaAccessAllowed(phone);
+
     const now = new Date();
     const resendSeconds = this.getOtpResendSeconds();
     const recentCode = await this.prisma.customerVerificationCode.findFirst({
@@ -75,8 +77,9 @@ export class PortalAuthService {
 
     const code = createVerificationCode();
     const ttlSeconds = this.getOtpTtlSeconds();
+    const debugCode = this.shouldExposeDebugCode() ? code : undefined;
 
-    await this.prisma.customerVerificationCode.create({
+    const verificationCode = await this.prisma.customerVerificationCode.create({
       data: {
         codeHash: this.hashVerificationCode(phone, CustomerVerificationCodePurpose.LOGIN, code),
         expiresAt: new Date(now.getTime() + ttlSeconds * 1000),
@@ -87,12 +90,24 @@ export class PortalAuthService {
       }
     });
 
-    if (this.shouldExposeDebugCode()) {
-      this.logger.log(`Mock customer login code for ${maskPhone(phone)}: ${code}`);
+    const sendResult = await this.smsService.sendLoginCode({
+      allowDebugCode: debugCode !== undefined,
+      code,
+      expiresInSeconds: ttlSeconds,
+      phone,
+      verificationCodeId: verificationCode.id
+    });
+
+    if (!sendResult.success) {
+      await this.prisma.customerVerificationCode.update({
+        data: { consumedAt: new Date(), deletedAt: new Date() },
+        where: { id: verificationCode.id }
+      });
+      throw new BadRequestException(PORTAL_SMS_SEND_FAILURE_MESSAGE);
     }
 
     return {
-      debugCode: this.shouldExposeDebugCode() ? code : undefined,
+      debugCode,
       expiresIn: ttlSeconds,
       sent: true
     };
@@ -100,6 +115,8 @@ export class PortalAuthService {
 
   async login(dto: PortalLoginDto, context: PortalRequestContext) {
     const phone = normalizePhone(dto.phone);
+    this.assertBetaAccessAllowed(phone);
+
     const code = dto.code.trim();
     const codeRecord = await this.prisma.customerVerificationCode.findFirst({
       orderBy: { createdAt: "desc" },
@@ -265,8 +282,24 @@ export class PortalAuthService {
   }
 
   private shouldExposeDebugCode() {
-    const debugEnabled = this.configService.get<string>("PORTAL_AUTH_DEBUG_CODE") === "true";
-    return debugEnabled || this.configService.get<string>("NODE_ENV") !== "production";
+    if (this.getRuntimeEnvironment() === "production") {
+      return false;
+    }
+
+    const debugEnabled =
+      this.configService.get<string>("PORTAL_SMS_DEBUG_CODE") === "true" ||
+      this.configService.get<string>("PORTAL_AUTH_DEBUG_CODE") === "true";
+    return debugEnabled || this.getRuntimeEnvironment() !== "production";
+  }
+
+  private getRuntimeEnvironment() {
+    return (
+      this.configService.get<string>("APP_ENV") ??
+      this.configService.get<string>("NODE_ENV") ??
+      "development"
+    )
+      .trim()
+      .toLowerCase();
   }
 
   private getCustomerJwtSecret() {
@@ -289,6 +322,16 @@ export class PortalAuthService {
 
   private getOtpMaxAttempts() {
     return readPositiveInteger(this.configService, "PORTAL_OTP_MAX_ATTEMPTS", DEFAULT_OTP_MAX_ATTEMPTS);
+  }
+
+  private assertBetaAccessAllowed(phone: string) {
+    if (this.configService.get<string>("PORTAL_BETA_MODE") !== "true") {
+      return;
+    }
+
+    if (!readAllowedPhones(this.configService).has(normalizePhoneForAccessGate(phone))) {
+      throw new ForbiddenException(PORTAL_BETA_GATE_MESSAGE);
+    }
   }
 }
 
@@ -358,6 +401,21 @@ function normalizePhone(phone: string) {
   return phone.trim();
 }
 
+function normalizePhoneForAccessGate(phone: string) {
+  const normalized = stripWrappingQuotes(phone).replace(/[\s-]/g, "");
+  if (normalized.startsWith("+86") && normalized.length === 14) {
+    return normalized.slice(3);
+  }
+  if (normalized.startsWith("0086") && normalized.length === 15) {
+    return normalized.slice(4);
+  }
+  if (normalized.startsWith("86") && normalized.length === 13) {
+    return normalized.slice(2);
+  }
+
+  return normalized;
+}
+
 function normalizeIp(ip?: string) {
   return ip?.slice(0, 64);
 }
@@ -372,6 +430,34 @@ function maskPhone(phone: string) {
   }
 
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
+}
+
+function readAllowedPhones(configService: ConfigService) {
+  const allowedPhones = configService.get<string>("PORTAL_BETA_ALLOWED_PHONES") ?? "";
+  return new Set(
+    allowedPhones
+      .split(",")
+      .map((item) => normalizePhoneForAccessGate(item))
+      .filter(Boolean)
+  );
+}
+
+function stripWrappingQuotes(value: string) {
+  const trimmed = value.trim();
+  const quotePairs: Array<[string, string]> = [
+    ['"', '"'],
+    ["'", "'"],
+    ["“", "”"],
+    ["‘", "’"]
+  ];
+
+  for (const [left, right] of quotePairs) {
+    if (trimmed.startsWith(left) && trimmed.endsWith(right)) {
+      return trimmed.slice(left.length, -right.length).trim();
+    }
+  }
+
+  return trimmed;
 }
 
 function parseDurationMillis(value: string) {

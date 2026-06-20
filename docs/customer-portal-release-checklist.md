@@ -7,6 +7,7 @@
 - Stage 10H-B real WeChat template-message validation: complete.
 - Stage 10H-B evidence: access_token smoke passed, one `PAYMENT_PENDING` single-openid template message was sent, WeChat `msgid` was recorded, and the WeChat client receipt/click-through to the Portal order page was confirmed.
 - Stage 10J release-candidate evidence is tracked in `docs/customer-portal-release-candidate-report.md`.
+- Stage 10K-A: Aliyun SMS login provider and invited beta gate are implemented in code; real SMS staging validation remains required before production customer traffic.
 
 ## Checklist
 
@@ -16,7 +17,9 @@
 | Portal route smoke | Run `pnpm portal:route-smoke` locally/staging/production | Production smoke failed on `/portal/terms`, `/portal/privacy`, and `/portal/notifications` |
 | Portal API smoke | Run `pnpm portal:api-smoke` public checks | Production public API smoke passed |
 | Authenticated Portal API smoke | Run with `PORTAL_CUSTOMER_COOKIE` for a controlled customer | Pending controlled cookie |
-| Customer login | Phone-code login works; login requires agreement checkbox | Ready for manual acceptance |
+| Customer login | Phone-code login works; login requires agreement checkbox | Stage 10K-A adds SMS provider abstraction and beta gate; staging real-SMS validation pending |
+| Login SMS provider | Aliyun provider configured through env; production does not return `debugCode` | Implemented in code; no real SMS sent in local tests |
+| Beta phone gate | `PORTAL_BETA_MODE=true` allows only invited phones to request/use login codes | Implemented; whitelist values must stay out of Git |
 | Terms/privacy | `/portal/terms` and `/portal/privacy` exist in code | Placeholder text, legal review pending; production currently returns 404 until latest Web image is deployed |
 | Product browsing | Vehicle catalog list/detail load and do not expose internal cost fields | Pending smoke/manual acceptance |
 | Application submission | Customer can submit self-service application | Pending manual acceptance |
@@ -47,6 +50,7 @@
 Go only after:
 
 - Route smoke and API smoke pass for target environment.
+- Stage 10K-A-Staging real Aliyun SMS validation passes for one controlled phone, and non-whitelist phone rejection is confirmed.
 - Legal has approved or explicitly accepted placeholder terms/privacy for pilot.
 - Customer ownership checks pass for the controlled E2E account.
 - Latest production Web/API image includes Stage 10I and Stage 10H-A Portal routes.

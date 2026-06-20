@@ -14,7 +14,7 @@ The rollout should first target internal validation or invited beta users. It sh
 
 Included:
 
-- Customer login.
+- Customer login, with Stage 10K-A SMS provider and invited beta gate once real SMS staging validation passes.
 - Public catalog browsing.
 - Self-service application.
 - Material upload and preview.
@@ -33,7 +33,7 @@ Out of scope:
 - Refund automation.
 - Reconciliation automation.
 - Invoice workflow.
-- SMS notification provider.
+- Broad SMS notification provider. Login verification SMS is handled by Stage 10K-A and is not a notification-center batch/mass-send capability.
 - Native mini-program.
 - Enterprise customer portal.
 
@@ -100,6 +100,14 @@ Stage 10J-R6 status:
 - Production Web image remained unchanged at `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
 - R6 supersedes the R5 fallback behavior: unapproved service-case WeChat `const4` values are skipped instead of being replaced with `处理中`.
 - This keeps WeChat cards from displaying a status that disagrees with the Portal detail page.
+
+Stage 10K-A code status:
+
+- The API now has an SMS provider abstraction with mock and Aliyun implementations for Portal login verification codes.
+- `SmsSendLog` records login SMS send results, provider request/message ids, sanitized provider response, and failure reason.
+- Production suppresses `debugCode` unconditionally.
+- `PORTAL_BETA_MODE=true` restricts Portal request-code and login to `PORTAL_BETA_ALLOWED_PHONES`.
+- This stage does not send real SMS and does not deploy to production. Proceed next to Stage 10K-A-Staging for one controlled real Aliyun SMS validation.
 
 ## WeChat Official Account Menu Strategy
 
@@ -200,11 +208,13 @@ Release rules:
    ```
 
 12. Run authenticated API smoke with a controlled customer cookie; do not commit or print the cookie.
-13. Run WeChat menu dry-run.
-14. Decide whether to apply the WeChat service-account menu.
-15. Execute a controlled customer journey: login, catalog, application, materials, final plan, contract, payment, bills, service case, notifications.
-16. Confirm WeChat template notification receipt/click-through.
-17. Record Go / No-Go.
+13. Before invited beta, configure `APP_ENV=production`, `PORTAL_SMS_PROVIDER=aliyun`, `PORTAL_SMS_ENABLED=true`, `PORTAL_SMS_DEBUG_CODE=false`, `PORTAL_BETA_MODE=true`, and a real allowlist outside Git.
+14. Run Stage 10K-A-Staging with one controlled phone and confirm real SMS receipt, login success, non-whitelist rejection, and `SmsSendLog` provider request ids.
+15. Run WeChat menu dry-run.
+16. Decide whether to apply the WeChat service-account menu.
+17. Execute a controlled customer journey: login, catalog, application, materials, final plan, contract, payment, bills, service case, notifications.
+18. Confirm WeChat template notification receipt/click-through.
+19. Record Go / No-Go.
 
 ## Rollback Steps
 
@@ -245,6 +255,7 @@ Proceed only with internal RC or invited beta after:
 - Latest API/Web images are deployed and route/API smoke passes. Stage 10J-R2 has closed the production route/API deployment blockers found during RC acceptance.
 - Stage 10J-R4 service-case notification retest passes after a new valid status transition.
 - Stage 10J-R5 service-case notification retest confirms the enum guard prevents `47003`.
+- Stage 10K-A-Staging confirms real Aliyun SMS login and beta whitelist behavior without debugCode or secret leakage.
 - Legal explicitly accepts placeholder text or formal text is deployed.
 - Authenticated API smoke passes.
 - Business owner explicitly accepts Mock ESignProvider for the release scope.

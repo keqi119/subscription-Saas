@@ -40,13 +40,14 @@ The current Stage 10 customer Portal codebase covers:
 - Real WeChat Official Account `PAYMENT_PENDING` single-openid template send.
 - WeChat `msgid` persistence in `NotificationRecord.providerMessageId`.
 - WeChat client receipt and click-through to the Portal order page.
+- Stage 10K-A code now adds Aliyun SMS login provider support, SMS send logs, production `debugCode` suppression, and invited-beta phone gating. It still requires staging real-SMS validation before production rollout.
 
 ## Deferred Capability Scope
 
 - Real e-sign provider integration: Stage 10D-B.
 - WeChat-outside browser H5 payment fallback: Stage 10E-C.
 - Refunds, reconciliation, and invoices: later payment enhancements.
-- SMS notification provider: P1.
+- Broad SMS notification provider: P1. Login verification SMS is handled separately by Stage 10K-A.
 - WeChat Official Account menu apply: pending explicit manual confirmation.
 - Legal-approved final terms and privacy policy: release prerequisite.
 - Native mini-program: P2.
@@ -345,6 +346,7 @@ Blockers:
 - Authenticated Portal API smoke was not executed because no controlled customer cookie was supplied.
 - Legal-approved final terms/privacy text is not yet in place.
 - Real e-sign provider is not integrated; Mock ESignProvider is still used.
+- Production customer login previously depended on a mock/debug code path. Stage 10K-A closes this in code with Aliyun SMS and beta gate support, but real SMS staging validation is still required before customer traffic.
 
 Closed in Stage 10J-R1:
 
@@ -374,6 +376,7 @@ Go criteria for customer-facing rollout:
 - Production route smoke passes all Portal routes.
 - Production public API smoke passes.
 - Production authenticated API smoke passes with a controlled customer cookie.
+- Stage 10K-A-Staging real Aliyun SMS validation passes for one controlled phone, with production-like `debugCode=false` and beta whitelist enforcement.
 - Legal approves terms/privacy or explicitly approves placeholder text for invited beta.
 - Business owner confirms whether Mock ESignProvider is acceptable for the release scope.
 - WeChat Official Account menu apply is either executed with explicit confirmation or deliberately deferred in release notes.

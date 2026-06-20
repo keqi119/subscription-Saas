@@ -1,12 +1,21 @@
 import { BadRequestException, ExecutionContext, ForbiddenException, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { CustomerAccountStatus, CustomerStatus, CustomerVerificationCodePurpose } from "@prisma/client";
+import {
+  CustomerAccountStatus,
+  CustomerStatus,
+  CustomerVerificationCodePurpose,
+  SmsProviderType,
+  SmsSendStatus
+} from "@prisma/client";
 import jwt from "jsonwebtoken";
 import { describe, expect, it, vi } from "vitest";
 
 import { CustomerAuthGuard } from "../src/portal/portal-auth.guard";
 import { PortalAuthController } from "../src/portal/portal-auth.controller";
 import { PortalAuthService } from "../src/portal/portal-auth.service";
+import { PORTAL_BETA_GATE_MESSAGE, PORTAL_SMS_SEND_FAILURE_MESSAGE } from "../src/sms/sms.dto";
+import { SendSmsCodeInput, SendSmsCodeResult, SmsProvider } from "../src/sms/sms-provider";
+import { SmsService } from "../src/sms/sms.service";
 
 const CUSTOMER_SECRET = "customer-test-secret";
 
@@ -21,6 +30,12 @@ describe("PortalAuthService", () => {
     expect(result.debugCode).toMatch(/^\d{6}$/);
     expect(prisma.codes).toHaveLength(1);
     expect(prisma.codes[0]?.codeHash).not.toBe(result.debugCode);
+    expect(prisma.smsLogs).toMatchObject([
+      {
+        provider: SmsProviderType.MOCK,
+        sendStatus: SmsSendStatus.SKIPPED
+      }
+    ]);
   });
 
   it("request-code rejects duplicate requests within resend window", async () => {
@@ -34,19 +49,149 @@ describe("PortalAuthService", () => {
   });
 
   it("request-code hides debugCode in production by default", async () => {
-    const { service } = createPortalAuthFixture({ NODE_ENV: "production", PORTAL_AUTH_DEBUG_CODE: "false" });
+    const { service } = createPortalAuthFixture({
+      NODE_ENV: "production",
+      PORTAL_AUTH_DEBUG_CODE: "false",
+      PORTAL_SMS_ENABLED: "true"
+    });
 
     const result = await service.requestCode({ phone: "13800000000" }, requestContext());
 
     expect(result.debugCode).toBeUndefined();
   });
 
-  it("request-code can expose debugCode in production when explicitly enabled", async () => {
-    const { service } = createPortalAuthFixture({ NODE_ENV: "production", PORTAL_AUTH_DEBUG_CODE: "true" });
+  it("request-code never exposes debugCode in production even when explicitly enabled", async () => {
+    const { service } = createPortalAuthFixture({
+      APP_ENV: "production",
+      NODE_ENV: "production",
+      PORTAL_AUTH_DEBUG_CODE: "true",
+      PORTAL_SMS_DEBUG_CODE: "true",
+      PORTAL_SMS_ENABLED: "true"
+    });
+
+    const result = await service.requestCode({ phone: "13800000000" }, requestContext());
+
+    expect(result.debugCode).toBeUndefined();
+  });
+
+  it("request-code can expose debugCode in staging even when NODE_ENV uses production runtime mode", async () => {
+    const { service } = createPortalAuthFixture({
+      APP_ENV: "staging",
+      NODE_ENV: "production",
+      PORTAL_SMS_DEBUG_CODE: "true",
+      PORTAL_SMS_ENABLED: "false"
+    });
 
     const result = await service.requestCode({ phone: "13800000000" }, requestContext());
 
     expect(result.debugCode).toMatch(/^\d{6}$/);
+  });
+
+  it("request-code uses the mock sms provider and records SENT when sms is enabled", async () => {
+    const { prisma, service, smsProvider } = createPortalAuthFixture({ PORTAL_SMS_ENABLED: "true" });
+
+    const result = await service.requestCode({ phone: "13800000000" }, requestContext());
+
+    expect(result.sent).toBe(true);
+    expect(smsProvider.sendCode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phone: "13800000000",
+        purpose: CustomerVerificationCodePurpose.LOGIN
+      })
+    );
+    expect(prisma.smsLogs[0]).toMatchObject({
+      phone: "13800000000",
+      phoneMasked: "138****0000",
+      provider: SmsProviderType.MOCK,
+      sendStatus: SmsSendStatus.SENT,
+      verificationCodeId: prisma.codes[0]?.id
+    });
+  });
+
+  it("request-code succeeds with an aliyun OK result and records SENT", async () => {
+    const { prisma, service } = createPortalAuthFixture(
+      { PORTAL_SMS_ENABLED: "true", PORTAL_SMS_PROVIDER: "aliyun" },
+      {
+        smsProvider: createSmsProvider({
+          provider: "aliyun",
+          providerMessageId: "aliyun-biz-id",
+          providerRequestId: "aliyun-request-id",
+          providerResponse: { bizId: "aliyun-biz-id", code: "OK", message: "OK", requestId: "aliyun-request-id" },
+          success: true
+        })
+      }
+    );
+
+    await expect(service.requestCode({ phone: "13800000000" }, requestContext())).resolves.toMatchObject({
+      sent: true
+    });
+    expect(prisma.smsLogs[0]).toMatchObject({
+      provider: SmsProviderType.ALIYUN,
+      providerMessageId: "aliyun-biz-id",
+      providerRequestId: "aliyun-request-id",
+      sendStatus: SmsSendStatus.SENT
+    });
+  });
+
+  it("request-code rejects sms failures, records FAILED, and makes the code unusable", async () => {
+    const { prisma, service } = createPortalAuthFixture(
+      { PORTAL_SMS_ENABLED: "true" },
+      {
+        smsProvider: createSmsProvider({
+          errorCode: "MockFailure",
+          errorMessage: "mock failed",
+          provider: "mock",
+          success: false
+        })
+      }
+    );
+
+    await expect(service.requestCode({ phone: "13800000000" }, requestContext())).rejects.toMatchObject({
+      response: { message: PORTAL_SMS_SEND_FAILURE_MESSAGE }
+    });
+
+    expect(prisma.codes).toHaveLength(1);
+    expect(prisma.codes[0]?.consumedAt).toBeInstanceOf(Date);
+    expect(prisma.codes[0]?.deletedAt).toBeInstanceOf(Date);
+    expect(prisma.smsLogs[0]).toMatchObject({
+      errorCode: "MockFailure",
+      provider: SmsProviderType.MOCK,
+      sendStatus: SmsSendStatus.FAILED
+    });
+  });
+
+  it("request-code allows whitelisted phones when beta mode is enabled", async () => {
+    const { service } = createPortalAuthFixture({
+      PORTAL_BETA_ALLOWED_PHONES: "+8613800000000",
+      PORTAL_BETA_MODE: "true"
+    });
+
+    await expect(service.requestCode({ phone: "13800000000" }, requestContext())).resolves.toMatchObject({
+      sent: true
+    });
+  });
+
+  it("request-code rejects non-whitelisted phones when beta mode is enabled", async () => {
+    const { prisma, service } = createPortalAuthFixture({
+      PORTAL_BETA_ALLOWED_PHONES: "13800000000",
+      PORTAL_BETA_MODE: "true"
+    });
+
+    await expect(service.requestCode({ phone: "13900000000" }, requestContext())).rejects.toMatchObject({
+      response: { message: PORTAL_BETA_GATE_MESSAGE }
+    });
+    expect(prisma.codes).toHaveLength(0);
+  });
+
+  it("request-code allows ordinary phones when beta mode is disabled", async () => {
+    const { service } = createPortalAuthFixture({
+      PORTAL_BETA_ALLOWED_PHONES: "",
+      PORTAL_BETA_MODE: "false"
+    });
+
+    await expect(service.requestCode({ phone: "13900000000" }, requestContext())).resolves.toMatchObject({
+      sent: true
+    });
   });
 
   it("login succeeds with a correct code and creates customer account on first login", async () => {
@@ -191,21 +336,31 @@ describe("PortalAuthController", () => {
   });
 });
 
-function createPortalAuthFixture(overrides: Record<string, string> = {}) {
+function createPortalAuthFixture(
+  overrides: Record<string, string> = {},
+  options: { smsProvider?: SmsProvider } = {}
+) {
   const config = new FakeConfigService({
     CUSTOMER_ACCESS_TOKEN_COOKIE: "customer_access_token",
     CUSTOMER_ACCESS_TOKEN_EXPIRES_IN: "7d",
     CUSTOMER_JWT_SECRET: CUSTOMER_SECRET,
     NODE_ENV: "test",
     PORTAL_AUTH_DEBUG_CODE: "false",
+    PORTAL_BETA_ALLOWED_PHONES: "",
+    PORTAL_BETA_MODE: "false",
     PORTAL_OTP_MAX_ATTEMPTS: "5",
     PORTAL_OTP_RESEND_SECONDS: "60",
     PORTAL_OTP_TTL_SECONDS: "300",
+    PORTAL_SMS_DEBUG_CODE: "false",
+    PORTAL_SMS_ENABLED: "false",
+    PORTAL_SMS_PROVIDER: "mock",
     ...overrides
   });
   const prisma = new FakePrismaService();
-  const service = new PortalAuthService(config as unknown as ConfigService, prisma as never);
-  return { config, prisma, service };
+  const smsProvider = options.smsProvider ?? createSmsProvider();
+  const smsService = new SmsService(config as unknown as ConfigService, prisma as never, smsProvider);
+  const service = new PortalAuthService(config as unknown as ConfigService, prisma as never, smsService);
+  return { config, prisma, service, smsProvider };
 }
 
 function requestContext() {
@@ -235,6 +390,7 @@ class FakePrismaService {
   readonly accounts: FakeAccount[] = [];
   readonly codes: FakeCode[] = [];
   readonly customers: FakeCustomer[] = [];
+  readonly smsLogs: FakeSmsSendLog[] = [];
   readonly user = {
     create: vi.fn()
   };
@@ -329,6 +485,28 @@ class FakePrismaService {
     })
   };
 
+  readonly smsSendLog = {
+    create: vi.fn(async ({ data }: { data: Partial<FakeSmsSendLog> }) => {
+      const log: FakeSmsSendLog = {
+        createdAt: data.createdAt ?? new Date(),
+        errorCode: data.errorCode,
+        errorMessage: data.errorMessage,
+        id: data.id ?? `sms-log-${this.smsLogs.length + 1}`,
+        phone: data.phone!,
+        phoneMasked: data.phoneMasked,
+        provider: data.provider!,
+        providerMessageId: data.providerMessageId,
+        providerRequestId: data.providerRequestId,
+        providerResponse: data.providerResponse,
+        purpose: data.purpose!,
+        sendStatus: data.sendStatus!,
+        verificationCodeId: data.verificationCodeId
+      };
+      this.smsLogs.push(log);
+      return log;
+    })
+  };
+
   async $transaction<T>(callback: (tx: FakePrismaService) => Promise<T>) {
     return callback(this);
   }
@@ -355,6 +533,22 @@ interface FakeCode {
   requestIp: string | null;
   updatedAt: Date;
   userAgent: string | null;
+}
+
+interface FakeSmsSendLog {
+  createdAt: Date;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  id: string;
+  phone: string;
+  phoneMasked?: string | null;
+  provider: SmsProviderType;
+  providerMessageId?: string | null;
+  providerRequestId?: string | null;
+  providerResponse?: unknown;
+  purpose: CustomerVerificationCodePurpose;
+  sendStatus: SmsSendStatus;
+  verificationCodeId?: string | null;
 }
 
 interface FakeCustomer {
@@ -447,4 +641,25 @@ function applyUpdate<T extends object>(target: T, data: Record<string, unknown>)
     }
     record[key] = value;
   }
+}
+
+function createSmsProvider(result?: SendSmsCodeResult) {
+  return {
+    sendCode: vi.fn(async (input: SendSmsCodeInput) => {
+      const defaultResult: SendSmsCodeResult = {
+        provider: "mock",
+        providerMessageId: "mock-message-id",
+        providerResponse: {
+          mock: true,
+          phoneMasked: `${input.phone.slice(0, 3)}****${input.phone.slice(-4)}`,
+          purpose: input.purpose
+        },
+        success: true
+      };
+
+      return (
+        result ?? defaultResult
+      );
+    })
+  } satisfies SmsProvider;
 }

@@ -88,6 +88,21 @@ enum CustomerVerificationCodePurpose {
   @@map("customer_verification_code_purpose")
 }
 
+enum SmsProviderType {
+  MOCK
+  ALIYUN
+
+  @@map("sms_provider_type")
+}
+
+enum SmsSendStatus {
+  SENT
+  FAILED
+  SKIPPED
+
+  @@map("sms_send_status")
+}
+
 enum FollowupType {
   PHONE
   WECHAT
@@ -1475,6 +1490,29 @@ model CustomerVerificationCode {
   @@index([expiresAt])
   @@index([consumedAt])
   @@map("customer_verification_code")
+}
+
+model SmsSendLog {
+  id                 String                          @id @default(uuid()) @db.Uuid
+  phone              String                          @db.VarChar(32)
+  phoneMasked        String?                         @map("phone_masked") @db.VarChar(32)
+  purpose            CustomerVerificationCodePurpose
+  provider           SmsProviderType
+  sendStatus         SmsSendStatus                   @map("send_status")
+  providerMessageId  String?                         @map("provider_message_id") @db.VarChar(128)
+  providerRequestId  String?                         @map("provider_request_id") @db.VarChar(128)
+  providerResponse   Json?                           @map("provider_response")
+  errorCode          String?                         @map("error_code") @db.VarChar(128)
+  errorMessage       String?                         @map("error_message") @db.Text
+  verificationCodeId String?                         @map("verification_code_id") @db.Uuid
+  createdAt          DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([phone])
+  @@index([purpose])
+  @@index([provider])
+  @@index([sendStatus])
+  @@index([createdAt])
+  @@map("sms_send_log")
 }
 
 model CustomerIdentity {

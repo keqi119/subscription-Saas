@@ -66,6 +66,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10g-service-case-portal.md`：Stage 10G-A 服务工单 / 事故报案 / 救援申请
 - `docs/stage-10h-notification-wechat-foundation.md`：Stage 10H-A 通知中心与微信服务号基础
 - `docs/stage-10h-wechat-official-account-validation.md`：Stage 10H-B 微信服务号真实联调报告
+- `docs/stage-10k-portal-production-login-beta-gate.md`：Stage 10K-A 阿里云短信验证码 Provider 与受邀试运行门禁
 - `docs/portal-security-audit.md`：Customer Portal 数据隔离与脱敏审计
 - `docs/customer-portal-release-checklist.md`：Customer Portal 发布前检查清单
 - `docs/customer-portal-manual-acceptance.md`：Customer Portal 全链路人工验收手册

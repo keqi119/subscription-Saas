@@ -16,7 +16,7 @@ import {
   SERVICE_CASE_TYPE_LABELS,
   labelOf
 } from "../../../../constants/labels";
-import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
+import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import { PortalServiceCase } from "../../../../lib/portal-types";
 
 const statusColors: Record<string, string> = {
@@ -185,7 +185,11 @@ export default function PortalServiceCaseDetailPage() {
             renderItem={(item) => (
               <List.Item
                 actions={[
-                  <Button href={item.previewUrl} key="preview" target="_blank" type="link">
+                  <Button
+                    key="preview"
+                    onClick={() => window.open(buildPreviewUrl(item.previewUrl), "_blank", "noopener,noreferrer")}
+                    type="link"
+                  >
                     预览
                   </Button>
                 ]}
@@ -250,4 +254,9 @@ export default function PortalServiceCaseDetailPage() {
 
 function formatTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+function buildPreviewUrl(previewUrl: string) {
+  const origin = PORTAL_API_BASE_URL.replace(/\/api$/, "");
+  return `${origin}${previewUrl}`;
 }

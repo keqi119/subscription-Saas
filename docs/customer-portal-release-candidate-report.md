@@ -7,6 +7,7 @@
 - Branch: `feature/stage10-customer-portal-rc-deployment-fix`.
 - Baseline commit: `ff40bd1` (`main`, after Stage 10J merge).
 - R1 fix commit: `cf35dc7` (`fix: make portal legal pages production build safe`).
+- R2 fix commit: `a122c05` (`fix: disable invalid portal payment actions`).
 - Target H5 domain: `https://app.subauto.keybox.cloud`.
 - Target API domain: `https://api.subauto.keybox.cloud/api`.
 - Back-office dependency: `https://admin.subauto.keybox.cloud`.
@@ -85,6 +86,19 @@ Additional Stage 10J-R1 checks:
 - `pnpm portal:api-smoke` against `https://api.subauto.keybox.cloud/api`: passed for public endpoints; authenticated smoke skipped because no `PORTAL_CUSTOMER_COOKIE` was supplied.
 - `pnpm wechat:menu:dry-run`: passed; no WeChat API call was made.
 
+Additional Stage 10J-R2 checks:
+
+- Production database backup completed before migration: `/opt/subscription-saas/backups/subscription_saas_prod_20260620140248.dump`.
+- Backup SHA256: `8be1b6f71979ec0d44b8a1e38ec1ffa3aeabf639b6ba36f0a59728eea954c74b`.
+- Production `prisma migrate deploy` applied existing migrations `20260618143000_service_cases` and `20260618170000_notification_center`.
+- Production migration status after deploy: database schema up to date, 40 migrations.
+- Production tables verified: `service_case`, `notification_record`, and `notification_event`.
+- Production seed executed through the R2 API container.
+- Production role/menu seed verified for `orders.service_cases`, `orders.notifications`, `service_case:*`, and `notification:*`.
+- R2 production route smoke against `https://app.subauto.keybox.cloud`: passed.
+- R2 production public API smoke against `https://api.subauto.keybox.cloud/api`: passed.
+- R2 unauthenticated protected-API probes returned expected `401` instead of `404` or `500` for notifications, service cases, order detail, and payment order detail routes.
+
 ### Environment Smoke Results
 
 #### Portal Route Smoke
@@ -127,6 +141,22 @@ Previously failing routes now pass:
 
 All Portal route smoke checks passed, including public pages, protected route shells, and WeChat menu target URLs.
 
+Stage 10J-R2 production API/Web refresh:
+
+- Previous production API image: `ghcr.io/keqi119/subscription-api:stage10-cert-rotation-b5ced12-fix3`.
+- Previous production Web image: `ghcr.io/keqi119/subscription-web:portal-rc-20260620-cf35dc7`.
+- New production API image: `ghcr.io/keqi119/subscription-api:portal-rc-r2-20260620-a122c05`.
+- New API image digest: `ghcr.io/keqi119/subscription-api@sha256:7f44ab01e2dccd262afd8f5e99572adb6b77766b1065d4ee9e0e8014b7fec1b3`.
+- New production Web image: `ghcr.io/keqi119/subscription-web:portal-rc-r2-20260620-a122c05`.
+- New Web image digest: `ghcr.io/keqi119/subscription-web@sha256:ea0fe110d6ff8ba543ec45b627d01f612a8673b2204740b1b431c428aec41569`.
+- Production containers after deployment: API healthy, Web healthy, Postgres healthy.
+- Production route smoke result after R2 deployment: passed.
+- `/portal/service-cases`: 200 route shell.
+- `/portal/service-cases/new`: 200 route shell.
+- `/portal/notifications`: 200 route shell.
+- `/portal/orders/__smoke__`: 200 route shell.
+- `/portal/payment-orders/__smoke__`: 200 route shell.
+
 #### Portal API Smoke
 
 Command:
@@ -142,6 +172,15 @@ Result: passed for public endpoints.
 - `GET /api/portal/catalog/subscription-plans`: 200.
 
 Authenticated Portal API smoke was skipped because no `PORTAL_CUSTOMER_COOKIE` was supplied to the agent. No cookie was printed or committed.
+
+Stage 10J-R2 API route probes without a customer cookie:
+
+- `GET /api/portal/notifications?pageSize=50`: 401 `Unauthorized`, route exists.
+- `GET /api/portal/service-cases`: 401 `Unauthorized`, route exists.
+- `GET /api/portal/orders/a2c96de8-f243-4c86-b022-8cac31bb9775`: 401 `Unauthorized`, route exists.
+- `GET /api/portal/payment-orders/60342352-0678-4ba7-92e9-f596cb28caa5`: 401 `Unauthorized`, route exists.
+
+This closes the production `Cannot GET /api/portal/notifications` and missing-table 500 blockers at the deployment layer. Authenticated browser retest is still required with a real customer session.
 
 #### WeChat Official Account Menu Dry-Run
 
@@ -177,6 +216,8 @@ Stage 10E-B and Stage 10E-B-CertRotation are complete:
 - Multi-platform-certificate callback verification passed.
 
 No payment provider, certificate rotation, posting, write-off, or receivable-bill logic was modified in Stage 10J.
+
+Stage 10J-R2 added a Portal UI guard that disables the payment action when the payment order is no longer payable, for example `CANCELLED`, `CLOSED`, `EXPIRED`, `FAILED`, `PAID`, or when all linked bill items are not payable. This is a frontend action-state fix only; it does not alter WeChat Pay provider, callback, posting, write-off, or receivable-bill logic.
 
 ## WeChat Template-Message Validation
 
@@ -229,11 +270,19 @@ Closed in Stage 10J-R1:
 
 - Production H5 route 404 blocker for `/portal/terms`, `/portal/privacy`, and `/portal/notifications`.
 
+Closed in Stage 10J-R2:
+
+- Production API image was refreshed to include service case and notification routes.
+- Production database was migrated to include `service_case`, `notification_record`, and `notification_event`.
+- Production seed restored back-office service-case and notification-center menus and permissions.
+- Unauthenticated protected-API probes now return expected `401` instead of `Cannot GET` or `500`.
+- Invalid Portal payment action for cancelled/non-payable payment orders is disabled in the Web UI.
+
 ## Go / No-Go Recommendation
 
 No-Go for unrestricted real-customer launch.
 
-Allowed next step: Customer Portal RC manual acceptance, internal RC validation, or invited beta planning after route smoke passed with the refreshed Web image.
+Allowed next step: Customer Portal RC manual retest with a real customer session. If the browser retest passes, proceed to internal RC validation or invited beta planning.
 
 Go criteria for customer-facing rollout:
 

@@ -10,6 +10,7 @@
 - R2 fix commit: `a122c05` (`fix: disable invalid portal payment actions`).
 - R3 fix commit: `1355c85` (`fix: repair service case preview and transitions`).
 - R4 fix commit: `692586a` (`fix: map service case wechat template fields`).
+- R5 fix commit: `aa9289a` (`fix: guard service case wechat status enum values`).
 - Target H5 domain: `https://app.subauto.keybox.cloud`.
 - Target API domain: `https://api.subauto.keybox.cloud/api`.
 - Back-office dependency: `https://admin.subauto.keybox.cloud`.
@@ -126,6 +127,17 @@ Additional Stage 10J-R4 checks:
 - Production route probes returned 200 for `/portal/service-cases` and `/portal/notifications`.
 - PR quality gate passed after the R4 commit.
 
+Additional Stage 10J-R5 checks:
+
+- `pnpm --filter @subscription-saas/api lint`: passed.
+- `pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json`: passed.
+- `pnpm --filter @subscription-saas/api test -- notification.spec.ts`: passed, 11 tests.
+- `pnpm --filter @subscription-saas/api test`: passed, 42 test files / 631 tests.
+- Production API image was refreshed to `ghcr.io/keqi119/subscription-api:portal-rc-r5-20260620-aa9289a`.
+- Production API image digest: `ghcr.io/keqi119/subscription-api@sha256:04e2c99c80ec8328d3112b258e6d44d38827462896a1b15d6a9f3e4dce2f1311`.
+- Production Web image remained unchanged at `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
+- Production API health probe passed after R5 deployment.
+
 ### Environment Smoke Results
 
 #### Portal Route Smoke
@@ -223,6 +235,13 @@ Stage 10J-R4 notification fix:
 - Historical failed records remain `FAILED` and are not automatically resent.
 - Controlled retest is required by triggering a new valid service-case status transition after R4 deployment.
 
+Stage 10J-R5 notification enum guard:
+
+- Post-R4 retest proved that `处理中` succeeds, while `待客户补充` and `已解决` are still rejected by WeChat with `data.const4.value invalid`.
+- R5 keeps the internal service-case status unchanged in the notification payload, but sends only audited WeChat `const4` values to the template API.
+- Default WeChat `const4` allowlist is currently `处理中`.
+- When WeChat approves additional enum values, configure `WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST`, for example `处理中,已解决,待客户补充`, and retest before broad rollout.
+
 #### WeChat Official Account Menu Dry-Run
 
 Command:
@@ -279,6 +298,13 @@ Stage 10J-R4 follow-up:
 - Service-case progress notifications are now mapped to the active WeChat service-case template fields.
 - Three pre-R4 service-case notification records failed with `WECHAT_TEMPLATE_SEND_FAILED:47003`; these records should remain failed for auditability.
 - Post-R4 verification should use a new single-customer service-case status transition and confirm `NotificationRecord.notificationStatus = SENT`, `NotificationEvent.eventStatus = PROCESSED`, WeChat receipt, and Portal click-through.
+
+Stage 10J-R5 follow-up:
+
+- R4/R5 retest records show one successful WeChat service-case message for `处理中`.
+- Two later service-case messages failed because WeChat had not yet accepted `待客户补充` and `已解决` for template field `const4`.
+- R5 mitigates that provider enum restriction by falling back to the audited `处理中` enum value for WeChat only.
+- Verify with a new single-customer service-case update after R5 deployment; old failed records should remain failed.
 
 ## Data Security And Ownership
 

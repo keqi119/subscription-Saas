@@ -85,6 +85,14 @@ Stage 10J-R4 status:
 - The refresh maps service-case notification payloads to the active WeChat template fields to address `WECHAT_TEMPLATE_SEND_FAILED:47003`.
 - Historical failed notification records are retained as `FAILED`; verify the fix with a new valid service-case status transition.
 
+Stage 10J-R5 status:
+
+- Production API image was refreshed to `ghcr.io/keqi119/subscription-api:portal-rc-r5-20260620-aa9289a`.
+- Production API image digest: `ghcr.io/keqi119/subscription-api@sha256:04e2c99c80ec8328d3112b258e6d44d38827462896a1b15d6a9f3e4dce2f1311`.
+- Production Web image remained unchanged at `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
+- The refresh guards service-case WeChat template `const4` values with an allowlist because WeChat rejected unaudited enum values such as `待客户补充` and `已解决`.
+- Default service-case WeChat `const4` value is currently `处理中`; expand `WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST` only after WeChat enum approval.
+
 ## WeChat Official Account Menu Strategy
 
 Menu dry-run has passed and points only to customer Portal URLs.
@@ -116,6 +124,7 @@ Rollout rules:
 - Keep AppSecret, access_token, full openid, and full template IDs out of Git and logs.
 - Confirm each production template ID mapping through environment variables, not hardcoded source.
 - For service-case progress notifications, confirm the active WeChat template field names before release and retest after any template change.
+- For service-case status enum values, keep `WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST` aligned with the approved WeChat template enum list.
 
 ## Payment Strategy
 
@@ -214,6 +223,7 @@ Monitor:
 - Payment posting/write-off mismatches.
 - WeChat Official Account template send failures.
 - Service-case WeChat template field mismatches such as `47003`.
+- WeChat service-case enum-value rejections for `const4`.
 - Notification record/event failures.
 - Service-case creation volume.
 - Customer support issues around terms/privacy, signing, and payment.
@@ -226,6 +236,7 @@ Proceed only with internal RC or invited beta after:
 
 - Latest API/Web images are deployed and route/API smoke passes. Stage 10J-R2 has closed the production route/API deployment blockers found during RC acceptance.
 - Stage 10J-R4 service-case notification retest passes after a new valid status transition.
+- Stage 10J-R5 service-case notification retest confirms the enum guard prevents `47003`.
 - Legal explicitly accepts placeholder text or formal text is deployed.
 - Authenticated API smoke passes.
 - Business owner explicitly accepts Mock ESignProvider for the release scope.

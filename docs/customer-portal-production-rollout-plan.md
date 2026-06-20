@@ -69,6 +69,14 @@ Stage 10J-R2 status:
 - Production public API smoke passed after the API/Web refresh.
 - Protected Portal API probes without a customer cookie return expected `401` instead of `404` or `500`.
 
+Stage 10J-R3 status:
+
+- Production Web image was refreshed to `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
+- Production Web image digest: `ghcr.io/keqi119/subscription-web@sha256:ceec6025e2845b8d39f6d5d7c38af9a7b5f5097ca02fb756480caff6af79bfe4`.
+- Production API image remained unchanged at `ghcr.io/keqi119/subscription-api:portal-rc-r2-20260620-a122c05`.
+- The refresh fixed Portal service-case attachment preview URL construction and back-office service-case status-transition options.
+- Production route smoke passed after the Web-only refresh.
+
 ## WeChat Official Account Menu Strategy
 
 Menu dry-run has passed and points only to customer Portal URLs.

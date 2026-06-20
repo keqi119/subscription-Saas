@@ -8,6 +8,7 @@
 - Baseline commit: `ff40bd1` (`main`, after Stage 10J merge).
 - R1 fix commit: `cf35dc7` (`fix: make portal legal pages production build safe`).
 - R2 fix commit: `a122c05` (`fix: disable invalid portal payment actions`).
+- R3 fix commit: `1355c85` (`fix: repair service case preview and transitions`).
 - Target H5 domain: `https://app.subauto.keybox.cloud`.
 - Target API domain: `https://api.subauto.keybox.cloud/api`.
 - Back-office dependency: `https://admin.subauto.keybox.cloud`.
@@ -99,6 +100,18 @@ Additional Stage 10J-R2 checks:
 - R2 production public API smoke against `https://api.subauto.keybox.cloud/api`: passed.
 - R2 unauthenticated protected-API probes returned expected `401` instead of `404` or `500` for notifications, service cases, order detail, and payment order detail routes.
 
+Additional Stage 10J-R3 checks:
+
+- `pnpm --filter @subscription-saas/web lint`: passed.
+- `pnpm --filter @subscription-saas/web exec tsc --noEmit --incremental false`: passed.
+- `pnpm --filter @subscription-saas/web build`: passed.
+- Web bundle API base check passed for `https://api.subauto.keybox.cloud/api`.
+- Production Web-only refresh deployed `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
+- Production Web image digest: `ghcr.io/keqi119/subscription-web@sha256:ceec6025e2845b8d39f6d5d7c38af9a7b5f5097ca02fb756480caff6af79bfe4`.
+- Production API image remained unchanged at `ghcr.io/keqi119/subscription-api:portal-rc-r2-20260620-a122c05`.
+- Production route smoke passed after R3 deployment.
+- Production page probes returned 200 for `/service-cases` and `/portal/service-cases/38cb3388-1a51-4b6a-bd44-9982b05ccac1`.
+
 ### Environment Smoke Results
 
 #### Portal Route Smoke
@@ -181,6 +194,13 @@ Stage 10J-R2 API route probes without a customer cookie:
 - `GET /api/portal/payment-orders/60342352-0678-4ba7-92e9-f596cb28caa5`: 401 `Unauthorized`, route exists.
 
 This closes the production `Cannot GET /api/portal/notifications` and missing-table 500 blockers at the deployment layer. Authenticated browser retest is still required with a real customer session.
+
+Stage 10J-R3 UI fixes:
+
+- Portal service-case attachment preview now resolves protected preview URLs through `NEXT_PUBLIC_API_BASE_URL`, matching the existing application-material preview behavior.
+- Back-office service-case status update now shows only API-allowed next statuses for the current state.
+- For a newly submitted case such as `SC202606200645386M2Q`, the correct flow is `SUBMITTED -> ACCEPTED -> IN_PROGRESS -> RESOLVED`; the UI no longer offers direct `SUBMITTED -> RESOLVED`.
+- No API status-machine changes were made.
 
 #### WeChat Official Account Menu Dry-Run
 
@@ -277,6 +297,11 @@ Closed in Stage 10J-R2:
 - Production seed restored back-office service-case and notification-center menus and permissions.
 - Unauthenticated protected-API probes now return expected `401` instead of `Cannot GET` or `500`.
 - Invalid Portal payment action for cancelled/non-payable payment orders is disabled in the Web UI.
+
+Closed in Stage 10J-R3:
+
+- Portal service-case attachment preview no longer opens the Web-domain `/api/...` path.
+- Back-office service-case status dropdown no longer offers invalid transitions such as direct `SUBMITTED -> RESOLVED`.
 
 ## Go / No-Go Recommendation
 

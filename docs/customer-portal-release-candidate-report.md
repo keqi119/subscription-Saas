@@ -306,6 +306,13 @@ Stage 10J-R5 follow-up:
 - R5 mitigates that provider enum restriction by falling back to the audited `处理中` enum value for WeChat only.
 - Verify with a new single-customer service-case update after R5 deployment; old failed records should remain failed.
 
+Stage 10J-R6 follow-up:
+
+- R5 fallback avoided WeChat `47003`, but it could make a WeChat card display `处理中` while the Portal detail page already showed a terminal status such as `已关闭`.
+- R6 supersedes the fallback behavior: when `const4` is not in `WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST`, the WeChat channel is recorded as `SKIPPED` with `WECHAT_TEMPLATE_CONST4_NOT_APPROVED:<status>`.
+- Portal in-app notifications and internal payloads continue to keep the real service-case status.
+- This prevents sending misleading WeChat messages while WeChat template enum values are still under approval.
+
 ## Data Security And Ownership
 
 Security posture is documented in `docs/portal-security-audit.md`.

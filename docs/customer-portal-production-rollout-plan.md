@@ -93,6 +93,14 @@ Stage 10J-R5 status:
 - The refresh guards service-case WeChat template `const4` values with an allowlist because WeChat rejected unaudited enum values such as `待客户补充` and `已解决`.
 - Default service-case WeChat `const4` value is currently `处理中`; expand `WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST` only after WeChat enum approval.
 
+Stage 10J-R6 status:
+
+- Production API image was refreshed to `ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec`.
+- Production API image digest: `ghcr.io/keqi119/subscription-api@sha256:bf10d831a24fa99abee7a8ba915bf18b0ae958b374e04c0a09a404c09c74e9fc`.
+- Production Web image remained unchanged at `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
+- R6 supersedes the R5 fallback behavior: unapproved service-case WeChat `const4` values are skipped instead of being replaced with `处理中`.
+- This keeps WeChat cards from displaying a status that disagrees with the Portal detail page.
+
 ## WeChat Official Account Menu Strategy
 
 Menu dry-run has passed and points only to customer Portal URLs.
@@ -124,7 +132,7 @@ Rollout rules:
 - Keep AppSecret, access_token, full openid, and full template IDs out of Git and logs.
 - Confirm each production template ID mapping through environment variables, not hardcoded source.
 - For service-case progress notifications, confirm the active WeChat template field names before release and retest after any template change.
-- For service-case status enum values, keep `WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST` aligned with the approved WeChat template enum list.
+- For service-case status enum values, keep `WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST` aligned with the approved WeChat template enum list; unapproved values should be skipped, not remapped to another status.
 
 ## Payment Strategy
 

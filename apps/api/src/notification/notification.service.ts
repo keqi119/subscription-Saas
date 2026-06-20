@@ -117,6 +117,8 @@ const SERVICE_CASE_STATUS_TEXT: Record<string, string> = {
   WAITING_CUSTOMER: "待客户补充"
 };
 
+const DEFAULT_WECHAT_SERVICE_CASE_STATUS_CONST4 = "处理中";
+
 const SERVICE_CASE_NOTIFICATION_EVENTS = new Set<NotificationEventType>([
   NotificationEventType.SERVICE_CASE_SUBMITTED,
   NotificationEventType.SERVICE_CASE_UPDATED,
@@ -606,16 +608,22 @@ export class NotificationService {
     return trimTrailingSlash(this.configService.get<string>("PORTAL_BASE_URL") ?? "http://localhost:3000");
   }
 
+  private get wechatServiceCaseStatusConst4Allowlist() {
+    const configured = parseCsv(this.configService.get<string>("WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST"));
+    return configured.length > 0 ? configured : [DEFAULT_WECHAT_SERVICE_CASE_STATUS_CONST4];
+  }
+
   private buildWechatTemplateData(input: NotifyCustomerInput, data: Record<string, unknown>) {
     if (!isServiceCaseNotification(input.eventType)) {
       return {};
     }
 
     const now = new Date();
+    const statusText = serviceCaseStatusText(data.status);
     return {
       character_string2: stringValue(data.aggregateNo),
       const3: serviceCaseTypeText(input.notificationType),
-      const4: serviceCaseStatusText(data.status),
+      const4: wechatConstValue(statusText, this.wechatServiceCaseStatusConst4Allowlist),
       thing1: truncateWechatThing(input.title || "服务工单更新"),
       time6: formatWechatTime(now)
     };
@@ -732,6 +740,13 @@ function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
 
+function parseCsv(value: string | undefined) {
+  return (value ?? "")
+    .split(/[,\n，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function isServiceCaseNotification(eventType: NotificationEventType) {
   return SERVICE_CASE_NOTIFICATION_EVENTS.has(eventType);
 }
@@ -743,6 +758,13 @@ function serviceCaseTypeText(notificationType: NotificationType) {
 function serviceCaseStatusText(value: unknown) {
   const status = stringValue(value);
   return SERVICE_CASE_STATUS_TEXT[status] ?? (status || "已更新");
+}
+
+function wechatConstValue(value: string, allowlist: string[]) {
+  if (allowlist.includes(value)) {
+    return value;
+  }
+  return allowlist[0] ?? DEFAULT_WECHAT_SERVICE_CASE_STATUS_CONST4;
 }
 
 function stringValue(value: unknown) {

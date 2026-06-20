@@ -136,6 +136,45 @@ describe("NotificationService", () => {
     );
   });
 
+  it("uses audited WeChat const values for service case status fields", async () => {
+    const harness = createNotificationHarness();
+
+    await harness.service.notifyCustomer({
+      aggregateId: "service-case-a",
+      aggregateType: "ServiceCase",
+      content: "您的服务工单有新的处理进度。",
+      customerId: "customer-a",
+      data: {
+        aggregateNo: "SC202606200711389G2K",
+        status: "RESOLVED"
+      },
+      eventType: NotificationEventType.SERVICE_CASE_UPDATED,
+      notificationType: NotificationType.SERVICE_CASE_UPDATE,
+      title: "服务工单更新",
+      url: "/portal/service-cases/service-case-a"
+    });
+
+    expect(harness.provider.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          character_string2: "SC202606200711389G2K",
+          const3: "事故报案",
+          const4: "处理中",
+          status: "RESOLVED"
+        })
+      })
+    );
+    expect(
+      harness.records.find((record) => record.channel === NotificationChannel.WECHAT_OFFICIAL_ACCOUNT)
+    ).toMatchObject({
+      notificationStatus: NotificationStatus.SENT,
+      payload: expect.objectContaining({
+        const4: "处理中",
+        status: "RESOLVED"
+      })
+    });
+  });
+
   it("lists and marks only the current customer's portal notifications", async () => {
     const harness = createNotificationHarness();
     harness.addRecord({ customerId: "customer-a", id: "record-a", readAt: null, title: "A" });
@@ -409,7 +448,9 @@ function createTemplates() {
     ["CONTRACT_PENDING_IN_APP", NotificationChannel.IN_APP, NotificationTemplateType.CONTRACT_PENDING],
     ["CONTRACT_PENDING_WECHAT", NotificationChannel.WECHAT_OFFICIAL_ACCOUNT, NotificationTemplateType.CONTRACT_PENDING],
     ["PAYMENT_PENDING_IN_APP", NotificationChannel.IN_APP, NotificationTemplateType.PAYMENT_PENDING],
-    ["PAYMENT_PENDING_WECHAT", NotificationChannel.WECHAT_OFFICIAL_ACCOUNT, NotificationTemplateType.PAYMENT_PENDING]
+    ["PAYMENT_PENDING_WECHAT", NotificationChannel.WECHAT_OFFICIAL_ACCOUNT, NotificationTemplateType.PAYMENT_PENDING],
+    ["SERVICE_CASE_UPDATE_IN_APP", NotificationChannel.IN_APP, NotificationTemplateType.SERVICE_CASE_UPDATE],
+    ["SERVICE_CASE_UPDATE_WECHAT", NotificationChannel.WECHAT_OFFICIAL_ACCOUNT, NotificationTemplateType.SERVICE_CASE_UPDATE]
   ] as const;
 
   return pairs.map(([templateCode, channel, templateType], index) => ({

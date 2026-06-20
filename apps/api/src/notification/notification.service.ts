@@ -107,6 +107,22 @@ const WECHAT_TEMPLATE_ENV_BY_TYPE: Partial<Record<NotificationTemplateType, stri
   [NotificationTemplateType.SERVICE_CASE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE"
 };
 
+const SERVICE_CASE_STATUS_TEXT: Record<string, string> = {
+  ACCEPTED: "已受理",
+  CANCELLED: "已取消",
+  CLOSED: "已关闭",
+  IN_PROGRESS: "处理中",
+  RESOLVED: "已解决",
+  SUBMITTED: "已提交",
+  WAITING_CUSTOMER: "待客户补充"
+};
+
+const SERVICE_CASE_NOTIFICATION_EVENTS = new Set<NotificationEventType>([
+  NotificationEventType.SERVICE_CASE_SUBMITTED,
+  NotificationEventType.SERVICE_CASE_UPDATED,
+  NotificationEventType.RESCUE_UPDATED
+]);
+
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -335,6 +351,7 @@ export class NotificationService {
       title: input.title,
       ...(input.data ?? {})
     };
+    Object.assign(data, this.buildWechatTemplateData(input, data));
     const inApp = await this.createRecord({
       channel: NotificationChannel.IN_APP,
       content: input.content,
@@ -588,6 +605,21 @@ export class NotificationService {
   private get portalBaseUrl() {
     return trimTrailingSlash(this.configService.get<string>("PORTAL_BASE_URL") ?? "http://localhost:3000");
   }
+
+  private buildWechatTemplateData(input: NotifyCustomerInput, data: Record<string, unknown>) {
+    if (!isServiceCaseNotification(input.eventType)) {
+      return {};
+    }
+
+    const now = new Date();
+    return {
+      character_string2: stringValue(data.aggregateNo),
+      const3: serviceCaseTypeText(input.notificationType),
+      const4: serviceCaseStatusText(data.status),
+      thing1: truncateWechatThing(input.title || "服务工单更新"),
+      time6: formatWechatTime(now)
+    };
+  }
 }
 
 function toTemplateView(template: Prisma.NotificationTemplateGetPayload<Record<string, never>>) {
@@ -698,6 +730,32 @@ function normalizeProvider(value: string) {
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+function isServiceCaseNotification(eventType: NotificationEventType) {
+  return SERVICE_CASE_NOTIFICATION_EVENTS.has(eventType);
+}
+
+function serviceCaseTypeText(notificationType: NotificationType) {
+  return notificationType === NotificationType.RESCUE_UPDATE ? "救援申请" : "事故报案";
+}
+
+function serviceCaseStatusText(value: unknown) {
+  const status = stringValue(value);
+  return SERVICE_CASE_STATUS_TEXT[status] ?? (status || "已更新");
+}
+
+function stringValue(value: unknown) {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function truncateWechatThing(value: string) {
+  return Array.from(value).slice(0, 20).join("");
+}
+
+function formatWechatTime(value: Date) {
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}`;
 }
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue | undefined {

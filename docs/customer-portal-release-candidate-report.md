@@ -9,6 +9,7 @@
 - R1 fix commit: `cf35dc7` (`fix: make portal legal pages production build safe`).
 - R2 fix commit: `a122c05` (`fix: disable invalid portal payment actions`).
 - R3 fix commit: `1355c85` (`fix: repair service case preview and transitions`).
+- R4 fix commit: `692586a` (`fix: map service case wechat template fields`).
 - Target H5 domain: `https://app.subauto.keybox.cloud`.
 - Target API domain: `https://api.subauto.keybox.cloud/api`.
 - Back-office dependency: `https://admin.subauto.keybox.cloud`.
@@ -112,6 +113,19 @@ Additional Stage 10J-R3 checks:
 - Production route smoke passed after R3 deployment.
 - Production page probes returned 200 for `/service-cases` and `/portal/service-cases/38cb3388-1a51-4b6a-bd44-9982b05ccac1`.
 
+Additional Stage 10J-R4 checks:
+
+- `pnpm --filter @subscription-saas/api lint`: passed.
+- `pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json`: passed.
+- `pnpm --filter @subscription-saas/api test`: passed, 42 test files / 630 tests.
+- Production API image was refreshed to `ghcr.io/keqi119/subscription-api:portal-rc-r4-20260620-692586a`.
+- Production API image digest: `ghcr.io/keqi119/subscription-api@sha256:4ebb676b5b6170c83091a23062ccbbf798e6d8aff8029d30e4b8c614c959396c`.
+- Production Web image remained unchanged at `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
+- Production API health probe passed after R4 deployment.
+- Production public probes passed for catalog vehicles and subscription plans.
+- Production route probes returned 200 for `/portal/service-cases` and `/portal/notifications`.
+- PR quality gate passed after the R4 commit.
+
 ### Environment Smoke Results
 
 #### Portal Route Smoke
@@ -202,6 +216,13 @@ Stage 10J-R3 UI fixes:
 - For a newly submitted case such as `SC202606200645386M2Q`, the correct flow is `SUBMITTED -> ACCEPTED -> IN_PROGRESS -> RESOLVED`; the UI no longer offers direct `SUBMITTED -> RESOLVED`.
 - No API status-machine changes were made.
 
+Stage 10J-R4 notification fix:
+
+- Production service-case WeChat notifications failed with `WECHAT_TEMPLATE_SEND_FAILED:47003` because the active WeChat template expects keys such as `character_string2`, `const3`, `thing1`, `time6`, and `const4`.
+- The API now maps service-case notification payloads to those provider fields while preserving the existing internal payload keys.
+- Historical failed records remain `FAILED` and are not automatically resent.
+- Controlled retest is required by triggering a new valid service-case status transition after R4 deployment.
+
 #### WeChat Official Account Menu Dry-Run
 
 Command:
@@ -252,6 +273,12 @@ Stage 10H-B is complete:
 - Provider response did not contain access_token.
 - Test WeChat client receipt was confirmed.
 - Clicking the message opened the Portal order page.
+
+Stage 10J-R4 follow-up:
+
+- Service-case progress notifications are now mapped to the active WeChat service-case template fields.
+- Three pre-R4 service-case notification records failed with `WECHAT_TEMPLATE_SEND_FAILED:47003`; these records should remain failed for auditability.
+- Post-R4 verification should use a new single-customer service-case status transition and confirm `NotificationRecord.notificationStatus = SENT`, `NotificationEvent.eventStatus = PROCESSED`, WeChat receipt, and Portal click-through.
 
 ## Data Security And Ownership
 

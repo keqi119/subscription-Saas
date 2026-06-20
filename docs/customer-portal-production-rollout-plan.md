@@ -77,6 +77,14 @@ Stage 10J-R3 status:
 - The refresh fixed Portal service-case attachment preview URL construction and back-office service-case status-transition options.
 - Production route smoke passed after the Web-only refresh.
 
+Stage 10J-R4 status:
+
+- Production API image was refreshed to `ghcr.io/keqi119/subscription-api:portal-rc-r4-20260620-692586a`.
+- Production API image digest: `ghcr.io/keqi119/subscription-api@sha256:4ebb676b5b6170c83091a23062ccbbf798e6d8aff8029d30e4b8c614c959396c`.
+- Production Web image remained unchanged at `ghcr.io/keqi119/subscription-web:portal-rc-r3-20260620-1355c85`.
+- The refresh maps service-case notification payloads to the active WeChat template fields to address `WECHAT_TEMPLATE_SEND_FAILED:47003`.
+- Historical failed notification records are retained as `FAILED`; verify the fix with a new valid service-case status transition.
+
 ## WeChat Official Account Menu Strategy
 
 Menu dry-run has passed and points only to customer Portal URLs.
@@ -107,6 +115,7 @@ Rollout rules:
 - Do not send marketing pushes.
 - Keep AppSecret, access_token, full openid, and full template IDs out of Git and logs.
 - Confirm each production template ID mapping through environment variables, not hardcoded source.
+- For service-case progress notifications, confirm the active WeChat template field names before release and retest after any template change.
 
 ## Payment Strategy
 
@@ -204,6 +213,7 @@ Monitor:
 - WeChat Pay callback serial mismatches.
 - Payment posting/write-off mismatches.
 - WeChat Official Account template send failures.
+- Service-case WeChat template field mismatches such as `47003`.
 - Notification record/event failures.
 - Service-case creation volume.
 - Customer support issues around terms/privacy, signing, and payment.
@@ -215,6 +225,7 @@ Current recommendation: No-Go for unrestricted production launch.
 Proceed only with internal RC or invited beta after:
 
 - Latest API/Web images are deployed and route/API smoke passes. Stage 10J-R2 has closed the production route/API deployment blockers found during RC acceptance.
+- Stage 10J-R4 service-case notification retest passes after a new valid status transition.
 - Legal explicitly accepts placeholder text or formal text is deployed.
 - Authenticated API smoke passes.
 - Business owner explicitly accepts Mock ESignProvider for the release scope.

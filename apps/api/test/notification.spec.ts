@@ -136,8 +136,14 @@ describe("NotificationService", () => {
     );
   });
 
-  it("uses audited WeChat const values for service case status fields", async () => {
-    const harness = createNotificationHarness();
+  it("skips WeChat service case notifications when the status enum is not approved", async () => {
+    const harness = createNotificationHarness({
+      config: {
+        NOTIFICATION_PROVIDER: "wechat_official_account",
+        NOTIFICATION_WECHAT_ENABLED: "true",
+        WECHAT_TEMPLATE_SERVICE_CASE_UPDATE: "wechat-service-case-template"
+      }
+    });
 
     await harness.service.notifyCustomer({
       aggregateId: "service-case-a",
@@ -154,13 +160,61 @@ describe("NotificationService", () => {
       url: "/portal/service-cases/service-case-a"
     });
 
+    expect(harness.provider.send).not.toHaveBeenCalled();
+    expect(harness.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channel: NotificationChannel.IN_APP,
+          notificationStatus: NotificationStatus.SENT,
+          payload: expect.objectContaining({
+            const4: "已解决",
+            status: "RESOLVED"
+          })
+        }),
+        expect.objectContaining({
+          channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+          errorMessage: "WECHAT_TEMPLATE_CONST4_NOT_APPROVED:已解决",
+          notificationStatus: NotificationStatus.SKIPPED,
+          payload: expect.objectContaining({
+            const4: "已解决",
+            status: "RESOLVED"
+          })
+        })
+      ])
+    );
+  });
+
+  it("sends WeChat service case notifications when the status enum is approved", async () => {
+    const harness = createNotificationHarness({
+      config: {
+        NOTIFICATION_PROVIDER: "wechat_official_account",
+        NOTIFICATION_WECHAT_ENABLED: "true",
+        WECHAT_TEMPLATE_SERVICE_CASE_UPDATE: "wechat-service-case-template"
+      }
+    });
+
+    await harness.service.notifyCustomer({
+      aggregateId: "service-case-a",
+      aggregateType: "ServiceCase",
+      content: "您的服务工单有新的处理进度。",
+      customerId: "customer-a",
+      data: {
+        aggregateNo: "SC202606200711389G2K",
+        status: "IN_PROGRESS"
+      },
+      eventType: NotificationEventType.SERVICE_CASE_UPDATED,
+      notificationType: NotificationType.SERVICE_CASE_UPDATE,
+      title: "服务工单更新",
+      url: "/portal/service-cases/service-case-a"
+    });
+
     expect(harness.provider.send).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           character_string2: "SC202606200711389G2K",
           const3: "事故报案",
           const4: "处理中",
-          status: "RESOLVED"
+          status: "IN_PROGRESS"
         })
       })
     );
@@ -170,7 +224,7 @@ describe("NotificationService", () => {
       notificationStatus: NotificationStatus.SENT,
       payload: expect.objectContaining({
         const4: "处理中",
-        status: "RESOLVED"
+        status: "IN_PROGRESS"
       })
     });
   });
@@ -320,6 +374,7 @@ describe("WeChatOfficialAccountProvider", () => {
 });
 
 function createNotificationHarness(options: {
+  config?: Record<string, string>;
   providerSendResult?: { errorMessage?: string; providerMessageId?: string; providerResponse?: unknown; success: boolean };
   wechatOpenId?: string | null;
 } = {}) {
@@ -408,7 +463,8 @@ function createNotificationHarness(options: {
     new ConfigService({
       NOTIFICATION_PROVIDER: "mock",
       NOTIFICATION_WECHAT_ENABLED: "false",
-      PORTAL_BASE_URL: "https://app.subauto.keybox.cloud"
+      PORTAL_BASE_URL: "https://app.subauto.keybox.cloud",
+      ...options.config
     }),
     provider,
     prisma as any

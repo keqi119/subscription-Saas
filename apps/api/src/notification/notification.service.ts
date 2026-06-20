@@ -418,7 +418,30 @@ export class NotificationService {
       });
     }
 
-    if (this.providerMode === "mock") {
+    const providerMode = this.providerMode;
+    if (providerMode !== "mock") {
+      const const4Error = this.serviceCaseWechatConst4Error(input);
+      if (const4Error) {
+        return this.createRecord({
+          channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+          content: input.content,
+          customerAccountId: input.account.id,
+          customerId: input.customerId,
+          errorMessage: const4Error,
+          payload: input.data,
+          recipientOpenId: input.account.wechatOpenId,
+          recipientPhone: input.account.phone,
+          status: NotificationStatus.SKIPPED,
+          template: input.template,
+          templateCode: input.templateCode,
+          title: input.title,
+          type: input.notificationType,
+          url: input.url
+        });
+      }
+    }
+
+    if (providerMode === "mock") {
       const result = await this.provider.send({
         channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
         content: input.content,
@@ -623,10 +646,24 @@ export class NotificationService {
     return {
       character_string2: stringValue(data.aggregateNo),
       const3: serviceCaseTypeText(input.notificationType),
-      const4: wechatConstValue(statusText, this.wechatServiceCaseStatusConst4Allowlist),
+      const4: statusText,
       thing1: truncateWechatThing(input.title || "服务工单更新"),
       time6: formatWechatTime(now)
     };
+  }
+
+  private serviceCaseWechatConst4Error(input: { data: Record<string, unknown>; notificationType: NotificationType }) {
+    if (
+      input.notificationType !== NotificationType.SERVICE_CASE_UPDATE
+      && input.notificationType !== NotificationType.RESCUE_UPDATE
+    ) {
+      return null;
+    }
+    const value = stringValue(input.data.const4);
+    if (!value || this.wechatServiceCaseStatusConst4Allowlist.includes(value)) {
+      return null;
+    }
+    return `WECHAT_TEMPLATE_CONST4_NOT_APPROVED:${value}`;
   }
 }
 
@@ -758,13 +795,6 @@ function serviceCaseTypeText(notificationType: NotificationType) {
 function serviceCaseStatusText(value: unknown) {
   const status = stringValue(value);
   return SERVICE_CASE_STATUS_TEXT[status] ?? (status || "已更新");
-}
-
-function wechatConstValue(value: string, allowlist: string[]) {
-  if (allowlist.includes(value)) {
-    return value;
-  }
-  return allowlist[0] ?? DEFAULT_WECHAT_SERVICE_CASE_STATUS_CONST4;
 }
 
 function stringValue(value: unknown) {

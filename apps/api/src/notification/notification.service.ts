@@ -107,6 +107,24 @@ const WECHAT_TEMPLATE_ENV_BY_TYPE: Partial<Record<NotificationTemplateType, stri
   [NotificationTemplateType.SERVICE_CASE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE"
 };
 
+const SERVICE_CASE_STATUS_TEXT: Record<string, string> = {
+  ACCEPTED: "已受理",
+  CANCELLED: "已取消",
+  CLOSED: "已关闭",
+  IN_PROGRESS: "处理中",
+  RESOLVED: "已解决",
+  SUBMITTED: "已提交",
+  WAITING_CUSTOMER: "待客户补充"
+};
+
+const DEFAULT_WECHAT_SERVICE_CASE_STATUS_CONST4 = "处理中";
+
+const SERVICE_CASE_NOTIFICATION_EVENTS = new Set<NotificationEventType>([
+  NotificationEventType.SERVICE_CASE_SUBMITTED,
+  NotificationEventType.SERVICE_CASE_UPDATED,
+  NotificationEventType.RESCUE_UPDATED
+]);
+
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -335,6 +353,7 @@ export class NotificationService {
       title: input.title,
       ...(input.data ?? {})
     };
+    Object.assign(data, this.buildWechatTemplateData(input, data));
     const inApp = await this.createRecord({
       channel: NotificationChannel.IN_APP,
       content: input.content,
@@ -399,7 +418,30 @@ export class NotificationService {
       });
     }
 
-    if (this.providerMode === "mock") {
+    const providerMode = this.providerMode;
+    if (providerMode !== "mock") {
+      const const4Error = this.serviceCaseWechatConst4Error(input);
+      if (const4Error) {
+        return this.createRecord({
+          channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+          content: input.content,
+          customerAccountId: input.account.id,
+          customerId: input.customerId,
+          errorMessage: const4Error,
+          payload: input.data,
+          recipientOpenId: input.account.wechatOpenId,
+          recipientPhone: input.account.phone,
+          status: NotificationStatus.SKIPPED,
+          template: input.template,
+          templateCode: input.templateCode,
+          title: input.title,
+          type: input.notificationType,
+          url: input.url
+        });
+      }
+    }
+
+    if (providerMode === "mock") {
       const result = await this.provider.send({
         channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
         content: input.content,
@@ -588,6 +630,41 @@ export class NotificationService {
   private get portalBaseUrl() {
     return trimTrailingSlash(this.configService.get<string>("PORTAL_BASE_URL") ?? "http://localhost:3000");
   }
+
+  private get wechatServiceCaseStatusConst4Allowlist() {
+    const configured = parseCsv(this.configService.get<string>("WECHAT_SERVICE_CASE_STATUS_CONST4_ALLOWLIST"));
+    return configured.length > 0 ? configured : [DEFAULT_WECHAT_SERVICE_CASE_STATUS_CONST4];
+  }
+
+  private buildWechatTemplateData(input: NotifyCustomerInput, data: Record<string, unknown>) {
+    if (!isServiceCaseNotification(input.eventType)) {
+      return {};
+    }
+
+    const now = new Date();
+    const statusText = serviceCaseStatusText(data.status);
+    return {
+      character_string2: stringValue(data.aggregateNo),
+      const3: serviceCaseTypeText(input.notificationType),
+      const4: statusText,
+      thing1: truncateWechatThing(input.title || "服务工单更新"),
+      time6: formatWechatTime(now)
+    };
+  }
+
+  private serviceCaseWechatConst4Error(input: { data: Record<string, unknown>; notificationType: NotificationType }) {
+    if (
+      input.notificationType !== NotificationType.SERVICE_CASE_UPDATE
+      && input.notificationType !== NotificationType.RESCUE_UPDATE
+    ) {
+      return null;
+    }
+    const value = stringValue(input.data.const4);
+    if (!value || this.wechatServiceCaseStatusConst4Allowlist.includes(value)) {
+      return null;
+    }
+    return `WECHAT_TEMPLATE_CONST4_NOT_APPROVED:${value}`;
+  }
 }
 
 function toTemplateView(template: Prisma.NotificationTemplateGetPayload<Record<string, never>>) {
@@ -698,6 +775,39 @@ function normalizeProvider(value: string) {
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+function parseCsv(value: string | undefined) {
+  return (value ?? "")
+    .split(/[,\n，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isServiceCaseNotification(eventType: NotificationEventType) {
+  return SERVICE_CASE_NOTIFICATION_EVENTS.has(eventType);
+}
+
+function serviceCaseTypeText(notificationType: NotificationType) {
+  return notificationType === NotificationType.RESCUE_UPDATE ? "救援申请" : "事故报案";
+}
+
+function serviceCaseStatusText(value: unknown) {
+  const status = stringValue(value);
+  return SERVICE_CASE_STATUS_TEXT[status] ?? (status || "已更新");
+}
+
+function stringValue(value: unknown) {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function truncateWechatThing(value: string) {
+  return Array.from(value).slice(0, 20).join("");
+}
+
+function formatWechatTime(value: Date) {
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}`;
 }
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue | undefined {

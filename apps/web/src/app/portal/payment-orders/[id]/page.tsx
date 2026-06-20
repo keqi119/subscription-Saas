@@ -132,6 +132,17 @@ export default function PortalPaymentOrderPage() {
     );
   }
 
+  const canStartPayment = isPaymentOrderPayable(paymentOrder);
+  const paymentActionText = canStartPayment
+    ? paymentOrder.paymentChannel === "MOCK"
+      ? "模拟支付"
+      : paymentOrder.paymentChannel === "WECHAT_JSAPI"
+        ? "微信支付"
+        : "去支付"
+    : paymentOrder.paymentStatus === "PAID"
+      ? "已支付"
+      : "不可继续支付";
+
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
       <section style={{ margin: "0 auto", maxWidth: 860 }}>
@@ -164,6 +175,13 @@ export default function PortalPaymentOrderPage() {
               showIcon
               style={{ marginTop: 16 }}
               type="success"
+            />
+          ) : !canStartPayment ? (
+            <Alert
+              message="当前支付单状态或账单状态不允许继续支付。请返回账单或支付记录查看最新状态。"
+              showIcon
+              style={{ marginTop: 16 }}
+              type="warning"
             />
           ) : (
             <Alert
@@ -205,17 +223,13 @@ export default function PortalPaymentOrderPage() {
               账单明细
             </Typography.Title>
             <Button
-              disabled={paymentOrder.paymentStatus === "PAID"}
-              icon={paymentOrder.paymentStatus === "PAID" ? <CheckCircleOutlined /> : <PayCircleOutlined />}
+              disabled={!canStartPayment}
+              icon={canStartPayment ? <PayCircleOutlined /> : <CheckCircleOutlined />}
               loading={paying}
               onClick={startPayment}
               type="primary"
             >
-              {paymentOrder.paymentChannel === "MOCK"
-                ? "模拟支付"
-                : paymentOrder.paymentChannel === "WECHAT_JSAPI"
-                  ? "微信支付"
-                  : "去支付"}
+              {paymentActionText}
             </Button>
           </Flex>
           <Table columns={columns} dataSource={paymentOrder.items} pagination={false} rowKey="id" size="small" />
@@ -284,6 +298,14 @@ function invokeWeChatPay(params: PortalWeChatJsapiParams) {
 
     document.addEventListener("WeixinJSBridgeReady", invoke, { once: true });
   });
+}
+
+const PAYABLE_PAYMENT_ORDER_STATUSES = new Set(["CREATED", "PENDING"]);
+const PAYABLE_BILL_STATUSES = new Set(["PENDING", "PARTIALLY_PAID", "OVERDUE"]);
+
+function isPaymentOrderPayable(paymentOrder: PortalPaymentOrder) {
+  return PAYABLE_PAYMENT_ORDER_STATUSES.has(paymentOrder.paymentStatus) &&
+    paymentOrder.items.some((item) => PAYABLE_BILL_STATUSES.has(item.billStatus) && item.remainingAmount > 0);
 }
 
 function formatMoney(amount?: number | null) {

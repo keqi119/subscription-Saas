@@ -60,12 +60,12 @@ const statusColors: Record<string, string> = {
 const statusOptions = Object.entries(SERVICE_CASE_STATUS_LABELS).map(([value, label]) => ({ label, value }));
 const typeOptions = Object.entries(SERVICE_CASE_TYPE_LABELS).map(([value, label]) => ({ label, value }));
 const priorityOptions = Object.entries(SERVICE_CASE_PRIORITY_LABELS).map(([value, label]) => ({ label, value }));
-const nextStatusOptions = [
-  "IN_PROGRESS",
-  "WAITING_CUSTOMER",
-  "RESOLVED",
-  "CLOSED"
-].map((value) => ({ label: labelOf(SERVICE_CASE_STATUS_LABELS, value), value }));
+const adminStatusTransitions: Record<string, string[]> = {
+  ACCEPTED: ["IN_PROGRESS"],
+  IN_PROGRESS: ["WAITING_CUSTOMER", "RESOLVED"],
+  RESOLVED: ["CLOSED"],
+  WAITING_CUSTOMER: ["IN_PROGRESS"]
+};
 
 export default function ServiceCasesPage() {
   const { message } = App.useApp();
@@ -106,6 +106,8 @@ export default function ServiceCasesPage() {
   async function openDetail(id: string) {
     try {
       const row = await apiFetch<PortalServiceCase>(`/service-cases/${id}`);
+      actionForm.resetFields();
+      statusForm.resetFields();
       setDetail(row);
       setDrawerOpen(true);
     } catch (error) {
@@ -179,6 +181,7 @@ export default function ServiceCasesPage() {
       width: 100
     }
   ];
+  const availableNextStatusOptions = buildNextStatusOptions(detail?.caseStatus);
 
   return (
     <ProtectedShell>
@@ -281,12 +284,16 @@ export default function ServiceCasesPage() {
               );
             }}>
               <Form.Item label="更新状态" name="toStatus">
-                <Select options={nextStatusOptions} placeholder="请选择目标状态" />
+                <Select
+                  disabled={availableNextStatusOptions.length === 0}
+                  options={availableNextStatusOptions}
+                  placeholder="请选择目标状态"
+                />
               </Form.Item>
               <Form.Item label="处理说明" name="remark">
                 <Input.TextArea rows={2} />
               </Form.Item>
-              <Button htmlType="submit" loading={submitting}>
+              <Button disabled={availableNextStatusOptions.length === 0} htmlType="submit" loading={submitting}>
                 更新状态
               </Button>
             </Form>
@@ -357,4 +364,11 @@ export default function ServiceCasesPage() {
 
 function formatTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+function buildNextStatusOptions(caseStatus?: string) {
+  return (caseStatus ? adminStatusTransitions[caseStatus] : undefined)?.map((value) => ({
+    label: labelOf(SERVICE_CASE_STATUS_LABELS, value),
+    value
+  })) ?? [];
 }

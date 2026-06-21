@@ -51,6 +51,11 @@ import {
   SALE_PRICE_REVIEW_TYPE_LABELS,
   STATUS_LABELS,
   RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS,
+  VEHICLE_CONDITION_ITEM_AREA_LABELS,
+  VEHICLE_CONDITION_ITEM_RESULT_LABELS,
+  VEHICLE_CONDITION_ITEM_SEVERITY_LABELS,
+  VEHICLE_CONDITION_ITEM_TYPE_LABELS,
+  VEHICLE_CONDITION_REPORT_STATUS_LABELS,
   VEHICLE_LISTING_CONDITION_GRADE_LABELS,
   VEHICLE_LISTING_MEDIA_CATEGORY_LABELS,
   VEHICLE_LISTING_STATUS_LABELS,
@@ -545,6 +550,10 @@ const batteryUsageTypeOptions = [
 
 const listingConditionGradeOptions = optionsFromLabels(VEHICLE_LISTING_CONDITION_GRADE_LABELS);
 const listingMediaCategoryOptions = optionsFromLabels(VEHICLE_LISTING_MEDIA_CATEGORY_LABELS);
+const conditionItemAreaOptions = optionsFromLabels(VEHICLE_CONDITION_ITEM_AREA_LABELS);
+const conditionItemTypeOptions = optionsFromLabels(VEHICLE_CONDITION_ITEM_TYPE_LABELS);
+const conditionItemSeverityOptions = optionsFromLabels(VEHICLE_CONDITION_ITEM_SEVERITY_LABELS);
+const conditionItemResultOptions = optionsFromLabels(VEHICLE_CONDITION_ITEM_RESULT_LABELS);
 const acquisitionModeOptions = optionsFromLabels(VEHICLE_ACQUISITION_MODE_LABELS);
 const capitalEventTypeOptions = optionsFromLabels(VEHICLE_CAPITAL_EVENT_TYPE_LABELS);
 const revenueShareRuleTypeOptions = optionsFromLabels(REVENUE_SHARE_RULE_TYPE_LABELS);
@@ -3301,6 +3310,101 @@ interface VehicleListingPlanDraft extends VehicleListingAvailablePlan {
   visible: boolean;
 }
 
+interface VehicleConditionReport {
+  archivedAt?: string | null;
+  batteryCheckedAt?: string | null;
+  batteryCycleCount?: number | null;
+  batteryEstimatedRangeKm?: number | null;
+  batteryHealthPercent?: number | null;
+  batteryRemark?: string | null;
+  batteryWarrantyUntil?: string | null;
+  brakeSummary?: string | null;
+  chassisSummary?: string | null;
+  customerSummary?: string | null;
+  customerVisible: boolean;
+  exteriorSummary?: string | null;
+  glassLightSummary?: string | null;
+  hasFireDamage?: boolean | null;
+  hasFloodDamage?: boolean | null;
+  hasMajorAccident?: boolean | null;
+  hasStructuralDamage?: boolean | null;
+  id: string;
+  inspectionDate?: string | null;
+  inspectorName?: string | null;
+  inspectorOrg?: string | null;
+  interiorSummary?: string | null;
+  items: VehicleConditionReportItem[];
+  odometerKm?: number | null;
+  overallGrade?: string | null;
+  publishedAt?: string | null;
+  repairSuggestion?: string | null;
+  reportNo: string;
+  reportStatus: string;
+  safetyConclusion?: string | null;
+  summary?: string | null;
+  tireSummary?: string | null;
+  vehicleId: string;
+}
+
+interface VehicleConditionReportItem {
+  affectsSafety: boolean;
+  area: string;
+  customerVisible: boolean;
+  description?: string | null;
+  id: string;
+  itemType: string;
+  mediaIds: string[];
+  partName?: string | null;
+  repairRequired: boolean;
+  result: string;
+  severity: string;
+  sortOrder: number;
+  title?: string | null;
+}
+
+interface VehicleConditionReportFormValues {
+  batteryCheckedAt?: Dayjs | null;
+  batteryCycleCount?: number | null;
+  batteryEstimatedRangeKm?: number | null;
+  batteryHealthPercent?: number | null;
+  batteryRemark?: string | null;
+  batteryWarrantyUntil?: Dayjs | null;
+  brakeSummary?: string | null;
+  chassisSummary?: string | null;
+  customerSummary?: string | null;
+  exteriorSummary?: string | null;
+  glassLightSummary?: string | null;
+  hasFireDamage?: boolean | null;
+  hasFloodDamage?: boolean | null;
+  hasMajorAccident?: boolean | null;
+  hasStructuralDamage?: boolean | null;
+  inspectionDate?: Dayjs | null;
+  inspectorName?: string | null;
+  inspectorOrg?: string | null;
+  interiorSummary?: string | null;
+  odometerKm?: number | null;
+  overallGrade?: string | null;
+  repairSuggestion?: string | null;
+  safetyConclusion?: string | null;
+  summary?: string | null;
+  tireSummary?: string | null;
+}
+
+interface VehicleConditionReportItemFormValues {
+  affectsSafety?: boolean;
+  area?: string;
+  customerVisible?: boolean;
+  description?: string | null;
+  itemType?: string;
+  mediaIds?: string[];
+  partName?: string | null;
+  repairRequired?: boolean;
+  result?: string;
+  severity?: string;
+  sortOrder?: number;
+  title?: string | null;
+}
+
 function VehicleListingManagementBlock({
   permissions,
   vehicle
@@ -3877,6 +3981,17 @@ function VehicleListingManagementBlock({
             },
             {
               children: (
+                <VehicleConditionReportBlock
+                  mediaRows={mediaRows}
+                  permissions={permissions}
+                  vehicle={vehicle}
+                />
+              ),
+              key: "conditionReports",
+              label: "车况报告"
+            },
+            {
+              children: (
                 <Space direction="vertical" size={12}>
                   <Typography.Text>客户侧预览不会生成订单，仍然是提交审核。</Typography.Text>
                   <Button onClick={() => window.open(`/portal/catalog/${vehicle.id}`, "_blank", "noopener,noreferrer")}>
@@ -3892,6 +4007,632 @@ function VehicleListingManagementBlock({
       </Space>
     </section>
   );
+}
+
+function VehicleConditionReportBlock({
+  mediaRows,
+  permissions,
+  vehicle
+}: Readonly<{
+  mediaRows: VehicleListingMedia[];
+  permissions: ReadonlySet<string>;
+  vehicle: Vehicle;
+}>) {
+  const { message } = App.useApp();
+  const [reportForm] = Form.useForm<VehicleConditionReportFormValues>();
+  const [itemForm] = Form.useForm<VehicleConditionReportItemFormValues>();
+  const [reports, setReports] = useState<VehicleConditionReport[]>([]);
+  const [selectedReportId, setSelectedReportId] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  const [savingReport, setSavingReport] = useState(false);
+  const [itemModalOpen, setItemModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<VehicleConditionReportItem | null>(null);
+  const canManage = permissions.has("vehicle:manage");
+
+  const selectedReport = useMemo(
+    () => reports.find((report) => report.id === selectedReportId) ?? reports[0],
+    [reports, selectedReportId]
+  );
+
+  const loadReports = useCallback(async () => {
+    setLoading(true);
+    try {
+      const rows = await apiFetch<VehicleConditionReport[]>(`/vehicles/${vehicle.id}/condition-reports`);
+      setReports(rows);
+      setSelectedReportId((current) => (current && rows.some((row) => row.id === current) ? current : rows[0]?.id));
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [message, vehicle.id]);
+
+  useEffect(() => {
+    void loadReports();
+  }, [loadReports]);
+
+  useEffect(() => {
+    reportForm.setFieldsValue(reportToFormValues(selectedReport, vehicle));
+  }, [reportForm, selectedReport, vehicle]);
+
+  async function createReport() {
+    try {
+      const report = await apiFetch<VehicleConditionReport>(`/vehicles/${vehicle.id}/condition-reports`, {
+        body: JSON.stringify({
+          inspectionDate: dayjs().format("YYYY-MM-DD"),
+          odometerKm: vehicle.currentMileageKm,
+          overallGrade: "UNKNOWN"
+        }),
+        method: "POST"
+      });
+      void message.success("车况报告草稿已创建");
+      setSelectedReportId(report.id);
+      await loadReports();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function saveReport(values: VehicleConditionReportFormValues) {
+    if (!selectedReport) {
+      return;
+    }
+
+    setSavingReport(true);
+    try {
+      const report = await apiFetch<VehicleConditionReport>(`/vehicle-condition-reports/${selectedReport.id}`, {
+        body: JSON.stringify(reportFormToPayload(values)),
+        method: "PATCH"
+      });
+      void message.success("车况报告已保存");
+      setReports((rows) => rows.map((row) => (row.id === report.id ? report : row)));
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setSavingReport(false);
+    }
+  }
+
+  async function updateReportStatus(action: "archive" | "publish", successMessage: string, reportId = selectedReport?.id) {
+    if (!reportId) {
+      return;
+    }
+
+    try {
+      const report = await apiFetch<VehicleConditionReport>(
+        `/vehicle-condition-reports/${reportId}/${action}`,
+        { method: "POST" }
+      );
+      void message.success(successMessage);
+      setSelectedReportId(report.id);
+      await loadReports();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  function openItemModal(item?: VehicleConditionReportItem) {
+    setEditingItem(item ?? null);
+    itemForm.setFieldsValue(itemToFormValues(item));
+    setItemModalOpen(true);
+  }
+
+  async function saveItem(values: VehicleConditionReportItemFormValues) {
+    if (!selectedReport) {
+      return;
+    }
+
+    try {
+      const payload = itemFormToPayload(values);
+      if (editingItem) {
+        await apiFetch<VehicleConditionReportItem>(`/vehicle-condition-report-items/${editingItem.id}`, {
+          body: JSON.stringify(payload),
+          method: "PATCH"
+        });
+      } else {
+        await apiFetch<VehicleConditionReportItem>(`/vehicle-condition-reports/${selectedReport.id}/items`, {
+          body: JSON.stringify(payload),
+          method: "POST"
+        });
+      }
+      void message.success("检测项已保存");
+      setItemModalOpen(false);
+      setEditingItem(null);
+      await loadReports();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  function deleteItem(item: VehicleConditionReportItem) {
+    Modal.confirm({
+      content: "删除后客户侧报告不再展示该检测项。",
+      okText: "删除",
+      onOk: async () => {
+        try {
+          await apiFetch<VehicleConditionReportItem>(`/vehicle-condition-report-items/${item.id}`, {
+            method: "DELETE"
+          });
+          void message.success("检测项已删除");
+          await loadReports();
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        }
+      },
+      title: "确认删除检测项？"
+    });
+  }
+
+  const mediaOptions = mediaRows
+    .filter((media) => media.customerVisible)
+    .map((media) => ({
+      label: `${labelOf(VEHICLE_LISTING_MEDIA_CATEGORY_LABELS, media.mediaCategory)} - ${media.caption || media.fileName}`,
+      value: media.id
+    }));
+
+  const reportColumns: ColumnsType<VehicleConditionReport> = [
+    { dataIndex: "reportNo", title: "报告编号", width: 150 },
+    {
+      dataIndex: "reportStatus",
+      render: (value: string) => labelOf(VEHICLE_CONDITION_REPORT_STATUS_LABELS, value),
+      title: "状态",
+      width: 100
+    },
+    {
+      dataIndex: "customerVisible",
+      render: (value: boolean) => (value ? <Tag color="green">客户可见</Tag> : <Tag>未公开</Tag>),
+      title: "可见性",
+      width: 110
+    },
+    { dataIndex: "inspectionDate", render: formatDateText, title: "检测日期", width: 120 },
+    {
+      dataIndex: "overallGrade",
+      render: (value: string | null) => labelOf(VEHICLE_LISTING_CONDITION_GRADE_LABELS, value),
+      title: "综合等级",
+      width: 110
+    },
+    { dataIndex: "inspectorOrg", render: (value: string | null) => value ?? "-", title: "检测机构", width: 150 },
+    {
+      render: (_, record) => (
+        <Space size={8}>
+          <Button onClick={() => setSelectedReportId(record.id)} size="small">
+            编辑
+          </Button>
+          <ActionButton
+            onClick={() => {
+              setSelectedReportId(record.id);
+              void updateReportStatus("publish", "车况报告已发布", record.id);
+            }}
+            permission="vehicle:manage"
+            permissions={permissions}
+            size="small"
+          >
+            发布
+          </ActionButton>
+          <ActionButton
+            onClick={() => {
+              setSelectedReportId(record.id);
+              void updateReportStatus("archive", "车况报告已归档", record.id);
+            }}
+            permission="vehicle:manage"
+            permissions={permissions}
+            size="small"
+          >
+            归档
+          </ActionButton>
+        </Space>
+      ),
+      title: "操作",
+      width: 210
+    }
+  ];
+
+  const itemColumns: ColumnsType<VehicleConditionReportItem> = [
+    {
+      dataIndex: "area",
+      render: (value: string) => labelOf(VEHICLE_CONDITION_ITEM_AREA_LABELS, value),
+      title: "区域",
+      width: 100
+    },
+    {
+      render: (_, record) => record.title || record.partName || "-",
+      title: "项目",
+      width: 180
+    },
+    {
+      dataIndex: "itemType",
+      render: (value: string) => labelOf(VEHICLE_CONDITION_ITEM_TYPE_LABELS, value),
+      title: "类型",
+      width: 120
+    },
+    {
+      dataIndex: "severity",
+      render: (value: string) => labelOf(VEHICLE_CONDITION_ITEM_SEVERITY_LABELS, value),
+      title: "严重度",
+      width: 110
+    },
+    {
+      dataIndex: "result",
+      render: (value: string) => labelOf(VEHICLE_CONDITION_ITEM_RESULT_LABELS, value),
+      title: "结果",
+      width: 110
+    },
+    {
+      render: (_, record) => (
+        <Space size={6} wrap>
+          {record.affectsSafety ? <Tag color="red">影响安全</Tag> : null}
+          {record.repairRequired ? <Tag color="orange">需整备</Tag> : null}
+          {record.customerVisible ? <Tag color="blue">客户可见</Tag> : <Tag>隐藏</Tag>}
+          {record.mediaIds.length > 0 ? <Tag>{record.mediaIds.length} 张图</Tag> : null}
+        </Space>
+      ),
+      title: "标签",
+      width: 220
+    },
+    {
+      render: (_, record) => (
+        <Space size={8}>
+          <ActionButton onClick={() => openItemModal(record)} permission="vehicle:manage" permissions={permissions} size="small">
+            编辑
+          </ActionButton>
+          <ActionButton danger onClick={() => deleteItem(record)} permission="vehicle:manage" permissions={permissions} size="small">
+            删除
+          </ActionButton>
+        </Space>
+      ),
+      title: "操作",
+      width: 130
+    }
+  ];
+
+  return (
+    <>
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Flex justify="space-between" wrap="wrap" gap={8}>
+          <Space>
+            <ActionButton onClick={createReport} permission="vehicle:manage" permissions={permissions} type="primary">
+              新建报告
+            </ActionButton>
+            <Button loading={loading} onClick={loadReports}>
+              刷新报告
+            </Button>
+          </Space>
+          <Button onClick={() => window.open(`/portal/catalog/${vehicle.id}/condition-report`, "_blank", "noopener,noreferrer")}>
+            客户报告预览
+          </Button>
+        </Flex>
+        <Table
+          columns={reportColumns}
+          dataSource={reports}
+          loading={loading}
+          pagination={false}
+          rowKey="id"
+          rowSelection={{
+            selectedRowKeys: selectedReport ? [selectedReport.id] : [],
+            type: "radio",
+            onChange: (keys) => setSelectedReportId(String(keys[0]))
+          }}
+          scroll={{ x: 1000 }}
+          size="small"
+        />
+        {selectedReport ? (
+          <Form<VehicleConditionReportFormValues> form={reportForm} layout="vertical" onFinish={saveReport}>
+            <Alert
+              message={`当前报告：${selectedReport.reportNo} / ${labelOf(
+                VEHICLE_CONDITION_REPORT_STATUS_LABELS,
+                selectedReport.reportStatus
+              )}`}
+              showIcon
+              type={selectedReport.customerVisible ? "success" : "info"}
+            />
+            <Flex gap={12} wrap="wrap">
+              <Form.Item label="检测日期" name="inspectionDate" style={{ flex: "1 1 160px" }}>
+                <DatePicker style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item label="检测机构" name="inspectorOrg" style={{ flex: "1 1 180px" }}>
+                <Input maxLength={128} />
+              </Form.Item>
+              <Form.Item label="检测人" name="inspectorName" style={{ flex: "1 1 160px" }}>
+                <Input maxLength={128} />
+              </Form.Item>
+              <Form.Item label="表显里程(km)" name="odometerKm" style={{ flex: "1 1 150px" }}>
+                <InputNumber min={0} style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item label="综合等级" name="overallGrade" style={{ flex: "1 1 150px" }}>
+                <Select allowClear options={listingConditionGradeOptions} />
+              </Form.Item>
+            </Flex>
+            <Form.Item label="报告摘要" name="summary">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+            <Form.Item label="客户摘要" name="customerSummary">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+            <Flex gap={18} wrap="wrap">
+              <Form.Item label="重大事故" name="hasMajorAccident" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="水泡" name="hasFloodDamage" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="火烧" name="hasFireDamage" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="结构件损伤" name="hasStructuralDamage" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </Flex>
+            <Collapse
+              items={[
+                {
+                  children: (
+                    <Flex gap={12} wrap="wrap">
+                      <Form.Item label="电池健康度(%)" name="batteryHealthPercent" style={{ flex: "1 1 150px" }}>
+                        <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
+                      </Form.Item>
+                      <Form.Item label="循环次数" name="batteryCycleCount" style={{ flex: "1 1 140px" }}>
+                        <InputNumber min={0} style={{ width: "100%" }} />
+                      </Form.Item>
+                      <Form.Item label="检测日期" name="batteryCheckedAt" style={{ flex: "1 1 160px" }}>
+                        <DatePicker style={{ width: "100%" }} />
+                      </Form.Item>
+                      <Form.Item label="预估续航(km)" name="batteryEstimatedRangeKm" style={{ flex: "1 1 150px" }}>
+                        <InputNumber min={0} style={{ width: "100%" }} />
+                      </Form.Item>
+                      <Form.Item label="质保到期" name="batteryWarrantyUntil" style={{ flex: "1 1 160px" }}>
+                        <DatePicker style={{ width: "100%" }} />
+                      </Form.Item>
+                      <Form.Item label="电池备注" name="batteryRemark" style={{ flex: "1 1 100%" }}>
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                    </Flex>
+                  ),
+                  key: "battery",
+                  label: "电池检测"
+                },
+                {
+                  children: (
+                    <>
+                      <Form.Item label="外观摘要" name="exteriorSummary">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                      <Form.Item label="内饰摘要" name="interiorSummary">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                      <Form.Item label="底盘摘要" name="chassisSummary">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                      <Form.Item label="轮胎摘要" name="tireSummary">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                      <Form.Item label="制动摘要" name="brakeSummary">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                      <Form.Item label="玻璃灯光摘要" name="glassLightSummary">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                    </>
+                  ),
+                  key: "sections",
+                  label: "分区摘要"
+                },
+                {
+                  children: (
+                    <>
+                      <Form.Item label="安全结论" name="safetyConclusion">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                      <Form.Item label="整备建议" name="repairSuggestion">
+                        <Input.TextArea rows={2} />
+                      </Form.Item>
+                    </>
+                  ),
+                  key: "conclusion",
+                  label: "安全结论 / 整备建议"
+                }
+              ]}
+            />
+            <Space style={{ marginTop: 12 }}>
+              <ActionButton
+                htmlType="submit"
+                loading={savingReport}
+                permission="vehicle:manage"
+                permissions={permissions}
+                type="primary"
+              >
+                保存报告
+              </ActionButton>
+              <ActionButton
+                onClick={() => updateReportStatus("publish", "车况报告已发布")}
+                permission="vehicle:manage"
+                permissions={permissions}
+              >
+                发布报告
+              </ActionButton>
+              <ActionButton
+                onClick={() => updateReportStatus("archive", "车况报告已归档")}
+                permission="vehicle:manage"
+                permissions={permissions}
+              >
+                归档报告
+              </ActionButton>
+            </Space>
+            <Flex align="center" justify="space-between" style={{ marginTop: 18 }}>
+              <Typography.Title level={5} style={{ margin: 0 }}>
+                检测项
+              </Typography.Title>
+              <ActionButton onClick={() => openItemModal()} permission="vehicle:manage" permissions={permissions}>
+                添加检测项
+              </ActionButton>
+            </Flex>
+            <Table
+              columns={itemColumns}
+              dataSource={selectedReport.items}
+              pagination={false}
+              rowKey="id"
+              scroll={{ x: 970 }}
+              size="small"
+              style={{ marginTop: 10 }}
+            />
+          </Form>
+        ) : (
+          <Empty description="暂无车况报告" />
+        )}
+      </Space>
+      <Modal
+        destroyOnHidden
+        okButtonProps={{ disabled: !canManage }}
+        onCancel={() => setItemModalOpen(false)}
+        onOk={() => itemForm.submit()}
+        open={itemModalOpen}
+        title={editingItem ? "编辑检测项" : "添加检测项"}
+      >
+        <Form<VehicleConditionReportItemFormValues> form={itemForm} layout="vertical" onFinish={saveItem}>
+          <Flex gap={12} wrap="wrap">
+            <Form.Item label="区域" name="area" rules={[{ required: true }]} style={{ flex: "1 1 150px" }}>
+              <Select options={conditionItemAreaOptions} />
+            </Form.Item>
+            <Form.Item label="类型" name="itemType" rules={[{ required: true }]} style={{ flex: "1 1 150px" }}>
+              <Select options={conditionItemTypeOptions} />
+            </Form.Item>
+            <Form.Item label="严重度" name="severity" style={{ flex: "1 1 150px" }}>
+              <Select options={conditionItemSeverityOptions} />
+            </Form.Item>
+            <Form.Item label="结果" name="result" style={{ flex: "1 1 150px" }}>
+              <Select options={conditionItemResultOptions} />
+            </Form.Item>
+          </Flex>
+          <Form.Item label="部位" name="partName">
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item label="标题" name="title">
+            <Input maxLength={256} />
+          </Form.Item>
+          <Form.Item label="描述" name="description">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+          <Form.Item label="关联图片" name="mediaIds">
+            <Select mode="multiple" options={mediaOptions} placeholder="选择当前车辆已上传且客户可见的图片" />
+          </Form.Item>
+          <Flex gap={18} wrap="wrap">
+            <Form.Item label="影响安全" name="affectsSafety" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item label="需要整备" name="repairRequired" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item label="客户可见" name="customerVisible" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item label="排序" name="sortOrder">
+              <InputNumber style={{ width: 120 }} />
+            </Form.Item>
+          </Flex>
+        </Form>
+      </Modal>
+    </>
+  );
+}
+
+function reportToFormValues(
+  report: VehicleConditionReport | undefined,
+  vehicle: Vehicle
+): VehicleConditionReportFormValues {
+  return {
+    batteryCheckedAt: report?.batteryCheckedAt ? dayjs(report.batteryCheckedAt) : null,
+    batteryCycleCount: report?.batteryCycleCount,
+    batteryEstimatedRangeKm: report?.batteryEstimatedRangeKm,
+    batteryHealthPercent: report?.batteryHealthPercent,
+    batteryRemark: report?.batteryRemark,
+    batteryWarrantyUntil: report?.batteryWarrantyUntil ? dayjs(report.batteryWarrantyUntil) : null,
+    brakeSummary: report?.brakeSummary,
+    chassisSummary: report?.chassisSummary,
+    customerSummary: report?.customerSummary,
+    exteriorSummary: report?.exteriorSummary,
+    glassLightSummary: report?.glassLightSummary,
+    hasFireDamage: Boolean(report?.hasFireDamage),
+    hasFloodDamage: Boolean(report?.hasFloodDamage),
+    hasMajorAccident: Boolean(report?.hasMajorAccident),
+    hasStructuralDamage: Boolean(report?.hasStructuralDamage),
+    inspectionDate: report?.inspectionDate ? dayjs(report.inspectionDate) : dayjs(),
+    inspectorName: report?.inspectorName,
+    inspectorOrg: report?.inspectorOrg,
+    interiorSummary: report?.interiorSummary,
+    odometerKm: report?.odometerKm ?? vehicle.currentMileageKm,
+    overallGrade: report?.overallGrade,
+    repairSuggestion: report?.repairSuggestion,
+    safetyConclusion: report?.safetyConclusion,
+    summary: report?.summary,
+    tireSummary: report?.tireSummary
+  };
+}
+
+function reportFormToPayload(values: VehicleConditionReportFormValues) {
+  return {
+    batteryCheckedAt: values.batteryCheckedAt?.format("YYYY-MM-DD") ?? null,
+    batteryCycleCount: values.batteryCycleCount ?? null,
+    batteryEstimatedRangeKm: values.batteryEstimatedRangeKm ?? null,
+    batteryHealthPercent: values.batteryHealthPercent ?? null,
+    batteryRemark: values.batteryRemark ?? null,
+    batteryWarrantyUntil: values.batteryWarrantyUntil?.format("YYYY-MM-DD") ?? null,
+    brakeSummary: values.brakeSummary ?? null,
+    chassisSummary: values.chassisSummary ?? null,
+    customerSummary: values.customerSummary ?? null,
+    exteriorSummary: values.exteriorSummary ?? null,
+    glassLightSummary: values.glassLightSummary ?? null,
+    hasFireDamage: values.hasFireDamage ?? null,
+    hasFloodDamage: values.hasFloodDamage ?? null,
+    hasMajorAccident: values.hasMajorAccident ?? null,
+    hasStructuralDamage: values.hasStructuralDamage ?? null,
+    inspectionDate: values.inspectionDate?.format("YYYY-MM-DD") ?? null,
+    inspectorName: values.inspectorName ?? null,
+    inspectorOrg: values.inspectorOrg ?? null,
+    interiorSummary: values.interiorSummary ?? null,
+    odometerKm: values.odometerKm ?? null,
+    overallGrade: values.overallGrade ?? null,
+    repairSuggestion: values.repairSuggestion ?? null,
+    safetyConclusion: values.safetyConclusion ?? null,
+    summary: values.summary ?? null,
+    tireSummary: values.tireSummary ?? null
+  };
+}
+
+function itemToFormValues(item?: VehicleConditionReportItem): VehicleConditionReportItemFormValues {
+  return {
+    affectsSafety: item?.affectsSafety ?? false,
+    area: item?.area ?? "EXTERIOR",
+    customerVisible: item?.customerVisible ?? true,
+    description: item?.description,
+    itemType: item?.itemType ?? "DEFECT",
+    mediaIds: item?.mediaIds ?? [],
+    partName: item?.partName,
+    repairRequired: item?.repairRequired ?? false,
+    result: item?.result ?? "UNKNOWN",
+    severity: item?.severity ?? "MINOR",
+    sortOrder: item?.sortOrder ?? 0,
+    title: item?.title
+  };
+}
+
+function itemFormToPayload(values: VehicleConditionReportItemFormValues) {
+  return {
+    affectsSafety: values.affectsSafety ?? false,
+    area: values.area ?? "EXTERIOR",
+    customerVisible: values.customerVisible ?? true,
+    description: values.description ?? null,
+    itemType: values.itemType ?? "DEFECT",
+    mediaIds: values.mediaIds ?? [],
+    partName: values.partName ?? null,
+    repairRequired: values.repairRequired ?? false,
+    result: values.result ?? "UNKNOWN",
+    severity: values.severity ?? "MINOR",
+    sortOrder: values.sortOrder ?? 0,
+    title: values.title ?? null
+  };
+}
+
+function formatDateText(value?: string | null) {
+  return value ? dayjs(value).format("YYYY-MM-DD") : "-";
 }
 
 function buildPlanDrafts(response: VehicleListingPlansResponse): VehicleListingPlanDraft[] {

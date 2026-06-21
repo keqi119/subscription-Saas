@@ -392,3 +392,16 @@ RC impact:
 - No direct order creation, payment change, contract change, bill change, entitlement change, service-case change, or notification-send change is included.
 - Private listing media is streamed through API preview routes; Portal responses do not expose storage internals.
 - This improvement does not close the remaining unrestricted-launch blockers listed above.
+
+## Stage 10L-B Vehicle Condition Report Update
+
+Stage 10L-B adds formal customer-visible vehicle condition reports for the vehicle product page.
+
+RC impact:
+
+- Portal vehicle detail can now use the latest published customer-visible condition report instead of only listing-profile summary fields.
+- `/portal/catalog/[id]/condition-report` displays accident checks, battery inspection, grouped report items, defect photos, safety conclusion, and repair suggestions.
+- Back office can create, edit, publish, and archive condition reports and report items.
+- Report item photos reuse private `VehicleListingMedia` preview routes.
+- Customer action remains `提交审核`; no order, contract, bill, payment, entitlement, service-case, or notification main-flow behavior changes.
+- This does not remove the existing unrestricted-launch blockers.

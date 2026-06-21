@@ -191,6 +191,35 @@ export default function PortalCatalogDetailPage() {
               {detail.condition.knownDefectsSummary ? (
                 <Alert message={detail.condition.knownDefectsSummary} showIcon type="warning" />
               ) : null}
+              {detail.conditionReportSummary ? (
+                <Alert
+                  action={
+                    <Button onClick={() => router.push(`/portal/catalog/${detail.id}/condition-report`)} size="small" type="link">
+                      查看完整车况报告
+                    </Button>
+                  }
+                  description={[
+                    detail.conditionReportSummary.inspectionDate
+                      ? `检测日期：${formatDate(detail.conditionReportSummary.inspectionDate)}`
+                      : null,
+                    detail.conditionReportSummary.inspectorOrg
+                      ? `检测机构：${detail.conditionReportSummary.inspectorOrg}`
+                      : null,
+                    detail.conditionReportSummary.defectSummary
+                      ? `主要瑕疵：${detail.conditionReportSummary.defectSummary}`
+                      : null
+                  ]
+                    .filter(Boolean)
+                    .join(" / ")}
+                  message={`正式车况报告 ${detail.conditionReportSummary.reportNo}${
+                    detail.conditionReportSummary.overallGrade
+                      ? ` / 综合等级 ${detail.conditionReportSummary.overallGrade}`
+                      : ""
+                  }`}
+                  showIcon
+                  type="success"
+                />
+              ) : null}
             </Space>
           </InfoSection>
 

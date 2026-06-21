@@ -18,6 +18,11 @@ export class PortalCatalogController {
     return this.portalCatalogService.getVehicle(id);
   }
 
+  @Get("vehicles/:id/condition-report")
+  getVehicleConditionReport(@Param("id") id: string) {
+    return this.portalCatalogService.getVehicleConditionReport(id);
+  }
+
   @Get("vehicles/:id/media/:mediaId/preview")
   async previewVehicleMedia(
     @Param("id") id: string,

@@ -9,6 +9,8 @@ import {
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
+  VehicleConditionItemType,
+  VehicleConditionReportStatus,
   VehicleListingStatus,
   VehicleStatus
 } from "@prisma/client";
@@ -70,6 +72,24 @@ const portalVehicleInclude = {
         }
       }
     }
+  },
+  conditionReports: {
+    include: {
+      items: {
+        orderBy: [{ sortOrder: "asc" as const }, { createdAt: "asc" as const }],
+        where: {
+          customerVisible: true,
+          deletedAt: null
+        }
+      }
+    },
+    orderBy: [{ inspectionDate: "desc" as const }, { createdAt: "desc" as const }],
+    take: 1,
+    where: {
+      customerVisible: true,
+      deletedAt: null,
+      reportStatus: VehicleConditionReportStatus.PUBLISHED
+    }
   }
 } satisfies Prisma.VehicleInclude;
 
@@ -84,6 +104,7 @@ type PortalVehicle = Prisma.VehicleGetPayload<{
 type PortalListingProfile = NonNullable<PortalVehicle["listingProfile"]>;
 type PortalListingPlan = PortalListingProfile["plans"][number];
 type PortalListingMedia = PortalListingProfile["media"][number];
+type PortalConditionReport = PortalVehicle["conditionReports"][number];
 
 interface PortalPlanOption {
   listingPlan?: PortalListingPlan;
@@ -162,6 +183,34 @@ export class PortalCatalogService {
       sizeBytes: downloaded.contentLength ?? media.fileSize ?? 0,
       stream: downloaded.stream
     };
+  }
+
+  async getVehicleConditionReport(vehicleId: string) {
+    const vehicle = await this.findAvailableVehicle(vehicleId);
+    const report = latestConditionReport(vehicle);
+    if (!report) {
+      throw new NotFoundException("vehicle condition report is not available");
+    }
+
+    const mediaById = await this.findVisibleMediaById(vehicleId, conditionReportMediaIds(report));
+    return toPortalConditionReportView(vehicle, report, mediaById);
+  }
+
+  private async findVisibleMediaById(vehicleId: string, mediaIds: string[]) {
+    if (mediaIds.length === 0) {
+      return new Map<string, PortalListingMedia>();
+    }
+
+    const rows = await this.prisma.vehicleListingMedia.findMany({
+      where: {
+        customerVisible: true,
+        deletedAt: null,
+        id: { in: mediaIds },
+        vehicleId
+      }
+    });
+
+    return new Map(rows.map((media) => [media.id, media as PortalListingMedia]));
   }
 
   private async findAvailableVehicle(id: string) {
@@ -305,24 +354,9 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
 function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[] = []) {
   const listItem = toPortalVehicleListItem(vehicle, plans);
   const profile = customerVisibleProfile(vehicle.listingProfile);
-  const condition = {
-    grade: profile?.conditionGrade ?? null,
-    hasFireDamage: profile?.hasFireDamage ?? null,
-    hasFloodDamage: profile?.hasFloodDamage ?? null,
-    hasMajorAccident: profile?.hasMajorAccident ?? null,
-    hasStructuralDamage: profile?.hasStructuralDamage ?? null,
-    knownDefectsSummary: profile?.knownDefectsSummary ?? null,
-    summary: profile?.conditionSummary ?? null
-  };
-  const battery = {
-    capacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
-    checkedAt: profile?.batteryHealthCheckedAt ?? null,
-    estimatedRangeKm: profile?.estimatedRangeKm ?? null,
-    healthPercent: decimalToNumber(profile?.batteryHealthPercent ?? null),
-    remark: profile?.batteryRemark ?? null,
-    usageType: vehicle.batteryUsageType,
-    usageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType]
-  };
+  const report = latestConditionReport(vehicle);
+  const condition = buildConditionView(profile, report);
+  const battery = buildBatteryView(vehicle, profile, report);
 
   return {
     ...listItem,
@@ -330,6 +364,7 @@ function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[]
     applicationProcess: DEFAULT_APPLICATION_PROCESS,
     battery,
     condition,
+    conditionReportSummary: report ? toConditionReportSummary(report) : null,
     coreHighlights: buildCoreHighlights(vehicle, profile),
     depositNotice: "押金金额将根据审核结果最终确认。",
     faq: faqArray(profile?.faqSnapshot),
@@ -535,6 +570,157 @@ function buildGallery(vehicle: PortalVehicle, profile: PortalListingProfile | nu
       previewUrl: buildMediaPreviewUrl(vehicle.id, media),
       sortOrder: media.sortOrder
     }));
+}
+
+function latestConditionReport(vehicle: PortalVehicle) {
+  return (
+    (vehicle.conditionReports ?? []).find(
+      (report) =>
+        report.customerVisible &&
+        !report.deletedAt &&
+        report.reportStatus === VehicleConditionReportStatus.PUBLISHED
+    ) ?? null
+  );
+}
+
+function buildConditionView(profile: PortalListingProfile | null, report: PortalConditionReport | null) {
+  return {
+    grade: report?.overallGrade ?? profile?.conditionGrade ?? null,
+    hasFireDamage: report?.hasFireDamage ?? profile?.hasFireDamage ?? null,
+    hasFloodDamage: report?.hasFloodDamage ?? profile?.hasFloodDamage ?? null,
+    hasMajorAccident: report?.hasMajorAccident ?? profile?.hasMajorAccident ?? null,
+    hasStructuralDamage: report?.hasStructuralDamage ?? profile?.hasStructuralDamage ?? null,
+    knownDefectsSummary: report ? buildReportDefectSummary(report) : profile?.knownDefectsSummary ?? null,
+    summary: report?.customerSummary ?? report?.summary ?? profile?.conditionSummary ?? null
+  };
+}
+
+function buildBatteryView(
+  vehicle: PortalVehicle,
+  profile: PortalListingProfile | null,
+  report: PortalConditionReport | null
+) {
+  return {
+    capacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
+    checkedAt: report?.batteryCheckedAt ?? profile?.batteryHealthCheckedAt ?? null,
+    cycleCount: report?.batteryCycleCount ?? null,
+    estimatedRangeKm: report?.batteryEstimatedRangeKm ?? profile?.estimatedRangeKm ?? null,
+    healthPercent: decimalToNumber(report?.batteryHealthPercent ?? profile?.batteryHealthPercent ?? null),
+    remark: report?.batteryRemark ?? profile?.batteryRemark ?? null,
+    usageType: vehicle.batteryUsageType,
+    usageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType],
+    warrantyUntil: report?.batteryWarrantyUntil ?? null
+  };
+}
+
+function toConditionReportSummary(report: PortalConditionReport) {
+  return {
+    defectSummary: buildReportDefectSummary(report),
+    id: report.id,
+    inspectionDate: report.inspectionDate,
+    inspectorName: report.inspectorName,
+    inspectorOrg: report.inspectorOrg,
+    itemCount: report.items.length,
+    overallGrade: report.overallGrade,
+    reportNo: report.reportNo,
+    summary: report.customerSummary ?? report.summary
+  };
+}
+
+function toPortalConditionReportView(
+  vehicle: PortalVehicle,
+  report: PortalConditionReport,
+  mediaById: Map<string, PortalListingMedia>
+) {
+  return {
+    accident: {
+      hasFireDamage: report.hasFireDamage,
+      hasFloodDamage: report.hasFloodDamage,
+      hasMajorAccident: report.hasMajorAccident,
+      hasStructuralDamage: report.hasStructuralDamage
+    },
+    battery: {
+      checkedAt: report.batteryCheckedAt,
+      cycleCount: report.batteryCycleCount,
+      estimatedRangeKm: report.batteryEstimatedRangeKm,
+      healthPercent: decimalToNumber(report.batteryHealthPercent),
+      remark: report.batteryRemark,
+      warrantyUntil: report.batteryWarrantyUntil
+    },
+    customerSummary: report.customerSummary,
+    inspectionDate: report.inspectionDate,
+    inspectorName: report.inspectorName,
+    inspectorOrg: report.inspectorOrg,
+    items: report.items
+      .filter((item) => item.customerVisible && !item.deletedAt)
+      .map((item) => ({
+        affectsSafety: item.affectsSafety,
+        area: item.area,
+        description: item.description,
+        id: item.id,
+        itemType: item.itemType,
+        media: mediaIds(item).flatMap((mediaId) => {
+          const media = mediaById.get(mediaId);
+          return media
+            ? [
+                {
+                  caption: media.caption,
+                  category: media.mediaCategory,
+                  id: media.id,
+                  previewUrl: buildMediaPreviewUrl(vehicle.id, media)
+                }
+              ]
+            : [];
+        }),
+        partName: item.partName,
+        repairRequired: item.repairRequired,
+        result: item.result,
+        severity: item.severity,
+        sortOrder: item.sortOrder,
+        title: item.title
+      })),
+    odometerKm: report.odometerKm,
+    overallGrade: report.overallGrade,
+    repairSuggestion: report.repairSuggestion,
+    reportNo: report.reportNo,
+    safetyConclusion: report.safetyConclusion,
+    sections: {
+      brakeSummary: report.brakeSummary,
+      chassisSummary: report.chassisSummary,
+      exteriorSummary: report.exteriorSummary,
+      glassLightSummary: report.glassLightSummary,
+      interiorSummary: report.interiorSummary,
+      tireSummary: report.tireSummary
+    },
+    summary: report.summary,
+    vehicle: {
+      brand: vehicle.brand,
+      city: vehicle.assetLocation,
+      displayName: buildVehicleDisplayName(vehicle),
+      id: vehicle.id,
+      model: vehicle.model,
+      modelYear: vehicle.modelYear,
+      series: vehicle.series
+    }
+  };
+}
+
+function conditionReportMediaIds(report: PortalConditionReport) {
+  return Array.from(new Set(report.items.flatMap(mediaIds)));
+}
+
+function mediaIds(item: PortalConditionReport["items"][number]) {
+  return stringArray(item.mediaIds);
+}
+
+function buildReportDefectSummary(report: PortalConditionReport) {
+  const defects = report.items
+    .filter((item) => item.customerVisible && !item.deletedAt)
+    .filter((item) => item.itemType === VehicleConditionItemType.DEFECT)
+    .map((item) => [item.partName, item.title].filter(Boolean).join("："))
+    .filter(Boolean);
+
+  return defects.length > 0 ? defects.join("；") : null;
 }
 
 function buildMediaPreviewUrl(vehicleId: string, media: Pick<PortalListingMedia, "id">) {

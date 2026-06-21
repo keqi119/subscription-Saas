@@ -72,11 +72,13 @@ export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
   battery: {
     capacityKwh: number | null;
     checkedAt: string | null;
+    cycleCount?: number | null;
     estimatedRangeKm: number | null;
     healthPercent: number | null;
     remark: string | null;
     usageType: string;
     usageTypeLabel: string;
+    warrantyUntil?: string | null;
   };
   condition: {
     grade: string | null;
@@ -87,6 +89,17 @@ export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
     knownDefectsSummary: string | null;
     summary: string | null;
   };
+  conditionReportSummary: {
+    defectSummary: string | null;
+    id: string;
+    inspectionDate: string | null;
+    inspectorName: string | null;
+    inspectorOrg: string | null;
+    itemCount: number;
+    overallGrade: string | null;
+    reportNo: string;
+    summary: string | null;
+  } | null;
   coreHighlights: string[];
   depositNotice: string;
   faq: Array<{
@@ -110,6 +123,71 @@ export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
     series: string | null;
   };
   vehicleHistorySummary: string;
+}
+
+export interface PortalVehicleConditionReport {
+  accident: {
+    hasFireDamage: boolean | null;
+    hasFloodDamage: boolean | null;
+    hasMajorAccident: boolean | null;
+    hasStructuralDamage: boolean | null;
+  };
+  battery: {
+    checkedAt: string | null;
+    cycleCount: number | null;
+    estimatedRangeKm: number | null;
+    healthPercent: number | null;
+    remark: string | null;
+    warrantyUntil: string | null;
+  };
+  customerSummary: string | null;
+  inspectionDate: string | null;
+  inspectorName: string | null;
+  inspectorOrg: string | null;
+  items: PortalVehicleConditionReportItem[];
+  odometerKm: number | null;
+  overallGrade: string | null;
+  repairSuggestion: string | null;
+  reportNo: string;
+  safetyConclusion: string | null;
+  sections: {
+    brakeSummary: string | null;
+    chassisSummary: string | null;
+    exteriorSummary: string | null;
+    glassLightSummary: string | null;
+    interiorSummary: string | null;
+    tireSummary: string | null;
+  };
+  summary: string | null;
+  vehicle: {
+    brand: string;
+    city: string | null;
+    displayName: string;
+    id: string;
+    model: string | null;
+    modelYear: number | null;
+    series: string | null;
+  };
+}
+
+export interface PortalVehicleConditionReportItem {
+  affectsSafety: boolean;
+  area: string;
+  description: string | null;
+  id: string;
+  itemType: string;
+  media: Array<{
+    caption: string | null;
+    category: string;
+    id: string;
+    previewUrl: string;
+  }>;
+  partName: string | null;
+  repairRequired: boolean;
+  result: string;
+  severity: string;
+  sortOrder: number;
+  title: string | null;
 }
 
 export interface PortalApplicationListItem {

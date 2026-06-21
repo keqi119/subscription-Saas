@@ -272,3 +272,17 @@ Production rollout notes:
 - Verify a controlled catalog journey after deployment: list, detail, media preview, and `提交审核`.
 - Confirm Portal responses still redact purchase price, sale price, full VIN/plate, and storage internals.
 - Treat Stage 10L-A as catalog presentation readiness, not as unrestricted customer-launch approval.
+
+## Stage 10L-B Rollout Note
+
+Stage 10L-B introduces formal vehicle condition reports and the customer report page.
+
+Production rollout notes:
+
+- Run the new migration with `prisma migrate deploy`; do not use `prisma migrate reset` or `prisma db push`.
+- Verify back-office report creation, item editing, media linking, publish, and archive on a controlled vehicle.
+- Verify Portal detail falls back to listing-profile fields when no published report exists.
+- Verify Portal detail uses the latest published report after publish.
+- Verify `/portal/catalog/[id]/condition-report` does not expose purchase price, sale price, full VIN/plate, storage internals, or internal audit fields.
+- Keep customer CTA copy as `提交审核`.
+- Treat Stage 10L-B as report presentation readiness, not as unrestricted customer-launch approval.

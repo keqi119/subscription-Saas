@@ -234,6 +234,49 @@ export const VEHICLE_LISTING_MEDIA_CATEGORY_LABELS: Record<string, string> = {
   TIRE: "轮胎"
 };
 
+export const VEHICLE_CONDITION_REPORT_STATUS_LABELS: Record<string, string> = {
+  ARCHIVED: "已归档",
+  DRAFT: "草稿",
+  PUBLISHED: "已发布"
+};
+
+export const VEHICLE_CONDITION_ITEM_AREA_LABELS: Record<string, string> = {
+  BATTERY: "电池",
+  BRAKE: "制动",
+  CHARGING: "充电系统",
+  CHASSIS: "底盘",
+  ELECTRONICS: "电子设备",
+  EXTERIOR: "外观",
+  GLASS_LIGHT: "玻璃灯光",
+  INTERIOR: "内饰",
+  OTHER: "其他",
+  TIRE: "轮胎"
+};
+
+export const VEHICLE_CONDITION_ITEM_TYPE_LABELS: Record<string, string> = {
+  BATTERY_CHECK: "电池检测",
+  CHECK: "常规检测",
+  DEFECT: "瑕疵",
+  OTHER: "其他",
+  REPAIR_RECOMMENDATION: "整备建议",
+  SAFETY_CHECK: "安全检测"
+};
+
+export const VEHICLE_CONDITION_ITEM_SEVERITY_LABELS: Record<string, string> = {
+  MAJOR: "明显",
+  MINOR: "轻微",
+  MODERATE: "一般",
+  SAFETY_CRITICAL: "影响安全"
+};
+
+export const VEHICLE_CONDITION_ITEM_RESULT_LABELS: Record<string, string> = {
+  ABNORMAL: "异常",
+  ATTENTION: "需关注",
+  NORMAL: "正常",
+  REPAIRED: "已修复",
+  UNKNOWN: "待确认"
+};
+
 export const VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "生效中",
   INACTIVE: "已停用"

@@ -188,3 +188,16 @@ Candidate models:
 - Battery inspection details.
 - Defect-location photos.
 - Report publication state.
+
+## Stage 10L-B Follow-Up
+
+Stage 10L-B adds the formal condition-report layer described above:
+
+- `VehicleConditionReport`
+- `VehicleConditionReportItem`
+- Battery inspection detail fields.
+- Defect item photo references through `VehicleListingMedia`.
+- Back-office report publish/archive actions.
+- Portal `/portal/catalog/[id]/condition-report`.
+
+The 10L-A listing profile remains the fallback summary when no published customer-visible report exists.

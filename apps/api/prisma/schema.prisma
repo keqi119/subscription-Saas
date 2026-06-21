@@ -857,6 +857,59 @@ enum VehicleListingMediaCategory {
   @@map("vehicle_listing_media_category")
 }
 
+enum VehicleConditionReportStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+
+  @@map("vehicle_condition_report_status")
+}
+
+enum VehicleConditionItemArea {
+  EXTERIOR
+  INTERIOR
+  BATTERY
+  TIRE
+  BRAKE
+  CHASSIS
+  GLASS_LIGHT
+  ELECTRONICS
+  CHARGING
+  OTHER
+
+  @@map("vehicle_condition_item_area")
+}
+
+enum VehicleConditionItemType {
+  DEFECT
+  CHECK
+  REPAIR_RECOMMENDATION
+  BATTERY_CHECK
+  SAFETY_CHECK
+  OTHER
+
+  @@map("vehicle_condition_item_type")
+}
+
+enum VehicleConditionItemSeverity {
+  MINOR
+  MODERATE
+  MAJOR
+  SAFETY_CRITICAL
+
+  @@map("vehicle_condition_item_severity")
+}
+
+enum VehicleConditionItemResult {
+  NORMAL
+  ATTENTION
+  ABNORMAL
+  REPAIRED
+  UNKNOWN
+
+  @@map("vehicle_condition_item_result")
+}
+
 enum VehicleAcquisitionMode {
   OWNED_CASH
   OWNED_FINANCED
@@ -2154,6 +2207,7 @@ model Vehicle {
   listingProfile                VehicleListingProfile?
   listingMedia                  VehicleListingMedia[]
   listingPlans                  VehicleListingPlan[]
+  conditionReports              VehicleConditionReport[]
   residualForecasts             VehicleResidualForecast[]
   residualModelRunOutputs       ResidualModelRunOutput[]
   valuationReviews              VehicleValuationReview[]
@@ -2269,6 +2323,83 @@ model VehicleListingPlan {
   @@index([visible])
   @@index([recommended])
   @@map("vehicle_listing_plan")
+}
+
+model VehicleConditionReport {
+  id                       String                         @id @default(uuid()) @db.Uuid
+  reportNo                 String                         @unique @map("report_no") @db.VarChar(64)
+  vehicleId                String                         @map("vehicle_id") @db.Uuid
+  vehicle                  Vehicle                        @relation(fields: [vehicleId], references: [id])
+  reportStatus             VehicleConditionReportStatus   @default(DRAFT) @map("report_status")
+  customerVisible          Boolean                        @default(false) @map("customer_visible")
+  inspectionDate           DateTime?                      @map("inspection_date") @db.Date
+  inspectorName            String?                        @map("inspector_name") @db.VarChar(128)
+  inspectorOrg             String?                        @map("inspector_org") @db.VarChar(128)
+  odometerKm               Int?                           @map("odometer_km")
+  overallGrade             VehicleListingConditionGrade?  @map("overall_grade")
+  summary                  String?                        @db.Text
+  hasMajorAccident         Boolean?                       @map("has_major_accident")
+  hasFloodDamage           Boolean?                       @map("has_flood_damage")
+  hasFireDamage            Boolean?                       @map("has_fire_damage")
+  hasStructuralDamage      Boolean?                       @map("has_structural_damage")
+  exteriorSummary          String?                        @map("exterior_summary") @db.Text
+  interiorSummary          String?                        @map("interior_summary") @db.Text
+  chassisSummary           String?                        @map("chassis_summary") @db.Text
+  tireSummary              String?                        @map("tire_summary") @db.Text
+  brakeSummary             String?                        @map("brake_summary") @db.Text
+  glassLightSummary        String?                        @map("glass_light_summary") @db.Text
+  batteryHealthPercent     Decimal?                       @map("battery_health_percent") @db.Decimal(5, 2)
+  batteryCycleCount        Int?                           @map("battery_cycle_count")
+  batteryCheckedAt         DateTime?                      @map("battery_checked_at") @db.Date
+  batteryEstimatedRangeKm  Int?                           @map("battery_estimated_range_km")
+  batteryWarrantyUntil     DateTime?                      @map("battery_warranty_until") @db.Date
+  batteryRemark            String?                        @map("battery_remark") @db.Text
+  safetyConclusion         String?                        @map("safety_conclusion") @db.Text
+  repairSuggestion         String?                        @map("repair_suggestion") @db.Text
+  customerSummary          String?                        @map("customer_summary") @db.Text
+  publishedAt              DateTime?                      @map("published_at") @db.Timestamptz(6)
+  archivedAt               DateTime?                      @map("archived_at") @db.Timestamptz(6)
+  createdAt                DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                String?                        @map("created_by") @db.Uuid
+  updatedBy                String?                        @map("updated_by") @db.Uuid
+  deletedAt                DateTime?                      @map("deleted_at") @db.Timestamptz(6)
+  items                    VehicleConditionReportItem[]
+
+  @@index([vehicleId])
+  @@index([reportStatus])
+  @@index([customerVisible])
+  @@index([inspectionDate])
+  @@map("vehicle_condition_report")
+}
+
+model VehicleConditionReportItem {
+  id              String                       @id @default(uuid()) @db.Uuid
+  reportId        String                       @map("report_id") @db.Uuid
+  report          VehicleConditionReport       @relation(fields: [reportId], references: [id])
+  area            VehicleConditionItemArea
+  itemType        VehicleConditionItemType     @map("item_type")
+  severity        VehicleConditionItemSeverity @default(MINOR)
+  result          VehicleConditionItemResult   @default(UNKNOWN)
+  partName        String?                      @map("part_name") @db.VarChar(128)
+  title           String?                      @db.VarChar(256)
+  description     String?                      @db.Text
+  affectsSafety   Boolean                      @default(false) @map("affects_safety")
+  repairRequired  Boolean                      @default(false) @map("repair_required")
+  customerVisible Boolean                      @default(true) @map("customer_visible")
+  mediaIds        Json?                        @map("media_ids")
+  sortOrder       Int                          @default(0) @map("sort_order")
+  createdAt       DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt       DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([reportId])
+  @@index([area])
+  @@index([itemType])
+  @@index([severity])
+  @@index([customerVisible])
+  @@index([sortOrder])
+  @@map("vehicle_condition_report_item")
 }
 
 model VehicleSalePriceHistory {

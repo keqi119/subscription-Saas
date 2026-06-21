@@ -8,6 +8,11 @@ import {
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
+  VehicleConditionItemArea,
+  VehicleConditionItemResult,
+  VehicleConditionItemSeverity,
+  VehicleConditionItemType,
+  VehicleConditionReportStatus,
   VehicleListingConditionGrade,
   VehicleListingMediaCategory,
   VehicleListingStatus,
@@ -71,6 +76,69 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
     expect(JSON.stringify(detail)).not.toContain("private-bucket");
     expect(JSON.stringify(detail)).not.toContain("VIN1234567890");
     expect(JSON.stringify(detail)).not.toContain("沪A12345");
+  });
+
+  it("uses latest published condition report in detail and exposes a redacted customer report", async () => {
+    const vehicle = createVehicle({ conditionReports: [createConditionReport()] });
+    const { service } = createHarness({ vehicle });
+
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(detail.condition).toMatchObject({
+      grade: VehicleListingConditionGrade.A,
+      knownDefectsSummary: "右前门：轻微划痕",
+      summary: "正式报告客户摘要"
+    });
+    expect(detail.battery).toMatchObject({
+      cycleCount: 320,
+      healthPercent: 92,
+      warrantyUntil: new Date("2028-01-01T00:00:00.000Z")
+    });
+    expect(detail.conditionReportSummary).toMatchObject({
+      overallGrade: VehicleListingConditionGrade.A,
+      reportNo: "VCR-20260621-0001"
+    });
+
+    const report = await service.getVehicleConditionReport("vehicle-1");
+    expect(report).toMatchObject({
+      accident: {
+        hasMajorAccident: false
+      },
+      battery: {
+        cycleCount: 320,
+        healthPercent: 92
+      },
+      reportNo: "VCR-20260621-0001"
+    });
+    expect(report.items).toHaveLength(1);
+    expect(report.items[0]?.media).toHaveLength(1);
+    expect(report.items[0]?.media[0]).toMatchObject({
+      id: "media-cover",
+      previewUrl: "/api/portal/catalog/vehicles/vehicle-1/media/media-cover/preview"
+    });
+    expect(JSON.stringify(report)).not.toContain("private-bucket");
+    expect(JSON.stringify(report)).not.toContain("vehicle-listings/");
+    expect(JSON.stringify(report)).not.toContain("createdBy");
+    expect(JSON.stringify(report)).not.toContain("updatedBy");
+    expect(JSON.stringify(report)).not.toContain("deletedAt");
+  });
+
+  it("does not expose draft or archived condition reports through Portal", async () => {
+    const vehicle = createVehicle({
+      conditionReports: [
+        createConditionReport({
+          customerVisible: false,
+          reportStatus: VehicleConditionReportStatus.ARCHIVED
+        })
+      ]
+    });
+    const { service } = createHarness({ vehicle });
+
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(detail.conditionReportSummary).toBeNull();
+    expect(detail.condition.summary).toBe("车况良好");
+    await expect(service.getVehicleConditionReport("vehicle-1")).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it("falls back to active plans when listing plans are not configured", async () => {
@@ -137,7 +205,16 @@ function createHarness(seed: { vehicle?: ReturnType<typeof createVehicle> } = {}
           ...media,
           listingProfile: vehicle.listingProfile
         };
-      })
+      }),
+      findMany: vi.fn(async ({ where }: { where: { customerVisible?: boolean; id?: { in: string[] }; vehicleId?: string } }) =>
+        (vehicle.listingProfile?.media ?? []).filter(
+          (item) =>
+            item.vehicleId === where.vehicleId &&
+            item.customerVisible === where.customerVisible &&
+            !item.deletedAt &&
+            (!where.id?.in || where.id.in.includes(item.id))
+        )
+      )
     }
   };
   const storageService = {
@@ -165,6 +242,7 @@ function createVehicle(overrides: Record<string, unknown> = {}) {
     brand: "NIO",
     createdAt: now,
     createdBy: "user-1",
+    conditionReports: [],
     currentMileageKm: 12000,
     currentSalePriceAmount: 20000000n,
     currentSalePriceInitializedAt: now,
@@ -306,6 +384,90 @@ function createListingProfile() {
     updatedAt: now,
     updatedBy: "user-1",
     vehicleId: "vehicle-1"
+  };
+}
+
+function createConditionReport(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-06-21T10:00:00.000Z");
+  return {
+    archivedAt: null,
+    batteryCheckedAt: new Date("2026-06-01T00:00:00.000Z"),
+    batteryCycleCount: 320,
+    batteryEstimatedRangeKm: 490,
+    batteryHealthPercent: new Prisma.Decimal(92),
+    batteryRemark: "电池状态稳定",
+    batteryWarrantyUntil: new Date("2028-01-01T00:00:00.000Z"),
+    brakeSummary: "制动正常",
+    chassisSummary: "底盘正常",
+    createdAt: now,
+    createdBy: "user-1",
+    customerSummary: "正式报告客户摘要",
+    customerVisible: true,
+    deletedAt: null,
+    exteriorSummary: "外观有轻微划痕",
+    glassLightSummary: "玻璃灯光正常",
+    hasFireDamage: false,
+    hasFloodDamage: false,
+    hasMajorAccident: false,
+    hasStructuralDamage: false,
+    id: "condition-report-1",
+    inspectionDate: new Date("2026-06-21T00:00:00.000Z"),
+    inspectorName: "Inspector",
+    inspectorOrg: "内部检测",
+    interiorSummary: "内饰整洁",
+    items: [
+      {
+        affectsSafety: false,
+        area: VehicleConditionItemArea.EXTERIOR,
+        createdAt: now,
+        customerVisible: true,
+        deletedAt: null,
+        description: "右前门有轻微划痕，不影响安全。",
+        id: "condition-item-1",
+        itemType: VehicleConditionItemType.DEFECT,
+        mediaIds: ["media-cover"],
+        partName: "右前门",
+        repairRequired: false,
+        reportId: "condition-report-1",
+        result: VehicleConditionItemResult.ATTENTION,
+        severity: VehicleConditionItemSeverity.MINOR,
+        sortOrder: 0,
+        title: "轻微划痕",
+        updatedAt: now
+      },
+      {
+        affectsSafety: false,
+        area: VehicleConditionItemArea.INTERIOR,
+        createdAt: now,
+        customerVisible: false,
+        deletedAt: null,
+        description: "后台可见备注",
+        id: "condition-item-hidden",
+        itemType: VehicleConditionItemType.CHECK,
+        mediaIds: [],
+        partName: "内饰",
+        repairRequired: false,
+        reportId: "condition-report-1",
+        result: VehicleConditionItemResult.NORMAL,
+        severity: VehicleConditionItemSeverity.MINOR,
+        sortOrder: 1,
+        title: "隐藏项",
+        updatedAt: now
+      }
+    ],
+    odometerKm: 12000,
+    overallGrade: VehicleListingConditionGrade.A,
+    publishedAt: now,
+    repairSuggestion: "交付前复核外观。",
+    reportNo: "VCR-20260621-0001",
+    reportStatus: VehicleConditionReportStatus.PUBLISHED,
+    safetyConclusion: "未见影响安全的问题。",
+    summary: "正式检测报告摘要",
+    tireSummary: "轮胎正常",
+    updatedAt: now,
+    updatedBy: "user-1",
+    vehicleId: "vehicle-1",
+    ...overrides
   };
 }
 

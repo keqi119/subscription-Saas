@@ -821,6 +821,42 @@ enum VehicleBatteryUsageType {
   @@map("vehicle_battery_usage_type")
 }
 
+enum VehicleListingStatus {
+  DRAFT
+  PUBLISHED
+  UNPUBLISHED
+  ARCHIVED
+
+  @@map("vehicle_listing_status")
+}
+
+enum VehicleListingConditionGrade {
+  S
+  A
+  B
+  C
+  D
+  UNKNOWN
+
+  @@map("vehicle_listing_condition_grade")
+}
+
+enum VehicleListingMediaCategory {
+  COVER
+  EXTERIOR
+  INTERIOR
+  DASHBOARD
+  CENTRAL_CONTROL
+  TIRE
+  CHARGING_PORT
+  DEFECT
+  INSPECTION_REPORT
+  BATTERY
+  OTHER
+
+  @@map("vehicle_listing_media_category")
+}
+
 enum VehicleAcquisitionMode {
   OWNED_CASH
   OWNED_FINANCED
@@ -2028,6 +2064,7 @@ model SubscriptionPlan {
   effectiveTo          DateTime?              @map("effective_to") @db.Date
   remark               String?                @db.Text
   quotes               SubscriptionQuote[]
+  vehicleListingPlans  VehicleListingPlan[]
   entitlementAccounts  OrderEntitlementAccount[]
   createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -2114,6 +2151,9 @@ model Vehicle {
   assetPoolMemberships          VehicleAssetPoolVehicle[]
   revenueRightAssignments       RevenueRightAssignment[]
   revenueShareRules             RevenueShareRule[]
+  listingProfile                VehicleListingProfile?
+  listingMedia                  VehicleListingMedia[]
+  listingPlans                  VehicleListingPlan[]
   residualForecasts             VehicleResidualForecast[]
   residualModelRunOutputs       ResidualModelRunOutput[]
   valuationReviews              VehicleValuationReview[]
@@ -2129,6 +2169,106 @@ model Vehicle {
   @@index([nextSalePriceReviewAt])
   @@index([salePriceReinitRequiredAt])
   @@map("vehicle")
+}
+
+model VehicleListingProfile {
+  id                     String                         @id @default(uuid()) @db.Uuid
+  vehicleId              String                         @unique @map("vehicle_id") @db.Uuid
+  vehicle                Vehicle                        @relation(fields: [vehicleId], references: [id])
+  listingStatus          VehicleListingStatus           @default(DRAFT) @map("listing_status")
+  portalVisible          Boolean                        @default(false) @map("portal_visible")
+  displayName            String?                        @map("display_name") @db.VarChar(128)
+  shortTitle             String?                        @map("short_title") @db.VarChar(128)
+  subtitle               String?                        @db.VarChar(256)
+  sellingPoints          Json?                          @map("selling_points")
+  customerTags           Json?                          @map("customer_tags")
+  highlightSummary       String?                        @map("highlight_summary") @db.Text
+  conditionGrade         VehicleListingConditionGrade?   @map("condition_grade")
+  conditionSummary       String?                        @map("condition_summary") @db.Text
+  hasMajorAccident       Boolean?                       @map("has_major_accident")
+  hasFloodDamage         Boolean?                       @map("has_flood_damage")
+  hasFireDamage          Boolean?                       @map("has_fire_damage")
+  hasStructuralDamage    Boolean?                       @map("has_structural_damage")
+  knownDefectsSummary    String?                        @map("known_defects_summary") @db.Text
+  batteryHealthPercent   Decimal?                       @map("battery_health_percent") @db.Decimal(5, 2)
+  batteryHealthCheckedAt DateTime?                      @map("battery_health_checked_at") @db.Date
+  estimatedRangeKm       Int?                           @map("estimated_range_km")
+  batteryRemark          String?                        @map("battery_remark") @db.Text
+  serviceHighlights      Json?                          @map("service_highlights")
+  feeDescription         String?                        @map("fee_description") @db.Text
+  applicationNotice      String?                        @map("application_notice") @db.Text
+  faqSnapshot            Json?                          @map("faq_snapshot")
+  sortOrder              Int                            @default(0) @map("sort_order")
+  publishedAt            DateTime?                      @map("published_at") @db.Timestamptz(6)
+  unpublishedAt          DateTime?                      @map("unpublished_at") @db.Timestamptz(6)
+  createdAt              DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                        @map("created_by") @db.Uuid
+  updatedBy              String?                        @map("updated_by") @db.Uuid
+  deletedAt              DateTime?                      @map("deleted_at") @db.Timestamptz(6)
+  media                  VehicleListingMedia[]
+  plans                  VehicleListingPlan[]
+
+  @@index([listingStatus])
+  @@index([portalVisible])
+  @@index([sortOrder])
+  @@map("vehicle_listing_profile")
+}
+
+model VehicleListingMedia {
+  id               String                      @id @default(uuid()) @db.Uuid
+  vehicleId        String                      @map("vehicle_id") @db.Uuid
+  vehicle          Vehicle                     @relation(fields: [vehicleId], references: [id])
+  listingProfileId String?                     @map("listing_profile_id") @db.Uuid
+  listingProfile   VehicleListingProfile?      @relation(fields: [listingProfileId], references: [id])
+  fileName         String                      @map("file_name") @db.VarChar(256)
+  originalName     String?                     @map("original_name") @db.VarChar(256)
+  mimeType         String?                     @map("mime_type") @db.VarChar(128)
+  fileSize         Int?                        @map("file_size")
+  bucket           String?                     @db.VarChar(256)
+  objectKey        String?                     @map("object_key") @db.VarChar(512)
+  mediaCategory    VehicleListingMediaCategory @map("media_category")
+  caption          String?                     @db.VarChar(256)
+  sortOrder        Int                         @default(0) @map("sort_order")
+  isCover          Boolean                     @default(false) @map("is_cover")
+  customerVisible  Boolean                     @default(true) @map("customer_visible")
+  uploadedBy       String?                     @map("uploaded_by") @db.Uuid
+  createdAt        DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt        DateTime?                   @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([listingProfileId])
+  @@index([mediaCategory])
+  @@index([customerVisible])
+  @@index([sortOrder])
+  @@map("vehicle_listing_media")
+}
+
+model VehicleListingPlan {
+  id                       String                 @id @default(uuid()) @db.Uuid
+  vehicleId                String                 @map("vehicle_id") @db.Uuid
+  vehicle                  Vehicle                @relation(fields: [vehicleId], references: [id])
+  listingProfileId         String?                @map("listing_profile_id") @db.Uuid
+  listingProfile           VehicleListingProfile? @relation(fields: [listingProfileId], references: [id])
+  subscriptionPlanId       String                 @map("subscription_plan_id") @db.Uuid
+  subscriptionPlan         SubscriptionPlan       @relation(fields: [subscriptionPlanId], references: [id])
+  visible                  Boolean                @default(true)
+  recommended              Boolean                @default(false)
+  sortOrder                Int                    @default(0) @map("sort_order")
+  displayMonthlyFeeAmount  BigInt?                @map("display_monthly_fee_amount")
+  displayRemark            String?                @map("display_remark") @db.Text
+  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt                DateTime?              @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([vehicleId, subscriptionPlanId])
+  @@index([vehicleId])
+  @@index([listingProfileId])
+  @@index([subscriptionPlanId])
+  @@index([visible])
+  @@index([recommended])
+  @@map("vehicle_listing_plan")
 }
 
 model VehicleSalePriceHistory {

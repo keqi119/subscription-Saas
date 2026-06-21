@@ -1,0 +1,390 @@
+import {
+  MonthlyFeeMode,
+  Prisma,
+  ProductStatus,
+  ProductType,
+  ProductVersionStatus,
+  RecordStatus,
+  SalePriceStatus,
+  SubscriptionPlanStatus,
+  VehicleBatteryUsageType,
+  VehicleListingConditionGrade,
+  VehicleListingMediaCategory,
+  VehicleListingStatus,
+  VehicleModel,
+  VehicleStatus
+} from "@prisma/client";
+import { NotFoundException } from "@nestjs/common";
+import { Readable } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
+
+import { PortalCatalogService } from "../src/portal/portal-catalog.service";
+
+describe("PortalCatalogService enhanced vehicle listing", () => {
+  it("returns enhanced list fields without internal asset fields", async () => {
+    const { service } = createHarness();
+
+    const rows = await service.listVehicles();
+
+    expect(rows[0]).toMatchObject({
+      batteryHealthPercent: 91,
+      conditionGrade: VehicleListingConditionGrade.B,
+      coverImageUrl: "/api/portal/catalog/vehicles/vehicle-1/media/media-cover/preview",
+      displayName: "ES6 长续航现车",
+      hasMajorAccident: false,
+      monthlyFeeFromAmount: 690000
+    });
+    expect(rows[0]).not.toHaveProperty("purchasePriceAmount");
+    expect(rows[0]).not.toHaveProperty("currentSalePriceAmount");
+    expect(rows[0]).not.toHaveProperty("vin");
+    expect(rows[0]).not.toHaveProperty("plateNo");
+    expect(JSON.stringify(rows[0])).not.toContain("private-bucket");
+    expect(JSON.stringify(rows[0])).not.toContain("vehicle-listings/");
+  });
+
+  it("returns detail gallery, condition, battery, FAQ, and configured visible plans", async () => {
+    const { service } = createHarness();
+
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(detail.gallery).toHaveLength(1);
+    expect(detail.condition).toMatchObject({
+      grade: VehicleListingConditionGrade.B,
+      hasFireDamage: false,
+      hasFloodDamage: false,
+      hasMajorAccident: false,
+      knownDefectsSummary: "右前门轻微划痕"
+    });
+    expect(detail.battery).toMatchObject({
+      healthPercent: 91,
+      estimatedRangeKm: 480
+    });
+    expect(detail.subscriptionPlans).toHaveLength(1);
+    expect(detail.subscriptionPlans[0]).toMatchObject({
+      monthlyFeeAmount: 690000,
+      planId: "plan-1",
+      recommended: true
+    });
+    expect(detail.faq[0]).toMatchObject({ question: "这台车是新车还是二手车？" });
+    expect(JSON.stringify(detail)).not.toContain("purchasePriceAmount");
+    expect(JSON.stringify(detail)).not.toContain("currentSalePriceAmount");
+    expect(JSON.stringify(detail)).not.toContain("private-bucket");
+    expect(JSON.stringify(detail)).not.toContain("VIN1234567890");
+    expect(JSON.stringify(detail)).not.toContain("沪A12345");
+  });
+
+  it("falls back to active plans when listing plans are not configured", async () => {
+    const vehicle = createVehicle({
+      listingProfile: {
+        ...createListingProfile(),
+        plans: []
+      }
+    });
+    const { service } = createHarness({ vehicle });
+
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(detail.subscriptionPlans).toHaveLength(2);
+    expect(detail.subscriptionPlans.map((plan) => plan.planId)).toEqual(["plan-1", "plan-2"]);
+  });
+
+  it("keeps catalog fallback when no listing profile exists", async () => {
+    const vehicle = createVehicle({ listingProfile: null });
+    const { service } = createHarness({ vehicle });
+
+    const rows = await service.listVehicles();
+
+    expect(rows[0]).toMatchObject({
+      coverImageUrl: null,
+      displayName: "NIO ES6 ES6 2025款"
+    });
+  });
+
+  it("streams only customer-visible published media", async () => {
+    const { service, storageService } = createHarness();
+
+    const preview = await service.previewVehicleMedia("vehicle-1", "media-cover");
+
+    expect(preview.filename).toBe("cover.jpg");
+    expect(storageService.getVehicleListingMediaStream).toHaveBeenCalledWith(
+      "private-bucket",
+      "vehicle-listings/vehicle-1/2026/cover.jpg"
+    );
+    await expect(service.previewVehicleMedia("vehicle-1", "media-hidden")).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+function createHarness(seed: { vehicle?: ReturnType<typeof createVehicle> } = {}) {
+  const vehicle = seed.vehicle ?? createVehicle();
+  const plans = [createPlan("plan-1"), createPlan("plan-2", { planName: "灵活订阅 24 个月" })];
+  const prisma = {
+    subscriptionPlan: {
+      findMany: vi.fn(async () => plans)
+    },
+    vehicle: {
+      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        !where.id || where.id === vehicle.id ? vehicle : null
+      ),
+      findMany: vi.fn(async () => [vehicle])
+    },
+    vehicleListingMedia: {
+      findFirst: vi.fn(async ({ where }: { where: { customerVisible?: boolean; id?: string; vehicleId?: string } }) => {
+        const media = vehicle.listingProfile?.media.find((item) => item.id === where.id);
+        if (!media || media.vehicleId !== where.vehicleId || media.customerVisible !== where.customerVisible) {
+          return null;
+        }
+        return {
+          ...media,
+          listingProfile: vehicle.listingProfile
+        };
+      })
+    }
+  };
+  const storageService = {
+    getVehicleListingMediaStream: vi.fn(async () => ({
+      contentLength: 5,
+      contentType: "image/jpeg",
+      stream: Readable.from(["hello"])
+    }))
+  };
+
+  return {
+    prisma,
+    service: new PortalCatalogService(prisma as never, storageService as never),
+    storageService
+  };
+}
+
+function createVehicle(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-06-21T10:00:00.000Z");
+  return {
+    acquisitionMode: "OWNED_CASH",
+    assetLocation: "上海",
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+    brand: "NIO",
+    createdAt: now,
+    createdBy: "user-1",
+    currentMileageKm: 12000,
+    currentSalePriceAmount: 20000000n,
+    currentSalePriceInitializedAt: now,
+    currentSalePriceReviewedAt: now,
+    deletedAt: null,
+    id: "vehicle-1",
+    insuranceEndDate: null,
+    insuranceStartDate: null,
+    latestRegistrationDate: null,
+    listingProfile: createListingProfile(),
+    model: "ES6",
+    modelYear: 2025,
+    nextSalePriceReviewAt: null,
+    plateNo: "沪A12345",
+    purchaseDate: null,
+    purchasePriceAmount: 26000000n,
+    registrationDate: new Date("2025-01-10T00:00:00.000Z"),
+    remark: null,
+    salePriceReinitRequiredAt: null,
+    salePriceStatus: SalePriceStatus.EFFECTIVE,
+    series: "ES6",
+    status: VehicleStatus.AVAILABLE,
+    updatedAt: now,
+    updatedBy: "user-1",
+    vehicleModel: VehicleModel.ES6,
+    vehicleNo: "VH001",
+    vin: "VIN1234567890",
+    ...overrides
+  };
+}
+
+function createListingProfile() {
+  const now = new Date("2026-06-21T10:00:00.000Z");
+  return {
+    applicationNotice: "提交后进入审核。",
+    batteryHealthCheckedAt: new Date("2026-06-01T00:00:00.000Z"),
+    batteryHealthPercent: new Prisma.Decimal(91),
+    batteryRemark: "续航受环境影响",
+    conditionGrade: VehicleListingConditionGrade.B,
+    conditionSummary: "车况良好",
+    createdAt: now,
+    createdBy: "user-1",
+    customerTags: ["现车", "长续航"],
+    deletedAt: null,
+    displayName: "ES6 长续航现车",
+    estimatedRangeKm: 480,
+    faqSnapshot: [{ answer: "二手车。", question: "这台车是新车还是二手车？" }],
+    feeDescription: "押金审核后确认。",
+    hasFireDamage: false,
+    hasFloodDamage: false,
+    hasMajorAccident: false,
+    hasStructuralDamage: false,
+    highlightSummary: "一车一况已维护",
+    id: "listing-profile-1",
+    knownDefectsSummary: "右前门轻微划痕",
+    listingStatus: VehicleListingStatus.PUBLISHED,
+    media: [
+      {
+        bucket: "private-bucket",
+        caption: "外观封面",
+        createdAt: now,
+        customerVisible: true,
+        deletedAt: null,
+        fileName: "cover.jpg",
+        fileSize: 5,
+        id: "media-cover",
+        isCover: true,
+        listingProfileId: "listing-profile-1",
+        mediaCategory: VehicleListingMediaCategory.COVER,
+        mimeType: "image/jpeg",
+        objectKey: "vehicle-listings/vehicle-1/2026/cover.jpg",
+        originalName: "cover.jpg",
+        sortOrder: 0,
+        updatedAt: now,
+        uploadedBy: "user-1",
+        vehicleId: "vehicle-1"
+      },
+      {
+        bucket: "private-bucket",
+        caption: "隐藏图",
+        createdAt: now,
+        customerVisible: false,
+        deletedAt: null,
+        fileName: "hidden.jpg",
+        fileSize: 5,
+        id: "media-hidden",
+        isCover: false,
+        listingProfileId: "listing-profile-1",
+        mediaCategory: VehicleListingMediaCategory.EXTERIOR,
+        mimeType: "image/jpeg",
+        objectKey: "vehicle-listings/vehicle-1/2026/hidden.jpg",
+        originalName: "hidden.jpg",
+        sortOrder: 1,
+        updatedAt: now,
+        uploadedBy: "user-1",
+        vehicleId: "vehicle-1"
+      }
+    ],
+    plans: [
+      {
+        createdAt: now,
+        deletedAt: null,
+        displayMonthlyFeeAmount: 690000n,
+        displayRemark: null,
+        id: "listing-plan-1",
+        listingProfileId: "listing-profile-1",
+        recommended: true,
+        sortOrder: 0,
+        subscriptionPlan: createPlan("plan-1"),
+        subscriptionPlanId: "plan-1",
+        updatedAt: now,
+        vehicleId: "vehicle-1",
+        visible: true
+      },
+      {
+        createdAt: now,
+        deletedAt: null,
+        displayMonthlyFeeAmount: null,
+        displayRemark: null,
+        id: "listing-plan-2",
+        listingProfileId: "listing-profile-1",
+        recommended: false,
+        sortOrder: 1,
+        subscriptionPlan: createPlan("plan-2"),
+        subscriptionPlanId: "plan-2",
+        updatedAt: now,
+        vehicleId: "vehicle-1",
+        visible: false
+      }
+    ],
+    portalVisible: true,
+    publishedAt: now,
+    sellingPoints: ["一车一况", "电池健康度已维护"],
+    serviceHighlights: ["账单线上查看"],
+    shortTitle: "ES6 长续航",
+    sortOrder: 0,
+    subtitle: "上海现车",
+    unpublishedAt: null,
+    updatedAt: now,
+    updatedBy: "user-1",
+    vehicleId: "vehicle-1"
+  };
+}
+
+function createPlan(id: string, overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-06-21T10:00:00.000Z");
+  const product = {
+    deletedAt: null,
+    id: "product-1",
+    productType: ProductType.SUBSCRIPTION,
+    status: ProductStatus.ACTIVE
+  };
+  const productVersion = {
+    deletedAt: null,
+    id: "version-1",
+    productId: "product-1",
+    status: ProductVersionStatus.ACTIVE
+  };
+
+  return {
+    baseMonthlyFeeAmount: null,
+    benefitPackage: null,
+    benefitPackageId: null,
+    createdAt: now,
+    createdBy: "user-1",
+    deletedAt: null,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    energyPackage: {
+      deletedAt: null,
+      id: "energy-package-1",
+      monthlyEnergyCount: null,
+      monthlyEnergyKwh: 100,
+      packageName: "补能包",
+      priceAmount: 20000n,
+      productId: "product-1",
+      productVersionId: "version-1",
+      serviceDescription: null,
+      status: RecordStatus.ACTIVE
+    },
+    energyPackageId: "energy-package-1",
+    id,
+    maxPeriodMonths: 24,
+    mileagePackage: {
+      deletedAt: null,
+      id: "mileage-package-1",
+      monthlyMileageKm: 1500,
+      overMileageFeeAmount: 100n,
+      packageName: "1500 公里",
+      priceAmount: 10000n,
+      productId: "product-1",
+      productVersionId: "version-1",
+      status: RecordStatus.ACTIVE
+    },
+    mileagePackageId: "mileage-package-1",
+    minPeriodMonths: 12,
+    monthlyFeeCapRate: null,
+    monthlyFeeMode: MonthlyFeeMode.RATE_FORMULA,
+    monthlyFeeRate: new Prisma.Decimal("0.035"),
+    planName: "安心订阅 12 个月",
+    planNo: id.toUpperCase(),
+    product,
+    productId: "product-1",
+    productVersion,
+    productVersionId: "version-1",
+    remark: null,
+    status: SubscriptionPlanStatus.ACTIVE,
+    updatedAt: now,
+    updatedBy: "user-1",
+    vehiclePackage: {
+      deletedAt: null,
+      id: "vehicle-package-1",
+      monthlyFeeRate: new Prisma.Decimal("0.04"),
+      packageName: "ES6 基础车包",
+      productId: "product-1",
+      productVersionId: "version-1",
+      status: RecordStatus.ACTIVE,
+      vehicleModel: VehicleModel.ES6
+    },
+    vehiclePackageId: "vehicle-package-1",
+    ...overrides
+  };
+}

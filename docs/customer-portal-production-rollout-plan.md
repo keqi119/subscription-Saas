@@ -260,3 +260,15 @@ Proceed only with internal RC or invited beta after:
 - Authenticated API smoke passes.
 - Business owner explicitly accepts Mock ESignProvider for the release scope.
 - WeChat menu apply decision is recorded.
+
+## Stage 10L-A Rollout Note
+
+Stage 10L-A introduces vehicle listing profiles, gallery media, optional display-plan configuration, and richer Portal catalog/detail pages.
+
+Production rollout notes:
+
+- Run the new migration with `prisma migrate deploy`; do not use `prisma migrate reset` or `prisma db push`.
+- Keep `PORTAL_CATALOG_REQUIRE_PUBLISHED=false` during beta unless business explicitly wants unpublished/unconfigured vehicles hidden.
+- Verify a controlled catalog journey after deployment: list, detail, media preview, and `提交审核`.
+- Confirm Portal responses still redact purchase price, sale price, full VIN/plate, and storage internals.
+- Treat Stage 10L-A as catalog presentation readiness, not as unrestricted customer-launch approval.

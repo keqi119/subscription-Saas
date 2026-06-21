@@ -204,6 +204,36 @@ export const VEHICLE_STATUS_LABELS: Record<string, string> = {
   SOLD: "已出售"
 };
 
+export const VEHICLE_LISTING_STATUS_LABELS: Record<string, string> = {
+  ARCHIVED: "已归档",
+  DRAFT: "草稿",
+  PUBLISHED: "已发布",
+  UNPUBLISHED: "已下架"
+};
+
+export const VEHICLE_LISTING_CONDITION_GRADE_LABELS: Record<string, string> = {
+  A: "优秀",
+  B: "良好",
+  C: "一般",
+  D: "需整备",
+  S: "准新 / 极佳",
+  UNKNOWN: "待确认"
+};
+
+export const VEHICLE_LISTING_MEDIA_CATEGORY_LABELS: Record<string, string> = {
+  BATTERY: "电池",
+  CENTRAL_CONTROL: "中控",
+  CHARGING_PORT: "充电口",
+  COVER: "封面",
+  DASHBOARD: "仪表",
+  DEFECT: "瑕疵",
+  EXTERIOR: "外观",
+  INSPECTION_REPORT: "检测报告",
+  INTERIOR: "内饰",
+  OTHER: "其他",
+  TIRE: "轮胎"
+};
+
 export const VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "生效中",
   INACTIVE: "已停用"

@@ -8,7 +8,8 @@ import {
   HistoryOutlined,
   PlusOutlined,
   ReloadOutlined,
-  SyncOutlined
+  SyncOutlined,
+  UploadOutlined
 } from "@ant-design/icons";
 import {
   App,
@@ -19,6 +20,7 @@ import {
   Descriptions,
   Drawer,
   Empty,
+  Flex,
   Form,
   type FormInstance,
   Input,
@@ -26,12 +28,15 @@ import {
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Tabs,
   Tag,
-  Typography
+  Typography,
+  Upload
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import type { UploadFile } from "antd/es/upload/interface";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -46,6 +51,9 @@ import {
   SALE_PRICE_REVIEW_TYPE_LABELS,
   STATUS_LABELS,
   RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS,
+  VEHICLE_LISTING_CONDITION_GRADE_LABELS,
+  VEHICLE_LISTING_MEDIA_CATEGORY_LABELS,
+  VEHICLE_LISTING_STATUS_LABELS,
   VEHICLE_ACQUISITION_MODE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   VEHICLE_CAPITAL_EVENT_STATUS_LABELS,
@@ -65,7 +73,7 @@ import {
   canReviewVehicleSalePrice,
   canUpdateVehicleStatus
 } from "../../lib/action-guards";
-import { apiFetch, ApiError } from "../../lib/api";
+import { API_BASE_URL, apiFetch, ApiError } from "../../lib/api";
 import type { AuthMeResponse } from "../../lib/auth";
 import {
   formatPercentFromBps,
@@ -535,6 +543,8 @@ const batteryUsageTypeOptions = [
   { label: "BaaS / 电池租用", value: "BAAS" }
 ];
 
+const listingConditionGradeOptions = optionsFromLabels(VEHICLE_LISTING_CONDITION_GRADE_LABELS);
+const listingMediaCategoryOptions = optionsFromLabels(VEHICLE_LISTING_MEDIA_CATEGORY_LABELS);
 const acquisitionModeOptions = optionsFromLabels(VEHICLE_ACQUISITION_MODE_LABELS);
 const capitalEventTypeOptions = optionsFromLabels(VEHICLE_CAPITAL_EVENT_TYPE_LABELS);
 const revenueShareRuleTypeOptions = optionsFromLabels(REVENUE_SHARE_RULE_TYPE_LABELS);
@@ -2246,6 +2256,7 @@ export default function VehiclesPage() {
                 { label: "备注", children: detailVehicle.remark ?? "-" }
               ]}
             />
+            <VehicleListingManagementBlock permissions={permissions} vehicle={detailVehicle} />
             {canViewResidualForecast ? (
               <VehicleResidualForecastBlock
                 history={residualForecastHistory}
@@ -3178,6 +3189,790 @@ function VehicleResidualForecastBlock({
       />
     </Space>
   );
+}
+
+interface VehicleListingProfile {
+  applicationNotice?: string | null;
+  batteryHealthCheckedAt?: string | null;
+  batteryHealthPercent?: number | null;
+  batteryRemark?: string | null;
+  conditionGrade?: string | null;
+  conditionSummary?: string | null;
+  customerTags?: unknown;
+  displayName?: string | null;
+  estimatedRangeKm?: number | null;
+  faqSnapshot?: unknown;
+  feeDescription?: string | null;
+  hasFireDamage?: boolean | null;
+  hasFloodDamage?: boolean | null;
+  hasMajorAccident?: boolean | null;
+  hasStructuralDamage?: boolean | null;
+  highlightSummary?: string | null;
+  knownDefectsSummary?: string | null;
+  listingStatus?: string | null;
+  portalVisible?: boolean;
+  sellingPoints?: unknown;
+  serviceHighlights?: unknown;
+  shortTitle?: string | null;
+  sortOrder?: number;
+  subtitle?: string | null;
+}
+
+interface VehicleListingMedia {
+  bucket?: string | null;
+  caption?: string | null;
+  customerVisible: boolean;
+  fileName: string;
+  fileSize?: number | null;
+  id: string;
+  isCover: boolean;
+  mediaCategory: string;
+  mimeType?: string | null;
+  objectKey?: string | null;
+  previewUrl: string;
+  sortOrder: number;
+}
+
+interface VehicleListingAvailablePlan {
+  packageSummary: string[];
+  planId: string;
+  planName: string;
+  planNo: string;
+  subscriptionPeriodRange: {
+    max: number;
+    min: number;
+  };
+}
+
+interface VehicleListingPlanConfig {
+  displayMonthlyFeeAmount?: number | null;
+  displayRemark?: string | null;
+  recommended: boolean;
+  sortOrder: number;
+  subscriptionPlanId: string;
+  visible: boolean;
+}
+
+interface VehicleListingPlansResponse {
+  availablePlans: VehicleListingAvailablePlan[];
+  plans: VehicleListingPlanConfig[];
+}
+
+interface VehicleListingProfileFormValues {
+  applicationNotice?: string | null;
+  batteryHealthCheckedAt?: Dayjs | null;
+  batteryHealthPercent?: number | null;
+  batteryRemark?: string | null;
+  conditionGrade?: string | null;
+  conditionSummary?: string | null;
+  customerTagsText?: string;
+  displayName?: string | null;
+  estimatedRangeKm?: number | null;
+  faqJson?: string;
+  feeDescription?: string | null;
+  hasFireDamage?: boolean | null;
+  hasFloodDamage?: boolean | null;
+  hasMajorAccident?: boolean | null;
+  hasStructuralDamage?: boolean | null;
+  highlightSummary?: string | null;
+  knownDefectsSummary?: string | null;
+  portalVisible?: boolean;
+  sellingPointsText?: string;
+  serviceHighlightsText?: string;
+  shortTitle?: string | null;
+  sortOrder?: number;
+  subtitle?: string | null;
+}
+
+interface VehicleListingMediaFormValues {
+  caption?: string | null;
+  customerVisible?: boolean;
+  isCover?: boolean;
+  mediaCategory?: string;
+  sortOrder?: number;
+}
+
+interface VehicleListingPlanDraft extends VehicleListingAvailablePlan {
+  displayMonthlyFeeAmountYuan?: number | null;
+  displayRemark?: string | null;
+  enabled: boolean;
+  recommended: boolean;
+  sortOrder: number;
+  visible: boolean;
+}
+
+function VehicleListingManagementBlock({
+  permissions,
+  vehicle
+}: Readonly<{
+  permissions: ReadonlySet<string>;
+  vehicle: Vehicle;
+}>) {
+  const { message } = App.useApp();
+  const [profileForm] = Form.useForm<VehicleListingProfileFormValues>();
+  const [mediaForm] = Form.useForm<VehicleListingMediaFormValues>();
+  const [loading, setLoading] = useState(false);
+  const [profile, setProfile] = useState<VehicleListingProfile | null>(null);
+  const [mediaRows, setMediaRows] = useState<VehicleListingMedia[]>([]);
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaFileList, setMediaFileList] = useState<UploadFile[]>([]);
+  const [planDrafts, setPlanDrafts] = useState<VehicleListingPlanDraft[]>([]);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPlans, setSavingPlans] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const canManage = permissions.has("vehicle:manage");
+
+  const loadListing = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [nextProfile, nextMediaRows, nextPlans] = await Promise.all([
+        apiFetch<VehicleListingProfile | null>(`/vehicles/${vehicle.id}/listing-profile`),
+        apiFetch<VehicleListingMedia[]>(`/vehicles/${vehicle.id}/listing-media`),
+        apiFetch<VehicleListingPlansResponse>(`/vehicles/${vehicle.id}/listing-plans`)
+      ]);
+      setProfile(nextProfile);
+      setMediaRows(nextMediaRows);
+      setPlanDrafts(buildPlanDrafts(nextPlans));
+      profileForm.setFieldsValue(profileToFormValues(nextProfile, vehicle));
+      mediaForm.setFieldsValue({
+        customerVisible: true,
+        isCover: false,
+        mediaCategory: "EXTERIOR",
+        sortOrder: nextMediaRows.length
+      });
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [mediaForm, message, profileForm, vehicle]);
+
+  useEffect(() => {
+    void loadListing();
+  }, [loadListing]);
+
+  async function saveProfile(values: VehicleListingProfileFormValues) {
+    setSavingProfile(true);
+    try {
+      const payload = {
+        applicationNotice: values.applicationNotice,
+        batteryHealthCheckedAt: values.batteryHealthCheckedAt?.format("YYYY-MM-DD") ?? null,
+        batteryHealthPercent: values.batteryHealthPercent ?? null,
+        batteryRemark: values.batteryRemark,
+        conditionGrade: values.conditionGrade ?? null,
+        conditionSummary: values.conditionSummary,
+        customerTags: textToLines(values.customerTagsText),
+        displayName: values.displayName,
+        estimatedRangeKm: values.estimatedRangeKm ?? null,
+        faqSnapshot: parseJsonArray(values.faqJson, "FAQ JSON"),
+        feeDescription: values.feeDescription,
+        hasFireDamage: values.hasFireDamage ?? null,
+        hasFloodDamage: values.hasFloodDamage ?? null,
+        hasMajorAccident: values.hasMajorAccident ?? null,
+        hasStructuralDamage: values.hasStructuralDamage ?? null,
+        highlightSummary: values.highlightSummary,
+        knownDefectsSummary: values.knownDefectsSummary,
+        portalVisible: values.portalVisible ?? false,
+        sellingPoints: textToLines(values.sellingPointsText),
+        serviceHighlights: textToLines(values.serviceHighlightsText),
+        shortTitle: values.shortTitle,
+        sortOrder: values.sortOrder ?? 0,
+        subtitle: values.subtitle
+      };
+      const nextProfile = await apiFetch<VehicleListingProfile>(`/vehicles/${vehicle.id}/listing-profile`, {
+        body: JSON.stringify(payload),
+        method: "PUT"
+      });
+      setProfile(nextProfile);
+      profileForm.setFieldsValue(profileToFormValues(nextProfile, vehicle));
+      void message.success("客户展示配置已保存");
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
+  async function publishProfile() {
+    await updateProfileStatus("publish", "客户展示已发布");
+  }
+
+  async function unpublishProfile() {
+    await updateProfileStatus("unpublish", "客户展示已下架");
+  }
+
+  async function updateProfileStatus(action: "publish" | "unpublish", successMessage: string) {
+    try {
+      const nextProfile = await apiFetch<VehicleListingProfile>(
+        `/vehicles/${vehicle.id}/listing-profile/${action}`,
+        { method: "POST" }
+      );
+      setProfile(nextProfile);
+      profileForm.setFieldsValue(profileToFormValues(nextProfile, vehicle));
+      void message.success(successMessage);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function uploadMedia(values: VehicleListingMediaFormValues) {
+    if (!mediaFile) {
+      void message.warning("请选择图片或文件");
+      return;
+    }
+    const body = new FormData();
+    body.append("file", mediaFile);
+    body.append("mediaCategory", values.mediaCategory ?? "EXTERIOR");
+    body.append("sortOrder", String(values.sortOrder ?? 0));
+    body.append("isCover", String(Boolean(values.isCover)));
+    body.append("customerVisible", String(values.customerVisible ?? true));
+    if (values.caption) {
+      body.append("caption", values.caption);
+    }
+
+    setUploadingMedia(true);
+    try {
+      await apiFetch<VehicleListingMedia>(`/vehicles/${vehicle.id}/listing-media`, {
+        body,
+        method: "POST"
+      });
+      void message.success("图片已上传");
+      setMediaFile(null);
+      setMediaFileList([]);
+      mediaForm.resetFields();
+      await loadListing();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setUploadingMedia(false);
+    }
+  }
+
+  async function patchMedia(media: VehicleListingMedia, payload: Partial<VehicleListingMediaFormValues>) {
+    try {
+      await apiFetch<VehicleListingMedia>(`/vehicles/${vehicle.id}/listing-media/${media.id}`, {
+        body: JSON.stringify(payload),
+        method: "PATCH"
+      });
+      await loadListing();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
+  function deleteMedia(media: VehicleListingMedia) {
+    Modal.confirm({
+      content: "删除后客户侧不再展示该图片，存储对象保留在私有存储中。",
+      okText: "删除",
+      onOk: async () => {
+        try {
+          await apiFetch<VehicleListingMedia>(`/vehicles/${vehicle.id}/listing-media/${media.id}`, {
+            method: "DELETE"
+          });
+          void message.success("图片已删除");
+          await loadListing();
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+        }
+      },
+      title: "确认删除该客户侧图片？"
+    });
+  }
+
+  async function saveListingPlans() {
+    setSavingPlans(true);
+    try {
+      await apiFetch<VehicleListingPlansResponse>(`/vehicles/${vehicle.id}/listing-plans`, {
+        body: JSON.stringify({
+          plans: planDrafts
+            .filter((plan) => plan.enabled)
+            .map((plan) => ({
+              displayMonthlyFeeAmount:
+                plan.displayMonthlyFeeAmountYuan === undefined || plan.displayMonthlyFeeAmountYuan === null
+                  ? null
+                  : toCents(plan.displayMonthlyFeeAmountYuan),
+              displayRemark: plan.displayRemark ?? null,
+              recommended: plan.recommended,
+              sortOrder: plan.sortOrder,
+              subscriptionPlanId: plan.planId,
+              visible: plan.visible
+            }))
+        }),
+        method: "PUT"
+      });
+      void message.success("展示套餐已保存");
+      await loadListing();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setSavingPlans(false);
+    }
+  }
+
+  function updatePlanDraft(planId: string, patch: Partial<VehicleListingPlanDraft>) {
+    setPlanDrafts((rows) => rows.map((row) => (row.planId === planId ? { ...row, ...patch } : row)));
+  }
+
+  const mediaColumns: ColumnsType<VehicleListingMedia> = [
+    {
+      render: (_, record) => (
+        <Button onClick={() => window.open(buildAdminAssetUrl(record.previewUrl), "_blank", "noopener,noreferrer")} size="small">
+          预览
+        </Button>
+      ),
+      title: "预览",
+      width: 80
+    },
+    { dataIndex: "fileName", title: "文件名", width: 190 },
+    {
+      dataIndex: "mediaCategory",
+      render: (value: string) => labelOf(VEHICLE_LISTING_MEDIA_CATEGORY_LABELS, value),
+      title: "分类",
+      width: 130
+    },
+    { dataIndex: "caption", render: (value: string | null) => value ?? "-", title: "说明", width: 180 },
+    { dataIndex: "sortOrder", title: "排序", width: 80 },
+    {
+      render: (_, record) => (
+        <Space size={6}>
+          {record.isCover ? <Tag color="green">封面</Tag> : null}
+          {record.customerVisible ? <Tag color="blue">客户可见</Tag> : <Tag>隐藏</Tag>}
+        </Space>
+      ),
+      title: "状态",
+      width: 160
+    },
+    {
+      render: (_, record) => (
+        <Space size={8}>
+          <ActionButton
+            allowed={!record.isCover}
+            onClick={() => patchMedia(record, { isCover: true })}
+            permission="vehicle:manage"
+            permissions={permissions}
+            size="small"
+          >
+            设封面
+          </ActionButton>
+          <ActionButton
+            onClick={() => patchMedia(record, { customerVisible: !record.customerVisible })}
+            permission="vehicle:manage"
+            permissions={permissions}
+            size="small"
+          >
+            {record.customerVisible ? "隐藏" : "显示"}
+          </ActionButton>
+          <ActionButton
+            danger
+            onClick={() => deleteMedia(record)}
+            permission="vehicle:manage"
+            permissions={permissions}
+            size="small"
+          >
+            删除
+          </ActionButton>
+        </Space>
+      ),
+      title: "操作",
+      width: 230
+    }
+  ];
+
+  const planColumns: ColumnsType<VehicleListingPlanDraft> = [
+    {
+      render: (_, record) => (
+        <Switch
+          checked={record.enabled}
+          disabled={!canManage}
+          onChange={(checked) => updatePlanDraft(record.planId, { enabled: checked, visible: checked ? record.visible : false })}
+        />
+      ),
+      title: "配置",
+      width: 70
+    },
+    { dataIndex: "planName", title: "套餐", width: 190 },
+    {
+      render: (_, record) => record.packageSummary.join(" / ") || "-",
+      title: "套餐包",
+      width: 260
+    },
+    {
+      render: (_, record) => `${record.subscriptionPeriodRange.min}-${record.subscriptionPeriodRange.max} 个月`,
+      title: "期限",
+      width: 120
+    },
+    {
+      render: (_, record) => (
+        <Switch
+          checked={record.visible}
+          disabled={!canManage || !record.enabled}
+          onChange={(checked) => updatePlanDraft(record.planId, { visible: checked })}
+        />
+      ),
+      title: "客户可见",
+      width: 90
+    },
+    {
+      render: (_, record) => (
+        <Switch
+          checked={record.recommended}
+          disabled={!canManage || !record.enabled}
+          onChange={(checked) => updatePlanDraft(record.planId, { recommended: checked })}
+        />
+      ),
+      title: "推荐",
+      width: 80
+    },
+    {
+      render: (_, record) => (
+        <InputNumber
+          disabled={!canManage || !record.enabled}
+          min={0}
+          onChange={(value) => updatePlanDraft(record.planId, { displayMonthlyFeeAmountYuan: value })}
+          placeholder="按系统估算"
+          precision={2}
+          style={{ width: "100%" }}
+          value={record.displayMonthlyFeeAmountYuan}
+        />
+      ),
+      title: "展示月租(元)",
+      width: 150
+    },
+    {
+      render: (_, record) => (
+        <Input
+          disabled={!canManage || !record.enabled}
+          onChange={(event) => updatePlanDraft(record.planId, { displayRemark: event.target.value })}
+          placeholder="展示说明"
+          value={record.displayRemark ?? ""}
+        />
+      ),
+      title: "展示说明",
+      width: 220
+    }
+  ];
+
+  return (
+    <section style={{ border: "1px solid #e5eaf2", borderRadius: 8, padding: 14 }}>
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between">
+          <Space>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              客户侧商品展示
+            </Typography.Title>
+            {profile?.listingStatus ? (
+              <Tag color={profile.portalVisible ? "green" : "default"}>
+                {labelOf(VEHICLE_LISTING_STATUS_LABELS, profile.listingStatus)}
+              </Tag>
+            ) : null}
+          </Space>
+          <Button loading={loading} onClick={loadListing} size="small">
+            刷新
+          </Button>
+        </Flex>
+        <Tabs
+          items={[
+            {
+              children: (
+                <Form<VehicleListingProfileFormValues>
+                  form={profileForm}
+                  layout="vertical"
+                  onFinish={saveProfile}
+                >
+                  <Descriptions
+                    column={2}
+                    items={[
+                      { label: "发布状态", children: labelOf(VEHICLE_LISTING_STATUS_LABELS, profile?.listingStatus) },
+                      { label: "客户可见", children: profile?.portalVisible ? "是" : "否" }
+                    ]}
+                    size="small"
+                  />
+                  <Form.Item label="展示标题" name="displayName">
+                    <Input maxLength={128} />
+                  </Form.Item>
+                  <Form.Item label="短标题" name="shortTitle">
+                    <Input maxLength={128} />
+                  </Form.Item>
+                  <Form.Item label="副标题" name="subtitle">
+                    <Input maxLength={256} />
+                  </Form.Item>
+                  <Form.Item label="卖点（每行一条）" name="sellingPointsText">
+                    <Input.TextArea rows={3} />
+                  </Form.Item>
+                  <Form.Item label="客户标签（每行一条）" name="customerTagsText">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Form.Item label="一车一况摘要" name="highlightSummary">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Flex gap={12} wrap="wrap">
+                    <Form.Item label="车况等级" name="conditionGrade" style={{ flex: "1 1 180px" }}>
+                      <Select allowClear options={listingConditionGradeOptions} />
+                    </Form.Item>
+                    <Form.Item label="电池健康度(%)" name="batteryHealthPercent" style={{ flex: "1 1 160px" }}>
+                      <InputNumber max={100} min={0} precision={2} style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item label="电池检测日期" name="batteryHealthCheckedAt" style={{ flex: "1 1 180px" }}>
+                      <DatePicker style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item label="预计续航(km)" name="estimatedRangeKm" style={{ flex: "1 1 160px" }}>
+                      <InputNumber min={0} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Flex>
+                  <Form.Item label="车况摘要" name="conditionSummary">
+                    <Input.TextArea rows={3} />
+                  </Form.Item>
+                  <Flex gap={18} wrap="wrap">
+                    <Form.Item label="重大事故" name="hasMajorAccident" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label="水泡" name="hasFloodDamage" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label="火烧" name="hasFireDamage" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label="结构件损伤" name="hasStructuralDamage" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label="Portal 可见" name="portalVisible" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                  </Flex>
+                  <Form.Item label="已知瑕疵摘要" name="knownDefectsSummary">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Form.Item label="电池说明" name="batteryRemark">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Form.Item label="费用说明" name="feeDescription">
+                    <Input.TextArea rows={4} />
+                  </Form.Item>
+                  <Form.Item label="申请须知" name="applicationNotice">
+                    <Input.TextArea rows={3} />
+                  </Form.Item>
+                  <Form.Item label="服务亮点（每行一条）" name="serviceHighlightsText">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Form.Item label="FAQ JSON" name="faqJson">
+                    <Input.TextArea rows={5} />
+                  </Form.Item>
+                  <Form.Item label="排序" name="sortOrder">
+                    <InputNumber style={{ width: 160 }} />
+                  </Form.Item>
+                  <Space>
+                    <ActionButton
+                      htmlType="submit"
+                      loading={savingProfile}
+                      permission="vehicle:manage"
+                      permissions={permissions}
+                      type="primary"
+                    >
+                      保存客户展示
+                    </ActionButton>
+                    <ActionButton onClick={publishProfile} permission="vehicle:manage" permissions={permissions}>
+                      发布
+                    </ActionButton>
+                    <ActionButton onClick={unpublishProfile} permission="vehicle:manage" permissions={permissions}>
+                      下架
+                    </ActionButton>
+                  </Space>
+                </Form>
+              ),
+              key: "profile",
+              label: "客户展示"
+            },
+            {
+              children: (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Form<VehicleListingMediaFormValues> form={mediaForm} layout="inline" onFinish={uploadMedia}>
+                    <Form.Item label="分类" name="mediaCategory">
+                      <Select options={listingMediaCategoryOptions} style={{ width: 150 }} />
+                    </Form.Item>
+                    <Form.Item label="说明" name="caption">
+                      <Input style={{ width: 180 }} />
+                    </Form.Item>
+                    <Form.Item label="排序" name="sortOrder">
+                      <InputNumber style={{ width: 90 }} />
+                    </Form.Item>
+                    <Form.Item label="封面" name="isCover" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label="客户可见" name="customerVisible" valuePropName="checked">
+                      <Switch defaultChecked />
+                    </Form.Item>
+                    <Form.Item>
+                      <Upload
+                        beforeUpload={(file) => {
+                          setMediaFile(file as File);
+                          setMediaFileList([file]);
+                          return false;
+                        }}
+                        fileList={mediaFileList}
+                        maxCount={1}
+                        onChange={({ fileList }) => {
+                          setMediaFileList(fileList.slice(-1));
+                          const latestFile = fileList.at(-1);
+                          setMediaFile((latestFile?.originFileObj as File | undefined) ?? null);
+                        }}
+                        onRemove={() => {
+                          setMediaFile(null);
+                          setMediaFileList([]);
+                        }}
+                      >
+                        <Button icon={<UploadOutlined />}>选择图片</Button>
+                      </Upload>
+                    </Form.Item>
+                    <Form.Item>
+                      <ActionButton
+                        htmlType="submit"
+                        loading={uploadingMedia}
+                        permission="vehicle:manage"
+                        permissions={permissions}
+                        type="primary"
+                      >
+                        上传
+                      </ActionButton>
+                    </Form.Item>
+                  </Form>
+                  <Table
+                    columns={mediaColumns}
+                    dataSource={mediaRows}
+                    loading={loading}
+                    pagination={false}
+                    rowKey="id"
+                    scroll={{ x: 1130 }}
+                    size="small"
+                  />
+                </Space>
+              ),
+              key: "media",
+              label: "图片图集"
+            },
+            {
+              children: (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Table
+                    columns={planColumns}
+                    dataSource={planDrafts}
+                    loading={loading}
+                    pagination={false}
+                    rowKey="planId"
+                    scroll={{ x: 1090 }}
+                    size="small"
+                  />
+                  <ActionButton
+                    loading={savingPlans}
+                    onClick={saveListingPlans}
+                    permission="vehicle:manage"
+                    permissions={permissions}
+                    type="primary"
+                  >
+                    保存展示套餐
+                  </ActionButton>
+                </Space>
+              ),
+              key: "plans",
+              label: "展示套餐"
+            },
+            {
+              children: (
+                <Space direction="vertical" size={12}>
+                  <Typography.Text>客户侧预览不会生成订单，仍然是提交审核。</Typography.Text>
+                  <Button onClick={() => window.open(`/portal/catalog/${vehicle.id}`, "_blank", "noopener,noreferrer")}>
+                    打开客户预览
+                  </Button>
+                </Space>
+              ),
+              key: "preview",
+              label: "客户预览"
+            }
+          ]}
+        />
+      </Space>
+    </section>
+  );
+}
+
+function buildPlanDrafts(response: VehicleListingPlansResponse): VehicleListingPlanDraft[] {
+  const configByPlanId = new Map(response.plans.map((plan) => [plan.subscriptionPlanId, plan]));
+  return response.availablePlans.map((plan) => {
+    const config = configByPlanId.get(plan.planId);
+    return {
+      ...plan,
+      displayMonthlyFeeAmountYuan:
+        config?.displayMonthlyFeeAmount === undefined || config?.displayMonthlyFeeAmount === null
+          ? null
+          : config.displayMonthlyFeeAmount / 100,
+      displayRemark: config?.displayRemark ?? null,
+      enabled: Boolean(config),
+      recommended: config?.recommended ?? false,
+      sortOrder: config?.sortOrder ?? 0,
+      visible: config?.visible ?? false
+    };
+  });
+}
+
+function profileToFormValues(
+  profile: VehicleListingProfile | null,
+  vehicle: Vehicle
+): VehicleListingProfileFormValues {
+  return {
+    applicationNotice: profile?.applicationNotice,
+    batteryHealthCheckedAt: profile?.batteryHealthCheckedAt ? dayjs(profile.batteryHealthCheckedAt) : null,
+    batteryHealthPercent: profile?.batteryHealthPercent,
+    batteryRemark: profile?.batteryRemark,
+    conditionGrade: profile?.conditionGrade,
+    conditionSummary: profile?.conditionSummary,
+    customerTagsText: unknownArrayToText(profile?.customerTags),
+    displayName: profile?.displayName ?? vehicleModelText(vehicle),
+    estimatedRangeKm: profile?.estimatedRangeKm,
+    faqJson: JSON.stringify(Array.isArray(profile?.faqSnapshot) ? profile?.faqSnapshot : [], null, 2),
+    feeDescription: profile?.feeDescription,
+    hasFireDamage: Boolean(profile?.hasFireDamage),
+    hasFloodDamage: Boolean(profile?.hasFloodDamage),
+    hasMajorAccident: Boolean(profile?.hasMajorAccident),
+    hasStructuralDamage: Boolean(profile?.hasStructuralDamage),
+    highlightSummary: profile?.highlightSummary,
+    knownDefectsSummary: profile?.knownDefectsSummary,
+    portalVisible: profile?.portalVisible ?? false,
+    sellingPointsText: unknownArrayToText(profile?.sellingPoints),
+    serviceHighlightsText: unknownArrayToText(profile?.serviceHighlights),
+    shortTitle: profile?.shortTitle,
+    sortOrder: profile?.sortOrder ?? 0,
+    subtitle: profile?.subtitle
+  };
+}
+
+function textToLines(value?: string) {
+  return value
+    ? value
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+    : [];
+}
+
+function unknownArrayToText(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join("\n") : "";
+}
+
+function parseJsonArray(value: string | undefined, label: string) {
+  if (!value?.trim()) {
+    return [];
+  }
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${label} 必须是数组`);
+  }
+  return parsed;
+}
+
+function buildAdminAssetUrl(url: string) {
+  if (/^https?:\/\//.test(url)) {
+    return url;
+  }
+  return `${API_BASE_URL.replace(/\/api$/, "")}${url}`;
 }
 
 function ResidualForecastGenerateModal({

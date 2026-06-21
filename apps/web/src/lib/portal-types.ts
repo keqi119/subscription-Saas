@@ -1,26 +1,51 @@
 export interface PortalCatalogVehicle {
   available: boolean;
   batteryCapacityKwh: number | null;
+  batteryHealthCheckedAt?: string | null;
+  batteryHealthPercent?: number | null;
   batteryUsageType: string;
   batteryUsageTypeLabel: string;
   brand: string;
   city: string | null;
+  conditionGrade?: string | null;
+  conditionSummary?: string | null;
   coverImageUrl: string | null;
   currentMileageKm: number;
+  customerTags?: string[];
   displayName: string;
-  gallery: string[];
+  estimatedRangeKm?: number | null;
+  gallery: PortalCatalogVehicleMedia[];
+  hasFireDamage?: boolean | null;
+  hasFloodDamage?: boolean | null;
+  hasMajorAccident?: boolean | null;
   id: string;
+  mileageKm?: number;
   model: string | null;
   modelYear: number | null;
+  monthlyFeeFromAmount?: number | null;
+  registrationDate?: string | null;
+  sellingPoints?: string[];
   series: string | null;
+  shortTitle?: string | null;
   statusLabel: string;
+  subtitle?: string | null;
   tags: string[];
+}
+
+export interface PortalCatalogVehicleMedia {
+  caption: string | null;
+  category: string;
+  id: string;
+  isCover: boolean;
+  previewUrl: string;
+  sortOrder: number;
 }
 
 export interface PortalSubscriptionPlan {
   benefitDescription: string;
   canSubmit: boolean;
   depositDescription: string;
+  displayRemark?: string | null;
   effectiveFrom: string;
   effectiveTo: string | null;
   energyDescription: string;
@@ -32,6 +57,8 @@ export interface PortalSubscriptionPlan {
   planId: string;
   planName: string;
   planNo: string;
+  recommended?: boolean;
+  sortOrder?: number;
   subscriptionPeriodMonths: number;
   subscriptionPeriodRange: {
     max: number;
@@ -40,9 +67,49 @@ export interface PortalSubscriptionPlan {
 }
 
 export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
+  applicationNotice: string;
+  applicationProcess: string[];
+  battery: {
+    capacityKwh: number | null;
+    checkedAt: string | null;
+    estimatedRangeKm: number | null;
+    healthPercent: number | null;
+    remark: string | null;
+    usageType: string;
+    usageTypeLabel: string;
+  };
+  condition: {
+    grade: string | null;
+    hasFireDamage: boolean | null;
+    hasFloodDamage: boolean | null;
+    hasMajorAccident: boolean | null;
+    hasStructuralDamage: boolean | null;
+    knownDefectsSummary: string | null;
+    summary: string | null;
+  };
+  coreHighlights: string[];
   depositNotice: string;
+  faq: Array<{
+    answer: string;
+    question: string;
+  }>;
+  feeDescription: string;
+  serviceHighlights: string[];
   submitButtonText: string;
   subscriptionPlans: PortalSubscriptionPlan[];
+  vehicle: {
+    batteryCapacityKwh: number | null;
+    brand: string;
+    city: string | null;
+    currentMileageKm: number;
+    displayName: string;
+    id: string;
+    model: string | null;
+    modelYear: number | null;
+    registrationDate: string | null;
+    series: string | null;
+  };
+  vehicleHistorySummary: string;
 }
 
 export interface PortalApplicationListItem {

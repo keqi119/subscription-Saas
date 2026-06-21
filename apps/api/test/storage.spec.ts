@@ -156,6 +156,54 @@ describe("Storage providers", () => {
     expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/materials\/app-1\/\d{4}\/\d{2}\//);
   });
 
+  it("maps vehicle listing media uploads to private local or OSS database fields", async () => {
+    const local = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        driver: "local" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const oss = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        bucket: "private-bucket",
+        driver: "oss" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({ OSS_PREFIX: "subscription-saas/staging", UPLOAD_STORAGE_DRIVER: "oss" }) as never,
+      local as never,
+      oss as never
+    );
+
+    const localStored = await localService.putVehicleListingMedia({
+      buffer: Buffer.from("hello"),
+      originalName: "front cover.jpg",
+      vehicleId: "vehicle-1"
+    });
+    const ossStored = await ossService.putVehicleListingMedia({
+      buffer: Buffer.from("hello"),
+      originalName: "front cover.jpg",
+      vehicleId: "vehicle-1"
+    });
+
+    expect(localStored.bucket).toBe("application-materials");
+    expect(localStored.objectKey).toMatch(/^vehicle-listings\/vehicle-1\/\d{4}\//);
+    expect(ossStored.bucket).toBe("oss:private-bucket");
+    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/vehicle-listings\/vehicle-1\/\d{4}\//);
+  });
+
   async function createTempDir() {
     const dir = await mkdtemp(path.join(tmpdir(), "subscription-storage-"));
     tempDirs.push(dir);

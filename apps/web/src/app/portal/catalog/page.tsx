@@ -1,11 +1,13 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Listing media previews are private API streams, not optimizer-friendly public assets. */
+
 import { CarOutlined, SearchOutlined } from "@ant-design/icons";
 import { App, Button, Empty, Flex, Form, Input, List, Space, Tag, Typography } from "antd";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
+import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../lib/portal-api";
 import { PortalCatalogVehicle } from "../../../lib/portal-types";
 
 interface CatalogFilterValues {
@@ -48,13 +50,13 @@ export default function PortalCatalogPage() {
 
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 40px" }}>
-      <section style={{ margin: "0 auto", maxWidth: 820 }}>
+      <section style={{ margin: "0 auto", maxWidth: 920 }}>
         <Flex align="center" justify="space-between" style={{ marginBottom: 18 }}>
           <div>
             <Typography.Title level={2} style={{ margin: 0 }}>
               订阅车辆
             </Typography.Title>
-            <Typography.Text type="secondary">选择预设套餐后提交审核</Typography.Text>
+            <Typography.Text type="secondary">选择车辆和订阅方案后提交审核</Typography.Text>
           </div>
           <Button onClick={() => router.push("/portal")}>我的入口</Button>
         </Flex>
@@ -97,7 +99,7 @@ export default function PortalCatalogPage() {
             <List.Item
               actions={[
                 <Button key="detail" onClick={() => router.push(`/portal/catalog/${vehicle.id}`)} type="link">
-                  查看详情
+                  提交审核
                 </Button>
               ]}
               style={{
@@ -109,35 +111,38 @@ export default function PortalCatalogPage() {
               }}
             >
               <List.Item.Meta
-                avatar={
-                  <div
-                    style={{
-                      alignItems: "center",
-                      background: "#eef3f8",
-                      borderRadius: 8,
-                      color: "#246b99",
-                      display: "flex",
-                      height: 72,
-                      justifyContent: "center",
-                      width: 96
-                    }}
-                  >
-                    <CarOutlined style={{ fontSize: 28 }} />
-                  </div>
-                }
+                avatar={<VehicleCoverImage vehicle={vehicle} />}
                 description={
                   <Space direction="vertical" size={8}>
                     <Typography.Text type="secondary">
+                      {vehicle.modelYear ? `${vehicle.modelYear}款 · ` : ""}
+                      {vehicle.registrationDate ? `上牌 ${formatMonth(vehicle.registrationDate)} · ` : ""}
                       {vehicle.city ?? "待确认城市"} · {vehicle.currentMileageKm.toLocaleString("zh-CN")} km
                     </Typography.Text>
+                    <Space size={[8, 6]} wrap>
+                      {vehicle.conditionGrade ? <Tag color="blue">车况 {vehicle.conditionGrade}</Tag> : null}
+                      {vehicle.batteryHealthPercent ? (
+                        <Tag color="green">电池健康度 {vehicle.batteryHealthPercent}%</Tag>
+                      ) : null}
+                      {vehicle.hasMajorAccident === false ? <Tag color="green">未标记重大事故</Tag> : null}
+                      <Tag>押金审核后确认</Tag>
+                    </Space>
                     <Space size={[6, 6]} wrap>
                       {vehicle.tags.map((tag) => (
                         <Tag key={tag}>{tag}</Tag>
                       ))}
                     </Space>
+                    <Typography.Text strong>
+                      {vehicle.monthlyFeeFromAmount ? `${formatYuan(vehicle.monthlyFeeFromAmount)} / 月起` : "月租审核后确认"}
+                    </Typography.Text>
                   </Space>
                 }
-                title={<Typography.Text strong>{vehicle.displayName}</Typography.Text>}
+                title={
+                  <Space direction="vertical" size={2}>
+                    <Typography.Text strong>{vehicle.shortTitle ?? vehicle.displayName}</Typography.Text>
+                    {vehicle.subtitle ? <Typography.Text type="secondary">{vehicle.subtitle}</Typography.Text> : null}
+                  </Space>
+                }
               />
             </List.Item>
           )}
@@ -147,3 +152,59 @@ export default function PortalCatalogPage() {
   );
 }
 
+function VehicleCoverImage({ vehicle }: Readonly<{ vehicle: PortalCatalogVehicle }>) {
+  if (vehicle.coverImageUrl) {
+    return (
+      <img
+        alt={vehicle.displayName}
+        src={buildPortalAssetUrl(vehicle.coverImageUrl)}
+        style={{
+          aspectRatio: "4 / 3",
+          borderRadius: 8,
+          height: 96,
+          objectFit: "cover",
+          width: 128
+        }}
+      />
+    );
+  }
+
+  return (
+    <div
+      style={{
+        alignItems: "center",
+        aspectRatio: "4 / 3",
+        background: "#eef3f8",
+        borderRadius: 8,
+        color: "#246b99",
+        display: "flex",
+        height: 96,
+        justifyContent: "center",
+        width: 128
+      }}
+    >
+      <CarOutlined style={{ fontSize: 28 }} />
+    </div>
+  );
+}
+
+function buildPortalAssetUrl(url: string) {
+  if (/^https?:\/\//.test(url)) {
+    return url;
+  }
+  return `${PORTAL_API_BASE_URL.replace(/\/api$/, "")}${url}`;
+}
+
+function formatMonth(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatYuan(amount: number) {
+  return `¥${(amount / 100).toLocaleString("zh-CN", {
+    maximumFractionDigits: 0
+  })}`;
+}

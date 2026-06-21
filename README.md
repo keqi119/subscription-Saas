@@ -465,3 +465,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 ## Additional Docs
 
 - `docs/wechat-pay-certificate-rotation.md`: WeChat Pay platform certificate rotation runbook.
+- `docs/stage-10l-vehicle-listing-product-page.md`: Stage 10L-A vehicle listing profile, gallery, display-plan, and Portal product-page foundation.

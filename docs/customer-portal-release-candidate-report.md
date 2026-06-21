@@ -380,3 +380,15 @@ Go criteria for customer-facing rollout:
 - Legal approves terms/privacy or explicitly approves placeholder text for invited beta.
 - Business owner confirms whether Mock ESignProvider is acceptable for the release scope.
 - WeChat Official Account menu apply is either executed with explicit confirmation or deliberately deferred in release notes.
+
+## Stage 10L-A Vehicle Listing Update
+
+Stage 10L-A adds richer customer-side vehicle listing data and a back-office maintenance surface for listing profiles, media galleries, and optional display-plan configuration.
+
+RC impact:
+
+- Customer catalog and detail pages now have a richer one-car-one-condition presentation.
+- Customer CTA copy remains application review oriented: `提交审核`.
+- No direct order creation, payment change, contract change, bill change, entitlement change, service-case change, or notification-send change is included.
+- Private listing media is streamed through API preview routes; Portal responses do not expose storage internals.
+- This improvement does not close the remaining unrestricted-launch blockers listed above.

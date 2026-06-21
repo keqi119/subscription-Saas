@@ -983,3 +983,24 @@ Strategy:
 - Stage 10I does not send WeChat template messages and does not apply WeChat menus.
 - Stage 10I does not modify WeChat Pay provider logic, certificate rotation, payment posting, write-off, receivable bill logic, Prisma schema, or migrations.
 - Real Stage 10H-B validation resumes as Stage 10H-B-R2 after WeChat template-message capability is approved.
+
+## 25. Stage 10L-A Status
+
+Stage 10L-A adds the vehicle listing product-page foundation without changing the customer application flow.
+
+Implemented:
+
+- `VehicleListingProfile`, `VehicleListingMedia`, and `VehicleListingPlan` models.
+- Customer-facing listing profile fields for title, tags, selling points, one-car-one-condition summary, battery information, fee copy, service highlights, and FAQ.
+- Back-office listing profile, gallery, display-plan, and preview controls in the vehicle detail page.
+- Private vehicle-listing media storage and API-streamed previews.
+- Portal catalog list/detail enhancements for richer vehicle cards and detail pages.
+- Optional `PORTAL_CATALOG_REQUIRE_PUBLISHED` filter, defaulting to the previous visible-vehicle behavior.
+- Portal redaction checks for purchase price, sale price, full VIN/plate, and storage internals.
+
+Strategy:
+
+- Customer Portal still presents the action as submitting an application for review.
+- Listing-plan configuration is optional; if not configured, active subscription plans continue to appear by existing fallback rules.
+- Stage 10L-A is not a full inspection-report system. Stage 10L-B should add formal condition reports, report items, battery inspection details, and defect-location photos.
+- Unrestricted customer launch is still not recommended until the existing RC/legal/SMS/authenticated-smoke gates are closed.

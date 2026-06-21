@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3000 --webpack",
+    "dev": "node scripts/next-with-port.mjs dev --webpack",
     "build": "next build",
-    "start": "next start --port 3000",
+    "start": "node scripts/next-with-port.mjs start",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

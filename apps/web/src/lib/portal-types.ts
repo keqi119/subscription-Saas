@@ -667,6 +667,26 @@ export interface PortalOrderDetail extends PortalOrderListItem {
   };
 }
 
+export interface PortalVehicleDocument {
+  createdAt: string;
+  description: string | null;
+  documentType: string;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  fileName: string;
+  fileSize: number | null;
+  id: string;
+  mimeType: string | null;
+  originalName: string | null;
+  policy: {
+    insurerName: string | null;
+    policyNo: string;
+    policyType: string;
+  } | null;
+  previewUrl: string;
+  title: string | null;
+}
+
 export interface PortalOrderPlanSummary {
   mileageLimitKm: number;
   monthlyFeeAmount: number;
@@ -852,6 +872,7 @@ export interface PortalServiceCase {
   description: string | null;
   id: string;
   insuranceReportNo: string | null;
+  insuranceClaims: PortalInsuranceClaimSummary[];
   locationText: string | null;
   occurredAt: string | null;
   order: {
@@ -878,6 +899,17 @@ export interface PortalServiceCase {
     series: string | null;
     vehicleModel: string | null;
   } | null;
+}
+
+export interface PortalInsuranceClaimSummary {
+  approvedAmount: number | null;
+  claimNo: string;
+  claimStatus: string;
+  closedAt: string | null;
+  id: string;
+  insurerClaimNo: string | null;
+  paidAmount: number | null;
+  submittedAt: string | null;
 }
 
 export interface PortalServiceCaseAttachment {

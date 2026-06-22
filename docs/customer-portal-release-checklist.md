@@ -9,6 +9,7 @@
 - Stage 10J release-candidate evidence is tracked in `docs/customer-portal-release-candidate-report.md`.
 - Stage 10K-A: Aliyun SMS login provider and invited beta gate are implemented in code; real SMS staging validation remains required before production customer traffic.
 - Stage 10M-A: customer profile material center and application precheck are implemented in code; manual acceptance should confirm missing-material warning does not block submission.
+- Stage 10M-B: vehicle insurance policies, vehicle documents, customer-visible order documents, and basic insurance claim records are implemented in code; manual acceptance should confirm private preview and ownership checks.
 
 ## Checklist
 
@@ -34,13 +35,18 @@
 | WeChat payment | JSAPI payment has passed prior real validation | Prior stage passed |
 | Payment fallback | WeChat-outside H5 fallback is not in Stage 10I scope | Deferred |
 | Orders | Customer can view own orders only | Pending manual acceptance |
+| Order vehicle documents | Customer can view customer-visible vehicle license / policy / authorization documents for own active order vehicle only | Pending manual acceptance |
 | Bills | Customer can view own bills and payable status | Pending manual acceptance |
 | Deposit | Customer can view own deposit ledger | Pending manual acceptance |
 | Entitlements | Customer can view own grants/usages | Pending manual acceptance |
 | Accident report | Customer can submit and track accident service case | Pending manual acceptance |
+| Insurance claim summary | Accident service-case detail can show read-only claim summary for the current customer only | Pending manual acceptance |
 | Rescue request | Customer can submit and track rescue service case | Pending manual acceptance |
 | Notifications | Portal notification center lists own in-app notifications | Implemented in code; production route currently returns 404 until latest Web image is deployed |
 | Back-office notifications | Back-office records/events are visible and openid is masked | Pending manual acceptance |
+| Back-office insurance policies | Back office can create separate compulsory traffic and commercial insurance policies, maintain coverage rows, upload documents, and archive policies | Pending manual acceptance |
+| Back-office vehicle documents | Vehicle document preview streams private files and does not expose OSS public URLs or storage keys | Pending manual acceptance |
+| Back-office insurance claims | Accident service cases can create and update basic claim records without changing vehicle/order status or generating bills | Pending manual acceptance |
 | WeChat service account menu | Menu dry-run targets customer Portal pages | Dry-run ready |
 | WeChat menu apply | Requires explicit `WECHAT_MENU_APPLY=1` and human confirmation | Pending |
 | Template messages | Real single-openid template smoke | Passed in Stage 10H-B R2 |

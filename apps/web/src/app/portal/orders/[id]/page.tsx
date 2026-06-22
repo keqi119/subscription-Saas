@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeftOutlined, FileTextOutlined, GiftOutlined, PayCircleOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Descriptions, Empty, Flex, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Descriptions, Empty, Flex, List, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
@@ -12,16 +12,18 @@ import {
   BILL_TYPE_LABELS,
   ORDER_STATUS_LABELS,
   STATUS_LABELS,
+  VEHICLE_DOCUMENT_TYPE_LABELS,
   labelOf
 } from "../../../../constants/labels";
-import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
-import { PortalOrderDetail, PortalPaymentOrder } from "../../../../lib/portal-types";
+import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
+import { PortalOrderDetail, PortalPaymentOrder, PortalVehicleDocument } from "../../../../lib/portal-types";
 
 export default function PortalOrderDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { message } = App.useApp();
   const [order, setOrder] = useState<PortalOrderDetail>();
+  const [documents, setDocuments] = useState<PortalVehicleDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
 
@@ -31,7 +33,12 @@ export default function PortalOrderDetailPage() {
     }
     setLoading(true);
     try {
-      setOrder(await portalApiFetch<PortalOrderDetail>(`/portal/orders/${params.id}`));
+      const [nextOrder, nextDocuments] = await Promise.all([
+        portalApiFetch<PortalOrderDetail>(`/portal/orders/${params.id}`),
+        portalApiFetch<PortalVehicleDocument[]>(`/portal/orders/${params.id}/documents`)
+      ]);
+      setOrder(nextOrder);
+      setDocuments(nextDocuments);
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
         router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/orders/${params.id}`)}`);
@@ -206,6 +213,39 @@ export default function PortalOrderDetailPage() {
         </section>
 
         <section style={sectionStyle}>
+          <Typography.Title level={4} style={{ marginTop: 0 }}>
+            车辆材料
+          </Typography.Title>
+          <List
+            dataSource={documents}
+            locale={{ emptyText: <Empty description="暂无可查看车辆材料，如需协助请联系工作人员。" /> }}
+            renderItem={(item) => (
+              <List.Item
+                actions={[
+                  <Button
+                    key="preview"
+                    icon={<FileTextOutlined />}
+                    onClick={() => window.open(buildPreviewUrl(item.previewUrl), "_blank", "noopener,noreferrer")}
+                    type="link"
+                  >
+                    预览
+                  </Button>
+                ]}
+              >
+                <List.Item.Meta
+                  description={[
+                    item.policy?.insurerName,
+                    item.policy?.policyNo,
+                    item.effectiveTo ? `有效至 ${item.effectiveTo}` : null
+                  ].filter(Boolean).join(" / ")}
+                  title={item.title || labelOf(VEHICLE_DOCUMENT_TYPE_LABELS, item.documentType)}
+                />
+              </List.Item>
+            )}
+          />
+        </section>
+
+        <section style={sectionStyle}>
           <Flex align="center" justify="space-between" style={{ marginBottom: 12 }} wrap="wrap">
             <div>
               <Typography.Title level={4} style={{ margin: 0 }}>
@@ -267,6 +307,11 @@ function formatMoney(amount?: number | null) {
 
 function formatTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+function buildPreviewUrl(previewUrl: string) {
+  const origin = PORTAL_API_BASE_URL.replace(/\/api$/, "");
+  return `${origin}${previewUrl}`;
 }
 
 const sectionStyle = {

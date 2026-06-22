@@ -300,3 +300,17 @@ Production rollout notes:
 - Verify created applications show reused profile materials in the back-office application material table with source `客户资料中心`.
 - Confirm customer-facing APIs do not expose `bucket`, `objectKey`, storage public URLs, or back-office-only financial fields.
 - Keep customer action as `提交审核`; Stage 10M-A is an application-experience improvement, not unrestricted customer-launch approval.
+
+## Stage 10M-B Rollout Note
+
+Stage 10M-B introduces vehicle insurance policies, vehicle documents, customer-visible order documents, and basic insurance claim records.
+
+Production rollout notes:
+
+- Run the new migration with `prisma migrate deploy`; do not use `prisma migrate reset` or `prisma db push`.
+- Verify `/vehicle-insurance-policies` can create separate compulsory traffic and commercial policies with independent effective dates.
+- Verify policy attachment and vehicle-document preview routes stream private files without exposing `bucket`, `objectKey`, or OSS public URLs.
+- Verify `/portal/orders/[id]` only shows `customerVisible=true` documents for the current customer's own order vehicle.
+- Verify accident service cases can create and display claim records, and Portal service-case detail only shows read-only claim summaries.
+- Confirm this stage does not change vehicle/order state machines, does not generate bills, and does not change payment or write-off logic.
+- Treat Stage 10M-B as operational readiness for insurance/documents/claims, not as unrestricted customer-launch approval.

@@ -10,6 +10,7 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { ServiceCaseModule } from "../service-case/service-case.module";
 import { SmsModule } from "../sms/sms.module";
 import { StorageModule } from "../storage/storage.module";
+import { VehicleInsuranceModule } from "../vehicle-insurance/vehicle-insurance.module";
 import { WeChatModule } from "../wechat/wechat.module";
 import { PortalApplicationController } from "./portal-application.controller";
 import { PortalApplicationService } from "./portal-application.service";
@@ -23,6 +24,7 @@ import { PortalCatalogService } from "./portal-catalog.service";
 import { PortalContractController } from "./portal-contract.controller";
 import { PortalController } from "./portal.controller";
 import { PortalPaymentController } from "./portal-payment.controller";
+import { PortalOrderDocumentController } from "./portal-order-document.controller";
 import { PortalProfileMaterialController } from "./portal-profile-material.controller";
 import { PortalProfileMaterialService } from "./portal-profile-material.service";
 import { PortalServiceCaseController } from "./portal-service-case.controller";
@@ -36,6 +38,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalCatalogController,
     PortalContractController,
     PortalNotificationController,
+    PortalOrderDocumentController,
     PortalPaymentController,
     PortalProfileMaterialController,
     PortalServiceCaseController,
@@ -54,6 +57,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     ServiceCaseModule,
     SmsModule,
     StorageModule,
+    VehicleInsuranceModule,
     WeChatModule
   ],
   providers: [

@@ -291,6 +291,55 @@ export const CUSTOMER_PROFILE_MATERIAL_STATUS_LABELS: Record<string, string> = {
   REPLACED: "已替换"
 };
 
+export const VEHICLE_INSURANCE_POLICY_TYPE_LABELS: Record<string, string> = {
+  COMMERCIAL: "商业险",
+  COMPULSORY_TRAFFIC: "交强险",
+  OTHER: "其他"
+};
+
+export const VEHICLE_INSURANCE_POLICY_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  ARCHIVED: "已归档",
+  CANCELLED: "已取消",
+  EXPIRED: "已过期",
+  PENDING_RENEWAL: "待续保"
+};
+
+export const VEHICLE_INSURANCE_COVERAGE_TYPE_LABELS: Record<string, string> = {
+  ADDITIONAL: "附加险",
+  COMPULSORY_TRAFFIC: "交强险",
+  MEDICAL_OUTSIDE: "医保外用药",
+  OTHER: "其他",
+  THIRD_PARTY_LIABILITY: "第三者责任险",
+  VEHICLE_DAMAGE: "车辆损失险",
+  VEHICLE_PERSONNEL: "车上人员险"
+};
+
+export const VEHICLE_DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  COMMERCIAL_INSURANCE_POLICY: "商业险保单",
+  COMPULSORY_INSURANCE_POLICY: "交强险保单",
+  INSPECTION_CERTIFICATE: "年检材料",
+  OTHER: "其他车辆材料",
+  VEHICLE_AUTHORIZATION: "车辆授权文件",
+  VEHICLE_LICENSE: "行驶证"
+};
+
+export const VEHICLE_DOCUMENT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "当前有效",
+  ARCHIVED: "已归档"
+};
+
+export const INSURANCE_CLAIM_STATUS_LABELS: Record<string, string> = {
+  ACCEPTED: "已受理",
+  CANCELLED: "已取消",
+  CLOSED: "已关闭",
+  DRAFT: "草稿",
+  IN_PROGRESS: "处理中",
+  REJECTED: "已拒赔",
+  SETTLED: "已结算",
+  SUBMITTED: "已提交"
+};
+
 export const VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "生效中",
   INACTIVE: "已停用"

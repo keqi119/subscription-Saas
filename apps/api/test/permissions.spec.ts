@@ -25,6 +25,7 @@ import {
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
 import { ServiceCaseController } from "../src/service-case/service-case.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
+import { VehicleInsuranceController } from "../src/vehicle-insurance/vehicle-insurance.controller";
 import { VehicleValuationReviewController } from "../src/vehicle-valuation-review/vehicle-valuation-review.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
@@ -34,6 +35,12 @@ const FINANCING_VIEW_PERMISSION = "financing:view";
 const FINANCING_MANAGE_PERMISSION = "financing:manage";
 const VEHICLE_ASSET_POOL_VIEW_PERMISSION = "vehicle_asset_pool:view";
 const VEHICLE_ASSET_POOL_MANAGE_PERMISSION = "vehicle_asset_pool:manage";
+const VEHICLE_INSURANCE_VIEW_PERMISSION = "vehicle_insurance:view";
+const VEHICLE_INSURANCE_MANAGE_PERMISSION = "vehicle_insurance:manage";
+const VEHICLE_DOCUMENT_VIEW_PERMISSION = "vehicle_document:view";
+const VEHICLE_DOCUMENT_MANAGE_PERMISSION = "vehicle_document:manage";
+const INSURANCE_CLAIM_VIEW_PERMISSION = "insurance_claim:view";
+const INSURANCE_CLAIM_MANAGE_PERMISSION = "insurance_claim:manage";
 const REVENUE_RIGHT_VIEW_PERMISSION = "revenue_right:view";
 const REVENUE_RIGHT_MANAGE_PERMISSION = "revenue_right:manage";
 const REVENUE_SHARE_VIEW_PERMISSION = "revenue_share:view";
@@ -687,6 +694,86 @@ describe("service case permissions", () => {
     expect(closePermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
     expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_VIEW], acceptPermissions)).toBe(false);
     expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_MANAGE], acceptPermissions)).toBe(true);
+  });
+});
+
+describe("vehicle insurance, document, and claim permissions", () => {
+  it("gates vehicle insurance APIs behind vehicle insurance permissions", () => {
+    const listPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.listPolicies
+    );
+    const detailPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.getPolicy
+    );
+    const createPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.createPolicy
+    );
+    const updatePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.updatePolicy
+    );
+    const archivePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.archivePolicy
+    );
+
+    expect(listPermissions).toEqual([VEHICLE_INSURANCE_VIEW_PERMISSION]);
+    expect(detailPermissions).toEqual([VEHICLE_INSURANCE_VIEW_PERMISSION]);
+    expect(createPermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
+    expect(updatePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
+    expect(archivePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
+    expect(hasRequiredPermissions([VEHICLE_INSURANCE_VIEW_PERMISSION], createPermissions)).toBe(false);
+    expect(hasRequiredPermissions([VEHICLE_INSURANCE_MANAGE_PERMISSION], createPermissions)).toBe(true);
+  });
+
+  it("gates vehicle document APIs behind vehicle document permissions", () => {
+    const listPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.listDocuments
+    );
+    const uploadPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.uploadDocument
+    );
+    const previewPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.previewDocument
+    );
+
+    expect(listPermissions).toEqual([VEHICLE_DOCUMENT_VIEW_PERMISSION]);
+    expect(previewPermissions).toEqual([VEHICLE_DOCUMENT_VIEW_PERMISSION]);
+    expect(uploadPermissions).toEqual([VEHICLE_DOCUMENT_MANAGE_PERMISSION]);
+    expect(hasRequiredPermissions([VEHICLE_DOCUMENT_VIEW_PERMISSION], uploadPermissions)).toBe(false);
+    expect(hasRequiredPermissions([VEHICLE_DOCUMENT_MANAGE_PERMISSION], uploadPermissions)).toBe(true);
+  });
+
+  it("gates insurance claim APIs behind claim permissions", () => {
+    const listPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.listClaims
+    );
+    const detailPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.getClaim
+    );
+    const createPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.createClaim
+    );
+    const updatePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.updateClaim
+    );
+
+    expect(listPermissions).toEqual([INSURANCE_CLAIM_VIEW_PERMISSION]);
+    expect(detailPermissions).toEqual([INSURANCE_CLAIM_VIEW_PERMISSION]);
+    expect(createPermissions).toEqual([INSURANCE_CLAIM_MANAGE_PERMISSION]);
+    expect(updatePermissions).toEqual([INSURANCE_CLAIM_MANAGE_PERMISSION]);
+    expect(hasRequiredPermissions([INSURANCE_CLAIM_VIEW_PERMISSION], createPermissions)).toBe(false);
+    expect(hasRequiredPermissions([INSURANCE_CLAIM_MANAGE_PERMISSION], createPermissions)).toBe(true);
   });
 });
 

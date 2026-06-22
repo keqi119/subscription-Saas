@@ -111,7 +111,15 @@ Stage 10H-B real WeChat template-message validation is pending WeChat platform r
 - Expected result: records are scoped to current customer and amounts/statuses are readable.
 - Not allowed: finance write-off internals, other customer records, internal collection notes.
 
-## 14. Customer Submits Accident Report
+## 14. Customer Views Order Vehicle Documents
+
+- Entry: `/portal/orders/[id]`
+- Prerequisite data: current customer's order vehicle has `customerVisible=true` vehicle documents such as vehicle license, compulsory policy, or commercial policy.
+- Operation: open order detail and preview vehicle documents.
+- Expected result: only current customer's order vehicle documents are listed; preview streams through Portal API.
+- Not allowed: hidden documents, another customer's vehicle documents, `bucket`, `objectKey`, or OSS public URLs.
+
+## 15. Customer Submits Accident Report
 
 - Entry: `/portal/service-cases/new?type=ACCIDENT_REPORT`
 - Prerequisite data: customer has order/vehicle if linked case is needed.
@@ -119,7 +127,15 @@ Stage 10H-B real WeChat template-message validation is pending WeChat platform r
 - Expected result: service case is created and visible in `/portal/service-cases`.
 - Not allowed: uploading files to another case or changing staff-only status fields.
 
-## 15. Customer Submits Rescue Request
+## 16. Back Office Links Accident Case To Insurance Claim
+
+- Entry: admin `/service-cases`
+- Prerequisite data: submitted accident service case and optional vehicle insurance policy.
+- Operation: create an insurance claim, set insurer claim number/status/amounts, and reopen the customer service-case detail.
+- Expected result: back office sees the claim record and the customer sees a read-only claim summary.
+- Not allowed: automatic bill generation, vehicle status changes, order status changes, or insurer API calls.
+
+## 17. Customer Submits Rescue Request
 
 - Entry: `/portal/service-cases/new?type=RESCUE_REQUEST`
 - Prerequisite data: customer has contact/location information.
@@ -127,7 +143,7 @@ Stage 10H-B real WeChat template-message validation is pending WeChat platform r
 - Expected result: rescue case is created and progress can be tracked.
 - Not allowed: implying guaranteed arrival time or external vendor confirmation unless actually integrated.
 
-## 16. Back Office Handles Service Case
+## 18. Back Office Handles Service Case
 
 - Entry: admin `/service-cases`
 - Prerequisite data: submitted accident/rescue case.
@@ -135,7 +151,15 @@ Stage 10H-B real WeChat template-message validation is pending WeChat platform r
 - Expected result: customer sees customer-safe timeline updates.
 - Not allowed: exposing internal staff-only notes if not intended for Portal.
 
-## 17. Customer Views Notifications
+## 19. Back Office Maintains Insurance Policies And Vehicle Documents
+
+- Entry: admin `/vehicle-insurance-policies` and vehicle detail.
+- Prerequisite data: vehicle exists.
+- Operation: create compulsory traffic and commercial policies with different effective dates, add coverage rows, upload policy/vehicle documents, set customer visibility, preview files, and archive old policies.
+- Expected result: policies and documents are saved, previews stream through API, and expiring-within filters work.
+- Not allowed: exposing OSS public URLs, automatically changing vehicle state, or generating charges.
+
+## 20. Customer Views Notifications
 
 - Entry: `/portal/notifications`
 - Prerequisite data: in-app notification records exist.
@@ -143,7 +167,7 @@ Stage 10H-B real WeChat template-message validation is pending WeChat platform r
 - Expected result: only current customer's notifications appear; unread/read state works.
 - Not allowed: customer A seeing customer B notification; full openid in UI.
 
-## 18. WeChat Service Account Menu Targets
+## 21. WeChat Service Account Menu Targets
 
 - Entry: service account menu dry-run/apply payload.
 - Prerequisite data: menu approved.

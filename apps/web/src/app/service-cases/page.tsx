@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircleOutlined, EyeOutlined, ReloadOutlined } from "@ant-design/icons";
+import { CheckCircleOutlined, EyeOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   App,
   Button,
@@ -8,6 +8,7 @@ import {
   Drawer,
   Form,
   Input,
+  List,
   Select,
   Space,
   Table,
@@ -21,6 +22,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import {
+  INSURANCE_CLAIM_STATUS_LABELS,
   RESCUE_TYPE_LABELS,
   SERVICE_CASE_ACTION_TYPE_LABELS,
   SERVICE_CASE_ACTOR_TYPE_LABELS,
@@ -77,6 +79,7 @@ export default function ServiceCasesPage() {
   const [loading, setLoading] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [creatingClaim, setCreatingClaim] = useState(false);
 
   const loadCases = useCallback(async () => {
     setLoading(true);
@@ -128,6 +131,26 @@ export default function ServiceCasesPage() {
       void message.error(error instanceof ApiError ? error.message : "操作失败");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function createInsuranceClaim() {
+    if (!detail) {
+      return;
+    }
+    setCreatingClaim(true);
+    try {
+      await apiFetch(`/service-cases/${detail.id}/insurance-claims`, {
+        body: JSON.stringify({}),
+        method: "POST"
+      });
+      void message.success("理赔记录已创建");
+      await openDetail(detail.id);
+      await loadCases();
+    } catch (error) {
+      void message.error(error instanceof ApiError ? error.message : "无法创建理赔记录");
+    } finally {
+      setCreatingClaim(false);
     }
   }
 
@@ -251,6 +274,46 @@ export default function ServiceCasesPage() {
               )}
               <Descriptions.Item label="描述">{detail.description ?? "-"}</Descriptions.Item>
             </Descriptions>
+
+            <div>
+              <Space align="center" style={{ marginBottom: 8 }} wrap>
+                <Typography.Title level={5} style={{ margin: 0 }}>
+                  保险理赔
+                </Typography.Title>
+                {detail.caseType === "ACCIDENT_REPORT" ? (
+                  <Button
+                    icon={<PlusOutlined />}
+                    loading={creatingClaim}
+                    onClick={() => void createInsuranceClaim()}
+                    size="small"
+                  >
+                    创建理赔
+                  </Button>
+                ) : null}
+              </Space>
+              <List
+                dataSource={detail.insuranceClaims ?? []}
+                locale={{ emptyText: "暂无理赔记录" }}
+                size="small"
+                renderItem={(claim) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      description={[
+                        claim.insurerClaimNo ? `保险公司案件号 ${claim.insurerClaimNo}` : null,
+                        claim.submittedAt ? `提交 ${formatTime(claim.submittedAt)}` : null,
+                        claim.closedAt ? `结案 ${formatTime(claim.closedAt)}` : null
+                      ].filter(Boolean).join(" / ")}
+                      title={
+                        <Space wrap>
+                          <Typography.Text>{claim.claimNo}</Typography.Text>
+                          <Tag>{labelOf(INSURANCE_CLAIM_STATUS_LABELS, claim.claimStatus)}</Tag>
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            </div>
 
             <Space wrap>
               <Button

@@ -419,3 +419,16 @@ RC impact:
 - On submission, existing customer profile materials are reused into the application material area by metadata reference, so reviewers can see them in the existing back-office application detail material table.
 - Customer action remains `提交审核`; no order, contract, bill, payment, entitlement, service-case, or notification main-flow behavior changes.
 - This does not remove the existing unrestricted-launch blockers.
+
+## Stage 10M-B Vehicle Insurance And Claims Update
+
+Stage 10M-B adds vehicle insurance policy management, vehicle document management, customer-visible order vehicle documents, and basic insurance claim records.
+
+RC impact:
+
+- Compulsory traffic insurance and commercial insurance are now managed as separate vehicle policies with independent effective periods.
+- Private vehicle documents such as vehicle license and insurance policies can be uploaded, marked customer-visible, and previewed through API stream routes.
+- `/portal/orders/[id]` can show customer-visible vehicle documents for the current customer's own order vehicle.
+- Accident service cases can be linked to basic insurance claim records; `/portal/service-cases/[id]` shows a read-only claim summary when available.
+- No insurer API integration, automatic claim submission, automatic claim sync, vehicle state change, order state change, bill generation, payment change, write-off change, or notification-send main-flow change is included.
+- This does not remove the existing unrestricted-launch blockers.

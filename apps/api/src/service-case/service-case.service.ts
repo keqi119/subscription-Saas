@@ -58,6 +58,20 @@ const serviceCaseInclude = {
     orderBy: { createdAt: "desc" as const },
     where: { deletedAt: null }
   },
+  insuranceClaims: {
+    orderBy: { createdAt: "desc" as const },
+    select: {
+      approvedAmount: true,
+      claimNo: true,
+      claimStatus: true,
+      closedAt: true,
+      id: true,
+      insurerClaimNo: true,
+      paidAmount: true,
+      submittedAt: true
+    },
+    where: { deletedAt: null }
+  },
   customer: {
     select: {
       customerNo: true,
@@ -829,6 +843,7 @@ function toServiceCaseView(serviceCase: ServiceCaseWithRelations, scope: "admin"
     description: serviceCase.description,
     id: serviceCase.id,
     insuranceReportNo: serviceCase.insuranceReportNo,
+    insuranceClaims: (serviceCase.insuranceClaims ?? []).map(toInsuranceClaimSummary),
     locationText: serviceCase.locationText,
     occurredAt: toIso(serviceCase.occurredAt),
     order: serviceCase.order
@@ -865,6 +880,28 @@ function toAttachmentView(attachment: {
     id: attachment.id,
     mimeType: attachment.mimeType,
     previewUrl: `/api/portal/service-cases/${attachment.serviceCaseId}/attachments/${attachment.id}/preview`
+  };
+}
+
+function toInsuranceClaimSummary(claim: {
+  approvedAmount: bigint | null;
+  claimNo: string;
+  claimStatus: string;
+  closedAt: Date | null;
+  id: string;
+  insurerClaimNo: string | null;
+  paidAmount: bigint | null;
+  submittedAt: Date | null;
+}) {
+  return {
+    approvedAmount: claim.approvedAmount === null ? null : Number(claim.approvedAmount),
+    claimNo: claim.claimNo,
+    claimStatus: claim.claimStatus,
+    closedAt: toIso(claim.closedAt),
+    id: claim.id,
+    insurerClaimNo: claim.insurerClaimNo,
+    paidAmount: claim.paidAmount === null ? null : Number(claim.paidAmount),
+    submittedAt: toIso(claim.submittedAt)
   };
 }
 

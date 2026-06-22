@@ -56,6 +56,9 @@ import {
   VEHICLE_CONDITION_ITEM_SEVERITY_LABELS,
   VEHICLE_CONDITION_ITEM_TYPE_LABELS,
   VEHICLE_CONDITION_REPORT_STATUS_LABELS,
+  VEHICLE_DOCUMENT_TYPE_LABELS,
+  VEHICLE_INSURANCE_POLICY_STATUS_LABELS,
+  VEHICLE_INSURANCE_POLICY_TYPE_LABELS,
   VEHICLE_LISTING_CONDITION_GRADE_LABELS,
   VEHICLE_LISTING_MEDIA_CATEGORY_LABELS,
   VEHICLE_LISTING_STATUS_LABELS,
@@ -120,6 +123,44 @@ interface Vehicle {
   vehicleModel?: string | null;
   vehicleNo: string;
   vin?: string | null;
+}
+
+interface VehicleInsurancePolicySummary {
+  documentCount: number;
+  effectiveFrom: string;
+  effectiveTo: string;
+  id: string;
+  insuredAmount?: number | null;
+  insurerName?: string | null;
+  isExpiringSoon: boolean;
+  policyNo: string;
+  policyStatus: string;
+  policyType: string;
+  premiumAmount?: number | null;
+  vehicleId: string;
+}
+
+interface VehicleDocumentSummary {
+  customerVisible: boolean;
+  documentStatus: string;
+  documentType: string;
+  id: string;
+}
+
+interface VehicleDocumentUploadFormValues {
+  customerVisible?: boolean;
+  description?: string | null;
+  documentType?: string;
+  effectiveFrom?: Dayjs | null;
+  effectiveTo?: Dayjs | null;
+  title?: string | null;
+}
+
+interface VehicleInsurancePolicyListResponse {
+  items: VehicleInsurancePolicySummary[];
+  page: number;
+  pageSize: number;
+  total: number;
 }
 
 interface SalePriceHistory {
@@ -2265,6 +2306,7 @@ export default function VehiclesPage() {
                 { label: "备注", children: detailVehicle.remark ?? "-" }
               ]}
             />
+            <VehicleInsuranceDocumentsBlock permissions={permissions} vehicle={detailVehicle} />
             <VehicleListingManagementBlock permissions={permissions} vehicle={detailVehicle} />
             {canViewResidualForecast ? (
               <VehicleResidualForecastBlock
@@ -3403,6 +3445,227 @@ interface VehicleConditionReportItemFormValues {
   severity?: string;
   sortOrder?: number;
   title?: string | null;
+}
+
+function VehicleInsuranceDocumentsBlock({
+  permissions,
+  vehicle
+}: Readonly<{
+  permissions: ReadonlySet<string>;
+  vehicle: Vehicle;
+}>) {
+  const { message } = App.useApp();
+  const [documentForm] = Form.useForm<VehicleDocumentUploadFormValues>();
+  const [policies, setPolicies] = useState<VehicleInsurancePolicySummary[]>([]);
+  const [documents, setDocuments] = useState<VehicleDocumentSummary[]>([]);
+  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const canViewInsurance = permissions.has("vehicle_insurance:view");
+  const canViewDocuments = permissions.has("vehicle_document:view");
+  const canManageDocuments = permissions.has("vehicle_document:manage");
+
+  const loadInsuranceDocuments = useCallback(() => {
+    if (!canViewInsurance && !canViewDocuments) {
+      return Promise.resolve();
+    }
+
+    setLoading(true);
+    return Promise.all([
+      canViewInsurance
+        ? apiFetch<VehicleInsurancePolicyListResponse>(`/vehicle-insurance-policies?vehicleId=${encodeURIComponent(vehicle.id)}`)
+        : Promise.resolve({ items: [], page: 1, pageSize: 20, total: 0 }),
+      canViewDocuments ? apiFetch<VehicleDocumentSummary[]>(`/vehicles/${vehicle.id}/documents`) : Promise.resolve([])
+    ])
+      .then(([policyResult, documentRows]) => {
+        setPolicies(policyResult.items);
+        setDocuments(documentRows);
+      })
+      .catch((error) => {
+        void message.error(error instanceof ApiError ? error.message : "无法加载保险 / 权证信息");
+      })
+      .finally(() => setLoading(false));
+  }, [canViewDocuments, canViewInsurance, message, vehicle.id]);
+
+  useEffect(() => {
+    void loadInsuranceDocuments();
+  }, [loadInsuranceDocuments]);
+
+  async function uploadVehicleDocument(values: VehicleDocumentUploadFormValues) {
+    const file = fileList.find((item) => item.originFileObj);
+    if (!file?.originFileObj) {
+      void message.warning("请选择车辆材料文件");
+      return;
+    }
+    if (!values.documentType) {
+      void message.warning("请选择材料类型");
+      return;
+    }
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("files", file.originFileObj, file.name);
+      formData.append("documentType", values.documentType);
+      formData.append("customerVisible", values.customerVisible ? "true" : "false");
+      appendIfPresent(formData, "title", values.title);
+      appendIfPresent(formData, "description", values.description);
+      appendIfPresent(formData, "effectiveFrom", values.effectiveFrom?.format("YYYY-MM-DD"));
+      appendIfPresent(formData, "effectiveTo", values.effectiveTo?.format("YYYY-MM-DD"));
+      await apiFetch(`/vehicles/${vehicle.id}/documents`, {
+        body: formData,
+        method: "POST"
+      });
+      setFileList([]);
+      documentForm.resetFields();
+      void message.success("车辆材料已上传");
+      await loadInsuranceDocuments();
+    } catch (error) {
+      void message.error(error instanceof ApiError ? error.message : "车辆材料上传失败");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  if (!canViewInsurance && !canViewDocuments) {
+    return null;
+  }
+
+  const compulsoryPolicy = currentInsurancePolicy(policies, "COMPULSORY_TRAFFIC");
+  const commercialPolicy = currentInsurancePolicy(policies, "COMMERCIAL");
+  const nearestPolicy = policies
+    .filter((policy) => policy.policyStatus === "ACTIVE")
+    .sort((left, right) => dayjs(left.effectiveTo).valueOf() - dayjs(right.effectiveTo).valueOf())[0];
+  const customerVisibleDocumentCount = documents.filter(
+    (document) => document.customerVisible && document.documentStatus === "ACTIVE"
+  ).length;
+
+  return (
+    <Collapse
+      items={[
+        {
+          children: (
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              <Descriptions
+                column={2}
+                size="small"
+                items={[
+                  { label: "当前交强险", children: insurancePolicySummaryText(compulsoryPolicy) },
+                  { label: "当前商业险", children: insurancePolicySummaryText(commercialPolicy) },
+                  {
+                    label: "最近到期保单",
+                    children: nearestPolicy
+                      ? `${labelOf(VEHICLE_INSURANCE_POLICY_TYPE_LABELS, nearestPolicy.policyType)} / ${formatDate(nearestPolicy.effectiveTo)}`
+                      : "-"
+                  },
+                  { label: "客户可见材料", children: `${customerVisibleDocumentCount} 份` }
+                ]}
+              />
+              {nearestPolicy?.isExpiringSoon ? (
+                <Alert
+                  message={`${labelOf(VEHICLE_INSURANCE_POLICY_TYPE_LABELS, nearestPolicy.policyType)} 将于 ${formatDate(nearestPolicy.effectiveTo)} 到期`}
+                  showIcon
+                  type="warning"
+                />
+              ) : null}
+              <Table
+                columns={vehiclePolicySummaryColumns}
+                dataSource={policies}
+                loading={loading}
+                pagination={false}
+                rowKey="id"
+                size="small"
+              />
+              <Button href={`/vehicle-insurance-policies?vehicleId=${encodeURIComponent(vehicle.id)}`} type="link">
+                前往保单管理
+              </Button>
+              {canManageDocuments ? (
+                <Form form={documentForm} layout="vertical" onFinish={(values) => void uploadVehicleDocument(values)}>
+                  <Typography.Title level={5}>上传车辆材料</Typography.Title>
+                  <Space align="baseline" wrap>
+                    <Form.Item label="材料类型" name="documentType" rules={[{ required: true, message: "请选择材料类型" }]}>
+                      <Select options={optionsFromLabels(VEHICLE_DOCUMENT_TYPE_LABELS)} style={{ width: 180 }} />
+                    </Form.Item>
+                    <Form.Item label="标题" name="title">
+                      <Input maxLength={128} style={{ width: 180 }} />
+                    </Form.Item>
+                    <Form.Item label="起期" name="effectiveFrom">
+                      <DatePicker />
+                    </Form.Item>
+                    <Form.Item label="止期" name="effectiveTo">
+                      <DatePicker />
+                    </Form.Item>
+                    <Form.Item label="客户可见" name="customerVisible" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                  </Space>
+                  <Form.Item label="说明" name="description">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Upload beforeUpload={() => false} fileList={fileList} maxCount={1} onChange={({ fileList: next }) => setFileList(next)}>
+                    <Button icon={<UploadOutlined />}>选择文件</Button>
+                  </Upload>
+                  <Button htmlType="submit" loading={uploading} style={{ marginTop: 12 }} type="primary">
+                    上传材料
+                  </Button>
+                </Form>
+              ) : null}
+            </Space>
+          ),
+          key: "insurance-documents",
+          label: "保险 / 权证"
+        }
+      ]}
+    />
+  );
+}
+
+const vehiclePolicySummaryColumns: ColumnsType<VehicleInsurancePolicySummary> = [
+  {
+    dataIndex: "policyType",
+    render: (value: string) => labelOf(VEHICLE_INSURANCE_POLICY_TYPE_LABELS, value),
+    title: "类型"
+  },
+  {
+    dataIndex: "policyStatus",
+    render: (value: string) => (
+      <Tag color={value === "ACTIVE" ? "green" : value === "EXPIRED" ? "red" : "default"}>
+        {labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, value)}
+      </Tag>
+    ),
+    title: "状态"
+  },
+  {
+    dataIndex: "insurerName",
+    render: (value?: string | null) => value ?? "-",
+    title: "保险公司"
+  },
+  {
+    render: (_, row) => `${formatDate(row.effectiveFrom)} 至 ${formatDate(row.effectiveTo)}`,
+    title: "期间"
+  },
+  {
+    dataIndex: "documentCount",
+    title: "附件"
+  }
+];
+
+function currentInsurancePolicy(policies: VehicleInsurancePolicySummary[], policyType: string) {
+  return policies
+    .filter((policy) => policy.policyType === policyType && policy.policyStatus === "ACTIVE")
+    .sort((left, right) => dayjs(right.effectiveFrom).valueOf() - dayjs(left.effectiveFrom).valueOf())[0];
+}
+
+function insurancePolicySummaryText(policy?: VehicleInsurancePolicySummary) {
+  if (!policy) {
+    return "-";
+  }
+  return `${policy.insurerName ?? "未填写保险公司"} / ${formatDate(policy.effectiveFrom)} 至 ${formatDate(policy.effectiveTo)}`;
+}
+
+function appendIfPresent(formData: FormData, key: string, value?: string | null) {
+  if (value) {
+    formData.append(key, value);
+  }
 }
 
 function VehicleListingManagementBlock({

@@ -638,6 +638,67 @@ enum ServiceCaseActorType {
   @@map("service_case_actor_type")
 }
 
+enum VehicleInsurancePolicyType {
+  COMPULSORY_TRAFFIC
+  COMMERCIAL
+  OTHER
+
+  @@map("vehicle_insurance_policy_type")
+}
+
+enum VehicleInsurancePolicyStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  PENDING_RENEWAL
+  ARCHIVED
+
+  @@map("vehicle_insurance_policy_status")
+}
+
+enum VehicleInsuranceCoverageType {
+  COMPULSORY_TRAFFIC
+  VEHICLE_DAMAGE
+  THIRD_PARTY_LIABILITY
+  VEHICLE_PERSONNEL
+  MEDICAL_OUTSIDE
+  ADDITIONAL
+  OTHER
+
+  @@map("vehicle_insurance_coverage_type")
+}
+
+enum VehicleDocumentType {
+  VEHICLE_LICENSE
+  COMPULSORY_INSURANCE_POLICY
+  COMMERCIAL_INSURANCE_POLICY
+  INSPECTION_CERTIFICATE
+  VEHICLE_AUTHORIZATION
+  OTHER
+
+  @@map("vehicle_document_type")
+}
+
+enum VehicleDocumentStatus {
+  ACTIVE
+  ARCHIVED
+
+  @@map("vehicle_document_status")
+}
+
+enum InsuranceClaimStatus {
+  DRAFT
+  SUBMITTED
+  ACCEPTED
+  IN_PROGRESS
+  SETTLED
+  REJECTED
+  CLOSED
+  CANCELLED
+
+  @@map("insurance_claim_status")
+}
+
 enum NotificationChannel {
   IN_APP
   WECHAT_OFFICIAL_ACCOUNT
@@ -1541,6 +1602,7 @@ model Customer {
   entitlementAccounts OrderEntitlementAccount[]
   entitlementGrants   OrderEntitlementGrant[]
   entitlementUsages   OrderEntitlementUsage[]
+  insuranceClaims  InsuranceClaim[]
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy        String?             @map("created_by") @db.Uuid
@@ -2251,6 +2313,9 @@ model Vehicle {
   listingMedia                  VehicleListingMedia[]
   listingPlans                  VehicleListingPlan[]
   conditionReports              VehicleConditionReport[]
+  insurancePolicies             VehicleInsurancePolicy[]
+  documents                     VehicleDocument[]
+  insuranceClaims               InsuranceClaim[]
   residualForecasts             VehicleResidualForecast[]
   residualModelRunOutputs       ResidualModelRunOutput[]
   valuationReviews              VehicleValuationReview[]
@@ -2443,6 +2508,131 @@ model VehicleConditionReportItem {
   @@index([customerVisible])
   @@index([sortOrder])
   @@map("vehicle_condition_report_item")
+}
+
+model VehicleInsurancePolicy {
+  id                String                       @id @default(uuid()) @db.Uuid
+  policyNo          String                       @map("policy_no") @db.VarChar(128)
+  vehicleId         String                       @map("vehicle_id") @db.Uuid
+  vehicle           Vehicle                      @relation(fields: [vehicleId], references: [id])
+  policyType        VehicleInsurancePolicyType   @map("policy_type")
+  policyStatus      VehicleInsurancePolicyStatus @default(ACTIVE) @map("policy_status")
+  insurerName       String?                      @map("insurer_name") @db.VarChar(128)
+  policyHolderName  String?                      @map("policy_holder_name") @db.VarChar(128)
+  insuredName       String?                      @map("insured_name") @db.VarChar(128)
+  effectiveFrom     DateTime                     @map("effective_from") @db.Date
+  effectiveTo       DateTime                     @map("effective_to") @db.Date
+  renewalReminderAt DateTime?                    @map("renewal_reminder_at") @db.Timestamptz(6)
+  premiumAmount     BigInt?                      @map("premium_amount")
+  insuredAmount     BigInt?                      @map("insured_amount")
+  currency          String?                      @default("CNY") @db.VarChar(16)
+  remark            String?                      @db.Text
+  snapshot          Json?
+  coverages         VehicleInsuranceCoverage[]
+  documents         VehicleDocument[]
+  claims            InsuranceClaim[]
+  createdAt         DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy         String?                      @map("created_by") @db.Uuid
+  updatedBy         String?                      @map("updated_by") @db.Uuid
+  deletedAt         DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([vehicleId, policyNo])
+  @@index([vehicleId])
+  @@index([policyType])
+  @@index([policyStatus])
+  @@index([effectiveFrom])
+  @@index([effectiveTo])
+  @@map("vehicle_insurance_policy")
+}
+
+model VehicleInsuranceCoverage {
+  id               String                       @id @default(uuid()) @db.Uuid
+  policyId         String                       @map("policy_id") @db.Uuid
+  policy           VehicleInsurancePolicy       @relation(fields: [policyId], references: [id])
+  coverageType     VehicleInsuranceCoverageType @map("coverage_type")
+  coverageName     String?                      @map("coverage_name") @db.VarChar(128)
+  insuredAmount    BigInt?                      @map("insured_amount")
+  deductibleAmount BigInt?                      @map("deductible_amount")
+  remark           String?                      @db.Text
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt        DateTime?                    @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([policyId])
+  @@index([coverageType])
+  @@map("vehicle_insurance_coverage")
+}
+
+model VehicleDocument {
+  id              String                  @id @default(uuid()) @db.Uuid
+  vehicleId       String                  @map("vehicle_id") @db.Uuid
+  vehicle         Vehicle                 @relation(fields: [vehicleId], references: [id])
+  policyId        String?                 @map("policy_id") @db.Uuid
+  policy          VehicleInsurancePolicy? @relation(fields: [policyId], references: [id])
+  documentType    VehicleDocumentType     @map("document_type")
+  documentStatus  VehicleDocumentStatus   @default(ACTIVE) @map("document_status")
+  fileName        String                  @map("file_name") @db.VarChar(255)
+  originalName    String?                 @map("original_name") @db.VarChar(255)
+  mimeType        String?                 @map("mime_type") @db.VarChar(128)
+  fileSize        Int?                    @map("file_size")
+  bucket          String?                 @db.VarChar(256)
+  objectKey       String?                 @map("object_key") @db.VarChar(512)
+  title           String?                 @db.VarChar(128)
+  description     String?                 @db.Text
+  effectiveFrom   DateTime?               @map("effective_from") @db.Date
+  effectiveTo     DateTime?               @map("effective_to") @db.Date
+  customerVisible Boolean                 @default(false) @map("customer_visible")
+  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  uploadedBy      String?                 @map("uploaded_by") @db.Uuid
+  deletedAt       DateTime?               @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([policyId])
+  @@index([documentType])
+  @@index([documentStatus])
+  @@index([customerVisible])
+  @@map("vehicle_document")
+}
+
+model InsuranceClaim {
+  id              String                  @id @default(uuid()) @db.Uuid
+  claimNo         String                  @unique @map("claim_no") @db.VarChar(64)
+  serviceCaseId   String?                 @map("service_case_id") @db.Uuid
+  serviceCase     ServiceCase?            @relation(fields: [serviceCaseId], references: [id])
+  policyId        String?                 @map("policy_id") @db.Uuid
+  policy          VehicleInsurancePolicy? @relation(fields: [policyId], references: [id])
+  vehicleId       String                  @map("vehicle_id") @db.Uuid
+  vehicle         Vehicle                 @relation(fields: [vehicleId], references: [id])
+  orderId         String?                 @map("order_id") @db.Uuid
+  order           SubscriptionOrder?      @relation(fields: [orderId], references: [id])
+  customerId      String?                 @map("customer_id") @db.Uuid
+  customer        Customer?               @relation(fields: [customerId], references: [id])
+  claimStatus     InsuranceClaimStatus    @default(DRAFT) @map("claim_status")
+  insurerClaimNo  String?                 @map("insurer_claim_no") @db.VarChar(128)
+  accidentAt      DateTime?               @map("accident_at") @db.Timestamptz(6)
+  submittedAt     DateTime?               @map("submitted_at") @db.Timestamptz(6)
+  acceptedAt      DateTime?               @map("accepted_at") @db.Timestamptz(6)
+  closedAt        DateTime?               @map("closed_at") @db.Timestamptz(6)
+  estimatedAmount BigInt?                 @map("estimated_amount")
+  approvedAmount  BigInt?                 @map("approved_amount")
+  paidAmount      BigInt?                 @map("paid_amount")
+  remark          String?                 @db.Text
+  snapshot        Json?
+  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?                 @map("created_by") @db.Uuid
+  updatedBy       String?                 @map("updated_by") @db.Uuid
+  deletedAt       DateTime?               @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([serviceCaseId])
+  @@index([policyId])
+  @@index([vehicleId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([claimStatus])
+  @@map("insurance_claim")
 }
 
 model VehicleSalePriceHistory {
@@ -3202,6 +3392,7 @@ model SubscriptionOrder {
   contracts                  Contract[]            @relation("OrderContracts")
   changes                    OrderChange[]
   revenueRightAssignments    RevenueRightAssignment[]
+  insuranceClaims            InsuranceClaim[]
   createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?               @map("created_by") @db.Uuid
@@ -3669,6 +3860,7 @@ model ServiceCase {
   vehicleSnapshot        Json?                     @map("vehicle_snapshot")
   attachments            ServiceCaseAttachment[]
   actions                ServiceCaseAction[]
+  insuranceClaims        InsuranceClaim[]
   createdAt              DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy              String?                   @map("created_by") @db.Uuid

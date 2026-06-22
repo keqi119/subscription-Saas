@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 
 import {
   RESCUE_TYPE_LABELS,
+  INSURANCE_CLAIM_STATUS_LABELS,
   SERVICE_CASE_ACTION_TYPE_LABELS,
   SERVICE_CASE_ACTOR_TYPE_LABELS,
   SERVICE_CASE_ATTACHMENT_TYPE_LABELS,
@@ -167,6 +168,39 @@ export default function PortalServiceCaseDetailPage() {
             )}
             <Descriptions.Item label="描述">{detail?.description ?? "-"}</Descriptions.Item>
           </Descriptions>
+        </section>
+
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e5eaf2",
+            borderRadius: 8,
+            marginBottom: 14,
+            padding: 18
+          }}
+        >
+          <Typography.Title level={4}>保险理赔</Typography.Title>
+          <List
+            dataSource={detail?.insuranceClaims ?? []}
+            locale={{ emptyText: <Empty description="暂无保险理赔记录" /> }}
+            renderItem={(claim) => (
+              <List.Item>
+                <List.Item.Meta
+                  description={[
+                    claim.insurerClaimNo ? `保险公司案件号 ${claim.insurerClaimNo}` : null,
+                    claim.submittedAt ? `提交 ${formatTime(claim.submittedAt)}` : null,
+                    claim.closedAt ? `结案 ${formatTime(claim.closedAt)}` : null
+                  ].filter(Boolean).join(" / ")}
+                  title={
+                    <Space wrap>
+                      <Typography.Text>{claim.claimNo}</Typography.Text>
+                      <Tag>{labelOf(INSURANCE_CLAIM_STATUS_LABELS, claim.claimStatus)}</Tag>
+                    </Space>
+                  }
+                />
+              </List.Item>
+            )}
+          />
         </section>
 
         <section

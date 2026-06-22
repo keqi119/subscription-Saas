@@ -25,6 +25,10 @@ import {
   RevenueShareRuleType,
   VehicleAssetCostProfileStatus,
   VehicleAcquisitionMode,
+  VehicleBaasBillingCycle,
+  VehicleBaasContractStatus,
+  VehicleBaasCostRecordStatus,
+  VehicleBaasCostSource,
   VehicleCapitalEventStatus,
   VehicleDepreciationMethod,
   VehicleModel,
@@ -679,6 +683,90 @@ describe("reporting dashboard APIs", () => {
     expect(JSON.stringify(row)).toContain("forecastResidualAmount");
   });
 
+  it("asset return trial aggregates BaaS costs as adjusted return metrics without changing main ROE", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      baasContracts: [assetBaasContract()],
+      baasCostRecords: [
+        assetBaasCostRecord({
+          costAmount: 30000n,
+          costRecordNo: "BCR-SCHEDULED",
+          costStatus: VehicleBaasCostRecordStatus.SCHEDULED,
+          id: "baas-cost-scheduled"
+        }),
+        assetBaasCostRecord({
+          costAmount: 20000n,
+          costPeriod: "2026-07",
+          costRecordNo: "BCR-CONFIRMED",
+          costStatus: VehicleBaasCostRecordStatus.CONFIRMED,
+          id: "baas-cost-confirmed"
+        }),
+        assetBaasCostRecord({
+          costAmount: 40000n,
+          costPeriod: "2026-08",
+          costRecordNo: "BCR-PAID",
+          costStatus: VehicleBaasCostRecordStatus.PAID,
+          id: "baas-cost-paid"
+        })
+      ]
+    });
+
+    const vehicles = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    const row = vehicles.items[0];
+
+    expect(row).toMatchObject({
+      baasAdjustedPlatformNetIncomeAmount: -761500,
+      baasConfirmedCostAmount: 20000,
+      baasContractNo: "BAAS202606010001",
+      baasContractStatus: VehicleBaasContractStatus.ACTIVE,
+      baasCostAmount: 90000,
+      baasCostRecordCount: 3,
+      baasPaidCostAmount: 40000,
+      baasProviderName: "蔚来能源",
+      baasScheduledCostAmount: 30000,
+      platformNetIncomeAmount: -671500
+    });
+    expect(row?.roeTrial).toBeCloseTo(-671500 / 1200000);
+    expect(row?.baasAdjustedRoeTrial).toBeCloseTo(-761500 / 1200000);
+    expect(row?.baasAdjustedAnnualizedRoeTrial).toBeCloseTo(-761500 / 1200000);
+
+    const summary = await service.getAssetReturnTrialSummary({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(summary).toMatchObject({
+      baasAdjustedPlatformNetIncomeAmount: -761500,
+      baasCostAmount: 90000,
+      baasCostRecordCount: 3,
+      baasCostVehicleCount: 1,
+      platformNetIncomeAmount: -671500
+    });
+    expect(summary.roeTrial).toBeCloseTo(-671500 / 1200000);
+    expect(summary.baasAdjustedRoeTrial).toBeCloseTo(-761500 / 1200000);
+    expect(prisma.vehicleBaasCostRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          costStatus: {
+            in: [
+              VehicleBaasCostRecordStatus.SCHEDULED,
+              VehicleBaasCostRecordStatus.CONFIRMED,
+              VehicleBaasCostRecordStatus.PAID,
+              VehicleBaasCostRecordStatus.OVERDUE
+            ]
+          },
+          dueDate: expect.objectContaining({
+            gte: expect.any(Date),
+            lt: expect.any(Date)
+          })
+        })
+      })
+    );
+  });
+
   it("asset return trial uses adopted residual amount before predicted amount", async () => {
     const { prisma, service } = createReportHarness();
     mockAssetReturnTrial(prisma, {
@@ -1287,6 +1375,59 @@ describe("reporting dashboard APIs", () => {
         includedInOperatingRevenue: true
       })
     ]);
+  });
+
+  it("asset return trial vehicle detail returns BaaS contract, cost records, and adjusted metrics", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        paidAmount: 100000n
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+    prisma.vehicleBaasContract.findMany.mockResolvedValue([assetBaasContract()]);
+    prisma.vehicleBaasCostRecord.findMany.mockResolvedValue([
+      assetBaasCostRecord({
+        costAmount: 30000n,
+        costStatus: VehicleBaasCostRecordStatus.PAID,
+        paidAt: new Date("2026-06-11T00:00:00.000Z")
+      })
+    ]);
+
+    const result = await service.getAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+
+    expect(result.baasCurrentContract).toMatchObject({
+      contractNo: "BAAS202606010001",
+      contractStatus: VehicleBaasContractStatus.ACTIVE,
+      providerName: "蔚来能源",
+      rentalAmount: 30000
+    });
+    expect(result.baasCostSummary).toMatchObject({
+      costAmount: 30000,
+      costRecordCount: 1,
+      paidCostAmount: 30000
+    });
+    expect(result.baasCostRecords).toEqual([
+      expect.objectContaining({
+        costAmount: 30000,
+        costStatus: VehicleBaasCostRecordStatus.PAID
+      })
+    ]);
+    expect(result.baasAdjustedReturn).toMatchObject({
+      baasAdjustedPlatformNetIncomeAmount: -751500,
+      platformNetIncomeAmount: -721500
+    });
+    expect(result.baasAdjustedReturn.baasAdjustedRoeTrial).toBeCloseTo(-751500 / 1200000);
+    expect(result.returns.roeTrial).toBeCloseTo(-721500 / 1200000);
   });
 
   it("asset return trial vehicle detail returns capital, financing, revenue right, and sharing details", async () => {
@@ -1900,6 +2041,10 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("预测残值合计（元）,1800.00");
     expect(result.content).toContain("相对成本参数预计残值差异（元）,600.00");
     expect(result.content).toContain("残值敏感性 ROE,-50.96%");
+    expect(result.content).toContain("BaaS 电池成本");
+    expect(result.content).toContain("BaaS 成本车辆数,0");
+    expect(result.content).toContain("BaaS 调整后平台权益净收益（元）,-6715.00");
+    expect(result.content).toContain("BaaS 调整后 ROE,-55.96%");
     expect(result.content).toContain("计算链路 / 钩稽关系");
     expect(result.content).toContain("ROE 不可用原因");
     expect(result.content).toContain("ROE 试算提示");
@@ -1944,6 +2089,9 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("预测残值（元）");
     expect(result.content).toContain("相对成本参数残值差异（元）");
     expect(result.content).toContain("残值敏感性 ROE");
+    expect(result.content).toContain("BaaS 合同状态");
+    expect(result.content).toContain("BaaS 成本合计（元）");
+    expect(result.content).toContain("BaaS 调整后 ROE");
     expect(result.content).toContain('"NIO, ""Premium""\nLine"');
     expect(result.content).toContain("已出租");
     expect(result.content).toContain("6500.00");
@@ -2034,6 +2182,10 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("平台权益净收益（元）,-7215.00");
     expect(result.content).toContain("试算 ROE,-60.12%");
     expect(result.content).toContain("ROE 状态,可试算");
+    expect(result.content).toContain("BaaS 电池成本");
+    expect(result.content).toContain("BaaS 成本汇总");
+    expect(result.content).toContain("BaaS 调整后收益指标");
+    expect(result.content).toContain("BaaS 成本记录");
     expect(result.content).toContain("残值预测敏感性");
     expect(result.content).toContain("残值预测状态,可用");
     expect(result.content).toContain("预测值来源,曲线预测");
@@ -2942,6 +3094,12 @@ function createReportHarness() {
       update: reportWriteGuard("vehicle.update"),
       updateMany: reportWriteGuard("vehicle.updateMany")
     },
+    vehicleBaasContract: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    vehicleBaasCostRecord: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
     vehicleMarketPriceObservation: {
       create: reportWriteGuard("vehicleMarketPriceObservation.create"),
       update: reportWriteGuard("vehicleMarketPriceObservation.update")
@@ -3159,6 +3317,8 @@ function mockAssetReturnTrial(
   prisma: ReportPrismaMock,
   overrides: {
     bills?: Array<Record<string, unknown>>;
+    baasContracts?: Array<Record<string, unknown>>;
+    baasCostRecords?: Array<Record<string, unknown>>;
     capitalEvents?: Array<Record<string, unknown>>;
     financingAllocations?: Array<Record<string, unknown>>;
     forecasts?: Array<Record<string, unknown>>;
@@ -3211,6 +3371,8 @@ function mockAssetReturnTrial(
     .mockResolvedValueOnce([]);
   prisma.revenueShareRule.findMany.mockResolvedValue(overrides.revenueShareRules ?? []);
   prisma.vehicleResidualForecast.findMany.mockResolvedValue(overrides.forecasts ?? []);
+  prisma.vehicleBaasContract.findMany.mockResolvedValue(overrides.baasContracts ?? []);
+  prisma.vehicleBaasCostRecord.findMany.mockResolvedValue(overrides.baasCostRecords ?? []);
 }
 
 function assetVehicle(overrides: Record<string, unknown> = {}) {
@@ -3344,6 +3506,48 @@ function assetResidualCurve(overrides: Record<string, unknown> = {}) {
     modelYear: 2024,
     series: "ET",
     trim: null,
+    ...overrides
+  };
+}
+
+function assetBaasContract(overrides: Record<string, unknown> = {}) {
+  return {
+    batteryPackageName: "75kWh BaaS",
+    batterySerialNo: "BATTERY-001",
+    billingCycle: VehicleBaasBillingCycle.MONTHLY,
+    contractNo: "BAAS202606010001",
+    contractStatus: VehicleBaasContractStatus.ACTIVE,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    id: "baas-contract-1",
+    paymentDayOfMonth: 10,
+    providerContractNo: "PROVIDER-BAAS-001",
+    providerName: "蔚来能源",
+    rentalAmount: 30000n,
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetBaasCostRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    confirmedAt: null,
+    contractId: "baas-contract-1",
+    costAmount: 30000n,
+    costPeriod: "2026-06",
+    costRecordNo: "BCR202606001",
+    costSource: VehicleBaasCostSource.GENERATED,
+    costStatus: VehicleBaasCostRecordStatus.SCHEDULED,
+    currency: "CNY",
+    dueDate: new Date("2026-06-10T00:00:00.000Z"),
+    id: "baas-cost-record-1",
+    invoiceNo: null,
+    paidAt: null,
+    paymentRefNo: null,
+    periodEnd: new Date("2026-06-30T00:00:00.000Z"),
+    periodStart: new Date("2026-06-01T00:00:00.000Z"),
+    vehicleId: "vehicle-1",
+    voidedAt: null,
     ...overrides
   };
 }

@@ -26,6 +26,8 @@ import {
   RevenueShareRuleType,
   VehicleAssetCostProfileStatus,
   VehicleAcquisitionMode,
+  VehicleBaasContractStatus,
+  VehicleBaasCostRecordStatus,
   VehicleCapitalEventStatus,
   VehicleModel,
   VehicleResidualForecastPointStatus,
@@ -92,6 +94,10 @@ import {
   revenueShareRuleTypeLabels,
   salePriceStatusLabels,
   vehicleAssetCostProfileStatusLabels,
+  vehicleBaasBillingCycleLabels,
+  vehicleBaasContractStatusLabels,
+  vehicleBaasCostSourceLabels,
+  vehicleBaasCostRecordStatusLabels,
   vehicleDamageLevelLabels,
   vehicleDamageResponsiblePartyLabels,
   vehicleDamageTypeLabels,
@@ -677,6 +683,13 @@ export class ReportService {
       platformNetIncomeAmount === null || roeEquityBaseAmount <= 0
         ? null
         : platformNetIncomeAmount / roeEquityBaseAmount;
+    const baasCostAmount = sumNumbers(rows.map((row) => row.baasCostAmount));
+    const baasAdjustedFields = baasAdjustedReturnFields({
+      analysisDays,
+      baasCostAmount,
+      platformNetIncomeAmount,
+      roeEquityBaseAmount
+    });
     const residualForecastRows = rows.filter((row) => row.forecastResidualAmount !== null);
     const residualForecastUnsupportedVehicleCount = rows.filter(
       (row) => row.residualForecastUnavailableReason === RESIDUAL_FORECAST_UNSUPPORTED_REASON
@@ -707,6 +720,17 @@ export class ReportService {
       annualizedRoeTrial:
         roeTrial === null || analysisDays <= 0 ? null : (roeTrial * 365) / analysisDays,
       assignedOutRevenueAmount: sumNumbers(rows.map((row) => row.assignedOutRevenueAmount)),
+      baasAdjustedAnnualizedRoeTrial: baasAdjustedFields.baasAdjustedAnnualizedRoeTrial,
+      baasAdjustedPlatformNetIncomeAmount:
+        baasAdjustedFields.baasAdjustedPlatformNetIncomeAmount,
+      baasAdjustedRoeTrial: baasAdjustedFields.baasAdjustedRoeTrial,
+      baasConfirmedCostAmount: sumNumbers(rows.map((row) => row.baasConfirmedCostAmount)),
+      baasCostAmount,
+      baasCostRecordCount: sumNumbers(rows.map((row) => row.baasCostRecordCount)),
+      baasCostVehicleCount: rows.filter((row) => row.baasCostRecordCount > 0).length,
+      baasOverdueCostAmount: sumNumbers(rows.map((row) => row.baasOverdueCostAmount)),
+      baasPaidCostAmount: sumNumbers(rows.map((row) => row.baasPaidCostAmount)),
+      baasScheduledCostAmount: sumNumbers(rows.map((row) => row.baasScheduledCostAmount)),
       capitalCostAmount: sumNullable(costCalculatedRows.map((row) => row.capitalCostAmount)),
       costCalculatedVehicleCount: costCalculatedRows.length,
       costUnavailableVehicleCount: rows.length - costCalculatedRows.length,
@@ -807,20 +831,50 @@ export class ReportService {
     }
 
     const residualHorizonMonth = resolveResidualHorizonMonth(query);
-    const [metricsByVehicleId, roeContextsByVehicleId, residualContextsByVehicleId] = await Promise.all([
+    const [
+      metricsByVehicleId,
+      roeContextsByVehicleId,
+      residualContextsByVehicleId,
+      baasContextsByVehicleId
+    ] = await Promise.all([
       this.buildAssetProfitabilityMetrics([vehicle], range),
       this.buildAssetReturnRoeContexts([vehicle], range),
-      this.buildAssetReturnResidualForecastContexts([vehicle], residualHorizonMonth)
+      this.buildAssetReturnResidualForecastContexts([vehicle], residualHorizonMonth),
+      this.buildAssetReturnBaasContexts([vehicle], range)
     ]);
     const metrics = metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics();
     const roeContext = roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id);
     const residualContext =
       residualContextsByVehicleId.get(vehicle.id) ??
       emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth);
-    const row = assetReturnTrialVehicleRow(vehicle, metrics, range, roeContext, residualContext);
+    const baasContext =
+      baasContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnBaasContext(vehicle.id);
+    const analysisDays = inclusiveBusinessDays(range.output.startDate, range.output.endDate);
+    const row = attachAssetReturnBaasFields(
+      assetReturnTrialVehicleRow(vehicle, metrics, range, roeContext, residualContext),
+      baasContext,
+      analysisDays
+    );
     const profile = activeCostProfileFor(vehicle);
+    const baasAdjustedReturn = {
+      baasAdjustedAnnualizedRoeTrial: row.baasAdjustedAnnualizedRoeTrial,
+      baasAdjustedPlatformNetIncomeAmount: row.baasAdjustedPlatformNetIncomeAmount,
+      baasAdjustedRoeTrial: row.baasAdjustedRoeTrial,
+      platformNetIncomeAmount: row.platformNetIncomeAmount
+    };
 
     return {
+      baasAdjustedReturn,
+      baasCostRecords: baasContext.records.map(assetReturnBaasCostRecordView),
+      baasCostSummary: {
+        confirmedCostAmount: row.baasConfirmedCostAmount,
+        costAmount: row.baasCostAmount,
+        costRecordCount: row.baasCostRecordCount,
+        overdueCostAmount: row.baasOverdueCostAmount,
+        paidCostAmount: row.baasPaidCostAmount,
+        scheduledCostAmount: row.baasScheduledCostAmount
+      },
+      baasCurrentContract: assetReturnBaasContractView(baasContext.currentContract),
       bills: metrics.bills.map((bill) => ({
         amount: toNumber(bill.amount),
         billId: bill.id,
@@ -900,6 +954,9 @@ export class ReportService {
         debtInterestCostAmount: row.debtInterestCostAmount,
         externalLeaseCostAmount: row.externalLeaseCostAmount,
         platformNetIncomeAmount: row.platformNetIncomeAmount,
+        baasAdjustedAnnualizedRoeTrial: row.baasAdjustedAnnualizedRoeTrial,
+        baasAdjustedPlatformNetIncomeAmount: row.baasAdjustedPlatformNetIncomeAmount,
+        baasAdjustedRoeTrial: row.baasAdjustedRoeTrial,
         roeDataReady: row.roeDataReady,
         roeEquityBaseAmount: row.roeEquityBaseAmount,
         roeMissingReasons: row.roeMissingReasons,
@@ -970,7 +1027,24 @@ export class ReportService {
       ["残值敏感性净收益（元）", formatMoneyYuan(report.residualSensitivityNetIncomeAmount)],
       ["残值敏感性 ROE", formatPercent(report.residualSensitivityRoeTrial)],
       ["年化残值敏感性 ROE", formatPercent(report.residualSensitivityAnnualizedRoeTrial)],
+      ["BaaS 调整后平台权益净收益（元）", formatMoneyYuan(report.baasAdjustedPlatformNetIncomeAmount)],
+      ["BaaS 调整后 ROE", formatPercent(report.baasAdjustedRoeTrial)],
+      ["BaaS 调整后年化 ROE", formatPercent(report.baasAdjustedAnnualizedRoeTrial)],
       ["ROE 状态", returnTrialRoeCoverageStatus(report)],
+      [],
+      ["BaaS 电池成本"],
+      ["指标", "值"],
+      ["BaaS 成本车辆数", report.baasCostVehicleCount],
+      ["BaaS 成本记录数", report.baasCostRecordCount],
+      ["BaaS 成本合计（元）", formatMoneyYuan(report.baasCostAmount)],
+      ["BaaS 已计划成本（元）", formatMoneyYuan(report.baasScheduledCostAmount)],
+      ["BaaS 已确认成本（元）", formatMoneyYuan(report.baasConfirmedCostAmount)],
+      ["BaaS 已支付成本（元）", formatMoneyYuan(report.baasPaidCostAmount)],
+      ["BaaS 逾期成本（元）", formatMoneyYuan(report.baasOverdueCostAmount)],
+      ["BaaS 调整后平台权益净收益（元）", formatMoneyYuan(report.baasAdjustedPlatformNetIncomeAmount)],
+      ["BaaS 调整后 ROE", formatPercent(report.baasAdjustedRoeTrial)],
+      ["BaaS 调整后年化 ROE", formatPercent(report.baasAdjustedAnnualizedRoeTrial)],
+      ["口径说明", "BaaS 成本作为补充口径展示，不改变主平台权益净收益 / 主试算 ROE。"],
       [],
       ["数据完整性 / 可计算性"],
       ["指标", "值"],
@@ -1042,6 +1116,8 @@ export class ReportService {
       ],
       ["平台权益净收益", "平台留存经营收入 - 经营成本合计"],
       ["试算 ROE", "平台权益净收益 / 权益资本基数"],
+      ["BaaS 调整后平台权益净收益", "平台权益净收益 - BaaS 成本合计"],
+      ["BaaS 调整后 ROE", "BaaS 调整后平台权益净收益 / 权益资本基数"],
       [
         "残值敏感性净收益",
         "平台权益净收益 + 预测残值相对成本参数残值差异"
@@ -1110,6 +1186,18 @@ export class ReportService {
         "年化试算 ROA",
         "试算 ROE",
         "年化试算 ROE",
+        "BaaS 合同状态",
+        "BaaS 服务商",
+        "BaaS 合同编号",
+        "BaaS 成本记录数",
+        "BaaS 成本合计（元）",
+        "BaaS 已计划成本（元）",
+        "BaaS 已确认成本（元）",
+        "BaaS 已支付成本（元）",
+        "BaaS 逾期成本（元）",
+        "BaaS 调整后平台权益净收益（元）",
+        "BaaS 调整后 ROE",
+        "BaaS 调整后年化 ROE",
         "残值预测状态",
         "残值预测周期",
         "预测值来源",
@@ -1162,6 +1250,18 @@ export class ReportService {
         formatPercent(vehicle.annualizedTrialRoa),
         roeExportValue(vehicle.roeTrial),
         roeExportValue(vehicle.annualizedRoeTrial),
+        labelOf(vehicleBaasContractStatusLabels, vehicle.baasContractStatus),
+        vehicle.baasProviderName,
+        vehicle.baasContractNo,
+        vehicle.baasCostRecordCount,
+        formatMoneyYuan(vehicle.baasCostAmount),
+        formatMoneyYuan(vehicle.baasScheduledCostAmount),
+        formatMoneyYuan(vehicle.baasConfirmedCostAmount),
+        formatMoneyYuan(vehicle.baasPaidCostAmount),
+        formatMoneyYuan(vehicle.baasOverdueCostAmount),
+        formatMoneyYuan(vehicle.baasAdjustedPlatformNetIncomeAmount),
+        formatPercent(vehicle.baasAdjustedRoeTrial),
+        formatPercent(vehicle.baasAdjustedAnnualizedRoeTrial),
         residualForecastAvailabilityText(vehicle.residualForecastAvailable),
         residualHorizonText(vehicle.residualForecastHorizonMonth),
         residualForecastAmountSourceText(vehicle.forecastResidualAmountSource),
@@ -1203,6 +1303,9 @@ export class ReportService {
     const income = detail.incomeBreakdown;
     const cost = detail.costBreakdown;
     const returns = detail.returns;
+    const baasCurrentContract = detail.baasCurrentContract;
+    const baasCostSummary = detail.baasCostSummary;
+    const baasAdjustedReturn = detail.baasAdjustedReturn;
     const residualForecastSummary = detail.residualForecastSummary;
     const residualForecastPoint = detail.residualForecastPoint;
     const residualForecastCurveSummary = detail.residualForecastCurveSummary;
@@ -1314,6 +1417,72 @@ export class ReportService {
       ["ROE 状态", roeStatusText(returns)],
       ["不可计算原因", csvTextList(returns.roeMissingReasons)],
       ["提示信息", csvTextList(returns.roeWarnings)],
+      [],
+      ["BaaS 电池成本"],
+      ["字段", "值"],
+      ["合同编号", baasCurrentContract?.contractNo],
+      ["合同状态", labelOf(vehicleBaasContractStatusLabels, baasCurrentContract?.contractStatus)],
+      ["服务商", baasCurrentContract?.providerName],
+      ["服务商合同号", baasCurrentContract?.providerContractNo],
+      ["电池包名称", baasCurrentContract?.batteryPackageName],
+      ["电池序列号", baasCurrentContract?.batterySerialNo],
+      ["计费周期", labelOf(vehicleBaasBillingCycleLabels, baasCurrentContract?.billingCycle)],
+      ["月租金（元）", formatMoneyYuan(baasCurrentContract?.rentalAmount)],
+      ["每月支付日", baasCurrentContract?.paymentDayOfMonth],
+      ["生效日期", formatDate(baasCurrentContract?.effectiveFrom)],
+      ["到期日期", formatDate(baasCurrentContract?.effectiveTo)],
+      [],
+      ["BaaS 成本汇总"],
+      ["指标", "值"],
+      ["BaaS 成本记录数", baasCostSummary.costRecordCount],
+      ["BaaS 成本合计（元）", formatMoneyYuan(baasCostSummary.costAmount)],
+      ["BaaS 已计划成本（元）", formatMoneyYuan(baasCostSummary.scheduledCostAmount)],
+      ["BaaS 已确认成本（元）", formatMoneyYuan(baasCostSummary.confirmedCostAmount)],
+      ["BaaS 已支付成本（元）", formatMoneyYuan(baasCostSummary.paidCostAmount)],
+      ["BaaS 逾期成本（元）", formatMoneyYuan(baasCostSummary.overdueCostAmount)],
+      [],
+      ["BaaS 调整后收益指标"],
+      ["指标", "值"],
+      ["主平台权益净收益（元）", formatMoneyYuan(baasAdjustedReturn.platformNetIncomeAmount)],
+      [
+        "BaaS 调整后平台权益净收益（元）",
+        formatMoneyYuan(baasAdjustedReturn.baasAdjustedPlatformNetIncomeAmount)
+      ],
+      ["BaaS 调整后 ROE", formatPercent(baasAdjustedReturn.baasAdjustedRoeTrial)],
+      [
+        "BaaS 调整后年化 ROE",
+        formatPercent(baasAdjustedReturn.baasAdjustedAnnualizedRoeTrial)
+      ],
+      ["说明", "BaaS 成本作为补充口径展示，不改变主平台权益净收益 / 主试算 ROE。"],
+      [],
+      ["BaaS 成本记录"],
+      [
+        "成本记录编号",
+        "账期",
+        "周期开始",
+        "周期结束",
+        "应付日期",
+        "成本金额（元）",
+        "成本状态",
+        "成本来源",
+        "支付日期",
+        "付款参考号",
+        "发票号"
+      ],
+      ...detail.baasCostRecords.map((record) => [
+        record.costRecordNo,
+        record.costPeriod,
+        formatDate(record.periodStart),
+        formatDate(record.periodEnd),
+        formatDate(record.dueDate),
+        formatMoneyYuan(record.costAmount),
+        labelOf(vehicleBaasCostRecordStatusLabels, record.costStatus),
+        labelOf(vehicleBaasCostSourceLabels, record.costSource),
+        formatDate(record.paidAt),
+        record.paymentRefNo,
+        record.invoiceNo
+      ]),
+      ...(detail.baasCostRecords.length === 0 ? ([["暂无数据"]] satisfies CsvRow[]) : []),
       [],
       ["残值预测敏感性"],
       ["字段", "值"],
@@ -2864,19 +3033,30 @@ export class ReportService {
       where: assetProfitabilityVehicleWhere(query)
     });
     const residualHorizonMonth = resolveResidualHorizonMonth(query);
-    const [metricsByVehicleId, roeContextsByVehicleId, residualContextsByVehicleId] = await Promise.all([
+    const [
+      metricsByVehicleId,
+      roeContextsByVehicleId,
+      residualContextsByVehicleId,
+      baasContextsByVehicleId
+    ] = await Promise.all([
       this.buildAssetProfitabilityMetrics(vehicles, range),
       this.buildAssetReturnRoeContexts(vehicles, range),
-      this.buildAssetReturnResidualForecastContexts(vehicles, residualHorizonMonth)
+      this.buildAssetReturnResidualForecastContexts(vehicles, residualHorizonMonth),
+      this.buildAssetReturnBaasContexts(vehicles, range)
     ]);
+    const analysisDays = inclusiveBusinessDays(range.output.startDate, range.output.endDate);
     const rows = vehicles.map((vehicle) =>
-      assetReturnTrialVehicleRow(
-        vehicle,
-        metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics(),
-        range,
-        roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id),
-        residualContextsByVehicleId.get(vehicle.id) ??
-          emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth)
+      attachAssetReturnBaasFields(
+        assetReturnTrialVehicleRow(
+          vehicle,
+          metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics(),
+          range,
+          roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id),
+          residualContextsByVehicleId.get(vehicle.id) ??
+            emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth)
+        ),
+        baasContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnBaasContext(vehicle.id),
+        analysisDays
       )
     );
 
@@ -3184,6 +3364,61 @@ export class ReportService {
         unavailableReason: point ? null : RESIDUAL_FORECAST_POINT_MISSING_REASON,
         vehicleId
       });
+    }
+
+    return contextsByVehicleId;
+  }
+
+  private async buildAssetReturnBaasContexts(
+    vehicles: Pick<AssetReturnTrialVehicleRecord, "id">[],
+    range: ReturnType<typeof resolveReportDateRange>
+  ) {
+    const vehicleIds = vehicles.map((vehicle) => vehicle.id);
+    const contextsByVehicleId = new Map(
+      vehicleIds.map((vehicleId) => [vehicleId, emptyAssetReturnBaasContext(vehicleId)])
+    );
+
+    if (vehicleIds.length === 0) {
+      return contextsByVehicleId;
+    }
+
+    const [contracts, records] = await Promise.all([
+      this.prisma.vehicleBaasContract.findMany({
+        orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        select: assetReturnBaasContractSelect,
+        where: {
+          contractStatus: VehicleBaasContractStatus.ACTIVE,
+          deletedAt: null,
+          vehicleId: { in: vehicleIds }
+        }
+      }),
+      this.prisma.vehicleBaasCostRecord.findMany({
+        orderBy: [{ dueDate: "asc" }, { costPeriod: "asc" }, { createdAt: "asc" }],
+        select: assetReturnBaasCostRecordSelect,
+        where: {
+          costStatus: { in: BAAS_COST_INCLUDED_STATUSES },
+          deletedAt: null,
+          dueDate: range.dateTimeFilter,
+          vehicleId: { in: vehicleIds }
+        }
+      })
+    ]);
+
+    for (const contract of contracts) {
+      const context = contextsByVehicleId.get(contract.vehicleId);
+      if (context && !context.currentContract) {
+        context.currentContract = contract;
+      }
+    }
+
+    for (const record of records) {
+      const context = contextsByVehicleId.get(record.vehicleId);
+      if (!context) {
+        continue;
+      }
+
+      context.records.push(record);
+      addBaasCostRecordToSummary(context.summary, record);
     }
 
     return contextsByVehicleId;
@@ -4058,6 +4293,42 @@ const assetReturnTrialVehicleDetailSelect = {
   assetCostProfiles: activeAssetCostProfileRelationSelect
 } satisfies Prisma.VehicleSelect;
 
+const assetReturnBaasContractSelect = {
+  batteryPackageName: true,
+  batterySerialNo: true,
+  billingCycle: true,
+  contractNo: true,
+  contractStatus: true,
+  effectiveFrom: true,
+  effectiveTo: true,
+  id: true,
+  paymentDayOfMonth: true,
+  providerContractNo: true,
+  providerName: true,
+  rentalAmount: true,
+  vehicleId: true
+} satisfies Prisma.VehicleBaasContractSelect;
+
+const assetReturnBaasCostRecordSelect = {
+  confirmedAt: true,
+  contractId: true,
+  costAmount: true,
+  costPeriod: true,
+  costRecordNo: true,
+  costSource: true,
+  costStatus: true,
+  currency: true,
+  dueDate: true,
+  id: true,
+  invoiceNo: true,
+  paidAt: true,
+  paymentRefNo: true,
+  periodEnd: true,
+  periodStart: true,
+  vehicleId: true,
+  voidedAt: true
+} satisfies Prisma.VehicleBaasCostRecordSelect;
+
 const assetProfitabilityOrderSelect = {
   actualDeliveryAt: true,
   actualReturnAt: true,
@@ -4261,6 +4532,12 @@ type AssetReturnResidualForecastRecord = Prisma.VehicleResidualForecastGetPayloa
   select: typeof assetReturnResidualForecastSelect;
 }>;
 type AssetReturnResidualForecastPointRecord = AssetReturnResidualForecastRecord["points"][number];
+type AssetReturnBaasContractRecord = Prisma.VehicleBaasContractGetPayload<{
+  select: typeof assetReturnBaasContractSelect;
+}>;
+type AssetReturnBaasCostRecord = Prisma.VehicleBaasCostRecordGetPayload<{
+  select: typeof assetReturnBaasCostRecordSelect;
+}>;
 type AssetProfitabilitySortField = NonNullable<AssetProfitabilityVehicleListQueryDto["sortBy"]>;
 type AssetReturnTrialSortField = NonNullable<AssetReturnTrialVehicleListQueryDto["sortBy"]>;
 
@@ -4281,6 +4558,22 @@ type AssetReturnResidualForecastContext = {
   vehicleId: string;
 };
 
+type AssetReturnBaasCostSummary = {
+  confirmedCostAmount: number;
+  costAmount: number;
+  costRecordCount: number;
+  overdueCostAmount: number;
+  paidCostAmount: number;
+  scheduledCostAmount: number;
+};
+
+type AssetReturnBaasContext = {
+  currentContract: AssetReturnBaasContractRecord | null;
+  records: AssetReturnBaasCostRecord[];
+  summary: AssetReturnBaasCostSummary;
+  vehicleId: string;
+};
+
 const ROE_UNAVAILABLE_REASON = "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。";
 const MISSING_COST_PROFILE_REASON = "缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。";
 const DEFAULT_RESIDUAL_HORIZON_MONTH = 12;
@@ -4290,6 +4583,12 @@ const RESIDUAL_FORECAST_UNSUPPORTED_REASON = "该预测点暂不支持，可能�
 const RESIDUAL_FORECAST_AMOUNT_MISSING_REASON = "预测点缺少预测残值金额。";
 const RESIDUAL_CURRENT_SALE_PRICE_MISSING_WARNING = "车辆缺少当前销售价，无法计算相对当前销售价差异。";
 const RESIDUAL_COST_PROFILE_MISSING_WARNING = "车辆成本参数缺少预计残值，无法计算相对成本参数残值差异。";
+const BAAS_COST_INCLUDED_STATUSES: VehicleBaasCostRecordStatus[] = [
+  VehicleBaasCostRecordStatus.SCHEDULED,
+  VehicleBaasCostRecordStatus.CONFIRMED,
+  VehicleBaasCostRecordStatus.PAID,
+  VehicleBaasCostRecordStatus.OVERDUE
+];
 const operatingRevenueBillTypes: BillType[] = [
   BillType.FIRST_MONTHLY_FEE,
   BillType.MONTHLY_RENT,
@@ -5263,6 +5562,145 @@ function emptyAssetReturnResidualForecastContext(
     point: null,
     unavailableReason: RESIDUAL_FORECAST_MISSING_REASON,
     vehicleId
+  };
+}
+
+function emptyAssetReturnBaasCostSummary(): AssetReturnBaasCostSummary {
+  return {
+    confirmedCostAmount: 0,
+    costAmount: 0,
+    costRecordCount: 0,
+    overdueCostAmount: 0,
+    paidCostAmount: 0,
+    scheduledCostAmount: 0
+  };
+}
+
+function emptyAssetReturnBaasContext(vehicleId: string): AssetReturnBaasContext {
+  return {
+    currentContract: null,
+    records: [],
+    summary: emptyAssetReturnBaasCostSummary(),
+    vehicleId
+  };
+}
+
+function addBaasCostRecordToSummary(
+  summary: AssetReturnBaasCostSummary,
+  record: Pick<AssetReturnBaasCostRecord, "costAmount" | "costStatus">
+) {
+  const amount = toNumber(record.costAmount);
+  summary.costAmount += amount;
+  summary.costRecordCount += 1;
+
+  if (record.costStatus === VehicleBaasCostRecordStatus.SCHEDULED) {
+    summary.scheduledCostAmount += amount;
+  } else if (record.costStatus === VehicleBaasCostRecordStatus.CONFIRMED) {
+    summary.confirmedCostAmount += amount;
+  } else if (record.costStatus === VehicleBaasCostRecordStatus.PAID) {
+    summary.paidCostAmount += amount;
+  } else if (record.costStatus === VehicleBaasCostRecordStatus.OVERDUE) {
+    summary.overdueCostAmount += amount;
+  }
+}
+
+function assetReturnBaasContractView(contract: AssetReturnBaasContractRecord | null) {
+  if (!contract) {
+    return null;
+  }
+
+  return {
+    batteryPackageName: contract.batteryPackageName,
+    batterySerialNo: contract.batterySerialNo,
+    billingCycle: contract.billingCycle,
+    contractId: contract.id,
+    contractNo: contract.contractNo,
+    contractStatus: contract.contractStatus,
+    effectiveFrom: contract.effectiveFrom,
+    effectiveTo: contract.effectiveTo,
+    paymentDayOfMonth: contract.paymentDayOfMonth,
+    providerContractNo: contract.providerContractNo,
+    providerName: contract.providerName,
+    rentalAmount: toNumber(contract.rentalAmount)
+  };
+}
+
+function assetReturnBaasCostRecordView(record: AssetReturnBaasCostRecord) {
+  return {
+    confirmedAt: record.confirmedAt,
+    contractId: record.contractId,
+    costAmount: toNumber(record.costAmount),
+    costPeriod: record.costPeriod,
+    costRecordNo: record.costRecordNo,
+    costSource: record.costSource,
+    costStatus: record.costStatus,
+    currency: record.currency,
+    dueDate: record.dueDate,
+    id: record.id,
+    invoiceNo: record.invoiceNo,
+    paidAt: record.paidAt,
+    paymentRefNo: record.paymentRefNo,
+    periodEnd: record.periodEnd,
+    periodStart: record.periodStart,
+    vehicleId: record.vehicleId,
+    voidedAt: record.voidedAt
+  };
+}
+
+function baasAdjustedReturnFields({
+  analysisDays,
+  baasCostAmount,
+  platformNetIncomeAmount,
+  roeEquityBaseAmount
+}: {
+  analysisDays: number;
+  baasCostAmount: number;
+  platformNetIncomeAmount: number | null;
+  roeEquityBaseAmount: number | null;
+}) {
+  const baasAdjustedPlatformNetIncomeAmount =
+    platformNetIncomeAmount === null ? null : platformNetIncomeAmount - baasCostAmount;
+  const baasAdjustedRoeTrial =
+    baasAdjustedPlatformNetIncomeAmount === null ||
+    roeEquityBaseAmount === null ||
+    roeEquityBaseAmount <= 0
+      ? null
+      : baasAdjustedPlatformNetIncomeAmount / roeEquityBaseAmount;
+
+  return {
+    baasAdjustedAnnualizedRoeTrial:
+      baasAdjustedRoeTrial === null || analysisDays <= 0
+        ? null
+        : (baasAdjustedRoeTrial * 365) / analysisDays,
+    baasAdjustedPlatformNetIncomeAmount,
+    baasAdjustedRoeTrial
+  };
+}
+
+function attachAssetReturnBaasFields<T extends ReturnType<typeof assetReturnTrialVehicleRow>>(
+  row: T,
+  context: AssetReturnBaasContext,
+  analysisDays: number
+) {
+  const adjustedFields = baasAdjustedReturnFields({
+    analysisDays,
+    baasCostAmount: context.summary.costAmount,
+    platformNetIncomeAmount: row.platformNetIncomeAmount,
+    roeEquityBaseAmount: row.roeEquityBaseAmount
+  });
+
+  return {
+    ...row,
+    baasConfirmedCostAmount: context.summary.confirmedCostAmount,
+    baasContractNo: context.currentContract?.contractNo ?? null,
+    baasContractStatus: context.currentContract?.contractStatus ?? null,
+    baasCostAmount: context.summary.costAmount,
+    baasCostRecordCount: context.summary.costRecordCount,
+    baasOverdueCostAmount: context.summary.overdueCostAmount,
+    baasPaidCostAmount: context.summary.paidCostAmount,
+    baasProviderName: context.currentContract?.providerName ?? null,
+    baasScheduledCostAmount: context.summary.scheduledCostAmount,
+    ...adjustedFields
   };
 }
 

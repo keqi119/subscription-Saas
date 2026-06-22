@@ -470,3 +470,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10m-a-portal-material-precheck.md`: Stage 10M-A customer profile material center and application material precheck flow.
 - `docs/stage-10m-b-vehicle-insurance-documents-claims.md`: Stage 10M-B vehicle insurance policy, vehicle document, customer-visible order document, and basic claim foundation.
 - `docs/stage-10m-c-baas-contract-costs.md`: Stage 10M-C-A BaaS battery contract, attachment, and monthly cost ledger foundation.
+- `docs/stage-10m-c-baas-cost-return-analytics.md`: Stage 10M-C-B BaaS cost visibility in asset profitability analysis and CSV exports as a supplemental adjusted metric.

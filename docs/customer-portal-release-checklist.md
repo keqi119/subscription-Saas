@@ -10,6 +10,7 @@
 - Stage 10K-A: Aliyun SMS login provider and invited beta gate are implemented in code; real SMS staging validation remains required before production customer traffic.
 - Stage 10M-A: customer profile material center and application precheck are implemented in code; manual acceptance should confirm missing-material warning does not block submission.
 - Stage 10M-B: vehicle insurance policies, vehicle documents, customer-visible order documents, and basic insurance claim records are implemented in code; manual acceptance should confirm private preview and ownership checks.
+- Stage 10M-C-A: BaaS battery contracts and monthly cost ledger are implemented in code; manual acceptance should confirm cost generation is idempotent and does not affect asset profitability formulas yet.
 
 ## Checklist
 
@@ -47,6 +48,9 @@
 | Back-office insurance policies | Back office can create separate compulsory traffic and commercial insurance policies, maintain coverage rows, upload documents, and archive policies | Pending manual acceptance |
 | Back-office vehicle documents | Vehicle document preview streams private files and does not expose OSS public URLs or storage keys | Pending manual acceptance |
 | Back-office insurance claims | Accident service cases can create and update basic claim records without changing vehicle/order status or generating bills | Pending manual acceptance |
+| Back-office BaaS contracts | Back office can create/activate/suspend/terminate/archive BaaS contracts for BAAS vehicles only | Pending manual acceptance |
+| BaaS cost ledger | Dry-run does not write records; formal generation creates idempotent cost records and payment day 31 uses month end | Pending manual acceptance |
+| BaaS reporting boundary | BaaS costs do not change asset profitability, CSV export, billing, payment, or write-off results in Stage 10M-C-A | Pending manual acceptance |
 | WeChat service account menu | Menu dry-run targets customer Portal pages | Dry-run ready |
 | WeChat menu apply | Requires explicit `WECHAT_MENU_APPLY=1` and human confirmation | Pending |
 | Template messages | Real single-openid template smoke | Passed in Stage 10H-B R2 |

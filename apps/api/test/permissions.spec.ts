@@ -25,6 +25,7 @@ import {
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
 import { ServiceCaseController } from "../src/service-case/service-case.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
+import { VehicleBaasController } from "../src/vehicle-baas/vehicle-baas.controller";
 import { VehicleInsuranceController } from "../src/vehicle-insurance/vehicle-insurance.controller";
 import { VehicleValuationReviewController } from "../src/vehicle-valuation-review/vehicle-valuation-review.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
@@ -39,6 +40,8 @@ const VEHICLE_INSURANCE_VIEW_PERMISSION = "vehicle_insurance:view";
 const VEHICLE_INSURANCE_MANAGE_PERMISSION = "vehicle_insurance:manage";
 const VEHICLE_DOCUMENT_VIEW_PERMISSION = "vehicle_document:view";
 const VEHICLE_DOCUMENT_MANAGE_PERMISSION = "vehicle_document:manage";
+const VEHICLE_BAAS_VIEW_PERMISSION = "vehicle_baas:view";
+const VEHICLE_BAAS_MANAGE_PERMISSION = "vehicle_baas:manage";
 const INSURANCE_CLAIM_VIEW_PERMISSION = "insurance_claim:view";
 const INSURANCE_CLAIM_MANAGE_PERMISSION = "insurance_claim:manage";
 const REVENUE_RIGHT_VIEW_PERMISSION = "revenue_right:view";
@@ -774,6 +777,46 @@ describe("vehicle insurance, document, and claim permissions", () => {
     expect(updatePermissions).toEqual([INSURANCE_CLAIM_MANAGE_PERMISSION]);
     expect(hasRequiredPermissions([INSURANCE_CLAIM_VIEW_PERMISSION], createPermissions)).toBe(false);
     expect(hasRequiredPermissions([INSURANCE_CLAIM_MANAGE_PERMISSION], createPermissions)).toBe(true);
+  });
+});
+
+describe("vehicle baas permissions", () => {
+  it("gates BaaS contract, attachment, and cost APIs behind vehicle_baas permissions", () => {
+    const viewHandlers = [
+      VehicleBaasController.prototype.listContracts,
+      VehicleBaasController.prototype.getContract,
+      VehicleBaasController.prototype.getVehicleBaasSummary,
+      VehicleBaasController.prototype.listAttachments,
+      VehicleBaasController.prototype.previewAttachment,
+      VehicleBaasController.prototype.listCostRecords,
+      VehicleBaasController.prototype.listContractCostRecords
+    ];
+    const manageHandlers = [
+      VehicleBaasController.prototype.createContract,
+      VehicleBaasController.prototype.updateContract,
+      VehicleBaasController.prototype.activateContract,
+      VehicleBaasController.prototype.suspendContract,
+      VehicleBaasController.prototype.terminateContract,
+      VehicleBaasController.prototype.archiveContract,
+      VehicleBaasController.prototype.uploadAttachment,
+      VehicleBaasController.prototype.deleteAttachment,
+      VehicleBaasController.prototype.generateCostRecords,
+      VehicleBaasController.prototype.createCostRecord,
+      VehicleBaasController.prototype.updateCostRecord,
+      VehicleBaasController.prototype.confirmCostRecord,
+      VehicleBaasController.prototype.markCostRecordPaid,
+      VehicleBaasController.prototype.voidCostRecord
+    ];
+
+    for (const handler of viewHandlers) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([VEHICLE_BAAS_VIEW_PERMISSION]);
+    }
+    for (const handler of manageHandlers) {
+      const permissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(permissions).toEqual([VEHICLE_BAAS_MANAGE_PERMISSION]);
+      expect(hasRequiredPermissions([VEHICLE_BAAS_VIEW_PERMISSION], permissions)).toBe(false);
+      expect(hasRequiredPermissions([VEHICLE_BAAS_MANAGE_PERMISSION], permissions)).toBe(true);
+    }
   });
 });
 

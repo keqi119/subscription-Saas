@@ -51,6 +51,8 @@ import {
   SALE_PRICE_REVIEW_TYPE_LABELS,
   STATUS_LABELS,
   RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS,
+  VEHICLE_BAAS_BILLING_CYCLE_LABELS,
+  VEHICLE_BAAS_CONTRACT_STATUS_LABELS,
   VEHICLE_CONDITION_ITEM_AREA_LABELS,
   VEHICLE_CONDITION_ITEM_RESULT_LABELS,
   VEHICLE_CONDITION_ITEM_SEVERITY_LABELS,
@@ -161,6 +163,28 @@ interface VehicleInsurancePolicyListResponse {
   page: number;
   pageSize: number;
   total: number;
+}
+
+interface VehicleBaasContractSummary {
+  billingCycle: string;
+  contractNo: string;
+  contractStatus: string;
+  currency?: string | null;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  id: string;
+  nextDueDate?: string | null;
+  paymentDayOfMonth: number;
+  providerName: string;
+  rentalAmount: number;
+  unpaidCostCount: number;
+}
+
+interface VehicleBaasSummary {
+  activeContract?: VehicleBaasContractSummary | null;
+  contractCount: number;
+  contracts: VehicleBaasContractSummary[];
+  unpaidCostCount: number;
 }
 
 interface SalePriceHistory {
@@ -2307,6 +2331,7 @@ export default function VehiclesPage() {
               ]}
             />
             <VehicleInsuranceDocumentsBlock permissions={permissions} vehicle={detailVehicle} />
+            <VehicleBaasSummaryBlock permissions={permissions} vehicle={detailVehicle} />
             <VehicleListingManagementBlock permissions={permissions} vehicle={detailVehicle} />
             {canViewResidualForecast ? (
               <VehicleResidualForecastBlock
@@ -3613,6 +3638,91 @@ function VehicleInsuranceDocumentsBlock({
           ),
           key: "insurance-documents",
           label: "保险 / 权证"
+        }
+      ]}
+    />
+  );
+}
+
+function VehicleBaasSummaryBlock({
+  permissions,
+  vehicle
+}: Readonly<{
+  permissions: ReadonlySet<string>;
+  vehicle: Vehicle;
+}>) {
+  const { message } = App.useApp();
+  const [summary, setSummary] = useState<VehicleBaasSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const canViewBaas = permissions.has("vehicle_baas:view");
+
+  const loadSummary = useCallback(async () => {
+    if (!canViewBaas) {
+      return;
+    }
+    setLoading(true);
+    try {
+      setSummary(await apiFetch<VehicleBaasSummary>(`/vehicles/${vehicle.id}/baas-summary`));
+    } catch (error) {
+      void message.error(error instanceof ApiError ? error.message : "无法加载 BaaS 合同摘要");
+    } finally {
+      setLoading(false);
+    }
+  }, [canViewBaas, message, vehicle.id]);
+
+  useEffect(() => {
+    void loadSummary();
+  }, [loadSummary]);
+
+  if (!canViewBaas) {
+    return null;
+  }
+
+  const active = summary?.activeContract ?? null;
+
+  return (
+    <Collapse
+      items={[
+        {
+          children: (
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              {vehicle.batteryUsageType !== "BAAS" ? (
+                <Alert message="当前车辆非 BaaS 电池使用方式" showIcon type="info" />
+              ) : null}
+              {loading ? <Typography.Text type="secondary">正在加载 BaaS 合同摘要...</Typography.Text> : null}
+              <Descriptions
+                column={2}
+                size="small"
+                items={[
+                  { label: "当前 BaaS 合同", children: active?.contractNo ?? "-" },
+                  { label: "服务商", children: active?.providerName ?? "-" },
+                  { label: "月租金", children: active ? formatYuan(active.rentalAmount) : "-" },
+                  {
+                    label: "计费周期",
+                    children: active ? labelOf(VEHICLE_BAAS_BILLING_CYCLE_LABELS, active.billingCycle) : "-"
+                  },
+                  { label: "每月支付日", children: active ? `${active.paymentDayOfMonth} 日` : "-" },
+                  { label: "下次付款日", children: formatDate(active?.nextDueDate) },
+                  { label: "未支付成本数", children: `${summary?.unpaidCostCount ?? 0} 条` },
+                  {
+                    label: "合同状态",
+                    children: active ? (
+                      <Tag color={active.contractStatus === "ACTIVE" ? "green" : "default"}>
+                        {labelOf(VEHICLE_BAAS_CONTRACT_STATUS_LABELS, active.contractStatus)}
+                      </Tag>
+                    ) : (
+                      "-"
+                    )
+                  }
+                ]}
+              />
+              <Button href={`/vehicle-baas-contracts?vehicleId=${encodeURIComponent(vehicle.id)}`} type="link">
+                查看 BaaS 合同
+              </Button>
+            </Space>
+          ),
+          key: "vehicle-baas",
+          label: "BaaS 电池服务"
         }
       ]}
     />

@@ -118,6 +118,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         permissionCode: PermissionCode.VEHICLE_ASSET_POOL_VIEW
       },
       {
+        code: "vehicles.baas_contracts",
+        icon: "file",
+        label: "BaaS合同",
+        path: "/vehicle-baas-contracts",
+        permissionCode: PermissionCode.VEHICLE_BAAS_VIEW
+      },
+      {
         code: "vehicles.residual_market",
         icon: "car",
         label: "市场残值样本",

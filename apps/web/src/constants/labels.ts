@@ -277,6 +277,20 @@ export const VEHICLE_CONDITION_ITEM_RESULT_LABELS: Record<string, string> = {
   UNKNOWN: "待确认"
 };
 
+export const CUSTOMER_PROFILE_MATERIAL_TYPE_LABELS: Record<string, string> = {
+  DRIVER_LICENSE_BACK: "驾驶证副页",
+  DRIVER_LICENSE_FRONT: "驾驶证主页",
+  ID_CARD_BACK: "身份证国徽面",
+  ID_CARD_FRONT: "身份证人像面",
+  OTHER: "其他资料"
+};
+
+export const CUSTOMER_PROFILE_MATERIAL_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "当前有效",
+  ARCHIVED: "已归档",
+  REPLACED: "已替换"
+};
+
 export const VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "生效中",
   INACTIVE: "已停用"

@@ -6,6 +6,7 @@ import {
   ApplicationSource,
   ApplicationStatus,
   AuditAction,
+  CustomerProfileMaterialStatus,
   DepositStatus,
   MaterialStatus,
   OrderReviewStatus,
@@ -23,9 +24,17 @@ import { StorageService } from "../storage/storage.service";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
 import {
   CreatePortalSelfServiceApplicationDto,
+  PrecheckPortalSelfServiceApplicationDto,
   RejectPortalFinalPlanDto,
   UploadPortalApplicationMaterialDto
 } from "./portal-application.dto";
+import {
+  buildCustomerProfileMaterialCompleteness,
+  getCustomerProfileMaterialLabel,
+  isCustomerProfileMaterialObjectKey,
+  toApplicationMaterialType
+} from "./portal-profile-materials";
+import type { CustomerProfileMaterialCompleteness } from "./portal-profile-materials";
 
 const portalApplicationInclude = {
   materialGroups: {
@@ -73,12 +82,27 @@ export class PortalApplicationService {
     private readonly storageService: StorageService
   ) {}
 
+  async precheckApplication(
+    dto: PrecheckPortalSelfServiceApplicationDto,
+    currentCustomer: CurrentCustomer
+  ) {
+    await this.customerService.validateSelfServiceApplicationSelection({
+      periodMonths: dto.subscriptionPeriodMonths,
+      subscriptionPlanId: dto.subscriptionPlanId,
+      vehicleId: dto.vehicleId
+    });
+
+    const materialCompleteness = await this.getProfileMaterialCompleteness(currentCustomer.customerId);
+    return toPortalApplicationPrecheck(materialCompleteness);
+  }
+
   async createApplication(
     dto: CreatePortalSelfServiceApplicationDto,
     currentCustomer: CurrentCustomer,
     context: PortalRequestContext
   ) {
     const operator = await this.resolvePortalApplicationOperator(currentCustomer.customerId);
+    const materialCompleteness = await this.getProfileMaterialCompleteness(currentCustomer.customerId);
     const result = await this.customerService.createSelfServiceApplication(
       {
         customerId: currentCustomer.customerId,
@@ -89,6 +113,7 @@ export class PortalApplicationService {
       operator,
       context
     );
+    await this.copyProfileMaterialsToApplication(result.applicationId, currentCustomer, operator);
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -110,7 +135,10 @@ export class PortalApplicationService {
       applicationId: result.applicationId,
       applicationNo: result.applicationNo,
       depositStatus: result.depositStatus,
+      materialComplete: materialCompleteness.complete,
+      missingMaterials: materialCompleteness.missingMaterials,
       message: result.message,
+      profileMaterialsAvailable: materialCompleteness.completedCount > 0,
       status: result.status,
       vehicleStatus: result.vehicleStatus
     };
@@ -132,7 +160,8 @@ export class PortalApplicationService {
 
   async getApplication(id: string, currentCustomer: CurrentCustomer) {
     const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
-    return toPortalApplicationDetail(application);
+    const materialCompleteness = await this.getProfileMaterialCompleteness(currentCustomer.customerId);
+    return toPortalApplicationDetail(application, materialCompleteness);
   }
 
   async getApplicationProgress(id: string, currentCustomer: CurrentCustomer) {
@@ -561,6 +590,113 @@ export class PortalApplicationService {
     };
   }
 
+  private async getProfileMaterialCompleteness(customerId: string) {
+    const materials = await this.prisma.customerProfileMaterial.findMany({
+      select: {
+        deletedAt: true,
+        materialStatus: true,
+        materialType: true
+      },
+      where: {
+        customerId,
+        deletedAt: null
+      }
+    });
+
+    return buildCustomerProfileMaterialCompleteness(materials);
+  }
+
+  private async copyProfileMaterialsToApplication(
+    applicationId: string,
+    currentCustomer: CurrentCustomer,
+    operator: RequestUser
+  ) {
+    const materials = await this.prisma.customerProfileMaterial.findMany({
+      orderBy: [{ materialType: "asc" }, { createdAt: "asc" }],
+      where: {
+        customerId: currentCustomer.customerId,
+        deletedAt: null,
+        materialStatus: CustomerProfileMaterialStatus.ACTIVE
+      }
+    });
+
+    const reusableMaterials = materials.filter((material) => material.bucket && material.objectKey);
+    if (reusableMaterials.length === 0) {
+      return;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const material of reusableMaterials) {
+        const applicationMaterialType = toApplicationMaterialType(material.materialType);
+        const materialGroup = await tx.applicationMaterialGroup.upsert({
+          create: {
+            applicationId,
+            createdBy: operator.id,
+            materialName: MATERIAL_TYPE_LABELS[applicationMaterialType],
+            materialType: applicationMaterialType,
+            required: REQUIRED_MATERIAL_TYPES.includes(applicationMaterialType),
+            updatedBy: operator.id
+          },
+          update: {
+            materialName: MATERIAL_TYPE_LABELS[applicationMaterialType],
+            required: REQUIRED_MATERIAL_TYPES.includes(applicationMaterialType),
+            updatedBy: operator.id
+          },
+          where: {
+            applicationId_materialType: {
+              applicationId,
+              materialType: applicationMaterialType
+            }
+          }
+        });
+
+        const label = getCustomerProfileMaterialLabel(material.materialType);
+        const originalName = material.originalName ?? material.fileName;
+        const fileName = `客户资料中心 - ${label} - ${originalName}`;
+        const fileObject = await tx.fileObject.create({
+          data: {
+            bucket: material.bucket ?? "",
+            mimeType: material.mimeType,
+            objectKey: material.objectKey ?? "",
+            originalName,
+            sizeBytes: BigInt(material.fileSize ?? 0),
+            uploadedBy: operator.id
+          }
+        });
+
+        const materialFile = await tx.applicationMaterialFile.create({
+          data: {
+            applicationId,
+            createdBy: operator.id,
+            fileId: fileObject.id,
+            fileName,
+            materialGroupId: materialGroup.id,
+            materialType: applicationMaterialType,
+            mimeType: material.mimeType,
+            sizeBytes: BigInt(material.fileSize ?? 0),
+            updatedBy: operator.id,
+            uploadedBy: operator.id
+          }
+        });
+
+        await tx.applicationActionLog.create({
+          data: {
+            actionType: ApplicationActionType.UPLOAD_MATERIAL_FILE,
+            applicationId,
+            comment: `来自客户资料中心：${label} - ${originalName}`,
+            createdBy: operator.id,
+            materialFileId: materialFile.id,
+            materialGroupId: materialGroup.id,
+            operatorId: operator.id,
+            operatorName: `客户门户 ${maskPhone(currentCustomer.phone)}`,
+            toStatus: ApplicationStatus.SUBMITTED,
+            updatedBy: operator.id
+          }
+        });
+      }
+    });
+  }
+
   private async findOwnedApplicationOrThrow(id: string, customerId: string) {
     const application = await this.prisma.application.findFirst({
       include: portalApplicationInclude,
@@ -670,16 +806,22 @@ function toPortalApplicationListItem(application: PortalApplication) {
   };
 }
 
-function toPortalApplicationDetail(application: PortalApplication) {
+function toPortalApplicationDetail(
+  application: PortalApplication,
+  materialCompleteness: CustomerProfileMaterialCompleteness
+) {
   return {
     ...toPortalApplicationListItem(application),
     canCancel: PORTAL_CUSTOMER_MUTABLE_APPLICATION_STATUSES.includes(application.status) &&
       application.orders.length === 0,
     finalDepositAmount:
       application.finalDepositAmount === null ? null : Number(application.finalDepositAmount),
+    materialComplete: materialCompleteness.complete,
     materials: application.materialGroups.map(toPortalMaterialGroupView),
+    missingMaterials: materialCompleteness.missingMaterials,
     nextStepHint: buildApplicationNextStepHint(application),
     ordersGenerated: application.orders.length > 0,
+    profileMaterialsAvailable: materialCompleteness.completedCount > 0,
     rejectedReason: application.rejectedReason,
     salesUser: application.salesUser
       ? {
@@ -687,6 +829,28 @@ function toPortalApplicationDetail(application: PortalApplication) {
         }
       : null,
     softReservationExpiresAt: application.softReservationExpiresAt
+  };
+}
+
+function toPortalApplicationPrecheck(materialCompleteness: CustomerProfileMaterialCompleteness) {
+  return {
+    actions: [
+      {
+        key: "UPLOAD_MATERIALS",
+        label: "去补充资料",
+        url: "/portal/materials"
+      },
+      {
+        key: "CONTINUE_SUBMIT",
+        label: "继续提交，稍后补充"
+      }
+    ],
+    canSubmit: materialCompleteness.canSubmit,
+    materialComplete: materialCompleteness.complete,
+    missingMaterials: materialCompleteness.missingMaterials,
+    warnings: materialCompleteness.complete
+      ? []
+      : ["为加快审核，建议先补充身份证和驾驶证资料。"]
   };
 }
 
@@ -1155,16 +1319,23 @@ function toPortalMaterialGroupView(group: PortalMaterialGroup) {
   return {
     files: group.files
       .filter((file) => !file.isDeleted)
-      .map((file) => ({
-        fileName: file.fileName,
-        fileRecordId: file.id,
-        id: file.id,
-        materialType: file.materialType,
-        mimeType: file.mimeType,
-        previewUrl: `/api/portal/applications/${file.applicationId}/materials/${file.id}/preview`,
-        sizeBytes: Number(file.sizeBytes),
-        uploadedAt: file.uploadedAt
-      })),
+      .map((file) => {
+        const source = isCustomerProfileMaterialObjectKey(file.file.objectKey)
+          ? "CUSTOMER_PROFILE"
+          : "APPLICATION_UPLOAD";
+        return {
+          fileName: file.fileName,
+          fileRecordId: file.id,
+          id: file.id,
+          materialType: file.materialType,
+          mimeType: file.mimeType,
+          previewUrl: `/api/portal/applications/${file.applicationId}/materials/${file.id}/preview`,
+          sizeBytes: Number(file.sizeBytes),
+          source,
+          sourceLabel: source === "CUSTOMER_PROFILE" ? "客户资料中心" : "申请上传",
+          uploadedAt: file.uploadedAt
+        };
+      }),
     id: group.id,
     materialGroupId: group.id,
     materialName: group.materialName ?? MATERIAL_TYPE_LABELS[group.materialType],

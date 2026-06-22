@@ -21,6 +21,7 @@ import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
 import { PortalApplicationService } from "./portal-application.service";
 import {
   CreatePortalSelfServiceApplicationDto,
+  PrecheckPortalSelfServiceApplicationDto,
   RejectPortalFinalPlanDto,
   UploadPortalApplicationMaterialDto
 } from "./portal-application.dto";
@@ -29,6 +30,14 @@ import {
 @UseGuards(CustomerAuthGuard)
 export class PortalApplicationController {
   constructor(private readonly portalApplicationService: PortalApplicationService) {}
+
+  @Post("self-service-applications/precheck")
+  precheckApplication(
+    @Body() dto: PrecheckPortalSelfServiceApplicationDto,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
+  ) {
+    return this.portalApplicationService.precheckApplication(dto, currentCustomer);
+  }
 
   @Post("self-service-applications")
   createApplication(

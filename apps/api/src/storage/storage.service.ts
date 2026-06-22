@@ -36,6 +36,19 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
+  async putCustomerProfileMaterial(input: Omit<UploadObjectInput, "key"> & { customerId: string }): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildCustomerProfileMaterialKey(input.customerId, input.originalName ?? "file");
+    return this.putPrivateObject(key, input);
+  }
+
+  getCustomerProfileMaterialStream(bucket: string, objectKey: string): Promise<DownloadObjectResult> {
+    return this.getObject(bucket, objectKey);
+  }
+
   async putServiceCaseAttachment(input: Omit<UploadObjectInput, "key"> & { serviceCaseId: string }): Promise<{
     bucket: string;
     objectKey: string;
@@ -118,6 +131,12 @@ export class StorageService {
     const year = String(now.getUTCFullYear());
     const month = String(now.getUTCMonth() + 1).padStart(2, "0");
     return `materials/${sanitizeKeyPart(applicationId)}/${year}/${month}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildCustomerProfileMaterialKey(customerId: string, originalName: string) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    return `customer-profile-materials/${sanitizeKeyPart(customerId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
   private buildServiceCaseAttachmentKey(serviceCaseId: string, originalName: string) {

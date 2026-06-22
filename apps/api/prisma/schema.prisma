@@ -160,6 +160,24 @@ enum MaterialStatus {
   @@map("material_status")
 }
 
+enum CustomerProfileMaterialType {
+  ID_CARD_FRONT
+  ID_CARD_BACK
+  DRIVER_LICENSE_FRONT
+  DRIVER_LICENSE_BACK
+  OTHER
+
+  @@map("customer_profile_material_type")
+}
+
+enum CustomerProfileMaterialStatus {
+  ACTIVE
+  REPLACED
+  ARCHIVED
+
+  @@map("customer_profile_material_status")
+}
+
 enum ApplicationActionType {
   CREATE
   UPLOAD_MATERIAL
@@ -1500,6 +1518,7 @@ model Customer {
   accounts         CustomerAccount[]
   identity         CustomerIdentity?
   profile          CustomerProfile?
+  profileMaterials CustomerProfileMaterial[]
   followups        CustomerFollowup[]
   applications     Application[]
   riskResults      RiskResult[]
@@ -1644,6 +1663,30 @@ model CustomerProfile {
   deletedAt              DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   @@map("customer_profile")
+}
+
+model CustomerProfileMaterial {
+  id             String                        @id @default(uuid()) @db.Uuid
+  customerId     String                        @map("customer_id") @db.Uuid
+  customer       Customer                      @relation(fields: [customerId], references: [id])
+  materialType   CustomerProfileMaterialType   @map("material_type")
+  materialStatus CustomerProfileMaterialStatus @default(ACTIVE) @map("material_status")
+  fileName       String                        @map("file_name") @db.VarChar(255)
+  originalName   String?                       @map("original_name") @db.VarChar(255)
+  mimeType       String?                       @map("mime_type") @db.VarChar(128)
+  fileSize       Int?                          @map("file_size")
+  bucket         String?                       @db.VarChar(256)
+  objectKey      String?                       @map("object_key") @db.VarChar(512)
+  remark         String?                       @db.Text
+  snapshot       Json?
+  createdAt      DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt      DateTime?                     @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([customerId])
+  @@index([materialType])
+  @@index([materialStatus])
+  @@map("customer_profile_material")
 }
 
 model CustomerFollowup {

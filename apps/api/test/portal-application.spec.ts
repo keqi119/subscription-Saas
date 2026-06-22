@@ -1,7 +1,10 @@
 import {
   ApplicationActionType,
+  ApplicationMaterialType,
   ApplicationSource,
   ApplicationStatus,
+  CustomerProfileMaterialStatus,
+  CustomerProfileMaterialType,
   DepositStatus,
   MaterialStatus,
   MonthlyFeeMode,
@@ -93,14 +96,79 @@ describe("PortalApplicationService", () => {
       expect.objectContaining({
         applicationId: "application-created",
         depositStatus: DepositStatus.PENDING_CONFIRM,
+        materialComplete: false,
         status: ApplicationStatus.SUBMITTED
       })
     );
+    expect(result.missingMaterials).toHaveLength(4);
     expect(result).not.toHaveProperty("orderId");
     expect(prisma.auditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         entityType: "portal_self_service_application",
         operatorId: "account-1"
+      })
+    );
+  });
+
+  it("prechecks material completeness without creating an application", async () => {
+    const { customerService, service } = createPortalApplicationFixture();
+
+    const result = await service.precheckApplication(
+      {
+        subscriptionPeriodMonths: 12,
+        subscriptionPlanId: "plan-1",
+        vehicleId: "vehicle-1"
+      },
+      currentCustomer("customer-1")
+    );
+
+    expect(customerService.validateSelfServiceApplicationSelection).toHaveBeenCalledWith({
+      periodMonths: 12,
+      subscriptionPlanId: "plan-1",
+      vehicleId: "vehicle-1"
+    });
+    expect(result).toMatchObject({
+      canSubmit: true,
+      materialComplete: false
+    });
+    expect(result.missingMaterials).toHaveLength(4);
+    expect(customerService.createSelfServiceApplication).not.toHaveBeenCalled();
+  });
+
+  it("reuses customer profile materials for application review visibility", async () => {
+    const profileMaterial = createProfileMaterial();
+    const { prisma, service, tx } = createPortalApplicationFixture({
+      profileMaterials: [profileMaterial]
+    });
+
+    await service.createApplication(
+      {
+        subscriptionPeriodMonths: 12,
+        subscriptionPlanId: "plan-1",
+        vehicleId: "vehicle-1"
+      },
+      currentCustomer("customer-1"),
+      requestContext()
+    );
+
+    expect(prisma.customerProfileMaterial.findMany).toHaveBeenCalled();
+    expect(tx.applicationMaterialGroup.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ materialType: ApplicationMaterialType.ID_CARD })
+      })
+    );
+    expect(tx.fileObject.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          objectKey: profileMaterial.objectKey
+        })
+      })
+    );
+    expect(tx.applicationActionLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          comment: expect.stringContaining("客户资料中心")
+        })
       })
     );
   });
@@ -375,8 +443,14 @@ function createCatalogPrisma() {
   };
 }
 
-function createPortalApplicationFixture(overrides: { application?: Record<string, unknown> } = {}) {
+function createPortalApplicationFixture(
+  overrides: {
+    application?: Record<string, unknown>;
+    profileMaterials?: ReturnType<typeof createProfileMaterial>[];
+  } = {}
+) {
   const application = createApplication(overrides.application);
+  const profileMaterials = overrides.profileMaterials ?? [];
   const users = [createUser()];
   const tx = createPortalTransaction(application);
   const prisma = {
@@ -417,6 +491,17 @@ function createPortalApplicationFixture(overrides: { application?: Record<string
     customer: {
       findFirst: vi.fn(async () => ({ ownerUserId: "user-1" }))
     },
+    customerProfileMaterial: {
+      findMany: vi.fn(async ({ select }: { select?: Record<string, boolean> } = {}) =>
+        select
+          ? profileMaterials.map((material) => ({
+              deletedAt: material.deletedAt,
+              materialStatus: material.materialStatus,
+              materialType: material.materialType
+            }))
+          : profileMaterials
+      )
+    },
     user: {
       findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
         users.find((user) => !where.id || user.id === where.id) ?? null
@@ -435,6 +520,7 @@ function createPortalApplicationFixture(overrides: { application?: Record<string
       return application;
     }),
     createOrderFromApplication: vi.fn(),
+    validateSelfServiceApplicationSelection: vi.fn(async () => ({})),
     createSelfServiceApplication: vi.fn(async () => ({
       applicationId: "application-created",
       applicationNo: "APP202606160001",
@@ -830,6 +916,27 @@ function createPlan() {
       vehicleModel: VehicleModel.ES6
     },
     vehiclePackageId: "vehicle-package-1"
+  };
+}
+
+function createProfileMaterial(overrides: Record<string, unknown> = {}) {
+  return {
+    bucket: "application-materials",
+    createdAt: new Date("2026-06-16T09:00:00.000Z"),
+    customerId: "customer-1",
+    deletedAt: null,
+    fileName: "id-front.png",
+    fileSize: 128,
+    id: "profile-material-1",
+    materialStatus: CustomerProfileMaterialStatus.ACTIVE,
+    materialType: CustomerProfileMaterialType.ID_CARD_FRONT,
+    mimeType: "image/png",
+    objectKey: "customer-profile-materials/customer-1/2026/id-front.png",
+    originalName: "id-front.png",
+    remark: null,
+    snapshot: null,
+    updatedAt: new Date("2026-06-16T09:00:00.000Z"),
+    ...overrides
   };
 }
 

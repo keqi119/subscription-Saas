@@ -8,6 +8,7 @@
 - Stage 10H-B evidence: access_token smoke passed, one `PAYMENT_PENDING` single-openid template message was sent, WeChat `msgid` was recorded, and the WeChat client receipt/click-through to the Portal order page was confirmed.
 - Stage 10J release-candidate evidence is tracked in `docs/customer-portal-release-candidate-report.md`.
 - Stage 10K-A: Aliyun SMS login provider and invited beta gate are implemented in code; real SMS staging validation remains required before production customer traffic.
+- Stage 10M-A: customer profile material center and application precheck are implemented in code; manual acceptance should confirm missing-material warning does not block submission.
 
 ## Checklist
 
@@ -22,7 +23,10 @@
 | Beta phone gate | `PORTAL_BETA_MODE=true` allows only invited phones to request/use login codes | Implemented; whitelist values must stay out of Git |
 | Terms/privacy | `/portal/terms` and `/portal/privacy` exist in code | Placeholder text, legal review pending; production currently returns 404 until latest Web image is deployed |
 | Product browsing | Vehicle catalog list/detail load and do not expose internal cost fields | Pending smoke/manual acceptance |
+| Catalog CTA | Vehicle card primary action is `查看详情`, not direct application submission | Pending manual acceptance |
 | Application submission | Customer can submit self-service application | Pending manual acceptance |
+| Application precheck | Vehicle detail warns about missing required profile materials before submission and still allows continue-submit | Pending manual acceptance |
+| Customer profile materials | `/portal/materials` supports upload/replace/preview/archive for ID card and driver-license files | Pending manual acceptance |
 | Material upload | Customer can upload required materials; preview is ownership-checked | Pending manual acceptance |
 | Application progress | Customer can view progress and material supplement hints | Pending manual acceptance |
 | Final plan confirmation | Customer can confirm/reject final plan | Pending manual acceptance |

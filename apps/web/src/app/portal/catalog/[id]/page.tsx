@@ -11,6 +11,7 @@ import {
   Descriptions,
   Empty,
   Flex,
+  Modal,
   Radio,
   Select,
   Space,
@@ -26,12 +27,15 @@ import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../..
 import {
   PortalCatalogVehicleDetail,
   PortalCatalogVehicleMedia,
+  PortalApplicationPrecheck,
   PortalSubscriptionPlan
 } from "../../../../lib/portal-types";
 
 interface CreateApplicationResponse {
   applicationId: string;
   applicationNo: string;
+  materialComplete?: boolean;
+  missingMaterials?: Array<{ label: string; type: string }>;
   status: string;
 }
 
@@ -42,6 +46,8 @@ export default function PortalCatalogDetailPage() {
   const [detail, setDetail] = useState<PortalCatalogVehicleDetail>();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [precheck, setPrecheck] = useState<PortalApplicationPrecheck>();
+  const [precheckModalOpen, setPrecheckModalOpen] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string>();
   const [selectedPeriod, setSelectedPeriod] = useState<number>();
   const [selectedMediaId, setSelectedMediaId] = useState<string>();
@@ -89,16 +95,25 @@ export default function PortalCatalogDetailPage() {
 
     try {
       setSubmitting(true);
-      const result = await portalApiFetch<CreateApplicationResponse>("/portal/self-service-applications", {
-        body: JSON.stringify({
-          subscriptionPeriodMonths: selectedPeriod,
-          subscriptionPlanId: selectedPlan.planId,
-          vehicleId: detail.id
-        }),
-        method: "POST"
-      });
-      void message.success("申请已提交");
-      router.push(`/portal/applications/${result.applicationId}`);
+      const precheckResult = await portalApiFetch<PortalApplicationPrecheck>(
+        "/portal/self-service-applications/precheck",
+        {
+          body: JSON.stringify({
+            subscriptionPeriodMonths: selectedPeriod,
+            subscriptionPlanId: selectedPlan.planId,
+            vehicleId: detail.id
+          }),
+          method: "POST"
+        }
+      );
+
+      if (!precheckResult.materialComplete && precheckResult.missingMaterials.length > 0) {
+        setPrecheck(precheckResult);
+        setPrecheckModalOpen(true);
+        return;
+      }
+
+      await createApplication();
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
         router.push(`/portal/login?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`);
@@ -108,6 +123,39 @@ export default function PortalCatalogDetailPage() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function continueSubmitAfterPrecheck() {
+    setPrecheckModalOpen(false);
+    try {
+      setSubmitting(true);
+      await createApplication();
+    } catch (error) {
+      if (error instanceof PortalApiError && error.status === 401 && detail) {
+        router.push(`/portal/login?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`);
+        return;
+      }
+      void message.error(error instanceof PortalApiError ? error.message : "提交审核失败");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function createApplication() {
+    if (!detail || !selectedPlan || !selectedPeriod) {
+      return;
+    }
+
+    const result = await portalApiFetch<CreateApplicationResponse>("/portal/self-service-applications", {
+        body: JSON.stringify({
+          subscriptionPeriodMonths: selectedPeriod,
+          subscriptionPlanId: selectedPlan.planId,
+          vehicleId: detail.id
+        }),
+        method: "POST"
+      });
+    void message.success(result.materialComplete === false ? "申请已提交，请尽快补充资料" : "申请已提交");
+    router.push(`/portal/applications/${result.applicationId}`);
   }
 
   if (loading) {
@@ -129,6 +177,7 @@ export default function PortalCatalogDetailPage() {
   }
 
   return (
+    <>
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
       <section style={{ margin: "0 auto", maxWidth: 1120 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/portal/catalog")} style={{ marginBottom: 16 }}>
@@ -290,6 +339,53 @@ export default function PortalCatalogDetailPage() {
         </Space>
       </section>
     </main>
+    <Modal
+      cancelText="取消"
+      okText="去补充资料"
+      onCancel={() => setPrecheckModalOpen(false)}
+      onOk={() => {
+        if (detail) {
+          router.push(`/portal/materials?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`);
+        }
+      }}
+      open={precheckModalOpen}
+      title="资料待补充"
+      footer={(_, { CancelBtn }) => (
+        <Flex gap={8} justify="flex-end" wrap="wrap">
+          <CancelBtn />
+          <Button onClick={() => void continueSubmitAfterPrecheck()} loading={submitting}>
+            继续提交，稍后补充
+          </Button>
+          <Button
+            type="primary"
+            onClick={() => {
+              if (detail) {
+                router.push(`/portal/materials?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`);
+              }
+            }}
+          >
+            去补充资料
+          </Button>
+        </Flex>
+      )}
+    >
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Typography.Text>
+          为加快审核，建议先补充以下资料：
+        </Typography.Text>
+        <Space direction="vertical" size={4}>
+          {(precheck?.missingMaterials ?? []).map((item) => (
+            <Typography.Text key={item.type}>- {item.label}</Typography.Text>
+          ))}
+        </Space>
+        <Alert
+          message="你也可以先提交审核，稍后在申请进度中补充资料。"
+          showIcon
+          type="warning"
+        />
+      </Space>
+    </Modal>
+    </>
   );
 }
 

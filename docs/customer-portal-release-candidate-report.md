@@ -405,3 +405,17 @@ RC impact:
 - Report item photos reuse private `VehicleListingMedia` preview routes.
 - Customer action remains `提交审核`; no order, contract, bill, payment, entitlement, service-case, or notification main-flow behavior changes.
 - This does not remove the existing unrestricted-launch blockers.
+
+## Stage 10M-A Material Precheck Update
+
+Stage 10M-A adds a customer profile material center and a pre-submit material completeness precheck.
+
+RC impact:
+
+- `/portal/catalog` vehicle cards now lead customers to vehicle details with `查看详情`; list cards no longer imply direct submission.
+- `/portal/materials` lets logged-in customers upload ID card front/back and driver-license front/back before applying.
+- Vehicle detail submission now runs `/api/portal/self-service-applications/precheck` before creating the application.
+- Missing materials trigger a strong customer warning and a supplement-materials entry, but `canSubmit` remains true.
+- On submission, existing customer profile materials are reused into the application material area by metadata reference, so reviewers can see them in the existing back-office application detail material table.
+- Customer action remains `提交审核`; no order, contract, bill, payment, entitlement, service-case, or notification main-flow behavior changes.
+- This does not remove the existing unrestricted-launch blockers.

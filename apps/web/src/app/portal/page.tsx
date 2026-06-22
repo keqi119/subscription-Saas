@@ -6,6 +6,7 @@ import {
   CarOutlined,
   FileTextOutlined,
   GiftOutlined,
+  IdcardOutlined,
   LogoutOutlined,
   MessageOutlined,
   PayCircleOutlined,
@@ -29,6 +30,7 @@ interface PortalMe {
 
 const portalEntries = [
   { href: "/portal/catalog", icon: <CarOutlined />, title: "订阅车辆" },
+  { href: "/portal/materials", icon: <IdcardOutlined />, title: "我的资料" },
   { href: "/portal/applications", icon: <AuditOutlined />, title: "我的申请" },
   { href: "/portal/contracts", icon: <FileTextOutlined />, title: "我的合同" },
   { href: "/portal/orders", icon: <ProfileOutlined />, title: "我的订单" },

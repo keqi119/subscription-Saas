@@ -211,9 +211,12 @@ export interface PortalApplicationListItem {
 export interface PortalApplicationDetail extends PortalApplicationListItem {
   canCancel: boolean;
   finalDepositAmount: number | null;
+  materialComplete: boolean;
   materials: PortalApplicationMaterialGroup[];
+  missingMaterials: PortalMissingMaterial[];
   nextStepHint: string;
   ordersGenerated: boolean;
+  profileMaterialsAvailable: boolean;
   rejectedReason: string | null;
   salesUser: { name: string } | null;
   softReservationExpiresAt: string | null;
@@ -262,7 +265,57 @@ export interface PortalApplicationMaterialFile {
   mimeType: string | null;
   previewUrl: string;
   sizeBytes: number;
+  source?: "APPLICATION_UPLOAD" | "CUSTOMER_PROFILE" | string;
+  sourceLabel?: string;
   uploadedAt: string;
+}
+
+export interface PortalMissingMaterial {
+  label: string;
+  type: string;
+}
+
+export interface PortalMaterialCompleteness {
+  canSubmit: boolean;
+  complete: boolean;
+  completedCount: number;
+  missingMaterials: PortalMissingMaterial[];
+  requiredCount: number;
+  stronglyRecommendedUploadBeforeSubmit: boolean;
+}
+
+export interface PortalProfileMaterialRequirement {
+  label: string;
+  required: boolean;
+  type: string;
+}
+
+export interface PortalProfileMaterial {
+  createdAt: string;
+  fileName: string;
+  fileSize: number | null;
+  id: string;
+  label: string;
+  materialStatus: string;
+  materialStatusLabel: string;
+  materialType: string;
+  mimeType: string | null;
+  originalName: string | null;
+  previewUrl: string;
+  remark: string | null;
+  updatedAt: string;
+}
+
+export interface PortalApplicationPrecheck {
+  actions: Array<{
+    key: string;
+    label: string;
+    url?: string;
+  }>;
+  canSubmit: boolean;
+  materialComplete: boolean;
+  missingMaterials: PortalMissingMaterial[];
+  warnings: string[];
 }
 
 export interface PortalApplicationProgress {

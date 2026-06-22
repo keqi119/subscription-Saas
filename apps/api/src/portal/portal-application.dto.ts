@@ -19,6 +19,20 @@ export class CreatePortalSelfServiceApplicationDto {
   remark?: string;
 }
 
+export class PrecheckPortalSelfServiceApplicationDto {
+  @IsUUID()
+  vehicleId!: string;
+
+  @IsUUID()
+  subscriptionPlanId!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  subscriptionPeriodMonths?: number;
+}
+
 export class UploadPortalApplicationMaterialDto {
   @IsEnum(ApplicationMaterialType)
   materialType!: ApplicationMaterialType;

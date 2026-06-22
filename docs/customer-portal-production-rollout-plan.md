@@ -286,3 +286,17 @@ Production rollout notes:
 - Verify `/portal/catalog/[id]/condition-report` does not expose purchase price, sale price, full VIN/plate, storage internals, or internal audit fields.
 - Keep customer CTA copy as `提交审核`.
 - Treat Stage 10L-B as report presentation readiness, not as unrestricted customer-launch approval.
+
+## Stage 10M-A Rollout Note
+
+Stage 10M-A introduces customer profile materials and pre-submit material completeness checks.
+
+Production rollout notes:
+
+- Run the new migration with `prisma migrate deploy`; do not use `prisma migrate reset` or `prisma db push`.
+- Verify `/portal/materials` under a controlled customer account: upload, replace, preview, and archive ID card / driver-license files.
+- Verify `/portal/catalog` card CTA is `查看详情`, and application creation only happens from vehicle detail.
+- Verify vehicle detail precheck warns when profile materials are missing and still allows `继续提交，稍后补充`.
+- Verify created applications show reused profile materials in the back-office application material table with source `客户资料中心`.
+- Confirm customer-facing APIs do not expose `bucket`, `objectKey`, storage public URLs, or back-office-only financial fields.
+- Keep customer action as `提交审核`; Stage 10M-A is an application-experience improvement, not unrestricted customer-launch approval.

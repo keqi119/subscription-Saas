@@ -1072,18 +1072,15 @@ export class CustomerService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const [customer, vehicle, plan] = await Promise.all([
+    const [customer, selection] = await Promise.all([
       this.prisma.customer.findUnique({ where: { id: dto.customerId } }),
-      this.prisma.vehicle.findUnique({ where: { id: dto.vehicleId } }),
-      this.prisma.subscriptionPlan.findUnique({
-        include: selfServiceSubscriptionPlanInclude,
-        where: { id: dto.subscriptionPlanId }
-      })
+      this.validateSelfServiceApplicationSelection(dto)
     ]);
 
     if (!customer || customer.deletedAt) {
       throw new NotFoundException("Customer not found.");
     }
+    const { plan, vehicle } = selection;
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
 
@@ -1283,6 +1280,35 @@ export class CustomerService {
       status: result.application.status,
       vehicleStatus: result.vehicleAfter.status
     };
+  }
+
+  async validateSelfServiceApplicationSelection(
+    dto: Pick<CreateSelfServiceApplicationDto, "subscriptionPlanId" | "vehicleId"> &
+      Partial<Pick<CreateSelfServiceApplicationDto, "periodMonths">>
+  ) {
+    const [vehicle, plan] = await Promise.all([
+      this.prisma.vehicle.findUnique({ where: { id: dto.vehicleId } }),
+      this.prisma.subscriptionPlan.findUnique({
+        include: selfServiceSubscriptionPlanInclude,
+        where: { id: dto.subscriptionPlanId }
+      })
+    ]);
+
+    assertSelfServiceVehicleAvailable(vehicle);
+    assertSelfServiceSubscriptionPlanAvailable(plan);
+
+    if (!vehicle.vehicleModel) {
+      throw new BadRequestException("所选车辆缺少车型信息，无法提交自助进件");
+    }
+    const vehicleModel = vehicle.vehicleModel;
+    if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
+      throw new BadRequestException("所选套餐不适用于该车辆车型");
+    }
+    if (dto.periodMonths !== undefined) {
+      assertSelfServicePeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
+    }
+
+    return { plan, vehicle, vehicleModel };
   }
 
   async getApplication(id: string, user: RequestUser) {
@@ -3304,6 +3330,9 @@ function toMaterialFileView(
   application: Pick<ApplicationWithDetails, "salesUserId" | "status">,
   user?: RequestUser
 ) {
+  const source = file.file?.objectKey?.startsWith("customer-profile-materials/")
+    ? "CUSTOMER_PROFILE"
+    : "APPLICATION_UPLOAD";
   return {
     canDelete: user ? canDeleteMaterialFile(application, user) && !file.isDeleted : false,
     deletedAt: file.deletedAt,
@@ -3317,6 +3346,8 @@ function toMaterialFileView(
     materialType: file.materialType,
     mimeType: file.mimeType,
     sizeBytes: Number(file.sizeBytes),
+    source,
+    sourceLabel: source === "CUSTOMER_PROFILE" ? "客户资料中心" : "申请上传",
     uploadedAt: file.uploadedAt,
     uploadedBy: file.uploader,
     uploader: file.uploader

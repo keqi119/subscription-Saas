@@ -99,7 +99,7 @@ export default function PortalCatalogPage() {
             <List.Item
               actions={[
                 <Button key="detail" onClick={() => router.push(`/portal/catalog/${vehicle.id}`)} type="link">
-                  提交审核
+                  查看详情
                 </Button>
               ]}
               style={{

@@ -284,6 +284,25 @@ export default function PortalApplicationDetailPage() {
             </Space>
           </Flex>
           <Alert message={application.nextStepHint} showIcon style={{ marginTop: 16 }} type="info" />
+          {!application.materialComplete && application.missingMaterials.length > 0 ? (
+            <Alert
+              action={
+                <Button
+                  onClick={() => router.push(`/portal/materials?redirect=${encodeURIComponent(`/portal/applications/${application.id}`)}`)}
+                  type="link"
+                >
+                  去补充资料
+                </Button>
+              }
+              description={`为加快审核，请补充以下资料：${application.missingMaterials
+                .map((item) => item.label)
+                .join("、")}`}
+              message="审核资料待补充"
+              showIcon
+              style={{ marginTop: 12 }}
+              type="warning"
+            />
+          ) : null}
           {progress?.nextAction === "CONFIRM_FINAL_PLAN" ? (
             <Alert
               message="最终方案已生成，请确认车辆、套餐、月租、押金和订阅周期。"
@@ -557,7 +576,10 @@ function MaterialGroup({ group }: { group: PortalApplicationMaterialGroup }) {
       <Space direction="vertical" style={{ marginTop: 12, width: "100%" }}>
         {group.files.map((file) => (
           <Flex align="center" gap={8} justify="space-between" key={file.id} wrap="wrap">
-            <Typography.Text>{file.fileName}</Typography.Text>
+            <Space>
+              <Typography.Text>{file.fileName}</Typography.Text>
+              {file.sourceLabel ? <Tag>{file.sourceLabel}</Tag> : null}
+            </Space>
             <Button
               icon={<FileSearchOutlined />}
               onClick={() => window.open(buildPreviewUrl(file.previewUrl), "_blank", "noopener,noreferrer")}

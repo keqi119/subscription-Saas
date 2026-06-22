@@ -77,6 +77,8 @@ interface MaterialFile {
   isDeleted: boolean;
   mimeType?: string | null;
   sizeBytes: number;
+  source?: string;
+  sourceLabel?: string;
   uploadedAt: string;
   uploadedBy?: UserRef | null;
   uploader?: UserRef | null;
@@ -881,6 +883,7 @@ export default function ApplicationDetailPage() {
                 <Button onClick={() => openPreview(file)} type="link">
                   {file.fileName}
                 </Button>
+                {file.sourceLabel ? <Tag>{file.sourceLabel}</Tag> : null}
                 <Typography.Text type="secondary">{file.uploader?.name ?? file.uploadedBy?.name ?? "-"}</Typography.Text>
                 <Typography.Text type="secondary">{formatTime(file.uploadedAt)}</Typography.Text>
                 <Tag color={file.isDeleted ? "default" : "green"}>{file.isDeleted ? "已删除" : "正常"}</Tag>

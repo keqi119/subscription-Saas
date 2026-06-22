@@ -1625,9 +1625,9 @@ CSV 格式约定：
 - 状态和枚举中文化。
 - 缺失值导出为 `-`。
 
-## Stage 10M-C-B BaaS 成本收益试算补充口径
+## Stage 10M-C-B / 10M-C-C BaaS 成本收益试算口径
 
-Stage 10M-C-B 将 BaaS 电池租赁成本接入资产收益试算的补充展示口径。本阶段只新增 BaaS 成本维度和 BaaS adjusted 指标，不修改主 `platformNetIncomeAmount`、`roeTrial`、`annualizedRoeTrial`、`trialRoa`。
+Stage 10M-C-B 先将 BaaS 电池租赁成本作为资产收益试算的补充展示口径。Stage 10M-C-C 起，BaaS 成本正式并入主 `platformNetIncomeAmount`、`roeTrial`、`annualizedRoeTrial` 和 `trialRoa`。此前未含 BaaS 的 ROE 试算未进入大规模生产使用，当前页面不再单独展示 BaaS 结果卡。
 
 BaaS 成本来源：
 
@@ -1639,9 +1639,11 @@ VehicleBaasCostRecord
 
 - 按车辆维度归集。
 - 只统计未删除记录。
-- 按报表周期内的 `dueDate` 归集。
+- 按 `periodStart / periodEnd` 对应服务期间归属到报表周期；跨期记录按重叠天数分摊。
 - 纳入 `SCHEDULED`、`CONFIRMED`、`PAID`、`OVERDUE`。
 - 排除 `WAIVED`、`VOIDED`。
+- `dueDate` 仅用于付款计划、应付提醒、逾期判断和现金流分析，不用于主 ROE 成本归属。
+- `paidAt` 仅展示实际付款状态，不决定成本是否计入收益。
 
 新增汇总字段：
 
@@ -1653,9 +1655,8 @@ baasScheduledCostAmount
 baasConfirmedCostAmount
 baasPaidCostAmount
 baasOverdueCostAmount
-baasAdjustedPlatformNetIncomeAmount
-baasAdjustedRoeTrial
-baasAdjustedAnnualizedRoeTrial
+baasCostFullRecordAmount
+baasCostAllocationMethod
 ```
 
 新增车辆列表字段：
@@ -1670,9 +1671,8 @@ baasScheduledCostAmount
 baasConfirmedCostAmount
 baasPaidCostAmount
 baasOverdueCostAmount
-baasAdjustedPlatformNetIncomeAmount
-baasAdjustedRoeTrial
-baasAdjustedAnnualizedRoeTrial
+baasCostFullRecordAmount
+baasCostAllocationMethod
 ```
 
 单车详情新增：
@@ -1681,25 +1681,30 @@ baasAdjustedAnnualizedRoeTrial
 baasCostSummary
 baasCurrentContract
 baasCostRecords
-baasAdjustedReturn
 ```
 
 计算公式：
 
 ```text
-baasAdjustedPlatformNetIncomeAmount =
-  platformNetIncomeAmount - baasCostAmount
+operatingCostAmount =
+  existingOperatingCostAmount + baasProratedCostAmount
 
-baasAdjustedRoeTrial =
-  baasAdjustedPlatformNetIncomeAmount / roeEquityBaseAmount
+platformNetIncomeAmount =
+  platformRetainedRevenueAmount - operatingCostAmount
 
-baasAdjustedAnnualizedRoeTrial =
-  baasAdjustedRoeTrial * 365 / analysisDays
+roeTrial =
+  platformNetIncomeAmount / roeEquityBaseAmount
+
+annualizedRoeTrial =
+  roeTrial * 365 / analysisDays
+
+trialRoa =
+  trialNetOperatingIncomeAmount / purchasePriceAmount
 ```
 
-当 `platformNetIncomeAmount`、`roeEquityBaseAmount` 缺失或权益资本基数小于等于 0 时，BaaS adjusted ROE 返回 `null`。
+当 `platformNetIncomeAmount`、`roeEquityBaseAmount` 缺失或权益资本基数小于等于 0 时，主 `roeTrial` 返回 `null`。
 
-CSV 导出同步增加 BaaS 成本汇总、BaaS 合同摘要、BaaS 成本记录和 BaaS adjusted 指标。CSV 仍为只读导出，不写业务表、不写审计日志、不生成付款单或账单。
+CSV 导出同步增加 BaaS 成本汇总、BaaS 合同摘要和 BaaS 成本分摊记录。车辆列表 CSV 中，BaaS 合同状态跟随车辆状态，BaaS 成本字段位于经营成本之前。CSV 仍为只读导出，不写业务表、不写审计日志、不生成付款单或账单。
 
 ## ROA / ROE
 

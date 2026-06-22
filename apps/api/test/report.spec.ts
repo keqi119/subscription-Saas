@@ -683,7 +683,7 @@ describe("reporting dashboard APIs", () => {
     expect(JSON.stringify(row)).toContain("forecastResidualAmount");
   });
 
-  it("asset return trial aggregates BaaS costs as adjusted return metrics without changing main ROE", async () => {
+  it("asset return trial includes BaaS costs in main return metrics", async () => {
     const { prisma, service } = createReportHarness();
     mockAssetReturnTrial(prisma, {
       baasContracts: [assetBaasContract()],
@@ -723,13 +723,18 @@ describe("reporting dashboard APIs", () => {
       baasContractNo: "BAAS202606010001",
       baasContractStatus: VehicleBaasContractStatus.ACTIVE,
       baasCostAmount: 90000,
+      baasCostAllocationMethod: "PERIOD_PRORATED",
+      baasCostFullRecordAmount: 90000,
       baasCostRecordCount: 3,
       baasPaidCostAmount: 40000,
       baasProviderName: "蔚来能源",
       baasScheduledCostAmount: 30000,
-      platformNetIncomeAmount: -671500
+      operatingCostAmount: 1411500,
+      platformNetIncomeAmount: -761500,
+      trialNetOperatingIncomeAmount: -761500
     });
-    expect(row?.roeTrial).toBeCloseTo(-671500 / 1200000);
+    expect(row?.roeTrial).toBeCloseTo(-761500 / 1200000);
+    expect(row?.trialRoa).toBeCloseTo(-761500 / 1200000);
     expect(row?.baasAdjustedRoeTrial).toBeCloseTo(-761500 / 1200000);
     expect(row?.baasAdjustedAnnualizedRoeTrial).toBeCloseTo(-761500 / 1200000);
 
@@ -741,14 +746,17 @@ describe("reporting dashboard APIs", () => {
     expect(summary).toMatchObject({
       baasAdjustedPlatformNetIncomeAmount: -761500,
       baasCostAmount: 90000,
+      baasCostAllocationMethod: "PERIOD_PRORATED",
+      baasCostFullRecordAmount: 90000,
       baasCostRecordCount: 3,
       baasCostVehicleCount: 1,
-      platformNetIncomeAmount: -671500
+      platformNetIncomeAmount: -761500
     });
-    expect(summary.roeTrial).toBeCloseTo(-671500 / 1200000);
+    expect(summary.roeTrial).toBeCloseTo(-761500 / 1200000);
     expect(summary.baasAdjustedRoeTrial).toBeCloseTo(-761500 / 1200000);
     expect(prisma.vehicleBaasCostRecord.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        orderBy: [{ periodStart: "asc" }, { costPeriod: "asc" }, { createdAt: "asc" }],
         where: expect.objectContaining({
           costStatus: {
             in: [
@@ -758,13 +766,84 @@ describe("reporting dashboard APIs", () => {
               VehicleBaasCostRecordStatus.OVERDUE
             ]
           },
-          dueDate: expect.objectContaining({
-            gte: expect.any(Date),
-            lt: expect.any(Date)
-          })
+          periodEnd: { gte: expect.any(Date) },
+          periodStart: { lte: expect.any(Date) }
         })
       })
     );
+  });
+
+  it("asset return trial prorates BaaS costs by service period instead of due date", async () => {
+    const { prisma, service } = createReportHarness();
+    const allBaasCostRecords = [
+      assetBaasCostRecord({
+        costAmount: 31000n,
+        costRecordNo: "BCR-PRORATED",
+        costStatus: VehicleBaasCostRecordStatus.SCHEDULED,
+        dueDate: new Date("2026-02-10T00:00:00.000Z"),
+        id: "baas-cost-prorated",
+        periodEnd: new Date("2026-01-31T00:00:00.000Z"),
+        periodStart: new Date("2026-01-01T00:00:00.000Z")
+      }),
+      assetBaasCostRecord({
+        costAmount: 28000n,
+        costRecordNo: "BCR-DUE-ONLY",
+        costStatus: VehicleBaasCostRecordStatus.PAID,
+        dueDate: new Date("2026-01-20T00:00:00.000Z"),
+        id: "baas-cost-due-only",
+        periodEnd: new Date("2026-02-28T00:00:00.000Z"),
+        periodStart: new Date("2026-02-01T00:00:00.000Z")
+      }),
+      assetBaasCostRecord({
+        costAmount: 10000n,
+        costRecordNo: "BCR-VOIDED",
+        costStatus: VehicleBaasCostRecordStatus.VOIDED,
+        dueDate: new Date("2026-01-18T00:00:00.000Z"),
+        id: "baas-cost-voided",
+        periodEnd: new Date("2026-01-31T00:00:00.000Z"),
+        periodStart: new Date("2026-01-01T00:00:00.000Z")
+      }),
+      assetBaasCostRecord({
+        costAmount: 16000n,
+        costRecordNo: "BCR-OVERDUE",
+        costStatus: VehicleBaasCostRecordStatus.OVERDUE,
+        dueDate: new Date("2026-03-10T00:00:00.000Z"),
+        id: "baas-cost-overdue",
+        periodEnd: new Date("2026-01-31T00:00:00.000Z"),
+        periodStart: new Date("2026-01-16T00:00:00.000Z")
+      })
+    ];
+    mockAssetReturnTrial(prisma, {
+      baasContracts: [assetBaasContract()]
+    });
+    prisma.vehicleBaasCostRecord.findMany.mockImplementation(async (args) => {
+      const where = args.where as {
+        costStatus: { in: VehicleBaasCostRecordStatus[] };
+        periodEnd: { gte: Date };
+        periodStart: { lte: Date };
+      };
+
+      return allBaasCostRecords.filter((record) => {
+        const costStatus = record.costStatus as VehicleBaasCostRecordStatus;
+        return (
+          where.costStatus.in.includes(costStatus) &&
+          (record.periodStart as Date) <= where.periodStart.lte &&
+          (record.periodEnd as Date) >= where.periodEnd.gte
+        );
+      });
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-01-31",
+      startDate: "2026-01-16"
+    });
+    const row = result.items[0];
+
+    expect(row?.baasCostAmount).toBe(32000);
+    expect(row?.baasCostFullRecordAmount).toBe(47000);
+    expect(row?.baasCostRecordCount).toBe(2);
+    expect(row?.baasScheduledCostAmount).toBe(16000);
+    expect(row?.baasOverdueCostAmount).toBe(16000);
   });
 
   it("asset return trial uses adopted residual amount before predicted amount", async () => {
@@ -1412,22 +1491,29 @@ describe("reporting dashboard APIs", () => {
       rentalAmount: 30000
     });
     expect(result.baasCostSummary).toMatchObject({
+      allocationMethod: "PERIOD_PRORATED",
       costAmount: 30000,
+      fullCostRecordAmount: 30000,
       costRecordCount: 1,
       paidCostAmount: 30000
     });
     expect(result.baasCostRecords).toEqual([
       expect.objectContaining({
+        allocationMethod: "PERIOD_PRORATED",
         costAmount: 30000,
-        costStatus: VehicleBaasCostRecordStatus.PAID
+        costStatus: VehicleBaasCostRecordStatus.PAID,
+        fullCostRecordAmount: 30000,
+        includedProratedAmount: 30000,
+        overlapDays: 30,
+        totalDays: 30
       })
     ]);
     expect(result.baasAdjustedReturn).toMatchObject({
       baasAdjustedPlatformNetIncomeAmount: -751500,
-      platformNetIncomeAmount: -721500
+      platformNetIncomeAmount: -751500
     });
     expect(result.baasAdjustedReturn.baasAdjustedRoeTrial).toBeCloseTo(-751500 / 1200000);
-    expect(result.returns.roeTrial).toBeCloseTo(-721500 / 1200000);
+    expect(result.returns.roeTrial).toBeCloseTo(-751500 / 1200000);
   });
 
   it("asset return trial vehicle detail returns capital, financing, revenue right, and sharing details", async () => {
@@ -2043,8 +2129,8 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("残值敏感性 ROE,-50.96%");
     expect(result.content).toContain("BaaS 电池成本");
     expect(result.content).toContain("BaaS 成本车辆数,0");
-    expect(result.content).toContain("BaaS 调整后平台权益净收益（元）,-6715.00");
-    expect(result.content).toContain("BaaS 调整后 ROE,-55.96%");
+    expect(result.content).toContain("BaaS 成本分摊方法,PERIOD_PRORATED");
+    expect(result.content).toContain("BaaS 成本按服务期间纳入主平台权益净收益 / 主试算 ROE。");
     expect(result.content).toContain("计算链路 / 钩稽关系");
     expect(result.content).toContain("ROE 不可用原因");
     expect(result.content).toContain("ROE 试算提示");
@@ -2091,7 +2177,6 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("残值敏感性 ROE");
     expect(result.content).toContain("BaaS 合同状态");
     expect(result.content).toContain("BaaS 成本合计（元）");
-    expect(result.content).toContain("BaaS 调整后 ROE");
     expect(result.content).toContain('"NIO, ""Premium""\nLine"');
     expect(result.content).toContain("已出租");
     expect(result.content).toContain("6500.00");
@@ -2184,8 +2269,8 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("ROE 状态,可试算");
     expect(result.content).toContain("BaaS 电池成本");
     expect(result.content).toContain("BaaS 成本汇总");
-    expect(result.content).toContain("BaaS 调整后收益指标");
     expect(result.content).toContain("BaaS 成本记录");
+    expect(result.content).toContain("纳入本分析周期金额");
     expect(result.content).toContain("残值预测敏感性");
     expect(result.content).toContain("残值预测状态,可用");
     expect(result.content).toContain("预测值来源,曲线预测");

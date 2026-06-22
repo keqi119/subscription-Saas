@@ -699,6 +699,52 @@ enum InsuranceClaimStatus {
   @@map("insurance_claim_status")
 }
 
+enum VehicleBaasContractStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+  EXPIRED
+  ARCHIVED
+
+  @@map("vehicle_baas_contract_status")
+}
+
+enum VehicleBaasBillingCycle {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+
+  @@map("vehicle_baas_billing_cycle")
+}
+
+enum VehicleBaasContractAttachmentType {
+  CONTRACT
+  INVOICE
+  OTHER
+
+  @@map("vehicle_baas_contract_attachment_type")
+}
+
+enum VehicleBaasCostRecordStatus {
+  SCHEDULED
+  CONFIRMED
+  PAID
+  WAIVED
+  VOIDED
+  OVERDUE
+
+  @@map("vehicle_baas_cost_record_status")
+}
+
+enum VehicleBaasCostSource {
+  GENERATED
+  MANUAL
+  IMPORTED
+
+  @@map("vehicle_baas_cost_source")
+}
+
 enum NotificationChannel {
   IN_APP
   WECHAT_OFFICIAL_ACCOUNT
@@ -2316,6 +2362,8 @@ model Vehicle {
   insurancePolicies             VehicleInsurancePolicy[]
   documents                     VehicleDocument[]
   insuranceClaims               InsuranceClaim[]
+  baasContracts                 VehicleBaasContract[]
+  baasCostRecords               VehicleBaasCostRecord[]
   residualForecasts             VehicleResidualForecast[]
   residualModelRunOutputs       ResidualModelRunOutput[]
   valuationReviews              VehicleValuationReview[]
@@ -2633,6 +2681,105 @@ model InsuranceClaim {
   @@index([customerId])
   @@index([claimStatus])
   @@map("insurance_claim")
+}
+
+model VehicleBaasContract {
+  id                 String                          @id @default(uuid()) @db.Uuid
+  contractNo         String                          @unique @map("contract_no") @db.VarChar(128)
+  vehicleId          String                          @map("vehicle_id") @db.Uuid
+  vehicle            Vehicle                         @relation(fields: [vehicleId], references: [id])
+  providerName       String                          @map("provider_name") @db.VarChar(128)
+  providerContractNo String?                         @map("provider_contract_no") @db.VarChar(128)
+  batteryPackageName String?                         @map("battery_package_name") @db.VarChar(128)
+  batterySerialNo    String?                         @map("battery_serial_no") @db.VarChar(128)
+  contractStatus     VehicleBaasContractStatus       @default(DRAFT) @map("contract_status")
+  effectiveFrom      DateTime                        @map("effective_from") @db.Date
+  effectiveTo        DateTime?                       @map("effective_to") @db.Date
+  billingCycle       VehicleBaasBillingCycle         @default(MONTHLY) @map("billing_cycle")
+  rentalAmount       BigInt                          @map("rental_amount")
+  currency           String?                         @default("CNY") @db.VarChar(16)
+  paymentDayOfMonth  Int                             @map("payment_day_of_month")
+  graceDays          Int?                            @default(0) @map("grace_days")
+  invoiceRequired    Boolean                         @default(false) @map("invoice_required")
+  taxIncluded        Boolean                         @default(true) @map("tax_included")
+  remark             String?                         @db.Text
+  snapshot           Json?
+  activatedAt        DateTime?                       @map("activated_at") @db.Timestamptz(6)
+  suspendedAt        DateTime?                       @map("suspended_at") @db.Timestamptz(6)
+  terminatedAt       DateTime?                       @map("terminated_at") @db.Timestamptz(6)
+  archivedAt         DateTime?                       @map("archived_at") @db.Timestamptz(6)
+  attachments        VehicleBaasContractAttachment[]
+  costRecords        VehicleBaasCostRecord[]
+  createdAt          DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?                         @map("created_by") @db.Uuid
+  updatedBy          String?                         @map("updated_by") @db.Uuid
+  deletedAt          DateTime?                       @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([contractStatus])
+  @@index([effectiveFrom])
+  @@index([effectiveTo])
+  @@map("vehicle_baas_contract")
+}
+
+model VehicleBaasContractAttachment {
+  id             String                            @id @default(uuid()) @db.Uuid
+  contractId     String                            @map("contract_id") @db.Uuid
+  contract       VehicleBaasContract               @relation(fields: [contractId], references: [id])
+  fileName       String                            @map("file_name") @db.VarChar(255)
+  originalName   String?                           @map("original_name") @db.VarChar(255)
+  mimeType       String?                           @map("mime_type") @db.VarChar(128)
+  fileSize       Int?                              @map("file_size")
+  bucket         String?                           @db.VarChar(256)
+  objectKey      String?                           @map("object_key") @db.VarChar(512)
+  attachmentType VehicleBaasContractAttachmentType @default(CONTRACT) @map("attachment_type")
+  title          String?                           @db.VarChar(128)
+  description    String?                           @db.Text
+  uploadedBy     String?                           @map("uploaded_by") @db.Uuid
+  createdAt      DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt      DateTime?                         @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([contractId])
+  @@index([attachmentType])
+  @@map("vehicle_baas_contract_attachment")
+}
+
+model VehicleBaasCostRecord {
+  id            String                      @id @default(uuid()) @db.Uuid
+  costRecordNo  String                      @unique @map("cost_record_no") @db.VarChar(64)
+  contractId    String                      @map("contract_id") @db.Uuid
+  contract      VehicleBaasContract         @relation(fields: [contractId], references: [id])
+  vehicleId     String                      @map("vehicle_id") @db.Uuid
+  vehicle       Vehicle                     @relation(fields: [vehicleId], references: [id])
+  costPeriod    String                      @map("cost_period") @db.VarChar(7)
+  periodStart   DateTime                    @map("period_start") @db.Date
+  periodEnd     DateTime                    @map("period_end") @db.Date
+  dueDate       DateTime                    @map("due_date") @db.Date
+  costAmount    BigInt                      @map("cost_amount")
+  currency      String?                     @default("CNY") @db.VarChar(16)
+  costStatus    VehicleBaasCostRecordStatus @default(SCHEDULED) @map("cost_status")
+  costSource    VehicleBaasCostSource       @default(GENERATED) @map("cost_source")
+  confirmedAt   DateTime?                   @map("confirmed_at") @db.Timestamptz(6)
+  paidAt        DateTime?                   @map("paid_at") @db.Timestamptz(6)
+  voidedAt      DateTime?                   @map("voided_at") @db.Timestamptz(6)
+  paymentRefNo  String?                     @map("payment_ref_no") @db.VarChar(128)
+  invoiceNo     String?                     @map("invoice_no") @db.VarChar(128)
+  remark        String?                     @db.Text
+  snapshot      Json?
+  createdAt     DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?                     @map("created_by") @db.Uuid
+  updatedBy     String?                     @map("updated_by") @db.Uuid
+  deletedAt     DateTime?                   @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([contractId, costPeriod])
+  @@index([vehicleId])
+  @@index([costPeriod])
+  @@index([dueDate])
+  @@index([costStatus])
+  @@map("vehicle_baas_cost_record")
 }
 
 model VehicleSalePriceHistory {

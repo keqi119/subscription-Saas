@@ -340,6 +340,42 @@ export const INSURANCE_CLAIM_STATUS_LABELS: Record<string, string> = {
   SUBMITTED: "已提交"
 };
 
+export const VEHICLE_BAAS_CONTRACT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效中",
+  ARCHIVED: "已归档",
+  DRAFT: "草稿",
+  EXPIRED: "已过期",
+  SUSPENDED: "已暂停",
+  TERMINATED: "已终止"
+};
+
+export const VEHICLE_BAAS_BILLING_CYCLE_LABELS: Record<string, string> = {
+  MONTHLY: "月付",
+  QUARTERLY: "季付",
+  YEARLY: "年付"
+};
+
+export const VEHICLE_BAAS_CONTRACT_ATTACHMENT_TYPE_LABELS: Record<string, string> = {
+  CONTRACT: "合同附件",
+  INVOICE: "发票",
+  OTHER: "其他"
+};
+
+export const VEHICLE_BAAS_COST_RECORD_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  OVERDUE: "已逾期",
+  PAID: "已支付",
+  SCHEDULED: "待处理",
+  VOIDED: "已作废",
+  WAIVED: "已减免"
+};
+
+export const VEHICLE_BAAS_COST_SOURCE_LABELS: Record<string, string> = {
+  GENERATED: "系统生成",
+  IMPORTED: "导入",
+  MANUAL: "手工"
+};
+
 export const VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "生效中",
   INACTIVE: "已停用"

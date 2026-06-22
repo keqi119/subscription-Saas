@@ -432,3 +432,16 @@ RC impact:
 - Accident service cases can be linked to basic insurance claim records; `/portal/service-cases/[id]` shows a read-only claim summary when available.
 - No insurer API integration, automatic claim submission, automatic claim sync, vehicle state change, order state change, bill generation, payment change, write-off change, or notification-send main-flow change is included.
 - This does not remove the existing unrestricted-launch blockers.
+
+## Stage 10M-C-A BaaS Contract Cost Ledger Update
+
+Stage 10M-C-A adds back-office BaaS battery contract and cost-ledger management.
+
+RC impact:
+
+- Vehicles whose `batteryUsageType` is `BAAS` can now have provider contracts, monthly rental amount, payment day, attachments, and generated cost records.
+- Back office can generate cost records with dry-run support and mark records confirmed, paid, or voided.
+- Vehicle detail shows a BaaS contract summary and link to contract management.
+- This stage does not change Portal customer flows.
+- BaaS costs are not yet included in asset profitability, ROA / ROE trial formulas, CSV exports, billing, payment, write-off, supplier payment, or accounting flows.
+- This does not remove the existing unrestricted-launch blockers.

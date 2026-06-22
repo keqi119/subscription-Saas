@@ -84,6 +84,19 @@ export class StorageService {
     return this.getObject(bucket, objectKey);
   }
 
+  async putVehicleBaasContractAttachment(input: Omit<UploadObjectInput, "key"> & { contractId: string }): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildVehicleBaasContractAttachmentKey(input.contractId, input.originalName ?? "file");
+    return this.putPrivateObject(key, input);
+  }
+
+  getVehicleBaasContractAttachmentStream(bucket: string, objectKey: string): Promise<DownloadObjectResult> {
+    return this.getObject(bucket, objectKey);
+  }
+
   private async putPrivateObject(key: string, input: Omit<UploadObjectInput, "key">): Promise<{
     bucket: string;
     objectKey: string;
@@ -169,6 +182,12 @@ export class StorageService {
     const now = new Date();
     const year = String(now.getUTCFullYear());
     return `vehicle-documents/${sanitizeKeyPart(vehicleId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildVehicleBaasContractAttachmentKey(contractId: string, originalName: string) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    return `vehicle-baas-contracts/${sanitizeKeyPart(contractId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
   private withOssPrefix(key: string) {

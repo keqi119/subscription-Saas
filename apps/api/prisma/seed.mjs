@@ -163,6 +163,8 @@ permissionRows.push(
   ["vehicle_insurance:manage", "管理车辆保单", "vehicle_insurance", "manage"],
   ["vehicle_document:view", "查看车辆权证材料", "vehicle_document", "view"],
   ["vehicle_document:manage", "管理车辆权证材料", "vehicle_document", "manage"],
+  ["vehicle_baas:view", "查看BaaS合同", "vehicle_baas", "view"],
+  ["vehicle_baas:manage", "管理BaaS合同", "vehicle_baas", "manage"],
   ["insurance_claim:view", "查看保险理赔", "insurance_claim", "view"],
   ["insurance_claim:manage", "管理保险理赔", "insurance_claim", "manage"],
   ["vehicle_valuation_review:view", "查看车辆估值复核", "vehicle_valuation_review", "view"],
@@ -231,6 +233,7 @@ const menuRows = [
   ["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"],
   ["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"],
   ["vehicles.insurance_policies", "保单管理", "/vehicle-insurance-policies", "file", 25, "vehicle_insurance:view", "vehicles"],
+  ["vehicles.baas_contracts", "BaaS合同", "/vehicle-baas-contracts", "file", 28, "vehicle_baas:view", "vehicles"],
   ["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"],
   ["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"],
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
@@ -601,6 +604,8 @@ const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"];
 const vehicleInsuranceManagementPermissions = ["vehicle_insurance:view", "vehicle_insurance:manage"];
 const vehicleDocumentViewPermissions = ["vehicle_document:view"];
 const vehicleDocumentManagementPermissions = ["vehicle_document:view", "vehicle_document:manage"];
+const vehicleBaasViewPermissions = ["vehicle_baas:view"];
+const vehicleBaasManagementPermissions = ["vehicle_baas:view", "vehicle_baas:manage"];
 const insuranceClaimViewPermissions = ["insurance_claim:view"];
 const insuranceClaimManagementPermissions = ["insurance_claim:view", "insurance_claim:manage"];
 const vehicleValuationReviewViewPermissions = ["vehicle_valuation_review:view"];
@@ -620,6 +625,7 @@ const vehicleValuationReviewManagementPermissions = [
 const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
 const vehicleInsuranceMenuCodes = ["vehicles.insurance_policies"];
+const vehicleBaasMenuCodes = ["vehicles.baas_contracts"];
 const residualMarketMenuCodes = ["vehicles.residual_market"];
 const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"];
 
@@ -763,6 +769,7 @@ async function main() {
       ...vehicleViewPermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
+      ...vehicleBaasViewPermissions,
       ...insuranceClaimViewPermissions,
       ...quoteManagementPermissions,
       "order:view",
@@ -784,6 +791,7 @@ async function main() {
       ...productMenuCodes,
       ...vehicleMenuCodes,
       ...vehicleInsuranceMenuCodes,
+      ...vehicleBaasMenuCodes,
       "quotes",
       "orders",
       "orders.subscription",
@@ -806,6 +814,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...vehicleInsuranceManagementPermissions,
       ...vehicleDocumentManagementPermissions,
+      ...vehicleBaasManagementPermissions,
       ...insuranceClaimManagementPermissions,
       ...vehicleValuationReviewManagementPermissions,
       ...quoteManagementPermissions,
@@ -839,6 +848,7 @@ async function main() {
       ...productMenuCodes,
       ...vehicleMenuCodes,
       ...vehicleInsuranceMenuCodes,
+      ...vehicleBaasMenuCodes,
       "quotes",
       "orders",
       "orders.subscription",
@@ -895,6 +905,7 @@ async function main() {
         "product_price_rule:view",
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
+        ...(roleCode === "FI" ? vehicleBaasManagementPermissions : vehicleBaasViewPermissions),
         ...(roleCode === "AS"
           ? vehicleValuationReviewCreatePermissions
           : vehicleValuationReviewViewPermissions),
@@ -927,6 +938,7 @@ async function main() {
         "dashboard",
         ...productMenuCodes,
         ...vehicleMenuCodes,
+        ...vehicleBaasMenuCodes,
         "quotes",
         "orders",
         "orders.subscription",
@@ -956,6 +968,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
+      ...vehicleBaasViewPermissions,
       ...insuranceClaimViewPermissions,
       ...vehicleValuationReviewApprovePermissions,
       ...capitalStructureViewPermissions,
@@ -985,6 +998,7 @@ async function main() {
       ...productMenuCodes,
       ...vehicleMenuCodes,
       ...vehicleInsuranceMenuCodes,
+      ...vehicleBaasMenuCodes,
       "quotes",
       "orders",
       "orders.subscription",

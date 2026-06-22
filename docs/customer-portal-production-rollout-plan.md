@@ -314,3 +314,18 @@ Production rollout notes:
 - Verify accident service cases can create and display claim records, and Portal service-case detail only shows read-only claim summaries.
 - Confirm this stage does not change vehicle/order state machines, does not generate bills, and does not change payment or write-off logic.
 - Treat Stage 10M-B as operational readiness for insurance/documents/claims, not as unrestricted customer-launch approval.
+
+## Stage 10M-C-A Rollout Note
+
+Stage 10M-C-A introduces BaaS battery contracts and a BaaS cost-record ledger.
+
+Production rollout notes:
+
+- Run the new migration with `prisma migrate deploy`; do not use `prisma migrate reset` or `prisma db push`.
+- Run `pnpm prisma:seed` and require back-office users to log in again so tokens include `vehicle_baas:view/manage` and the new menu.
+- Verify a controlled BAAS vehicle can create and activate one active BaaS contract.
+- Verify non-BAAS vehicles cannot activate a BaaS contract.
+- Verify cost generation dry-run does not write records and formal generation is idempotent by `contractId + costPeriod`.
+- Verify 31st payment day uses month end for shorter months.
+- Confirm this stage does not change asset profitability formulas, CSV exports, billing, payment, write-off, supplier payment, or vehicle/order state machines.
+- Treat Stage 10M-C-A as BaaS ledger readiness; reporting integration belongs to Stage 10M-C-B.

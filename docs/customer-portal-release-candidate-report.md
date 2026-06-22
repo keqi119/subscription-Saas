@@ -445,3 +445,15 @@ RC impact:
 - This stage does not change Portal customer flows.
 - BaaS costs are not yet included in asset profitability, ROA / ROE trial formulas, CSV exports, billing, payment, write-off, supplier payment, or accounting flows.
 - This does not remove the existing unrestricted-launch blockers.
+
+## Stage 10M-C-B BaaS Cost Return Analytics Update
+
+Stage 10M-C-B adds BaaS cost visibility to asset profitability analysis as a supplemental reporting口径.
+
+RC impact:
+
+- `/reports/asset-profitability` now shows BaaS cost totals, cost status breakdown, current BaaS contract summary, and BaaS adjusted platform net income / ROE / annualized ROE.
+- Return-trial summary, vehicle list, vehicle detail, and CSV exports include BaaS cost fields.
+- Main `platformNetIncomeAmount`, `roeTrial`, `annualizedRoeTrial`, and `trialRoa` remain unchanged.
+- This stage does not generate bills, payment records, write-offs, supplier payment orders, accounting entries, or customer-facing flow changes.
+- This does not remove the existing unrestricted-launch blockers.

@@ -48,6 +48,10 @@ import {
   STATUS_LABELS,
   VEHICLE_ASSET_COST_PROFILE_STATUS_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
+  VEHICLE_BAAS_BILLING_CYCLE_LABELS,
+  VEHICLE_BAAS_CONTRACT_STATUS_LABELS,
+  VEHICLE_BAAS_COST_RECORD_STATUS_LABELS,
+  VEHICLE_BAAS_COST_SOURCE_LABELS,
   VEHICLE_DAMAGE_LEVEL_LABELS,
   VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS,
   VEHICLE_DAMAGE_TYPE_LABELS,
@@ -123,6 +127,16 @@ interface AssetReturnTrialSummary {
   annualizedTrialRoa?: number | null;
   annualizedRoeTrial?: number | null;
   assignedOutRevenueAmount?: number | null;
+  baasAdjustedAnnualizedRoeTrial?: number | null;
+  baasAdjustedPlatformNetIncomeAmount?: number | null;
+  baasAdjustedRoeTrial?: number | null;
+  baasConfirmedCostAmount?: number | null;
+  baasCostAmount?: number | null;
+  baasCostRecordCount?: number | null;
+  baasCostVehicleCount?: number | null;
+  baasOverdueCostAmount?: number | null;
+  baasPaidCostAmount?: number | null;
+  baasScheduledCostAmount?: number | null;
   capitalCostAmount?: number | null;
   capitalCostSource?: string | null;
   costCalculatedVehicleCount?: number | null;
@@ -209,6 +223,18 @@ interface AssetReturnTrialVehicleRow extends AssetProfitabilityVehicleRow {
   annualizedTrialRoa?: number | null;
   annualizedRoeTrial?: number | null;
   assignedOutRevenueAmount?: number | null;
+  baasAdjustedAnnualizedRoeTrial?: number | null;
+  baasAdjustedPlatformNetIncomeAmount?: number | null;
+  baasAdjustedRoeTrial?: number | null;
+  baasConfirmedCostAmount?: number | null;
+  baasContractNo?: string | null;
+  baasContractStatus?: string | null;
+  baasCostAmount?: number | null;
+  baasCostRecordCount?: number | null;
+  baasOverdueCostAmount?: number | null;
+  baasPaidCostAmount?: number | null;
+  baasProviderName?: string | null;
+  baasScheduledCostAmount?: number | null;
   capitalCostAmount?: number | null;
   capitalCostSource?: string | null;
   costDays?: number | null;
@@ -277,6 +303,10 @@ interface AssetProfitabilityVehicleDetail {
 }
 
 interface AssetReturnTrialVehicleDetail {
+  baasAdjustedReturn?: BaasAdjustedReturn | null;
+  baasCostRecords?: BaasCostRecordRow[];
+  baasCostSummary?: BaasCostSummary | null;
+  baasCurrentContract?: BaasCurrentContract | null;
   bills?: ReturnTrialBillRow[];
   capitalEvents?: ReturnTrialCapitalEventRow[];
   capitalStructureSummary?: ReturnTrialCapitalStructureSummary | null;
@@ -295,6 +325,57 @@ interface AssetReturnTrialVehicleDetail {
   roeBreakdown?: ReturnTrialRoeBreakdown | null;
   returns?: ReturnTrialMetrics | null;
   vehicle?: ReturnTrialVehicleInfo | null;
+}
+
+interface BaasCostSummary {
+  confirmedCostAmount?: number | null;
+  costAmount?: number | null;
+  costRecordCount?: number | null;
+  overdueCostAmount?: number | null;
+  paidCostAmount?: number | null;
+  scheduledCostAmount?: number | null;
+}
+
+interface BaasCurrentContract {
+  batteryPackageName?: string | null;
+  batterySerialNo?: string | null;
+  billingCycle?: string | null;
+  contractId?: string | null;
+  contractNo?: string | null;
+  contractStatus?: string | null;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  paymentDayOfMonth?: number | null;
+  providerContractNo?: string | null;
+  providerName?: string | null;
+  rentalAmount?: number | null;
+}
+
+interface BaasCostRecordRow {
+  confirmedAt?: string | null;
+  contractId?: string | null;
+  costAmount?: number | null;
+  costPeriod?: string | null;
+  costRecordNo?: string | null;
+  costSource?: string | null;
+  costStatus?: string | null;
+  currency?: string | null;
+  dueDate?: string | null;
+  id?: string | null;
+  invoiceNo?: string | null;
+  paidAt?: string | null;
+  paymentRefNo?: string | null;
+  periodEnd?: string | null;
+  periodStart?: string | null;
+  vehicleId?: string | null;
+  voidedAt?: string | null;
+}
+
+interface BaasAdjustedReturn {
+  baasAdjustedAnnualizedRoeTrial?: number | null;
+  baasAdjustedPlatformNetIncomeAmount?: number | null;
+  baasAdjustedRoeTrial?: number | null;
+  platformNetIncomeAmount?: number | null;
 }
 
 interface ResidualForecastSummary {
@@ -474,6 +555,9 @@ interface ReturnTrialCostBreakdown {
 interface ReturnTrialMetrics {
   annualizedRoeTrial?: number | null;
   annualizedTrialRoa?: number | null;
+  baasAdjustedAnnualizedRoeTrial?: number | null;
+  baasAdjustedPlatformNetIncomeAmount?: number | null;
+  baasAdjustedRoeTrial?: number | null;
   capitalCostSource?: string | null;
   debtInterestCostAmount?: number | null;
   externalLeaseCostAmount?: number | null;
@@ -1323,6 +1407,24 @@ export default function AssetProfitabilityPage() {
       { dataIndex: "roeTrial", render: formatTrialRoe, title: "试算 ROE", width: 120 },
       { dataIndex: "annualizedRoeTrial", render: formatPercent, title: "年化试算 ROE", width: 150 },
       {
+        dataIndex: "baasContractStatus",
+        render: (value?: string | null) => labelOf(VEHICLE_BAAS_CONTRACT_STATUS_LABELS, value),
+        title: "BaaS 合同",
+        width: 120
+      },
+      {
+        dataIndex: "baasCostAmount",
+        render: formatYuan,
+        title: "BaaS 成本",
+        width: 130
+      },
+      {
+        dataIndex: "baasAdjustedRoeTrial",
+        render: formatPercent,
+        title: "BaaS 调整后 ROE",
+        width: 160
+      },
+      {
         render: (_value, record) => renderResidualForecastStatus(record),
         title: "残值预测状态",
         width: 150
@@ -1862,12 +1964,39 @@ function ReturnTrialSummaryMetrics({
             { title: "试算 ROE", value: formatTrialRoe(summary?.roeTrial) },
             { title: "年化试算 ROE", value: formatPercent(summary?.annualizedRoeTrial) },
             { title: "残值敏感性 ROE", value: formatPercent(summary?.residualSensitivityRoeTrial) },
+            { title: "BaaS 调整后 ROE", value: formatPercent(summary?.baasAdjustedRoeTrial) },
             { title: "ROE 状态", value: roeStatus }
           ]}
         />
         {missingReasons.length > 0 ? (
           <Typography.Text type="secondary">主要原因：{missingReasons.slice(0, 2).join("；")}</Typography.Text>
         ) : null}
+      </MetricGroupCard>
+
+      <MetricGroupCard
+        description="BaaS 成本按成本记录应付日归集，作为补充口径展示，不覆盖主平台权益净收益或主试算 ROE。"
+        loading={loading}
+        title="BaaS 电池成本"
+      >
+        <MetricCardGrid
+          items={[
+            { title: "BaaS 成本车辆数", value: formatInteger(summary?.baasCostVehicleCount) },
+            { title: "BaaS 成本合计", value: formatYuan(summary?.baasCostAmount) },
+            { title: "已计划成本", value: formatYuan(summary?.baasScheduledCostAmount) },
+            { title: "已确认成本", value: formatYuan(summary?.baasConfirmedCostAmount) },
+            { title: "已支付成本", value: formatYuan(summary?.baasPaidCostAmount) },
+            { title: "逾期成本", value: formatYuan(summary?.baasOverdueCostAmount) },
+            {
+              title: "BaaS 调整后平台权益净收益",
+              value: formatYuan(summary?.baasAdjustedPlatformNetIncomeAmount)
+            },
+            { title: "BaaS 调整后 ROE", value: formatPercent(summary?.baasAdjustedRoeTrial) },
+            {
+              title: "BaaS 调整后年化 ROE",
+              value: formatPercent(summary?.baasAdjustedAnnualizedRoeTrial)
+            }
+          ]}
+        />
       </MetricGroupCard>
 
       <div
@@ -1981,6 +2110,12 @@ function ReturnTrialSummaryMetrics({
                 </Typography.Text>
                 <Typography.Text>平台权益净收益 = 平台留存经营收入 - 经营成本合计</Typography.Text>
                 <Typography.Text>试算 ROE = 平台权益净收益 / 权益资本基数</Typography.Text>
+                <Typography.Text>
+                  BaaS 调整后平台权益净收益 = 平台权益净收益 - BaaS 成本合计
+                </Typography.Text>
+                <Typography.Text>
+                  BaaS 调整后 ROE = BaaS 调整后平台权益净收益 / 权益资本基数
+                </Typography.Text>
                 <Typography.Text>
                   残值敏感性净收益 = 平台权益净收益 + 预测残值相对成本参数预计残值的差异
                 </Typography.Text>
@@ -2186,6 +2321,10 @@ function ReturnTrialDetailContent({
   const income = detail.incomeBreakdown ?? {};
   const cost = detail.costBreakdown ?? {};
   const returns = detail.returns ?? {};
+  const baasAdjustedReturn = detail.baasAdjustedReturn ?? {};
+  const baasCostRecords = detail.baasCostRecords ?? [];
+  const baasCostSummary = detail.baasCostSummary ?? {};
+  const baasCurrentContract = detail.baasCurrentContract ?? null;
   const capitalSummary = detail.capitalStructureSummary ?? {};
   const roeBreakdown = detail.roeBreakdown ?? {};
   const roeMissingReasons = normalizeReasonList(returns.roeMissingReasons);
@@ -2446,6 +2585,79 @@ function ReturnTrialDetailContent({
         {roeWarnings.length > 0 ? (
           <ReasonAlert items={roeWarnings} title="ROE 试算提示" type="info" />
         ) : null}
+      </DetailSection>
+
+      <DetailSection title="BaaS 电池成本">
+        <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+          <Alert
+            showIcon
+            type="info"
+            message="BaaS 成本作为补充口径展示，本阶段不改变主平台权益净收益 / 主试算 ROE。"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "合同编号", children: safeText(baasCurrentContract?.contractNo) },
+              {
+                label: "合同状态",
+                children: labelOf(
+                  VEHICLE_BAAS_CONTRACT_STATUS_LABELS,
+                  baasCurrentContract?.contractStatus
+                )
+              },
+              { label: "服务商", children: safeText(baasCurrentContract?.providerName) },
+              { label: "服务商合同号", children: safeText(baasCurrentContract?.providerContractNo) },
+              { label: "电池包", children: safeText(baasCurrentContract?.batteryPackageName) },
+              { label: "电池序列号", children: safeText(baasCurrentContract?.batterySerialNo) },
+              {
+                label: "计费周期",
+                children: labelOf(VEHICLE_BAAS_BILLING_CYCLE_LABELS, baasCurrentContract?.billingCycle)
+              },
+              { label: "月租金", children: formatYuan(baasCurrentContract?.rentalAmount) },
+              { label: "每月支付日", children: formatInteger(baasCurrentContract?.paymentDayOfMonth) }
+            ]}
+            size="small"
+          />
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "成本记录数", children: formatInteger(baasCostSummary.costRecordCount) },
+              { label: "成本合计", children: formatYuan(baasCostSummary.costAmount) },
+              { label: "已计划成本", children: formatYuan(baasCostSummary.scheduledCostAmount) },
+              { label: "已确认成本", children: formatYuan(baasCostSummary.confirmedCostAmount) },
+              { label: "已支付成本", children: formatYuan(baasCostSummary.paidCostAmount) },
+              { label: "逾期成本", children: formatYuan(baasCostSummary.overdueCostAmount) },
+              {
+                label: "BaaS 调整后平台权益净收益",
+                children: formatYuan(baasAdjustedReturn.baasAdjustedPlatformNetIncomeAmount)
+              },
+              {
+                label: "BaaS 调整后 ROE",
+                children: formatPercent(baasAdjustedReturn.baasAdjustedRoeTrial)
+              },
+              {
+                label: "BaaS 调整后年化 ROE",
+                children: formatPercent(baasAdjustedReturn.baasAdjustedAnnualizedRoeTrial)
+              },
+              {
+                label: "主平台权益净收益",
+                children: formatYuan(baasAdjustedReturn.platformNetIncomeAmount)
+              }
+            ]}
+            size="small"
+          />
+          <Table
+            columns={baasCostRecordColumns}
+            dataSource={baasCostRecords}
+            locale={{ emptyText: "暂无 BaaS 成本记录" }}
+            pagination={false}
+            rowKey={(record) => record.id ?? record.costRecordNo ?? "baas-cost-record"}
+            scroll={{ x: 980 }}
+            size="small"
+          />
+        </Space>
       </DetailSection>
 
       <DetailSection title="残值预测敏感性">
@@ -2803,6 +3015,30 @@ const revenueShareRuleColumns: ColumnsType<ReturnTrialRevenueShareRuleRow> = [
     width: 140
   },
   { dataIndex: "effectiveFrom", render: formatDate, title: "生效日期", width: 120 }
+];
+
+const baasCostRecordColumns: ColumnsType<BaasCostRecordRow> = [
+  { dataIndex: "costRecordNo", render: safeText, title: "记录编号", width: 170 },
+  { dataIndex: "costPeriod", render: safeText, title: "账期", width: 100 },
+  { dataIndex: "periodStart", render: formatDate, title: "周期开始", width: 120 },
+  { dataIndex: "periodEnd", render: formatDate, title: "周期结束", width: 120 },
+  { dataIndex: "dueDate", render: formatDate, title: "应付日期", width: 120 },
+  { dataIndex: "costAmount", render: formatYuan, title: "成本金额", width: 130 },
+  {
+    dataIndex: "costStatus",
+    render: (value?: string | null) => labelOf(VEHICLE_BAAS_COST_RECORD_STATUS_LABELS, value),
+    title: "状态",
+    width: 110
+  },
+  {
+    dataIndex: "costSource",
+    render: (value?: string | null) => labelOf(VEHICLE_BAAS_COST_SOURCE_LABELS, value),
+    title: "来源",
+    width: 110
+  },
+  { dataIndex: "paidAt", render: formatDate, title: "支付日期", width: 120 },
+  { dataIndex: "paymentRefNo", render: safeText, title: "付款参考号", width: 150 },
+  { dataIndex: "invoiceNo", render: safeText, title: "发票号", width: 140 }
 ];
 
 const orderCycleColumns: ColumnsType<OrderCycleRow> = [

@@ -1625,6 +1625,82 @@ CSV 格式约定：
 - 状态和枚举中文化。
 - 缺失值导出为 `-`。
 
+## Stage 10M-C-B BaaS 成本收益试算补充口径
+
+Stage 10M-C-B 将 BaaS 电池租赁成本接入资产收益试算的补充展示口径。本阶段只新增 BaaS 成本维度和 BaaS adjusted 指标，不修改主 `platformNetIncomeAmount`、`roeTrial`、`annualizedRoeTrial`、`trialRoa`。
+
+BaaS 成本来源：
+
+```text
+VehicleBaasCostRecord
+```
+
+取数规则：
+
+- 按车辆维度归集。
+- 只统计未删除记录。
+- 按报表周期内的 `dueDate` 归集。
+- 纳入 `SCHEDULED`、`CONFIRMED`、`PAID`、`OVERDUE`。
+- 排除 `WAIVED`、`VOIDED`。
+
+新增汇总字段：
+
+```text
+baasCostVehicleCount
+baasCostRecordCount
+baasCostAmount
+baasScheduledCostAmount
+baasConfirmedCostAmount
+baasPaidCostAmount
+baasOverdueCostAmount
+baasAdjustedPlatformNetIncomeAmount
+baasAdjustedRoeTrial
+baasAdjustedAnnualizedRoeTrial
+```
+
+新增车辆列表字段：
+
+```text
+baasContractStatus
+baasContractNo
+baasProviderName
+baasCostRecordCount
+baasCostAmount
+baasScheduledCostAmount
+baasConfirmedCostAmount
+baasPaidCostAmount
+baasOverdueCostAmount
+baasAdjustedPlatformNetIncomeAmount
+baasAdjustedRoeTrial
+baasAdjustedAnnualizedRoeTrial
+```
+
+单车详情新增：
+
+```text
+baasCostSummary
+baasCurrentContract
+baasCostRecords
+baasAdjustedReturn
+```
+
+计算公式：
+
+```text
+baasAdjustedPlatformNetIncomeAmount =
+  platformNetIncomeAmount - baasCostAmount
+
+baasAdjustedRoeTrial =
+  baasAdjustedPlatformNetIncomeAmount / roeEquityBaseAmount
+
+baasAdjustedAnnualizedRoeTrial =
+  baasAdjustedRoeTrial * 365 / analysisDays
+```
+
+当 `platformNetIncomeAmount`、`roeEquityBaseAmount` 缺失或权益资本基数小于等于 0 时，BaaS adjusted ROE 返回 `null`。
+
+CSV 导出同步增加 BaaS 成本汇总、BaaS 合同摘要、BaaS 成本记录和 BaaS adjusted 指标。CSV 仍为只读导出，不写业务表、不写审计日志、不生成付款单或账单。
+
 ## ROA / ROE
 
 当前阶段不计算正式会计 ROA / ROE。

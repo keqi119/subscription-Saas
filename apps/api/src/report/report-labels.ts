@@ -109,6 +109,36 @@ export const vehicleBatteryUsageTypeLabels: Record<string, string> = {
   BUYOUT: "买断"
 };
 
+export const vehicleBaasContractStatusLabels: Record<string, string> = {
+  ACTIVE: "生效中",
+  ARCHIVED: "已归档",
+  DRAFT: "草稿",
+  EXPIRED: "已到期",
+  SUSPENDED: "已暂停",
+  TERMINATED: "已终止"
+};
+
+export const vehicleBaasBillingCycleLabels: Record<string, string> = {
+  MONTHLY: "月度",
+  QUARTERLY: "季度",
+  YEARLY: "年度"
+};
+
+export const vehicleBaasCostRecordStatusLabels: Record<string, string> = {
+  CONFIRMED: "已确认",
+  OVERDUE: "已逾期",
+  PAID: "已支付",
+  SCHEDULED: "已计划",
+  VOIDED: "已作废",
+  WAIVED: "已豁免"
+};
+
+export const vehicleBaasCostSourceLabels: Record<string, string> = {
+  GENERATED: "系统生成",
+  IMPORTED: "导入",
+  MANUAL: "人工录入"
+};
+
 export const vehicleStatusLabels: Record<string, string> = {
   AVAILABLE: "可租用",
   DRAFT: "草稿",

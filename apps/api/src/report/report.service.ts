@@ -684,12 +684,6 @@ export class ReportService {
         ? null
         : platformNetIncomeAmount / roeEquityBaseAmount;
     const baasCostAmount = sumNumbers(rows.map((row) => row.baasCostAmount));
-    const baasAdjustedFields = baasAdjustedReturnFields({
-      analysisDays,
-      baasCostAmount,
-      platformNetIncomeAmount,
-      roeEquityBaseAmount
-    });
     const residualForecastRows = rows.filter((row) => row.forecastResidualAmount !== null);
     const residualForecastUnsupportedVehicleCount = rows.filter(
       (row) => row.residualForecastUnavailableReason === RESIDUAL_FORECAST_UNSUPPORTED_REASON
@@ -720,12 +714,14 @@ export class ReportService {
       annualizedRoeTrial:
         roeTrial === null || analysisDays <= 0 ? null : (roeTrial * 365) / analysisDays,
       assignedOutRevenueAmount: sumNumbers(rows.map((row) => row.assignedOutRevenueAmount)),
-      baasAdjustedAnnualizedRoeTrial: baasAdjustedFields.baasAdjustedAnnualizedRoeTrial,
-      baasAdjustedPlatformNetIncomeAmount:
-        baasAdjustedFields.baasAdjustedPlatformNetIncomeAmount,
-      baasAdjustedRoeTrial: baasAdjustedFields.baasAdjustedRoeTrial,
+      baasAdjustedAnnualizedRoeTrial:
+        roeTrial === null || analysisDays <= 0 ? null : (roeTrial * 365) / analysisDays,
+      baasAdjustedPlatformNetIncomeAmount: platformNetIncomeAmount,
+      baasAdjustedRoeTrial: roeTrial,
       baasConfirmedCostAmount: sumNumbers(rows.map((row) => row.baasConfirmedCostAmount)),
       baasCostAmount,
+      baasCostAllocationMethod: BAAS_COST_ALLOCATION_METHOD,
+      baasCostFullRecordAmount: sumNumbers(rows.map((row) => row.baasCostFullRecordAmount)),
       baasCostRecordCount: sumNumbers(rows.map((row) => row.baasCostRecordCount)),
       baasCostVehicleCount: rows.filter((row) => row.baasCostRecordCount > 0).length,
       baasOverdueCostAmount: sumNumbers(rows.map((row) => row.baasOverdueCostAmount)),
@@ -860,6 +856,14 @@ export class ReportService {
       baasAdjustedAnnualizedRoeTrial: row.baasAdjustedAnnualizedRoeTrial,
       baasAdjustedPlatformNetIncomeAmount: row.baasAdjustedPlatformNetIncomeAmount,
       baasAdjustedRoeTrial: row.baasAdjustedRoeTrial,
+      mainReturnAfterBaas: {
+        annualizedRoeTrial: row.annualizedRoeTrial,
+        annualizedTrialRoa: row.annualizedTrialRoa,
+        platformNetIncomeAmount: row.platformNetIncomeAmount,
+        roeTrial: row.roeTrial,
+        trialNetOperatingIncomeAmount: row.trialNetOperatingIncomeAmount,
+        trialRoa: row.trialRoa
+      },
       platformNetIncomeAmount: row.platformNetIncomeAmount
     };
 
@@ -867,8 +871,10 @@ export class ReportService {
       baasAdjustedReturn,
       baasCostRecords: baasContext.records.map(assetReturnBaasCostRecordView),
       baasCostSummary: {
+        allocationMethod: row.baasCostAllocationMethod,
         confirmedCostAmount: row.baasConfirmedCostAmount,
         costAmount: row.baasCostAmount,
+        fullCostRecordAmount: row.baasCostFullRecordAmount,
         costRecordCount: row.baasCostRecordCount,
         overdueCostAmount: row.baasOverdueCostAmount,
         paidCostAmount: row.baasPaidCostAmount,
@@ -1027,9 +1033,6 @@ export class ReportService {
       ["残值敏感性净收益（元）", formatMoneyYuan(report.residualSensitivityNetIncomeAmount)],
       ["残值敏感性 ROE", formatPercent(report.residualSensitivityRoeTrial)],
       ["年化残值敏感性 ROE", formatPercent(report.residualSensitivityAnnualizedRoeTrial)],
-      ["BaaS 调整后平台权益净收益（元）", formatMoneyYuan(report.baasAdjustedPlatformNetIncomeAmount)],
-      ["BaaS 调整后 ROE", formatPercent(report.baasAdjustedRoeTrial)],
-      ["BaaS 调整后年化 ROE", formatPercent(report.baasAdjustedAnnualizedRoeTrial)],
       ["ROE 状态", returnTrialRoeCoverageStatus(report)],
       [],
       ["BaaS 电池成本"],
@@ -1037,14 +1040,13 @@ export class ReportService {
       ["BaaS 成本车辆数", report.baasCostVehicleCount],
       ["BaaS 成本记录数", report.baasCostRecordCount],
       ["BaaS 成本合计（元）", formatMoneyYuan(report.baasCostAmount)],
+      ["BaaS 原始记录金额（元）", formatMoneyYuan(report.baasCostFullRecordAmount)],
+      ["BaaS 成本分摊方法", report.baasCostAllocationMethod],
       ["BaaS 已计划成本（元）", formatMoneyYuan(report.baasScheduledCostAmount)],
       ["BaaS 已确认成本（元）", formatMoneyYuan(report.baasConfirmedCostAmount)],
       ["BaaS 已支付成本（元）", formatMoneyYuan(report.baasPaidCostAmount)],
       ["BaaS 逾期成本（元）", formatMoneyYuan(report.baasOverdueCostAmount)],
-      ["BaaS 调整后平台权益净收益（元）", formatMoneyYuan(report.baasAdjustedPlatformNetIncomeAmount)],
-      ["BaaS 调整后 ROE", formatPercent(report.baasAdjustedRoeTrial)],
-      ["BaaS 调整后年化 ROE", formatPercent(report.baasAdjustedAnnualizedRoeTrial)],
-      ["口径说明", "BaaS 成本作为补充口径展示，不改变主平台权益净收益 / 主试算 ROE。"],
+      ["口径说明", "BaaS 成本按服务期间纳入主平台权益净收益 / 主试算 ROE。"],
       [],
       ["数据完整性 / 可计算性"],
       ["指标", "值"],
@@ -1081,6 +1083,7 @@ export class ReportService {
       ["维修准备金", formatMoneyYuan(report.maintenanceReserveCostAmount)],
       ["其他成本", formatMoneyYuan(report.otherCostAmount)],
       ["外部长租固定成本", formatMoneyYuan(report.externalLeaseCostAmount)],
+      ["BaaS 成本", formatMoneyYuan(report.baasCostAmount)],
       ["经营成本合计", formatMoneyYuan(report.operatingCostAmount)],
       ["债务本金", formatMoneyYuan(report.debtPrincipalAmount)],
       ["权益资本基数", formatMoneyYuan(report.roeEquityBaseAmount)],
@@ -1112,12 +1115,11 @@ export class ReportService {
       ],
       [
         "经营成本合计",
-        "折旧成本 + 资金成本 / 债务利息 + 保险成本 + 维修准备金 + 其他成本 + 外部长租固定成本"
+        "折旧成本 + 资金成本 / 债务利息 + 保险成本 + 维修准备金 + 其他成本 + 外部长租固定成本 + BaaS 成本"
       ],
       ["平台权益净收益", "平台留存经营收入 - 经营成本合计"],
       ["试算 ROE", "平台权益净收益 / 权益资本基数"],
-      ["BaaS 调整后平台权益净收益", "平台权益净收益 - BaaS 成本合计"],
-      ["BaaS 调整后 ROE", "BaaS 调整后平台权益净收益 / 权益资本基数"],
+      ["BaaS 成本", "按服务期间纳入经营成本，进而影响平台权益净收益 / ROA / ROE"],
       [
         "残值敏感性净收益",
         "平台权益净收益 + 预测残值相对成本参数残值差异"
@@ -1161,6 +1163,9 @@ export class ReportService {
         "车系",
         "车型",
         "车辆状态",
+        "BaaS 合同状态",
+        "BaaS 服务商",
+        "BaaS 合同编号",
         "采购价（元）",
         "当前销售价（元）",
         "租金实收（元）",
@@ -1179,6 +1184,12 @@ export class ReportService {
         "维修准备金（元）",
         "其他成本（元）",
         "外部长租固定成本（元）",
+        "BaaS 成本记录数",
+        "BaaS 成本合计（元）",
+        "BaaS 已计划成本（元）",
+        "BaaS 已确认成本（元）",
+        "BaaS 已支付成本（元）",
+        "BaaS 逾期成本（元）",
         "经营成本（元）",
         "试算经营净收益（元）",
         "平台权益净收益（元）",
@@ -1186,18 +1197,6 @@ export class ReportService {
         "年化试算 ROA",
         "试算 ROE",
         "年化试算 ROE",
-        "BaaS 合同状态",
-        "BaaS 服务商",
-        "BaaS 合同编号",
-        "BaaS 成本记录数",
-        "BaaS 成本合计（元）",
-        "BaaS 已计划成本（元）",
-        "BaaS 已确认成本（元）",
-        "BaaS 已支付成本（元）",
-        "BaaS 逾期成本（元）",
-        "BaaS 调整后平台权益净收益（元）",
-        "BaaS 调整后 ROE",
-        "BaaS 调整后年化 ROE",
         "残值预测状态",
         "残值预测周期",
         "预测值来源",
@@ -1225,6 +1224,9 @@ export class ReportService {
         vehicle.series,
         vehicle.model ?? vehicle.vehicleModel,
         labelOf(vehicleStatusLabels, vehicle.vehicleStatus),
+        labelOf(vehicleBaasContractStatusLabels, vehicle.baasContractStatus),
+        vehicle.baasProviderName,
+        vehicle.baasContractNo,
         formatMoneyYuan(vehicle.purchasePriceAmount),
         formatMoneyYuan(vehicle.currentSalePriceAmount),
         formatMoneyYuan(vehicle.rentalPaidAmount),
@@ -1243,6 +1245,12 @@ export class ReportService {
         formatMoneyYuan(vehicle.maintenanceReserveCostAmount),
         formatMoneyYuan(vehicle.otherCostAmount),
         formatMoneyYuan(vehicle.externalLeaseCostAmount),
+        vehicle.baasCostRecordCount,
+        formatMoneyYuan(vehicle.baasCostAmount),
+        formatMoneyYuan(vehicle.baasScheduledCostAmount),
+        formatMoneyYuan(vehicle.baasConfirmedCostAmount),
+        formatMoneyYuan(vehicle.baasPaidCostAmount),
+        formatMoneyYuan(vehicle.baasOverdueCostAmount),
         formatMoneyYuan(vehicle.operatingCostAmount),
         formatMoneyYuan(vehicle.trialNetOperatingIncomeAmount),
         formatMoneyYuan(vehicle.platformNetIncomeAmount),
@@ -1250,18 +1258,6 @@ export class ReportService {
         formatPercent(vehicle.annualizedTrialRoa),
         roeExportValue(vehicle.roeTrial),
         roeExportValue(vehicle.annualizedRoeTrial),
-        labelOf(vehicleBaasContractStatusLabels, vehicle.baasContractStatus),
-        vehicle.baasProviderName,
-        vehicle.baasContractNo,
-        vehicle.baasCostRecordCount,
-        formatMoneyYuan(vehicle.baasCostAmount),
-        formatMoneyYuan(vehicle.baasScheduledCostAmount),
-        formatMoneyYuan(vehicle.baasConfirmedCostAmount),
-        formatMoneyYuan(vehicle.baasPaidCostAmount),
-        formatMoneyYuan(vehicle.baasOverdueCostAmount),
-        formatMoneyYuan(vehicle.baasAdjustedPlatformNetIncomeAmount),
-        formatPercent(vehicle.baasAdjustedRoeTrial),
-        formatPercent(vehicle.baasAdjustedAnnualizedRoeTrial),
         residualForecastAvailabilityText(vehicle.residualForecastAvailable),
         residualHorizonText(vehicle.residualForecastHorizonMonth),
         residualForecastAmountSourceText(vehicle.forecastResidualAmountSource),
@@ -1305,7 +1301,6 @@ export class ReportService {
     const returns = detail.returns;
     const baasCurrentContract = detail.baasCurrentContract;
     const baasCostSummary = detail.baasCostSummary;
-    const baasAdjustedReturn = detail.baasAdjustedReturn;
     const residualForecastSummary = detail.residualForecastSummary;
     const residualForecastPoint = detail.residualForecastPoint;
     const residualForecastCurveSummary = detail.residualForecastCurveSummary;
@@ -1385,6 +1380,7 @@ export class ReportService {
       ["维修准备金", formatMoneyYuan(cost.maintenanceReserveCostAmount)],
       ["其他成本", formatMoneyYuan(cost.otherCostAmount)],
       ["外部长租固定成本", formatMoneyYuan(returns.externalLeaseCostAmount)],
+      ["BaaS 成本", formatMoneyYuan(baasCostSummary.costAmount)],
       ["经营成本合计", formatMoneyYuan(cost.operatingCostAmount)],
       ["资金成本来源", capitalCostSourceText(returns.capitalCostSource)],
       ["不可计算原因", assetReturnTrialUnavailableReasonText(cost)],
@@ -1436,24 +1432,12 @@ export class ReportService {
       ["指标", "值"],
       ["BaaS 成本记录数", baasCostSummary.costRecordCount],
       ["BaaS 成本合计（元）", formatMoneyYuan(baasCostSummary.costAmount)],
+      ["BaaS 原始记录金额（元）", formatMoneyYuan(baasCostSummary.fullCostRecordAmount)],
+      ["BaaS 成本分摊方法", baasCostSummary.allocationMethod],
       ["BaaS 已计划成本（元）", formatMoneyYuan(baasCostSummary.scheduledCostAmount)],
       ["BaaS 已确认成本（元）", formatMoneyYuan(baasCostSummary.confirmedCostAmount)],
       ["BaaS 已支付成本（元）", formatMoneyYuan(baasCostSummary.paidCostAmount)],
       ["BaaS 逾期成本（元）", formatMoneyYuan(baasCostSummary.overdueCostAmount)],
-      [],
-      ["BaaS 调整后收益指标"],
-      ["指标", "值"],
-      ["主平台权益净收益（元）", formatMoneyYuan(baasAdjustedReturn.platformNetIncomeAmount)],
-      [
-        "BaaS 调整后平台权益净收益（元）",
-        formatMoneyYuan(baasAdjustedReturn.baasAdjustedPlatformNetIncomeAmount)
-      ],
-      ["BaaS 调整后 ROE", formatPercent(baasAdjustedReturn.baasAdjustedRoeTrial)],
-      [
-        "BaaS 调整后年化 ROE",
-        formatPercent(baasAdjustedReturn.baasAdjustedAnnualizedRoeTrial)
-      ],
-      ["说明", "BaaS 成本作为补充口径展示，不改变主平台权益净收益 / 主试算 ROE。"],
       [],
       ["BaaS 成本记录"],
       [
@@ -1462,7 +1446,11 @@ export class ReportService {
         "周期开始",
         "周期结束",
         "应付日期",
-        "成本金额（元）",
+        "原始成本金额（元）",
+        "纳入本分析周期金额（元）",
+        "重叠天数",
+        "总服务天数",
+        "分摊比例",
         "成本状态",
         "成本来源",
         "支付日期",
@@ -1475,7 +1463,11 @@ export class ReportService {
         formatDate(record.periodStart),
         formatDate(record.periodEnd),
         formatDate(record.dueDate),
-        formatMoneyYuan(record.costAmount),
+        formatMoneyYuan(record.fullCostRecordAmount ?? record.costAmount),
+        formatMoneyYuan(record.includedProratedAmount),
+        record.overlapDays,
+        record.totalDays,
+        formatPercent(record.allocationRatio),
         labelOf(vehicleBaasCostRecordStatusLabels, record.costStatus),
         labelOf(vehicleBaasCostSourceLabels, record.costSource),
         formatDate(record.paidAt),
@@ -3382,6 +3374,8 @@ export class ReportService {
       return contextsByVehicleId;
     }
 
+    const analysisStart = utcDateOnlyStart(range.output.startDate, "startDate");
+    const analysisEnd = utcDateOnlyStart(range.output.endDate, "endDate");
     const [contracts, records] = await Promise.all([
       this.prisma.vehicleBaasContract.findMany({
         orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
@@ -3393,12 +3387,13 @@ export class ReportService {
         }
       }),
       this.prisma.vehicleBaasCostRecord.findMany({
-        orderBy: [{ dueDate: "asc" }, { costPeriod: "asc" }, { createdAt: "asc" }],
+        orderBy: [{ periodStart: "asc" }, { costPeriod: "asc" }, { createdAt: "asc" }],
         select: assetReturnBaasCostRecordSelect,
         where: {
           costStatus: { in: BAAS_COST_INCLUDED_STATUSES },
           deletedAt: null,
-          dueDate: range.dateTimeFilter,
+          periodEnd: { gte: analysisStart },
+          periodStart: { lte: analysisEnd },
           vehicleId: { in: vehicleIds }
         }
       })
@@ -3417,8 +3412,13 @@ export class ReportService {
         continue;
       }
 
-      context.records.push(record);
-      addBaasCostRecordToSummary(context.summary, record);
+      const allocatedRecord = {
+        ...record,
+        fullCostRecordAmount: toNumber(record.costAmount),
+        ...calculateProratedBaasCostForAnalysisWindow(record, range.output)
+      };
+      context.records.push(allocatedRecord);
+      addBaasCostRecordToSummary(context.summary, allocatedRecord);
     }
 
     return contextsByVehicleId;
@@ -4538,6 +4538,13 @@ type AssetReturnBaasContractRecord = Prisma.VehicleBaasContractGetPayload<{
 type AssetReturnBaasCostRecord = Prisma.VehicleBaasCostRecordGetPayload<{
   select: typeof assetReturnBaasCostRecordSelect;
 }>;
+type AssetReturnBaasAllocatedCostRecord = AssetReturnBaasCostRecord & {
+  allocationRatio: number | null;
+  fullCostRecordAmount: number;
+  includedProratedAmount: number;
+  overlapDays: number;
+  totalDays: number;
+};
 type AssetProfitabilitySortField = NonNullable<AssetProfitabilityVehicleListQueryDto["sortBy"]>;
 type AssetReturnTrialSortField = NonNullable<AssetReturnTrialVehicleListQueryDto["sortBy"]>;
 
@@ -4562,6 +4569,7 @@ type AssetReturnBaasCostSummary = {
   confirmedCostAmount: number;
   costAmount: number;
   costRecordCount: number;
+  fullCostRecordAmount: number;
   overdueCostAmount: number;
   paidCostAmount: number;
   scheduledCostAmount: number;
@@ -4569,7 +4577,7 @@ type AssetReturnBaasCostSummary = {
 
 type AssetReturnBaasContext = {
   currentContract: AssetReturnBaasContractRecord | null;
-  records: AssetReturnBaasCostRecord[];
+  records: AssetReturnBaasAllocatedCostRecord[];
   summary: AssetReturnBaasCostSummary;
   vehicleId: string;
 };
@@ -4589,6 +4597,7 @@ const BAAS_COST_INCLUDED_STATUSES: VehicleBaasCostRecordStatus[] = [
   VehicleBaasCostRecordStatus.PAID,
   VehicleBaasCostRecordStatus.OVERDUE
 ];
+const BAAS_COST_ALLOCATION_METHOD = "PERIOD_PRORATED";
 const operatingRevenueBillTypes: BillType[] = [
   BillType.FIRST_MONTHLY_FEE,
   BillType.MONTHLY_RENT,
@@ -5570,6 +5579,7 @@ function emptyAssetReturnBaasCostSummary(): AssetReturnBaasCostSummary {
     confirmedCostAmount: 0,
     costAmount: 0,
     costRecordCount: 0,
+    fullCostRecordAmount: 0,
     overdueCostAmount: 0,
     paidCostAmount: 0,
     scheduledCostAmount: 0
@@ -5587,11 +5597,15 @@ function emptyAssetReturnBaasContext(vehicleId: string): AssetReturnBaasContext 
 
 function addBaasCostRecordToSummary(
   summary: AssetReturnBaasCostSummary,
-  record: Pick<AssetReturnBaasCostRecord, "costAmount" | "costStatus">
+  record: Pick<
+    AssetReturnBaasAllocatedCostRecord,
+    "costStatus" | "fullCostRecordAmount" | "includedProratedAmount"
+  >
 ) {
-  const amount = toNumber(record.costAmount);
+  const amount = record.includedProratedAmount;
   summary.costAmount += amount;
   summary.costRecordCount += 1;
+  summary.fullCostRecordAmount += record.fullCostRecordAmount;
 
   if (record.costStatus === VehicleBaasCostRecordStatus.SCHEDULED) {
     summary.scheduledCostAmount += amount;
@@ -5625,8 +5639,10 @@ function assetReturnBaasContractView(contract: AssetReturnBaasContractRecord | n
   };
 }
 
-function assetReturnBaasCostRecordView(record: AssetReturnBaasCostRecord) {
+function assetReturnBaasCostRecordView(record: AssetReturnBaasAllocatedCostRecord) {
   return {
+    allocationMethod: BAAS_COST_ALLOCATION_METHOD,
+    allocationRatio: record.allocationRatio,
     confirmedAt: record.confirmedAt,
     contractId: record.contractId,
     costAmount: toNumber(record.costAmount),
@@ -5636,44 +5652,145 @@ function assetReturnBaasCostRecordView(record: AssetReturnBaasCostRecord) {
     costStatus: record.costStatus,
     currency: record.currency,
     dueDate: record.dueDate,
+    fullCostRecordAmount: record.fullCostRecordAmount,
     id: record.id,
+    includedProratedAmount: record.includedProratedAmount,
     invoiceNo: record.invoiceNo,
+    overlapDays: record.overlapDays,
     paidAt: record.paidAt,
     paymentRefNo: record.paymentRefNo,
     periodEnd: record.periodEnd,
     periodStart: record.periodStart,
+    totalDays: record.totalDays,
     vehicleId: record.vehicleId,
     voidedAt: record.voidedAt
   };
 }
 
-function baasAdjustedReturnFields({
+function calculateProratedBaasCostForAnalysisWindow(
+  record: Pick<AssetReturnBaasCostRecord, "costAmount" | "periodEnd" | "periodStart">,
+  analysisWindow: { endDate: string; startDate: string }
+) {
+  const periodStartDate = formatDateOnly(record.periodStart);
+  const periodEndDate = formatDateOnly(record.periodEnd);
+  const totalDays = inclusiveBusinessDays(periodStartDate, periodEndDate);
+
+  if (totalDays <= 0) {
+    return {
+      allocationRatio: null,
+      includedProratedAmount: 0,
+      overlapDays: 0,
+      totalDays
+    };
+  }
+
+  const overlapStartDate = maxBusinessDate(periodStartDate, analysisWindow.startDate);
+  const overlapEndDate = minBusinessDate(periodEndDate, analysisWindow.endDate);
+  const overlapDays = inclusiveBusinessDays(overlapStartDate, overlapEndDate);
+
+  if (overlapDays <= 0) {
+    return {
+      allocationRatio: 0,
+      includedProratedAmount: 0,
+      overlapDays: 0,
+      totalDays
+    };
+  }
+
+  const costAmount = bigintAmount(record.costAmount);
+  const includedProratedAmount = Number(
+    (costAmount * BigInt(overlapDays) + BigInt(totalDays) / 2n) / BigInt(totalDays)
+  );
+
+  return {
+    allocationRatio: overlapDays / totalDays,
+    includedProratedAmount,
+    overlapDays,
+    totalDays
+  };
+}
+
+function bigintAmount(value: bigint | number | null | undefined) {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return 0n;
+  }
+  return BigInt(Math.round(Number(value)));
+}
+
+function utcDateOnlyStart(value: string, field: string) {
+  const parts = parseDateOnly(value, field);
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+}
+
+function applyBaasMainReturnFields({
   analysisDays,
   baasCostAmount,
-  platformNetIncomeAmount,
+  row,
   roeEquityBaseAmount
 }: {
   analysisDays: number;
   baasCostAmount: number;
-  platformNetIncomeAmount: number | null;
+  row: ReturnType<typeof assetReturnTrialVehicleRow>;
   roeEquityBaseAmount: number | null;
 }) {
-  const baasAdjustedPlatformNetIncomeAmount =
-    platformNetIncomeAmount === null ? null : platformNetIncomeAmount - baasCostAmount;
-  const baasAdjustedRoeTrial =
-    baasAdjustedPlatformNetIncomeAmount === null ||
+  const platformNetIncomeAmount =
+    row.platformNetIncomeAmount === null ? null : row.platformNetIncomeAmount - baasCostAmount;
+  const trialNetOperatingIncomeAmount =
+    row.trialNetOperatingIncomeAmount === null
+      ? null
+      : row.trialNetOperatingIncomeAmount - baasCostAmount;
+  const operatingCostAmount =
+    row.operatingCostAmount === null ? null : row.operatingCostAmount + baasCostAmount;
+  const trialRoa =
+    trialNetOperatingIncomeAmount === null || row.purchasePriceAmount <= 0
+      ? null
+      : trialNetOperatingIncomeAmount / row.purchasePriceAmount;
+  const roeTrial =
+    row.roeMissingReasons.length > 0 ||
+    platformNetIncomeAmount === null ||
     roeEquityBaseAmount === null ||
     roeEquityBaseAmount <= 0
       ? null
-      : baasAdjustedPlatformNetIncomeAmount / roeEquityBaseAmount;
+      : platformNetIncomeAmount / roeEquityBaseAmount;
+  const residualSensitivityNetIncomeAmount =
+    platformNetIncomeAmount === null || row.residualDeltaToCostProfileAmount === null
+      ? null
+      : platformNetIncomeAmount + row.residualDeltaToCostProfileAmount;
+  const residualSensitivityRoeTrial =
+    residualSensitivityNetIncomeAmount === null ||
+    roeEquityBaseAmount === null ||
+    roeEquityBaseAmount <= 0
+      ? null
+      : residualSensitivityNetIncomeAmount / roeEquityBaseAmount;
 
   return {
+    annualizedRoeTrial:
+      roeTrial === null || analysisDays <= 0 ? null : (roeTrial * 365) / analysisDays,
+    annualizedTrialRoa:
+      trialRoa === null || analysisDays <= 0 ? null : (trialRoa * 365) / analysisDays,
     baasAdjustedAnnualizedRoeTrial:
-      baasAdjustedRoeTrial === null || analysisDays <= 0
+      roeTrial === null || analysisDays <= 0
         ? null
-        : (baasAdjustedRoeTrial * 365) / analysisDays,
-    baasAdjustedPlatformNetIncomeAmount,
-    baasAdjustedRoeTrial
+        : (roeTrial * 365) / analysisDays,
+    baasAdjustedPlatformNetIncomeAmount: platformNetIncomeAmount,
+    baasAdjustedRoeTrial: roeTrial,
+    operatingCostAmount,
+    platformNetIncomeAmount,
+    residualSensitivityAnnualizedRoeTrial:
+      residualSensitivityRoeTrial === null || analysisDays <= 0
+        ? null
+        : (residualSensitivityRoeTrial * 365) / analysisDays,
+    residualSensitivityNetIncomeAmount,
+    residualSensitivityRoeTrial,
+    roeDataReady: roeTrial !== null,
+    roeTrial,
+    roeUnavailableReason:
+      roeTrial === null ? row.roeMissingReasons.join(" / ") || ROE_UNAVAILABLE_REASON : null,
+    trialNetOperatingIncomeAmount,
+    trialRoa
   };
 }
 
@@ -5682,25 +5799,27 @@ function attachAssetReturnBaasFields<T extends ReturnType<typeof assetReturnTria
   context: AssetReturnBaasContext,
   analysisDays: number
 ) {
-  const adjustedFields = baasAdjustedReturnFields({
+  const mainReturnFields = applyBaasMainReturnFields({
     analysisDays,
     baasCostAmount: context.summary.costAmount,
-    platformNetIncomeAmount: row.platformNetIncomeAmount,
+    row,
     roeEquityBaseAmount: row.roeEquityBaseAmount
   });
 
   return {
     ...row,
+    ...mainReturnFields,
     baasConfirmedCostAmount: context.summary.confirmedCostAmount,
     baasContractNo: context.currentContract?.contractNo ?? null,
     baasContractStatus: context.currentContract?.contractStatus ?? null,
     baasCostAmount: context.summary.costAmount,
+    baasCostAllocationMethod: BAAS_COST_ALLOCATION_METHOD,
+    baasCostFullRecordAmount: context.summary.fullCostRecordAmount,
     baasCostRecordCount: context.summary.costRecordCount,
     baasOverdueCostAmount: context.summary.overdueCostAmount,
     baasPaidCostAmount: context.summary.paidCostAmount,
     baasProviderName: context.currentContract?.providerName ?? null,
-    baasScheduledCostAmount: context.summary.scheduledCostAmount,
-    ...adjustedFields
+    baasScheduledCostAmount: context.summary.scheduledCostAmount
   };
 }
 

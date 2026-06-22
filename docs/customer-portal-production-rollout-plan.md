@@ -330,17 +330,17 @@ Production rollout notes:
 - Confirm this stage does not change asset profitability formulas, CSV exports, billing, payment, write-off, supplier payment, or vehicle/order state machines.
 - Treat Stage 10M-C-A as BaaS ledger readiness; reporting integration belongs to Stage 10M-C-B.
 
-## Stage 10M-C-B Rollout Note
+## Stage 10M-C-B / 10M-C-C Rollout Note
 
-Stage 10M-C-B introduces BaaS cost visibility in asset profitability reporting.
+Stage 10M-C-B introduced BaaS cost visibility in asset profitability reporting. Stage 10M-C-C promotes BaaS costs into the main asset return metrics.
 
 Production rollout notes:
 
 - No Prisma migration is expected for this stage.
-- Verify `/reports/asset-profitability` return-trial summary shows BaaS cost totals and BaaS adjusted ROE.
-- Verify vehicle return rows show BaaS contract status, BaaS cost, and BaaS adjusted ROE.
-- Verify vehicle return detail shows current BaaS contract, cost records, and adjusted return metrics.
+- Verify `/reports/asset-profitability` cost/capital structure breakdown shows BaaS cost as part of operating cost.
+- Verify vehicle return rows show BaaS contract status after vehicle status and BaaS cost before operating cost.
+- Verify vehicle return detail shows current BaaS contract, cost records, and period-proration details.
 - Verify summary, vehicle list, and single-vehicle CSV exports include BaaS cost fields and Chinese labels.
-- Confirm main `platformNetIncomeAmount`, `roeTrial`, `annualizedRoeTrial`, and `trialRoa` remain unchanged.
+- Confirm main `platformNetIncomeAmount`, `roeTrial`, `annualizedRoeTrial`, and `trialRoa` include BaaS cost.
 - Confirm this stage does not generate bills, payment records, write-offs, supplier payment orders, accounting entries, or customer-facing flow changes.
-- Treat Stage 10M-C-B as supplemental reporting readiness; main口径切换 requires a separate decision.
+- Treat Stage 10M-C-C as the active asset profitability reporting口径.

@@ -1337,6 +1337,12 @@ export default function AssetProfitabilityPage() {
         title: "车辆状态",
         width: 120
       },
+      {
+        dataIndex: "baasContractStatus",
+        render: (value?: string | null) => labelOf(VEHICLE_BAAS_CONTRACT_STATUS_LABELS, value),
+        title: "BaaS 合同",
+        width: 120
+      },
       { dataIndex: "purchasePriceAmount", render: formatYuan, title: "采购价", width: 130 },
       { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 140 },
       {
@@ -1370,6 +1376,7 @@ export default function AssetProfitabilityPage() {
       { dataIndex: "insuranceCostAmount", render: formatYuan, title: "保险成本", width: 130 },
       { dataIndex: "maintenanceReserveCostAmount", render: formatYuan, title: "维修准备金", width: 140 },
       { dataIndex: "otherCostAmount", render: formatYuan, title: "其他成本", width: 130 },
+      { dataIndex: "baasCostAmount", render: formatYuan, title: "BaaS 成本", width: 130 },
       {
         dataIndex: "operatingCostAmount",
         render: formatYuan,
@@ -1406,24 +1413,6 @@ export default function AssetProfitabilityPage() {
       { dataIndex: "platformNetIncomeAmount", render: formatYuan, title: "平台权益净收益", width: 160 },
       { dataIndex: "roeTrial", render: formatTrialRoe, title: "试算 ROE", width: 120 },
       { dataIndex: "annualizedRoeTrial", render: formatPercent, title: "年化试算 ROE", width: 150 },
-      {
-        dataIndex: "baasContractStatus",
-        render: (value?: string | null) => labelOf(VEHICLE_BAAS_CONTRACT_STATUS_LABELS, value),
-        title: "BaaS 合同",
-        width: 120
-      },
-      {
-        dataIndex: "baasCostAmount",
-        render: formatYuan,
-        title: "BaaS 成本",
-        width: 130
-      },
-      {
-        dataIndex: "baasAdjustedRoeTrial",
-        render: formatPercent,
-        title: "BaaS 调整后 ROE",
-        width: 160
-      },
       {
         render: (_value, record) => renderResidualForecastStatus(record),
         title: "残值预测状态",
@@ -1964,7 +1953,6 @@ function ReturnTrialSummaryMetrics({
             { title: "试算 ROE", value: formatTrialRoe(summary?.roeTrial) },
             { title: "年化试算 ROE", value: formatPercent(summary?.annualizedRoeTrial) },
             { title: "残值敏感性 ROE", value: formatPercent(summary?.residualSensitivityRoeTrial) },
-            { title: "BaaS 调整后 ROE", value: formatPercent(summary?.baasAdjustedRoeTrial) },
             { title: "ROE 状态", value: roeStatus }
           ]}
         />
@@ -1972,33 +1960,6 @@ function ReturnTrialSummaryMetrics({
           <Typography.Text type="secondary">主要原因：{missingReasons.slice(0, 2).join("；")}</Typography.Text>
         ) : null}
       </MetricGroupCard>
-
-      <MetricGroupCard
-        description="BaaS 成本按成本记录应付日归集，作为补充口径展示，不覆盖主平台权益净收益或主试算 ROE。"
-        loading={loading}
-        title="BaaS 电池成本"
-      >
-        <MetricCardGrid
-          items={[
-            { title: "BaaS 成本车辆数", value: formatInteger(summary?.baasCostVehicleCount) },
-            { title: "BaaS 成本合计", value: formatYuan(summary?.baasCostAmount) },
-            { title: "已计划成本", value: formatYuan(summary?.baasScheduledCostAmount) },
-            { title: "已确认成本", value: formatYuan(summary?.baasConfirmedCostAmount) },
-            { title: "已支付成本", value: formatYuan(summary?.baasPaidCostAmount) },
-            { title: "逾期成本", value: formatYuan(summary?.baasOverdueCostAmount) },
-            {
-              title: "BaaS 调整后平台权益净收益",
-              value: formatYuan(summary?.baasAdjustedPlatformNetIncomeAmount)
-            },
-            { title: "BaaS 调整后 ROE", value: formatPercent(summary?.baasAdjustedRoeTrial) },
-            {
-              title: "BaaS 调整后年化 ROE",
-              value: formatPercent(summary?.baasAdjustedAnnualizedRoeTrial)
-            }
-          ]}
-        />
-      </MetricGroupCard>
-
       <div
         style={{
           display: "grid",
@@ -2064,6 +2025,7 @@ function ReturnTrialSummaryMetrics({
               { label: "维修准备金", children: formatYuan(summary?.maintenanceReserveCostAmount) },
               { label: "其他成本", children: formatYuan(summary?.otherCostAmount) },
               { label: "外部长租成本", children: formatYuan(summary?.externalLeaseCostAmount) },
+              { label: "BaaS 成本", children: formatYuan(summary?.baasCostAmount) },
               { label: "经营成本合计", children: formatYuan(summary?.operatingCostAmount) },
               { label: "债务本金", children: formatYuan(summary?.debtPrincipalAmount) },
               { label: "权益资本基数", children: formatYuan(summary?.roeEquityBaseAmount) },
@@ -2110,12 +2072,7 @@ function ReturnTrialSummaryMetrics({
                 </Typography.Text>
                 <Typography.Text>平台权益净收益 = 平台留存经营收入 - 经营成本合计</Typography.Text>
                 <Typography.Text>试算 ROE = 平台权益净收益 / 权益资本基数</Typography.Text>
-                <Typography.Text>
-                  BaaS 调整后平台权益净收益 = 平台权益净收益 - BaaS 成本合计
-                </Typography.Text>
-                <Typography.Text>
-                  BaaS 调整后 ROE = BaaS 调整后平台权益净收益 / 权益资本基数
-                </Typography.Text>
+                <Typography.Text>BaaS 成本按服务期间计入经营成本。</Typography.Text>
                 <Typography.Text>
                   残值敏感性净收益 = 平台权益净收益 + 预测残值相对成本参数预计残值的差异
                 </Typography.Text>
@@ -2321,7 +2278,6 @@ function ReturnTrialDetailContent({
   const income = detail.incomeBreakdown ?? {};
   const cost = detail.costBreakdown ?? {};
   const returns = detail.returns ?? {};
-  const baasAdjustedReturn = detail.baasAdjustedReturn ?? {};
   const baasCostRecords = detail.baasCostRecords ?? [];
   const baasCostSummary = detail.baasCostSummary ?? {};
   const baasCurrentContract = detail.baasCurrentContract ?? null;
@@ -2589,11 +2545,6 @@ function ReturnTrialDetailContent({
 
       <DetailSection title="BaaS 电池成本">
         <Space orientation="vertical" size={8} style={{ width: "100%" }}>
-          <Alert
-            showIcon
-            type="info"
-            message="BaaS 成本作为补充口径展示，本阶段不改变主平台权益净收益 / 主试算 ROE。"
-          />
           <Descriptions
             bordered
             column={2}
@@ -2629,22 +2580,6 @@ function ReturnTrialDetailContent({
               { label: "已确认成本", children: formatYuan(baasCostSummary.confirmedCostAmount) },
               { label: "已支付成本", children: formatYuan(baasCostSummary.paidCostAmount) },
               { label: "逾期成本", children: formatYuan(baasCostSummary.overdueCostAmount) },
-              {
-                label: "BaaS 调整后平台权益净收益",
-                children: formatYuan(baasAdjustedReturn.baasAdjustedPlatformNetIncomeAmount)
-              },
-              {
-                label: "BaaS 调整后 ROE",
-                children: formatPercent(baasAdjustedReturn.baasAdjustedRoeTrial)
-              },
-              {
-                label: "BaaS 调整后年化 ROE",
-                children: formatPercent(baasAdjustedReturn.baasAdjustedAnnualizedRoeTrial)
-              },
-              {
-                label: "主平台权益净收益",
-                children: formatYuan(baasAdjustedReturn.platformNetIncomeAmount)
-              }
             ]}
             size="small"
           />

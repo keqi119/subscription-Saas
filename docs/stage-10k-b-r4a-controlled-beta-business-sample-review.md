@@ -239,24 +239,146 @@ CSV 复核：
 
 结论：通知记录可查；支付和工单缺少本轮 beta 业务样本，不建议在关闭这些样本缺口前扩大白名单。
 
+## R4B P1 closure results
+
+R4B 在本地受控环境执行 authenticated Portal API、资料 ownership、PaymentOrder、ServiceCase 和追踪复核。验证过程中不提交真实手机号、customer cookie、token、AccessKey、AppSecret，不群发短信或微信消息，不发起真实扣款，不修改 Prisma schema，不新增 migration。
+
+执行环境：
+
+```text
+API: http://localhost:3201/api
+Web: http://localhost:3200
+Upload storage: local
+Payment provider: MOCK
+```
+
+Authenticated Portal API smoke：
+
+```text
+结果：通过
+public endpoints: 2 passed
+authenticated endpoints: 10 passed
+cookie/token：未写入文档，未提交
+```
+
+客户资料中心 ownership：
+
+```text
+结果：通过
+测试资料：R4B 专用 1x1 PNG 测试图片，非真实证件
+上传：通过
+本人 preview：200
+无 cookie preview：401
+其他客户 preview：404
+删除 / 归档：通过
+删除后 preview：404
+返回 DTO：未暴露 bucket / objectKey
+```
+
+订单车辆材料 / 权证 preview ownership：
+
+```text
+结果：未执行完成
+原因：当前本地数据库 7 个有车订单均未关联 customerVisible=true 且 ACTIVE 的车辆文档
+性质：样本 / 运营缺口，不是本轮发现的代码缺陷
+```
+
+因此订单车辆材料 preview ownership 仍需准备一个满足条件的 beta 订单样本后复核：
+
+```text
+客户订单 -> 订单车辆 -> customerVisible=true ACTIVE 车辆文档
+```
+
+PaymentOrder beta 样本：
+
+```text
+结果：通过
+样本：R4B 本地创建 / 复用 1 个 MOCK PENDING PaymentOrder
+paymentOrderNo: PYO202606232239149P9J
+未调用 pay
+未调用 mock-pay
+未发起真实扣款
+PaymentRecord: 0
+PaymentWriteOff: 0
+其他客户 detail：404
+无 cookie detail：401
+```
+
+PaymentOrder DTO 复核说明：
+
+```text
+未返回 requestSnapshot / responseSnapshot / errorSnapshot
+返回 providerPrepayId，作为 provider 技术引用保留为后续 DTO 暴露范围复核项
+```
+
+ServiceCase beta 样本：
+
+```text
+结果：通过
+最新样本 caseNo: SC20260623224308W3YQ
+客户创建：SUBMITTED
+后台可见：通过
+后台受理：ACCEPTED
+后台更新：IN_PROGRESS
+Portal 可见更新：IN_PROGRESS
+后台关闭：CLOSED
+Portal 可见关闭：CLOSED
+其他客户 detail：404
+无 cookie detail：401
+未自动修改车辆状态
+未自动生成费用账单
+```
+
+脚本调试期间共创建 4 个 R4B 标记工单，均已关闭：
+
+```text
+SC202606232240012M48: CLOSED
+SC202606232241054GZC: CLOSED
+SC20260623224144ZYAP: CLOSED
+SC20260623224308W3YQ: CLOSED
+```
+
+通知 / 工单 / 支付追踪：
+
+```text
+ServiceCaseAction: 4
+NotificationEvent: 4
+NotificationRecord: 4
+PaymentOrder: PENDING
+PaymentRecord: 0
+PaymentWriteOff: 0
+5xx：未发现
+权限越权：未发现
+```
+
+R4B 判断：
+
+```text
+P0: 0
+P1: authenticated Portal API smoke、资料 ownership、PaymentOrder、ServiceCase 已关闭
+剩余缺口：订单车辆材料 preview ownership 缺可执行样本，降级为 P2 运营样本缺口
+是否继续 beta：建议继续 controlled beta monitoring
+是否扩大白名单：暂不建议
+是否暂停 beta：不建议
+```
+
 ## 问题和风险
 
 | 等级 | 数量 | 说明 |
 | --- | ---: | --- |
 | P0 | 0 | 未发现需要暂停 beta 的阻断问题 |
-| P1 | 2 | 未执行真实短信/白名单登录；未执行 authenticated customer cookie ownership 复核 |
-| P2 | 4 | 服务工单无样本；PaymentOrder 无样本；车辆商品内容部分缺失；公开 catalog 选中车辆车况报告返回 404 |
+| P1 | 0 | R4B 已关闭 authenticated Portal API smoke、资料 ownership、PaymentOrder 和 ServiceCase 验证缺口 |
+| P2 | 5 | 订单车辆材料 preview ownership 缺少可执行样本；车辆商品内容部分缺失；公开 catalog 选中车辆车况报告返回 404；PaymentOrder provider 技术引用 DTO 暴露范围待复核；真实短信 / beta gate 仍需 staging controlled account 复核 |
 | P3 | 1 | Next dev 日志存在 Ant Design deprecation warnings，不影响本轮验收 |
 
 ## 运营待办
 
-1. 在 staging/production controlled account 上完成真实短信登录和非白名单拒绝复核。
-2. 提供一次短期 `PORTAL_CUSTOMER_COOKIE`，运行 authenticated `pnpm portal:api-smoke`，完成客户数据隔离复核。
-3. 为至少 1 个 beta 客户创建服务工单样本，覆盖提交、后台处理、客户查看。
-4. 准备 1 个 PaymentOrder 样本或明确采用历史支付验证证据。
-5. 补齐 Portal 商品内容：车况摘要、费用说明、申请流程、FAQ。
-6. 复核公开 catalog 车辆与 customer-visible 车况报告的映射。
-7. 确认 beta allowlist 仅存在于环境变量或密钥系统，不进入 Git。
+1. 准备 1 个订单车辆材料样本：订单车辆需有关联 `customerVisible=true` 且 `ACTIVE` 的车辆文档。
+2. 在 staging/production controlled account 上完成真实短信登录和非白名单拒绝复核。
+3. 补齐 Portal 商品内容：车况摘要、费用说明、申请流程、FAQ。
+4. 复核公开 catalog 车辆与 customer-visible 车况报告的映射。
+5. 复核 PaymentOrder Portal DTO 中 provider 技术引用字段是否需要对客户隐藏。
+6. 确认 beta allowlist 仅存在于环境变量或密钥系统，不进入 Git。
 
 ## 文档更新状态
 
@@ -295,5 +417,5 @@ CSV 复核：
 下一步建议：
 
 ```text
-先关闭 R4A 的 P1 验证缺口，再进入 Stage 10X-B 车型代码主数据化影响审计。
+先准备订单车辆材料样本并补做 preview ownership，再进入 Stage 10X-B 车型代码主数据化影响审计。
 ```

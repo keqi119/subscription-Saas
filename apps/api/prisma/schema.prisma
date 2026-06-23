@@ -918,8 +918,13 @@ enum OrderChangeStatus {
 
 enum VehicleModel {
   ET5
+  ET5T
   ET7
   ES6
+  EC6
+  ES8
+  ET9
+  ES9
 
   @@map("vehicle_model")
 }

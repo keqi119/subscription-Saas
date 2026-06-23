@@ -38,7 +38,7 @@ Stage 10N-C-C 在资产收益分析中新增市场校准折旧对比口径，把
 
 - 默认：`0`
 - 范围：`-30` 到 `30`
-- 步长：前端 `1%`
+- 档位：前端选框每 `5%` 一档
 - 超出范围：API 返回 `400`
 
 该参数只模拟市场残值上调或下调，不修改 `VehicleDepreciationPolicy`、`VehicleDepreciationRecord`、`VehicleAssetCostProfile.residualValueAmount` 或残值预测数据。

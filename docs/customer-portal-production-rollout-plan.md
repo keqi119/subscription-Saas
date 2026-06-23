@@ -375,7 +375,7 @@ Production rollout notes:
 
 - No Prisma migration is expected for this stage.
 - Verify `/reports/asset-profitability`收益试算 displays accounting depreciation main ROE and market calibrated ROE side by side.
-- Verify the residual calibration slider accepts `-30%` to `+30%` and API rejects out-of-range values.
+- Verify the residual calibration selector offers `-30%` to `+30%` in `5%` steps and API rejects out-of-range values.
 - Verify vehicle return rows show market calibrated ROE, residual source, and residual delta.
 - Verify vehicle return detail shows accounting residual baseline, market residual baseline, calibrated residual, residual delta, accounting ROE / ROA, and market calibrated ROE / ROA.
 - Verify CSV exports include market calibrated depreciation / residual calibration fields.

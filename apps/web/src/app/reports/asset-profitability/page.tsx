@@ -12,7 +12,6 @@ import {
   Drawer,
   Select,
   Skeleton,
-  Slider,
   Space,
   Statistic,
   Table,
@@ -878,6 +877,13 @@ const residualHorizonMonthOptions = [
   { label: "未来 24 个月", value: 24 },
   { label: "未来 36 个月", value: 36 }
 ];
+const residualCalibrationPercentOptions = Array.from({ length: 13 }, (_item, index) => {
+  const value = -30 + index * 5;
+  return {
+    label: `${value > 0 ? "+" : ""}${value}%`,
+    value
+  };
+});
 const vehicleStatusFilterOptions = [
   "AVAILABLE",
   "REVIEW_RESERVED",
@@ -1955,20 +1961,17 @@ function FilterBar({
           </Space>
         ) : null}
         {onResidualCalibrationPercentChange ? (
-          <Space orientation="vertical" size={4} style={{ minWidth: 240 }}>
+          <Space orientation="vertical" size={4}>
             <Typography.Text type="secondary">
               残值校准比例{" "}
               <Tooltip title="模拟市场残值上调或下调对 ROE 的影响，不会写入车辆资产、折旧策略或残值预测。">
                 <InfoCircleOutlined />
               </Tooltip>
             </Typography.Text>
-            <Slider
-              marks={{ "-30": "-30%", "0": "0%", "30": "+30%" }}
-              max={30}
-              min={-30}
+            <Select
               onChange={onResidualCalibrationPercentChange}
-              step={1}
-              tooltip={{ formatter: (value) => `${value ?? 0}%` }}
+              options={residualCalibrationPercentOptions}
+              style={{ width: 150 }}
               value={residualCalibrationPercent ?? 0}
             />
           </Space>

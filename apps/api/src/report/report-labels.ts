@@ -181,6 +181,12 @@ export const forecastResidualAmountSourceLabels: Record<string, string> = {
   PREDICTED: "曲线预测"
 };
 
+export const marketResidualSourceLabels: Record<string, string> = {
+  ADOPTED: "人工采用",
+  NONE: "无可用残值",
+  PREDICTED: "曲线预测"
+};
+
 export const residualForecastInterpolationMethodLabels: Record<string, string> = {
   EXACT: "精确匹配",
   LINEAR_INTERPOLATION: "线性插值",

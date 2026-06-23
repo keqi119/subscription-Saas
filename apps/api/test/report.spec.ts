@@ -675,8 +675,15 @@ describe("reporting dashboard APIs", () => {
       forecastResidualAmountSource: "PREDICTED",
       forecastResidualRateBps: 1500,
       forecastUpperBoundAmount: 220000,
+      marketCalibratedPlatformNetIncomeAmount: -611500,
+      marketCalibratedResidualAmount: 180000,
+      marketCalibrationUnavailableReason: null,
+      marketResidualBaseAmount: 180000,
+      marketResidualDeltaAmount: 60000,
+      marketResidualSource: "PREDICTED",
       residualDeltaToCostProfileAmount: 60000,
       residualDeltaToCurrentSalePriceAmount: -820000,
+      residualCalibrationPercent: 0,
       residualForecastAvailable: true,
       residualForecastHorizonMonth: 12,
       residualSensitivityNetIncomeAmount: -611500
@@ -684,7 +691,96 @@ describe("reporting dashboard APIs", () => {
     expect(row?.roeTrial).toBeCloseTo(-671500 / 1200000);
     expect(row?.residualSensitivityRoeTrial).toBeCloseTo(-611500 / 1200000);
     expect(row?.residualSensitivityAnnualizedRoeTrial).toBeCloseTo(-611500 / 1200000);
+    expect(row?.marketCalibratedRoeTrial).toBeCloseTo(-611500 / 1200000);
+    expect(row?.marketCalibratedAnnualizedRoeTrial).toBeCloseTo(-611500 / 1200000);
+    expect(row?.marketCalibratedTrialRoa).toBeCloseTo(-611500 / 1200000);
     expect(JSON.stringify(row)).toContain("forecastResidualAmount");
+  });
+
+  it("asset return trial applies residualCalibrationPercent only to market calibrated comparison", async () => {
+    const positiveHarness = createReportHarness();
+    mockAssetReturnTrial(positiveHarness.prisma, {
+      forecasts: [assetResidualForecast()]
+    });
+
+    const positive = await positiveHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      residualCalibrationPercent: 10,
+      startDate: "2026-01-01"
+    });
+    const positiveRow = positive.items[0];
+
+    expect(positiveRow).toMatchObject({
+      marketCalibratedPlatformNetIncomeAmount: -593500,
+      marketCalibratedResidualAmount: 198000,
+      marketResidualBaseAmount: 180000,
+      marketResidualDeltaAmount: 78000,
+      platformNetIncomeAmount: -671500,
+      residualCalibrationPercent: 10,
+      residualSensitivityNetIncomeAmount: -611500
+    });
+    expect(positiveRow?.roeTrial).toBeCloseTo(-671500 / 1200000);
+    expect(positiveRow?.marketCalibratedRoeTrial).toBeCloseTo(-593500 / 1200000);
+
+    const summary = await positiveHarness.service.getAssetReturnTrialSummary({
+      endDate: "2026-12-31",
+      residualCalibrationPercent: 10,
+      startDate: "2026-01-01"
+    });
+    expect(summary).toMatchObject({
+      marketCalibratedPlatformNetIncomeAmount: -593500,
+      marketCalibratedResidualAmount: 198000,
+      marketCalibratedVehicleCount: 1,
+      marketCalibratedUnavailableVehicleCount: 0,
+      marketResidualBaseAmount: 180000,
+      marketResidualDeltaAmount: 78000,
+      platformNetIncomeAmount: -671500,
+      residualCalibrationPercent: 10,
+      residualSensitivityNetIncomeAmount: -611500
+    });
+    expect(summary.marketCalibratedRoeTrial).toBeCloseTo(-593500 / 1200000);
+    expect(summary.roeTrial).toBeCloseTo(-671500 / 1200000);
+
+    const negativeHarness = createReportHarness();
+    mockAssetReturnTrial(negativeHarness.prisma, {
+      forecasts: [assetResidualForecast()]
+    });
+    const negative = await negativeHarness.service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      residualCalibrationPercent: -10,
+      startDate: "2026-01-01"
+    });
+    expect(negative.items[0]).toMatchObject({
+      marketCalibratedPlatformNetIncomeAmount: -629500,
+      marketCalibratedResidualAmount: 162000,
+      marketResidualDeltaAmount: 42000,
+      platformNetIncomeAmount: -671500,
+      residualCalibrationPercent: -10
+    });
+    expect(negative.items[0]?.marketCalibratedRoeTrial).toBeCloseTo(-629500 / 1200000);
+  });
+
+  it("asset return trial rejects residualCalibrationPercent outside the supported range", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      forecasts: [assetResidualForecast()]
+    });
+
+    await expect(
+      service.getAssetReturnTrialVehicles({
+        endDate: "2026-12-31",
+        residualCalibrationPercent: 31,
+        startDate: "2026-01-01"
+      })
+    ).rejects.toThrow("residualCalibrationPercent must be an integer between -30 and 30.");
+
+    await expect(
+      service.getAssetReturnTrialSummary({
+        endDate: "2026-12-31",
+        residualCalibrationPercent: -31,
+        startDate: "2026-01-01"
+      })
+    ).rejects.toThrow("residualCalibrationPercent must be an integer between -30 and 30.");
   });
 
   it("asset return trial includes BaaS costs in main return metrics", async () => {
@@ -712,7 +808,8 @@ describe("reporting dashboard APIs", () => {
           costStatus: VehicleBaasCostRecordStatus.PAID,
           id: "baas-cost-paid"
         })
-      ]
+      ],
+      forecasts: [assetResidualForecast()]
     });
 
     const vehicles = await service.getAssetReturnTrialVehicles({
@@ -733,8 +830,11 @@ describe("reporting dashboard APIs", () => {
       baasPaidCostAmount: 40000,
       baasProviderName: "蔚来能源",
       baasScheduledCostAmount: 30000,
+      marketCalibratedPlatformNetIncomeAmount: -701500,
+      marketResidualDeltaAmount: 60000,
       operatingCostAmount: 1411500,
       platformNetIncomeAmount: -761500,
+      residualSensitivityNetIncomeAmount: -701500,
       trialNetOperatingIncomeAmount: -761500
     });
     expect(row?.roeTrial).toBeCloseTo(-761500 / 1200000);
@@ -754,6 +854,8 @@ describe("reporting dashboard APIs", () => {
       baasCostFullRecordAmount: 90000,
       baasCostRecordCount: 3,
       baasCostVehicleCount: 1,
+      marketCalibratedPlatformNetIncomeAmount: -701500,
+      marketResidualDeltaAmount: 60000,
       platformNetIncomeAmount: -761500
     });
     expect(summary.roeTrial).toBeCloseTo(-761500 / 1200000);
@@ -1100,6 +1202,10 @@ describe("reporting dashboard APIs", () => {
     expect(result.items[0]).toMatchObject({
       forecastResidualAmount: 210000,
       forecastResidualAmountSource: "ADOPTED",
+      marketCalibratedPlatformNetIncomeAmount: -581500,
+      marketResidualBaseAmount: 210000,
+      marketResidualDeltaAmount: 90000,
+      marketResidualSource: "ADOPTED",
       residualDeltaToCostProfileAmount: 90000,
       residualForecastNo: "VRF-ADOPTED",
       residualForecastStatus: VehicleResidualForecastStatus.ADOPTED,
@@ -1163,6 +1269,9 @@ describe("reporting dashboard APIs", () => {
       startDate: "2026-01-01"
     });
     expect(missingResult.items[0]).toMatchObject({
+      marketCalibratedPlatformNetIncomeAmount: null,
+      marketCalibrationUnavailableReason: "未找到有效残值预测记录。",
+      marketResidualSource: "NONE",
       residualForecastAvailable: false,
       residualForecastUnavailableReason: "未找到有效残值预测记录。"
     });
@@ -1186,6 +1295,9 @@ describe("reporting dashboard APIs", () => {
     });
     expect(unsupportedResult.items[0]).toMatchObject({
       forecastResidualAmount: null,
+      marketCalibratedPlatformNetIncomeAmount: null,
+      marketCalibrationUnavailableReason: "该预测点暂不支持，可能超出残值曲线范围。",
+      marketResidualSource: "NONE",
       residualForecastAvailable: false,
       residualForecastUnavailableReason: "该预测点暂不支持，可能超出残值曲线范围。"
     });
@@ -1720,6 +1832,55 @@ describe("reporting dashboard APIs", () => {
       depreciationCostAmount: 16000,
       depreciationSource: "RECORDS"
     });
+  });
+
+  it("asset return trial vehicle detail returns accounting versus market calibrated comparison", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.vehicleResidualForecast.findMany.mockResolvedValue([assetResidualForecast()]);
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n }),
+      assetBill({
+        billNo: "BILL-DAMAGE",
+        billType: BillType.DAMAGE_FEE,
+        id: "bill-damage",
+        paidAmount: 100000n
+      })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+
+    const result = await service.getAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-12-31",
+      residualCalibrationPercent: 10,
+      residualHorizonMonth: 12,
+      startDate: "2026-01-01"
+    });
+
+    expect(result.returns).toMatchObject({
+      marketCalibratedPlatformNetIncomeAmount: -643500,
+      marketCalibratedResidualAmount: 198000,
+      marketResidualDeltaAmount: 78000,
+      platformNetIncomeAmount: -721500,
+      residualSensitivityNetIncomeAmount: -661500
+    });
+    expect(result.marketCalibratedDepreciation).toMatchObject({
+      accountingPlatformNetIncomeAmount: -721500,
+      accountingResidualBaselineAmount: 120000,
+      marketCalibratedPlatformNetIncomeAmount: -643500,
+      marketCalibratedResidualAmount: 198000,
+      marketResidualBaseAmount: 180000,
+      marketResidualDeltaAmount: 78000,
+      residualCalibrationPercent: 10,
+      residualSource: "PREDICTED",
+      unavailableReason: null
+    });
+    expect(result.marketCalibratedDepreciation?.accountingRoeTrial).toBeCloseTo(
+      -721500 / 1200000
+    );
+    expect(result.marketCalibratedDepreciation?.marketCalibratedRoeTrial).toBeCloseTo(
+      -643500 / 1200000
+    );
   });
 
   it("asset return trial vehicle detail returns BaaS contract, cost records, and adjusted metrics", async () => {
@@ -2364,6 +2525,7 @@ describe("reporting dashboard APIs", () => {
 
     const result = await service.exportAssetReturnTrialSummary({
       endDate: "2026-12-31",
+      residualCalibrationPercent: 10,
       residualHorizonMonth: 12,
       startDate: "2026-01-01"
     });
@@ -2372,6 +2534,7 @@ describe("reporting dashboard APIs", () => {
     expect(result.content.charCodeAt(0)).toBe(0xfeff);
     expect(result.content).toContain("资产收益试算汇总");
     expect(result.content).toContain("残值预测周期,未来 12 个月");
+    expect(result.content).toContain("残值校准比例,10.00%");
     expect(result.content).toContain("核心结果");
     expect(result.content).toContain("数据完整性 / 可计算性");
     expect(result.content).toContain("收入归属");
@@ -2396,6 +2559,12 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("预测残值合计（元）,1800.00");
     expect(result.content).toContain("相对成本参数预计残值差异（元）,600.00");
     expect(result.content).toContain("残值敏感性 ROE,-50.96%");
+    expect(result.content).toContain("市场校准折旧 / 残值校准");
+    expect(result.content).toContain("市场校准车辆数,1");
+    expect(result.content).toContain("市场校准不可用车辆数,0");
+    expect(result.content).toContain("市场残值差异合计（元）,780.00");
+    expect(result.content).toContain("市场校准平台净收益（元）,-5935.00");
+    expect(result.content).toContain("市场校准 ROE,-49.46%");
     expect(result.content).toContain("BaaS 电池成本");
     expect(result.content).toContain("BaaS 成本车辆数,0");
     expect(result.content).toContain("BaaS 成本分摊方法,PERIOD_PRORATED");
@@ -2423,6 +2592,7 @@ describe("reporting dashboard APIs", () => {
 
     const result = await service.exportAssetReturnTrialVehicles({
       endDate: "2026-12-31",
+      residualCalibrationPercent: 10,
       residualHorizonMonth: 12,
       sortBy: "trialNetOperatingIncomeAmount",
       sortOrder: "desc",
@@ -2447,6 +2617,9 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("预测残值（元）");
     expect(result.content).toContain("相对成本参数残值差异（元）");
     expect(result.content).toContain("残值敏感性 ROE");
+    expect(result.content).toContain("残值校准比例");
+    expect(result.content).toContain("市场校准平台净收益（元）");
+    expect(result.content).toContain("市场校准 ROE");
     expect(result.content).toContain("BaaS 合同状态");
     expect(result.content).toContain("BaaS 成本合计（元）");
     expect(result.content).toContain('"NIO, ""Premium""\nLine"');
@@ -2459,6 +2632,11 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("1800.00");
     expect(result.content).toContain("600.00");
     expect(result.content).toContain("-50.96%");
+    expect(result.content).toContain("10.00%");
+    expect(result.content).toContain("1980.00");
+    expect(result.content).toContain("780.00");
+    expect(result.content).toContain("-5935.00");
+    expect(result.content).toContain("-49.46%");
     expect(result.content).toContain("可试算");
     expect(result.content).toContain("未录入资本事件，按全自有资金假设试算 ROE。");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
@@ -2511,6 +2689,7 @@ describe("reporting dashboard APIs", () => {
 
     const result = await service.exportAssetReturnTrialVehicleDetail("vehicle-1", {
       endDate: "2026-12-31",
+      residualCalibrationPercent: 10,
       residualHorizonMonth: 12,
       startDate: "2026-01-01"
     });
@@ -2555,6 +2734,15 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("残值敏感性收益");
     expect(result.content).toContain("残值敏感性 ROE,-55.13%");
     expect(result.content).toContain("残值敏感性说明");
+    expect(result.content).toContain("市场校准折旧说明");
+    expect(result.content).toContain("残值校准比例,10.00%");
+    expect(result.content).toContain("会计残值基准（元）,1200.00");
+    expect(result.content).toContain("市场残值基准（元）,1800.00");
+    expect(result.content).toContain("校准后残值（元）,1980.00");
+    expect(result.content).toContain("残值差异（元）,780.00");
+    expect(result.content).toContain("市场校准平台权益净收益（元）,-6435.00");
+    expect(result.content).toContain("市场校准 ROE,-53.63%");
+    expect(result.content).toContain("市场校准 ROA,-53.63%");
     expect(result.content).toContain("订单周期明细");
     expect(result.content).toContain("账单明细");
     expect(result.content).toContain("在租");

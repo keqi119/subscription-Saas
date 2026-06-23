@@ -29,7 +29,9 @@ Included:
 Back-office-only asset note:
 
 - Stage 10N-C-A adds vehicle depreciation policy / schedule / record management.
-- This is not customer-facing Portal scope and does not change the main asset ROE formula yet.
+- Stage 10N-C-B includes confirmed / locked depreciation records in the main asset return metrics.
+- Stage 10N-C-C adds market calibrated depreciation / residual calibration comparison without overriding accounting depreciation main ROE.
+- These are not customer-facing Portal scope changes.
 
 Out of scope:
 
@@ -364,3 +366,18 @@ Production rollout notes:
 - Confirm vehicles without ACTIVE depreciation policy still fallback to legacy cost-profile depreciation.
 - Confirm ACTIVE MANUAL / STRAIGHT_LINE policies without confirmed / locked records make ROE unavailable with explicit reasons.
 - Confirm this stage does not change schedule generation, billing, payment, write-off, supplier payment orders, accounting entries, or customer-facing Portal behavior.
+
+## Stage 10N-C-C Rollout Note
+
+Stage 10N-C-C adds market calibrated depreciation / residual slider comparison to asset return analysis.
+
+Production rollout notes:
+
+- No Prisma migration is expected for this stage.
+- Verify `/reports/asset-profitability`收益试算 displays accounting depreciation main ROE and market calibrated ROE side by side.
+- Verify the residual calibration selector offers `-30%` to `+30%` in `5%` steps and API rejects out-of-range values.
+- Verify vehicle return rows show market calibrated ROE, residual source, and residual delta.
+- Verify vehicle return detail shows accounting residual baseline, market residual baseline, calibrated residual, residual delta, accounting ROE / ROA, and market calibrated ROE / ROA.
+- Verify CSV exports include market calibrated depreciation / residual calibration fields.
+- Confirm main `platformNetIncomeAmount`, `roeTrial`, `annualizedRoeTrial`, and `trialRoa` remain the accounting depreciation main口径.
+- Confirm this stage does not update depreciation policy / records, residual forecasts, vehicle sale price, billing, payment, write-off, supplier payment orders, accounting entries, or customer-facing Portal behavior.

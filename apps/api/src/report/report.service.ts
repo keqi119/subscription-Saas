@@ -87,6 +87,7 @@ import {
   forecastResidualAmountSourceLabels,
   financingInstrumentTypeLabels,
   labelOf,
+  marketResidualSourceLabels,
   orderSourceLabels,
   orderStatusLabels,
   residualForecastInterpolationMethodLabels,
@@ -712,6 +713,68 @@ export class ReportService {
       residualSensitivityNetIncomeAmount === null || residualSensitivityEquityBaseAmount <= 0
         ? null
         : residualSensitivityNetIncomeAmount / residualSensitivityEquityBaseAmount;
+    const marketCalibratedRows = rows.filter(
+      (row) =>
+        row.marketCalibratedPlatformNetIncomeAmount !== null &&
+        row.marketResidualDeltaAmount !== null
+    );
+    const marketCalibratedRoeRows = marketCalibratedRows.filter(
+      (row) =>
+        row.marketCalibratedRoeTrial !== null &&
+        row.roeEquityBaseAmount !== null &&
+        row.roeEquityBaseAmount > 0
+    );
+    const marketCalibratedRoaRows = marketCalibratedRows.filter(
+      (row) =>
+        row.marketCalibratedTrialRoa !== null &&
+        row.purchasePriceAmount > 0
+    );
+    const marketResidualBaseAmount =
+      marketCalibratedRows.length === 0
+        ? null
+        : sumNumbers(marketCalibratedRows.map((row) => row.marketResidualBaseAmount ?? 0));
+    const marketCalibratedResidualAmount =
+      marketCalibratedRows.length === 0
+        ? null
+        : sumNumbers(
+            marketCalibratedRows.map((row) => row.marketCalibratedResidualAmount ?? 0)
+          );
+    const marketResidualDeltaAmount =
+      marketCalibratedRows.length === 0
+        ? null
+        : sumNumbers(marketCalibratedRows.map((row) => row.marketResidualDeltaAmount ?? 0));
+    const marketCalibratedPlatformNetIncomeAmount =
+      marketCalibratedRows.length === 0
+        ? null
+        : sumNumbers(
+            marketCalibratedRows.map((row) => row.marketCalibratedPlatformNetIncomeAmount ?? 0)
+          );
+    const marketCalibratedRoeEquityBaseAmount = sumNumbers(
+      marketCalibratedRoeRows.map((row) => row.roeEquityBaseAmount ?? 0)
+    );
+    const marketCalibratedRoeNetIncomeAmount =
+      marketCalibratedRoeRows.length === 0
+        ? null
+        : sumNumbers(
+            marketCalibratedRoeRows.map((row) => row.marketCalibratedPlatformNetIncomeAmount ?? 0)
+          );
+    const marketCalibratedRoeTrial =
+      marketCalibratedRoeNetIncomeAmount === null || marketCalibratedRoeEquityBaseAmount <= 0
+        ? null
+        : marketCalibratedRoeNetIncomeAmount / marketCalibratedRoeEquityBaseAmount;
+    const marketCalibratedRoaPurchasePriceAmount = sumNumbers(
+      marketCalibratedRoaRows.map((row) => row.purchasePriceAmount)
+    );
+    const marketCalibratedRoaNetIncomeAmount =
+      marketCalibratedRoaRows.length === 0
+        ? null
+        : sumNumbers(
+            marketCalibratedRoaRows.map((row) => row.marketCalibratedPlatformNetIncomeAmount ?? 0)
+          );
+    const marketCalibratedTrialRoa =
+      marketCalibratedRoaNetIncomeAmount === null || marketCalibratedRoaPurchasePriceAmount <= 0
+        ? null
+        : marketCalibratedRoaNetIncomeAmount / marketCalibratedRoaPurchasePriceAmount;
 
     return {
       annualizedTrialRoa:
@@ -758,6 +821,18 @@ export class ReportService {
       maintenanceReserveCostAmount: sumNullable(
         costCalculatedRows.map((row) => row.maintenanceReserveCostAmount)
       ),
+      marketCalibratedAnnualizedRoeTrial:
+        marketCalibratedRoeTrial === null || analysisDays <= 0
+          ? null
+          : (marketCalibratedRoeTrial * 365) / analysisDays,
+      marketCalibratedPlatformNetIncomeAmount,
+      marketCalibratedResidualAmount,
+      marketCalibratedRoeTrial,
+      marketCalibratedTrialRoa,
+      marketCalibratedUnavailableVehicleCount: rows.length - marketCalibratedRows.length,
+      marketCalibratedVehicleCount: marketCalibratedRows.length,
+      marketResidualBaseAmount,
+      marketResidualDeltaAmount,
       operatingCostAmount: sumNullable(costCalculatedRows.map((row) => row.operatingCostAmount)),
       operatingRevenueAmount: sumNumbers(rows.map((row) => row.operatingRevenueAmount)),
       otherCostAmount: sumNullable(costCalculatedRows.map((row) => row.otherCostAmount)),
@@ -793,6 +868,7 @@ export class ReportService {
       residualForecastWarnings: uniqueStrings(
         rows.flatMap((row) => row.residualForecastWarnings)
       ),
+      residualCalibrationPercent: resolveResidualCalibrationPercent(query),
       residualSensitivityAnnualizedRoeTrial:
         residualSensitivityRoeTrial === null || analysisDays <= 0
           ? null
@@ -841,6 +917,7 @@ export class ReportService {
     }
 
     const residualHorizonMonth = resolveResidualHorizonMonth(query);
+    const residualCalibrationPercent = resolveResidualCalibrationPercent(query);
     const [
       metricsByVehicleId,
       roeContextsByVehicleId,
@@ -875,7 +952,8 @@ export class ReportService {
         depreciationContext
       ),
       baasContext,
-      analysisDays
+      analysisDays,
+      residualCalibrationPercent
     );
     const profile = activeCostProfileFor(vehicle);
     const baasAdjustedReturn = {
@@ -920,6 +998,23 @@ export class ReportService {
         source: row.depreciationSource,
         unconfirmedScheduleCount: depreciationContext.summary.unconfirmedScheduleCount,
         warnings: depreciationContext.summary.warnings
+      },
+      marketCalibratedDepreciation: {
+        accountingPlatformNetIncomeAmount: row.platformNetIncomeAmount,
+        accountingResidualBaselineAmount: row.accountingResidualBaselineAmount,
+        accountingRoeTrial: row.roeTrial,
+        accountingTrialRoa: row.trialRoa,
+        marketCalibratedAnnualizedRoeTrial: row.marketCalibratedAnnualizedRoeTrial,
+        marketCalibratedPlatformNetIncomeAmount: row.marketCalibratedPlatformNetIncomeAmount,
+        marketCalibratedResidualAmount: row.marketCalibratedResidualAmount,
+        marketCalibratedRoeTrial: row.marketCalibratedRoeTrial,
+        marketCalibratedTrialRoa: row.marketCalibratedTrialRoa,
+        marketResidualBaseAmount: row.marketResidualBaseAmount,
+        marketResidualDeltaAmount: row.marketResidualDeltaAmount,
+        residualCalibrationPercent: row.residualCalibrationPercent,
+        residualHorizonMonth: row.residualForecastHorizonMonth,
+        residualSource: row.marketResidualSource,
+        unavailableReason: row.marketCalibrationUnavailableReason
       },
       bills: metrics.bills.map((bill) => ({
         amount: toNumber(bill.amount),
@@ -1022,6 +1117,16 @@ export class ReportService {
         residualSensitivityAnnualizedRoeTrial: row.residualSensitivityAnnualizedRoeTrial,
         residualSensitivityNetIncomeAmount: row.residualSensitivityNetIncomeAmount,
         residualSensitivityRoeTrial: row.residualSensitivityRoeTrial,
+        marketResidualSource: row.marketResidualSource,
+        marketResidualBaseAmount: row.marketResidualBaseAmount,
+        marketCalibratedResidualAmount: row.marketCalibratedResidualAmount,
+        marketResidualDeltaAmount: row.marketResidualDeltaAmount,
+        marketCalibratedPlatformNetIncomeAmount: row.marketCalibratedPlatformNetIncomeAmount,
+        marketCalibratedRoeTrial: row.marketCalibratedRoeTrial,
+        marketCalibratedAnnualizedRoeTrial: row.marketCalibratedAnnualizedRoeTrial,
+        marketCalibratedTrialRoa: row.marketCalibratedTrialRoa,
+        marketCalibrationUnavailableReason: row.marketCalibrationUnavailableReason,
+        residualCalibrationPercent: row.residualCalibrationPercent,
         trialNetOperatingIncomeAmount: row.trialNetOperatingIncomeAmount,
         trialRoa: row.trialRoa
       },
@@ -1067,6 +1172,7 @@ export class ReportService {
       ["资产收益试算汇总"],
       ["统计周期", dateRangeText(report.dateRange)],
       ["残值预测周期", residualHorizonText(query.residualHorizonMonth)],
+      ["残值校准比例", formatPercent(report.residualCalibrationPercent / 100)],
       ["车型筛选", query.vehicleModel ?? "全部"],
       ["车辆状态筛选", query.vehicleStatus ? labelOf(vehicleStatusLabels, query.vehicleStatus) : "全部"],
       [],
@@ -1078,6 +1184,9 @@ export class ReportService {
       ["残值敏感性净收益（元）", formatMoneyYuan(report.residualSensitivityNetIncomeAmount)],
       ["残值敏感性 ROE", formatPercent(report.residualSensitivityRoeTrial)],
       ["年化残值敏感性 ROE", formatPercent(report.residualSensitivityAnnualizedRoeTrial)],
+      ["市场校准平台净收益（元）", formatMoneyYuan(report.marketCalibratedPlatformNetIncomeAmount)],
+      ["市场校准 ROE", formatPercent(report.marketCalibratedRoeTrial)],
+      ["市场校准年化 ROE", formatPercent(report.marketCalibratedAnnualizedRoeTrial)],
       ["ROE 状态", returnTrialRoeCoverageStatus(report)],
       [],
       ["BaaS 电池成本"],
@@ -1157,6 +1266,19 @@ export class ReportService {
       ["残值敏感性 ROE", formatPercent(report.residualSensitivityRoeTrial)],
       ["年化残值敏感性 ROE", formatPercent(report.residualSensitivityAnnualizedRoeTrial)],
       [],
+      ["市场校准折旧 / 残值校准"],
+      ["指标", "值"],
+      ["残值校准比例", formatPercent(report.residualCalibrationPercent / 100)],
+      ["市场校准车辆数", report.marketCalibratedVehicleCount],
+      ["市场校准不可用车辆数", report.marketCalibratedUnavailableVehicleCount],
+      ["市场残值基准合计（元）", formatMoneyYuan(report.marketResidualBaseAmount)],
+      ["校准后残值合计（元）", formatMoneyYuan(report.marketCalibratedResidualAmount)],
+      ["市场残值差异合计（元）", formatMoneyYuan(report.marketResidualDeltaAmount)],
+      ["市场校准平台净收益（元）", formatMoneyYuan(report.marketCalibratedPlatformNetIncomeAmount)],
+      ["市场校准 ROE", formatPercent(report.marketCalibratedRoeTrial)],
+      ["市场校准年化 ROE", formatPercent(report.marketCalibratedAnnualizedRoeTrial)],
+      ["市场校准 ROA", formatPercent(report.marketCalibratedTrialRoa)],
+      [],
       ["计算链路 / 钩稽关系"],
       ["公式", "说明"],
       ["经营收入合计", "租金实收 + 损伤实收 + 其他实收"],
@@ -1176,6 +1298,11 @@ export class ReportService {
         "平台权益净收益 + 预测残值相对成本参数残值差异"
       ],
       ["残值敏感性 ROE", "残值敏感性净收益 / 权益资本基数"],
+      [
+        "市场校准平台净收益",
+        "主平台权益净收益 + 校准后市场残值相对成本参数残值差异"
+      ],
+      ["市场校准 ROE", "市场校准平台净收益 / 权益资本基数"],
       [],
       ["ROE 不可用原因"],
       ["原因"],
@@ -1265,6 +1392,16 @@ export class ReportService {
         "残值敏感性净收益（元）",
         "残值敏感性 ROE",
         "年化残值敏感性 ROE",
+        "残值来源",
+        "残值校准比例",
+        "市场残值基准（元）",
+        "校准后残值（元）",
+        "残值差异（元）",
+        "市场校准平台净收益（元）",
+        "市场校准 ROE",
+        "市场校准年化 ROE",
+        "市场校准 ROA",
+        "市场校准不可用原因",
         "债务本金（元）",
         "权益资本基数（元）",
         "资金成本来源",
@@ -1331,6 +1468,16 @@ export class ReportService {
         formatMoneyYuan(vehicle.residualSensitivityNetIncomeAmount),
         formatPercent(vehicle.residualSensitivityRoeTrial),
         formatPercent(vehicle.residualSensitivityAnnualizedRoeTrial),
+        marketResidualSourceText(vehicle.marketResidualSource),
+        formatPercent(vehicle.residualCalibrationPercent / 100),
+        formatMoneyYuan(vehicle.marketResidualBaseAmount),
+        formatMoneyYuan(vehicle.marketCalibratedResidualAmount),
+        formatMoneyYuan(vehicle.marketResidualDeltaAmount),
+        formatMoneyYuan(vehicle.marketCalibratedPlatformNetIncomeAmount),
+        formatPercent(vehicle.marketCalibratedRoeTrial),
+        formatPercent(vehicle.marketCalibratedAnnualizedRoeTrial),
+        formatPercent(vehicle.marketCalibratedTrialRoa),
+        vehicle.marketCalibrationUnavailableReason,
         formatMoneyYuan(vehicle.debtPrincipalAmount),
         formatMoneyYuan(vehicle.roeEquityBaseAmount),
         capitalCostSourceText(vehicle.capitalCostSource),
@@ -1365,6 +1512,7 @@ export class ReportService {
     const depreciationPolicy = detail.depreciationPolicy;
     const depreciationRecords = detail.depreciationRecords ?? [];
     const depreciationSummary = detail.depreciationSummary;
+    const marketCalibratedDepreciation = detail.marketCalibratedDepreciation;
     const residualForecastSummary = detail.residualForecastSummary;
     const residualForecastPoint = detail.residualForecastPoint;
     const residualForecastCurveSummary = detail.residualForecastCurveSummary;
@@ -1677,6 +1825,52 @@ export class ReportService {
       ],
       ["残值敏感性 ROE", "残值敏感性净收益 / 权益资本基数"],
       ["注意", "残值敏感性 ROE 不改变主试算 ROE"],
+      [],
+      ["市场校准折旧说明"],
+      ["字段", "值"],
+      [
+        "残值来源",
+        marketResidualSourceText(marketCalibratedDepreciation?.residualSource)
+      ],
+      [
+        "残值校准比例",
+        formatPercent((marketCalibratedDepreciation?.residualCalibrationPercent ?? 0) / 100)
+      ],
+      [
+        "会计残值基准（元）",
+        formatMoneyYuan(marketCalibratedDepreciation?.accountingResidualBaselineAmount)
+      ],
+      [
+        "市场残值基准（元）",
+        formatMoneyYuan(marketCalibratedDepreciation?.marketResidualBaseAmount)
+      ],
+      [
+        "校准后残值（元）",
+        formatMoneyYuan(marketCalibratedDepreciation?.marketCalibratedResidualAmount)
+      ],
+      [
+        "残值差异（元）",
+        formatMoneyYuan(marketCalibratedDepreciation?.marketResidualDeltaAmount)
+      ],
+      [
+        "会计平台权益净收益（元）",
+        formatMoneyYuan(marketCalibratedDepreciation?.accountingPlatformNetIncomeAmount)
+      ],
+      [
+        "市场校准平台权益净收益（元）",
+        formatMoneyYuan(marketCalibratedDepreciation?.marketCalibratedPlatformNetIncomeAmount)
+      ],
+      ["会计 ROE", roeExportValue(marketCalibratedDepreciation?.accountingRoeTrial)],
+      [
+        "市场校准 ROE",
+        formatPercent(marketCalibratedDepreciation?.marketCalibratedRoeTrial)
+      ],
+      ["会计 ROA", formatPercent(marketCalibratedDepreciation?.accountingTrialRoa)],
+      [
+        "市场校准 ROA",
+        formatPercent(marketCalibratedDepreciation?.marketCalibratedTrialRoa)
+      ],
+      ["不可用原因", marketCalibratedDepreciation?.unavailableReason],
       [],
       ["订单周期明细"],
       [
@@ -3133,6 +3327,7 @@ export class ReportService {
       where: assetProfitabilityVehicleWhere(query)
     });
     const residualHorizonMonth = resolveResidualHorizonMonth(query);
+    const residualCalibrationPercent = resolveResidualCalibrationPercent(query);
     const [
       metricsByVehicleId,
       roeContextsByVehicleId,
@@ -3160,7 +3355,8 @@ export class ReportService {
             emptyAssetReturnDepreciationContext(vehicle.id)
         ),
         baasContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnBaasContext(vehicle.id),
-        analysisDays
+        analysisDays,
+        residualCalibrationPercent
       )
     );
 
@@ -3747,6 +3943,10 @@ function residualForecastAmountSourceText(value: unknown) {
   return labelOf(forecastResidualAmountSourceLabels, value);
 }
 
+function marketResidualSourceText(value: unknown) {
+  return labelOf(marketResidualSourceLabels, value);
+}
+
 function residualForecastAvailabilityText(value: unknown) {
   return value === true ? "可用" : "不可用";
 }
@@ -4074,6 +4274,23 @@ function pagedResult<T>(items: T[], total: number, pagination: ResolvedPaginatio
 
 function resolveResidualHorizonMonth(query: Pick<AssetReturnTrialQueryDto, "residualHorizonMonth">) {
   return query.residualHorizonMonth ?? DEFAULT_RESIDUAL_HORIZON_MONTH;
+}
+
+function resolveResidualCalibrationPercent(
+  query: Pick<AssetReturnTrialQueryDto, "residualCalibrationPercent">
+) {
+  const value = query.residualCalibrationPercent ?? DEFAULT_RESIDUAL_CALIBRATION_PERCENT;
+  if (
+    !Number.isInteger(value) ||
+    value < MIN_RESIDUAL_CALIBRATION_PERCENT ||
+    value > MAX_RESIDUAL_CALIBRATION_PERCENT
+  ) {
+    throw new BadRequestException(
+      `residualCalibrationPercent must be an integer between ${MIN_RESIDUAL_CALIBRATION_PERCENT} and ${MAX_RESIDUAL_CALIBRATION_PERCENT}.`
+    );
+  }
+
+  return value;
 }
 
 function clampInteger(value: unknown, min: number, max: number, fallback: number) {
@@ -4892,12 +5109,21 @@ type AssetReturnDepreciationContext = {
 const ROE_UNAVAILABLE_REASON = "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。";
 const MISSING_COST_PROFILE_REASON = "缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。";
 const DEFAULT_RESIDUAL_HORIZON_MONTH = 12;
+const DEFAULT_RESIDUAL_CALIBRATION_PERCENT = 0;
+const MIN_RESIDUAL_CALIBRATION_PERCENT = -30;
+const MAX_RESIDUAL_CALIBRATION_PERCENT = 30;
 const RESIDUAL_FORECAST_MISSING_REASON = "未找到有效残值预测记录。";
 const RESIDUAL_FORECAST_POINT_MISSING_REASON = "未找到指定预测周期的残值预测点。";
 const RESIDUAL_FORECAST_UNSUPPORTED_REASON = "该预测点暂不支持，可能超出残值曲线范围。";
 const RESIDUAL_FORECAST_AMOUNT_MISSING_REASON = "预测点缺少预测残值金额。";
 const RESIDUAL_CURRENT_SALE_PRICE_MISSING_WARNING = "车辆缺少当前销售价，无法计算相对当前销售价差异。";
 const RESIDUAL_COST_PROFILE_MISSING_WARNING = "车辆成本参数缺少预计残值，无法计算相对成本参数残值差异。";
+const MARKET_CALIBRATION_RESIDUAL_MISSING_REASON =
+  "缺少可用残值预测，无法计算市场校准折旧对比。";
+const MARKET_CALIBRATION_BASELINE_MISSING_REASON =
+  "车辆成本参数缺少预计残值，无法计算市场校准折旧对比。";
+const MARKET_CALIBRATION_MAIN_RETURN_MISSING_REASON =
+  "主平台权益净收益不可用，无法计算市场校准折旧对比。";
 const BAAS_COST_INCLUDED_STATUSES: VehicleBaasCostRecordStatus[] = [
   VehicleBaasCostRecordStatus.SCHEDULED,
   VehicleBaasCostRecordStatus.CONFIRMED,
@@ -6395,10 +6621,77 @@ function applyBaasMainReturnFields({
   };
 }
 
+function buildMarketCalibratedDepreciationFields({
+  analysisDays,
+  residualCalibrationPercent,
+  row
+}: {
+  analysisDays: number;
+  residualCalibrationPercent: number;
+  row: ReturnType<typeof assetReturnTrialVehicleRow> &
+    ReturnType<typeof applyBaasMainReturnFields>;
+}) {
+  const marketResidualBaseAmount = row.forecastResidualAmount;
+  const marketResidualSource =
+    row.forecastResidualAmountSource === "ADOPTED" ||
+    row.forecastResidualAmountSource === "PREDICTED"
+      ? row.forecastResidualAmountSource
+      : "NONE";
+  const accountingResidualBaselineAmount = row.costProfileResidualValueAmount;
+  const marketCalibratedResidualAmount =
+    marketResidualBaseAmount === null
+      ? null
+      : Math.round((marketResidualBaseAmount * (100 + residualCalibrationPercent)) / 100);
+  const marketResidualDeltaAmount =
+    marketCalibratedResidualAmount === null || accountingResidualBaselineAmount === null
+      ? null
+      : marketCalibratedResidualAmount - accountingResidualBaselineAmount;
+  const marketCalibratedPlatformNetIncomeAmount =
+    row.platformNetIncomeAmount === null || marketResidualDeltaAmount === null
+      ? null
+      : row.platformNetIncomeAmount + marketResidualDeltaAmount;
+  const marketCalibratedRoeTrial =
+    marketCalibratedPlatformNetIncomeAmount === null ||
+    row.roeEquityBaseAmount === null ||
+    row.roeEquityBaseAmount <= 0
+      ? null
+      : marketCalibratedPlatformNetIncomeAmount / row.roeEquityBaseAmount;
+  const marketCalibratedTrialRoa =
+    marketCalibratedPlatformNetIncomeAmount === null || row.purchasePriceAmount <= 0
+      ? null
+      : marketCalibratedPlatformNetIncomeAmount / row.purchasePriceAmount;
+  const unavailableReason =
+    marketResidualBaseAmount === null
+      ? row.residualForecastUnavailableReason || MARKET_CALIBRATION_RESIDUAL_MISSING_REASON
+      : accountingResidualBaselineAmount === null
+        ? MARKET_CALIBRATION_BASELINE_MISSING_REASON
+        : row.platformNetIncomeAmount === null
+          ? row.roeUnavailableReason || MARKET_CALIBRATION_MAIN_RETURN_MISSING_REASON
+          : null;
+
+  return {
+    accountingResidualBaselineAmount,
+    marketCalibratedAnnualizedRoeTrial:
+      marketCalibratedRoeTrial === null || analysisDays <= 0
+        ? null
+        : (marketCalibratedRoeTrial * 365) / analysisDays,
+    marketCalibratedPlatformNetIncomeAmount,
+    marketCalibratedResidualAmount,
+    marketCalibratedRoeTrial,
+    marketCalibratedTrialRoa,
+    marketCalibrationUnavailableReason: unavailableReason,
+    marketResidualBaseAmount,
+    marketResidualDeltaAmount,
+    marketResidualSource,
+    residualCalibrationPercent
+  };
+}
+
 function attachAssetReturnBaasFields<T extends ReturnType<typeof assetReturnTrialVehicleRow>>(
   row: T,
   context: AssetReturnBaasContext,
-  analysisDays: number
+  analysisDays: number,
+  residualCalibrationPercent: number
 ) {
   const mainReturnFields = applyBaasMainReturnFields({
     analysisDays,
@@ -6406,10 +6699,19 @@ function attachAssetReturnBaasFields<T extends ReturnType<typeof assetReturnTria
     row,
     roeEquityBaseAmount: row.roeEquityBaseAmount
   });
+  const rowWithMainReturnFields = {
+    ...row,
+    ...mainReturnFields
+  };
+  const marketCalibratedDepreciationFields = buildMarketCalibratedDepreciationFields({
+    analysisDays,
+    residualCalibrationPercent,
+    row: rowWithMainReturnFields
+  });
 
   return {
-    ...row,
-    ...mainReturnFields,
+    ...rowWithMainReturnFields,
+    ...marketCalibratedDepreciationFields,
     baasConfirmedCostAmount: context.summary.confirmedCostAmount,
     baasContractNo: context.currentContract?.contractNo ?? null,
     baasContractStatus: context.currentContract?.contractStatus ?? null,

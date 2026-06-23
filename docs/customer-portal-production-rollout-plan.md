@@ -349,3 +349,18 @@ Production rollout notes:
 - Confirm main `platformNetIncomeAmount`, `roeTrial`, `annualizedRoeTrial`, and `trialRoa` include BaaS cost.
 - Confirm this stage does not generate bills, payment records, write-offs, supplier payment orders, accounting entries, or customer-facing flow changes.
 - Treat Stage 10M-C-C as the active asset profitability reporting口径.
+
+## Stage 10N-C-B Rollout Note
+
+Stage 10N-C-B includes confirmed / locked depreciation records in the main asset return metrics.
+
+Production rollout notes:
+
+- No Prisma migration is expected for this stage.
+- Verify `/reports/asset-profitability` summary shows depreciation record amount, legacy cost-profile depreciation amount, record count, and unavailable vehicle count.
+- Verify vehicle return rows show depreciation source, depreciation amount, record count, and missing reasons.
+- Verify vehicle return detail shows depreciation policy summary and record proration details.
+- Verify CSV exports include depreciation source, policy, method, amount, record count, missing reasons, and single-vehicle record allocation details.
+- Confirm vehicles without ACTIVE depreciation policy still fallback to legacy cost-profile depreciation.
+- Confirm ACTIVE MANUAL / STRAIGHT_LINE policies without confirmed / locked records make ROE unavailable with explicit reasons.
+- Confirm this stage does not change schedule generation, billing, payment, write-off, supplier payment orders, accounting entries, or customer-facing Portal behavior.

@@ -463,3 +463,16 @@ RC impact:
 - Return-trial summary, vehicle list, vehicle detail, and CSV exports include BaaS cost fields and period-proration details.
 - This stage does not generate bills, payment records, write-offs, supplier payment orders, accounting entries, or customer-facing flow changes.
 - This does not remove the existing unrestricted-launch blockers.
+
+## Stage 10N-C-B Depreciation Main Return Metrics Update
+
+Stage 10N-C-B promotes confirmed / locked vehicle depreciation records into the main asset return metrics.
+
+RC impact:
+
+- Main asset return metrics now use `CONFIRMED / LOCKED` depreciation records when a vehicle has an ACTIVE depreciation policy.
+- Vehicles without an ACTIVE depreciation policy continue to fallback to the legacy `VehicleAssetCostProfile` immediate depreciation calculation.
+- ACTIVE `NONE` policies contribute zero depreciation; ACTIVE `MANUAL` / `STRAIGHT_LINE` policies without valid records make ROE unavailable with explicit missing reasons.
+- `/reports/asset-profitability` summary, vehicle list, vehicle detail, and CSV exports show depreciation source, record amount, legacy comparison amount, record count, and missing reasons.
+- This stage does not change depreciation schedule generation, payment, write-off, billing, order, contract, entitlement, service-case, notification, or customer-facing Portal behavior.
+- This does not remove the existing unrestricted-launch blockers.

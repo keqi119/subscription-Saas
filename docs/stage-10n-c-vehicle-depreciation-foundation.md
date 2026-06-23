@@ -124,14 +124,14 @@ Record：
 
 ## 后续阶段
 
-Stage 10N-C-B：折旧接入资产收益主口径。
+Stage 10N-C-B：折旧接入资产收益主口径，已落地。
 
-待确认事项：
+已确认并实现：
 
-- 是否仅使用 `CONFIRMED` / `LOCKED` depreciation records 进入主口径。
-- STRAIGHT_LINE schedule 是否必须先 confirm 才进入主口径。
-- MANUAL policy 缺 record 时 ROE 如何提示不可用。
+- 仅使用 `CONFIRMED` / `LOCKED` depreciation records 进入主口径。
+- STRAIGHT_LINE schedule 必须先 confirm 生成 record 才进入主口径。
+- MANUAL policy 缺 record 时 ROE 返回不可用原因。
 - 折旧按 `periodStart` / `periodEnd` 分摊。
-- 与现有 `VehicleAssetCostProfile` depreciation 字段如何过渡。
+- 无 ACTIVE depreciation policy 时 fallback 到 `VehicleAssetCostProfile` 即时折旧，避免历史车辆 ROE 失效。
 
 Stage 10N-C-C：市场校准折旧与残值敏感性对比。

@@ -56,6 +56,9 @@ import {
   VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS,
   VEHICLE_DAMAGE_TYPE_LABELS,
   VEHICLE_DEPRECIATION_METHOD_LABELS,
+  VEHICLE_DEPRECIATION_RECORD_SOURCE_LABELS,
+  VEHICLE_DEPRECIATION_RECORD_STATUS_LABELS,
+  VEHICLE_DEPRECIATION_SOURCE_LABELS,
   VEHICLE_RESIDUAL_CURVE_METHOD_LABELS,
   VEHICLE_RESIDUAL_CURVE_STATUS_LABELS,
   VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS,
@@ -98,6 +101,12 @@ type AssetReturnSortField = (typeof assetReturnSortFields)[number];
 interface DateRangeResponse {
   endDate?: string | null;
   startDate?: string | null;
+}
+
+interface AmountSourceBreakdown {
+  amount?: number | null;
+  count?: number | null;
+  source?: string | null;
 }
 
 interface AssetProfitabilitySummary {
@@ -147,9 +156,16 @@ interface AssetReturnTrialSummary {
   debtInterestCostAmount?: number | null;
   debtPrincipalAmount?: number | null;
   depositCollectedAmount?: number | null;
+  depreciationAmount?: number | null;
   depreciationCostAmount?: number | null;
+  depreciationRecordAmount?: number | null;
+  depreciationRecordCount?: number | null;
+  depreciationSourceBreakdown?: AmountSourceBreakdown[];
+  depreciationUnavailableVehicleCount?: number | null;
+  depreciationVehicleCount?: number | null;
   externalLeaseCostAmount?: number | null;
   insuranceCostAmount?: number | null;
+  legacyDepreciationAmount?: number | null;
   maintenanceReserveCostAmount?: number | null;
   operatingCostAmount?: number | null;
   operatingRevenueAmount?: number | null;
@@ -243,9 +259,17 @@ interface AssetReturnTrialVehicleRow extends AssetProfitabilityVehicleRow {
   costUnavailableReason?: string | null;
   debtInterestCostAmount?: number | null;
   debtPrincipalAmount?: number | null;
+  depreciationAmount?: number | null;
   depreciationCostAmount?: number | null;
+  depreciationMethod?: string | null;
+  depreciationMissingReasons?: string[];
+  depreciationPolicyId?: string | null;
+  depreciationPolicyNo?: string | null;
+  depreciationRecordCount?: number | null;
+  depreciationSource?: string | null;
   externalLeaseCostAmount?: number | null;
   insuranceCostAmount?: number | null;
+  legacyDepreciationAmount?: number | null;
   maintenanceReserveCostAmount?: number | null;
   manualDepreciationUnsupported?: boolean | null;
   operatingCostAmount?: number | null;
@@ -286,6 +310,7 @@ interface AssetReturnTrialVehicleRow extends AssetProfitabilityVehicleRow {
   roeTrial?: number | null;
   roeUnavailableReason?: string | null;
   roeWarnings?: string[];
+  recordDepreciationAmount?: number | null;
   trialNetOperatingIncomeAmount?: number | null;
   trialRoa?: number | null;
 }
@@ -314,6 +339,9 @@ interface AssetReturnTrialVehicleDetail {
   costPreview?: VehicleAssetCostPreview | null;
   costProfile?: VehicleAssetCostProfileInfo | null;
   dateRange?: DateRangeResponse;
+  depreciationPolicy?: DepreciationPolicyInfo | null;
+  depreciationRecords?: DepreciationRecordRow[];
+  depreciationSummary?: DepreciationSummary | null;
   financingAllocations?: ReturnTrialFinancingAllocationRow[];
   incomeBreakdown?: ReturnTrialIncomeBreakdown | null;
   orderCycles?: ReturnTrialOrderCycleRow[];
@@ -367,6 +395,59 @@ interface BaasCostRecordRow {
   paymentRefNo?: string | null;
   periodEnd?: string | null;
   periodStart?: string | null;
+  vehicleId?: string | null;
+  voidedAt?: string | null;
+}
+
+interface DepreciationPolicyInfo {
+  basisSource?: string | null;
+  currency?: string | null;
+  depreciationBasisAmount?: number | null;
+  depreciationEndDate?: string | null;
+  depreciationMethod?: string | null;
+  depreciationStartDate?: string | null;
+  id?: string | null;
+  monthlyDepreciationAmount?: number | null;
+  policyNo?: string | null;
+  policyStatus?: string | null;
+  residualValueAmount?: number | null;
+  usefulLifeMonths?: number | null;
+  vehicleId?: string | null;
+}
+
+interface DepreciationSummary {
+  amount?: number | null;
+  legacyAmount?: number | null;
+  missingReasons?: string[];
+  policyId?: string | null;
+  policyNo?: string | null;
+  recordAmount?: number | null;
+  recordCount?: number | null;
+  source?: string | null;
+  unconfirmedScheduleCount?: number | null;
+  warnings?: string[];
+}
+
+interface DepreciationRecordRow {
+  allocationMethod?: string | null;
+  allocationRatio?: number | null;
+  confirmedAt?: string | null;
+  costPeriod?: string | null;
+  currency?: string | null;
+  depreciationAmount?: number | null;
+  fullDepreciationAmount?: number | null;
+  id?: string | null;
+  includedProratedAmount?: number | null;
+  lockedAt?: string | null;
+  overlapDays?: number | null;
+  periodEnd?: string | null;
+  periodStart?: string | null;
+  policyId?: string | null;
+  recordNo?: string | null;
+  recordSource?: string | null;
+  recordStatus?: string | null;
+  scheduleId?: string | null;
+  totalDays?: number | null;
   vehicleId?: string | null;
   voidedAt?: string | null;
 }
@@ -544,12 +625,17 @@ interface ReturnTrialCostBreakdown {
   costDays?: number | null;
   costProfileMissing?: boolean | null;
   costUnavailableReason?: string | null;
+  depreciationAmount?: number | null;
   depreciationCostAmount?: number | null;
+  depreciationMissingReasons?: string[];
+  depreciationSource?: string | null;
   insuranceCostAmount?: number | null;
+  legacyDepreciationAmount?: number | null;
   maintenanceReserveCostAmount?: number | null;
   manualDepreciationUnsupported?: boolean | null;
   operatingCostAmount?: number | null;
   otherCostAmount?: number | null;
+  recordDepreciationAmount?: number | null;
 }
 
 interface ReturnTrialMetrics {
@@ -1371,6 +1457,12 @@ export default function AssetProfitabilityPage() {
       },
       { dataIndex: "depositCollectedAmount", render: formatYuan, title: "押金收取", width: 130 },
       { dataIndex: "depreciationCostAmount", render: formatYuan, title: "折旧成本", width: 130 },
+      {
+        render: (_value, record) => renderDepreciationSource(record),
+        title: "折旧来源",
+        width: 150
+      },
+      { dataIndex: "depreciationRecordCount", render: formatInteger, title: "折旧记录数", width: 120 },
       { dataIndex: "capitalCostAmount", render: formatYuan, title: "资金成本", width: 130 },
       { dataIndex: "debtInterestCostAmount", render: formatYuan, title: "债务利息", width: 130 },
       { dataIndex: "insuranceCostAmount", render: formatYuan, title: "保险成本", width: 130 },
@@ -2019,6 +2111,18 @@ function ReturnTrialSummaryMetrics({
             column={1}
             items={[
               { label: "折旧成本", children: formatYuan(summary?.depreciationCostAmount) },
+              { label: "折旧记录金额", children: formatYuan(summary?.depreciationRecordAmount) },
+              { label: "旧成本参数折旧金额", children: formatYuan(summary?.legacyDepreciationAmount) },
+              { label: "折旧记录数", children: formatInteger(summary?.depreciationRecordCount) },
+              { label: "折旧车辆数", children: formatInteger(summary?.depreciationVehicleCount) },
+              {
+                label: "折旧不可用车辆数",
+                children: formatInteger(summary?.depreciationUnavailableVehicleCount)
+              },
+              {
+                label: "折旧来源",
+                children: formatDepreciationSourceBreakdown(summary?.depreciationSourceBreakdown)
+              },
               { label: "资金成本", children: formatYuan(summary?.capitalCostAmount) },
               { label: "债务利息成本", children: formatYuan(summary?.debtInterestCostAmount) },
               { label: "保险成本", children: formatYuan(summary?.insuranceCostAmount) },
@@ -2281,6 +2385,9 @@ function ReturnTrialDetailContent({
   const baasCostRecords = detail.baasCostRecords ?? [];
   const baasCostSummary = detail.baasCostSummary ?? {};
   const baasCurrentContract = detail.baasCurrentContract ?? null;
+  const depreciationPolicy = detail.depreciationPolicy ?? null;
+  const depreciationRecords = detail.depreciationRecords ?? [];
+  const depreciationSummary = detail.depreciationSummary ?? {};
   const capitalSummary = detail.capitalStructureSummary ?? {};
   const roeBreakdown = detail.roeBreakdown ?? {};
   const roeMissingReasons = normalizeReasonList(returns.roeMissingReasons);
@@ -2381,6 +2488,56 @@ function ReturnTrialDetailContent({
         )}
       </DetailSection>
 
+      <DetailSection title="折旧主口径">
+        <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+          <Alert
+            showIcon
+            type="info"
+            message="ACTIVE 折旧策略优先于旧成本参数即时折旧；只有 CONFIRMED / LOCKED 折旧记录会进入主资产收益口径。"
+          />
+          {normalizeReasonList(depreciationSummary.missingReasons).length > 0 ? (
+            <ReasonAlert
+              items={normalizeReasonList(depreciationSummary.missingReasons)}
+              title="折旧缺失原因"
+              type="warning"
+            />
+          ) : null}
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              {
+                label: "折旧来源",
+                children: labelOf(VEHICLE_DEPRECIATION_SOURCE_LABELS, depreciationSummary.source)
+              },
+              { label: "折旧策略编号", children: safeText(depreciationPolicy?.policyNo) },
+              {
+                label: "折旧方法",
+                children: labelOf(VEHICLE_DEPRECIATION_METHOD_LABELS, depreciationPolicy?.depreciationMethod)
+              },
+              { label: "折旧金额", children: formatYuan(depreciationSummary.amount) },
+              { label: "折旧记录金额", children: formatYuan(depreciationSummary.recordAmount) },
+              { label: "旧成本参数折旧金额", children: formatYuan(depreciationSummary.legacyAmount) },
+              { label: "折旧记录数", children: formatInteger(depreciationSummary.recordCount) },
+              {
+                label: "未确认折旧计划数",
+                children: formatInteger(depreciationSummary.unconfirmedScheduleCount)
+              }
+            ]}
+            size="small"
+          />
+          <Table
+            columns={depreciationRecordColumns}
+            dataSource={depreciationRecords}
+            locale={{ emptyText: "暂无已确认 / 已锁定折旧记录" }}
+            pagination={false}
+            rowKey={(record) => record.id ?? record.recordNo ?? "depreciation-record"}
+            scroll={{ x: 980 }}
+            size="small"
+          />
+        </Space>
+      </DetailSection>
+
       <DetailSection title="收入明细">
         <Space orientation="vertical" size={8} style={{ width: "100%" }}>
           <Alert
@@ -2435,6 +2592,12 @@ function ReturnTrialDetailContent({
             items={[
               { label: "成本分摊天数", children: formatInteger(cost.costDays) },
               { label: "折旧成本", children: formatYuan(cost.depreciationCostAmount) },
+              {
+                label: "折旧来源",
+                children: labelOf(VEHICLE_DEPRECIATION_SOURCE_LABELS, cost.depreciationSource)
+              },
+              { label: "折旧记录金额", children: formatYuan(cost.recordDepreciationAmount) },
+              { label: "旧成本参数折旧金额", children: formatYuan(cost.legacyDepreciationAmount) },
               { label: "资金成本", children: formatYuan(cost.capitalCostAmount) },
               { label: "保险成本", children: formatYuan(cost.insuranceCostAmount) },
               { label: "维修准备金", children: formatYuan(cost.maintenanceReserveCostAmount) },
@@ -2976,6 +3139,30 @@ const baasCostRecordColumns: ColumnsType<BaasCostRecordRow> = [
   { dataIndex: "invoiceNo", render: safeText, title: "发票号", width: 140 }
 ];
 
+const depreciationRecordColumns: ColumnsType<DepreciationRecordRow> = [
+  { dataIndex: "recordNo", render: safeText, title: "记录编号", width: 170 },
+  { dataIndex: "costPeriod", render: safeText, title: "账期", width: 100 },
+  { dataIndex: "periodStart", render: formatDate, title: "期间开始", width: 120 },
+  { dataIndex: "periodEnd", render: formatDate, title: "期间结束", width: 120 },
+  { dataIndex: "depreciationAmount", render: formatYuan, title: "原始金额", width: 130 },
+  { dataIndex: "includedProratedAmount", render: formatYuan, title: "纳入金额", width: 130 },
+  { dataIndex: "overlapDays", render: formatInteger, title: "重叠天数", width: 110 },
+  { dataIndex: "totalDays", render: formatInteger, title: "总天数", width: 100 },
+  { dataIndex: "allocationRatio", render: formatPercent, title: "分摊比例", width: 110 },
+  {
+    dataIndex: "recordStatus",
+    render: (value?: string | null) => labelOf(VEHICLE_DEPRECIATION_RECORD_STATUS_LABELS, value),
+    title: "状态",
+    width: 110
+  },
+  {
+    dataIndex: "recordSource",
+    render: (value?: string | null) => labelOf(VEHICLE_DEPRECIATION_RECORD_SOURCE_LABELS, value),
+    title: "来源",
+    width: 110
+  }
+];
+
 const orderCycleColumns: ColumnsType<OrderCycleRow> = [
   {
     dataIndex: "orderNo",
@@ -3161,6 +3348,37 @@ function renderResidualForecastStatus(
         </Tooltip>
       ) : null}
     </Space>
+  );
+}
+
+function renderDepreciationSource(
+  record: Pick<
+    AssetReturnTrialVehicleRow,
+    "depreciationMissingReasons" | "depreciationPolicyNo" | "depreciationSource"
+  >
+) {
+  const source = record.depreciationSource;
+  const missingReasons = normalizeReasonList(record.depreciationMissingReasons);
+  const color =
+    source === "RECORDS"
+      ? "green"
+      : source === "LEGACY_COST_PROFILE"
+        ? "blue"
+        : source === "NONE"
+          ? "default"
+          : "orange";
+  const content = (
+    <Space orientation="vertical" size={4}>
+      <span>{labelOf(VEHICLE_DEPRECIATION_SOURCE_LABELS, source)}</span>
+      {record.depreciationPolicyNo ? <span>策略：{record.depreciationPolicyNo}</span> : null}
+      {missingReasons.length > 0 ? <span>原因：{missingReasons.join("；")}</span> : null}
+    </Space>
+  );
+
+  return (
+    <Tooltip title={content}>
+      <Tag color={color}>{labelOf(VEHICLE_DEPRECIATION_SOURCE_LABELS, source)}</Tag>
+    </Tooltip>
   );
 }
 
@@ -3451,6 +3669,19 @@ function formatPercent(value?: number | null) {
 
 function formatTrialRoe(value?: number | null) {
   return value === null ? "暂不可用" : formatPercent(value);
+}
+
+function formatDepreciationSourceBreakdown(values?: AmountSourceBreakdown[] | null) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return "-";
+  }
+
+  return values
+    .map((item) => {
+      const label = labelOf(VEHICLE_DEPRECIATION_SOURCE_LABELS, item.source);
+      return `${label} ${formatInteger(item.count)} 辆 / ${formatYuan(item.amount)}`;
+    })
+    .join("；");
 }
 
 function formatHorizonMonth(value?: number | null) {

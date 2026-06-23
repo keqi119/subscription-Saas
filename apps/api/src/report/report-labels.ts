@@ -164,6 +164,13 @@ export const vehicleDepreciationMethodLabels: Record<string, string> = {
   STRAIGHT_LINE: "直线法"
 };
 
+export const vehicleDepreciationSourceLabels: Record<string, string> = {
+  LEGACY_COST_PROFILE: "旧成本参数",
+  NONE: "无折旧",
+  RECORDS: "折旧记录",
+  UNAVAILABLE: "不可用"
+};
+
 export const capitalCostSourceLabels: Record<string, string> = {
   COST_PROFILE: "成本参数",
   FINANCING_INSTRUMENT: "融资工具"

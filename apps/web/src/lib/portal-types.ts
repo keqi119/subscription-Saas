@@ -11,6 +11,7 @@ export interface PortalCatalogVehicle {
   conditionSummary?: string | null;
   coverImageUrl: string | null;
   currentMileageKm: number;
+  customerModelDisplayName?: string | null;
   customerTags?: string[];
   displayName: string;
   estimatedRangeKm?: number | null;
@@ -21,6 +22,9 @@ export interface PortalCatalogVehicle {
   id: string;
   mileageKm?: number;
   model: string | null;
+  modelDefinition?: PortalModelDefinitionSummary | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   modelYear: number | null;
   monthlyFeeFromAmount?: number | null;
   registrationDate?: string | null;
@@ -30,6 +34,15 @@ export interface PortalCatalogVehicle {
   statusLabel: string;
   subtitle?: string | null;
   tags: string[];
+  vehicleModel?: string | null;
+}
+
+export interface PortalModelDefinitionSummary {
+  customerDisplayName?: string | null;
+  displayName: string;
+  id: string;
+  legacyVehicleModel?: string | null;
+  modelCode: string;
 }
 
 export interface PortalCatalogVehicleMedia {
@@ -118,6 +131,9 @@ export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
     displayName: string;
     id: string;
     model: string | null;
+    modelDefinition?: PortalModelDefinitionSummary | null;
+    modelDefinitionId?: string | null;
+    modelDisplayName?: string | null;
     modelYear: number | null;
     registrationDate: string | null;
     series: string | null;

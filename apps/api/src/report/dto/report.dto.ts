@@ -54,6 +54,10 @@ export class OrderReportQueryDto extends ReportDateRangeQueryDto {
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string;
 }
 
 export class ReportDetailQueryDto extends ReportDateRangeQueryDto {
@@ -83,6 +87,10 @@ export class OrderDetailQueryDto extends ReportDetailQueryDto {
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string;
 
   @IsOptional()
   @IsUUID()
@@ -191,6 +199,10 @@ export class VehicleDetailQueryDto extends ReportDetailQueryDto {
   vehicleModel?: VehicleModel;
 
   @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string;
+
+  @IsOptional()
   @IsString()
   brand?: string;
 
@@ -223,6 +235,10 @@ export class AssetProfitabilityQueryDto extends ReportDateRangeQueryDto {
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string;
 
   @IsOptional()
   @IsEnum(VehicleStatus)

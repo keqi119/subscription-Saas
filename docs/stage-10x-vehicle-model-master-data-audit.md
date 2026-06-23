@@ -782,3 +782,43 @@ legacy enum 退场
 ```
 
 因此当前仍处于双轨过渡，不应删除 `VehicleModel` enum，也不应把无 `legacyVehicleModel` 映射的主数据用于车辆创建 / 编辑。
+
+## 10. Stage 10X-E 审计更新
+
+Stage 10X-E 已按审计拆分完成 Product / Portal / Reports 接入：
+
+```text
+VehiclePackage / ProductPriceRule 新增 nullable modelDefinitionId
+Product 配置写入 modelDefinitionId 时同步 legacy vehicleModel
+Portal catalog 展示优先 customerDisplayName / displayName
+Portal catalog modelDefinitionId 筛选包含历史 legacy fallback 车辆
+Reports 查询和 CSV 支持 modelDefinitionId
+Reports 保留 legacy vehicleModel filter
+```
+
+未改变的审计边界：
+
+```text
+不删除 VehicleModel enum
+不修改 Vehicle.model 类型
+不强制迁移历史车辆
+不修改 SubscriptionQuote / SubscriptionOrder 历史快照
+不接入 Residual market / residual forecast
+不修改 ROE / 折旧 / BaaS / 支付 / 核销主逻辑
+```
+
+Residual market 相关对象继续留到 Stage 10X-F：
+
+```text
+ResidualMarketSample
+VehicleResidualCurve
+VehicleResidualForecast
+VehicleResidualForecastPoint
+VehicleValuationReview
+```
+
+详见：
+
+```text
+docs/stage-10x-model-master-data-portal-product-reports.md
+```

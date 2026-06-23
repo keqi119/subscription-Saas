@@ -143,3 +143,41 @@ Stage 10X-F: Residual market / forecast 接入车型主数据
 Stage 10X-G: legacy enum 退场评估
 ```
 
+## 11. Stage 10X-E 更新
+
+Stage 10X-E 已完成 Portal / Product / Reports 接入车型主数据。
+
+已接入范围：
+
+```text
+VehiclePackage.modelDefinitionId
+ProductPriceRule.modelDefinitionId
+Product 后台车型代码选择和主数据显示
+Portal catalog modelDefinition 展示
+Portal catalog modelDefinitionId 筛选
+综合报表 modelDefinitionId 筛选、展示、CSV
+资产经营分析 modelDefinitionId 筛选、展示、CSV
+```
+
+继续保留：
+
+```text
+Vehicle.vehicleModel legacy enum
+Product / Package / Report 的 vehicleModel legacy filter
+无 modelDefinitionId 历史数据 fallback legacy label
+```
+
+仍未接入：
+
+```text
+Residual market / forecast
+SubscriptionQuote / SubscriptionOrder 历史快照迁移
+legacy enum 退场
+```
+
+详见：
+
+```text
+docs/stage-10x-model-master-data-portal-product-reports.md
+```
+

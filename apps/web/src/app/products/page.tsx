@@ -91,6 +91,9 @@ interface PackageRow {
   maxPurchasePriceAmount?: number | null;
   minPeriodMonths?: number;
   minPurchasePriceAmount?: number | null;
+  modelDefinition?: VehicleModelDefinitionSummary | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   monthlyEnergyCount?: number | null;
   monthlyEnergyKwh?: number | null;
   monthlyFeeRate?: number;
@@ -123,6 +126,7 @@ interface PackageValues {
   maxPurchasePriceAmountYuan?: number | null;
   minPeriodMonths?: number;
   minPurchasePriceAmountYuan?: number | null;
+  modelDefinitionId?: string | null;
   monthlyEnergyCount?: number | null;
   monthlyEnergyKwh?: number | null;
   monthlyFeeRate?: number;
@@ -188,6 +192,18 @@ interface PlanValues {
   vehiclePackageId: string;
 }
 
+interface VehicleModelDefinitionSummary {
+  customerDisplayName?: string | null;
+  displayName: string;
+  id: string;
+  legacyVehicleModel?: string | null;
+  modelCode: string;
+}
+
+interface ListResponse<T> {
+  items: T[];
+}
+
 const statusColors: Record<string, string> = {
   ACTIVE: "green",
   APPROVED: "blue",
@@ -227,6 +243,20 @@ function toCents(value?: number | null) {
   return value === undefined || value === null ? undefined : Math.round(value * 100);
 }
 
+function modelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
+  return `${definition.modelCode} - ${definition.displayName} (legacy: ${labelOf(
+    VEHICLE_MODEL_LABELS,
+    definition.legacyVehicleModel
+  )})`;
+}
+
+function packageModelDisplayName(row?: PackageRow | null) {
+  if (!row) {
+    return "-";
+  }
+  return row.modelDisplayName ?? row.modelDefinition?.displayName ?? labelOf(VEHICLE_MODEL_LABELS, row.vehicleModel);
+}
+
 function getErrorMessage(error: unknown) {
   return error instanceof ApiError ? error.message : "操作失败，请稍后重试";
 }
@@ -262,6 +292,7 @@ function ProductsPageContent() {
   const [productOpen, setProductOpen] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>([]);
+  const [vehicleModelDefinitions, setVehicleModelDefinitions] = useState<VehicleModelDefinitionSummary[]>([]);
   const [vehiclePackages, setVehiclePackages] = useState<PackageRow[]>([]);
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionProductLocked, setVersionProductLocked] = useState(false);
@@ -290,13 +321,23 @@ function ProductsPageContent() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [productRows, vehicleRows, mileageRows, energyRows, benefitRows, planRows, nextMe] = await Promise.all([
+      const [
+        productRows,
+        vehicleRows,
+        mileageRows,
+        energyRows,
+        benefitRows,
+        planRows,
+        modelDefinitionResult,
+        nextMe
+      ] = await Promise.all([
         apiFetch<Product[]>("/products"),
         apiFetch<PackageRow[]>("/vehicle-packages"),
         apiFetch<PackageRow[]>("/mileage-packages"),
         apiFetch<PackageRow[]>("/energy-packages"),
         apiFetch<PackageRow[]>("/benefit-packages"),
         apiFetch<SubscriptionPlan[]>("/subscription-plans"),
+        apiFetch<ListResponse<VehicleModelDefinitionSummary>>("/vehicle-model-definitions?enabled=true&pageSize=100"),
         apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setProducts(productRows);
@@ -305,6 +346,7 @@ function ProductsPageContent() {
       setEnergyPackages(energyRows);
       setBenefitPackages(benefitRows);
       setSubscriptionPlans(planRows);
+      setVehicleModelDefinitions(modelDefinitionResult.items);
       setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -332,6 +374,21 @@ function ProductsPageContent() {
     () => products.map((product) => ({ label: `${product.productNo} / ${product.name}`, value: product.id })),
     [products]
   );
+  const vehicleModelDefinitionOptions = useMemo(
+    () =>
+      vehicleModelDefinitions.map((definition) => ({
+        label: modelDefinitionOptionLabel(definition),
+        value: definition.id
+      })),
+    [vehicleModelDefinitions]
+  );
+
+  function syncPackageLegacyVehicleModel(modelDefinitionId?: string) {
+    const definition = vehicleModelDefinitions.find((row) => row.id === modelDefinitionId);
+    if (definition?.legacyVehicleModel) {
+      packageForm.setFieldValue("vehicleModel", definition.legacyVehicleModel);
+    }
+  }
 
   function openProductModal(product?: Product) {
     setEditingProduct(product ?? null);
@@ -698,7 +755,7 @@ function ProductsPageContent() {
     { dataIndex: ["product", "productNo"], title: "产品编号", width: 150 },
     { dataIndex: ["product", "name"], title: "产品名称", width: 180 },
     { dataIndex: ["productVersion", "versionNo"], title: "产品版本", width: 110 },
-    { render: (_, record) => record.vehiclePackage.vehicleModel ?? "-", title: "车型", width: 90 },
+    { render: (_, record) => packageModelDisplayName(record.vehiclePackage), title: "车型", width: 140 },
     { render: (_, record) => record.vehiclePackage.packageName, title: "车辆使用费", width: 170 },
     { render: (_, record) => record.mileagePackage.packageName, title: "里程包", width: 150 },
     { render: (_, record) => record.energyPackage.packageName, title: "补能包", width: 150 },
@@ -851,7 +908,7 @@ function ProductsPageContent() {
             <Select options={(selectedPackageProduct?.versions ?? []).map((version) => ({ label: version.versionNo, value: version.id }))} />
           </Form.Item>
           <Form.Item label={`${packageMeta[packageKind].title}名称`} name="packageName" rules={[{ required: true, message: "请输入名称" }]}><Input /></Form.Item>
-          {packageFields(packageKind)}
+          {packageFields(packageKind, vehicleModelDefinitionOptions, syncPackageLegacyVehicleModel)}
           <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
         </Form>
       </Modal>
@@ -903,7 +960,7 @@ function ProductsPageContent() {
           <Form.Item label="车辆使用费 / 车型包" name="vehiclePackageId" rules={[{ required: true, message: "请选择车辆使用费" }]}>
             <Select
               options={planVehicleOptions.map((row) => ({
-                label: `${row.packageName} / ${row.vehicleModel ?? "-"} / ${formatRate(row.monthlyFeeRate)} / ${labelOf(STATUS_LABELS, row.status)}`,
+                label: `${row.packageName} / ${packageModelDisplayName(row)} / ${formatRate(row.monthlyFeeRate)} / ${labelOf(STATUS_LABELS, row.status)}`,
                 value: row.id
               }))}
             />
@@ -939,7 +996,7 @@ function ProductsPageContent() {
             size="small"
             style={{ marginBottom: 16 }}
             items={[
-              { label: "车型", children: selectedPlanVehiclePackage?.vehicleModel ?? "-" },
+              { label: "车型", children: packageModelDisplayName(selectedPlanVehiclePackage) },
               { label: "月费率", children: formatRate(selectedPlanVehiclePackage?.monthlyFeeRate) },
               {
                 label: "采购价区间",
@@ -1004,7 +1061,7 @@ function ProductsPageContent() {
               { label: "套餐名称", children: planDetail.planName },
               { label: "产品", children: `${planDetail.product.productNo} / ${planDetail.product.name}` },
               { label: "产品版本", children: planDetail.productVersion.versionNo },
-              { label: "车辆使用费", children: `${planDetail.vehiclePackage.packageName} / ${planDetail.vehiclePackage.vehicleModel ?? "-"}` },
+              { label: "车辆使用费", children: `${planDetail.vehiclePackage.packageName} / ${packageModelDisplayName(planDetail.vehiclePackage)}` },
               { label: "里程包", children: `${planDetail.mileagePackage.packageName} / ${planDetail.mileagePackage.monthlyMileageKm ?? "-"} km` },
               { label: "补能包", children: `${planDetail.energyPackage.packageName} / ${planDetail.energyPackage.monthlyEnergyKwh ?? "-"} kWh` },
               { label: "权益包", children: planDetail.benefitPackage?.packageName ?? "-" },
@@ -1026,7 +1083,7 @@ function ProductsPageContent() {
 function defaultPackageValues(kind: PackageKind): Partial<PackageValues> {
   const base = { priceAmountYuan: 0 };
   if (kind === "vehicle") {
-    return { ...base, maxPeriodMonths: 36, minPeriodMonths: 12, monthlyFeeRate: 0.035, vehicleModel: "ET5" };
+    return { ...base, maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: null, monthlyFeeRate: 0.035, vehicleModel: "ET5" };
   }
   if (kind === "mileage") {
     return { ...base, monthlyMileageKm: 1500, overMileageFeeAmountYuan: 1 };
@@ -1061,6 +1118,7 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
       maxPurchasePriceAmount: toCents(values.maxPurchasePriceAmountYuan),
       minPeriodMonths: values.minPeriodMonths,
       minPurchasePriceAmount: toCents(values.minPurchasePriceAmountYuan),
+      modelDefinitionId: values.modelDefinitionId ?? null,
       monthlyFeeRate: values.monthlyFeeRate,
       vehicleModel: values.vehicleModel,
       vehicleModelName: values.vehicleModelName
@@ -1093,10 +1151,23 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
   };
 }
 
-function packageFields(kind: PackageKind) {
+function packageFields(
+  kind: PackageKind,
+  modelDefinitionOptions: Array<{ label: string; value: string }>,
+  onModelDefinitionChange: (value?: string) => void
+) {
   if (kind === "vehicle") {
     return (
       <>
+        <Form.Item label="车型代码（主数据）" name="modelDefinitionId">
+          <Select
+            allowClear
+            options={modelDefinitionOptions}
+            onChange={(value?: string) => onModelDefinitionChange(value)}
+            showSearch
+            optionFilterProp="label"
+          />
+        </Form.Item>
         <Form.Item label="车型" name="vehicleModel" rules={[{ required: true, message: "请选择车型" }]}><Select options={vehicleOptions} /></Form.Item>
         <Form.Item label="车型包展示名" name="vehicleModelName"><Input /></Form.Item>
         <Form.Item label="品牌" name="brand"><Input /></Form.Item>
@@ -1199,7 +1270,9 @@ function packageTable(
 function packageSpecificColumns(kind: PackageKind): ColumnsType<PackageRow> {
   if (kind === "vehicle") {
     return [
-      { dataIndex: "vehicleModel", title: "车型", width: 90 },
+      { render: (_, record) => record.modelDefinition?.modelCode ?? "-", title: "车型代码", width: 120 },
+      { render: (_, record) => packageModelDisplayName(record), title: "车型显示名", width: 150 },
+      { render: (_, record) => labelOf(VEHICLE_MODEL_LABELS, record.vehicleModel), title: "legacy 车型", width: 110 },
       { dataIndex: "monthlyFeeRate", render: formatRate, title: "月费率", width: 100 },
       { render: (_, record) => `${record.minPeriodMonths ?? "-"} - ${record.maxPeriodMonths ?? "-"} 个月`, title: "订阅周期", width: 140 }
     ];

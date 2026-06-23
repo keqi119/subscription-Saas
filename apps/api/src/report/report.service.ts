@@ -126,9 +126,79 @@ const MAX_DETAIL_EXPORT_ROWS = 5000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BUSINESS_OFFSET_MS = BUSINESS_UTC_OFFSET_MINUTES * 60 * 1000;
 
+const reportModelDefinitionSelect = {
+  customerDisplayName: true,
+  deletedAt: true,
+  displayName: true,
+  id: true,
+  legacyVehicleModel: true,
+  modelCode: true
+} satisfies Prisma.VehicleModelDefinitionSelect;
+
+type ReportModelDefinition = Prisma.VehicleModelDefinitionGetPayload<{
+  select: typeof reportModelDefinitionSelect;
+}>;
+
 @Injectable()
 export class ReportService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private async resolveReportModelDefinition(modelDefinitionId: string | undefined, vehicleModel: VehicleModel | undefined) {
+    if (!modelDefinitionId) {
+      return null;
+    }
+
+    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+      select: reportModelDefinitionSelect,
+      where: {
+        deletedAt: null,
+        id: modelDefinitionId
+      }
+    });
+
+    if (!definition) {
+      throw new BadRequestException("车型主数据不存在");
+    }
+    if (vehicleModel && vehicleModel !== definition.legacyVehicleModel) {
+      throw new BadRequestException("modelDefinitionId 与 vehicleModel 不一致");
+    }
+
+    return definition;
+  }
+
+  private async reportVehicleModelWhere(
+    query: Pick<AssetProfitabilityQueryDto, "modelDefinitionId" | "vehicleModel">
+  ): Promise<Prisma.VehicleWhereInput> {
+    const definition = await this.resolveReportModelDefinition(query.modelDefinitionId, query.vehicleModel);
+    if (!definition) {
+      return query.vehicleModel ? { vehicleModel: query.vehicleModel } : {};
+    }
+
+    return {
+      OR: [
+        { modelDefinitionId: definition.id },
+        ...(definition.legacyVehicleModel
+          ? [{ modelDefinitionId: null, vehicleModel: definition.legacyVehicleModel }]
+          : [])
+      ]
+    };
+  }
+
+  private async reportOrderModelWhere(
+    query: Pick<OrderReportQueryDto, "modelDefinitionId" | "vehicleModel">
+  ): Promise<Prisma.SubscriptionOrderWhereInput> {
+    const definition = await this.resolveReportModelDefinition(query.modelDefinitionId, query.vehicleModel);
+    if (!definition) {
+      return query.vehicleModel ? { vehicleModel: query.vehicleModel } : {};
+    }
+
+    return {
+      OR: [
+        { vehicle: { modelDefinitionId: definition.id } },
+        ...(definition.legacyVehicleModel ? [{ vehicleModel: definition.legacyVehicleModel }] : [])
+      ]
+    };
+  }
 
   async getDashboardSummary(query: ReportDateRangeQueryDto) {
     const range = resolveReportDateRange(query);
@@ -228,13 +298,14 @@ export class ReportService {
 
   async getOrderReport(query: OrderReportQueryDto) {
     const range = resolveReportDateRange(query);
+    const modelWhere = await this.reportOrderModelWhere(query);
     const where: Prisma.SubscriptionOrderWhereInput = {
       createdAt: range.dateTimeFilter,
       deletedAt: null,
+      ...modelWhere,
       ...(query.orderSource ? { orderSource: query.orderSource } : {}),
       ...(query.orderStatus ? { orderStatus: query.orderStatus } : {}),
-      ...(query.productId ? { productId: query.productId } : {}),
-      ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {})
+      ...(query.productId ? { productId: query.productId } : {})
     };
 
     const [totalOrders, statusGroups, sourceGroups, vehicleModelGroups, ordersWithPlans] =
@@ -572,6 +643,9 @@ export class ReportService {
         brand: vehicle.brand,
         series: vehicle.series,
         model: vehicle.model,
+        modelDefinition: reportModelDefinitionSummary(vehicle.modelDefinition),
+        modelDefinitionId: vehicle.modelDefinitionId,
+        modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition, vehicle.vehicleModel),
         vehicleModel: vehicle.vehicleModel,
         batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
         batteryUsageType: vehicle.batteryUsageType,
@@ -1154,6 +1228,9 @@ export class ReportService {
         brand: vehicle.brand,
         currentSalePriceAmount: row.currentSalePriceAmount,
         model: vehicle.model,
+        modelDefinition: row.modelDefinition,
+        modelDefinitionId: row.modelDefinitionId,
+        modelDisplayName: row.modelDisplayName,
         plateNo: vehicle.plateNo,
         purchasePriceAmount: row.purchasePriceAmount,
         series: vehicle.series,
@@ -1339,7 +1416,9 @@ export class ReportService {
         "车牌号",
         "品牌",
         "车系",
-        "车型",
+        "车型代码",
+        "车型显示名",
+        "legacy 车型",
         "车辆状态",
         "BaaS 合同状态",
         "BaaS 服务商",
@@ -1415,7 +1494,9 @@ export class ReportService {
         vehicle.plateNo,
         vehicle.brand,
         vehicle.series,
-        vehicle.model ?? vehicle.vehicleModel,
+        vehicle.modelDefinition?.modelCode ?? "",
+        vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel,
+        vehicle.vehicleModel,
         labelOf(vehicleStatusLabels, vehicle.vehicleStatus),
         labelOf(vehicleBaasContractStatusLabels, vehicle.baasContractStatus),
         vehicle.baasProviderName,
@@ -1527,7 +1608,9 @@ export class ReportService {
       ["车牌号", vehicle.plateNo],
       ["品牌", vehicle.brand],
       ["车系", vehicle.series],
-      ["车型", vehicle.model ?? vehicle.vehicleModel],
+      ["车型代码", vehicle.modelDefinition?.modelCode ?? ""],
+      ["车型显示名", vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel],
+      ["legacy 车型", vehicle.vehicleModel],
       ["车辆状态", labelOf(vehicleStatusLabels, vehicle.vehicleStatus)],
       [],
       ["成本参数"],
@@ -1962,7 +2045,9 @@ export class ReportService {
         "车牌号",
         "品牌",
         "车系",
-        "车型",
+        "车型代码",
+        "车型显示名",
+        "legacy 车型",
         "车辆状态",
         "电池容量（kWh）",
         "电池使用方式",
@@ -1989,7 +2074,9 @@ export class ReportService {
         vehicle.plateNo,
         vehicle.brand,
         vehicle.series,
-        vehicle.model ?? vehicle.vehicleModel,
+        vehicle.modelDefinition?.modelCode ?? "",
+        vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel,
+        vehicle.vehicleModel,
         labelOf(vehicleStatusLabels, vehicle.vehicleStatus),
         vehicle.batteryCapacityKwh,
         labelOf(vehicleBatteryUsageTypeLabels, vehicle.batteryUsageType),
@@ -2038,7 +2125,9 @@ export class ReportService {
       ["车牌号", vehicle.plateNo],
       ["品牌", vehicle.brand],
       ["车系", vehicle.series],
-      ["车型", vehicle.model ?? vehicle.vehicleModel],
+      ["车型代码", vehicle.modelDefinition?.modelCode ?? ""],
+      ["车型显示名", vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel],
+      ["legacy 车型", vehicle.vehicleModel],
       ["电池容量（kWh）", vehicle.batteryCapacityKwh],
       ["电池使用方式", labelOf(vehicleBatteryUsageTypeLabels, vehicle.batteryUsageType)],
       ["车辆状态", labelOf(vehicleStatusLabels, vehicle.vehicleStatus)],
@@ -2424,12 +2513,13 @@ export class ReportService {
   async getOrderDetails(query: OrderDetailQueryDto) {
     const range = resolveReportDateRange(query);
     const pagination = resolvePagination(query);
+    const modelWhere = await this.reportOrderModelWhere(query);
     const where: Prisma.SubscriptionOrderWhereInput = {
       createdAt: range.dateTimeFilter,
       deletedAt: null,
+      ...modelWhere,
       ...(query.orderStatus ? { orderStatus: query.orderStatus } : {}),
       ...(query.orderSource ? { orderSource: query.orderSource } : {}),
-      ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {}),
       ...(query.productId ? { productId: query.productId } : {}),
       ...(query.subscriptionPlanId
         ? { quote: { subscriptionPlanId: query.subscriptionPlanId } }
@@ -2458,7 +2548,15 @@ export class ReportService {
             }
           },
           startDate: true,
-          vehicle: { select: { plateNo: true, vehicleNo: true, vin: true } },
+          vehicle: {
+            select: {
+              modelDefinition: { select: reportModelDefinitionSelect },
+              modelDefinitionId: true,
+              plateNo: true,
+              vehicleNo: true,
+              vin: true
+            }
+          },
           vehicleModel: true
         },
         skip: pagination.skip,
@@ -2478,6 +2576,9 @@ export class ReportService {
         vehicleVin: order.vehicle?.vin ?? null,
         vehicleNo: order.vehicle?.vehicleNo ?? null,
         plateNo: order.vehicle?.plateNo ?? null,
+        modelDefinition: reportModelDefinitionSummary(order.vehicle?.modelDefinition ?? null),
+        modelDefinitionId: order.vehicle?.modelDefinitionId ?? null,
+        modelDisplayName: reportVehicleModelDisplayName(order.vehicle?.modelDefinition ?? null, order.vehicleModel),
         vehicleModel: order.vehicleModel,
         subscriptionPlanId: order.quote.subscriptionPlanId,
         subscriptionPlanName: order.quote.subscriptionPlan?.planName ?? null,
@@ -2750,10 +2851,11 @@ export class ReportService {
   async getVehicleDetails(query: VehicleDetailQueryDto) {
     const range = resolveReportDateRange(query);
     const pagination = resolvePagination(query);
+    const modelWhere = await this.reportVehicleModelWhere(query);
     const where: Prisma.VehicleWhereInput = {
       deletedAt: null,
+      ...modelWhere,
       ...(query.vehicleStatus ? { status: query.vehicleStatus } : {}),
-      ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {}),
       ...(query.brand ? { brand: containsText(query.brand) } : {}),
       ...(query.series ? { series: containsText(query.series) } : {})
     };
@@ -2776,6 +2878,8 @@ export class ReportService {
           },
           id: true,
           model: true,
+          modelDefinition: { select: reportModelDefinitionSelect },
+          modelDefinitionId: true,
           orders: {
             orderBy: { createdAt: "desc" },
             select: {
@@ -2822,6 +2926,9 @@ export class ReportService {
           brand: vehicle.brand,
           series: vehicle.series,
           model: vehicle.model,
+          modelDefinition: reportModelDefinitionSummary(vehicle.modelDefinition),
+          modelDefinitionId: vehicle.modelDefinitionId,
+          modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition, vehicle.vehicleModel),
           vehicleModel: vehicle.vehicleModel,
           batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
           batteryUsageType: vehicle.batteryUsageType,
@@ -3021,7 +3128,9 @@ export class ReportService {
         "订单状态",
         "车辆VIN",
         "车牌号",
-        "车型",
+        "车型代码",
+        "车型显示名",
+        "legacy 车型",
         "订阅套餐",
         "月费（元）",
         "押金（元）",
@@ -3038,6 +3147,8 @@ export class ReportService {
         labelOf(orderStatusLabels, row.orderStatus),
         row.vehicleVin,
         row.plateNo,
+        row.modelDefinition?.modelCode ?? "",
+        row.modelDisplayName ?? row.vehicleModel,
         row.vehicleModel,
         row.subscriptionPlanName ?? row.subscriptionPlanNo,
         formatMoneyYuan(row.monthlyFeeAmount),
@@ -3220,7 +3331,9 @@ export class ReportService {
         "车牌号",
         "品牌",
         "车系",
-        "车型",
+        "车型代码",
+        "车型显示名",
+        "legacy 车型",
         "电池容量（kWh）",
         "电池使用方式",
         "车辆状态",
@@ -3239,7 +3352,9 @@ export class ReportService {
         row.plateNo,
         row.brand,
         row.series,
-        row.model ?? row.vehicleModel,
+        row.modelDefinition?.modelCode ?? "",
+        row.modelDisplayName ?? row.model ?? row.vehicleModel,
+        row.vehicleModel,
         row.batteryCapacityKwh,
         labelOf(vehicleBatteryUsageTypeLabels, row.batteryUsageType),
         labelOf(vehicleStatusLabels, row.vehicleStatus),
@@ -3294,10 +3409,11 @@ export class ReportService {
     query: AssetProfitabilityQueryDto & Partial<Pick<AssetProfitabilityVehicleListQueryDto, "sortBy" | "sortOrder">>
   ) {
     const range = resolveReportDateRange(query);
+    const modelWhere = await this.reportVehicleModelWhere(query);
     const vehicles = await this.prisma.vehicle.findMany({
       orderBy: { createdAt: "desc" },
       select: assetProfitabilityVehicleSelect,
-      where: assetProfitabilityVehicleWhere(query)
+      where: assetProfitabilityVehicleWhere(query, modelWhere)
     });
     const metricsByVehicleId = await this.buildAssetProfitabilityMetrics(vehicles, range);
     const rows = vehicles.map((vehicle) =>
@@ -3321,10 +3437,11 @@ export class ReportService {
     query: AssetReturnTrialQueryDto & Partial<Pick<AssetReturnTrialVehicleListQueryDto, "sortBy" | "sortOrder">>
   ) {
     const range = resolveReportDateRange(query);
+    const modelWhere = await this.reportVehicleModelWhere(query);
     const vehicles = await this.prisma.vehicle.findMany({
       orderBy: { createdAt: "desc" },
       select: assetReturnTrialVehicleSelect,
-      where: assetProfitabilityVehicleWhere(query)
+      where: assetProfitabilityVehicleWhere(query, modelWhere)
     });
     const residualHorizonMonth = resolveResidualHorizonMonth(query);
     const residualCalibrationPercent = resolveResidualCalibrationPercent(query);
@@ -4615,6 +4732,8 @@ const assetProfitabilityVehicleSelect = {
   currentSalePriceReviewedAt: true,
   id: true,
   model: true,
+  modelDefinition: { select: reportModelDefinitionSelect },
+  modelDefinitionId: true,
   plateNo: true,
   purchasePriceAmount: true,
   salePriceStatus: true,
@@ -5177,13 +5296,36 @@ type AssetProfitabilityMetrics = {
 };
 
 function assetProfitabilityVehicleWhere(
-  query: Pick<AssetProfitabilityQueryDto, "vehicleModel" | "vehicleStatus">
+  query: Pick<AssetProfitabilityQueryDto, "vehicleStatus">,
+  modelWhere: Prisma.VehicleWhereInput = {}
 ): Prisma.VehicleWhereInput {
   return {
     deletedAt: null,
-    ...(query.vehicleModel ? { vehicleModel: query.vehicleModel } : {}),
+    ...modelWhere,
     ...(query.vehicleStatus ? { status: query.vehicleStatus } : {})
   };
+}
+
+function reportModelDefinitionSummary(definition: ReportModelDefinition | null | undefined) {
+  if (!definition || definition.deletedAt) {
+    return null;
+  }
+
+  return {
+    customerDisplayName: definition.customerDisplayName,
+    displayName: definition.displayName,
+    id: definition.id,
+    legacyVehicleModel: definition.legacyVehicleModel,
+    modelCode: definition.modelCode
+  };
+}
+
+function reportVehicleModelDisplayName(
+  definition: ReportModelDefinition | null | undefined,
+  vehicleModel: VehicleModel | string | null | undefined
+) {
+  const summary = reportModelDefinitionSummary(definition);
+  return summary?.displayName ?? vehicleModel ?? null;
 }
 
 function assetProfitabilityVehicleRow(
@@ -5202,6 +5344,9 @@ function assetProfitabilityVehicleRow(
     brand: vehicle.brand,
     series: vehicle.series,
     model: vehicle.model,
+    modelDefinition: reportModelDefinitionSummary(vehicle.modelDefinition),
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition, vehicle.vehicleModel),
     vehicleModel: vehicle.vehicleModel,
     batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,

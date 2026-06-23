@@ -165,3 +165,30 @@ Product / Portal / Reports / Residual 留到后续阶段接入
 ```text
 docs/stage-10x-vehicle-master-data-integration.md
 ```
+
+## 11. Stage 10X-E 更新
+
+Stage 10X-E 已将车型主数据接入 Product、Portal catalog 和 Reports：
+
+```text
+Product / VehiclePackage / ProductPriceRule 支持可选 modelDefinitionId
+Portal catalog 返回 modelDefinition、modelDisplayName、customerModelDisplayName
+Portal catalog 支持 modelDefinitionId 筛选并保留 vehicleModel legacy filter
+Reports 查询、展示和 CSV 支持 modelDefinitionId
+CSV 输出车型代码、车型显示名、legacy 车型
+```
+
+仍保留双轨边界：
+
+```text
+VehicleModel enum 不删除
+legacy VehicleModel fallback 不删除
+SubscriptionQuote / SubscriptionOrder 历史快照不迁移
+Residual market / forecast 留到 Stage 10X-F
+```
+
+详见：
+
+```text
+docs/stage-10x-model-master-data-portal-product-reports.md
+```

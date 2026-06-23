@@ -13,6 +13,11 @@ export class PortalCatalogController {
     return this.portalCatalogService.listVehicles(query);
   }
 
+  @Get("model-definitions")
+  listModelDefinitions() {
+    return this.portalCatalogService.listModelDefinitions();
+  }
+
   @Get("vehicles/:id")
   getVehicle(@Param("id") id: string) {
     return this.portalCatalogService.getVehicle(id);

@@ -2181,6 +2181,8 @@ model VehiclePackage {
   productVersionId       String              @map("product_version_id") @db.Uuid
   productVersion         ProductVersion      @relation(fields: [productVersionId], references: [id])
   vehicleModel           VehicleModel        @map("vehicle_model")
+  modelDefinitionId      String?             @map("model_definition_id") @db.Uuid
+  modelDefinition        VehicleModelDefinition? @relation(fields: [modelDefinitionId], references: [id])
   vehicleModelName       String?             @map("vehicle_model_name") @db.VarChar(128)
   brand                  String?             @db.VarChar(64)
   series                 String?             @db.VarChar(64)
@@ -2203,6 +2205,7 @@ model VehiclePackage {
   @@index([productId])
   @@index([productVersionId])
   @@index([vehicleModel])
+  @@index([modelDefinitionId])
   @@index([status])
   @@map("vehicle_package")
 }
@@ -2343,6 +2346,8 @@ model ProductPriceRule {
   productVersionId     String         @map("product_version_id") @db.Uuid
   productVersion       ProductVersion @relation(fields: [productVersionId], references: [id])
   vehicleModel         VehicleModel   @map("vehicle_model")
+  modelDefinitionId    String?        @map("model_definition_id") @db.Uuid
+  modelDefinition      VehicleModelDefinition? @relation(fields: [modelDefinitionId], references: [id])
   monthlyFeeRate       Decimal        @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
   minPeriodMonths      Int            @map("min_period_months")
   maxPeriodMonths      Int            @map("max_period_months")
@@ -2360,6 +2365,7 @@ model ProductPriceRule {
   @@unique([productVersionId, vehicleModel])
   @@index([productVersionId])
   @@index([vehicleModel])
+  @@index([modelDefinitionId])
   @@index([status])
   @@map("product_price_rule")
 }
@@ -2466,6 +2472,8 @@ model VehicleModelDefinition {
   updatedBy           String?       @map("updated_by") @db.Uuid
   deletedAt           DateTime?     @map("deleted_at") @db.Timestamptz(6)
   vehicles            Vehicle[]
+  vehiclePackages     VehiclePackage[]
+  productPriceRules   ProductPriceRule[]
 
   @@index([modelCode])
   @@index([legacyVehicleModel])

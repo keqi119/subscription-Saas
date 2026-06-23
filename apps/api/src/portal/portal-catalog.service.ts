@@ -47,10 +47,37 @@ const portalSubscriptionPlanInclude = {
       status: true
     }
   },
-  vehiclePackage: true
+  vehiclePackage: {
+    include: {
+      modelDefinition: {
+        select: {
+          customerDisplayName: true,
+          deletedAt: true,
+          displayName: true,
+          enabled: true,
+          id: true,
+          legacyVehicleModel: true,
+          modelCode: true,
+          portalVisible: true
+        }
+      }
+    }
+  }
 } satisfies Prisma.SubscriptionPlanInclude;
 
 const portalVehicleInclude = {
+  modelDefinition: {
+    select: {
+      customerDisplayName: true,
+      deletedAt: true,
+      displayName: true,
+      enabled: true,
+      id: true,
+      legacyVehicleModel: true,
+      modelCode: true,
+      portalVisible: true
+    }
+  },
   listingProfile: {
     include: {
       media: {
@@ -119,10 +146,11 @@ export class PortalCatalogService {
   ) {}
 
   async listVehicles(query: PortalVehicleCatalogQueryDto = {}) {
+    const where = await this.catalogVehicleWhere(query);
     const vehicles = await this.prisma.vehicle.findMany({
       include: portalVehicleInclude,
       orderBy: { createdAt: "desc" },
-      where: catalogVehicleWhere(query)
+      where
     });
 
     return Promise.all(
@@ -152,6 +180,25 @@ export class PortalCatalogService {
     const vehicle = await this.findAvailableVehicle(vehicleId);
     const plans = await this.findCustomerPlansForVehicle(vehicle);
     return plans.map((plan) => toPortalSubscriptionPlanView(plan.plan, vehicle, plan.listingPlan));
+  }
+
+  async listModelDefinitions() {
+    const rows = await this.prisma.vehicleModelDefinition.findMany({
+      orderBy: [{ sortOrder: "asc" }, { modelCode: "asc" }],
+      select: {
+        customerDisplayName: true,
+        displayName: true,
+        id: true,
+        modelCode: true
+      },
+      where: {
+        deletedAt: null,
+        enabled: true,
+        portalVisible: true
+      }
+    });
+
+    return rows;
   }
 
   async previewVehicleMedia(vehicleId: string, mediaId: string): Promise<PortalCatalogMediaPreview> {
@@ -214,9 +261,10 @@ export class PortalCatalogService {
   }
 
   private async findAvailableVehicle(id: string) {
+    const where = await this.catalogVehicleWhere({}, id);
     const vehicle = await this.prisma.vehicle.findFirst({
       include: portalVehicleInclude,
-      where: catalogVehicleWhere({}, id)
+      where
     });
 
     if (!vehicle) {
@@ -244,14 +292,9 @@ export class PortalCatalogService {
     return fallbackPlans.map((plan) => ({ plan }));
   }
 
-  private async findAvailablePlansForVehicle(vehicle: Pick<PortalVehicle, "vehicleModel">) {
-    if (!vehicle.vehicleModel) {
-      return [];
-    }
-
-    return this.findAvailablePlans({
-      vehiclePackage: { vehicleModel: vehicle.vehicleModel }
-    });
+  private async findAvailablePlansForVehicle(vehicle: Pick<PortalVehicle, "modelDefinitionId" | "vehicleModel">) {
+    const plans = await this.findAvailablePlans();
+    return plans.filter((plan) => isPlanAvailableForVehicle(plan, vehicle));
   }
 
   private async findAvailablePlans(extraWhere: Prisma.SubscriptionPlanWhereInput = {}) {
@@ -279,16 +322,59 @@ export class PortalCatalogService {
 
     return plans.filter(isPortalSubscriptionPlanAvailable);
   }
+
+  private async catalogVehicleWhere(
+    query: PortalVehicleCatalogQueryDto = {},
+    id?: string
+  ): Promise<Prisma.VehicleWhereInput> {
+    const modelFilter = await this.resolveCatalogModelFilter(query);
+    return catalogVehicleWhere(query, id, modelFilter);
+  }
+
+  private async resolveCatalogModelFilter(query: PortalVehicleCatalogQueryDto): Promise<Prisma.VehicleWhereInput> {
+    if (!query.modelDefinitionId) {
+      return query.vehicleModel ? { vehicleModel: query.vehicleModel } : {};
+    }
+
+    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+      select: {
+        id: true,
+        legacyVehicleModel: true
+      },
+      where: {
+        deletedAt: null,
+        id: query.modelDefinitionId
+      }
+    });
+
+    if (!definition) {
+      throw new BadRequestException("车型主数据不存在");
+    }
+    if (query.vehicleModel && query.vehicleModel !== definition.legacyVehicleModel) {
+      throw new BadRequestException("modelDefinitionId 与 vehicleModel 不一致");
+    }
+
+    return {
+      OR: [
+        { modelDefinitionId: definition.id },
+        ...(definition.legacyVehicleModel
+          ? [{ modelDefinitionId: null, vehicleModel: definition.legacyVehicleModel }]
+          : [])
+      ]
+    };
+  }
 }
 
 function catalogVehicleWhere(
   query: PortalVehicleCatalogQueryDto = {},
-  id?: string
+  id?: string,
+  modelFilter: Prisma.VehicleWhereInput = {}
 ): Prisma.VehicleWhereInput {
   return {
     currentSalePriceAmount: { gt: 0 },
     deletedAt: null,
     id,
+    ...modelFilter,
     salePriceStatus: SalePriceStatus.EFFECTIVE,
     status: VehicleStatus.AVAILABLE,
     ...(query.brand ? { brand: { contains: query.brand, mode: "insensitive" } } : {}),
@@ -315,6 +401,9 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
   const cover = gallery.find((item) => item.isCover) ?? gallery[0] ?? null;
   const customerTags = stringArray(profile?.customerTags);
   const sellingPoints = stringArray(profile?.sellingPoints);
+  const modelDefinition = toPortalModelDefinitionSummary(vehicle.modelDefinition);
+  const modelDisplayName = portalModelDisplayName(vehicle);
+  const customerModelDisplayName = portalCustomerModelDisplayName(vehicle);
 
   return {
     available: true,
@@ -330,7 +419,7 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
     coverImageUrl: cover?.previewUrl ?? null,
     currentMileageKm: vehicle.currentMileageKm,
     customerTags,
-    displayName: profile?.displayName ?? profile?.shortTitle ?? buildVehicleDisplayName(vehicle),
+    displayName: profile?.displayName ?? profile?.shortTitle ?? portalCustomerModelDisplayName(vehicle),
     estimatedRangeKm: profile?.estimatedRangeKm ?? null,
     gallery,
     hasFireDamage: profile?.hasFireDamage ?? null,
@@ -339,6 +428,9 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
     id: vehicle.id,
     mileageKm: vehicle.currentMileageKm,
     model: vehicle.model,
+    modelDefinition,
+    modelDefinitionId: modelDefinition?.id ?? null,
+    modelDisplayName,
     modelYear: vehicle.modelYear,
     monthlyFeeFromAmount: monthlyFeeFrom(plans, vehicle),
     registrationDate: vehicle.registrationDate,
@@ -347,7 +439,9 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
     shortTitle: profile?.shortTitle ?? null,
     statusLabel: "可申请",
     subtitle: profile?.subtitle ?? null,
-    tags: buildVehicleTags(vehicle, customerTags, profile)
+    tags: buildVehicleTags(vehicle, customerTags, profile),
+    vehicleModel: vehicle.vehicleModel,
+    customerModelDisplayName
   };
 }
 
@@ -379,6 +473,9 @@ function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[]
       displayName: listItem.displayName,
       id: vehicle.id,
       model: vehicle.model,
+      modelDefinition: listItem.modelDefinition,
+      modelDefinitionId: listItem.modelDefinitionId,
+      modelDisplayName: listItem.modelDisplayName,
       modelYear: vehicle.modelYear,
       registrationDate: vehicle.registrationDate,
       series: vehicle.series
@@ -508,8 +605,17 @@ function isPortalSubscriptionPlanAvailable(plan: PortalSubscriptionPlan) {
   );
 }
 
-function isPlanAvailableForVehicle(plan: PortalSubscriptionPlan, vehicle: Pick<PortalVehicle, "vehicleModel">) {
-  return isPortalSubscriptionPlanAvailable(plan) && plan.vehiclePackage.vehicleModel === vehicle.vehicleModel;
+function isPlanAvailableForVehicle(
+  plan: PortalSubscriptionPlan,
+  vehicle: Pick<PortalVehicle, "modelDefinitionId" | "vehicleModel">
+) {
+  if (!isPortalSubscriptionPlanAvailable(plan)) {
+    return false;
+  }
+  if (vehicle.modelDefinitionId && plan.vehiclePackage.modelDefinitionId) {
+    return vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId;
+  }
+  return Boolean(vehicle.vehicleModel && plan.vehiclePackage.vehicleModel === vehicle.vehicleModel);
 }
 
 function packageBelongsToPlan(
@@ -725,6 +831,37 @@ function buildReportDefectSummary(report: PortalConditionReport) {
 
 function buildMediaPreviewUrl(vehicleId: string, media: Pick<PortalListingMedia, "id">) {
   return `/api/portal/catalog/vehicles/${vehicleId}/media/${media.id}/preview`;
+}
+
+function toPortalModelDefinitionSummary(definition: PortalVehicle["modelDefinition"] | null) {
+  if (!definition || definition.deletedAt) {
+    return null;
+  }
+
+  return {
+    customerDisplayName: definition.customerDisplayName,
+    displayName: definition.displayName,
+    enabled: definition.enabled,
+    id: definition.id,
+    legacyVehicleModel: definition.legacyVehicleModel,
+    modelCode: definition.modelCode,
+    portalVisible: definition.portalVisible
+  };
+}
+
+function portalModelDisplayName(vehicle: Pick<PortalVehicle, "modelDefinition" | "vehicleModel">) {
+  const definition = toPortalModelDefinitionSummary(vehicle.modelDefinition);
+  return definition?.displayName ?? vehicle.vehicleModel ?? null;
+}
+
+function portalCustomerModelDisplayName(
+  vehicle: Pick<PortalVehicle, "brand" | "model" | "modelDefinition" | "modelYear" | "series" | "vehicleModel">
+) {
+  const definition = toPortalModelDefinitionSummary(vehicle.modelDefinition);
+  const modelName = definition?.customerDisplayName ?? definition?.displayName ?? vehicle.vehicleModel ?? vehicle.model;
+  return [vehicle.brand, vehicle.series, modelName, vehicle.modelYear ? `${vehicle.modelYear}款` : null]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function buildVehicleDisplayName(vehicle: Pick<PortalVehicle, "brand" | "model" | "modelYear" | "series">) {

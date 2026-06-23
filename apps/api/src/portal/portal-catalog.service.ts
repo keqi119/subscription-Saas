@@ -54,11 +54,8 @@ const portalSubscriptionPlanInclude = {
           customerDisplayName: true,
           deletedAt: true,
           displayName: true,
-          enabled: true,
           id: true,
-          legacyVehicleModel: true,
-          modelCode: true,
-          portalVisible: true
+          modelCode: true
         }
       }
     }
@@ -71,11 +68,8 @@ const portalVehicleInclude = {
       customerDisplayName: true,
       deletedAt: true,
       displayName: true,
-      enabled: true,
       id: true,
-      legacyVehicleModel: true,
-      modelCode: true,
-      portalVisible: true
+      modelCode: true
     }
   },
   listingProfile: {
@@ -841,11 +835,8 @@ function toPortalModelDefinitionSummary(definition: PortalVehicle["modelDefiniti
   return {
     customerDisplayName: definition.customerDisplayName,
     displayName: definition.displayName,
-    enabled: definition.enabled,
     id: definition.id,
-    legacyVehicleModel: definition.legacyVehicleModel,
-    modelCode: definition.modelCode,
-    portalVisible: definition.portalVisible
+    modelCode: definition.modelCode
   };
 }
 

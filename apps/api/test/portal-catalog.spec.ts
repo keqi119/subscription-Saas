@@ -195,6 +195,9 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
       modelDefinitionId: definition.id,
       modelDisplayName: "ES6 主数据"
     });
+    expect(rows[0]?.modelDefinition).not.toHaveProperty("enabled");
+    expect(rows[0]?.modelDefinition).not.toHaveProperty("legacyVehicleModel");
+    expect(rows[0]?.modelDefinition).not.toHaveProperty("portalVisible");
     expect(detail.vehicle).toMatchObject({
       modelDefinitionId: definition.id,
       modelDisplayName: "ES6 主数据"

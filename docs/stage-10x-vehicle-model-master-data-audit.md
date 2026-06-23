@@ -733,3 +733,28 @@ Stage 10X-G: legacy enum 退场评估
 ```text
 保留 enum，新增主数据，优先 relation，fallback enum，逐步迁移。
 ```
+
+## 16. Stage 10X-C 实施状态
+
+Stage 10X-C 已按本审计推荐的双轨过渡路线新增车型代码主数据维护基础：
+
+```text
+VehicleModelDefinition schema / migration
+vehicle_model:view / vehicle_model:manage 权限
+车辆资产 -> 车型代码 菜单入口
+/api/vehicle-model-definitions CRUD API
+/vehicle-model-definitions 后台维护页面
+8 个 legacy VehicleModel enum 映射 seed
+```
+
+10X-C 仍未接入车辆主流程：
+
+```text
+未修改 Vehicle.model
+未新增 Vehicle.modelDefinitionId
+未修改车辆新增 / 编辑页面车型下拉
+未迁移历史车辆
+未修改产品 / Portal / 报表 / 残值模块
+```
+
+车辆管理双轨接入仍留给 Stage 10X-D。

@@ -128,6 +128,8 @@ leads、产品/套餐、押金规则、车辆资产池和车辆销售价初始�
 创建测试进件、报价、订单、合同、账单、收款、交付、退车、催收或权益履约数据；
 seed 后车辆资产应处于 `AVAILABLE` 且销售价状态为 `EFFECTIVE`。
 
+车型代码主数据 seed 会初始化 `ET5 / ET5T / ET7 / EC6 / ES6 / ES8 / ET9 / ES9` 的 legacy enum 映射；如权限或菜单发生变化，后台用户需要重新登录刷新 token。
+
 复杂验收数据必须通过显式场景脚本创建，例如：
 
 ```powershell
@@ -478,3 +480,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10n-c-market-calibrated-depreciation.md`: Stage 10N-C-C market calibrated depreciation and residual calibration comparison. This is an analysis-only口径 and does not override accounting depreciation main ROE.
 - `docs/stage-10x-vehicle-model-enum-drift-closure.md`: Stage 10X-A VehicleModel enum drift closure for ET5T, EC6, ES8, ET9, and ES9 before model-code master-data migration.
 - `docs/stage-10x-vehicle-model-master-data-audit.md`: Stage 10X-B vehicle model master-data impact audit and double-track migration plan.
+- `docs/stage-10x-vehicle-model-master-data.md`: Stage 10X-C VehicleModelDefinition master data model, CRUD API, seed, permission, menu, and back-office maintenance page.

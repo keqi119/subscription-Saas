@@ -28,6 +28,7 @@ import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-as
 import { VehicleBaasController } from "../src/vehicle-baas/vehicle-baas.controller";
 import { VehicleDepreciationController } from "../src/vehicle-depreciation/vehicle-depreciation.controller";
 import { VehicleInsuranceController } from "../src/vehicle-insurance/vehicle-insurance.controller";
+import { VehicleModelDefinitionController } from "../src/vehicle-model-definition/vehicle-model-definition.controller";
 import { VehicleValuationReviewController } from "../src/vehicle-valuation-review/vehicle-valuation-review.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
 
@@ -45,6 +46,8 @@ const VEHICLE_BAAS_VIEW_PERMISSION = "vehicle_baas:view";
 const VEHICLE_BAAS_MANAGE_PERMISSION = "vehicle_baas:manage";
 const VEHICLE_DEPRECIATION_VIEW_PERMISSION = "vehicle_depreciation:view";
 const VEHICLE_DEPRECIATION_MANAGE_PERMISSION = "vehicle_depreciation:manage";
+const VEHICLE_MODEL_VIEW_PERMISSION = "vehicle_model:view";
+const VEHICLE_MODEL_MANAGE_PERMISSION = "vehicle_model:manage";
 const INSURANCE_CLAIM_VIEW_PERMISSION = "insurance_claim:view";
 const INSURANCE_CLAIM_MANAGE_PERMISSION = "insurance_claim:manage";
 const REVENUE_RIGHT_VIEW_PERMISSION = "revenue_right:view";
@@ -866,6 +869,34 @@ describe("vehicle depreciation permissions", () => {
   });
 });
 
+describe("vehicle model definition permissions", () => {
+  it("gates model definition APIs behind vehicle_model permissions", () => {
+    const viewHandlers = [
+      VehicleModelDefinitionController.prototype.listDefinitions,
+      VehicleModelDefinitionController.prototype.getDefinition
+    ];
+    const manageHandlers = [
+      VehicleModelDefinitionController.prototype.createDefinition,
+      VehicleModelDefinitionController.prototype.updateDefinition,
+      VehicleModelDefinitionController.prototype.enableDefinition,
+      VehicleModelDefinitionController.prototype.disableDefinition,
+      VehicleModelDefinitionController.prototype.deleteDefinition
+    ];
+
+    for (const handler of viewHandlers) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        VEHICLE_MODEL_VIEW_PERMISSION
+      ]);
+    }
+    for (const handler of manageHandlers) {
+      const permissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(permissions).toEqual([VEHICLE_MODEL_MANAGE_PERMISSION]);
+      expect(hasRequiredPermissions([VEHICLE_MODEL_VIEW_PERMISSION], permissions)).toBe(false);
+      expect(hasRequiredPermissions([VEHICLE_MODEL_MANAGE_PERMISSION], permissions)).toBe(true);
+    }
+  });
+});
+
 describe("notification permissions", () => {
   it("gates back-office notification center APIs behind notification:view", () => {
     for (const handler of [
@@ -1220,6 +1251,8 @@ describe("seed permission calibration", () => {
       "financing:manage",
       "vehicle_asset_pool:view",
       "vehicle_asset_pool:manage",
+      "vehicle_model:view",
+      "vehicle_model:manage",
       "vehicle_depreciation:view",
       "vehicle_depreciation:manage",
       "revenue_right:view",
@@ -1296,6 +1329,33 @@ describe("seed permission calibration", () => {
     expect(roleHasMenu(roleMenuArray("OP"), "vehicles.depreciation_policies")).toBe(true);
     expect(roleHasMenu(roleMenuArray("SA"), "vehicles.depreciation_policies")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "vehicles.depreciation_policies")).toBe(true);
+  });
+
+  it("calibrates vehicle model definition permissions by role", () => {
+    for (const permission of ["vehicle_model:view", "vehicle_model:manage"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const vehicleModelViewPermissions = ["vehicle_model:view"]');
+    expect(seedSource).toContain(
+      'const vehicleModelManagementPermissions = ["vehicle_model:view", "vehicle_model:manage"]'
+    );
+    expect(seedSource).toContain(
+      '["vehicles.model_definitions", "车型代码", "/vehicle-model-definitions", "car", 15, "vehicle_model:view", "vehicles"]'
+    );
+    expect(seedSource).toContain('const vehicleModelMenuCodes = ["vehicles.model_definitions"]');
+    expect(seedSource).toContain(
+      '...(roleCode === "FI" ? vehicleModelManagementPermissions : [])'
+    );
+    expect(seedSource).toContain('...(roleCode === "FI" ? vehicleModelMenuCodes : [])');
+    expectRolePermissions("OP", ["vehicle_model:view", "vehicle_model:manage"]);
+    expectRolePermissions("SA", ["vehicle_model:view"]);
+    expectRolePermissions("GM", ["vehicle_model:view"]);
+    expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_model:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "vehicle_model:manage")).toBe(false);
+    expect(roleHasMenu(roleMenuArray("OP"), "vehicles.model_definitions")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("SA"), "vehicles.model_definitions")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "vehicles.model_definitions")).toBe(true);
   });
 
   it("calibrates vehicle valuation review permissions by role", () => {

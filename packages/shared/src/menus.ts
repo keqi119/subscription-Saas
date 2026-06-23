@@ -111,6 +111,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         permissionCode: PermissionCode.VEHICLE_VIEW
       },
       {
+        code: "vehicles.model_definitions",
+        icon: "car",
+        label: "车型代码",
+        path: "/vehicle-model-definitions",
+        permissionCode: PermissionCode.VEHICLE_MODEL_VIEW
+      },
+      {
         code: "vehicles.asset_pools",
         icon: "car",
         label: "车辆资产池",

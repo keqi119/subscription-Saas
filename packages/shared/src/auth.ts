@@ -65,6 +65,8 @@ export enum PermissionCode {
   VEHICLE_REVIEW_SALE_PRICE = "vehicle:review_sale_price",
   VEHICLE_HISTORY_VIEW = "vehicle:history_view",
   VEHICLE_MANAGE = "vehicle:manage",
+  VEHICLE_MODEL_VIEW = "vehicle_model:view",
+  VEHICLE_MODEL_MANAGE = "vehicle_model:manage",
   VEHICLE_INSURANCE_VIEW = "vehicle_insurance:view",
   VEHICLE_INSURANCE_MANAGE = "vehicle_insurance:manage",
   VEHICLE_DOCUMENT_VIEW = "vehicle_document:view",

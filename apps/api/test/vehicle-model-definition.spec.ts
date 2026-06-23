@@ -143,11 +143,12 @@ describe("VehicleModelDefinitionService", () => {
     expect(seedSource).toContain("prisma.vehicleModelDefinition.upsert");
   });
 
-  it("does not change Vehicle create/update away from the legacy VehicleModel enum", () => {
+  it("keeps Vehicle on the legacy VehicleModel enum while allowing optional master-data linkage", () => {
     const schemaSource = fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
 
     expect(schemaSource).toContain("vehicleModel                  VehicleModel?");
-    expect(schemaSource).not.toContain("modelDefinitionId");
+    expect(schemaSource).toContain("modelDefinitionId");
+    expect(schemaSource).toContain("VehicleModelDefinition?");
   });
 });
 

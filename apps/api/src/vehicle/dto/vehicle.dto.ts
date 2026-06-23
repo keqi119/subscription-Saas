@@ -8,7 +8,7 @@ import {
   VehicleSalePriceReviewType,
   VehicleStatus
 } from "@prisma/client";
-import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from "class-validator";
+import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from "class-validator";
 
 export class CreateVehicleDto {
   @IsString()
@@ -27,8 +27,13 @@ export class CreateVehicleDto {
   @Min(1900)
   modelYear?: number | null;
 
+  @IsOptional()
   @IsEnum(VehicleModel)
-  vehicleModel!: VehicleModel;
+  vehicleModel?: VehicleModel | null;
+
+  @IsOptional()
+  @IsUUID("4")
+  modelDefinitionId?: string | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -115,6 +120,10 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel | null;
+
+  @IsOptional()
+  @IsUUID("4")
+  modelDefinitionId?: string | null;
 
   @IsOptional()
   @Type(() => Number)

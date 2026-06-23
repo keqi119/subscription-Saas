@@ -976,6 +976,7 @@ function makeVehicleBase(): VehicleFixture {
     status: VehicleStatus.DRAFT,
     updatedAt: now,
     updatedBy: "user-1",
+    modelDefinitionId: null,
     vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH20260602000000A1B2",
     vin: null

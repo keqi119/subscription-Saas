@@ -5,7 +5,6 @@ import {
   FinancingInstrument,
   Prisma,
   SalePriceStatus,
-  Vehicle,
   VehicleAcquisitionMode,
   VehicleAssetCostProfile,
   VehicleAssetCostProfileStatus,
@@ -13,6 +12,7 @@ import {
   VehicleCapitalEventStatus,
   VehicleCapitalEventType,
   VehicleDepreciationMethod,
+  VehicleModel,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
@@ -35,13 +35,32 @@ import {
   UpsertVehicleAssetCostProfileDto
 } from "./dto/vehicle.dto";
 
+const vehicleModelDefinitionSelect = {
+  brand: true,
+  customerDisplayName: true,
+  displayName: true,
+  enabled: true,
+  id: true,
+  legacyVehicleModel: true,
+  modelCode: true,
+  modelName: true,
+  modelYear: true,
+  series: true
+} satisfies Prisma.VehicleModelDefinitionSelect;
+
 const vehicleInclude = {
+  modelDefinition: {
+    select: vehicleModelDefinitionSelect
+  },
   salePriceHistories: {
     orderBy: { createdAt: "desc" as const }
   }
 } satisfies Prisma.VehicleInclude;
 
-type VehicleWithHistory = Vehicle & { salePriceHistories?: VehicleSalePriceHistory[] };
+type VehicleWithHistory = Prisma.VehicleGetPayload<{ include: typeof vehicleInclude }>;
+type VehicleModelDefinitionForVehicle = Prisma.VehicleModelDefinitionGetPayload<{
+  select: typeof vehicleModelDefinitionSelect;
+}>;
 
 const capitalEventInclude = {
   financingInstrument: true
@@ -134,16 +153,18 @@ export class VehicleService {
 
   async createVehicle(dto: CreateVehicleDto, user: RequestUser, context: RequestContext) {
     assertRequiredString(dto.vin, "VIN 必填");
-    if (!dto.vehicleModel) {
-      throw new BadRequestException("车型代码必填");
-    }
+    const modelDefinition = await this.resolveModelDefinitionForVehicle(dto.modelDefinitionId);
+    const vehicleModel = resolveVehicleModelForWrite(dto.vehicleModel, modelDefinition);
     assertPositiveAmount(dto.purchasePriceAmount, "车辆采购价必须大于 0");
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
     assertCanCreateAsAvailable(dto.status ?? VehicleStatus.DRAFT);
 
-    const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id);
+    const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id, {
+      modelDefinition,
+      vehicleModel
+    });
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -173,7 +194,12 @@ export class VehicleService {
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
-    const data = updateVehicleData(dto, user.id);
+    const modelDefinition = await this.resolveModelDefinitionForVehicle(dto.modelDefinitionId);
+    const data = updateVehicleData(dto, user.id, {
+      modelDefinition,
+      modelDefinitionProvided: dto.modelDefinitionId !== undefined,
+      vehicleModel: resolveVehicleModelForUpdate(dto.vehicleModel, modelDefinition, dto.modelDefinitionId !== undefined)
+    });
 
     if (dto.status) {
       assertCanEnterAvailable(dto.status, before);
@@ -237,6 +263,7 @@ export class VehicleService {
           salePriceStatus: SalePriceStatus.EFFECTIVE,
           updatedBy: user.id
         },
+        include: vehicleInclude,
         where: { id }
       });
 
@@ -313,6 +340,7 @@ export class VehicleService {
           salePriceStatus: SalePriceStatus.EFFECTIVE,
           updatedBy: user.id
         },
+        include: vehicleInclude,
         where: { id }
       });
 
@@ -720,13 +748,47 @@ export class VehicleService {
 
     return financingInstrument;
   }
+
+  private async resolveModelDefinitionForVehicle(modelDefinitionId: string | null | undefined) {
+    if (modelDefinitionId === undefined || modelDefinitionId === null) {
+      return null;
+    }
+
+    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+      select: vehicleModelDefinitionSelect,
+      where: {
+        deletedAt: null,
+        id: modelDefinitionId
+      }
+    });
+
+    if (!definition) {
+      throw new BadRequestException("车型主数据不存在");
+    }
+    if (!definition.enabled) {
+      throw new BadRequestException("车型主数据已停用");
+    }
+    if (!definition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于车辆创建");
+    }
+
+    return definition;
+  }
 }
 
-async function createVehicleWithRetry(prisma: PrismaService, dto: CreateVehicleDto, operatorId: string) {
+async function createVehicleWithRetry(
+  prisma: PrismaService,
+  dto: CreateVehicleDto,
+  operatorId: string,
+  modelContext: {
+    modelDefinition: VehicleModelDefinitionForVehicle | null;
+    vehicleModel: VehicleModel;
+  }
+) {
   try {
     return await withUniqueBusinessNoRetry(() => prisma.vehicle.create({
       data: {
-        ...createVehicleData(dto),
+        ...createVehicleData(dto, modelContext),
         createdBy: operatorId,
         updatedBy: operatorId,
         vehicleNo: createBusinessNo("VEH")
@@ -738,7 +800,13 @@ async function createVehicleWithRetry(prisma: PrismaService, dto: CreateVehicleD
   }
 }
 
-function createVehicleData(dto: CreateVehicleDto): Omit<Prisma.VehicleCreateInput, "vehicleNo"> {
+function createVehicleData(
+  dto: CreateVehicleDto,
+  modelContext: {
+    modelDefinition: VehicleModelDefinitionForVehicle | null;
+    vehicleModel: VehicleModel;
+  }
+): Omit<Prisma.VehicleCreateInput, "vehicleNo"> {
   return {
     assetLocation: dto.assetLocation,
     batteryCapacityKwh:
@@ -761,12 +829,23 @@ function createVehicleData(dto: CreateVehicleDto): Omit<Prisma.VehicleCreateInpu
     remark: dto.remark,
     series: dto.series,
     status: dto.status ?? VehicleStatus.DRAFT,
-    vehicleModel: dto.vehicleModel,
+    vehicleModel: modelContext.vehicleModel,
+    ...(modelContext.modelDefinition
+      ? { modelDefinition: { connect: { id: modelContext.modelDefinition.id } } }
+      : {}),
     vin: dto.vin
   };
 }
 
-function updateVehicleData(dto: UpdateVehicleDto, operatorId: string): Prisma.VehicleUpdateInput {
+function updateVehicleData(
+  dto: UpdateVehicleDto,
+  operatorId: string,
+  modelContext: {
+    modelDefinition: VehicleModelDefinitionForVehicle | null;
+    modelDefinitionProvided: boolean;
+    vehicleModel?: VehicleModel | null;
+  }
+): Prisma.VehicleUpdateInput {
   const data: Prisma.VehicleUpdateInput = {
     updatedBy: operatorId
   };
@@ -799,7 +878,14 @@ function updateVehicleData(dto: UpdateVehicleDto, operatorId: string): Prisma.Ve
   assignIfDefined(data, "remark", dto.remark);
   assignIfDefined(data, "series", dto.series);
   assignIfDefined(data, "status", dto.status);
-  assignIfDefined(data, "vehicleModel", dto.vehicleModel);
+  assignIfDefined(data, "vehicleModel", modelContext.vehicleModel);
+  if (modelContext.modelDefinitionProvided) {
+    if (modelContext.modelDefinition) {
+      data.modelDefinition = { connect: { id: modelContext.modelDefinition.id } };
+    } else {
+      data.modelDefinition = { disconnect: true };
+    }
+  }
   assignIfDefined(data, "vin", dto.vin);
 
   return data;
@@ -809,6 +895,43 @@ function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K,
   if (value !== undefined) {
     target[key] = value;
   }
+}
+
+function resolveVehicleModelForWrite(
+  vehicleModel: VehicleModel | null | undefined,
+  modelDefinition: VehicleModelDefinitionForVehicle | null
+) {
+  if (modelDefinition) {
+    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据与 legacy 车型不一致");
+    }
+    return modelDefinition.legacyVehicleModel as VehicleModel;
+  }
+
+  if (!vehicleModel) {
+    throw new BadRequestException("车型代码必填");
+  }
+
+  return vehicleModel;
+}
+
+function resolveVehicleModelForUpdate(
+  vehicleModel: VehicleModel | null | undefined,
+  modelDefinition: VehicleModelDefinitionForVehicle | null,
+  modelDefinitionProvided: boolean
+) {
+  if (modelDefinition) {
+    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据与 legacy 车型不一致");
+    }
+    return modelDefinition.legacyVehicleModel;
+  }
+
+  if (modelDefinitionProvided) {
+    return vehicleModel;
+  }
+
+  return vehicleModel;
 }
 
 function assertRequiredString(value: string | null | undefined, message: string) {
@@ -1023,6 +1146,9 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     insuranceStartDate: vehicle.insuranceStartDate,
     latestRegistrationDate: vehicle.latestRegistrationDate,
     model: vehicle.model,
+    modelDefinition: vehicle.modelDefinition ? toVehicleModelDefinitionView(vehicle.modelDefinition) : null,
+    modelDefinitionId: vehicle.modelDefinitionId ?? null,
+    modelDisplayName: vehicle.modelDefinition?.displayName ?? vehicle.vehicleModel,
     modelYear: vehicle.modelYear,
     nextSalePriceReviewAt: vehicle.nextSalePriceReviewAt,
     plateNo: vehicle.plateNo,
@@ -1040,6 +1166,21 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     vehicleModel: vehicle.vehicleModel,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
+  };
+}
+
+function toVehicleModelDefinitionView(definition: VehicleModelDefinitionForVehicle) {
+  return {
+    brand: definition.brand,
+    customerDisplayName: definition.customerDisplayName,
+    displayName: definition.displayName,
+    enabled: definition.enabled,
+    id: definition.id,
+    legacyVehicleModel: definition.legacyVehicleModel,
+    modelCode: definition.modelCode,
+    modelName: definition.modelName,
+    modelYear: definition.modelYear,
+    series: definition.series
   };
 }
 

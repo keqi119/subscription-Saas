@@ -26,6 +26,7 @@ import { RevenueRightController } from "../src/revenue-right/revenue-right.contr
 import { ServiceCaseController } from "../src/service-case/service-case.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
 import { VehicleBaasController } from "../src/vehicle-baas/vehicle-baas.controller";
+import { VehicleDepreciationController } from "../src/vehicle-depreciation/vehicle-depreciation.controller";
 import { VehicleInsuranceController } from "../src/vehicle-insurance/vehicle-insurance.controller";
 import { VehicleValuationReviewController } from "../src/vehicle-valuation-review/vehicle-valuation-review.controller";
 import { VehicleController } from "../src/vehicle/vehicle.controller";
@@ -42,6 +43,8 @@ const VEHICLE_DOCUMENT_VIEW_PERMISSION = "vehicle_document:view";
 const VEHICLE_DOCUMENT_MANAGE_PERMISSION = "vehicle_document:manage";
 const VEHICLE_BAAS_VIEW_PERMISSION = "vehicle_baas:view";
 const VEHICLE_BAAS_MANAGE_PERMISSION = "vehicle_baas:manage";
+const VEHICLE_DEPRECIATION_VIEW_PERMISSION = "vehicle_depreciation:view";
+const VEHICLE_DEPRECIATION_MANAGE_PERMISSION = "vehicle_depreciation:manage";
 const INSURANCE_CLAIM_VIEW_PERMISSION = "insurance_claim:view";
 const INSURANCE_CLAIM_MANAGE_PERMISSION = "insurance_claim:manage";
 const REVENUE_RIGHT_VIEW_PERMISSION = "revenue_right:view";
@@ -820,6 +823,49 @@ describe("vehicle baas permissions", () => {
   });
 });
 
+describe("vehicle depreciation permissions", () => {
+  it("gates policy, schedule, record, and summary APIs behind vehicle_depreciation permissions", () => {
+    const viewHandlers = [
+      VehicleDepreciationController.prototype.listPolicies,
+      VehicleDepreciationController.prototype.getPolicy,
+      VehicleDepreciationController.prototype.listVehiclePolicies,
+      VehicleDepreciationController.prototype.getVehicleDepreciationSummary,
+      VehicleDepreciationController.prototype.listPolicySchedules,
+      VehicleDepreciationController.prototype.listRecords,
+      VehicleDepreciationController.prototype.listPolicyRecords
+    ];
+    const manageHandlers = [
+      VehicleDepreciationController.prototype.createPolicy,
+      VehicleDepreciationController.prototype.updatePolicy,
+      VehicleDepreciationController.prototype.activatePolicy,
+      VehicleDepreciationController.prototype.suspendPolicy,
+      VehicleDepreciationController.prototype.terminatePolicy,
+      VehicleDepreciationController.prototype.archivePolicy,
+      VehicleDepreciationController.prototype.generateSchedules,
+      VehicleDepreciationController.prototype.confirmSchedule,
+      VehicleDepreciationController.prototype.voidSchedule,
+      VehicleDepreciationController.prototype.lockSchedule,
+      VehicleDepreciationController.prototype.createRecord,
+      VehicleDepreciationController.prototype.updateRecord,
+      VehicleDepreciationController.prototype.confirmRecord,
+      VehicleDepreciationController.prototype.voidRecord,
+      VehicleDepreciationController.prototype.lockRecord
+    ];
+
+    for (const handler of viewHandlers) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        VEHICLE_DEPRECIATION_VIEW_PERMISSION
+      ]);
+    }
+    for (const handler of manageHandlers) {
+      const permissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(permissions).toEqual([VEHICLE_DEPRECIATION_MANAGE_PERMISSION]);
+      expect(hasRequiredPermissions([VEHICLE_DEPRECIATION_VIEW_PERMISSION], permissions)).toBe(false);
+      expect(hasRequiredPermissions([VEHICLE_DEPRECIATION_MANAGE_PERMISSION], permissions)).toBe(true);
+    }
+  });
+});
+
 describe("notification permissions", () => {
   it("gates back-office notification center APIs behind notification:view", () => {
     for (const handler of [
@@ -1174,6 +1220,8 @@ describe("seed permission calibration", () => {
       "financing:manage",
       "vehicle_asset_pool:view",
       "vehicle_asset_pool:manage",
+      "vehicle_depreciation:view",
+      "vehicle_depreciation:manage",
       "revenue_right:view",
       "revenue_right:manage",
       "revenue_share:view",
@@ -1219,6 +1267,35 @@ describe("seed permission calibration", () => {
     );
     expect(seedSource).toContain('"vehicle:initialize_sale_price"');
     expect(seedSource).toContain('"vehicle:review_sale_price"');
+  });
+
+  it("calibrates vehicle depreciation permissions by role", () => {
+    for (const permission of ["vehicle_depreciation:view", "vehicle_depreciation:manage"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const vehicleDepreciationViewPermissions = ["vehicle_depreciation:view"]');
+    expect(seedSource).toContain(
+      'const vehicleDepreciationManagementPermissions = ["vehicle_depreciation:view", "vehicle_depreciation:manage"]'
+    );
+    expect(seedSource).toContain(
+      '["vehicles.depreciation_policies", "折旧管理", "/vehicle-depreciation-policies", "money", 29, "vehicle_depreciation:view", "vehicles"]'
+    );
+    expect(seedSource).toContain('const vehicleDepreciationMenuCodes = ["vehicles.depreciation_policies"]');
+    expect(seedSource).toContain(
+      '...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : [])'
+    );
+    expect(seedSource).toContain(
+      '...(roleCode === "FI" ? vehicleDepreciationMenuCodes : [])'
+    );
+    expectRolePermissions("OP", ["vehicle_depreciation:view", "vehicle_depreciation:manage"]);
+    expectRolePermissions("SA", ["vehicle_depreciation:view"]);
+    expectRolePermissions("GM", ["vehicle_depreciation:view"]);
+    expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_depreciation:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "vehicle_depreciation:manage")).toBe(false);
+    expect(roleHasMenu(roleMenuArray("OP"), "vehicles.depreciation_policies")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("SA"), "vehicles.depreciation_policies")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "vehicles.depreciation_policies")).toBe(true);
   });
 
   it("calibrates vehicle valuation review permissions by role", () => {

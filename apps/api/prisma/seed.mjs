@@ -222,6 +222,11 @@ permissionRows.push(
   ["report:asset", "查看资产报表", "report", "asset"]
 );
 
+permissionRows.push(
+  ["vehicle_depreciation:view", "查看车辆折旧", "vehicle_depreciation", "view"],
+  ["vehicle_depreciation:manage", "管理车辆折旧", "vehicle_depreciation", "manage"]
+);
+
 const menuRows = [
   ["dashboard", "首页驾驶舱", "/", "dashboard", 10, "dashboard:view", null],
   ["customers", "客户中心", "/customers", "customer", 20, "customer:view", null],
@@ -267,6 +272,10 @@ menuRows.push(
   ["products.energy_packages", "补能包", "/products?tab=energy-packages", "money", 50, "energy_package:view", "products"],
   ["products.benefit_packages", "权益包", "/products?tab=benefit-packages", "safety", 60, "benefit_package:view", "products"],
   ["products.subscription_plans", "订阅套餐", "/products?tab=subscription-plans", "quote", 70, "subscription_plan:view", "products"]
+);
+
+menuRows.push(
+  ["vehicles.depreciation_policies", "折旧管理", "/vehicle-depreciation-policies", "money", 29, "vehicle_depreciation:view", "vehicles"]
 );
 
 const defaultDepositRules = [
@@ -606,6 +615,8 @@ const vehicleDocumentViewPermissions = ["vehicle_document:view"];
 const vehicleDocumentManagementPermissions = ["vehicle_document:view", "vehicle_document:manage"];
 const vehicleBaasViewPermissions = ["vehicle_baas:view"];
 const vehicleBaasManagementPermissions = ["vehicle_baas:view", "vehicle_baas:manage"];
+const vehicleDepreciationViewPermissions = ["vehicle_depreciation:view"];
+const vehicleDepreciationManagementPermissions = ["vehicle_depreciation:view", "vehicle_depreciation:manage"];
 const insuranceClaimViewPermissions = ["insurance_claim:view"];
 const insuranceClaimManagementPermissions = ["insurance_claim:view", "insurance_claim:manage"];
 const vehicleValuationReviewViewPermissions = ["vehicle_valuation_review:view"];
@@ -626,6 +637,7 @@ const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
 const vehicleInsuranceMenuCodes = ["vehicles.insurance_policies"];
 const vehicleBaasMenuCodes = ["vehicles.baas_contracts"];
+const vehicleDepreciationMenuCodes = ["vehicles.depreciation_policies"];
 const residualMarketMenuCodes = ["vehicles.residual_market"];
 const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"];
 
@@ -770,6 +782,7 @@ async function main() {
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
       ...vehicleBaasViewPermissions,
+      ...vehicleDepreciationViewPermissions,
       ...insuranceClaimViewPermissions,
       ...quoteManagementPermissions,
       "order:view",
@@ -792,6 +805,7 @@ async function main() {
       ...vehicleMenuCodes,
       ...vehicleInsuranceMenuCodes,
       ...vehicleBaasMenuCodes,
+      ...vehicleDepreciationMenuCodes,
       "quotes",
       "orders",
       "orders.subscription",
@@ -815,6 +829,7 @@ async function main() {
       ...vehicleInsuranceManagementPermissions,
       ...vehicleDocumentManagementPermissions,
       ...vehicleBaasManagementPermissions,
+      ...vehicleDepreciationManagementPermissions,
       ...insuranceClaimManagementPermissions,
       ...vehicleValuationReviewManagementPermissions,
       ...quoteManagementPermissions,
@@ -849,6 +864,7 @@ async function main() {
       ...vehicleMenuCodes,
       ...vehicleInsuranceMenuCodes,
       ...vehicleBaasMenuCodes,
+      ...vehicleDepreciationMenuCodes,
       "quotes",
       "orders",
       "orders.subscription",
@@ -906,6 +922,7 @@ async function main() {
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         ...(roleCode === "FI" ? vehicleBaasManagementPermissions : vehicleBaasViewPermissions),
+        ...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : []),
         ...(roleCode === "AS"
           ? vehicleValuationReviewCreatePermissions
           : vehicleValuationReviewViewPermissions),
@@ -939,6 +956,7 @@ async function main() {
         ...productMenuCodes,
         ...vehicleMenuCodes,
         ...vehicleBaasMenuCodes,
+        ...(roleCode === "FI" ? vehicleDepreciationMenuCodes : []),
         "quotes",
         "orders",
         "orders.subscription",
@@ -969,6 +987,7 @@ async function main() {
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
       ...vehicleBaasViewPermissions,
+      ...vehicleDepreciationViewPermissions,
       ...insuranceClaimViewPermissions,
       ...vehicleValuationReviewApprovePermissions,
       ...capitalStructureViewPermissions,
@@ -999,6 +1018,7 @@ async function main() {
       ...vehicleMenuCodes,
       ...vehicleInsuranceMenuCodes,
       ...vehicleBaasMenuCodes,
+      ...vehicleDepreciationMenuCodes,
       "quotes",
       "orders",
       "orders.subscription",

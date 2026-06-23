@@ -1437,6 +1437,52 @@ enum VehicleDepreciationMethod {
   @@map("vehicle_depreciation_method")
 }
 
+enum VehicleDepreciationPolicyStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+  ARCHIVED
+
+  @@map("vehicle_depreciation_policy_status")
+}
+
+enum VehicleDepreciationBasisSource {
+  PURCHASE_COST
+  MANUAL
+  ASSET_COST_PROFILE
+  OTHER
+
+  @@map("vehicle_depreciation_basis_source")
+}
+
+enum VehicleDepreciationScheduleStatus {
+  SCHEDULED
+  CONFIRMED
+  VOIDED
+  LOCKED
+
+  @@map("vehicle_depreciation_schedule_status")
+}
+
+enum VehicleDepreciationRecordStatus {
+  DRAFT
+  CONFIRMED
+  VOIDED
+  LOCKED
+
+  @@map("vehicle_depreciation_record_status")
+}
+
+enum VehicleDepreciationRecordSource {
+  SCHEDULED
+  MANUAL
+  ADJUSTMENT
+  IMPORTED
+
+  @@map("vehicle_depreciation_record_source")
+}
+
 enum BenefitType {
   WASH_CAR
   CAR_SWAP
@@ -2364,6 +2410,9 @@ model Vehicle {
   insuranceClaims               InsuranceClaim[]
   baasContracts                 VehicleBaasContract[]
   baasCostRecords               VehicleBaasCostRecord[]
+  depreciationPolicies          VehicleDepreciationPolicy[]
+  depreciationSchedules         VehicleDepreciationSchedule[]
+  depreciationRecords           VehicleDepreciationRecord[]
   residualForecasts             VehicleResidualForecast[]
   residualModelRunOutputs       ResidualModelRunOutput[]
   valuationReviews              VehicleValuationReview[]
@@ -2829,6 +2878,117 @@ model VehicleAssetCostProfile {
   @@index([profileStatus])
   @@index([deletedAt])
   @@map("vehicle_asset_cost_profile")
+}
+
+model VehicleDepreciationPolicy {
+  id                        String                            @id @default(uuid()) @db.Uuid
+  policyNo                  String                            @unique @map("policy_no") @db.VarChar(64)
+  vehicleId                 String                            @map("vehicle_id") @db.Uuid
+  vehicle                   Vehicle                           @relation(fields: [vehicleId], references: [id])
+  assetCostProfileId        String?                           @map("asset_cost_profile_id") @db.Uuid
+  policyStatus              VehicleDepreciationPolicyStatus   @default(DRAFT) @map("policy_status")
+  depreciationMethod        VehicleDepreciationMethod         @map("depreciation_method")
+  basisSource               VehicleDepreciationBasisSource    @default(PURCHASE_COST) @map("basis_source")
+  depreciationBasisAmount   BigInt                            @map("depreciation_basis_amount")
+  residualValueAmount       BigInt                            @default(0) @map("residual_value_amount")
+  usefulLifeMonths          Int?                              @map("useful_life_months")
+  depreciationStartDate     DateTime                          @map("depreciation_start_date") @db.Date
+  depreciationEndDate       DateTime?                         @map("depreciation_end_date") @db.Date
+  monthlyDepreciationAmount BigInt?                           @map("monthly_depreciation_amount")
+  currency                  String?                           @default("CNY") @db.VarChar(16)
+  remark                    String?                           @db.Text
+  snapshot                  Json?
+  activatedAt               DateTime?                         @map("activated_at") @db.Timestamptz(6)
+  suspendedAt               DateTime?                         @map("suspended_at") @db.Timestamptz(6)
+  terminatedAt              DateTime?                         @map("terminated_at") @db.Timestamptz(6)
+  archivedAt                DateTime?                         @map("archived_at") @db.Timestamptz(6)
+  createdAt                 DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                 String?                           @map("created_by") @db.Uuid
+  updatedBy                 String?                           @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                         @map("deleted_at") @db.Timestamptz(6)
+  schedules                 VehicleDepreciationSchedule[]
+  records                   VehicleDepreciationRecord[]
+
+  @@index([vehicleId])
+  @@index([policyStatus])
+  @@index([depreciationMethod])
+  @@index([depreciationStartDate])
+  @@index([depreciationEndDate])
+  @@map("vehicle_depreciation_policy")
+}
+
+model VehicleDepreciationSchedule {
+  id             String                              @id @default(uuid()) @db.Uuid
+  scheduleNo     String                              @unique @map("schedule_no") @db.VarChar(64)
+  policyId       String                              @map("policy_id") @db.Uuid
+  policy         VehicleDepreciationPolicy           @relation(fields: [policyId], references: [id])
+  vehicleId      String                              @map("vehicle_id") @db.Uuid
+  vehicle        Vehicle                             @relation(fields: [vehicleId], references: [id])
+  costPeriod     String                              @map("cost_period") @db.VarChar(7)
+  periodStart    DateTime                            @map("period_start") @db.Date
+  periodEnd      DateTime                            @map("period_end") @db.Date
+  scheduledAmount BigInt                             @map("scheduled_amount")
+  currency       String?                             @default("CNY") @db.VarChar(16)
+  scheduleStatus VehicleDepreciationScheduleStatus   @default(SCHEDULED) @map("schedule_status")
+  generatedAt    DateTime?                           @map("generated_at") @db.Timestamptz(6)
+  confirmedAt    DateTime?                           @map("confirmed_at") @db.Timestamptz(6)
+  voidedAt       DateTime?                           @map("voided_at") @db.Timestamptz(6)
+  lockedAt       DateTime?                           @map("locked_at") @db.Timestamptz(6)
+  remark         String?                             @db.Text
+  snapshot       Json?
+  createdAt      DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy      String?                             @map("created_by") @db.Uuid
+  updatedBy      String?                             @map("updated_by") @db.Uuid
+  deletedAt      DateTime?                           @map("deleted_at") @db.Timestamptz(6)
+  records        VehicleDepreciationRecord[]
+
+  @@unique([policyId, costPeriod])
+  @@index([vehicleId])
+  @@index([costPeriod])
+  @@index([periodStart])
+  @@index([periodEnd])
+  @@index([scheduleStatus])
+  @@map("vehicle_depreciation_schedule")
+}
+
+model VehicleDepreciationRecord {
+  id                 String                            @id @default(uuid()) @db.Uuid
+  recordNo           String                            @unique @map("record_no") @db.VarChar(64)
+  policyId           String                            @map("policy_id") @db.Uuid
+  policy             VehicleDepreciationPolicy         @relation(fields: [policyId], references: [id])
+  scheduleId         String?                           @map("schedule_id") @db.Uuid
+  schedule           VehicleDepreciationSchedule?      @relation(fields: [scheduleId], references: [id])
+  vehicleId          String                            @map("vehicle_id") @db.Uuid
+  vehicle            Vehicle                           @relation(fields: [vehicleId], references: [id])
+  costPeriod         String                            @map("cost_period") @db.VarChar(7)
+  periodStart        DateTime                          @map("period_start") @db.Date
+  periodEnd          DateTime                          @map("period_end") @db.Date
+  depreciationAmount BigInt                            @map("depreciation_amount")
+  currency           String?                           @default("CNY") @db.VarChar(16)
+  recordStatus       VehicleDepreciationRecordStatus   @default(DRAFT) @map("record_status")
+  recordSource       VehicleDepreciationRecordSource   @default(SCHEDULED) @map("record_source")
+  confirmedAt        DateTime?                         @map("confirmed_at") @db.Timestamptz(6)
+  voidedAt           DateTime?                         @map("voided_at") @db.Timestamptz(6)
+  lockedAt           DateTime?                         @map("locked_at") @db.Timestamptz(6)
+  remark             String?                           @db.Text
+  snapshot           Json?
+  createdAt          DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?                           @map("created_by") @db.Uuid
+  updatedBy          String?                           @map("updated_by") @db.Uuid
+  deletedAt          DateTime?                         @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([policyId])
+  @@index([scheduleId])
+  @@index([vehicleId])
+  @@index([costPeriod])
+  @@index([periodStart])
+  @@index([periodEnd])
+  @@index([recordStatus])
+  @@index([recordSource])
+  @@map("vehicle_depreciation_record")
 }
 
 model MarketPriceImportBatch {

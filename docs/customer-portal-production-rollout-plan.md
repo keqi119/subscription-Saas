@@ -26,6 +26,11 @@ Included:
 - Portal and back-office notification center.
 - WeChat Official Account template-message notifications.
 
+Back-office-only asset note:
+
+- Stage 10N-C-A adds vehicle depreciation policy / schedule / record management.
+- This is not customer-facing Portal scope and does not change the main asset ROE formula yet.
+
 Out of scope:
 
 - Real e-sign provider.

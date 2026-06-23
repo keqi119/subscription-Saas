@@ -476,6 +476,33 @@ estimatedMonthlyCostAmount =
 
 `estimatedMonthlyCostAmount` 只是经营分析预估成本，不构成会计凭证，不产生财务入账。本阶段不计算正式 ROA / ROE。
 
+## Stage 10N-C-A 车辆折旧基础台账
+
+Stage 10N-C-A 已新增正式折旧基础模型：
+
+- `VehicleDepreciationPolicy`
+- `VehicleDepreciationSchedule`
+- `VehicleDepreciationRecord`
+
+本阶段口径：
+
+1. 主 ROE 后续先采用会计折旧。
+2. 会计折旧默认采用直线法。
+3. `MANUAL` 折旧通过月度折旧 record 补录解决。
+4. 后续接入 ROE 时，折旧按 `periodStart` / `periodEnd` 归属，跨期按天分摊。
+
+本阶段仅建立 policy / schedule / record 和后台管理能力，不接入资产收益主口径：
+
+- 不修改 `platformNetIncomeAmount`。
+- 不修改 `roeTrial`。
+- 不修改 `annualizedRoeTrial`。
+- 不修改 `trialRoa`。
+- 不修改既有 `VehicleAssetCostProfile` 即时折旧试算。
+
+直线法 schedule 生成以月为最小计划单位，第一期从 `depreciationStartDate` 到当月月末，后续按自然月生成；金额按分取整，余数放入最后一期，保证 schedule 合计等于 `depreciationBasisAmount - residualValueAmount`。
+
+后续 Stage 10N-C-B 再确认是否仅使用 `CONFIRMED` / `LOCKED` depreciation records 接入资产收益主口径。
+
 ## Stage 8.2 ROA / ROE 试算口径
 
 Stage 8.2B 新增资产收益试算 API：

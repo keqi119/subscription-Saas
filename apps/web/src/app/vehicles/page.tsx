@@ -58,6 +58,8 @@ import {
   VEHICLE_CONDITION_ITEM_SEVERITY_LABELS,
   VEHICLE_CONDITION_ITEM_TYPE_LABELS,
   VEHICLE_CONDITION_REPORT_STATUS_LABELS,
+  VEHICLE_DEPRECIATION_METHOD_LABELS,
+  VEHICLE_DEPRECIATION_POLICY_STATUS_LABELS,
   VEHICLE_DOCUMENT_TYPE_LABELS,
   VEHICLE_INSURANCE_POLICY_STATUS_LABELS,
   VEHICLE_INSURANCE_POLICY_TYPE_LABELS,
@@ -185,6 +187,26 @@ interface VehicleBaasSummary {
   contractCount: number;
   contracts: VehicleBaasContractSummary[];
   unpaidCostCount: number;
+}
+
+interface VehicleDepreciationPolicySummary {
+  depreciationBasisAmount: number;
+  depreciationMethod: string;
+  depreciationStartDate: string;
+  id: string;
+  policyNo: string;
+  policyStatus: string;
+  residualValueAmount: number;
+  usefulLifeMonths?: number | null;
+}
+
+interface VehicleDepreciationSummary {
+  activePolicy?: VehicleDepreciationPolicySummary | null;
+  confirmedRecordCount: number;
+  lockedRecordCount: number;
+  policies: VehicleDepreciationPolicySummary[];
+  policyCount: number;
+  scheduleCount: number;
 }
 
 interface SalePriceHistory {
@@ -2332,6 +2354,7 @@ export default function VehiclesPage() {
             />
             <VehicleInsuranceDocumentsBlock permissions={permissions} vehicle={detailVehicle} />
             <VehicleBaasSummaryBlock permissions={permissions} vehicle={detailVehicle} />
+            <VehicleDepreciationSummaryBlock permissions={permissions} vehicle={detailVehicle} />
             <VehicleListingManagementBlock permissions={permissions} vehicle={detailVehicle} />
             {canViewResidualForecast ? (
               <VehicleResidualForecastBlock
@@ -3723,6 +3746,90 @@ function VehicleBaasSummaryBlock({
           ),
           key: "vehicle-baas",
           label: "BaaS 电池服务"
+        }
+      ]}
+    />
+  );
+}
+
+function VehicleDepreciationSummaryBlock({
+  permissions,
+  vehicle
+}: Readonly<{
+  permissions: ReadonlySet<string>;
+  vehicle: Vehicle;
+}>) {
+  const { message } = App.useApp();
+  const [summary, setSummary] = useState<VehicleDepreciationSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const canViewDepreciation = permissions.has("vehicle_depreciation:view");
+
+  const loadSummary = useCallback(async () => {
+    if (!canViewDepreciation) {
+      return;
+    }
+    setLoading(true);
+    try {
+      setSummary(await apiFetch<VehicleDepreciationSummary>(`/vehicles/${vehicle.id}/depreciation-summary`));
+    } catch (error) {
+      void message.error(error instanceof ApiError ? error.message : "无法加载折旧摘要");
+    } finally {
+      setLoading(false);
+    }
+  }, [canViewDepreciation, message, vehicle.id]);
+
+  useEffect(() => {
+    void loadSummary();
+  }, [loadSummary]);
+
+  if (!canViewDepreciation) {
+    return null;
+  }
+
+  const active = summary?.activePolicy ?? null;
+
+  return (
+    <Collapse
+      items={[
+        {
+          children: (
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              {loading ? <Typography.Text type="secondary">正在加载折旧摘要...</Typography.Text> : null}
+              {!active ? <Alert message="暂无折旧 policy" showIcon type="info" /> : null}
+              <Descriptions
+                column={2}
+                size="small"
+                items={[
+                  { label: "当前 ACTIVE policy", children: active?.policyNo ?? "-" },
+                  {
+                    label: "折旧方法",
+                    children: active ? labelOf(VEHICLE_DEPRECIATION_METHOD_LABELS, active.depreciationMethod) : "-"
+                  },
+                  { label: "折旧基数", children: active ? formatYuan(active.depreciationBasisAmount) : "-" },
+                  { label: "残值", children: active ? formatYuan(active.residualValueAmount) : "-" },
+                  { label: "使用月数", children: active?.usefulLifeMonths ?? "-" },
+                  { label: "起算日", children: formatDate(active?.depreciationStartDate) },
+                  { label: "已生成 schedule 数", children: `${summary?.scheduleCount ?? 0} 条` },
+                  { label: "已确认 record 数", children: `${summary?.confirmedRecordCount ?? 0} 条` },
+                  {
+                    label: "policy 状态",
+                    children: active ? (
+                      <Tag color={active.policyStatus === "ACTIVE" ? "green" : "default"}>
+                        {labelOf(VEHICLE_DEPRECIATION_POLICY_STATUS_LABELS, active.policyStatus)}
+                      </Tag>
+                    ) : (
+                      "-"
+                    )
+                  }
+                ]}
+              />
+              <Button href={`/vehicle-depreciation-policies?vehicleId=${encodeURIComponent(vehicle.id)}`} type="link">
+                查看折旧管理
+              </Button>
+            </Space>
+          ),
+          key: "vehicle-depreciation",
+          label: "折旧管理"
         }
       ]}
     />

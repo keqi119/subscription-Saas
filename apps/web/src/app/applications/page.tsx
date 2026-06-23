@@ -529,7 +529,7 @@ export default function ApplicationsPage() {
             />
           </Form.Item>
           <Form.Item label="意向车型" name="intendedModel">
-            <Input placeholder="ET5 / ET7 / ES6" />
+            <Input placeholder="ET5 / ET5T / ET7 / ES6 / EC6 / ES8 / ET9 / ES9" />
           </Form.Item>
           <Form.Item label="订阅周期（月）" name="intendedPeriodMonths">
             <InputNumber max={60} min={1} style={{ width: "100%" }} />

@@ -66,6 +66,7 @@ import {
   VEHICLE_LISTING_CONDITION_GRADE_LABELS,
   VEHICLE_LISTING_MEDIA_CATEGORY_LABELS,
   VEHICLE_LISTING_STATUS_LABELS,
+  VEHICLE_MODEL_LABELS,
   VEHICLE_ACQUISITION_MODE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   VEHICLE_CAPITAL_EVENT_STATUS_LABELS,
@@ -239,7 +240,7 @@ interface CreateVehicleValues {
   latestRegistrationDate?: Dayjs | null;
   remark?: string | null;
   series?: string | null;
-  vehicleModel: "ET5" | "ET7" | "ES6";
+  vehicleModel: "ET5" | "ET5T" | "ET7" | "ES6" | "EC6" | "ES8" | "ET9" | "ES9";
   vin: string;
 }
 
@@ -628,7 +629,9 @@ const vehicleStatusOptions = [
   "RETIRED"
 ].map((value) => ({ label: labelOf(STATUS_LABELS, value), value }));
 
-const vehicleModelOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+const vehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
+  (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
+);
 
 const batteryUsageTypeOptions = [
   { label: "电池买断", value: "BUYOUT" },
@@ -1802,7 +1805,7 @@ export default function VehiclesPage() {
       registrationDate: vehicle.registrationDate ? dayjs(vehicle.registrationDate) : null,
       remark: vehicle.remark,
       series: vehicle.series,
-      vehicleModel: (vehicle.vehicleModel ?? "ET5") as "ET5" | "ET7" | "ES6",
+      vehicleModel: (vehicle.vehicleModel ?? "ET5") as CreateVehicleValues["vehicleModel"],
       vin: vehicle.vin ?? ""
     });
   }

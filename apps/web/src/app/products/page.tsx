@@ -30,6 +30,7 @@ import {
   PRODUCT_VERSION_STATUS_LABELS,
   STATUS_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
+  VEHICLE_MODEL_LABELS,
   labelOf
 } from "../../constants/labels";
 import {
@@ -194,7 +195,9 @@ const statusColors: Record<string, string> = {
   INACTIVE: "default"
 };
 
-const vehicleOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+const vehicleOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
+  (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
+);
 const benefitOptions = [
   { label: "洗车权益", value: "WASH_CAR" },
   { label: "换车权益", value: "CAR_SWAP" },

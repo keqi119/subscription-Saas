@@ -204,6 +204,17 @@ export const VEHICLE_STATUS_LABELS: Record<string, string> = {
   SOLD: "已出售"
 };
 
+export const VEHICLE_MODEL_LABELS: Record<string, string> = {
+  EC6: "EC6",
+  ES6: "ES6",
+  ES8: "ES8",
+  ES9: "ES9",
+  ET5: "ET5",
+  ET5T: "ET5T",
+  ET7: "ET7",
+  ET9: "ET9"
+};
+
 export const VEHICLE_LISTING_STATUS_LABELS: Record<string, string> = {
   ARCHIVED: "已归档",
   DRAFT: "草稿",

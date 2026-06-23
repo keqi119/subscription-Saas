@@ -1445,6 +1445,7 @@ export const MENU_LABELS: Record<string, string> = {
   vehicles: "车辆资产",
   "vehicles.asset_pools": "车辆资产池",
   "vehicles.assets": "车辆资产台账",
+  "vehicles.model_definitions": "车型代码",
   "vehicles.residual_market": "市场残值样本",
   "vehicles.valuation_reviews": "估值复核"
 };

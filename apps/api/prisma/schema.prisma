@@ -2435,6 +2435,44 @@ model Vehicle {
   @@map("vehicle")
 }
 
+model VehicleModelDefinition {
+  id                  String        @id @default(uuid()) @db.Uuid
+  modelCode           String        @unique @map("model_code") @db.VarChar(64)
+  legacyVehicleModel  VehicleModel? @unique @map("legacy_vehicle_model")
+  brand               String        @db.VarChar(64)
+  series              String?       @db.VarChar(64)
+  modelName           String        @map("model_name") @db.VarChar(128)
+  modelYear           Int?          @map("model_year")
+  variantName         String?       @map("variant_name") @db.VarChar(128)
+  displayName         String        @map("display_name") @db.VarChar(128)
+  customerDisplayName String?       @map("customer_display_name") @db.VarChar(128)
+  energyType          String?       @map("energy_type") @db.VarChar(64)
+  bodyType            String?       @map("body_type") @db.VarChar(64)
+  seatCount           Int?          @map("seat_count")
+  driveType           String?       @map("drive_type") @db.VarChar(64)
+  batteryCapacityKwh  Decimal?      @map("battery_capacity_kwh") @db.Decimal(8, 2)
+  officialRangeKm     Int?          @map("official_range_km")
+  enabled             Boolean       @default(true)
+  portalVisible       Boolean       @default(false) @map("portal_visible")
+  sortOrder           Int           @default(0) @map("sort_order")
+  remark              String?       @db.Text
+  snapshot            Json?
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy           String?       @map("created_by") @db.Uuid
+  updatedBy           String?       @map("updated_by") @db.Uuid
+  deletedAt           DateTime?     @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([modelCode])
+  @@index([legacyVehicleModel])
+  @@index([brand])
+  @@index([series])
+  @@index([enabled])
+  @@index([portalVisible])
+  @@index([sortOrder])
+  @@map("vehicle_model_definition")
+}
+
 model VehicleListingProfile {
   id                     String                         @id @default(uuid()) @db.Uuid
   vehicleId              String                         @unique @map("vehicle_id") @db.Uuid

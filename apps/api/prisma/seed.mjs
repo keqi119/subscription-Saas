@@ -159,6 +159,8 @@ permissionRows.push(
   ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
+  ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
+  ["vehicle_model:manage", "管理车型代码", "vehicle_model", "manage"],
   ["vehicle_insurance:view", "查看车辆保单", "vehicle_insurance", "view"],
   ["vehicle_insurance:manage", "管理车辆保单", "vehicle_insurance", "manage"],
   ["vehicle_document:view", "查看车辆权证材料", "vehicle_document", "view"],
@@ -236,6 +238,7 @@ const menuRows = [
   ["products", "产品中心", "/products", "product", 50, "product:view", null],
   ["vehicles", "车辆资产", "/vehicles", "car", 55, "vehicle:view", null],
   ["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"],
+  ["vehicles.model_definitions", "车型代码", "/vehicle-model-definitions", "car", 15, "vehicle_model:view", "vehicles"],
   ["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"],
   ["vehicles.insurance_policies", "保单管理", "/vehicle-insurance-policies", "file", 25, "vehicle_insurance:view", "vehicles"],
   ["vehicles.baas_contracts", "BaaS合同", "/vehicle-baas-contracts", "file", 28, "vehicle_baas:view", "vehicles"],
@@ -345,6 +348,17 @@ const demoVehicles = [
     vehicleNo: "VEH-DEMO-ES6-001",
     vin: "TESTVINES60000001"
   }
+];
+
+const vehicleModelDefinitionSeedRows = [
+  ["ET5", "ET5", "NIO", "ET", "ET5", "ET5", "ET5", 10],
+  ["ET5T", "ET5T", "NIO", "ET", "ET5T", "ET5T", "ET5T", 20],
+  ["ET7", "ET7", "NIO", "ET", "ET7", "ET7", "ET7", 30],
+  ["EC6", "EC6", "NIO", "EC", "EC6", "EC6", "EC6", 40],
+  ["ES6", "ES6", "NIO", "ES", "ES6", "ES6", "ES6", 50],
+  ["ES8", "ES8", "NIO", "ES", "ES8", "ES8", "ES8", 60],
+  ["ET9", "ET9", "NIO", "ET", "ET9", "ET9", "ET9", 70],
+  ["ES9", "ES9", "NIO", "ES", "ES9", "ES9", "ES9", 80]
 ];
 
 const baselineSubscriptionSeed = {
@@ -617,6 +631,8 @@ const vehicleBaasViewPermissions = ["vehicle_baas:view"];
 const vehicleBaasManagementPermissions = ["vehicle_baas:view", "vehicle_baas:manage"];
 const vehicleDepreciationViewPermissions = ["vehicle_depreciation:view"];
 const vehicleDepreciationManagementPermissions = ["vehicle_depreciation:view", "vehicle_depreciation:manage"];
+const vehicleModelViewPermissions = ["vehicle_model:view"];
+const vehicleModelManagementPermissions = ["vehicle_model:view", "vehicle_model:manage"];
 const insuranceClaimViewPermissions = ["insurance_claim:view"];
 const insuranceClaimManagementPermissions = ["insurance_claim:view", "insurance_claim:manage"];
 const vehicleValuationReviewViewPermissions = ["vehicle_valuation_review:view"];
@@ -634,6 +650,7 @@ const vehicleValuationReviewManagementPermissions = [
   "vehicle_valuation_review:approve"
 ];
 const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
+const vehicleModelMenuCodes = ["vehicles.model_definitions"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
 const vehicleInsuranceMenuCodes = ["vehicles.insurance_policies"];
 const vehicleBaasMenuCodes = ["vehicles.baas_contracts"];
@@ -781,6 +798,7 @@ async function main() {
       ...vehicleViewPermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
+      ...vehicleModelViewPermissions,
       ...vehicleBaasViewPermissions,
       ...vehicleDepreciationViewPermissions,
       ...insuranceClaimViewPermissions,
@@ -803,6 +821,7 @@ async function main() {
       "applications",
       ...productMenuCodes,
       ...vehicleMenuCodes,
+      ...vehicleModelMenuCodes,
       ...vehicleInsuranceMenuCodes,
       ...vehicleBaasMenuCodes,
       ...vehicleDepreciationMenuCodes,
@@ -828,6 +847,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...vehicleInsuranceManagementPermissions,
       ...vehicleDocumentManagementPermissions,
+      ...vehicleModelManagementPermissions,
       ...vehicleBaasManagementPermissions,
       ...vehicleDepreciationManagementPermissions,
       ...insuranceClaimManagementPermissions,
@@ -862,6 +882,7 @@ async function main() {
       "applications",
       ...productMenuCodes,
       ...vehicleMenuCodes,
+      ...vehicleModelMenuCodes,
       ...vehicleInsuranceMenuCodes,
       ...vehicleBaasMenuCodes,
       ...vehicleDepreciationMenuCodes,
@@ -921,6 +942,7 @@ async function main() {
         "product_price_rule:view",
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
+        ...(roleCode === "FI" ? vehicleModelManagementPermissions : []),
         ...(roleCode === "FI" ? vehicleBaasManagementPermissions : vehicleBaasViewPermissions),
         ...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : []),
         ...(roleCode === "AS"
@@ -955,6 +977,7 @@ async function main() {
         "dashboard",
         ...productMenuCodes,
         ...vehicleMenuCodes,
+        ...(roleCode === "FI" ? vehicleModelMenuCodes : []),
         ...vehicleBaasMenuCodes,
         ...(roleCode === "FI" ? vehicleDepreciationMenuCodes : []),
         "quotes",
@@ -986,6 +1009,7 @@ async function main() {
       ...vehicleManagementPermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
+      ...vehicleModelViewPermissions,
       ...vehicleBaasViewPermissions,
       ...vehicleDepreciationViewPermissions,
       ...insuranceClaimViewPermissions,
@@ -1016,6 +1040,7 @@ async function main() {
       "risk.deposit_rules",
       ...productMenuCodes,
       ...vehicleMenuCodes,
+      ...vehicleModelMenuCodes,
       ...vehicleInsuranceMenuCodes,
       ...vehicleBaasMenuCodes,
       ...vehicleDepreciationMenuCodes,
@@ -1040,6 +1065,7 @@ async function main() {
 
   const adminUser = await seedDefaultUsers();
 
+  await seedVehicleModelDefinitions(adminUser.id);
   await cleanupDefaultSeedFlowData();
   await seedDefaultDepositRules(adminUser.id);
   await seedBaselineSubscriptionCatalog(adminUser.id);
@@ -1366,6 +1392,55 @@ async function cleanupDefaultSeedFlowData() {
     await prisma.customerIdentity.deleteMany({ where: { customerId: { in: oldFlowCustomerIds } } });
     await prisma.customerProfile.deleteMany({ where: { customerId: { in: oldFlowCustomerIds } } });
     await prisma.customer.deleteMany({ where: { id: { in: oldFlowCustomerIds } } });
+  }
+}
+
+async function seedVehicleModelDefinitions(operatorId) {
+  for (const [
+    modelCode,
+    legacyVehicleModel,
+    brand,
+    series,
+    modelName,
+    displayName,
+    customerDisplayName,
+    sortOrder
+  ] of vehicleModelDefinitionSeedRows) {
+    await prisma.vehicleModelDefinition.upsert({
+      create: {
+        brand,
+        createdBy: operatorId,
+        customerDisplayName,
+        displayName,
+        enabled: true,
+        legacyVehicleModel,
+        modelCode,
+        modelName,
+        portalVisible: false,
+        series,
+        snapshot: {
+          source: "SEED",
+          stage: "10X-C"
+        },
+        sortOrder,
+        updatedBy: operatorId
+      },
+      update: {
+        brand,
+        customerDisplayName,
+        displayName,
+        legacyVehicleModel,
+        modelName,
+        series,
+        snapshot: {
+          source: "SEED",
+          stage: "10X-C"
+        },
+        sortOrder,
+        updatedBy: operatorId
+      },
+      where: { modelCode }
+    });
   }
 }
 

@@ -25,6 +25,7 @@ import { VehicleAssetPoolModule } from "./vehicle-asset-pool/vehicle-asset-pool.
 import { VehicleBaasModule } from "./vehicle-baas/vehicle-baas.module";
 import { VehicleDepreciationModule } from "./vehicle-depreciation/vehicle-depreciation.module";
 import { VehicleInsuranceModule } from "./vehicle-insurance/vehicle-insurance.module";
+import { VehicleModelDefinitionModule } from "./vehicle-model-definition/vehicle-model-definition.module";
 import { VehicleValuationReviewModule } from "./vehicle-valuation-review/vehicle-valuation-review.module";
 import { VehicleModule } from "./vehicle/vehicle.module";
 
@@ -56,6 +57,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     VehicleBaasModule,
     VehicleDepreciationModule,
     VehicleInsuranceModule,
+    VehicleModelDefinitionModule,
     VehicleValuationReviewModule,
     VehicleModule
   ],

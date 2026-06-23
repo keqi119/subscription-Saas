@@ -14,6 +14,7 @@
 - Stage 10M-C-C: BaaS costs are included in main asset profitability formulas; manual acceptance should confirm BaaS cost appears in cost breakdown and single-vehicle return rows before operating cost.
 - Stage 10K-B-R4A: controlled beta business sample read-only review completed locally; public Portal route/API smoke, admin read-only endpoints, ROE API, and CSV checks passed. Real SMS beta-gate login, authenticated customer-cookie ownership checks, service-case samples, and payment-order samples remain required before any whitelist expansion.
 - Stage 10K-B-R4B: controlled beta P1 verification closure completed locally for authenticated Portal API smoke, profile material ownership, PaymentOrder sample, ServiceCase sample, and traceability. Order vehicle document preview ownership remains blocked by missing sample data: no current order vehicle has `customerVisible=true` and `ACTIVE` vehicle documents.
+- Stage 10K-B-R4C: order vehicle document ownership closure completed locally with a non-sensitive `VEHICLE_LICENSE` test PDF. Portal list, owner preview, no-cookie 401, cross-customer 404, hidden-document exclusion, and storage-key redaction passed; test documents were archived after verification.
 
 ## Checklist
 
@@ -39,7 +40,7 @@
 | WeChat payment | JSAPI payment has passed prior real validation | Prior stage passed |
 | Payment fallback | WeChat-outside H5 fallback is not in Stage 10I scope | Deferred |
 | Orders | Customer can view own orders only | Pending manual acceptance |
-| Order vehicle documents | Customer can view customer-visible vehicle license / policy / authorization documents for own active order vehicle only | R4B blocked by sample data: no current order vehicle has customer-visible active vehicle documents |
+| Order vehicle documents | Customer can view customer-visible vehicle license / policy / authorization documents for own active order vehicle only | Stage 10K-B-R4C passed with non-sensitive test `VEHICLE_LICENSE` PDF: owner list/preview passed, no-cookie 401, cross-customer 404, hidden document excluded, no bucket/objectKey exposed |
 | Bills | Customer can view own bills and payable status | Pending manual acceptance |
 | Deposit | Customer can view own deposit ledger | Pending manual acceptance |
 | Entitlements | Customer can view own grants/usages | Pending manual acceptance |

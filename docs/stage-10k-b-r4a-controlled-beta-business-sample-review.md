@@ -362,23 +362,118 @@ P1: authenticated Portal API smoke、资料 ownership、PaymentOrder、ServiceCa
 是否暂停 beta：不建议
 ```
 
+## R4C order vehicle document preview ownership closure
+
+R4C 在本地受控环境补充订单车辆材料样本，并执行 Portal list / preview ownership 复核。验证过程中不提交真实行驶证、真实保单、完整 VIN、完整车牌、customer cookie、token、AccessKey 或 AppSecret；不修改业务逻辑、Prisma schema 或 migration。
+
+执行环境：
+
+```text
+API: http://localhost:3201/api
+Web: http://localhost:3200
+Upload storage: local
+```
+
+样本范围：
+
+```text
+Customer A: 受控 beta 客户，手机号已脱敏
+Order A: ORD2...PJUG
+Vehicle A: VEH2...TEH6 / VIN LE4Z****0762
+Cross-customer: Customer B
+```
+
+样本材料：
+
+```text
+documentType: VEHICLE_LICENSE
+文件类型：application/pdf
+材料性质：R4C 测试占位 PDF，文件内容明确标记为测试材料 / 非正式材料
+敏感信息：不包含真实证件号、完整 VIN、完整车牌、真实保单号
+创建方式：后台车辆材料上传 API
+```
+
+Portal documents list：
+
+```text
+GET /api/portal/orders/:id/documents
+结果：通过
+HTTP: 200
+返回数量：1
+返回刚创建的 customerVisible=true ACTIVE VEHICLE_LICENSE
+customerVisible=false 测试材料未出现在列表
+未暴露 bucket / objectKey
+未暴露 uploadedBy / deletedAt / policyId / vehicleId
+```
+
+本人 preview：
+
+```text
+GET /api/portal/orders/:id/documents/:documentId/preview
+结果：通过
+HTTP: 200
+Content-Type: application/pdf
+返回文件流
+未返回 OSS public URL
+```
+
+无 cookie preview：
+
+```text
+结果：通过
+HTTP: 401
+```
+
+跨客户 preview：
+
+```text
+结果：通过
+HTTP: 404
+说明：与当前 ownership 口径一致，对他人订单 / 文档返回 not found
+```
+
+customerVisible=false 验证：
+
+```text
+结果：通过
+Portal list 不返回
+preview HTTP: 404
+```
+
+测试材料清理：
+
+```text
+visible test document: ARCHIVED, customerVisible=false
+hidden test document: ARCHIVED, customerVisible=false
+是否保留为客户可见材料：否
+```
+
+R4C 判断：
+
+```text
+订单车辆材料 preview ownership：已关闭
+P2 订单车辆材料样本缺口：已关闭
+是否继续 beta：建议继续 controlled beta monitoring
+是否扩大白名单：暂不建议
+是否暂停 beta：不建议
+```
+
 ## 问题和风险
 
 | 等级 | 数量 | 说明 |
 | --- | ---: | --- |
 | P0 | 0 | 未发现需要暂停 beta 的阻断问题 |
 | P1 | 0 | R4B 已关闭 authenticated Portal API smoke、资料 ownership、PaymentOrder 和 ServiceCase 验证缺口 |
-| P2 | 5 | 订单车辆材料 preview ownership 缺少可执行样本；车辆商品内容部分缺失；公开 catalog 选中车辆车况报告返回 404；PaymentOrder provider 技术引用 DTO 暴露范围待复核；真实短信 / beta gate 仍需 staging controlled account 复核 |
+| P2 | 4 | 车辆商品内容部分缺失；公开 catalog 选中车辆车况报告返回 404；PaymentOrder provider 技术引用 DTO 暴露范围待复核；真实短信 / beta gate 仍需 staging controlled account 复核 |
 | P3 | 1 | Next dev 日志存在 Ant Design deprecation warnings，不影响本轮验收 |
 
 ## 运营待办
 
-1. 准备 1 个订单车辆材料样本：订单车辆需有关联 `customerVisible=true` 且 `ACTIVE` 的车辆文档。
-2. 在 staging/production controlled account 上完成真实短信登录和非白名单拒绝复核。
-3. 补齐 Portal 商品内容：车况摘要、费用说明、申请流程、FAQ。
-4. 复核公开 catalog 车辆与 customer-visible 车况报告的映射。
-5. 复核 PaymentOrder Portal DTO 中 provider 技术引用字段是否需要对客户隐藏。
-6. 确认 beta allowlist 仅存在于环境变量或密钥系统，不进入 Git。
+1. 在 staging/production controlled account 上完成真实短信登录和非白名单拒绝复核。
+2. 补齐 Portal 商品内容：车况摘要、费用说明、申请流程、FAQ。
+3. 复核公开 catalog 车辆与 customer-visible 车况报告的映射。
+4. 复核 PaymentOrder Portal DTO 中 provider 技术引用字段是否需要对客户隐藏。
+5. 确认 beta allowlist 仅存在于环境变量或密钥系统，不进入 Git。
 
 ## 文档更新状态
 
@@ -417,5 +512,5 @@ P1: authenticated Portal API smoke、资料 ownership、PaymentOrder、ServiceCa
 下一步建议：
 
 ```text
-先准备订单车辆材料样本并补做 preview ownership，再进入 Stage 10X-B 车型代码主数据化影响审计。
+进入 Stage 10X-B 车型代码主数据化影响审计。
 ```

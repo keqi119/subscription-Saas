@@ -243,15 +243,16 @@ describe("VehicleDepreciationService policy, schedule, and record foundation", (
     expect(lockedRecord.recordStatus).toBe(VehicleDepreciationRecordStatus.LOCKED);
   });
 
-  it("does not modify the report service main ROE path in this stage", () => {
+  it("keeps legacy cost profile fallback while allowing report service to read depreciation records", () => {
     const reportSource = fs.readFileSync(
       path.resolve(__dirname, "../src/report/report.service.ts"),
       "utf8"
     );
 
     expect(reportSource).toContain("VehicleAssetCostProfile");
-    expect(reportSource).not.toContain("vehicleDepreciationPolicy");
-    expect(reportSource).not.toContain("vehicleDepreciationRecord");
+    expect(reportSource).toContain("vehicleDepreciationPolicy");
+    expect(reportSource).toContain("vehicleDepreciationRecord");
+    expect(reportSource).toContain("DEPRECIATION_SOURCE_LEGACY_COST_PROFILE");
   });
 });
 

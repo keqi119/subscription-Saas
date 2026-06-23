@@ -29,6 +29,10 @@ import {
   VehicleBaasContractStatus,
   VehicleBaasCostRecordStatus,
   VehicleCapitalEventStatus,
+  VehicleDepreciationMethod,
+  VehicleDepreciationPolicyStatus,
+  VehicleDepreciationRecordStatus,
+  VehicleDepreciationScheduleStatus,
   VehicleModel,
   VehicleResidualForecastPointStatus,
   VehicleResidualForecastStatus,
@@ -101,6 +105,7 @@ import {
   vehicleDamageLevelLabels,
   vehicleDamageResponsiblePartyLabels,
   vehicleDamageTypeLabels,
+  vehicleDepreciationSourceLabels,
   vehicleDepreciationMethodLabels,
   vehicleResidualCurveMethodLabels,
   vehicleResidualCurveStatusLabels,
@@ -736,11 +741,20 @@ export class ReportService {
       debtInterestCostAmount: sumNullable(rows.map((row) => row.debtInterestCostAmount)),
       debtPrincipalAmount: sumNumbers(rows.map((row) => row.debtPrincipalAmount)),
       depositCollectedAmount: sumNumbers(rows.map((row) => row.depositCollectedAmount)),
+      depreciationAmount: sumNullable(costCalculatedRows.map((row) => row.depreciationAmount)),
       depreciationCostAmount: sumNullable(
         costCalculatedRows.map((row) => row.depreciationCostAmount)
       ),
+      depreciationRecordAmount: sumNumbers(rows.map((row) => row.recordDepreciationAmount)),
+      depreciationRecordCount: sumNumbers(rows.map((row) => row.depreciationRecordCount)),
+      depreciationSourceBreakdown: depreciationSourceBreakdownRows(rows),
+      depreciationUnavailableVehicleCount: rows.filter(
+        (row) => row.depreciationSource === DEPRECIATION_SOURCE_UNAVAILABLE
+      ).length,
+      depreciationVehicleCount: rows.filter((row) => row.depreciationRecordCount > 0).length,
       externalLeaseCostAmount: sumNumbers(rows.map((row) => row.externalLeaseCostAmount)),
       insuranceCostAmount: sumNullable(costCalculatedRows.map((row) => row.insuranceCostAmount)),
+      legacyDepreciationAmount: sumNumbers(rows.map((row) => row.legacyDepreciationAmount ?? 0)),
       maintenanceReserveCostAmount: sumNullable(
         costCalculatedRows.map((row) => row.maintenanceReserveCostAmount)
       ),
@@ -831,11 +845,13 @@ export class ReportService {
       metricsByVehicleId,
       roeContextsByVehicleId,
       residualContextsByVehicleId,
+      depreciationContextsByVehicleId,
       baasContextsByVehicleId
     ] = await Promise.all([
       this.buildAssetProfitabilityMetrics([vehicle], range),
       this.buildAssetReturnRoeContexts([vehicle], range),
       this.buildAssetReturnResidualForecastContexts([vehicle], residualHorizonMonth),
+      this.buildAssetReturnDepreciationContexts([vehicle], range),
       this.buildAssetReturnBaasContexts([vehicle], range)
     ]);
     const metrics = metricsByVehicleId.get(vehicle.id) ?? emptyAssetProfitabilityMetrics();
@@ -843,11 +859,21 @@ export class ReportService {
     const residualContext =
       residualContextsByVehicleId.get(vehicle.id) ??
       emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth);
+    const depreciationContext =
+      depreciationContextsByVehicleId.get(vehicle.id) ??
+      emptyAssetReturnDepreciationContext(vehicle.id);
     const baasContext =
       baasContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnBaasContext(vehicle.id);
     const analysisDays = inclusiveBusinessDays(range.output.startDate, range.output.endDate);
     const row = attachAssetReturnBaasFields(
-      assetReturnTrialVehicleRow(vehicle, metrics, range, roeContext, residualContext),
+      assetReturnTrialVehicleRow(
+        vehicle,
+        metrics,
+        range,
+        roeContext,
+        residualContext,
+        depreciationContext
+      ),
       baasContext,
       analysisDays
     );
@@ -881,6 +907,20 @@ export class ReportService {
         scheduledCostAmount: row.baasScheduledCostAmount
       },
       baasCurrentContract: assetReturnBaasContractView(baasContext.currentContract),
+      depreciationPolicy: assetReturnDepreciationPolicyView(depreciationContext.policy),
+      depreciationRecords: depreciationContext.records.map(assetReturnDepreciationRecordView),
+      depreciationSummary: {
+        amount: row.depreciationAmount,
+        legacyAmount: row.legacyDepreciationAmount,
+        missingReasons: row.depreciationMissingReasons,
+        policyId: row.depreciationPolicyId,
+        policyNo: row.depreciationPolicyNo,
+        recordAmount: row.recordDepreciationAmount,
+        recordCount: row.depreciationRecordCount,
+        source: row.depreciationSource,
+        unconfirmedScheduleCount: depreciationContext.summary.unconfirmedScheduleCount,
+        warnings: depreciationContext.summary.warnings
+      },
       bills: metrics.bills.map((bill) => ({
         amount: toNumber(bill.amount),
         billId: bill.id,
@@ -900,12 +940,17 @@ export class ReportService {
         costDays: row.costDays,
         costProfileMissing: row.costProfileMissing,
         costUnavailableReason: row.costUnavailableReason,
+        depreciationAmount: row.depreciationAmount,
         depreciationCostAmount: row.depreciationCostAmount,
+        depreciationMissingReasons: row.depreciationMissingReasons,
+        depreciationSource: row.depreciationSource,
+        legacyDepreciationAmount: row.legacyDepreciationAmount,
         insuranceCostAmount: row.insuranceCostAmount,
         maintenanceReserveCostAmount: row.maintenanceReserveCostAmount,
         manualDepreciationUnsupported: row.manualDepreciationUnsupported,
         operatingCostAmount: row.operatingCostAmount,
-        otherCostAmount: row.otherCostAmount
+        otherCostAmount: row.otherCostAmount,
+        recordDepreciationAmount: row.recordDepreciationAmount
       },
       costPreview: profile ? buildVehicleAssetCostProfilePreview(vehicle, profile) : null,
       costProfile: profile ? assetCostProfileView(profile) : null,
@@ -1077,6 +1122,12 @@ export class ReportService {
       ["成本与资本结构"],
       ["指标", "金额（元）/值"],
       ["折旧成本", formatMoneyYuan(report.depreciationCostAmount)],
+      ["折旧金额", formatMoneyYuan(report.depreciationAmount)],
+      ["折旧记录金额", formatMoneyYuan(report.depreciationRecordAmount)],
+      ["旧成本参数折旧金额", formatMoneyYuan(report.legacyDepreciationAmount)],
+      ["折旧记录数", report.depreciationRecordCount],
+      ["折旧车辆数", report.depreciationVehicleCount],
+      ["折旧不可用车辆数", report.depreciationUnavailableVehicleCount],
       ["资金成本", formatMoneyYuan(report.capitalCostAmount)],
       ["债务利息成本", formatMoneyYuan(report.debtInterestCostAmount)],
       ["保险成本", formatMoneyYuan(report.insuranceCostAmount)],
@@ -1115,7 +1166,7 @@ export class ReportService {
       ],
       [
         "经营成本合计",
-        "折旧成本 + 资金成本 / 债务利息 + 保险成本 + 维修准备金 + 其他成本 + 外部长租固定成本 + BaaS 成本"
+        "折旧成本（折旧记录优先，未启用折旧策略时 fallback 旧成本参数） + 资金成本 / 债务利息 + 保险成本 + 维修准备金 + 其他成本 + 外部长租固定成本 + BaaS 成本"
       ],
       ["平台权益净收益", "平台留存经营收入 - 经营成本合计"],
       ["试算 ROE", "平台权益净收益 / 权益资本基数"],
@@ -1178,6 +1229,11 @@ export class ReportService {
         "车主分润金额（元）",
         "平台留存经营收入（元）",
         "折旧成本（元）",
+        "折旧来源",
+        "折旧策略",
+        "折旧方法",
+        "折旧记录数",
+        "折旧缺失原因",
         "资金成本（元）",
         "债务利息成本（元）",
         "保险成本（元）",
@@ -1239,6 +1295,11 @@ export class ReportService {
         formatMoneyYuan(vehicle.ownerShareAmount),
         formatMoneyYuan(vehicle.platformRetainedRevenueAmount),
         formatMoneyYuan(vehicle.depreciationCostAmount),
+        labelOf(vehicleDepreciationSourceLabels, vehicle.depreciationSource),
+        vehicle.depreciationPolicyNo,
+        labelOf(vehicleDepreciationMethodLabels, vehicle.depreciationMethod),
+        vehicle.depreciationRecordCount,
+        csvTextList(vehicle.depreciationMissingReasons),
         formatMoneyYuan(vehicle.capitalCostAmount),
         formatMoneyYuan(vehicle.debtInterestCostAmount),
         formatMoneyYuan(vehicle.insuranceCostAmount),
@@ -1301,6 +1362,9 @@ export class ReportService {
     const returns = detail.returns;
     const baasCurrentContract = detail.baasCurrentContract;
     const baasCostSummary = detail.baasCostSummary;
+    const depreciationPolicy = detail.depreciationPolicy;
+    const depreciationRecords = detail.depreciationRecords ?? [];
+    const depreciationSummary = detail.depreciationSummary;
     const residualForecastSummary = detail.residualForecastSummary;
     const residualForecastPoint = detail.residualForecastPoint;
     const residualForecastCurveSummary = detail.residualForecastCurveSummary;
@@ -1360,6 +1424,50 @@ export class ReportService {
             ["预估月成本（元）", formatMoneyYuan(costPreview.estimatedMonthlyCostAmount)]
           ] satisfies CsvRow[])
         : ([["成本 Preview", "-"]] satisfies CsvRow[])),
+      [],
+      ["折旧策略摘要"],
+      ["字段", "值"],
+      ["折旧来源", labelOf(vehicleDepreciationSourceLabels, depreciationSummary?.source)],
+      ["折旧策略编号", depreciationPolicy?.policyNo],
+      [
+        "折旧方法",
+        labelOf(vehicleDepreciationMethodLabels, depreciationPolicy?.depreciationMethod)
+      ],
+      ["折旧金额（元）", formatMoneyYuan(depreciationSummary?.amount)],
+      ["折旧记录金额（元）", formatMoneyYuan(depreciationSummary?.recordAmount)],
+      ["旧成本参数折旧金额（元）", formatMoneyYuan(depreciationSummary?.legacyAmount)],
+      ["折旧记录数", depreciationSummary?.recordCount],
+      ["未确认折旧计划数", depreciationSummary?.unconfirmedScheduleCount],
+      ["折旧缺失原因", csvTextList(depreciationSummary?.missingReasons)],
+      [],
+      ["折旧记录分摊明细"],
+      [
+        "折旧记录编号",
+        "账期",
+        "期间开始",
+        "期间结束",
+        "原始折旧金额（元）",
+        "纳入本分析周期金额（元）",
+        "重叠天数",
+        "总天数",
+        "分摊比例",
+        "记录状态",
+        "记录来源"
+      ],
+      ...depreciationRecords.map((record) => [
+        record.recordNo,
+        record.costPeriod,
+        formatDate(record.periodStart),
+        formatDate(record.periodEnd),
+        formatMoneyYuan(record.fullDepreciationAmount ?? record.depreciationAmount),
+        formatMoneyYuan(record.includedProratedAmount),
+        record.overlapDays,
+        record.totalDays,
+        formatPercent(record.allocationRatio),
+        record.recordStatus,
+        record.recordSource
+      ]),
+      ...(depreciationRecords.length === 0 ? ([["暂无数据"]] satisfies CsvRow[]) : []),
       [],
       ["平台留存收入"],
       ["指标", "金额（元）"],
@@ -3029,11 +3137,13 @@ export class ReportService {
       metricsByVehicleId,
       roeContextsByVehicleId,
       residualContextsByVehicleId,
+      depreciationContextsByVehicleId,
       baasContextsByVehicleId
     ] = await Promise.all([
       this.buildAssetProfitabilityMetrics(vehicles, range),
       this.buildAssetReturnRoeContexts(vehicles, range),
       this.buildAssetReturnResidualForecastContexts(vehicles, residualHorizonMonth),
+      this.buildAssetReturnDepreciationContexts(vehicles, range),
       this.buildAssetReturnBaasContexts(vehicles, range)
     ]);
     const analysisDays = inclusiveBusinessDays(range.output.startDate, range.output.endDate);
@@ -3045,7 +3155,9 @@ export class ReportService {
           range,
           roeContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnRoeContext(vehicle.id),
           residualContextsByVehicleId.get(vehicle.id) ??
-            emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth)
+            emptyAssetReturnResidualForecastContext(vehicle.id, residualHorizonMonth),
+          depreciationContextsByVehicleId.get(vehicle.id) ??
+            emptyAssetReturnDepreciationContext(vehicle.id)
         ),
         baasContextsByVehicleId.get(vehicle.id) ?? emptyAssetReturnBaasContext(vehicle.id),
         analysisDays
@@ -3356,6 +3468,110 @@ export class ReportService {
         unavailableReason: point ? null : RESIDUAL_FORECAST_POINT_MISSING_REASON,
         vehicleId
       });
+    }
+
+    return contextsByVehicleId;
+  }
+
+  private async buildAssetReturnDepreciationContexts(
+    vehicles: Pick<AssetReturnTrialVehicleRecord, "id">[],
+    range: ReturnType<typeof resolveReportDateRange>
+  ) {
+    const vehicleIds = vehicles.map((vehicle) => vehicle.id);
+    const contextsByVehicleId = new Map(
+      vehicleIds.map((vehicleId) => [vehicleId, emptyAssetReturnDepreciationContext(vehicleId)])
+    );
+
+    if (vehicleIds.length === 0) {
+      return contextsByVehicleId;
+    }
+
+    const analysisStart = utcDateOnlyStart(range.output.startDate, "startDate");
+    const analysisEnd = utcDateOnlyStart(range.output.endDate, "endDate");
+    const policies = await this.prisma.vehicleDepreciationPolicy.findMany({
+      orderBy: [{ activatedAt: "desc" }, { createdAt: "desc" }],
+      select: assetReturnDepreciationPolicySelect,
+      where: {
+        deletedAt: null,
+        policyStatus: VehicleDepreciationPolicyStatus.ACTIVE,
+        vehicleId: { in: vehicleIds }
+      }
+    });
+
+    const policyIds: string[] = [];
+    for (const policy of policies) {
+      const context = contextsByVehicleId.get(policy.vehicleId);
+      if (!context || context.policy) {
+        continue;
+      }
+      context.policy = policy;
+      context.summary.policyId = policy.id;
+      context.summary.policyNo = policy.policyNo;
+      policyIds.push(policy.id);
+    }
+
+    if (policyIds.length === 0) {
+      return contextsByVehicleId;
+    }
+
+    const [records, schedules] = await Promise.all([
+      this.prisma.vehicleDepreciationRecord.findMany({
+        orderBy: [{ periodStart: "asc" }, { costPeriod: "asc" }, { createdAt: "asc" }],
+        select: assetReturnDepreciationRecordSelect,
+        where: {
+          deletedAt: null,
+          periodEnd: { gte: analysisStart },
+          periodStart: { lte: analysisEnd },
+          policyId: { in: policyIds },
+          recordStatus: { in: DEPRECIATION_RECORD_INCLUDED_STATUSES },
+          vehicleId: { in: vehicleIds }
+        }
+      }),
+      this.prisma.vehicleDepreciationSchedule.findMany({
+        orderBy: [{ periodStart: "asc" }, { costPeriod: "asc" }, { createdAt: "asc" }],
+        select: assetReturnDepreciationScheduleSelect,
+        where: {
+          deletedAt: null,
+          periodEnd: { gte: analysisStart },
+          periodStart: { lte: analysisEnd },
+          policyId: { in: policyIds },
+          scheduleStatus: VehicleDepreciationScheduleStatus.SCHEDULED,
+          vehicleId: { in: vehicleIds }
+        }
+      })
+    ]);
+
+    for (const schedule of schedules) {
+      const context = contextsByVehicleId.get(schedule.vehicleId);
+      if (!context || context.policy?.id !== schedule.policyId) {
+        continue;
+      }
+      context.schedules.push(schedule);
+      context.summary.unconfirmedScheduleCount += 1;
+    }
+
+    for (const record of records) {
+      const context = contextsByVehicleId.get(record.vehicleId);
+      if (!context || context.policy?.id !== record.policyId) {
+        continue;
+      }
+
+      const allocation = calculateProratedDepreciationForAnalysisWindow(record, range.output);
+      const allocatedRecord = {
+        ...record,
+        fullDepreciationAmount: toNumber(record.depreciationAmount),
+        ...allocation
+      };
+      context.records.push(allocatedRecord);
+      context.summary.recordAmount += allocatedRecord.includedProratedAmount;
+      context.summary.recordCount += 1;
+      if (allocation.totalDays <= 0) {
+        context.summary.warnings.push(INVALID_DEPRECIATION_RECORD_PERIOD_WARNING);
+      }
+    }
+
+    for (const context of contextsByVehicleId.values()) {
+      updateDepreciationContextSummary(context);
     }
 
     return contextsByVehicleId;
@@ -4293,6 +4509,51 @@ const assetReturnTrialVehicleDetailSelect = {
   assetCostProfiles: activeAssetCostProfileRelationSelect
 } satisfies Prisma.VehicleSelect;
 
+const assetReturnDepreciationPolicySelect = {
+  basisSource: true,
+  currency: true,
+  depreciationBasisAmount: true,
+  depreciationEndDate: true,
+  depreciationMethod: true,
+  depreciationStartDate: true,
+  id: true,
+  monthlyDepreciationAmount: true,
+  policyNo: true,
+  policyStatus: true,
+  residualValueAmount: true,
+  usefulLifeMonths: true,
+  vehicleId: true
+} satisfies Prisma.VehicleDepreciationPolicySelect;
+
+const assetReturnDepreciationRecordSelect = {
+  confirmedAt: true,
+  costPeriod: true,
+  currency: true,
+  depreciationAmount: true,
+  id: true,
+  lockedAt: true,
+  periodEnd: true,
+  periodStart: true,
+  policyId: true,
+  recordNo: true,
+  recordSource: true,
+  recordStatus: true,
+  scheduleId: true,
+  vehicleId: true,
+  voidedAt: true
+} satisfies Prisma.VehicleDepreciationRecordSelect;
+
+const assetReturnDepreciationScheduleSelect = {
+  costPeriod: true,
+  id: true,
+  periodEnd: true,
+  periodStart: true,
+  policyId: true,
+  scheduleNo: true,
+  scheduleStatus: true,
+  vehicleId: true
+} satisfies Prisma.VehicleDepreciationScheduleSelect;
+
 const assetReturnBaasContractSelect = {
   batteryPackageName: true,
   batterySerialNo: true,
@@ -4545,6 +4806,31 @@ type AssetReturnBaasAllocatedCostRecord = AssetReturnBaasCostRecord & {
   overlapDays: number;
   totalDays: number;
 };
+type AssetReturnDepreciationSource =
+  | typeof DEPRECIATION_SOURCE_RECORDS
+  | typeof DEPRECIATION_SOURCE_LEGACY_COST_PROFILE
+  | typeof DEPRECIATION_SOURCE_NONE
+  | typeof DEPRECIATION_SOURCE_UNAVAILABLE;
+type AssetReturnDepreciationPolicyRecord = Prisma.VehicleDepreciationPolicyGetPayload<{
+  select: typeof assetReturnDepreciationPolicySelect;
+}>;
+type AssetReturnDepreciationRecord = Prisma.VehicleDepreciationRecordGetPayload<{
+  select: typeof assetReturnDepreciationRecordSelect;
+}>;
+type AssetReturnDepreciationScheduleRecord = Prisma.VehicleDepreciationScheduleGetPayload<{
+  select: typeof assetReturnDepreciationScheduleSelect;
+}>;
+type AssetReturnDepreciationAllocatedRecord = AssetReturnDepreciationRecord & {
+  allocationRatio: number | null;
+  fullDepreciationAmount: number;
+  includedProratedAmount: number;
+  overlapDays: number;
+  totalDays: number;
+};
+type AssetReturnPeriodCost = ReturnType<typeof buildVehicleAssetPeriodCost> & {
+  depreciationMissingReasons: string[];
+  depreciationWarnings: string[];
+};
 type AssetProfitabilitySortField = NonNullable<AssetProfitabilityVehicleListQueryDto["sortBy"]>;
 type AssetReturnTrialSortField = NonNullable<AssetReturnTrialVehicleListQueryDto["sortBy"]>;
 
@@ -4582,6 +4868,27 @@ type AssetReturnBaasContext = {
   vehicleId: string;
 };
 
+type AssetReturnDepreciationSummary = {
+  amount: number | null;
+  legacyAmount: number | null;
+  missingReasons: string[];
+  policyId: string | null;
+  policyNo: string | null;
+  recordAmount: number;
+  recordCount: number;
+  source: AssetReturnDepreciationSource;
+  unconfirmedScheduleCount: number;
+  warnings: string[];
+};
+
+type AssetReturnDepreciationContext = {
+  policy: AssetReturnDepreciationPolicyRecord | null;
+  records: AssetReturnDepreciationAllocatedRecord[];
+  schedules: AssetReturnDepreciationScheduleRecord[];
+  summary: AssetReturnDepreciationSummary;
+  vehicleId: string;
+};
+
 const ROE_UNAVAILABLE_REASON = "缺少债务 / 自有资本拆分模型，暂不输出正式 ROE。";
 const MISSING_COST_PROFILE_REASON = "缺少 ACTIVE 车辆资产成本参数，无法试算 ROA。";
 const DEFAULT_RESIDUAL_HORIZON_MONTH = 12;
@@ -4598,6 +4905,20 @@ const BAAS_COST_INCLUDED_STATUSES: VehicleBaasCostRecordStatus[] = [
   VehicleBaasCostRecordStatus.OVERDUE
 ];
 const BAAS_COST_ALLOCATION_METHOD = "PERIOD_PRORATED";
+const DEPRECIATION_RECORD_INCLUDED_STATUSES: VehicleDepreciationRecordStatus[] = [
+  VehicleDepreciationRecordStatus.CONFIRMED,
+  VehicleDepreciationRecordStatus.LOCKED
+];
+const DEPRECIATION_ALLOCATION_METHOD = "PERIOD_PRORATED";
+const DEPRECIATION_SOURCE_RECORDS = "RECORDS";
+const DEPRECIATION_SOURCE_LEGACY_COST_PROFILE = "LEGACY_COST_PROFILE";
+const DEPRECIATION_SOURCE_NONE = "NONE";
+const DEPRECIATION_SOURCE_UNAVAILABLE = "UNAVAILABLE";
+const DEPRECIATION_MISSING_RECORD_REASON = "缺少已确认折旧记录";
+const MANUAL_DEPRECIATION_POLICY_MISSING_RECORD_REASON = "手工折旧策略缺少折旧记录";
+const STRAIGHT_LINE_DEPRECIATION_UNCONFIRMED_SCHEDULE_REASON =
+  "直线折旧策略存在未确认折旧计划";
+const INVALID_DEPRECIATION_RECORD_PERIOD_WARNING = "折旧记录期间无效，已按 0 计入。";
 const operatingRevenueBillTypes: BillType[] = [
   BillType.FIRST_MONTHLY_FEE,
   BillType.MONTHLY_RENT,
@@ -4689,6 +5010,9 @@ function assetReturnTrialVehicleRow(
   residualContext: AssetReturnResidualForecastContext = emptyAssetReturnResidualForecastContext(
     vehicle.id,
     DEFAULT_RESIDUAL_HORIZON_MONTH
+  ),
+  depreciationContext: AssetReturnDepreciationContext = emptyAssetReturnDepreciationContext(
+    vehicle.id
   )
 ) {
   const baseRow = assetProfitabilityVehicleRow(vehicle, metrics);
@@ -4698,9 +5022,12 @@ function assetReturnTrialVehicleRow(
   const analysisDays = inclusiveBusinessDays(range.output.startDate, range.output.endDate);
 
   if (!profile) {
+    const depreciationFields = depreciationFieldsForMissingCostProfile(depreciationContext);
     const roeFields = buildAssetReturnRoeTrialFields({
       analysisDays,
       baseRow,
+      depreciationMissingReasons: depreciationFields.depreciationMissingReasons,
+      depreciationWarnings: depreciationFields.depreciationWarnings,
       metrics,
       operatingRevenueAmount,
       periodCost: null,
@@ -4725,6 +5052,7 @@ function assetReturnTrialVehicleRow(
       costProfileMissing: true,
       costProfileStatus: null,
       costUnavailableReason: MISSING_COST_PROFILE_REASON,
+      ...depreciationFields,
       depreciationCostAmount: null,
       insuranceCostAmount: null,
       maintenanceReserveCostAmount: null,
@@ -4735,10 +5063,17 @@ function assetReturnTrialVehicleRow(
   }
 
   const costDays = costDaysForProfile(profile, range);
-  const periodCost = buildVehicleAssetPeriodCost(vehicle, profile, costDays);
+  const legacyPeriodCost = buildVehicleAssetPeriodCost(vehicle, profile, costDays);
+  const { depreciationFields, periodCost } = applyDepreciationContextToPeriodCost(
+    legacyPeriodCost,
+    depreciationContext,
+    profile
+  );
   const roeFields = buildAssetReturnRoeTrialFields({
     analysisDays,
     baseRow,
+    depreciationMissingReasons: depreciationFields.depreciationMissingReasons,
+    depreciationWarnings: depreciationFields.depreciationWarnings,
     metrics,
     operatingRevenueAmount,
     periodCost,
@@ -4760,12 +5095,13 @@ function assetReturnTrialVehicleRow(
     ...periodCost,
     ...roeFields,
     ...residualFields,
+    ...depreciationFields,
     costDays,
     costProfileMissing: false,
     costProfileStatus: profile.profileStatus,
     costUnavailableReason: periodCost.manualDepreciationUnsupported
       ? MANUAL_DEPRECIATION_UNSUPPORTED_REASON
-      : null,
+      : depreciationFields.depreciationMissingReasons.join("；") || null,
     operatingRevenueAmount
   };
 }
@@ -4773,6 +5109,8 @@ function assetReturnTrialVehicleRow(
 function buildAssetReturnRoeTrialFields({
   analysisDays,
   baseRow,
+  depreciationMissingReasons,
+  depreciationWarnings,
   metrics,
   operatingRevenueAmount,
   periodCost,
@@ -4782,21 +5120,24 @@ function buildAssetReturnRoeTrialFields({
 }: {
   analysisDays: number;
   baseRow: ReturnType<typeof assetProfitabilityVehicleRow>;
+  depreciationMissingReasons: string[];
+  depreciationWarnings: string[];
   metrics: AssetProfitabilityMetrics;
   operatingRevenueAmount: number;
-  periodCost: ReturnType<typeof buildVehicleAssetPeriodCost> | null;
+  periodCost: AssetReturnPeriodCost | null;
   range: ReturnType<typeof resolveReportDateRange>;
   roeContext: AssetReturnRoeContext;
   vehicle: AssetReturnTrialVehicleRecord;
 }) {
   const missingReasons: string[] = [];
-  const warnings: string[] = [];
+  const warnings: string[] = [...depreciationWarnings];
 
   if (!periodCost) {
     missingReasons.push(MISSING_COST_PROFILE_REASON);
   } else if (periodCost.manualDepreciationUnsupported) {
     missingReasons.push(MANUAL_DEPRECIATION_UNSUPPORTED_REASON);
   }
+  missingReasons.push(...depreciationMissingReasons);
 
   if (roeContext.vehiclePoolRevenueRightWarning) {
     warnings.push("车辆池收益权归集暂未接入 ROE 试算。");
@@ -5406,6 +5747,105 @@ function costDaysForProfile(
   return inclusiveBusinessDays(costStart, range.output.endDate);
 }
 
+function applyDepreciationContextToPeriodCost(
+  legacyPeriodCost: ReturnType<typeof buildVehicleAssetPeriodCost>,
+  depreciationContext: AssetReturnDepreciationContext,
+  profile: AssetCostProfileRecord
+) {
+  if (!depreciationContext.policy) {
+    const depreciationFields = {
+      depreciationAmount: legacyPeriodCost.depreciationCostAmount,
+      depreciationCostAmount: legacyPeriodCost.depreciationCostAmount,
+      depreciationMethod: profile.depreciationMethod,
+      depreciationMissingReasons: [] as string[],
+      depreciationPolicyId: null,
+      depreciationPolicyNo: null,
+      depreciationRecordCount: 0,
+      depreciationSource: DEPRECIATION_SOURCE_LEGACY_COST_PROFILE,
+      depreciationWarnings: [] as string[],
+      legacyDepreciationAmount: legacyPeriodCost.depreciationCostAmount,
+      recordDepreciationAmount: 0
+    };
+
+    return {
+      depreciationFields,
+      periodCost: {
+        ...legacyPeriodCost,
+        depreciationMissingReasons: depreciationFields.depreciationMissingReasons,
+        depreciationWarnings: depreciationFields.depreciationWarnings
+      }
+    };
+  }
+
+  const summary = depreciationContext.summary;
+  const depreciationCostAmount = summary.amount;
+  const depreciationFields = {
+    depreciationAmount: depreciationCostAmount,
+    depreciationCostAmount,
+    depreciationMethod: depreciationContext.policy.depreciationMethod,
+    depreciationMissingReasons: summary.missingReasons,
+    depreciationPolicyId: depreciationContext.policy.id,
+    depreciationPolicyNo: depreciationContext.policy.policyNo,
+    depreciationRecordCount: summary.recordCount,
+    depreciationSource: summary.source,
+    depreciationWarnings: summary.warnings,
+    legacyDepreciationAmount: legacyPeriodCost.depreciationCostAmount,
+    recordDepreciationAmount: summary.recordAmount
+  };
+  const operatingCostAmount =
+    depreciationCostAmount === null
+      ? null
+      : depreciationCostAmount +
+        legacyPeriodCost.capitalCostAmount +
+        legacyPeriodCost.insuranceCostAmount +
+        legacyPeriodCost.maintenanceReserveCostAmount +
+        legacyPeriodCost.otherCostAmount;
+
+  return {
+    depreciationFields,
+    periodCost: {
+      ...legacyPeriodCost,
+      depreciationCostAmount,
+      depreciationMissingReasons: depreciationFields.depreciationMissingReasons,
+      depreciationWarnings: depreciationFields.depreciationWarnings,
+      manualDepreciationUnsupported: false,
+      operatingCostAmount
+    }
+  };
+}
+
+function depreciationFieldsForMissingCostProfile(
+  depreciationContext: AssetReturnDepreciationContext
+) {
+  if (!depreciationContext.policy) {
+    return {
+      depreciationAmount: null,
+      depreciationMethod: null,
+      depreciationMissingReasons: [] as string[],
+      depreciationPolicyId: null,
+      depreciationPolicyNo: null,
+      depreciationRecordCount: 0,
+      depreciationSource: DEPRECIATION_SOURCE_LEGACY_COST_PROFILE,
+      depreciationWarnings: [] as string[],
+      legacyDepreciationAmount: null,
+      recordDepreciationAmount: 0
+    };
+  }
+
+  return {
+    depreciationAmount: depreciationContext.summary.amount,
+    depreciationMethod: depreciationContext.policy.depreciationMethod,
+    depreciationMissingReasons: depreciationContext.summary.missingReasons,
+    depreciationPolicyId: depreciationContext.policy.id,
+    depreciationPolicyNo: depreciationContext.policy.policyNo,
+    depreciationRecordCount: depreciationContext.summary.recordCount,
+    depreciationSource: depreciationContext.summary.source,
+    depreciationWarnings: depreciationContext.summary.warnings,
+    legacyDepreciationAmount: null,
+    recordDepreciationAmount: depreciationContext.summary.recordAmount
+  };
+}
+
 function assetCostProfileView(profile: AssetCostProfileRecord) {
   return {
     annualInsuranceCostAmount: toNullableNumber(profile.annualInsuranceCostAmount),
@@ -5586,6 +6026,120 @@ function emptyAssetReturnBaasCostSummary(): AssetReturnBaasCostSummary {
   };
 }
 
+function emptyAssetReturnDepreciationSummary(): AssetReturnDepreciationSummary {
+  return {
+    amount: null,
+    legacyAmount: null,
+    missingReasons: [],
+    policyId: null,
+    policyNo: null,
+    recordAmount: 0,
+    recordCount: 0,
+    source: DEPRECIATION_SOURCE_LEGACY_COST_PROFILE,
+    unconfirmedScheduleCount: 0,
+    warnings: []
+  };
+}
+
+function emptyAssetReturnDepreciationContext(
+  vehicleId: string
+): AssetReturnDepreciationContext {
+  return {
+    policy: null,
+    records: [],
+    schedules: [],
+    summary: emptyAssetReturnDepreciationSummary(),
+    vehicleId
+  };
+}
+
+function updateDepreciationContextSummary(context: AssetReturnDepreciationContext) {
+  const policy = context.policy;
+  if (!policy) {
+    return;
+  }
+
+  context.summary.policyId = policy.id;
+  context.summary.policyNo = policy.policyNo;
+
+  if (policy.depreciationMethod === VehicleDepreciationMethod.NONE) {
+    context.summary.amount = 0;
+    context.summary.missingReasons = [];
+    context.summary.source = DEPRECIATION_SOURCE_NONE;
+    return;
+  }
+
+  if (context.summary.recordCount > 0) {
+    context.summary.amount = context.summary.recordAmount;
+    context.summary.missingReasons = [];
+    context.summary.source = DEPRECIATION_SOURCE_RECORDS;
+    return;
+  }
+
+  context.summary.amount = null;
+  context.summary.source = DEPRECIATION_SOURCE_UNAVAILABLE;
+  if (policy.depreciationMethod === VehicleDepreciationMethod.MANUAL) {
+    context.summary.missingReasons = [MANUAL_DEPRECIATION_POLICY_MISSING_RECORD_REASON];
+  } else if (
+    policy.depreciationMethod === VehicleDepreciationMethod.STRAIGHT_LINE &&
+    context.summary.unconfirmedScheduleCount > 0
+  ) {
+    context.summary.missingReasons = [STRAIGHT_LINE_DEPRECIATION_UNCONFIRMED_SCHEDULE_REASON];
+  } else {
+    context.summary.missingReasons = [DEPRECIATION_MISSING_RECORD_REASON];
+  }
+}
+
+function assetReturnDepreciationPolicyView(
+  policy: AssetReturnDepreciationPolicyRecord | null
+) {
+  if (!policy) {
+    return null;
+  }
+
+  return {
+    basisSource: policy.basisSource,
+    currency: policy.currency,
+    depreciationBasisAmount: toNumber(policy.depreciationBasisAmount),
+    depreciationEndDate: policy.depreciationEndDate,
+    depreciationMethod: policy.depreciationMethod,
+    depreciationStartDate: policy.depreciationStartDate,
+    id: policy.id,
+    monthlyDepreciationAmount: toNullableNumber(policy.monthlyDepreciationAmount),
+    policyNo: policy.policyNo,
+    policyStatus: policy.policyStatus,
+    residualValueAmount: toNumber(policy.residualValueAmount),
+    usefulLifeMonths: policy.usefulLifeMonths,
+    vehicleId: policy.vehicleId
+  };
+}
+
+function assetReturnDepreciationRecordView(record: AssetReturnDepreciationAllocatedRecord) {
+  return {
+    allocationMethod: DEPRECIATION_ALLOCATION_METHOD,
+    allocationRatio: record.allocationRatio,
+    confirmedAt: record.confirmedAt,
+    costPeriod: record.costPeriod,
+    currency: record.currency,
+    depreciationAmount: toNumber(record.depreciationAmount),
+    fullDepreciationAmount: record.fullDepreciationAmount,
+    id: record.id,
+    includedProratedAmount: record.includedProratedAmount,
+    lockedAt: record.lockedAt,
+    overlapDays: record.overlapDays,
+    periodEnd: record.periodEnd,
+    periodStart: record.periodStart,
+    policyId: record.policyId,
+    recordNo: record.recordNo,
+    recordSource: record.recordSource,
+    recordStatus: record.recordStatus,
+    scheduleId: record.scheduleId,
+    totalDays: record.totalDays,
+    vehicleId: record.vehicleId,
+    voidedAt: record.voidedAt
+  };
+}
+
 function emptyAssetReturnBaasContext(vehicleId: string): AssetReturnBaasContext {
   return {
     currentContract: null,
@@ -5700,6 +6254,53 @@ function calculateProratedBaasCostForAnalysisWindow(
   const costAmount = bigintAmount(record.costAmount);
   const includedProratedAmount = Number(
     (costAmount * BigInt(overlapDays) + BigInt(totalDays) / 2n) / BigInt(totalDays)
+  );
+
+  return {
+    allocationRatio: overlapDays / totalDays,
+    includedProratedAmount,
+    overlapDays,
+    totalDays
+  };
+}
+
+function calculateProratedDepreciationForAnalysisWindow(
+  record: Pick<
+    AssetReturnDepreciationRecord,
+    "depreciationAmount" | "periodEnd" | "periodStart"
+  >,
+  analysisWindow: { endDate: string; startDate: string }
+) {
+  const periodStartDate = formatDateOnly(record.periodStart);
+  const periodEndDate = formatDateOnly(record.periodEnd);
+  const totalDays = inclusiveBusinessDays(periodStartDate, periodEndDate);
+
+  if (totalDays <= 0) {
+    return {
+      allocationRatio: null,
+      includedProratedAmount: 0,
+      overlapDays: 0,
+      totalDays
+    };
+  }
+
+  const overlapStartDate = maxBusinessDate(periodStartDate, analysisWindow.startDate);
+  const overlapEndDate = minBusinessDate(periodEndDate, analysisWindow.endDate);
+  const overlapDays = inclusiveBusinessDays(overlapStartDate, overlapEndDate);
+
+  if (overlapDays <= 0) {
+    return {
+      allocationRatio: 0,
+      includedProratedAmount: 0,
+      overlapDays: 0,
+      totalDays
+    };
+  }
+
+  const depreciationAmount = bigintAmount(record.depreciationAmount);
+  const includedProratedAmount = Number(
+    (depreciationAmount * BigInt(overlapDays) + BigInt(totalDays) / 2n) /
+      BigInt(totalDays)
   );
 
   return {
@@ -5893,6 +6494,28 @@ function assetReturnTrialComparator(field: AssetReturnTrialSortField, order: "as
 
     return (leftValue - rightValue) * direction;
   };
+}
+
+function depreciationSourceBreakdownRows(
+  rows: Array<{
+    depreciationAmount: number | null;
+    depreciationSource: string;
+  }>
+) {
+  const breakdown = new Map<string, { amount: number; count: number; source: string }>();
+
+  for (const row of rows) {
+    const current = breakdown.get(row.depreciationSource) ?? {
+      amount: 0,
+      count: 0,
+      source: row.depreciationSource
+    };
+    current.amount += row.depreciationAmount ?? 0;
+    current.count += 1;
+    breakdown.set(row.depreciationSource, current);
+  }
+
+  return [...breakdown.values()].sort((left, right) => left.source.localeCompare(right.source));
 }
 
 function sortableNumber(value: number | null) {

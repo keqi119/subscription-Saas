@@ -31,6 +31,10 @@ import {
   VehicleBaasCostSource,
   VehicleCapitalEventStatus,
   VehicleDepreciationMethod,
+  VehicleDepreciationPolicyStatus,
+  VehicleDepreciationRecordSource,
+  VehicleDepreciationRecordStatus,
+  VehicleDepreciationScheduleStatus,
   VehicleModel,
   VehicleResidualCurveMethod,
   VehicleResidualCurveStatus,
@@ -846,6 +850,222 @@ describe("reporting dashboard APIs", () => {
     expect(row?.baasOverdueCostAmount).toBe(16000);
   });
 
+  it("asset return trial falls back to legacy depreciation without an active depreciation policy", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma);
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    const row = result.items[0];
+
+    expect(row).toMatchObject({
+      depreciationAmount: 1080000,
+      depreciationCostAmount: 1080000,
+      depreciationRecordCount: 0,
+      depreciationSource: "LEGACY_COST_PROFILE",
+      legacyDepreciationAmount: 1080000,
+      operatingCostAmount: 1321500,
+      recordDepreciationAmount: 0
+    });
+  });
+
+  it("asset return trial uses NONE active depreciation policy as zero depreciation", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      depreciationPolicies: [
+        assetDepreciationPolicy({
+          depreciationMethod: VehicleDepreciationMethod.NONE
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    const row = result.items[0];
+
+    expect(row).toMatchObject({
+      depreciationAmount: 0,
+      depreciationCostAmount: 0,
+      depreciationSource: "NONE",
+      operatingCostAmount: 241500,
+      roeUnavailableReason: null
+    });
+  });
+
+  it("asset return trial uses confirmed manual depreciation records and avoids legacy manual blocking", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      depreciationPolicies: [
+        assetDepreciationPolicy({
+          depreciationMethod: VehicleDepreciationMethod.MANUAL
+        })
+      ],
+      depreciationRecords: [
+        assetDepreciationRecord({
+          depreciationAmount: 240000n,
+          recordSource: VehicleDepreciationRecordSource.MANUAL,
+          scheduleId: null
+        })
+      ],
+      profiles: [
+        assetCostProfile({
+          depreciationMethod: VehicleDepreciationMethod.MANUAL
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    const row = result.items[0];
+
+    expect(row).toMatchObject({
+      depreciationAmount: 240000,
+      depreciationRecordCount: 1,
+      depreciationSource: "RECORDS",
+      manualDepreciationUnsupported: false,
+      operatingCostAmount: 481500,
+      recordDepreciationAmount: 240000
+    });
+    expect(row?.roeTrial).not.toBeNull();
+    expect(row?.roeMissingReasons).not.toContain(
+      "MANUAL 折旧方法暂未配置手工折旧明细，无法试算 ROA。"
+    );
+  });
+
+  it("asset return trial marks active manual depreciation policy unavailable without records", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      depreciationPolicies: [
+        assetDepreciationPolicy({
+          depreciationMethod: VehicleDepreciationMethod.MANUAL
+        })
+      ]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-12-31",
+      startDate: "2026-01-01"
+    });
+    const row = result.items[0];
+
+    expect(row).toMatchObject({
+      depreciationAmount: null,
+      depreciationCostAmount: null,
+      depreciationSource: "UNAVAILABLE",
+      operatingCostAmount: null,
+      roeTrial: null
+    });
+    expect(row?.roeMissingReasons).toContain("手工折旧策略缺少折旧记录");
+  });
+
+  it("asset return trial marks straight-line policy unavailable when schedules are not confirmed", async () => {
+    const { prisma, service } = createReportHarness();
+    mockAssetReturnTrial(prisma, {
+      depreciationPolicies: [assetDepreciationPolicy()],
+      depreciationSchedules: [assetDepreciationSchedule()]
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+    const row = result.items[0];
+
+    expect(row).toMatchObject({
+      depreciationSource: "UNAVAILABLE",
+      operatingCostAmount: null,
+      roeTrial: null
+    });
+    expect(row?.roeMissingReasons).toContain("直线折旧策略存在未确认折旧计划");
+  });
+
+  it("asset return trial includes confirmed and locked depreciation records by period window", async () => {
+    const { prisma, service } = createReportHarness();
+    const allRecords = [
+      assetDepreciationRecord({
+        costPeriod: "2026-02",
+        depreciationAmount: 31000n,
+        id: "dep-confirmed",
+        periodEnd: new Date("2026-01-31T00:00:00.000Z"),
+        periodStart: new Date("2026-01-01T00:00:00.000Z"),
+        recordNo: "VDR-CONFIRMED",
+        recordStatus: VehicleDepreciationRecordStatus.CONFIRMED
+      }),
+      assetDepreciationRecord({
+        depreciationAmount: 16000n,
+        id: "dep-locked",
+        periodEnd: new Date("2026-01-31T00:00:00.000Z"),
+        periodStart: new Date("2026-01-16T00:00:00.000Z"),
+        recordNo: "VDR-LOCKED",
+        recordStatus: VehicleDepreciationRecordStatus.LOCKED
+      }),
+      assetDepreciationRecord({
+        depreciationAmount: 99999n,
+        id: "dep-draft",
+        recordNo: "VDR-DRAFT",
+        recordStatus: VehicleDepreciationRecordStatus.DRAFT
+      }),
+      assetDepreciationRecord({
+        depreciationAmount: 99999n,
+        id: "dep-voided",
+        recordNo: "VDR-VOIDED",
+        recordStatus: VehicleDepreciationRecordStatus.VOIDED
+      })
+    ];
+    mockAssetReturnTrial(prisma, {
+      depreciationPolicies: [assetDepreciationPolicy()]
+    });
+    prisma.vehicleDepreciationRecord.findMany.mockImplementation(async (args) => {
+      const where = args.where as {
+        periodEnd: { gte: Date };
+        periodStart: { lte: Date };
+        recordStatus: { in: VehicleDepreciationRecordStatus[] };
+      };
+
+      return allRecords.filter((record) => {
+        const status = record.recordStatus as VehicleDepreciationRecordStatus;
+        return (
+          where.recordStatus.in.includes(status) &&
+          (record.periodStart as Date) <= where.periodStart.lte &&
+          (record.periodEnd as Date) >= where.periodEnd.gte
+        );
+      });
+    });
+
+    const result = await service.getAssetReturnTrialVehicles({
+      endDate: "2026-01-31",
+      startDate: "2026-01-16"
+    });
+    const row = result.items[0];
+
+    expect(row).toMatchObject({
+      depreciationAmount: 32000,
+      depreciationRecordCount: 2,
+      depreciationSource: "RECORDS",
+      recordDepreciationAmount: 32000
+    });
+    expect(prisma.vehicleDepreciationRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          recordStatus: {
+            in: [
+              VehicleDepreciationRecordStatus.CONFIRMED,
+              VehicleDepreciationRecordStatus.LOCKED
+            ]
+          },
+          periodEnd: { gte: expect.any(Date) },
+          periodStart: { lte: expect.any(Date) }
+        })
+      })
+    );
+  });
+
   it("asset return trial uses adopted residual amount before predicted amount", async () => {
     const { prisma, service } = createReportHarness();
     mockAssetReturnTrial(prisma, {
@@ -1454,6 +1674,52 @@ describe("reporting dashboard APIs", () => {
         includedInOperatingRevenue: true
       })
     ]);
+  });
+
+  it("asset return trial vehicle detail returns depreciation policy and allocated records", async () => {
+    const { prisma, service } = createReportHarness();
+    prisma.vehicle.findFirst.mockResolvedValue(assetReturnVehicleDetail());
+    prisma.subscriptionOrder.findMany.mockResolvedValue([assetOrder()]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      assetBill({ billType: BillType.MONTHLY_RENT, paidAmount: 500000n })
+    ]);
+    prisma.depositLedger.findMany.mockResolvedValue([]);
+    prisma.vehicleDepreciationPolicy.findMany.mockResolvedValue([assetDepreciationPolicy()]);
+    prisma.vehicleDepreciationRecord.findMany.mockResolvedValue([
+      assetDepreciationRecord({
+        depreciationAmount: 31000n,
+        periodEnd: new Date("2026-01-31T00:00:00.000Z"),
+        periodStart: new Date("2026-01-01T00:00:00.000Z")
+      })
+    ]);
+
+    const result = await service.getAssetReturnTrialVehicleDetail("vehicle-1", {
+      endDate: "2026-01-31",
+      startDate: "2026-01-16"
+    });
+
+    expect(result.depreciationPolicy).toMatchObject({
+      depreciationMethod: VehicleDepreciationMethod.STRAIGHT_LINE,
+      policyNo: "VDP202606001"
+    });
+    expect(result.depreciationSummary).toMatchObject({
+      amount: 16000,
+      recordAmount: 16000,
+      recordCount: 1,
+      source: "RECORDS"
+    });
+    expect(result.depreciationRecords).toEqual([
+      expect.objectContaining({
+        allocationMethod: "PERIOD_PRORATED",
+        includedProratedAmount: 16000,
+        overlapDays: 16,
+        totalDays: 31
+      })
+    ]);
+    expect(result.costBreakdown).toMatchObject({
+      depreciationCostAmount: 16000,
+      depreciationSource: "RECORDS"
+    });
   });
 
   it("asset return trial vehicle detail returns BaaS contract, cost records, and adjusted metrics", async () => {
@@ -2117,6 +2383,9 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("平台留存经营收入,6500.00");
     expect(result.content).toContain("债务利息成本,0.00");
     expect(result.content).toContain("成本与资本结构");
+    expect(result.content).toContain("折旧记录金额,0.00");
+    expect(result.content).toContain("旧成本参数折旧金额,10800.00");
+    expect(result.content).toContain("折旧记录数,0");
     expect(result.content).toContain("债务本金,0.00");
     expect(result.content).toContain("权益资本基数,12000.00");
     expect(result.content).toContain("经营成本合计,13215.00");
@@ -2167,6 +2436,9 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("资产收益试算车辆列表");
     expect(result.content).toContain("车辆编号,VIN,车牌号");
     expect(result.content).toContain("平台留存经营收入（元）");
+    expect(result.content).toContain("折旧来源");
+    expect(result.content).toContain("折旧记录数");
+    expect(result.content).toContain("旧成本参数");
     expect(result.content).toContain("债务利息成本（元）");
     expect(result.content).toContain("权益资本基数（元）");
     expect(result.content).toContain("ROE 状态");
@@ -2251,6 +2523,9 @@ describe("reporting dashboard APIs", () => {
     expect(result.content).toContain("折旧方法,直线法");
     expect(result.content).toContain("成本 Preview");
     expect(result.content).toContain("月折旧（元）,900.00");
+    expect(result.content).toContain("折旧策略摘要");
+    expect(result.content).toContain("折旧来源,旧成本参数");
+    expect(result.content).toContain("折旧记录分摊明细");
     expect(result.content).toContain("平台留存收入");
     expect(result.content).toContain("经营收入合计,6000.00");
     expect(result.content).toContain("质押收入金额,0.00");
@@ -3185,6 +3460,15 @@ function createReportHarness() {
     vehicleBaasCostRecord: {
       findMany: vi.fn().mockResolvedValue([])
     },
+    vehicleDepreciationPolicy: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    vehicleDepreciationRecord: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    vehicleDepreciationSchedule: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
     vehicleMarketPriceObservation: {
       create: reportWriteGuard("vehicleMarketPriceObservation.create"),
       update: reportWriteGuard("vehicleMarketPriceObservation.update")
@@ -3405,6 +3689,9 @@ function mockAssetReturnTrial(
     baasContracts?: Array<Record<string, unknown>>;
     baasCostRecords?: Array<Record<string, unknown>>;
     capitalEvents?: Array<Record<string, unknown>>;
+    depreciationPolicies?: Array<Record<string, unknown>>;
+    depreciationRecords?: Array<Record<string, unknown>>;
+    depreciationSchedules?: Array<Record<string, unknown>>;
     financingAllocations?: Array<Record<string, unknown>>;
     forecasts?: Array<Record<string, unknown>>;
     orders?: Array<Record<string, unknown>>;
@@ -3458,6 +3745,11 @@ function mockAssetReturnTrial(
   prisma.vehicleResidualForecast.findMany.mockResolvedValue(overrides.forecasts ?? []);
   prisma.vehicleBaasContract.findMany.mockResolvedValue(overrides.baasContracts ?? []);
   prisma.vehicleBaasCostRecord.findMany.mockResolvedValue(overrides.baasCostRecords ?? []);
+  prisma.vehicleDepreciationPolicy.findMany.mockResolvedValue(overrides.depreciationPolicies ?? []);
+  prisma.vehicleDepreciationRecord.findMany.mockResolvedValue(overrides.depreciationRecords ?? []);
+  prisma.vehicleDepreciationSchedule.findMany.mockResolvedValue(
+    overrides.depreciationSchedules ?? []
+  );
 }
 
 function assetVehicle(overrides: Record<string, unknown> = {}) {
@@ -3633,6 +3925,60 @@ function assetBaasCostRecord(overrides: Record<string, unknown> = {}) {
     periodStart: new Date("2026-06-01T00:00:00.000Z"),
     vehicleId: "vehicle-1",
     voidedAt: null,
+    ...overrides
+  };
+}
+
+function assetDepreciationPolicy(overrides: Record<string, unknown> = {}) {
+  return {
+    basisSource: "PURCHASE_COST",
+    currency: "CNY",
+    depreciationBasisAmount: 1200000n,
+    depreciationEndDate: new Date("2026-12-31T00:00:00.000Z"),
+    depreciationMethod: VehicleDepreciationMethod.STRAIGHT_LINE,
+    depreciationStartDate: new Date("2026-01-01T00:00:00.000Z"),
+    id: "depreciation-policy-1",
+    monthlyDepreciationAmount: 100000n,
+    policyNo: "VDP202606001",
+    policyStatus: VehicleDepreciationPolicyStatus.ACTIVE,
+    residualValueAmount: 0n,
+    usefulLifeMonths: 12,
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function assetDepreciationRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    confirmedAt: new Date("2026-06-30T00:00:00.000Z"),
+    costPeriod: "2026-06",
+    currency: "CNY",
+    depreciationAmount: 100000n,
+    id: "depreciation-record-1",
+    lockedAt: null,
+    periodEnd: new Date("2026-06-30T00:00:00.000Z"),
+    periodStart: new Date("2026-06-01T00:00:00.000Z"),
+    policyId: "depreciation-policy-1",
+    recordNo: "VDR202606001",
+    recordSource: VehicleDepreciationRecordSource.SCHEDULED,
+    recordStatus: VehicleDepreciationRecordStatus.CONFIRMED,
+    scheduleId: "depreciation-schedule-1",
+    vehicleId: "vehicle-1",
+    voidedAt: null,
+    ...overrides
+  };
+}
+
+function assetDepreciationSchedule(overrides: Record<string, unknown> = {}) {
+  return {
+    costPeriod: "2026-06",
+    id: "depreciation-schedule-1",
+    periodEnd: new Date("2026-06-30T00:00:00.000Z"),
+    periodStart: new Date("2026-06-01T00:00:00.000Z"),
+    policyId: "depreciation-policy-1",
+    scheduleNo: "VDS202606001",
+    scheduleStatus: VehicleDepreciationScheduleStatus.SCHEDULED,
+    vehicleId: "vehicle-1",
     ...overrides
   };
 }

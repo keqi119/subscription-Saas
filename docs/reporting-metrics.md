@@ -1733,9 +1733,73 @@ trialRoa =
 
 CSV 导出同步增加 BaaS 成本汇总、BaaS 合同摘要和 BaaS 成本分摊记录。车辆列表 CSV 中，BaaS 合同状态跟随车辆状态，BaaS 成本字段位于经营成本之前。CSV 仍为只读导出，不写业务表、不写审计日志、不生成付款单或账单。
 
+## Stage 10N-C-B 折旧记录进入主资产收益口径
+
+Stage 10N-C-B 起，车辆折旧 records 正式进入资产收益主口径。
+
+纳入规则：
+
+- 仅纳入 `VehicleDepreciationRecord.recordStatus = CONFIRMED / LOCKED`。
+- 排除 `DRAFT`、`VOIDED`、`deletedAt != null`。
+- `VehicleDepreciationSchedule` 不直接进入 ROE，必须 confirm 生成 / 更新 record 后才进入报表。
+
+分摊规则：
+
+- 使用 `VehicleDepreciationRecord.periodStart / periodEnd` 与分析周期的重叠天数分摊。
+- 不按 `costPeriod`、`createdAt`、`confirmedAt` 归属。
+- 金额按分四舍五入，期间无效时按 0 计入并返回 warning。
+
+折旧来源：
+
+```text
+RECORDS = ACTIVE policy 下使用 CONFIRMED / LOCKED records
+LEGACY_COST_PROFILE = 无 ACTIVE policy 时 fallback 到 VehicleAssetCostProfile 即时折旧
+NONE = ACTIVE NONE policy，折旧为 0
+UNAVAILABLE = ACTIVE MANUAL / STRAIGHT_LINE policy 缺少有效 records
+```
+
+主口径避免双扣：
+
+```text
+有 ACTIVE depreciation policy:
+  剥离 VehicleAssetCostProfile 即时折旧
+  使用 policy 对应 records / NONE / UNAVAILABLE 结果
+
+无 ACTIVE depreciation policy:
+  沿用 VehicleAssetCostProfile 即时折旧
+```
+
+新增 summary 字段：
+
+```text
+depreciationAmount
+depreciationRecordAmount
+legacyDepreciationAmount
+depreciationRecordCount
+depreciationVehicleCount
+depreciationSourceBreakdown
+depreciationUnavailableVehicleCount
+```
+
+新增车辆列表 / 单车详情字段：
+
+```text
+depreciationSource
+depreciationPolicyId
+depreciationPolicyNo
+depreciationMethod
+depreciationAmount
+recordDepreciationAmount
+legacyDepreciationAmount
+depreciationRecordCount
+depreciationMissingReasons
+```
+
+CSV 导出同步增加折旧来源、折旧策略、折旧记录数、折旧缺失原因和单车折旧记录分摊明细。本阶段不修改折旧模型 schema，不接市场校准折旧，不修改支付 / 核销 / 财务主线。
+
 ## ROA / ROE
 
-当前阶段不计算正式会计 ROA / ROE。
+历史早期阶段不计算正式会计 ROA / ROE；Stage 8 之后资产收益页已经提供试算 ROA / ROE，Stage 10M-C-C 纳入 BaaS 成本，Stage 10N-C-B 纳入已确认 / 已锁定折旧 records。
 
 正式 ROA / ROE 后续需要引入：
 

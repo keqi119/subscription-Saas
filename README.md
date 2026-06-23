@@ -473,3 +473,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10m-c-baas-cost-return-analytics.md`: Stage 10M-C-B historical BaaS cost visibility step before the main formula switch.
 - `docs/stage-10m-c-baas-cost-main-return-metrics.md`: Stage 10M-C-C BaaS cost inclusion in main asset profitability metrics and CSV exports.
 - `docs/stage-10n-c-vehicle-depreciation-foundation.md`: Stage 10N-C-A vehicle depreciation policy, schedule, and record foundation. This stage does not connect depreciation to main ROE yet.
+- `docs/stage-10n-c-depreciation-main-return-metrics.md`: Stage 10N-C-B depreciation record inclusion in main asset return metrics with legacy cost-profile fallback.

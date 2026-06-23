@@ -547,6 +547,13 @@ export const VEHICLE_DEPRECIATION_METHOD_LABELS: Record<string, string> = {
   STRAIGHT_LINE: "直线法"
 };
 
+export const VEHICLE_DEPRECIATION_SOURCE_LABELS: Record<string, string> = {
+  LEGACY_COST_PROFILE: "旧成本参数",
+  NONE: "无折旧",
+  RECORDS: "折旧记录",
+  UNAVAILABLE: "不可用"
+};
+
 export const VEHICLE_DEPRECIATION_POLICY_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "生效",
   ARCHIVED: "已归档",

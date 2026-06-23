@@ -97,6 +97,21 @@ import {
   toCentAmount
 } from "../../lib/capital-format";
 
+type LegacyVehicleModel = "ET5" | "ET5T" | "ET7" | "ES6" | "EC6" | "ES8" | "ET9" | "ES9";
+
+interface VehicleModelDefinitionSummary {
+  brand: string;
+  customerDisplayName?: string | null;
+  displayName: string;
+  enabled: boolean;
+  id: string;
+  legacyVehicleModel?: LegacyVehicleModel | null;
+  modelCode: string;
+  modelName: string;
+  modelYear?: number | null;
+  series?: string | null;
+}
+
 interface Vehicle {
   acquisitionMode?: string | null;
   assetLocation?: string | null;
@@ -113,6 +128,9 @@ interface Vehicle {
   insuranceStartDate?: string | null;
   latestRegistrationDate?: string | null;
   model?: string | null;
+  modelDefinition?: VehicleModelDefinitionSummary | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   modelYear?: number | null;
   nextSalePriceReviewAt?: string | null;
   plateNo?: string | null;
@@ -125,7 +143,7 @@ interface Vehicle {
   salePriceStatus: string;
   series?: string | null;
   status: string;
-  vehicleModel?: string | null;
+  vehicleModel?: LegacyVehicleModel | null;
   vehicleNo: string;
   vin?: string | null;
 }
@@ -240,7 +258,8 @@ interface CreateVehicleValues {
   latestRegistrationDate?: Dayjs | null;
   remark?: string | null;
   series?: string | null;
-  vehicleModel: "ET5" | "ET5T" | "ET7" | "ES6" | "EC6" | "ES8" | "ET9" | "ES9";
+  modelDefinitionId?: string | null;
+  vehicleModel?: LegacyVehicleModel | null;
   vin: string;
 }
 
@@ -281,6 +300,13 @@ interface FinancingInstrumentSummary {
 
 interface FinancingInstrumentListResponse {
   items: FinancingInstrumentSummary[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+interface VehicleModelDefinitionListResponse {
+  items: VehicleModelDefinitionSummary[];
   page: number;
   pageSize: number;
   total: number;
@@ -629,7 +655,9 @@ const vehicleStatusOptions = [
   "RETIRED"
 ].map((value) => ({ label: labelOf(STATUS_LABELS, value), value }));
 
-const vehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
+const legacyVehicleModels: LegacyVehicleModel[] = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"];
+
+const vehicleModelOptions = legacyVehicleModels.map(
   (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
 );
 
@@ -1014,7 +1042,13 @@ function getErrorMessage(error: unknown) {
 }
 
 function vehicleModelText(vehicle: Vehicle) {
-  return [vehicle.brand, vehicle.series, vehicle.model, vehicle.vehicleModel].filter(Boolean).join(" / ") || "-";
+  const modelDisplayName = vehicle.modelDefinition?.displayName ?? vehicle.modelDisplayName ?? vehicle.vehicleModel;
+  return [vehicle.brand, vehicle.series, vehicle.model, modelDisplayName].filter(Boolean).join(" / ") || "-";
+}
+
+function vehicleModelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
+  const legacyText = definition.legacyVehicleModel ? `legacy: ${definition.legacyVehicleModel}` : "未映射 legacy，暂不可用于车辆";
+  return `${definition.modelCode} - ${definition.displayName}（${legacyText}）`;
 }
 
 function toReviewQuarter(date: Dayjs) {
@@ -1090,6 +1124,7 @@ export default function VehiclesPage() {
   const [valuationReviewTotal, setValuationReviewTotal] = useState(0);
   const [statusVehicle, setStatusVehicle] = useState<Vehicle | null>(null);
   const [vehicleFinancialLoading, setVehicleFinancialLoading] = useState(false);
+  const [vehicleModelDefinitions, setVehicleModelDefinitions] = useState<VehicleModelDefinitionSummary[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
@@ -1105,6 +1140,19 @@ export default function VehiclesPage() {
   const canGenerateResidualForecast = permissions.has("residual_forecast:generate");
   const canViewValuationReview = permissions.has("vehicle_valuation_review:view");
   const canCreateValuationReview = permissions.has("vehicle_valuation_review:create");
+  const vehicleModelDefinitionById = useMemo(
+    () => new Map(vehicleModelDefinitions.map((definition) => [definition.id, definition])),
+    [vehicleModelDefinitions]
+  );
+  const vehicleModelDefinitionOptions = useMemo(
+    () =>
+      vehicleModelDefinitions.map((definition) => ({
+        disabled: !definition.legacyVehicleModel,
+        label: vehicleModelDefinitionOptionLabel(definition),
+        value: definition.id
+      })),
+    [vehicleModelDefinitions]
+  );
   const financingInstrumentOptions = useMemo(() => {
     const instrumentMap = new Map<string, FinancingInstrumentSummary>();
 
@@ -1139,6 +1187,14 @@ export default function VehiclesPage() {
       setVehicles(vehicleRows);
       setDueReviews(dueRows);
       setMe(nextMe);
+      if (nextMe.user.permissions.includes("vehicle_model:view")) {
+        const definitionResult = await apiFetch<VehicleModelDefinitionListResponse>(
+          "/vehicle-model-definitions?enabled=true&pageSize=200"
+        );
+        setVehicleModelDefinitions(definitionResult.items);
+      } else {
+        setVehicleModelDefinitions([]);
+      }
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -1149,6 +1205,35 @@ export default function VehiclesPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  function syncLegacyVehicleModelFromDefinition(
+    form: FormInstance<CreateVehicleValues>,
+    modelDefinitionId?: string | null
+  ) {
+    if (!modelDefinitionId) {
+      return;
+    }
+
+    const definition = vehicleModelDefinitionById.get(modelDefinitionId);
+    if (definition?.legacyVehicleModel) {
+      form.setFieldsValue({ vehicleModel: definition.legacyVehicleModel });
+    }
+  }
+
+  function clearModelDefinitionWhenLegacyDiffers(
+    form: FormInstance<CreateVehicleValues>,
+    vehicleModel?: LegacyVehicleModel | null
+  ) {
+    const modelDefinitionId = form.getFieldValue("modelDefinitionId");
+    if (!modelDefinitionId) {
+      return;
+    }
+
+    const definition = vehicleModelDefinitionById.get(modelDefinitionId);
+    if (definition?.legacyVehicleModel && vehicleModel && definition.legacyVehicleModel !== vehicleModel) {
+      form.setFieldsValue({ modelDefinitionId: null });
+    }
+  }
 
   const loadFinancingInstruments = useCallback(async () => {
     setFinancingInstrumentsLoading(true);
@@ -1404,6 +1489,7 @@ export default function VehiclesPage() {
       currentMileageKm: 0,
       insuranceEndDate: dayjs().add(1, "year"),
       insuranceStartDate: dayjs(),
+      modelDefinitionId: null,
       vehicleModel: "ET5"
     });
   }
@@ -1421,6 +1507,7 @@ export default function VehiclesPage() {
           insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
           latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
+          modelDefinitionId: values.modelDefinitionId ?? null,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
           purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
@@ -1795,6 +1882,7 @@ export default function VehiclesPage() {
       brand: vehicle.brand,
       currentMileageKm: vehicle.currentMileageKm,
       model: vehicle.model,
+      modelDefinitionId: vehicle.modelDefinitionId ?? null,
       modelYear: vehicle.modelYear,
       plateNo: vehicle.plateNo,
       insuranceEndDate: vehicle.insuranceEndDate ? dayjs(vehicle.insuranceEndDate) : null,
@@ -1826,6 +1914,7 @@ export default function VehiclesPage() {
           insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
           latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
+          modelDefinitionId: values.modelDefinitionId ?? null,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
           purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
@@ -2264,8 +2353,25 @@ export default function VehiclesPage() {
           <Form.Item label="车型" name="model">
             <Input maxLength={64} />
           </Form.Item>
-          <Form.Item label="车型代码" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
-            <Select options={vehicleModelOptions} />
+          <Form.Item
+            extra="当前阶段仅可选择已映射 legacy 车型的主数据；未配置时可继续使用下方兼容车型。"
+            label="车型代码（主数据）"
+            name="modelDefinitionId"
+          >
+            <Select
+              allowClear
+              filterOption={(input, option) => String(option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
+              onChange={(value) => syncLegacyVehicleModelFromDefinition(createForm, value)}
+              options={vehicleModelDefinitionOptions}
+              placeholder="选择车型代码主数据"
+              showSearch
+            />
+          </Form.Item>
+          <Form.Item label="兼容车型（legacy）" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
+            <Select
+              onChange={(value) => clearModelDefinitionWhenLegacyDiffers(createForm, value)}
+              options={vehicleModelOptions}
+            />
           </Form.Item>
           <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
@@ -2340,6 +2446,12 @@ export default function VehiclesPage() {
                 { label: "品牌", children: detailVehicle.brand },
                 { label: "车系", children: detailVehicle.series ?? "-" },
                 { label: "车型", children: vehicleModelText(detailVehicle) },
+                {
+                  label: "车型代码（主数据）",
+                  children: detailVehicle.modelDefinition
+                    ? vehicleModelDefinitionOptionLabel(detailVehicle.modelDefinition)
+                    : "未关联，使用兼容车型"
+                },
                 { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
                 { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
                 { label: "采购价", children: formatYuan(detailVehicle.purchasePriceAmount) },
@@ -2792,8 +2904,25 @@ export default function VehiclesPage() {
           <Form.Item label="车型" name="model">
             <Input maxLength={64} />
           </Form.Item>
-          <Form.Item label="车型代码" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
-            <Select options={vehicleModelOptions} />
+          <Form.Item
+            extra="当前阶段仅可选择已映射 legacy 车型的主数据；未配置时可继续使用下方兼容车型。"
+            label="车型代码（主数据）"
+            name="modelDefinitionId"
+          >
+            <Select
+              allowClear
+              filterOption={(input, option) => String(option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
+              onChange={(value) => syncLegacyVehicleModelFromDefinition(editForm, value)}
+              options={vehicleModelDefinitionOptions}
+              placeholder="选择车型代码主数据"
+              showSearch
+            />
+          </Form.Item>
+          <Form.Item label="兼容车型（legacy）" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
+            <Select
+              onChange={(value) => clearModelDefinitionWhenLegacyDiffers(editForm, value)}
+              options={vehicleModelOptions}
+            />
           </Form.Item>
           <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />

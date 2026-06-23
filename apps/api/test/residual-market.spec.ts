@@ -2226,6 +2226,7 @@ function makeVehicle(overrides: Partial<Vehicle> = {}): Vehicle {
     status: VehicleStatus.AVAILABLE,
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedBy: user.id,
+    modelDefinitionId: null,
     vehicleModel: VehicleModel.ET5,
     vehicleNo: "VH20260601000000A1B2",
     vin: "LJ1TEST0000000001",

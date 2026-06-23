@@ -757,4 +757,28 @@ vehicle_model:view / vehicle_model:manage 权限
 未修改产品 / Portal / 报表 / 残值模块
 ```
 
-车辆管理双轨接入仍留给 Stage 10X-D。
+## 17. Stage 10X-D 实施状态
+
+Stage 10X-D 已按本审计建议完成车辆管理的最小安全接入：
+
+```text
+Vehicle 新增可选 modelDefinitionId
+Vehicle.vehicleModel enum 继续保留
+车辆 create / update 支持 modelDefinitionId
+有 modelDefinitionId 时校验 enabled / deletedAt / legacyVehicleModel
+有 modelDefinitionId 时自动同步 Vehicle.vehicleModel
+车辆列表 / 详情返回 modelDefinition 摘要和 modelDisplayName
+/vehicles 页面优先展示主数据 displayName，fallback legacy enum
+```
+
+仍未接入的范围：
+
+```text
+Product / VehiclePackage / ProductPriceRule
+Portal catalog
+Reports / CSV
+Residual market / forecast
+legacy enum 退场
+```
+
+因此当前仍处于双轨过渡，不应删除 `VehicleModel` enum，也不应把无 `legacyVehicleModel` 映射的主数据用于车辆创建 / 编辑。

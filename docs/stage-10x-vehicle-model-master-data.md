@@ -138,3 +138,30 @@ Stage 10X-E：Portal / 产品 / 报表接入车型主数据
 Stage 10X-F：残值市场接入车型主数据
 Stage 10X-G：legacy enum 退场评估
 ```
+
+## 10. Stage 10X-D 更新
+
+Stage 10X-D 已开始把车型主数据接入车辆管理：
+
+```text
+Vehicle 新增可选 modelDefinitionId
+车辆 create / update 支持 modelDefinitionId
+选择主数据时自动同步 legacy VehicleModel
+车辆列表 / 详情返回 modelDefinition 摘要
+/vehicles 页面增加车型代码（主数据）选择器
+```
+
+当前仍保留双轨策略：
+
+```text
+Vehicle.vehicleModel enum 继续保留
+历史车辆不强制迁移
+未映射 legacyVehicleModel 的主数据暂不能用于车辆创建 / 编辑
+Product / Portal / Reports / Residual 留到后续阶段接入
+```
+
+详见：
+
+```text
+docs/stage-10x-vehicle-master-data-integration.md
+```

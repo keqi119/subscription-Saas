@@ -481,3 +481,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10x-vehicle-model-enum-drift-closure.md`: Stage 10X-A VehicleModel enum drift closure for ET5T, EC6, ES8, ET9, and ES9 before model-code master-data migration.
 - `docs/stage-10x-vehicle-model-master-data-audit.md`: Stage 10X-B vehicle model master-data impact audit and double-track migration plan.
 - `docs/stage-10x-vehicle-model-master-data.md`: Stage 10X-C VehicleModelDefinition master data model, CRUD API, seed, permission, menu, and back-office maintenance page.
+- `docs/stage-10x-vehicle-master-data-integration.md`: Stage 10X-D vehicle management integration with VehicleModelDefinition while retaining legacy VehicleModel fallback.

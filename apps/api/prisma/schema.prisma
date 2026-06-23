@@ -2374,6 +2374,8 @@ model Vehicle {
   model                         String?                   @db.VarChar(64)
   modelYear                     Int?                      @map("model_year")
   vehicleModel                  VehicleModel?             @map("vehicle_model")
+  modelDefinitionId             String?                   @map("model_definition_id") @db.Uuid
+  modelDefinition               VehicleModelDefinition?   @relation(fields: [modelDefinitionId], references: [id])
   batteryCapacityKwh            Decimal?                  @map("battery_capacity_kwh") @db.Decimal(6, 2)
   batteryUsageType              VehicleBatteryUsageType   @default(BUYOUT) @map("battery_usage_type")
   acquisitionMode               VehicleAcquisitionMode    @default(OWNED_CASH) @map("acquisition_mode")
@@ -2428,6 +2430,7 @@ model Vehicle {
   deletedAt                     DateTime?                 @map("deleted_at") @db.Timestamptz(6)
 
   @@index([vehicleModel])
+  @@index([modelDefinitionId])
   @@index([status])
   @@index([salePriceStatus])
   @@index([nextSalePriceReviewAt])
@@ -2462,6 +2465,7 @@ model VehicleModelDefinition {
   createdBy           String?       @map("created_by") @db.Uuid
   updatedBy           String?       @map("updated_by") @db.Uuid
   deletedAt           DateTime?     @map("deleted_at") @db.Timestamptz(6)
+  vehicles            Vehicle[]
 
   @@index([modelCode])
   @@index([legacyVehicleModel])

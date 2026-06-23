@@ -12,20 +12,21 @@
 - Stage 10M-B: vehicle insurance policies, vehicle documents, customer-visible order documents, and basic insurance claim records are implemented in code; manual acceptance should confirm private preview and ownership checks.
 - Stage 10M-C-A: BaaS battery contracts and monthly cost ledger are implemented in code; manual acceptance should confirm cost generation is idempotent.
 - Stage 10M-C-C: BaaS costs are included in main asset profitability formulas; manual acceptance should confirm BaaS cost appears in cost breakdown and single-vehicle return rows before operating cost.
+- Stage 10K-B-R4A: controlled beta business sample read-only review completed locally; public Portal route/API smoke, admin read-only endpoints, ROE API, and CSV checks passed. Real SMS beta-gate login, authenticated customer-cookie ownership checks, service-case samples, and payment-order samples remain required before any whitelist expansion.
 
 ## Checklist
 
 | Area | Check | Status |
 | --- | --- | --- |
 | H5 domain | `https://app.subauto.keybox.cloud` resolves and serves Portal H5 over HTTPS | Production route smoke reached the domain; three RC routes returned 404 |
-| Portal route smoke | Run `pnpm portal:route-smoke` locally/staging/production | Production smoke failed on `/portal/terms`, `/portal/privacy`, and `/portal/notifications` |
-| Portal API smoke | Run `pnpm portal:api-smoke` public checks | Production public API smoke passed |
-| Authenticated Portal API smoke | Run with `PORTAL_CUSTOMER_COOKIE` for a controlled customer | Pending controlled cookie |
+| Portal route smoke | Run `pnpm portal:route-smoke` locally/staging/production | Stage 10K-B-R4A local smoke passed on `localhost:3200`; production smoke still requires latest deployed image |
+| Portal API smoke | Run `pnpm portal:api-smoke` public checks | Stage 10K-B-R4A local public API smoke passed on `localhost:3201`; production public API smoke previously passed |
+| Authenticated Portal API smoke | Run with `PORTAL_CUSTOMER_COOKIE` for a controlled customer | Pending controlled cookie; Stage 10K-B-R4A skipped authenticated smoke |
 | Customer login | Phone-code login works; login requires agreement checkbox | Stage 10K-A adds SMS provider abstraction and beta gate; staging real-SMS validation pending |
 | Login SMS provider | Aliyun provider configured through env; production does not return `debugCode` | Implemented in code; no real SMS sent in local tests |
 | Beta phone gate | `PORTAL_BETA_MODE=true` allows only invited phones to request/use login codes | Implemented; whitelist values must stay out of Git |
 | Terms/privacy | `/portal/terms` and `/portal/privacy` exist in code | Placeholder text, legal review pending; production currently returns 404 until latest Web image is deployed |
-| Product browsing | Vehicle catalog list/detail load and do not expose internal cost fields | Pending smoke/manual acceptance |
+| Product browsing | Vehicle catalog list/detail load and do not expose internal cost fields | Stage 10K-B-R4A public catalog list/detail API reviewed; content completeness remains an operations task |
 | Catalog CTA | Vehicle card primary action is `查看详情`, not direct application submission | Pending manual acceptance |
 | Application submission | Customer can submit self-service application | Pending manual acceptance |
 | Application precheck | Vehicle detail warns about missing required profile materials before submission and still allows continue-submit | Pending manual acceptance |
@@ -45,13 +46,13 @@
 | Insurance claim summary | Accident service-case detail can show read-only claim summary for the current customer only | Pending manual acceptance |
 | Rescue request | Customer can submit and track rescue service case | Pending manual acceptance |
 | Notifications | Portal notification center lists own in-app notifications | Implemented in code; production route currently returns 404 until latest Web image is deployed |
-| Back-office notifications | Back-office records/events are visible and openid is masked | Pending manual acceptance |
+| Back-office notifications | Back-office records/events are visible and openid is masked | Stage 10K-B-R4A read-only admin API review found notification records/events; masking still needs staging UI spot-check |
 | Back-office insurance policies | Back office can create separate compulsory traffic and commercial insurance policies, maintain coverage rows, upload documents, and archive policies | Pending manual acceptance |
 | Back-office vehicle documents | Vehicle document preview streams private files and does not expose OSS public URLs or storage keys | Pending manual acceptance |
 | Back-office insurance claims | Accident service cases can create and update basic claim records without changing vehicle/order status or generating bills | Pending manual acceptance |
 | Back-office BaaS contracts | Back office can create/activate/suspend/terminate/archive BaaS contracts for BAAS vehicles only | Pending manual acceptance |
 | BaaS cost ledger | Dry-run does not write records; formal generation creates idempotent cost records and payment day 31 uses month end | Pending manual acceptance |
-| BaaS return metrics | BaaS costs are included in operating cost, platform net income, ROA/ROE trial, and CSV exports without changing billing/payment/write-off flows | Pending manual acceptance |
+| BaaS return metrics | BaaS costs are included in operating cost, platform net income, ROA/ROE trial, and CSV exports without changing billing/payment/write-off flows | Stage 10N-C-D and Stage 10K-B-R4A sample checks passed for API/CSV/manual consistency |
 | WeChat service account menu | Menu dry-run targets customer Portal pages | Dry-run ready |
 | WeChat menu apply | Requires explicit `WECHAT_MENU_APPLY=1` and human confirmation | Pending |
 | Template messages | Real single-openid template smoke | Passed in Stage 10H-B R2 |

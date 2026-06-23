@@ -71,6 +71,8 @@ export enum PermissionCode {
   VEHICLE_DOCUMENT_MANAGE = "vehicle_document:manage",
   VEHICLE_BAAS_VIEW = "vehicle_baas:view",
   VEHICLE_BAAS_MANAGE = "vehicle_baas:manage",
+  VEHICLE_DEPRECIATION_VIEW = "vehicle_depreciation:view",
+  VEHICLE_DEPRECIATION_MANAGE = "vehicle_depreciation:manage",
   VEHICLE_VALUATION_REVIEW_VIEW = "vehicle_valuation_review:view",
   VEHICLE_VALUATION_REVIEW_CREATE = "vehicle_valuation_review:create",
   VEHICLE_VALUATION_REVIEW_APPROVE = "vehicle_valuation_review:approve",

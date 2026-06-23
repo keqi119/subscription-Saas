@@ -547,6 +547,42 @@ export const VEHICLE_DEPRECIATION_METHOD_LABELS: Record<string, string> = {
   STRAIGHT_LINE: "直线法"
 };
 
+export const VEHICLE_DEPRECIATION_POLICY_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "生效",
+  ARCHIVED: "已归档",
+  DRAFT: "草稿",
+  SUSPENDED: "已暂停",
+  TERMINATED: "已终止"
+};
+
+export const VEHICLE_DEPRECIATION_BASIS_SOURCE_LABELS: Record<string, string> = {
+  ASSET_COST_PROFILE: "成本参数",
+  MANUAL: "手工录入",
+  OTHER: "其他",
+  PURCHASE_COST: "采购成本"
+};
+
+export const VEHICLE_DEPRECIATION_SCHEDULE_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  LOCKED: "已锁定",
+  SCHEDULED: "待确认",
+  VOIDED: "已作废"
+};
+
+export const VEHICLE_DEPRECIATION_RECORD_STATUS_LABELS: Record<string, string> = {
+  CONFIRMED: "已确认",
+  DRAFT: "草稿",
+  LOCKED: "已锁定",
+  VOIDED: "已作废"
+};
+
+export const VEHICLE_DEPRECIATION_RECORD_SOURCE_LABELS: Record<string, string> = {
+  ADJUSTMENT: "调整",
+  IMPORTED: "导入",
+  MANUAL: "手工补录",
+  SCHEDULED: "计划确认"
+};
+
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "在租",
   CANCELLED: "已取消",

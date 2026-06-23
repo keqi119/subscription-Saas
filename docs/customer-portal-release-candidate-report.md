@@ -42,6 +42,12 @@ The current Stage 10 customer Portal codebase covers:
 - WeChat client receipt and click-through to the Portal order page.
 - Stage 10K-A code now adds Aliyun SMS login provider support, SMS send logs, production `debugCode` suppression, and invited-beta phone gating. It still requires staging real-SMS validation before production rollout.
 
+Back-office asset update after Stage 10N-C-A:
+
+- Vehicle depreciation policy / schedule / record foundation has been added for back-office asset management.
+- The depreciation foundation is not part of the Customer Portal customer-facing scope.
+- Depreciation is not yet connected to main asset ROE; Stage 10N-C-B will handle that integration.
+
 ## Deferred Capability Scope
 
 - Real e-sign provider integration: Stage 10D-B.

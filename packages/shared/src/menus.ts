@@ -125,6 +125,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         permissionCode: PermissionCode.VEHICLE_BAAS_VIEW
       },
       {
+        code: "vehicles.depreciation_policies",
+        icon: "money",
+        label: "折旧管理",
+        path: "/vehicle-depreciation-policies",
+        permissionCode: PermissionCode.VEHICLE_DEPRECIATION_VIEW
+      },
+      {
         code: "vehicles.residual_market",
         icon: "car",
         label: "市场残值样本",

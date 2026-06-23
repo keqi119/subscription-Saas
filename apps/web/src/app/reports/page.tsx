@@ -322,7 +322,9 @@ const collectionCaseStatusLabels: Record<string, string> = {
   PAUSED: "暂停催收"
 };
 
-const vehicleModelOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+const vehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
+  (value) => ({ label: value, value })
+);
 const detailDrawerSize = "min(1472px, calc(100vw - 32px))";
 
 function buildQuery(values: Record<string, unknown>) {

@@ -194,7 +194,9 @@ const statusColors: Record<string, string> = {
   INACTIVE: "default"
 };
 
-const vehicleOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+const vehicleOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
+  (value) => ({ label: value, value })
+);
 const benefitOptions = [
   { label: "洗车权益", value: "WASH_CAR" },
   { label: "换车权益", value: "CAR_SWAP" },

@@ -869,7 +869,9 @@ interface SalePriceHistoryRow {
   reviewType?: string | null;
 }
 
-const vehicleModelOptions = ["ET5", "ET7", "ES6"].map((value) => ({ label: value, value }));
+const vehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
+  (value) => ({ label: value, value })
+);
 const residualHorizonMonthOptions = [
   { label: "当前", value: 0 },
   { label: "未来 6 个月", value: 6 },

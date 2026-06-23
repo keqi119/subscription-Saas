@@ -12,6 +12,7 @@ import {
   Drawer,
   Select,
   Skeleton,
+  Slider,
   Space,
   Statistic,
   Table,
@@ -35,6 +36,7 @@ import {
   FINANCING_INSTRUMENT_TYPE_LABELS,
   FINANCING_REPAYMENT_METHOD_LABELS,
   FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS,
+  MARKET_RESIDUAL_SOURCE_LABELS,
   ORDER_STATUS_LABELS,
   RESIDUAL_FORECAST_INTERPOLATION_METHOD_LABELS,
   REVENUE_RIGHT_ASSIGNEE_TYPE_LABELS,
@@ -167,6 +169,15 @@ interface AssetReturnTrialSummary {
   insuranceCostAmount?: number | null;
   legacyDepreciationAmount?: number | null;
   maintenanceReserveCostAmount?: number | null;
+  marketCalibratedAnnualizedRoeTrial?: number | null;
+  marketCalibratedPlatformNetIncomeAmount?: number | null;
+  marketCalibratedResidualAmount?: number | null;
+  marketCalibratedRoeTrial?: number | null;
+  marketCalibratedTrialRoa?: number | null;
+  marketCalibratedUnavailableVehicleCount?: number | null;
+  marketCalibratedVehicleCount?: number | null;
+  marketResidualBaseAmount?: number | null;
+  marketResidualDeltaAmount?: number | null;
   operatingCostAmount?: number | null;
   operatingRevenueAmount?: number | null;
   otherCostAmount?: number | null;
@@ -187,6 +198,7 @@ interface AssetReturnTrialSummary {
   residualForecastUnsupportedVehicleCount?: number | null;
   residualForecastVehicleCount?: number | null;
   residualForecastWarnings?: string[];
+  residualCalibrationPercent?: number | null;
   residualSensitivityAnnualizedRoeTrial?: number | null;
   residualSensitivityNetIncomeAmount?: number | null;
   residualSensitivityRoeTrial?: number | null;
@@ -272,6 +284,15 @@ interface AssetReturnTrialVehicleRow extends AssetProfitabilityVehicleRow {
   legacyDepreciationAmount?: number | null;
   maintenanceReserveCostAmount?: number | null;
   manualDepreciationUnsupported?: boolean | null;
+  marketCalibratedAnnualizedRoeTrial?: number | null;
+  marketCalibratedPlatformNetIncomeAmount?: number | null;
+  marketCalibratedResidualAmount?: number | null;
+  marketCalibratedRoeTrial?: number | null;
+  marketCalibratedTrialRoa?: number | null;
+  marketCalibrationUnavailableReason?: string | null;
+  marketResidualBaseAmount?: number | null;
+  marketResidualDeltaAmount?: number | null;
+  marketResidualSource?: string | null;
   operatingCostAmount?: number | null;
   operatingRevenueAmount?: number | null;
   otherCostAmount?: number | null;
@@ -301,6 +322,7 @@ interface AssetReturnTrialVehicleRow extends AssetProfitabilityVehicleRow {
   residualForecastTargetDate?: string | null;
   residualForecastUnavailableReason?: string | null;
   residualForecastWarnings?: string[];
+  residualCalibrationPercent?: number | null;
   residualSensitivityAnnualizedRoeTrial?: number | null;
   residualSensitivityNetIncomeAmount?: number | null;
   residualSensitivityRoeTrial?: number | null;
@@ -344,6 +366,7 @@ interface AssetReturnTrialVehicleDetail {
   depreciationSummary?: DepreciationSummary | null;
   financingAllocations?: ReturnTrialFinancingAllocationRow[];
   incomeBreakdown?: ReturnTrialIncomeBreakdown | null;
+  marketCalibratedDepreciation?: MarketCalibratedDepreciation | null;
   orderCycles?: ReturnTrialOrderCycleRow[];
   revenueRightAssignments?: ReturnTrialRevenueRightAssignmentRow[];
   revenueShareRules?: ReturnTrialRevenueShareRuleRow[];
@@ -426,6 +449,24 @@ interface DepreciationSummary {
   source?: string | null;
   unconfirmedScheduleCount?: number | null;
   warnings?: string[];
+}
+
+interface MarketCalibratedDepreciation {
+  accountingPlatformNetIncomeAmount?: number | null;
+  accountingResidualBaselineAmount?: number | null;
+  accountingRoeTrial?: number | null;
+  accountingTrialRoa?: number | null;
+  marketCalibratedAnnualizedRoeTrial?: number | null;
+  marketCalibratedPlatformNetIncomeAmount?: number | null;
+  marketCalibratedResidualAmount?: number | null;
+  marketCalibratedRoeTrial?: number | null;
+  marketCalibratedTrialRoa?: number | null;
+  marketResidualBaseAmount?: number | null;
+  marketResidualDeltaAmount?: number | null;
+  residualCalibrationPercent?: number | null;
+  residualHorizonMonth?: number | null;
+  residualSource?: string | null;
+  unavailableReason?: string | null;
 }
 
 interface DepreciationRecordRow {
@@ -647,6 +688,15 @@ interface ReturnTrialMetrics {
   capitalCostSource?: string | null;
   debtInterestCostAmount?: number | null;
   externalLeaseCostAmount?: number | null;
+  marketCalibratedAnnualizedRoeTrial?: number | null;
+  marketCalibratedPlatformNetIncomeAmount?: number | null;
+  marketCalibratedResidualAmount?: number | null;
+  marketCalibratedRoeTrial?: number | null;
+  marketCalibratedTrialRoa?: number | null;
+  marketCalibrationUnavailableReason?: string | null;
+  marketResidualBaseAmount?: number | null;
+  marketResidualDeltaAmount?: number | null;
+  marketResidualSource?: string | null;
   platformNetIncomeAmount?: number | null;
   roeDataReady?: boolean | null;
   roeEquityBaseAmount?: number | null;
@@ -659,6 +709,7 @@ interface ReturnTrialMetrics {
   residualForecastAvailable?: boolean | null;
   residualForecastUnavailableReason?: string | null;
   residualForecastWarnings?: string[];
+  residualCalibrationPercent?: number | null;
   residualSensitivityAnnualizedRoeTrial?: number | null;
   residualSensitivityNetIncomeAmount?: number | null;
   residualSensitivityRoeTrial?: number | null;
@@ -914,6 +965,7 @@ export default function AssetProfitabilityPage() {
   const [detailExporting, setDetailExporting] = useState(false);
   const [activeTab, setActiveTab] = useState<"asset" | "returns">("asset");
   const [residualHorizonMonth, setResidualHorizonMonth] = useState(12);
+  const [residualCalibrationPercent, setResidualCalibrationPercent] = useState(0);
   const [returnSummary, setReturnSummary] = useState<AssetReturnTrialSummary | null>(null);
   const [returnSummaryError, setReturnSummaryError] = useState<string | null>(null);
   const [returnSummaryLoading, setReturnSummaryLoading] = useState(false);
@@ -966,9 +1018,10 @@ export default function AssetProfitabilityPage() {
   const returnQuery = useCallback(() => {
     return {
       ...baseQuery(),
+      residualCalibrationPercent,
       residualHorizonMonth
     };
-  }, [baseQuery, residualHorizonMonth]);
+  }, [baseQuery, residualCalibrationPercent, residualHorizonMonth]);
 
   const loadSummary = useCallback(async () => {
     if (!canViewAssetReport) {
@@ -1213,6 +1266,7 @@ export default function AssetProfitabilityPage() {
       await downloadCsv(
         `/reports/asset-profitability/returns/vehicles/${selectedReturnVehicle.vehicleId}/export${buildQuery({
           endDate: dateRange[1].format("YYYY-MM-DD"),
+          residualCalibrationPercent,
           residualHorizonMonth,
           startDate: dateRange[0].format("YYYY-MM-DD")
         })}`,
@@ -1223,7 +1277,14 @@ export default function AssetProfitabilityPage() {
     } finally {
       setReturnDetailExporting(false);
     }
-  }, [canViewAssetReport, dateRange, message, residualHorizonMonth, selectedReturnVehicle]);
+  }, [
+    canViewAssetReport,
+    dateRange,
+    message,
+    residualCalibrationPercent,
+    residualHorizonMonth,
+    selectedReturnVehicle
+  ]);
 
   const openDetail = useCallback(async (record: AssetProfitabilityVehicleRow) => {
     if (!canViewAssetReport) {
@@ -1266,6 +1327,7 @@ export default function AssetProfitabilityPage() {
         await apiFetch<AssetReturnTrialVehicleDetail>(
           `/reports/asset-profitability/returns/vehicles/${record.vehicleId}${buildQuery({
             endDate: dateRange[1].format("YYYY-MM-DD"),
+            residualCalibrationPercent,
             residualHorizonMonth,
             startDate: dateRange[0].format("YYYY-MM-DD")
           })}`
@@ -1276,7 +1338,7 @@ export default function AssetProfitabilityPage() {
     } finally {
       setReturnDetailLoading(false);
     }
-  }, [canViewAssetReport, dateRange, residualHorizonMonth]);
+  }, [canViewAssetReport, dateRange, residualCalibrationPercent, residualHorizonMonth]);
 
   const handleTableChange: TableProps<AssetProfitabilityVehicleRow>["onChange"] = (
     nextPagination,
@@ -1506,6 +1568,30 @@ export default function AssetProfitabilityPage() {
       { dataIndex: "roeTrial", render: formatTrialRoe, title: "试算 ROE", width: 120 },
       { dataIndex: "annualizedRoeTrial", render: formatPercent, title: "年化试算 ROE", width: 150 },
       {
+        dataIndex: "marketCalibratedRoeTrial",
+        render: formatPercent,
+        title: "市场校准 ROE",
+        width: 150
+      },
+      {
+        dataIndex: "marketResidualSource",
+        render: (value?: string | null) => labelOf(MARKET_RESIDUAL_SOURCE_LABELS, value),
+        title: "残值来源",
+        width: 120
+      },
+      {
+        dataIndex: "marketResidualDeltaAmount",
+        render: renderSignedYuan,
+        title: "市场残值差异",
+        width: 150
+      },
+      {
+        dataIndex: "marketCalibrationUnavailableReason",
+        render: safeText,
+        title: "市场校准不可用原因",
+        width: 220
+      },
+      {
         render: (_value, record) => renderResidualForecastStatus(record),
         title: "残值预测状态",
         width: 150
@@ -1611,6 +1697,17 @@ export default function AssetProfitabilityPage() {
               }
             : undefined
         }
+        onResidualCalibrationPercentChange={
+          activeTab === "returns"
+            ? (value) => {
+                setResidualCalibrationPercent(value);
+                setReturnPage(1);
+              }
+            : undefined
+        }
+        residualCalibrationPercent={
+          activeTab === "returns" ? residualCalibrationPercent : undefined
+        }
         residualHorizonMonth={activeTab === "returns" ? residualHorizonMonth : undefined}
         summaryExporting={activeTab === "returns" ? returnSummaryExporting : summaryExporting}
         vehicleModel={vehicleModel}
@@ -1662,7 +1759,7 @@ export default function AssetProfitabilityPage() {
                   title="收益试算口径"
                   showIcon
                   type="info"
-                  description="本页为经营分析试算口径，不构成会计凭证或正式财务报表。试算 ROE 使用 Stage 8.3D 主口径；残值敏感性 ROE 读取单车残值预测，优先使用人工采用值，其次使用曲线预测值，并在主口径基础上叠加预测残值相对成本参数预计残值的差异。残值预测不会自动覆盖车辆当前销售价，也不会写入销售价历史。"
+                  description="本页为经营分析试算口径，不构成会计凭证或正式财务报表。主试算 ROE 使用会计折旧和 BaaS 后的主口径；残值敏感性与市场校准 ROE 读取单车残值预测，优先使用人工采用值，其次使用曲线预测值，并在主口径基础上叠加残值差异。市场校准只做对比，不会覆盖主 ROE、折旧策略、折旧记录或销售价历史。"
                 />
                 {returnSummaryError ? (
                   <Alert showIcon title={returnSummaryError} type="error" />
@@ -1686,7 +1783,7 @@ export default function AssetProfitabilityPage() {
                       total: returnVehiclePage.total
                     }}
                     rowKey="vehicleId"
-                    scroll={{ x: 5400 }}
+                    scroll={{ x: 6070 }}
                   />
                 </Card>
               </Space>
@@ -1774,9 +1871,11 @@ function FilterBar({
   onExportVehicles,
   onDateRangeChange,
   onRefresh,
+  onResidualCalibrationPercentChange,
   onResidualHorizonMonthChange,
   onVehicleModelChange,
   onVehicleStatusChange,
+  residualCalibrationPercent,
   residualHorizonMonth,
   summaryExporting,
   vehicleModel,
@@ -1791,9 +1890,11 @@ function FilterBar({
   onExportVehicles: () => void;
   onDateRangeChange: (value: [Dayjs, Dayjs]) => void;
   onRefresh: () => void;
+  onResidualCalibrationPercentChange?: (value: number) => void;
   onResidualHorizonMonthChange?: (value: number) => void;
   onVehicleModelChange: (value?: string) => void;
   onVehicleStatusChange: (value?: string) => void;
+  residualCalibrationPercent?: number;
   residualHorizonMonth?: number;
   summaryExporting: boolean;
   vehicleModel?: string;
@@ -1850,6 +1951,25 @@ function FilterBar({
               options={residualHorizonMonthOptions}
               style={{ width: 150 }}
               value={residualHorizonMonth ?? 12}
+            />
+          </Space>
+        ) : null}
+        {onResidualCalibrationPercentChange ? (
+          <Space orientation="vertical" size={4} style={{ minWidth: 240 }}>
+            <Typography.Text type="secondary">
+              残值校准比例{" "}
+              <Tooltip title="模拟市场残值上调或下调对 ROE 的影响，不会写入车辆资产、折旧策略或残值预测。">
+                <InfoCircleOutlined />
+              </Tooltip>
+            </Typography.Text>
+            <Slider
+              marks={{ "-30": "-30%", "0": "0%", "30": "+30%" }}
+              max={30}
+              min={-30}
+              onChange={onResidualCalibrationPercentChange}
+              step={1}
+              tooltip={{ formatter: (value) => `${value ?? 0}%` }}
+              value={residualCalibrationPercent ?? 0}
             />
           </Space>
         ) : null}
@@ -2139,6 +2259,42 @@ function ReturnTrialSummaryMetrics({
           />
         </MetricGroupCard>
 
+        <MetricGroupCard loading={loading} title="折旧口径对比">
+          <Descriptions
+            bordered
+            column={1}
+            items={[
+              { label: "会计折旧主口径 ROE", children: formatTrialRoe(summary?.roeTrial) },
+              { label: "市场校准 ROE", children: formatPercent(summary?.marketCalibratedRoeTrial) },
+              {
+                label: "市场校准年化 ROE",
+                children: formatPercent(summary?.marketCalibratedAnnualizedRoeTrial)
+              },
+              { label: "残值差异", children: renderSignedYuan(summary?.marketResidualDeltaAmount) },
+              {
+                label: "市场校准平台净收益",
+                children: formatYuan(summary?.marketCalibratedPlatformNetIncomeAmount)
+              },
+              {
+                label: "残值校准比例",
+                children: formatPercent((summary?.residualCalibrationPercent ?? 0) / 100)
+              },
+              {
+                label: "市场校准车辆数",
+                children: `${formatInteger(summary?.marketCalibratedVehicleCount)} / ${formatInteger(summary?.vehicleCount)}`
+              },
+              {
+                label: "市场校准不可用车辆数",
+                children: formatInteger(summary?.marketCalibratedUnavailableVehicleCount)
+              }
+            ]}
+            size="small"
+          />
+          <Typography.Text type="secondary">
+            市场校准口径只用于对比，不修改会计折旧主口径。
+          </Typography.Text>
+        </MetricGroupCard>
+
         <MetricGroupCard loading={loading} title="资产价值与残值敏感性">
           <Descriptions
             bordered
@@ -2181,6 +2337,10 @@ function ReturnTrialSummaryMetrics({
                   残值敏感性净收益 = 平台权益净收益 + 预测残值相对成本参数预计残值的差异
                 </Typography.Text>
                 <Typography.Text>残值敏感性 ROE = 残值敏感性净收益 / 权益资本基数</Typography.Text>
+                <Typography.Text>
+                  市场校准平台净收益 = 主平台权益净收益 + 校准后市场残值相对成本参数残值差异
+                </Typography.Text>
+                <Typography.Text>市场校准 ROE = 市场校准平台净收益 / 权益资本基数</Typography.Text>
               </Space>
             ),
             key: "return-trial-chain",
@@ -2388,6 +2548,7 @@ function ReturnTrialDetailContent({
   const depreciationPolicy = detail.depreciationPolicy ?? null;
   const depreciationRecords = detail.depreciationRecords ?? [];
   const depreciationSummary = detail.depreciationSummary ?? {};
+  const marketCalibratedDepreciation = detail.marketCalibratedDepreciation ?? {};
   const capitalSummary = detail.capitalStructureSummary ?? {};
   const roeBreakdown = detail.roeBreakdown ?? {};
   const roeMissingReasons = normalizeReasonList(returns.roeMissingReasons);
@@ -2535,6 +2696,84 @@ function ReturnTrialDetailContent({
             scroll={{ x: 980 }}
             size="small"
           />
+        </Space>
+      </DetailSection>
+
+      <DetailSection title="折旧口径对比">
+        <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+          {marketCalibratedDepreciation.unavailableReason ? (
+            <Alert
+              showIcon
+              title="市场校准口径暂不可用"
+              description={marketCalibratedDepreciation.unavailableReason}
+              type="warning"
+            />
+          ) : null}
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              {
+                label: "残值来源",
+                children: labelOf(
+                  MARKET_RESIDUAL_SOURCE_LABELS,
+                  marketCalibratedDepreciation.residualSource
+                )
+              },
+              {
+                label: "残值校准比例",
+                children: formatPercent(
+                  (marketCalibratedDepreciation.residualCalibrationPercent ?? 0) / 100
+                )
+              },
+              {
+                label: "会计残值基准",
+                children: formatYuan(marketCalibratedDepreciation.accountingResidualBaselineAmount)
+              },
+              {
+                label: "市场残值基准",
+                children: formatYuan(marketCalibratedDepreciation.marketResidualBaseAmount)
+              },
+              {
+                label: "校准后残值",
+                children: formatYuan(marketCalibratedDepreciation.marketCalibratedResidualAmount)
+              },
+              {
+                label: "残值差异",
+                children: renderSignedYuan(marketCalibratedDepreciation.marketResidualDeltaAmount)
+              },
+              {
+                label: "会计主口径净收益",
+                children: formatYuan(marketCalibratedDepreciation.accountingPlatformNetIncomeAmount)
+              },
+              {
+                label: "市场校准净收益",
+                children: formatYuan(
+                  marketCalibratedDepreciation.marketCalibratedPlatformNetIncomeAmount
+                )
+              },
+              {
+                label: "会计折旧主口径 ROE",
+                children: formatTrialRoe(marketCalibratedDepreciation.accountingRoeTrial)
+              },
+              {
+                label: "市场校准 ROE",
+                children: formatPercent(marketCalibratedDepreciation.marketCalibratedRoeTrial)
+              },
+              {
+                label: "会计折旧主口径 ROA",
+                children: formatPercent(marketCalibratedDepreciation.accountingTrialRoa)
+              },
+              {
+                label: "市场校准 ROA",
+                children: formatPercent(marketCalibratedDepreciation.marketCalibratedTrialRoa)
+              }
+            ]}
+            size="small"
+          />
+          <Typography.Text type="secondary">
+            市场校准口径仅作经营分析对比，不写回折旧策略、折旧记录或残值预测。
+          </Typography.Text>
         </Space>
       </DetailSection>
 

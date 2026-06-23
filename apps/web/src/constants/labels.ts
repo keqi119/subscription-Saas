@@ -1062,6 +1062,12 @@ export const FORECAST_RESIDUAL_AMOUNT_SOURCE_LABELS: Record<string, string> = {
   PREDICTED: "曲线预测"
 };
 
+export const MARKET_RESIDUAL_SOURCE_LABELS: Record<string, string> = {
+  ADOPTED: "人工采用",
+  NONE: "无可用残值",
+  PREDICTED: "曲线预测"
+};
+
 export const RESIDUAL_MODEL_RUN_TYPE_LABELS: Record<string, string> = {
   EXTERNAL_MODEL: "外部模型",
   MANUAL_IMPORT: "手工导入",

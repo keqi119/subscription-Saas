@@ -1177,6 +1177,7 @@ Stage 8.4D-C-A 将单车残值预测接入资产收益试算 API，作为残值�
 查询参数：
 
 - `residualHorizonMonth`：选择未来 N 个月预测点用于残值敏感性展示，默认 `12`，范围 `0 - 120`。
+- `residualCalibrationPercent`：Stage 10N-C-C 新增的市场残值校准比例，默认 `0`，范围 `-30 - 30`；超出范围返回 `400`。
 
 残值预测选择规则：
 
@@ -1206,11 +1207,51 @@ Stage 8.4D-C-A 将单车残值预测接入资产收益试算 API，作为残值�
 前端展示口径：
 
 - `/reports/asset-profitability` 的“收益试算”Tab 可选择 `residualHorizonMonth`，默认展示未来 `12` 个月预测点。
+- Stage 10N-C-C 起可选择 `residualCalibrationPercent`，用于模拟市场残值上调或下调。
 - 页面同时展示主 `roeTrial` / `annualizedRoeTrial` 与 `residualSensitivityRoeTrial` / `residualSensitivityAnnualizedRoeTrial`。
 - 残值敏感性 ROE 不改变主 ROE，仅用于观察采用残值预测后对收益试算的影响。
+- 市场校准 ROE 不改变主 ROE，仅用于观察残值校准后的经营分析对比。
 - 车辆列表展示残值预测可用状态、预测残值、预测值来源、相对成本参数残值差异和残值敏感性 ROE；不可用车辆展示不可用原因。
 - 单车收益详情展示残值预测摘要、预测点、曲线摘要、残值差异和残值敏感性 ROE。
 - 页面展示预测残值不会覆盖车辆当前销售价，也不会写入销售价历史。
+
+### Stage 10N-C-C 市场校准折旧 / 残值滑块对比
+
+Stage 10N-C-C 在会计折旧主口径旁新增市场校准折旧对比。该口径复用残值预测和残值敏感性基准，不修改主 `platformNetIncomeAmount`、`roeTrial`、`annualizedRoeTrial`、`trialRoa`。
+
+市场残值基准：
+
+- 优先使用 `adoptedResidualAmount`。
+- 其次使用 `predictedResidualAmount`。
+- 缺少可用残值时返回 `marketCalibrationUnavailableReason`。
+
+公式：
+
+```text
+marketCalibratedResidualAmount =
+  marketResidualBaseAmount * (1 + residualCalibrationPercent / 100)
+
+marketResidualDeltaAmount =
+  marketCalibratedResidualAmount - VehicleAssetCostProfile.residualValueAmount
+
+marketCalibratedPlatformNetIncomeAmount =
+  platformNetIncomeAmount + marketResidualDeltaAmount
+```
+
+新增 summary 字段：
+
+- `marketCalibratedVehicleCount`
+- `marketCalibratedUnavailableVehicleCount`
+- `marketResidualBaseAmount`
+- `marketCalibratedResidualAmount`
+- `marketResidualDeltaAmount`
+- `marketCalibratedPlatformNetIncomeAmount`
+- `marketCalibratedRoeTrial`
+- `marketCalibratedAnnualizedRoeTrial`
+- `marketCalibratedTrialRoa`
+- `residualCalibrationPercent`
+
+车辆列表与单车详情新增市场残值来源、市场残值基准、校准后残值、残值差异、市场校准净收益、市场校准 ROE / ROA 和不可用原因。CSV 同步新增“市场校准折旧 / 残值校准”字段。
 
 ### Stage 8.4D-C-C 残值敏感性 CSV 导出口径
 
@@ -1226,15 +1267,17 @@ Stage 8.4D-C-C 将收益试算页面的信息架构同步到 CSV 导出，只增
 
 - 前端导出会继续携带统计周期、车型、车辆状态、排序等既有筛选。
 - 收益试算导出额外携带 `residualHorizonMonth`，默认 `12`，用于指定本次 CSV 中展示的残值预测周期。
+- Stage 10N-C-C 起收益试算导出同时携带 `residualCalibrationPercent`，用于输出市场校准折旧对比字段。
 
 收益汇总 CSV 按页面结构分段输出：
 
 - 标题与筛选条件：统计周期、残值预测周期、车型筛选和车辆状态筛选。
-- 核心结果：平台权益净收益、主试算 ROE、年化主试算 ROE、残值敏感性净收益、残值敏感性 ROE、年化残值敏感性 ROE 和 ROE 状态。
+- 核心结果：平台权益净收益、主试算 ROE、年化主试算 ROE、残值敏感性净收益、残值敏感性 ROE、年化残值敏感性 ROE、市场校准净收益、市场校准 ROE 和 ROE 状态。
 - 数据完整性 / 可计算性：车辆总数、成本参数覆盖、成本可计算覆盖、ROE 可计算覆盖和残值预测覆盖情况。
 - 收入归属：租金实收、损伤实收、其他实收、经营收入合计、转让 / 入池外流收入、质押收入金额、车主分润金额、平台留存经营收入和押金收取。
 - 成本与资本结构：折旧成本、资金成本、债务利息成本、保险成本、维修准备金、其他成本、外部长租固定成本、经营成本合计、债务本金、权益资本基数和资金成本来源。
 - 资产价值与残值敏感性：预测残值合计、预测下界合计、预测上界合计、相对当前销售价差异、相对成本参数预计残值差异、残值敏感性净收益和残值敏感性 ROE。
+- 市场校准折旧 / 残值校准：残值校准比例、市场校准车辆数、市场残值基准合计、校准后残值合计、市场残值差异合计、市场校准净收益、市场校准 ROE / ROA。
 - 计算链路 / 钩稽关系：导出经营收入、平台留存经营收入、经营成本、平台权益净收益、主 ROE、残值敏感性净收益和残值敏感性 ROE 的公式说明。
 - 不可用原因 / warnings：逐条导出 ROE 不可用原因、ROE 试算提示和残值预测提示。
 
@@ -1244,6 +1287,7 @@ Stage 8.4D-C-C 将收益试算页面的信息架构同步到 CSV 导出，只增
 - 预测残值、预测下界、预测上界、预测残值率。
 - 相对当前销售价差异、相对成本参数残值差异。
 - 残值敏感性净收益、残值敏感性 ROE、年化残值敏感性 ROE。
+- 残值来源、残值校准比例、市场残值基准、校准后残值、残值差异、市场校准平台净收益、市场校准 ROE / ROA、市场校准不可用原因。
 - 不可计算原因会合并 ROE 不可计算原因和残值预测不可用原因；提示信息会合并 ROE warnings 和残值预测 warnings。
 
 单车收益详情 CSV 新增分段：
@@ -1251,6 +1295,7 @@ Stage 8.4D-C-C 将收益试算页面的信息架构同步到 CSV 导出，只增
 - 残值预测敏感性：预测状态、预测编号、预测方法、预测基准日、预测周期、目标日期、引用曲线编号、预测值来源、预测残值、预测区间和置信度。
 - 残值差异：当前内部销售价、成本参数预计残值、预测残值、相对当前销售价差异和相对成本参数残值差异。
 - 残值敏感性收益：主平台权益净收益、残值敏感性净收益、主试算 ROE、残值敏感性 ROE、主年化试算 ROE和年化残值敏感性 ROE。
+- 市场校准折旧说明：会计残值基准、市场残值基准、校准后残值、残值差异、会计 ROE、市场校准 ROE、会计 ROA、市场校准 ROA 和不可用原因。
 - 残值敏感性说明：导出残值敏感性净收益和残值敏感性 ROE 的公式，并明确残值敏感性 ROE 不改变主试算 ROE。
 
 CSV 格式约定：

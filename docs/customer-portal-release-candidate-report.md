@@ -42,11 +42,12 @@ The current Stage 10 customer Portal codebase covers:
 - WeChat client receipt and click-through to the Portal order page.
 - Stage 10K-A code now adds Aliyun SMS login provider support, SMS send logs, production `debugCode` suppression, and invited-beta phone gating. It still requires staging real-SMS validation before production rollout.
 
-Back-office asset update after Stage 10N-C-A:
+Back-office asset update after Stage 10N-C-C:
 
 - Vehicle depreciation policy / schedule / record foundation has been added for back-office asset management.
 - The depreciation foundation is not part of the Customer Portal customer-facing scope.
-- Depreciation is not yet connected to main asset ROE; Stage 10N-C-B will handle that integration.
+- Confirmed / locked depreciation records now enter main asset return metrics, with legacy cost-profile fallback when no ACTIVE depreciation policy exists.
+- Market calibrated depreciation / residual slider comparison has been added as an analysis-only view and does not override accounting depreciation main ROE.
 
 ## Deferred Capability Scope
 
@@ -475,4 +476,16 @@ RC impact:
 - ACTIVE `NONE` policies contribute zero depreciation; ACTIVE `MANUAL` / `STRAIGHT_LINE` policies without valid records make ROE unavailable with explicit missing reasons.
 - `/reports/asset-profitability` summary, vehicle list, vehicle detail, and CSV exports show depreciation source, record amount, legacy comparison amount, record count, and missing reasons.
 - This stage does not change depreciation schedule generation, payment, write-off, billing, order, contract, entitlement, service-case, notification, or customer-facing Portal behavior.
+- This does not remove the existing unrestricted-launch blockers.
+
+## Stage 10N-C-C Market Calibrated Depreciation Update
+
+Stage 10N-C-C adds market calibrated depreciation / residual calibration comparison to asset return analysis.
+
+RC impact:
+
+- `/reports/asset-profitability` can compare accounting depreciation main ROE with market calibrated ROE.
+- The comparison uses adopted residual first, predicted residual second, plus `residualCalibrationPercent`.
+- Summary, vehicle list, vehicle detail, and CSV exports include market residual source, calibrated residual, residual delta, market calibrated net income, ROE, annualized ROE, ROA, and unavailable reasons.
+- This stage does not modify main `platformNetIncomeAmount`, `roeTrial`, `annualizedRoeTrial`, `trialRoa`, depreciation policy / records, residual forecast adoption, payment, write-off, billing, order, contract, entitlement, service-case, notification, or customer-facing Portal behavior.
 - This does not remove the existing unrestricted-launch blockers.

@@ -261,6 +261,13 @@ export class AssetReturnTrialQueryDto extends AssetProfitabilityQueryDto {
   @Min(0)
   @Max(120)
   residualHorizonMonth?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(-30)
+  @Max(30)
+  residualCalibrationPercent?: number;
 }
 
 export class AssetReturnTrialVehicleListQueryDto extends AssetReturnTrialQueryDto {

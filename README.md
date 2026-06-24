@@ -498,3 +498,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10x-legacy-enum-snapshot-to-string.md`: Stage 10X-N Quote / Order legacy enum snapshot to string model-code snapshot, with guarded dry-run/apply backfill and no enum removal.
 - `docs/stage-10x-legacy-enum-dewrite-vehicle-product.md`: Stage 10X-O Vehicle / Product legacy enum dewrite, requiring modelDefinitionId for new Vehicle, VehiclePackage, and ProductPriceRule model writes while deriving legacy vehicleModel for compatibility.
 - `docs/stage-10x-legacy-enum-read-only-mode.md`: Stage 10X-P VehicleModel enum read-only legacy mode, keeping compatibility reads while rejecting remaining legacy-only new write paths.
+- `docs/stage-10x-vehicle-model-enum-removal-rereview.md`: Stage 10X-Q VehicleModel enum removal re-review, confirming active legacy-only writes are closed while schema, ProductPriceRule uniqueness, snapshots, reports, CSV, API contracts, and freeze guard still block immediate enum removal.

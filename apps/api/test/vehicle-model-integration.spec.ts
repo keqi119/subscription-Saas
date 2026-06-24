@@ -139,29 +139,23 @@ describe("VehicleService vehicle model master-data integration", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("auto-resolves modelDefinitionId when only legacy vehicleModel is provided on create", async () => {
+  it("rejects legacy-only vehicle creation even when a model definition mapping exists", async () => {
     const definition = makeDefinition({ id: "definition-es6", legacyVehicleModel: VehicleModel.ES6, modelCode: "ES6" });
     const { prisma, service } = createHarness({ definitions: [definition] });
 
-    const result = await service.createVehicle(
-      {
-        brand: "NIO",
-        purchasePriceAmount: 16800000,
-        vehicleModel: VehicleModel.ES6,
-        vin: "TESTVINES600001"
-      },
-      user,
-      context
-    );
-
-    expect(result).toMatchObject({
-      modelDefinition: expect.objectContaining({ id: definition.id, legacyVehicleModel: VehicleModel.ES6 }),
-      modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ES6
-    });
-    expect(prisma.vehicle.create.mock.calls[0]?.[0].data.modelDefinition).toEqual({
-      connect: { id: definition.id }
-    });
+    await expect(
+      service.createVehicle(
+        {
+          brand: "NIO",
+          purchasePriceAmount: 16800000,
+          vehicleModel: VehicleModel.ES6,
+          vin: "TESTVINES600001"
+        },
+        user,
+        context
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.vehicle.create).not.toHaveBeenCalled();
   });
 
   it("rejects legacy-only vehicle creation when no matching model definition exists", async () => {
@@ -246,7 +240,7 @@ describe("VehicleService vehicle model master-data integration", () => {
     expect(prisma.vehicle.update).not.toHaveBeenCalled();
   });
 
-  it("auto-resolves modelDefinitionId when only legacy vehicleModel is updated", async () => {
+  it("rejects legacy-only vehicleModel updates", async () => {
     const definition = makeDefinition({ id: "definition-et7", legacyVehicleModel: VehicleModel.ET7, modelCode: "ET7" });
     const vehicle = makeVehicle({
       id: "vehicle-1",
@@ -256,26 +250,15 @@ describe("VehicleService vehicle model master-data integration", () => {
     });
     const { prisma, service } = createHarness({ definitions: [definition], vehicles: [vehicle] });
 
-    const result = await service.updateVehicle(
-      "vehicle-1",
-      { vehicleModel: VehicleModel.ET7 },
-      user,
-      context
-    );
-
-    expect(result).toMatchObject({
-      modelDefinition: expect.objectContaining({ id: definition.id }),
-      modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ET7
-    });
-    expect(prisma.vehicle.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinition: { connect: { id: definition.id } },
-          vehicleModel: VehicleModel.ET7
-        })
-      })
-    );
+    await expect(
+      service.updateVehicle(
+        "vehicle-1",
+        { vehicleModel: VehicleModel.ET7 },
+        user,
+        context
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.vehicle.update).not.toHaveBeenCalled();
   });
 
   it("returns modelDefinition summaries for linked vehicles and legacy fallback for historical vehicles", async () => {

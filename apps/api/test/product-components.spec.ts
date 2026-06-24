@@ -64,11 +64,11 @@ describe("product component packages", () => {
         maxPurchasePriceAmount: 18000000,
         minPeriodMonths: 12,
         minPurchasePriceAmount: 12000000,
+        modelDefinitionId: "model-et5",
         monthlyFeeRate: 0.035,
         packageName: "ET5 standard",
         productId: "product-1",
-        productVersionId: "version-1",
-        vehicleModel: VehicleModel.ET5
+        productVersionId: "version-1"
       },
       user,
       context
@@ -253,7 +253,7 @@ describe("product component model definitions", () => {
     });
   });
 
-  it("auto-resolves vehicle package modelDefinitionId from legacy vehicleModel", async () => {
+  it("rejects legacy-only vehicle package creation even when a model definition mapping exists", async () => {
     const definition = makeModelDefinition({
       displayName: "ES6",
       id: "model-es6",
@@ -262,32 +262,22 @@ describe("product component model definitions", () => {
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
 
-    const result = await service.createVehiclePackage(
-      {
-        maxPeriodMonths: 36,
-        minPeriodMonths: 12,
-        monthlyFeeRate: 0.035,
-        packageName: "ES6 standard",
-        productId: "product-1",
-        productVersionId: "version-1",
-        vehicleModel: VehicleModel.ES6
-      },
-      user,
-      context
-    );
-
-    expect(result).toMatchObject({
-      modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ES6
-    });
-    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
+    await expect(
+      service.createVehiclePackage(
+        {
+          maxPeriodMonths: 36,
+          minPeriodMonths: 12,
+          monthlyFeeRate: 0.035,
+          packageName: "ES6 standard",
+          productId: "product-1",
+          productVersionId: "version-1",
           vehicleModel: VehicleModel.ES6
-        })
-      })
-    );
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow();
+    expect(prisma.vehiclePackage.create).not.toHaveBeenCalled();
   });
 
   it("rejects vehicle package creation when legacy vehicleModel has no model definition mapping", async () => {
@@ -387,7 +377,7 @@ describe("product component model definitions", () => {
     expect(prisma.vehiclePackage.update).not.toHaveBeenCalled();
   });
 
-  it("auto-resolves vehicle package modelDefinitionId when legacy vehicleModel is updated", async () => {
+  it("rejects legacy-only vehicle package updates", async () => {
     const definition = makeModelDefinition({
       displayName: "ET7",
       id: "model-et7",
@@ -399,19 +389,13 @@ describe("product component model definitions", () => {
       vehiclePackages: [makeVehiclePackage({ modelDefinition: null, modelDefinitionId: null })]
     });
 
-    await service.updateVehiclePackage("vehicle-1", { vehicleModel: VehicleModel.ET7 }, user, context);
-
-    expect(prisma.vehiclePackage.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
-          vehicleModel: VehicleModel.ET7
-        })
-      })
-    );
+    await expect(
+      service.updateVehiclePackage("vehicle-1", { vehicleModel: VehicleModel.ET7 }, user, context)
+    ).rejects.toThrow();
+    expect(prisma.vehiclePackage.update).not.toHaveBeenCalled();
   });
 
-  it("auto-resolves product price rules from legacy vehicleModel", async () => {
+  it("rejects legacy-only product price rule creation", async () => {
     const definition = makeModelDefinition({
       displayName: "EC6",
       id: "model-ec6",
@@ -420,31 +404,21 @@ describe("product component model definitions", () => {
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
 
-    const result = await service.createPriceRule(
-      "version-1",
-      {
-        baseMileageKm: 1500,
-        maxPeriodMonths: 36,
-        minPeriodMonths: 12,
-        overMileageFeeAmount: 100,
-        vehicleModel: VehicleModel.EC6
-      },
-      user,
-      context
-    );
-
-    expect(result).toMatchObject({
-      modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.EC6
-    });
-    expect(prisma.productPriceRule.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
+    await expect(
+      service.createPriceRule(
+        "version-1",
+        {
+          baseMileageKm: 1500,
+          maxPeriodMonths: 36,
+          minPeriodMonths: 12,
+          overMileageFeeAmount: 100,
           vehicleModel: VehicleModel.EC6
-        })
-      })
-    );
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow();
+    expect(prisma.productPriceRule.create).not.toHaveBeenCalled();
   });
 
   it("rejects product price rules without a vehicle model scope", async () => {
@@ -478,6 +452,22 @@ describe("product component model definitions", () => {
     });
 
     await expect(service.updatePriceRule("rule-1", { modelDefinitionId: null }, user, context)).rejects.toThrow();
+    expect(prisma.productPriceRule.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy-only product price rule updates", async () => {
+    const definition = makeModelDefinition({
+      displayName: "EC6",
+      id: "model-ec6",
+      legacyVehicleModel: VehicleModel.EC6,
+      modelCode: "NIO_EC6"
+    });
+    const { prisma, service } = makeService({
+      modelDefinitions: [definition],
+      priceRules: [makePriceRule({ modelDefinition: null, modelDefinitionId: null })]
+    });
+
+    await expect(service.updatePriceRule("rule-1", { vehicleModel: VehicleModel.EC6 }, user, context)).rejects.toThrow();
     expect(prisma.productPriceRule.update).not.toHaveBeenCalled();
   });
 });

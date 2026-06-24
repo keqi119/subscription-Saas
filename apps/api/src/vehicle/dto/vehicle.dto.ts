@@ -27,6 +27,7 @@ export class CreateVehicleDto {
   @Min(1900)
   modelYear?: number | null;
 
+  /** @deprecated Use modelDefinitionId. vehicleModel is derived from model master data. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel | null;
@@ -117,6 +118,7 @@ export class UpdateVehicleDto {
   @Min(1900)
   modelYear?: number | null;
 
+  /** @deprecated Use modelDefinitionId. vehicleModel is derived from model master data. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel | null;

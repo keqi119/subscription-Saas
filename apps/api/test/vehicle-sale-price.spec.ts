@@ -34,8 +34,8 @@ describe("VehicleService sale price baseline", () => {
         brand: "NIO",
         batteryCapacityKwh: 75,
         batteryUsageType: VehicleBatteryUsageType.BUYOUT,
+        modelDefinitionId: "definition-et5",
         purchasePriceAmount: 16800000,
-        vehicleModel: VehicleModel.ET5,
         vin: "TESTVINET50000002"
       },
       user,
@@ -71,8 +71,8 @@ describe("VehicleService sale price baseline", () => {
           batteryCapacityKwh: 0,
           batteryUsageType: VehicleBatteryUsageType.BUYOUT,
           brand: "NIO",
+          modelDefinitionId: "definition-et5",
           purchasePriceAmount: 16800000,
-          vehicleModel: VehicleModel.ET5,
           vin: "TESTVINET50000002"
         },
         user,
@@ -90,8 +90,8 @@ describe("VehicleService sale price baseline", () => {
           batteryCapacityKwh: 75,
           batteryUsageType: "LEASED" as VehicleBatteryUsageType,
           brand: "NIO",
+          modelDefinitionId: "definition-et5",
           purchasePriceAmount: 16800000,
-          vehicleModel: VehicleModel.ET5,
           vin: "TESTVINET50000002"
         },
         user,
@@ -108,8 +108,8 @@ describe("VehicleService sale price baseline", () => {
       service.createVehicle(
         {
           brand: "NIO",
+          modelDefinitionId: "definition-et5",
           purchasePriceAmount: 16800000,
-          vehicleModel: VehicleModel.ET5,
           vin: "TESTVINET50000002"
         },
         user,

@@ -430,7 +430,7 @@ export class ProductService {
     const modelContext = await this.resolveModelContextForProductConfigCreate(
       dto.modelDefinitionId,
       dto.vehicleModel,
-      "车型代码主数据缺失，无法创建价格规则。请先维护车型代码。"
+      "新增价格规则必须选择车型主数据，请传入 modelDefinitionId。"
     );
 
     const rule = await this.prisma.productPriceRule.create({
@@ -470,7 +470,8 @@ export class ProductService {
     const modelContext = await this.resolveModelContextForProductConfigUpdate(
       dto.modelDefinitionId,
       dto.vehicleModel,
-      "车型代码主数据缺失，无法更新价格规则。请先维护车型代码。"
+      "修改价格规则车型必须选择车型主数据，请传入 modelDefinitionId。",
+      Object.prototype.hasOwnProperty.call(dto, "vehicleModel")
     );
 
     const rule = await this.prisma.productPriceRule.update({
@@ -557,7 +558,7 @@ export class ProductService {
     const modelContext = await this.resolveModelContextForProductConfigCreate(
       dto.modelDefinitionId,
       dto.vehicleModel,
-      "车型代码主数据缺失，无法创建车型包。请先维护车型代码。"
+      "新增车型包必须选择车型主数据，请传入 modelDefinitionId。"
     );
     const row = await withUniqueBusinessNoRetry(() => this.prisma.vehiclePackage.create({
       data: {
@@ -593,7 +594,8 @@ export class ProductService {
     const modelContext = await this.resolveModelContextForProductConfigUpdate(
       dto.modelDefinitionId,
       dto.vehicleModel,
-      "车型代码主数据缺失，无法更新车型包。请先维护车型代码。"
+      "修改车型包车型必须选择车型主数据，请传入 modelDefinitionId。",
+      Object.prototype.hasOwnProperty.call(dto, "vehicleModel")
     );
     const row = await this.prisma.vehiclePackage.update({
       data: {
@@ -1670,32 +1672,10 @@ export class ProductService {
     return definition;
   }
 
-  private async resolveModelDefinitionForLegacyProductConfig(vehicleModel: VehicleModel) {
-    const definition = await this.prisma.vehicleModelDefinition.findFirst({
-      select: productModelDefinitionSelect,
-      where: {
-        deletedAt: null,
-        legacyVehicleModel: vehicleModel
-      }
-    });
-
-    if (!definition) {
-      return null;
-    }
-    if (!definition.enabled) {
-      throw new BadRequestException("车型主数据已停用");
-    }
-    if (!definition.legacyVehicleModel) {
-      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于产品配置");
-    }
-
-    return definition;
-  }
-
   private async resolveModelContextForProductConfigCreate(
     modelDefinitionId: string | null | undefined,
     vehicleModel: VehicleModel | null | undefined,
-    missingLegacyMessage: string
+    requiredModelDefinitionMessage: string
   ): Promise<{ modelDefinition: ProductModelDefinition; vehicleModel: VehicleModel }> {
     if (modelDefinitionId) {
       const modelDefinition = await this.resolveModelDefinitionForProductConfig(modelDefinitionId);
@@ -1708,25 +1688,15 @@ export class ProductService {
       };
     }
 
-    if (!vehicleModel) {
-      throw new BadRequestException("请选择车型代码。");
-    }
-
-    const modelDefinition = await this.resolveModelDefinitionForLegacyProductConfig(vehicleModel);
-    if (!modelDefinition) {
-      throw new BadRequestException(missingLegacyMessage);
-    }
-
-    return {
-      modelDefinition,
-      vehicleModel
-    };
+    void vehicleModel;
+    throw new BadRequestException(requiredModelDefinitionMessage);
   }
 
   private async resolveModelContextForProductConfigUpdate(
     modelDefinitionId: string | null | undefined,
     vehicleModel: VehicleModel | null | undefined,
-    missingLegacyMessage: string
+    legacyOnlyMessage: string,
+    vehicleModelProvided: boolean
   ): Promise<{ modelDefinition?: ProductModelDefinition; vehicleModel?: VehicleModel }> {
     if (modelDefinitionId === null) {
       throw new BadRequestException("车型代码主数据已启用，不能清除车型代码。");
@@ -1743,16 +1713,9 @@ export class ProductService {
       };
     }
 
-    if (vehicleModel) {
-      const modelDefinition = await this.resolveModelDefinitionForLegacyProductConfig(vehicleModel);
-      if (!modelDefinition) {
-        throw new BadRequestException(missingLegacyMessage);
-      }
-
-      return {
-        modelDefinition,
-        vehicleModel
-      };
+    if (vehicleModelProvided) {
+      void vehicleModel;
+      throw new BadRequestException(legacyOnlyMessage);
     }
 
     return {};

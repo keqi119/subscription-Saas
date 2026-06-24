@@ -494,3 +494,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10x-quote-order-snapshot.md`: Stage 10X-M-C additive Quote / Order model snapshot fields for immutable audit display without rewriting historical rows.
 - `docs/stage-10x-quote-order-snapshot-backfill.md`: Stage 10X-M-D additive Quote / Order snapshot backfill with dry-run, apply guard, idempotency report, and production runbook.
 - `docs/stage-10x-quote-order-snapshot-reporting.md`: Stage 10X-M-E Quote / Order snapshot-mode reporting and display rules, with runtime mode retained for current operational objects.
+- `docs/stage-10x-vehicle-model-enum-retirement-final-review.md`: Stage 10X-M-F final VehicleModel enum retirement feasibility review, recommending frozen legacy mode now and string snapshot detachment before any removal.

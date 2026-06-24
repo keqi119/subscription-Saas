@@ -130,17 +130,17 @@ export class CreateMarketPriceObservationDto {
   @IsString()
   modelDefinitionId?: string | null;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  brand!: string;
+  brand?: string | null;
 
   @IsOptional()
   @IsString()
   series?: string | null;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  model!: string;
+  model?: string | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -308,17 +308,17 @@ export class GenerateResidualCurveDto {
   @IsString()
   modelDefinitionId?: string | null;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  brand!: string;
+  brand?: string | null;
 
   @IsOptional()
   @IsString()
   series?: string | null;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  model!: string;
+  model?: string | null;
 
   @IsOptional()
   @Type(() => Number)

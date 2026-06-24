@@ -110,3 +110,23 @@ Residual / Reports / Product / Portal fallback 是否稳定
 ```
 
 短期建议仍是保留 `VehicleModel` enum，新主流程优先使用 `modelDefinitionId`。
+
+## 8. Stage 10X-J 完成后状态
+
+Stage 10X-J 在 10X-F 双轨接入基础上收紧 residual 新数据入口：
+
+```text
+Residual market 新增样本必须最终写入 modelDefinitionId
+Residual market CSV 导入样本必须最终写入 modelDefinitionId
+Residual curve 新建 / 生成必须最终写入 modelDefinitionId
+ResidualModelRun 如指定目标车型，必须最终写入 targetModelDefinitionId
+legacy brand / series / model 继续保留历史 fallback
+```
+
+10X-J 仍不迁移历史 residual 数据，不重算历史 forecast，不自动 adopt residual，不更新车辆当前销售价。
+
+详见：
+
+```text
+docs/stage-10x-residual-model-definition-required.md
+```

@@ -1490,8 +1490,28 @@ async function seedDemoVehicles(operatorId) {
   const insuranceEndDate = new Date("2027-12-31T00:00:00.000Z");
   const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
   const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
+  const legacyVehicleModels = [...new Set(demoVehicles.map((vehicle) => vehicle.vehicleModel))];
+  const modelDefinitions = await prisma.vehicleModelDefinition.findMany({
+    select: {
+      id: true,
+      legacyVehicleModel: true
+    },
+    where: {
+      deletedAt: null,
+      enabled: true,
+      legacyVehicleModel: { in: legacyVehicleModels }
+    }
+  });
+  const modelDefinitionByLegacy = new Map(
+    modelDefinitions.map((definition) => [definition.legacyVehicleModel, definition])
+  );
 
   for (const vehicleSeed of demoVehicles) {
+    const modelDefinition = modelDefinitionByLegacy.get(vehicleSeed.vehicleModel);
+    if (!modelDefinition) {
+      throw new Error(`VehicleModelDefinition is required for demo vehicle model ${vehicleSeed.vehicleModel}.`);
+    }
+
     const vehicle = await prisma.vehicle.upsert({
       create: {
         assetLocation: "上海验收车库",
@@ -1506,6 +1526,7 @@ async function seedDemoVehicles(operatorId) {
         insuranceEndDate,
         insuranceStartDate,
         model: vehicleSeed.model,
+        modelDefinition: { connect: { id: modelDefinition.id } },
         modelYear: vehicleSeed.modelYear,
         nextSalePriceReviewAt,
         plateNo: vehicleSeed.plateNo,
@@ -1533,6 +1554,7 @@ async function seedDemoVehicles(operatorId) {
         insuranceEndDate,
         insuranceStartDate,
         model: vehicleSeed.model,
+        modelDefinition: { connect: { id: modelDefinition.id } },
         modelYear: vehicleSeed.modelYear,
         nextSalePriceReviewAt,
         plateNo: vehicleSeed.plateNo,

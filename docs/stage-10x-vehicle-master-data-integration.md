@@ -181,3 +181,38 @@ legacy enum 退场
 docs/stage-10x-model-master-data-portal-product-reports.md
 ```
 
+## 12. Stage 10X-H 更新
+
+Stage 10X-H 已将车辆创建入口收紧为“新建车辆最终必须有 `modelDefinitionId`”。
+
+更新后的车辆 create 规则：
+
+```text
+传入 modelDefinitionId:
+  使用车型主数据，自动同步 Vehicle.vehicleModel = legacyVehicleModel
+
+只传 legacy vehicleModel:
+  后端通过 VehicleModelDefinition.legacyVehicleModel 自动解析 modelDefinitionId
+  解析失败返回 400
+
+modelDefinitionId 和 vehicleModel 都未传:
+  返回 400
+```
+
+更新后的车辆 update 规则：
+
+```text
+不强制历史车辆迁移
+不允许显式清除 modelDefinitionId
+只更新 vehicleModel 时会尝试自动解析并同步 modelDefinitionId
+未提交车型字段时保持原车型数据不变
+```
+
+后台车辆页已将“车型代码（主数据）”作为新增车辆必填项，兼容车型字段由主数据自动带出，仅用于 legacy fallback 和历史解释。
+
+详见：
+
+```text
+docs/stage-10x-vehicle-model-required-on-create.md
+```
+

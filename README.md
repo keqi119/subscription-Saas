@@ -485,3 +485,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10x-model-master-data-portal-product-reports.md`: Stage 10X-E Product, Portal catalog, and Reports integration with VehicleModelDefinition while leaving Residual market for Stage 10X-F.
 - `docs/stage-10x-model-master-data-residual-market.md`: Stage 10X-F Residual market, residual curve, forecast, model run, and valuation review integration with VehicleModelDefinition while retaining legacy residual dimensions.
 - `docs/stage-10x-vehicle-model-enum-retirement-audit.md`: Stage 10X-G VehicleModel enum retirement audit, freeze recommendation, backfill design, and staged modelDefinitionId-required roadmap.
+- `docs/stage-10x-vehicle-model-required-on-create.md`: Stage 10X-H vehicle create/update enforcement so new vehicles must resolve VehicleModelDefinition while preserving legacy VehicleModel fallback.

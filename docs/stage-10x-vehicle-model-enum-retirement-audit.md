@@ -755,3 +755,37 @@ Stage 10X-M: enum removal feasibility review
 legacy enum 保留用于历史快照 / fallback / 审计解释
 完成 backfill dry-run、snapshot 迁移和 active dependency 清零后，再评估真正退场
 ```
+
+## 15. Stage 10X-H 实施记录
+
+10X-H 采纳本审计的保守路线：冻结 enum 的第一步不是删除 `VehicleModel`，而是先阻止新增车辆继续缺失车型主数据。
+
+已确认的边界：
+
+```text
+无 legacyVehicleModel 映射的 VehicleModelDefinition 暂不能用于新建车辆
+Web 新建车辆必须选择车型代码主数据
+API create 兼容只传 legacy vehicleModel，但必须自动解析出 modelDefinitionId
+解析失败返回 400
+历史车辆不强制迁移
+update 不允许清除已有 modelDefinitionId
+Quote / Order 快照不在本阶段修改
+Product / Portal / Reports / Residual 不在本阶段修改
+CI enum freeze guard 仍留到 Stage 10X-K
+```
+
+10X-H 完成后，后续路线保持：
+
+```text
+Stage 10X-I: Product / Package 新建规则 modelDefinitionId 必填
+Stage 10X-J: Residual 新建 sample / curve modelDefinitionId 必填
+Stage 10X-K: legacy enum freeze guard
+Stage 10X-L: backfill dry-run / report
+Stage 10X-M: enum removal feasibility review
+```
+
+详见：
+
+```text
+docs/stage-10x-vehicle-model-required-on-create.md
+```

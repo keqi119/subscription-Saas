@@ -400,6 +400,7 @@ async function createScenarioVehicle({
   vehicleNo,
   vin
 }) {
+  const modelDefinition = await getVehicleModelDefinitionByLegacy("ET5");
   const vehicle = await prisma.vehicle.create({
     data: {
       assetLocation: "SCN9 acceptance pool",
@@ -415,6 +416,7 @@ async function createScenarioVehicle({
       insuranceStartDate: new Date("2026-01-01T00:00:00.000Z"),
       latestRegistrationDate: new Date("2026-05-20T00:00:00.000Z"),
       model: "ET5",
+      modelDefinition: { connect: { id: modelDefinition.id } },
       modelYear: 2026,
       nextSalePriceReviewAt: new Date("2026-09-01T00:00:00.000Z"),
       plateNo,
@@ -447,6 +449,26 @@ async function createScenarioVehicle({
   });
 
   return vehicle;
+}
+
+async function getVehicleModelDefinitionByLegacy(legacyVehicleModel) {
+  const definition = await prisma.vehicleModelDefinition.findFirst({
+    select: {
+      id: true,
+      legacyVehicleModel: true
+    },
+    where: {
+      deletedAt: null,
+      enabled: true,
+      legacyVehicleModel
+    }
+  });
+
+  if (!definition) {
+    throw new Error(`VehicleModelDefinition is required for scenario vehicle model ${legacyVehicleModel}.`);
+  }
+
+  return definition;
 }
 
 function buildResidualObservations(batchId, operatorId) {

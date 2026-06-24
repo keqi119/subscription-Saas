@@ -153,18 +153,14 @@ export class VehicleService {
 
   async createVehicle(dto: CreateVehicleDto, user: RequestUser, context: RequestContext) {
     assertRequiredString(dto.vin, "VIN 必填");
-    const modelDefinition = await this.resolveModelDefinitionForVehicle(dto.modelDefinitionId);
-    const vehicleModel = resolveVehicleModelForWrite(dto.vehicleModel, modelDefinition);
+    const modelContext = await this.resolveModelContextForCreate(dto.modelDefinitionId, dto.vehicleModel);
     assertPositiveAmount(dto.purchasePriceAmount, "车辆采购价必须大于 0");
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
     assertCanCreateAsAvailable(dto.status ?? VehicleStatus.DRAFT);
 
-    const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id, {
-      modelDefinition,
-      vehicleModel
-    });
+    const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id, modelContext);
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -194,11 +190,11 @@ export class VehicleService {
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
-    const modelDefinition = await this.resolveModelDefinitionForVehicle(dto.modelDefinitionId);
+    const modelContext = await this.resolveModelContextForUpdate(dto.modelDefinitionId, dto.vehicleModel);
     const data = updateVehicleData(dto, user.id, {
-      modelDefinition,
+      modelDefinition: modelContext.modelDefinition,
       modelDefinitionProvided: dto.modelDefinitionId !== undefined,
-      vehicleModel: resolveVehicleModelForUpdate(dto.vehicleModel, modelDefinition, dto.modelDefinitionId !== undefined)
+      vehicleModel: modelContext.vehicleModel
     });
 
     if (dto.status) {
@@ -774,6 +770,89 @@ export class VehicleService {
 
     return definition;
   }
+
+  private async resolveModelDefinitionByLegacyVehicleModel(vehicleModel: VehicleModel) {
+    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+      select: vehicleModelDefinitionSelect,
+      where: {
+        deletedAt: null,
+        legacyVehicleModel: vehicleModel
+      }
+    });
+
+    if (!definition) {
+      return null;
+    }
+    if (!definition.enabled) {
+      throw new BadRequestException("车型主数据已停用");
+    }
+    if (!definition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于车辆创建");
+    }
+
+    return definition;
+  }
+
+  private async resolveModelContextForCreate(
+    modelDefinitionId: string | null | undefined,
+    vehicleModel: VehicleModel | null | undefined
+  ) {
+    if (modelDefinitionId) {
+      const modelDefinition = await this.resolveModelDefinitionForVehicle(modelDefinitionId);
+      return {
+        modelDefinition,
+        vehicleModel: resolveVehicleModelForWrite(vehicleModel, modelDefinition)
+      };
+    }
+
+    if (!vehicleModel) {
+      throw new BadRequestException("请选择车型代码。");
+    }
+
+    const modelDefinition = await this.resolveModelDefinitionByLegacyVehicleModel(vehicleModel);
+    if (!modelDefinition) {
+      throw new BadRequestException("车型代码主数据缺失，无法创建车辆。请先维护车型代码。");
+    }
+
+    return {
+      modelDefinition,
+      vehicleModel
+    };
+  }
+
+  private async resolveModelContextForUpdate(
+    modelDefinitionId: string | null | undefined,
+    vehicleModel: VehicleModel | null | undefined
+  ) {
+    if (modelDefinitionId === null) {
+      throw new BadRequestException("车型代码主数据已启用，不能清除车型代码。");
+    }
+
+    if (modelDefinitionId) {
+      const modelDefinition = await this.resolveModelDefinitionForVehicle(modelDefinitionId);
+      return {
+        modelDefinition,
+        vehicleModel: resolveVehicleModelForWrite(vehicleModel, modelDefinition)
+      };
+    }
+
+    if (vehicleModel) {
+      const modelDefinition = await this.resolveModelDefinitionByLegacyVehicleModel(vehicleModel);
+      if (!modelDefinition) {
+        throw new BadRequestException("车型代码主数据缺失，无法更新车辆车型。请先维护车型代码。");
+      }
+
+      return {
+        modelDefinition,
+        vehicleModel
+      };
+    }
+
+    return {
+      modelDefinition: null,
+      vehicleModel: undefined
+    };
+  }
 }
 
 async function createVehicleWithRetry(
@@ -879,12 +958,10 @@ function updateVehicleData(
   assignIfDefined(data, "series", dto.series);
   assignIfDefined(data, "status", dto.status);
   assignIfDefined(data, "vehicleModel", modelContext.vehicleModel);
-  if (modelContext.modelDefinitionProvided) {
-    if (modelContext.modelDefinition) {
-      data.modelDefinition = { connect: { id: modelContext.modelDefinition.id } };
-    } else {
-      data.modelDefinition = { disconnect: true };
-    }
+  if (modelContext.modelDefinition) {
+    data.modelDefinition = { connect: { id: modelContext.modelDefinition.id } };
+  } else if (modelContext.modelDefinitionProvided) {
+    data.modelDefinition = { disconnect: true };
   }
   assignIfDefined(data, "vin", dto.vin);
 
@@ -910,25 +987,6 @@ function resolveVehicleModelForWrite(
 
   if (!vehicleModel) {
     throw new BadRequestException("车型代码必填");
-  }
-
-  return vehicleModel;
-}
-
-function resolveVehicleModelForUpdate(
-  vehicleModel: VehicleModel | null | undefined,
-  modelDefinition: VehicleModelDefinitionForVehicle | null,
-  modelDefinitionProvided: boolean
-) {
-  if (modelDefinition) {
-    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
-      throw new BadRequestException("车型主数据与 legacy 车型不一致");
-    }
-    return modelDefinition.legacyVehicleModel;
-  }
-
-  if (modelDefinitionProvided) {
-    return vehicleModel;
   }
 
   return vehicleModel;

@@ -62,6 +62,7 @@ describe("ResidualMarketService", () => {
     const result = await harness.service.createObservation(validObservationDto(), user, context);
 
     expect(result.observationNo).toMatch(/^MPO\d{14}[A-Z0-9]{4}$/);
+    expect(result.modelDefinitionId).toBe(makeModelDefinition().id);
     expect(result.priceAmount).toBe(12800000);
     expect(result.confidenceScore).toBe(100);
     expect(harness.state.observations).toHaveLength(1);
@@ -94,6 +95,52 @@ describe("ResidualMarketService", () => {
     expect(list.items[0]?.modelDefinition?.id).toBe(definition.id);
   });
 
+  it("creates market price observations from modelDefinitionId without legacy brand and model input", async () => {
+    const definition = makeModelDefinition();
+    const harness = createResidualMarketHarness({ modelDefinitions: [definition] });
+
+    const result = await harness.service.createObservation(
+      {
+        ...validObservationDto(),
+        brand: undefined,
+        model: undefined,
+        modelDefinitionId: definition.id
+      },
+      user,
+      context
+    );
+
+    expect(result).toMatchObject({
+      brand: definition.brand,
+      model: definition.modelName,
+      modelDefinitionId: definition.id,
+      series: definition.series
+    });
+  });
+
+  it("rejects market price observations when legacy brand and model cannot resolve to model definition", async () => {
+    const harness = createResidualMarketHarness({ modelDefinitions: [] });
+
+    await expect(harness.service.createObservation(validObservationDto(), user, context)).rejects.toThrow(
+      "车型代码主数据缺失"
+    );
+    expect(harness.state.observations).toHaveLength(0);
+  });
+
+  it("rejects market price observations when legacy brand and model resolve ambiguously", async () => {
+    const harness = createResidualMarketHarness({
+      modelDefinitions: [
+        makeModelDefinition({ id: "00000000-0000-4000-8000-000000000e51", modelCode: "ET5-A" }),
+        makeModelDefinition({ id: "00000000-0000-4000-8000-000000000e52", modelCode: "ET5-B" })
+      ]
+    });
+
+    await expect(harness.service.createObservation(validObservationDto(), user, context)).rejects.toThrow(
+      "匹配到多条"
+    );
+    expect(harness.state.observations).toHaveLength(0);
+  });
+
   it("rejects priceAmount less than or equal to zero", async () => {
     const harness = createResidualMarketHarness();
 
@@ -119,7 +166,7 @@ describe("ResidualMarketService", () => {
 
     await expect(
       harness.service.createObservation({ ...validObservationDto(), brand: "" }, user, context)
-    ).rejects.toThrow("brand");
+    ).rejects.toThrow("请选择车型代码");
   });
 
   it("rejects missing model", async () => {
@@ -127,7 +174,7 @@ describe("ResidualMarketService", () => {
 
     await expect(
       harness.service.createObservation({ ...validObservationDto(), model: "" }, user, context)
-    ).rejects.toThrow("model");
+    ).rejects.toThrow("请选择车型代码");
   });
 
   it("rejects missing priceType", async () => {
@@ -179,6 +226,7 @@ describe("ResidualMarketService", () => {
     expect(result.totalRows).toBe(1);
     expect(result.importedRows).toBe(1);
     expect(result.batch.importStatus).toBe(MarketPriceImportStatus.COMPLETED);
+    expect(harness.state.observations[0]?.modelDefinitionId).toBe(makeModelDefinition().id);
     expect(harness.state.observations[0]?.priceAmount).toBe(12800000n);
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -233,6 +281,54 @@ describe("ResidualMarketService", () => {
     expect(harness.state.batches[0]?.errorSnapshot).toMatchObject({
       failedItems: [expect.objectContaining({ rowNumber: 3 })]
     });
+  });
+
+  it("imports CSV rows with modelDefinitionId even when legacy brand and model are blank", async () => {
+    const definition = makeModelDefinition();
+    const harness = createResidualMarketHarness({ modelDefinitions: [definition] });
+
+    const result = await harness.service.importCsv(
+      {
+        csvText: [
+          "observedAt,modelDefinitionId,brand,model,priceType,priceAmount",
+          `2026-06-01,${definition.id},,,LISTING,128000`
+        ].join("\n"),
+        source: MarketPriceSource.CSV_IMPORT
+      },
+      user,
+      context
+    );
+
+    expect(result.importedRows).toBe(1);
+    expect(result.createdRows).toBe(1);
+    expect(result.failedRows).toBe(0);
+    expect(harness.state.observations[0]).toMatchObject({
+      brand: definition.brand,
+      model: definition.modelName,
+      modelDefinitionId: definition.id
+    });
+  });
+
+  it("returns row-level CSV errors when legacy model cannot resolve to model definition", async () => {
+    const harness = createResidualMarketHarness({ modelDefinitions: [] });
+
+    const result = await harness.service.importCsv(
+      {
+        csvText: [
+          "observedAt,brand,model,priceType,priceAmount",
+          "2026-06-01,NIO,ET5,LISTING,128000"
+        ].join("\n"),
+        source: MarketPriceSource.CSV_IMPORT
+      },
+      user,
+      context
+    );
+
+    expect(result.importedRows).toBe(0);
+    expect(result.createdRows).toBe(0);
+    expect(result.failedRows).toBe(1);
+    expect(result.errors[0]).toMatchObject({ action: "FAILED", rowNumber: 2 });
+    expect(harness.state.observations).toHaveLength(0);
   });
 
   it("calculates confidenceScore with the documented first-version formula", () => {
@@ -346,6 +442,7 @@ describe("ResidualMarketService", () => {
     );
 
     expect(result.dryRun).toBe(true);
+    expect(result.curve.modelDefinitionId).toBe(makeModelDefinition().id);
     expect(result.pointCount).toBe(1);
     expect(result.points[0]?.medianPriceAmount).toBe(12000000);
     expect(harness.state.curves).toHaveLength(0);
@@ -377,6 +474,7 @@ describe("ResidualMarketService", () => {
     expect(result.dryRun).toBe(false);
     expect(result.curve.curveNo).toMatch(/^RVC\d{14}[A-Z0-9]{4}$/);
     expect(result.curve.curveStatus).toBe(VehicleResidualCurveStatus.DRAFT);
+    expect(result.curve.modelDefinitionId).toBe(makeModelDefinition().id);
     expect(harness.state.curves).toHaveLength(1);
     expect(harness.state.points).toHaveLength(1);
     expect(harness.state.modelRuns).toHaveLength(0);
@@ -696,10 +794,21 @@ describe("ResidualMarketService", () => {
 
     await expect(
       harness.service.generateCurve({ brand: "", model: "ET5" }, user, context)
-    ).rejects.toThrow("brand");
+    ).rejects.toThrow("请选择车型代码");
     await expect(
       harness.service.generateCurve({ brand: "NIO", model: "" }, user, context)
-    ).rejects.toThrow("model");
+    ).rejects.toThrow("请选择车型代码");
+  });
+
+  it("rejects residual curve generation when legacy model cannot resolve to model definition", async () => {
+    const harness = createResidualMarketHarness({
+      modelDefinitions: [],
+      observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
+    });
+
+    await expect(
+      harness.service.generateCurve({ brand: "NIO", minSamplePerPoint: 3, model: "ET5" }, user, context)
+    ).rejects.toThrow("车型代码主数据缺失");
   });
 
   it("uses only active market observations for residual curves", async () => {
@@ -1229,6 +1338,7 @@ describe("ResidualMarketService", () => {
 
     expect(result.runNo).toMatch(/^RMR\d{14}[A-Z0-9]{4}$/);
     expect(result.runStatus).toBe(ResidualModelRunStatus.CREATED);
+    expect(result.targetModelDefinitionId).toBe(makeModelDefinition().id);
     expect(result.featureSnapshot).toEqual({ features: ["ageMonth", "mileageKm"] });
     expect(harness.state.modelRuns).toHaveLength(1);
     expect(harness.auditService.write).toHaveBeenCalledWith(
@@ -1258,6 +1368,36 @@ describe("ResidualMarketService", () => {
 
     expect(list.total).toBe(1);
     expect(list.items[0]?.targetModelDefinition?.id).toBe(definition.id);
+  });
+
+  it("allows full residual model runs without targetModelDefinitionId when no target model is specified", async () => {
+    const harness = createResidualMarketHarness();
+
+    const result = await harness.service.createModelRun(
+      {
+        algorithm: ResidualModelAlgorithm.STATISTICAL_MEDIAN,
+        modelProvider: "internal",
+        modelVersion: "v2026.06.full",
+        runName: "full residual baseline",
+        runStatus: ResidualModelRunStatus.CREATED,
+        runType: ResidualModelRunType.STATISTICAL_BASELINE,
+        targetType: ResidualModelTargetType.MARKET_PRICE
+      },
+      user,
+      context
+    );
+
+    expect(result.targetModelDefinitionId).toBeNull();
+    expect(result.targetModelDefinition).toBeNull();
+  });
+
+  it("rejects target-specific residual model runs when legacy target cannot resolve to model definition", async () => {
+    const harness = createResidualMarketHarness({ modelDefinitions: [] });
+
+    await expect(harness.service.createModelRun(validModelRunDto(), user, context)).rejects.toThrow(
+      "车型代码主数据缺失"
+    );
+    expect(harness.state.modelRuns).toHaveLength(0);
   });
 
   it("rejects invalid initial residual model run status", async () => {
@@ -1499,7 +1639,7 @@ function createResidualMarketHarness(seed: Partial<ResidualMarketState> = {}) {
     forecasts: [...(seed.forecasts ?? [])],
     modelRunOutputs: [...(seed.modelRunOutputs ?? [])],
     modelRuns: [...(seed.modelRuns ?? [])],
-    modelDefinitions: [...(seed.modelDefinitions ?? [])],
+    modelDefinitions: [...(seed.modelDefinitions ?? [makeModelDefinition()])],
     observations: [...(seed.observations ?? [])],
     points: [...(seed.points ?? [])],
     salePriceHistories: [...(seed.salePriceHistories ?? [])],
@@ -1553,6 +1693,9 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
         Promise.resolve(
           state.modelDefinitions.find((definition) => matchesModelDefinitionWhere(definition, where)) ?? null
         )
+      ),
+      findMany: vi.fn(({ where }) =>
+        Promise.resolve(state.modelDefinitions.filter((definition) => matchesModelDefinitionWhere(definition, where)))
       )
     },
     vehicleSalePriceHistory: {
@@ -2000,14 +2143,33 @@ function matchesVehicleWhere(vehicle: Vehicle, where: Record<string, unknown> = 
   return true;
 }
 
-function matchesModelDefinitionWhere(definition: VehicleModelDefinition, where: Record<string, unknown> = {}) {
+function matchesModelDefinitionWhere(definition: VehicleModelDefinition, where: Record<string, unknown> = {}): boolean {
+  if (Array.isArray(where.OR)) {
+    const baseWhere = { ...where };
+    delete baseWhere.OR;
+    return where.OR.some((orWhere) =>
+      matchesModelDefinitionWhere(definition, { ...baseWhere, ...(orWhere as Record<string, unknown>) })
+    );
+  }
   if (where.id !== undefined && definition.id !== where.id) {
+    return false;
+  }
+  if (where.brand !== undefined && definition.brand !== where.brand) {
     return false;
   }
   if (where.deletedAt === null && definition.deletedAt !== null) {
     return false;
   }
   if (where.enabled !== undefined && definition.enabled !== where.enabled) {
+    return false;
+  }
+  if (where.modelCode !== undefined && definition.modelCode !== where.modelCode) {
+    return false;
+  }
+  if (where.modelName !== undefined && definition.modelName !== where.modelName) {
+    return false;
+  }
+  if (where.series !== undefined && definition.series !== where.series) {
     return false;
   }
   return true;

@@ -821,3 +821,36 @@ Stage 10X-M: enum removal feasibility review
 ```text
 docs/stage-10x-product-model-definition-required.md
 ```
+
+## 17. Stage 10X-J 实施记录
+
+10X-J 继续执行本审计推荐的分阶段 required 路线，将 residual 新数据入口推进到 `modelDefinitionId first`。
+
+实施结果：
+
+```text
+Residual market 新增样本最终必须写入 modelDefinitionId
+Residual market CSV 导入样本最终必须写入 modelDefinitionId
+legacy-only sample / import row 会自动解析 VehicleModelDefinition brand / series / modelName / modelCode
+解析失败的 CSV 行返回 row-level error，不写入该行
+Residual curve 新建 / 生成最终必须写入 modelDefinitionId
+ResidualModelRun 如指定目标车型，最终必须写入 targetModelDefinitionId
+全量 / 泛化 model run 可不传 targetModelDefinitionId
+历史 residual sample / curve / forecast 不强制迁移
+forecast lookup 优先级未修改
+不重算历史 forecast，不自动 adopt residual，不更新车辆销售价
+```
+
+10X-J 完成后，后续路线保持：
+
+```text
+Stage 10X-K: legacy enum freeze guard
+Stage 10X-L: backfill dry-run / report
+Stage 10X-M: enum removal feasibility review
+```
+
+详见：
+
+```text
+docs/stage-10x-residual-model-definition-required.md
+```

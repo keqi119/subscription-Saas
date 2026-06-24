@@ -67,7 +67,7 @@ const CSV_HEADER =
   "observedAt,sourceListingId,modelDefinitionId,brand,series,model,modelYear,trim,batteryCapacityKwh,batteryUsageType,mileageKm,registrationDate,vehicleAgeMonths,province,city,priceType,priceAmount,listingPriceAmount,transactionPriceAmount,listingDays,sellerType,conditionGrade,batteryHealthPercent,accidentFlag,sourceUrl,remark";
 
 const CSV_TEMPLATE = `${CSV_HEADER}
-2026-06-01,ET5-SH-001,,NIO,ET5,ET5 75kWh,2024,标准续航,75,BUYOUT,18000,2024-06-01,24,上海,上海,LISTING,168000,168000,,12,PLATFORM,A,92.5,false,https://example.com/listing/ET5-SH-001,示例样本`;
+2026-06-01,ET5-SH-001,,NIO,ET5,ET5,2024,标准续航,75,BUYOUT,18000,2024-06-01,24,上海,上海,LISTING,168000,168000,,12,PLATFORM,A,92.5,false,https://example.com/listing/ET5-SH-001,示例样本`;
 
 const DEFAULT_CURVE_PRICE_TYPES = ["TRANSACTION", "AUCTION", "DEALER_QUOTE", "INTERNAL_SALE", "LISTING"];
 
@@ -148,7 +148,7 @@ const tagColors: Record<string, string> = {
 
 interface VehicleModelDefinitionSummary {
   batteryCapacityKwh?: number | null;
-  brand: string;
+  brand?: string;
   customerDisplayName?: string | null;
   displayName: string;
   id: string;
@@ -176,7 +176,7 @@ interface ObservationRow {
   listingDays?: number | null;
   listingPriceAmount?: number | null;
   mileageKm?: number | null;
-  model: string;
+  model?: string;
   modelDefinition?: VehicleModelDefinitionSummary | null;
   modelDefinitionId?: string | null;
   modelDisplayName?: string | null;
@@ -244,6 +244,8 @@ interface CsvImportItem {
 
 interface CsvImportResult {
   batch: ImportBatchRow;
+  createdRows?: number;
+  errors?: CsvImportItem[];
   failedRows: number;
   importedRows: number;
   items: CsvImportItem[];
@@ -275,7 +277,7 @@ interface CurvePointRow {
 interface ResidualCurveRow {
   batteryCapacityKwh?: number | null;
   batteryUsageType?: string | null;
-  brand: string;
+  brand?: string;
   confidenceScore?: number | null;
   createdAt?: string;
   createdBy?: string | null;
@@ -289,7 +291,7 @@ interface ResidualCurveRow {
   generatedAt?: string | null;
   id?: string | null;
   metrics?: unknown;
-  model: string;
+  model?: string;
   modelDefinition?: VehicleModelDefinitionSummary | null;
   modelDefinitionId?: string | null;
   modelDisplayName?: string | null;
@@ -482,13 +484,13 @@ interface ObservationFormValues {
   batteryCapacityKwh?: number | null;
   batteryHealthPercent?: number | null;
   batteryUsageType?: string;
-  brand: string;
+  brand?: string;
   city?: string;
   conditionGrade?: string;
   listingDays?: number | null;
   listingPriceAmountYuan?: number | null;
   mileageKm?: number | null;
-  model: string;
+  model?: string;
   modelDefinitionId?: string | null;
   modelYear?: number | null;
   observedAt: Dayjs;
@@ -1620,6 +1622,23 @@ export default function ResidualMarketPage() {
   }
 
   async function submitModelRunCreate(values: ModelRunCreateFormValues) {
+    const hasTargetModelYear = values.targetModelYear !== undefined && values.targetModelYear !== null;
+    const hasTargetBatteryCapacity =
+      values.targetBatteryCapacityKwh !== undefined && values.targetBatteryCapacityKwh !== null;
+    const hasTargetDimensions = Boolean(
+      values.targetBrand ||
+        values.targetSeries ||
+        values.targetModel ||
+        hasTargetModelYear ||
+        values.targetTrim ||
+        hasTargetBatteryCapacity ||
+        values.targetBatteryUsageType
+    );
+    if (hasTargetDimensions && !values.targetModelDefinitionId) {
+      void message.error("指定目标车型时请选择目标车型代码主数据。");
+      return;
+    }
+
     setModelRunCreateSubmitting(true);
     try {
       await apiFetch<ResidualModelRunRow>("/residual-market/model-runs", {
@@ -2866,7 +2885,11 @@ export default function ResidualMarketPage() {
                   </Form.Item>
                 </Col>
                 <Col span={24}>
-                  <Form.Item label="目标车型代码（主数据）" name="targetModelDefinitionId">
+                  <Form.Item
+                    extra="全量运行可留空；如果指定目标品牌、车系、车型或电池规格，必须选择车型代码主数据。"
+                    label="目标车型代码（主数据）"
+                    name="targetModelDefinitionId"
+                  >
                     <Select
                       allowClear
                       onChange={(value) => applyDefinitionToModelRun(value)}
@@ -3162,9 +3185,13 @@ export default function ResidualMarketPage() {
                   </>
                 ) : null}
                 <Col span={24}>
-                  <Form.Item label="车型代码（主数据）" name="modelDefinitionId">
+                  <Form.Item
+                    extra="新残值曲线必须关联车型主数据；只会生成带 modelDefinitionId 的新曲线。"
+                    label="车型代码（主数据）"
+                    name="modelDefinitionId"
+                    rules={[{ required: true, message: "请选择车型代码。新残值曲线必须关联车型主数据。" }]}
+                  >
                     <Select
-                      allowClear
                       onChange={(value) => applyDefinitionToCurve(value)}
                       optionFilterProp="label"
                       options={modelDefinitionOptions}
@@ -3173,7 +3200,7 @@ export default function ResidualMarketPage() {
                   </Form.Item>
                 </Col>
                 <Col md={8} xs={24}>
-                  <Form.Item label="品牌" name="brand" rules={[{ required: true, message: "请输入品牌" }]}>
+                  <Form.Item label="品牌" name="brand">
                     <Input maxLength={64} />
                   </Form.Item>
                 </Col>
@@ -3183,7 +3210,7 @@ export default function ResidualMarketPage() {
                   </Form.Item>
                 </Col>
                 <Col md={8} xs={24}>
-                  <Form.Item label="车型" name="model" rules={[{ required: true, message: "请输入车型" }]}>
+                  <Form.Item label="车型" name="model">
                     <Input maxLength={128} />
                   </Form.Item>
                 </Col>
@@ -3420,9 +3447,13 @@ export default function ResidualMarketPage() {
                 </Form.Item>
               </Col>
               <Col span={24}>
-                <Form.Item label="车型代码（主数据）" name="modelDefinitionId">
+                <Form.Item
+                  extra="新增市场样本必须关联车型主数据；品牌、车系和车型会由车型代码自动带出。"
+                  label="车型代码（主数据）"
+                  name="modelDefinitionId"
+                  rules={[{ required: true, message: "请选择车型代码。新增市场样本必须关联车型主数据。" }]}
+                >
                   <Select
-                    allowClear
                     onChange={(value) => applyDefinitionToObservation(value)}
                     optionFilterProp="label"
                     options={modelDefinitionOptions}
@@ -3431,7 +3462,7 @@ export default function ResidualMarketPage() {
                 </Form.Item>
               </Col>
               <Col md={8} xs={24}>
-                <Form.Item label="品牌" name="brand" rules={[{ required: true, message: "请输入品牌" }]}>
+                <Form.Item label="品牌" name="brand">
                   <Input maxLength={64} />
                 </Form.Item>
               </Col>
@@ -3441,7 +3472,7 @@ export default function ResidualMarketPage() {
                 </Form.Item>
               </Col>
               <Col md={8} xs={24}>
-                <Form.Item label="车型" name="model" rules={[{ required: true, message: "请输入车型" }]}>
+                <Form.Item label="车型" name="model">
                   <Input maxLength={128} />
                 </Form.Item>
               </Col>

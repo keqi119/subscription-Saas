@@ -101,6 +101,13 @@ type ObservationInput = {
   vehicleAgeMonths?: number | null | string;
 };
 
+type ResidualModelDefinitionLookupInput = {
+  brand?: string | null;
+  model?: string | null;
+  modelDefinitionId?: string | null;
+  series?: string | null;
+};
+
 type ObservationFields = {
   accidentFlag: boolean | null;
   batteryCapacityKwh: Prisma.Decimal | null;
@@ -424,7 +431,10 @@ export class ResidualMarketService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const modelDefinition = await this.resolveEnabledModelDefinition(dto.modelDefinitionId);
+    const modelDefinition = await this.resolveRequiredModelDefinitionForResidualInput(
+      dto,
+      "车型代码主数据缺失，无法创建市场样本。请先维护车型代码。"
+    );
     const built = buildObservationData(dto, "fen", undefined, modelDefinition);
     const duplicate = await this.findActiveDuplicate(built.data.dedupeKey);
 
@@ -494,7 +504,10 @@ export class ResidualMarketService {
     for (const record of records) {
       try {
         const input: ObservationInput = { ...record.values, source };
-        const modelDefinition = await this.resolveEnabledModelDefinition(input.modelDefinitionId);
+        const modelDefinition = await this.resolveRequiredModelDefinitionForResidualInput(
+          input,
+          "车型代码主数据缺失，无法导入该市场样本。请先维护车型代码。"
+        );
         const built = buildObservationData(input, "yuan", record.values, modelDefinition);
 
         if (seenDedupeKeys.has(built.data.dedupeKey)) {
@@ -594,6 +607,8 @@ export class ResidualMarketService {
 
     return {
       batch: toBatchView(updatedBatch),
+      createdRows: importedRows,
+      errors: items.filter((item) => item.action === "FAILED"),
       failedRows,
       importedRows,
       items,
@@ -685,7 +700,10 @@ export class ResidualMarketService {
   }
 
   async generateCurve(dto: GenerateResidualCurveDto, user: RequestUser, context: RequestContext) {
-    const modelDefinition = await this.resolveEnabledModelDefinition(dto.modelDefinitionId);
+    const modelDefinition = await this.resolveRequiredModelDefinitionForResidualInput(
+      dto,
+      "车型代码主数据缺失，无法生成残值曲线。请先维护车型代码。"
+    );
     const input = buildCurveGenerationInput(dto, modelDefinition);
     this.ensureModelRunManagePermission(input, user);
     const existingModelRun = input.modelRunId ? await this.findLinkableModelRun(input.modelRunId, input, input.dryRun) : null;
@@ -1259,7 +1277,7 @@ export class ResidualMarketService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const targetModelDefinition = await this.resolveEnabledModelDefinition(dto.targetModelDefinitionId);
+    const targetModelDefinition = await this.resolveTargetModelDefinitionForModelRun(dto);
     const data = buildModelRunCreateData(dto, user.id, targetModelDefinition);
     const run = await withUniqueBusinessNoRetry(() =>
       this.prisma.residualModelRun.create({
@@ -1476,6 +1494,102 @@ export class ResidualMarketService {
     }
 
     return definition;
+  }
+
+  private async resolveRequiredModelDefinitionForResidualInput(
+    input: ResidualModelDefinitionLookupInput,
+    missingLegacyMessage: string
+  ) {
+    const modelDefinition = await this.resolveEnabledModelDefinition(input.modelDefinitionId);
+    if (modelDefinition) {
+      return modelDefinition;
+    }
+
+    return this.resolveModelDefinitionFromResidualLegacy(input, missingLegacyMessage, true);
+  }
+
+  private async resolveTargetModelDefinitionForModelRun(dto: CreateResidualModelRunDto) {
+    const targetModelDefinition = await this.resolveEnabledModelDefinition(dto.targetModelDefinitionId);
+    if (targetModelDefinition) {
+      return targetModelDefinition;
+    }
+
+    const hasTargetModelYear = dto.targetModelYear !== undefined && dto.targetModelYear !== null;
+    const hasTargetBatteryCapacity =
+      dto.targetBatteryCapacityKwh !== undefined && dto.targetBatteryCapacityKwh !== null;
+    const hasLegacyTarget = Boolean(
+      normalizeOptionalText(dto.targetBrand) ||
+        normalizeOptionalText(dto.targetSeries) ||
+        normalizeOptionalText(dto.targetModel) ||
+        normalizeOptionalText(dto.targetTrim) ||
+        hasTargetModelYear ||
+        hasTargetBatteryCapacity ||
+        dto.targetBatteryUsageType
+    );
+    if (!hasLegacyTarget) {
+      return null;
+    }
+
+    return this.resolveModelDefinitionFromResidualLegacy(
+      {
+        brand: dto.targetBrand,
+        model: dto.targetModel,
+        series: dto.targetSeries
+      },
+      "车型代码主数据缺失，无法创建模型运行记录。请先维护车型代码。",
+      true
+    );
+  }
+
+  private async resolveModelDefinitionFromResidualLegacy(
+    input: ResidualModelDefinitionLookupInput,
+    missingLegacyMessage: string,
+    required: true
+  ): Promise<ModelDefinitionSummary>;
+  private async resolveModelDefinitionFromResidualLegacy(
+    input: ResidualModelDefinitionLookupInput,
+    missingLegacyMessage: string,
+    required: false
+  ): Promise<ModelDefinitionSummary | null>;
+  private async resolveModelDefinitionFromResidualLegacy(
+    input: ResidualModelDefinitionLookupInput,
+    missingLegacyMessage: string,
+    required: boolean
+  ) {
+    const brand = normalizeOptionalText(input.brand);
+    const model = normalizeOptionalText(input.model);
+    const series = normalizeOptionalText(input.series);
+
+    if (!brand || !model) {
+      if (!required) {
+        return null;
+      }
+      throw new BadRequestException("请选择车型代码。");
+    }
+
+    const definitions = await this.prisma.vehicleModelDefinition.findMany({
+      select: modelDefinitionSelect,
+      where: {
+        OR: [{ modelName: model }, { modelCode: model }],
+        brand,
+        deletedAt: null,
+        enabled: true,
+        series: series ?? undefined
+      }
+    });
+
+    if (definitions.length === 0) {
+      if (!required) {
+        return null;
+      }
+      throw new BadRequestException(missingLegacyMessage);
+    }
+
+    if (definitions.length > 1) {
+      throw new BadRequestException("车型代码主数据匹配到多条记录，请明确 modelDefinitionId。");
+    }
+
+    return definitions[0] ?? null;
   }
 
   private async selectForecastCurve(vehicle: Vehicle, input: ForecastGenerationInput): Promise<CurveSelection> {
@@ -1842,11 +1956,11 @@ function buildModelRunCreateData(
       dto.targetBatteryUsageType,
       "targetBatteryUsageType"
     ),
-    targetBrand: normalizeOptionalText(dto.targetBrand),
+    targetBrand: targetModelDefinition?.brand ?? normalizeOptionalText(dto.targetBrand),
     targetModelDefinitionId: targetModelDefinition?.id ?? null,
-    targetModel: normalizeOptionalText(dto.targetModel),
-    targetModelYear: optionalInteger(dto.targetModelYear, "targetModelYear", 0),
-    targetSeries: normalizeOptionalText(dto.targetSeries),
+    targetModel: targetModelDefinition?.modelName ?? targetModelDefinition?.modelCode ?? normalizeOptionalText(dto.targetModel),
+    targetModelYear: optionalInteger(dto.targetModelYear, "targetModelYear", 0) ?? targetModelDefinition?.modelYear ?? null,
+    targetSeries: targetModelDefinition?.series ?? normalizeOptionalText(dto.targetSeries),
     targetTrim: normalizeOptionalText(dto.targetTrim),
     targetType,
     trainingDataEndDate,
@@ -2200,8 +2314,8 @@ function buildObservationData(
   const source = parseEnumValue(MarketPriceSource, input.source, "source");
   const sourceListingId = normalizeOptionalText(input.sourceListingId);
   const observedAt = parseDateOnly(input.observedAt, "observedAt");
-  const brand = requiredText(input.brand, "brand");
-  const model = requiredText(input.model, "model");
+  const brand = modelDefinition?.brand ?? requiredText(input.brand, "brand");
+  const model = modelDefinition?.modelName ?? modelDefinition?.modelCode ?? requiredText(input.model, "model");
   const fields: ObservationFields = {
     accidentFlag: parseOptionalBoolean(input.accidentFlag, "accidentFlag"),
     batteryCapacityKwh: optionalDecimal(input.batteryCapacityKwh, "batteryCapacityKwh", 0),
@@ -2218,7 +2332,7 @@ function buildObservationData(
     mileageKm: optionalInteger(input.mileageKm, "mileageKm", 0),
     model,
     modelDefinitionId: modelDefinition?.id ?? null,
-    modelYear: optionalInteger(input.modelYear, "modelYear", 0),
+    modelYear: optionalInteger(input.modelYear, "modelYear", 0) ?? modelDefinition?.modelYear ?? null,
     observedAt,
     priceAmount:
       amountUnit === "yuan"
@@ -2229,7 +2343,7 @@ function buildObservationData(
     registrationDate: parseOptionalDateOnly(input.registrationDate, "registrationDate"),
     remark: normalizeOptionalText(input.remark),
     sellerType: parseOptionalEnumValue(MarketSellerType, input.sellerType, "sellerType"),
-    series: normalizeOptionalText(input.series),
+    series: modelDefinition?.series ?? normalizeOptionalText(input.series),
     source,
     sourceListingId,
     sourceUrlHash: normalizeOptionalText(input.sourceUrlHash) ?? hashOptionalText(input.sourceUrl),
@@ -2331,25 +2445,25 @@ function buildCurveGenerationInput(
     autoCreateModelRun,
     batteryCapacityKwh: optionalDecimal(dto.batteryCapacityKwh, "batteryCapacityKwh", 0),
     batteryUsageType: parseOptionalEnumValue(VehicleBatteryUsageType, dto.batteryUsageType, "batteryUsageType"),
-    brand: requiredText(dto.brand, "brand"),
+    brand: modelDefinition?.brand ?? requiredText(dto.brand, "brand"),
     curveName: normalizeOptionalText(dto.curveName),
     curveVersion: normalizeOptionalText(dto.curveVersion),
     dryRun: dto.dryRun ?? false,
     minSamplePerPoint: optionalInteger(dto.minSamplePerPoint, "minSamplePerPoint", 1) ?? 3,
-    model: requiredText(dto.model, "model"),
+    model: modelDefinition?.modelName ?? modelDefinition?.modelCode ?? requiredText(dto.model, "model"),
     modelDefinition,
     modelDefinitionId: modelDefinition?.id ?? null,
     modelProvider: normalizeOptionalText(dto.modelProvider),
     modelRunId,
     modelRunName: normalizeOptionalText(dto.modelRunName),
     modelVersion: normalizeOptionalText(dto.modelVersion),
-    modelYear: optionalInteger(dto.modelYear, "modelYear", 0),
+    modelYear: optionalInteger(dto.modelYear, "modelYear", 0) ?? modelDefinition?.modelYear ?? null,
     priceTypes,
     referencePriceAmount,
     remark: normalizeOptionalText(dto.remark),
     sampleEndDate,
     sampleStartDate,
-    series: normalizeOptionalText(dto.series),
+    series: modelDefinition?.series ?? normalizeOptionalText(dto.series),
     trim: normalizeOptionalText(dto.trim)
   };
 }

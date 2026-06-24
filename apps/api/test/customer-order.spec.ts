@@ -135,6 +135,43 @@ describe("customer self-service order API rules", () => {
     );
   });
 
+  it("writes model snapshots to the quote and order created by customer self-service", async () => {
+    const harness = createCustomerOrderHarness({
+      vehicle: {
+        modelDefinition: { displayName: "NIO ET5 Snapshot" },
+        modelDefinitionId: "model-et5"
+      }
+    });
+
+    await harness.service.createCustomerOrder(
+      {
+        customerId: harness.customer.id,
+        periodMonths: 12,
+        subscriptionPlanId: harness.plan.id,
+        vehicleBaseFeeAmount: 520000,
+        vehicleId: harness.vehicle.id
+      },
+      harness.user,
+      harness.context
+    );
+
+    const expectedSnapshot = {
+      legacyVehicleModelSnapshot: VehicleModel.ET5,
+      modelDefinitionIdSnapshot: "model-et5",
+      modelDisplayNameSnapshot: "NIO ET5 Snapshot"
+    };
+    expect(harness.tx.subscriptionQuote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining(expectedSnapshot)
+      })
+    );
+    expect(harness.tx.subscriptionOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining(expectedSnapshot)
+      })
+    );
+  });
+
   it("rejects a subscription plan that does not match the selected vehicle model", async () => {
     const harness = createCustomerOrderHarness({
       plan: { vehiclePackage: { vehicleModel: VehicleModel.ES6 } }

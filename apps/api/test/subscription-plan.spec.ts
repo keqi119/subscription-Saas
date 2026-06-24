@@ -239,7 +239,13 @@ describe("subscription plan backend flow", () => {
   });
 
   it("creates quotes from subscriptionPlanId and stores package and deposit snapshots", async () => {
-    const { prisma, service } = makeService();
+    const modelDefinition = makeModelDefinition();
+    const { prisma, service } = makeService({
+      vehicle: makeVehicle({
+        modelDefinition,
+        modelDefinitionId: modelDefinition.id
+      })
+    });
 
     const quote = await service.createQuote(
         "application-1",
@@ -274,6 +280,9 @@ describe("subscription plan backend flow", () => {
           vehicleBaseFeeAmount: BigInt(420000),
           vehicleBaseFeeCapAmount: BigInt(420000),
           vehicleId: "vehicle-asset-1",
+          modelDefinitionIdSnapshot: "model-et5",
+          modelDisplayNameSnapshot: "NIO ET5",
+          legacyVehicleModelSnapshot: VehicleModel.ET5,
           vehiclePurchasePriceAmount: BigInt(10000000),
           vehicleSalePriceAmount: BigInt(12000000),
           vehicleSnapshot: expect.objectContaining({
@@ -282,6 +291,32 @@ describe("subscription plan backend flow", () => {
             batteryUsageTypeLabel: "电池买断"
           }),
           vehiclePackageId: "vehicle-1"
+        })
+      })
+    );
+  });
+
+  it("falls back to the legacy vehicle model snapshot when quote vehicle has no model definition", async () => {
+    const { prisma, service } = makeService();
+
+    await service.createQuote(
+      "application-1",
+      {
+        periodMonths: 12,
+        subscriptionPlanId: "plan-1",
+        vehicleBaseFeeAmount: 420000,
+        vehicleId: "vehicle-asset-1"
+      },
+      user,
+      context
+    );
+
+    expect(prisma.subscriptionQuote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          legacyVehicleModelSnapshot: VehicleModel.ET5,
+          modelDefinitionIdSnapshot: null,
+          modelDisplayNameSnapshot: VehicleModel.ET5
         })
       })
     );
@@ -530,6 +565,15 @@ describe("subscription plan backend flow", () => {
       data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
       where: { id: "vehicle-asset-1" }
     });
+    expect(prisma.subscriptionQuote.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.not.objectContaining({
+          legacyVehicleModelSnapshot: expect.anything(),
+          modelDefinitionIdSnapshot: expect.anything(),
+          modelDisplayNameSnapshot: expect.anything()
+        })
+      })
+    );
   });
 
   it("rejects confirming a vehicle based quote when the vehicle is unavailable", async () => {
@@ -869,6 +913,16 @@ function makeVehicle(overrides: Record<string, unknown> = {}) {
     vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH2026060200001",
     vin: "VIN0001",
+    ...overrides
+  };
+}
+
+function makeModelDefinition(overrides: Record<string, unknown> = {}) {
+  return {
+    displayName: "NIO ET5",
+    id: "model-et5",
+    legacyVehicleModel: VehicleModel.ET5,
+    modelCode: "NIO_ET5",
     ...overrides
   };
 }

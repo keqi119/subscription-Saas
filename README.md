@@ -491,3 +491,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10x-vehicle-model-enum-freeze-guard.md`: Stage 10X-K VehicleModel enum freeze guard, release/CI check, and rule that new vehicle models must be created through VehicleModelDefinition.
 - `docs/stage-10x-model-definition-backfill-dry-run-report.md`: Stage 10X-L modelDefinitionId historical backfill dry-run report covering Vehicle, Product, Quote/Order snapshots, and Residual legacy dimensions.
 - `docs/stage-10x-model-definition-low-risk-backfill.md`: Stage 10X-M-A low-risk modelDefinitionId backfill for Vehicle, VehiclePackage, and ProductPriceRule with dry-run, apply guard, and production runbook.
+- `docs/stage-10x-quote-order-snapshot.md`: Stage 10X-M-C additive Quote / Order model snapshot fields for immutable audit display without rewriting historical rows.

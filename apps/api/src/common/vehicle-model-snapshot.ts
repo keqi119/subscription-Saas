@@ -15,6 +15,13 @@ export type VehicleModelSnapshot = {
   modelDisplayNameSnapshot: string | null;
 };
 
+export type QuoteOrderModelDisplaySource =
+  | "SNAPSHOT"
+  | "RUNTIME_MODEL_DEFINITION"
+  | "LEGACY_SNAPSHOT"
+  | "LEGACY_VEHICLE_MODEL"
+  | "UNKNOWN";
+
 type VehicleModelSnapshotSource = {
   legacyVehicleModelSnapshot?: VehicleModel | null;
   modelDefinition?: VehicleModelSnapshotDefinition | null;
@@ -55,12 +62,55 @@ export function freezeQuoteVehicleModelSnapshot(quote: VehicleModelSnapshotSourc
   return buildVehicleModelSnapshot(quote);
 }
 
+export function buildQuoteOrderModelDisplay(source: VehicleModelSnapshotSource) {
+  const modelDefinitionId =
+    source.modelDefinitionIdSnapshot ?? source.modelDefinitionId ?? source.modelDefinition?.id ?? null;
+  const legacyVehicleModel = source.legacyVehicleModelSnapshot ?? source.vehicleModel ?? null;
+
+  if (source.modelDisplayNameSnapshot) {
+    return {
+      legacyVehicleModel,
+      modelDefinitionId,
+      modelDisplayName: source.modelDisplayNameSnapshot,
+      modelDisplaySource: "SNAPSHOT" as const
+    };
+  }
+
+  if (source.modelDefinition?.displayName) {
+    return {
+      legacyVehicleModel,
+      modelDefinitionId,
+      modelDisplayName: source.modelDefinition.displayName,
+      modelDisplaySource: "RUNTIME_MODEL_DEFINITION" as const
+    };
+  }
+
+  if (source.legacyVehicleModelSnapshot) {
+    return {
+      legacyVehicleModel,
+      modelDefinitionId,
+      modelDisplayName: source.legacyVehicleModelSnapshot,
+      modelDisplaySource: "LEGACY_SNAPSHOT" as const
+    };
+  }
+
+  if (source.vehicleModel) {
+    return {
+      legacyVehicleModel,
+      modelDefinitionId,
+      modelDisplayName: source.vehicleModel,
+      modelDisplaySource: "LEGACY_VEHICLE_MODEL" as const
+    };
+  }
+
+  return {
+    legacyVehicleModel,
+    modelDefinitionId,
+    modelDisplayName: null,
+    modelDisplaySource: "UNKNOWN" as const
+  };
+}
+
 export function vehicleModelSnapshotDisplayName(source: VehicleModelSnapshotSource) {
-  return (
-    source.modelDisplayNameSnapshot ??
-    source.modelDefinition?.displayName ??
-    source.legacyVehicleModelSnapshot ??
-    source.vehicleModel ??
-    null
-  );
+  return buildQuoteOrderModelDisplay(source).modelDisplayName;
 }

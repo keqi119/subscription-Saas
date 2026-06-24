@@ -35,6 +35,8 @@ interface ReviewOrderRow {
   finalPlanConfirmedAt?: string | null;
   finalPlanSnapshot?: unknown;
   id: string;
+  modelDisplayName?: string | null;
+  modelDisplaySource?: string | null;
   monthlyFeeAmount?: number | null;
   orderNo: string;
   orderSource: string;
@@ -236,7 +238,8 @@ function vehicleLabel(record: ReviewOrderRow) {
 
 function vehicleModelLabel(record: ReviewOrderRow) {
   return safeText(
-    record.vehicle?.vehicleModel ??
+    record.modelDisplayName ??
+      record.vehicle?.vehicleModel ??
       record.vehicleModel ??
       snapshotValue(record.quoteSnapshot, "vehicleSnapshot.vehicleModel", "vehicleSnapshot.model", "vehicleModel")
   );

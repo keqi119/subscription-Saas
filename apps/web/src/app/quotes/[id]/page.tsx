@@ -136,11 +136,16 @@ interface QuoteDetail {
   energyLimitKwh?: number | string | null;
   energyPackagePriceAmount?: number | string | null;
   id: string;
+  legacyVehicleModelSnapshot?: string | null;
   mileagePackagePriceAmount?: number | string | null;
   mileageLimitKm?: number | string | null;
   monthlyFeeAmount?: number | string | null;
   monthlyFeeCapAmount?: number | string | null;
   monthlyFeeRate?: number | string | null;
+  modelDefinitionIdSnapshot?: string | null;
+  modelDisplayName?: string | null;
+  modelDisplayNameSnapshot?: string | null;
+  modelDisplaySource?: string | null;
   notes?: string | null;
   order?: {
     contract?: { contractNo?: string | null; id?: string | null; status?: string | null } | null;
@@ -375,7 +380,14 @@ function getVehicleLabel(quote: QuoteDetail) {
 }
 
 function getVehicleModel(quote: QuoteDetail) {
-  return safeText(quote.vehicleSnapshot?.vehicleModel ?? quote.vehicle?.vehicleModel ?? quote.vehicleModel);
+  return safeText(
+    quote.modelDisplayName ??
+      quote.modelDisplayNameSnapshot ??
+      quote.legacyVehicleModelSnapshot ??
+      quote.vehicleSnapshot?.vehicleModel ??
+      quote.vehicle?.vehicleModel ??
+      quote.vehicleModel
+  );
 }
 
 function getDepositAmount(quote: QuoteDetail) {

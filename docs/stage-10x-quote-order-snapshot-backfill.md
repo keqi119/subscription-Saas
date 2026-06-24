@@ -210,4 +210,4 @@ Before production apply:
 
 ## 13. Follow-up
 
-Stage 10X-M-E should update Quote / Order reporting and CSV reads to prefer immutable snapshot display fields for historical explanation while keeping runtime modelDefinition reads for current operational objects.
+Stage 10X-M-E updates Quote / Order API display, customer portal order display, admin pages, and order detail CSV reads to prefer immutable snapshot display fields for historical explanation while keeping runtime modelDefinition reads for current operational objects.

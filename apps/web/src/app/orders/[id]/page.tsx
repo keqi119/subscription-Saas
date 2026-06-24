@@ -60,7 +60,12 @@ interface OrderDetail {
   finalDepositAmount?: number | null;
   finalPlanConfirmedAt?: string | null;
   id: string;
+  legacyVehicleModelSnapshot?: string | null;
   mileageLimitKm: number;
+  modelDefinitionIdSnapshot?: string | null;
+  modelDisplayName?: string | null;
+  modelDisplayNameSnapshot?: string | null;
+  modelDisplaySource?: string | null;
   monthlyFeeAmount: number;
   orderNo: string;
   orderSource?: string;
@@ -895,6 +900,15 @@ function safeText(value?: unknown) {
   return String(value);
 }
 
+function orderModelDisplay(order?: OrderDetail | null) {
+  return safeText(
+    order?.modelDisplayName ??
+      order?.modelDisplayNameSnapshot ??
+      order?.legacyVehicleModelSnapshot ??
+      order?.vehicleModel
+  );
+}
+
 function parsePhotoUrls(value?: string) {
   if (!value) {
     return [];
@@ -1371,11 +1385,7 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
             { label: "车系", children: safeText(getSnapshotValue(vehicleSnapshot, "series") ?? getSnapshotValue(snapshot, "series")) },
             {
               label: "车型",
-              children: safeText(
-                getSnapshotValue(vehicleSnapshot, "vehicleModel", "model") ??
-                  getSnapshotValue(snapshot, "vehicleModel", "model") ??
-                  order.vehicleModel
-              )
+              children: orderModelDisplay(order)
             },
             {
               label: "电池容量",
@@ -1630,7 +1640,7 @@ function OrderInfoSections({
             { label: "车辆编号", children: safeText(order.vehicle?.vehicleNo ?? getSnapshotValue(vehicleSnapshot, "vehicleNo")) },
             { label: "VIN", children: safeText(order.vehicle?.vin ?? getSnapshotValue(vehicleSnapshot, "vin")) },
             { label: "车牌号", children: safeText(order.vehicle?.plateNo ?? getSnapshotValue(vehicleSnapshot, "plateNo")) },
-            { label: "车型", children: safeText(order.vehicle?.vehicleModel ?? getSnapshotValue(vehicleSnapshot, "vehicleModel") ?? order.vehicleModel) },
+            { label: "车型", children: orderModelDisplay(order) },
             { label: "电池容量", children: formatKwh(order.vehicle?.batteryCapacityKwh ?? getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")) },
             {
               label: "电池使用方式",
@@ -4543,7 +4553,7 @@ function OrderDetailPageContent() {
                     label: "关联报价",
                     children: order.quote ? <Link href={`/quotes/${order.quote.id}`}>{order.quote.quoteNo}</Link> : "-"
                   },
-                  { label: "车型", children: order.vehicleModel },
+                  { label: "车型", children: orderModelDisplay(order) },
                   { label: "车辆采购价", children: formatYuan(order.vehiclePurchasePriceAmount) },
                   { label: "月费", children: formatYuan(order.monthlyFeeAmount) },
                   { label: "押金", children: formatYuan(order.depositAmount) },
@@ -5249,7 +5259,7 @@ function OrderDetailPageContent() {
                 车辆：{order?.vehicle ? joinText(order.vehicle.vehicleNo, order.vehicle.plateNo, order.vehicle.vin) : "-"}
               </Typography.Text>
               <Typography.Text>车辆状态：{order?.vehicle?.status ?? "-"}</Typography.Text>
-              <Typography.Text>车型：{order?.vehicle?.vehicleModel ?? order?.vehicleModel ?? "-"}</Typography.Text>
+              <Typography.Text>车型：{orderModelDisplay(order)}</Typography.Text>
               <Typography.Text>当前销售价：{formatYuan(currentVehicleSalePrice)}</Typography.Text>
             </Space>
             <Form.Item label="变更原因" name="reason" rules={[{ required: true, message: "请填写变更原因" }]}>

@@ -17,6 +17,8 @@ interface QuoteRow {
   createdAt: string;
   depositAmount: number;
   id: string;
+  modelDisplayName?: string | null;
+  modelDisplaySource?: string | null;
   monthlyFeeAmount: number;
   periodMonths: number;
   productVersion: { product: { name: string }; versionNo: string };
@@ -44,7 +46,8 @@ export default function QuotesPage() {
   const loadQuotes = useCallback(async () => {
     setLoading(true);
     try {
-      setQuotes(await apiFetch<QuoteRow[]>("/quotes"));
+      const nextQuotes = await apiFetch<QuoteRow[]>("/quotes");
+      setQuotes(nextQuotes.map((quote) => ({ ...quote, vehicleModel: quote.modelDisplayName ?? quote.vehicleModel })));
     } finally {
       setLoading(false);
     }

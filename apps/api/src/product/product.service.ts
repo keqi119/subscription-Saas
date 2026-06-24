@@ -28,9 +28,9 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
+  buildQuoteOrderModelDisplay,
   buildVehicleModelSnapshot,
   vehicleModelSnapshotDefinitionSelect,
-  vehicleModelSnapshotDisplayName
 } from "../common/vehicle-model-snapshot";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -2491,6 +2491,11 @@ function toQuoteView(quote: QuoteWithDetails) {
       : quote.monthlyFeeCapAmount === null
         ? computedMonthlyFeeCapAmount
         : Number(quote.monthlyFeeCapAmount);
+  const modelDisplay = buildQuoteOrderModelDisplay({
+    ...quote,
+    modelDefinition: quote.vehicle?.modelDefinition ?? null,
+    modelDefinitionId: quote.vehicle?.modelDefinitionId ?? null
+  });
   return {
     application: quote.application,
     applicationId: quote.applicationId,
@@ -2520,12 +2525,9 @@ function toQuoteView(quote: QuoteWithDetails) {
     monthlyFeeRate: Number(quote.monthlyFeeRate),
     legacyVehicleModelSnapshot: quote.legacyVehicleModelSnapshot,
     modelDefinitionIdSnapshot: quote.modelDefinitionIdSnapshot,
-    modelDisplayName: vehicleModelSnapshotDisplayName({
-      ...quote,
-      modelDefinition: quote.vehicle?.modelDefinition ?? null,
-      modelDefinitionId: quote.vehicle?.modelDefinitionId ?? null
-    }),
+    modelDisplayName: modelDisplay.modelDisplayName,
     modelDisplayNameSnapshot: quote.modelDisplayNameSnapshot,
+    modelDisplaySource: modelDisplay.modelDisplaySource,
     order: quote.order && !quote.order.deletedAt
       ? {
           id: quote.order.id,

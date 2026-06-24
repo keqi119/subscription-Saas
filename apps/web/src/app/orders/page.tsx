@@ -21,6 +21,8 @@ interface OrderRow {
   customer: { name: string; mobile: string };
   depositAmount: number;
   id: string;
+  modelDisplayName?: string | null;
+  modelDisplaySource?: string | null;
   monthlyFeeAmount: number;
   orderNo: string;
   orderStatus: string;
@@ -58,7 +60,7 @@ export default function OrdersPage() {
         apiFetch<OrderRow[]>("/orders"),
         apiFetch<AuthMeResponse>("/auth/me")
       ]);
-      setOrders(nextOrders);
+      setOrders(nextOrders.map((order) => ({ ...order, vehicleModel: order.modelDisplayName ?? order.vehicleModel })));
       setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));

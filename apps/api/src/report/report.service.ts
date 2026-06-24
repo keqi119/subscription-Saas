@@ -40,6 +40,7 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { buildQuoteOrderModelDisplay } from "../common/vehicle-model-snapshot";
 import {
   buildVehicleAssetCostProfilePreview,
   buildVehicleAssetPeriodCost,
@@ -2537,6 +2538,9 @@ export class ReportService {
           customer: { select: { mobile: true, name: true } },
           depositAmount: true,
           id: true,
+          legacyVehicleModelSnapshot: true,
+          modelDefinitionIdSnapshot: true,
+          modelDisplayNameSnapshot: true,
           monthlyFeeAmount: true,
           orderNo: true,
           orderSource: true,
@@ -2566,30 +2570,42 @@ export class ReportService {
     ]);
 
     return pagedResult(
-      items.map((order) => ({
-        id: order.id,
-        orderNo: order.orderNo,
-        customerName: order.customer.name,
-        mobile: order.customer.mobile,
-        orderSource: order.orderSource,
-        orderStatus: order.orderStatus,
-        vehicleVin: order.vehicle?.vin ?? null,
-        vehicleNo: order.vehicle?.vehicleNo ?? null,
-        plateNo: order.vehicle?.plateNo ?? null,
-        modelDefinition: reportModelDefinitionSummary(order.vehicle?.modelDefinition ?? null),
-        modelDefinitionId: order.vehicle?.modelDefinitionId ?? null,
-        modelDisplayName: reportVehicleModelDisplayName(order.vehicle?.modelDefinition ?? null, order.vehicleModel),
-        vehicleModel: order.vehicleModel,
-        subscriptionPlanId: order.quote.subscriptionPlanId,
-        subscriptionPlanName: order.quote.subscriptionPlan?.planName ?? null,
-        subscriptionPlanNo: order.quote.subscriptionPlan?.planNo ?? null,
-        monthlyFeeAmount: toNumber(order.monthlyFeeAmount),
-        depositAmount: toNumber(order.depositAmount),
-        contractStatus: order.contract?.status ?? null,
-        leaseStartDate: order.startDate,
-        returnAt: order.actualReturnAt,
-        createdAt: order.createdAt
-      })),
+      items.map((order) => {
+        const modelDisplay = buildQuoteOrderModelDisplay({
+          legacyVehicleModelSnapshot: order.legacyVehicleModelSnapshot,
+          modelDefinition: order.vehicle?.modelDefinition ?? null,
+          modelDefinitionId: order.vehicle?.modelDefinitionId ?? null,
+          modelDefinitionIdSnapshot: order.modelDefinitionIdSnapshot,
+          modelDisplayNameSnapshot: order.modelDisplayNameSnapshot,
+          vehicleModel: order.vehicleModel
+        });
+
+        return {
+          id: order.id,
+          orderNo: order.orderNo,
+          customerName: order.customer.name,
+          mobile: order.customer.mobile,
+          orderSource: order.orderSource,
+          orderStatus: order.orderStatus,
+          vehicleVin: order.vehicle?.vin ?? null,
+          vehicleNo: order.vehicle?.vehicleNo ?? null,
+          plateNo: order.vehicle?.plateNo ?? null,
+          modelDefinition: reportModelDefinitionSummary(order.vehicle?.modelDefinition ?? null),
+          modelDefinitionId: modelDisplay.modelDefinitionId,
+          modelDisplayName: modelDisplay.modelDisplayName,
+          modelDisplaySource: modelDisplay.modelDisplaySource,
+          vehicleModel: order.vehicleModel,
+          subscriptionPlanId: order.quote.subscriptionPlanId,
+          subscriptionPlanName: order.quote.subscriptionPlan?.planName ?? null,
+          subscriptionPlanNo: order.quote.subscriptionPlan?.planNo ?? null,
+          monthlyFeeAmount: toNumber(order.monthlyFeeAmount),
+          depositAmount: toNumber(order.depositAmount),
+          contractStatus: order.contract?.status ?? null,
+          leaseStartDate: order.startDate,
+          returnAt: order.actualReturnAt,
+          createdAt: order.createdAt
+        };
+      }),
       total,
       pagination
     );
@@ -3149,6 +3165,7 @@ export class ReportService {
         row.plateNo,
         row.modelDefinition?.modelCode ?? "",
         row.modelDisplayName ?? row.vehicleModel,
+        row.modelDisplaySource ?? "",
         row.vehicleModel,
         row.subscriptionPlanName ?? row.subscriptionPlanNo,
         formatMoneyYuan(row.monthlyFeeAmount),
@@ -3159,6 +3176,8 @@ export class ReportService {
         formatDate(row.createdAt)
       ])
     ];
+
+    rows[3]?.splice(9, 0, "车型快照来源");
 
     return csvExport("orders-detail", dateRange, rows);
   }

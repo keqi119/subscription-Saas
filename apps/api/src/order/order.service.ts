@@ -42,10 +42,10 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
+  buildQuoteOrderModelDisplay,
   buildVehicleModelSnapshot,
   freezeQuoteVehicleModelSnapshot,
   vehicleModelSnapshotDefinitionSelect,
-  vehicleModelSnapshotDisplayName
 } from "../common/vehicle-model-snapshot";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -4177,15 +4177,17 @@ function parseDateOnly(value: string, field: string) {
 }
 
 function toOrderView(order: OrderWithDetails): Record<string, unknown> {
+  const modelDisplay = buildQuoteOrderModelDisplay({
+    ...order,
+    modelDefinition: order.vehicle?.modelDefinition ?? null,
+    modelDefinitionId: order.vehicle?.modelDefinitionId ?? null
+  });
   return toPlain({
     ...order,
     depositAmount: Number(order.depositAmount),
     finalDepositAmount: order.finalDepositAmount === null ? null : Number(order.finalDepositAmount),
-    modelDisplayName: vehicleModelSnapshotDisplayName({
-      ...order,
-      modelDefinition: order.vehicle?.modelDefinition ?? null,
-      modelDefinitionId: order.vehicle?.modelDefinitionId ?? null
-    }),
+    modelDisplayName: modelDisplay.modelDisplayName,
+    modelDisplaySource: modelDisplay.modelDisplaySource,
     monthlyFeeAmount: Number(order.monthlyFeeAmount),
     overMileageFeeAmount: Number(order.overMileageFeeAmount),
     vehiclePurchasePriceAmount: Number(order.vehiclePurchasePriceAmount)

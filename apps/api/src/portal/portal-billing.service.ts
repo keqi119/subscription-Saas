@@ -9,6 +9,7 @@ import {
   Prisma
 } from "@prisma/client";
 
+import { buildQuoteOrderModelDisplay } from "../common/vehicle-model-snapshot";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
@@ -229,7 +230,7 @@ export class PortalBillingService {
       nextAction: resolveOrderNextAction(order, billSummary.remainingAmount),
       order: toOrderSummary(order),
       subscriptionPlanSummary: toSubscriptionPlanSummary(order),
-      vehicleSummary: toVehicleSummary(order.vehicle)
+      vehicleSummary: toVehicleSummary(order)
     };
   }
 
@@ -455,7 +456,7 @@ function toPortalOrderListItem(order: PortalOrder) {
     orderStatus: order.orderStatus,
     paymentStatus: resolvePaymentStatus(order.receivableBills),
     subscriptionPlanSummary: toSubscriptionPlanSummary(order),
-    vehicleSummary: toVehicleSummary(order.vehicle),
+    vehicleSummary: toVehicleSummary(order),
     ...billSummary
   };
 }
@@ -476,12 +477,19 @@ function toOrderSummary(order: PortalOrder) {
   };
 }
 
-function toVehicleSummary(vehicle: PortalOrder["vehicle"]) {
+function toVehicleSummary(order: PortalOrder) {
+  const vehicle = order.vehicle;
   if (!vehicle) {
     return null;
   }
+  const modelDisplay = buildQuoteOrderModelDisplay({
+    legacyVehicleModelSnapshot: order.legacyVehicleModelSnapshot,
+    modelDefinitionIdSnapshot: order.modelDefinitionIdSnapshot,
+    modelDisplayNameSnapshot: order.modelDisplayNameSnapshot,
+    vehicleModel: order.vehicleModel ?? vehicle.vehicleModel
+  });
 
-  return {
+  const summary = {
     batteryCapacityKwh: vehicle.batteryCapacityKwh === null ? null : Number(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,
     brand: vehicle.brand,
@@ -495,6 +503,11 @@ function toVehicleSummary(vehicle: PortalOrder["vehicle"]) {
     modelYear: vehicle.modelYear,
     series: vehicle.series,
     vehicleModel: vehicle.vehicleModel
+  };
+
+  return {
+    ...summary,
+    displayName: modelDisplay.modelDisplayName ?? summary.displayName
   };
 }
 

@@ -253,6 +253,64 @@ describe("product component model definitions", () => {
     });
   });
 
+  it("auto-resolves vehicle package modelDefinitionId from legacy vehicleModel", async () => {
+    const definition = makeModelDefinition({
+      displayName: "ES6",
+      id: "model-es6",
+      legacyVehicleModel: VehicleModel.ES6,
+      modelCode: "NIO_ES6"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [definition] });
+
+    const result = await service.createVehiclePackage(
+      {
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        monthlyFeeRate: 0.035,
+        packageName: "ES6 standard",
+        productId: "product-1",
+        productVersionId: "version-1",
+        vehicleModel: VehicleModel.ES6
+      },
+      user,
+      context
+    );
+
+    expect(result).toMatchObject({
+      modelDefinitionId: definition.id,
+      vehicleModel: VehicleModel.ES6
+    });
+    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: definition.id,
+          vehicleModel: VehicleModel.ES6
+        })
+      })
+    );
+  });
+
+  it("rejects vehicle package creation when legacy vehicleModel has no model definition mapping", async () => {
+    const { prisma, service } = makeService({ modelDefinitions: [] });
+
+    await expect(
+      service.createVehiclePackage(
+        {
+          maxPeriodMonths: 36,
+          minPeriodMonths: 12,
+          monthlyFeeRate: 0.035,
+          packageName: "ES6 standard",
+          productId: "product-1",
+          productVersionId: "version-1",
+          vehicleModel: VehicleModel.ES6
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow();
+    expect(prisma.vehiclePackage.create).not.toHaveBeenCalled();
+  });
+
   it("creates price rules from modelDefinitionId and rejects mismatched legacy VehicleModel", async () => {
     const definition = makeModelDefinition({
       displayName: "ES8",
@@ -306,7 +364,7 @@ describe("product component model definitions", () => {
     ).rejects.toThrow();
   });
 
-  it("clears vehicle package modelDefinitionId while preserving legacy behavior", async () => {
+  it("rejects clearing vehicle package modelDefinitionId", async () => {
     const definition = makeModelDefinition({
       displayName: "ES9",
       id: "model-es9",
@@ -323,16 +381,104 @@ describe("product component model definitions", () => {
       ]
     });
 
-    await service.updateVehiclePackage("vehicle-1", { modelDefinitionId: null }, user, context);
+    await expect(
+      service.updateVehiclePackage("vehicle-1", { modelDefinitionId: null }, user, context)
+    ).rejects.toThrow();
+    expect(prisma.vehiclePackage.update).not.toHaveBeenCalled();
+  });
+
+  it("auto-resolves vehicle package modelDefinitionId when legacy vehicleModel is updated", async () => {
+    const definition = makeModelDefinition({
+      displayName: "ET7",
+      id: "model-et7",
+      legacyVehicleModel: VehicleModel.ET7,
+      modelCode: "NIO_ET7"
+    });
+    const { prisma, service } = makeService({
+      modelDefinitions: [definition],
+      vehiclePackages: [makeVehiclePackage({ modelDefinition: null, modelDefinitionId: null })]
+    });
+
+    await service.updateVehiclePackage("vehicle-1", { vehicleModel: VehicleModel.ET7 }, user, context);
 
     expect(prisma.vehiclePackage.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          modelDefinitionId: null,
-          vehicleModel: undefined
+          modelDefinitionId: definition.id,
+          vehicleModel: VehicleModel.ET7
         })
       })
     );
+  });
+
+  it("auto-resolves product price rules from legacy vehicleModel", async () => {
+    const definition = makeModelDefinition({
+      displayName: "EC6",
+      id: "model-ec6",
+      legacyVehicleModel: VehicleModel.EC6,
+      modelCode: "NIO_EC6"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [definition] });
+
+    const result = await service.createPriceRule(
+      "version-1",
+      {
+        baseMileageKm: 1500,
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        overMileageFeeAmount: 100,
+        vehicleModel: VehicleModel.EC6
+      },
+      user,
+      context
+    );
+
+    expect(result).toMatchObject({
+      modelDefinitionId: definition.id,
+      vehicleModel: VehicleModel.EC6
+    });
+    expect(prisma.productPriceRule.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: definition.id,
+          vehicleModel: VehicleModel.EC6
+        })
+      })
+    );
+  });
+
+  it("rejects product price rules without a vehicle model scope", async () => {
+    const { prisma, service } = makeService();
+
+    await expect(
+      service.createPriceRule(
+        "version-1",
+        {
+          baseMileageKm: 1500,
+          maxPeriodMonths: 36,
+          minPeriodMonths: 12,
+          overMileageFeeAmount: 100
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow();
+    expect(prisma.productPriceRule.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects clearing product price rule modelDefinitionId", async () => {
+    const definition = makeModelDefinition({
+      displayName: "ES8",
+      id: "model-es8",
+      legacyVehicleModel: VehicleModel.ES8,
+      modelCode: "NIO_ES8"
+    });
+    const { prisma, service } = makeService({
+      priceRules: [makePriceRule({ modelDefinition: definition, modelDefinitionId: definition.id, vehicleModel: VehicleModel.ES8 })]
+    });
+
+    await expect(service.updatePriceRule("rule-1", { modelDefinitionId: null }, user, context)).rejects.toThrow();
+    expect(prisma.productPriceRule.update).not.toHaveBeenCalled();
   });
 });
 
@@ -405,7 +551,8 @@ function makeService(seed: Partial<MockSeed> = {}) {
         Promise.resolve(
           (seed.modelDefinitions ?? [makeModelDefinition()]).find(
             (definition) =>
-              definition.id === where.id &&
+              (where.id === undefined || definition.id === where.id) &&
+              (where.legacyVehicleModel === undefined || definition.legacyVehicleModel === where.legacyVehicleModel) &&
               (where.deletedAt !== null || definition.deletedAt === null)
           ) ?? null
         )

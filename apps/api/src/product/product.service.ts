@@ -422,8 +422,11 @@ export class ProductService {
   ) {
     const version = await this.findVersionOrThrow(versionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
-    const modelDefinition = await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId);
-    const vehicleModel = resolveVehicleModelForProductConfig(dto.vehicleModel, modelDefinition);
+    const modelContext = await this.resolveModelContextForProductConfigCreate(
+      dto.modelDefinitionId,
+      dto.vehicleModel,
+      "车型代码主数据缺失，无法创建价格规则。请先维护车型代码。"
+    );
 
     const rule = await this.prisma.productPriceRule.create({
       data: {
@@ -434,12 +437,12 @@ export class ProductService {
         maxPeriodMonths: dto.maxPeriodMonths,
         minPeriodMonths: dto.minPeriodMonths,
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
-        modelDefinitionId: modelDefinition?.id ?? null,
+        modelDefinitionId: modelContext.modelDefinition.id,
         overMileageFeeAmount: BigInt(dto.overMileageFeeAmount),
         productVersionId: version.id,
         status: dto.status ?? RecordStatus.ACTIVE,
         updatedBy: user.id,
-        vehicleModel
+        vehicleModel: modelContext.vehicleModel
       },
       include: priceRuleInclude
     });
@@ -459,14 +462,10 @@ export class ProductService {
       dto.minPeriodMonths ?? before.minPeriodMonths,
       dto.maxPeriodMonths ?? before.maxPeriodMonths
     );
-    const modelDefinitionProvided = dto.modelDefinitionId !== undefined;
-    const modelDefinition = modelDefinitionProvided
-      ? await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId)
-      : before.modelDefinition ?? null;
-    const vehicleModel = resolveVehicleModelForProductConfigUpdate(
+    const modelContext = await this.resolveModelContextForProductConfigUpdate(
+      dto.modelDefinitionId,
       dto.vehicleModel,
-      modelDefinition,
-      modelDefinitionProvided
+      "车型代码主数据缺失，无法更新价格规则。请先维护车型代码。"
     );
 
     const rule = await this.prisma.productPriceRule.update({
@@ -476,7 +475,7 @@ export class ProductService {
         energyLimitKwh: dto.energyLimitKwh,
         maxPeriodMonths: dto.maxPeriodMonths,
         minPeriodMonths: dto.minPeriodMonths,
-        modelDefinitionId: modelDefinitionProvided ? modelDefinition?.id ?? null : undefined,
+        modelDefinitionId: modelContext.modelDefinition?.id,
         monthlyFeeRate:
           dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         overMileageFeeAmount:
@@ -485,7 +484,7 @@ export class ProductService {
             : BigInt(dto.overMileageFeeAmount),
         status: dto.status,
         updatedBy: user.id,
-        vehicleModel
+        vehicleModel: modelContext.vehicleModel
       },
       include: priceRuleInclude,
       where: { id }
@@ -550,8 +549,11 @@ export class ProductService {
   async createVehiclePackage(dto: CreateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
-    const modelDefinition = await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId);
-    const vehicleModel = resolveVehicleModelForProductConfig(dto.vehicleModel, modelDefinition);
+    const modelContext = await this.resolveModelContextForProductConfigCreate(
+      dto.modelDefinitionId,
+      dto.vehicleModel,
+      "车型代码主数据缺失，无法创建车型包。请先维护车型代码。"
+    );
     const row = await withUniqueBusinessNoRetry(() => this.prisma.vehiclePackage.create({
       data: {
         brand: dto.brand,
@@ -561,7 +563,7 @@ export class ProductService {
         maxPurchasePriceAmount: optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: optionalBigInt(dto.minPurchasePriceAmount),
-        modelDefinitionId: modelDefinition?.id ?? null,
+        modelDefinitionId: modelContext.modelDefinition.id,
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
         packageName: dto.packageName,
         packageNo: this.nextPackageNo("vehiclePackage", "VPK"),
@@ -571,7 +573,7 @@ export class ProductService {
         series: dto.series,
         status: dto.status ?? RecordStatus.ACTIVE,
         updatedBy: user.id,
-        vehicleModel,
+        vehicleModel: modelContext.vehicleModel,
         vehicleModelName: dto.vehicleModelName
       },
       include: vehiclePackageInclude
@@ -583,14 +585,10 @@ export class ProductService {
   async updateVehiclePackage(id: string, dto: UpdateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
     ensureValidPeriod(dto.minPeriodMonths ?? before.minPeriodMonths, dto.maxPeriodMonths ?? before.maxPeriodMonths);
-    const modelDefinitionProvided = dto.modelDefinitionId !== undefined;
-    const modelDefinition = modelDefinitionProvided
-      ? await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId)
-      : before.modelDefinition ?? null;
-    const vehicleModel = resolveVehicleModelForProductConfigUpdate(
+    const modelContext = await this.resolveModelContextForProductConfigUpdate(
+      dto.modelDefinitionId,
       dto.vehicleModel,
-      modelDefinition,
-      modelDefinitionProvided
+      "车型代码主数据缺失，无法更新车型包。请先维护车型代码。"
     );
     const row = await this.prisma.vehiclePackage.update({
       data: {
@@ -600,13 +598,13 @@ export class ProductService {
         maxPurchasePriceAmount: dto.maxPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: dto.minPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.minPurchasePriceAmount),
-        modelDefinitionId: modelDefinitionProvided ? modelDefinition?.id ?? null : undefined,
+        modelDefinitionId: modelContext.modelDefinition?.id,
         monthlyFeeRate: dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         packageName: dto.packageName,
         remark: dto.remark,
         series: dto.series,
         updatedBy: user.id,
-        vehicleModel,
+        vehicleModel: modelContext.vehicleModel,
         vehicleModelName: dto.vehicleModelName
       },
       include: vehiclePackageInclude,
@@ -1653,6 +1651,94 @@ export class ProductService {
     return definition;
   }
 
+  private async resolveModelDefinitionForLegacyProductConfig(vehicleModel: VehicleModel) {
+    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+      select: productModelDefinitionSelect,
+      where: {
+        deletedAt: null,
+        legacyVehicleModel: vehicleModel
+      }
+    });
+
+    if (!definition) {
+      return null;
+    }
+    if (!definition.enabled) {
+      throw new BadRequestException("车型主数据已停用");
+    }
+    if (!definition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于产品配置");
+    }
+
+    return definition;
+  }
+
+  private async resolveModelContextForProductConfigCreate(
+    modelDefinitionId: string | null | undefined,
+    vehicleModel: VehicleModel | null | undefined,
+    missingLegacyMessage: string
+  ): Promise<{ modelDefinition: ProductModelDefinition; vehicleModel: VehicleModel }> {
+    if (modelDefinitionId) {
+      const modelDefinition = await this.resolveModelDefinitionForProductConfig(modelDefinitionId);
+      if (!modelDefinition) {
+        throw new BadRequestException("车型代码主数据缺失");
+      }
+      return {
+        modelDefinition,
+        vehicleModel: resolveVehicleModelForProductConfig(vehicleModel, modelDefinition)
+      };
+    }
+
+    if (!vehicleModel) {
+      throw new BadRequestException("请选择车型代码。");
+    }
+
+    const modelDefinition = await this.resolveModelDefinitionForLegacyProductConfig(vehicleModel);
+    if (!modelDefinition) {
+      throw new BadRequestException(missingLegacyMessage);
+    }
+
+    return {
+      modelDefinition,
+      vehicleModel
+    };
+  }
+
+  private async resolveModelContextForProductConfigUpdate(
+    modelDefinitionId: string | null | undefined,
+    vehicleModel: VehicleModel | null | undefined,
+    missingLegacyMessage: string
+  ): Promise<{ modelDefinition?: ProductModelDefinition; vehicleModel?: VehicleModel }> {
+    if (modelDefinitionId === null) {
+      throw new BadRequestException("车型代码主数据已启用，不能清除车型代码。");
+    }
+
+    if (modelDefinitionId) {
+      const modelDefinition = await this.resolveModelDefinitionForProductConfig(modelDefinitionId);
+      if (!modelDefinition) {
+        throw new BadRequestException("车型代码主数据缺失");
+      }
+      return {
+        modelDefinition,
+        vehicleModel: resolveVehicleModelForProductConfig(vehicleModel, modelDefinition)
+      };
+    }
+
+    if (vehicleModel) {
+      const modelDefinition = await this.resolveModelDefinitionForLegacyProductConfig(vehicleModel);
+      if (!modelDefinition) {
+        throw new BadRequestException(missingLegacyMessage);
+      }
+
+      return {
+        modelDefinition,
+        vehicleModel
+      };
+    }
+
+    return {};
+  }
+
   private async findActivePriceRule(productVersionId: string, vehicleModel: NonNullable<CreateQuoteDto["vehicleModel"]>) {
     const version = await this.findVersionOrThrow(productVersionId);
     ensureSubscriptionProductType(version.product.productType);
@@ -1751,21 +1837,6 @@ function resolveVehicleModelForProductConfig(
   }
 
   return vehicleModel;
-}
-
-function resolveVehicleModelForProductConfigUpdate(
-  vehicleModel: VehicleModel | null | undefined,
-  modelDefinition: ProductModelDefinition | null,
-  modelDefinitionProvided: boolean
-) {
-  if (modelDefinition) {
-    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
-      throw new BadRequestException("车型主数据与 legacy 车型不一致");
-    }
-    return modelDefinitionProvided || vehicleModel ? modelDefinition.legacyVehicleModel as VehicleModel : undefined;
-  }
-
-  return vehicleModel ?? undefined;
 }
 
 function requirePositiveInteger(value: number | undefined, message: string): number {

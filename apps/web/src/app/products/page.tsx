@@ -3,6 +3,7 @@
 import { CheckOutlined, DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, PoweroffOutlined } from "@ant-design/icons";
 import {
   App,
+  Alert,
   Button,
   DatePicker,
   Descriptions,
@@ -110,7 +111,7 @@ interface PackageRow {
   serviceDescription?: string | null;
   stationScope?: string | null;
   status: string;
-  vehicleModel?: string;
+  vehicleModel?: string | null;
   vehicleModelName?: string | null;
 }
 
@@ -139,7 +140,7 @@ interface PackageValues {
   remark?: string | null;
   serviceDescription?: string | null;
   stationScope?: string | null;
-  vehicleModel?: string;
+  vehicleModel?: string | null;
   vehicleModelName?: string | null;
 }
 
@@ -376,15 +377,21 @@ function ProductsPageContent() {
   );
   const vehicleModelDefinitionOptions = useMemo(
     () =>
-      vehicleModelDefinitions.map((definition) => ({
-        label: modelDefinitionOptionLabel(definition),
-        value: definition.id
-      })),
+      vehicleModelDefinitions
+        .filter((definition) => definition.legacyVehicleModel)
+        .map((definition) => ({
+          label: modelDefinitionOptionLabel(definition),
+          value: definition.id
+        })),
+    [vehicleModelDefinitions]
+  );
+  const vehicleModelDefinitionById = useMemo(
+    () => new Map(vehicleModelDefinitions.map((definition) => [definition.id, definition])),
     [vehicleModelDefinitions]
   );
 
   function syncPackageLegacyVehicleModel(modelDefinitionId?: string) {
-    const definition = vehicleModelDefinitions.find((row) => row.id === modelDefinitionId);
+    const definition = modelDefinitionId ? vehicleModelDefinitionById.get(modelDefinitionId) : null;
     if (definition?.legacyVehicleModel) {
       packageForm.setFieldValue("vehicleModel", definition.legacyVehicleModel);
     }
@@ -515,7 +522,15 @@ function ProductsPageContent() {
 
   async function savePackage(values: PackageValues) {
     const endpoint = packageMeta[packageKind].endpoint;
-    const body = buildPackagePayload(packageKind, values);
+    if (packageKind === "vehicle" && !editingPackage && !values.modelDefinitionId) {
+      void message.error("请选择车型代码。新增车型包必须关联车型主数据。");
+      return;
+    }
+
+    const body = buildPackagePayload(packageKind, values, {
+      editingPackage,
+      vehicleModelDefinitionById
+    });
     try {
       if (editingPackage) {
         await apiFetch(`/${endpoint}/${editingPackage.id}`, { body: JSON.stringify(body), method: "PATCH" });
@@ -908,7 +923,15 @@ function ProductsPageContent() {
             <Select options={(selectedPackageProduct?.versions ?? []).map((version) => ({ label: version.versionNo, value: version.id }))} />
           </Form.Item>
           <Form.Item label={`${packageMeta[packageKind].title}名称`} name="packageName" rules={[{ required: true, message: "请输入名称" }]}><Input /></Form.Item>
-          {packageFields(packageKind, vehicleModelDefinitionOptions, syncPackageLegacyVehicleModel)}
+          {packageKind === "vehicle" && editingPackage && !editingPackage.modelDefinitionId ? (
+            <Alert
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="当前车型包仍使用兼容车型，建议补充车型代码主数据。"
+              type="warning"
+            />
+          ) : null}
+          {packageFields(packageKind, vehicleModelDefinitionOptions, syncPackageLegacyVehicleModel, !editingPackage)}
           <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
         </Form>
       </Modal>
@@ -1083,7 +1106,7 @@ function ProductsPageContent() {
 function defaultPackageValues(kind: PackageKind): Partial<PackageValues> {
   const base = { priceAmountYuan: 0 };
   if (kind === "vehicle") {
-    return { ...base, maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: null, monthlyFeeRate: 0.035, vehicleModel: "ET5" };
+    return { ...base, maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: null, monthlyFeeRate: 0.035, vehicleModel: null };
   }
   if (kind === "mileage") {
     return { ...base, monthlyMileageKm: 1500, overMileageFeeAmountYuan: 1 };
@@ -1102,7 +1125,14 @@ function packagePermission(kind: PackageKind, action: "activate" | "create" | "d
   return `${kind}_package:${action}`;
 }
 
-function buildPackagePayload(kind: PackageKind, values: PackageValues) {
+function buildPackagePayload(
+  kind: PackageKind,
+  values: PackageValues,
+  context?: {
+    editingPackage?: PackageRow | null;
+    vehicleModelDefinitionById?: Map<string, VehicleModelDefinitionSummary>;
+  }
+) {
   const base = {
     packageName: values.packageName,
     productId: values.productId,
@@ -1110,7 +1140,10 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
     remark: values.remark
   };
   if (kind === "vehicle") {
-    return {
+    const selectedDefinition = values.modelDefinitionId
+      ? context?.vehicleModelDefinitionById?.get(values.modelDefinitionId)
+      : null;
+    const payload: Record<string, unknown> = {
       ...base,
       brand: values.brand,
       configName: values.configName,
@@ -1118,11 +1151,18 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
       maxPurchasePriceAmount: toCents(values.maxPurchasePriceAmountYuan),
       minPeriodMonths: values.minPeriodMonths,
       minPurchasePriceAmount: toCents(values.minPurchasePriceAmountYuan),
-      modelDefinitionId: values.modelDefinitionId ?? null,
       monthlyFeeRate: values.monthlyFeeRate,
-      vehicleModel: values.vehicleModel,
       vehicleModelName: values.vehicleModelName
     };
+    if (values.modelDefinitionId) {
+      payload.modelDefinitionId = values.modelDefinitionId;
+      payload.vehicleModel = selectedDefinition?.legacyVehicleModel ?? values.vehicleModel;
+    } else if (!context?.editingPackage) {
+      payload.vehicleModel = values.vehicleModel;
+    } else if (values.vehicleModel && values.vehicleModel !== context.editingPackage.vehicleModel) {
+      payload.vehicleModel = values.vehicleModel;
+    }
+    return payload;
   }
   if (kind === "mileage") {
     return {
@@ -1154,21 +1194,36 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
 function packageFields(
   kind: PackageKind,
   modelDefinitionOptions: Array<{ label: string; value: string }>,
-  onModelDefinitionChange: (value?: string) => void
+  onModelDefinitionChange: (value?: string) => void,
+  requireModelDefinition = false
 ) {
   if (kind === "vehicle") {
     return (
       <>
-        <Form.Item label="车型代码（主数据）" name="modelDefinitionId">
+        <Form.Item
+          extra="新增车型包必须关联车型主数据；仅展示已映射 legacy 车型的启用主数据。"
+          label="车型代码（主数据）"
+          name="modelDefinitionId"
+          rules={
+            requireModelDefinition
+              ? [{ required: true, message: "请选择车型代码。新增车型包必须关联车型主数据。" }]
+              : undefined
+          }
+        >
           <Select
-            allowClear
             options={modelDefinitionOptions}
             onChange={(value?: string) => onModelDefinitionChange(value)}
             showSearch
             optionFilterProp="label"
           />
         </Form.Item>
-        <Form.Item label="车型" name="vehicleModel" rules={[{ required: true, message: "请选择车型" }]}><Select options={vehicleOptions} /></Form.Item>
+        <Form.Item
+          extra="兼容车型由车型代码自动带出，主要用于历史兼容。"
+          label="兼容车型（legacy）"
+          name="vehicleModel"
+        >
+          <Select disabled options={vehicleOptions} />
+        </Form.Item>
         <Form.Item label="车型包展示名" name="vehicleModelName"><Input /></Form.Item>
         <Form.Item label="品牌" name="brand"><Input /></Form.Item>
         <Form.Item label="车系" name="series"><Input /></Form.Item>

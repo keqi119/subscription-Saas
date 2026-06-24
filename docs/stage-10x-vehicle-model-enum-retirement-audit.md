@@ -789,3 +789,35 @@ Stage 10X-M: enum removal feasibility review
 ```text
 docs/stage-10x-vehicle-model-required-on-create.md
 ```
+
+## 16. Stage 10X-I 实施记录
+
+10X-I 继续执行本审计推荐的分阶段 required 路线，将 Product / Package / Price Rule 新流程推进到 `modelDefinitionId first`。
+
+实施结果：
+
+```text
+VehiclePackage 新建最终必须写入 modelDefinitionId
+ProductPriceRule 新建最终必须写入 modelDefinitionId
+legacy-only create 会自动解析 VehicleModelDefinition.legacyVehicleModel
+update 不强制迁移历史记录，但不允许显式清空车型主数据
+Product 后台车型包表单默认选择车型代码主数据
+legacy vehicleModel 仍保留为兼容字段
+Quote / Order 历史快照未修改
+Portal / Reports / Residual 未修改
+```
+
+10X-I 完成后，后续路线保持：
+
+```text
+Stage 10X-J: Residual 新建 sample / curve modelDefinitionId 必填
+Stage 10X-K: legacy enum freeze guard
+Stage 10X-L: backfill dry-run / report
+Stage 10X-M: enum removal feasibility review
+```
+
+详见：
+
+```text
+docs/stage-10x-product-model-definition-required.md
+```

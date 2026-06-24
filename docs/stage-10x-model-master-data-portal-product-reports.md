@@ -207,3 +207,23 @@ Vehicle valuation review 展示优先 modelDefinition.displayName
 ```text
 docs/stage-10x-model-master-data-residual-market.md
 ```
+
+## 10. Stage 10X-I 完成后状态
+
+Stage 10X-I 在 10X-E 的 Product 双轨基础上继续收紧新流程：
+
+```text
+VehiclePackage 新建最终必须写入 modelDefinitionId
+ProductPriceRule 新建最终必须写入 modelDefinitionId
+legacy-only create 会通过 VehicleModelDefinition.legacyVehicleModel 自动解析
+显式清空已有 modelDefinitionId 会返回 400
+历史 Product / Package / PriceRule 不强制迁移
+```
+
+10X-I 仍保留 `VehicleModel` enum、legacy matching fallback 和 Quote / Order 历史快照。
+
+详见：
+
+```text
+docs/stage-10x-product-model-definition-required.md
+```

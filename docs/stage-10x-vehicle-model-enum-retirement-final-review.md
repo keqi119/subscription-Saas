@@ -16,6 +16,7 @@ VehicleModel enum freeze guard in release:check and CI
 low-risk modelDefinitionId backfill for Vehicle / VehiclePackage / ProductPriceRule
 Quote / Order additive model snapshots
 Quote / Order snapshot-mode display and CSV reads
+Quote / Order string model-code snapshots for future enum detachment
 ```
 
 This review does not remove the enum, change schema, write data, or modify runtime behavior.
@@ -32,7 +33,7 @@ Current new-flow status:
 | Portal catalog | Supports `modelDefinitionId` filter and display | Legacy `vehicleModel` filter remains |
 | Reports | Supports `modelDefinitionId` filter and model display | Legacy `vehicleModel` filters and groupings remain |
 | Residual market | New sample / curve / target run resolves `modelDefinitionId` | Legacy `brand` / `series` / `model` strings remain for history |
-| Quote / Order | New rows write additive snapshots | `vehicleModel` and `legacyVehicleModelSnapshot` remain enum fields |
+| Quote / Order | New rows write additive snapshots including string model code | `vehicleModel` and `legacyVehicleModelSnapshot` remain enum fields |
 | CSV / UI display | Quote / Order use snapshot mode | Runtime vehicle reports still expose legacy compatibility columns |
 
 ## 3. Remaining VehicleModel Enum Dependencies
@@ -127,7 +128,7 @@ SubscriptionOrder.legacyVehicleModelSnapshot
 quoteSnapshot / finalPlanSnapshot JSON payloads that may contain vehicleModel text
 ```
 
-Stage 10X-M-C through M-E made snapshots additive and display-first, but did not detach historical snapshots from the enum type.
+Stage 10X-M-C through M-E made snapshots additive and display-first. Stage 10X-N adds `legacyVehicleModelCodeSnapshot` as an additive string explanation field, but the original enum snapshot fields remain for compatibility.
 
 ### 3.6 Seed / Scenario Dependencies
 
@@ -191,8 +192,8 @@ The freeze guard is a deliberate protection: the enum exists but cannot be expan
 | `VehicleModelDefinition` | Yes, `legacyVehicleModel` | N/A | N/A | No | High | Keep as legacy mapping until string bridge exists |
 | `VehiclePackage` | Yes, `vehicleModel` | Yes | Runtime display uses definition | No | High | Keep frozen; do not write legacy-only new rows |
 | `ProductPriceRule` | Yes, `vehicleModel` | Yes | Runtime display uses definition | No | High | Keep; unique constraint must be redesigned first |
-| `SubscriptionQuote` | Yes, `vehicleModel`, `legacyVehicleModelSnapshot` | Snapshot id only | Yes | No | High | Convert snapshot enum to string before retirement |
-| `SubscriptionOrder` | Yes, `vehicleModel`, `legacyVehicleModelSnapshot` | Snapshot id only | Yes | No | High | Convert snapshot enum to string before retirement |
+| `SubscriptionQuote` | Yes, `vehicleModel`, `legacyVehicleModelSnapshot` | Snapshot id and string code | Yes | No | High | Keep enum while string snapshot adoption stabilizes |
+| `SubscriptionOrder` | Yes, `vehicleModel`, `legacyVehicleModelSnapshot` | Snapshot id and string code | Yes | No | High | Keep enum while string snapshot adoption stabilizes |
 | Contract / e-sign display | Reads order / vehicle legacy fields | Indirect | Quote/order display exists | No | Medium | Keep display fallback; consider contract snapshot audit |
 | Application / review snapshots | JSON may contain `vehicleModel` text | Indirect | Partial | No | Medium | Treat JSON as historical text, not enum first |
 | `VehicleMarketPriceObservation` | No `VehicleModel` enum | Yes | Runtime display exists | Not blocked by enum | Low | Keep legacy brand/series/model strings |
@@ -226,11 +227,12 @@ Current snapshot fields:
 
 ```text
 legacyVehicleModelSnapshot VehicleModel?
+legacyVehicleModelCodeSnapshot String?
 modelDefinitionIdSnapshot String?
 modelDisplayNameSnapshot String?
 ```
 
-Future string-based option:
+Stage 10X-N implements the string-based option additively:
 
 ```text
 legacyVehicleModelCodeSnapshot String?
@@ -253,9 +255,7 @@ legacyVehicleModelCodeSnapshot String?
 
 ### Recommendation
 
-Do not convert enum snapshots immediately in 10X-M-F.
-
-Create a follow-up Stage 10X-N to design and implement string snapshots additively. Keep the enum snapshot fields during the transition, then re-review removal once Quote / Order / Contract / Report reads no longer need enum values.
+Stage 10X-N implements string snapshots additively. Keep the enum snapshot fields during the transition, then re-review removal once Quote / Order / Contract / Report reads no longer need enum values.
 
 ## 8. Final Recommendation
 
@@ -372,6 +372,8 @@ Add additive string snapshot fields for Quote / Order historical model code.
 Backfill them from existing enum snapshots.
 Update display helpers to prefer string snapshots.
 ```
+
+Status: Implemented after this review.
 
 Migration: Yes.
 

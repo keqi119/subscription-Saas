@@ -3679,6 +3679,7 @@ model SubscriptionQuote {
   modelDefinitionIdSnapshot  String?            @map("model_definition_id_snapshot") @db.Uuid
   modelDisplayNameSnapshot   String?            @map("model_display_name_snapshot") @db.VarChar(128)
   legacyVehicleModelSnapshot VehicleModel?      @map("legacy_vehicle_model_snapshot")
+  legacyVehicleModelCodeSnapshot String?        @map("legacy_vehicle_model_code_snapshot") @db.VarChar(64)
   status                     QuoteStatus        @default(DRAFT)
   confirmedAt                DateTime?          @map("confirmed_at") @db.Timestamptz(6)
   confirmedBy                String?            @map("confirmed_by") @db.Uuid
@@ -3741,6 +3742,7 @@ model SubscriptionOrder {
   modelDefinitionIdSnapshot  String?               @map("model_definition_id_snapshot") @db.Uuid
   modelDisplayNameSnapshot   String?               @map("model_display_name_snapshot") @db.VarChar(128)
   legacyVehicleModelSnapshot VehicleModel?         @map("legacy_vehicle_model_snapshot")
+  legacyVehicleModelCodeSnapshot String?           @map("legacy_vehicle_model_code_snapshot") @db.VarChar(64)
   quoteSnapshot              Json                  @map("quote_snapshot")
   customerSelectedSnapshot   Json?                 @map("customer_selected_snapshot")
   finalPlanSnapshot          Json?                 @map("final_plan_snapshot")

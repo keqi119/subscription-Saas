@@ -43,6 +43,7 @@ describe("portal billing and entitlement center", () => {
     const serialized = JSON.stringify(result.items[0]);
     expect(serialized).not.toContain("modelDefinitionIdSnapshot");
     expect(serialized).not.toContain("legacyVehicleModelSnapshot");
+    expect(serialized).not.toContain("legacyVehicleModelCodeSnapshot");
     expect(serialized).not.toContain("modelDisplaySource");
   });
 
@@ -233,6 +234,7 @@ function makeOrder(input: Partial<AnyRecord>) {
     finalPlanSnapshot: { subscriptionPlan: { planName: "安心订阅套餐" } },
     id: input.id ?? "order_a",
     legacyVehicleModelSnapshot: input.legacyVehicleModelSnapshot ?? VehicleModel.ET5,
+    legacyVehicleModelCodeSnapshot: input.legacyVehicleModelCodeSnapshot ?? VehicleModel.ET5,
     mileageLimitKm: 1500,
     modelDefinitionIdSnapshot: input.modelDefinitionIdSnapshot ?? "model-et5",
     modelDisplayNameSnapshot: input.modelDisplayNameSnapshot ?? "Frozen Portal ET5",

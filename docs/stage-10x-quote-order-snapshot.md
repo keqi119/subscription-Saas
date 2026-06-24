@@ -14,6 +14,7 @@ The goal is to preserve what model information was selected at quote / order cre
 modelDefinitionIdSnapshot
 modelDisplayNameSnapshot
 legacyVehicleModelSnapshot
+legacyVehicleModelCodeSnapshot
 ```
 
 All fields are nullable. Existing quote and order rows are not backfilled or rewritten by this stage.
@@ -26,6 +27,7 @@ New quote creation writes model snapshots only at create time:
 modelDefinitionIdSnapshot = selected vehicle / package / rule modelDefinitionId when available
 modelDisplayNameSnapshot = modelDefinition.displayName when available
 legacyVehicleModelSnapshot = legacy vehicleModel
+legacyVehicleModelCodeSnapshot = legacy vehicleModel as string code
 ```
 
 If no model definition is available, `modelDisplayNameSnapshot` falls back to the legacy `VehicleModel` value.
@@ -38,6 +40,7 @@ New order creation freezes the quote model snapshot:
 order.modelDefinitionIdSnapshot = quote.modelDefinitionIdSnapshot
 order.modelDisplayNameSnapshot = quote.modelDisplayNameSnapshot
 order.legacyVehicleModelSnapshot = quote.legacyVehicleModelSnapshot
+order.legacyVehicleModelCodeSnapshot = quote.legacyVehicleModelCodeSnapshot
 ```
 
 If an older quote has no snapshot values, order creation falls back to the same vehicle-based snapshot resolution used by quote creation.
@@ -55,6 +58,7 @@ Display should prefer:
 ```text
 modelDisplayNameSnapshot
 modelDefinition displayName lookup
+legacyVehicleModelCodeSnapshot
 legacyVehicleModelSnapshot / vehicleModel
 ```
 
@@ -83,3 +87,5 @@ Historical quote / order data remains unchanged. The new fields are nullable so 
 Stage 10X-M-D backfills additive quote / order snapshot fields with a guarded dry-run / apply script. It does not rewrite the original `vehicleModel` or any quote / order financial facts.
 
 Stage 10X-M-E updates Quote / Order read paths, customer portal order display, and order detail CSV export to prefer immutable snapshot display fields for historical explanation.
+
+Stage 10X-N adds `legacyVehicleModelCodeSnapshot` so Quote / Order history has a string model-code explanation field independent of the frozen `VehicleModel` enum.

@@ -2538,6 +2538,7 @@ export class ReportService {
           customer: { select: { mobile: true, name: true } },
           depositAmount: true,
           id: true,
+          legacyVehicleModelCodeSnapshot: true,
           legacyVehicleModelSnapshot: true,
           modelDefinitionIdSnapshot: true,
           modelDisplayNameSnapshot: true,
@@ -2572,6 +2573,7 @@ export class ReportService {
     return pagedResult(
       items.map((order) => {
         const modelDisplay = buildQuoteOrderModelDisplay({
+          legacyVehicleModelCodeSnapshot: order.legacyVehicleModelCodeSnapshot,
           legacyVehicleModelSnapshot: order.legacyVehicleModelSnapshot,
           modelDefinition: order.vehicle?.modelDefinition ?? null,
           modelDefinitionId: order.vehicle?.modelDefinitionId ?? null,

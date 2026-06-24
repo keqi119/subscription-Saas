@@ -11,18 +11,21 @@ export type VehicleModelSnapshotDefinition = Prisma.VehicleModelDefinitionGetPay
 
 export type VehicleModelSnapshot = {
   legacyVehicleModelSnapshot: VehicleModel | null;
+  legacyVehicleModelCodeSnapshot: string | null;
   modelDefinitionIdSnapshot: string | null;
   modelDisplayNameSnapshot: string | null;
 };
 
 export type QuoteOrderModelDisplaySource =
   | "SNAPSHOT"
+  | "SNAPSHOT_MODEL_CODE"
+  | "SNAPSHOT_LEGACY_ENUM"
   | "RUNTIME_MODEL_DEFINITION"
-  | "LEGACY_SNAPSHOT"
   | "LEGACY_VEHICLE_MODEL"
   | "UNKNOWN";
 
 type VehicleModelSnapshotSource = {
+  legacyVehicleModelCodeSnapshot?: string | null;
   legacyVehicleModelSnapshot?: VehicleModel | null;
   modelDefinition?: VehicleModelSnapshotDefinition | null;
   modelDefinitionId?: string | null;
@@ -33,9 +36,12 @@ type VehicleModelSnapshotSource = {
 
 export function buildVehicleModelSnapshot(source: VehicleModelSnapshotSource): VehicleModelSnapshot {
   const legacyVehicleModel = source.legacyVehicleModelSnapshot ?? source.vehicleModel ?? null;
+  const legacyVehicleModelCode =
+    source.legacyVehicleModelCodeSnapshot ?? (legacyVehicleModel ? String(legacyVehicleModel) : null);
   const modelDefinitionId = source.modelDefinitionIdSnapshot ?? source.modelDefinitionId ?? null;
   return {
     legacyVehicleModelSnapshot: legacyVehicleModel,
+    legacyVehicleModelCodeSnapshot: legacyVehicleModelCode,
     modelDefinitionIdSnapshot: modelDefinitionId,
     modelDisplayNameSnapshot:
       source.modelDisplayNameSnapshot ?? source.modelDefinition?.displayName ?? legacyVehicleModel ?? null
@@ -46,15 +52,20 @@ export function freezeQuoteVehicleModelSnapshot(quote: VehicleModelSnapshotSourc
   if (
     quote.modelDefinitionIdSnapshot ||
     quote.modelDisplayNameSnapshot ||
-    quote.legacyVehicleModelSnapshot
+    quote.legacyVehicleModelSnapshot ||
+    quote.legacyVehicleModelCodeSnapshot
   ) {
+    const legacyVehicleModel = quote.legacyVehicleModelSnapshot ?? quote.vehicleModel ?? null;
     return {
-      legacyVehicleModelSnapshot: quote.legacyVehicleModelSnapshot ?? quote.vehicleModel ?? null,
+      legacyVehicleModelSnapshot: legacyVehicleModel,
+      legacyVehicleModelCodeSnapshot:
+        quote.legacyVehicleModelCodeSnapshot ??
+        (quote.legacyVehicleModelSnapshot ? String(quote.legacyVehicleModelSnapshot) : null) ??
+        (quote.vehicleModel ? String(quote.vehicleModel) : null),
       modelDefinitionIdSnapshot: quote.modelDefinitionIdSnapshot ?? null,
       modelDisplayNameSnapshot:
         quote.modelDisplayNameSnapshot ??
-        quote.legacyVehicleModelSnapshot ??
-        quote.vehicleModel ??
+        legacyVehicleModel ??
         null
     };
   }
@@ -66,10 +77,13 @@ export function buildQuoteOrderModelDisplay(source: VehicleModelSnapshotSource) 
   const modelDefinitionId =
     source.modelDefinitionIdSnapshot ?? source.modelDefinitionId ?? source.modelDefinition?.id ?? null;
   const legacyVehicleModel = source.legacyVehicleModelSnapshot ?? source.vehicleModel ?? null;
+  const legacyVehicleModelCode =
+    source.legacyVehicleModelCodeSnapshot ?? (legacyVehicleModel ? String(legacyVehicleModel) : null);
 
   if (source.modelDisplayNameSnapshot) {
     return {
       legacyVehicleModel,
+      legacyVehicleModelCode,
       modelDefinitionId,
       modelDisplayName: source.modelDisplayNameSnapshot,
       modelDisplaySource: "SNAPSHOT" as const
@@ -79,24 +93,37 @@ export function buildQuoteOrderModelDisplay(source: VehicleModelSnapshotSource) 
   if (source.modelDefinition?.displayName) {
     return {
       legacyVehicleModel,
+      legacyVehicleModelCode,
       modelDefinitionId,
       modelDisplayName: source.modelDefinition.displayName,
       modelDisplaySource: "RUNTIME_MODEL_DEFINITION" as const
     };
   }
 
+  if (source.legacyVehicleModelCodeSnapshot) {
+    return {
+      legacyVehicleModel,
+      legacyVehicleModelCode,
+      modelDefinitionId,
+      modelDisplayName: source.legacyVehicleModelCodeSnapshot,
+      modelDisplaySource: "SNAPSHOT_MODEL_CODE" as const
+    };
+  }
+
   if (source.legacyVehicleModelSnapshot) {
     return {
       legacyVehicleModel,
+      legacyVehicleModelCode,
       modelDefinitionId,
       modelDisplayName: source.legacyVehicleModelSnapshot,
-      modelDisplaySource: "LEGACY_SNAPSHOT" as const
+      modelDisplaySource: "SNAPSHOT_LEGACY_ENUM" as const
     };
   }
 
   if (source.vehicleModel) {
     return {
       legacyVehicleModel,
+      legacyVehicleModelCode,
       modelDefinitionId,
       modelDisplayName: source.vehicleModel,
       modelDisplaySource: "LEGACY_VEHICLE_MODEL" as const
@@ -105,6 +132,7 @@ export function buildQuoteOrderModelDisplay(source: VehicleModelSnapshotSource) 
 
   return {
     legacyVehicleModel,
+    legacyVehicleModelCode,
     modelDefinitionId,
     modelDisplayName: null,
     modelDisplaySource: "UNKNOWN" as const

@@ -242,3 +242,7 @@ $env:RUN_RELEASE_SMOKE="1"; pnpm release:check
 - 核心 smoke 未通过。
 - release checklist 未填写负责人和验收人。
 - manual acceptance 无法完成最小主线。
+
+## 13. Stage 10X Model Governance Note
+
+`pnpm release:check` includes the VehicleModel enum freeze guard. New vehicle models must be created through VehicleModelDefinition master data. Legacy-only model write paths must remain rejected; legacy VehicleModel fields are read-only compatibility fields for responses, reports, CSV, snapshots, fallback labels, seeds, fixtures, and audit history.

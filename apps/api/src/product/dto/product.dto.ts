@@ -86,7 +86,7 @@ export class UpdateProductVersionDto {
 }
 
 export class CreatePriceRuleDto {
-  /** @deprecated Use modelDefinitionId. vehicleModel is derived from model master data. */
+  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
@@ -133,7 +133,7 @@ export class CreatePriceRuleDto {
 }
 
 export class UpdatePriceRuleDto {
-  /** @deprecated Use modelDefinitionId. vehicleModel is derived from model master data. */
+  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
@@ -238,6 +238,7 @@ export class CreateQuoteDto {
   @IsUUID()
   benefitPackageId?: string | null;
 
+  /** @deprecated Legacy compatibility only. Quote model display now uses snapshots where available. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
@@ -420,6 +421,7 @@ export class CreateVehiclePackageDto {
   @IsString()
   packageName!: string;
 
+  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
@@ -478,6 +480,7 @@ export class CreateVehiclePackageDto {
 }
 
 export class UpdateVehiclePackageDto {
+  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;

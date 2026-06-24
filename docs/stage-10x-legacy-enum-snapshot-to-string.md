@@ -162,4 +162,6 @@ deploy to production
 
 ## 10. Follow-up
 
-Stage 10X-O reduces new Vehicle / Product writes that accept legacy enum input directly. New Vehicle, VehiclePackage, and ProductPriceRule create/update model changes use `modelDefinitionId`; legacy `vehicleModel` remains derived for compatibility. The enum remains frozen and compatibility-only until later read-only and removal feasibility reviews.
+Stage 10X-O reduces new Vehicle / Product writes that accept legacy enum input directly. New Vehicle, VehiclePackage, and ProductPriceRule create/update model changes use `modelDefinitionId`; legacy `vehicleModel` remains derived for compatibility.
+
+Stage 10X-P formalizes read-only legacy enum mode. VehicleModel remains frozen, legacy-only writes are rejected across Vehicle, Product, and Residual new-data entrances, and legacy fields remain available for responses, reports, CSV, snapshots, fallback labels, and audit compatibility.

@@ -52,6 +52,7 @@ export class OrderReportQueryDto extends ReportDateRangeQueryDto {
   productId?: string;
 
   @IsOptional()
+  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
 
@@ -85,6 +86,7 @@ export class OrderDetailQueryDto extends ReportDetailQueryDto {
   orderSource?: OrderSource;
 
   @IsOptional()
+  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
 
@@ -195,6 +197,7 @@ export class VehicleDetailQueryDto extends ReportDetailQueryDto {
   vehicleStatus?: VehicleStatus;
 
   @IsOptional()
+  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
 
@@ -233,6 +236,7 @@ export const sortOrders = ["asc", "desc"] as const;
 
 export class AssetProfitabilityQueryDto extends ReportDateRangeQueryDto {
   @IsOptional()
+  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
 

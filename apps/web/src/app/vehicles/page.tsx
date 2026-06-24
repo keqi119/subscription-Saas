@@ -1146,11 +1146,12 @@ export default function VehiclesPage() {
   );
   const vehicleModelDefinitionOptions = useMemo(
     () =>
-      vehicleModelDefinitions.map((definition) => ({
-        disabled: !definition.legacyVehicleModel,
-        label: vehicleModelDefinitionOptionLabel(definition),
-        value: definition.id
-      })),
+      vehicleModelDefinitions
+        .filter((definition) => definition.legacyVehicleModel)
+        .map((definition) => ({
+          label: vehicleModelDefinitionOptionLabel(definition),
+          value: definition.id
+        })),
     [vehicleModelDefinitions]
   );
   const financingInstrumentOptions = useMemo(() => {
@@ -1217,21 +1218,6 @@ export default function VehiclesPage() {
     const definition = vehicleModelDefinitionById.get(modelDefinitionId);
     if (definition?.legacyVehicleModel) {
       form.setFieldsValue({ vehicleModel: definition.legacyVehicleModel });
-    }
-  }
-
-  function clearModelDefinitionWhenLegacyDiffers(
-    form: FormInstance<CreateVehicleValues>,
-    vehicleModel?: LegacyVehicleModel | null
-  ) {
-    const modelDefinitionId = form.getFieldValue("modelDefinitionId");
-    if (!modelDefinitionId) {
-      return;
-    }
-
-    const definition = vehicleModelDefinitionById.get(modelDefinitionId);
-    if (definition?.legacyVehicleModel && vehicleModel && definition.legacyVehicleModel !== vehicleModel) {
-      form.setFieldsValue({ modelDefinitionId: null });
     }
   }
 
@@ -1490,11 +1476,23 @@ export default function VehiclesPage() {
       insuranceEndDate: dayjs().add(1, "year"),
       insuranceStartDate: dayjs(),
       modelDefinitionId: null,
-      vehicleModel: "ET5"
+      vehicleModel: null
     });
   }
 
   async function saveCreateVehicle(values: CreateVehicleValues) {
+    if (!values.modelDefinitionId) {
+      void message.error("请选择车型代码。新增车辆必须关联车型主数据。");
+      return;
+    }
+
+    const selectedDefinition = vehicleModelDefinitionById.get(values.modelDefinitionId);
+    const vehicleModel = selectedDefinition?.legacyVehicleModel ?? values.vehicleModel;
+    if (!vehicleModel) {
+      void message.error("所选车型代码未映射兼容车型，当前阶段不能用于车辆创建。");
+      return;
+    }
+
     try {
       await apiFetch<Vehicle>("/vehicles", {
         body: JSON.stringify({
@@ -1507,7 +1505,7 @@ export default function VehiclesPage() {
           insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
           latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
-          modelDefinitionId: values.modelDefinitionId ?? null,
+          modelDefinitionId: values.modelDefinitionId,
           modelYear: values.modelYear,
           plateNo: values.plateNo,
           purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
@@ -1515,7 +1513,7 @@ export default function VehiclesPage() {
           registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
           remark: values.remark,
           series: values.series,
-          vehicleModel: values.vehicleModel,
+          vehicleModel,
           vin: values.vin
         }),
         method: "POST"
@@ -1902,29 +1900,39 @@ export default function VehiclesPage() {
     if (!editingVehicle) {
       return;
     }
+    const selectedDefinition = values.modelDefinitionId
+      ? vehicleModelDefinitionById.get(values.modelDefinitionId)
+      : null;
+    const vehiclePayload: Record<string, unknown> = {
+      assetLocation: values.assetLocation,
+      batteryCapacityKwh: values.batteryCapacityKwh,
+      batteryUsageType: values.batteryUsageType,
+      brand: values.brand,
+      currentMileageKm: values.currentMileageKm ?? 0,
+      insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
+      insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
+      latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
+      model: values.model,
+      modelYear: values.modelYear,
+      plateNo: values.plateNo,
+      purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
+      purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
+      registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
+      remark: values.remark,
+      series: values.series,
+      vin: values.vin
+    };
+
+    if (values.modelDefinitionId) {
+      vehiclePayload.modelDefinitionId = values.modelDefinitionId;
+      vehiclePayload.vehicleModel = selectedDefinition?.legacyVehicleModel ?? values.vehicleModel;
+    } else if (values.vehicleModel && values.vehicleModel !== editingVehicle.vehicleModel) {
+      vehiclePayload.vehicleModel = values.vehicleModel;
+    }
+
     try {
       await apiFetch<Vehicle>(`/vehicles/${editingVehicle.id}`, {
-        body: JSON.stringify({
-          assetLocation: values.assetLocation,
-          batteryCapacityKwh: values.batteryCapacityKwh,
-          batteryUsageType: values.batteryUsageType,
-          brand: values.brand,
-          currentMileageKm: values.currentMileageKm ?? 0,
-          insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
-          insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
-          latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
-          model: values.model,
-          modelDefinitionId: values.modelDefinitionId ?? null,
-          modelYear: values.modelYear,
-          plateNo: values.plateNo,
-          purchaseDate: values.purchaseDate?.format("YYYY-MM-DD"),
-          purchasePriceAmount: toCents(values.purchasePriceAmountYuan),
-          registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
-          remark: values.remark,
-          series: values.series,
-          vehicleModel: values.vehicleModel,
-          vin: values.vin
-        }),
+        body: JSON.stringify(vehiclePayload),
         method: "PATCH"
       });
       void message.success("车辆已更新");
@@ -2354,12 +2362,12 @@ export default function VehiclesPage() {
             <Input maxLength={64} />
           </Form.Item>
           <Form.Item
-            extra="当前阶段仅可选择已映射 legacy 车型的主数据；未配置时可继续使用下方兼容车型。"
+            extra="新增车辆必须关联车型主数据；仅展示已映射 legacy 车型的启用主数据。"
             label="车型代码（主数据）"
             name="modelDefinitionId"
+            rules={[{ required: true, message: "请选择车型代码。新增车辆必须关联车型主数据。" }]}
           >
             <Select
-              allowClear
               filterOption={(input, option) => String(option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
               onChange={(value) => syncLegacyVehicleModelFromDefinition(createForm, value)}
               options={vehicleModelDefinitionOptions}
@@ -2367,11 +2375,12 @@ export default function VehiclesPage() {
               showSearch
             />
           </Form.Item>
-          <Form.Item label="兼容车型（legacy）" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
-            <Select
-              onChange={(value) => clearModelDefinitionWhenLegacyDiffers(createForm, value)}
-              options={vehicleModelOptions}
-            />
+          <Form.Item
+            extra="由车型代码自动带出，主要用于历史兼容。"
+            label="兼容车型（legacy）"
+            name="vehicleModel"
+          >
+            <Select disabled options={vehicleModelOptions} />
           </Form.Item>
           <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
@@ -2904,13 +2913,20 @@ export default function VehiclesPage() {
           <Form.Item label="车型" name="model">
             <Input maxLength={64} />
           </Form.Item>
+          {editingVehicle && !editingVehicle.modelDefinitionId ? (
+            <Alert
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="该车辆仍使用兼容车型，建议补充车型代码主数据。"
+              type="warning"
+            />
+          ) : null}
           <Form.Item
-            extra="当前阶段仅可选择已映射 legacy 车型的主数据；未配置时可继续使用下方兼容车型。"
+            extra="选择车型代码后会同步兼容车型；历史车辆可保持未关联。"
             label="车型代码（主数据）"
             name="modelDefinitionId"
           >
             <Select
-              allowClear
               filterOption={(input, option) => String(option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
               onChange={(value) => syncLegacyVehicleModelFromDefinition(editForm, value)}
               options={vehicleModelDefinitionOptions}
@@ -2918,11 +2934,12 @@ export default function VehiclesPage() {
               showSearch
             />
           </Form.Item>
-          <Form.Item label="兼容车型（legacy）" name="vehicleModel" rules={[{ required: true, message: "请选择车型代码" }]}>
-            <Select
-              onChange={(value) => clearModelDefinitionWhenLegacyDiffers(editForm, value)}
-              options={vehicleModelOptions}
-            />
+          <Form.Item
+            extra="由车型代码自动带出，主要用于历史兼容。"
+            label="兼容车型（legacy）"
+            name="vehicleModel"
+          >
+            <Select disabled options={vehicleModelOptions} />
           </Form.Item>
           <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />

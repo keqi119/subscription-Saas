@@ -899,6 +899,18 @@ const context: RequestContext = {
 };
 
 function makeService() {
+  const defaultModelDefinition = {
+    brand: "NIO",
+    customerDisplayName: "ET5",
+    displayName: "ET5",
+    enabled: true,
+    id: "definition-et5",
+    legacyVehicleModel: VehicleModel.ET5,
+    modelCode: "ET5",
+    modelName: "ET5",
+    modelYear: null,
+    series: "ET"
+  };
   const prisma = {
     $transaction: vi.fn(),
     vehicle: {
@@ -915,6 +927,17 @@ function makeService() {
     vehicleSalePriceHistory: {
       create: vi.fn(),
       findMany: vi.fn()
+    },
+    vehicleModelDefinition: {
+      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: VehicleModel } }) => {
+        if (where.deletedAt === null && where.legacyVehicleModel === VehicleModel.ET5) {
+          return defaultModelDefinition;
+        }
+        if (where.deletedAt === null && where.id === defaultModelDefinition.id) {
+          return defaultModelDefinition;
+        }
+        return null;
+      })
     }
   };
   prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => callback(prisma));

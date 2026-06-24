@@ -4,6 +4,7 @@ import {
   Prisma,
   SalePriceStatus,
   Vehicle,
+  VehicleModelDefinition,
   VehicleResidualForecastPointStatus,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
@@ -27,20 +28,49 @@ const REVIEW_ENTITY_TYPE = "vehicle_valuation_review";
 const REVIEW_MODULE = "vehicle_valuation_review";
 const REVIEW_NO_PREFIX = "VVR";
 
+const modelDefinitionSelect = {
+  brand: true,
+  customerDisplayName: true,
+  displayName: true,
+  id: true,
+  legacyVehicleModel: true,
+  modelCode: true,
+  modelName: true,
+  modelYear: true,
+  series: true
+} satisfies Prisma.VehicleModelDefinitionSelect;
+
 const reviewInclude = {
   forecast: true,
   forecastPoint: true,
-  vehicle: true
+  vehicle: {
+    include: {
+      modelDefinition: { select: modelDefinitionSelect }
+    }
+  }
 } satisfies Prisma.VehicleValuationReviewInclude;
 
 const forecastPointInclude = {
   forecast: {
     include: {
       curve: true,
-      vehicle: true
+      vehicle: {
+        include: {
+          modelDefinition: { select: modelDefinitionSelect }
+        }
+      }
     }
   }
 } satisfies Prisma.VehicleResidualForecastPointInclude;
+
+type ModelDefinitionSummary = Pick<
+  VehicleModelDefinition,
+  "brand" | "customerDisplayName" | "displayName" | "id" | "legacyVehicleModel" | "modelCode" | "modelName" | "modelYear" | "series"
+>;
+
+type VehicleWithModelDefinition = Vehicle & {
+  modelDefinition?: ModelDefinitionSummary | null;
+};
 
 type ReviewWithRelations = Prisma.VehicleValuationReviewGetPayload<{
   include: typeof reviewInclude;
@@ -358,6 +388,9 @@ export class VehicleValuationReviewService {
 
   private async findVehicleOrThrow(id: string) {
     const vehicle = await this.prisma.vehicle.findFirst({
+      include: {
+        modelDefinition: { select: modelDefinitionSelect }
+      },
       where: { deletedAt: null, id }
     });
 
@@ -662,13 +695,36 @@ function toReviewDetailView(review: ReviewWithRelations) {
   };
 }
 
-function toVehicleSummary(vehicle: Vehicle) {
+function toModelDefinitionSummary(definition?: ModelDefinitionSummary | null) {
+  return definition
+    ? {
+        brand: definition.brand,
+        customerDisplayName: definition.customerDisplayName,
+        displayName: definition.displayName,
+        id: definition.id,
+        legacyVehicleModel: definition.legacyVehicleModel,
+        modelCode: definition.modelCode,
+        modelName: definition.modelName,
+        modelYear: definition.modelYear,
+        series: definition.series
+      }
+    : null;
+}
+
+function modelDisplayName(definition: ModelDefinitionSummary | null | undefined, fallback?: string | null) {
+  return definition?.displayName ?? fallback ?? null;
+}
+
+function toVehicleSummary(vehicle: VehicleWithModelDefinition) {
   return {
     brand: vehicle.brand,
     currentSalePriceAmount: numberOrNull(vehicle.currentSalePriceAmount),
     currentSalePriceReviewedAt: vehicle.currentSalePriceReviewedAt?.toISOString() ?? null,
     id: vehicle.id,
     model: vehicle.model,
+    modelDefinition: toModelDefinitionSummary(vehicle.modelDefinition),
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: modelDisplayName(vehicle.modelDefinition, vehicle.model),
     nextSalePriceReviewAt: vehicle.nextSalePriceReviewAt ? formatDateOnly(vehicle.nextSalePriceReviewAt) : null,
     plateNo: vehicle.plateNo,
     salePriceStatus: vehicle.salePriceStatus,

@@ -7,6 +7,7 @@ import {
   VehicleAcquisitionMode,
   VehicleBatteryUsageType,
   VehicleModel,
+  VehicleModelDefinition,
   VehicleResidualCurve,
   VehicleResidualCurveMethod,
   VehicleResidualCurveStatus,
@@ -69,6 +70,25 @@ describe("VehicleValuationReviewService", () => {
       })
     );
     expect(() => JSON.stringify(result)).not.toThrow();
+  });
+
+  it("returns vehicle model definition display data in valuation review summaries", async () => {
+    const definition = makeModelDefinition();
+    harness = makeHarness({
+      modelDefinitions: [definition],
+      vehicles: [makeVehicle({ modelDefinitionId: definition.id })]
+    });
+
+    const result = await harness.service.createFromResidualForecast(
+      "vehicle-1",
+      { forecastPointId: "forecast-point-1" },
+      user,
+      context
+    );
+
+    expect(result.vehicle?.modelDefinitionId).toBe(definition.id);
+    expect(result.vehicle?.modelDefinition?.displayName).toBe("NIO ET5");
+    expect(result.vehicle?.modelDisplayName).toBe("NIO ET5");
   });
 
   it("rejects forecast points that do not belong to the vehicle", async () => {
@@ -314,7 +334,7 @@ const context: RequestContext = {
 type ReviewWithRelations = VehicleValuationReview & {
   forecast?: VehicleResidualForecast | null;
   forecastPoint?: VehicleResidualForecastPoint | null;
-  vehicle?: Vehicle | null;
+  vehicle?: (Vehicle & { modelDefinition?: VehicleModelDefinition | null }) | null;
 };
 
 type ResidualReviewState = {
@@ -322,6 +342,7 @@ type ResidualReviewState = {
   forecastPoints: VehicleResidualForecastPoint[];
   forecasts: VehicleResidualForecast[];
   histories: VehicleSalePriceHistory[];
+  modelDefinitions: VehicleModelDefinition[];
   reviews: VehicleValuationReview[];
   vehicles: Vehicle[];
 };
@@ -332,6 +353,7 @@ function makeHarness(seed: Partial<ResidualReviewState> = {}) {
     forecastPoints: seed.forecastPoints ?? [makeForecastPoint()],
     forecasts: seed.forecasts ?? [makeForecast()],
     histories: seed.histories ?? [],
+    modelDefinitions: seed.modelDefinitions ?? [],
     reviews: seed.reviews ?? [],
     vehicles: seed.vehicles ?? [makeVehicle()]
   };
@@ -344,14 +366,14 @@ function makeHarness(seed: Partial<ResidualReviewState> = {}) {
       return (input as (tx: typeof prisma) => unknown)(prisma);
     }),
     vehicle: {
-      findFirst: vi.fn(async (args: { select?: { id?: boolean }; where?: { id?: string; deletedAt?: null } }) => {
+      findFirst: vi.fn(async (args: { include?: { modelDefinition?: unknown }; select?: { id?: boolean }; where?: { id?: string; deletedAt?: null } }) => {
         const vehicle =
           state.vehicles.find(
             (candidate) =>
               (args.where?.id === undefined || candidate.id === args.where.id) &&
               (args.where?.deletedAt === undefined || candidate.deletedAt === args.where.deletedAt)
           ) ?? null;
-        return args.select?.id && vehicle ? { id: vehicle.id } : vehicle;
+        return args.select?.id && vehicle ? { id: vehicle.id } : attachVehicle(vehicle, args.include, state);
       }),
       update: vi.fn(async (args: { data: Partial<Vehicle>; where: { id: string } }) => {
         const index = state.vehicles.findIndex((vehicle) => vehicle.id === args.where.id);
@@ -443,8 +465,20 @@ function attachReview(review: VehicleValuationReview | null, state: ResidualRevi
     ...review,
     forecast: state.forecasts.find((forecast) => forecast.id === review.forecastId) ?? null,
     forecastPoint: state.forecastPoints.find((point) => point.id === review.forecastPointId) ?? null,
-    vehicle: state.vehicles.find((vehicle) => vehicle.id === review.vehicleId) ?? null
+    vehicle: attachVehicle(state.vehicles.find((vehicle) => vehicle.id === review.vehicleId) ?? null, { modelDefinition: true }, state)
   } as ReviewWithRelations;
+}
+
+function attachVehicle(vehicle: Vehicle | null, include: { modelDefinition?: unknown } | undefined, state: ResidualReviewState) {
+  if (!vehicle) {
+    return null;
+  }
+  return {
+    ...vehicle,
+    ...(include?.modelDefinition
+      ? { modelDefinition: state.modelDefinitions.find((definition) => definition.id === vehicle.modelDefinitionId) ?? null }
+      : {})
+  };
 }
 
 function attachForecastPoint(point: VehicleResidualForecastPoint | null, state: ResidualReviewState) {
@@ -457,7 +491,11 @@ function attachForecastPoint(point: VehicleResidualForecastPoint | null, state: 
     forecast: {
       ...forecast,
       curve: state.curves.find((curve) => curve.id === forecast?.curveId),
-      vehicle: state.vehicles.find((vehicle) => vehicle.id === forecast?.vehicleId)
+      vehicle: attachVehicle(
+        state.vehicles.find((vehicle) => vehicle.id === forecast?.vehicleId) ?? null,
+        { modelDefinition: true },
+        state
+      )
     }
   };
 }
@@ -605,6 +643,7 @@ function makeForecast(overrides: Partial<VehicleResidualForecast> = {}): Vehicle
     inputSnapshot: null,
     metrics: null,
     model: "ET5",
+    modelDefinitionId: null,
     modelYear: 2024,
     purchasePriceAmount: 20000000n,
     remark: null,
@@ -639,6 +678,7 @@ function makeCurve(overrides: Partial<VehicleResidualCurve> = {}): VehicleResidu
     id: "curve-1",
     metrics: null,
     model: "ET5",
+    modelDefinitionId: null,
     modelYear: 2024,
     pointCount: 1,
     priceTypes: ["TRANSACTION"],
@@ -653,6 +693,38 @@ function makeCurve(overrides: Partial<VehicleResidualCurve> = {}): VehicleResidu
     trim: null,
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedBy: user.id,
+    ...overrides
+  };
+}
+
+function makeModelDefinition(overrides: Partial<VehicleModelDefinition> = {}): VehicleModelDefinition {
+  return {
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    bodyType: null,
+    brand: "NIO",
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    createdBy: null,
+    customerDisplayName: "ET5",
+    deletedAt: null,
+    displayName: "NIO ET5",
+    driveType: null,
+    enabled: true,
+    energyType: null,
+    id: "00000000-0000-4000-8000-000000000e50",
+    legacyVehicleModel: VehicleModel.ET5,
+    modelCode: "ET5",
+    modelName: "ET5",
+    modelYear: 2024,
+    officialRangeKm: null,
+    portalVisible: true,
+    remark: null,
+    seatCount: null,
+    series: "ET5",
+    snapshot: null,
+    sortOrder: 10,
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedBy: null,
+    variantName: null,
     ...overrides
   };
 }

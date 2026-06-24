@@ -187,3 +187,23 @@ legacy brand / series / model fallback
 不破坏历史曲线和样本
 不自动重算旧预测
 ```
+
+## 9. Stage 10X-F 完成后状态
+
+Stage 10X-F 已完成 Residual market / forecast 接入车型主数据：
+
+```text
+Residual market sample 支持 modelDefinitionId
+Residual curve 支持 modelDefinitionId
+Residual forecast 保存 modelDefinitionId 快照
+ResidualModelRun 支持 targetModelDefinitionId
+Vehicle valuation review 展示优先 modelDefinition.displayName
+```
+
+10X-F 仍未改变 10X-E 的边界：`VehicleModel` enum、legacy filter、Quote / Order 历史快照继续保留。
+
+详见：
+
+```text
+docs/stage-10x-model-master-data-residual-market.md
+```

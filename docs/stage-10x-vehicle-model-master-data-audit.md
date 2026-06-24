@@ -822,3 +822,36 @@ VehicleValuationReview
 ```text
 docs/stage-10x-model-master-data-portal-product-reports.md
 ```
+
+## 11. Stage 10X-F 审计更新
+
+Stage 10X-F 已按审计拆分完成 Residual market / forecast 接入：
+
+```text
+VehicleMarketPriceObservation 新增 nullable modelDefinitionId
+VehicleResidualCurve 新增 nullable modelDefinitionId
+VehicleResidualForecast 新增 nullable modelDefinitionId，作为预测生成时车型快照
+ResidualModelRun 新增 nullable targetModelDefinitionId
+Residual market / curve / forecast API 支持 modelDefinitionId 查询和展示
+Vehicle valuation review 展示链路优先 modelDefinition.displayName
+```
+
+仍保留的审计边界：
+
+```text
+legacy brand / series / model 字段不删除
+VehicleModel enum 不删除
+历史 residual sample / curve / forecast 不回填
+不重算历史 forecast
+不自动 adopt residual
+不更新 Vehicle.currentSalePriceAmount
+不修改 ROE / 折旧 / BaaS / 支付 / 核销主逻辑
+```
+
+下一阶段进入 10X-G 时，应先评估 enum 长期保留、历史快照兼容和可选回填脚本，不应直接删除 enum。
+
+详见：
+
+```text
+docs/stage-10x-model-master-data-residual-market.md
+```

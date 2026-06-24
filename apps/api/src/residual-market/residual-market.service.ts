@@ -22,6 +22,7 @@ import {
   Vehicle,
   VehicleBatteryUsageType,
   VehicleMarketPriceObservation,
+  VehicleModelDefinition,
   VehicleResidualCurve,
   VehicleResidualCurveMethod,
   VehicleResidualCurvePoint,
@@ -81,6 +82,7 @@ type ObservationInput = {
   listingPriceAmount?: number | null | string;
   mileageKm?: number | null | string;
   model?: string | null;
+  modelDefinitionId?: string | null;
   modelYear?: number | null | string;
   observedAt?: string | null;
   priceAmount?: number | null | string;
@@ -111,6 +113,7 @@ type ObservationFields = {
   listingPriceAmount: bigint | null;
   mileageKm: number | null;
   model: string;
+  modelDefinitionId: string | null;
   modelYear: number | null;
   observedAt: Date;
   priceAmount: bigint;
@@ -144,6 +147,8 @@ type CurveGenerationInput = {
   autoCreateModelRun: boolean;
   minSamplePerPoint: number;
   model: string;
+  modelDefinition: ModelDefinitionSummary | null;
+  modelDefinitionId: string | null;
   modelProvider: string | null;
   modelRunId: string | null;
   modelRunName: string | null;
@@ -188,6 +193,8 @@ type BuiltResidualCurve = {
   curveVersion: string | null;
   metrics: Prisma.InputJsonObject;
   model: string;
+  modelDefinition: ModelDefinitionSummary | null;
+  modelDefinitionId: string | null;
   modelYear: number | null;
   pointCount: number;
   priceTypes: Prisma.InputJsonArray;
@@ -211,7 +218,22 @@ type BuiltResidualCurvePreview = {
   skippedSampleCount: number;
 };
 
-type ForecastCurve = VehicleResidualCurve & { points: VehicleResidualCurvePoint[] };
+type ModelDefinitionSummary = Pick<
+  VehicleModelDefinition,
+  "brand" | "customerDisplayName" | "displayName" | "id" | "legacyVehicleModel" | "modelCode" | "modelName" | "modelYear" | "series"
+>;
+
+type WithModelDefinition<T> = T & {
+  modelDefinition?: ModelDefinitionSummary | null;
+};
+
+type WithTargetModelDefinition<T> = T & {
+  targetModelDefinition?: ModelDefinitionSummary | null;
+};
+
+type ForecastVehicle = WithModelDefinition<Vehicle>;
+
+type ForecastCurve = WithModelDefinition<VehicleResidualCurve> & { points: VehicleResidualCurvePoint[] };
 
 type ForecastGenerationInput = {
   asOfDate: Date;
@@ -257,6 +279,8 @@ type BuiltVehicleResidualForecast = {
   inputSnapshot: Prisma.InputJsonObject;
   metrics: Prisma.InputJsonObject;
   model: string | null;
+  modelDefinition: ModelDefinitionSummary | null;
+  modelDefinitionId: string | null;
   modelYear: number | null;
   purchasePriceAmount: bigint | null;
   remark: string | null;
@@ -274,23 +298,26 @@ type BuiltVehicleResidualForecastPreview = {
   points: BuiltVehicleResidualForecastPoint[];
 };
 
-type VehicleResidualForecastWithRelations = VehicleResidualForecast & {
-  curve?: VehicleResidualCurve | null;
+type VehicleResidualForecastWithRelations = WithModelDefinition<VehicleResidualForecast> & {
+  curve?: WithModelDefinition<VehicleResidualCurve> | null;
   points?: VehicleResidualForecastPoint[];
-  vehicle?: Vehicle | null;
+  vehicle?: ForecastVehicle | null;
 };
 
 type VehicleResidualForecastPointWithForecast = VehicleResidualForecastPoint & {
-  forecast?: (VehicleResidualForecast & { curve?: VehicleResidualCurve | null; vehicle?: Vehicle | null }) | null;
+  forecast?: (WithModelDefinition<VehicleResidualForecast> & {
+    curve?: WithModelDefinition<VehicleResidualCurve> | null;
+    vehicle?: ForecastVehicle | null;
+  }) | null;
 };
 
 type ResidualModelRunOutputWithRelations = ResidualModelRunOutput & {
-  curve?: VehicleResidualCurve | null;
-  forecast?: VehicleResidualForecast | null;
-  vehicle?: Vehicle | null;
+  curve?: WithModelDefinition<VehicleResidualCurve> | null;
+  forecast?: WithModelDefinition<VehicleResidualForecast> | null;
+  vehicle?: ForecastVehicle | null;
 };
 
-type ResidualModelRunWithOutputs = ResidualModelRun & {
+type ResidualModelRunWithOutputs = WithTargetModelDefinition<ResidualModelRun> & {
   outputs?: ResidualModelRunOutputWithRelations[];
 };
 
@@ -312,6 +339,42 @@ const DEFAULT_CURVE_PRICE_TYPES = [
 ];
 const DEFAULT_FORECAST_HORIZONS = [0, 6, 12, 24, 36];
 
+const modelDefinitionSelect = {
+  brand: true,
+  customerDisplayName: true,
+  displayName: true,
+  id: true,
+  legacyVehicleModel: true,
+  modelCode: true,
+  modelName: true,
+  modelYear: true,
+  series: true
+} satisfies Prisma.VehicleModelDefinitionSelect;
+
+const observationInclude = {
+  modelDefinition: { select: modelDefinitionSelect }
+} satisfies Prisma.VehicleMarketPriceObservationInclude;
+
+const curveInclude = {
+  modelDefinition: { select: modelDefinitionSelect }
+} satisfies Prisma.VehicleResidualCurveInclude;
+
+const curveWithPointsInclude = {
+  modelDefinition: { select: modelDefinitionSelect },
+  points: { orderBy: { ageMonth: "asc" } }
+} satisfies Prisma.VehicleResidualCurveInclude;
+
+const forecastInclude = {
+  curve: { include: curveInclude },
+  modelDefinition: { select: modelDefinitionSelect },
+  points: { orderBy: { horizonMonth: "asc" } },
+  vehicle: { include: { modelDefinition: { select: modelDefinitionSelect } } }
+} satisfies Prisma.VehicleResidualForecastInclude;
+
+const forecastPointInclude = {
+  forecast: { include: forecastInclude }
+} satisfies Prisma.VehicleResidualForecastPointInclude;
+
 @Injectable()
 export class ResidualMarketService {
   constructor(
@@ -327,6 +390,7 @@ export class ResidualMarketService {
     const [total, observations] = await Promise.all([
       this.prisma.vehicleMarketPriceObservation.count({ where }),
       this.prisma.vehicleMarketPriceObservation.findMany({
+        include: observationInclude,
         orderBy: [{ observedAt: "desc" }, { createdAt: "desc" }],
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -344,6 +408,7 @@ export class ResidualMarketService {
 
   async getObservation(id: string) {
     const observation = await this.prisma.vehicleMarketPriceObservation.findFirst({
+      include: observationInclude,
       where: { deletedAt: null, id }
     });
 
@@ -359,7 +424,8 @@ export class ResidualMarketService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const built = buildObservationData(dto, "fen");
+    const modelDefinition = await this.resolveEnabledModelDefinition(dto.modelDefinitionId);
+    const built = buildObservationData(dto, "fen", undefined, modelDefinition);
     const duplicate = await this.findActiveDuplicate(built.data.dedupeKey);
 
     if (duplicate) {
@@ -374,7 +440,8 @@ export class ResidualMarketService {
             createdBy: user.id,
             observationNo: createBusinessNo("MPO"),
             updatedBy: user.id
-          }
+          },
+          include: observationInclude
         })
       );
 
@@ -426,8 +493,9 @@ export class ResidualMarketService {
 
     for (const record of records) {
       try {
-        const input = { ...record.values, source };
-        const built = buildObservationData(input, "yuan", record.values);
+        const input: ObservationInput = { ...record.values, source };
+        const modelDefinition = await this.resolveEnabledModelDefinition(input.modelDefinitionId);
+        const built = buildObservationData(input, "yuan", record.values, modelDefinition);
 
         if (seenDedupeKeys.has(built.data.dedupeKey)) {
           items.push({
@@ -458,7 +526,8 @@ export class ResidualMarketService {
               createdBy: user.id,
               observationNo: createBusinessNo("MPO"),
               updatedBy: user.id
-            }
+            },
+            include: observationInclude
           })
         );
 
@@ -540,6 +609,7 @@ export class ResidualMarketService {
     context: RequestContext
   ) {
     const before = await this.prisma.vehicleMarketPriceObservation.findFirst({
+      include: observationInclude,
       where: { deletedAt: null, id }
     });
 
@@ -557,6 +627,7 @@ export class ResidualMarketService {
         remark: mergeRemark(before.remark, dto.remark),
         updatedBy: user.id
       },
+      include: observationInclude,
       where: { id }
     });
 
@@ -614,7 +685,8 @@ export class ResidualMarketService {
   }
 
   async generateCurve(dto: GenerateResidualCurveDto, user: RequestUser, context: RequestContext) {
-    const input = buildCurveGenerationInput(dto);
+    const modelDefinition = await this.resolveEnabledModelDefinition(dto.modelDefinitionId);
+    const input = buildCurveGenerationInput(dto, modelDefinition);
     this.ensureModelRunManagePermission(input, user);
     const existingModelRun = input.modelRunId ? await this.findLinkableModelRun(input.modelRunId, input, input.dryRun) : null;
     const observations = await this.prisma.vehicleMarketPriceObservation.findMany({
@@ -649,6 +721,7 @@ export class ResidualMarketService {
             curveVersion: preview.curve.curveVersion,
             metrics: preview.curve.metrics,
             model: preview.curve.model,
+            modelDefinitionId: preview.curve.modelDefinitionId,
             modelYear: preview.curve.modelYear,
             pointCount: preview.curve.pointCount,
             points: { create: preview.points.map(toCurvePointCreateInput) },
@@ -665,6 +738,7 @@ export class ResidualMarketService {
             updatedBy: user.id
           },
           include: {
+            modelDefinition: { select: modelDefinitionSelect },
             points: { orderBy: { ageMonth: "asc" } }
           }
         });
@@ -780,6 +854,7 @@ export class ResidualMarketService {
     const [total, curves] = await Promise.all([
       this.prisma.vehicleResidualCurve.count({ where }),
       this.prisma.vehicleResidualCurve.findMany({
+        include: curveInclude,
         orderBy: [{ generatedAt: "desc" }, { createdAt: "desc" }],
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -797,9 +872,7 @@ export class ResidualMarketService {
 
   async getCurve(id: string) {
     const curve = await this.prisma.vehicleResidualCurve.findFirst({
-      include: {
-        points: { orderBy: { ageMonth: "asc" } }
-      },
+      include: curveWithPointsInclude,
       where: { deletedAt: null, id }
     });
 
@@ -849,9 +922,7 @@ export class ResidualMarketService {
           remark: mergeOperationRemark(before.remark, dto.remark),
           updatedBy: user.id
         },
-        include: {
-          points: { orderBy: { ageMonth: "asc" } }
-        },
+        include: curveWithPointsInclude,
         where: { id }
       });
     });
@@ -894,9 +965,7 @@ export class ResidualMarketService {
         remark: mergeOperationRemark(before.remark, dto.remark),
         updatedBy: user.id
       },
-      include: {
-        points: { orderBy: { ageMonth: "asc" } }
-      },
+      include: curveWithPointsInclude,
       where: { id }
     });
 
@@ -921,6 +990,9 @@ export class ResidualMarketService {
   ) {
     const input = buildForecastGenerationInput(dto);
     const vehicle = await this.prisma.vehicle.findFirst({
+      include: {
+        modelDefinition: { select: modelDefinitionSelect }
+      },
       where: { deletedAt: null, id: vehicleId }
     });
 
@@ -958,6 +1030,7 @@ export class ResidualMarketService {
           inputSnapshot: preview.forecast.inputSnapshot,
           metrics: preview.forecast.metrics,
           model: preview.forecast.model,
+          modelDefinitionId: preview.forecast.modelDefinitionId,
           modelYear: preview.forecast.modelYear,
           points: { create: preview.points.map(toForecastPointCreateInput) },
           purchasePriceAmount: preview.forecast.purchasePriceAmount,
@@ -969,11 +1042,7 @@ export class ResidualMarketService {
           vehicleId: preview.forecast.vehicleId,
           vehicleSnapshot: preview.forecast.vehicleSnapshot
         },
-        include: {
-          curve: true,
-          points: { orderBy: { horizonMonth: "asc" } },
-          vehicle: true
-        }
+        include: forecastInclude
       })
     );
 
@@ -1005,10 +1074,7 @@ export class ResidualMarketService {
     const [total, forecasts] = await Promise.all([
       this.prisma.vehicleResidualForecast.count({ where }),
       this.prisma.vehicleResidualForecast.findMany({
-        include: {
-          curve: true,
-          points: { orderBy: { horizonMonth: "asc" } }
-        },
+        include: forecastInclude,
         orderBy: [{ createdAt: "desc" }],
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -1026,11 +1092,7 @@ export class ResidualMarketService {
 
   async getLatestVehicleForecast(vehicleId: string) {
     const forecast = await this.prisma.vehicleResidualForecast.findFirst({
-      include: {
-        curve: true,
-        points: { orderBy: { horizonMonth: "asc" } },
-        vehicle: true
-      },
+      include: forecastInclude,
       orderBy: { createdAt: "desc" },
       where: { deletedAt: null, vehicleId }
     });
@@ -1040,11 +1102,7 @@ export class ResidualMarketService {
 
   async getVehicleForecast(id: string) {
     const forecast = await this.prisma.vehicleResidualForecast.findFirst({
-      include: {
-        curve: true,
-        points: { orderBy: { horizonMonth: "asc" } },
-        vehicle: true
-      },
+      include: forecastInclude,
       where: { deletedAt: null, id }
     });
 
@@ -1062,14 +1120,7 @@ export class ResidualMarketService {
     context: RequestContext
   ) {
     const before = await this.prisma.vehicleResidualForecastPoint.findFirst({
-      include: {
-        forecast: {
-          include: {
-            curve: true,
-            vehicle: true
-          }
-        }
-      },
+      include: forecastPointInclude,
       where: { id: pointId }
     });
 
@@ -1092,14 +1143,7 @@ export class ResidualMarketService {
           adoptRemark: normalizeOptionalText(dto.adoptRemark),
           pointStatus: VehicleResidualForecastPointStatus.ADOPTED
         },
-        include: {
-          forecast: {
-            include: {
-              curve: true,
-              vehicle: true
-            }
-          }
-        },
+        include: forecastPointInclude,
         where: { id: pointId }
       });
 
@@ -1138,11 +1182,7 @@ export class ResidualMarketService {
     context: RequestContext
   ) {
     const before = await this.prisma.vehicleResidualForecast.findFirst({
-      include: {
-        curve: true,
-        points: { orderBy: { horizonMonth: "asc" } },
-        vehicle: true
-      },
+      include: forecastInclude,
       where: { deletedAt: null, id }
     });
 
@@ -1160,11 +1200,7 @@ export class ResidualMarketService {
         remark: mergeOperationRemark(before.remark, dto.remark),
         updatedBy: user.id
       },
-      include: {
-        curve: true,
-        points: { orderBy: { horizonMonth: "asc" } },
-        vehicle: true
-      },
+      include: forecastInclude,
       where: { id }
     });
 
@@ -1189,6 +1225,7 @@ export class ResidualMarketService {
     const [total, runs] = await Promise.all([
       this.prisma.residualModelRun.count({ where }),
       this.prisma.residualModelRun.findMany({
+        include: modelRunInclude(),
         orderBy: [{ createdAt: "desc" }],
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -1222,13 +1259,15 @@ export class ResidualMarketService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const data = buildModelRunCreateData(dto, user.id);
+    const targetModelDefinition = await this.resolveEnabledModelDefinition(dto.targetModelDefinitionId);
+    const data = buildModelRunCreateData(dto, user.id, targetModelDefinition);
     const run = await withUniqueBusinessNoRetry(() =>
       this.prisma.residualModelRun.create({
         data: {
           ...data,
           runNo: createBusinessNo("RMR")
-        }
+        },
+        include: modelRunInclude()
       })
     );
 
@@ -1417,12 +1456,32 @@ export class ResidualMarketService {
     });
   }
 
+  private async resolveEnabledModelDefinition(id: string | null | undefined) {
+    const modelDefinitionId = normalizeOptionalText(id);
+    if (!modelDefinitionId) {
+      return null;
+    }
+
+    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+      select: modelDefinitionSelect,
+      where: {
+        deletedAt: null,
+        enabled: true,
+        id: modelDefinitionId
+      }
+    });
+
+    if (!definition) {
+      throw new BadRequestException("Vehicle model definition is not available.");
+    }
+
+    return definition;
+  }
+
   private async selectForecastCurve(vehicle: Vehicle, input: ForecastGenerationInput): Promise<CurveSelection> {
     if (input.curveId) {
       const curve = await this.prisma.vehicleResidualCurve.findFirst({
-        include: {
-          points: { orderBy: { ageMonth: "asc" } }
-        },
+        include: curveWithPointsInclude,
         where: {
           deletedAt: null,
           id: input.curveId
@@ -1460,10 +1519,38 @@ export class ResidualMarketService {
       throw new BadRequestException("车辆缺少品牌或车型，无法匹配生效残值曲线。");
     }
 
+    const modelDefinitionCurves = vehicle.modelDefinitionId
+      ? await this.prisma.vehicleResidualCurve.findMany({
+          include: curveWithPointsInclude,
+          where: {
+            curveStatus: VehicleResidualCurveStatus.ACTIVE,
+            deletedAt: null,
+            modelDefinitionId: vehicle.modelDefinitionId
+          }
+        })
+      : [];
+
+    if (modelDefinitionCurves.length > 0) {
+      const ranked = modelDefinitionCurves
+        .map((curve) => rankModelDefinitionForecastCurve(curve as ForecastCurve, vehicle))
+        .sort(compareCurveSelection);
+      const selected = ranked[0];
+      if (!selected) {
+        throw new BadRequestException("No active residual curve matched the vehicle model definition.");
+      }
+
+      return {
+        candidateSummaries: ranked.map((candidate) =>
+          curveCandidateSummary(candidate.curve, candidate.score, candidate.matchedFields)
+        ),
+        curve: selected.curve,
+        matchedFields: selected.matchedFields,
+        score: selected.score
+      };
+    }
+
     const curves = await this.prisma.vehicleResidualCurve.findMany({
-      include: {
-        points: { orderBy: { ageMonth: "asc" } }
-      },
+      include: curveWithPointsInclude,
       where: {
         brand: exactTextFilter(brand),
         curveStatus: VehicleResidualCurveStatus.ACTIVE,
@@ -1685,6 +1772,7 @@ function buildModelRunWhere(query: ResidualModelRunQueryDto): Prisma.ResidualMod
     deletedAt: null,
     modelVersion: query.modelVersion ? exactTextFilter(query.modelVersion) : undefined,
     runStatus: query.runStatus,
+    targetModelDefinitionId: normalizeOptionalText(query.targetModelDefinitionId) ?? undefined,
     runType: query.runType,
     targetBrand: query.targetBrand ? exactTextFilter(query.targetBrand) : undefined,
     targetModel: query.targetModel ? exactTextFilter(query.targetModel) : undefined,
@@ -1707,7 +1795,11 @@ function buildModelRunWhere(query: ResidualModelRunQueryDto): Prisma.ResidualMod
   return where;
 }
 
-function buildModelRunCreateData(dto: CreateResidualModelRunDto, userId: string) {
+function buildModelRunCreateData(
+  dto: CreateResidualModelRunDto,
+  userId: string,
+  targetModelDefinition: ModelDefinitionSummary | null = null
+) {
   const runType = parseEnumValue(ResidualModelRunType, dto.runType, "runType");
   const runStatus = dto.runStatus
     ? parseEnumValue(ResidualModelRunStatus, dto.runStatus, "runStatus")
@@ -1751,6 +1843,7 @@ function buildModelRunCreateData(dto: CreateResidualModelRunDto, userId: string)
       "targetBatteryUsageType"
     ),
     targetBrand: normalizeOptionalText(dto.targetBrand),
+    targetModelDefinitionId: targetModelDefinition?.id ?? null,
     targetModel: normalizeOptionalText(dto.targetModel),
     targetModelYear: optionalInteger(dto.targetModelYear, "targetModelYear", 0),
     targetSeries: normalizeOptionalText(dto.targetSeries),
@@ -1766,20 +1859,21 @@ function modelRunInclude() {
   return {
     outputs: {
       include: {
-        curve: true,
-        forecast: true,
-        vehicle: true
+        curve: { include: curveInclude },
+        forecast: { include: { modelDefinition: { select: modelDefinitionSelect } } },
+        vehicle: { include: { modelDefinition: { select: modelDefinitionSelect } } }
       },
       orderBy: [{ createdAt: "asc" }]
-    }
+    },
+    targetModelDefinition: { select: modelDefinitionSelect }
   } satisfies Prisma.ResidualModelRunInclude;
 }
 
 function modelRunOutputInclude() {
   return {
-    curve: true,
-    forecast: true,
-    vehicle: true
+    curve: { include: curveInclude },
+    forecast: { include: { modelDefinition: { select: modelDefinitionSelect } } },
+    vehicle: { include: { modelDefinition: { select: modelDefinitionSelect } } }
   } satisfies Prisma.ResidualModelRunOutputInclude;
 }
 
@@ -1791,6 +1885,10 @@ function assertModelRunCanReceiveCurveOutput(run: Pick<ResidualModelRun, "runSta
 }
 
 function assertModelRunTargetMatchesCurveInput(run: ResidualModelRun, input: CurveGenerationInput) {
+  if (run.targetModelDefinitionId && run.targetModelDefinitionId !== input.modelDefinitionId) {
+    throw new BadRequestException("Residual model run target modelDefinitionId does not match curve generation input.");
+  }
+
   const textFields: Array<[string | null, string | null, string]> = [
     [run.targetBrand, input.brand, "targetBrand"],
     [run.targetSeries, input.series, "targetSeries"],
@@ -1819,7 +1917,7 @@ function buildExistingModelRunCurveLinkUpdate(
   run: ResidualModelRun,
   input: CurveGenerationInput,
   preview: BuiltResidualCurvePreview,
-  curve: VehicleResidualCurve,
+  curve: WithModelDefinition<VehicleResidualCurve>,
   userId: string,
   finishedAt: Date
 ): Prisma.ResidualModelRunUncheckedUpdateInput {
@@ -1844,7 +1942,7 @@ function buildExistingModelRunCurveLinkUpdate(
 function buildAutoModelRunCreateData(
   input: CurveGenerationInput,
   preview: BuiltResidualCurvePreview,
-  curve: VehicleResidualCurve,
+  curve: WithModelDefinition<VehicleResidualCurve>,
   userId: string,
   finishedAt: Date
 ): Omit<Prisma.ResidualModelRunUncheckedCreateInput, "runNo"> {
@@ -1878,6 +1976,7 @@ function buildAutoModelRunCreateData(
     targetBatteryUsageType: input.batteryUsageType,
     targetBrand: input.brand,
     targetModel: input.model,
+    targetModelDefinitionId: input.modelDefinitionId,
     targetModelYear: input.modelYear,
     targetSeries: input.series,
     targetTrim: input.trim,
@@ -1890,7 +1989,7 @@ function buildAutoModelRunCreateData(
 
 function buildCurveModelRunOutputCreate(
   runId: string,
-  curve: VehicleResidualCurve,
+  curve: WithModelDefinition<VehicleResidualCurve>,
   remark?: string | null
 ): Prisma.ResidualModelRunOutputUncheckedCreateInput {
   return {
@@ -1924,7 +2023,7 @@ function buildCurveGenerationModelRunMetricsSnapshot(preview: BuiltResidualCurve
   };
 }
 
-function buildCurveGenerationModelRunOutputSnapshot(curve: VehicleResidualCurve): Prisma.InputJsonObject {
+function buildCurveGenerationModelRunOutputSnapshot(curve: WithModelDefinition<VehicleResidualCurve>): Prisma.InputJsonObject {
   return {
     batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
     batteryUsageType: curve.batteryUsageType,
@@ -1935,6 +2034,9 @@ function buildCurveGenerationModelRunOutputSnapshot(curve: VehicleResidualCurve)
     curveNo: curve.curveNo,
     curveStatus: curve.curveStatus,
     model: curve.model,
+    modelDefinition: toModelDefinitionSummary(curve.modelDefinition),
+    modelDefinitionId: curve.modelDefinitionId,
+    modelDisplayName: modelDisplayName(curve.modelDefinition, curve.model),
     modelYear: curve.modelYear,
     pointCount: curve.pointCount,
     sampleCount: curve.sampleCount,
@@ -2000,6 +2102,9 @@ function toModelRunView(run: ResidualModelRunWithOutputs) {
     targetBatteryUsageType: run.targetBatteryUsageType,
     targetBrand: run.targetBrand,
     targetModel: run.targetModel,
+    targetModelDefinition: toModelDefinitionSummary(run.targetModelDefinition),
+    targetModelDefinitionId: run.targetModelDefinitionId,
+    targetModelDisplayName: modelDisplayName(run.targetModelDefinition, run.targetModel),
     targetModelYear: run.targetModelYear,
     targetSeries: run.targetSeries,
     targetTrim: run.targetTrim,
@@ -2031,7 +2136,7 @@ function toModelRunOutputView(output: ResidualModelRunOutputWithRelations) {
   };
 }
 
-function toModelRunForecastSummary(forecast: VehicleResidualForecast) {
+function toModelRunForecastSummary(forecast: WithModelDefinition<VehicleResidualForecast>) {
   return {
     asOfDate: formatDateOnly(forecast.asOfDate),
     batteryCapacityKwh: decimalToNumber(forecast.batteryCapacityKwh),
@@ -2043,6 +2148,9 @@ function toModelRunForecastSummary(forecast: VehicleResidualForecast) {
     forecastStatus: forecast.forecastStatus,
     id: forecast.id,
     model: forecast.model,
+    modelDefinition: toModelDefinitionSummary(forecast.modelDefinition),
+    modelDefinitionId: forecast.modelDefinitionId,
+    modelDisplayName: modelDisplayName(forecast.modelDefinition, forecast.model),
     modelYear: forecast.modelYear,
     series: forecast.series,
     trim: forecast.trim,
@@ -2086,7 +2194,8 @@ function addDaysDateOnly(date: Date, days: number) {
 function buildObservationData(
   input: ObservationInput,
   amountUnit: "fen" | "yuan",
-  rawRecord?: Record<string, string>
+  rawRecord?: Record<string, string>,
+  modelDefinition: ModelDefinitionSummary | null = null
 ): BuiltObservation {
   const source = parseEnumValue(MarketPriceSource, input.source, "source");
   const sourceListingId = normalizeOptionalText(input.sourceListingId);
@@ -2108,6 +2217,7 @@ function buildObservationData(
         : optionalFenAmount(input.listingPriceAmount, "listingPriceAmount"),
     mileageKm: optionalInteger(input.mileageKm, "mileageKm", 0),
     model,
+    modelDefinitionId: modelDefinition?.id ?? null,
     modelYear: optionalInteger(input.modelYear, "modelYear", 0),
     observedAt,
     priceAmount:
@@ -2139,6 +2249,7 @@ function buildObservationData(
       ...fields,
       confidenceScore,
       dedupeKey,
+      modelDefinitionId: fields.modelDefinitionId,
       observationStatus: MarketPriceObservationStatus.ACTIVE,
       rawSnapshot: buildRawSnapshot(fields, amountUnit, rawRecord, input.sourceUrl)
     },
@@ -2163,6 +2274,7 @@ function buildObservationWhere(query: MarketPriceObservationsQueryDto): Prisma.V
     deletedAt: null,
     mileageKm: hasFilter(mileageKm) ? mileageKm : undefined,
     model: query.model ? { contains: query.model, mode: "insensitive" } : undefined,
+    modelDefinitionId: normalizeOptionalText(query.modelDefinitionId) ?? undefined,
     modelYear: query.modelYear,
     observationStatus: query.observationStatus,
     observedAt: hasFilter(observedAt) ? observedAt : undefined,
@@ -2190,7 +2302,10 @@ function buildBatchWhere(query: MarketPriceImportBatchesQueryDto): Prisma.Market
   };
 }
 
-function buildCurveGenerationInput(dto: GenerateResidualCurveDto): CurveGenerationInput {
+function buildCurveGenerationInput(
+  dto: GenerateResidualCurveDto,
+  modelDefinition: ModelDefinitionSummary | null = null
+): CurveGenerationInput {
   const priceTypes = (dto.priceTypes && dto.priceTypes.length > 0 ? dto.priceTypes : DEFAULT_CURVE_PRICE_TYPES).map(
     (priceType) => parseEnumValue(MarketPriceType, priceType, "priceTypes")
   );
@@ -2222,6 +2337,8 @@ function buildCurveGenerationInput(dto: GenerateResidualCurveDto): CurveGenerati
     dryRun: dto.dryRun ?? false,
     minSamplePerPoint: optionalInteger(dto.minSamplePerPoint, "minSamplePerPoint", 1) ?? 3,
     model: requiredText(dto.model, "model"),
+    modelDefinition,
+    modelDefinitionId: modelDefinition?.id ?? null,
     modelProvider: normalizeOptionalText(dto.modelProvider),
     modelRunId,
     modelRunName: normalizeOptionalText(dto.modelRunName),
@@ -2246,18 +2363,34 @@ function buildCurveObservationWhere(input: CurveGenerationInput): Prisma.Vehicle
     observedAt.lte = input.sampleEndDate;
   }
 
-  return {
+  const commonWhere: Prisma.VehicleMarketPriceObservationWhereInput = {
     batteryCapacityKwh: input.batteryCapacityKwh ?? undefined,
     batteryUsageType: input.batteryUsageType ?? undefined,
-    brand: exactTextFilter(input.brand),
     deletedAt: null,
-    model: exactTextFilter(input.model),
-    modelYear: input.modelYear ?? undefined,
     observationStatus: MarketPriceObservationStatus.ACTIVE,
     observedAt: hasFilter(observedAt) ? observedAt : undefined,
-    priceType: { in: input.priceTypes },
+    priceType: { in: input.priceTypes }
+  };
+  const legacyWhere: Prisma.VehicleMarketPriceObservationWhereInput = {
+    brand: exactTextFilter(input.brand),
+    model: exactTextFilter(input.model),
+    modelDefinitionId: null,
+    modelYear: input.modelYear ?? undefined,
     series: input.series ? exactTextFilter(input.series) : undefined,
     trim: input.trim ? exactTextFilter(input.trim) : undefined
+  };
+
+  if (input.modelDefinitionId) {
+    return {
+      ...commonWhere,
+      OR: [{ modelDefinitionId: input.modelDefinitionId }, legacyWhere]
+    };
+  }
+
+  return {
+    ...commonWhere,
+    ...legacyWhere,
+    modelDefinitionId: undefined
   };
 }
 
@@ -2269,6 +2402,7 @@ function buildCurveWhere(query: ResidualCurveQueryDto): Prisma.VehicleResidualCu
     curveStatus: query.curveStatus,
     deletedAt: null,
     model: query.model ? { contains: query.model, mode: "insensitive" } : undefined,
+    modelDefinitionId: normalizeOptionalText(query.modelDefinitionId) ?? undefined,
     modelYear: query.modelYear,
     series: query.series ? { contains: query.series, mode: "insensitive" } : undefined
   };
@@ -2305,7 +2439,7 @@ function normalizeForecastHorizons(horizonMonths: number[] | undefined) {
 }
 
 function buildVehicleResidualForecastPreview(
-  vehicle: Vehicle,
+  vehicle: ForecastVehicle,
   selection: CurveSelection,
   input: ForecastGenerationInput,
   vehicleAgeMonths: number
@@ -2340,7 +2474,9 @@ function buildVehicleResidualForecastPreview(
         selectedCurveNo: selection.curve.curveNo
       },
       dryRun: input.dryRun,
-      horizonMonths: input.horizonMonths
+      horizonMonths: input.horizonMonths,
+      modelDefinition: toModelDefinitionSummary(vehicle.modelDefinition),
+      modelDefinitionId: vehicle.modelDefinitionId
     },
     metrics: {
       exactCount,
@@ -2350,6 +2486,8 @@ function buildVehicleResidualForecastPreview(
       unsupportedCount
     },
     model: vehicle.model,
+    modelDefinition: toModelDefinitionSummary(vehicle.modelDefinition),
+    modelDefinitionId: vehicle.modelDefinitionId,
     modelYear: vehicle.modelYear,
     purchasePriceAmount: vehicle.purchasePriceAmount,
     remark: input.remark,
@@ -2487,6 +2625,15 @@ function rankForecastCurve(curve: ForecastCurve, vehicle: Vehicle): CurveSelecti
   };
 }
 
+function rankModelDefinitionForecastCurve(curve: ForecastCurve, vehicle: Vehicle): CurveSelection {
+  const legacySelection = rankForecastCurve(curve, vehicle);
+  return {
+    ...legacySelection,
+    matchedFields: ["modelDefinitionId", ...legacySelection.matchedFields],
+    score: 100 + legacySelection.score
+  };
+}
+
 function compareCurveSelection(left: CurveSelection, right: CurveSelection) {
   if (left.score !== right.score) {
     return right.score - left.score;
@@ -2510,6 +2657,9 @@ function curveCandidateSummary(curve: ForecastCurve, score: number, matchedField
     generatedAt: curve.generatedAt.toISOString(),
     matchedFields,
     model: curve.model,
+    modelDefinition: toModelDefinitionSummary(curve.modelDefinition),
+    modelDefinitionId: curve.modelDefinitionId,
+    modelDisplayName: modelDisplayName(curve.modelDefinition, curve.model),
     modelYear: curve.modelYear,
     pointCount: curve.points.length,
     score
@@ -2586,6 +2736,8 @@ function buildResidualCurvePreview(
       skippedSampleCount
     },
     model: input.model,
+    modelDefinition: input.modelDefinition,
+    modelDefinitionId: input.modelDefinitionId,
     modelYear: input.modelYear,
     pointCount: points.length,
     priceTypes: input.priceTypes,
@@ -2727,6 +2879,8 @@ function curveFilterSnapshot(input: CurveGenerationInput): Prisma.InputJsonObjec
     batteryUsageType: input.batteryUsageType,
     brand: input.brand,
     model: input.model,
+    modelDefinition: toModelDefinitionSummary(input.modelDefinition),
+    modelDefinitionId: input.modelDefinitionId,
     modelYear: input.modelYear,
     priceTypes: input.priceTypes,
     referencePriceAmount: numberOrNull(input.referencePriceAmount),
@@ -2738,7 +2892,14 @@ function curveFilterSnapshot(input: CurveGenerationInput): Prisma.InputJsonObjec
 }
 
 function defaultCurveName(input: CurveGenerationInput) {
-  return [input.brand, input.series, input.model, input.modelYear, decimalToNumber(input.batteryCapacityKwh), input.batteryUsageType]
+  return [
+    input.modelDefinition?.displayName ?? input.brand,
+    input.modelDefinition ? null : input.series,
+    input.modelDefinition ? null : input.model,
+    input.modelYear,
+    decimalToNumber(input.batteryCapacityKwh),
+    input.batteryUsageType
+  ]
     .filter((part) => part !== null && part !== undefined && part !== "")
     .join(" ");
 }
@@ -2749,7 +2910,14 @@ function exactTextFilter(value: string): Prisma.StringFilter {
 
 function sameCurveDimensionWhere(curve: Pick<
   VehicleResidualCurve,
-  "batteryCapacityKwh" | "batteryUsageType" | "brand" | "model" | "modelYear" | "series" | "trim"
+  | "batteryCapacityKwh"
+  | "batteryUsageType"
+  | "brand"
+  | "model"
+  | "modelDefinitionId"
+  | "modelYear"
+  | "series"
+  | "trim"
 >): Prisma.VehicleResidualCurveWhereInput {
   return {
     batteryCapacityKwh: curve.batteryCapacityKwh,
@@ -2757,6 +2925,7 @@ function sameCurveDimensionWhere(curve: Pick<
     brand: curve.brand,
     deletedAt: null,
     model: curve.model,
+    modelDefinitionId: curve.modelDefinitionId,
     modelYear: curve.modelYear,
     series: curve.series,
     trim: curve.trim
@@ -2861,6 +3030,7 @@ function buildDedupeKey(fields: ObservationFields) {
     fields.brand,
     fields.series,
     fields.model,
+    fields.modelDefinitionId,
     fields.modelYear,
     fields.mileageKm,
     fields.city,
@@ -2936,6 +3106,7 @@ function observationSnapshot(fields: ObservationFields): Prisma.InputJsonObject 
     listingPriceAmount: numberOrNull(fields.listingPriceAmount),
     mileageKm: fields.mileageKm,
     model: fields.model,
+    modelDefinitionId: fields.modelDefinitionId,
     modelYear: fields.modelYear,
     observedAt: formatDateOnly(fields.observedAt),
     priceAmount: Number(fields.priceAmount),
@@ -2957,7 +3128,7 @@ function observationSnapshot(fields: ObservationFields): Prisma.InputJsonObject 
 function auditPayload(
   observation: Pick<
     VehicleMarketPriceObservation,
-    "batchId" | "brand" | "id" | "model" | "priceAmount" | "source"
+    "batchId" | "brand" | "id" | "model" | "modelDefinitionId" | "priceAmount" | "source"
   >,
   extra: { remark?: string | null }
 ) {
@@ -2965,6 +3136,7 @@ function auditPayload(
     batchId: observation.batchId,
     brand: observation.brand,
     model: observation.model,
+    modelDefinitionId: observation.modelDefinitionId,
     observationId: observation.id,
     priceAmount: Number(observation.priceAmount),
     remark: extra.remark ?? null,
@@ -2972,7 +3144,27 @@ function auditPayload(
   };
 }
 
-function toObservationView(observation: VehicleMarketPriceObservation) {
+function toModelDefinitionSummary(definition?: ModelDefinitionSummary | null) {
+  return definition
+    ? {
+        brand: definition.brand,
+        customerDisplayName: definition.customerDisplayName,
+        displayName: definition.displayName,
+        id: definition.id,
+        legacyVehicleModel: definition.legacyVehicleModel,
+        modelCode: definition.modelCode,
+        modelName: definition.modelName,
+        modelYear: definition.modelYear,
+        series: definition.series
+      }
+    : null;
+}
+
+function modelDisplayName(definition: ModelDefinitionSummary | null | undefined, fallback?: string | null) {
+  return definition?.displayName ?? fallback ?? null;
+}
+
+function toObservationView(observation: WithModelDefinition<VehicleMarketPriceObservation>) {
   return {
     accidentFlag: observation.accidentFlag,
     batchId: observation.batchId,
@@ -2991,6 +3183,9 @@ function toObservationView(observation: VehicleMarketPriceObservation) {
     listingPriceAmount: numberOrNull(observation.listingPriceAmount),
     mileageKm: observation.mileageKm,
     model: observation.model,
+    modelDefinition: toModelDefinitionSummary(observation.modelDefinition),
+    modelDefinitionId: observation.modelDefinitionId,
+    modelDisplayName: modelDisplayName(observation.modelDefinition, observation.model),
     modelYear: observation.modelYear,
     observationNo: observation.observationNo,
     observationStatus: observation.observationStatus,
@@ -3120,6 +3315,9 @@ function toCurvePreviewView(curve: BuiltResidualCurve) {
     id: null,
     metrics: curve.metrics,
     model: curve.model,
+    modelDefinition: toModelDefinitionSummary(curve.modelDefinition),
+    modelDefinitionId: curve.modelDefinitionId,
+    modelDisplayName: modelDisplayName(curve.modelDefinition, curve.model),
     modelYear: curve.modelYear,
     pointCount: curve.pointCount,
     priceTypes: curve.priceTypes,
@@ -3135,7 +3333,7 @@ function toCurvePreviewView(curve: BuiltResidualCurve) {
   };
 }
 
-function toCurveView(curve: VehicleResidualCurve & { points?: VehicleResidualCurvePoint[] }) {
+function toCurveView(curve: WithModelDefinition<VehicleResidualCurve> & { points?: VehicleResidualCurvePoint[] }) {
   return {
     batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
     batteryUsageType: curve.batteryUsageType,
@@ -3154,6 +3352,9 @@ function toCurveView(curve: VehicleResidualCurve & { points?: VehicleResidualCur
     id: curve.id,
     metrics: curve.metrics,
     model: curve.model,
+    modelDefinition: toModelDefinitionSummary(curve.modelDefinition),
+    modelDefinitionId: curve.modelDefinitionId,
+    modelDisplayName: modelDisplayName(curve.modelDefinition, curve.model),
     modelYear: curve.modelYear,
     pointCount: curve.pointCount,
     points: curve.points?.map(toCurvePointView),
@@ -3270,6 +3471,9 @@ function toForecastPreviewView(forecast: BuiltVehicleResidualForecast) {
     inputSnapshot: forecast.inputSnapshot,
     metrics: forecast.metrics,
     model: forecast.model,
+    modelDefinition: toModelDefinitionSummary(forecast.modelDefinition),
+    modelDefinitionId: forecast.modelDefinitionId,
+    modelDisplayName: modelDisplayName(forecast.modelDefinition, forecast.model),
     modelYear: forecast.modelYear,
     pointCount: null,
     points: undefined,
@@ -3305,6 +3509,9 @@ function toForecastView(forecast: VehicleResidualForecastWithRelations) {
     inputSnapshot: forecast.inputSnapshot,
     metrics: forecast.metrics,
     model: forecast.model,
+    modelDefinition: toModelDefinitionSummary(forecast.modelDefinition),
+    modelDefinitionId: forecast.modelDefinitionId,
+    modelDisplayName: modelDisplayName(forecast.modelDefinition, forecast.model),
     modelYear: forecast.modelYear,
     pointCount: forecast.points?.length,
     points: forecast.points?.map(toForecastPointView),
@@ -3369,7 +3576,7 @@ function toForecastPointView(point: VehicleResidualForecastPointWithForecast | V
   };
 }
 
-function toForecastCurveSummary(curve: VehicleResidualCurve) {
+function toForecastCurveSummary(curve: WithModelDefinition<VehicleResidualCurve>) {
   return {
     batteryCapacityKwh: decimalToNumber(curve.batteryCapacityKwh),
     batteryUsageType: curve.batteryUsageType,
@@ -3382,6 +3589,9 @@ function toForecastCurveSummary(curve: VehicleResidualCurve) {
     effectiveFrom: curve.effectiveFrom ? formatDateOnly(curve.effectiveFrom) : null,
     id: curve.id,
     model: curve.model,
+    modelDefinition: toModelDefinitionSummary(curve.modelDefinition),
+    modelDefinitionId: curve.modelDefinitionId,
+    modelDisplayName: modelDisplayName(curve.modelDefinition, curve.model),
     modelYear: curve.modelYear,
     pointCount: curve.pointCount,
     series: curve.series,
@@ -3389,7 +3599,7 @@ function toForecastCurveSummary(curve: VehicleResidualCurve) {
   };
 }
 
-function toForecastVehicleSummary(vehicle: Vehicle) {
+function toForecastVehicleSummary(vehicle: ForecastVehicle) {
   return {
     batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,
@@ -3398,6 +3608,9 @@ function toForecastVehicleSummary(vehicle: Vehicle) {
     currentSalePriceAmount: numberOrNull(vehicle.currentSalePriceAmount),
     id: vehicle.id,
     model: vehicle.model,
+    modelDefinition: toModelDefinitionSummary(vehicle.modelDefinition),
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: modelDisplayName(vehicle.modelDefinition, vehicle.model),
     modelYear: vehicle.modelYear,
     purchasePriceAmount: Number(vehicle.purchasePriceAmount),
     registrationDate: vehicle.registrationDate ? formatDateOnly(vehicle.registrationDate) : null,
@@ -3415,6 +3628,7 @@ function curveAuditPayload(
     | "curveNo"
     | "id"
     | "model"
+    | "modelDefinitionId"
     | "modelYear"
     | "pointCount"
     | "sampleCount"
@@ -3429,6 +3643,7 @@ function curveAuditPayload(
     curveId: curve.id,
     curveNo: curve.curveNo,
     model: curve.model,
+    modelDefinitionId: curve.modelDefinitionId,
     modelYear: curve.modelYear,
     pointCount: curve.pointCount,
     remark: extra.remark ?? null,
@@ -3448,6 +3663,7 @@ function forecastAuditPayload(
     forecastId: forecast.id,
     forecastNo: forecast.forecastNo,
     horizonMonths: extra.horizonMonths ?? forecast.points?.map((point) => point.horizonMonth) ?? [],
+    modelDefinitionId: forecast.modelDefinitionId,
     remark: extra.remark ?? null,
     vehicleId: forecast.vehicleId
   };
@@ -3484,6 +3700,8 @@ function curveSummarySnapshot(curve: ForecastCurve): Prisma.InputJsonObject {
     effectiveFrom: curve.effectiveFrom ? formatDateOnly(curve.effectiveFrom) : null,
     generatedAt: curve.generatedAt.toISOString(),
     model: curve.model,
+    modelDefinition: toModelDefinitionSummary(curve.modelDefinition),
+    modelDefinitionId: curve.modelDefinitionId,
     modelYear: curve.modelYear,
     pointCount: curve.points.length,
     sampleCount: curve.sampleCount,
@@ -3492,7 +3710,7 @@ function curveSummarySnapshot(curve: ForecastCurve): Prisma.InputJsonObject {
   };
 }
 
-function vehicleSummarySnapshot(vehicle: Vehicle): Prisma.InputJsonObject {
+function vehicleSummarySnapshot(vehicle: ForecastVehicle): Prisma.InputJsonObject {
   return {
     batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,
@@ -3500,6 +3718,8 @@ function vehicleSummarySnapshot(vehicle: Vehicle): Prisma.InputJsonObject {
     currentMileageKm: vehicle.currentMileageKm,
     currentSalePriceAmount: numberOrNull(vehicle.currentSalePriceAmount),
     model: vehicle.model,
+    modelDefinition: toModelDefinitionSummary(vehicle.modelDefinition),
+    modelDefinitionId: vehicle.modelDefinitionId,
     modelYear: vehicle.modelYear,
     purchasePriceAmount: Number(vehicle.purchasePriceAmount),
     registrationDate: vehicle.registrationDate ? formatDateOnly(vehicle.registrationDate) : null,

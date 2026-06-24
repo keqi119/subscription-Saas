@@ -45,6 +45,10 @@ export class MarketPriceObservationsQueryDto {
 
   @IsOptional()
   @IsString()
+  modelDefinitionId?: string;
+
+  @IsOptional()
+  @IsString()
   brand?: string;
 
   @IsOptional()
@@ -121,6 +125,10 @@ export class CreateMarketPriceObservationDto {
   @IsString()
   @IsNotEmpty()
   observedAt!: string;
+
+  @IsOptional()
+  @IsString()
+  modelDefinitionId?: string | null;
 
   @IsString()
   @IsNotEmpty()
@@ -296,6 +304,10 @@ export class GenerateResidualCurveDto {
   @IsString()
   curveVersion?: string | null;
 
+  @IsOptional()
+  @IsString()
+  modelDefinitionId?: string | null;
+
   @IsString()
   @IsNotEmpty()
   brand!: string;
@@ -393,6 +405,10 @@ export class ResidualCurveQueryDto {
   @IsOptional()
   @IsEnum(VehicleResidualCurveMethod)
   curveMethod?: VehicleResidualCurveMethod;
+
+  @IsOptional()
+  @IsString()
+  modelDefinitionId?: string;
 
   @IsOptional()
   @IsString()
@@ -526,6 +542,10 @@ export class ResidualModelRunQueryDto {
 
   @IsOptional()
   @IsString()
+  targetModelDefinitionId?: string;
+
+  @IsOptional()
+  @IsString()
   targetBrand?: string;
 
   @IsOptional()
@@ -588,6 +608,10 @@ export class CreateResidualModelRunDto {
 
   @IsEnum(ResidualModelTargetType)
   targetType!: ResidualModelTargetType;
+
+  @IsOptional()
+  @IsString()
+  targetModelDefinitionId?: string | null;
 
   @IsOptional()
   @IsString()

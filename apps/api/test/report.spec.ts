@@ -164,6 +164,39 @@ describe("reporting dashboard APIs", () => {
     ]);
   });
 
+  it("orders report filters by modelDefinitionId with legacy fallback and rejects mismatched legacy filter", async () => {
+    const { prisma, service } = createReportHarness();
+    mockOrderReport(prisma);
+
+    const result = await service.getOrderReport({
+      endDate: "2026-06-30",
+      modelDefinitionId: "model-et5",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.totalOrders).toBe(3);
+    expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { deletedAt: null, id: "model-et5" } })
+    );
+    expect(prisma.subscriptionOrder.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            { vehicle: { modelDefinitionId: "model-et5" } },
+            { vehicleModel: VehicleModel.ET5 }
+          ]
+        })
+      })
+    );
+
+    await expect(
+      service.getOrderReport({
+        modelDefinitionId: "model-et5",
+        vehicleModel: VehicleModel.ES6
+      })
+    ).rejects.toThrow("modelDefinitionId");
+  });
+
   it("finance report calculates receivable, paid, and unpaid totals from ReceivableBill", async () => {
     const { prisma, service } = createReportHarness();
 
@@ -423,6 +456,44 @@ describe("reporting dashboard APIs", () => {
         where: expect.objectContaining({
           status: VehicleStatus.LEASED,
           vehicleModel: VehicleModel.ET5
+        })
+      })
+    );
+  });
+
+  it("asset-profitability vehicles filters by modelDefinitionId and returns master display fields", async () => {
+    const { prisma, service } = createReportHarness();
+    const definition = reportModelDefinition();
+    mockAssetProfitability(prisma);
+    prisma.vehicle.findMany.mockResolvedValueOnce([
+      assetVehicle({
+        modelDefinition: definition,
+        modelDefinitionId: definition.id
+      })
+    ]);
+
+    const result = await service.getAssetProfitabilityVehicles({
+      endDate: "2026-06-30",
+      modelDefinitionId: definition.id,
+      startDate: "2026-06-01"
+    });
+
+    expect(result.items[0]).toMatchObject({
+      modelDefinition: {
+        displayName: "ET5 主数据",
+        id: definition.id,
+        modelCode: "NIO_ET5"
+      },
+      modelDefinitionId: definition.id,
+      modelDisplayName: "ET5 主数据"
+    });
+    expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            { modelDefinitionId: definition.id },
+            { modelDefinitionId: null, vehicleModel: VehicleModel.ET5 }
+          ]
         })
       })
     );
@@ -2420,6 +2491,27 @@ describe("reporting dashboard APIs", () => {
     );
   });
 
+  it("asset-profitability vehicles export includes model definition code, display name, and legacy model", async () => {
+    const { prisma, service } = createReportHarness();
+    const definition = reportModelDefinition();
+    mockAssetProfitability(prisma);
+    prisma.vehicle.findMany.mockResolvedValueOnce([
+      assetVehicle({
+        modelDefinition: definition,
+        modelDefinitionId: definition.id
+      })
+    ]);
+
+    const result = await service.exportAssetProfitabilityVehicles({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.content).toContain("车型代码,车型显示名,legacy 车型");
+    expect(result.content).toContain("NIO_ET5,ET5 主数据,ET5");
+    expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
+  });
+
   it("asset-profitability vehicles export rejects more than 5000 rows", async () => {
     const { prisma, service } = createReportHarness();
     prisma.vehicle.findMany.mockResolvedValue(
@@ -3630,6 +3722,13 @@ function createReportHarness() {
       findMany: vi.fn(),
       groupBy: vi.fn()
     },
+    vehicleModelDefinition: {
+      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+        where.id === "missing-model-definition"
+          ? null
+          : reportModelDefinition({ id: where.id ?? "model-et5" })
+      )
+    },
     vehicleCapitalEvent: {
       findMany: vi.fn().mockResolvedValue([])
     },
@@ -3870,6 +3969,18 @@ function mockAssetProfitability(prisma: ReportPrismaMock) {
   ]);
 }
 
+function reportModelDefinition(overrides: Record<string, unknown> = {}) {
+  return {
+    customerDisplayName: null,
+    deletedAt: null,
+    displayName: "ET5 主数据",
+    id: "model-et5",
+    legacyVehicleModel: VehicleModel.ET5,
+    modelCode: "NIO_ET5",
+    ...overrides
+  };
+}
+
 function mockAssetReturnTrial(
   prisma: ReportPrismaMock,
   overrides: {
@@ -3951,6 +4062,8 @@ function assetVehicle(overrides: Record<string, unknown> = {}) {
     currentSalePriceReviewedAt: new Date("2026-06-01T02:00:00.000Z"),
     id: "vehicle-1",
     model: "ET5 75kWh",
+    modelDefinition: null,
+    modelDefinitionId: null,
     plateNo: "沪A10001",
     purchasePriceAmount: 1000000n,
     salePriceStatus: "EFFECTIVE",

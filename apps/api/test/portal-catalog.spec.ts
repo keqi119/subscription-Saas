@@ -168,6 +168,79 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
     });
   });
 
+  it("returns model definition display fields for catalog vehicles", async () => {
+    const definition = createModelDefinition({
+      customerDisplayName: "乐道 ES6",
+      displayName: "ES6 主数据",
+      id: "model-es6",
+      legacyVehicleModel: VehicleModel.ES6,
+      modelCode: "NIO_ES6"
+    });
+    const vehicle = createVehicle({
+      modelDefinition: definition,
+      modelDefinitionId: definition.id
+    });
+    const { service } = createHarness({ vehicle });
+
+    const rows = await service.listVehicles();
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(rows[0]).toMatchObject({
+      customerModelDisplayName: "NIO ES6 乐道 ES6 2025款",
+      modelDefinition: {
+        displayName: "ES6 主数据",
+        id: definition.id,
+        modelCode: "NIO_ES6"
+      },
+      modelDefinitionId: definition.id,
+      modelDisplayName: "ES6 主数据"
+    });
+    expect(rows[0]?.modelDefinition).not.toHaveProperty("enabled");
+    expect(rows[0]?.modelDefinition).not.toHaveProperty("legacyVehicleModel");
+    expect(rows[0]?.modelDefinition).not.toHaveProperty("portalVisible");
+    expect(detail.vehicle).toMatchObject({
+      modelDefinitionId: definition.id,
+      modelDisplayName: "ES6 主数据"
+    });
+  });
+
+  it("filters modelDefinitionId with legacy fallback vehicles and rejects mismatched legacy filter", async () => {
+    const definition = createModelDefinition({ id: "model-es6", legacyVehicleModel: VehicleModel.ES6 });
+    const { service } = createHarness({
+      modelDefinitions: [definition],
+      vehicles: [
+        createVehicle({ id: "vehicle-master", modelDefinition: definition, modelDefinitionId: definition.id }),
+        createVehicle({ id: "vehicle-legacy", modelDefinitionId: null, vehicleNo: "VH-LEGACY" }),
+        createVehicle({ id: "vehicle-et5", modelDefinitionId: null, vehicleModel: VehicleModel.ET5 })
+      ]
+    });
+
+    const rows = await service.listVehicles({ modelDefinitionId: definition.id });
+
+    expect(rows.map((row) => row.id)).toEqual(["vehicle-master", "vehicle-legacy"]);
+    await expect(
+      service.listVehicles({ modelDefinitionId: definition.id, vehicleModel: VehicleModel.ET5 })
+    ).rejects.toThrow();
+  });
+
+  it("lists only enabled portal-visible model definitions for filters", async () => {
+    const visible = createModelDefinition({ id: "model-visible", modelCode: "VISIBLE" });
+    const disabled = createModelDefinition({ enabled: false, id: "model-disabled", modelCode: "DISABLED" });
+    const hidden = createModelDefinition({ id: "model-hidden", modelCode: "HIDDEN", portalVisible: false });
+    const { service } = createHarness({ modelDefinitions: [visible, disabled, hidden] });
+
+    const rows = await service.listModelDefinitions();
+
+    expect(rows).toEqual([
+      {
+        customerDisplayName: visible.customerDisplayName,
+        displayName: visible.displayName,
+        id: visible.id,
+        modelCode: visible.modelCode
+      }
+    ]);
+  });
+
   it("streams only customer-visible published media", async () => {
     const { service, storageService } = createHarness();
 
@@ -182,23 +255,54 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
   });
 });
 
-function createHarness(seed: { vehicle?: ReturnType<typeof createVehicle> } = {}) {
-  const vehicle = seed.vehicle ?? createVehicle();
+function createHarness(
+  seed: {
+    modelDefinitions?: ReturnType<typeof createModelDefinition>[];
+    vehicle?: ReturnType<typeof createVehicle>;
+    vehicles?: ReturnType<typeof createVehicle>[];
+  } = {}
+) {
+  const vehicles = seed.vehicles ?? [seed.vehicle ?? createVehicle()];
+  const modelDefinitions = seed.modelDefinitions ?? [createModelDefinition()];
   const plans = [createPlan("plan-1"), createPlan("plan-2", { planName: "灵活订阅 24 个月" })];
   const prisma = {
     subscriptionPlan: {
       findMany: vi.fn(async () => plans)
     },
     vehicle: {
-      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
-        !where.id || where.id === vehicle.id ? vehicle : null
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        filterCatalogVehicles(vehicles, where)[0] ?? null
       ),
-      findMany: vi.fn(async () => [vehicle])
+      findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        filterCatalogVehicles(vehicles, where)
+      )
+    },
+    vehicleModelDefinition: {
+      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+        modelDefinitions.find(
+          (definition) =>
+            (!where.id || definition.id === where.id) &&
+            (where.deletedAt !== null || definition.deletedAt === null)
+        ) ?? null
+      ),
+      findMany: vi.fn(async ({ where }: { where: { deletedAt?: null; enabled?: boolean; portalVisible?: boolean } }) =>
+        modelDefinitions
+          .filter((definition) => where.deletedAt !== null || definition.deletedAt === null)
+          .filter((definition) => where.enabled === undefined || definition.enabled === where.enabled)
+          .filter((definition) => where.portalVisible === undefined || definition.portalVisible === where.portalVisible)
+          .map((definition) => ({
+            customerDisplayName: definition.customerDisplayName,
+            displayName: definition.displayName,
+            id: definition.id,
+            modelCode: definition.modelCode
+          }))
+      )
     },
     vehicleListingMedia: {
       findFirst: vi.fn(async ({ where }: { where: { customerVisible?: boolean; id?: string; vehicleId?: string } }) => {
-        const media = vehicle.listingProfile?.media.find((item) => item.id === where.id);
-        if (!media || media.vehicleId !== where.vehicleId || media.customerVisible !== where.customerVisible) {
+        const vehicle = vehicles.find((item) => item.id === where.vehicleId);
+        const media = vehicle?.listingProfile?.media.find((item) => item.id === where.id);
+        if (!vehicle || !media || media.vehicleId !== where.vehicleId || media.customerVisible !== where.customerVisible) {
           return null;
         }
         return {
@@ -207,7 +311,7 @@ function createHarness(seed: { vehicle?: ReturnType<typeof createVehicle> } = {}
         };
       }),
       findMany: vi.fn(async ({ where }: { where: { customerVisible?: boolean; id?: { in: string[] }; vehicleId?: string } }) =>
-        (vehicle.listingProfile?.media ?? []).filter(
+        (vehicles.find((item) => item.id === where.vehicleId)?.listingProfile?.media ?? []).filter(
           (item) =>
             item.vehicleId === where.vehicleId &&
             item.customerVisible === where.customerVisible &&
@@ -229,6 +333,56 @@ function createHarness(seed: { vehicle?: ReturnType<typeof createVehicle> } = {}
     prisma,
     service: new PortalCatalogService(prisma as never, storageService as never),
     storageService
+  };
+}
+
+function filterCatalogVehicles(
+  vehicles: ReturnType<typeof createVehicle>[],
+  where: Record<string, unknown>
+) {
+  return vehicles.filter((vehicle) => {
+    if (where.id && vehicle.id !== where.id) {
+      return false;
+    }
+    if (where.vehicleModel && vehicle.vehicleModel !== where.vehicleModel) {
+      return false;
+    }
+    const modelOr = where.OR as Array<{ modelDefinitionId?: string | null; vehicleModel?: VehicleModel }> | undefined;
+    if (modelOr?.length) {
+      return modelOr.some((condition) => {
+        if (condition.modelDefinitionId !== undefined && vehicle.modelDefinitionId !== condition.modelDefinitionId) {
+          return false;
+        }
+        if (condition.vehicleModel !== undefined && vehicle.vehicleModel !== condition.vehicleModel) {
+          return false;
+        }
+        return true;
+      });
+    }
+    return true;
+  });
+}
+
+function createModelDefinition(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-06-21T10:00:00.000Z");
+  return {
+    brand: "NIO",
+    createdAt: now,
+    createdBy: "user-1",
+    customerDisplayName: null,
+    deletedAt: null,
+    displayName: "ES6",
+    enabled: true,
+    id: "model-es6",
+    legacyVehicleModel: VehicleModel.ES6,
+    modelCode: "NIO_ES6",
+    modelName: "ES6",
+    portalVisible: true,
+    series: "ES6",
+    sortOrder: 0,
+    updatedAt: now,
+    updatedBy: "user-1",
+    ...overrides
   };
 }
 
@@ -254,6 +408,8 @@ function createVehicle(overrides: Record<string, unknown> = {}) {
     latestRegistrationDate: null,
     listingProfile: createListingProfile(),
     model: "ES6",
+    modelDefinition: null,
+    modelDefinitionId: null,
     modelYear: 2025,
     nextSalePriceReviewAt: null,
     plateNo: "沪A12345",
@@ -539,6 +695,8 @@ function createPlan(id: string, overrides: Record<string, unknown> = {}) {
     vehiclePackage: {
       deletedAt: null,
       id: "vehicle-package-1",
+      modelDefinition: null,
+      modelDefinitionId: null,
       monthlyFeeRate: new Prisma.Decimal("0.04"),
       packageName: "ES6 基础车包",
       productId: "product-1",

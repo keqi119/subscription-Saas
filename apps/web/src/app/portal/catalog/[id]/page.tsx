@@ -213,7 +213,8 @@ export default function PortalCatalogDetailPage() {
               items={[
                 { label: "品牌", children: detail.brand },
                 { label: "车系", children: detail.series ?? "-" },
-                { label: "车型", children: detail.model ?? "-" },
+                { label: "车型", children: detail.modelDisplayName ?? detail.model ?? "-" },
+                { label: "车型代码", children: detail.modelDefinition?.modelCode ?? "-" },
                 { label: "年款", children: detail.modelYear ? `${detail.modelYear}款` : "-" },
                 { label: "上牌日期", children: formatDate(detail.registrationDate) },
                 { label: "当前里程", children: `${detail.currentMileageKm.toLocaleString("zh-CN")} km` },

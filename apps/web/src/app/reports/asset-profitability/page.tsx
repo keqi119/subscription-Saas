@@ -230,6 +230,9 @@ interface AssetProfitabilityVehicleRow {
   lastReturnAt?: string | null;
   leasedDays?: number | null;
   model?: string | null;
+  modelDefinition?: VehicleModelDefinitionSummary | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   operatingDays?: number | null;
   plateNo?: string | null;
   purchasePriceAmount?: number | null;
@@ -550,6 +553,9 @@ interface VehicleBaseInfo {
   batteryUsageType?: string | null;
   brand?: string | null;
   model?: string | null;
+  modelDefinition?: VehicleModelDefinitionSummary | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   plateNo?: string | null;
   salePriceStatus?: string | null;
   series?: string | null;
@@ -870,9 +876,24 @@ interface SalePriceHistoryRow {
   reviewType?: string | null;
 }
 
+interface VehicleModelDefinitionSummary {
+  customerDisplayName?: string | null;
+  displayName: string;
+  id: string;
+  legacyVehicleModel?: string | null;
+  modelCode: string;
+}
+
 const vehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
   (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
 );
+function modelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
+  return `${definition.modelCode} - ${definition.displayName} (legacy: ${labelOf(
+    VEHICLE_MODEL_LABELS,
+    definition.legacyVehicleModel
+  )})`;
+}
+
 const residualHorizonMonthOptions = [
   { label: "当前", value: 0 },
   { label: "未来 6 个月", value: 6 },
@@ -947,6 +968,8 @@ export default function AssetProfitabilityPage() {
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>(defaultDateRange);
+  const [modelDefinitionId, setModelDefinitionId] = useState<string | undefined>();
+  const [modelDefinitions, setModelDefinitions] = useState<VehicleModelDefinitionSummary[]>([]);
   const [vehicleModel, setVehicleModel] = useState<string | undefined>();
   const [vehicleStatus, setVehicleStatus] = useState<string | undefined>();
   const [summary, setSummary] = useState<AssetProfitabilitySummary | null>(null);
@@ -1002,6 +1025,14 @@ export default function AssetProfitabilityPage() {
 
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
   const canViewAssetReport = permissions.has("report:asset");
+  const modelDefinitionOptions = useMemo(
+    () =>
+      modelDefinitions.map((definition) => ({
+        label: modelDefinitionOptionLabel(definition),
+        value: definition.id
+      })),
+    [modelDefinitions]
+  );
 
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
@@ -1015,14 +1046,23 @@ export default function AssetProfitabilityPage() {
       .finally(() => setAuthLoading(false));
   }, [message]);
 
+  useEffect(() => {
+    apiFetch<{ items: VehicleModelDefinitionSummary[] }>("/vehicle-model-definitions?enabled=true&pageSize=100")
+      .then((result) => setModelDefinitions(result.items))
+      .catch((error: unknown) => {
+        void message.error(normalizeErrorMessage(error));
+      });
+  }, [message]);
+
   const baseQuery = useCallback(() => {
     return {
       endDate: dateRange[1].format("YYYY-MM-DD"),
+      modelDefinitionId,
       startDate: dateRange[0].format("YYYY-MM-DD"),
       vehicleModel,
       vehicleStatus
     };
-  }, [dateRange, vehicleModel, vehicleStatus]);
+  }, [dateRange, modelDefinitionId, vehicleModel, vehicleStatus]);
 
   const returnQuery = useCallback(() => {
     return {
@@ -1396,7 +1436,7 @@ export default function AssetProfitabilityPage() {
       { dataIndex: "plateNo", render: safeText, title: "车牌号", width: 110 },
       { dataIndex: "brand", render: safeText, title: "品牌", width: 100 },
       { dataIndex: "series", render: safeText, title: "车系", width: 110 },
-      { dataIndex: "vehicleModel", render: safeText, title: "车型", width: 90 },
+      { render: (_value, record) => vehicleDisplayName(record), title: "车型", width: 140 },
       {
         dataIndex: "vehicleStatus",
         render: renderVehicleStatus,
@@ -1487,7 +1527,7 @@ export default function AssetProfitabilityPage() {
       { dataIndex: "vehicleNo", fixed: "left", render: safeText, title: "车辆编号", width: 130 },
       { dataIndex: "vin", render: safeText, title: "VIN", width: 180 },
       { dataIndex: "plateNo", render: safeText, title: "车牌号", width: 110 },
-      { dataIndex: "vehicleModel", render: safeText, title: "车型", width: 90 },
+      { render: (_value, record) => vehicleDisplayName(record), title: "车型", width: 140 },
       {
         dataIndex: "vehicleStatus",
         render: renderVehicleStatus,
@@ -1687,6 +1727,13 @@ export default function AssetProfitabilityPage() {
           setPage(1);
           setReturnPage(1);
         }}
+        modelDefinitionId={modelDefinitionId}
+        modelDefinitionOptions={modelDefinitionOptions}
+        onModelDefinitionChange={(value) => {
+          setModelDefinitionId(value);
+          setPage(1);
+          setReturnPage(1);
+        }}
         onRefresh={() => void refresh()}
         onVehicleModelChange={(value) => {
           setVehicleModel(value);
@@ -1876,9 +1923,12 @@ function FilterBar({
   exportSummaryLabel,
   exportVehiclesLabel,
   loading,
+  modelDefinitionId,
+  modelDefinitionOptions,
   onExportSummary,
   onExportVehicles,
   onDateRangeChange,
+  onModelDefinitionChange,
   onRefresh,
   onResidualCalibrationPercentChange,
   onResidualHorizonMonthChange,
@@ -1895,9 +1945,12 @@ function FilterBar({
   exportSummaryLabel: string;
   exportVehiclesLabel: string;
   loading: boolean;
+  modelDefinitionId?: string;
+  modelDefinitionOptions: Array<{ label: string; value: string }>;
   onExportSummary: () => void;
   onExportVehicles: () => void;
   onDateRangeChange: (value: [Dayjs, Dayjs]) => void;
+  onModelDefinitionChange: (value?: string) => void;
   onRefresh: () => void;
   onResidualCalibrationPercentChange?: (value: number) => void;
   onResidualHorizonMonthChange?: (value: number) => void;
@@ -1923,6 +1976,19 @@ function FilterBar({
               }
             }}
             value={dateRange}
+          />
+        </Space>
+        <Space orientation="vertical" size={4}>
+          <Typography.Text type="secondary">车型代码</Typography.Text>
+          <Select
+            allowClear
+            onChange={onModelDefinitionChange}
+            optionFilterProp="label"
+            options={modelDefinitionOptions}
+            placeholder="全部车型代码"
+            showSearch
+            style={{ width: 220 }}
+            value={modelDefinitionId}
           />
         </Space>
         <Space orientation="vertical" size={4}>
@@ -2406,7 +2472,7 @@ function VehicleDetailContent({
             { label: "车牌号", children: safeText(vehicle.plateNo) },
             { label: "品牌", children: safeText(vehicle.brand) },
             { label: "车系", children: safeText(vehicle.series) },
-            { label: "车型", children: safeText(vehicle.vehicleModel ?? vehicle.model) },
+            { label: "车型", children: vehicleDisplayName(vehicle) },
             { label: "电池容量", children: formatKwh(vehicle.batteryCapacityKwh) },
             {
               label: "电池使用方式",
@@ -2583,7 +2649,7 @@ function ReturnTrialDetailContent({
             { label: "车牌号", children: safeText(vehicle.plateNo) },
             { label: "品牌", children: safeText(vehicle.brand) },
             { label: "车系", children: safeText(vehicle.series) },
-            { label: "车型", children: safeText(vehicle.vehicleModel ?? vehicle.model) },
+            { label: "车型", children: vehicleDisplayName(vehicle) },
             { label: "车辆状态", children: renderVehicleStatus(vehicle.vehicleStatus) },
             { label: "采购价", children: formatYuan(vehicle.purchasePriceAmount) },
             { label: "当前销售价", children: formatYuan(vehicle.currentSalePriceAmount) }
@@ -4032,6 +4098,10 @@ function safeText(value?: unknown) {
   }
 
   return typeof value === "string" && value.trim() ? value : "-";
+}
+
+function vehicleDisplayName(vehicle?: { model?: string | null; modelDisplayName?: string | null; vehicleModel?: string | null } | null) {
+  return safeText(vehicle?.modelDisplayName ?? vehicle?.model ?? vehicle?.vehicleModel);
 }
 
 function normalizeErrorMessage(error: unknown) {

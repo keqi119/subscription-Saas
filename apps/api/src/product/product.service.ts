@@ -20,6 +20,7 @@ import {
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
+  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 
@@ -48,10 +49,42 @@ import {
   UpdateSubscriptionPlanDto
 } from "./dto/product.dto";
 
+const productModelDefinitionSelect = {
+  customerDisplayName: true,
+  displayName: true,
+  enabled: true,
+  id: true,
+  legacyVehicleModel: true,
+  modelCode: true
+} satisfies Prisma.VehicleModelDefinitionSelect;
+
 const packageInclude = {
   product: { select: { id: true, name: true, productNo: true, status: true } },
   productVersion: { select: { id: true, productId: true, status: true, versionNo: true } }
+};
+
+const vehiclePackageInclude = {
+  modelDefinition: {
+    select: productModelDefinitionSelect
+  },
+  product: { select: { id: true, name: true, productNo: true, status: true } },
+  productVersion: { select: { id: true, productId: true, status: true, versionNo: true } }
 } satisfies Prisma.VehiclePackageInclude;
+
+const priceRuleListInclude = {
+  modelDefinition: {
+    select: productModelDefinitionSelect
+  }
+} satisfies Prisma.ProductPriceRuleInclude;
+
+const priceRuleInclude = {
+  modelDefinition: {
+    select: productModelDefinitionSelect
+  },
+  productVersion: {
+    include: { product: true }
+  }
+} satisfies Prisma.ProductPriceRuleInclude;
 
 const productInclude = {
   versions: {
@@ -60,8 +93,8 @@ const productInclude = {
       benefitPackages: { include: packageInclude, where: { deletedAt: null } },
       energyPackages: { include: packageInclude, where: { deletedAt: null } },
       mileagePackages: { include: packageInclude, where: { deletedAt: null } },
-      priceRules: { where: { deletedAt: null } },
-      vehiclePackages: { include: packageInclude, where: { deletedAt: null } }
+      priceRules: { include: priceRuleListInclude, where: { deletedAt: null } },
+      vehiclePackages: { include: vehiclePackageInclude, where: { deletedAt: null } }
     },
     orderBy: { createdAt: "desc" as const },
     where: { deletedAt: null }
@@ -71,21 +104,16 @@ const productInclude = {
 const versionInclude = {
   approver: { select: { id: true, name: true, username: true } },
   priceRules: {
+    include: priceRuleListInclude,
     orderBy: { vehicleModel: "asc" as const },
     where: { deletedAt: null }
   },
   benefitPackages: { include: packageInclude, where: { deletedAt: null } },
   energyPackages: { include: packageInclude, where: { deletedAt: null } },
   mileagePackages: { include: packageInclude, where: { deletedAt: null } },
-  vehiclePackages: { include: packageInclude, where: { deletedAt: null } },
+  vehiclePackages: { include: vehiclePackageInclude, where: { deletedAt: null } },
   product: true
 } satisfies Prisma.ProductVersionInclude;
-
-const priceRuleInclude = {
-  productVersion: {
-    include: { product: true }
-  }
-} satisfies Prisma.ProductPriceRuleInclude;
 
 const subscriptionPlanInclude = {
   benefitPackage: { include: packageInclude },
@@ -103,7 +131,7 @@ const subscriptionPlanInclude = {
       versionNo: true
     }
   },
-  vehiclePackage: { include: packageInclude }
+  vehiclePackage: { include: vehiclePackageInclude }
 } satisfies Prisma.SubscriptionPlanInclude;
 
 const VEHICLE_BASE_FEE_MODE_LABELS: Record<MonthlyFeeMode, string> = {
@@ -131,7 +159,7 @@ const quoteInclude = {
   riskResult: true,
   subscriptionPlan: { include: subscriptionPlanInclude },
   vehicle: true,
-  vehiclePackage: { include: packageInclude }
+  vehiclePackage: { include: vehiclePackageInclude }
 } satisfies Prisma.SubscriptionQuoteInclude;
 
 type ProductWithDetails = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
@@ -139,6 +167,9 @@ type VersionWithDetails = Prisma.ProductVersionGetPayload<{ include: typeof vers
 type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ProductListVersion = ProductWithDetails["versions"][number];
+type ProductModelDefinition = Prisma.VehicleModelDefinitionGetPayload<{
+  select: typeof productModelDefinitionSelect;
+}>;
 const CURRENT_PRODUCT_TYPE = ProductType.SUBSCRIPTION;
 const RENT_TO_OWN_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购产品线。";
 const SELF_SERVICE_APPLICATION_QUOTE_MESSAGE = "客户自助进件请使用确认最终方案 / 生成正式订单流程。";
@@ -391,6 +422,8 @@ export class ProductService {
   ) {
     const version = await this.findVersionOrThrow(versionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
+    const modelDefinition = await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId);
+    const vehicleModel = resolveVehicleModelForProductConfig(dto.vehicleModel, modelDefinition);
 
     const rule = await this.prisma.productPriceRule.create({
       data: {
@@ -401,11 +434,12 @@ export class ProductService {
         maxPeriodMonths: dto.maxPeriodMonths,
         minPeriodMonths: dto.minPeriodMonths,
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
+        modelDefinitionId: modelDefinition?.id ?? null,
         overMileageFeeAmount: BigInt(dto.overMileageFeeAmount),
         productVersionId: version.id,
         status: dto.status ?? RecordStatus.ACTIVE,
         updatedBy: user.id,
-        vehicleModel: dto.vehicleModel
+        vehicleModel
       },
       include: priceRuleInclude
     });
@@ -425,6 +459,15 @@ export class ProductService {
       dto.minPeriodMonths ?? before.minPeriodMonths,
       dto.maxPeriodMonths ?? before.maxPeriodMonths
     );
+    const modelDefinitionProvided = dto.modelDefinitionId !== undefined;
+    const modelDefinition = modelDefinitionProvided
+      ? await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId)
+      : before.modelDefinition ?? null;
+    const vehicleModel = resolveVehicleModelForProductConfigUpdate(
+      dto.vehicleModel,
+      modelDefinition,
+      modelDefinitionProvided
+    );
 
     const rule = await this.prisma.productPriceRule.update({
       data: {
@@ -433,6 +476,7 @@ export class ProductService {
         energyLimitKwh: dto.energyLimitKwh,
         maxPeriodMonths: dto.maxPeriodMonths,
         minPeriodMonths: dto.minPeriodMonths,
+        modelDefinitionId: modelDefinitionProvided ? modelDefinition?.id ?? null : undefined,
         monthlyFeeRate:
           dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         overMileageFeeAmount:
@@ -440,7 +484,8 @@ export class ProductService {
             ? undefined
             : BigInt(dto.overMileageFeeAmount),
         status: dto.status,
-        updatedBy: user.id
+        updatedBy: user.id,
+        vehicleModel
       },
       include: priceRuleInclude,
       where: { id }
@@ -465,7 +510,7 @@ export class ProductService {
     await this.findVersionOrThrow(versionId);
     const [vehiclePackages, mileagePackages, energyPackages, benefitPackages] = await Promise.all([
       this.prisma.vehiclePackage.findMany({
-        include: packageInclude,
+        include: vehiclePackageInclude,
         orderBy: { createdAt: "desc" },
         where: { deletedAt: null, productVersionId: versionId, status: RecordStatus.ACTIVE }
       }),
@@ -495,7 +540,7 @@ export class ProductService {
 
   async listVehiclePackages() {
     const rows = await this.prisma.vehiclePackage.findMany({
-      include: packageInclude,
+      include: vehiclePackageInclude,
       orderBy: { createdAt: "desc" },
       where: { deletedAt: null }
     });
@@ -505,6 +550,8 @@ export class ProductService {
   async createVehiclePackage(dto: CreateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
+    const modelDefinition = await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId);
+    const vehicleModel = resolveVehicleModelForProductConfig(dto.vehicleModel, modelDefinition);
     const row = await withUniqueBusinessNoRetry(() => this.prisma.vehiclePackage.create({
       data: {
         brand: dto.brand,
@@ -514,6 +561,7 @@ export class ProductService {
         maxPurchasePriceAmount: optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: optionalBigInt(dto.minPurchasePriceAmount),
+        modelDefinitionId: modelDefinition?.id ?? null,
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
         packageName: dto.packageName,
         packageNo: this.nextPackageNo("vehiclePackage", "VPK"),
@@ -523,10 +571,10 @@ export class ProductService {
         series: dto.series,
         status: dto.status ?? RecordStatus.ACTIVE,
         updatedBy: user.id,
-        vehicleModel: dto.vehicleModel,
+        vehicleModel,
         vehicleModelName: dto.vehicleModelName
       },
-      include: packageInclude
+      include: vehiclePackageInclude
     }));
     await this.writeAudit(AuditAction.CREATE, "vehicle_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
@@ -535,6 +583,15 @@ export class ProductService {
   async updateVehiclePackage(id: string, dto: UpdateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
     ensureValidPeriod(dto.minPeriodMonths ?? before.minPeriodMonths, dto.maxPeriodMonths ?? before.maxPeriodMonths);
+    const modelDefinitionProvided = dto.modelDefinitionId !== undefined;
+    const modelDefinition = modelDefinitionProvided
+      ? await this.resolveModelDefinitionForProductConfig(dto.modelDefinitionId)
+      : before.modelDefinition ?? null;
+    const vehicleModel = resolveVehicleModelForProductConfigUpdate(
+      dto.vehicleModel,
+      modelDefinition,
+      modelDefinitionProvided
+    );
     const row = await this.prisma.vehiclePackage.update({
       data: {
         brand: dto.brand,
@@ -543,14 +600,16 @@ export class ProductService {
         maxPurchasePriceAmount: dto.maxPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: dto.minPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.minPurchasePriceAmount),
+        modelDefinitionId: modelDefinitionProvided ? modelDefinition?.id ?? null : undefined,
         monthlyFeeRate: dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         packageName: dto.packageName,
         remark: dto.remark,
         series: dto.series,
         updatedBy: user.id,
+        vehicleModel,
         vehicleModelName: dto.vehicleModelName
       },
-      include: packageInclude,
+      include: vehiclePackageInclude,
       where: { id }
     });
     await this.writeAudit(AuditAction.UPDATE, "vehicle_package", id, toPackageView(before), toPackageView(row), user, context);
@@ -559,14 +618,14 @@ export class ProductService {
 
   async setVehiclePackageStatus(id: string, status: RecordStatus, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
-    const row = await this.prisma.vehiclePackage.update({ data: { status, updatedBy: user.id }, include: packageInclude, where: { id } });
+    const row = await this.prisma.vehiclePackage.update({ data: { status, updatedBy: user.id }, include: vehiclePackageInclude, where: { id } });
     await this.writeAudit(AuditAction.UPDATE, "vehicle_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async deleteVehiclePackage(id: string, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
-    const row = await this.prisma.vehiclePackage.update({ data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id }, include: packageInclude, where: { id } });
+    const row = await this.prisma.vehiclePackage.update({ data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id }, include: vehiclePackageInclude, where: { id } });
     await this.writeAudit(AuditAction.DELETE, "vehicle_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
@@ -1197,7 +1256,7 @@ export class ProductService {
         throw new BadRequestException("产品与产品版本不一致");
       }
       const [vehiclePackage, mileagePackage, energyPackage, benefitPackage] = await Promise.all([
-        this.prisma.vehiclePackage.findFirst({ include: packageInclude, where: { deletedAt: null, id: dto.vehiclePackageId, status: RecordStatus.ACTIVE } }),
+        this.prisma.vehiclePackage.findFirst({ include: vehiclePackageInclude, where: { deletedAt: null, id: dto.vehiclePackageId, status: RecordStatus.ACTIVE } }),
         this.prisma.mileagePackage.findFirst({ include: packageInclude, where: { deletedAt: null, id: dto.mileagePackageId, status: RecordStatus.ACTIVE } }),
         this.prisma.energyPackage.findFirst({ include: packageInclude, where: { deletedAt: null, id: dto.energyPackageId, status: RecordStatus.ACTIVE } }),
         dto.benefitPackageId
@@ -1444,7 +1503,7 @@ export class ProductService {
   }
 
   private async findVehiclePackageOrThrow(id: string) {
-    const row = await this.prisma.vehiclePackage.findUnique({ include: packageInclude, where: { id } });
+    const row = await this.prisma.vehiclePackage.findUnique({ include: vehiclePackageInclude, where: { id } });
     if (!row || row.deletedAt) {
       throw new NotFoundException("Vehicle package not found.");
     }
@@ -1526,7 +1585,7 @@ export class ProductService {
     const [product, productVersion, vehiclePackage, mileagePackage, energyPackage, benefitPackage] = await Promise.all([
       this.prisma.product.findUnique({ where: { id: input.productId } }),
       this.prisma.productVersion.findUnique({ where: { id: input.productVersionId } }),
-      this.prisma.vehiclePackage.findUnique({ include: packageInclude, where: { id: input.vehiclePackageId } }),
+      this.prisma.vehiclePackage.findUnique({ include: vehiclePackageInclude, where: { id: input.vehiclePackageId } }),
       this.prisma.mileagePackage.findUnique({ include: packageInclude, where: { id: input.mileagePackageId } }),
       this.prisma.energyPackage.findUnique({ include: packageInclude, where: { id: input.energyPackageId } }),
       input.benefitPackageId
@@ -1566,6 +1625,32 @@ export class ProductService {
       productVersion,
       vehiclePackage
     };
+  }
+
+  private async resolveModelDefinitionForProductConfig(modelDefinitionId: string | null | undefined) {
+    if (modelDefinitionId === undefined || modelDefinitionId === null) {
+      return null;
+    }
+
+    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+      select: productModelDefinitionSelect,
+      where: {
+        deletedAt: null,
+        id: modelDefinitionId
+      }
+    });
+
+    if (!definition) {
+      throw new BadRequestException("车型主数据不存在");
+    }
+    if (!definition.enabled) {
+      throw new BadRequestException("车型主数据已停用");
+    }
+    if (!definition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于产品配置");
+    }
+
+    return definition;
   }
 
   private async findActivePriceRule(productVersionId: string, vehicleModel: NonNullable<CreateQuoteDto["vehicleModel"]>) {
@@ -1648,6 +1733,39 @@ function ensureValidDateRange(effectiveFrom: Date, effectiveTo: Date | null) {
 
 function optionalBigInt(value?: number | null) {
   return value === undefined || value === null ? null : BigInt(value);
+}
+
+function resolveVehicleModelForProductConfig(
+  vehicleModel: VehicleModel | null | undefined,
+  modelDefinition: ProductModelDefinition | null
+) {
+  if (modelDefinition) {
+    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据与 legacy 车型不一致");
+    }
+    return modelDefinition.legacyVehicleModel as VehicleModel;
+  }
+
+  if (!vehicleModel) {
+    throw new BadRequestException("车型代码必填");
+  }
+
+  return vehicleModel;
+}
+
+function resolveVehicleModelForProductConfigUpdate(
+  vehicleModel: VehicleModel | null | undefined,
+  modelDefinition: ProductModelDefinition | null,
+  modelDefinitionProvided: boolean
+) {
+  if (modelDefinition) {
+    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
+      throw new BadRequestException("车型主数据与 legacy 车型不一致");
+    }
+    return modelDefinitionProvided || vehicleModel ? modelDefinition.legacyVehicleModel as VehicleModel : undefined;
+  }
+
+  return vehicleModel ?? undefined;
 }
 
 function requirePositiveInteger(value: number | undefined, message: string): number {
@@ -1966,6 +2084,21 @@ function toNumberOrNull(value: unknown) {
   return Number.isFinite(n) ? n : null;
 }
 
+function toModelDefinitionSummary(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    customerDisplayName: toStringOrNull(value.customerDisplayName),
+    displayName: toStringOrDash(value.displayName),
+    enabled: Boolean(value.enabled),
+    id: toStringOrDash(value.id),
+    legacyVehicleModel: toStringOrNull(value.legacyVehicleModel),
+    modelCode: toStringOrDash(value.modelCode)
+  };
+}
+
 function formatDateOnly(value: unknown) {
   const date = toDateOrNull(value);
   return date ? date.toISOString().slice(0, 10) : "-";
@@ -2067,6 +2200,7 @@ function toPriceRuleView(rule?: RecordSource | null) {
   if (!rule) {
     return null;
   }
+  const modelDefinition = toModelDefinitionSummary(rule.modelDefinition);
   return {
     baseMileageKm: rule.baseMileageKm,
     energyLimitCount: rule.energyLimitCount,
@@ -2074,6 +2208,9 @@ function toPriceRuleView(rule?: RecordSource | null) {
     id: toStringOrDash(rule.id),
     maxPeriodMonths: rule.maxPeriodMonths,
     minPeriodMonths: rule.minPeriodMonths,
+    modelDefinition,
+    modelDefinitionId: toStringOrNull(rule.modelDefinitionId),
+    modelDisplayName: modelDefinition?.displayName ?? toStringOrDash(rule.vehicleModel),
     monthlyFeeRate: toNumberOrZero(rule.monthlyFeeRate),
     overMileageFeeAmount: toNumberOrZero(rule.overMileageFeeAmount),
     productVersionId: toStringOrDash(rule.productVersionId),
@@ -2219,12 +2356,16 @@ function toPackageView(row?: RecordSource | null) {
   };
 
   if ("vehicleModel" in row) {
+    const modelDefinition = toModelDefinitionSummary(row.modelDefinition);
     result.brand = row.brand;
     result.configName = row.configName;
     result.maxPeriodMonths = row.maxPeriodMonths;
     result.maxPurchasePriceAmount = row.maxPurchasePriceAmount === null ? null : toNumberOrZero(row.maxPurchasePriceAmount);
     result.minPeriodMonths = row.minPeriodMonths;
     result.minPurchasePriceAmount = row.minPurchasePriceAmount === null ? null : toNumberOrZero(row.minPurchasePriceAmount);
+    result.modelDefinition = modelDefinition;
+    result.modelDefinitionId = toStringOrNull(row.modelDefinitionId);
+    result.modelDisplayName = modelDefinition?.displayName ?? toStringOrDash(row.vehicleModel);
     result.monthlyFeeRate = toNumberOrZero(row.monthlyFeeRate);
     result.series = row.series;
     result.vehicleModel = row.vehicleModel;

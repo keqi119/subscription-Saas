@@ -212,6 +212,130 @@ describe("product component packages", () => {
   });
 });
 
+describe("product component model definitions", () => {
+  it("creates vehicle packages from modelDefinitionId and writes the mapped legacy VehicleModel", async () => {
+    const definition = makeModelDefinition({
+      displayName: "ET5 Touring",
+      id: "model-et5t",
+      legacyVehicleModel: VehicleModel.ET5T,
+      modelCode: "NIO_ET5T"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [definition] });
+
+    const result = await service.createVehiclePackage(
+      {
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: definition.id,
+        monthlyFeeRate: 0.035,
+        packageName: "ET5T standard",
+        productId: "product-1",
+        productVersionId: "version-1"
+      },
+      user,
+      context
+    );
+
+    expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { deletedAt: null, id: definition.id } })
+    );
+    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: definition.id,
+          vehicleModel: VehicleModel.ET5T
+        })
+      })
+    );
+    expect(result).toMatchObject({
+      modelDefinitionId: definition.id,
+      vehicleModel: VehicleModel.ET5T
+    });
+  });
+
+  it("creates price rules from modelDefinitionId and rejects mismatched legacy VehicleModel", async () => {
+    const definition = makeModelDefinition({
+      displayName: "ES8",
+      id: "model-es8",
+      legacyVehicleModel: VehicleModel.ES8,
+      modelCode: "NIO_ES8"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [definition] });
+
+    await expect(
+      service.createPriceRule(
+        "version-1",
+        {
+          baseMileageKm: 1500,
+          maxPeriodMonths: 36,
+          minPeriodMonths: 12,
+          modelDefinitionId: definition.id,
+          monthlyFeeRate: 0.04,
+          overMileageFeeAmount: 100
+        },
+        user,
+        context
+      )
+    ).resolves.toMatchObject({
+      modelDefinitionId: definition.id,
+      vehicleModel: VehicleModel.ES8
+    });
+    expect(prisma.productPriceRule.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: definition.id,
+          vehicleModel: VehicleModel.ES8
+        })
+      })
+    );
+
+    await expect(
+      service.createPriceRule(
+        "version-1",
+        {
+          baseMileageKm: 1500,
+          maxPeriodMonths: 36,
+          minPeriodMonths: 12,
+          modelDefinitionId: definition.id,
+          overMileageFeeAmount: 100,
+          vehicleModel: VehicleModel.ET5
+        },
+        user,
+        context
+      )
+    ).rejects.toThrow();
+  });
+
+  it("clears vehicle package modelDefinitionId while preserving legacy behavior", async () => {
+    const definition = makeModelDefinition({
+      displayName: "ES9",
+      id: "model-es9",
+      legacyVehicleModel: VehicleModel.ES9,
+      modelCode: "NIO_ES9"
+    });
+    const { prisma, service } = makeService({
+      vehiclePackages: [
+        makeVehiclePackage({
+          modelDefinition: definition,
+          modelDefinitionId: definition.id,
+          vehicleModel: VehicleModel.ES9
+        })
+      ]
+    });
+
+    await service.updateVehiclePackage("vehicle-1", { modelDefinitionId: null }, user, context);
+
+    expect(prisma.vehiclePackage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: null,
+          vehicleModel: undefined
+        })
+      })
+    );
+  });
+});
+
 describe("quote compatibility with component fields", () => {
   it("lists and reads old quotes when component fields are empty", async () => {
     const oldQuote = makeQuote({
@@ -259,6 +383,7 @@ function makeService(seed: Partial<MockSeed> = {}) {
       findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn().mockResolvedValue(product)
     },
+    productPriceRule: makePackageDelegate(seed.priceRules ?? [makePriceRule()], makePriceRule),
     productVersion: {
       findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn().mockResolvedValue(version),
@@ -274,6 +399,17 @@ function makeService(seed: Partial<MockSeed> = {}) {
     vehicle: {
       findUnique: vi.fn(),
       update: vi.fn()
+    },
+    vehicleModelDefinition: {
+      findFirst: vi.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          (seed.modelDefinitions ?? [makeModelDefinition()]).find(
+            (definition) =>
+              definition.id === where.id &&
+              (where.deletedAt !== null || definition.deletedAt === null)
+          ) ?? null
+        )
+      )
     },
     vehiclePackage: makePackageDelegate(seed.vehiclePackages ?? [makeVehiclePackage()], makeVehiclePackage)
   };
@@ -329,6 +465,8 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     minPeriodMonths: 12,
     minPurchasePriceAmount: BigInt(12000000),
     monthlyFeeRate: new Prisma.Decimal("0.035"),
+    modelDefinition: null,
+    modelDefinitionId: null,
     packageName: "ET5 standard",
     packageNo: "VPK2026060100001",
     product,
@@ -342,6 +480,53 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     updatedBy: "user-1",
     vehicleModel: VehicleModel.ET5,
     vehicleModelName: null,
+    ...overrides
+  };
+}
+
+function makePriceRule(overrides: Record<string, unknown> = {}) {
+  return {
+    baseMileageKm: 1500,
+    createdAt: now,
+    createdBy: "user-1",
+    deletedAt: null,
+    energyLimitCount: 8,
+    energyLimitKwh: 300,
+    id: "rule-1",
+    maxPeriodMonths: 36,
+    minPeriodMonths: 12,
+    modelDefinition: null,
+    modelDefinitionId: null,
+    monthlyFeeRate: new Prisma.Decimal("0.035"),
+    overMileageFeeAmount: BigInt(100),
+    productVersion: version,
+    productVersionId: "version-1",
+    status: RecordStatus.ACTIVE,
+    updatedAt: now,
+    updatedBy: "user-1",
+    vehicleModel: VehicleModel.ET5,
+    ...overrides
+  };
+}
+
+function makeModelDefinition(overrides: Record<string, unknown> = {}) {
+  return {
+    brand: "NIO",
+    createdAt: now,
+    createdBy: "user-1",
+    customerDisplayName: null,
+    deletedAt: null,
+    displayName: "ET5",
+    enabled: true,
+    id: "model-et5",
+    legacyVehicleModel: VehicleModel.ET5,
+    modelCode: "NIO_ET5",
+    modelName: "ET5",
+    portalVisible: true,
+    series: "ET",
+    sortOrder: 0,
+    updatedAt: now,
+    updatedBy: "user-1",
     ...overrides
   };
 }
@@ -470,6 +655,8 @@ interface MockSeed {
   benefitPackages: ReturnType<typeof makeBenefitPackage>[];
   energyPackages: ReturnType<typeof makeEnergyPackage>[];
   mileagePackages: ReturnType<typeof makeMileagePackage>[];
+  modelDefinitions: ReturnType<typeof makeModelDefinition>[];
+  priceRules: ReturnType<typeof makePriceRule>[];
   quotes: ReturnType<typeof makeQuote>[];
   vehiclePackages: ReturnType<typeof makeVehiclePackage>[];
 }

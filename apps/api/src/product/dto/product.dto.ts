@@ -86,8 +86,13 @@ export class UpdateProductVersionDto {
 }
 
 export class CreatePriceRuleDto {
+  @IsOptional()
   @IsEnum(VehicleModel)
-  vehicleModel!: VehicleModel;
+  vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string | null;
 
   @IsOptional()
   @IsNumber()
@@ -127,6 +132,14 @@ export class CreatePriceRuleDto {
 }
 
 export class UpdatePriceRuleDto {
+  @IsOptional()
+  @IsEnum(VehicleModel)
+  vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string | null;
+
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -405,8 +418,13 @@ export class CreateVehiclePackageDto {
   @IsString()
   packageName!: string;
 
+  @IsOptional()
   @IsEnum(VehicleModel)
-  vehicleModel!: VehicleModel;
+  vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string | null;
 
   @IsOptional()
   @IsString()
@@ -458,6 +476,14 @@ export class CreateVehiclePackageDto {
 }
 
 export class UpdateVehiclePackageDto {
+  @IsOptional()
+  @IsEnum(VehicleModel)
+  vehicleModel?: VehicleModel;
+
+  @IsOptional()
+  @IsUUID()
+  modelDefinitionId?: string | null;
+
   @IsOptional()
   @IsString()
   packageName?: string;

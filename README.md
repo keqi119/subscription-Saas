@@ -482,3 +482,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10x-vehicle-model-master-data-audit.md`: Stage 10X-B vehicle model master-data impact audit and double-track migration plan.
 - `docs/stage-10x-vehicle-model-master-data.md`: Stage 10X-C VehicleModelDefinition master data model, CRUD API, seed, permission, menu, and back-office maintenance page.
 - `docs/stage-10x-vehicle-master-data-integration.md`: Stage 10X-D vehicle management integration with VehicleModelDefinition while retaining legacy VehicleModel fallback.
+- `docs/stage-10x-model-master-data-portal-product-reports.md`: Stage 10X-E Product, Portal catalog, and Reports integration with VehicleModelDefinition while leaving Residual market for Stage 10X-F.

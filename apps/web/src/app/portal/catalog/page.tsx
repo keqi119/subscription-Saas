@@ -3,17 +3,18 @@
 /* eslint-disable @next/next/no-img-element -- Listing media previews are private API streams, not optimizer-friendly public assets. */
 
 import { CarOutlined, SearchOutlined } from "@ant-design/icons";
-import { App, Button, Empty, Flex, Form, Input, List, Space, Tag, Typography } from "antd";
+import { App, Button, Empty, Flex, Form, Input, List, Select, Space, Tag, Typography } from "antd";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../lib/portal-api";
-import { PortalCatalogVehicle } from "../../../lib/portal-types";
+import { PortalCatalogVehicle, PortalModelDefinitionSummary } from "../../../lib/portal-types";
 
 interface CatalogFilterValues {
   brand?: string;
   city?: string;
   model?: string;
+  modelDefinitionId?: string;
 }
 
 export default function PortalCatalogPage() {
@@ -21,7 +22,17 @@ export default function PortalCatalogPage() {
   const { message } = App.useApp();
   const [form] = Form.useForm<CatalogFilterValues>();
   const [loading, setLoading] = useState(false);
+  const [modelDefinitions, setModelDefinitions] = useState<PortalModelDefinitionSummary[]>([]);
   const [vehicles, setVehicles] = useState<PortalCatalogVehicle[]>([]);
+
+  const loadModelDefinitions = useCallback(async () => {
+    try {
+      const rows = await portalApiFetch<PortalModelDefinitionSummary[]>("/portal/catalog/model-definitions");
+      setModelDefinitions(rows);
+    } catch (error) {
+      void message.error(error instanceof PortalApiError ? error.message : "无法加载车型筛选项");
+    }
+  }, [message]);
 
   const loadVehicles = useCallback(async (values: CatalogFilterValues = {}) => {
     setLoading(true);
@@ -46,7 +57,8 @@ export default function PortalCatalogPage() {
 
   useEffect(() => {
     void loadVehicles();
-  }, [loadVehicles]);
+    void loadModelDefinitions();
+  }, [loadModelDefinitions, loadVehicles]);
 
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 40px" }}>
@@ -79,6 +91,17 @@ export default function PortalCatalogPage() {
             </Form.Item>
             <Form.Item label="车型" name="model" style={{ flex: "1 1 150px", marginBottom: 0 }}>
               <Input allowClear placeholder="车型关键词" />
+            </Form.Item>
+            <Form.Item label="车型代码" name="modelDefinitionId" style={{ flex: "1 1 200px", marginBottom: 0 }}>
+              <Select
+                allowClear
+                options={modelDefinitions.map((definition) => ({
+                  label: `${definition.modelCode} - ${definition.customerDisplayName ?? definition.displayName}`,
+                  value: definition.id
+                }))}
+                optionFilterProp="label"
+                showSearch
+              />
             </Form.Item>
             <Form.Item label="城市" name="city" style={{ flex: "1 1 150px", marginBottom: 0 }}>
               <Input allowClear placeholder="所在城市" />
@@ -139,7 +162,12 @@ export default function PortalCatalogPage() {
                 }
                 title={
                   <Space direction="vertical" size={2}>
-                    <Typography.Text strong>{vehicle.shortTitle ?? vehicle.displayName}</Typography.Text>
+                    <Typography.Text strong>
+                      {vehicle.shortTitle ?? vehicle.customerModelDisplayName ?? vehicle.displayName}
+                    </Typography.Text>
+                    {vehicle.modelDisplayName ? (
+                      <Typography.Text type="secondary">{vehicle.modelDisplayName}</Typography.Text>
+                    ) : null}
                     {vehicle.subtitle ? <Typography.Text type="secondary">{vehicle.subtitle}</Typography.Text> : null}
                   </Space>
                 }

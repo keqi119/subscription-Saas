@@ -139,6 +139,7 @@ describe("subscription order and contract rules", () => {
     const harness = createOrderServiceHarness({
       quote: {
         legacyVehicleModelSnapshot: VehicleModel.ET5,
+        legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
         modelDefinitionIdSnapshot: "quote-model-definition",
         modelDisplayNameSnapshot: "Quote Frozen ET5"
       },
@@ -160,8 +161,36 @@ describe("subscription order and contract rules", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           legacyVehicleModelSnapshot: VehicleModel.ET5,
+          legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
           modelDefinitionIdSnapshot: "quote-model-definition",
           modelDisplayNameSnapshot: "Quote Frozen ET5"
+        })
+      })
+    );
+  });
+
+  it("derives order model code snapshot from a legacy quote enum snapshot when the code snapshot is missing", async () => {
+    const harness = createOrderServiceHarness({
+      quote: {
+        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        legacyVehicleModelCodeSnapshot: null,
+        modelDefinitionIdSnapshot: "quote-model-definition",
+        modelDisplayNameSnapshot: "Quote Frozen ET5"
+      }
+    });
+    harness.state.vehicleStatus = VehicleStatus.RESERVED;
+
+    await harness.service.createOrderFromQuote(
+      harness.quoteId,
+      { businessType: BusinessType.SUBSCRIPTION },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.prisma.subscriptionOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          legacyVehicleModelCodeSnapshot: VehicleModel.ET5
         })
       })
     );
@@ -183,6 +212,7 @@ describe("subscription order and contract rules", () => {
     const harness = createOrderServiceHarness({
       order: {
         legacyVehicleModelSnapshot: VehicleModel.ET5,
+        legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: "Frozen Order ET5"
       },
@@ -194,6 +224,7 @@ describe("subscription order and contract rules", () => {
 
     const order = (await harness.service.getOrder(harness.orderId, harness.user)) as {
       legacyVehicleModelSnapshot: VehicleModel;
+      legacyVehicleModelCodeSnapshot: string;
       modelDefinitionIdSnapshot: string;
       modelDisplayName: string;
       modelDisplaySource: string;
@@ -202,6 +233,7 @@ describe("subscription order and contract rules", () => {
 
     expect(order).toMatchObject({
       legacyVehicleModelSnapshot: VehicleModel.ET5,
+      legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
       modelDefinitionIdSnapshot: "snapshot-model",
       modelDisplayName: "Frozen Order ET5",
       modelDisplaySource: "SNAPSHOT",

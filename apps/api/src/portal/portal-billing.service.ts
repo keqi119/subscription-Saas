@@ -483,6 +483,7 @@ function toVehicleSummary(order: PortalOrder) {
     return null;
   }
   const modelDisplay = buildQuoteOrderModelDisplay({
+    legacyVehicleModelCodeSnapshot: order.legacyVehicleModelCodeSnapshot,
     legacyVehicleModelSnapshot: order.legacyVehicleModelSnapshot,
     modelDefinitionIdSnapshot: order.modelDefinitionIdSnapshot,
     modelDisplayNameSnapshot: order.modelDisplayNameSnapshot,

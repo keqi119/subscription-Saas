@@ -157,6 +157,7 @@ describe("customer self-service order API rules", () => {
 
     const expectedSnapshot = {
       legacyVehicleModelSnapshot: VehicleModel.ET5,
+      legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
       modelDefinitionIdSnapshot: "model-et5",
       modelDisplayNameSnapshot: "NIO ET5 Snapshot"
     };

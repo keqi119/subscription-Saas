@@ -283,6 +283,7 @@ describe("subscription plan backend flow", () => {
           modelDefinitionIdSnapshot: "model-et5",
           modelDisplayNameSnapshot: "NIO ET5",
           legacyVehicleModelSnapshot: VehicleModel.ET5,
+          legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
           vehiclePurchasePriceAmount: BigInt(10000000),
           vehicleSalePriceAmount: BigInt(12000000),
           vehicleSnapshot: expect.objectContaining({
@@ -315,6 +316,7 @@ describe("subscription plan backend flow", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           legacyVehicleModelSnapshot: VehicleModel.ET5,
+          legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
           modelDefinitionIdSnapshot: null,
           modelDisplayNameSnapshot: VehicleModel.ET5
         })
@@ -327,6 +329,7 @@ describe("subscription plan backend flow", () => {
     const { service } = makeService({
       quote: makeQuote({
         legacyVehicleModelSnapshot: VehicleModel.ET5,
+        legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: "Frozen ET5",
         vehicle: makeVehicle({
@@ -338,6 +341,7 @@ describe("subscription plan backend flow", () => {
 
     const quote = (await service.getQuote("quote-1", user)) as {
       legacyVehicleModelSnapshot: VehicleModel;
+      legacyVehicleModelCodeSnapshot: string;
       modelDefinitionIdSnapshot: string;
       modelDisplayName: string;
       modelDisplaySource: string;
@@ -346,6 +350,7 @@ describe("subscription plan backend flow", () => {
 
     expect(quote).toMatchObject({
       legacyVehicleModelSnapshot: VehicleModel.ET5,
+      legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
       modelDefinitionIdSnapshot: "snapshot-model",
       modelDisplayName: "Frozen ET5",
       modelDisplaySource: "SNAPSHOT",
@@ -600,6 +605,7 @@ describe("subscription plan backend flow", () => {
       expect.objectContaining({
         data: expect.not.objectContaining({
           legacyVehicleModelSnapshot: expect.anything(),
+          legacyVehicleModelCodeSnapshot: expect.anything(),
           modelDefinitionIdSnapshot: expect.anything(),
           modelDisplayNameSnapshot: expect.anything()
         })

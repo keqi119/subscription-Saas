@@ -1141,6 +1141,7 @@ export class ProductService {
       modelDefinitionIdSnapshot?: string | null;
       modelDisplayNameSnapshot?: string | null;
       legacyVehicleModelSnapshot?: VehicleModel | null;
+      legacyVehicleModelCodeSnapshot?: string | null;
       vehiclePackageId?: string;
       vehiclePurchasePriceAmount: bigint;
       vehicleSalePriceAmount?: bigint;
@@ -1354,6 +1355,7 @@ export class ProductService {
         monthlyFeeCapAmount: quoteData.monthlyFeeCapAmount,
         monthlyFeeRate: quoteData.monthlyFeeRate,
         legacyVehicleModelSnapshot: quoteData.legacyVehicleModelSnapshot,
+        legacyVehicleModelCodeSnapshot: quoteData.legacyVehicleModelCodeSnapshot,
         modelDefinitionIdSnapshot: quoteData.modelDefinitionIdSnapshot,
         modelDisplayNameSnapshot: quoteData.modelDisplayNameSnapshot,
         overMileageFeeAmount: quoteData.overMileageFeeAmount,
@@ -2524,6 +2526,7 @@ function toQuoteView(quote: QuoteWithDetails) {
     monthlyFeeCapAmount,
     monthlyFeeRate: Number(quote.monthlyFeeRate),
     legacyVehicleModelSnapshot: quote.legacyVehicleModelSnapshot,
+    legacyVehicleModelCodeSnapshot: quote.legacyVehicleModelCodeSnapshot,
     modelDefinitionIdSnapshot: quote.modelDefinitionIdSnapshot,
     modelDisplayName: modelDisplay.modelDisplayName,
     modelDisplayNameSnapshot: quote.modelDisplayNameSnapshot,

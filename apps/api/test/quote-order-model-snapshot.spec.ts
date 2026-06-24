@@ -16,6 +16,7 @@ describe("quote/order model snapshot display helper", () => {
       })
     ).toEqual({
       legacyVehicleModel: VehicleModel.ET5,
+      legacyVehicleModelCode: VehicleModel.ET5,
       modelDefinitionId: "snapshot-model",
       modelDisplayName: "Frozen ET5",
       modelDisplaySource: "SNAPSHOT"
@@ -33,9 +34,27 @@ describe("quote/order model snapshot display helper", () => {
       })
     ).toEqual({
       legacyVehicleModel: VehicleModel.ET5,
+      legacyVehicleModelCode: VehicleModel.ET5,
       modelDefinitionId: "snapshot-model",
       modelDisplayName: "Current ET5 Name",
       modelDisplaySource: "RUNTIME_MODEL_DEFINITION"
+    });
+  });
+
+  it("falls back to legacy model code snapshots before enum snapshots", () => {
+    expect(
+      buildQuoteOrderModelDisplay({
+        legacyVehicleModelCodeSnapshot: "ET5T",
+        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelDisplayNameSnapshot: null,
+        vehicleModel: VehicleModel.ES6
+      })
+    ).toEqual({
+      legacyVehicleModel: VehicleModel.ET5,
+      legacyVehicleModelCode: "ET5T",
+      modelDefinitionId: null,
+      modelDisplayName: "ET5T",
+      modelDisplaySource: "SNAPSHOT_MODEL_CODE"
     });
   });
 
@@ -48,9 +67,10 @@ describe("quote/order model snapshot display helper", () => {
       })
     ).toEqual({
       legacyVehicleModel: VehicleModel.ET7,
+      legacyVehicleModelCode: VehicleModel.ET7,
       modelDefinitionId: null,
       modelDisplayName: VehicleModel.ET7,
-      modelDisplaySource: "LEGACY_SNAPSHOT"
+      modelDisplaySource: "SNAPSHOT_LEGACY_ENUM"
     });
   });
 
@@ -61,6 +81,7 @@ describe("quote/order model snapshot display helper", () => {
       })
     ).toEqual({
       legacyVehicleModel: VehicleModel.ES6,
+      legacyVehicleModelCode: VehicleModel.ES6,
       modelDefinitionId: null,
       modelDisplayName: VehicleModel.ES6,
       modelDisplaySource: "LEGACY_VEHICLE_MODEL"

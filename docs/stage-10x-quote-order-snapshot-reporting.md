@@ -37,10 +37,11 @@ Quote / Order model display uses this priority:
 ```text
 1. modelDisplayNameSnapshot
 2. modelDefinitionIdSnapshot with runtime lookup when available
-3. legacyVehicleModelSnapshot label
-4. runtime vehicle modelDefinition displayName
-5. legacy vehicleModel label
-6. unknown
+3. legacyVehicleModelCodeSnapshot
+4. legacyVehicleModelSnapshot label
+5. runtime vehicle modelDefinition displayName
+6. legacy vehicleModel label
+7. unknown
 ```
 
 The helper returns both:
@@ -54,8 +55,9 @@ modelDisplaySource
 
 ```text
 SNAPSHOT
+SNAPSHOT_MODEL_CODE
+SNAPSHOT_LEGACY_ENUM
 RUNTIME_MODEL_DEFINITION
-LEGACY_SNAPSHOT
 LEGACY_VEHICLE_MODEL
 UNKNOWN
 ```
@@ -68,6 +70,7 @@ Admin Quote and Order responses continue to include the legacy `vehicleModel` fi
 modelDefinitionIdSnapshot
 modelDisplayNameSnapshot
 legacyVehicleModelSnapshot
+legacyVehicleModelCodeSnapshot
 modelDisplayName
 modelDisplaySource
 ```
@@ -118,3 +121,5 @@ BaaS
 ## 9. Follow-up
 
 Stage 10X-M-F should perform the final VehicleModel enum retirement feasibility review with the runtime / snapshot read split in place.
+
+Stage 10X-N adds `legacyVehicleModelCodeSnapshot` and keeps Portal customer-facing responses limited to friendly display names rather than internal snapshot fields.

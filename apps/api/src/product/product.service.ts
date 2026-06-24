@@ -27,6 +27,11 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import {
+  buildVehicleModelSnapshot,
+  vehicleModelSnapshotDefinitionSelect,
+  vehicleModelSnapshotDisplayName
+} from "../common/vehicle-model-snapshot";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   CreatePriceRuleDto,
@@ -158,7 +163,7 @@ const quoteInclude = {
   productVersion: { include: { product: true } },
   riskResult: true,
   subscriptionPlan: { include: subscriptionPlanInclude },
-  vehicle: true,
+  vehicle: { include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } } },
   vehiclePackage: { include: vehiclePackageInclude }
 } satisfies Prisma.SubscriptionQuoteInclude;
 
@@ -1133,6 +1138,9 @@ export class ProductService {
       vehicleBaseFeeCapAmount?: bigint;
       vehicleId?: string | null;
       vehicleModel: NonNullable<CreateQuoteDto["vehicleModel"]>;
+      modelDefinitionIdSnapshot?: string | null;
+      modelDisplayNameSnapshot?: string | null;
+      legacyVehicleModelSnapshot?: VehicleModel | null;
       vehiclePackageId?: string;
       vehiclePurchasePriceAmount: bigint;
       vehicleSalePriceAmount?: bigint;
@@ -1186,6 +1194,7 @@ export class ProductService {
         vehicleNo: vehicle.vehicleNo,
         vin: vehicle.vin
       });
+      const modelSnapshot = buildVehicleModelSnapshot(vehicle);
       quoteData = {
         benefitPackageId: plan.benefitPackage?.id ?? null,
         depositRuleSnapshot,
@@ -1200,6 +1209,7 @@ export class ProductService {
         monthlyFeeAmount,
         monthlyFeeCapAmount: vehicleBaseFeePricing.vehicleBaseFeeCapAmount,
         monthlyFeeRate: plan.monthlyFeeRate,
+        ...modelSnapshot,
         overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
         packageSnapshot: toJsonValue({
           benefitPackage: plan.benefitPackage ? toPackageView(plan.benefitPackage) : null,
@@ -1268,6 +1278,7 @@ export class ProductService {
       ensurePeriodInRange(dto.periodMonths, vehiclePackage);
       assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, vehiclePackage.monthlyFeeRate);
       ensurePurchasePriceInRange(vehiclePurchasePriceAmount, vehiclePackage);
+      const modelSnapshot = buildVehicleModelSnapshot(vehiclePackage);
       quoteData = {
         benefitPackageId: benefitPackage?.id ?? null,
         energyLimitCount: energyPackage.monthlyEnergyCount,
@@ -1277,6 +1288,7 @@ export class ProductService {
         mileagePackageId: mileagePackage.id,
         monthlyFeeAmount: BigInt(monthlyFeeAmount),
         monthlyFeeRate: vehiclePackage.monthlyFeeRate,
+        ...modelSnapshot,
         overMileageFeeAmount: mileagePackage.overMileageFeeAmount,
         packageSnapshot: toJsonValue({
           benefitPackage: benefitPackage ? toPackageView(benefitPackage) : null,
@@ -1306,12 +1318,14 @@ export class ProductService {
       const priceRule = await this.findActivePriceRule(dto.productVersionId, dto.vehicleModel);
       ensurePeriodInRange(dto.periodMonths, priceRule);
       assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, priceRule.monthlyFeeRate);
+      const modelSnapshot = buildVehicleModelSnapshot(priceRule);
       quoteData = {
         energyLimitCount: dto.energyLimitCount ?? priceRule.energyLimitCount,
         energyLimitKwh: dto.energyLimitKwh ?? priceRule.energyLimitKwh,
         mileageLimitKm: dto.mileageLimitKm ?? priceRule.baseMileageKm,
         monthlyFeeAmount: BigInt(monthlyFeeAmount),
         monthlyFeeRate: priceRule.monthlyFeeRate,
+        ...modelSnapshot,
         overMileageFeeAmount: priceRule.overMileageFeeAmount,
         productId: priceRule.productVersion.productId,
         productVersionId: dto.productVersionId,
@@ -1339,6 +1353,9 @@ export class ProductService {
         monthlyFeeAmount: quoteData.monthlyFeeAmount,
         monthlyFeeCapAmount: quoteData.monthlyFeeCapAmount,
         monthlyFeeRate: quoteData.monthlyFeeRate,
+        legacyVehicleModelSnapshot: quoteData.legacyVehicleModelSnapshot,
+        modelDefinitionIdSnapshot: quoteData.modelDefinitionIdSnapshot,
+        modelDisplayNameSnapshot: quoteData.modelDisplayNameSnapshot,
         overMileageFeeAmount: quoteData.overMileageFeeAmount,
         packageSnapshot: quoteData.packageSnapshot,
         periodMonths: dto.periodMonths,
@@ -2501,6 +2518,14 @@ function toQuoteView(quote: QuoteWithDetails) {
     monthlyFeeAmount: Number(quote.monthlyFeeAmount),
     monthlyFeeCapAmount,
     monthlyFeeRate: Number(quote.monthlyFeeRate),
+    legacyVehicleModelSnapshot: quote.legacyVehicleModelSnapshot,
+    modelDefinitionIdSnapshot: quote.modelDefinitionIdSnapshot,
+    modelDisplayName: vehicleModelSnapshotDisplayName({
+      ...quote,
+      modelDefinition: quote.vehicle?.modelDefinition ?? null,
+      modelDefinitionId: quote.vehicle?.modelDefinitionId ?? null
+    }),
+    modelDisplayNameSnapshot: quote.modelDisplayNameSnapshot,
     order: quote.order && !quote.order.deletedAt
       ? {
           id: quote.order.id,
@@ -2558,6 +2583,8 @@ function toQuoteVehicleView(vehicle: NonNullable<QuoteWithDetails["vehicle"]>) {
     plateNo: vehicle.plateNo,
     series: vehicle.series,
     status: vehicle.status,
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: vehicle.modelDefinition?.displayName ?? vehicle.vehicleModel,
     vehicleModel: vehicle.vehicleModel,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin

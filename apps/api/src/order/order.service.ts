@@ -41,6 +41,12 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import {
+  buildVehicleModelSnapshot,
+  freezeQuoteVehicleModelSnapshot,
+  vehicleModelSnapshotDefinitionSelect,
+  vehicleModelSnapshotDisplayName
+} from "../common/vehicle-model-snapshot";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   ArchiveContractDto,
@@ -169,7 +175,7 @@ const orderInclude = {
   productVersion: { include: { product: true } },
   quote: { select: { id: true, packageSnapshot: true, quoteNo: true, status: true } },
   riskResult: true,
-  vehicle: true
+  vehicle: { include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } } }
 } satisfies Prisma.SubscriptionOrderInclude;
 
 const quoteInclude = {
@@ -178,7 +184,7 @@ const quoteInclude = {
   order: true,
   productVersion: { include: { product: true } },
   riskResult: true,
-  vehicle: true
+  vehicle: { include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } } }
 } satisfies Prisma.SubscriptionQuoteInclude;
 
 const contractInclude = {
@@ -1115,7 +1121,10 @@ export class OrderService {
   async createCustomerOrder(dto: CreateCustomerOrderDto, user: RequestUser, context: RequestContext) {
     const [customer, vehicle, plan] = await Promise.all([
       this.prisma.customer.findUnique({ where: { id: dto.customerId } }),
-      this.prisma.vehicle.findUnique({ where: { id: dto.vehicleId } }),
+      this.prisma.vehicle.findUnique({
+        include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } },
+        where: { id: dto.vehicleId }
+      }),
       this.prisma.subscriptionPlan.findUnique({
         include: subscriptionPlanInclude,
         where: { id: dto.subscriptionPlanId }
@@ -1135,6 +1144,7 @@ export class OrderService {
     if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
       throw new BadRequestException("所选套餐不适用于该车型");
     }
+    const modelSnapshot = buildVehicleModelSnapshot(vehicle);
     assertPeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
 
     const vehicleSalePriceAmount = vehicle.currentSalePriceAmount;
@@ -1267,6 +1277,7 @@ export class OrderService {
           monthlyFeeAmount,
           monthlyFeeCapAmount: vehicleBaseFeeCapAmount,
           monthlyFeeRate: plan.monthlyFeeRate,
+          ...modelSnapshot,
           overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
           packageSnapshot,
           periodMonths: dto.periodMonths,
@@ -1312,6 +1323,7 @@ export class OrderService {
           finalDepositAmount: null,
           mileageLimitKm: plan.mileagePackage.monthlyMileageKm,
           monthlyFeeAmount,
+          ...modelSnapshot,
           orderNo: createBusinessNo("ORD"),
           orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
           orderStatus: OrderStatus.PENDING_REVIEW,
@@ -1412,6 +1424,11 @@ export class OrderService {
     }
 
     const quoteSnapshot = toJsonValue(toPlain(quote));
+    const modelSnapshot = freezeQuoteVehicleModelSnapshot({
+      ...quote,
+      modelDefinition: quote.vehicle?.modelDefinition ?? null,
+      modelDefinitionId: quote.vehicle?.modelDefinitionId ?? null
+    });
     const order = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionOrder.create({
       data: {
         applicationId: quote.applicationId,
@@ -1423,6 +1440,7 @@ export class OrderService {
         energyLimitKwh: quote.energyLimitKwh,
         mileageLimitKm: quote.mileageLimitKm,
         monthlyFeeAmount: quote.monthlyFeeAmount,
+        ...modelSnapshot,
         orderNo: createBusinessNo("ORD"),
         orderStatus: OrderStatus.PENDING_CONTRACT,
         overMileageFeeAmount: quote.overMileageFeeAmount,
@@ -4163,6 +4181,11 @@ function toOrderView(order: OrderWithDetails): Record<string, unknown> {
     ...order,
     depositAmount: Number(order.depositAmount),
     finalDepositAmount: order.finalDepositAmount === null ? null : Number(order.finalDepositAmount),
+    modelDisplayName: vehicleModelSnapshotDisplayName({
+      ...order,
+      modelDefinition: order.vehicle?.modelDefinition ?? null,
+      modelDefinitionId: order.vehicle?.modelDefinitionId ?? null
+    }),
     monthlyFeeAmount: Number(order.monthlyFeeAmount),
     overMileageFeeAmount: Number(order.overMileageFeeAmount),
     vehiclePurchasePriceAmount: Number(order.vehiclePurchasePriceAmount)

@@ -8,6 +8,7 @@ import {
   OrderStatus,
   ProductStatus,
   QuoteStatus,
+  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -134,6 +135,38 @@ describe("subscription order and contract rules", () => {
     );
   });
 
+  it("freezes the quote model snapshot when creating an order from quote", async () => {
+    const harness = createOrderServiceHarness({
+      quote: {
+        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelDefinitionIdSnapshot: "quote-model-definition",
+        modelDisplayNameSnapshot: "Quote Frozen ET5"
+      },
+      vehicle: {
+        modelDefinition: { displayName: "Current Vehicle Display" },
+        modelDefinitionId: "current-vehicle-model-definition"
+      }
+    });
+    harness.state.vehicleStatus = VehicleStatus.RESERVED;
+
+    await harness.service.createOrderFromQuote(
+      harness.quoteId,
+      { businessType: BusinessType.SUBSCRIPTION },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.prisma.subscriptionOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          legacyVehicleModelSnapshot: VehicleModel.ET5,
+          modelDefinitionIdSnapshot: "quote-model-definition",
+          modelDisplayNameSnapshot: "Quote Frozen ET5"
+        })
+      })
+    );
+  });
+
   it("reads legacy sales-assisted order details without A/B extension fields", async () => {
     const harness = createOrderServiceHarness();
 
@@ -224,7 +257,10 @@ describe("subscription order and contract rules", () => {
   });
 });
 
-function createOrderServiceHarness() {
+function createOrderServiceHarness(options: {
+  quote?: Record<string, unknown>;
+  vehicle?: Record<string, unknown>;
+} = {}) {
   const now = new Date("2026-06-02T08:00:00.000Z");
   const orderId = "order-1";
   const quoteId = "quote-1";
@@ -284,7 +320,8 @@ function createOrderServiceHarness() {
       status: state.vehicleStatus,
       updatedAt: now,
       vehicleNo: "VEH2026060200001",
-      vin: "VIN202606020000001"
+      vin: "VIN202606020000001",
+      ...options.vehicle
     };
   }
 
@@ -328,7 +365,8 @@ function createOrderServiceHarness() {
       vehicleId,
       vehicleModel: "ET5",
       vehiclePurchasePriceAmount: 10000000n,
-      vehicleSnapshot: { vehicleNo: "VEH2026060200001", vin: "VIN202606020000001" }
+      vehicleSnapshot: { vehicleNo: "VEH2026060200001", vin: "VIN202606020000001" },
+      ...options.quote
     };
   }
 

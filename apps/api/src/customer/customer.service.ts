@@ -40,6 +40,11 @@ import type { Readable } from "node:stream";
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import {
+  buildVehicleModelSnapshot,
+  type VehicleModelSnapshotDefinition,
+  vehicleModelSnapshotDefinitionSelect
+} from "../common/vehicle-model-snapshot";
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
@@ -153,6 +158,10 @@ const selfServiceSubscriptionPlanInclude = {
   vehiclePackage: { include: selfServicePackageInclude }
 } satisfies Prisma.SubscriptionPlanInclude;
 
+const selfServiceVehicleInclude = {
+  modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+} satisfies Prisma.VehicleInclude;
+
 const applicationInclude = {
   customer: {
     select: {
@@ -227,7 +236,9 @@ type ApplicationWithDetails = Prisma.ApplicationGetPayload<{ include: typeof app
 type SelfServiceSubscriptionPlan = Prisma.SubscriptionPlanGetPayload<{
   include: typeof selfServiceSubscriptionPlanInclude;
 }>;
-type SelfServiceVehicle = Prisma.VehicleGetPayload<object>;
+type SelfServiceVehicle = Prisma.VehicleGetPayload<object> & {
+  modelDefinition?: VehicleModelSnapshotDefinition | null;
+};
 type Tx = Prisma.TransactionClient;
 type ApplicationReviewType = "material" | "credit" | "product" | "vehicle";
 type ApplicationFinalPlanInput = {
@@ -874,6 +885,7 @@ export class CustomerService {
       const vehicleAfter = await tx.vehicle.findUniqueOrThrow({ where: { id: details.vehicle.id } });
 
       const finalPlanSnapshot = (before.finalPlanSnapshot ?? details.finalPlanSnapshot) as Prisma.InputJsonValue;
+      const modelSnapshot = buildVehicleModelSnapshot(details.vehicle);
       const quote = await tx.subscriptionQuote.create({
         data: {
           applicationId: before.id,
@@ -896,6 +908,7 @@ export class CustomerService {
           monthlyFeeAmount: details.monthlyFeeAmount,
           monthlyFeeCapAmount: details.vehicleBaseFeeCapAmount,
           monthlyFeeRate: details.plan.monthlyFeeRate,
+          ...modelSnapshot,
           overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
           packageSnapshot: details.packageSnapshot,
           periodMonths: details.periodMonths,
@@ -936,6 +949,7 @@ export class CustomerService {
           finalPlanSnapshot,
           mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
           monthlyFeeAmount: details.monthlyFeeAmount,
+          ...modelSnapshot,
           orderNo: createBusinessNo("ORD"),
           orderSource: mapApplicationSourceToOrderSource(before.applicationSource),
           orderStatus: OrderStatus.PENDING_CONTRACT,
@@ -1287,7 +1301,10 @@ export class CustomerService {
       Partial<Pick<CreateSelfServiceApplicationDto, "periodMonths">>
   ) {
     const [vehicle, plan] = await Promise.all([
-      this.prisma.vehicle.findUnique({ where: { id: dto.vehicleId } }),
+      this.prisma.vehicle.findUnique({
+        include: selfServiceVehicleInclude,
+        where: { id: dto.vehicleId }
+      }),
       this.prisma.subscriptionPlan.findUnique({
         include: selfServiceSubscriptionPlanInclude,
         where: { id: dto.subscriptionPlanId }
@@ -2218,7 +2235,10 @@ async function loadApplicationFinalPlanDetails(
       include: selfServiceSubscriptionPlanInclude,
       where: { id: input.subscriptionPlanId }
     }),
-    tx.vehicle.findUnique({ where: { id: input.vehicleId } })
+    tx.vehicle.findUnique({
+      include: selfServiceVehicleInclude,
+      where: { id: input.vehicleId }
+    })
   ]);
 
   assertSelfServiceSubscriptionPlanAvailable(plan);

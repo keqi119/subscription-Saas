@@ -342,7 +342,11 @@ describe("application self-service review APIs", () => {
 
   it("creates an official quote and order, then locks the vehicle as reserved", async () => {
     const harness = createApplicationReviewHarness({
-      application: readyToCreateOrderApplication()
+      application: readyToCreateOrderApplication(),
+      vehicle: {
+        modelDefinition: { displayName: "NIO ET5 Final Plan" },
+        modelDefinitionId: "model-et5"
+      }
     });
 
     const result = await harness.service.createOrderFromApplication(
@@ -363,6 +367,9 @@ describe("application self-service review APIs", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           depositAmount: 300000n,
+          legacyVehicleModelSnapshot: VehicleModel.ET5,
+          modelDefinitionIdSnapshot: "model-et5",
+          modelDisplayNameSnapshot: "NIO ET5 Final Plan",
           status: QuoteStatus.CONFIRMED,
           subscriptionPlanId: harness.plan.id,
           vehicleId: harness.vehicle.id
@@ -374,6 +381,9 @@ describe("application self-service review APIs", () => {
         data: expect.objectContaining({
           depositAmount: 300000n,
           finalDepositAmount: 300000n,
+          legacyVehicleModelSnapshot: VehicleModel.ET5,
+          modelDefinitionIdSnapshot: "model-et5",
+          modelDisplayNameSnapshot: "NIO ET5 Final Plan",
           orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
           orderStatus: OrderStatus.PENDING_CONTRACT,
           quoteId: "quote-1",

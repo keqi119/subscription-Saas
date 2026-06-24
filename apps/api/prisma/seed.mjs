@@ -1651,6 +1651,17 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
   const overMileageFeeAmount = 120;
   const energyLimitKwh = 200;
   const energyLimitCount = 4;
+  const et5ModelDefinition = await prisma.vehicleModelDefinition.findFirst({
+    select: { id: true },
+    where: {
+      deletedAt: null,
+      enabled: true,
+      legacyVehicleModel: "ET5"
+    }
+  });
+  if (!et5ModelDefinition) {
+    throw new Error("VehicleModelDefinition is required for baseline ET5 product configuration.");
+  }
 
   const product = await prisma.product.upsert({
     create: {
@@ -1709,6 +1720,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       energyLimitKwh,
       maxPeriodMonths: 36,
       minPeriodMonths: 12,
+      modelDefinitionId: et5ModelDefinition.id,
       monthlyFeeRate,
       overMileageFeeAmount: BigInt(overMileageFeeAmount),
       productVersionId: productVersion.id,
@@ -1723,6 +1735,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       energyLimitKwh,
       maxPeriodMonths: 36,
       minPeriodMonths: 12,
+      modelDefinitionId: et5ModelDefinition.id,
       monthlyFeeRate,
       overMileageFeeAmount: BigInt(overMileageFeeAmount),
       status: "ACTIVE",
@@ -1745,6 +1758,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       maxPurchasePriceAmount: BigInt(18000000),
       minPeriodMonths: 12,
       minPurchasePriceAmount: BigInt(10000000),
+      modelDefinitionId: et5ModelDefinition.id,
       monthlyFeeRate: vehiclePackageRate,
       packageName: "A线ET5标准车型包",
       packageNo: baselineSubscriptionSeed.vehiclePackageNo,
@@ -1765,6 +1779,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       maxPurchasePriceAmount: BigInt(18000000),
       minPeriodMonths: 12,
       minPurchasePriceAmount: BigInt(10000000),
+      modelDefinitionId: et5ModelDefinition.id,
       monthlyFeeRate: vehiclePackageRate,
       packageName: "A线ET5标准车型包",
       productId: product.id,

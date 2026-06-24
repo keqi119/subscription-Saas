@@ -190,7 +190,11 @@ export class VehicleService {
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
-    const modelContext = await this.resolveModelContextForUpdate(dto.modelDefinitionId, dto.vehicleModel);
+    const modelContext = await this.resolveModelContextForUpdate(
+      dto.modelDefinitionId,
+      dto.vehicleModel,
+      Object.prototype.hasOwnProperty.call(dto, "vehicleModel")
+    );
     const data = updateVehicleData(dto, user.id, {
       modelDefinition: modelContext.modelDefinition,
       modelDefinitionProvided: dto.modelDefinitionId !== undefined,
@@ -771,28 +775,6 @@ export class VehicleService {
     return definition;
   }
 
-  private async resolveModelDefinitionByLegacyVehicleModel(vehicleModel: VehicleModel) {
-    const definition = await this.prisma.vehicleModelDefinition.findFirst({
-      select: vehicleModelDefinitionSelect,
-      where: {
-        deletedAt: null,
-        legacyVehicleModel: vehicleModel
-      }
-    });
-
-    if (!definition) {
-      return null;
-    }
-    if (!definition.enabled) {
-      throw new BadRequestException("车型主数据已停用");
-    }
-    if (!definition.legacyVehicleModel) {
-      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于车辆创建");
-    }
-
-    return definition;
-  }
-
   private async resolveModelContextForCreate(
     modelDefinitionId: string | null | undefined,
     vehicleModel: VehicleModel | null | undefined
@@ -805,24 +787,14 @@ export class VehicleService {
       };
     }
 
-    if (!vehicleModel) {
-      throw new BadRequestException("请选择车型代码。");
-    }
-
-    const modelDefinition = await this.resolveModelDefinitionByLegacyVehicleModel(vehicleModel);
-    if (!modelDefinition) {
-      throw new BadRequestException("车型代码主数据缺失，无法创建车辆。请先维护车型代码。");
-    }
-
-    return {
-      modelDefinition,
-      vehicleModel
-    };
+    void vehicleModel;
+    throw new BadRequestException("新增车辆必须选择车型主数据，请传入 modelDefinitionId。");
   }
 
   private async resolveModelContextForUpdate(
     modelDefinitionId: string | null | undefined,
-    vehicleModel: VehicleModel | null | undefined
+    vehicleModel: VehicleModel | null | undefined,
+    vehicleModelProvided: boolean
   ) {
     if (modelDefinitionId === null) {
       throw new BadRequestException("车型代码主数据已启用，不能清除车型代码。");
@@ -836,16 +808,9 @@ export class VehicleService {
       };
     }
 
-    if (vehicleModel) {
-      const modelDefinition = await this.resolveModelDefinitionByLegacyVehicleModel(vehicleModel);
-      if (!modelDefinition) {
-        throw new BadRequestException("车型代码主数据缺失，无法更新车辆车型。请先维护车型代码。");
-      }
-
-      return {
-        modelDefinition,
-        vehicleModel
-      };
+    if (vehicleModelProvided) {
+      void vehicleModel;
+      throw new BadRequestException("修改车辆车型必须选择车型主数据，请传入 modelDefinitionId。");
     }
 
     return {

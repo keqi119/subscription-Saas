@@ -1487,8 +1487,7 @@ export default function VehiclesPage() {
     }
 
     const selectedDefinition = vehicleModelDefinitionById.get(values.modelDefinitionId);
-    const vehicleModel = selectedDefinition?.legacyVehicleModel ?? values.vehicleModel;
-    if (!vehicleModel) {
+    if (!selectedDefinition?.legacyVehicleModel) {
       void message.error("所选车型代码未映射兼容车型，当前阶段不能用于车辆创建。");
       return;
     }
@@ -1513,7 +1512,6 @@ export default function VehiclesPage() {
           registrationDate: values.registrationDate?.format("YYYY-MM-DD"),
           remark: values.remark,
           series: values.series,
-          vehicleModel,
           vin: values.vin
         }),
         method: "POST"
@@ -1900,9 +1898,6 @@ export default function VehiclesPage() {
     if (!editingVehicle) {
       return;
     }
-    const selectedDefinition = values.modelDefinitionId
-      ? vehicleModelDefinitionById.get(values.modelDefinitionId)
-      : null;
     const vehiclePayload: Record<string, unknown> = {
       assetLocation: values.assetLocation,
       batteryCapacityKwh: values.batteryCapacityKwh,
@@ -1925,9 +1920,6 @@ export default function VehiclesPage() {
 
     if (values.modelDefinitionId) {
       vehiclePayload.modelDefinitionId = values.modelDefinitionId;
-      vehiclePayload.vehicleModel = selectedDefinition?.legacyVehicleModel ?? values.vehicleModel;
-    } else if (values.vehicleModel && values.vehicleModel !== editingVehicle.vehicleModel) {
-      vehiclePayload.vehicleModel = values.vehicleModel;
     }
 
     try {

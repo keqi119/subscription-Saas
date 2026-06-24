@@ -86,6 +86,7 @@ export class UpdateProductVersionDto {
 }
 
 export class CreatePriceRuleDto {
+  /** @deprecated Use modelDefinitionId. vehicleModel is derived from model master data. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;
@@ -132,6 +133,7 @@ export class CreatePriceRuleDto {
 }
 
 export class UpdatePriceRuleDto {
+  /** @deprecated Use modelDefinitionId. vehicleModel is derived from model master data. */
   @IsOptional()
   @IsEnum(VehicleModel)
   vehicleModel?: VehicleModel;

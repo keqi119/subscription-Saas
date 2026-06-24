@@ -527,10 +527,7 @@ function ProductsPageContent() {
       return;
     }
 
-    const body = buildPackagePayload(packageKind, values, {
-      editingPackage,
-      vehicleModelDefinitionById
-    });
+    const body = buildPackagePayload(packageKind, values);
     try {
       if (editingPackage) {
         await apiFetch(`/${endpoint}/${editingPackage.id}`, { body: JSON.stringify(body), method: "PATCH" });
@@ -1125,14 +1122,7 @@ function packagePermission(kind: PackageKind, action: "activate" | "create" | "d
   return `${kind}_package:${action}`;
 }
 
-function buildPackagePayload(
-  kind: PackageKind,
-  values: PackageValues,
-  context?: {
-    editingPackage?: PackageRow | null;
-    vehicleModelDefinitionById?: Map<string, VehicleModelDefinitionSummary>;
-  }
-) {
+function buildPackagePayload(kind: PackageKind, values: PackageValues) {
   const base = {
     packageName: values.packageName,
     productId: values.productId,
@@ -1140,9 +1130,6 @@ function buildPackagePayload(
     remark: values.remark
   };
   if (kind === "vehicle") {
-    const selectedDefinition = values.modelDefinitionId
-      ? context?.vehicleModelDefinitionById?.get(values.modelDefinitionId)
-      : null;
     const payload: Record<string, unknown> = {
       ...base,
       brand: values.brand,
@@ -1156,11 +1143,6 @@ function buildPackagePayload(
     };
     if (values.modelDefinitionId) {
       payload.modelDefinitionId = values.modelDefinitionId;
-      payload.vehicleModel = selectedDefinition?.legacyVehicleModel ?? values.vehicleModel;
-    } else if (!context?.editingPackage) {
-      payload.vehicleModel = values.vehicleModel;
-    } else if (values.vehicleModel && values.vehicleModel !== context.editingPackage.vehicleModel) {
-      payload.vehicleModel = values.vehicleModel;
     }
     return payload;
   }

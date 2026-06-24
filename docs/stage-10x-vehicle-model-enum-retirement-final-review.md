@@ -393,11 +393,13 @@ No quote/order amount or status changes.
 Goal:
 
 ```text
-Audit whether Vehicle, VehiclePackage, and ProductPriceRule can stop accepting legacy-only writes.
+Stop Vehicle, VehiclePackage, and ProductPriceRule from accepting legacy-only writes.
 Keep existing enum fields but treat them as derived compatibility values.
 ```
 
-Migration: Maybe not.
+Implementation status: Completed in Stage 10X-O.
+
+Migration: No.
 
 Risk: Medium.
 
@@ -407,6 +409,7 @@ Acceptance:
 Create/update APIs require modelDefinitionId for new writes.
 Legacy vehicleModel is derived from VehicleModelDefinition where still required.
 No legacy-only new records are created.
+Frontend forms use modelDefinitionId selectors and show legacy vehicleModel as read-only compatibility.
 ```
 
 ### Stage 10X-P: Legacy Enum Read-Only Mode

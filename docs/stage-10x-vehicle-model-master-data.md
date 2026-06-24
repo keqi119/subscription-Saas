@@ -222,3 +222,21 @@ VehicleModel enum 不删除
 ```text
 docs/stage-10x-model-master-data-residual-market.md
 ```
+
+## 13. Stage 10X-K 更新
+
+Stage 10X-K 已将 `VehicleModel` enum 标记为冻结集合，并加入 release / CI 防线。
+
+冻结集合为：
+
+```text
+ET5 / ET5T / ET7 / ES6 / EC6 / ES8 / ET9 / ES9
+```
+
+后续新增车型必须通过 `VehicleModelDefinition` 后台主数据维护，不再通过扩张 Prisma enum 完成。本阶段不删除 enum、不修改 schema、不新增 migration，legacy enum 继续用于历史快照、fallback 和兼容字段。
+
+详见：
+
+```text
+docs/stage-10x-vehicle-model-enum-freeze-guard.md
+```

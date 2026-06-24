@@ -156,3 +156,27 @@ Stage 10X-K: VehicleModel enum freeze guard
 Stage 10X-L: backfill dry-run / report
 Stage 10X-M: enum removal feasibility review
 ```
+
+## 10. Stage 10X-K 补充
+
+10X-K 已冻结 `VehicleModel` enum，并增加 release / CI guard，防止 residual 新车型再通过 Prisma enum 扩张进入系统。
+
+这不会改变 10X-J 的 residual 规则：
+
+```text
+新增 / 导入 residual sample 必须最终写入 modelDefinitionId
+新建 / 生成 residual curve 必须最终写入 modelDefinitionId
+target-specific model run 必须最终写入 targetModelDefinitionId
+历史 residual sample / curve / forecast 继续 legacy fallback
+不重算历史 forecast
+不自动 adopt residual
+不更新车辆销售价
+```
+
+后续新增 residual 车型维度应先维护 `VehicleModelDefinition`，而不是新增 `VehicleModel` enum 值。
+
+详见：
+
+```text
+docs/stage-10x-vehicle-model-enum-freeze-guard.md
+```

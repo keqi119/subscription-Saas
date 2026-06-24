@@ -57,6 +57,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: VehicleModel enum freeze
+        run: pnpm vehicle-model:enum-freeze
+
       - name: Prisma validate
         run: pnpm prisma:validate
 

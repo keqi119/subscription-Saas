@@ -6,6 +6,9 @@ const runReleaseSmoke = process.env.RUN_RELEASE_SMOKE === "1";
 const requiredSteps = [
   ["Prisma validate", "pnpm", ["prisma:validate"]],
   ["Prisma generate", "pnpm", ["prisma:generate"]],
+  ["VehicleModel enum freeze syntax", "node", ["--check", "scripts/check-vehicle-model-enum-freeze.mjs"]],
+  ["VehicleModel enum freeze", "pnpm", ["vehicle-model:enum-freeze"]],
+  ["VehicleModel enum freeze tests", "pnpm", ["vehicle-model:enum-freeze:test"]],
   ["Workspace lint", "pnpm", ["-r", "lint"]],
   ["API typecheck", "pnpm", ["--filter", "@subscription-saas/api", "typecheck"]],
   ["Web typecheck", "pnpm", ["--filter", "@subscription-saas/web", "typecheck"]],

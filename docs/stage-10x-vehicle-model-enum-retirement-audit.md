@@ -854,3 +854,33 @@ Stage 10X-M: enum removal feasibility review
 ```text
 docs/stage-10x-residual-model-definition-required.md
 ```
+
+## 9. Stage 10X-K 实施记录
+
+10X-K 已落实本审计文档推荐的“方案 B：冻结 enum，不再新增值；中期保留作为 legacy fallback”。
+
+实施结果：
+
+```text
+新增 scripts/check-vehicle-model-enum-freeze.mjs
+冻结集合：ET5 / ET5T / ET7 / ES6 / EC6 / ES8 / ET9 / ES9
+pnpm vehicle-model:enum-freeze 可本地执行冻结检查
+pnpm release:check 已执行 freeze check 和脚本测试
+GitHub CI quality-gate 已执行 pnpm vehicle-model:enum-freeze
+新增车型必须通过 VehicleModelDefinition 后台主数据维护
+```
+
+10X-K 仍不删除 `VehicleModel` enum，不修改任何业务模型，不新增 migration，也不迁移历史数据。legacy enum 继续服务于历史快照解释、兼容字段和 fallback。
+
+后续路线保持：
+
+```text
+Stage 10X-L: modelDefinitionId backfill dry-run / report
+Stage 10X-M: enum removal feasibility review
+```
+
+详见：
+
+```text
+docs/stage-10x-vehicle-model-enum-freeze-guard.md
+```

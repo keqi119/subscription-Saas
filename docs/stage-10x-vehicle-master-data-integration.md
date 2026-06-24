@@ -216,3 +216,21 @@ modelDefinitionId 和 vehicleModel 都未传:
 docs/stage-10x-vehicle-model-required-on-create.md
 ```
 
+## 13. Stage 10X-K 更新
+
+Stage 10X-K 已冻结 `VehicleModel` enum，防止后续新增车型继续走 schema enum / migration 路径。
+
+```text
+冻结集合：ET5 / ET5T / ET7 / ES6 / EC6 / ES8 / ET9 / ES9
+新增车型：必须通过 VehicleModelDefinition 后台主数据维护
+release:check / CI：会阻止 enum 新增、删除或改名
+```
+
+本阶段不删除 `Vehicle.vehicleModel`，不迁移历史车辆，也不改变车辆 create / update 的业务语义；10X-H 已建立的新建车辆 `modelDefinitionId` 必填策略继续保留。
+
+详见：
+
+```text
+docs/stage-10x-vehicle-model-enum-freeze-guard.md
+```
+

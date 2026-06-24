@@ -146,3 +146,24 @@ Stage 10X-J: Residual 新建 sample / curve 强制车型主数据
 Stage 10X-K: VehicleModel enum freeze guard
 Stage 10X-L: backfill dry-run / report
 ```
+
+## 11. Stage 10X-K 补充
+
+10X-K 已将 `VehicleModel` enum 冻结，并把检查接入 `release:check` 与 CI。
+
+这不会改变 10X-I 的 Product / VehiclePackage / ProductPriceRule 行为：
+
+```text
+新建车型相关规则仍必须最终写入 modelDefinitionId
+legacy vehicleModel 仍保留为兼容字段
+历史 Product / Package / PriceRule 不强制迁移
+Quote / Order 历史快照不修改
+```
+
+后续新增车型不得扩张 `VehicleModel` enum，应先维护 `VehicleModelDefinition` 主数据。
+
+详见：
+
+```text
+docs/stage-10x-vehicle-model-enum-freeze-guard.md
+```

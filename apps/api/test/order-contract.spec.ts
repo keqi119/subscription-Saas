@@ -179,6 +179,36 @@ describe("subscription order and contract rules", () => {
     expect(order.quoteSnapshot.vehicleSnapshot?.vehicleNo).toBe("VEH2026060200001");
   });
 
+  it("order response exposes snapshot display metadata before runtime vehicle display", async () => {
+    const harness = createOrderServiceHarness({
+      order: {
+        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelDefinitionIdSnapshot: "snapshot-model",
+        modelDisplayNameSnapshot: "Frozen Order ET5"
+      },
+      vehicle: {
+        modelDefinition: { displayName: "Runtime Vehicle ET5", id: "runtime-model" },
+        modelDefinitionId: "runtime-model"
+      }
+    });
+
+    const order = (await harness.service.getOrder(harness.orderId, harness.user)) as {
+      legacyVehicleModelSnapshot: VehicleModel;
+      modelDefinitionIdSnapshot: string;
+      modelDisplayName: string;
+      modelDisplaySource: string;
+      vehicleModel: VehicleModel;
+    };
+
+    expect(order).toMatchObject({
+      legacyVehicleModelSnapshot: VehicleModel.ET5,
+      modelDefinitionIdSnapshot: "snapshot-model",
+      modelDisplayName: "Frozen Order ET5",
+      modelDisplaySource: "SNAPSHOT",
+      vehicleModel: VehicleModel.ET5
+    });
+  });
+
   it("rejects creating an order when the quote vehicle is not locked", async () => {
     const harness = createOrderServiceHarness();
     harness.state.vehicleStatus = VehicleStatus.AVAILABLE;
@@ -258,6 +288,7 @@ describe("subscription order and contract rules", () => {
 });
 
 function createOrderServiceHarness(options: {
+  order?: Record<string, unknown>;
   quote?: Record<string, unknown>;
   vehicle?: Record<string, unknown>;
 } = {}) {
@@ -421,7 +452,8 @@ function createOrderServiceHarness(options: {
       vehicle: buildVehicle(),
       vehicleId,
       vehicleModel: "ET5",
-      vehiclePurchasePriceAmount: 10000000n
+      vehiclePurchasePriceAmount: 10000000n,
+      ...options.order
     };
   }
 

@@ -3121,6 +3121,9 @@ describe("reporting dashboard APIs", () => {
         customer: { mobile: "13800000000", name: "张三" },
         depositAmount: 200000n,
         id: "order-1",
+        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelDefinitionIdSnapshot: "snapshot-model-et5",
+        modelDisplayNameSnapshot: "Frozen Order ET5",
         monthlyFeeAmount: 300000n,
         orderNo: "SO-001",
         orderSource: OrderSource.SALES_ASSISTED,
@@ -3153,6 +3156,8 @@ describe("reporting dashboard APIs", () => {
           customerName: "张三",
           depositAmount: 200000,
           id: "order-1",
+          modelDisplayName: "Frozen Order ET5",
+          modelDisplaySource: "SNAPSHOT",
           monthlyFeeAmount: 300000,
           orderNo: "SO-001",
           orderStatus: OrderStatus.ACTIVE,
@@ -3433,6 +3438,9 @@ describe("reporting dashboard APIs", () => {
         customer: { mobile: "13800000000", name: "张三" },
         depositAmount: 200000n,
         id: "order-1",
+        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelDefinitionIdSnapshot: "snapshot-model-et5",
+        modelDisplayNameSnapshot: "Frozen CSV ET5",
         monthlyFeeAmount: 300000n,
         orderNo: "SO-001",
         orderSource: OrderSource.SALES_ASSISTED,
@@ -3455,6 +3463,7 @@ describe("reporting dashboard APIs", () => {
 
     expect(result.filename).toBe("orders-detail-20260601-20260630.csv");
     expect(result.content.charCodeAt(0)).toBe(0xfeff);
+    expect(result.content).toContain("Frozen CSV ET5,SNAPSHOT,ET5");
     expect(result.content).toContain("订单编号,客户姓名,手机号,订单来源,订单状态");
     expect(result.content).toContain("销售人工,在租");
     expect(result.content).toContain('"标准,套餐""豪华\n版"');

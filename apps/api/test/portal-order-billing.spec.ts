@@ -12,7 +12,8 @@ import {
   EntitlementUsageStatus,
   OrderSource,
   OrderStatus,
-  Prisma
+  Prisma,
+  VehicleModel
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -31,6 +32,18 @@ describe("portal billing and entitlement center", () => {
     expect(serialized).not.toContain("currentSalePriceAmount");
     expect(serialized).not.toContain("vin");
     expect(serialized).not.toContain("plateNo");
+  });
+
+  it("uses immutable order snapshot display names for customer-facing order vehicles", async () => {
+    const harness = createPortalBillingHarness();
+
+    const result = await harness.service.listOrders(harness.currentCustomer("customer_a"), {});
+
+    expect(result.items[0]?.vehicleSummary?.displayName).toBe("Frozen Portal ET5");
+    const serialized = JSON.stringify(result.items[0]);
+    expect(serialized).not.toContain("modelDefinitionIdSnapshot");
+    expect(serialized).not.toContain("legacyVehicleModelSnapshot");
+    expect(serialized).not.toContain("modelDisplaySource");
   });
 
   it("returns only bills owned by the current customer and marks payable bills", async () => {
@@ -219,7 +232,10 @@ function makeOrder(input: Partial<AnyRecord>) {
     entitlementGrants: [],
     finalPlanSnapshot: { subscriptionPlan: { planName: "安心订阅套餐" } },
     id: input.id ?? "order_a",
+    legacyVehicleModelSnapshot: input.legacyVehicleModelSnapshot ?? VehicleModel.ET5,
     mileageLimitKm: 1500,
+    modelDefinitionIdSnapshot: input.modelDefinitionIdSnapshot ?? "model-et5",
+    modelDisplayNameSnapshot: input.modelDisplayNameSnapshot ?? "Frozen Portal ET5",
     monthlyFeeAmount: 39900n,
     orderNo: input.orderNo ?? "ORD-A",
     orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
@@ -236,6 +252,7 @@ function makeOrder(input: Partial<AnyRecord>) {
     quoteSnapshot: {},
     receivableBills: [],
     startDate: null,
+    vehicleModel: input.vehicleModel ?? VehicleModel.ET5,
     vehicle: {
       assetLocation: "上海",
       batteryCapacityKwh: new Prisma.Decimal(75),

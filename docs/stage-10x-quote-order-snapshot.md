@@ -81,3 +81,5 @@ Historical quote / order data remains unchanged. The new fields are nullable so 
 ## 9. Follow-up
 
 Stage 10X-M-D backfills additive quote / order snapshot fields with a guarded dry-run / apply script. It does not rewrite the original `vehicleModel` or any quote / order financial facts.
+
+Stage 10X-M-E updates Quote / Order read paths, customer portal order display, and order detail CSV export to prefer immutable snapshot display fields for historical explanation.

@@ -322,6 +322,37 @@ describe("subscription plan backend flow", () => {
     );
   });
 
+  it("quote response exposes snapshot display metadata before runtime vehicle display", async () => {
+    const runtimeDefinition = makeModelDefinition({ displayName: "Runtime ET5", id: "runtime-model" });
+    const { service } = makeService({
+      quote: makeQuote({
+        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelDefinitionIdSnapshot: "snapshot-model",
+        modelDisplayNameSnapshot: "Frozen ET5",
+        vehicle: makeVehicle({
+          modelDefinition: runtimeDefinition,
+          modelDefinitionId: runtimeDefinition.id
+        })
+      })
+    });
+
+    const quote = (await service.getQuote("quote-1", user)) as {
+      legacyVehicleModelSnapshot: VehicleModel;
+      modelDefinitionIdSnapshot: string;
+      modelDisplayName: string;
+      modelDisplaySource: string;
+      vehicleModel: VehicleModel;
+    };
+
+    expect(quote).toMatchObject({
+      legacyVehicleModelSnapshot: VehicleModel.ET5,
+      modelDefinitionIdSnapshot: "snapshot-model",
+      modelDisplayName: "Frozen ET5",
+      modelDisplaySource: "SNAPSHOT",
+      vehicleModel: VehicleModel.ET5
+    });
+  });
+
   it("uses fixed amount subscription plan pricing and ignores submitted vehicle base fee", async () => {
     const plan = makeSubscriptionPlan({
       baseMonthlyFeeAmount: BigInt(360000),

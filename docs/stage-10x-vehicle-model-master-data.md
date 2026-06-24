@@ -192,3 +192,33 @@ Residual market / forecast 留到 Stage 10X-F
 ```text
 docs/stage-10x-model-master-data-portal-product-reports.md
 ```
+
+## 12. Stage 10X-F 更新
+
+Stage 10X-F 已将车型主数据接入 Residual market / forecast：
+
+```text
+VehicleMarketPriceObservation.modelDefinitionId nullable FK
+VehicleResidualCurve.modelDefinitionId nullable FK
+VehicleResidualForecast.modelDefinitionId nullable FK
+ResidualModelRun.targetModelDefinitionId nullable FK
+Residual market / curve / forecast 查询和展示返回 modelDefinition / modelDisplayName
+Vehicle valuation review 展示优先 modelDefinition.displayName
+```
+
+本阶段仍保留双轨边界：
+
+```text
+legacy brand / series / model fallback 保留
+VehicleModel enum 不删除
+不重算历史 forecast
+不自动 adopt residual
+不更新车辆当前销售价
+不修改 ROE / 折旧 / BaaS 主口径
+```
+
+详见：
+
+```text
+docs/stage-10x-model-master-data-residual-market.md
+```

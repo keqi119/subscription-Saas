@@ -35,6 +35,7 @@ import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import {
   SALE_PRICE_REVIEW_TYPE_LABELS,
+  VEHICLE_MODEL_LABELS,
   VEHICLE_VALUATION_REVIEW_SOURCE_LABELS,
   VEHICLE_VALUATION_REVIEW_STATUS_LABELS,
   labelOf
@@ -51,12 +52,25 @@ import {
   toCentAmount
 } from "../../lib/capital-format";
 
+interface VehicleModelDefinitionSummary {
+  customerDisplayName?: string | null;
+  displayName: string;
+  id: string;
+  legacyVehicleModel?: string | null;
+  modelCode: string;
+  modelName: string;
+  series?: string | null;
+}
+
 interface VehicleSummary {
   brand?: string | null;
   currentSalePriceAmount?: number | null;
   currentSalePriceReviewedAt?: string | null;
   id: string;
   model?: string | null;
+  modelDefinition?: VehicleModelDefinitionSummary | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   nextSalePriceReviewAt?: string | null;
   plateNo?: string | null;
   salePriceStatus?: string | null;
@@ -220,6 +234,10 @@ function vehicleTitle(vehicle?: VehicleSummary | null) {
     return "-";
   }
   return [vehicle.vehicleNo, vehicle.plateNo].filter(Boolean).join(" / ") || vehicle.id;
+}
+
+function vehicleModelDisplayName(vehicle?: VehicleSummary | null) {
+  return vehicle?.modelDisplayName ?? vehicle?.modelDefinition?.displayName ?? labelOf(VEHICLE_MODEL_LABELS, vehicle?.model);
 }
 
 function formatSnapshot(value?: unknown) {
@@ -518,6 +536,7 @@ export default function VehicleValuationReviewsPage() {
   const columns: ColumnsType<VehicleValuationReview> = [
     { dataIndex: "reviewNo", render: (value: string | null) => value ?? "-", title: "复核编号", width: 190 },
     { render: (_, record) => vehicleTitle(record.vehicle), title: "车辆", width: 180 },
+    { render: (_, record) => vehicleModelDisplayName(record.vehicle), title: "车型", width: 160 },
     { render: (_, record) => record.vehicle?.vin ?? "-", title: "VIN", width: 180 },
     { render: (_, record) => record.vehicle?.plateNo ?? "-", title: "车牌号", width: 120 },
     { dataIndex: "reviewSource", render: reviewSourceTag, title: "来源", width: 120 },
@@ -669,7 +688,7 @@ export default function VehicleValuationReviewsPage() {
             total
           }}
           rowKey="id"
-          scroll={{ x: 2320 }}
+          scroll={{ x: 2480 }}
         />
       </Space>
 
@@ -753,7 +772,9 @@ export default function VehicleValuationReviewsPage() {
                 { label: "车牌号", children: detail.vehicle?.plateNo ?? "-" },
                 { label: "品牌", children: detail.vehicle?.brand ?? "-" },
                 { label: "车系", children: detail.vehicle?.series ?? "-" },
-                { label: "车型", children: detail.vehicle?.model ?? "-" },
+                { label: "车型代码", children: detail.vehicle?.modelDefinition?.modelCode ?? "-" },
+                { label: "车型", children: vehicleModelDisplayName(detail.vehicle) },
+                { label: "legacy 车型", children: detail.vehicle?.model ?? "-" },
                 { label: "年款", children: "-" },
                 { label: "当前销售价", children: formatYuan(detail.vehicle?.currentSalePriceAmount) },
                 { label: "原销售价", children: formatYuan(detail.originalSalePriceAmount) }

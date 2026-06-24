@@ -2,6 +2,17 @@
 
 本文档固化 Stage 7.6 经营报表与 CSV 导出的第一版口径。当前报表面向后台运营、财务和资产管理角色，提供实时聚合查询与轻量 CSV 导出。
 
+## Stage 10X-F 车型主数据说明
+
+车型主数据接入状态：
+
+```text
+Stage 10X-E: Product / Portal / Reports 已支持 modelDefinitionId、modelDisplayName 和 legacy fallback
+Stage 10X-F: Residual market / residual forecast / valuation review 已支持 modelDefinitionId 展示和筛选
+```
+
+本阶段不修改既有经营报表主口径，不重算历史 residual forecast，不自动 adopt residual，不更新车辆当前销售价，也不改变 ROE / 折旧 / BaaS 计算公式。
+
 ## 报表模块
 
 后端模块：`apps/api/src/report`

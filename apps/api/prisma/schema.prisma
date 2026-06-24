@@ -2474,6 +2474,10 @@ model VehicleModelDefinition {
   vehicles            Vehicle[]
   vehiclePackages     VehiclePackage[]
   productPriceRules   ProductPriceRule[]
+  marketPriceObservations VehicleMarketPriceObservation[]
+  residualCurves      VehicleResidualCurve[]
+  residualForecasts   VehicleResidualForecast[]
+  residualModelRuns   ResidualModelRun[]
 
   @@index([modelCode])
   @@index([legacyVehicleModel])
@@ -3076,6 +3080,8 @@ model VehicleMarketPriceObservation {
   observationNo          String                       @unique @map("observation_no") @db.VarChar(64)
   batchId                String?                      @map("batch_id") @db.Uuid
   batch                  MarketPriceImportBatch?      @relation(fields: [batchId], references: [id])
+  modelDefinitionId      String?                      @map("model_definition_id") @db.Uuid
+  modelDefinition        VehicleModelDefinition?      @relation(fields: [modelDefinitionId], references: [id])
   source                 MarketPriceSource
   sourceListingId        String?                      @map("source_listing_id") @db.VarChar(128)
   observedAt             DateTime                     @map("observed_at") @db.Date
@@ -3113,6 +3119,7 @@ model VehicleMarketPriceObservation {
   deletedAt              DateTime?                    @map("deleted_at") @db.Timestamptz(6)
 
   @@index([source])
+  @@index([modelDefinitionId])
   @@index([observedAt])
   @@index([brand, series, model])
   @@index([modelYear])
@@ -3129,6 +3136,8 @@ model VehicleResidualCurve {
   curveName            String?                    @map("curve_name") @db.VarChar(128)
   curveStatus          VehicleResidualCurveStatus @default(DRAFT) @map("curve_status")
   curveMethod          VehicleResidualCurveMethod @default(STATISTICAL_MEDIAN) @map("curve_method")
+  modelDefinitionId    String?                    @map("model_definition_id") @db.Uuid
+  modelDefinition      VehicleModelDefinition?    @relation(fields: [modelDefinitionId], references: [id])
   brand                String                     @db.VarChar(64)
   series               String?                    @db.VarChar(64)
   model                String                     @db.VarChar(64)
@@ -3163,6 +3172,7 @@ model VehicleResidualCurve {
 
   @@index([curveStatus])
   @@index([curveMethod])
+  @@index([modelDefinitionId])
   @@index([brand, series, model])
   @@index([modelYear])
   @@index([batteryUsageType])
@@ -3205,6 +3215,8 @@ model VehicleResidualForecast {
   vehicle                Vehicle                        @relation(fields: [vehicleId], references: [id])
   curveId                String                         @map("curve_id") @db.Uuid
   curve                  VehicleResidualCurve           @relation(fields: [curveId], references: [id])
+  modelDefinitionId      String?                        @map("model_definition_id") @db.Uuid
+  modelDefinition        VehicleModelDefinition?        @relation(fields: [modelDefinitionId], references: [id])
   forecastStatus         VehicleResidualForecastStatus  @default(GENERATED) @map("forecast_status")
   forecastMethod         VehicleResidualForecastMethod  @default(CURVE_STATISTICAL) @map("forecast_method")
   asOfDate               DateTime                       @map("as_of_date") @db.Date
@@ -3236,6 +3248,7 @@ model VehicleResidualForecast {
 
   @@index([vehicleId])
   @@index([curveId])
+  @@index([modelDefinitionId])
   @@index([forecastStatus])
   @@index([asOfDate])
   @@map("vehicle_residual_forecast")
@@ -3333,6 +3346,8 @@ model ResidualModelRun {
   modelProvider            String?                    @map("model_provider") @db.VarChar(64)
   algorithm                ResidualModelAlgorithm?
   targetType               ResidualModelTargetType    @map("target_type")
+  targetModelDefinitionId  String?                    @map("target_model_definition_id") @db.Uuid
+  targetModelDefinition    VehicleModelDefinition?    @relation(fields: [targetModelDefinitionId], references: [id])
   targetBrand              String?                    @map("target_brand") @db.VarChar(64)
   targetSeries             String?                    @map("target_series") @db.VarChar(64)
   targetModel              String?                    @map("target_model") @db.VarChar(64)
@@ -3364,6 +3379,7 @@ model ResidualModelRun {
   @@index([runType])
   @@index([runStatus])
   @@index([targetType])
+  @@index([targetModelDefinitionId])
   @@index([modelVersion])
   @@index([targetBrand, targetSeries, targetModel])
   @@index([createdAt])

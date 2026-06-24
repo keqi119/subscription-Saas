@@ -21,6 +21,7 @@ import {
   VehicleBatteryUsageType,
   VehicleMarketPriceObservation,
   VehicleModel,
+  VehicleModelDefinition,
   VehicleResidualCurve,
   VehicleResidualCurveMethod,
   VehicleResidualCurvePoint,
@@ -71,6 +72,26 @@ describe("ResidualMarketService", () => {
         module: "residual_market"
       })
     );
+  });
+
+  it("binds market price observations to vehicle model definitions", async () => {
+    const definition = makeModelDefinition();
+    const harness = createResidualMarketHarness({ modelDefinitions: [definition] });
+
+    const result = await harness.service.createObservation(
+      { ...validObservationDto(), modelDefinitionId: definition.id },
+      user,
+      context
+    );
+
+    expect(result.modelDefinitionId).toBe(definition.id);
+    expect(result.modelDefinition?.modelCode).toBe("ET5");
+    expect(result.modelDisplayName).toBe("NIO ET5");
+
+    const list = await harness.service.listObservations({ modelDefinitionId: definition.id });
+
+    expect(list.total).toBe(1);
+    expect(list.items[0]?.modelDefinition?.id).toBe(definition.id);
   });
 
   it("rejects priceAmount less than or equal to zero", async () => {
@@ -370,6 +391,41 @@ describe("ResidualMarketService", () => {
         module: "residual_market"
       })
     );
+  });
+
+  it("generates residual curves with modelDefinitionId and legacy sample fallback", async () => {
+    const definition = makeModelDefinition();
+    const observations = makeCurveSamples([10000000n, 12000000n, 14000000n]).map((observation, index) => ({
+      ...observation,
+      modelDefinitionId: index < 2 ? definition.id : null
+    }));
+    const harness = createResidualMarketHarness({
+      modelDefinitions: [definition],
+      observations
+    });
+
+    const result = await harness.service.generateCurve(
+      {
+        brand: "NIO",
+        minSamplePerPoint: 3,
+        model: "ET5",
+        modelDefinitionId: definition.id,
+        referencePriceAmount: 20000000
+      },
+      user,
+      context
+    );
+
+    expect(result.curve.modelDefinitionId).toBe(definition.id);
+    expect(result.curve.modelDefinition?.displayName).toBe("NIO ET5");
+    expect(result.curve.modelDisplayName).toBe("NIO ET5");
+    expect(result.curve.sampleCount).toBe(3);
+    expect(harness.state.curves[0]?.modelDefinitionId).toBe(definition.id);
+
+    const list = await harness.service.listCurves({ modelDefinitionId: definition.id });
+
+    expect(list.total).toBe(1);
+    expect(list.items[0]?.modelDefinition?.id).toBe(definition.id);
   });
 
   it("keeps residual model run linkage read-only during dryRun", async () => {
@@ -953,6 +1009,71 @@ describe("ResidualMarketService", () => {
     expect(inputSnapshot.curveMatch.score).toBeGreaterThan(0);
   });
 
+  it("uses modelDefinition residual curves before legacy curves for forecast generation", async () => {
+    const definition = makeModelDefinition();
+    const harness = createResidualMarketHarness({
+      curves: [
+        makeCurve({
+          curveStatus: VehicleResidualCurveStatus.ACTIVE,
+          id: "curve-legacy",
+          modelDefinitionId: null
+        }),
+        makeCurve({
+          curveNo: "RVC20260602000000A1B2",
+          curveStatus: VehicleResidualCurveStatus.ACTIVE,
+          id: "curve-definition",
+          modelDefinitionId: definition.id
+        })
+      ],
+      modelDefinitions: [definition],
+      points: [
+        makeCurvePoint({ curveId: "curve-legacy", id: "legacy-24", predictedResidualAmount: 12000000n }),
+        makeCurvePoint({ curveId: "curve-definition", id: "definition-24", predictedResidualAmount: 9000000n })
+      ],
+      vehicles: [makeVehicle({ modelDefinitionId: definition.id })]
+    });
+
+    const result = await harness.service.generateVehicleForecast(
+      "vehicle-1",
+      { asOfDate: "2026-06-01", dryRun: false, horizonMonths: [0] },
+      user,
+      context
+    );
+
+    expect(result.forecast.curveId).toBe("curve-definition");
+    expect(result.forecast.modelDefinitionId).toBe(definition.id);
+    expect(result.forecast.modelDefinition?.displayName).toBe("NIO ET5");
+    expect(result.points[0]?.predictedResidualAmount).toBe(9000000);
+    expect(harness.state.forecasts[0]?.modelDefinitionId).toBe(definition.id);
+    expectNoResidualMarketSalePriceWrites(harness);
+    const inputSnapshot = result.forecast.inputSnapshot as { curveMatch: { matchedFields: string[] } };
+    expect(inputSnapshot.curveMatch.matchedFields).toContain("modelDefinitionId");
+  });
+
+  it("falls back to legacy residual curves when a vehicle modelDefinition curve is missing", async () => {
+    const definition = makeModelDefinition();
+    const harness = createResidualMarketHarness({
+      curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE, id: "curve-legacy" })],
+      modelDefinitions: [definition],
+      points: [makeCurvePoint({ curveId: "curve-legacy", id: "legacy-24", predictedResidualAmount: 12000000n })],
+      vehicles: [makeVehicle({ modelDefinitionId: definition.id })]
+    });
+
+    const result = await harness.service.generateVehicleForecast(
+      "vehicle-1",
+      { asOfDate: "2026-06-01", dryRun: false, horizonMonths: [0] },
+      user,
+      context
+    );
+
+    expect(result.forecast.curveId).toBe("curve-legacy");
+    expect(result.forecast.modelDefinitionId).toBe(definition.id);
+    expect(result.points[0]?.predictedResidualAmount).toBe(12000000);
+    expectNoResidualMarketSalePriceWrites(harness);
+    const inputSnapshot = result.forecast.inputSnapshot as { curveMatch: { matchedFields: string[] } };
+    expect(inputSnapshot.curveMatch.matchedFields).not.toContain("modelDefinitionId");
+  });
+
   it("linearly interpolates forecast points and marks out-of-range points unsupported", async () => {
     const harness = createResidualMarketHarness({
       curves: [makeCurve({ curveStatus: VehicleResidualCurveStatus.ACTIVE })],
@@ -1117,6 +1238,26 @@ describe("ResidualMarketService", () => {
         module: "residual_market"
       })
     );
+  });
+
+  it("creates and filters residual model runs with target model definitions", async () => {
+    const definition = makeModelDefinition();
+    const harness = createResidualMarketHarness({ modelDefinitions: [definition] });
+
+    const result = await harness.service.createModelRun(
+      { ...validModelRunDto(), targetModelDefinitionId: definition.id },
+      user,
+      context
+    );
+
+    expect(result.targetModelDefinitionId).toBe(definition.id);
+    expect(result.targetModelDefinition?.modelCode).toBe("ET5");
+    expect(result.targetModelDisplayName).toBe("NIO ET5");
+
+    const list = await harness.service.listModelRuns({ targetModelDefinitionId: definition.id });
+
+    expect(list.total).toBe(1);
+    expect(list.items[0]?.targetModelDefinition?.id).toBe(definition.id);
   });
 
   it("rejects invalid initial residual model run status", async () => {
@@ -1358,6 +1499,7 @@ function createResidualMarketHarness(seed: Partial<ResidualMarketState> = {}) {
     forecasts: [...(seed.forecasts ?? [])],
     modelRunOutputs: [...(seed.modelRunOutputs ?? [])],
     modelRuns: [...(seed.modelRuns ?? [])],
+    modelDefinitions: [...(seed.modelDefinitions ?? [])],
     observations: [...(seed.observations ?? [])],
     points: [...(seed.points ?? [])],
     salePriceHistories: [...(seed.salePriceHistories ?? [])],
@@ -1377,6 +1519,7 @@ type ResidualMarketState = {
   forecasts: VehicleResidualForecast[];
   modelRunOutputs: ResidualModelRunOutput[];
   modelRuns: ResidualModelRun[];
+  modelDefinitions: VehicleModelDefinition[];
   observations: VehicleMarketPriceObservation[];
   points: VehicleResidualCurvePoint[];
   salePriceHistories: VehicleSalePriceHistory[];
@@ -1396,11 +1539,20 @@ function expectNoResidualMarketSalePriceWrites(
 function createResidualMarketPrisma(state: ResidualMarketState) {
   const prisma = {
     vehicle: {
-      findFirst: vi.fn(({ where }) =>
-        Promise.resolve(state.vehicles.find((vehicle) => matchesVehicleWhere(vehicle, where)) ?? null)
+      findFirst: vi.fn(({ include, where }) =>
+        Promise.resolve(
+          attachVehicleInclude(state.vehicles.find((vehicle) => matchesVehicleWhere(vehicle, where)) ?? null, include, state)
+        )
       ),
       update: vi.fn(() =>
         Promise.reject(new Error("Residual market service must not update Vehicle.currentSalePriceAmount."))
+      )
+    },
+    vehicleModelDefinition: {
+      findFirst: vi.fn(({ where }) =>
+        Promise.resolve(
+          state.modelDefinitions.find((definition) => matchesModelDefinitionWhere(definition, where)) ?? null
+        )
       )
     },
     vehicleSalePriceHistory: {
@@ -1446,7 +1598,7 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
       count: vi.fn(({ where }) =>
         Promise.resolve(state.observations.filter((observation) => matchesObservationWhere(observation, where)).length)
       ),
-      create: vi.fn(({ data }) => {
+      create: vi.fn(({ data, include }) => {
         if (
           state.observations.some(
             (observation) =>
@@ -1462,17 +1614,26 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           id: `observation-${state.observations.length + 1}`
         });
         state.observations.push(observation);
-        return Promise.resolve(observation);
+        return Promise.resolve(attachObservationInclude(observation, include, state));
       }),
-      findFirst: vi.fn(({ where }) =>
-        Promise.resolve(state.observations.find((observation) => matchesObservationWhere(observation, where)) ?? null)
-      ),
-      findMany: vi.fn(({ skip = 0, take = 20, where }) =>
+      findFirst: vi.fn(({ include, where }) =>
         Promise.resolve(
-          state.observations.filter((observation) => matchesObservationWhere(observation, where)).slice(skip, skip + take)
+          attachObservationInclude(
+            state.observations.find((observation) => matchesObservationWhere(observation, where)) ?? null,
+            include,
+            state
+          )
         )
       ),
-      update: vi.fn(({ data, where }) => {
+      findMany: vi.fn(({ include, skip = 0, take = 20, where }) =>
+        Promise.resolve(
+          state.observations
+            .filter((observation) => matchesObservationWhere(observation, where))
+            .slice(skip, skip + take)
+            .map((observation) => attachObservationInclude(observation, include, state))
+        )
+      ),
+      update: vi.fn(({ data, include, where }) => {
         const index = state.observations.findIndex((observation) => observation.id === where.id);
         const before = state.observations[index];
         if (!before) {
@@ -1483,9 +1644,9 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           ...data,
           updatedAt: new Date("2026-06-01T00:10:00.000Z")
         };
-          state.observations[index] = updated;
-          return Promise.resolve(updated);
-        })
+        state.observations[index] = updated;
+        return Promise.resolve(attachObservationInclude(updated, include, state));
+      })
     },
     vehicleResidualCurve: {
       count: vi.fn(({ where }) =>
@@ -1633,7 +1794,7 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
       count: vi.fn(({ where }) =>
         Promise.resolve(state.modelRuns.filter((run) => matchesModelRunWhere(run, where)).length)
       ),
-      create: vi.fn(({ data }) => {
+      create: vi.fn(({ data, include }) => {
         const run = makeModelRun({
           ...data,
           featureSnapshot: data.featureSnapshot === Prisma.JsonNull ? null : data.featureSnapshot,
@@ -1642,7 +1803,7 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           parameterSnapshot: data.parameterSnapshot === Prisma.JsonNull ? null : data.parameterSnapshot
         });
         state.modelRuns.push(run);
-        return Promise.resolve(run);
+        return Promise.resolve(attachModelRunInclude(run, include, state));
       }),
       findFirst: vi.fn(({ include, where }) =>
         Promise.resolve(
@@ -1653,10 +1814,10 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           )
         )
       ),
-      findMany: vi.fn(({ orderBy, skip = 0, take = 20, where }) => {
+      findMany: vi.fn(({ include, orderBy, skip = 0, take = 20, where }) => {
         const runs = state.modelRuns.filter((run) => matchesModelRunWhere(run, where));
         sortModelRuns(runs, orderBy);
-        return Promise.resolve(runs.slice(skip, skip + take));
+        return Promise.resolve(runs.slice(skip, skip + take).map((run) => attachModelRunInclude(run, include, state)));
       }),
       findUniqueOrThrow: vi.fn(({ include, where }) => {
         const run = state.modelRuns.find((candidate) => candidate.id === where.id);
@@ -1693,16 +1854,7 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
           outputSnapshot: data.outputSnapshot === Prisma.JsonNull ? null : data.outputSnapshot
         });
         state.modelRunOutputs.push(created);
-        return Promise.resolve(
-          include
-            ? {
-                ...created,
-                curve: state.curves.find((curve) => curve.id === created.curveId) ?? null,
-                forecast: state.forecasts.find((forecast) => forecast.id === created.forecastId) ?? null,
-                vehicle: state.vehicles.find((vehicle) => vehicle.id === created.vehicleId) ?? null
-              }
-            : created
-        );
+        return Promise.resolve(include ? attachModelRunOutputInclude(created, include, state) : created);
       }),
       createMany: vi.fn(({ data }) => {
         const rows = Array.isArray(data) ? data : [data];
@@ -1725,7 +1877,12 @@ function createResidualMarketPrisma(state: ResidualMarketState) {
   };
 }
 
-function matchesObservationWhere(observation: VehicleMarketPriceObservation, where: Record<string, unknown> = {}) {
+function matchesObservationWhere(observation: VehicleMarketPriceObservation, where: Record<string, unknown> = {}): boolean {
+  if (Array.isArray(where.OR)) {
+    const baseWhere = { ...where };
+    delete baseWhere.OR;
+    return where.OR.some((orWhere) => matchesObservationWhere(observation, { ...baseWhere, ...(orWhere as Record<string, unknown>) }));
+  }
   if (where.id !== undefined && observation.id !== where.id) {
     return false;
   }
@@ -1739,6 +1896,9 @@ function matchesObservationWhere(observation: VehicleMarketPriceObservation, whe
     return false;
   }
   if (where.observationStatus !== undefined && observation.observationStatus !== where.observationStatus) {
+    return false;
+  }
+  if (where.modelDefinitionId !== undefined && observation.modelDefinitionId !== where.modelDefinitionId) {
     return false;
   }
   if (where.source !== undefined && observation.source !== where.source) {
@@ -1809,6 +1969,9 @@ function matchesCurveWhere(curve: VehicleResidualCurve, where: Record<string, un
   if (where.curveMethod !== undefined && curve.curveMethod !== where.curveMethod) {
     return false;
   }
+  if (where.modelDefinitionId !== undefined && curve.modelDefinitionId !== where.modelDefinitionId) {
+    return false;
+  }
   if (where.modelYear !== undefined && curve.modelYear !== where.modelYear) {
     return false;
   }
@@ -1837,6 +2000,19 @@ function matchesVehicleWhere(vehicle: Vehicle, where: Record<string, unknown> = 
   return true;
 }
 
+function matchesModelDefinitionWhere(definition: VehicleModelDefinition, where: Record<string, unknown> = {}) {
+  if (where.id !== undefined && definition.id !== where.id) {
+    return false;
+  }
+  if (where.deletedAt === null && definition.deletedAt !== null) {
+    return false;
+  }
+  if (where.enabled !== undefined && definition.enabled !== where.enabled) {
+    return false;
+  }
+  return true;
+}
+
 function matchesForecastWhere(forecast: VehicleResidualForecast, where: Record<string, unknown> = {}) {
   if (where.id !== undefined && forecast.id !== where.id) {
     return false;
@@ -1848,6 +2024,9 @@ function matchesForecastWhere(forecast: VehicleResidualForecast, where: Record<s
     return false;
   }
   if (where.forecastStatus !== undefined && forecast.forecastStatus !== where.forecastStatus) {
+    return false;
+  }
+  if (where.modelDefinitionId !== undefined && forecast.modelDefinitionId !== where.modelDefinitionId) {
     return false;
   }
   return true;
@@ -1877,6 +2056,9 @@ function matchesModelRunWhere(run: ResidualModelRun, where: Record<string, unkno
     return false;
   }
   if (where.targetType !== undefined && run.targetType !== where.targetType) {
+    return false;
+  }
+  if (where.targetModelDefinitionId !== undefined && run.targetModelDefinitionId !== where.targetModelDefinitionId) {
     return false;
   }
   if (!matchesTextFilter(run.modelVersion, where.modelVersion)) {
@@ -1959,29 +2141,66 @@ function matchesRange<T extends bigint | Date | number>(value: T | null, filter?
   return !(filter.lte !== undefined && value > filter.lte);
 }
 
+function findModelDefinition(state: ResidualMarketState, id: string | null) {
+  return id ? state.modelDefinitions.find((definition) => definition.id === id) ?? null : null;
+}
+
+function nestedInclude(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === "object" && "include" in value) {
+    return (value as { include?: Record<string, unknown> }).include;
+  }
+  return undefined;
+}
+
+function attachVehicleInclude(vehicle: Vehicle | null, include: { modelDefinition?: unknown } | undefined, state: ResidualMarketState) {
+  if (!vehicle) {
+    return null;
+  }
+  return {
+    ...vehicle,
+    ...(include?.modelDefinition ? { modelDefinition: findModelDefinition(state, vehicle.modelDefinitionId) } : {})
+  };
+}
+
+function attachObservationInclude(
+  observation: VehicleMarketPriceObservation | null,
+  include: { modelDefinition?: unknown } | undefined,
+  state: ResidualMarketState
+) {
+  if (!observation) {
+    return null;
+  }
+  return {
+    ...observation,
+    ...(include?.modelDefinition ? { modelDefinition: findModelDefinition(state, observation.modelDefinitionId) } : {})
+  };
+}
+
 function attachCurveInclude(
   curve: VehicleResidualCurve | null,
-  include: { points?: unknown } | undefined,
+  include: { modelDefinition?: unknown; points?: unknown } | undefined,
   state: ResidualMarketState
 ) {
   if (!curve) {
     return null;
   }
-  if (!include?.points) {
-    return curve;
-  }
 
   return {
     ...curve,
-    points: state.points
-      .filter((point) => point.curveId === curve.id)
-      .sort((left, right) => left.ageMonth - right.ageMonth)
+    ...(include?.modelDefinition ? { modelDefinition: findModelDefinition(state, curve.modelDefinitionId) } : {}),
+    ...(include?.points
+      ? {
+          points: state.points
+            .filter((point) => point.curveId === curve.id)
+            .sort((left, right) => left.ageMonth - right.ageMonth)
+        }
+      : {})
   };
 }
 
 function attachForecastInclude(
   forecast: VehicleResidualForecast | null,
-  include: { curve?: unknown; points?: unknown; vehicle?: unknown } | undefined,
+  include: { curve?: unknown; modelDefinition?: unknown; points?: unknown; vehicle?: unknown } | undefined,
   state: ResidualMarketState
 ) {
   if (!forecast) {
@@ -1990,7 +2209,16 @@ function attachForecastInclude(
 
   return {
     ...forecast,
-    ...(include?.curve ? { curve: state.curves.find((curve) => curve.id === forecast.curveId) ?? null } : {}),
+    ...(include?.modelDefinition ? { modelDefinition: findModelDefinition(state, forecast.modelDefinitionId) } : {}),
+    ...(include?.curve
+      ? {
+          curve: attachCurveInclude(
+            state.curves.find((curve) => curve.id === forecast.curveId) ?? null,
+            nestedInclude(include.curve),
+            state
+          )
+        }
+      : {}),
     ...(include?.points
       ? {
           points: state.forecastPoints
@@ -1998,13 +2226,21 @@ function attachForecastInclude(
             .sort((left, right) => left.horizonMonth - right.horizonMonth)
         }
       : {}),
-    ...(include?.vehicle ? { vehicle: state.vehicles.find((vehicle) => vehicle.id === forecast.vehicleId) ?? null } : {})
+    ...(include?.vehicle
+      ? {
+          vehicle: attachVehicleInclude(
+            state.vehicles.find((vehicle) => vehicle.id === forecast.vehicleId) ?? null,
+            nestedInclude(include.vehicle),
+            state
+          )
+        }
+      : {})
   };
 }
 
 function attachForecastPointInclude(
   point: VehicleResidualForecastPoint | null,
-  include: { forecast?: { include?: { curve?: unknown; vehicle?: unknown } } } | undefined,
+  include: { forecast?: { include?: { curve?: unknown; modelDefinition?: unknown; vehicle?: unknown } } } | undefined,
   state: ResidualMarketState
 ) {
   if (!point) {
@@ -2049,34 +2285,67 @@ function validModelRunDto() {
 
 function attachModelRunInclude(
   run: ResidualModelRun | null,
-  include: { outputs?: { include?: { curve?: unknown; forecast?: unknown; vehicle?: unknown } } } | undefined,
+  include: { outputs?: { include?: { curve?: unknown; forecast?: unknown; vehicle?: unknown } }; targetModelDefinition?: unknown } | undefined,
   state: ResidualMarketState
 ) {
   if (!run) {
     return null;
   }
 
+  const baseRun = {
+    ...run,
+    ...(include?.targetModelDefinition
+      ? { targetModelDefinition: findModelDefinition(state, run.targetModelDefinitionId) }
+      : {})
+  };
+
   if (!include?.outputs) {
-    return run;
+    return baseRun;
   }
 
   return {
-    ...run,
+    ...baseRun,
     outputs: state.modelRunOutputs
       .filter((output) => output.runId === run.id)
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
-      .map((output) => ({
-        ...output,
-        ...(include.outputs?.include?.curve
-          ? { curve: state.curves.find((curve) => curve.id === output.curveId) ?? null }
-          : {}),
-        ...(include.outputs?.include?.forecast
-          ? { forecast: state.forecasts.find((forecast) => forecast.id === output.forecastId) ?? null }
-          : {}),
-        ...(include.outputs?.include?.vehicle
-          ? { vehicle: state.vehicles.find((vehicle) => vehicle.id === output.vehicleId) ?? null }
-          : {})
-      }))
+      .map((output) => attachModelRunOutputInclude(output, include.outputs?.include, state))
+  };
+}
+
+function attachModelRunOutputInclude(
+  output: ResidualModelRunOutput,
+  include: { curve?: unknown; forecast?: unknown; vehicle?: unknown } | undefined,
+  state: ResidualMarketState
+) {
+  return {
+    ...output,
+    ...(include?.curve
+      ? {
+          curve: attachCurveInclude(
+            state.curves.find((curve) => curve.id === output.curveId) ?? null,
+            nestedInclude(include.curve),
+            state
+          )
+        }
+      : {}),
+    ...(include?.forecast
+      ? {
+          forecast: attachForecastInclude(
+            state.forecasts.find((forecast) => forecast.id === output.forecastId) ?? null,
+            nestedInclude(include.forecast),
+            state
+          )
+        }
+      : {}),
+    ...(include?.vehicle
+      ? {
+          vehicle: attachVehicleInclude(
+            state.vehicles.find((vehicle) => vehicle.id === output.vehicleId) ?? null,
+            nestedInclude(include.vehicle),
+            state
+          )
+        }
+      : {})
   };
 }
 
@@ -2140,6 +2409,7 @@ function makeCurve(overrides: Partial<VehicleResidualCurve> = {}): VehicleResidu
     id: "curve-1",
     metrics: null,
     model: "ET5",
+    modelDefinitionId: null,
     modelYear: 2024,
     pointCount: 1,
     priceTypes: [MarketPriceType.TRANSACTION],
@@ -2192,6 +2462,38 @@ function makeForecastCurvePoints() {
     makeCurvePoint({ ageMonth: 48, id: "curve-point-48", predictedResidualAmount: 8000000n }),
     makeCurvePoint({ ageMonth: 60, id: "curve-point-60", predictedResidualAmount: 6000000n })
   ];
+}
+
+function makeModelDefinition(overrides: Partial<VehicleModelDefinition> = {}): VehicleModelDefinition {
+  return {
+    batteryCapacityKwh: new Prisma.Decimal(75),
+    bodyType: null,
+    brand: "NIO",
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    createdBy: null,
+    customerDisplayName: "ET5",
+    deletedAt: null,
+    displayName: "NIO ET5",
+    driveType: null,
+    enabled: true,
+    energyType: null,
+    id: "00000000-0000-4000-8000-000000000e50",
+    legacyVehicleModel: VehicleModel.ET5,
+    modelCode: "ET5",
+    modelName: "ET5",
+    modelYear: 2024,
+    officialRangeKm: null,
+    portalVisible: true,
+    remark: null,
+    seatCount: null,
+    series: "ET5",
+    snapshot: null,
+    sortOrder: 10,
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedBy: null,
+    variantName: null,
+    ...overrides
+  };
 }
 
 function makeVehicle(overrides: Partial<Vehicle> = {}): Vehicle {
@@ -2254,6 +2556,7 @@ function makeForecast(overrides: Partial<VehicleResidualForecast> = {}): Vehicle
     inputSnapshot: null,
     metrics: null,
     model: "ET5",
+    modelDefinitionId: null,
     modelYear: 2024,
     purchasePriceAmount: 20000000n,
     remark: null,
@@ -2324,6 +2627,7 @@ function makeModelRun(overrides: Partial<ResidualModelRun> = {}): ResidualModelR
     targetBatteryCapacityKwh: new Prisma.Decimal(75),
     targetBatteryUsageType: VehicleBatteryUsageType.BUYOUT,
     targetBrand: "NIO",
+    targetModelDefinitionId: null,
     targetModel: "ET5",
     targetModelYear: 2024,
     targetSeries: "ET5",
@@ -2381,6 +2685,7 @@ function makeObservation(
     listingPriceAmount: null,
     mileageKm: 23000,
     model: "ET5",
+    modelDefinitionId: null,
     modelYear: 2024,
     observationNo: "MPO20260601000000A1B2",
     observationStatus: MarketPriceObservationStatus.ACTIVE,

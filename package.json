@@ -22,6 +22,7 @@
     "wechat:menu:dry-run": "node scripts/wechat-menu.mjs --dry-run",
     "wechat:menu:apply": "node scripts/wechat-menu.mjs --apply",
     "wechat:oa:smoke": "node scripts/wechat-official-account-smoke.mjs",
+    "model-definition:backfill-dry-run": "node scripts/model-definition-backfill-dry-run.mjs",
     "vehicle-model:enum-freeze": "node scripts/check-vehicle-model-enum-freeze.mjs",
     "vehicle-model:enum-freeze:test": "node --test scripts/check-vehicle-model-enum-freeze.test.mjs",
     "quality:gate": "pnpm -r lint && pnpm prisma:validate && pnpm prisma:generate && pnpm --filter @subscription-saas/api typecheck && pnpm --filter @subscription-saas/web typecheck && pnpm --filter @subscription-saas/api test && pnpm prisma:migrate:status",

@@ -489,3 +489,4 @@ B 线销售下单：AVAILABLE -> RESERVED
 - `docs/stage-10x-product-model-definition-required.md`: Stage 10X-I Product, VehiclePackage, and ProductPriceRule create/update enforcement so new product rules resolve VehicleModelDefinition while preserving legacy VehicleModel fallback.
 - `docs/stage-10x-residual-model-definition-required.md`: Stage 10X-J Residual sample import, curve generation, and target-specific model-run enforcement so new residual data resolves VehicleModelDefinition while preserving legacy residual fallback.
 - `docs/stage-10x-vehicle-model-enum-freeze-guard.md`: Stage 10X-K VehicleModel enum freeze guard, release/CI check, and rule that new vehicle models must be created through VehicleModelDefinition.
+- `docs/stage-10x-model-definition-backfill-dry-run-report.md`: Stage 10X-L modelDefinitionId historical backfill dry-run report covering Vehicle, Product, Quote/Order snapshots, and Residual legacy dimensions.

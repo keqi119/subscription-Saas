@@ -101,13 +101,6 @@ type ObservationInput = {
   vehicleAgeMonths?: number | null | string;
 };
 
-type ResidualModelDefinitionLookupInput = {
-  brand?: string | null;
-  model?: string | null;
-  modelDefinitionId?: string | null;
-  series?: string | null;
-};
-
 type ObservationFields = {
   accidentFlag: boolean | null;
   batteryCapacityKwh: Prisma.Decimal | null;
@@ -1497,15 +1490,15 @@ export class ResidualMarketService {
   }
 
   private async resolveRequiredModelDefinitionForResidualInput(
-    input: ResidualModelDefinitionLookupInput,
-    missingLegacyMessage: string
+    input: { modelDefinitionId?: string | null },
+    missingMessage: string
   ) {
     const modelDefinition = await this.resolveEnabledModelDefinition(input.modelDefinitionId);
     if (modelDefinition) {
       return modelDefinition;
     }
 
-    return this.resolveModelDefinitionFromResidualLegacy(input, missingLegacyMessage, true);
+    throw new BadRequestException(`${missingMessage} modelDefinitionId is required.`);
   }
 
   private async resolveTargetModelDefinitionForModelRun(dto: CreateResidualModelRunDto) {
@@ -1530,67 +1523,9 @@ export class ResidualMarketService {
       return null;
     }
 
-    return this.resolveModelDefinitionFromResidualLegacy(
-      {
-        brand: dto.targetBrand,
-        model: dto.targetModel,
-        series: dto.targetSeries
-      },
-      "车型代码主数据缺失，无法创建模型运行记录。请先维护车型代码。",
-      true
-    );
+    throw new BadRequestException("targetModelDefinitionId is required for target-specific residual model runs.");
   }
 
-  private async resolveModelDefinitionFromResidualLegacy(
-    input: ResidualModelDefinitionLookupInput,
-    missingLegacyMessage: string,
-    required: true
-  ): Promise<ModelDefinitionSummary>;
-  private async resolveModelDefinitionFromResidualLegacy(
-    input: ResidualModelDefinitionLookupInput,
-    missingLegacyMessage: string,
-    required: false
-  ): Promise<ModelDefinitionSummary | null>;
-  private async resolveModelDefinitionFromResidualLegacy(
-    input: ResidualModelDefinitionLookupInput,
-    missingLegacyMessage: string,
-    required: boolean
-  ) {
-    const brand = normalizeOptionalText(input.brand);
-    const model = normalizeOptionalText(input.model);
-    const series = normalizeOptionalText(input.series);
-
-    if (!brand || !model) {
-      if (!required) {
-        return null;
-      }
-      throw new BadRequestException("请选择车型代码。");
-    }
-
-    const definitions = await this.prisma.vehicleModelDefinition.findMany({
-      select: modelDefinitionSelect,
-      where: {
-        OR: [{ modelName: model }, { modelCode: model }],
-        brand,
-        deletedAt: null,
-        enabled: true,
-        series: series ?? undefined
-      }
-    });
-
-    if (definitions.length === 0) {
-      if (!required) {
-        return null;
-      }
-      throw new BadRequestException(missingLegacyMessage);
-    }
-
-    if (definitions.length > 1) {
-      throw new BadRequestException("车型代码主数据匹配到多条记录，请明确 modelDefinitionId。");
-    }
-
-    return definitions[0] ?? null;
-  }
 
   private async selectForecastCurve(vehicle: Vehicle, input: ForecastGenerationInput): Promise<CurveSelection> {
     if (input.curveId) {

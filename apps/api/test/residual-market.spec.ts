@@ -118,16 +118,20 @@ describe("ResidualMarketService", () => {
     });
   });
 
-  it("rejects market price observations when legacy brand and model cannot resolve to model definition", async () => {
-    const harness = createResidualMarketHarness({ modelDefinitions: [] });
+  it("rejects legacy-only market price observations even when legacy fields could resolve", async () => {
+    const harness = createResidualMarketHarness();
 
-    await expect(harness.service.createObservation(validObservationDto(), user, context)).rejects.toThrow(
-      "车型代码主数据缺失"
-    );
+    await expect(
+      harness.service.createObservation(
+        { ...validObservationDto(), modelDefinitionId: undefined },
+        user,
+        context
+      )
+    ).rejects.toThrow("modelDefinitionId");
     expect(harness.state.observations).toHaveLength(0);
   });
 
-  it("rejects market price observations when legacy brand and model resolve ambiguously", async () => {
+  it("does not auto-resolve legacy market price observations from duplicate model definitions", async () => {
     const harness = createResidualMarketHarness({
       modelDefinitions: [
         makeModelDefinition({ id: "00000000-0000-4000-8000-000000000e51", modelCode: "ET5-A" }),
@@ -135,9 +139,13 @@ describe("ResidualMarketService", () => {
       ]
     });
 
-    await expect(harness.service.createObservation(validObservationDto(), user, context)).rejects.toThrow(
-      "匹配到多条"
-    );
+    await expect(
+      harness.service.createObservation(
+        { ...validObservationDto(), modelDefinitionId: undefined },
+        user,
+        context
+      )
+    ).rejects.toThrow("modelDefinitionId");
     expect(harness.state.observations).toHaveLength(0);
   });
 
@@ -161,20 +169,17 @@ describe("ResidualMarketService", () => {
     ).rejects.toThrow("observedAt");
   });
 
-  it("rejects missing brand", async () => {
+  it("derives residual legacy fields from modelDefinitionId when legacy inputs are blank", async () => {
     const harness = createResidualMarketHarness();
 
-    await expect(
-      harness.service.createObservation({ ...validObservationDto(), brand: "" }, user, context)
-    ).rejects.toThrow("请选择车型代码");
-  });
+    const result = await harness.service.createObservation(
+      { ...validObservationDto(), brand: "", model: "" },
+      user,
+      context
+    );
 
-  it("rejects missing model", async () => {
-    const harness = createResidualMarketHarness();
-
-    await expect(
-      harness.service.createObservation({ ...validObservationDto(), model: "" }, user, context)
-    ).rejects.toThrow("请选择车型代码");
+    expect(result.brand).toBe(makeModelDefinition().brand);
+    expect(result.model).toBe(makeModelDefinition().modelName);
   });
 
   it("rejects missing priceType", async () => {
@@ -211,8 +216,8 @@ describe("ResidualMarketService", () => {
     const result = await harness.service.importCsv(
       {
         csvText: [
-          "observedAt,brand,model,priceType,priceAmount,city,mileageKm",
-          "2026-06-01,NIO,ET5,LISTING,128000,上海,23000"
+          "observedAt,modelDefinitionId,brand,model,priceType,priceAmount,city,mileageKm",
+          `2026-06-01,${makeModelDefinition().id},NIO,ET5,LISTING,128000,Shanghai,23000`
         ].join("\n"),
         fileName: "et5.csv",
         remark: "import",
@@ -243,9 +248,9 @@ describe("ResidualMarketService", () => {
     const result = await harness.service.importCsv(
       {
         csvText: [
-          "observedAt,brand,model,priceType,priceAmount,sourceListingId",
-          "2026-06-01,NIO,ET5,LISTING,128000,L-1",
-          "2026-06-01,NIO,ET5,LISTING,128000,L-1"
+          "observedAt,modelDefinitionId,brand,model,priceType,priceAmount,sourceListingId",
+          `2026-06-01,${makeModelDefinition().id},NIO,ET5,LISTING,128000,L-1`,
+          `2026-06-01,${makeModelDefinition().id},NIO,ET5,LISTING,128000,L-1`
         ].join("\n"),
         source: MarketPriceSource.CSV_IMPORT
       },
@@ -264,9 +269,9 @@ describe("ResidualMarketService", () => {
     const result = await harness.service.importCsv(
       {
         csvText: [
-          "observedAt,brand,model,priceType,priceAmount",
-          "2026-06-01,NIO,ET5,LISTING,128000",
-          "2026-06-02,NIO,ET5,LISTING,0"
+          "observedAt,modelDefinitionId,brand,model,priceType,priceAmount",
+          `2026-06-01,${makeModelDefinition().id},NIO,ET5,LISTING,128000`,
+          `2026-06-02,${makeModelDefinition().id},NIO,ET5,LISTING,0`
         ].join("\n"),
         source: MarketPriceSource.CSV_IMPORT
       },
@@ -435,6 +440,7 @@ describe("ResidualMarketService", () => {
         dryRun: true,
         minSamplePerPoint: 3,
         model: "ET5",
+        modelDefinitionId: makeModelDefinition().id,
         referencePriceAmount: 20000000
       },
       user,
@@ -464,6 +470,7 @@ describe("ResidualMarketService", () => {
         brand: "NIO",
         minSamplePerPoint: 3,
         model: "ET5",
+        modelDefinitionId: makeModelDefinition().id,
         referencePriceAmount: 20000000,
         remark: "generate"
       },
@@ -537,7 +544,8 @@ describe("ResidualMarketService", () => {
         brand: "NIO",
         dryRun: true,
         minSamplePerPoint: 3,
-        model: "ET5"
+        model: "ET5",
+        modelDefinitionId: makeModelDefinition().id
       },
       modelRunManager,
       context
@@ -564,6 +572,7 @@ describe("ResidualMarketService", () => {
         dryRun: true,
         minSamplePerPoint: 3,
         model: "ET5",
+        modelDefinitionId: makeModelDefinition().id,
         modelRunId: "model-run-1",
         modelYear: 2024,
         series: "ET5"
@@ -594,6 +603,7 @@ describe("ResidualMarketService", () => {
         brand: "NIO",
         minSamplePerPoint: 3,
         model: "ET5",
+        modelDefinitionId: makeModelDefinition().id,
         modelProvider: "internal",
         modelVersion: "v2026.06.link",
         modelYear: 2024,
@@ -683,6 +693,7 @@ describe("ResidualMarketService", () => {
           brand: "NIO",
           minSamplePerPoint: 3,
           model: "ET5",
+          modelDefinitionId: makeModelDefinition().id,
           modelRunId: "model-run-1",
           modelYear: 2024,
           series: "ET5"
@@ -721,6 +732,7 @@ describe("ResidualMarketService", () => {
             brand: "NIO",
             minSamplePerPoint: 3,
             model: "ET5",
+            modelDefinitionId: makeModelDefinition().id,
             modelRunId: "model-run-1",
             modelYear: 2024,
             series: "ET5"
@@ -746,6 +758,7 @@ describe("ResidualMarketService", () => {
           brand: "NIO",
           minSamplePerPoint: 3,
           model: "ET5",
+          modelDefinitionId: makeModelDefinition().id,
           modelRunId: "model-run-1",
           modelYear: 2024,
           series: "ET5"
@@ -768,7 +781,8 @@ describe("ResidualMarketService", () => {
           autoCreateModelRun: true,
           brand: "NIO",
           minSamplePerPoint: 3,
-          model: "ET5"
+          model: "ET5",
+          modelDefinitionId: makeModelDefinition().id
         },
         user,
         context
@@ -781,6 +795,7 @@ describe("ResidualMarketService", () => {
           brand: "NIO",
           minSamplePerPoint: 3,
           model: "ET5",
+          modelDefinitionId: makeModelDefinition().id,
           modelRunId: "model-run-1"
         },
         user,
@@ -789,26 +804,22 @@ describe("ResidualMarketService", () => {
     ).rejects.toThrow("缺少模型运行记录管理权限");
   });
 
-  it("rejects residual curve generation when brand or model is missing", async () => {
+  it("rejects legacy-only residual curve generation", async () => {
     const harness = createResidualMarketHarness();
 
     await expect(
-      harness.service.generateCurve({ brand: "", model: "ET5" }, user, context)
-    ).rejects.toThrow("请选择车型代码");
-    await expect(
-      harness.service.generateCurve({ brand: "NIO", model: "" }, user, context)
-    ).rejects.toThrow("请选择车型代码");
+      harness.service.generateCurve({ brand: "NIO", minSamplePerPoint: 3, model: "ET5" }, user, context)
+    ).rejects.toThrow("modelDefinitionId");
   });
 
-  it("rejects residual curve generation when legacy model cannot resolve to model definition", async () => {
+  it("does not auto-resolve legacy residual curve generation from available model definitions", async () => {
     const harness = createResidualMarketHarness({
-      modelDefinitions: [],
       observations: makeCurveSamples([10000000n, 12000000n, 14000000n])
     });
 
     await expect(
       harness.service.generateCurve({ brand: "NIO", minSamplePerPoint: 3, model: "ET5" }, user, context)
-    ).rejects.toThrow("车型代码主数据缺失");
+    ).rejects.toThrow("modelDefinitionId");
   });
 
   it("uses only active market observations for residual curves", async () => {
@@ -827,7 +838,13 @@ describe("ResidualMarketService", () => {
     });
 
     const result = await harness.service.generateCurve(
-      { brand: "NIO", dryRun: true, minSamplePerPoint: 1, model: "ET5" },
+      {
+        brand: "NIO",
+        dryRun: true,
+        minSamplePerPoint: 1,
+        model: "ET5",
+        modelDefinitionId: makeModelDefinition().id
+      },
       user,
       context
     );
@@ -857,7 +874,13 @@ describe("ResidualMarketService", () => {
     });
 
     const result = await harness.service.generateCurve(
-      { brand: "NIO", dryRun: true, minSamplePerPoint: 1, model: "ET5" },
+      {
+        brand: "NIO",
+        dryRun: true,
+        minSamplePerPoint: 1,
+        model: "ET5",
+        modelDefinitionId: makeModelDefinition().id
+      },
       user,
       context
     );
@@ -874,7 +897,13 @@ describe("ResidualMarketService", () => {
 
     await expect(
       harness.service.generateCurve(
-        { brand: "NIO", dryRun: true, minSamplePerPoint: 3, model: "ET5" },
+        {
+          brand: "NIO",
+          dryRun: true,
+          minSamplePerPoint: 3,
+          model: "ET5",
+          modelDefinitionId: makeModelDefinition().id
+        },
         user,
         context
       )
@@ -894,6 +923,7 @@ describe("ResidualMarketService", () => {
         dryRun: true,
         minSamplePerPoint: 4,
         model: "ET5",
+        modelDefinitionId: makeModelDefinition().id,
         referencePriceAmount: 20000000
       },
       user,
@@ -916,7 +946,13 @@ describe("ResidualMarketService", () => {
     });
 
     const result = await harness.service.generateCurve(
-      { brand: "NIO", dryRun: true, minSamplePerPoint: 3, model: "ET5" },
+      {
+        brand: "NIO",
+        dryRun: true,
+        minSamplePerPoint: 3,
+        model: "ET5",
+        modelDefinitionId: makeModelDefinition().id
+      },
       user,
       context
     );
@@ -1391,12 +1427,16 @@ describe("ResidualMarketService", () => {
     expect(result.targetModelDefinition).toBeNull();
   });
 
-  it("rejects target-specific residual model runs when legacy target cannot resolve to model definition", async () => {
-    const harness = createResidualMarketHarness({ modelDefinitions: [] });
+  it("rejects target-specific residual model runs when only legacy target fields are provided", async () => {
+    const harness = createResidualMarketHarness();
 
-    await expect(harness.service.createModelRun(validModelRunDto(), user, context)).rejects.toThrow(
-      "车型代码主数据缺失"
-    );
+    await expect(
+      harness.service.createModelRun(
+        { ...validModelRunDto(), targetModelDefinitionId: undefined },
+        user,
+        context
+      )
+    ).rejects.toThrow("targetModelDefinitionId");
     expect(harness.state.modelRuns).toHaveLength(0);
   });
 
@@ -1622,6 +1662,7 @@ function validObservationDto() {
     city: "上海",
     mileageKm: 23000,
     model: "ET5",
+    modelDefinitionId: makeModelDefinition().id,
     observedAt: "2026-06-01",
     priceAmount: 12800000,
     priceType: MarketPriceType.LISTING,
@@ -2437,6 +2478,7 @@ function validModelRunDto() {
     targetBatteryUsageType: VehicleBatteryUsageType.BUYOUT,
     targetBrand: "NIO",
     targetModel: "ET5",
+    targetModelDefinitionId: makeModelDefinition().id,
     targetModelYear: 2024,
     targetSeries: "ET5",
     targetType: ResidualModelTargetType.RESIDUAL_CURVE,

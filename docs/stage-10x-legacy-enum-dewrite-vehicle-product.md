@@ -79,9 +79,11 @@ Stage 10X-O does not:
 
 ## 8. Follow-Up
 
-Stage 10X-P should formalize legacy enum read-only mode across the system:
+Stage 10X-P has formalized legacy enum read-only mode across the system:
 
 1. Review any remaining service write paths.
 2. Keep API responses backward-compatible.
 3. Hide legacy enum editing in all UI surfaces.
 4. Keep legacy enum fields for fallback, CSV, historical explanation, and compatibility until a later removal feasibility review.
+
+The next review stage is Stage 10X-Q, which should re-check whether the enum is now only frozen schema / snapshot / fallback compatibility and whether removal is still worth the migration risk.

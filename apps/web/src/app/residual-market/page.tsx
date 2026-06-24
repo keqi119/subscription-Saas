@@ -3599,7 +3599,7 @@ export default function ResidualMarketPage() {
         >
           <Space orientation="vertical" size={16} style={{ width: "100%" }}>
             <Alert
-              description="金额字段按元填写；日期格式为 YYYY-MM-DD；必填字段为 observedAt、brand、model、priceType、priceAmount。前端读取本地 CSV 为文本后提交，不使用 multipart 上传。"
+              description="Required fields: observedAt, modelDefinitionId, priceType, priceAmount. brand / series / model are compatibility columns derived from model master data. The browser submits CSV text, not multipart upload."
               showIcon
               type="info"
             />

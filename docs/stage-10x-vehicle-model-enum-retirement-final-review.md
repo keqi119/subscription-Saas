@@ -434,6 +434,17 @@ DTO docs mark vehicleModel deprecated / legacy-only.
 Reports still accept legacy filters but modelDefinitionId is primary.
 ```
 
+Implementation status: Completed in Stage 10X-P.
+
+Notes:
+
+```text
+Vehicle / VehiclePackage / ProductPriceRule legacy-only writes remain rejected.
+Residual sample / curve / target-specific model-run legacy-only writes are rejected.
+Frontend legacy enum controls remain disabled compatibility fields.
+Reports keep legacy vehicleModel filters as read-only compatibility.
+```
+
 ### Stage 10X-Q: Enum Removal Feasibility Re-review
 
 Goal:

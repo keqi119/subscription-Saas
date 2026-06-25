@@ -17,6 +17,8 @@ export interface FadadaConfig {
   requestTimeoutMs: number;
   signNotifyUrl?: string;
   signReturnUrl?: string;
+  signUrlQuantity: number;
+  signUrlValidityMinutes: number;
   verifyNotifyUrl?: string;
   verifyReturnUrl?: string;
 }
@@ -46,6 +48,7 @@ export interface BuildFadadaRequestInput {
   config: FadadaConfig;
   contentType?: FadadaContentType;
   endpoint: FadadaEndpoint;
+  explicitMd5Seed?: string;
   explicitSortString?: string;
   timestamp?: string;
 }

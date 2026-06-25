@@ -6,25 +6,109 @@ import {
   GetSignerUrlResult,
   VerifyCallbackResult
 } from "../esign.provider";
+import { ContractPdfArtifactService } from "../contract-pdf-artifact.service";
+import { PrismaService } from "../../prisma/prisma.service";
+import { FadadaApiClient } from "./fadada-api.client";
 import { verifyFadadaCallbackDigest } from "./fadada-digest";
 import { FadadaCallbackPayload, FadadaConfig } from "./fadada.types";
 
 export const FADADA_PROVIDER_STAGE_B2_REQUIRED = "FADADA_PROVIDER_STAGE_B2_REQUIRED";
 export const FADADA_SIGN_URL_STAGE_B2_REQUIRED = "FADADA_SIGN_URL_STAGE_B2_REQUIRED";
+export const FADADA_PROVIDER_DEPENDENCY_MISSING = "FADADA_PROVIDER_DEPENDENCY_MISSING";
+export const FADADA_SIGN_URL_NOT_AVAILABLE = "FADADA_SIGN_URL_NOT_AVAILABLE";
 
 export class FadadaESignProvider implements ESignProvider {
   readonly providerType = "FADADA";
 
-  constructor(private readonly config: FadadaConfig) {}
+  constructor(
+    private readonly config: FadadaConfig,
+    private readonly apiClient?: FadadaApiClient,
+    private readonly pdfArtifactService?: ContractPdfArtifactService,
+    private readonly prisma?: PrismaService
+  ) {}
 
-  async createSignTask(_input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
-    void _input;
-    throw new Error(`${FADADA_PROVIDER_STAGE_B2_REQUIRED}: 法大大真实签署创建将在 Stage 10D-B2 接入`);
+  async createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
+    if (!this.apiClient || !this.pdfArtifactService) {
+      throw new Error(`${FADADA_PROVIDER_DEPENDENCY_MISSING}: Fadada B2-A dependencies are not wired`);
+    }
+
+    const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId);
+    const providerContractId = input.taskNo;
+    const customerSigner = input.signers.find((signer) => signer.signerType === "CUSTOMER");
+    if (!customerSigner?.customerId) {
+      throw new Error("FADADA_CUSTOMER_SIGNER_MISSING: customer signer is required");
+    }
+
+    const uploadResult = await this.apiClient.uploadDocs({
+      contractId: providerContractId,
+      docTitle: input.documentName,
+      fileName: artifact.fileName,
+      pdf: artifact.buffer
+    });
+    const transactionId = buildTransactionId(input.taskNo, 1);
+    const signUrlResult = await this.apiClient.createExternalSignUrl({
+      contractId: providerContractId,
+      customerId: customerSigner.customerId,
+      notifyUrl: input.callbackUrl ?? this.config.signNotifyUrl ?? "",
+      quantity: this.config.signUrlQuantity,
+      returnUrl: input.redirectUrl ?? this.config.signReturnUrl ?? "",
+      signerMobile: customerSigner.phone,
+      signerName: customerSigner.name,
+      transactionId,
+      validityMinutes: this.config.signUrlValidityMinutes
+    });
+
+    return {
+      documentObjectKey: artifact.objectKey,
+      providerEnvelopeId: providerContractId,
+      providerTaskId: transactionId,
+      rawResponse: {
+        artifact: {
+          fileName: artifact.fileName,
+          objectKey: artifact.objectKey,
+          size: artifact.size,
+          source: artifact.source
+        },
+        signUrl: signUrlResult.raw,
+        upload: uploadResult.raw
+      },
+      signUrl: signUrlResult.signUrl,
+      signUrlExpiresAt: signUrlResult.signUrlExpiresAt,
+      signers: [{
+        customerId: customerSigner.customerId,
+        providerSignerId: transactionId,
+        signUrl: signUrlResult.signUrl,
+        signUrlExpiresAt: signUrlResult.signUrlExpiresAt,
+        signerType: "CUSTOMER"
+      }]
+    };
   }
 
-  async getSignerUrl(_input: GetSignerUrlInput): Promise<GetSignerUrlResult> {
-    void _input;
-    throw new Error(`${FADADA_SIGN_URL_STAGE_B2_REQUIRED}: 法大大签署链接获取将在 Stage 10D-B2 接入`);
+  async getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult> {
+    if (!this.prisma || !input.taskId) {
+      throw new Error(`${FADADA_SIGN_URL_NOT_AVAILABLE}: no local signer lookup context`);
+    }
+
+    const signer = await this.prisma.contractESignSigner.findFirst({
+      where: {
+        deletedAt: null,
+        ...(input.signerId ? { id: input.signerId } : {}),
+        taskId: input.taskId
+      }
+    });
+
+    if (!signer?.signUrl || isExpired(signer.signUrlExpiresAt)) {
+      throw new Error(`${FADADA_SIGN_URL_NOT_AVAILABLE}: no non-expired local Fadada signer URL`);
+    }
+
+    return {
+      expiresAt: signer.signUrlExpiresAt ?? undefined,
+      rawResponse: {
+        providerSignerId: signer.providerSignerId,
+        source: "LOCAL_SIGNER_URL"
+      },
+      signUrl: signer.signUrl
+    };
   }
 
   async verifyCallback(payload: unknown): Promise<VerifyCallbackResult> {
@@ -71,4 +155,12 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringOrUndefined(value: unknown) {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function buildTransactionId(taskNo: string, index: number) {
+  return `${taskNo}-${index}`;
+}
+
+function isExpired(value: Date | null | undefined) {
+  return value ? value.getTime() <= Date.now() : false;
 }

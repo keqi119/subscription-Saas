@@ -305,6 +305,10 @@ Portal 详情页在非 Mock 时会 `window.location.assign(result.signUrl)`，�
 8. 阻塞项包括企业实名、客户实名、印章/授权、公网 HTTPS 回调、IP 白名单、PDF 模板和敏感字段处理。
 9. 可以进入 Stage 10D-B1，但 B1 仅做 provider skeleton、配置校验、摘要工具和注入切换，不调用真实法大大接口。
 
+## Stage 10D-B2-A Update
+
+Stage 10D-B2-A has prepared the mockable upload/sign URL code path in `docs/stage-10d-fadada-upload-sign-url-prep.md`. It does not make real Fadada calls. Real sandbox upload/sign URL smoke still requires the B2-B gate: credentials, enterprise/customer `customer_id`, response-code confirmation, endpoint-specific digest confirmation, and public HTTPS notify/return URLs.
+
 ## 官方文档章节索引
 
 本次审计读取或定位的官方文档章节包括：

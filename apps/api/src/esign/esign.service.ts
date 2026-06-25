@@ -189,10 +189,24 @@ export class ESignService {
         taskId: task.id,
         taskNo: task.taskNo
       });
+      const customerSignerResult = providerResult.signers?.find((signer) => signer.signerType === "CUSTOMER");
+      const customerSignUrl = customerSignerResult?.signUrl ?? providerResult.signUrl;
+      const customerSignUrlExpiresAt = customerSignerResult?.signUrlExpiresAt ?? providerResult.signUrlExpiresAt;
+      const customerSignerUpdate: Prisma.ContractESignSignerUpdateManyMutationInput = {
+        signUrl: customerSignUrl,
+        signUrlExpiresAt: customerSignUrlExpiresAt,
+        signerStatus: customerSignUrl
+          ? ESignSignerStatus.SIGNING
+          : ESignSignerStatus.PENDING
+      };
+      if (customerSignerResult?.providerSignerId) {
+        customerSignerUpdate.providerSignerId = customerSignerResult.providerSignerId;
+      }
 
       const updated = await this.prisma.$transaction(async (tx) => {
         await tx.contractESignTask.update({
           data: {
+            documentObjectKey: providerResult.documentObjectKey,
             providerEnvelopeId: providerResult.providerEnvelopeId,
             providerTaskId: providerResult.providerTaskId,
             responseSnapshot: toJsonValue(providerResult.rawResponse ?? providerResult),
@@ -205,11 +219,7 @@ export class ESignService {
           where: { id: task.id }
         });
         await tx.contractESignSigner.updateMany({
-          data: {
-            signUrl: providerResult.signUrl,
-            signUrlExpiresAt: providerResult.signUrlExpiresAt,
-            signerStatus: providerResult.signUrl ? ESignSignerStatus.SIGNING : ESignSignerStatus.PENDING
-          },
+          data: customerSignerUpdate,
           where: { deletedAt: null, signerType: ESignSignerType.CUSTOMER, taskId: task.id }
         });
         if (contract.status === ContractStatus.GENERATED) {

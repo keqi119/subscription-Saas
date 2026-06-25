@@ -1,0 +1,149 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { FadadaApiClient } from "../src/esign/fadada/fadada-api.client";
+import { FadadaHttpClient, FadadaTransport } from "../src/esign/fadada/fadada-http-client";
+import { buildContractStatusRequest } from "../src/esign/fadada/fadada-request-builder";
+import { FadadaConfig } from "../src/esign/fadada/fadada.types";
+
+describe("Fadada HTTP client", () => {
+  it("does not call transport when FADADA_ENABLED=false", async () => {
+    const transport: FadadaTransport = vi.fn();
+    const client = new FadadaHttpClient(fadadaConfig({ enabled: false }), transport);
+    const request = buildContractStatusRequest({
+      businessParams: { contract_id: "CON-1" },
+      config: fadadaConfig(),
+      timestamp: "20260102030405"
+    });
+
+    await expect(client.send(request)).rejects.toThrow(/FADADA_DISABLED/);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("uses an injectable transport and parses JSON responses", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: "{\"code\":\"1\",\"message\":\"ok\"}",
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const client = new FadadaHttpClient(fadadaConfig(), transport);
+    const request = buildContractStatusRequest({
+      businessParams: { contract_id: "CON-1" },
+      config: fadadaConfig(),
+      timestamp: "20260102030405"
+    });
+
+    const response = await client.send(request);
+
+    expect(transport).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining("contract_id=CON-1"),
+      headers: expect.objectContaining({ "content-type": "application/x-www-form-urlencoded;charset=UTF-8" }),
+      method: "POST",
+      timeoutMs: 15000,
+      url: "https://testapi.fadada.com:8443/api/contract_status.api"
+    }));
+    expect(response.parsedBody).toEqual({ code: "1", message: "ok" });
+  });
+});
+
+describe("Fadada API client", () => {
+  it("builds uploadDocs multipart requests through mocked transport", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: "{\"result\":\"kept-raw\"}",
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.uploadDocs({
+      contractId: "CON-1",
+      docTitle: "Contract.pdf",
+      fileName: "Contract.pdf",
+      pdf: minimalPdf()
+    });
+
+    expect(result).toMatchObject({
+      contractId: "CON-1",
+      raw: { result: "kept-raw" }
+    });
+    const request = vi.mocked(transport).mock.calls[0]?.[0];
+    expect(request?.headers["content-type"]).toContain("multipart/form-data");
+    expect(Buffer.isBuffer(request?.body)).toBe(true);
+    expect((request?.body as Buffer).toString("utf8")).toContain('name="file"; filename="Contract.pdf"');
+    expect((request?.body as Buffer).toString("utf8")).toContain("application/pdf");
+  });
+
+  it("rejects non-PDF and oversized uploadDocs files before transport", async () => {
+    const transport: FadadaTransport = vi.fn();
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    await expect(
+      apiClient.uploadDocs({
+        contractId: "CON-1",
+        docTitle: "Contract.txt",
+        fileName: "Contract.txt",
+        pdf: Buffer.from("not-pdf")
+      })
+    ).rejects.toThrow(/FADADA_UPLOAD_REQUIRES_PDF/);
+
+    await expect(
+      apiClient.uploadDocs({
+        contractId: "CON-1",
+        docTitle: "Contract.pdf",
+        fileName: "Contract.pdf",
+        pdf: Buffer.concat([minimalPdf(), Buffer.alloc(20 * 1024 * 1024)])
+      })
+    ).rejects.toThrow(/FADADA_UPLOAD_FILE_TOO_LARGE/);
+
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("creates external signing URL metadata and parses mocked signUrl", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: "{\"sign_url\":\"https://sign.example.test/t/1\"}",
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.createExternalSignUrl({
+      contractId: "CON-1",
+      customerId: "fadada-customer-1",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      quantity: 1,
+      returnUrl: "https://app.example.test/portal/contracts/contract-1",
+      transactionId: "TX-1",
+      validityMinutes: 30
+    });
+
+    expect(result).toMatchObject({
+      signUrl: "https://sign.example.test/t/1",
+      transactionId: "TX-1"
+    });
+    expect(result.signUrlExpiresAt).toBeInstanceOf(Date);
+    const request = vi.mocked(transport).mock.calls[0]?.[0];
+    expect(request?.url).toBe("https://testapi.fadada.com:8443/api/extsign_validation.api");
+    expect(String(request?.body)).toContain("transaction_id=TX-1");
+    expect(String(request?.body)).toContain("validity=30");
+    expect(String(request?.body)).toContain("quantity=1");
+  });
+});
+
+function fadadaConfig(overrides: Partial<FadadaConfig> = {}): FadadaConfig {
+  return {
+    apiVersion: "2.0",
+    appId: "app-123",
+    appSecret: "secret-xyz",
+    baseUrl: "https://testapi.fadada.com:8443/api/",
+    enabled: true,
+    env: "sandbox",
+    requestTimeoutMs: 15000,
+    signUrlQuantity: 1,
+    signUrlValidityMinutes: 30,
+    ...overrides
+  };
+}
+
+function minimalPdf() {
+  return Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n", "utf8");
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftOutlined, CheckCircleOutlined, FileTextOutlined, PayCircleOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, CheckCircleOutlined, DownloadOutlined, FileTextOutlined, PayCircleOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
@@ -14,7 +14,7 @@ import {
   STATUS_LABELS,
   labelOf
 } from "../../../../constants/labels";
-import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
+import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import {
   PortalContractDetail,
   PortalPayableBill,
@@ -75,6 +75,17 @@ export default function PortalContractDetailPage() {
     } finally {
       setStarting(false);
     }
+  }
+
+  function openSignedContract() {
+    if (!contract) {
+      return;
+    }
+    window.open(
+      `${PORTAL_API_BASE_URL}/portal/contracts/${encodeURIComponent(contract.id)}/signed-document/preview`,
+      "_blank",
+      "noopener,noreferrer"
+    );
   }
 
   async function createPaymentOrder() {
@@ -236,6 +247,32 @@ export default function PortalContractDetailPage() {
             </Space>
           ) : null}
         </section>
+
+        {contract.contractStatus === "SIGNED" ? (
+          <section style={sectionStyle}>
+            <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+              <div>
+                <Typography.Title level={4} style={{ margin: 0 }}>
+                  已签合同
+                </Typography.Title>
+                <Typography.Text type="secondary">
+                  {contract.signTask?.hasSignedDocument ? "已签署文件已生成，可下载查看。" : "已签署文件生成中，请稍后查看。"}
+                </Typography.Text>
+              </div>
+              <Button
+                disabled={!contract.signTask?.hasSignedDocument}
+                icon={<DownloadOutlined />}
+                onClick={openSignedContract}
+                type="primary"
+              >
+                下载已签合同
+              </Button>
+            </Flex>
+            {!contract.signTask?.hasSignedDocument ? (
+              <Alert message="已签署文件生成中，请稍后查看" showIcon style={{ marginTop: 16 }} type="info" />
+            ) : null}
+          </section>
+        ) : null}
 
         {contract.contractStatus === "SIGNED" && contract.order.orderStatus === "PENDING_PAYMENT" ? (
           <section style={sectionStyle}>

@@ -1,10 +1,18 @@
-import { buildFadadaRequest, FADADA_ENDPOINTS } from "./fadada-request-builder";
+import {
+  buildContractFilingRequest,
+  buildContractStatusRequest,
+  buildDownloadContractRequest,
+  buildFadadaRequest,
+  buildQuerySignResultRequest,
+  FADADA_ENDPOINTS
+} from "./fadada-request-builder";
 import { FadadaHttpClient } from "./fadada-http-client";
 import { FadadaConfig } from "./fadada.types";
 
 export const FADADA_UPLOAD_FILE_TOO_LARGE = "FADADA_UPLOAD_FILE_TOO_LARGE";
 export const FADADA_UPLOAD_REQUIRES_PDF = "FADADA_UPLOAD_REQUIRES_PDF";
 export const FADADA_SIGN_URL_MISSING = "FADADA_SIGN_URL_MISSING";
+export const FADADA_DOWNLOAD_REQUIRES_PDF = "FADADA_DOWNLOAD_REQUIRES_PDF";
 
 const MAX_FADADA_PDF_BYTES = 20 * 1024 * 1024;
 
@@ -105,6 +113,112 @@ export class FadadaApiClient {
       transactionId: input.transactionId
     };
   }
+
+  async querySignResult(input: {
+    contractId: string;
+    transactionId?: string;
+  }): Promise<{
+    contractId: string;
+    downloadUrl?: string;
+    raw: unknown;
+    resultCode?: string;
+    resultDesc?: string;
+    transactionId?: string;
+    viewPdfUrl?: string;
+  }> {
+    const request = buildQuerySignResultRequest({
+      businessParams: {
+        contract_id: input.contractId,
+        ...(input.transactionId ? { transaction_id: input.transactionId } : {})
+      },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+
+    return {
+      contractId: input.contractId,
+      downloadUrl: stringField(raw, ["download_url", "downloadUrl"]),
+      raw,
+      resultCode: stringField(raw, ["result_code", "resultCode", "result"]),
+      resultDesc: stringField(raw, ["result_desc", "resultDesc", "message", "msg"]),
+      transactionId: input.transactionId,
+      viewPdfUrl: stringField(raw, ["viewpdf_url", "viewPdfUrl", "view_pdf_url"])
+    };
+  }
+
+  async queryContractStatus(input: {
+    contractId: string;
+  }): Promise<{
+    contractId: string;
+    raw: unknown;
+    status?: string;
+  }> {
+    const request = buildContractStatusRequest({
+      businessParams: { contract_id: input.contractId },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+
+    return {
+      contractId: input.contractId,
+      raw,
+      status: stringField(raw, ["contractStatus", "contract_status", "status"])
+    };
+  }
+
+  async downloadSignedContract(input: {
+    contractId: string;
+    downloadUrl?: string;
+  }): Promise<{
+    buffer: Buffer;
+    contentType: "application/pdf";
+    fileName: string;
+    raw?: unknown;
+  }> {
+    // B4 intentionally uses the official downLoadContract.api builder. Direct
+    // temporary download_url handling remains gated until the HTTP method and
+    // endpoint-specific digest behavior are confirmed in a real sandbox stage.
+    const request = buildDownloadContractRequest({
+      businessParams: { contract_id: input.contractId },
+      config: this.config
+    });
+    const response = await this.httpClient.sendBinary(request);
+    assertHttpOk(response.status);
+    assertDownloadedPdf(response.bodyBuffer, headerValue(response.headers, "content-type"));
+
+    return {
+      buffer: response.bodyBuffer,
+      contentType: "application/pdf",
+      fileName: filenameFromContentDisposition(headerValue(response.headers, "content-disposition")) ??
+        `${sanitizeFileName(input.contractId)}-signed.pdf`
+    };
+  }
+
+  async createContractFiling(input: {
+    contractId: string;
+  }): Promise<{
+    contractId: string;
+    filingNo?: string;
+    raw: unknown;
+  }> {
+    const request = buildContractFilingRequest({
+      businessParams: { contract_id: input.contractId },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+
+    return {
+      contractId: input.contractId,
+      filingNo: stringField(raw, ["filing_no", "filingNo", "record_no", "recordNo", "evidence_no", "evidenceNo"]),
+      raw
+    };
+  }
 }
 
 function assertPdf(pdf: Buffer, fileName: string) {
@@ -119,6 +233,16 @@ function assertPdf(pdf: Buffer, fileName: string) {
 function assertHttpOk(status: number) {
   if (status < 200 || status >= 300) {
     throw new Error(`FADADA_HTTP_ERROR: status ${status}`);
+  }
+}
+
+function assertDownloadedPdf(buffer: Buffer, contentType?: string) {
+  if (buffer.length > MAX_FADADA_PDF_BYTES) {
+    throw new Error(`${FADADA_UPLOAD_FILE_TOO_LARGE}: signed PDF must be <= 20MB`);
+  }
+  const isPdfType = !contentType || contentType.toLowerCase().includes("application/pdf");
+  if (!isPdfType || !buffer.subarray(0, 5).equals(Buffer.from("%PDF-", "utf8"))) {
+    throw new Error(`${FADADA_DOWNLOAD_REQUIRES_PDF}: downLoadContract.api must return a PDF`);
   }
 }
 
@@ -141,6 +265,27 @@ function stringField(raw: unknown, keys: string[]): string | undefined {
   }
 
   return undefined;
+}
+
+function headerValue(headers: Record<string, string>, name: string) {
+  const lower = name.toLowerCase();
+  return headers[lower] ?? headers[name];
+}
+
+function filenameFromContentDisposition(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value)?.[1];
+  if (encoded) {
+    return sanitizeFileName(decodeURIComponent(encoded));
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(value)?.[1];
+  return plain ? sanitizeFileName(plain) : undefined;
+}
+
+function sanitizeFileName(value: string) {
+  return (value.replace(/[^\w.-]+/g, "_").slice(0, 120) || "contract").replace(/^\.+$/, "contract");
 }
 
 function fadadaTimestampNow() {

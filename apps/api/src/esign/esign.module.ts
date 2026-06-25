@@ -15,6 +15,7 @@ import { FadadaApiClient } from "./fadada/fadada-api.client";
 import { loadFadadaConfig, selectedESignProvider } from "./fadada/fadada.config";
 import { FadadaESignProvider } from "./fadada/fadada-esign.provider";
 import { FadadaHttpClient } from "./fadada/fadada-http-client";
+import { FadadaSignedArtifactService } from "./fadada/fadada-signed-artifact.service";
 import { MockESignProvider } from "./mock-esign.provider";
 
 export function createESignProviderClient(
@@ -41,11 +42,12 @@ export function createESignProviderClient(
 
 @Module({
   controllers: [ESignAdminController, ESignCallbackController],
-  exports: [ESignService],
+  exports: [ESignService, FadadaSignedArtifactService],
   imports: [AuditModule, AuthModule, NotificationModule, PrismaModule, StorageModule],
   providers: [
     ContractPdfArtifactService,
     ESignService,
+    FadadaSignedArtifactService,
     {
       inject: [ConfigService, ContractPdfArtifactService, PrismaService],
       provide: ESIGN_PROVIDER_CLIENT,

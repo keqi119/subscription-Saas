@@ -97,6 +97,27 @@ export class StorageService {
     return this.getObject(bucket, objectKey);
   }
 
+  async putContractSignedArtifact(input: Omit<UploadObjectInput, "key"> & {
+    contractId: string;
+    provider: string;
+  }): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildContractSignedArtifactKey(input.contractId, input.provider, input.originalName ?? "signed.pdf");
+    return this.putPrivateObject(key, {
+      buffer: input.buffer,
+      contentType: input.contentType,
+      metadata: input.metadata,
+      originalName: input.originalName
+    });
+  }
+
+  getContractSignedArtifactStream(objectKey: string): Promise<DownloadObjectResult> {
+    return this.getObject(LOCAL_BUCKET, objectKey);
+  }
+
   private async putPrivateObject(key: string, input: Omit<UploadObjectInput, "key">): Promise<{
     bucket: string;
     objectKey: string;
@@ -188,6 +209,12 @@ export class StorageService {
     const now = new Date();
     const year = String(now.getUTCFullYear());
     return `vehicle-baas-contracts/${sanitizeKeyPart(contractId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildContractSignedArtifactKey(contractId: string, provider: string, originalName: string) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    return `contracts/${sanitizeKeyPart(contractId)}/esign/${sanitizeKeyPart(provider)}/signed/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
   private withOssPrefix(key: string) {

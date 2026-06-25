@@ -8,6 +8,7 @@ export interface FadadaTransportRequest {
   body?: Buffer | string;
   headers: Record<string, string>;
   method: "POST";
+  responseType?: "arraybuffer" | "text";
   timeoutMs: number;
   url: string;
 }
@@ -19,8 +20,16 @@ export interface FadadaHttpResponse {
   status: number;
 }
 
-export type FadadaTransport = (request: FadadaTransportRequest) => Promise<{
+export interface FadadaBinaryHttpResponse {
+  bodyBuffer: Buffer;
   bodyText: string;
+  headers: Record<string, string>;
+  status: number;
+}
+
+export type FadadaTransport = (request: FadadaTransportRequest) => Promise<{
+  bodyBuffer?: Buffer;
+  bodyText?: string;
   headers: Record<string, string>;
   status: number;
 }>;
@@ -45,10 +54,31 @@ export class FadadaHttpClient {
 
     const transportRequest = buildTransportRequest(request, this.config.requestTimeoutMs, file);
     const response = await this.transport(transportRequest);
+    const bodyText = response.bodyText ?? response.bodyBuffer?.toString("utf8") ?? "";
 
     return {
       ...response,
-      parsedBody: parseJsonObject(response.bodyText)
+      bodyText,
+      parsedBody: parseJsonObject(bodyText)
+    };
+  }
+
+  async sendBinary(request: FadadaRequest): Promise<FadadaBinaryHttpResponse> {
+    if (!this.config.enabled) {
+      throw new Error(`${FADADA_DISABLED}: FADADA_ENABLED must be true before sending Fadada HTTP requests`);
+    }
+
+    const transportRequest = {
+      ...buildTransportRequest(request, this.config.requestTimeoutMs),
+      responseType: "arraybuffer" as const
+    };
+    const response = await this.transport(transportRequest);
+    const bodyBuffer = response.bodyBuffer ?? Buffer.from(response.bodyText ?? "", "utf8");
+
+    return {
+      ...response,
+      bodyBuffer,
+      bodyText: response.bodyText ?? bodyBuffer.toString("utf8")
     };
   }
 }
@@ -68,6 +98,15 @@ export const defaultFadadaTransport: FadadaTransport = async (request) => {
     response.headers.forEach((value, key) => {
       headers[key.toLowerCase()] = value;
     });
+
+    if (request.responseType === "arraybuffer") {
+      return {
+        bodyBuffer: Buffer.from(await response.arrayBuffer()),
+        bodyText: "",
+        headers,
+        status: response.status
+      };
+    }
 
     return {
       bodyText: await response.text(),

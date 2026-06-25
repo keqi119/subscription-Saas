@@ -105,6 +105,27 @@ describe("ESignService", () => {
     );
   });
 
+  it("exposes signed artifact availability without leaking storage object keys", async () => {
+    const { service, state } = createESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    state.tasks[0]!.signedDocumentObjectKey = "contracts/contract-1/esign/fadada/signed/2026/secret.pdf";
+    state.contracts[0]!.status = ContractStatus.SIGNED;
+
+    const adminView = await service.getTask(task.id, adminUser());
+    const portalView = await service.getPortalContract("contract-1", currentCustomer("customer-1"));
+
+    expect(adminView).toMatchObject({
+      hasEvidenceDocument: false,
+      hasSignedDocument: true
+    });
+    expect(adminView).not.toHaveProperty("signedDocumentObjectKey");
+    expect(portalView.signTask).toMatchObject({
+      hasEvidenceDocument: false,
+      hasSignedDocument: true
+    });
+    expect(portalView.signTask).not.toHaveProperty("signedDocumentObjectKey");
+  });
+
   it("returns a portal signing link for the current customer's active task", async () => {
     const { service } = createESignFixture();
     await service.createTaskForContract("contract-1", adminUser(), requestContext());

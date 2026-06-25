@@ -405,6 +405,7 @@ export interface PortalContractListItem {
   contractNo: string;
   contractStatus: string;
   createdAt: string;
+  hasSignedDocument: boolean;
   id: string;
   orderNo: string;
   signedAt: string | null;
@@ -428,6 +429,8 @@ export interface PortalContractDetail extends PortalContractListItem {
 
 export interface PortalContractESignTask {
   completedAt: string | null;
+  hasEvidenceDocument: boolean;
+  hasSignedDocument: boolean;
   id: string;
   provider: string;
   signers: PortalContractESignSigner[];

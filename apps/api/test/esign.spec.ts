@@ -14,6 +14,9 @@ import { describe, expect, it, vi } from "vitest";
 import { RequestUser } from "../src/auth/auth.types";
 import { ESignProvider } from "../src/esign/esign.provider";
 import { ESignService } from "../src/esign/esign.service";
+import { buildFadadaMsgDigest } from "../src/esign/fadada/fadada-digest";
+import { FadadaESignProvider } from "../src/esign/fadada/fadada-esign.provider";
+import { loadFadadaConfig } from "../src/esign/fadada/fadada.config";
 import { MockESignProvider } from "../src/esign/mock-esign.provider";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
 
@@ -165,6 +168,229 @@ describe("ESignService", () => {
     expect(state.callbackLogs.every((log) => log.handled)).toBe(true);
   });
 
+  it("handles a valid Fadada 3000 callback idempotently", async () => {
+    const { service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    const first = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+    const firstSignedAt = state.signers[0]!.signedAt;
+    const firstCompletedAt = state.tasks[0]!.completedAt;
+
+    const second = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(first).toMatchObject({ handled: true });
+    expect(second).toMatchObject({ handled: true, idempotent: true });
+    expect(state.signers[0]).toMatchObject({ signerStatus: ESignSignerStatus.SIGNED });
+    expect(state.signers[0]!.signedAt).toBe(firstSignedAt);
+    expect(state.tasks[0]).toMatchObject({
+      completedAt: firstCompletedAt,
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(state.contracts[0]).toMatchObject({
+      signedAt: expect.any(Date),
+      status: ContractStatus.SIGNED
+    });
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(state.callbackLogs).toHaveLength(2);
+    expect(state.callbackLogs.every((log) => log.handled && log.verified)).toBe(true);
+    expect(state.callbackLogs[0]!.payload).toMatchObject({
+      download_url: "[redacted-url]",
+      viewpdf_url: "[redacted-url]"
+    });
+  });
+
+  it("rejects invalid Fadada callback digests without advancing state", async () => {
+    const { service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.handleCallback("fadada", {
+      ...fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      }),
+      msg_digest: "bad-digest"
+    });
+
+    expect(result).toMatchObject({ handled: false, reason: "UNVERIFIED" });
+    expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(state.callbackLogs).toHaveLength(1);
+    expect(state.callbackLogs[0]).toMatchObject({
+      handled: true,
+      verified: false
+    });
+  });
+
+  it("marks Fadada 3001 callbacks as failed without advancing the order", async () => {
+    const { service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3001",
+      resultDesc: "provider sign failed",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(result).toMatchObject({ handled: true, resultCode: "3001" });
+    expect(state.tasks[0]).toMatchObject({
+      failedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.FAILED
+    });
+    expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(state.callbackLogs[0]).toMatchObject({
+      eventType: "FADADA_SIGN_FAILED",
+      handled: true,
+      verified: true
+    });
+  });
+
+  it("marks Fadada 3003 callbacks as rejected without advancing the order", async () => {
+    const { service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3003",
+      resultDesc: "customer rejected",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(result).toMatchObject({ handled: true, resultCode: "3003" });
+    expect(state.tasks[0]).toMatchObject({
+      failedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.FAILED
+    });
+    expect(state.signers[0]).toMatchObject({
+      rejectReason: "customer rejected",
+      rejectedAt: expect.any(Date),
+      signerStatus: ESignSignerStatus.REJECTED
+    });
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("logs unknown Fadada result codes without advancing state", async () => {
+    const { service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3999",
+      resultDesc: "unknown result",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(result).toMatchObject({ handled: false, reason: "UNKNOWN_RESULT_CODE", resultCode: "3999" });
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(state.callbackLogs[0]).toMatchObject({
+      eventType: "FADADA_SIGN_UNKNOWN",
+      handled: false,
+      verified: true
+    });
+  });
+
+  it("logs valid Fadada callbacks for unknown transactions without advancing state", async () => {
+    const { service, state } = createFadadaESignFixture();
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: "unknown-contract",
+      resultCode: "3000",
+      transactionId: "unknown-transaction"
+    }));
+
+    expect(result).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(state.callbackLogs[0]).toMatchObject({
+      handled: false,
+      providerTaskId: "unknown-transaction",
+      taskId: null,
+      verified: true
+    });
+  });
+
+  it("does not downgrade completed Fadada tasks from later failure or rejection callbacks", async () => {
+    const { service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+    const signedAt = state.contracts[0]!.signedAt;
+
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3001",
+      transactionId: task.providerTaskId
+    }));
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3003",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.COMPLETED);
+    expect(state.signers[0]!.signerStatus).toBe(ESignSignerStatus.SIGNED);
+    expect(state.contracts[0]).toMatchObject({
+      signedAt,
+      status: ContractStatus.SIGNED
+    });
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(state.callbackLogs).toHaveLength(3);
+    expect(state.callbackLogs.slice(1).every((log) => log.handled && log.errorMessage)).toBe(true);
+  });
+
+  it("does not auto-upgrade failed or rejected Fadada tasks from later success callbacks", async () => {
+    const failed = createFadadaESignFixture();
+    const failedTask = await failed.service.createTaskForContract("contract-1", adminUser(), requestContext());
+    await failed.service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: failed.state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3001",
+      transactionId: failedTask.providerTaskId
+    }));
+    await failed.service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: failed.state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: failedTask.providerTaskId
+    }));
+
+    const rejected = createFadadaESignFixture();
+    const rejectedTask = await rejected.service.createTaskForContract("contract-1", adminUser(), requestContext());
+    await rejected.service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: rejected.state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3003",
+      transactionId: rejectedTask.providerTaskId
+    }));
+    await rejected.service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: rejected.state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: rejectedTask.providerTaskId
+    }));
+
+    expect(failed.state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.FAILED);
+    expect(failed.state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(rejected.state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.FAILED);
+    expect(rejected.state.signers[0]!.signerStatus).toBe(ESignSignerStatus.REJECTED);
+    expect(rejected.state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
   it("requires a signable contract status before creating a task", async () => {
     const { service, state } = createESignFixture();
     state.contracts[0]!.status = ContractStatus.SIGNED;
@@ -246,6 +472,17 @@ function createESignFixture(env: Record<string, string> = {}, providerOverride?:
       })
     },
     contractESignSigner: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const signer = state.signers.find((item) => matchesWhere(item, where));
+        if (!signer) {
+          return null;
+        }
+        const task = state.tasks.find((item) => item.id === signer.taskId);
+        return {
+          ...signer,
+          task: task ? hydrateTask(state, task) : null
+        };
+      }),
       updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
         const rows = state.signers.filter((signer) => matchesWhere(signer, where));
         rows.forEach((signer) => Object.assign(signer, data));
@@ -434,15 +671,30 @@ function createContract(id: string, customerId: string, orderId: string, orderNo
   };
 }
 
-function matchesWhere(row: Record<string, unknown>, where: Record<string, unknown>) {
+function matchesWhere(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => {
     if (expected === undefined) {
+      return true;
+    }
+    if (key === "OR" && Array.isArray(expected)) {
+      return expected.some((item) => matchesWhere(row, item as Record<string, unknown>));
+    }
+    if (key === "task" && expected && typeof expected === "object") {
       return true;
     }
     if (key === "deletedAt" && expected === null) {
       return row.deletedAt === null;
     }
-    if (key === "id" || key === "contractId" || key === "customerId" || key === "orderId" || key === "taskId") {
+    if (
+      key === "id" ||
+      key === "contractId" ||
+      key === "customerId" ||
+      key === "orderId" ||
+      key === "providerEnvelopeId" ||
+      key === "providerSignerId" ||
+      key === "taskId" ||
+      key === "taskNo"
+    ) {
       return row[key] === expected;
     }
     if (key === "provider" || key === "providerTaskId" || key === "taskStatus" || key === "signerType") {
@@ -456,6 +708,73 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
     }
     return true;
   });
+}
+
+function createFadadaESignFixture() {
+  const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
+  const provider: ESignProvider = {
+    createSignTask: vi.fn(async (input) => {
+      const transactionId = `${input.taskNo}-1`;
+      return {
+        providerEnvelopeId: input.taskNo,
+        providerTaskId: transactionId,
+        rawResponse: { provider: "fadada" },
+        signUrl: "https://sign.example.test/customer",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+        signers: [{
+          customerId: "customer-1",
+          providerSignerId: transactionId,
+          signUrl: "https://sign.example.test/customer",
+          signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+          signerType: "CUSTOMER" as const
+        }]
+      };
+    }),
+    getSignerUrl: vi.fn(),
+    verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
+  };
+
+  return createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
+}
+
+function fadadaConfigService() {
+  return new ConfigService({
+    ESIGN_PROVIDER: "fadada",
+    FADADA_API_VERSION: "2.0",
+    FADADA_APP_ID: "app-123",
+    FADADA_APP_SECRET: "secret-xyz",
+    FADADA_BASE_URL: "https://testapi.fadada.com:8443/api/",
+    FADADA_ENABLED: "false",
+    FADADA_ENV: "sandbox",
+    FADADA_REQUEST_TIMEOUT_MS: "15000"
+  });
+}
+
+function fadadaCallbackPayload(input: {
+  contractId: string;
+  resultCode: string;
+  resultDesc?: string;
+  transactionId: string | null | undefined;
+}) {
+  const timestamp = "20260102030405";
+  const transactionId = input.transactionId ?? "";
+  const msgDigest = buildFadadaMsgDigest({
+    appId: "app-123",
+    appSecret: "secret-xyz",
+    explicitSortString: transactionId,
+    timestamp
+  });
+
+  return {
+    contract_id: input.contractId,
+    download_url: "https://download.example.test/file.pdf?token=secret",
+    msg_digest: msgDigest,
+    result_code: input.resultCode,
+    result_desc: input.resultDesc ?? "ok",
+    timestamp,
+    transaction_id: transactionId,
+    viewpdf_url: "https://view.example.test/file.pdf?token=secret"
+  };
 }
 
 function adminUser(): RequestUser {

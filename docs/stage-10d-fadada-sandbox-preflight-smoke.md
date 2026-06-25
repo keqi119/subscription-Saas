@@ -191,6 +191,8 @@ Yes, Stage 10D-B3 callback verify + idempotency code preparation can start using
 
 B3 should not require a successful B2-B smoke if it stays within callback verification, idempotency, event mapping, and local tests.
 
+Stage 10D-B3 is documented in `docs/stage-10d-fadada-callback-idempotency.md`.
+
 ## 14. Can Full Signing Validation Start?
 
 No.

@@ -164,7 +164,46 @@ describe("Fadada provider B2-A flow", () => {
 
     expect(result).toMatchObject({
       eventType: "FADADA_SIGN_COMPLETED",
+      providerContractId: "contract-1",
       providerTaskId: "transaction-1",
+      resultCode: "3000",
+      verified: true
+    });
+    expect(result.payload).toMatchObject({
+      download_url: "[redacted-url]",
+      viewpdf_url: "[redacted-url]"
+    });
+  });
+
+  it("parses form-urlencoded callback payloads and maps unknown result codes", async () => {
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService()));
+    const receivedMsgDigest = buildFadadaMsgDigest({
+      appId: "app-123",
+      appSecret: "secret-xyz",
+      explicitSortString: "transaction-form-1",
+      timestamp: "20260102030405"
+    });
+    const payload = new URLSearchParams({
+      contract_id: "contract-form-1",
+      download_url: "https://download.example.test/file.pdf?token=secret",
+      msg_digest: receivedMsgDigest,
+      result_code: "3999",
+      result_desc: "pending manual review",
+      timestamp: "20260102030405",
+      transaction_id: "transaction-form-1",
+      viewpdf_url: "https://view.example.test/file.pdf?token=secret"
+    });
+
+    await expect(provider.verifyCallback(payload)).resolves.toMatchObject({
+      eventType: "FADADA_SIGN_UNKNOWN",
+      payload: {
+        download_url: "[redacted-url]",
+        result_code: "3999",
+        viewpdf_url: "[redacted-url]"
+      },
+      providerContractId: "contract-form-1",
+      providerTaskId: "transaction-form-1",
+      resultCode: "3999",
       verified: true
     });
   });

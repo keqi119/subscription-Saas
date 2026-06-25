@@ -48,7 +48,10 @@ export interface GetSignerUrlResult {
 export interface VerifyCallbackResult {
   eventType?: string;
   payload: unknown;
+  providerContractId?: string;
   providerTaskId?: string;
+  resultCode?: string;
+  resultDescription?: string;
   verified: boolean;
 }
 

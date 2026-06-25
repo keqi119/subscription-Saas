@@ -10,7 +10,7 @@ import { ContractPdfArtifactService } from "../contract-pdf-artifact.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { FadadaApiClient } from "./fadada-api.client";
 import { verifyFadadaCallbackDigest } from "./fadada-digest";
-import { FadadaCallbackPayload, FadadaConfig } from "./fadada.types";
+import { FadadaConfig, FadadaSignCallbackPayload } from "./fadada.types";
 
 export const FADADA_PROVIDER_STAGE_B2_REQUIRED = "FADADA_PROVIDER_STAGE_B2_REQUIRED";
 export const FADADA_SIGN_URL_STAGE_B2_REQUIRED = "FADADA_SIGN_URL_STAGE_B2_REQUIRED";
@@ -112,10 +112,13 @@ export class FadadaESignProvider implements ESignProvider {
   }
 
   async verifyCallback(payload: unknown): Promise<VerifyCallbackResult> {
-    const record = asRecord(payload) as FadadaCallbackPayload & Record<string, unknown>;
+    const record = normalizeCallbackPayload(payload);
     const transactionId = stringOrUndefined(record.transaction_id);
+    const providerContractId = stringOrUndefined(record.contract_id);
     const timestamp = stringOrUndefined(record.timestamp);
     const receivedMsgDigest = stringOrUndefined(record.msg_digest);
+    const resultCode = stringOrUndefined(record.result_code);
+    const resultDescription = stringOrUndefined(record.result_desc);
     const verified =
       Boolean(transactionId && timestamp && receivedMsgDigest) &&
       verifyFadadaCallbackDigest({
@@ -128,9 +131,12 @@ export class FadadaESignProvider implements ESignProvider {
       });
 
     return {
-      eventType: mapFadadaResultCode(stringOrUndefined(record.result_code)),
-      payload,
+      eventType: mapFadadaResultCode(resultCode),
+      payload: sanitizeCallbackPayload(record),
+      providerContractId,
       providerTaskId: transactionId,
+      resultCode,
+      resultDescription,
       verified
     };
   }
@@ -145,12 +151,35 @@ function mapFadadaResultCode(resultCode: string | undefined) {
     case "3003":
       return "FADADA_SIGN_REJECTED";
     default:
-      return resultCode ? `FADADA_SIGN_${resultCode}` : undefined;
+      return resultCode ? "FADADA_SIGN_UNKNOWN" : undefined;
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+function normalizeCallbackPayload(value: unknown): FadadaSignCallbackPayload {
+  if (value instanceof URLSearchParams) {
+    return Object.fromEntries(value.entries());
+  }
+  if (typeof value === "string") {
+    return Object.fromEntries(new URLSearchParams(value).entries());
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      Array.isArray(item) ? item[0] : item
+    ])
+  ) as FadadaSignCallbackPayload;
+}
+
+function sanitizeCallbackPayload(payload: FadadaSignCallbackPayload): FadadaSignCallbackPayload {
+  return {
+    ...payload,
+    ...(payload.download_url ? { download_url: "[redacted-url]" } : {}),
+    ...(payload.viewpdf_url ? { viewpdf_url: "[redacted-url]" } : {})
+  };
 }
 
 function stringOrUndefined(value: unknown) {

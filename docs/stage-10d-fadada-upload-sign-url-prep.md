@@ -171,3 +171,20 @@ New and updated tests cover:
 B2-B can proceed only after sandbox credentials, customer id mapping, endpoint response confirmation, and public HTTPS notify/return URLs are available.
 
 B3 can proceed after callback payload mapping, local persistence, and idempotency rules are confirmed.
+
+## 12. Stage 10D-B2-B Preflight Status
+
+Stage 10D-B2-B is recorded in `docs/stage-10d-fadada-sandbox-preflight-smoke.md`.
+
+Status: preflight blocked; smoke not executed.
+
+Reasons:
+
+- local Fadada sandbox credentials were not configured
+- `FADADA_SANDBOX_SMOKE=1` and `FADADA_ENABLED=true` were not present
+- HTTPS notify/return URLs were not configured
+- no approved non-sensitive test contract PDF was selected
+- official endpoint-specific digest samples for `uploaddocs.api` and `extsign_validation.api` were not available in the repository baseline
+- explicit approval for a real sandbox call was not recorded
+
+No real Fadada request was sent, no sign URL was generated, and no contract/order state was advanced.

@@ -165,6 +165,8 @@ Stage 10D-B2-A has prepared the mockable upload/sign URL code path in `docs/stag
 - endpoint-specific formulas for `uploaddocs.api` and `extsign_validation.api`
 - public HTTPS `notify_url` and allowed `return_url` domains
 
+Stage 10D-B2-B recorded a blocked preflight in `docs/stage-10d-fadada-sandbox-preflight-smoke.md`: local sandbox credentials, notify/return URLs, approved test PDF, explicit smoke switch, and official endpoint digest confirmation were not present, so no real Fadada request was sent.
+
 ## 10. Open TODOs From B0
 
 - Production base URL: TODO, requires Fadada operations enablement.

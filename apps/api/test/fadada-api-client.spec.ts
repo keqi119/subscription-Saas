@@ -127,6 +127,116 @@ describe("Fadada API client", () => {
     expect(String(request?.body)).toContain("validity=30");
     expect(String(request?.body)).toContain("quantity=1");
   });
+
+  it("queries sign result and keeps provider URLs inside the raw response only", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        result: "3000",
+        result_desc: "completed",
+        download_url: "https://download.example.test/file.pdf?token=secret",
+        viewpdf_url: "https://view.example.test/file.pdf?token=secret"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.querySignResult({
+      contractId: "CON-1",
+      transactionId: "TX-1"
+    });
+
+    expect(result).toMatchObject({
+      contractId: "CON-1",
+      downloadUrl: "https://download.example.test/file.pdf?token=secret",
+      resultCode: "3000",
+      resultDesc: "completed",
+      transactionId: "TX-1",
+      viewPdfUrl: "https://view.example.test/file.pdf?token=secret"
+    });
+    expect(vi.mocked(transport).mock.calls[0]?.[0]).toMatchObject({
+      method: "POST",
+      url: "https://testapi.fadada.com:8443/api/query_sign_result.api"
+    });
+    expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("contract_id=CON-1");
+    expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("transaction_id=TX-1");
+  });
+
+  it("queries contract status through mocked transport", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: "{\"contractStatus\":\"2\"}",
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.queryContractStatus({ contractId: "CON-1" });
+
+    expect(result).toMatchObject({
+      contractId: "CON-1",
+      status: "2"
+    });
+    expect(vi.mocked(transport).mock.calls[0]?.[0].url).toBe(
+      "https://testapi.fadada.com:8443/api/contract_status.api"
+    );
+  });
+
+  it("downloads signed PDF buffers and rejects non-PDF responses", async () => {
+    const pdf = minimalPdf();
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyBuffer: pdf,
+      bodyText: "",
+      headers: {
+        "content-disposition": "attachment; filename=signed.pdf",
+        "content-type": "application/pdf"
+      },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.downloadSignedContract({ contractId: "CON-1" });
+
+    expect(result).toMatchObject({
+      contentType: "application/pdf",
+      fileName: "signed.pdf"
+    });
+    expect(result.buffer.equals(pdf)).toBe(true);
+    expect(vi.mocked(transport).mock.calls[0]?.[0]).toMatchObject({
+      responseType: "arraybuffer",
+      url: "https://testapi.fadada.com:8443/api/downLoadContract.api"
+    });
+
+    vi.mocked(transport).mockResolvedValueOnce({
+      bodyBuffer: Buffer.from("{\"code\":\"1003\"}", "utf8"),
+      bodyText: "",
+      headers: { "content-type": "application/json" },
+      status: 200
+    });
+
+    await expect(apiClient.downloadSignedContract({ contractId: "CON-1" })).rejects.toThrow(
+      /FADADA_DOWNLOAD_REQUIRES_PDF/
+    );
+  });
+
+  it("creates contract filing metadata through mocked transport", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: "{\"filing_no\":\"FILING-1\",\"result\":\"success\"}",
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.createContractFiling({ contractId: "CON-1" });
+
+    expect(result).toMatchObject({
+      contractId: "CON-1",
+      filingNo: "FILING-1",
+      raw: { filing_no: "FILING-1", result: "success" }
+    });
+    expect(vi.mocked(transport).mock.calls[0]?.[0].url).toBe(
+      "https://testapi.fadada.com:8443/api/contractFiling.api"
+    );
+  });
 });
 
 function fadadaConfig(overrides: Partial<FadadaConfig> = {}): FadadaConfig {

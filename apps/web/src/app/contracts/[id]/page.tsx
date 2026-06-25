@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, CloudDownloadOutlined, FileDoneOutlined } from "@ant-design/icons";
 import { App, Button, Card, Descriptions, Empty, List, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import Link from "next/link";
@@ -24,7 +24,7 @@ import {
   canCancelContract,
   canSignContract
 } from "../../../lib/action-guards";
-import { apiFetch, ApiError } from "../../../lib/api";
+import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 
 interface ContractDetail {
@@ -45,6 +45,8 @@ interface ContractESignTask {
   completedAt?: string | null;
   createdAt: string;
   documentName?: string | null;
+  hasEvidenceDocument?: boolean;
+  hasSignedDocument?: boolean;
   id: string;
   provider: string;
   signers: Array<{
@@ -344,6 +346,7 @@ export default function ContractDetailPage() {
   const [contract, setContract] = useState<ContractDetail | null>(null);
   const [esignTasks, setESignTasks] = useState<ContractESignTask[]>([]);
   const [loading, setLoading] = useState(true);
+  const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
   const [creatingESignTask, setCreatingESignTask] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
@@ -400,6 +403,27 @@ export default function ContractDetailPage() {
     } finally {
       setCreatingESignTask(false);
     }
+  }
+
+  async function archiveSignedArtifacts(taskId: string) {
+    try {
+      setArchivingTaskId(taskId);
+      await apiFetch(`/esign-tasks/${taskId}/archive-signed-artifacts`, { method: "POST" });
+      void message.success("已签合同已归档");
+      await loadContract();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setArchivingTaskId(null);
+    }
+  }
+
+  function openSignedContract(taskId: string) {
+    window.open(
+      `${API_BASE_URL}/esign-tasks/${encodeURIComponent(taskId)}/signed-contract/preview`,
+      "_blank",
+      "noopener,noreferrer"
+    );
   }
 
   return (
@@ -492,6 +516,11 @@ export default function ContractDetailPage() {
                         <Space size={[6, 6]} wrap>
                           <Tag color="blue">{labelOf(ESIGN_TASK_STATUS_LABELS, task.taskStatus)}</Tag>
                           <Tag>{labelOf(ESIGN_PROVIDER_LABELS, task.provider)}</Tag>
+                          {task.hasSignedDocument ? (
+                            <Tag color="green">已签文件已归档</Tag>
+                          ) : task.provider === "FADADA" && task.taskStatus === "COMPLETED" ? (
+                            <Tag color="orange">暂无已签文件</Tag>
+                          ) : null}
                           <Tag>创建于 {formatTime(task.createdAt)}</Tag>
                         </Space>
                         <Space size={[6, 6]} wrap>
@@ -505,6 +534,21 @@ export default function ContractDetailPage() {
                     }
                     title={`${task.taskNo} · ${task.documentName ?? "合同电子签"}`}
                   />
+                  {task.provider === "FADADA" && task.taskStatus === "COMPLETED" && !task.hasSignedDocument ? (
+                    <Button
+                      disabled={!permissions.has("contract:archive")}
+                      icon={<FileDoneOutlined />}
+                      loading={archivingTaskId === task.id}
+                      onClick={() => archiveSignedArtifacts(task.id)}
+                    >
+                      归档已签合同
+                    </Button>
+                  ) : null}
+                  {task.hasSignedDocument ? (
+                    <Button icon={<CloudDownloadOutlined />} onClick={() => openSignedContract(task.id)}>
+                      下载已签合同
+                    </Button>
+                  ) : null}
                 </List.Item>
               )}
             />

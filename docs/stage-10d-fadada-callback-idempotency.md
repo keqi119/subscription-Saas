@@ -180,3 +180,9 @@ B4 should cover:
 - evidence report interface TODO.
 
 Full real signing validation must still wait until B2-B upload/sign URL smoke and B4 archive preparation are both ready.
+
+## 13. Stage 10D-B4 Archive Status
+
+Stage 10D-B4 is recorded in `docs/stage-10d-fadada-signed-pdf-archive.md`.
+
+It adds mockable Fadada query/download/filing clients, private signed PDF storage, admin archive/download endpoints, Portal signed PDF download, and idempotent archive rules. It still does not call real Fadada APIs or process an independent evidence report download.

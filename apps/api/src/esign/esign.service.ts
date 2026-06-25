@@ -1053,6 +1053,8 @@ function toESignTaskView(task: ESignTaskWithDetails) {
     createdAt: task.createdAt,
     customerId: task.customerId,
     documentName: task.documentName,
+    hasEvidenceDocument: Boolean(task.evidenceObjectKey),
+    hasSignedDocument: Boolean(task.signedDocumentObjectKey),
     id: task.id,
     orderId: task.orderId,
     provider: task.provider,
@@ -1081,6 +1083,7 @@ function toPortalContractListItem(contract: ContractForESign) {
     contractStatus: contract.status,
     createdAt: contract.createdAt,
     id: contract.id,
+    hasSignedDocument: Boolean(task?.signedDocumentObjectKey),
     orderNo: contract.order.orderNo,
     signedAt: contract.signedAt,
     signStatus: task?.taskStatus ?? null
@@ -1104,6 +1107,8 @@ function toPortalContractDetail(contract: ContractForESign) {
     signTask: task
       ? {
           completedAt: task.completedAt,
+          hasEvidenceDocument: Boolean(task.evidenceObjectKey),
+          hasSignedDocument: Boolean(task.signedDocumentObjectKey),
           id: task.id,
           provider: task.provider,
           signers: task.signers.map((signer) => ({

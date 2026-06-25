@@ -194,3 +194,9 @@ No real Fadada request was sent, no sign URL was generated, and no contract/orde
 Stage 10D-B3 is recorded in `docs/stage-10d-fadada-callback-idempotency.md`.
 
 It adds Fadada callback parsing, digest verification, transaction/contract lookup, result code mapping, idempotent status updates, and callback log sanitization. It does not download or archive signed PDFs.
+
+## 14. Stage 10D-B4 Signed PDF Archive Status
+
+Stage 10D-B4 is recorded in `docs/stage-10d-fadada-signed-pdf-archive.md`.
+
+It prepares Fadada signed result query, signed PDF download, `contractFiling.api`, private artifact archive, admin download, and Portal download using mocked HTTP transport only. No real Fadada request was sent, no production signing flow was executed, and no contract/order state machine was changed.

@@ -188,3 +188,9 @@ Reasons:
 - explicit approval for a real sandbox call was not recorded
 
 No real Fadada request was sent, no sign URL was generated, and no contract/order state was advanced.
+
+## 13. Stage 10D-B3 Callback Status
+
+Stage 10D-B3 is recorded in `docs/stage-10d-fadada-callback-idempotency.md`.
+
+It adds Fadada callback parsing, digest verification, transaction/contract lookup, result code mapping, idempotent status updates, and callback log sanitization. It does not download or archive signed PDFs.

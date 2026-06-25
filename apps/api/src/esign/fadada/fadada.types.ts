@@ -63,3 +63,15 @@ export interface FadadaCallbackPayload {
   transaction_id?: unknown;
   viewpdf_url?: unknown;
 }
+
+export interface FadadaSignCallbackPayload {
+  contract_id?: string;
+  download_url?: string;
+  msg_digest?: string;
+  result_code?: string;
+  result_desc?: string;
+  timestamp?: string;
+  transaction_id?: string;
+  viewpdf_url?: string;
+  [key: string]: unknown;
+}

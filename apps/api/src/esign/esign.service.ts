@@ -104,9 +104,14 @@ const CALLBACK_COMPLETED_EVENTS = new Set([
   "SIGN_COMPLETED",
   "SIGNATURE_COMPLETED",
   "TASK_COMPLETED",
+  "FADADA_SIGN_COMPLETED",
   "MOCK_SIGN_COMPLETED",
   "mock.sign.completed"
 ]);
+
+const FADADA_FAILED_EVENT = "FADADA_SIGN_FAILED";
+const FADADA_REJECTED_EVENT = "FADADA_SIGN_REJECTED";
+const FADADA_UNKNOWN_EVENT = "FADADA_SIGN_UNKNOWN";
 
 @Injectable()
 export class ESignService {
@@ -394,18 +399,16 @@ export class ESignService {
     const providerTaskId =
       verified.providerTaskId ??
       stringOrNull(record.providerTaskId) ??
-      stringOrNull(record.taskNo);
+      stringOrNull(record.taskNo) ??
+      stringOrNull(record.transaction_id);
+    const providerContractId =
+      verified.providerContractId ??
+      stringOrNull(record.providerContractId) ??
+      stringOrNull(record.contract_id);
+    const resultCode = verified.resultCode ?? stringOrNull(record.result_code);
+    const resultDescription = verified.resultDescription ?? stringOrNull(record.result_desc);
     const eventType = verified.eventType ?? stringOrNull(record.eventType);
-    const task = providerTaskId
-      ? await this.prisma.contractESignTask.findFirst({
-          include: esignTaskInclude,
-          where: {
-            deletedAt: null,
-            provider,
-            providerTaskId
-          }
-        })
-      : null;
+    const task = await this.findCallbackTask(provider, providerTaskId, providerContractId);
 
     const callbackLog = await this.prisma.contractESignCallbackLog.create({
       data: {
@@ -439,10 +442,44 @@ export class ESignService {
         },
         where: { id: callbackLog.id }
       });
+      await this.prisma.contractESignCallbackLog.update({
+        data: {
+          handled: false,
+          handledAt: null
+        },
+        where: { id: callbackLog.id }
+      });
       return { handled: false, reason: "TASK_NOT_FOUND" };
     }
 
+    if (provider === ESignProviderType.FADADA) {
+      return this.handleFadadaCallback({
+        callbackLogId: callbackLog.id,
+        eventType,
+        providerContractId,
+        providerTaskId,
+        resultCode,
+        resultDescription,
+        sanitizedPayload: verified.payload,
+        task
+      });
+    }
+
     if (eventType && CALLBACK_COMPLETED_EVENTS.has(eventType)) {
+      if (task.taskStatus === ESignTaskStatus.COMPLETED) {
+        await this.prisma.contractESignCallbackLog.update({
+          data: {
+            handled: true,
+            handledAt: new Date()
+          },
+          where: { id: callbackLog.id }
+        });
+        return {
+          handled: true,
+          idempotent: true,
+          task: toESignTaskView(task)
+        };
+      }
       const completed = await this.completeTask(task.id, {
         callbackLogId: callbackLog.id,
         callbackPayload: verified.payload,
@@ -465,6 +502,253 @@ export class ESignService {
     });
 
     return { handled: true };
+  }
+
+  private async handleFadadaCallback(input: {
+    callbackLogId: string;
+    eventType?: string | null;
+    providerContractId?: string | null;
+    providerTaskId?: string | null;
+    resultCode?: string | null;
+    resultDescription?: string | null;
+    sanitizedPayload: unknown;
+    task: ESignTaskWithDetails;
+  }) {
+    if (input.eventType === FADADA_UNKNOWN_EVENT || !input.resultCode) {
+      await this.prisma.contractESignCallbackLog.update({
+        data: {
+          errorMessage: `FADADA_UNKNOWN_RESULT_CODE:${input.resultCode ?? "missing"}`
+        },
+        where: { id: input.callbackLogId }
+      });
+      return {
+        handled: false,
+        reason: "UNKNOWN_RESULT_CODE",
+        resultCode: input.resultCode
+      };
+    }
+
+    if (input.task.taskStatus === ESignTaskStatus.COMPLETED) {
+      await this.prisma.contractESignCallbackLog.update({
+        data: {
+          errorMessage: input.eventType === "FADADA_SIGN_COMPLETED"
+            ? undefined
+            : "FADADA_TERMINAL_COMPLETED_IGNORED",
+          handled: true,
+          handledAt: new Date(),
+          taskId: input.task.id
+        },
+        where: { id: input.callbackLogId }
+      });
+      return {
+        handled: true,
+        idempotent: true,
+        resultCode: input.resultCode,
+        task: toESignTaskView(input.task)
+      };
+    }
+
+    if (BLOCKED_COMPLETE_ESIGN_TASK_STATUSES.includes(input.task.taskStatus)) {
+      await this.prisma.contractESignCallbackLog.update({
+        data: {
+          errorMessage: "FADADA_TERMINAL_CONFLICT_IGNORED",
+          handled: true,
+          handledAt: new Date(),
+          taskId: input.task.id
+        },
+        where: { id: input.callbackLogId }
+      });
+      return {
+        handled: true,
+        ignored: true,
+        reason: "TERMINAL_TASK_CONFLICT",
+        resultCode: input.resultCode,
+        task: toESignTaskView(input.task)
+      };
+    }
+
+    if (input.eventType === "FADADA_SIGN_COMPLETED") {
+      const completed = await this.completeTask(input.task.id, {
+        callbackLogId: input.callbackLogId,
+        callbackPayload: input.sanitizedPayload,
+        eventType: input.eventType,
+        providerTaskId: input.providerTaskId,
+        source: "provider_callback"
+      });
+      return {
+        handled: true,
+        resultCode: input.resultCode,
+        task: toESignTaskView(completed)
+      };
+    }
+
+    if (input.eventType === FADADA_FAILED_EVENT || input.eventType === FADADA_REJECTED_EVENT) {
+      const failed = await this.markFadadaCallbackFailed({
+        callbackLogId: input.callbackLogId,
+        eventType: input.eventType,
+        providerContractId: input.providerContractId,
+        providerTaskId: input.providerTaskId,
+        resultCode: input.resultCode,
+        resultDescription: input.resultDescription,
+        sanitizedPayload: input.sanitizedPayload,
+        taskId: input.task.id
+      });
+      return {
+        handled: true,
+        resultCode: input.resultCode,
+        task: toESignTaskView(failed)
+      };
+    }
+
+    await this.prisma.contractESignCallbackLog.update({
+      data: {
+        errorMessage: `FADADA_UNHANDLED_EVENT:${input.eventType ?? "missing"}`
+      },
+      where: { id: input.callbackLogId }
+    });
+    return {
+      handled: false,
+      reason: "UNKNOWN_RESULT_CODE",
+      resultCode: input.resultCode
+    };
+  }
+
+  private async markFadadaCallbackFailed(input: {
+    callbackLogId: string;
+    eventType: string;
+    providerContractId?: string | null;
+    providerTaskId?: string | null;
+    resultCode: string;
+    resultDescription?: string | null;
+    sanitizedPayload: unknown;
+    taskId: string;
+  }) {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const task = await tx.contractESignTask.findUnique({
+        include: esignTaskInclude,
+        where: { id: input.taskId }
+      });
+
+      if (!task || task.deletedAt) {
+        throw new NotFoundException("E-sign task not found.");
+      }
+
+      if (task.taskStatus === ESignTaskStatus.COMPLETED || BLOCKED_COMPLETE_ESIGN_TASK_STATUSES.includes(task.taskStatus)) {
+        await tx.contractESignCallbackLog.update({
+          data: {
+            errorMessage: "FADADA_TERMINAL_CONFLICT_IGNORED",
+            handled: true,
+            handledAt: now,
+            taskId: task.id
+          },
+          where: { id: input.callbackLogId }
+        });
+        return task;
+      }
+
+      if (input.eventType === FADADA_REJECTED_EVENT) {
+        await tx.contractESignSigner.updateMany({
+          data: {
+            rejectedAt: now,
+            rejectReason: input.resultDescription,
+            signerStatus: ESignSignerStatus.REJECTED
+          },
+          where: {
+            deletedAt: null,
+            signerType: ESignSignerType.CUSTOMER,
+            taskId: task.id
+          }
+        });
+      }
+
+      await tx.contractESignTask.update({
+        data: {
+          callbackSnapshot: toJsonValue(input.sanitizedPayload),
+          errorSnapshot: toJsonValue({
+            eventType: input.eventType,
+            providerContractId: input.providerContractId,
+            providerTaskId: input.providerTaskId,
+            resultCode: input.resultCode,
+            resultDescription: input.resultDescription
+          }),
+          failedAt: task.failedAt ?? now,
+          taskStatus: ESignTaskStatus.FAILED
+        },
+        where: { id: task.id }
+      });
+
+      await tx.contractESignCallbackLog.update({
+        data: {
+          handled: true,
+          handledAt: now,
+          taskId: task.id
+        },
+        where: { id: input.callbackLogId }
+      });
+
+      return tx.contractESignTask.findUniqueOrThrow({
+        include: esignTaskInclude,
+        where: { id: task.id }
+      });
+    });
+  }
+
+  private async findCallbackTask(
+    provider: ESignProviderType,
+    providerTaskId?: string | null,
+    providerContractId?: string | null
+  ) {
+    if (providerTaskId) {
+      const signer = await this.prisma.contractESignSigner.findFirst({
+        include: {
+          task: {
+            include: esignTaskInclude
+          }
+        },
+        where: {
+          deletedAt: null,
+          providerSignerId: providerTaskId,
+          task: {
+            deletedAt: null,
+            provider
+          }
+        }
+      });
+
+      if (signer?.task) {
+        return signer.task;
+      }
+
+      const task = await this.prisma.contractESignTask.findFirst({
+        include: esignTaskInclude,
+        where: {
+          deletedAt: null,
+          provider,
+          providerTaskId
+        }
+      });
+
+      if (task) {
+        return task;
+      }
+    }
+
+    if (providerContractId) {
+      return this.prisma.contractESignTask.findFirst({
+        include: esignTaskInclude,
+        where: {
+          OR: [
+            { providerEnvelopeId: providerContractId },
+            { taskNo: providerContractId }
+          ],
+          deletedAt: null,
+          provider
+        }
+      });
+    }
+
+    return null;
   }
 
   private async completeTask(taskId: string, options: {

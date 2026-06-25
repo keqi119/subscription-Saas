@@ -6,9 +6,24 @@ import { AuthModule } from "../auth/auth.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { ESignAdminController, ESignCallbackController } from "./esign.controller";
-import { ESIGN_PROVIDER_CLIENT } from "./esign.provider";
+import { ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
 import { ESignService } from "./esign.service";
+import { loadFadadaConfig, selectedESignProvider } from "./fadada/fadada.config";
+import { FadadaESignProvider } from "./fadada/fadada-esign.provider";
 import { MockESignProvider } from "./mock-esign.provider";
+
+export function createESignProviderClient(configService: ConfigService): ESignProvider {
+  const provider = selectedESignProvider(configService);
+
+  switch (provider) {
+    case "mock":
+      return new MockESignProvider(configService);
+    case "fadada":
+      return new FadadaESignProvider(loadFadadaConfig(configService));
+    default:
+      throw new Error(`ESIGN_PROVIDER_UNSUPPORTED: ${provider}`);
+  }
+}
 
 @Module({
   controllers: [ESignAdminController, ESignCallbackController],
@@ -19,7 +34,7 @@ import { MockESignProvider } from "./mock-esign.provider";
     {
       inject: [ConfigService],
       provide: ESIGN_PROVIDER_CLIENT,
-      useFactory: (configService: ConfigService) => new MockESignProvider(configService)
+      useFactory: createESignProviderClient
     }
   ]
 })

@@ -10,6 +10,8 @@ Stage 10D-B2-A prepares the code path for uploading a contract PDF to Fadada and
 
 This stage still does not call real Fadada endpoints, create real signing tasks, perform real signing, auto-seal, process real callbacks, download signed PDFs, call `contractFiling.api`, add migrations, or change contract/order state-machine outcomes.
 
+Stage 10D-B2-B-R1 adds a guarded client-level smoke script documented in `docs/stage-10d-fadada-sandbox-upload-signurl-smoke.md`. The script is ready, but the latest run was preflight-blocked because the local safety switches were not enabled.
+
 ## 2. PDF Artifact Audit
 
 Current model support is sufficient without a migration:

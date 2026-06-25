@@ -172,3 +172,9 @@ B4-B mock archive smoke: **passed**.
 Code-side Fadada preparation now covers upload/sign URL prep, callback verification/idempotency, signed PDF archive, and mocked archive smoke.
 
 Do not enter Stage 10D-B5 full real signing validation until the B2-B sandbox blockers are closed.
+
+## 14. B2-B-R1 Upload/SignUrl Smoke Update
+
+Stage 10D-B2-B-R1 is recorded in `docs/stage-10d-fadada-sandbox-upload-signurl-smoke.md`.
+
+Current result: guarded smoke script added and executed in preflight mode only. No real Fadada call occurred because `FADADA_ENABLED=true` and `FADADA_SANDBOX_SMOKE=1` were not enabled in the local ignored env file.

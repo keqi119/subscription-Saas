@@ -64,6 +64,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-fadada-provider-skeleton.md`: Stage 10D-B1 Fadada provider skeleton
 - `docs/stage-10d-fadada-upload-sign-url-prep.md`: Stage 10D-B2-A Fadada upload and sign URL prep
 - `docs/stage-10d-fadada-sandbox-preflight-smoke.md`: Stage 10D-B2-B Fadada sandbox preflight and optional smoke gate
+- `docs/stage-10d-fadada-sandbox-upload-signurl-smoke.md`: Stage 10D-B2-B-R1 Fadada sandbox upload/signUrl smoke
 - `docs/stage-10d-fadada-callback-idempotency.md`: Stage 10D-B3 Fadada callback verification and idempotency
 - `docs/stage-10d-fadada-signed-pdf-archive.md`: Stage 10D-B4 Fadada signed PDF archive preparation
 - `docs/stage-10d-fadada-artifact-archive-mock-smoke.md`: Stage 10D-B4-B Fadada artifact archive mock smoke

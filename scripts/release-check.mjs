@@ -30,6 +30,8 @@ const requiredSteps = [
   ["WeChat Official Account menu syntax", "node", ["--check", "scripts/wechat-menu.mjs"]],
   ["WeChat Official Account menu dry-run syntax", "node", ["--check", "scripts/wechat-menu-dry-run.mjs"]],
   ["WeChat Pay certificate downloader syntax", "node", ["--check", "scripts/wechat-pay-download-platform-certs.mjs"]],
+  ["Fadada sandbox upload/signUrl smoke syntax", "node", ["--check", "scripts/fadada-sandbox-upload-signurl-smoke.mjs"]],
+  ["Fadada sandbox upload/signUrl smoke tests", "pnpm", ["fadada:sandbox-upload-signurl-smoke:test"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

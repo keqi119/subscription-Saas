@@ -143,3 +143,11 @@ Do not enter full real signing validation until these are closed:
 - signed PDF archive B4 complete.
 
 If the sandbox smoke blockers remain open, the safer next step is Stage 10D-B4-B artifact archive smoke with mocked provider payloads.
+
+## 11. B4-B Mock Smoke Result
+
+Stage 10D-B4-B is recorded in `docs/stage-10d-fadada-artifact-archive-mock-smoke.md`.
+
+Result: mocked archive smoke passed with an in-memory completed Fadada task fixture, mocked provider payloads, mocked private storage, idempotency checks for `force=false` and `force=true`, admin/Portal preview service checks, and contract/order/finance no-side-effect assertions.
+
+This B4-B result still does not call real Fadada APIs and does not unblock B5 by itself. B5 remains gated by the B2-B sandbox upload/sign URL blockers.

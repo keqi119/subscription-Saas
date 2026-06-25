@@ -66,6 +66,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-fadada-sandbox-preflight-smoke.md`: Stage 10D-B2-B Fadada sandbox preflight and optional smoke gate
 - `docs/stage-10d-fadada-callback-idempotency.md`: Stage 10D-B3 Fadada callback verification and idempotency
 - `docs/stage-10d-fadada-signed-pdf-archive.md`: Stage 10D-B4 Fadada signed PDF archive preparation
+- `docs/stage-10d-fadada-artifact-archive-mock-smoke.md`: Stage 10D-B4-B Fadada artifact archive mock smoke
 - `docs/stage-10e-payment-foundation.md`：Stage 10E-A 支付基础与 Mock 支付闭环
 - `docs/stage-10e-wechat-jsapi-payment.md`：Stage 10E-B 微信支付 JSAPI Provider
 - `docs/stage-10f-portal-billing-entitlements.md`：Stage 10F 客户账单 / 押金 / 权益中心

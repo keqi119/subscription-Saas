@@ -1,0 +1,121 @@
+import { ConfigService } from "@nestjs/config";
+import { Readable } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
+
+import { ContractPdfArtifactService } from "../src/esign/contract-pdf-artifact.service";
+
+describe("ContractPdfArtifactService", () => {
+  it("reads an existing ContractVersion PDF file through StorageService", async () => {
+    const pdf = minimalPdf();
+    const { prisma, service, storageService } = createFixture({
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/version-1.pdf",
+        originalName: "version-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    const artifact = await service.getContractPdfArtifact("contract-1");
+
+    expect(prisma.contract.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { deletedAt: null, id: "contract-1" }
+    }));
+    expect(prisma.fileObject.findUnique).toHaveBeenCalledWith({ where: { id: "file-1" } });
+    expect(storageService.getObject).toHaveBeenCalledWith("application-materials", "contracts/version-1.pdf");
+    expect(artifact).toMatchObject({
+      contentType: "application/pdf",
+      fileName: "version-1.pdf",
+      size: pdf.length,
+      source: "CONTRACT_VERSION_FILE"
+    });
+    expect(artifact.buffer.equals(pdf)).toBe(true);
+  });
+
+  it("returns CONTRACT_PDF_ARTIFACT_MISSING when real signing is enabled and no PDF exists", async () => {
+    const { service } = createFixture({
+      config: { FADADA_ENABLED: "true", NODE_ENV: "test" },
+      contract: { fileId: null, contractVersion: { fileId: null } }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_MISSING/);
+  });
+
+  it("can generate a deterministic test fixture PDF when real signing is disabled", async () => {
+    const { service } = createFixture({
+      config: { FADADA_ENABLED: "false", NODE_ENV: "test" },
+      contract: { fileId: null, contractVersion: { fileId: null } }
+    });
+
+    const artifact = await service.getContractPdfArtifact("contract-1");
+
+    expect(artifact).toMatchObject({
+      contentType: "application/pdf",
+      fileName: "CON-1.pdf",
+      source: "TEST_FIXTURE"
+    });
+    expect(artifact.buffer.subarray(0, 5).toString("utf8")).toBe("%PDF-");
+  });
+
+  it("rejects non-PDF contract files", async () => {
+    const { service } = createFixture({
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "text/plain",
+        objectKey: "contracts/version-1.txt",
+        originalName: "version-1.txt",
+        sizeBytes: 7n
+      },
+      storageObject: { contentType: "text/plain", stream: Readable.from(["not-pdf"]) }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_NOT_PDF/);
+  });
+});
+
+function createFixture(options: {
+  config?: Record<string, string>;
+  contract?: Record<string, unknown>;
+  fileObject?: Record<string, unknown> | null;
+  storageObject?: { contentType?: string; stream: Readable };
+} = {}) {
+  const contract = {
+    contractNo: "CON-1",
+    contractTitle: "Subscription Contract",
+    contractVersion: { fileId: "file-1" },
+    deletedAt: null,
+    fileId: null,
+    id: "contract-1",
+    ...options.contract
+  };
+  const prisma = {
+    contract: {
+      findFirst: vi.fn(async () => contract)
+    },
+    fileObject: {
+      findUnique: vi.fn(async () => options.fileObject ?? null)
+    }
+  };
+  const storageService = {
+    getObject: vi.fn(async () => options.storageObject)
+  };
+  const configService = new ConfigService({
+    FADADA_ENABLED: "false",
+    NODE_ENV: "test",
+    ...options.config
+  });
+
+  return {
+    prisma,
+    service: new ContractPdfArtifactService(prisma as never, storageService as never, configService),
+    storageService
+  };
+}
+
+function minimalPdf() {
+  return Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n", "utf8");
+}

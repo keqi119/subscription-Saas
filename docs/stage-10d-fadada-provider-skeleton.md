@@ -154,7 +154,7 @@ The deterministic digest fixture is local to this repository and is not an offic
 
 ## 9. B2 Requirements
 
-Stage 10D-B2 must not start until these are confirmed:
+Stage 10D-B2-A has prepared the mockable upload/sign URL code path in `docs/stage-10d-fadada-upload-sign-url-prep.md`. Real sandbox smoke must still not start until these are confirmed:
 
 - sandbox base URL is reachable from the intended environment
 - `FADADA_APP_ID` and `FADADA_APP_SECRET`

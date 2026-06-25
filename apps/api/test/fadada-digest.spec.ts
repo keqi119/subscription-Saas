@@ -187,6 +187,8 @@ function fadadaConfig(): FadadaConfig {
     baseUrl: "https://testapi.fadada.com:8443/api/",
     enabled: false,
     env: "sandbox",
-    requestTimeoutMs: 15000
+    requestTimeoutMs: 15000,
+    signUrlQuantity: 1,
+    signUrlValidityMinutes: 30
   };
 }

@@ -12,6 +12,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { RequestUser } from "../src/auth/auth.types";
+import { ESignProvider } from "../src/esign/esign.provider";
 import { ESignService } from "../src/esign/esign.service";
 import { MockESignProvider } from "../src/esign/mock-esign.provider";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
@@ -33,6 +34,49 @@ describe("ESignService", () => {
     expect(state.signers[0]).toMatchObject({
       signerStatus: ESignSignerStatus.SIGNING,
       signerType: ESignSignerType.CUSTOMER
+    });
+  });
+
+  it("persists provider signer identifiers and sign URLs from a Fadada provider result", async () => {
+    const signUrlExpiresAt = new Date("2026-01-02T03:34:05.000Z");
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async () => ({
+        documentObjectKey: "contracts/contract-1.pdf",
+        providerEnvelopeId: "ESG-1",
+        providerTaskId: "ESG-1-1",
+        rawResponse: { provider: "fadada" },
+        signUrl: "https://sign.example.test/customer",
+        signUrlExpiresAt,
+        signers: [{
+          customerId: "customer-1",
+          providerSignerId: "ESG-1-1",
+          signUrl: "https://sign.example.test/customer",
+          signUrlExpiresAt,
+          signerType: "CUSTOMER" as const
+        }]
+      })),
+      getSignerUrl: vi.fn(),
+      verifyCallback: vi.fn()
+    };
+    const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
+
+    const result = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    expect(result).toMatchObject({
+      provider: ESignProviderType.FADADA,
+      providerTaskId: "ESG-1-1",
+      signUrl: "https://sign.example.test/customer"
+    });
+    expect(state.tasks[0]).toMatchObject({
+      documentObjectKey: "contracts/contract-1.pdf",
+      providerEnvelopeId: "ESG-1",
+      providerTaskId: "ESG-1-1",
+      signUrl: "https://sign.example.test/customer"
+    });
+    expect(state.signers[0]).toMatchObject({
+      providerSignerId: "ESG-1-1",
+      signerStatus: ESignSignerStatus.SIGNING,
+      signUrl: "https://sign.example.test/customer"
     });
   });
 
@@ -131,7 +175,7 @@ describe("ESignService", () => {
   });
 });
 
-function createESignFixture(env: Record<string, string> = {}) {
+function createESignFixture(env: Record<string, string> = {}, providerOverride?: ESignProvider) {
   const state = {
     callbackLogs: [] as FakeCallbackLog[],
     contracts: [
@@ -311,7 +355,7 @@ function createESignFixture(env: Record<string, string> = {}) {
   const service = new ESignService(
     auditService as never,
     configService,
-    new MockESignProvider(configService),
+    providerOverride ?? new MockESignProvider(configService),
     prisma as never
   );
 

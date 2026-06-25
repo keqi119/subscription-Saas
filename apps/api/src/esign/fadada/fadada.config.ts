@@ -4,6 +4,8 @@ import { FadadaConfig, FadadaEnv } from "./fadada.types";
 
 const DEFAULT_API_VERSION = "2.0";
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const DEFAULT_SIGN_URL_QUANTITY = 1;
+const DEFAULT_SIGN_URL_VALIDITY_MINUTES = 30;
 
 export function loadFadadaConfig(configService: ConfigService): FadadaConfig {
   const baseUrl = requiredValue(configService, "FADADA_BASE_URL");
@@ -37,6 +39,14 @@ export function loadFadadaConfig(configService: ConfigService): FadadaConfig {
     ),
     signNotifyUrl: trimmed(configService.get<string>("FADADA_SIGN_NOTIFY_URL")),
     signReturnUrl: trimmed(configService.get<string>("FADADA_SIGN_RETURN_URL")),
+    signUrlQuantity: parsePositiveInt(
+      configService.get<string>("FADADA_SIGN_URL_QUANTITY"),
+      DEFAULT_SIGN_URL_QUANTITY
+    ),
+    signUrlValidityMinutes: parsePositiveInt(
+      configService.get<string>("FADADA_SIGN_URL_VALIDITY_MINUTES"),
+      DEFAULT_SIGN_URL_VALIDITY_MINUTES
+    ),
     verifyNotifyUrl: trimmed(configService.get<string>("FADADA_VERIFY_NOTIFY_URL")),
     verifyReturnUrl: trimmed(configService.get<string>("FADADA_VERIFY_RETURN_URL"))
   };

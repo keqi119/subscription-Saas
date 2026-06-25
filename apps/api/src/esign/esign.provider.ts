@@ -16,11 +16,19 @@ export interface CreateSignTaskInput {
 }
 
 export interface CreateSignTaskResult {
+  documentObjectKey?: string;
   providerEnvelopeId?: string;
   providerTaskId: string;
   rawResponse?: unknown;
   signUrl?: string;
   signUrlExpiresAt?: Date;
+  signers?: Array<{
+    customerId?: string;
+    providerSignerId?: string;
+    signUrl?: string;
+    signUrlExpiresAt?: Date;
+    signerType: "CUSTOMER" | "PLATFORM";
+  }>;
 }
 
 export interface GetSignerUrlInput {

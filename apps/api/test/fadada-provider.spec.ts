@@ -1,5 +1,5 @@
 import { ConfigService } from "@nestjs/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createESignProviderClient } from "../src/esign/esign.module";
 import { buildFadadaMsgDigest } from "../src/esign/fadada/fadada-digest";
@@ -33,25 +33,112 @@ describe("Fadada provider configuration", () => {
   });
 });
 
-describe("Fadada provider skeleton", () => {
-  it("returns a Stage 10D-B2 required error for createSignTask", async () => {
-    const provider = new FadadaESignProvider(loadFadadaConfig(configService()));
+describe("Fadada provider B2-A flow", () => {
+  it("uploads the PDF artifact and creates a customer sign URL without touching real network", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(async () => ({
+        raw: { sign_url: "https://sign.example.test/customer" },
+        signUrl: "https://sign.example.test/customer",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+        transactionId: "ESG-1-1"
+      })),
+      uploadDocs: vi.fn(async () => ({
+        contractId: "ESG-1",
+        raw: { upload: "ok" }
+      }))
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn(async () => ({
+        buffer: Buffer.from("%PDF-1.4\n%%EOF\n"),
+        contentType: "application/pdf" as const,
+        fileName: "contract.pdf",
+        objectKey: "contracts/contract.pdf",
+        size: 15,
+        source: "CONTRACT_VERSION_FILE" as const
+      }))
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService()), apiClient as never, pdfArtifactService as never);
 
-    await expect(
-      provider.createSignTask({
-        contractId: "contract-1",
-        documentName: "Contract.pdf",
-        signers: [{ customerId: "customer-1", signerType: "CUSTOMER" }],
-        taskNo: "ESG-1"
-      })
-    ).rejects.toThrow(/FADADA_PROVIDER_STAGE_B2_REQUIRED/);
+    const result = await provider.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    });
+
+    expect(pdfArtifactService.getContractPdfArtifact).toHaveBeenCalledWith("contract-1");
+    expect(apiClient.uploadDocs).toHaveBeenCalledWith({
+      contractId: "ESG-1",
+      docTitle: "Contract.pdf",
+      fileName: "contract.pdf",
+      pdf: expect.any(Buffer)
+    });
+    expect(apiClient.createExternalSignUrl).toHaveBeenCalledWith(expect.objectContaining({
+      contractId: "ESG-1",
+      customerId: "customer-1",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      returnUrl: "https://app.example.test/portal/contracts/contract-1",
+      transactionId: "ESG-1-1"
+    }));
+    expect(result).toMatchObject({
+      documentObjectKey: "contracts/contract.pdf",
+      providerEnvelopeId: "ESG-1",
+      providerTaskId: "ESG-1-1",
+      signUrl: "https://sign.example.test/customer",
+      signers: [{
+        customerId: "customer-1",
+        providerSignerId: "ESG-1-1",
+        signUrl: "https://sign.example.test/customer",
+        signerType: "CUSTOMER"
+      }]
+    });
   });
 
-  it("returns a Stage 10D-B2 required error for getSignerUrl", async () => {
-    const provider = new FadadaESignProvider(loadFadadaConfig(configService()));
+  it("returns an existing non-expired signer URL from local storage", async () => {
+    const prisma = {
+      contractESignSigner: {
+        findFirst: vi.fn(async () => ({
+          providerSignerId: "ESG-1-1",
+          signUrl: "https://sign.example.test/customer",
+          signUrlExpiresAt: new Date(Date.now() + 60_000)
+        }))
+      }
+    };
+    const provider = new FadadaESignProvider(
+      loadFadadaConfig(configService()),
+      undefined,
+      undefined,
+      prisma as never
+    );
 
-    await expect(provider.getSignerUrl({ providerTaskId: "transaction-1" })).rejects.toThrow(
-      /FADADA_SIGN_URL_STAGE_B2_REQUIRED/
+    await expect(provider.getSignerUrl({ providerTaskId: "ESG-1-1", taskId: "task-1" })).resolves.toMatchObject({
+      rawResponse: { source: "LOCAL_SIGNER_URL" },
+      signUrl: "https://sign.example.test/customer"
+    });
+  });
+
+  it("returns a clear error when no usable stored signer URL exists", async () => {
+    const prisma = {
+      contractESignSigner: {
+        findFirst: vi.fn(async () => ({
+          providerSignerId: "ESG-1-1",
+          signUrl: "https://sign.example.test/expired",
+          signUrlExpiresAt: new Date(Date.now() - 60_000)
+        }))
+      }
+    };
+    const provider = new FadadaESignProvider(
+      loadFadadaConfig(configService()),
+      undefined,
+      undefined,
+      prisma as never
+    );
+
+    await expect(provider.getSignerUrl({ providerTaskId: "ESG-1-1", taskId: "task-1" })).rejects.toThrow(
+      /FADADA_SIGN_URL_NOT_AVAILABLE/
     );
   });
 

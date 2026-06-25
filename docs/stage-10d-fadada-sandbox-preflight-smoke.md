@@ -225,3 +225,11 @@ Stage 10D-B4-B is recorded in `docs/stage-10d-fadada-artifact-archive-mock-smoke
 The mocked signed PDF archive smoke passed for a controlled in-memory fixture. It verifies archive, private signed artifact storage, admin/Portal preview service behavior, `force=false` skip, `force=true` new object key, evidence TODO behavior, and contract/order/finance no-side-effect checks.
 
 This update does not change the B2-B gate decision. Real sandbox upload/sign URL smoke remains blocked until the credentials, test customer, HTTPS notify/return URLs, approved test PDF, and endpoint-specific digest confirmation or user-approved sandbox trial are available.
+
+## 17. B2-B-R1 Upload/SignUrl Smoke Update
+
+Stage 10D-B2-B-R1 is recorded in `docs/stage-10d-fadada-sandbox-upload-signurl-smoke.md`.
+
+The new guarded script `pnpm fadada:sandbox-upload-signurl-smoke` can run `account_register.api`, `uploaddocs.api`, and `extsign_validation.api` when `.env.fadada.sandbox.local` explicitly enables `FADADA_ENABLED=true` and `FADADA_SANDBOX_SMOKE=1`.
+
+Current R1 result: preflight blocked. The script did not call Fadada because the two safety switches were present but not enabled.

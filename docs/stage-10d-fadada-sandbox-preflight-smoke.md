@@ -217,3 +217,11 @@ Do not start complete real signing validation until all are true:
 - No payment, billing, write-off, ROE, BaaS, or depreciation logic was touched.
 - No Prisma schema or migration was changed.
 - No secrets or full provider identifiers were committed.
+
+## 16. B4-B Mock Archive Smoke Update
+
+Stage 10D-B4-B is recorded in `docs/stage-10d-fadada-artifact-archive-mock-smoke.md`.
+
+The mocked signed PDF archive smoke passed for a controlled in-memory fixture. It verifies archive, private signed artifact storage, admin/Portal preview service behavior, `force=false` skip, `force=true` new object key, evidence TODO behavior, and contract/order/finance no-side-effect checks.
+
+This update does not change the B2-B gate decision. Real sandbox upload/sign URL smoke remains blocked until the credentials, test customer, HTTPS notify/return URLs, approved test PDF, and endpoint-specific digest confirmation or user-approved sandbox trial are available.

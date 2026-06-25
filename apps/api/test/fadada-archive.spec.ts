@@ -28,6 +28,7 @@ describe("FadadaSignedArtifactService", () => {
     const { apiClient, service, state, storageService } = createFixture();
     const signedAt = state.contract.signedAt;
     const orderStatus = state.contract.order.orderStatus;
+    const finance = financeSnapshot(state);
 
     const result = await service.archiveSignedContract({ taskId: "task-1" });
 
@@ -50,12 +51,13 @@ describe("FadadaSignedArtifactService", () => {
     expect(result).toMatchObject({
       archived: true,
       evidenceObjectKey: null,
-      signedPdfObjectKey: "contracts/contract-1/esign/fadada/signed/2026/signed.pdf"
+      signedPdfObjectKey: "contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf"
     });
-    expect(state.task.signedDocumentObjectKey).toBe("contracts/contract-1/esign/fadada/signed/2026/signed.pdf");
+    expect(state.task.signedDocumentObjectKey).toBe("contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf");
     expect(state.task.evidenceObjectKey).toBeNull();
     expect(state.contract.signedAt).toBe(signedAt);
     expect(state.contract.order.orderStatus).toBe(orderStatus);
+    expect(financeSnapshot(state)).toEqual(finance);
     expect(JSON.stringify(state.task.responseSnapshot)).not.toContain("token=secret");
     expect(JSON.stringify(state.task.responseSnapshot)).toContain("[redacted-url]");
   });
@@ -74,6 +76,34 @@ describe("FadadaSignedArtifactService", () => {
     });
     expect(apiClient.downloadSignedContract).not.toHaveBeenCalled();
     expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("force archives a new signed PDF object key without changing finance state", async () => {
+    const { service, state, storageService } = createFixture();
+    const signedAt = state.contract.signedAt;
+    const orderStatus = state.contract.order.orderStatus;
+    const finance = financeSnapshot(state);
+
+    const first = await service.archiveSignedContract({ taskId: "task-1" });
+    const firstObjectKey = state.task.signedDocumentObjectKey;
+    const forced = await service.archiveSignedContract({ force: true, taskId: "task-1" });
+
+    expect(first).toMatchObject({
+      archived: true,
+      signedPdfObjectKey: "contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf"
+    });
+    expect(forced).toMatchObject({
+      archived: true,
+      evidenceObjectKey: null,
+      signedPdfObjectKey: "contracts/contract-1/esign/fadada/signed/2026/signed-2.pdf"
+    });
+    expect(forced.signedPdfObjectKey).not.toBe(firstObjectKey);
+    expect(state.task.signedDocumentObjectKey).toBe(forced.signedPdfObjectKey);
+    expect(state.task.evidenceObjectKey).toBeNull();
+    expect(state.contract.signedAt).toBe(signedAt);
+    expect(state.contract.order.orderStatus).toBe(orderStatus);
+    expect(financeSnapshot(state)).toEqual(finance);
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledTimes(2);
   });
 
   it("streams archived signed PDFs for admins and owning portal customers only", async () => {
@@ -134,6 +164,35 @@ function createFixture() {
       },
       signedAt: new Date("2026-01-03T04:05:06.000Z"),
       status: ContractStatus.SIGNED
+    },
+    finance: {
+      paymentOrders: [
+        {
+          amount: "120000.00",
+          id: "payment-order-1",
+          paymentStatus: "PENDING"
+        }
+      ],
+      paymentRecords: [
+        {
+          amount: "0.00",
+          id: "payment-record-1",
+          paymentStatus: "DRAFT"
+        }
+      ],
+      paymentWriteOffs: [
+        {
+          amount: "0.00",
+          id: "writeoff-1"
+        }
+      ],
+      receivableBills: [
+        {
+          amount: "120000.00",
+          billStatus: "PENDING",
+          id: "bill-1"
+        }
+      ]
     },
     task: {
       callbackSnapshot: null as unknown,
@@ -207,6 +266,7 @@ function createFixture() {
       })
     }
   };
+  let signedArtifactWriteCount = 0;
   const storageService = {
     getContractSignedArtifactStream: vi.fn(async () => ({
       contentLength: pdf.length,
@@ -214,16 +274,20 @@ function createFixture() {
       originalName: "signed.pdf",
       stream: Readable.from([pdf])
     })),
-    putContractSignedArtifact: vi.fn(async () => ({
-      bucket: "application-materials",
-      objectKey: "contracts/contract-1/esign/fadada/signed/2026/signed.pdf",
-      stored: {
-        contentType: "application/pdf",
-        driver: "local",
-        key: "application-materials/contracts/contract-1/esign/fadada/signed/2026/signed.pdf",
-        size: pdf.length
-      }
-    }))
+    putContractSignedArtifact: vi.fn(async () => {
+      signedArtifactWriteCount += 1;
+      const objectKey = `contracts/contract-1/esign/fadada/signed/2026/signed-${signedArtifactWriteCount}.pdf`;
+      return {
+        bucket: "application-materials",
+        objectKey,
+        stored: {
+          contentType: "application/pdf",
+          driver: "local",
+          key: `application-materials/${objectKey}`,
+          size: pdf.length
+        }
+      };
+    })
   };
   const service = new TestFadadaSignedArtifactService(
     prisma as never,
@@ -248,6 +312,10 @@ function hydrateTask(state: ReturnType<typeof createFixture>["state"]) {
     ...state.task,
     contract: state.contract
   };
+}
+
+function financeSnapshot(state: ReturnType<typeof createFixture>["state"]) {
+  return JSON.parse(JSON.stringify(state.finance));
 }
 
 function minimalPdf() {

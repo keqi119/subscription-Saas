@@ -60,6 +60,8 @@ Stage 9 / Production readiness：
 - `docs/stage-10b-portal-catalog-application.md`：Stage 10B 商品浏览与自助申请
 - `docs/stage-10c-portal-application-progress-final-plan.md`：Stage 10C 申请进度与最终方案确认
 - `docs/stage-10d-esign-foundation.md`：Stage 10D-A 电子签约基础与 Mock 签署闭环
+- `docs/stage-10d-fadada-api-audit.md`: Stage 10D-B0 Fadada API audit and integration matrix
+- `docs/stage-10d-fadada-provider-skeleton.md`: Stage 10D-B1 Fadada provider skeleton
 - `docs/stage-10e-payment-foundation.md`：Stage 10E-A 支付基础与 Mock 支付闭环
 - `docs/stage-10e-wechat-jsapi-payment.md`：Stage 10E-B 微信支付 JSAPI Provider
 - `docs/stage-10f-portal-billing-entitlements.md`：Stage 10F 客户账单 / 押金 / 权益中心

@@ -56,11 +56,12 @@ Provider interface supports:
 - `getSignerUrl`
 - `verifyCallback`
 
-Current provider:
+Current providers:
 
 - `MockESignProvider`
+- `FadadaESignProvider` skeleton, added in Stage 10D-B1 and guarded from real network calls
 
-The provider is selected by `ESIGN_PROVIDER`. Stage 10D-A only wires `mock`; real providers are reserved for Stage 10D-B.
+The provider is selected by `ESIGN_PROVIDER`. Stage 10D-A wired `mock`; Stage 10D-B1 adds a non-network `fadada` skeleton. Real Fadada signing creation, sign URL retrieval, and callback state advancement are reserved for later Stage 10D-B phases.
 
 ## 5. Mock Provider
 
@@ -153,6 +154,6 @@ This stage does not implement:
 
 ## 11. Next Stage
 
-If a provider is selected, continue to Stage 10D-B for the real provider adapter.
+If Fadada is selected, use `docs/stage-10d-fadada-api-audit.md` and `docs/stage-10d-fadada-provider-skeleton.md` as the B0/B1 baseline before continuing to Stage 10D-B2.
 
 If the business wants the payment foundation first, continue to Stage 10E-A for payment order and WeChat Pay provider abstraction.

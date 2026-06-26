@@ -32,6 +32,7 @@ const requiredSteps = [
   ["WeChat Pay certificate downloader syntax", "node", ["--check", "scripts/wechat-pay-download-platform-certs.mjs"]],
   ["Fadada sandbox upload/signUrl smoke syntax", "node", ["--check", "scripts/fadada-sandbox-upload-signurl-smoke.mjs"]],
   ["Fadada sandbox upload/signUrl smoke tests", "pnpm", ["fadada:sandbox-upload-signurl-smoke:test"]],
+  ["Fadada test signer real-name prep syntax", "node", ["--check", "scripts/fadada-production-test-signer-realname.mjs"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

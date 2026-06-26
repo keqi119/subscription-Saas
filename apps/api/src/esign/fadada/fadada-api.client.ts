@@ -1,4 +1,7 @@
 import {
+  buildAccountRegisterRequest,
+  buildFindPersonCertInfoRequest,
+  buildPersonVerifyUrlRequest,
   buildContractFilingRequest,
   buildContractStatusRequest,
   buildDownloadContractRequest,
@@ -13,6 +16,8 @@ export const FADADA_UPLOAD_FILE_TOO_LARGE = "FADADA_UPLOAD_FILE_TOO_LARGE";
 export const FADADA_UPLOAD_REQUIRES_PDF = "FADADA_UPLOAD_REQUIRES_PDF";
 export const FADADA_SIGN_URL_MISSING = "FADADA_SIGN_URL_MISSING";
 export const FADADA_DOWNLOAD_REQUIRES_PDF = "FADADA_DOWNLOAD_REQUIRES_PDF";
+export const FADADA_ACCOUNT_CUSTOMER_ID_MISSING = "FADADA_ACCOUNT_CUSTOMER_ID_MISSING";
+export const FADADA_PERSON_VERIFY_URL_MISSING = "FADADA_PERSON_VERIFY_URL_MISSING";
 
 const MAX_FADADA_PDF_BYTES = 20 * 1024 * 1024;
 
@@ -21,6 +26,124 @@ export class FadadaApiClient {
     private readonly config: FadadaConfig,
     private readonly httpClient: FadadaHttpClient
   ) {}
+
+  async registerAccount(input: {
+    accountType: "PERSONAL";
+    openId: string;
+  }): Promise<{
+    openId: string;
+    providerCustomerId: string;
+    raw: unknown;
+    resultCode?: string;
+    resultDesc?: string;
+  }> {
+    const request = buildAccountRegisterRequest({
+      businessParams: {
+        account_type: input.accountType === "PERSONAL" ? "1" : input.accountType,
+        open_id: input.openId
+      },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+    const providerCustomerId = stringField(raw, ["data", "customer_id", "customerId"]);
+
+    if (!providerCustomerId) {
+      throw new Error(`${FADADA_ACCOUNT_CUSTOMER_ID_MISSING}: account_register.api response did not include customer_id`);
+    }
+
+    return {
+      openId: input.openId,
+      providerCustomerId,
+      raw,
+      resultCode: providerCode(raw),
+      resultDesc: providerMsg(raw)
+    };
+  }
+
+  async getPersonVerifyUrl(input: {
+    certFlag?: boolean;
+    customerId: string;
+    idCardNo: string;
+    mobile: string;
+    name: string;
+    notifyUrl: string;
+    option?: string;
+    pageModify?: string;
+    returnUrl: string;
+    verifiedWay?: string;
+  }): Promise<{
+    customerId: string;
+    raw: unknown;
+    resultCode?: string;
+    resultDesc?: string;
+    transactionNo?: string;
+    verifyUrl: string;
+  }> {
+    const request = buildPersonVerifyUrlRequest({
+      businessParams: {
+        cert_flag: input.certFlag === false ? "0" : "1",
+        customer_id: input.customerId,
+        customer_ident_no: input.idCardNo,
+        customer_ident_type: "0",
+        customer_name: input.name,
+        mobile: input.mobile,
+        notify_url: input.notifyUrl,
+        option: input.option ?? "add",
+        page_modify: input.pageModify ?? "1",
+        return_url: input.returnUrl,
+        verified_way: input.verifiedWay ?? "1"
+      },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+    const encodedUrl = stringField(raw, ["url"]);
+    const verifyUrl = decodeFadadaBase64Url(encodedUrl);
+
+    if (!verifyUrl) {
+      throw new Error(`${FADADA_PERSON_VERIFY_URL_MISSING}: get_person_verify_url.api response did not include verification URL`);
+    }
+
+    return {
+      customerId: input.customerId,
+      raw,
+      resultCode: providerCode(raw),
+      resultDesc: providerMsg(raw),
+      transactionNo: stringField(raw, ["transactionNo", "transaction_no"]),
+      verifyUrl
+    };
+  }
+
+  async findPersonCertInfo(input: {
+    verifiedSerialNo: string;
+  }): Promise<{
+    raw: unknown;
+    realNameStatus?: string;
+    resultCode?: string;
+    resultDesc?: string;
+    verifiedSerialNo: string;
+  }> {
+    const request = buildFindPersonCertInfoRequest({
+      businessParams: {
+        verified_serialno: input.verifiedSerialNo
+      },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+
+    return {
+      raw,
+      realNameStatus: stringField(raw, ["status", "certStatus", "cert_status", "realNameStatus"]),
+      resultCode: providerCode(raw),
+      resultDesc: providerMsg(raw),
+      verifiedSerialNo: input.verifiedSerialNo
+    };
+  }
 
   async uploadDocs(input: {
     contractId: string;
@@ -264,7 +387,35 @@ function stringField(raw: unknown, keys: string[]): string | undefined {
     return stringField(data, keys);
   }
 
+  for (const value of Object.values(record)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nested = stringField(value, keys);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
   return undefined;
+}
+
+function providerCode(raw: unknown) {
+  return stringField(raw, ["code", "result_code", "result"]);
+}
+
+function providerMsg(raw: unknown) {
+  return stringField(raw, ["msg", "message", "result_desc", "resultDesc"]);
+}
+
+function decodeFadadaBase64Url(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return Buffer.from(decodeURIComponent(value), "base64").toString("utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 function headerValue(headers: Record<string, string>, name: string) {

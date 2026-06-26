@@ -11,12 +11,16 @@ const FORM_URLENCODED: FadadaContentType = "application/x-www-form-urlencoded;ch
 const MULTIPART_FORM: FadadaContentType = "multipart/form-data;charset=utf8";
 
 export const FADADA_ENDPOINTS = {
+  accountRegister: "account_register.api",
+  applyCert: "apply_cert.api",
   contractFiling: "contractFiling.api",
   contractStatus: "contract_status.api",
   downloadContract: "downLoadContract.api",
   extSign: "extsign.api",
   extSignAuto: "extsign_auto.api",
   extSignValidation: "extsign_validation.api",
+  findPersonCertInfo: "find_personCertInfo.api",
+  getPersonVerifyUrl: "get_person_verify_url.api",
   getUrl: "geturl.api",
   querySignResult: "query_sign_result.api",
   uploadDocs: "uploaddocs.api",
@@ -56,6 +60,58 @@ export function buildFadadaRequest(input: BuildFadadaRequestInput): FadadaReques
     },
     url: buildEndpointUrl(input.config.baseUrl, input.endpoint)
   };
+}
+
+export function buildAccountRegisterRequest(input: {
+  businessParams: Record<string, unknown>;
+  config: FadadaConfig;
+  timestamp?: string;
+}): FadadaRequest {
+  return buildFadadaRequest({
+    businessParams: input.businessParams,
+    config: input.config,
+    endpoint: FADADA_ENDPOINTS.accountRegister,
+    timestamp: input.timestamp
+  });
+}
+
+export function buildPersonVerifyUrlRequest(input: {
+  businessParams: Record<string, unknown>;
+  config: FadadaConfig;
+  timestamp?: string;
+}): FadadaRequest {
+  return buildFadadaRequest({
+    businessParams: input.businessParams,
+    config: input.config,
+    endpoint: FADADA_ENDPOINTS.getPersonVerifyUrl,
+    timestamp: input.timestamp
+  });
+}
+
+export function buildFindPersonCertInfoRequest(input: {
+  businessParams: Record<string, unknown>;
+  config: FadadaConfig;
+  timestamp?: string;
+}): FadadaRequest {
+  return buildFadadaRequest({
+    businessParams: input.businessParams,
+    config: input.config,
+    endpoint: FADADA_ENDPOINTS.findPersonCertInfo,
+    timestamp: input.timestamp
+  });
+}
+
+export function buildApplyCertRequest(input: {
+  businessParams: Record<string, unknown>;
+  config: FadadaConfig;
+  timestamp?: string;
+}): FadadaRequest {
+  return buildFadadaRequest({
+    businessParams: input.businessParams,
+    config: input.config,
+    endpoint: FADADA_ENDPOINTS.applyCert,
+    timestamp: input.timestamp
+  });
 }
 
 export function buildUploadDocsRequest(input: {

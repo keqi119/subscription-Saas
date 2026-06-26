@@ -330,3 +330,15 @@ Stage 10D-B2-A has prepared the mockable upload/sign URL code path in `docs/stag
 - 签署结果异步通知规范：`IHLWUKC27D / VPRIC7HKFX5VJ4K1`
 - 页面跳转规范：`N0Q0OLN5NR / LIVYDN4H1WNFK9WQ`
 - 接口错误码列表：`PCLRYTIBS3 / VCWPQI42GMGLR6L9`
+
+## Stage 10D-C1 Production-channel Update
+
+After B0, the reused car-rental production Fadada channel was confirmed for Auto Subscription:
+
+- production host: `https://textapi.fadada.com/api2/`
+- allowed contract APIs: `uploaddocs.api`, `extsign_validation.api`, `extsign_auto.api`, `query_sign_result.api`, `downLoadContract.api`, `contractFiling.api`, `contract_status.api`, `geturl.api`, `reject_by_contract_id.api`
+- Auto Subscription signing callback and return domains are allowed
+- API egress IP whitelist is configured
+- current enterprise `customer_id` and `signature_id` are the Auto Subscription seal subject and seal
+
+No already-real-named personal test signer is available. Stage 10D-C1 therefore prepares a controlled test signer through `account_register.api` and `get_person_verify_url.api` before production-host upload/signUrl smoke. `find_personCertInfo.api` is confirmed from the local PDF docs to query by `verified_serialno`, not `customer_id`.

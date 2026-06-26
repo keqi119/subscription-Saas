@@ -203,12 +203,10 @@ describe("Fadada API client", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it("creates external signing URL metadata and parses mocked signUrl", async () => {
-    const transport: FadadaTransport = vi.fn(async () => ({
-      bodyText: "{\"sign_url\":\"https://sign.example.test/t/1\"}",
-      headers: { "content-type": "application/json" },
-      status: 200
-    }));
+  it("builds external signing page URL metadata without prefetching the page interface", async () => {
+    const transport: FadadaTransport = vi.fn(async () => {
+      throw new Error("extsign_validation.api is a page URL and must not be prefetched");
+    });
     const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
 
     const result = await apiClient.createExternalSignUrl({
@@ -222,17 +220,20 @@ describe("Fadada API client", () => {
       validityMinutes: 30
     });
 
-    expect(result).toMatchObject({
-      signUrl: "https://sign.example.test/t/1",
-      transactionId: "TX-1"
-    });
+    expect(result.transactionId).toBe("TX-1");
     expect(result.signUrlExpiresAt).toBeInstanceOf(Date);
-    const request = vi.mocked(transport).mock.calls[0]?.[0];
-    expect(request?.url).toBe("https://testapi.fadada.com:8443/api/extsign_validation.api");
-    expect(String(request?.body)).toContain("transaction_id=TX-1");
-    expect(String(request?.body)).toContain("doc_title=Contract.pdf");
-    expect(String(request?.body)).toContain("validity=30");
-    expect(String(request?.body)).toContain("quantity=1");
+    expect(transport).not.toHaveBeenCalled();
+    const url = new URL(result.signUrl);
+    expect(`${url.origin}${url.pathname}`).toBe("https://testapi.fadada.com:8443/api/extsign_validation.api");
+    expect(url.searchParams.get("transaction_id")).toBe("TX-1");
+    expect(url.searchParams.get("doc_title")).toBe("Contract.pdf");
+    expect(url.searchParams.get("validity")).toBe("30");
+    expect(url.searchParams.get("quantity")).toBe("1");
+    expect(result.raw).toMatchObject({
+      endpoint: "extsign_validation.api",
+      method: "GET",
+      pageInterface: true
+    });
   });
 
   it("queries sign result and keeps provider URLs inside the raw response only", async () => {

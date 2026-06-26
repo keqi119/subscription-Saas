@@ -7,7 +7,7 @@ export const FADADA_DISABLED = "FADADA_DISABLED";
 export interface FadadaTransportRequest {
   body?: Buffer | string;
   headers: Record<string, string>;
-  method: "POST";
+  method: "GET" | "POST";
   responseType?: "arraybuffer" | "text";
   timeoutMs: number;
   url: string;
@@ -131,6 +131,21 @@ function buildTransportRequest(
       method: request.method,
       timeoutMs,
       url: request.url
+    };
+  }
+
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    for (const [key, value] of Object.entries(request.params)) {
+      url.searchParams.set(key, value);
+    }
+
+    return {
+      body: undefined,
+      headers: {},
+      method: request.method,
+      timeoutMs,
+      url: url.toString()
     };
   }
 

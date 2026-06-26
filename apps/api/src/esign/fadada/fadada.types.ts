@@ -26,7 +26,7 @@ export interface FadadaConfig {
 export interface FadadaRequest {
   contentType: FadadaContentType;
   endpoint: FadadaEndpoint;
-  method: "POST";
+  method: "GET" | "POST";
   params: Record<string, string>;
   url: string;
 }
@@ -54,6 +54,7 @@ export interface BuildFadadaRequestInput {
   endpoint: FadadaEndpoint;
   explicitMd5Seed?: string;
   explicitSortString?: string;
+  method?: "GET" | "POST";
   timestamp?: string;
 }
 

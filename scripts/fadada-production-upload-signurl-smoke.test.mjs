@@ -265,6 +265,38 @@ test("runFadadaProductionUploadSignUrlSmoke records text response diagnostics wh
   assert.equal(result.diagnosticState?.provider.extSignValidation.bodyTextPreview, "签署链接暂不可用");
 });
 
+test("runFadadaProductionUploadSignUrlSmoke treats HTML sign page response as the GET entry signUrl", async () => {
+  const result = await runFadadaProductionUploadSignUrlSmoke({
+    env: baseEnv,
+    now: () => new Date("2026-06-26T12:00:00.000Z"),
+    pdfBuffer: createTestPdf(),
+    transport: async (request) => {
+      if (request.url.includes("/uploaddocs.api")) {
+        return {
+          bodyText: JSON.stringify({ code: 1000, msg: "操作成功" }),
+          headers: {},
+          status: 200
+        };
+      }
+      if (request.url.includes("/extsign_validation.api")) {
+        return {
+          bodyText: "<html><title>签署文件</title></html>",
+          headers: { "content-type": "text/html;charset=UTF-8" },
+          status: 200
+        };
+      }
+      throw new Error(`unexpected URL ${request.url}`);
+    }
+  });
+
+  assert.equal(result.extSignValidation.status, "success");
+  assert.equal(result.signUrl.present, true);
+  assert.equal(result.signUrl.masked, "https://textapi.fadada.com/...");
+  assert.equal(result.diagnosticState?.provider.extSignValidation.bodyKind, "html-page");
+  assert.match(result.state?.signUrl ?? "", /extsign_validation\.api\?/);
+  assert.match(result.state?.signUrl ?? "", /doc_title=SubAuto\+Fadada\+Production\+Host\+Smoke\+Test/);
+});
+
 test("runFadadaProductionUploadSignUrlSmoke signurl-only reuses an uploaded contract without uploading again", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "fadada-signurl-only-"));
   try {

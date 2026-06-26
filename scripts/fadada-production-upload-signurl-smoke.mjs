@@ -181,8 +181,8 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
   };
   const signResponse = await sendRequest(signRequest, transport);
   const signRaw = parseJsonObject(signResponse.bodyText) ?? signResponse.bodyText;
-  const signUrl = extractSignUrl(signRaw);
-  const signSuccess = isProviderSuccess(signRaw) && Boolean(signUrl);
+  const signUrl = signUrlFromResponse(signRaw, signResponse, signRequest);
+  const signSuccess = Boolean(signUrl);
   const extSignValidation = {
     code: providerCode(signRaw),
     customerIdMasked: maskMiddle(customerId),
@@ -270,8 +270,8 @@ async function runSignUrlOnlyFlow(input) {
   };
   const signResponse = await sendRequest(signRequest, input.transport);
   const signRaw = parseJsonObject(signResponse.bodyText) ?? signResponse.bodyText;
-  const signUrl = extractSignUrl(signRaw);
-  const signSuccess = isProviderSuccess(signRaw) && Boolean(signUrl);
+  const signUrl = signUrlFromResponse(signRaw, signResponse, signRequest);
+  const signSuccess = Boolean(signUrl);
   const extSignValidation = {
     code: providerCode(signRaw),
     customerIdMasked: maskMiddle(input.customerId),
@@ -836,7 +836,7 @@ function buildProviderDiagnostic(raw, response) {
   };
   if (typeof raw === "string") {
     const text = raw.trim();
-    diagnostic.bodyKind = /^https?:\/\//i.test(text) ? "text-url" : "text";
+    diagnostic.bodyKind = isHtmlPageResponse(raw, response) ? "html-page" : /^https?:\/\//i.test(text) ? "text-url" : "text";
     diagnostic.bodyTextLength = text.length;
     diagnostic.bodyTextPreview = previewProviderText(text);
   } else if (raw && typeof raw === "object") {
@@ -973,6 +973,21 @@ function extractSignUrl(raw) {
     return raw.trim();
   }
   return stringField(raw, ["sign_url", "signUrl", "url"]);
+}
+
+function signUrlFromResponse(raw, response, request) {
+  const parsedUrl = extractSignUrl(raw);
+  if (parsedUrl) {
+    return parsedUrl;
+  }
+  return isHtmlPageResponse(raw, response) ? buildTransportRequest(request).url : undefined;
+}
+
+function isHtmlPageResponse(raw, response) {
+  if (typeof raw !== "string") return false;
+  const contentType = response.headers?.["content-type"] ?? response.headers?.["Content-Type"] ?? "";
+  const text = raw.trim();
+  return contentType.toLowerCase().includes("text/html") || /^<!doctype html\b|^<html\b|<title>签署文件<\/title>/i.test(text);
 }
 
 function providerCode(raw) {

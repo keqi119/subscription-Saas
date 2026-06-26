@@ -1001,6 +1001,44 @@ No signing, SMS code request, submit action, auto-seal, callback advancement, si
 
 Stage 10D-B5-A can start: **no**, until the corrected `doc_title` URL is observed and the page semantic is confirmed.
 
+### 23.6 Corrected URL Observation
+
+After adding `doc_title`, the user manually opened the regenerated local `.tmp` URL and confirmed:
+
+| Item | Result |
+| --- | --- |
+| user opened corrected URL | yes |
+| page classification | A - HTML signing page |
+| host shown by page | `textapi.fadada.com` |
+| contract preview visible | yes |
+| signing control visible | yes |
+| signing clicked | no |
+| SMS / verification code requested | no |
+| contract/order advanced | no |
+| business database written | no |
+
+Observed page title: `签署文件`.
+
+Conclusion:
+
+```text
+extsign_validation.api is a GET signing-page entry.
+The complete signed GET request URL itself is the signer URL.
+The backend should save/return that URL as signUrl instead of expecting a JSON or raw URL response body.
+```
+
+### 23.7 Implementation Decision
+
+The code path was updated accordingly:
+
+- `FadadaApiClient.createExternalSignUrl` now builds the `extsign_validation.api` GET URL and returns it as `signUrl`;
+- it does not prefetch the page interface, avoiding accidental open-count consumption;
+- `FadadaHttpClient` and request types now support GET request metadata;
+- production smoke diagnostics treat HTML signing-page responses as the GET entry signUrl;
+- `doc_title` remains required and included.
+
+Stage 10D-B5-A can start: **planning only**, subject to explicit confirmation of whether to open the sign page, sign, receive callback, and archive the signed PDF.
+
 ## 24. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:

@@ -220,19 +220,17 @@ export class FadadaApiClient {
       endpoint: FADADA_ENDPOINTS.extSignValidation,
       explicitMd5Seed: `${input.transactionId}${timestamp}${validity}${quantity}`,
       explicitSortString: input.customerId,
+      method: "GET",
       timestamp
     });
-    const response = await this.httpClient.send(request);
-    assertHttpOk(response.status);
-    const raw = response.parsedBody ?? response.bodyText;
-    const signUrl = stringField(raw, ["sign_url", "signUrl", "url"]);
-
-    if (!signUrl) {
-      throw new Error(`${FADADA_SIGN_URL_MISSING}: extsign_validation.api response did not include sign URL`);
-    }
+    const signUrl = buildGetRequestUrl(request.url, request.params);
 
     return {
-      raw,
+      raw: {
+        endpoint: request.endpoint,
+        method: request.method,
+        pageInterface: true
+      },
       signUrl,
       signUrlExpiresAt: new Date(Date.now() + Math.max(validity, 1) * 60_000),
       transactionId: input.transactionId
@@ -359,6 +357,14 @@ function assertHttpOk(status: number) {
   if (status < 200 || status >= 300) {
     throw new Error(`FADADA_HTTP_ERROR: status ${status}`);
   }
+}
+
+function buildGetRequestUrl(baseUrl: string, params: Record<string, string>) {
+  const url = new URL(baseUrl);
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
 }
 
 function assertDownloadedPdf(buffer: Buffer, contentType?: string) {

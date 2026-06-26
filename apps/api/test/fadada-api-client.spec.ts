@@ -214,6 +214,7 @@ describe("Fadada API client", () => {
     const result = await apiClient.createExternalSignUrl({
       contractId: "CON-1",
       customerId: "fadada-customer-1",
+      docTitle: "Contract.pdf",
       notifyUrl: "https://api.example.test/esign/callback/fadada",
       quantity: 1,
       returnUrl: "https://app.example.test/portal/contracts/contract-1",
@@ -229,6 +230,7 @@ describe("Fadada API client", () => {
     const request = vi.mocked(transport).mock.calls[0]?.[0];
     expect(request?.url).toBe("https://testapi.fadada.com:8443/api/extsign_validation.api");
     expect(String(request?.body)).toContain("transaction_id=TX-1");
+    expect(String(request?.body)).toContain("doc_title=Contract.pdf");
     expect(String(request?.body)).toContain("validity=30");
     expect(String(request?.body)).toContain("quantity=1");
   });

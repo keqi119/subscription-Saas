@@ -102,6 +102,7 @@ test("buildExtSignValidationRequest uses sign urls and masks customer id in outp
   assert.equal(request.url, "https://textapi.fadada.com/api2/extsign_validation.api");
   assert.equal(request.method, "GET");
   assert.equal(request.params.customer_id, baseEnv.FADADA_TEST_CUSTOMER_ID);
+  assert.equal(request.params.doc_title, "SubAuto Fadada Production Host Smoke Test");
   assert.equal(request.params.notify_url, baseEnv.FADADA_SIGN_NOTIFY_URL);
   assert.equal(request.params.return_url, baseEnv.FADADA_SIGN_RETURN_URL);
   assert.equal(maskMiddle(baseEnv.FADADA_TEST_CUSTOMER_ID), "CUST...7890");
@@ -131,6 +132,7 @@ test("buildTransportRequest sends extsign_validation as GET query without reques
   assert.equal(transportRequest.headers["content-type"], undefined);
   assert.equal(url.pathname.endsWith("/extsign_validation.api"), true);
   assert.equal(url.searchParams.get("contract_id"), "SAES20260626120000ABC123");
+  assert.equal(url.searchParams.get("doc_title"), "SubAuto Fadada Production Host Smoke Test");
   assert.equal(url.searchParams.get("transaction_id"), "SATX20260626120000ABC123");
   assert.equal(url.searchParams.get("customer_id"), baseEnv.FADADA_TEST_CUSTOMER_ID);
   assert.equal(url.searchParams.has("msg_digest"), true);
@@ -318,6 +320,10 @@ test("runFadadaProductionUploadSignUrlSmoke signurl-only reuses an uploaded cont
     assert.equal(result.diagnosticState?.reusedUpload, true);
     assert.equal(result.diagnosticState?.requests.uploadDocs, undefined);
     assert.equal(result.diagnosticState?.requests.extSignValidation.method, "GET");
+    assert.equal(
+      result.diagnosticState?.requests.extSignValidation.params.doc_title,
+      "SubAuto Fadada Production Host Smoke Test"
+    );
     assert.equal(result.diagnosticState?.requests.extSignValidation.contentType, undefined);
     assert.equal(result.diagnosticState?.requests.extSignValidation.headerContentType, "absent");
     assert.equal(

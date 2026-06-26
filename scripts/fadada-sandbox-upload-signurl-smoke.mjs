@@ -268,6 +268,7 @@ export function buildExtSignValidationRequest(input) {
     businessParams: {
       contract_id: input.contractId,
       customer_id: input.customerId,
+      doc_title: input.docTitle ?? DEFAULT_DOC_TITLE,
       notify_url: input.notifyUrl,
       quantity: input.quantity,
       return_url: input.returnUrl,

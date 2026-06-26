@@ -186,6 +186,7 @@ export class FadadaApiClient {
   async createExternalSignUrl(input: {
     contractId: string;
     customerId: string;
+    docTitle: string;
     transactionId: string;
     returnUrl: string;
     notifyUrl: string;
@@ -206,6 +207,7 @@ export class FadadaApiClient {
       businessParams: {
         contract_id: input.contractId,
         customer_id: input.customerId,
+        doc_title: input.docTitle,
         notify_url: input.notifyUrl,
         quantity,
         return_url: input.returnUrl,

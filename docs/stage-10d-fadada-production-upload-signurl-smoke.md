@@ -915,7 +915,93 @@ Before Stage 10D-B5-A, confirm with Fadada whether this HTML response should be 
 
 Stage 10D-B5-A can start: **no**, until the sign URL interpretation is confirmed or the provider returns a parseable sign URL.
 
-## 23. Chinese Support Handoff
+## 23. D1 Sign Page Semantic Check
+
+Date: 2026-06-27
+
+Stage 10D-D1 generated an `extsign_validation.api` GET entry URL from the previously uploaded test contract. The full URL was written only to ignored local `.tmp` files and was not committed.
+
+### 23.1 First Manual Observation
+
+The user manually opened the generated entry URL for observation only.
+
+| Item | Result |
+| --- | --- |
+| reused uploaded `contract_id` | yes |
+| generated sign page entry URL | yes |
+| URL stored only in `.tmp` | yes |
+| user opened URL | yes |
+| signing clicked | no |
+| SMS / verification code requested | no |
+| contract/order advanced | no |
+| business database written | no |
+| page classification | error |
+| page message | `doc_title不能为空` |
+
+### 23.2 Root Cause
+
+The local Fadada PDF document `4.2.7 扩展接口列表_签署_文档签署接口（含有效期和次数）.pdf` confirms:
+
+- `extsign_validation.api` is a `GET` page interface;
+- the interface returns a link address;
+- `doc_title` is a required request parameter;
+- `doc_title` must be UTF-8 URL-encoded;
+- the documented digest formula remains based on `transaction_id + timestamp + validity + quantity` and `app_secret + customer_id`.
+
+The previous D1 generated URL did not include `doc_title`, so the provider error was consistent with the official document.
+
+### 23.3 Local Fix
+
+The following local builders now include `doc_title` for `extsign_validation.api`:
+
+- production upload/signUrl smoke builder;
+- sandbox upload/signUrl smoke builder;
+- `FadadaApiClient.createExternalSignUrl`;
+- `FadadaESignProvider.createSignTask` passes `input.documentName` as the Fadada `doc_title`.
+
+The fix does not change the signing semantics yet. It only supplies the required page parameter.
+
+### 23.4 New D1 Entry URL
+
+A new semantic-check URL was generated after the fix:
+
+```text
+.tmp/fadada/signpage-semantic/latest.json
+```
+
+Sanitized metadata:
+
+| Item | Result |
+| --- | --- |
+| method | `GET` |
+| request body | absent |
+| request `content-type` header | absent |
+| `doc_title` present | yes |
+| `doc_title` | `SubAuto Fadada Production Host Smoke Test` |
+| `contract_id` length | `24` |
+| `transaction_id` length | `24` |
+| validity | `30` |
+| quantity | `1` |
+
+The full URL remains local-only in `.tmp`; do not paste it into chat or commit it.
+
+### 23.5 Next Observation
+
+Open the new `.tmp/fadada/signpage-semantic/latest.json` URL manually and classify the page:
+
+```text
+A. HTML signing page
+B. redirect entry
+C. raw URL response
+D. asks for another interface
+E. error page
+```
+
+No signing, SMS code request, submit action, auto-seal, callback advancement, signed PDF download, or archive should be performed.
+
+Stage 10D-B5-A can start: **no**, until the corrected `doc_title` URL is observed and the page semantic is confirmed.
+
+## 24. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:
 

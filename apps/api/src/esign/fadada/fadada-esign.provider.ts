@@ -49,6 +49,7 @@ export class FadadaESignProvider implements ESignProvider {
     const signUrlResult = await this.apiClient.createExternalSignUrl({
       contractId: providerContractId,
       customerId: customerSigner.customerId,
+      docTitle: input.documentName,
       notifyUrl: input.callbackUrl ?? this.config.signNotifyUrl ?? "",
       quantity: this.config.signUrlQuantity,
       returnUrl: input.redirectUrl ?? this.config.signReturnUrl ?? "",

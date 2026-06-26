@@ -193,3 +193,98 @@ Next action:
 2. Rerun `pnpm fadada:upload-signurl:preflight`.
 3. If preflight passes, run `pnpm fadada:upload-signurl:run`.
 4. Do not open the resulting sign URL until Stage 10D-B5-A explicitly confirms the full signing plan.
+
+## 13. RUN After Enabling Upload/SignUrl Gate
+
+Date: 2026-06-26
+
+The user enabled the dedicated real-call gate in the ignored local env file:
+
+```text
+FADADA_UPLOAD_SIGNURL_SMOKE=1
+```
+
+Env safety check:
+
+| Check | Result |
+| --- | --- |
+| `.env.fadada.production.local` exists | present |
+| Git ignore rule | present via `.gitignore:10:.env.*` |
+| Git tracked | no evidence of tracking |
+| Env raw content printed | no |
+
+Preflight command:
+
+```powershell
+pnpm fadada:upload-signurl:preflight
+```
+
+Preflight result: **passed**.
+
+Run command:
+
+```powershell
+pnpm fadada:upload-signurl:run
+```
+
+Run result: **failed**.
+
+Script summary:
+
+| Item | Result |
+| --- | --- |
+| preflight | passed |
+| `uploaddocs.api` | executed, failed |
+| `extsign_validation.api` | skipped |
+| signUrl | missing |
+| blocker | `uploaddocs.api failed` |
+
+Local output:
+
+| Item | Result |
+| --- | --- |
+| test PDF | present |
+| test PDF size | 638 bytes |
+| `.tmp/fadada/upload-signurl-smoke/latest.json` | not written |
+| full signUrl | not present |
+
+Provider diagnostics:
+
+| Field | Result |
+| --- | --- |
+| provider error code | not captured by the current CLI summary |
+| sanitized provider response | not captured by the current CLI summary |
+
+The current script stopped correctly after `uploaddocs.api` failed and did not call `extsign_validation.api`.
+
+Boundary confirmation for this RUN:
+
+- A real production-host `uploaddocs.api` request was attempted.
+- No `extsign_validation.api` request was sent.
+- No sign URL was generated.
+- No sign URL was opened.
+- No signing was completed.
+- No platform auto-seal was executed.
+- No signed PDF was downloaded.
+- No artifact archive was executed.
+- No business database was written.
+- No Contract or Order state was advanced.
+- No payment, billing, write-off, ROE, BaaS, or depreciation logic was touched.
+- `.env.fadada.production.local` remained ignored and untracked.
+- `.tmp` remained ignored and untracked.
+- No app secret, full customer id, full signature id, full signUrl, or provider raw response was committed.
+
+RUN gate decision:
+
+| Gate | Result |
+| --- | --- |
+| uploadDocs production-host smoke | failed |
+| extsign_validation production-host smoke | not executed |
+| signUrl obtained | no |
+| Stage 10D-B5 can start | no |
+
+Recommended next action:
+
+1. Do not retry blindly, because the host may create provider-side records or costs.
+2. Check the Fadada provider console or ask Fadada support for the failed `uploaddocs.api` request reason around this run time.
+3. If another retry is needed, first add/confirm a diagnostic path that safely captures provider error code and sanitized response without committing raw provider payloads.

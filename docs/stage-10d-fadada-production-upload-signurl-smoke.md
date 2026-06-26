@@ -547,7 +547,82 @@ pnpm release:check
 
 No real R3 provider call has been executed as part of this fix. A real production-host R3 run still requires explicit user authorization because it may create Fadada backend records and may incur cost.
 
-## 17. Chinese Support Handoff
+## 17. R3 Controlled Run Result
+
+### 17.1 Execution
+
+R3 was executed once after the smoke `contract_id` length fix.
+
+```text
+env ignore check: passed
+preflight: passed
+real provider run: executed once
+uploaddocs.api: called
+extsign_validation.api: skipped
+signUrl: not obtained
+```
+
+### 17.2 Sanitized uploadDocs Request
+
+| Field | Value |
+| --- | --- |
+| endpoint | `uploaddocs.api` |
+| method | `POST` |
+| host | `textapi.fadada.com` |
+| content type | `multipart/form-data;charset=utf8` |
+| `contract_id` | masked, present |
+| `contract_id` length | `24` |
+| `contract_id` character set | `A-Z0-9 only` |
+| `doc_title` | `SubAuto Fadada Production Host Smoke Test` |
+| `doc_type` | `.pdf` |
+| `app_id` | present, masked |
+| `timestamp` | `20260626212546` |
+| `v` | `2.0` |
+| `msg_digest` | present |
+| file field name | `file` |
+| file name | `subauto-fadada-production-host-smoke.pdf` |
+| file content type | `application/pdf` |
+| file size | `638 bytes` |
+| file SHA-256 | `f14dc92193f2ee9a560001a9c265ea7069949241478b62a3b80a428756f8e9cc` |
+
+### 17.3 Provider Response
+
+| Field | Value |
+| --- | --- |
+| HTTP status | `200` |
+| provider code | `1000` |
+| provider msg | `operation success` |
+
+### 17.4 Local Script Result
+
+The provider response indicates `uploaddocs.api` likely succeeded, but the local smoke script still classified the upload step as failed because its success-code helper did not treat provider code `1000` as success.
+
+```text
+local uploadDocs status: failed
+local blocker: uploaddocs.api failed
+extsign_validation executed: no
+signUrl obtained: no
+```
+
+### 17.5 Boundary Confirmation
+
+- No sign URL was opened.
+- No signing was completed.
+- No platform auto-seal was executed.
+- No signed PDF was downloaded.
+- No artifact archive was executed.
+- No business database was written.
+- No Contract or Order state was advanced.
+- No payment, billing, write-off, ROE, BaaS, or depreciation logic was touched.
+- `.env.fadada.production.local` remained ignored and untracked.
+- `.tmp` remained ignored and untracked.
+- No app secret, full customer id, full signature id, full signUrl, PDF binary, or provider raw response was committed.
+
+### 17.6 Next Blocker
+
+Before another real provider retry, update the local smoke success-code mapping to treat the confirmed Fadada success code `1000` as success for `uploaddocs.api`, add unit coverage, and then request explicit approval for a follow-up controlled run.
+
+## 18. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:
 

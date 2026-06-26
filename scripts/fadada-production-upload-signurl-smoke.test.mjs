@@ -182,7 +182,12 @@ test("runFadadaProductionUploadSignUrlSmoke records explicit upload diagnostics 
   assert.equal(result.diagnosticState?.requests.uploadDocs.params.doc_title, "SubAuto Fadada Production Host Smoke Test");
   assert.equal(result.diagnosticState?.requests.uploadDocs.params.doc_type, ".pdf");
   assert.equal(result.diagnosticState?.requests.uploadDocs.params.app_id, baseEnv.FADADA_APP_ID);
-  assert.match(result.diagnosticState?.requests.uploadDocs.params.contract_id, /^SUBAUTO_CONTRACT_20260626_/);
+  assert.match(result.diagnosticState?.requests.uploadDocs.params.contract_id, /^SAES\d{14}[A-Z0-9]{6}$/);
+  assert.ok(result.diagnosticState?.requests.uploadDocs.params.contract_id.length <= 40);
+  assert.doesNotMatch(result.diagnosticState?.requests.uploadDocs.params.contract_id, /CUSTOMER|PHONE|VIN|PLATE/i);
+  assert.match(result.diagnosticState?.transactionId, /^SATX\d{14}[A-Z0-9]{6}$/);
+  assert.ok(result.diagnosticState?.transactionId.length <= 40);
+  assert.doesNotMatch(result.diagnosticState?.transactionId, /CUSTOMER|PHONE|VIN|PLATE/i);
   assert.match(result.diagnosticState?.requests.uploadDocs.params.msg_digest, /^[A-Za-z0-9+/]+={0,2}$/);
   assert.equal(result.diagnosticState?.requests.uploadDocs.file.fieldName, "file");
   assert.equal(result.diagnosticState?.requests.uploadDocs.file.contentType, "application/pdf");

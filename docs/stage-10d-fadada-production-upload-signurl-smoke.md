@@ -491,9 +491,63 @@ Current likely blocker:
 Generated smoke contract_id is too long for uploaddocs.api.
 ```
 
-Do not retry again until the smoke `contract_id` format is shortened to comply with the provider limit.
+This R2 blocker is addressed by the R3 preparation fix below. A real R3 retry still requires explicit user authorization.
 
-### 15.7 Chinese Support Handoff
+## 16. R3 Contract ID Length Fix
+
+### 16.1 R2 Blocker
+
+R2 captured the provider-side blocker:
+
+```text
+provider code: 2002
+provider msg: invalid contract number; contract number must be non-empty and no longer than 40 characters
+generated smoke contract_id length: 42
+```
+
+### 16.2 Fix Applied
+
+The smoke identifier generation was shortened before any further real provider retry:
+
+| Identifier | New format | Length |
+| --- | --- | --- |
+| `contract_id` | `SAESyyyyMMddHHmmssXXXXXX` | `24` |
+| `transaction_id` | `SATXyyyyMMddHHmmssXXXXXX` | `24` |
+
+Where:
+
+- `yyyyMMddHHmmss` is the Fadada timestamp format.
+- `XXXXXX` is a random uppercase alphanumeric suffix.
+- IDs contain only `A-Z0-9`.
+- IDs do not include customer data, phone numbers, VINs, license plates, or business contract numbers.
+
+### 16.3 Verification
+
+Added unit coverage confirms:
+
+- generated `contract_id` is non-empty;
+- generated `contract_id` length is `<= 40`;
+- generated `contract_id` uses only safe uppercase alphanumeric characters;
+- generated `transaction_id` length is `<= 40`;
+- generated `transaction_id` uses only safe uppercase alphanumeric characters;
+- diagnostic `latest.json` records the shortened generated IDs.
+
+Verification commands executed after the fix:
+
+```text
+node --check scripts/fadada-production-upload-signurl-smoke.mjs
+pnpm fadada:upload-signurl:preflight
+pnpm fadada:upload-signurl:test
+pnpm release:check
+```
+
+`pnpm release:check` passed against isolated local PostgreSQL at `127.0.0.1:55432`; no remote or production database was seeded.
+
+### 16.4 R3 Run Status
+
+No real R3 provider call has been executed as part of this fix. A real production-host R3 run still requires explicit user authorization because it may create Fadada backend records and may incur cost.
+
+## 17. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:
 

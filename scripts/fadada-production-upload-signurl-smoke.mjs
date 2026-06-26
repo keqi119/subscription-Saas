@@ -757,8 +757,10 @@ function positiveInt(value, fallback) {
 }
 
 function buildSmokeId(prefix, now) {
-  const date = formatFadadaTimestamp(now).slice(0, 8);
-  return `SUBAUTO_${prefix.toUpperCase()}_${date}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const kind = prefix === "tx" ? "SATX" : "SAES";
+  const timestamp = formatFadadaTimestamp(now);
+  const suffix = randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase();
+  return `${kind}${timestamp}${suffix}`;
 }
 
 function parseJsonObject(text) {

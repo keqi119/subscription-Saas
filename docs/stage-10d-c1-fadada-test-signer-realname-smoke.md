@@ -187,3 +187,73 @@ Required next action:
 6. after verified, put the provider customer id into `FADADA_TEST_CUSTOMER_ID`;
 7. then enter Stage 10D-B2-C-R1 production-host upload/signUrl controlled smoke.
 
+## 11. C1-B-R1 Rerun Update
+
+Date: 2026-06-26
+
+The local `.env.fadada.production.local` file was restored before this rerun.
+
+Env safety check:
+
+| Check | Result |
+| --- | --- |
+| File exists | present |
+| Git ignore rule | present via `.gitignore:10:.env.*` |
+| Git tracked | no evidence of tracking |
+| Env raw content printed | no |
+
+Preflight command:
+
+```powershell
+pnpm fadada:test-signer:preflight
+```
+
+Preflight result: **passed**.
+
+Prepare command:
+
+```powershell
+pnpm fadada:test-signer:prepare
+```
+
+Prepare result: **failed**.
+
+Script summary:
+
+| Item | Result |
+| --- | --- |
+| preflight | passed |
+| `account_register.api` | executed, failed |
+| provider `customer_id` | not obtained |
+| `get_person_verify_url.api` | skipped |
+| verify URL | not generated |
+| `.tmp/fadada/test-signer-realname/latest.json` | not written |
+| status query | not executed |
+
+Blocker:
+
+```text
+account_register.api did not return a customer_id
+```
+
+The script output did not expose a full provider response or a provider error code. No app secret, real-name field, full customer id, verify URL, or raw response was printed or written to documentation.
+
+Boundary confirmation for R1:
+
+- No contract upload was executed.
+- No signing URL was generated.
+- No real-name URL was opened.
+- No contract/order state was advanced.
+- No business database was written.
+- `.env.fadada.production.local` remained ignored and untracked.
+- `.tmp` was not committed.
+
+R1 gate decision:
+
+| Gate | Result |
+| --- | --- |
+| `FADADA_TEST_CUSTOMER_ID` ready | no |
+| Stage 10D-B2-C-R1 can start | no |
+
+Recommended next action: inspect Fadada back-office/provider-side response for the attempted `account_register.api` call, or run a follow-up diagnostic that safely records the provider error code and sanitized response. Do not enter upload/signUrl smoke until a provider customer id is obtained and the signer real-name flow is ready.
+

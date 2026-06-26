@@ -33,6 +33,8 @@ const requiredSteps = [
   ["Fadada sandbox upload/signUrl smoke syntax", "node", ["--check", "scripts/fadada-sandbox-upload-signurl-smoke.mjs"]],
   ["Fadada sandbox upload/signUrl smoke tests", "pnpm", ["fadada:sandbox-upload-signurl-smoke:test"]],
   ["Fadada test signer real-name prep syntax", "node", ["--check", "scripts/fadada-production-test-signer-realname.mjs"]],
+  ["Fadada production upload/signUrl smoke syntax", "node", ["--check", "scripts/fadada-production-upload-signurl-smoke.mjs"]],
+  ["Fadada production upload/signUrl smoke tests", "pnpm", ["fadada:upload-signurl:test"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

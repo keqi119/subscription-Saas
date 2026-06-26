@@ -257,3 +257,95 @@ R1 gate decision:
 
 Recommended next action: inspect Fadada back-office/provider-side response for the attempted `account_register.api` call, or run a follow-up diagnostic that safely records the provider error code and sanitized response. Do not enter upload/signUrl smoke until a provider customer id is obtained and the signer real-name flow is ready.
 
+## 12. C1-B-R2 Rerun Update
+
+Date: 2026-06-26
+
+This rerun was executed after the Fadada IP whitelist was updated for the previously blocked outbound IP.
+
+Env safety check:
+
+| Check | Result |
+| --- | --- |
+| File exists | present |
+| Git ignore rule | present via `.gitignore:10:.env.*` |
+| Git tracked | no evidence of tracking |
+| Env raw content printed | no |
+
+Preflight command:
+
+```powershell
+pnpm fadada:test-signer:preflight
+```
+
+Preflight result: **passed**.
+
+Prepare command:
+
+```powershell
+pnpm fadada:test-signer:prepare
+```
+
+Prepare result: **passed**.
+
+Script summary:
+
+| Item | Result |
+| --- | --- |
+| preflight | passed |
+| `account_register.api` | executed, success |
+| provider `customer_id` | obtained, masked only |
+| `get_person_verify_url.api` | executed, success |
+| verify URL | generated, not printed |
+| `.tmp/fadada/test-signer-realname/latest.json` | written, ignored |
+| status query | not executed |
+
+Local output check:
+
+| Field | Result |
+| --- | --- |
+| `customer_id` in `.tmp` | present |
+| verify URL in `.tmp` | present |
+| real-name transaction field in `.tmp` | present |
+| `.tmp` committed | no |
+
+Boundary confirmation for R2:
+
+- No contract upload was executed.
+- No signing URL was generated.
+- No real-name URL was opened automatically.
+- No status query was executed.
+- No contract/order state was advanced.
+- No business database was written.
+- No payment, billing, write-off, ROE, BaaS, or depreciation logic was touched.
+- `.env.fadada.production.local` remained ignored and untracked.
+- `.tmp` remained ignored and untracked.
+- No app secret, real-name field, full customer id, verify URL, or raw provider response was committed or written to documentation.
+
+R2 gate decision:
+
+| Gate | Result |
+| --- | --- |
+| Provider customer id obtained | yes |
+| Real-name URL generated | yes |
+| User manual real-name completed | pending |
+| `pnpm fadada:test-signer:status` verified | no |
+| `FADADA_TEST_CUSTOMER_ID` ready for upload/signUrl smoke | not yet |
+| Stage 10D-B2-C-R1 can start | no |
+
+R2 quality gate:
+
+| Command | Result |
+| --- | --- |
+| `pnpm release:check` | passed |
+
+Database-backed release checks used the isolated local PostgreSQL container at `127.0.0.1:55432/subscription_saas`. No remote or production database seed was executed.
+
+Required next action:
+
+1. The user manually opens the verify URL stored in `.tmp/fadada/test-signer-realname/latest.json`.
+2. The user completes personal real-name verification.
+3. Run `pnpm fadada:test-signer:status`.
+4. If status confirms verified, copy the provider customer id into `FADADA_TEST_CUSTOMER_ID`.
+5. Then enter Stage 10D-B2-C-R1 production-host upload/signUrl controlled smoke.
+

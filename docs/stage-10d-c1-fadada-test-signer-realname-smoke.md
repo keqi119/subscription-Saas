@@ -410,3 +410,11 @@ R3 quality gate:
 
 Database-backed release checks used the isolated local PostgreSQL container at `127.0.0.1:55432/subscription_saas`. No remote or production database seed was executed.
 
+## 14. B2-C-R1 Upload/SignUrl Smoke Follow-up
+
+Stage 10D-B2-C-R1 is recorded in `docs/stage-10d-fadada-production-upload-signurl-smoke.md`.
+
+The production-host upload/signUrl smoke script and tests are ready, and `FADADA_TEST_CUSTOMER_ID` remains recorded in the ignored local env file. The latest B2-C-R1 run stopped at preflight because `FADADA_UPLOAD_SIGNURL_SMOKE=1` was not enabled.
+
+No contract upload or sign URL generation occurred in that run.
+

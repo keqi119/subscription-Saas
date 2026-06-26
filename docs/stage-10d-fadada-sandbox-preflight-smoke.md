@@ -247,3 +247,13 @@ Current result: preflight-only blocked. The production-host test signer registra
 This means `FADADA_TEST_CUSTOMER_ID` is still not ready, and Stage 10D-B2-C-R1 production-host upload/signUrl controlled smoke must not start yet.
 
 No already-real-named personal test signer is available. Stage 10D-C1 therefore prepares a controlled production test signer through `account_register.api` and `get_person_verify_url.api` before production-host upload/signUrl smoke. See `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`.
+
+## 20. B2-C-R1 Production Upload/SignUrl Smoke Update
+
+Stage 10D-B2-C-R1 is recorded in `docs/stage-10d-fadada-production-upload-signurl-smoke.md`.
+
+Stage 10D-C1-B has since verified the controlled personal test signer and recorded `FADADA_TEST_CUSTOMER_ID` in the ignored local production env file.
+
+Current B2-C-R1 result: guarded script added and executed in preflight mode only. No real Fadada call occurred because `FADADA_UPLOAD_SIGNURL_SMOKE=1` was not enabled.
+
+The production-host upload/signUrl smoke must remain blocked until the user intentionally enables `FADADA_UPLOAD_SIGNURL_SMOKE=1` in `.env.fadada.production.local`.

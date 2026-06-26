@@ -622,7 +622,42 @@ signUrl obtained: no
 
 Before another real provider retry, update the local smoke success-code mapping to treat the confirmed Fadada success code `1000` as success for `uploaddocs.api`, add unit coverage, and then request explicit approval for a follow-up controlled run.
 
-## 18. Chinese Support Handoff
+## 18. Upload Success Code Normalization Fix
+
+### 18.1 Root Cause
+
+R3 showed that Fadada returned:
+
+```text
+HTTP status: 200
+provider code: 1000
+provider msg: operation success
+```
+
+The local production upload/signUrl smoke script still classified the upload as failed because its success-code helper only accepted legacy values and did not accept Fadada code `1000`.
+
+### 18.2 Fix
+
+The local smoke success-code mapping now treats Fadada provider code `1000` as success.
+
+```text
+code=1000 => success
+code=2002 => failed
+```
+
+### 18.3 Test Coverage
+
+Updated unit coverage confirms:
+
+- `uploaddocs.api` response `code=1000` is treated as success;
+- after upload success, the script proceeds to the mocked `extsign_validation.api` path;
+- `extsign_validation.api` response `code=1000` with a URL is treated as success;
+- `uploaddocs.api` response `code=2002` remains failed;
+- no sign URL is opened in tests.
+
+No real Fadada call was executed for this fix.
+
+## 19. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:
 

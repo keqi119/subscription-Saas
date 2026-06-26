@@ -813,7 +813,7 @@ function providerMsg(raw) {
 
 function isProviderSuccess(raw) {
   const code = providerCode(raw);
-  return code === "1" || code === "200" || code === "success";
+  return code === "1000";
 }
 
 function escapeMultipartName(value) {

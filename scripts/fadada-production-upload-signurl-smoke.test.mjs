@@ -126,14 +126,14 @@ test("runFadadaProductionUploadSignUrlSmoke uploads PDF, creates masked sign URL
         url: request.url
       });
       if (request.url.endsWith("/uploaddocs.api")) {
-        return { bodyText: JSON.stringify({ code: 1, msg: "success" }), headers: {}, status: 200 };
+        return { bodyText: JSON.stringify({ code: 1000, msg: "操作成功" }), headers: {}, status: 200 };
       }
       if (request.url.endsWith("/extsign_validation.api")) {
         return {
           bodyText: JSON.stringify({
-            code: 1,
+            code: 1000,
             data: "https://sign.example.test/path?token=super-secret",
-            msg: "success"
+            msg: "操作成功"
           }),
           headers: {},
           status: 200
@@ -164,7 +164,7 @@ test("runFadadaProductionUploadSignUrlSmoke records explicit upload diagnostics 
     transport: async (request) => {
       if (request.url.endsWith("/uploaddocs.api")) {
         return {
-          bodyText: JSON.stringify({ code: 1003, msg: "digest invalid" }),
+          bodyText: JSON.stringify({ code: 2002, msg: "invalid contract id" }),
           headers: {},
           status: 200
         };
@@ -191,8 +191,8 @@ test("runFadadaProductionUploadSignUrlSmoke records explicit upload diagnostics 
   assert.match(result.diagnosticState?.requests.uploadDocs.params.msg_digest, /^[A-Za-z0-9+/]+={0,2}$/);
   assert.equal(result.diagnosticState?.requests.uploadDocs.file.fieldName, "file");
   assert.equal(result.diagnosticState?.requests.uploadDocs.file.contentType, "application/pdf");
-  assert.equal(result.diagnosticState?.provider.uploadDocs.code, "1003");
-  assert.equal(result.diagnosticState?.provider.uploadDocs.msg, "digest invalid");
+  assert.equal(result.diagnosticState?.provider.uploadDocs.code, "2002");
+  assert.equal(result.diagnosticState?.provider.uploadDocs.msg, "invalid contract id");
   assert.equal(JSON.stringify(result.diagnosticState).includes(baseEnv.FADADA_APP_SECRET), false);
 });
 

@@ -180,3 +180,19 @@ After `prepare` succeeds:
 5. enter Stage 10D-B2-C-R1 production-host upload/signUrl controlled smoke.
 
 Do not enter full B5 signing validation until upload/signUrl smoke, callback reachability, signed PDF archive readiness, enterprise seal strategy, and test signer real-name status are all confirmed.
+
+## 10. C1-B Smoke Update
+
+Stage 10D-C1-B is recorded in `docs/stage-10d-c1-fadada-test-signer-realname-smoke.md`.
+
+Result: preflight-only blocked.
+
+Reason: `.env.fadada.production.local` was not present in the local workspace during the C1-B smoke run. The file is covered by `.gitignore:10:.env.*`, but because it was missing no production smoke fields could be confirmed.
+
+Real Fadada calls executed in C1-B:
+
+- `account_register.api`: no
+- `get_person_verify_url.api`: no
+- `find_personCertInfo.api`: no
+
+No real-name URL was generated, no `.tmp/fadada/test-signer-realname/latest.json` output was written, no contract API was called, and no business database was written.

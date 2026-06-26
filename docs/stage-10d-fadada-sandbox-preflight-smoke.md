@@ -238,4 +238,12 @@ Current R1 result: preflight blocked. The script did not call Fadada because the
 
 The reused car-rental production Fadada channel has since been confirmed for Auto Subscription, including production host `https://textapi.fadada.com/api2/`, contract API permissions, callback/return domains, IP whitelist, enterprise `customer_id`, and `signature_id`.
 
+## 19. C1-B Production Test Signer Smoke Update
+
+Stage 10D-C1-B is recorded in `docs/stage-10d-c1-fadada-test-signer-realname-smoke.md`.
+
+Current result: preflight-only blocked. The production-host test signer registration and real-name URL smoke did not call Fadada because `.env.fadada.production.local` was missing in the local workspace.
+
+This means `FADADA_TEST_CUSTOMER_ID` is still not ready, and Stage 10D-B2-C-R1 production-host upload/signUrl controlled smoke must not start yet.
+
 No already-real-named personal test signer is available. Stage 10D-C1 therefore prepares a controlled production test signer through `account_register.api` and `get_person_verify_url.api` before production-host upload/signUrl smoke. See `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`.

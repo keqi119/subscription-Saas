@@ -349,3 +349,64 @@ Required next action:
 4. If status confirms verified, copy the provider customer id into `FADADA_TEST_CUSTOMER_ID`.
 5. Then enter Stage 10D-B2-C-R1 production-host upload/signUrl controlled smoke.
 
+## 13. C1-B-R3 Real-name Status Update
+
+Date: 2026-06-26
+
+The user manually completed the personal real-name verification after the R2 verify URL was generated.
+
+Status command:
+
+```powershell
+pnpm fadada:test-signer:status
+```
+
+Status result: **passed**.
+
+Script summary:
+
+| Item | Result |
+| --- | --- |
+| preflight | passed |
+| `account_register.api` | skipped |
+| `get_person_verify_url.api` | skipped |
+| `find_personCertInfo.api` / status query | executed, success |
+| verify URL | not printed |
+
+Customer id handoff:
+
+| Item | Result |
+| --- | --- |
+| provider `customer_id` in `.tmp` | present |
+| `FADADA_TEST_CUSTOMER_ID` in `.env.fadada.production.local` | recorded |
+| `.env.fadada.production.local` committed | no |
+| full `customer_id` printed in docs/console | no |
+
+Boundary confirmation for R3:
+
+- No contract upload was executed.
+- No signing URL was generated.
+- No real-name URL was opened automatically.
+- No contract/order state was advanced.
+- No business database was written.
+- `.env.fadada.production.local` remained ignored and untracked.
+- `.tmp` remained ignored and untracked.
+- No app secret, real-name field, full customer id, verify URL, or raw provider response was committed or written to documentation.
+
+R3 gate decision:
+
+| Gate | Result |
+| --- | --- |
+| User manual real-name completed | yes |
+| Status query verified | yes |
+| `FADADA_TEST_CUSTOMER_ID` ready for controlled upload/signUrl smoke | yes |
+| Stage 10D-B2-C-R1 can start | yes, subject to the production-host smoke safety gates |
+
+R3 quality gate:
+
+| Command | Result |
+| --- | --- |
+| `pnpm release:check` | passed |
+
+Database-backed release checks used the isolated local PostgreSQL container at `127.0.0.1:55432/subscription_saas`. No remote or production database seed was executed.
+

@@ -288,3 +288,99 @@ Recommended next action:
 1. Do not retry blindly, because the host may create provider-side records or costs.
 2. Check the Fadada provider console or ask Fadada support for the failed `uploaddocs.api` request reason around this run time.
 3. If another retry is needed, first add/confirm a diagnostic path that safely captures provider error code and sanitized response without committing raw provider payloads.
+
+## 14. Diagnostic Request Logging Enhancement
+
+Date: 2026-06-26
+
+After the first RUN failed at `uploaddocs.api`, the smoke script was enhanced so future RUN attempts write explicit request diagnostics to the ignored local file:
+
+```text
+.tmp/fadada/upload-signurl-smoke/latest.json
+```
+
+This local file must not be committed. It is intended for controlled provider-side troubleshooting with Fadada support.
+
+### 14.1 uploaddocs.api Diagnostic Fields
+
+Future RUN attempts record the following explicit upload request fields:
+
+```json
+{
+  "requests": {
+    "uploadDocs": {
+      "endpoint": "uploaddocs.api",
+      "method": "POST",
+      "url": "https://textapi.fadada.com/api2/uploaddocs.api",
+      "contentType": "multipart/form-data;charset=utf8",
+      "params": {
+        "contract_id": "<generated smoke contract id>",
+        "doc_title": "SubAuto Fadada Production Host Smoke Test",
+        "doc_type": ".pdf",
+        "app_id": "<configured app_id>",
+        "timestamp": "<yyyyMMddHHmmss>",
+        "v": "2.0",
+        "msg_digest": "<calculated digest>"
+      },
+      "file": {
+        "fieldName": "file",
+        "fileName": "subauto-fadada-production-host-smoke.pdf",
+        "contentType": "application/pdf",
+        "sizeBytes": 638,
+        "sha256": "<test PDF sha256>"
+      }
+    }
+  },
+  "provider": {
+    "uploadDocs": {
+      "httpStatus": "<HTTP status>",
+      "code": "<provider code if returned>",
+      "msg": "<provider msg if returned>"
+    }
+  }
+}
+```
+
+The diagnostic file does not include `app_secret` or the PDF binary content.
+
+### 14.2 extsign_validation.api Diagnostic Fields
+
+Only if `uploaddocs.api` succeeds, future RUN attempts also record:
+
+```json
+{
+  "requests": {
+    "extSignValidation": {
+      "endpoint": "extsign_validation.api",
+      "method": "POST",
+      "url": "https://textapi.fadada.com/api2/extsign_validation.api",
+      "contentType": "application/x-www-form-urlencoded;charset=UTF-8",
+      "params": {
+        "contract_id": "<same smoke contract id>",
+        "customer_id": "<configured test signer customer_id>",
+        "notify_url": "<configured sign notify URL>",
+        "quantity": "<configured or default quantity>",
+        "return_url": "<configured sign return URL>",
+        "transaction_id": "<generated smoke transaction id>",
+        "validity": "<configured or default validity>",
+        "app_id": "<configured app_id>",
+        "timestamp": "<yyyyMMddHHmmss>",
+        "v": "2.0",
+        "msg_digest": "<calculated digest>"
+      }
+    }
+  },
+  "provider": {
+    "extSignValidation": {
+      "httpStatus": "<HTTP status>",
+      "code": "<provider code if returned>",
+      "msg": "<provider msg if returned>"
+    }
+  },
+  "signUrl": "<only present when provider returns a sign URL>"
+}
+```
+
+The committed documentation must continue to use masked/present status only. Full request values are local-only under `.tmp`.
+
+This enhancement does not retry the real provider call by itself. A new RUN is required to generate the diagnostic file for the next provider-side investigation.

@@ -156,6 +156,41 @@ test("runFadadaProductionUploadSignUrlSmoke uploads PDF, creates masked sign URL
   assert.equal(result.state?.signUrl, "https://sign.example.test/path?token=super-secret");
 });
 
+test("runFadadaProductionUploadSignUrlSmoke records explicit upload diagnostics on upload failure", async () => {
+  const result = await runFadadaProductionUploadSignUrlSmoke({
+    env: baseEnv,
+    now: () => new Date("2026-06-26T12:00:00.000Z"),
+    pdfBuffer: createTestPdf(),
+    transport: async (request) => {
+      if (request.url.endsWith("/uploaddocs.api")) {
+        return {
+          bodyText: JSON.stringify({ code: 1003, msg: "digest invalid" }),
+          headers: {},
+          status: 200
+        };
+      }
+      throw new Error(`unexpected URL ${request.url}`);
+    }
+  });
+
+  assert.equal(result.uploadDocs.status, "failed");
+  assert.equal(result.extSignValidation.status, "skipped");
+  assert.equal(result.signUrl.present, false);
+  assert.equal(result.diagnosticState?.requests.uploadDocs.endpoint, "uploaddocs.api");
+  assert.equal(result.diagnosticState?.requests.uploadDocs.method, "POST");
+  assert.equal(result.diagnosticState?.requests.uploadDocs.contentType, "multipart/form-data;charset=utf8");
+  assert.equal(result.diagnosticState?.requests.uploadDocs.params.doc_title, "SubAuto Fadada Production Host Smoke Test");
+  assert.equal(result.diagnosticState?.requests.uploadDocs.params.doc_type, ".pdf");
+  assert.equal(result.diagnosticState?.requests.uploadDocs.params.app_id, baseEnv.FADADA_APP_ID);
+  assert.match(result.diagnosticState?.requests.uploadDocs.params.contract_id, /^SUBAUTO_CONTRACT_20260626_/);
+  assert.match(result.diagnosticState?.requests.uploadDocs.params.msg_digest, /^[A-Za-z0-9+/]+={0,2}$/);
+  assert.equal(result.diagnosticState?.requests.uploadDocs.file.fieldName, "file");
+  assert.equal(result.diagnosticState?.requests.uploadDocs.file.contentType, "application/pdf");
+  assert.equal(result.diagnosticState?.provider.uploadDocs.code, "1003");
+  assert.equal(result.diagnosticState?.provider.uploadDocs.msg, "digest invalid");
+  assert.equal(JSON.stringify(result.diagnosticState).includes(baseEnv.FADADA_APP_SECRET), false);
+});
+
 test("sanitizeForOutput masks customer ids and sign urls", () => {
   const sanitized = sanitizeForOutput({
     customer_id: "CUSTOMER-1234567890",

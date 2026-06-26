@@ -35,8 +35,8 @@ export async function runCli(args = process.argv.slice(2)) {
     testPdfFile: options.pdfFile ? resolve(options.pdfFile) : resolve(DEFAULT_TEST_PDF_FILE)
   });
 
-  if (options.mode === "run" && result.state) {
-    writeJson(resultFile, result.state);
+  if (options.mode === "run" && result.diagnosticState) {
+    writeJson(resultFile, result.diagnosticState);
   }
 
   printSummary(result, resultFile);
@@ -95,12 +95,22 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     docTitle: DEFAULT_DOC_TITLE,
     timestamp
   });
-  const uploadResponse = await sendRequest(uploadRequest, transport, {
+  const uploadFile = {
     buffer: pdfBuffer,
     contentType: "application/pdf",
     fieldName: "file",
     fileName: "subauto-fadada-production-host-smoke.pdf"
-  });
+  };
+  const diagnosticBase = {
+    contractId,
+    createdAt: new Date().toISOString(),
+    provider: {},
+    requests: {
+      uploadDocs: buildRequestDiagnostic(uploadRequest, uploadFile)
+    },
+    transactionId
+  };
+  const uploadResponse = await sendRequest(uploadRequest, transport, uploadFile);
   const uploadRaw = parseJsonObject(uploadResponse.bodyText) ?? uploadResponse.bodyText;
   const uploadSuccess = isProviderSuccess(uploadRaw);
   const uploadDocs = {
@@ -122,6 +132,12 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     return withSanitized({
       ...afterUpload,
       blockers: ["uploaddocs.api failed"],
+      diagnosticState: {
+        ...diagnosticBase,
+        provider: {
+          uploadDocs: buildProviderDiagnostic(uploadRaw, uploadResponse)
+        }
+      },
       ok: false
     });
   }
@@ -139,6 +155,16 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     transactionId,
     validity
   });
+  const diagnosticWithSignRequest = {
+    ...diagnosticBase,
+    provider: {
+      uploadDocs: buildProviderDiagnostic(uploadRaw, uploadResponse)
+    },
+    requests: {
+      ...diagnosticBase.requests,
+      extSignValidation: buildRequestDiagnostic(signRequest)
+    }
+  };
   const signResponse = await sendRequest(signRequest, transport);
   const signRaw = parseJsonObject(signResponse.bodyText) ?? signResponse.bodyText;
   const signUrl = extractSignUrl(signRaw);
@@ -164,6 +190,14 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
         uploadDocs: sanitizeForOutput(uploadDocs)
       }
     : undefined;
+  const diagnosticState = {
+    ...diagnosticWithSignRequest,
+    provider: {
+      ...diagnosticWithSignRequest.provider,
+      extSignValidation: buildProviderDiagnostic(signRaw, signResponse)
+    },
+    signUrl: signSuccess ? signUrl : undefined
+  };
 
   return withSanitized({
     ...afterUpload,
@@ -171,6 +205,7 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     extSignValidation,
     ok: signSuccess,
     signUrl: signUrlResult,
+    diagnosticState,
     state
   });
 }
@@ -603,8 +638,8 @@ function printSummary(result, resultFile) {
   console.log(`uploaddocs=${result.uploadDocs.status}`);
   console.log(`extsign_validation=${result.extSignValidation.status}`);
   console.log(`signUrl=${result.signUrl.present ? "present" : "missing"}`);
-  if (result.state) {
-    console.log(`full signUrl saved to ${basename(resultFile)}; do not commit this file`);
+  if (result.diagnosticState) {
+    console.log(`full request diagnostics saved to ${basename(resultFile)}; do not commit this file`);
   }
   if (result.blockers?.length) {
     console.log(`blockers=${result.blockers.join("; ")}`);
@@ -617,6 +652,38 @@ function printSummary(result, resultFile) {
 function writeJson(path, data) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function buildRequestDiagnostic(request, file) {
+  const diagnostic = {
+    contentType: request.contentType,
+    endpoint: request.endpoint,
+    method: request.method,
+    params: request.params,
+    url: request.url
+  };
+  if (file) {
+    diagnostic.file = {
+      contentType: file.contentType,
+      fieldName: file.fieldName ?? "file",
+      fileName: file.fileName,
+      sha256: sha256Hex(file.buffer),
+      sizeBytes: file.buffer.length
+    };
+  }
+  return diagnostic;
+}
+
+function buildProviderDiagnostic(raw, response) {
+  return {
+    code: providerCode(raw),
+    httpStatus: response.status,
+    msg: providerMsg(raw)
+  };
+}
+
+function sha256Hex(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 function shouldMaskFieldValue(key, value) {

@@ -32,6 +32,10 @@ export interface FadadaRequest {
 }
 
 export type FadadaEndpoint =
+  | "account_register.api"
+  | "get_person_verify_url.api"
+  | "find_personCertInfo.api"
+  | "apply_cert.api"
   | "uploaddocs.api"
   | "extsign_validation.api"
   | "extsign.api"

@@ -158,6 +158,12 @@ B5 must remain blocked until:
 - callback/return URLs are reachable;
 - customer real-name binding and enterprise seal/auto-sign strategy are clear.
 
+## 14. Production-channel Follow-up
+
+The reused car-rental production channel has since been confirmed for Auto Subscription, including contract API permissions, production host `https://textapi.fadada.com/api2/`, callback/return domains, IP whitelist, enterprise `customer_id`, and `signature_id`.
+
+No already-real-named `FADADA_TEST_CUSTOMER_ID` is available. Stage 10D-C1 therefore prepares a controlled production test signer through `account_register.api` and `get_person_verify_url.api` before any production-host upload/signUrl smoke is attempted. See `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`.
+
 ## 12. Boundary Confirmation
 
 - No production Fadada environment was called.

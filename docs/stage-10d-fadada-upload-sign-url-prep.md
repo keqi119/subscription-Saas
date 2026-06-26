@@ -12,6 +12,8 @@ This stage still does not call real Fadada endpoints, create real signing tasks,
 
 Stage 10D-B2-B-R1 adds a guarded client-level smoke script documented in `docs/stage-10d-fadada-sandbox-upload-signurl-smoke.md`. The script is ready, but the latest run was preflight-blocked because the local safety switches were not enabled.
 
+Stage 10D-C1 adds a production-host test signer registration and personal real-name verification URL prep script documented in `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`. It exists because the reused production channel is confirmed, but no already-real-named `FADADA_TEST_CUSTOMER_ID` is available yet.
+
 ## 2. PDF Artifact Audit
 
 Current model support is sufficient without a migration:

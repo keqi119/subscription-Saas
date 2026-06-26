@@ -233,3 +233,9 @@ Stage 10D-B2-B-R1 is recorded in `docs/stage-10d-fadada-sandbox-upload-signurl-s
 The new guarded script `pnpm fadada:sandbox-upload-signurl-smoke` can run `account_register.api`, `uploaddocs.api`, and `extsign_validation.api` when `.env.fadada.sandbox.local` explicitly enables `FADADA_ENABLED=true` and `FADADA_SANDBOX_SMOKE=1`.
 
 Current R1 result: preflight blocked. The script did not call Fadada because the two safety switches were present but not enabled.
+
+## 18. C1 Production Test Signer Real-name Prep Update
+
+The reused car-rental production Fadada channel has since been confirmed for Auto Subscription, including production host `https://textapi.fadada.com/api2/`, contract API permissions, callback/return domains, IP whitelist, enterprise `customer_id`, and `signature_id`.
+
+No already-real-named personal test signer is available. Stage 10D-C1 therefore prepares a controlled production test signer through `account_register.api` and `get_person_verify_url.api` before production-host upload/signUrl smoke. See `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`.

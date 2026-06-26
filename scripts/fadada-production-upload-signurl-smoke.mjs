@@ -324,6 +324,7 @@ export function buildExtSignValidationRequest(input) {
     endpoint: "extsign_validation.api",
     explicitMd5Seed: `${input.transactionId}${input.timestamp}${input.validity}${input.quantity}`,
     explicitSortString: input.customerId,
+    method: "GET",
     timestamp: input.timestamp,
     version: input.version
   });
@@ -349,7 +350,7 @@ export function buildFadadaRequest(input) {
   return {
     contentType: input.contentType,
     endpoint: input.endpoint,
-    method: "POST",
+    method: input.method ?? "POST",
     params: {
       ...businessParams,
       app_id: input.appId,
@@ -502,6 +503,20 @@ export function buildTransportRequest(request, file) {
       method: request.method,
       timeoutMs: 15000,
       url: request.url
+    };
+  }
+
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    for (const [key, value] of Object.entries(request.params)) {
+      url.searchParams.set(key, value);
+    }
+    return {
+      body: undefined,
+      headers: {},
+      method: request.method,
+      timeoutMs: 15000,
+      url: url.toString()
     };
   }
 
@@ -675,11 +690,30 @@ function buildRequestDiagnostic(request, file) {
 }
 
 function buildProviderDiagnostic(raw, response) {
-  return {
+  const diagnostic = {
     code: providerCode(raw),
     httpStatus: response.status,
     msg: providerMsg(raw)
   };
+  if (typeof raw === "string") {
+    const text = raw.trim();
+    diagnostic.bodyKind = /^https?:\/\//i.test(text) ? "text-url" : "text";
+    diagnostic.bodyTextLength = text.length;
+    diagnostic.bodyTextPreview = previewProviderText(text);
+  } else if (raw && typeof raw === "object") {
+    diagnostic.bodyKind = "json-object";
+  }
+  const contentType = response.headers?.["content-type"] ?? response.headers?.["Content-Type"];
+  if (contentType) {
+    diagnostic.contentType = contentType;
+  }
+  return diagnostic;
+}
+
+function previewProviderText(text) {
+  return text
+    .slice(0, 200)
+    .replace(/https?:\/\/\S+/gi, (value) => maskUrl(value));
 }
 
 function sha256Hex(buffer) {
@@ -796,6 +830,9 @@ function stringField(raw, keys) {
 }
 
 function extractSignUrl(raw) {
+  if (typeof raw === "string" && /^https?:\/\//i.test(raw.trim())) {
+    return raw.trim();
+  }
   return stringField(raw, ["sign_url", "signUrl", "url"]);
 }
 
@@ -812,6 +849,9 @@ function providerMsg(raw) {
 }
 
 function isProviderSuccess(raw) {
+  if (typeof raw === "string" && /^https?:\/\//i.test(raw.trim())) {
+    return true;
+  }
   const code = providerCode(raw);
   return code === "1000";
 }

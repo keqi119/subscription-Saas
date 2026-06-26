@@ -657,7 +657,164 @@ Updated unit coverage confirms:
 
 No real Fadada call was executed for this fix.
 
-## 19. Chinese Support Handoff
+## 19. R4 Controlled Run Result
+
+### 19.1 Execution
+
+R4 was executed once after the Fadada success-code normalization fix.
+
+```text
+env ignore check: passed
+preflight: passed
+real provider run: executed once
+uploaddocs.api: called
+uploaddocs.api result: success
+extsign_validation.api: called
+extsign_validation.api result: failed
+signUrl: not obtained
+```
+
+### 19.2 Sanitized uploadDocs Request and Result
+
+| Field | Value |
+| --- | --- |
+| endpoint | `uploaddocs.api` |
+| method | `POST` |
+| host | `textapi.fadada.com` |
+| content type | `multipart/form-data;charset=utf8` |
+| `contract_id` | masked, present |
+| `contract_id` length | `24` |
+| `doc_title` | `SubAuto Fadada Production Host Smoke Test` |
+| `doc_type` | `.pdf` |
+| `timestamp` | `20260626221158` |
+| `v` | `2.0` |
+| `msg_digest` | present |
+| file field name | `file` |
+| file name | `subauto-fadada-production-host-smoke.pdf` |
+| file content type | `application/pdf` |
+| file size | `638 bytes` |
+| file SHA-256 | `f14dc92193f2ee9a560001a9c265ea7069949241478b62a3b80a428756f8e9cc` |
+| HTTP status | `200` |
+| provider code | `1000` |
+| provider msg | `operation success` |
+
+### 19.3 Sanitized extsign_validation Request and Result
+
+| Field | Value |
+| --- | --- |
+| endpoint | `extsign_validation.api` |
+| method | `POST` |
+| host | `textapi.fadada.com` |
+| content type | `application/x-www-form-urlencoded;charset=UTF-8` |
+| `contract_id` | masked, present |
+| `contract_id` length | `24` |
+| `transaction_id` | masked, present |
+| `transaction_id` length | `24` |
+| `customer_id` | present, masked |
+| `return_url` host | `app.subauto.keybox.cloud` |
+| `notify_url` host | `api.subauto.keybox.cloud` |
+| `validity` | `30` |
+| `quantity` | `1` |
+| `timestamp` | `20260626221158` |
+| `v` | `2.0` |
+| `msg_digest` | present |
+| HTTP status | `200` |
+| provider code | not parsed |
+| provider msg | not parsed |
+| signUrl | missing |
+
+### 19.4 Local Script Result
+
+The upload step now passed and the script continued to `extsign_validation.api`. The sign URL step failed because the provider response did not expose a parseable sign URL in the current local diagnostic output.
+
+```text
+local uploadDocs status: success
+local extSignValidation status: failed
+local blocker: extsign_validation.api did not return a signUrl
+```
+
+### 19.5 Boundary Confirmation
+
+- No sign URL was opened.
+- No signing was completed.
+- No platform auto-seal was executed.
+- No signed PDF was downloaded.
+- No artifact archive was executed.
+- No business database was written.
+- No Contract or Order state was advanced.
+- No payment, billing, write-off, ROE, BaaS, or depreciation logic was touched.
+- `.env.fadada.production.local` remained ignored and untracked.
+- `.tmp` remained ignored and untracked.
+- No app secret, full customer id, full signature id, full signUrl, PDF binary, or provider raw response was committed.
+
+### 19.6 Next Blocker
+
+Before another real provider retry, either:
+
+1. ask Fadada support to inspect the R4 `extsign_validation.api` request by timestamp, masked `contract_id`, and masked `transaction_id`; or
+2. enhance local diagnostics to persist a sanitized provider response body shape for `extsign_validation.api`, then request explicit approval for one follow-up controlled run.
+
+Do not enter Stage 10D-B5 until `extsign_validation.api` returns a sign URL and the user separately authorizes full signing validation.
+
+## 20. Local Fadada Document Review and Tooling Fix
+
+### 20.1 Documents Checked
+
+Local Fadada documents reviewed from `D:\Projects\document\fadada\doc`:
+
+| Document | Relevant finding |
+| --- | --- |
+| `4.2.7 ... extsign_validation ... .pdf` | `extsign_validation.api` is documented as a page interface with request method `GET`. |
+| `4.2.7 ... extsign_validation ... .pdf` | SDK sample says the interface returns a link address. |
+| `3.7.1 ... manual sign ... .pdf` | The manual sign page points users to `extsign_validation.api` when validity and open-count controls are required. |
+| `3.10 ... error code list ... .pdf` | Common code `1` is listed as success, but the production-host R3/R4 evidence showed `1000` as operation success for `uploaddocs.api`. |
+
+### 20.2 Root Cause Update
+
+R4 reached `extsign_validation.api`, but no signUrl was parsed. The local document review explains the likely tooling gap:
+
+```text
+extsign_validation.api is a GET page interface.
+The response can be the sign URL itself, not a JSON object with code/msg/data.
+```
+
+The previous smoke tool still treated `extsign_validation.api` like a form POST API and only parsed JSON-style URL fields.
+
+### 20.3 Tooling Changes
+
+The production upload/signUrl smoke tool was updated without making any real provider call:
+
+- `extsign_validation.api` requests now use `GET`.
+- GET requests put signed request parameters in the query string.
+- GET requests do not send a request body or content-type header.
+- a plain text HTTP URL response is now treated as the signUrl.
+- text provider responses now record diagnostic shape fields:
+  - `bodyKind`
+  - `bodyTextLength`
+  - `bodyTextPreview`
+  - `contentType`, if present
+- URL previews are masked before being written to diagnostics.
+
+### 20.4 Test Coverage
+
+Updated unit coverage confirms:
+
+- `buildExtSignValidationRequest` uses method `GET`;
+- `buildTransportRequest` sends `extsign_validation.api` params as query string;
+- GET transport request has no body and no content-type header;
+- direct URL text response is accepted as signUrl;
+- signUrl is still not opened by the smoke tool;
+- non-URL text response is captured as sanitized diagnostics.
+
+No real Fadada call was executed for this document-based tooling fix.
+
+### 20.5 Next Step
+
+After this fix is pushed, a follow-up controlled run can verify whether `extsign_validation.api` returns a parseable sign URL. That run still requires explicit user authorization because it calls the production host and may create Fadada backend records or cost.
+
+Do not enter Stage 10D-B5 until uploadDocs and extsign_validation both pass and the user separately authorizes full signing validation.
+
+## 21. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:
 

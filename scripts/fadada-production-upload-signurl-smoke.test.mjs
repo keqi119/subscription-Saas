@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildExtSignValidationRequest,
+  buildTransportRequest,
   buildUploadDocsRequest,
   createTestPdf,
   isMainModule,
@@ -96,10 +97,41 @@ test("buildExtSignValidationRequest uses sign urls and masks customer id in outp
   });
 
   assert.equal(request.url, "https://textapi.fadada.com/api2/extsign_validation.api");
+  assert.equal(request.method, "GET");
   assert.equal(request.params.customer_id, baseEnv.FADADA_TEST_CUSTOMER_ID);
   assert.equal(request.params.notify_url, baseEnv.FADADA_SIGN_NOTIFY_URL);
   assert.equal(request.params.return_url, baseEnv.FADADA_SIGN_RETURN_URL);
   assert.equal(maskMiddle(baseEnv.FADADA_TEST_CUSTOMER_ID), "CUST...7890");
+});
+
+test("buildTransportRequest sends extsign_validation as GET query without request body", () => {
+  const request = buildExtSignValidationRequest({
+    appId: baseEnv.FADADA_APP_ID,
+    appSecret: baseEnv.FADADA_APP_SECRET,
+    baseUrl: baseEnv.FADADA_BASE_URL,
+    contractId: "SAES20260626120000ABC123",
+    customerId: baseEnv.FADADA_TEST_CUSTOMER_ID,
+    notifyUrl: baseEnv.FADADA_SIGN_NOTIFY_URL,
+    quantity: 1,
+    returnUrl: baseEnv.FADADA_SIGN_RETURN_URL,
+    timestamp: "20260626120000",
+    transactionId: "SATX20260626120000ABC123",
+    validity: 30,
+    version: "2.0"
+  });
+
+  const transportRequest = buildTransportRequest(request);
+  const url = new URL(transportRequest.url);
+
+  assert.equal(transportRequest.method, "GET");
+  assert.equal(transportRequest.body, undefined);
+  assert.equal(transportRequest.headers["content-type"], undefined);
+  assert.equal(url.pathname.endsWith("/extsign_validation.api"), true);
+  assert.equal(url.searchParams.get("contract_id"), "SAES20260626120000ABC123");
+  assert.equal(url.searchParams.get("transaction_id"), "SATX20260626120000ABC123");
+  assert.equal(url.searchParams.get("customer_id"), baseEnv.FADADA_TEST_CUSTOMER_ID);
+  assert.equal(url.searchParams.has("msg_digest"), true);
+  assert.equal(url.toString().includes(baseEnv.FADADA_APP_SECRET), false);
 });
 
 test("createTestPdf returns a non-sensitive PDF fixture", () => {
@@ -121,20 +153,17 @@ test("runFadadaProductionUploadSignUrlSmoke uploads PDF, creates masked sign URL
     openUrl: (url) => openUrlCalls.push(url),
     transport: async (request) => {
       calls.push({
-        body: request.body.toString("utf8"),
+        body: request.body?.toString("utf8"),
         headers: request.headers,
+        method: request.method,
         url: request.url
       });
-      if (request.url.endsWith("/uploaddocs.api")) {
+      if (request.url.includes("/uploaddocs.api")) {
         return { bodyText: JSON.stringify({ code: 1000, msg: "操作成功" }), headers: {}, status: 200 };
       }
-      if (request.url.endsWith("/extsign_validation.api")) {
+      if (request.url.includes("/extsign_validation.api")) {
         return {
-          bodyText: JSON.stringify({
-            code: 1000,
-            data: "https://sign.example.test/path?token=super-secret",
-            msg: "操作成功"
-          }),
+          bodyText: "https://sign.example.test/path?token=super-secret",
           headers: {},
           status: 200
         };
@@ -154,6 +183,8 @@ test("runFadadaProductionUploadSignUrlSmoke uploads PDF, creates masked sign URL
   assert.equal(JSON.stringify(result.sanitized).includes("super-secret"), false);
   assert.deepEqual(openUrlCalls, []);
   assert.equal(result.state?.signUrl, "https://sign.example.test/path?token=super-secret");
+  assert.equal(calls[1].headers["content-type"], undefined);
+  assert.equal(calls[1].body, undefined);
 });
 
 test("runFadadaProductionUploadSignUrlSmoke records explicit upload diagnostics on upload failure", async () => {
@@ -194,6 +225,39 @@ test("runFadadaProductionUploadSignUrlSmoke records explicit upload diagnostics 
   assert.equal(result.diagnosticState?.provider.uploadDocs.code, "2002");
   assert.equal(result.diagnosticState?.provider.uploadDocs.msg, "invalid contract id");
   assert.equal(JSON.stringify(result.diagnosticState).includes(baseEnv.FADADA_APP_SECRET), false);
+});
+
+test("runFadadaProductionUploadSignUrlSmoke records text response diagnostics when sign URL is missing", async () => {
+  const result = await runFadadaProductionUploadSignUrlSmoke({
+    env: baseEnv,
+    now: () => new Date("2026-06-26T12:00:00.000Z"),
+    pdfBuffer: createTestPdf(),
+    transport: async (request) => {
+      if (request.url.includes("/uploaddocs.api")) {
+        return {
+          bodyText: JSON.stringify({ code: 1000, msg: "操作成功" }),
+          headers: {},
+          status: 200
+        };
+      }
+      if (request.url.includes("/extsign_validation.api")) {
+        return {
+          bodyText: "签署链接暂不可用",
+          headers: { "content-type": "text/plain;charset=utf-8" },
+          status: 200
+        };
+      }
+      throw new Error(`unexpected URL ${request.url}`);
+    }
+  });
+
+  assert.equal(result.uploadDocs.status, "success");
+  assert.equal(result.extSignValidation.status, "failed");
+  assert.equal(result.signUrl.present, false);
+  assert.equal(result.diagnosticState?.provider.extSignValidation.httpStatus, 200);
+  assert.equal(result.diagnosticState?.provider.extSignValidation.bodyKind, "text");
+  assert.equal(result.diagnosticState?.provider.extSignValidation.bodyTextLength, 8);
+  assert.equal(result.diagnosticState?.provider.extSignValidation.bodyTextPreview, "签署链接暂不可用");
 });
 
 test("sanitizeForOutput masks customer ids and sign urls", () => {

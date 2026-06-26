@@ -35,7 +35,7 @@ export async function runCli(args = process.argv.slice(2)) {
     testPdfFile: options.pdfFile ? resolve(options.pdfFile) : resolve(DEFAULT_TEST_PDF_FILE)
   });
 
-  if (options.mode === "run" && result.diagnosticState) {
+  if (options.mode !== "preflight" && result.diagnosticState) {
     writeJson(resultFile, result.diagnosticState);
   }
 
@@ -84,10 +84,24 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
   };
   const timestamp = formatFadadaTimestamp(now());
   const transport = input.transport ?? defaultTransport;
+  const customerId = requiredEnvValue(env, "FADADA_TEST_CUSTOMER_ID");
+
+  if (mode === "signurl-only") {
+    return runSignUrlOnlyFlow({
+      config,
+      customerId,
+      env,
+      now,
+      report,
+      resultFile: input.resultFile ?? DEFAULT_RESULT_FILE,
+      timestamp,
+      transport
+    });
+  }
+
   const pdfBuffer = input.pdfBuffer ?? loadOrCreateTestPdf(input.testPdfFile ?? DEFAULT_TEST_PDF_FILE);
   const contractId = buildSmokeId("contract", now());
   const transactionId = buildSmokeId("tx", now());
-  const customerId = requiredEnvValue(env, "FADADA_TEST_CUSTOMER_ID");
 
   const uploadRequest = buildUploadDocsRequest({
     ...config,
@@ -207,6 +221,96 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     signUrl: signUrlResult,
     diagnosticState,
     state
+  });
+}
+
+async function runSignUrlOnlyFlow(input) {
+  const reusable = loadReusableUploadState(input.resultFile);
+  if (!reusable.ok) {
+    return withSanitized({
+      ...input.report,
+      blockers: [reusable.blocker],
+      ok: false,
+      uploadDocs: { status: "missing-reuse" }
+    });
+  }
+
+  const validity = positiveInt(input.env.FADADA_SIGN_URL_VALIDITY_MINUTES, 30);
+  const quantity = positiveInt(input.env.FADADA_SIGN_URL_QUANTITY, 1);
+  const transactionId = buildSmokeId("tx", input.now());
+  const signRequest = buildExtSignValidationRequest({
+    ...input.config,
+    contractId: reusable.contractId,
+    customerId: input.customerId,
+    notifyUrl: requiredEnvValue(input.env, "FADADA_SIGN_NOTIFY_URL"),
+    quantity,
+    returnUrl: requiredEnvValue(input.env, "FADADA_SIGN_RETURN_URL"),
+    timestamp: input.timestamp,
+    transactionId,
+    validity
+  });
+  const diagnosticWithSignRequest = {
+    contractId: reusable.contractId,
+    createdAt: new Date().toISOString(),
+    mode: "signurl-only",
+    provider: {
+      uploadDocs: sanitizeForOutput(reusable.state.provider?.uploadDocs ?? {})
+    },
+    requests: {
+      extSignValidation: buildRequestDiagnostic(signRequest)
+    },
+    reusedUpload: true,
+    transactionId
+  };
+  const uploadDocs = {
+    code: providerCode(reusable.state.provider?.uploadDocs),
+    contractIdMasked: maskMiddle(reusable.contractId),
+    msg: providerMsg(reusable.state.provider?.uploadDocs),
+    status: "reused"
+  };
+  const signResponse = await sendRequest(signRequest, input.transport);
+  const signRaw = parseJsonObject(signResponse.bodyText) ?? signResponse.bodyText;
+  const signUrl = extractSignUrl(signRaw);
+  const signSuccess = isProviderSuccess(signRaw) && Boolean(signUrl);
+  const extSignValidation = {
+    code: providerCode(signRaw),
+    customerIdMasked: maskMiddle(input.customerId),
+    msg: providerMsg(signRaw),
+    status: signSuccess ? "success" : "failed",
+    transactionIdMasked: maskMiddle(transactionId)
+  };
+  const signUrlResult = {
+    masked: signUrl ? maskUrl(signUrl) : "missing",
+    present: Boolean(signUrl)
+  };
+  const state = signSuccess
+    ? {
+        contractId: reusable.contractId,
+        createdAt: new Date().toISOString(),
+        extSignValidation: sanitizeForOutput(extSignValidation),
+        signUrl,
+        transactionId,
+        uploadDocs: sanitizeForOutput(uploadDocs)
+      }
+    : undefined;
+  const diagnosticState = {
+    ...diagnosticWithSignRequest,
+    provider: {
+      ...diagnosticWithSignRequest.provider,
+      extSignValidation: buildProviderDiagnostic(signRaw, signResponse)
+    },
+    signUrl: signSuccess ? signUrl : undefined
+  };
+
+  return withSanitized({
+    ...input.report,
+    blockers: signSuccess ? undefined : ["extsign_validation.api did not return a signUrl"],
+    extSignValidation,
+    ok: signSuccess,
+    signUrl: signUrlResult,
+    diagnosticState,
+    state,
+    uploadDocs
   });
 }
 
@@ -615,6 +719,38 @@ function withSanitized(report) {
   };
 }
 
+function loadReusableUploadState(resultFile) {
+  const state = readJsonIfExists(resultFile);
+  const contractId = stringValue(state?.contractId ?? state?.requests?.uploadDocs?.params?.contract_id);
+  const uploadCode = providerCode(state?.provider?.uploadDocs);
+  if (!state || !contractId || uploadCode !== "1000") {
+    return {
+      blocker: "cannot reuse uploaded contract_id from latest.json",
+      ok: false
+    };
+  }
+
+  return {
+    contractId,
+    ok: true,
+    state
+  };
+}
+
+function readJsonIfExists(path) {
+  const filePath = resolve(path);
+  if (!existsSync(filePath)) return undefined;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function stringValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function parseArgs(args) {
   const options = { mode: "preflight" };
   for (let index = 0; index < args.length; index += 1) {
@@ -630,14 +766,14 @@ function parseArgs(args) {
 }
 
 function parseMode(value) {
-  if (["preflight", "run"].includes(value)) {
+  if (["preflight", "run", "signurl-only"].includes(value)) {
     return value;
   }
   throw new Error(`Unknown mode: ${value}`);
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/fadada-production-upload-signurl-smoke.mjs --mode <preflight|run> [options]
+  console.log(`Usage: node scripts/fadada-production-upload-signurl-smoke.mjs --mode <preflight|run|signurl-only> [options]
 
 Options:
   --env-file <path>     Defaults to ${DEFAULT_ENV_FILE}
@@ -671,10 +807,12 @@ function writeJson(path, data) {
 
 function buildRequestDiagnostic(request, file) {
   const diagnostic = {
-    contentType: request.contentType,
+    contentType: request.method === "GET" ? undefined : request.contentType,
     endpoint: request.endpoint,
+    headerContentType: request.method === "GET" ? "absent" : request.contentType,
     method: request.method,
     params: request.params,
+    requestContentType: request.contentType,
     url: request.url
   };
   if (file) {

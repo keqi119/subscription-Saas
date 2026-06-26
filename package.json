@@ -26,6 +26,7 @@
     "fadada:sandbox-upload-signurl-smoke:test": "node --test scripts/fadada-sandbox-upload-signurl-smoke.test.mjs",
     "fadada:upload-signurl:preflight": "node scripts/fadada-production-upload-signurl-smoke.mjs --mode preflight",
     "fadada:upload-signurl:run": "node scripts/fadada-production-upload-signurl-smoke.mjs --mode run",
+    "fadada:upload-signurl:signurl-only": "node scripts/fadada-production-upload-signurl-smoke.mjs --mode signurl-only",
     "fadada:upload-signurl:test": "node --test scripts/fadada-production-upload-signurl-smoke.test.mjs",
     "fadada:test-signer:preflight": "node scripts/fadada-production-test-signer-realname.mjs --mode preflight",
     "fadada:test-signer:prepare": "node scripts/fadada-production-test-signer-realname.mjs --mode prepare",

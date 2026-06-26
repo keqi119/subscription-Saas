@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -258,6 +261,93 @@ test("runFadadaProductionUploadSignUrlSmoke records text response diagnostics wh
   assert.equal(result.diagnosticState?.provider.extSignValidation.bodyKind, "text");
   assert.equal(result.diagnosticState?.provider.extSignValidation.bodyTextLength, 8);
   assert.equal(result.diagnosticState?.provider.extSignValidation.bodyTextPreview, "签署链接暂不可用");
+});
+
+test("runFadadaProductionUploadSignUrlSmoke signurl-only reuses an uploaded contract without uploading again", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "fadada-signurl-only-"));
+  try {
+    const resultFile = join(tempDir, "latest.json");
+    writeFileSync(
+      resultFile,
+      JSON.stringify({
+        contractId: "SAES20260626120000ABC123",
+        provider: {
+          uploadDocs: {
+            code: "1000",
+            httpStatus: 200,
+            msg: "操作成功"
+          }
+        },
+        requests: {
+          uploadDocs: {
+            endpoint: "uploaddocs.api",
+            params: {
+              contract_id: "SAES20260626120000ABC123",
+              doc_title: "SubAuto Fadada Production Host Smoke Test",
+              doc_type: ".pdf"
+            }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const calls = [];
+    const result = await runFadadaProductionUploadSignUrlSmoke({
+      env: baseEnv,
+      mode: "signurl-only",
+      now: () => new Date("2026-06-26T12:00:00.000Z"),
+      resultFile,
+      transport: async (request) => {
+        calls.push(request);
+        if (request.url.includes("/uploaddocs.api")) {
+          throw new Error("signurl-only must not upload");
+        }
+        return {
+          bodyText: "https://sign.example.test/path?token=super-secret",
+          headers: { "content-type": "text/plain;charset=utf-8" },
+          status: 200
+        };
+      }
+    });
+
+    assert.deepEqual(calls.map((call) => new URL(call.url).pathname.split("/").pop()), ["extsign_validation.api"]);
+    assert.equal(result.uploadDocs.status, "reused");
+    assert.equal(result.extSignValidation.status, "success");
+    assert.equal(result.signUrl.present, true);
+    assert.equal(result.diagnosticState?.reusedUpload, true);
+    assert.equal(result.diagnosticState?.requests.uploadDocs, undefined);
+    assert.equal(result.diagnosticState?.requests.extSignValidation.method, "GET");
+    assert.equal(result.diagnosticState?.requests.extSignValidation.contentType, undefined);
+    assert.equal(result.diagnosticState?.requests.extSignValidation.headerContentType, "absent");
+    assert.equal(
+      result.diagnosticState?.requests.extSignValidation.requestContentType,
+      "application/x-www-form-urlencoded;charset=UTF-8"
+    );
+    assert.equal(result.diagnosticState?.contractId, "SAES20260626120000ABC123");
+    assert.equal(result.state?.signUrl, "https://sign.example.test/path?token=super-secret");
+    assert.equal(JSON.stringify(result.sanitized).includes("super-secret"), false);
+  } finally {
+    rmSync(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("runFadadaProductionUploadSignUrlSmoke signurl-only blocks when there is no reusable uploaded contract", async () => {
+  const result = await runFadadaProductionUploadSignUrlSmoke({
+    env: baseEnv,
+    mode: "signurl-only",
+    now: () => new Date("2026-06-26T12:00:00.000Z"),
+    resultFile: join(tmpdir(), "missing-fadada-upload-state.json"),
+    transport: async () => {
+      throw new Error("transport must not be called without reusable upload state");
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.uploadDocs.status, "missing-reuse");
+  assert.equal(result.extSignValidation.status, "skipped");
+  assert.equal(result.signUrl.present, false);
+  assert.match(result.blockers.join("\n"), /cannot reuse uploaded contract_id/);
 });
 
 test("sanitizeForOutput masks customer ids and sign urls", () => {

@@ -27,6 +27,7 @@ Commands:
 ```powershell
 pnpm fadada:upload-signurl:preflight
 pnpm fadada:upload-signurl:run
+pnpm fadada:upload-signurl:signurl-only
 pnpm fadada:upload-signurl:test
 ```
 
@@ -814,7 +815,107 @@ After this fix is pushed, a follow-up controlled run can verify whether `extsign
 
 Do not enter Stage 10D-B5 until uploadDocs and extsign_validation both pass and the user separately authorizes full signing validation.
 
-## 21. Chinese Support Handoff
+## 22. R5 signUrl-only Controlled Run
+
+Date: 2026-06-27
+
+R5 used the R3/R4 successfully uploaded test contract and did not call `uploaddocs.api` again.
+
+### 22.1 Tooling Update Before R5
+
+The smoke script now supports:
+
+```powershell
+pnpm fadada:upload-signurl:signurl-only
+```
+
+This mode:
+
+- reads the ignored `.tmp/fadada/upload-signurl-smoke/latest.json`;
+- requires a reusable `contract_id` whose prior upload provider code is `1000`;
+- calls only `extsign_validation.api`;
+- uses method `GET`;
+- sends request parameters in the query string;
+- does not send a request body;
+- does not send a `content-type` request header;
+- writes full local diagnostics only to ignored `.tmp`;
+- never opens the sign URL.
+
+### 22.2 R5 Preconditions
+
+| Check | Result |
+| --- | --- |
+| branch | `feature/stage10-fadada-production-upload-signurl-smoke-run` |
+| env file ignored | yes |
+| `.tmp` ignored | yes |
+| preflight | passed |
+| reusable uploaded `contract_id` | yes, masked |
+| reusable upload provider code | `1000` |
+| reusable upload HTTP status | `200` |
+| reusable `contract_id` length | `24` |
+
+### 22.3 R5 Execution Result
+
+Command:
+
+```powershell
+pnpm fadada:upload-signurl:signurl-only
+```
+
+Result:
+
+| Item | Result |
+| --- | --- |
+| mode | `signurl-only` |
+| reused R3/R4 upload | yes |
+| `uploaddocs.api` called in R5 | no |
+| `extsign_validation.api` called | yes |
+| `extsign_validation.api` method | `GET` |
+| request body | absent |
+| request `content-type` header | absent |
+| query params | present |
+| HTTP status | `200` |
+| response content type | `text/html;charset=UTF-8` |
+| response body kind | `text` |
+| response body length | `4383` |
+| signUrl obtained | no |
+| `.tmp/fadada/upload-signurl-smoke/latest.json` written | yes |
+
+Provider response diagnostic preview was HTML, not a raw `http/https` URL:
+
+```text
+<link rel="stylesheet" type="text/css" href="libs/static/css/loading.css?v=20230213"/>
+<style>
+...
+```
+
+The smoke tool therefore did not treat it as a sign URL.
+
+### 22.4 R5 Boundary Confirmation
+
+- No sign URL was opened.
+- No signing was completed.
+- No platform auto-seal was executed.
+- No signed PDF was downloaded.
+- No artifact archive was executed.
+- No business database was written.
+- No Contract or Order state was advanced.
+- No payment, billing, write-off, ROE, BaaS, or depreciation logic was touched.
+- No app secret, full customer id, full signature id, full signUrl, PDF binary, or provider raw response was committed.
+
+### 22.5 R5 Blocker
+
+`extsign_validation.api` returned an HTML document with HTTP 200 instead of a raw URL text response. The current smoke tool records this as:
+
+```text
+extsign_validation.api did not return a signUrl
+```
+
+Before Stage 10D-B5-A, confirm with Fadada whether this HTML response should be considered the sign page itself, whether the request URL should be used as the customer signing URL, or whether another response/header/redirect field must be captured.
+
+Stage 10D-B5-A can start: **no**, until the sign URL interpretation is confirmed or the provider returns a parseable sign URL.
+
+## 23. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:
 

@@ -151,3 +151,22 @@ Stage 10D-B4-B is recorded in `docs/stage-10d-fadada-artifact-archive-mock-smoke
 Result: mocked archive smoke passed with an in-memory completed Fadada task fixture, mocked provider payloads, mocked private storage, idempotency checks for `force=false` and `force=true`, admin/Portal preview service checks, and contract/order/finance no-side-effect assertions.
 
 This B4-B result still does not call real Fadada APIs and does not unblock B5 by itself. B5 remains gated by the B2-B sandbox upload/sign URL blockers.
+
+## 12. Stage 10D-B5-A Plan Gate
+
+Stage 10D-B5-A is recorded in `docs/stage-10d-fadada-full-signing-validation-plan.md`.
+
+Archive should be part of the first full validation only after:
+
+- the sign URL was generated from a local task in the same callback target database;
+- Fadada callback verified and marked the task `COMPLETED`;
+- contract/order advancement was explicitly approved and observed;
+- the user approves one manual archive trigger.
+
+The archive service remains post-signing only. It must not be used to compensate for a failed callback, and it must not fabricate an evidence report while the independent evidence report download interface remains TODO.
+
+Current B5-B blocker:
+
+```text
+Before formal full signing, resolve how the controlled local signer maps to the verified Fadada provider customer_id.
+```

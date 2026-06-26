@@ -186,3 +186,23 @@ Full real signing validation must still wait until B2-B upload/sign URL smoke an
 Stage 10D-B4 is recorded in `docs/stage-10d-fadada-signed-pdf-archive.md`.
 
 It adds mockable Fadada query/download/filing clients, private signed PDF storage, admin archive/download endpoints, Portal signed PDF download, and idempotent archive rules. It still does not call real Fadada APIs or process an independent evidence report download.
+
+## 14. Stage 10D-B5-A Plan Gate
+
+Stage 10D-B5-A is recorded in `docs/stage-10d-fadada-full-signing-validation-plan.md`.
+
+The callback implementation is ready for a controlled full signing validation only when the callback target database contains the matching local `ContractESignTask` and signer records.
+
+Do not complete signing with a standalone smoke URL that has no local task mapping. A valid B5 signing URL must map through one of:
+
+1. `transaction_id` -> `ContractESignSigner.providerSignerId`
+2. `transaction_id` -> `ContractESignTask.providerTaskId`
+3. `contract_id` -> `ContractESignTask.providerEnvelopeId`
+
+Current B5-B blocker:
+
+```text
+The formal create-sign-task path still needs a verified way to pass Fadada provider customer_id, not local Customer.id, to extsign_validation.api.
+```
+
+B5-B must not start until this mapping or an explicitly approved controlled fixture path is resolved.

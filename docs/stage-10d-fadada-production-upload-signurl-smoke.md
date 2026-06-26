@@ -1039,7 +1039,33 @@ The code path was updated accordingly:
 
 Stage 10D-B5-A can start: **planning only**, subject to explicit confirmation of whether to open the sign page, sign, receive callback, and archive the signed PDF.
 
-## 24. Chinese Support Handoff
+## 24. B5-A Full Signing Validation Plan
+
+Stage 10D-B5-A is recorded in `docs/stage-10d-fadada-full-signing-validation-plan.md`.
+
+Key conclusion:
+
+```text
+extsign_validation.api full GET URL is the signer page URL.
+The backend should save/return that URL as signUrl.
+B5-A is plan and approval only, not signing execution.
+```
+
+The B5-A code review also found a blocker for the formal business flow:
+
+```text
+FadadaESignProvider.createSignTask currently receives local Customer.id from ESignService,
+but Fadada extsign_validation.api requires provider customer_id.
+```
+
+The standalone smoke scripts used `FADADA_TEST_CUSTOMER_ID`, but the formal `POST /api/contracts/:id/esign-tasks` path still needs either:
+
+1. a durable local-customer to Fadada provider-customer mapping; or
+2. an explicitly approved one-off controlled B5 fixture/override.
+
+Therefore Stage 10D-B5-B must not start until the approval matrix is completed and the provider customer-id mapping/fixture decision is resolved.
+
+## 25. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:
 

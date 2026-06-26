@@ -384,3 +384,159 @@ Only if `uploaddocs.api` succeeds, future RUN attempts also record:
 The committed documentation must continue to use masked/present status only. Full request values are local-only under `.tmp`.
 
 This enhancement does not retry the real provider call by itself. A new RUN is required to generate the diagnostic file for the next provider-side investigation.
+
+## 15. R2 Diagnostic RUN Result
+
+Date: 2026-06-26
+
+After diagnostics were added, one controlled R2 RUN was executed to collect provider-side troubleshooting evidence.
+
+### 15.1 Safety Check
+
+| Check | Result |
+| --- | --- |
+| `.env.fadada.production.local` exists | present |
+| `.env.fadada.production.local` ignored | yes |
+| `.tmp/fadada/upload-signurl-smoke/latest.json` ignored | yes |
+| Git status exposed env/tmp | no |
+
+### 15.2 Preflight
+
+Command:
+
+```powershell
+pnpm fadada:upload-signurl:preflight
+```
+
+Result: **passed**.
+
+### 15.3 RUN
+
+Command:
+
+```powershell
+pnpm fadada:upload-signurl:run
+```
+
+Result: **failed**.
+
+Script summary:
+
+| Item | Result |
+| --- | --- |
+| preflight | passed |
+| `uploaddocs.api` | executed, failed |
+| `extsign_validation.api` | skipped |
+| signUrl | missing |
+| `.tmp/fadada/upload-signurl-smoke/latest.json` | written |
+
+### 15.4 Sanitized uploadDocs Diagnostics
+
+The following fields were extracted from the ignored local diagnostic file. Full sensitive values are not committed.
+
+| Field | Value |
+| --- | --- |
+| endpoint | `uploaddocs.api` |
+| method | `POST` |
+| host | `textapi.fadada.com` |
+| content type | `multipart/form-data;charset=utf8` |
+| `contract_id` | masked, present |
+| `contract_id` length | `42` |
+| `doc_title` | `SubAuto Fadada Production Host Smoke Test` |
+| `doc_type` | `.pdf` |
+| `app_id` | present, masked |
+| `timestamp` | `20260626203516` |
+| `v` | `2.0` |
+| `msg_digest` | present |
+| file field name | `file` |
+| file name | `subauto-fadada-production-host-smoke.pdf` |
+| file content type | `application/pdf` |
+| file size | `638 bytes` |
+| file SHA-256 | `f14dc92193f2ee9a560001a9c265ea7069949241478b62a3b80a428756f8e9cc` |
+| HTTP status | `200` |
+| provider code | `2002` |
+| provider msg | captured as mojibake; inferred as `无效合同编号.(合同编号不能为空且字符长度不超过40)` |
+
+The provider message inference is based on the captured mojibake text and common UTF-8/GBK display mismatch. The actionable meaning is clear enough to diagnose the current blocker: the generated smoke `contract_id` length was `42`, while the provider message says the contract number length must not exceed `40`.
+
+### 15.5 Boundary Confirmation
+
+- One real production-host `uploaddocs.api` request was attempted.
+- No `extsign_validation.api` request was sent.
+- No sign URL was generated.
+- No sign URL was opened.
+- No signing was completed.
+- No platform auto-seal was executed.
+- No signed PDF was downloaded.
+- No artifact archive was executed.
+- No business database was written.
+- No Contract or Order state was advanced.
+- No payment, billing, write-off, ROE, BaaS, or depreciation logic was touched.
+- `.env.fadada.production.local` remained ignored and untracked.
+- `.tmp` remained ignored and untracked.
+- No app secret, full customer id, full signature id, full signUrl, PDF binary, or provider raw response was committed.
+
+### 15.6 Gate Decision
+
+| Gate | Result |
+| --- | --- |
+| uploadDocs production-host smoke | failed |
+| extsign_validation production-host smoke | not executed |
+| signUrl obtained | no |
+| Stage 10D-B5 can start | no |
+
+Current likely blocker:
+
+```text
+Generated smoke contract_id is too long for uploaddocs.api.
+```
+
+Do not retry again until the smoke `contract_id` format is shortened to comply with the provider limit.
+
+### 15.7 Chinese Support Handoff
+
+The following text can be sent to Fadada technical support:
+
+```text
+法大大 uploaddocs.api 诊断性测试报告
+
+项目：汽车订阅 / SubAuto
+接口模式：API URL 直连 HTTPS 请求
+环境：https://textapi.fadada.com/api2/
+接口：uploaddocs.api
+请求方式：POST
+Content-Type：multipart/form-data;charset=utf8
+调用时间 timestamp：20260626203516
+
+本次只做测试合同上传，不打开 signUrl，不签署，不自动盖章，不推进业务状态。
+
+入参摘要：
+- app_id：present / masked
+- contract_id：present / masked
+- contract_id 长度：42
+- doc_title：SubAuto Fadada Production Host Smoke Test
+- doc_type：.pdf
+- timestamp：20260626203516
+- v：2.0
+- msg_digest：present
+- 文件字段名：file
+- 文件名：subauto-fadada-production-host-smoke.pdf
+- 文件 Content-Type：application/pdf
+- 文件大小：638 bytes
+- 文件 SHA-256：f14dc92193f2ee9a560001a9c265ea7069949241478b62a3b80a428756f8e9cc
+
+返回结果：
+- HTTP status：200
+- provider code：2002
+- provider msg：脚本中捕获为编码错位文本，推断为“无效合同编号.(合同编号不能为空且字符长度不超过40)”
+
+请协助确认：
+1. code=2002 是否表示合同编号不合法；
+2. uploaddocs.api 的 contract_id 是否要求长度 <= 40；
+3. contract_id 是否还有字符集或格式限制；
+4. doc_type 是否应传 .pdf 还是 pdf；
+5. multipart 文件字段名 file 是否正确；
+6. 若 contract_id 长度修正后仍失败，请协助确认摘要公式和 multipart 参数要求。
+
+本报告不包含 app_secret、完整 customer_id、完整 signUrl、身份证号、手机号或 PDF 文件内容。
+```

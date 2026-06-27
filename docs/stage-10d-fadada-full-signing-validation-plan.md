@@ -446,3 +446,187 @@ B5-B may use this env override only if the approval matrix explicitly approves:
 - possible provider records and fees.
 
 Non-matching customers remain blocked. The R5 standalone sign URL still must not be used for full signing because it is not guaranteed to map to a local task in the callback target database.
+
+## 11. B5-B Execution Approval Record
+
+Date: 2026-06-27
+
+Status: **Pending approval**.
+
+This section records the Stage 10D-B5-B execution approval gate. It does not execute signing, open a sign URL, call Fadada, write the business database, archive a PDF, advance contract/order state, or touch payment, billing, write-off, ROE, BaaS, or depreciation logic.
+
+### 11.1 Readiness Status
+
+Code readiness review:
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Fadada provider create-sign-task path | Ready for approval | `FadadaESignProvider.createSignTask` now resolves provider `customer_id` through the guarded resolver before reading the PDF, uploading, or creating a sign URL. |
+| Sign URL semantics | Ready | `extsign_validation.api` is a `GET` page interface, and the complete signed GET URL is the signer page URL saved/returned as `signUrl`. |
+| Callback mapping | Ready with matching database | Callback handling can map by provider `transaction_id` / `contract_id` only when the callback target database contains the matching local task and signer records. |
+| Callback state advancement | Ready, pending approval | `result_code=3000` can advance signer/task/contract/order idempotently; `3001` and `3003` do not advance the order. |
+| Signed PDF archive | Ready, pending approval | Archive can store signed PDF artifacts in private storage and expose Admin/Portal streams without exposing provider URLs or object keys. |
+| Schema / migration | Not required | Existing task/signer artifact fields are sufficient for this controlled validation. |
+
+Remaining approval blocker:
+
+```text
+B5-B execution is not authorized until the approval matrix below is completed.
+```
+
+### 11.2 Recommended Test Data Scheme
+
+Recommended path:
+
+1. Use the target API environment and the same database that receives `FADADA_SIGN_NOTIFY_URL` callbacks.
+2. Use a controlled local test customer whose `Customer.id` is explicitly configured as `FADADA_TEST_LOCAL_CUSTOMER_ID`.
+3. Use the already-verified Fadada personal provider customer id through `FADADA_TEST_CUSTOMER_ID`, with `FADADA_FULL_SIGNING_SMOKE=1`.
+4. Use a controlled test order and test contract marked as non-production business data.
+5. Use a non-sensitive test PDF artifact that clearly says it is not a real contract.
+6. Generate the B5-B signing URL through the formal system `createSignTask` path so local `ContractESignTask`, signer, contract, and order records can map the later callback.
+
+Do **not** reuse the R5 standalone sign URL for B5-B. The R5 URL was produced by a script-level smoke and is not guaranteed to map to the local task/signer/contract/order records in the callback target database.
+
+### 11.3 Approval Matrix
+
+B5-B execution approval is **Pending**. Every required row must be explicitly approved before execution.
+
+| Approval item | Required decision | Current status |
+| --- | --- | --- |
+| Allow opening the generated `signUrl` | Yes / No | Pending |
+| Allow the test signer to complete signing | Yes / No | Pending |
+| Confirm the signer is the current verified tester | Yes / No | Pending |
+| Allow Fadada callback to advance `Contract.status = SIGNED` | Yes / No | Pending |
+| Allow `Order.status` to advance from `PENDING_SIGN` to `PENDING_PAYMENT` | Yes / No | Pending |
+| Allow signed PDF archive after callback success | Yes / No | Pending |
+| Allow the test contract to enter Fadada official backend records | Yes / No | Pending |
+| Accept possible Fadada fee for the controlled test | Yes / No | Pending |
+| Enable platform auto-seal | Yes / No | Pending; recommended first run is No |
+| If auto-seal is disabled, accept customer-only signing-chain validation first | Yes / No | Pending |
+| Use `FADADA_FULL_SIGNING_SMOKE=1` env override | Yes / No | Pending |
+| Confirm `FADADA_TEST_LOCAL_CUSTOMER_ID` is a controlled local test customer | Yes / No | Pending |
+| Confirm callback URL points to the intended target test database | Yes / No | Pending |
+| Allow test contract/order audit records to remain in the target database | Yes / No | Pending |
+| Allow Portal customer download after signed PDF archive | Yes / No | Pending |
+
+### 11.4 B5-B Execution Runbook
+
+This runbook is for the later execution stage only. It must not be executed until the approval matrix is complete.
+
+#### Step 1: Env Preflight
+
+Confirm:
+
+```text
+FADADA_ENABLED=true
+FADADA_PRODUCTION_SMOKE=1
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID present
+FADADA_TEST_CUSTOMER_ID present
+FADADA_APP_ID present
+FADADA_APP_SECRET present
+FADADA_SIGN_NOTIFY_URL is HTTPS
+FADADA_SIGN_RETURN_URL is HTTPS
+```
+
+Do not print secrets, full provider customer ids, or full sign URLs.
+
+#### Step 2: Test Sample Confirmation
+
+Confirm:
+
+- test `Customer` is controlled and matches `FADADA_TEST_LOCAL_CUSTOMER_ID`;
+- test `Order` is controlled and starts from the expected pre-sign state;
+- test `Contract` is controlled, non-sensitive, and ready for signing;
+- PDF artifact exists and is a non-sensitive test PDF;
+- no real customer PII or real business contract terms are included.
+
+#### Step 3: Create Sign Task
+
+Use the formal system create-sign-task path, not standalone smoke scripts.
+
+Expected local evidence:
+
+- `ContractESignTask` created;
+- `ContractESignSigner` created;
+- provider `contract_id` present;
+- provider `transaction_id` present;
+- signer `signUrl` present and is an `extsign_validation.api` GET URL;
+- callback target database can find the task/signer by provider ids.
+
+#### Step 4: Manual Signing
+
+Only after explicit approval:
+
+1. Controlled tester opens the generated sign URL.
+2. Tester confirms the page shows the expected test contract.
+3. Tester confirms the signer identity is correct.
+4. Tester completes signing only if approval allows it.
+
+Do not enable platform auto-seal in the first B5-B run unless separately approved.
+
+#### Step 5: Callback Verification
+
+Confirm:
+
+- callback reaches the configured API;
+- callback log is created;
+- callback digest verification succeeds;
+- callback is handled once;
+- repeated callback is idempotent;
+- signer/task/contract/order state matches the approved transition.
+
+#### Step 6: Signed PDF Archive
+
+Only after callback success and archive approval:
+
+- trigger archive;
+- confirm `signedDocumentObjectKey` is set;
+- confirm `evidenceObjectKey` remains TODO unless official evidence download is confirmed;
+- confirm Admin stream returns PDF;
+- confirm Portal stream returns PDF only for the owning customer;
+- confirm provider URLs and storage object keys are not exposed.
+
+#### Step 7: Post-Check
+
+Confirm no unintended side effects:
+
+- no unexpected `PaymentRecord`;
+- no unexpected `PaymentWriteOff`;
+- no unintended `ReceivableBill` amount/status change;
+- no ROE, BaaS, depreciation, billing, write-off, or payment logic changed outside the approved order status transition;
+- no non-test customer/order/contract touched.
+
+### 11.5 Stop Conditions
+
+Stop immediately if any of these happens:
+
+1. sign page displays a non-test contract;
+2. signer is not the approved tester;
+3. page says the customer is not real-name verified;
+4. callback does not arrive;
+5. callback verification fails;
+6. callback cannot map to the local task/signer;
+7. contract or order status differs from the approved transition;
+8. archive fails or returns non-PDF content;
+9. any PII, secret, full provider URL, full sign URL, or object key leaks into logs/docs/UI;
+10. any non-test data is affected.
+
+### 11.6 Rollback And Mitigation
+
+Rollback principles:
+
+- do not directly edit production database rows as an immediate rollback;
+- do not delete or hide Fadada provider records;
+- keep callback logs and provider responses as audit evidence;
+- mark local records as controlled test records in operational notes;
+- if state advanced unexpectedly, document the observed payload and state before remediation;
+- if any payment, billing, write-off, ROE, BaaS, or depreciation data is affected, stop and create a separate incident/remediation plan.
+
+### 11.7 Current Decision
+
+Stage 10D-B5-B execution approval: **Pending**.
+
+B5-B execution is **not allowed yet**.
+
+The next step is for the user to fill the approval matrix with explicit Yes/No decisions. Only after all required approvals are Yes may a separate B5-B execution stage begin.

@@ -357,7 +357,7 @@ Default state is pending. B5-B must not start until every required row is explic
 | Accept provider backend record / possible fee | Yes | Pending |
 | Allow production API host | Yes, if using approved production test data | Pending |
 | Allow production DB test sample | Yes, only clearly marked test data | Pending |
-| Provider customer-id mapping resolved | Required | Blocked |
+| Provider customer-id mapping resolved | Required | Controlled env override implemented; approval pending |
 | Test PDF artifact ready in target DB | Required | Pending |
 
 ## 9. B5-B Entry Decision
@@ -366,7 +366,7 @@ Stage 10D-B5-B cannot start yet.
 
 Required before B5-B:
 
-1. Resolve provider customer-id mapping for the formal business flow, or approve a controlled fixture/override path.
+1. Approve the B5-A-R1 controlled env override path, or implement the long-term provider binding model.
 2. Confirm the callback URL and target database.
 3. Prepare a non-sensitive PDF artifact in the target database.
 4. Approve all required rows in the matrix.
@@ -374,3 +374,75 @@ Required before B5-B:
 6. Confirm whether signed PDF archive is allowed after callback completion.
 
 Once these are approved, B5-B should execute exactly one controlled full signing validation and stop for review.
+
+## 10. B5-A-R1 Signer Customer ID Resolver
+
+Stage 10D-B5-A-R1 adds the controlled signer provider-customer resolver needed before B5-B approval.
+
+Root cause:
+
+```text
+Local Customer.id is not a Fadada customer_id.
+```
+
+The formal Fadada create-sign-task path now refuses to call `uploaddocs.api` or build `extsign_validation.api` unless it can resolve a Fadada provider customer id for the customer signer.
+
+### 10.1 Long-Term Production Strategy
+
+The durable production design remains a provider account binding model, for example:
+
+```text
+CustomerESignProviderAccount
+  local customer id
+  provider
+  provider customer_id
+  real-name status
+  verified metadata
+  audit timestamps
+```
+
+That model is intentionally not added in B5-A-R1 because this stage must not add Prisma schema or migrations.
+
+### 10.2 Controlled B5 Smoke Strategy
+
+B5-A-R1 supports only one temporary resolver source:
+
+```text
+source = ENV_TEST_SIGNER
+```
+
+It is allowed only when all of the following are true:
+
+```text
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID=<local test Customer.id>
+FADADA_TEST_CUSTOMER_ID=<verified Fadada personal provider customer_id>
+localCustomerId === FADADA_TEST_LOCAL_CUSTOMER_ID
+```
+
+If any gate is missing, create-sign-task fails before PDF loading, upload, or sign URL creation:
+
+```text
+FADADA_SIGNER_CUSTOMER_ID_MISSING
+```
+
+If the local customer does not match the approved test customer, create-sign-task fails before provider calls:
+
+```text
+FADADA_TEST_CUSTOMER_ID_MISMATCH
+```
+
+### 10.3 B5-B Implication
+
+B5-B may use this env override only if the approval matrix explicitly approves:
+
+- using `FADADA_FULL_SIGNING_SMOKE`;
+- the local test customer id;
+- the verified Fadada test `customer_id`;
+- opening the generated sign URL;
+- completing signing;
+- callback state advancement;
+- signed PDF archive;
+- possible provider records and fees.
+
+Non-matching customers remain blocked. The R5 standalone sign URL still must not be used for full signing because it is not guaranteed to map to a local task in the callback target database.

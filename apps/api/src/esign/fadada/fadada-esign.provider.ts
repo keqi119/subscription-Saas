@@ -10,6 +10,7 @@ import { ContractPdfArtifactService } from "../contract-pdf-artifact.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { FadadaApiClient } from "./fadada-api.client";
 import { verifyFadadaCallbackDigest } from "./fadada-digest";
+import { resolveFadadaSignerCustomerId } from "./fadada-signer-customer-resolver";
 import { FadadaConfig, FadadaSignCallbackPayload } from "./fadada.types";
 
 export const FADADA_PROVIDER_STAGE_B2_REQUIRED = "FADADA_PROVIDER_STAGE_B2_REQUIRED";
@@ -32,13 +33,20 @@ export class FadadaESignProvider implements ESignProvider {
       throw new Error(`${FADADA_PROVIDER_DEPENDENCY_MISSING}: Fadada B2-A dependencies are not wired`);
     }
 
-    const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId);
-    const providerContractId = input.taskNo;
     const customerSigner = input.signers.find((signer) => signer.signerType === "CUSTOMER");
     if (!customerSigner?.customerId) {
       throw new Error("FADADA_CUSTOMER_SIGNER_MISSING: customer signer is required");
     }
+    const resolvedSignerCustomer = resolveFadadaSignerCustomerId({
+      config: this.config,
+      contractId: input.contractId,
+      localCustomerId: customerSigner.customerId,
+      mode: this.config.fullSigningSmokeEnabled ? "FULL_SIGNING_SMOKE" : "NORMAL",
+      orderId: undefined
+    });
 
+    const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId);
+    const providerContractId = input.taskNo;
     const uploadResult = await this.apiClient.uploadDocs({
       contractId: providerContractId,
       docTitle: input.documentName,
@@ -48,7 +56,7 @@ export class FadadaESignProvider implements ESignProvider {
     const transactionId = buildTransactionId(input.taskNo, 1);
     const signUrlResult = await this.apiClient.createExternalSignUrl({
       contractId: providerContractId,
-      customerId: customerSigner.customerId,
+      customerId: resolvedSignerCustomer.providerCustomerId,
       docTitle: input.documentName,
       notifyUrl: input.callbackUrl ?? this.config.signNotifyUrl ?? "",
       quantity: this.config.signUrlQuantity,
@@ -69,6 +77,9 @@ export class FadadaESignProvider implements ESignProvider {
           objectKey: artifact.objectKey,
           size: artifact.size,
           source: artifact.source
+        },
+        signerCustomer: {
+          source: resolvedSignerCustomer.source
         },
         signUrl: signUrlResult.raw,
         upload: uploadResult.raw

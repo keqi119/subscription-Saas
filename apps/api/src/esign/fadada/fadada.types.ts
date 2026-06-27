@@ -12,6 +12,7 @@ export interface FadadaConfig {
   baseUrl: string;
   enabled: boolean;
   env: FadadaEnv;
+  fullSigningSmokeEnabled: boolean;
   platformCustomerId?: string;
   platformSignatureId?: string;
   requestTimeoutMs: number;
@@ -19,6 +20,8 @@ export interface FadadaConfig {
   signReturnUrl?: string;
   signUrlQuantity: number;
   signUrlValidityMinutes: number;
+  testCustomerId?: string;
+  testLocalCustomerId?: string;
   verifyNotifyUrl?: string;
   verifyReturnUrl?: string;
 }

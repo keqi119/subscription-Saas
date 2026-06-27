@@ -355,6 +355,7 @@ function fadadaConfig(overrides: Partial<FadadaConfig> = {}): FadadaConfig {
     baseUrl: "https://testapi.fadada.com:8443/api/",
     enabled: true,
     env: "sandbox",
+    fullSigningSmokeEnabled: false,
     requestTimeoutMs: 15000,
     signUrlQuantity: 1,
     signUrlValidityMinutes: 30,

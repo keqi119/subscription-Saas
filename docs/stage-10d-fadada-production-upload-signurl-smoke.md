@@ -1065,6 +1065,28 @@ The standalone smoke scripts used `FADADA_TEST_CUSTOMER_ID`, but the formal `POS
 
 Therefore Stage 10D-B5-B must not start until the approval matrix is completed and the provider customer-id mapping/fixture decision is resolved.
 
+### 24.1 B5-A-R1 Resolver Update
+
+B5-A-R1 adds a guarded signer provider-customer resolver for the formal Fadada create-sign-task path.
+
+The resolver prevents this unsafe behavior:
+
+```text
+local Customer.id -> Fadada customer_id
+```
+
+The only supported temporary source is the controlled B5 smoke env override:
+
+```text
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID=<local test Customer.id>
+FADADA_TEST_CUSTOMER_ID=<verified Fadada provider customer_id>
+```
+
+The override is accepted only when the local signer customer id exactly matches `FADADA_TEST_LOCAL_CUSTOMER_ID`. Otherwise `createSignTask` fails before PDF loading, upload, or sign URL creation.
+
+This does not execute B5-B and does not call Fadada. B5-B still requires a separate approval matrix.
+
 ## 25. Chinese Support Handoff
 
 The following text can be sent to Fadada technical support:

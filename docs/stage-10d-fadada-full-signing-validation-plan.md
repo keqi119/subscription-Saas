@@ -649,3 +649,38 @@ FADADA_TEST_LOCAL_CUSTOMER_ID is missing
 ```
 
 No sign task was created. No Fadada API was called. No sign URL was opened. No contract/order/payment/archive state changed.
+
+### 11.9 B5-B-R1 Callback API Configuration Blocker
+
+After `FADADA_TEST_LOCAL_CUSTOMER_ID` was filled for the controlled tester `186****0212`, the local B5-B env gate passed.
+
+The follow-up callback target check stopped execution again because the production callback API container was not configured for Fadada:
+
+```text
+ESIGN_PROVIDER missing
+FADADA_ENV missing
+FADADA_BASE_URL missing
+FADADA_ENABLED missing
+FADADA_APP_ID / FADADA_APP_SECRET not present in inspected Fadada env set
+```
+
+The target API database is `subscription_saas_prod`, but without Fadada provider env the callback target cannot reliably verify and handle real Fadada callbacks.
+
+B5-B must remain blocked until the callback target API is configured and restarted/redeployed with masked verification of:
+
+```text
+ESIGN_PROVIDER=fadada
+FADADA_ENV=production
+FADADA_BASE_URL=https://textapi.fadada.com/api2/
+FADADA_ENABLED=true
+FADADA_APP_ID present
+FADADA_APP_SECRET present
+FADADA_SIGN_NOTIFY_URL=https://api.subauto.keybox.cloud/api/esign/callback/fadada
+FADADA_SIGN_RETURN_URL=https://app.subauto.keybox.cloud/portal/contracts
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID present
+FADADA_TEST_CUSTOMER_ID present
+FADADA_AUTO_SIGN_ENABLED=false or missing
+```
+
+No B5-B sign task has been created yet.

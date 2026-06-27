@@ -117,8 +117,80 @@ Then re-run the B5-B preflight and confirm:
 3. `FADADA_TEST_CUSTOMER_ID` is the verified Fadada provider customer id for the same tester;
 4. automatic seal remains disabled.
 
-## 8. Current Gate
+## 8. R1 Preflight Retry
+
+After `FADADA_TEST_LOCAL_CUSTOMER_ID` was filled from the controlled tester customer, B5-B-R1 was attempted again.
+
+Local env safety gates:
+
+| Field | Result |
+| --- | --- |
+| `FADADA_FULL_SIGNING_SMOKE` | `1` |
+| `FADADA_TEST_LOCAL_CUSTOMER_ID` | present |
+| `FADADA_TEST_CUSTOMER_ID` | present |
+| `FADADA_AUTO_SIGN_ENABLED` | `false` |
+| generic upload/signUrl preflight | passed |
+
+Controlled local customer check:
+
+| Check | Result |
+| --- | --- |
+| masked mobile | `186****0212` |
+| production DB customer match | exactly one |
+| local customer id | present / masked |
+| customer status | approved |
+
+Callback target API / DB check:
+
+| Field | Result |
+| --- | --- |
+| target callback URL | `https://api.subauto.keybox.cloud/api/esign/callback/fadada` |
+| target API container | production API |
+| target DB | `subscription_saas_prod`, masked connection |
+| API `NODE_ENV` | production |
+| API `DATABASE_URL` | present, points to `postgres:5432/subscription_saas_prod` |
+| API `ESIGN_PROVIDER` | missing |
+| API `FADADA_ENV` | missing |
+| API `FADADA_BASE_URL` | missing |
+| API `FADADA_ENABLED` | missing |
+| API `FADADA_APP_ID` / `FADADA_APP_SECRET` | not present in inspected Fadada env set |
+
+### R1 Blocker
+
+B5-B-R1 stopped before sample selection or `createSignTask`.
+
+Reason:
+
+```text
+callback target API is not configured for the Fadada provider
+```
+
+The callback controller injects the configured e-sign provider. Without `ESIGN_PROVIDER=fadada` and the Fadada credentials/config in the callback target API environment, a real Fadada callback cannot be reliably verified and handled by the production API.
+
+No sign task was created. No Fadada API was called. No sign URL was opened. No signing was completed. No contract/order/payment/archive state changed.
+
+Required next action before another B5-B attempt:
+
+```text
+Configure the callback target API environment for Fadada:
+ESIGN_PROVIDER=fadada
+FADADA_ENV=production
+FADADA_BASE_URL=https://textapi.fadada.com/api2/
+FADADA_ENABLED=true
+FADADA_APP_ID=<present>
+FADADA_APP_SECRET=<present>
+FADADA_SIGN_NOTIFY_URL=https://api.subauto.keybox.cloud/api/esign/callback/fadada
+FADADA_SIGN_RETURN_URL=https://app.subauto.keybox.cloud/portal/contracts
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID=<controlled local test Customer.id>
+FADADA_TEST_CUSTOMER_ID=<verified Fadada tester customer_id>
+FADADA_AUTO_SIGN_ENABLED=false or missing
+```
+
+After updating server env, restart/redeploy the API container and re-check the callback target API env with masked output before any signing attempt.
+
+## 9. Current Gate
 
 Stage 10D-B5-B passed: **no**.
 
-Stage 10D-B5-B may be retried only after the missing resolver env gates are configured and the callback target database is confirmed.
+Stage 10D-B5-B may be retried only after the callback target API is configured with Fadada provider env and the masked preflight confirms it.

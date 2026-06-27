@@ -684,3 +684,38 @@ FADADA_AUTO_SIGN_ENABLED=false or missing
 ```
 
 No B5-B sign task has been created yet.
+
+### 11.10 B5-B-ENV Production API Image Gate
+
+Stage 10D-B5-B-ENV checked the running callback target API image before any env change, deploy, callback probe, task creation, or provider call.
+
+Current production API image:
+
+```text
+ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec
+```
+
+The running container search found:
+
+```text
+/app/apps/api/dist/src/esign/fadada missing
+resolveFadadaSignerCustomerId missing
+FADADA_FULL_SIGNING_SMOKE missing
+FADADA_TEST_LOCAL_CUSTOMER_ID missing
+extsign_validation.api missing
+```
+
+Conclusion:
+
+```text
+production API image does not contain PR #123 Fadada provider/runtime code
+```
+
+Therefore B5-B remains blocked even before runtime env configuration.
+
+Do not configure only env on the current production image. First choose one path:
+
+1. build and deploy a PR #123 API candidate image to `api.subauto.keybox.cloud`, then configure Fadada runtime env and re-run B5-B-ENV; or
+2. use a staging API callback URL that already runs PR #123 code and have Fadada allow that staging `notify_url`.
+
+No B5-B execution is allowed on the current `portal-rc-r6-20260620-4188aec` API image.

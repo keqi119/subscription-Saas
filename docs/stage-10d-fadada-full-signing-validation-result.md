@@ -189,8 +189,96 @@ FADADA_AUTO_SIGN_ENABLED=false or missing
 
 After updating server env, restart/redeploy the API container and re-check the callback target API env with masked output before any signing attempt.
 
-## 9. Current Gate
+## 9. Stage 10D-B5-B-ENV Runtime Config Preflight
+
+Stage 10D-B5-B-ENV was run as a configuration/readiness preflight only. It did not deploy, restart, create a task, call Fadada, open a sign URL, sign, advance state, or archive a PDF.
+
+### 9.1 Production API Image / Code Check
+
+Current production API container:
+
+| Field | Result |
+| --- | --- |
+| container | `subauto-production-api-1` |
+| status | healthy |
+| image | `ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec` |
+| image created | 2026-06-20 |
+| compose project | `subauto-production` |
+| compose env file | `/opt/subscription-saas/.env.production.images` |
+| compose config | `/opt/subscription-saas/docker-compose.production.images.example.yml` |
+
+Code capability search inside the running container:
+
+| Check | Result |
+| --- | --- |
+| `/app/apps/api/dist/src/esign/fadada` | missing |
+| `resolveFadadaSignerCustomerId` string | missing |
+| `FADADA_FULL_SIGNING_SMOKE` string | missing |
+| `FADADA_TEST_LOCAL_CUSTOMER_ID` string | missing |
+| `extsign_validation.api` string | missing |
+| visible e-sign provider files | only base/mock e-sign files found |
+
+Conclusion:
+
+```text
+production API image does not contain PR #123 Fadada provider/runtime code
+```
+
+This blocks B5-B-ENV. Do not configure only env on this image, because `ESIGN_PROVIDER=fadada` is not expected to work without the deployed Fadada provider code.
+
+### 9.2 Runtime Env Check
+
+The previous masked production API env check also showed:
+
+```text
+ESIGN_PROVIDER missing
+FADADA_ENV missing
+FADADA_BASE_URL missing
+FADADA_ENABLED missing
+FADADA_APP_ID / FADADA_APP_SECRET not present in inspected Fadada env set
+```
+
+These env gaps remain secondary to the image/code blocker above.
+
+### 9.3 Health / Callback Probe
+
+Skipped.
+
+Reason:
+
+```text
+image/code gate failed
+```
+
+No invalid-digest callback probe was sent, because the running image does not contain the Fadada callback verifier/provider code required for this stage.
+
+### 9.4 Target DB / Customer Mapping
+
+The target production DB and controlled customer were already checked in B5-B-R1:
+
+- target DB: `subscription_saas_prod`, masked;
+- masked mobile: `186****0212`;
+- customer match: exactly one;
+- local customer id: present / masked;
+- provider customer id: present / masked in ignored local env.
+
+No business data was written.
+
+### 9.5 ENV Gate Decision
+
+Stage 10D-B5-B-ENV passed: **no**.
+
+Required next decision:
+
+```text
+Option A: build and deploy a PR #123 API candidate image to api.subauto.keybox.cloud, then configure Fadada runtime env and re-run B5-B-ENV.
+Option B: use a staging API callback URL that runs PR #123 code, and have Fadada allow that staging notify_url before B5-B.
+```
+
+Do not proceed to B5-B execution on the current production API image.
+
+## 10. Current Gate
 
 Stage 10D-B5-B passed: **no**.
 
-Stage 10D-B5-B may be retried only after the callback target API is configured with Fadada provider env and the masked preflight confirms it.
+Stage 10D-B5-B may be retried only after the callback target API runs PR #123 Fadada code and the masked runtime env preflight passes.

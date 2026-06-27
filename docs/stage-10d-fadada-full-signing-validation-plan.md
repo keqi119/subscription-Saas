@@ -630,3 +630,22 @@ Stage 10D-B5-B execution approval: **Pending**.
 B5-B execution is **not allowed yet**.
 
 The next step is for the user to fill the approval matrix with explicit Yes/No decisions. Only after all required approvals are Yes may a separate B5-B execution stage begin.
+
+### 11.8 First B5-B Execution Attempt
+
+After approval was granted, the first B5-B execution attempt stopped at the B5-specific env gate before any provider call.
+
+Result document:
+
+```text
+docs/stage-10d-fadada-full-signing-validation-result.md
+```
+
+Blockers:
+
+```text
+FADADA_FULL_SIGNING_SMOKE is missing
+FADADA_TEST_LOCAL_CUSTOMER_ID is missing
+```
+
+No sign task was created. No Fadada API was called. No sign URL was opened. No contract/order/payment/archive state changed.

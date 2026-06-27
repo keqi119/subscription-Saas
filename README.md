@@ -67,6 +67,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-fadada-sandbox-upload-signurl-smoke.md`: Stage 10D-B2-B-R1 Fadada sandbox upload/signUrl smoke
 - `docs/stage-10d-fadada-production-upload-signurl-smoke.md`: Stage 10D-B2-C-R1 Fadada production-host upload/signUrl controlled smoke
 - `docs/stage-10d-fadada-full-signing-validation-plan.md`: Stage 10D-B5-A/B5-A-R1 Fadada full signing validation plan and signer customer_id resolver gate
+- `docs/stage-10d-fadada-full-signing-validation-result.md`: Stage 10D-B5-B Fadada controlled full signing execution result / blocker log
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep
 - `docs/stage-10d-c1-fadada-test-signer-realname-smoke.md`: Stage 10D-C1-B Fadada production-host test signer preflight/prepare smoke result
 - `docs/stage-10d-fadada-callback-idempotency.md`: Stage 10D-B3 Fadada callback verification and idempotency

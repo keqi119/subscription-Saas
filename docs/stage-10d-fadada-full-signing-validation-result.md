@@ -282,3 +282,177 @@ Do not proceed to B5-B execution on the current production API image.
 Stage 10D-B5-B passed: **no**.
 
 Stage 10D-B5-B may be retried only after the callback target API runs PR #123 Fadada code and the masked runtime env preflight passes.
+
+## 11. Stage 10D-B5-B-ENV-A Production API Candidate Deployment And Callback Readiness
+
+Stage 10D-B5-B-ENV-A was run as an API-only production candidate deployment and callback readiness check. It did not open a sign URL, sign, create a real `ContractESignTask`, call Fadada upload/signUrl/sign/download/filing APIs, seed production, migrate production, deploy Web, or intentionally advance contract/order/payment state.
+
+### 11.1 Candidate Image
+
+| Field | Result |
+| --- | --- |
+| source commit | `214576bbb539b9b22ca255fa6394050c64293d94` |
+| image tag | `ghcr.io/keqi119/subscription-api:fadada-pr123-20260627-214576b` |
+| image repo digest | `sha256:99312563a13410c529604d28ff37a4df960a657d62336de70eeaea0f01250fb5` |
+| remote image id | `sha256:781d26cca7809ee6251c1db230cb45bc5bbeb981cf7016537c0983b53a393e22` |
+| build time | `2026-06-27T13:59:44Z` |
+| GHCR push | passed |
+
+### 11.2 Production Backup And Predeploy Env
+
+| Field | Result |
+| --- | --- |
+| previous API image | `ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec` |
+| previous API repo digest | `sha256:bf10d831a24fa99abee7a8ba915bf18b0ae958b374e04c0a09a404c09c74e9fc` |
+| previous API image id | `sha256:a315f90e1cae481471bd47666609a63ab781c743f3b0419dc872d0376566c1b3` |
+| compose env file | `/opt/subscription-saas/.env.production.images` |
+| compose file | `/opt/subscription-saas/docker-compose.production.images.example.yml` |
+| predeploy backup | `/opt/subscription-saas/deploy-backups/fadada-pr123-20260627-220602` |
+| pre-Fadada env backup | `/opt/subscription-saas/deploy-backups/fadada-pr123-env-before-20260627-220900.env` |
+| API switch backup | `/opt/subscription-saas/deploy-backups/fadada-pr123-api-switch-20260628-003038` |
+
+Masked predeploy runtime env readiness passed before the API switch:
+
+```text
+ESIGN_PROVIDER=fadada
+FADADA_ENV=production
+FADADA_BASE_URL=https://textapi.fadada.com/api2/
+FADADA_API_VERSION=2.0
+FADADA_ENABLED=true
+FADADA_APP_ID=present
+FADADA_APP_SECRET=present
+FADADA_SIGN_NOTIFY_URL=https://api.subauto.keybox.cloud/api/esign/callback/fadada
+FADADA_SIGN_RETURN_URL=https://app.subauto.keybox.cloud/portal/contracts
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID=present
+FADADA_TEST_CUSTOMER_ID=present
+FADADA_AUTO_SIGN_ENABLED=false
+FADADA_UPLOAD_SIGNURL_SMOKE=0
+FADADA_TEST_SIGNER_REALNAME_PREP=0
+```
+
+### 11.3 API-Only Deployment
+
+Deployment executed: **yes**.
+
+Only the API service was recreated:
+
+```text
+docker compose -p subauto-production --env-file .env.production.images -f docker-compose.production.images.example.yml up -d --no-deps api
+```
+
+No Web restart, Postgres restart, seed, migration, `migrate reset`, or `db push` was executed.
+
+Post-deploy API health before the callback probe:
+
+| Field | Result |
+| --- | --- |
+| API image | `ghcr.io/keqi119/subscription-api:fadada-pr123-20260627-214576b` |
+| API image id | `sha256:781d26cca7809ee6251c1db230cb45bc5bbeb981cf7016537c0983b53a393e22` |
+| container status | running |
+| container health | healthy |
+| public health | `200`, `status:"ok"`, `storage:"oss"` |
+
+### 11.4 Callback Invalid Digest Probe
+
+Probe:
+
+```text
+POST https://api.subauto.keybox.cloud/api/esign/callback/fadada
+transaction_id=probe
+contract_id=probe
+result_code=3000
+timestamp=20260101000000
+msg_digest=invalid
+```
+
+Result:
+
+| Field | Result |
+| --- | --- |
+| endpoint exists | yes |
+| status code | `500` |
+| body summary | generic internal server error |
+| expected readiness | failed |
+| business advancement | no task/signer/callback-log row for `probe` |
+
+The API log showed the root cause:
+
+```text
+Prisma P2022 ColumnNotFound:
+column subscription_order.model_definition_id_snapshot does not exist
+```
+
+The callback code path queried `ContractESignSigner` and joined through relations that require PR #123/current schema fields. Production DB is behind the candidate image schema, so invalid-digest callback readiness failed before the digest rejection response could be returned.
+
+### 11.5 Production Migration Status
+
+Read-only `prisma migrate status` was run from the candidate image against production DB without deploying it again after rollback. Result: **not up to date**.
+
+Unapplied migrations:
+
+```text
+20260620100000_portal_sms_send_logs
+20260621100000_vehicle_listing_profiles
+20260621110000_vehicle_condition_reports
+20260622160000_customer_profile_materials
+20260622190000_vehicle_insurance_documents_claims
+20260622210000_vehicle_baas_contracts
+20260623090000_vehicle_depreciation_policies
+20260623170000_vehicle_model_codes
+20260624090000_vehicle_model_definitions
+20260624110000_vehicle_model_definition_on_vehicle
+20260624123000_product_model_definition_links
+20260624170000_residual_model_definition_links
+20260624193000_quote_order_model_snapshots
+20260624203000_quote_order_model_code_snapshots
+```
+
+No production migration was applied in this stage.
+
+### 11.6 Target DB / Customer Mapping
+
+Read-only production DB mapping check passed:
+
+| Check | Result |
+| --- | --- |
+| `FADADA_TEST_LOCAL_CUSTOMER_ID` customer count | `1` |
+| masked mobile `186****0212` customer count | `1` |
+| same customer | yes |
+| `FADADA_TEST_CUSTOMER_ID` | present |
+
+No full local customer id, provider customer id, mobile number, app secret, sign URL, or PII was printed or recorded.
+
+### 11.7 Rollback
+
+Rollback executed: **yes**.
+
+Reason:
+
+```text
+callback invalid digest probe returned 500 because production DB schema is not up to date for the PR #123 candidate image
+```
+
+Rollback restored the pre-Fadada production env backup and previous API image:
+
+| Field | Result |
+| --- | --- |
+| rollback dir | `/opt/subscription-saas/deploy-backups/fadada-pr123-rollback-20260628-003308` |
+| rollback image | `ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec` |
+| rollback image id | `sha256:a315f90e1cae481471bd47666609a63ab781c743f3b0419dc872d0376566c1b3` |
+| API health after rollback | healthy |
+| public health after rollback | `200`, `status:"ok"`, `storage:"oss"` |
+
+Current production API is not running the PR #123 candidate after rollback.
+
+### 11.8 Gate Decision
+
+Stage 10D-B5-B-ENV-A passed: **no**.
+
+B5-B execution is blocked by production schema drift:
+
+```text
+production DB is not up to date for the PR #123 API candidate image
+```
+
+Do not proceed to B5-B execution until a separate, approved production migration plan brings `subscription_saas_prod` up to the schema required by the PR #123 candidate image, followed by a new API candidate deploy and callback invalid-digest readiness probe.

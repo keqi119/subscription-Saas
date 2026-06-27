@@ -719,3 +719,60 @@ Do not configure only env on the current production image. First choose one path
 2. use a staging API callback URL that already runs PR #123 code and have Fadada allow that staging `notify_url`.
 
 No B5-B execution is allowed on the current `portal-rc-r6-20260620-4188aec` API image.
+
+### 11.11 B5-B-ENV-A API Candidate Deployment And Schema Blocker
+
+After explicit production deployment confirmation, Stage 10D-B5-B-ENV-A built and pushed the PR #123 API candidate:
+
+```text
+ghcr.io/keqi119/subscription-api:fadada-pr123-20260627-214576b
+sha256:99312563a13410c529604d28ff37a4df960a657d62336de70eeaea0f01250fb5
+source commit 214576bbb539b9b22ca255fa6394050c64293d94
+```
+
+The production API env was configured with masked Fadada runtime readiness:
+
+```text
+ESIGN_PROVIDER=fadada
+FADADA_ENV=production
+FADADA_BASE_URL=https://textapi.fadada.com/api2/
+FADADA_API_VERSION=2.0
+FADADA_ENABLED=true
+FADADA_APP_ID present
+FADADA_APP_SECRET present
+FADADA_SIGN_NOTIFY_URL=https://api.subauto.keybox.cloud/api/esign/callback/fadada
+FADADA_SIGN_RETURN_URL=https://app.subauto.keybox.cloud/portal/contracts
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID present
+FADADA_TEST_CUSTOMER_ID present
+FADADA_AUTO_SIGN_ENABLED=false
+FADADA_UPLOAD_SIGNURL_SMOKE=0
+FADADA_TEST_SIGNER_REALNAME_PREP=0
+```
+
+The API-only deployment was executed with `--no-deps api`. Web and Postgres were not restarted. No seed, migration, `migrate reset`, or `db push` was executed.
+
+The candidate API became healthy, but the invalid-digest callback readiness probe returned `500`. Production logs showed:
+
+```text
+Prisma P2022 ColumnNotFound:
+column subscription_order.model_definition_id_snapshot does not exist
+```
+
+Read-only `prisma migrate status` from the candidate image confirmed that production DB is not up to date for the candidate image. Several migrations from `20260620100000_portal_sms_send_logs` through `20260624203000_quote_order_model_code_snapshots` are unapplied.
+
+The deployment was rolled back to:
+
+```text
+ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec
+```
+
+Rollback health passed. The invalid `probe` callback left no `contract_esign_task`, `contract_esign_signer`, or `contract_esign_callback_log` rows.
+
+Current decision:
+
+```text
+B5-B execution remains blocked.
+```
+
+Next required action is a separate approved production migration plan for `subscription_saas_prod`, followed by a new PR #123 API candidate deployment and another callback invalid-digest readiness probe. Do not start B5-B signing execution until production migrate status is up to date and the invalid-digest callback probe rejects safely without 500.

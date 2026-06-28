@@ -921,3 +921,113 @@ no controlled pending-sign test contract/order sample
 ```
 
 B5-B full signing execution must not be retried until the user approves sample creation and the resulting sample is confirmed read-only.
+
+## 18. Stage 10D-B5-B-SAMPLE Controlled Pending-Sign Sample Creation
+
+Stage 10D-B5-B-SAMPLE creation using Option B was explicitly approved. The scope was limited to creating a controlled pending-sign test order/contract sample and attaching a non-sensitive PDF artifact. It did not authorize or execute B5-B full signing.
+
+### 18.1 Approval And Approach
+
+| Field | Result |
+| --- | --- |
+| approval received | yes |
+| selected approach | Option B: formal business flow plus guarded ops artifact attach |
+| production DB write executed | yes |
+| guarded safety flags | `FADADA_SAMPLE_CREATE=1`, `FADADA_SAMPLE_ARTIFACT_ATTACH=1` |
+| test customer | `3c954f...810a`, mobile mask `186****0212` |
+| provider customer id | present / masked |
+| selected plan | `03d2ff...7dbe` |
+| selected vehicle | `16b4ea...6f68` |
+| vehicle status after formal flow | `RESERVED` |
+
+The selected vehicle status changed through the formal order flow only. No existing `PENDING_PAYMENT` order was modified.
+
+### 18.2 Created Sample
+
+The formal API flow created the new order and contract, then the guarded artifact attach created a non-sensitive test PDF artifact and bound it only to the new contract.
+
+| Object | Masked reference | Result |
+| --- | --- | --- |
+| order | `b5698f...91c1` | `PENDING_SIGN` |
+| contract | `643f9d...2a3b` | `GENERATED` |
+| contract version | `5b591f...d6d8` | present |
+| PDF artifact | `2ff17a...82cc` | present, `application/pdf`, 859 bytes |
+
+The contract title and order review marker include the controlled-test marker:
+
+```text
+Fadada B5-B Controlled Test
+```
+
+No PDF binary, storage object key, full IDs, phone number, provider customer id, or PII was recorded.
+
+### 18.3 Post-Creation Verification
+
+Read-only verification after creation:
+
+```text
+eligible_rows=1
+Customer matches FADADA_TEST_LOCAL_CUSTOMER_ID=yes
+mobile mask=186****0212
+Order.status=PENDING_SIGN
+Contract.status=GENERATED
+ContractVersion present=yes
+PDF artifact present=yes
+ContractESignTask count for contract=0
+ContractESignSigner count for contract=0
+FADADA_AUTO_SIGN_ENABLED=false
+```
+
+Finance side-effect check:
+
+| Check | Before | After | Result |
+| --- | --- | --- | --- |
+| PaymentOrder count | 12 | 12 | unchanged |
+| PaymentRecord count | 8 | 8 | unchanged |
+| PaymentWriteOff count | 8 | 8 | unchanged |
+| ReceivableBill count | 10 | 10 | unchanged |
+| ReceivableBill paid amount sum | 8 | 8 | unchanged |
+| ReceivableBill remaining amount sum | 2 | 2 | unchanged |
+| DepositLedger count | 0 | 0 | unchanged |
+
+### 18.4 Actions Not Executed
+
+- no Fadada API call;
+- no `uploaddocs.api`;
+- no `extsign_validation.api`;
+- no `extsign_auto.api`;
+- no `downLoadContract.api`;
+- no `contractFiling.api`;
+- no `ContractESignTask` created;
+- no `ContractESignSigner` created;
+- no sign URL generated or opened;
+- no signing executed;
+- no contract/order advancement to `SIGNED` / `PENDING_PAYMENT`;
+- no PaymentRecord or PaymentWriteOff created;
+- no ReceivableBill paid amount or remaining amount mutation;
+- no production seed, migration deploy, DB push, migrate reset, API/Web deploy, or container restart;
+- no PII, secret, full customer id, full provider customer id, object key, sign URL, provider response, or PDF binary committed.
+
+### 18.5 Gate Decision
+
+Stage 10D-B5-B-SAMPLE passed.
+
+The previous blocker is closed:
+
+```text
+no controlled pending-sign test contract/order sample
+```
+
+Current status:
+
+```text
+controlled pending-sign test sample available=yes
+B5-B full signing execution automatically approved=no
+PR #123 status=Draft
+```
+
+Next allowed step is a separate approval checkpoint:
+
+```text
+confirm retry Stage 10D-B5-B full signing execution using the new controlled sample
+```

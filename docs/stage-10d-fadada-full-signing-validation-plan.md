@@ -970,3 +970,45 @@ approve Stage 10D-B5-B-SAMPLE creation using Option B
 ```
 
 B5-B full signing execution remains blocked until the approved sample exists and is verified read-only.
+
+### 11.18 B5-B-SAMPLE Creation Result
+
+Stage 10D-B5-B-SAMPLE creation using Option B later completed after explicit approval.
+
+Result:
+
+```text
+selected approach: Option B
+production DB write: yes
+order: b5698f...91c1
+order status: PENDING_SIGN
+contract: 643f9d...2a3b
+contract status: GENERATED
+contract version: 5b591f...d6d8
+PDF artifact: present
+eligible_rows=1
+```
+
+Safety result:
+
+```text
+Fadada APIs called: no
+ContractESignTask created: no
+ContractESignSigner created: no
+signUrl generated/opened: no
+signing executed: no
+Order advanced to PENDING_PAYMENT: no
+Contract advanced to SIGNED: no
+PaymentRecord / PaymentWriteOff: unchanged
+ReceivableBill paidAmount / remainingAmount: unchanged
+seed / migrate deploy / db push / reset: no
+deploy / restart: no
+```
+
+The controlled sample is now available for a future B5-B retry, but full signing execution remains a separate approval checkpoint:
+
+```text
+confirm retry Stage 10D-B5-B full signing execution using the new controlled sample
+```
+
+PR #123 remains Draft until the full signing result is separately reviewed.

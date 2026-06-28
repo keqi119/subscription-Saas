@@ -170,3 +170,20 @@ Current B5-B blocker:
 ```text
 Before formal full signing, resolve how the controlled local signer maps to the verified Fadada provider customer_id.
 ```
+
+## 13. Stage 10D-B5-B Archive Gate Status
+
+ENV-B later confirmed the production API candidate and Fadada runtime readiness, including the approved local-to-provider customer mapping and `FADADA_AUTO_SIGN_ENABLED=false`.
+
+The first B5-B full signing execution attempt stopped before `createSignTask` because there was no controlled pending-sign test contract/order sample for the approved tester. Therefore archive was not reached:
+
+```text
+archive executed: no
+signedDocumentObjectKey present: no new task created
+Admin signed PDF stream: not reached
+Portal signed PDF stream: not reached
+provider PDF download: not called
+contractFiling.api: not called
+```
+
+Before archive can be validated in production, B5-B needs one approved `PENDING_SIGN` test order with a signable contract and a non-sensitive PDF artifact.

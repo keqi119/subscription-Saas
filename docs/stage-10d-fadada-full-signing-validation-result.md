@@ -739,3 +739,79 @@ Stage 10D-B5-B execution approval checkpoint
 ```
 
 Do not start B5-B full signing execution until the user explicitly approves that checkpoint. PR #123 remains Draft.
+
+## 16. Stage 10D-B5-B Full Signing Execution Attempt: Sample Blocker
+
+Stage 10D-B5-B full signing execution was explicitly approved after ENV-B passed, including permission to create a controlled signing task, upload a test contract, generate and open a sign URL, complete tester signing, allow callback advancement, and archive the signed PDF. Auto sign remained forbidden.
+
+The run stopped at Step E before creating any signing task because no eligible controlled pending-sign test sample exists in production for the approved tester.
+
+### 16.1 Pre-Execution Checks
+
+| Check | Result |
+| --- | --- |
+| branch | `feature/stage10-fadada-production-upload-signurl-smoke-run` |
+| worktree | clean |
+| PR branch push | success, includes `f40e676` |
+| `.env.fadada.production.local` | ignored |
+| `.tmp` | ignored |
+| production API image | `ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959` |
+| production API health | healthy, public health HTTP 200 |
+| Fadada env masked check | passed |
+| `FADADA_AUTO_SIGN_ENABLED` | `false` |
+| target customer mapping | unique and matched |
+
+### 16.2 Step E Sample Search
+
+Read-only production DB query for the approved tester found:
+
+```text
+candidate_rows=1
+orderStatus=PENDING_PAYMENT
+contract=null
+contractStatus=null
+pdfSource=NONE
+esignTaskCount=0
+eligible_rows=0
+```
+
+The existing order is not a `PENDING_SIGN` order and has no associated signable contract or PDF artifact. Therefore it cannot be used for the controlled signing execution.
+
+### 16.3 Actions Not Executed
+
+Because Step E failed, the following actions were not executed:
+
+- no `ContractESignTask` created;
+- no `ContractESignSigner` created;
+- no test contract uploaded to Fadada;
+- no `uploaddocs.api` call;
+- no `extsign_validation.api` call;
+- no sign URL generated or opened;
+- no signing completed;
+- no callback from a real signing flow received;
+- no contract or order advancement;
+- no signed PDF download or archive;
+- no `extsign_auto.api` / auto seal;
+- no PaymentRecord, PaymentWriteOff, ReceivableBill, ROE, BaaS, depreciation, seed, migration, DB push, or migrate reset action.
+
+### 16.4 Gate Decision
+
+Stage 10D-B5-B passed: **no**.
+
+Blocker:
+
+```text
+no controlled pending-sign test contract/order sample
+```
+
+Next required action is to prepare a controlled tester-owned business sample through an approved plan:
+
+```text
+Customer.id = FADADA_TEST_LOCAL_CUSTOMER_ID
+Order.status = PENDING_SIGN
+Contract.status = GENERATED or SIGNING
+ContractVersion or Contract has a PDF artifact
+PDF is clearly a non-sensitive test contract
+```
+
+Do not retry full signing execution until that sample exists and is confirmed read-only. PR #123 remains Draft.

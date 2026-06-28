@@ -226,3 +226,17 @@ H1 behavior:
 - invalid callback log write/update failures are swallowed so the rejection remains non-500.
 
 This hardening does not remove the ENV-A schema blocker. Verified callbacks and other candidate API routes still require production DB migrations to match the PR #123 schema before B5-B execution can resume.
+
+## 16. Stage 10D-B5-B Callback Gate Status
+
+ENV-B later confirmed that the production callback endpoint is running the H1 candidate image and rejects invalid Fadada digests without 404/500:
+
+```text
+HTTP 201
+handled=false
+reason=UNVERIFIED
+```
+
+The first B5-B full signing execution attempt did not reach a real signing callback. It stopped before `createSignTask` because there was no controlled pending-sign test contract/order sample for the approved tester.
+
+No real Fadada callback, provider business callback handling, contract/order advancement, payment mutation, or archive action occurred in that attempt.

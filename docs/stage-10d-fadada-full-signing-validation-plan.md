@@ -891,3 +891,28 @@ Stage 10D-B5-B execution approval checkpoint
 ```
 
 B5-B full signing execution must not start automatically. It requires a separate explicit user approval, and PR #123 remains Draft until separately confirmed.
+
+### 11.16 B5-B Execution Sample Gate Blocker
+
+Stage 10D-B5-B full signing execution was approved after ENV-B, but the run stopped during the required sample gate before any provider business call.
+
+Read-only production query for the approved tester found one existing order, but it is already `PENDING_PAYMENT` and has no signable contract/PDF artifact attached. Eligible controlled sample count was zero:
+
+```text
+eligible_rows=0
+blocker=no controlled pending-sign test contract/order sample
+```
+
+No signing task, upload, sign URL, callback advancement, archive, payment record, write-off, bill mutation, seed, migration, or provider business API call was executed.
+
+Before retrying B5-B, prepare and confirm one controlled sample:
+
+```text
+Order.customerId = FADADA_TEST_LOCAL_CUSTOMER_ID
+Order.status = PENDING_SIGN
+Contract.status = GENERATED or SIGNING
+Contract or ContractVersion has a PDF artifact
+PDF is clearly a non-sensitive test contract
+```
+
+Sample creation is a separate approval checkpoint. Do not create it ad hoc during B5-B execution.

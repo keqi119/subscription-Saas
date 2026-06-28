@@ -188,3 +188,30 @@ B5-B execution can only be reconsidered after:
 3. API health passes;
 4. callback invalid digest probe returns non-500 and does not advance business state;
 5. target customer mapping and Fadada runtime masked checks pass.
+
+## 10. Follow-Up ENV-B Result
+
+Stage 10D-B5-B-ENV-B later completed successfully.
+
+| Field | Result |
+| --- | --- |
+| deployed API candidate | `ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959` |
+| candidate digest | `sha256:13f0d2dc30776f487f4c4bd1ca23007f4ae09ad17a6c3bfc2105a7c9659e5514` |
+| source commit | `e4bf95907bd4cae942f8db12bc79c00a0da5daa5` |
+| contains H1 | yes, `df4d33d` |
+| API-only deploy | success |
+| API health | healthy, public health HTTP 200 |
+| invalid digest probe | HTTP 201, `handled=false`, `reason=UNVERIFIED` |
+| Fadada masked env | passed |
+| customer mapping | unique and matched |
+| production migrate status | up to date, 54 migrations |
+| rollback | not needed |
+
+No seed, migration, DB push, migrate reset, Web restart, Postgres restart, Fadada business API call, task creation, sign URL action, signing, artifact archive, contract/order advancement, payment posting, write-off, or bill mutation was executed in ENV-B.
+
+Current gate:
+
+```text
+ENV-B callback readiness gate passed
+next step: B5-B execution approval checkpoint only
+```

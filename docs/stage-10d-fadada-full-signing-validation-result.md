@@ -580,3 +580,162 @@ production migration blocker: closed
 next stage: rebuild H1 API candidate and perform API-only callback readiness deployment
 B5-B execution: still blocked
 ```
+
+## 15. Stage 10D-B5-B-ENV-B Candidate Redeploy And Callback Readiness
+
+Stage 10D-B5-B-ENV-B rebuilt and deployed a PR #123 API candidate that includes H1 callback hardening.
+
+### 15.1 Candidate Image
+
+| Field | Result |
+| --- | --- |
+| source commit | `e4bf95907bd4cae942f8db12bc79c00a0da5daa5` |
+| contains H1 commit | yes, includes `df4d33d fix: reject invalid fadada callbacks before business lookup` |
+| image tag | `ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959` |
+| image digest | `sha256:13f0d2dc30776f487f4c4bd1ca23007f4ae09ad17a6c3bfc2105a7c9659e5514` |
+| build result | success |
+| GHCR push result | success |
+
+Local branch note:
+
+```text
+The local source commit e4bf959 contains documentation only after H1.
+GitHub push for e4bf959 failed due network reset, but the GHCR image was built from local HEAD and includes H1.
+```
+
+### 15.2 Deployment
+
+| Field | Result |
+| --- | --- |
+| deployment executed | yes |
+| deployment type | API-only |
+| compose project | `subauto-production` |
+| API service | `api` / `subauto-production-api-1` |
+| pre-deploy backup | `/opt/subscription-saas/deploy-backups/fadada-envb-20260628174342` |
+| previous API image | `ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec` |
+| previous API digest | `sha256:bf10d831a24fa99abee7a8ba915bf18b0ae958b374e04c0a09a404c09c74e9fc` |
+| rollback image | `ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec` |
+| Web restarted | no |
+| Postgres restarted | no |
+| seed executed | no |
+| production migrate deploy executed | no |
+| `db push` / `migrate reset` executed | no |
+
+### 15.3 API Health
+
+| Check | Result |
+| --- | --- |
+| deployed container image | `ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959` |
+| deployed container image id | `sha256:60ab5d638d13f4cf1cb35485093917feb8dbac1856478feea18ae6ef14cd682f` |
+| container status | running |
+| container health | healthy |
+| public `/api/health` | HTTP 200, `status:"ok"`, `storage:"oss"` |
+
+### 15.4 Masked Fadada Runtime Env
+
+Container env re-check passed:
+
+```text
+ESIGN_PROVIDER=fadada
+FADADA_ENV=production
+FADADA_BASE_URL=present_host_ok
+FADADA_API_VERSION=2.0
+FADADA_ENABLED=true
+FADADA_APP_ID=present
+FADADA_APP_SECRET=present
+FADADA_SIGN_NOTIFY_URL=present
+FADADA_SIGN_RETURN_URL=present
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_TEST_LOCAL_CUSTOMER_ID=present
+FADADA_TEST_CUSTOMER_ID=present
+FADADA_AUTO_SIGN_ENABLED=false
+FADADA_UPLOAD_SIGNURL_SMOKE=0
+FADADA_TEST_SIGNER_REALNAME_PREP=0
+```
+
+No app secret, full customer id, full local customer id, phone number, or PII was printed.
+
+### 15.5 Invalid Digest Callback Probe
+
+Probe:
+
+```text
+POST https://api.subauto.keybox.cloud/api/esign/callback/fadada
+transaction_id=probe
+contract_id=probe
+result_code=3000
+timestamp=20260101000000
+msg_digest=invalid
+```
+
+Result:
+
+| Field | Result |
+| --- | --- |
+| HTTP status | 201 |
+| body summary | `{"handled":false,"reason":"UNVERIFIED"}` |
+| endpoint exists | yes |
+| 404 / 500 | no |
+| business advancement | no |
+| ContractESignTask count after probe | 0 |
+
+This confirms the deployed candidate includes the H1 invalid-digest hardening behavior.
+
+### 15.6 Target Customer Mapping
+
+Read-only production DB mapping check passed:
+
+```text
+local_customer_count=1
+phone_186****0212_customer_count=1
+local_and_phone_same_customer=yes
+provider_customer_id=present
+contract_esign_task_count=0
+contract_count=0
+subscription_order_count=1
+mapping_ok=yes
+```
+
+No full local customer id, provider customer id, phone number, customer name, or PII was printed.
+
+### 15.7 Production Migration Status
+
+Read-only status from the deployed candidate image:
+
+```text
+54 migrations found in prisma/migrations
+Database schema is up to date
+```
+
+The first `pnpm exec prisma migrate status` attempt inside the runtime image triggered pnpm dependency status checks and was killed before DB verification. The status check was rerun with the image-bundled Prisma binary directly and succeeded. No migration was executed.
+
+### 15.8 Rollback
+
+Rollback was not needed.
+
+```text
+rollback executed: no
+rollback image: ghcr.io/keqi119/subscription-api:portal-rc-r6-20260620-4188aec
+```
+
+### 15.9 Gate Decision
+
+Stage 10D-B5-B-ENV-B passed.
+
+The following gate conditions are now satisfied:
+
+- PR #123 API candidate is running in production API;
+- production DB schema is up to date;
+- Fadada runtime env is present and masked checks passed;
+- invalid digest callback probe returned non-500 and `UNVERIFIED`;
+- target customer mapping is unique and matches the approved test customer;
+- `FADADA_AUTO_SIGN_ENABLED=false`;
+- no production seed, DB push, migrate reset, Fadada business API call, task creation, sign URL generation/opening, signing, artifact archive, contract/order advancement, payment posting, write-off, or bill mutation was executed.
+
+Next allowed step:
+
+```text
+Stage 10D-B5-B execution approval checkpoint
+```
+
+Do not start B5-B full signing execution until the user explicitly approves that checkpoint. PR #123 remains Draft.

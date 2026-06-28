@@ -842,3 +842,52 @@ Stage 10D-B5-B-ENV-B
 ```
 
 ENV-B must rebuild the API candidate image from `df4d33d` or later, deploy API-only with Fadada runtime env, and rerun callback readiness probes before B5-B full signing execution can be considered.
+
+### 11.15 B5-B-ENV-B Candidate Callback Readiness Gate
+
+Stage 10D-B5-B-ENV-B completed after explicit API-only deployment approval.
+
+Deployed candidate:
+
+```text
+ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959
+sha256:13f0d2dc30776f487f4c4bd1ca23007f4ae09ad17a6c3bfc2105a7c9659e5514
+source commit e4bf95907bd4cae942f8db12bc79c00a0da5daa5
+contains H1 commit df4d33d
+```
+
+Readiness result:
+
+```text
+API-only deployment: success
+API container: running / healthy
+public health: HTTP 200, status ok, storage oss
+Fadada masked env: passed
+invalid digest callback probe: HTTP 201, handled=false, reason=UNVERIFIED
+target customer mapping: unique and matched
+production migrate status: up to date, 54 migrations
+rollback: not needed
+```
+
+Safety result:
+
+```text
+seed: not executed
+production migrate deploy: not executed in ENV-B
+db push / migrate reset: not executed
+Fadada business APIs: not called
+ContractESignTask: not created
+signUrl: not generated or opened
+Contract / Order: not advanced
+PaymentRecord / PaymentWriteOff / ReceivableBill: not changed
+```
+
+ENV-B passes the callback readiness gate.
+
+Next allowed step is only an approval checkpoint:
+
+```text
+Stage 10D-B5-B execution approval checkpoint
+```
+
+B5-B full signing execution must not start automatically. It requires a separate explicit user approval, and PR #123 remains Draft until separately confirmed.

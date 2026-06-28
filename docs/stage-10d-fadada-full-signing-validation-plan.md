@@ -802,3 +802,29 @@ Required sequence remains:
 6. callback invalid-digest probe
 7. B5-B execution only if all gates pass
 ```
+
+### 11.13 B5-B-MIGRATION-PREFLIGHT Gate
+
+Stage 10D-B5-B-MIGRATION-PREFLIGHT is recorded in `docs/stage-10d-fadada-production-migration-preflight.md`.
+
+Preflight result:
+
+```text
+production pending migrations: 14
+backup: created and pg_restore -l verified
+isolated clone restore: success
+clone migrate deploy: success
+clone migrate status: up to date
+clone candidate API health: success
+clone invalid digest probe: non-500 / UNVERIFIED / no task or signer rows
+```
+
+The preflight supports moving to a separate human approval checkpoint for production `prisma migrate deploy`, with these constraints:
+
+- run a fresh backup at apply time or explicitly reuse the current backup window;
+- use no-seed `prisma migrate deploy`;
+- schedule a maintenance window;
+- do not deploy API candidate until migrations are applied;
+- rebuild the API candidate image from `df4d33d` or later so H1 is included.
+
+B5-B execution is still not approved by this preflight.

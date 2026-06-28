@@ -519,3 +519,37 @@ passed on isolated local PostgreSQL 127.0.0.1:55432/subscription_saas
 ```
 
 No remote or production database seed was executed.
+
+## 13. Stage 10D-B5-B-MIGRATION-PREFLIGHT Result
+
+Stage 10D-B5-B-MIGRATION-PREFLIGHT is recorded in `docs/stage-10d-fadada-production-migration-preflight.md`.
+
+Result summary:
+
+- H1 commit `df4d33d` is now pushed to the PR #123 branch.
+- Production read-only migration status shows 40 applied migrations and 14 pending migrations.
+- A new production backup was created at `/opt/subscription-saas/backups/subscription_saas_prod_20260628142508.dump`.
+- Backup validation passed with `pg_restore -l`.
+- The backup restored successfully into isolated clone `subauto-migration-preflight-20260628142508-postgres`.
+- Clone `prisma migrate deploy` applied all 14 pending migrations in 5 seconds.
+- Clone migration status is up to date with 54 migrations.
+- Temporary candidate API health on clone passed.
+- Invalid digest callback against the clone returned non-500 with `UNVERIFIED` and did not create task/signer rows.
+
+Important caveat:
+
+```text
+The API image used for the clone probe was ghcr.io/keqi119/subscription-api:fadada-pr123-20260627-214576b.
+That image was built from 214576b and does not contain H1.
+```
+
+Before production redeploy, build a new API candidate image from `df4d33d` or later.
+
+No production migration, production seed, production API deployment, Fadada API call, sign URL opening, signing, task creation, contract/order advancement, payment posting, write-off, or bill mutation was executed.
+
+Current gate:
+
+```text
+production migration apply approval can be discussed
+B5-B execution remains blocked
+```

@@ -69,6 +69,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-fadada-full-signing-validation-plan.md`: Stage 10D-B5-A/B5-A-R1 Fadada full signing validation plan and signer customer_id resolver gate
 - `docs/stage-10d-fadada-full-signing-validation-result.md`: Stage 10D-B5-B Fadada controlled full signing execution result / ENV-A candidate deploy blocker / H1 invalid-digest hardening log
 - `docs/stage-10d-fadada-production-migration-preflight.md`: Stage 10D-B5-B-MIGRATION-PREFLIGHT production pending migration impact review and isolated clone rehearsal
+- `docs/stage-10d-fadada-production-migration-apply.md`: Stage 10D-B5-B-MIGRATION-APPLY production no-seed migrate deploy result
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep
 - `docs/stage-10d-c1-fadada-test-signer-realname-smoke.md`: Stage 10D-C1-B Fadada production-host test signer preflight/prepare smoke result
 - `docs/stage-10d-fadada-callback-idempotency.md`: Stage 10D-B3 Fadada callback verification and idempotency

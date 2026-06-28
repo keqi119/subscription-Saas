@@ -553,3 +553,30 @@ Current gate:
 production migration apply approval can be discussed
 B5-B execution remains blocked
 ```
+
+## 14. Stage 10D-B5-B-MIGRATION-APPLY Result
+
+Stage 10D-B5-B-MIGRATION-APPLY is recorded in `docs/stage-10d-fadada-production-migration-apply.md`.
+
+Result summary:
+
+- fresh pre-apply backup created and validated:
+  `/opt/subscription-saas/backups/subscription_saas_prod_20260628150152_pre_migrate_apply.dump`;
+- backup size: 641582 bytes;
+- backup sha256: `e0c20c0e1143c3f098bbb2f11dc5de03cb93fefd9c9851bfe09793fd77a3bcdb`;
+- `pg_restore -l`: success;
+- production no-seed `prisma migrate deploy`: success;
+- applied migrations: 14;
+- production migrate status: up to date, 54 migrations;
+- production seed: not executed;
+- API candidate deploy: not executed;
+- Fadada API calls/signing/task creation/contract/order/payment changes: not executed;
+- old production API image remained running and healthy.
+
+Current gate:
+
+```text
+production migration blocker: closed
+next stage: rebuild H1 API candidate and perform API-only callback readiness deployment
+B5-B execution: still blocked
+```

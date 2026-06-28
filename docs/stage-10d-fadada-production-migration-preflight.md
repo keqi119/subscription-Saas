@@ -225,7 +225,8 @@ Production migration apply gate:
 
 ```text
 ready for human approval discussion: yes
-approved to execute production migrate deploy in this stage: no
+approved to execute production migrate deploy in preflight stage: no
+executed later in Stage 10D-B5-B-MIGRATION-APPLY: yes
 ```
 
 B5-B execution remains blocked until:
@@ -234,3 +235,9 @@ B5-B execution remains blocked until:
 2. a new API candidate image is built from `df4d33d` or later;
 3. production API candidate + Fadada runtime env deployment succeeds;
 4. production callback invalid digest probe returns non-500 and does not advance business state.
+
+## 13. Follow-Up Migration Apply
+
+Stage 10D-B5-B-MIGRATION-APPLY is recorded in `docs/stage-10d-fadada-production-migration-apply.md`.
+
+Production `prisma migrate deploy` was later approved and completed successfully with no seed. Production migrate status is now up to date with 54 migrations.

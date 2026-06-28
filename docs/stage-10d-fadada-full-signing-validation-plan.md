@@ -828,3 +828,17 @@ The preflight supports moving to a separate human approval checkpoint for produc
 - rebuild the API candidate image from `df4d33d` or later so H1 is included.
 
 B5-B execution is still not approved by this preflight.
+
+### 11.14 B5-B-MIGRATION-APPLY Gate
+
+Stage 10D-B5-B-MIGRATION-APPLY is recorded in `docs/stage-10d-fadada-production-migration-apply.md`.
+
+Production no-seed `prisma migrate deploy` later completed successfully. Production migrate status is now up to date with 54 migrations. The production API was not redeployed in that stage and remains on the old healthy image.
+
+Next required stage:
+
+```text
+Stage 10D-B5-B-ENV-B
+```
+
+ENV-B must rebuild the API candidate image from `df4d33d` or later, deploy API-only with Fadada runtime env, and rerun callback readiness probes before B5-B full signing execution can be considered.

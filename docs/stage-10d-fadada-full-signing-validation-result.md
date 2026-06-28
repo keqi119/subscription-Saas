@@ -456,3 +456,66 @@ production DB is not up to date for the PR #123 API candidate image
 ```
 
 Do not proceed to B5-B execution until a separate, approved production migration plan brings `subscription_saas_prod` up to the schema required by the PR #123 candidate image, followed by a new API candidate deploy and callback invalid-digest readiness probe.
+
+## 12. Stage 10D-B5-B-H1 Fadada Callback Invalid-Digest Hardening
+
+Stage 10D-B5-B-H1 addresses the ENV-A invalid-digest failure mode in code only. It does not deploy production, apply production migrations, call Fadada, open a sign URL, sign, archive a PDF, seed data, or advance contract/order/payment state.
+
+### 12.1 Root Cause
+
+ENV-A showed that the callback service verified the Fadada digest first, but still called task lookup before returning the unverified response. The lookup path queried `ContractESignSigner` / `ContractESignTask` with relation includes that reached `SubscriptionOrder`; on the old production schema this triggered:
+
+```text
+Prisma P2022 ColumnNotFound:
+subscription_order.model_definition_id_snapshot
+```
+
+### 12.2 H1 Behavior
+
+For `verified=false` callbacks:
+
+- return `handled=false`, `reason=UNVERIFIED` before signer/task/contract/order lookup;
+- do not call the Fadada business callback handler;
+- do not update signer, task, contract, order, payment, write-off, bill, archive, ROE, BaaS, or depreciation state;
+- sanitize `download_url` and `viewpdf_url` before any log write;
+- write a `verified=false` callback log on a best-effort basis;
+- if the callback log write/update fails, still return the unverified response instead of propagating a 500.
+
+### 12.3 Remaining Gate
+
+H1 is not sufficient to enter B5-B execution. Production still needs migration preflight and an approved no-seed production migration apply before the PR #123 candidate API can safely run against `subscription_saas_prod`.
+
+Next required stage:
+
+```text
+Stage 10D-B5-B-MIGRATION-PREFLIGHT
+```
+
+### 12.4 Local Verification
+
+H1 local gates passed:
+
+```text
+pnpm --filter @subscription-saas/api exec vitest run test/esign.spec.ts
+19 tests passed
+
+pnpm -r lint
+passed
+
+pnpm prisma:validate
+passed
+
+pnpm prisma:generate
+passed
+
+pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json
+passed
+
+pnpm --filter @subscription-saas/api test
+61 files / 838 tests passed
+
+pnpm release:check
+passed on isolated local PostgreSQL 127.0.0.1:55432/subscription_saas
+```
+
+No remote or production database seed was executed.

@@ -60,7 +60,9 @@ The local `ESignTaskStatus` enum has no `REJECTED` value. For `3003`, B3 uses `E
 
 ## 6. Lookup Priority
 
-Callback lookup order:
+Callback lookup happens only after provider verification succeeds. For Fadada, an invalid or missing `msg_digest` returns the local unverified callback response before any signer/task/contract/order lookup.
+
+Verified callback lookup order:
 
 1. `transaction_id` -> `ContractESignSigner.providerSignerId`
 2. `transaction_id` -> `ContractESignTask.providerTaskId`
@@ -108,11 +110,11 @@ For `3003`:
 - `3000` after `FAILED` is ignored as a terminal conflict and requires manual review.
 - `3000` after rejected signer/task is ignored as a terminal conflict and requires manual review.
 - Unknown result codes are logged as `handled=false` and do not mutate business state.
-- Invalid digest is logged as `verified=false`, `handled=true`, and does not mutate business state.
+- Invalid digest returns `handled=false`, `reason=UNVERIFIED` before task lookup and does not mutate business state. Its sanitized callback log is best-effort; a log write failure must not turn the rejected callback into HTTP 500.
 
 ## 9. Callback Log Sanitization
 
-Every callback creates a `ContractESignCallbackLog`.
+Every verified callback creates a `ContractESignCallbackLog`. Invalid digest callbacks are rejected before business lookup and attempt a sanitized `verified=false` callback log on a best-effort basis.
 
 Payload sanitization:
 
@@ -153,6 +155,8 @@ B3 does not:
 Coverage added/updated:
 
 - invalid digest does not advance state;
+- invalid digest does not query signer/task/order;
+- invalid digest remains non-500 if callback-log write fails;
 - valid `3000` advances signer/task/contract/order;
 - repeated `3000` is idempotent;
 - `3001` marks task failed and does not advance order;
@@ -206,3 +210,19 @@ The formal create-sign-task path still needs a verified way to pass Fadada provi
 ```
 
 B5-B must not start until this mapping or an explicitly approved controlled fixture path is resolved.
+
+## 15. Stage 10D-B5-B-H1 Invalid Digest Hardening
+
+Stage 10D-B5-B-H1 was added after the ENV-A production API candidate rollback exposed that invalid digest callbacks could still enter task lookup before returning the unverified response.
+
+H1 behavior:
+
+- `provider.verifyCallback` still parses and verifies the payload first;
+- `verified=false` now returns before `ContractESignSigner` / `ContractESignTask` lookup;
+- invalid digest callbacks do not query contract/order relations;
+- invalid digest callbacks do not call the Fadada business handler;
+- invalid digest callbacks do not advance contract, order, payment, or archive state;
+- `download_url` and `viewpdf_url` remain redacted before any best-effort log write;
+- invalid callback log write/update failures are swallowed so the rejection remains non-500.
+
+This hardening does not remove the ENV-A schema blocker. Verified callbacks and other candidate API routes still require production DB migrations to match the PR #123 schema before B5-B execution can resume.

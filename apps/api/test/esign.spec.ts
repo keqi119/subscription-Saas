@@ -228,8 +228,9 @@ describe("ESignService", () => {
   });
 
   it("rejects invalid Fadada callback digests without advancing state", async () => {
-    const { service, state } = createFadadaESignFixture();
+    const { prisma, service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    vi.clearAllMocks();
 
     const result = await service.handleCallback("fadada", {
       ...fadadaCallbackPayload({
@@ -241,6 +242,9 @@ describe("ESignService", () => {
     });
 
     expect(result).toMatchObject({ handled: false, reason: "UNVERIFIED" });
+    expect(prisma.contractESignSigner.findFirst).not.toHaveBeenCalled();
+    expect(prisma.contractESignTask.findFirst).not.toHaveBeenCalled();
+    expect(prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
     expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
     expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
@@ -248,8 +252,38 @@ describe("ESignService", () => {
     expect(state.callbackLogs).toHaveLength(1);
     expect(state.callbackLogs[0]).toMatchObject({
       handled: true,
+      payload: {
+        download_url: "[redacted-url]",
+        viewpdf_url: "[redacted-url]"
+      },
       verified: false
     });
+  });
+
+  it("keeps invalid Fadada callback rejection non-500 when callback log write fails", async () => {
+    const { prisma, service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    vi.clearAllMocks();
+    prisma.contractESignCallbackLog.create.mockRejectedValueOnce(new Error("callback log unavailable"));
+
+    const result = await service.handleCallback("fadada", {
+      ...fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      }),
+      msg_digest: "bad-digest"
+    });
+
+    expect(result).toMatchObject({ handled: false, reason: "UNVERIFIED" });
+    expect(prisma.contractESignSigner.findFirst).not.toHaveBeenCalled();
+    expect(prisma.contractESignTask.findFirst).not.toHaveBeenCalled();
+    expect(prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+    expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(state.callbackLogs).toHaveLength(0);
   });
 
   it("marks Fadada 3001 callbacks as failed without advancing the order", async () => {

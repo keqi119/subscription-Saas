@@ -776,3 +776,29 @@ B5-B execution remains blocked.
 ```
 
 Next required action is a separate approved production migration plan for `subscription_saas_prod`, followed by a new PR #123 API candidate deployment and another callback invalid-digest readiness probe. Do not start B5-B signing execution until production migrate status is up to date and the invalid-digest callback probe rejects safely without 500.
+
+### 11.12 B5-B-H1 Invalid-Digest Hardening Gate
+
+Stage 10D-B5-B-H1 is a code-only hardening stage added before migration preflight.
+
+H1 changes the invalid Fadada callback order:
+
+1. parse callback payload;
+2. call `provider.verifyCallback`;
+3. if `verified=false`, return the unverified response before any signer/task/contract/order lookup;
+4. write a sanitized invalid callback log only on a best-effort basis;
+5. keep valid callback handling and B3 idempotency unchanged.
+
+This prevents forged or malformed callbacks from exercising schema-dependent business lookup paths. It does not make the PR #123 candidate API compatible with the old production DB schema.
+
+Required sequence remains:
+
+```text
+1. H1 callback invalid-digest hardening
+2. production migration preflight on an isolated clone
+3. explicit approval for production migrate deploy
+4. no-seed production migrate deploy
+5. PR #123 candidate API + Fadada env redeploy
+6. callback invalid-digest probe
+7. B5-B execution only if all gates pass
+```

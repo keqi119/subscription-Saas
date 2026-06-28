@@ -916,3 +916,57 @@ PDF is clearly a non-sensitive test contract
 ```
 
 Sample creation is a separate approval checkpoint. Do not create it ad hoc during B5-B execution.
+
+### 11.17 B5-B-SAMPLE Preparation Plan
+
+Stage 10D-B5-B-SAMPLE was opened to design the controlled pending-sign sample. It has not created a sample yet.
+
+Business path audit result:
+
+```text
+formal order path can create:
+  Application
+  SubscriptionOrder
+  Contract
+  Order.status=PENDING_SIGN
+  Contract.status=GENERATED
+
+current gap:
+  active production ContractVersion has no PDF file artifact
+  no safe generic admin route was identified to upload/bind the contract PDF artifact
+```
+
+Recommended sample creation approach:
+
+```text
+Option B: formal business flow + one guarded ops artifact attach
+```
+
+Planned boundaries:
+
+- use the approved tester only, mobile mask `186****0212`;
+- create a new controlled test order and contract through the existing business flow;
+- generate and upload a non-sensitive test PDF artifact;
+- bind the PDF only to the new controlled test contract;
+- leave `Order.status=PENDING_SIGN` and `Contract.status=GENERATED`;
+- create no `ContractESignTask`;
+- call no Fadada business API;
+- generate/open no sign URL;
+- execute no signing;
+- create no PaymentRecord or PaymentWriteOff;
+- leave ReceivableBill paid amounts unchanged;
+- leave the existing `PENDING_PAYMENT` order untouched.
+
+Forbidden approach:
+
+```text
+do not direct-update the existing PENDING_PAYMENT order back to PENDING_SIGN
+```
+
+Manual checkpoint required before any production write:
+
+```text
+approve Stage 10D-B5-B-SAMPLE creation using Option B
+```
+
+B5-B full signing execution remains blocked until the approved sample exists and is verified read-only.

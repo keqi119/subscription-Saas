@@ -815,3 +815,109 @@ PDF is clearly a non-sensitive test contract
 ```
 
 Do not retry full signing execution until that sample exists and is confirmed read-only. PR #123 remains Draft.
+
+## 17. Stage 10D-B5-B-SAMPLE Controlled Pending-Sign Sample Preparation Plan
+
+Stage 10D-B5-B-SAMPLE was opened after the full-signing run stopped at the sample gate. This section records the preparation plan only. No production test sample was created or selected in this pass.
+
+### 17.1 Scope And Safety Result
+
+| Check | Result |
+| --- | --- |
+| branch | `feature/stage10-fadada-production-upload-signurl-smoke-run` |
+| worktree | clean |
+| remote branch | synced with `origin` after manual push |
+| `.env.fadada.production.local` | ignored |
+| `.tmp` | ignored |
+| production API image | `ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959` |
+| production API health | healthy, public health HTTP 200 |
+| production DB schema | up to date, 54 migrations |
+| `FADADA_AUTO_SIGN_ENABLED` | `false` |
+| target tester mapping | unique and matched |
+
+No production seed, migration, DB push, migrate reset, API deploy, container restart, Fadada business API call, sign URL action, signing action, contract/order advancement, archive, payment posting, write-off, bill mutation, PII output, or secret output was executed.
+
+### 17.2 Production Metadata Snapshot
+
+Read-only metadata checks found:
+
+```text
+active_contract_versions=1
+active_contract_version_fileId_present=false
+pdf_file_objects=0
+available_vehicle_candidates=3
+active_subscription_plans=1
+existing_esign_tasks=0
+```
+
+Masked candidate objects available for a controlled formal-flow sample:
+
+| Object | Masked reference | Notes |
+| --- | --- | --- |
+| contract version | `5b591f...d6d8` | active template `test-1` / `V1.1`, no PDF file artifact |
+| subscription plan | `03d2ff...7dbe` | active ET5 plan |
+| available vehicle | `16b4ea...6f68` | ET5 available vehicle candidate |
+
+### 17.3 Business Path Audit
+
+The formal order path can create the business objects needed to reach the signing gate:
+
+```text
+createCustomerOrder -> PENDING_REVIEW
+reviewOrder credit/product/vehicle -> PENDING_CUSTOMER_CONFIRMATION
+confirmCustomerOrder -> PENDING_CONTRACT
+generateContract -> Order.status=PENDING_SIGN and Contract.status=GENERATED
+```
+
+`Contract.status=GENERATED` is a signable pending-sign equivalent for the e-sign service. The e-sign provider later requires a PDF artifact from either `Contract.fileId` or `ContractVersion.fileId`.
+
+The audit also found that the current active production contract version has no `fileId`, and no safe generic admin API was identified for uploading and binding a contract template PDF artifact. Therefore a pure formal UI/API flow is not sufficient by itself for a Fadada upload/sign URL test.
+
+### 17.4 Options Considered
+
+| Option | Summary | Result |
+| --- | --- | --- |
+| A. Formal back-office/API flow only | Create a new tester order through existing business services, approve/confirm it, and generate a contract. | Safe for order/contract creation, but insufficient because the resulting contract has no PDF artifact unless one is bound separately. |
+| B. Formal flow plus guarded ops artifact attach | Use the formal flow for application/order/contract, then use a one-time guarded ops step to create a non-sensitive test PDF `FileObject` and bind it only to the new test contract. | Recommended. Keeps business state creation in the formal path and limits the extra production write to the missing PDF artifact attachment for the new controlled contract. |
+| C. Directly modify the existing `PENDING_PAYMENT` order | Revert or mutate the existing tester order/contract state directly in DB. | Forbidden. It would corrupt audit history and may break billing/payment/contract consistency. |
+
+Recommended approach: **Option B**.
+
+### 17.5 Manual Checkpoint Before Sample Creation
+
+The next production write requires separate human confirmation.
+
+Planned sample:
+
+```text
+customer: approved tester, mobile mask 186****0212
+order: new controlled test order
+contract: new controlled test contract
+PDF artifact: generated non-sensitive test PDF, uploaded/bound to the new test contract only
+expected order status: PENDING_SIGN
+expected contract status: GENERATED
+ContractESignTask: none
+Fadada business APIs: none
+signUrl: not generated or opened
+signing: not executed
+```
+
+Expected side effects:
+
+```text
+production DB write: yes, only after explicit sample creation approval
+PaymentRecord: none
+PaymentWriteOff: none
+ReceivableBill paidAmount: unchanged
+existing PENDING_PAYMENT order: unchanged
+```
+
+Stage 10D-B5-B-SAMPLE created sample: **no**.
+
+Current blocker remains:
+
+```text
+no controlled pending-sign test contract/order sample
+```
+
+B5-B full signing execution must not be retried until the user approves sample creation and the resulting sample is confirmed read-only.

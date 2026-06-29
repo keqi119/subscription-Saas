@@ -1,5 +1,5 @@
 import { ESignRealNameStatus } from "@prisma/client";
-import { IsEnum, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsBoolean, IsEnum, IsOptional, IsString, MaxLength } from "class-validator";
 
 export class ManualAttachFadadaProviderAccountDto {
   @IsString()
@@ -24,4 +24,37 @@ export class MarkFadadaRealNameStatusDto {
   @IsOptional()
   @MaxLength(128)
   verificationTransactionNo?: string;
+}
+
+export class StartFadadaRealNameVerificationDto {
+  @IsString()
+  @MaxLength(64)
+  name!: string;
+
+  @IsString()
+  @MaxLength(32)
+  idCardNo!: string;
+
+  @IsString()
+  @MaxLength(32)
+  mobile!: string;
+
+  @IsBoolean()
+  @IsOptional()
+  certFlag?: boolean;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(16)
+  verifiedWay?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(16)
+  pageModify?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(16)
+  option?: string;
 }

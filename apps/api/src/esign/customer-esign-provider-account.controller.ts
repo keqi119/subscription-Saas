@@ -6,7 +6,8 @@ import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   ManualAttachFadadaProviderAccountDto,
-  MarkFadadaRealNameStatusDto
+  MarkFadadaRealNameStatusDto,
+  StartFadadaRealNameVerificationDto
 } from "./customer-esign-provider-account.dto";
 import { CustomerESignProviderAccountService } from "./customer-esign-provider-account.service";
 
@@ -81,5 +82,33 @@ export class CustomerESignProviderAccountController {
       verificationSerialNo: dto.verificationSerialNo,
       verificationTransactionNo: dto.verificationTransactionNo
     }, request.user.id);
+  }
+
+  @Post("customers/:id/esign-provider-accounts/fadada/real-name-verification")
+  @RequirePermissions(PermissionCode.CUSTOMER_MANAGE)
+  startFadadaRealNameVerification(
+    @Param("id") id: string,
+    @Body() dto: StartFadadaRealNameVerificationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.accountService.startFadadaPersonalRealNameVerification(id, dto, request.user.id);
+  }
+
+  @Post("customers/:id/esign-provider-accounts/fadada/real-name-status/refresh")
+  @RequirePermissions(PermissionCode.CUSTOMER_MANAGE)
+  refreshFadadaRealNameStatus(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.accountService.refreshFadadaRealNameStatus(id, request.user.id);
+  }
+
+  @Post("customers/:id/esign-provider-accounts/fadada/apply-cert")
+  @RequirePermissions(PermissionCode.CUSTOMER_MANAGE)
+  applyFadadaPersonalCert(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.accountService.applyFadadaPersonalCert(id, request.user.id);
   }
 }

@@ -39,6 +39,7 @@ export function loadFadadaConfig(configService: ConfigService): FadadaConfig {
       configService.get<string>("FADADA_REQUEST_TIMEOUT_MS"),
       DEFAULT_REQUEST_TIMEOUT_MS
     ),
+    realNameVerifyEnabled: parseBoolean(configService.get<string>("FADADA_REALNAME_VERIFY_ENABLED"), false),
     signNotifyUrl: trimmed(configService.get<string>("FADADA_SIGN_NOTIFY_URL")),
     signReturnUrl: trimmed(configService.get<string>("FADADA_SIGN_RETURN_URL")),
     signUrlQuantity: parsePositiveInt(

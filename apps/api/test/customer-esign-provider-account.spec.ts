@@ -11,8 +11,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CustomerESignProviderAccountService,
-  FADADA_ACCOUNT_REGISTER_DISABLED
+  FADADA_ACCOUNT_REGISTER_DISABLED,
+  FADADA_REALNAME_VERIFY_DISABLED
 } from "../src/esign/customer-esign-provider-account.service";
+import { buildFadadaMsgDigest } from "../src/esign/fadada/fadada-digest";
 
 describe("CustomerESignProviderAccountService", () => {
   it("initializes a pending Fadada personal binding idempotently without provider calls", async () => {
@@ -179,6 +181,188 @@ describe("CustomerESignProviderAccountService", () => {
     expect(view.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
     expect(JSON.stringify(view)).not.toContain("18616570212");
   });
+
+  it("does not start real-name verification when FADADA_REALNAME_VERIFY_ENABLED is false", async () => {
+    const { apiClient, service } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED
+      }],
+      env: { FADADA_REALNAME_VERIFY_ENABLED: "false" }
+    });
+
+    await expect(service.startFadadaPersonalRealNameVerification("customer-1", {
+      idCardNo: "110101199001011234",
+      mobile: "18616570212",
+      name: "Controlled Tester"
+    }, "operator-1")).rejects.toThrow(FADADA_REALNAME_VERIFY_DISABLED);
+
+    expect(apiClient.getPersonVerifyUrl).not.toHaveBeenCalled();
+  });
+
+  it("starts real-name verification with a masked URL and stores only transaction metadata", async () => {
+    const { apiClient, service, state } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED
+      }],
+      env: realNameEnv()
+    });
+    vi.mocked(apiClient.getPersonVerifyUrl).mockResolvedValueOnce({
+      customerId: "fadada-registered-1",
+      raw: {
+        code: "1",
+        data: {
+          transactionNo: "VERIFY-TX-1",
+          url: "https://verify.example.test/realname?token=secret"
+        },
+        msg: "ok"
+      },
+      resultCode: "1",
+      resultDesc: "ok",
+      transactionNo: "VERIFY-TX-1",
+      verifyUrl: "https://verify.example.test/realname?token=secret"
+    });
+
+    const result = await service.startFadadaPersonalRealNameVerification("customer-1", {
+      idCardNo: "110101199001011234",
+      mobile: "18616570212",
+      name: "Controlled Tester"
+    }, "operator-1");
+
+    expect(apiClient.getPersonVerifyUrl).toHaveBeenCalledWith(expect.objectContaining({
+      customerId: "fadada-registered-1",
+      idCardNo: "110101199001011234",
+      mobile: "18616570212",
+      name: "Controlled Tester",
+      notifyUrl: "https://api.example.test/api/esign/callback/fadada/verify",
+      returnUrl: "https://app.example.test/portal/contracts"
+    }));
+    expect(result).toMatchObject({
+      account: {
+        realNameStatus: ESignRealNameStatus.PENDING,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      },
+      verifyUrlMasked: "https://verify.example.test/..."
+    });
+    expect(state.accounts[0]).toMatchObject({
+      realNameStatus: ESignRealNameStatus.PENDING,
+      verificationSerialNo: "VERIFY-TX-1",
+      verificationTransactionNo: "VERIFY-TX-1"
+    });
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("18616570212");
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("110101199001011234");
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("Controlled Tester");
+    expect(JSON.stringify(result)).not.toContain("token=secret");
+  });
+
+  it("handles verified real-name callback idempotently without signing side effects", async () => {
+    const { service, state } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.PENDING,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+    const payload = fadadaVerifyCallbackPayload({
+      resultCode: "2",
+      transactionNo: "VERIFY-TX-1"
+    });
+
+    const first = await service.handleFadadaVerifyCallback(payload);
+    const second = await service.handleFadadaVerifyCallback(payload);
+
+    expect(first).toMatchObject({ handled: true, realNameStatus: ESignRealNameStatus.VERIFIED, verified: true });
+    expect(second).toMatchObject({ handled: true, realNameStatus: ESignRealNameStatus.VERIFIED, verified: true });
+    expect(state.accounts[0]).toMatchObject({
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verificationSerialNo: "VERIFY-TX-1"
+    });
+    expect(state.accounts[0]?.verifiedAt).toBeInstanceOf(Date);
+  });
+
+  it("refreshes real-name status from find_personCertInfo.api", async () => {
+    const { apiClient, service, state } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.PENDING,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+    vi.mocked(apiClient.findPersonCertInfo).mockResolvedValueOnce({
+      raw: { code: "1", data: { person: { status: "2" } }, msg: "ok" },
+      realNameStatus: "2",
+      resultCode: "1",
+      resultDesc: "ok",
+      verifiedSerialNo: "VERIFY-TX-1"
+    });
+
+    const view = await service.refreshFadadaRealNameStatus("customer-1", "operator-1");
+
+    expect(apiClient.findPersonCertInfo).toHaveBeenCalledWith({ verifiedSerialNo: "VERIFY-TX-1" });
+    expect(view.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
+    expect(state.accounts[0]?.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
+  });
+
+  it("rejects invalid real-name callback digest without updating account state", async () => {
+    const { service, state } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.PENDING,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+
+    const result = await service.handleFadadaVerifyCallback({
+      msg_digest: "invalid",
+      result_code: "2",
+      timestamp: "20260102030405",
+      transaction_no: "VERIFY-TX-1"
+    });
+
+    expect(result).toMatchObject({ handled: false, reason: "UNVERIFIED", verified: false });
+    expect(state.accounts[0]?.realNameStatus).toBe(ESignRealNameStatus.PENDING);
+  });
+
+  it("applies the verified personal certificate without invoking signing APIs", async () => {
+    const { apiClient, service, state } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+    vi.mocked(apiClient.applyCert).mockResolvedValueOnce({
+      customerId: "fadada-registered-1",
+      raw: { code: "1", customer_id: "fadada-registered-1", msg: "ok" },
+      resultCode: "1",
+      resultDesc: "ok",
+      verifiedSerialNo: "VERIFY-TX-1"
+    });
+
+    const view = await service.applyFadadaPersonalCert("customer-1", "operator-1");
+
+    expect(apiClient.applyCert).toHaveBeenCalledWith({
+      customerId: "fadada-registered-1",
+      verifiedSerialNo: "VERIFY-TX-1"
+    });
+    expect(apiClient.getPersonVerifyUrl).not.toHaveBeenCalled();
+    expect(view.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("fadada-registered-1");
+  });
 });
 
 function createServiceFixture(input: {
@@ -193,6 +377,9 @@ function createServiceFixture(input: {
   };
   const prisma = fakePrisma(state);
   const apiClient = {
+    applyCert: vi.fn(),
+    findPersonCertInfo: vi.fn(),
+    getPersonVerifyUrl: vi.fn(),
     registerAccount: vi.fn()
   };
   const service = new CustomerESignProviderAccountService(
@@ -276,6 +463,12 @@ function fakePrisma(state: { accounts: FakeAccount[] }) {
     if (where.providerCustomerId && account.providerCustomerId !== where.providerCustomerId) {
       return false;
     }
+    if (where.verificationSerialNo && account.verificationSerialNo !== where.verificationSerialNo) {
+      return false;
+    }
+    if (where.verificationTransactionNo && account.verificationTransactionNo !== where.verificationTransactionNo) {
+      return false;
+    }
     if (where.deletedAt === null && account.deletedAt !== null) {
       return false;
     }
@@ -317,5 +510,35 @@ function fakePrisma(state: { accounts: FakeAccount[] }) {
         return account;
       })
     }
+  };
+}
+
+function realNameEnv() {
+  return {
+    FADADA_APP_ID: "app-123",
+    FADADA_APP_SECRET: "secret-xyz",
+    FADADA_REALNAME_VERIFY_ENABLED: "true",
+    FADADA_VERIFY_NOTIFY_URL: "https://api.example.test/api/esign/callback/fadada/verify",
+    FADADA_VERIFY_RETURN_URL: "https://app.example.test/portal/contracts"
+  };
+}
+
+function fadadaVerifyCallbackPayload(input: {
+  resultCode: string;
+  transactionNo: string;
+}) {
+  const timestamp = "20260102030405";
+  const msgDigest = buildFadadaMsgDigest({
+    appId: "app-123",
+    appSecret: "secret-xyz",
+    explicitSortString: input.transactionNo,
+    timestamp
+  });
+  return {
+    msg_digest: msgDigest,
+    result_code: input.resultCode,
+    timestamp,
+    transaction_no: input.transactionNo,
+    verified_serialno: input.transactionNo
   };
 }

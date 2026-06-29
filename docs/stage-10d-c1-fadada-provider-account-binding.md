@@ -190,3 +190,17 @@ Stage 10D-C2 should add the real-name verification flow:
 - customer/operator workflows for retry and audit.
 
 Until C2 is complete, unrestricted production e-sign remains **No-Go**.
+
+## Stage 10D-C2 Follow-Up
+
+Stage 10D-C2 adds the automated real-name lifecycle on top of this binding model without adding a new migration:
+
+```text
+get_person_verify_url.api
+verify callback: /api/esign/callback/fadada/verify
+find_personCertInfo.api status refresh
+apply_cert.api
+FADADA_REALNAME_VERIFY_ENABLED=false by default
+```
+
+The signing resolver still requires `REGISTERED + VERIFIED` formal binding before ordinary Fadada signing can start. C2 does not upload contracts, generate sign URLs, sign, advance Contract/Order, or mutate payment state.

@@ -17,6 +17,7 @@ export interface FadadaConfig {
   platformCustomerId?: string;
   platformSignatureId?: string;
   requestTimeoutMs: number;
+  realNameVerifyEnabled: boolean;
   signNotifyUrl?: string;
   signReturnUrl?: string;
   signUrlQuantity: number;

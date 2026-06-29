@@ -1,5 +1,6 @@
 import {
   buildAccountRegisterRequest,
+  buildApplyCertRequest,
   buildFindPersonCertInfoRequest,
   buildPersonVerifyUrlRequest,
   buildContractFilingRequest,
@@ -139,6 +140,36 @@ export class FadadaApiClient {
     return {
       raw,
       realNameStatus: stringField(raw, ["status", "certStatus", "cert_status", "realNameStatus"]),
+      resultCode: providerCode(raw),
+      resultDesc: providerMsg(raw),
+      verifiedSerialNo: input.verifiedSerialNo
+    };
+  }
+
+  async applyCert(input: {
+    customerId: string;
+    verifiedSerialNo: string;
+  }): Promise<{
+    customerId: string;
+    raw: unknown;
+    resultCode?: string;
+    resultDesc?: string;
+    verifiedSerialNo: string;
+  }> {
+    const request = buildApplyCertRequest({
+      businessParams: {
+        customer_id: input.customerId,
+        verified_serialno: input.verifiedSerialNo
+      },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+
+    return {
+      customerId: input.customerId,
+      raw,
       resultCode: providerCode(raw),
       resultDesc: providerMsg(raw),
       verifiedSerialNo: input.verifiedSerialNo

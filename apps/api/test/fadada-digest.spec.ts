@@ -190,6 +190,7 @@ function fadadaConfig(): FadadaConfig {
     env: "sandbox",
     fullSigningSmokeEnabled: false,
     requestTimeoutMs: 15000,
+    realNameVerifyEnabled: false,
     signUrlQuantity: 1,
     signUrlValidityMinutes: 30
   };

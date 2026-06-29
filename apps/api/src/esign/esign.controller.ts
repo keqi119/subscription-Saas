@@ -5,6 +5,7 @@ import type { Request, Response } from "express";
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
+import { CustomerESignProviderAccountService } from "./customer-esign-provider-account.service";
 import { ESignService } from "./esign.service";
 import { FadadaSignedArtifactService } from "./fadada/fadada-signed-artifact.service";
 
@@ -66,7 +67,15 @@ export class ESignAdminController {
 
 @Controller("esign")
 export class ESignCallbackController {
-  constructor(private readonly esignService: ESignService) {}
+  constructor(
+    private readonly esignService: ESignService,
+    private readonly accountService: CustomerESignProviderAccountService
+  ) {}
+
+  @Post("callback/fadada/verify")
+  handleFadadaVerifyCallback(@Body() payload: unknown) {
+    return this.accountService.handleFadadaVerifyCallback(payload);
+  }
 
   @Post("callback/:provider")
   handleCallback(

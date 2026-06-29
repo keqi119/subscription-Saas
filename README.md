@@ -70,6 +70,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-fadada-full-signing-validation-result.md`: Stage 10D-B5-B Fadada controlled full signing execution result / ENV-A blocker / H1 hardening / ENV-B readiness / pending-sign sample creation / full signing success / B5-C post-validation runtime closeout / B5-D mainline API promotion
 - `docs/stage-10d-fadada-post-merge-mainline-api-promotion.md`: Stage 10D-B5-D post-merge mainline API image promotion result
 - `docs/stage-10d-c1-fadada-provider-account-binding.md`: Stage 10D-C1-A formal Customer -> Fadada provider account binding foundation
+- `docs/stage-10d-c2-fadada-realname-lifecycle.md`: Stage 10D-C2 Fadada real-name verification lifecycle automation
 - `docs/stage-10d-fadada-production-migration-preflight.md`: Stage 10D-B5-B-MIGRATION-PREFLIGHT production pending migration impact review and isolated clone rehearsal
 - `docs/stage-10d-fadada-production-migration-apply.md`: Stage 10D-B5-B-MIGRATION-APPLY production no-seed migrate deploy result and ENV-B follow-up
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep

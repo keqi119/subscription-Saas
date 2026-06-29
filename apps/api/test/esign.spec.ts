@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RequestUser } from "../src/auth/auth.types";
 import { ESignProvider } from "../src/esign/esign.provider";
 import { ESignService } from "../src/esign/esign.service";
+import type { ApprovedSigningPlanRef } from "../src/esign/enterprise-seal/enterprise-seal.types";
 import { buildFadadaMsgDigest } from "../src/esign/fadada/fadada-digest";
 import { FadadaESignProvider } from "../src/esign/fadada/fadada-esign.provider";
 import { loadFadadaConfig } from "../src/esign/fadada/fadada.config";
@@ -81,6 +82,56 @@ describe("ESignService", () => {
       signerStatus: ESignSignerStatus.SIGNING,
       signUrl: "https://sign.example.test/customer"
     });
+  });
+
+  it("stores enterprise signing plan metadata without making B5 evaluate policy", async () => {
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async (input) => ({
+        providerEnvelopeId: input.taskNo,
+        providerTaskId: `${input.taskNo}-1`,
+        signUrl: "https://sign.example.test/customer",
+        signers: [{
+          customerId: "customer-1",
+          providerSignerId: `${input.taskNo}-customer`,
+          signUrl: "https://sign.example.test/customer",
+          signerType: "CUSTOMER" as const
+        }]
+      })),
+      getSignerUrl: vi.fn(),
+      verifyCallback: vi.fn()
+    };
+    const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
+
+    const result = await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext(),
+      approvedPlanRef()
+    );
+
+    expect(result.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.tasks[0]!.requestSnapshot).toMatchObject({
+      enterpriseSigningPlan: {
+        executionMode: "SEQUENTIAL",
+        planHash: "sha256:abc123",
+        policyId: "policy-1",
+        signingPlanId: "signing-plan-1",
+        stepSummary: [
+          { required: true, signerRole: "CUSTOMER", stepOrder: 1 },
+          { required: true, signerRole: "ENTERPRISE_SEAL", stepOrder: 2 }
+        ]
+      }
+    });
+    expect(provider.createSignTask).toHaveBeenCalledWith(expect.not.objectContaining({
+      policy: expect.anything(),
+      sealAuthority: expect.anything()
+    }));
+    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
+      signers: [expect.objectContaining({
+        customerId: "customer-1",
+        signerType: "CUSTOMER"
+      })]
+    }));
   });
 
   it("returns the existing active task instead of creating duplicates", async () => {
@@ -840,6 +891,30 @@ function adminUser(): RequestUser {
     permissions: ["contract:view", "contract:sign"],
     roles: ["admin"],
     username: "admin"
+  };
+}
+
+function approvedPlanRef(): ApprovedSigningPlanRef {
+  return {
+    executionMode: "SEQUENTIAL",
+    planHash: "sha256:abc123",
+    policyId: "policy-1",
+    signingPlanId: "signing-plan-1",
+    steps: [
+      {
+        required: true,
+        signerRole: "CUSTOMER",
+        signerType: "CUSTOMER",
+        stepOrder: 1
+      },
+      {
+        required: true,
+        sealId: "seal-1",
+        signerRole: "ENTERPRISE_SEAL",
+        signerType: "PLATFORM",
+        stepOrder: 2
+      }
+    ]
   };
 }
 

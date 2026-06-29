@@ -81,6 +81,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-c3-fadada-onboarding-runtime-validation.md`: Stage 10D-C3-F controlled runtime validation for customer onboarding product entry paths
 - `docs/stage-10d-c4-fadada-enterprise-seal-model.md`: Stage 10D-C4-A enterprise seal and multi-signature strategy model design
 - `docs/stage-10d-c4-fadada-enterprise-seal-implementation-plan.md`: Stage 10D-C4-B enterprise seal schema and policy engine implementation plan
+- `docs/stage-10d-c4-fadada-enterprise-seal-policy-engine-mvp.md`: Stage 10D-C4-C provider-free enterprise seal policy engine MVP implementation
 - `docs/stage-10d-fadada-production-migration-preflight.md`: Stage 10D-B5-B-MIGRATION-PREFLIGHT production pending migration impact review and isolated clone rehearsal
 - `docs/stage-10d-fadada-production-migration-apply.md`: Stage 10D-B5-B-MIGRATION-APPLY production no-seed migrate deploy result and ENV-B follow-up
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep

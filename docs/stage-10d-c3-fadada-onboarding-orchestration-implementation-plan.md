@@ -800,4 +800,22 @@ no production deploy
 no real Fadada integration test until separately approved
 ```
 
+C3-C MVP implementation result:
+
+```text
+docs/stage-10d-c3-fadada-onboarding-orchestration-mvp.md
+```
+
+The first implementation intentionally keeps the scope smaller than the full blueprint:
+
+```text
+admin status/start/retry endpoints only
+derived state only
+existing audit_log only
+REALNAME_VERIFY retry is mock/control-plane only
+no provider registration call
+no real-name provider call
+no schema migration
+```
+
 Unrestricted production e-sign remains **No-Go** until C3-C implementation, limited-cohort real-name onboarding validation, and operational approval are complete.

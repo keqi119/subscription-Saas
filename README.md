@@ -75,6 +75,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-c2-fadada-production-readiness-hardening.md`: Stage 10D-C2-C production Fadada real-name signing gate hardening
 - `docs/stage-10d-c3-fadada-customer-onboarding-model.md`: Stage 10D-C3-A production customer onboarding / activation model design for Fadada e-sign
 - `docs/stage-10d-c3-fadada-onboarding-orchestration-implementation-plan.md`: Stage 10D-C3-B implementation blueprint for customer onboarding orchestration
+- `docs/stage-10d-c3-fadada-onboarding-orchestration-mvp.md`: Stage 10D-C3-C control-plane MVP implementation for customer onboarding orchestration
 - `docs/stage-10d-fadada-production-migration-preflight.md`: Stage 10D-B5-B-MIGRATION-PREFLIGHT production pending migration impact review and isolated clone rehearsal
 - `docs/stage-10d-fadada-production-migration-apply.md`: Stage 10D-B5-B-MIGRATION-APPLY production no-seed migrate deploy result and ENV-B follow-up
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep

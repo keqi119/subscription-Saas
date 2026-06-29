@@ -1223,3 +1223,44 @@ Stage 10D-B5-C passed.
 PR #123 can move from Draft to Ready for review from the B5-B validation perspective.
 
 This is not an unrestricted production e-sign launch. Broad Fadada signing remains gated by a proper customer-provider account binding / real-name mapping flow instead of the controlled smoke override.
+
+## 21. Stage 10D-B5-D Post-Merge Mainline API Promotion
+
+Stage 10D-B5-D is recorded in `docs/stage-10d-fadada-post-merge-mainline-api-promotion.md`.
+
+Result:
+
+```text
+PR #123 merged: yes
+main source commit: 48dc98d06706fb97e91d44da9a2c23b812db3dee
+mainline API image: ghcr.io/keqi119/subscription-api:fadada-main-20260629-48dc98d
+mainline API digest: sha256:75c596de855a512ccbc7c61404a331267c076253fd0f552234f931e51af16dd1
+previous API image: ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959
+deployment executed: yes
+API-only restart: yes
+Web restart: no
+Postgres restart: no
+API health: healthy, status=ok
+callback invalid digest probe: HTTP 201, handled=false, reason=UNVERIFIED
+production migrate status: up to date, 54 migrations
+customer mapping spot check: 186****0212 unique, same customer=yes
+FADADA_FULL_SIGNING_SMOKE=0
+FADADA_AUTO_SIGN_ENABLED=false
+rollback executed: no
+```
+
+Actions not executed:
+
+```text
+Fadada business API calls: no
+signUrl generated/opened: no
+signing: no
+ContractESignTask created: no
+Contract / Order advanced: no
+signed PDF archive: no
+PaymentRecord / PaymentWriteOff: no
+ReceivableBill mutation: no
+production seed / migrate deploy / db push / reset: no
+```
+
+Production runtime is now normalized to the mainline API image built from the PR #123 merge commit.

@@ -1093,3 +1093,35 @@ Remaining launch gate:
 controlled full signing path: passed
 unrestricted customer e-sign launch: still gated by customer-provider account binding / real-name mapping
 ```
+
+### 11.21 B5-D Post-Merge Mainline API Promotion
+
+Stage 10D-B5-D normalized production API runtime after PR #123 was merged.
+
+Result:
+
+```text
+main source commit: 48dc98d06706fb97e91d44da9a2c23b812db3dee
+mainline API image: ghcr.io/keqi119/subscription-api:fadada-main-20260629-48dc98d
+mainline API digest: sha256:75c596de855a512ccbc7c61404a331267c076253fd0f552234f931e51af16dd1
+previous API image: ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959
+deployment executed: yes
+API-only restart: yes
+Web restart: no
+Postgres restart: no
+API health: healthy
+FADADA_FULL_SIGNING_SMOKE=0
+FADADA_AUTO_SIGN_ENABLED=false
+invalid digest probe: HTTP 201, handled=false, reason=UNVERIFIED
+production migrate status: up to date, 54 migrations
+customer mapping: 186****0212 unique
+rollback: not required
+```
+
+The promotion did not create signing tasks, call Fadada business APIs, open sign URLs, sign, archive PDFs, seed, migrate, run DB push/reset, or advance contract/order/payment state.
+
+Next recommended stage:
+
+```text
+Stage 10D-C1-A: CustomerESignProviderAccount formal provider-account binding
+```

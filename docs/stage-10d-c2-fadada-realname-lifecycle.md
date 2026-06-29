@@ -240,3 +240,21 @@ do not sign unless separately approved
 ```
 
 Unrestricted production e-sign remains **No-Go** until the real-name integration test and operational controls pass.
+
+## C2-B Integration Boundary
+
+Stage 10D-C2-B has a dedicated report:
+
+```text
+docs/stage-10d-c2-fadada-integration-test.md
+```
+
+The C2-B validation is mock-only and confirms:
+
+- real-name callback state transitions;
+- `VERIFIED` terminal behavior;
+- `REGISTERED + VERIFIED` binding readiness for the Fadada signer resolver;
+- smoke override remains explicitly gated;
+- no Fadada calls, sign URLs, signing, production DB writes, Contract / Order advancement, or payment side effects.
+
+This validates the integration boundary but still does not open unrestricted production e-sign.

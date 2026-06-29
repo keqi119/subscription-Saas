@@ -285,6 +285,37 @@ describe("CustomerESignProviderAccountService", () => {
     expect(state.accounts[0]?.verifiedAt).toBeInstanceOf(Date);
   });
 
+  it("keeps VERIFIED terminal when later failed or expired callbacks arrive", async () => {
+    const { service, state } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1",
+        verifiedAt: new Date("2026-01-02T00:00:00.000Z")
+      }],
+      env: realNameEnv()
+    });
+
+    const failed = await service.handleFadadaVerifyCallback(fadadaVerifyCallbackPayload({
+      resultCode: "3",
+      transactionNo: "VERIFY-TX-1"
+    }));
+    const expired = await service.handleFadadaVerifyCallback(fadadaVerifyCallbackPayload({
+      resultCode: "4",
+      transactionNo: "VERIFY-TX-1"
+    }));
+
+    expect(failed).toMatchObject({ handled: true, realNameStatus: ESignRealNameStatus.VERIFIED, verified: true });
+    expect(expired).toMatchObject({ handled: true, realNameStatus: ESignRealNameStatus.VERIFIED, verified: true });
+    expect(state.accounts[0]).toMatchObject({
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verificationSerialNo: "VERIFY-TX-1"
+    });
+    expect(state.accounts[0]?.verifiedAt).toEqual(new Date("2026-01-02T00:00:00.000Z"));
+  });
+
   it("refreshes real-name status from find_personCertInfo.api", async () => {
     const { apiClient, service, state } = createServiceFixture({
       accounts: [{

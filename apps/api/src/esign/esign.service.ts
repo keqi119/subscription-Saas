@@ -408,6 +408,17 @@ export class ESignService {
     const resultCode = verified.resultCode ?? stringOrNull(record.result_code);
     const resultDescription = verified.resultDescription ?? stringOrNull(record.result_desc);
     const eventType = verified.eventType ?? stringOrNull(record.eventType);
+
+    if (!verified.verified) {
+      await this.recordUnverifiedCallback({
+        eventType,
+        payload: verified.payload,
+        provider,
+        providerTaskId
+      });
+      return { handled: false, reason: "UNVERIFIED" };
+    }
+
     const task = await this.findCallbackTask(provider, providerTaskId, providerContractId);
 
     const callbackLog = await this.prisma.contractESignCallbackLog.create({
@@ -420,18 +431,6 @@ export class ESignService {
         verified: verified.verified
       }
     });
-
-    if (!verified.verified) {
-      await this.prisma.contractESignCallbackLog.update({
-        data: {
-          errorMessage: "电子签回调验签失败。",
-          handled: true,
-          handledAt: new Date()
-        },
-        where: { id: callbackLog.id }
-      });
-      return { handled: false, reason: "UNVERIFIED" };
-    }
 
     if (!task) {
       await this.prisma.contractESignCallbackLog.update({
@@ -502,6 +501,35 @@ export class ESignService {
     });
 
     return { handled: true };
+  }
+
+  private async recordUnverifiedCallback(input: {
+    eventType?: string | null;
+    payload: unknown;
+    provider: ESignProviderType;
+    providerTaskId?: string | null;
+  }) {
+    try {
+      const callbackLog = await this.prisma.contractESignCallbackLog.create({
+        data: {
+          eventType: input.eventType,
+          payload: toJsonValue(input.payload),
+          provider: input.provider,
+          providerTaskId: input.providerTaskId,
+          verified: false
+        }
+      });
+      await this.prisma.contractESignCallbackLog.update({
+        data: {
+          errorMessage: "ESIGN_CALLBACK_VERIFY_FAILED",
+          handled: true,
+          handledAt: new Date()
+        },
+        where: { id: callbackLog.id }
+      });
+    } catch {
+      return;
+    }
   }
 
   private async handleFadadaCallback(input: {

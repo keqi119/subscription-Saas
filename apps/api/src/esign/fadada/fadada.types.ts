@@ -12,6 +12,7 @@ export interface FadadaConfig {
   baseUrl: string;
   enabled: boolean;
   env: FadadaEnv;
+  fullSigningSmokeEnabled: boolean;
   platformCustomerId?: string;
   platformSignatureId?: string;
   requestTimeoutMs: number;
@@ -19,6 +20,8 @@ export interface FadadaConfig {
   signReturnUrl?: string;
   signUrlQuantity: number;
   signUrlValidityMinutes: number;
+  testCustomerId?: string;
+  testLocalCustomerId?: string;
   verifyNotifyUrl?: string;
   verifyReturnUrl?: string;
 }
@@ -26,7 +29,7 @@ export interface FadadaConfig {
 export interface FadadaRequest {
   contentType: FadadaContentType;
   endpoint: FadadaEndpoint;
-  method: "POST";
+  method: "GET" | "POST";
   params: Record<string, string>;
   url: string;
 }
@@ -54,6 +57,7 @@ export interface BuildFadadaRequestInput {
   endpoint: FadadaEndpoint;
   explicitMd5Seed?: string;
   explicitSortString?: string;
+  method?: "GET" | "POST";
   timestamp?: string;
 }
 

@@ -50,7 +50,7 @@ export function buildFadadaRequest(input: BuildFadadaRequestInput): FadadaReques
   return {
     contentType: input.contentType ?? FORM_URLENCODED,
     endpoint: input.endpoint,
-    method: "POST",
+    method: input.method ?? "POST",
     params: {
       ...businessParams,
       app_id: input.config.appId,
@@ -140,6 +140,7 @@ export function buildExtSignValidationRequest(input: {
     endpoint: FADADA_ENDPOINTS.extSignValidation,
     explicitMd5Seed: extSignValidationMd5Seed(input.businessParams),
     explicitSortString: input.explicitSortString,
+    method: "GET",
     timestamp: input.timestamp
   });
 }

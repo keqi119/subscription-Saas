@@ -31,6 +31,7 @@ export function loadFadadaConfig(configService: ConfigService): FadadaConfig {
     baseUrl: normalizeBaseUrl(baseUrl!),
     enabled: parseBoolean(configService.get<string>("FADADA_ENABLED"), false),
     env: parseFadadaEnv(configService.get<string>("FADADA_ENV")),
+    fullSigningSmokeEnabled: parseBoolean(configService.get<string>("FADADA_FULL_SIGNING_SMOKE"), false),
     platformCustomerId: trimmed(configService.get<string>("FADADA_PLATFORM_CUSTOMER_ID")),
     platformSignatureId: trimmed(configService.get<string>("FADADA_PLATFORM_SIGNATURE_ID")),
     requestTimeoutMs: parsePositiveInt(
@@ -47,6 +48,8 @@ export function loadFadadaConfig(configService: ConfigService): FadadaConfig {
       configService.get<string>("FADADA_SIGN_URL_VALIDITY_MINUTES"),
       DEFAULT_SIGN_URL_VALIDITY_MINUTES
     ),
+    testCustomerId: trimmed(configService.get<string>("FADADA_TEST_CUSTOMER_ID")),
+    testLocalCustomerId: trimmed(configService.get<string>("FADADA_TEST_LOCAL_CUSTOMER_ID")),
     verifyNotifyUrl: trimmed(configService.get<string>("FADADA_VERIFY_NOTIFY_URL")),
     verifyReturnUrl: trimmed(configService.get<string>("FADADA_VERIFY_RETURN_URL"))
   };

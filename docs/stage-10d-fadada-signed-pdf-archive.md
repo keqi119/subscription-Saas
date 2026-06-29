@@ -151,3 +151,78 @@ Stage 10D-B4-B is recorded in `docs/stage-10d-fadada-artifact-archive-mock-smoke
 Result: mocked archive smoke passed with an in-memory completed Fadada task fixture, mocked provider payloads, mocked private storage, idempotency checks for `force=false` and `force=true`, admin/Portal preview service checks, and contract/order/finance no-side-effect assertions.
 
 This B4-B result still does not call real Fadada APIs and does not unblock B5 by itself. B5 remains gated by the B2-B sandbox upload/sign URL blockers.
+
+## 12. Stage 10D-B5-A Plan Gate
+
+Stage 10D-B5-A is recorded in `docs/stage-10d-fadada-full-signing-validation-plan.md`.
+
+Archive should be part of the first full validation only after:
+
+- the sign URL was generated from a local task in the same callback target database;
+- Fadada callback verified and marked the task `COMPLETED`;
+- contract/order advancement was explicitly approved and observed;
+- the user approves one manual archive trigger.
+
+The archive service remains post-signing only. It must not be used to compensate for a failed callback, and it must not fabricate an evidence report while the independent evidence report download interface remains TODO.
+
+Current B5-B blocker:
+
+```text
+Before formal full signing, resolve how the controlled local signer maps to the verified Fadada provider customer_id.
+```
+
+## 13. Stage 10D-B5-B Archive Gate Status
+
+ENV-B later confirmed the production API candidate and Fadada runtime readiness, including the approved local-to-provider customer mapping and `FADADA_AUTO_SIGN_ENABLED=false`.
+
+The first B5-B full signing execution attempt stopped before `createSignTask` because there was no controlled pending-sign test contract/order sample for the approved tester. Therefore archive was not reached:
+
+```text
+archive executed: no
+signedDocumentObjectKey present: no new task created
+Admin signed PDF stream: not reached
+Portal signed PDF stream: not reached
+provider PDF download: not called
+contractFiling.api: not called
+```
+
+Before archive can be validated in production, B5-B needs one approved `PENDING_SIGN` test order with a signable contract and a non-sensitive PDF artifact.
+
+## 14. Stage 10D-B5-B Real Signed PDF Archive Result
+
+Stage 10D-B5-B full signing execution retry later completed a real signed PDF archive after the verified Fadada signing callback.
+
+Archive result:
+
+```text
+task=4315fc...ddb9
+contract=643f9d...2a3b
+task.status=COMPLETED
+contract.status=SIGNED
+order.status=PENDING_PAYMENT
+archive executed=yes
+signedDocumentObjectKey present=yes
+evidenceObjectKey present=no
+```
+
+Download verification:
+
+```text
+Admin signed PDF preview: HTTP 200, application/pdf, %PDF-
+Portal own-customer signed PDF preview: HTTP 200, application/pdf, %PDF-
+Portal no-cookie signed PDF preview: HTTP 401
+objectKey exposed=no
+provider URL exposed=no
+```
+
+Finance and safety:
+
+```text
+PaymentRecord unchanged
+PaymentWriteOff unchanged
+ReceivableBill paidAmount / remainingAmount unchanged
+extsign_auto.api not called
+seed / migrate deploy / db push / reset not executed
+```
+
+No storage object key, full sign URL, provider raw response, PII, secret, full customer id, or PDF binary is recorded.

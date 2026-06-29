@@ -35,8 +35,8 @@ export async function runCli(args = process.argv.slice(2)) {
     testPdfFile: options.pdfFile ? resolve(options.pdfFile) : resolve(DEFAULT_TEST_PDF_FILE)
   });
 
-  if (options.mode === "run" && result.state) {
-    writeJson(resultFile, result.state);
+  if (options.mode !== "preflight" && result.diagnosticState) {
+    writeJson(resultFile, result.diagnosticState);
   }
 
   printSummary(result, resultFile);
@@ -84,10 +84,24 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
   };
   const timestamp = formatFadadaTimestamp(now());
   const transport = input.transport ?? defaultTransport;
+  const customerId = requiredEnvValue(env, "FADADA_TEST_CUSTOMER_ID");
+
+  if (mode === "signurl-only") {
+    return runSignUrlOnlyFlow({
+      config,
+      customerId,
+      env,
+      now,
+      report,
+      resultFile: input.resultFile ?? DEFAULT_RESULT_FILE,
+      timestamp,
+      transport
+    });
+  }
+
   const pdfBuffer = input.pdfBuffer ?? loadOrCreateTestPdf(input.testPdfFile ?? DEFAULT_TEST_PDF_FILE);
   const contractId = buildSmokeId("contract", now());
   const transactionId = buildSmokeId("tx", now());
-  const customerId = requiredEnvValue(env, "FADADA_TEST_CUSTOMER_ID");
 
   const uploadRequest = buildUploadDocsRequest({
     ...config,
@@ -95,12 +109,22 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     docTitle: DEFAULT_DOC_TITLE,
     timestamp
   });
-  const uploadResponse = await sendRequest(uploadRequest, transport, {
+  const uploadFile = {
     buffer: pdfBuffer,
     contentType: "application/pdf",
     fieldName: "file",
     fileName: "subauto-fadada-production-host-smoke.pdf"
-  });
+  };
+  const diagnosticBase = {
+    contractId,
+    createdAt: new Date().toISOString(),
+    provider: {},
+    requests: {
+      uploadDocs: buildRequestDiagnostic(uploadRequest, uploadFile)
+    },
+    transactionId
+  };
+  const uploadResponse = await sendRequest(uploadRequest, transport, uploadFile);
   const uploadRaw = parseJsonObject(uploadResponse.bodyText) ?? uploadResponse.bodyText;
   const uploadSuccess = isProviderSuccess(uploadRaw);
   const uploadDocs = {
@@ -122,6 +146,12 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     return withSanitized({
       ...afterUpload,
       blockers: ["uploaddocs.api failed"],
+      diagnosticState: {
+        ...diagnosticBase,
+        provider: {
+          uploadDocs: buildProviderDiagnostic(uploadRaw, uploadResponse)
+        }
+      },
       ok: false
     });
   }
@@ -139,10 +169,20 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     transactionId,
     validity
   });
+  const diagnosticWithSignRequest = {
+    ...diagnosticBase,
+    provider: {
+      uploadDocs: buildProviderDiagnostic(uploadRaw, uploadResponse)
+    },
+    requests: {
+      ...diagnosticBase.requests,
+      extSignValidation: buildRequestDiagnostic(signRequest)
+    }
+  };
   const signResponse = await sendRequest(signRequest, transport);
   const signRaw = parseJsonObject(signResponse.bodyText) ?? signResponse.bodyText;
-  const signUrl = extractSignUrl(signRaw);
-  const signSuccess = isProviderSuccess(signRaw) && Boolean(signUrl);
+  const signUrl = signUrlFromResponse(signRaw, signResponse, signRequest);
+  const signSuccess = Boolean(signUrl);
   const extSignValidation = {
     code: providerCode(signRaw),
     customerIdMasked: maskMiddle(customerId),
@@ -164,6 +204,14 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
         uploadDocs: sanitizeForOutput(uploadDocs)
       }
     : undefined;
+  const diagnosticState = {
+    ...diagnosticWithSignRequest,
+    provider: {
+      ...diagnosticWithSignRequest.provider,
+      extSignValidation: buildProviderDiagnostic(signRaw, signResponse)
+    },
+    signUrl: signSuccess ? signUrl : undefined
+  };
 
   return withSanitized({
     ...afterUpload,
@@ -171,7 +219,98 @@ export async function runFadadaProductionUploadSignUrlSmoke(input) {
     extSignValidation,
     ok: signSuccess,
     signUrl: signUrlResult,
+    diagnosticState,
     state
+  });
+}
+
+async function runSignUrlOnlyFlow(input) {
+  const reusable = loadReusableUploadState(input.resultFile);
+  if (!reusable.ok) {
+    return withSanitized({
+      ...input.report,
+      blockers: [reusable.blocker],
+      ok: false,
+      uploadDocs: { status: "missing-reuse" }
+    });
+  }
+
+  const validity = positiveInt(input.env.FADADA_SIGN_URL_VALIDITY_MINUTES, 30);
+  const quantity = positiveInt(input.env.FADADA_SIGN_URL_QUANTITY, 1);
+  const transactionId = buildSmokeId("tx", input.now());
+  const signRequest = buildExtSignValidationRequest({
+    ...input.config,
+    contractId: reusable.contractId,
+    customerId: input.customerId,
+    notifyUrl: requiredEnvValue(input.env, "FADADA_SIGN_NOTIFY_URL"),
+    quantity,
+    returnUrl: requiredEnvValue(input.env, "FADADA_SIGN_RETURN_URL"),
+    timestamp: input.timestamp,
+    transactionId,
+    validity
+  });
+  const diagnosticWithSignRequest = {
+    contractId: reusable.contractId,
+    createdAt: new Date().toISOString(),
+    mode: "signurl-only",
+    provider: {
+      uploadDocs: sanitizeForOutput(reusable.state.provider?.uploadDocs ?? {})
+    },
+    requests: {
+      extSignValidation: buildRequestDiagnostic(signRequest)
+    },
+    reusedUpload: true,
+    transactionId
+  };
+  const uploadDocs = {
+    code: providerCode(reusable.state.provider?.uploadDocs),
+    contractIdMasked: maskMiddle(reusable.contractId),
+    msg: providerMsg(reusable.state.provider?.uploadDocs),
+    status: "reused"
+  };
+  const signResponse = await sendRequest(signRequest, input.transport);
+  const signRaw = parseJsonObject(signResponse.bodyText) ?? signResponse.bodyText;
+  const signUrl = signUrlFromResponse(signRaw, signResponse, signRequest);
+  const signSuccess = Boolean(signUrl);
+  const extSignValidation = {
+    code: providerCode(signRaw),
+    customerIdMasked: maskMiddle(input.customerId),
+    msg: providerMsg(signRaw),
+    status: signSuccess ? "success" : "failed",
+    transactionIdMasked: maskMiddle(transactionId)
+  };
+  const signUrlResult = {
+    masked: signUrl ? maskUrl(signUrl) : "missing",
+    present: Boolean(signUrl)
+  };
+  const state = signSuccess
+    ? {
+        contractId: reusable.contractId,
+        createdAt: new Date().toISOString(),
+        extSignValidation: sanitizeForOutput(extSignValidation),
+        signUrl,
+        transactionId,
+        uploadDocs: sanitizeForOutput(uploadDocs)
+      }
+    : undefined;
+  const diagnosticState = {
+    ...diagnosticWithSignRequest,
+    provider: {
+      ...diagnosticWithSignRequest.provider,
+      extSignValidation: buildProviderDiagnostic(signRaw, signResponse)
+    },
+    signUrl: signSuccess ? signUrl : undefined
+  };
+
+  return withSanitized({
+    ...input.report,
+    blockers: signSuccess ? undefined : ["extsign_validation.api did not return a signUrl"],
+    extSignValidation,
+    ok: signSuccess,
+    signUrl: signUrlResult,
+    diagnosticState,
+    state,
+    uploadDocs
   });
 }
 
@@ -279,6 +418,7 @@ export function buildExtSignValidationRequest(input) {
     businessParams: {
       contract_id: input.contractId,
       customer_id: input.customerId,
+      doc_title: input.docTitle ?? DEFAULT_DOC_TITLE,
       notify_url: input.notifyUrl,
       quantity: input.quantity,
       return_url: input.returnUrl,
@@ -289,6 +429,7 @@ export function buildExtSignValidationRequest(input) {
     endpoint: "extsign_validation.api",
     explicitMd5Seed: `${input.transactionId}${input.timestamp}${input.validity}${input.quantity}`,
     explicitSortString: input.customerId,
+    method: "GET",
     timestamp: input.timestamp,
     version: input.version
   });
@@ -314,7 +455,7 @@ export function buildFadadaRequest(input) {
   return {
     contentType: input.contentType,
     endpoint: input.endpoint,
-    method: "POST",
+    method: input.method ?? "POST",
     params: {
       ...businessParams,
       app_id: input.appId,
@@ -470,6 +611,20 @@ export function buildTransportRequest(request, file) {
     };
   }
 
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    for (const [key, value] of Object.entries(request.params)) {
+      url.searchParams.set(key, value);
+    }
+    return {
+      body: undefined,
+      headers: {},
+      method: request.method,
+      timeoutMs: 15000,
+      url: url.toString()
+    };
+  }
+
   return {
     body: new URLSearchParams(request.params).toString(),
     headers: { "content-type": request.contentType },
@@ -565,6 +720,38 @@ function withSanitized(report) {
   };
 }
 
+function loadReusableUploadState(resultFile) {
+  const state = readJsonIfExists(resultFile);
+  const contractId = stringValue(state?.contractId ?? state?.requests?.uploadDocs?.params?.contract_id);
+  const uploadCode = providerCode(state?.provider?.uploadDocs);
+  if (!state || !contractId || uploadCode !== "1000") {
+    return {
+      blocker: "cannot reuse uploaded contract_id from latest.json",
+      ok: false
+    };
+  }
+
+  return {
+    contractId,
+    ok: true,
+    state
+  };
+}
+
+function readJsonIfExists(path) {
+  const filePath = resolve(path);
+  if (!existsSync(filePath)) return undefined;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function stringValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function parseArgs(args) {
   const options = { mode: "preflight" };
   for (let index = 0; index < args.length; index += 1) {
@@ -580,14 +767,14 @@ function parseArgs(args) {
 }
 
 function parseMode(value) {
-  if (["preflight", "run"].includes(value)) {
+  if (["preflight", "run", "signurl-only"].includes(value)) {
     return value;
   }
   throw new Error(`Unknown mode: ${value}`);
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/fadada-production-upload-signurl-smoke.mjs --mode <preflight|run> [options]
+  console.log(`Usage: node scripts/fadada-production-upload-signurl-smoke.mjs --mode <preflight|run|signurl-only> [options]
 
 Options:
   --env-file <path>     Defaults to ${DEFAULT_ENV_FILE}
@@ -603,8 +790,8 @@ function printSummary(result, resultFile) {
   console.log(`uploaddocs=${result.uploadDocs.status}`);
   console.log(`extsign_validation=${result.extSignValidation.status}`);
   console.log(`signUrl=${result.signUrl.present ? "present" : "missing"}`);
-  if (result.state) {
-    console.log(`full signUrl saved to ${basename(resultFile)}; do not commit this file`);
+  if (result.diagnosticState) {
+    console.log(`full request diagnostics saved to ${basename(resultFile)}; do not commit this file`);
   }
   if (result.blockers?.length) {
     console.log(`blockers=${result.blockers.join("; ")}`);
@@ -617,6 +804,59 @@ function printSummary(result, resultFile) {
 function writeJson(path, data) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function buildRequestDiagnostic(request, file) {
+  const diagnostic = {
+    contentType: request.method === "GET" ? undefined : request.contentType,
+    endpoint: request.endpoint,
+    headerContentType: request.method === "GET" ? "absent" : request.contentType,
+    method: request.method,
+    params: request.params,
+    requestContentType: request.contentType,
+    url: request.url
+  };
+  if (file) {
+    diagnostic.file = {
+      contentType: file.contentType,
+      fieldName: file.fieldName ?? "file",
+      fileName: file.fileName,
+      sha256: sha256Hex(file.buffer),
+      sizeBytes: file.buffer.length
+    };
+  }
+  return diagnostic;
+}
+
+function buildProviderDiagnostic(raw, response) {
+  const diagnostic = {
+    code: providerCode(raw),
+    httpStatus: response.status,
+    msg: providerMsg(raw)
+  };
+  if (typeof raw === "string") {
+    const text = raw.trim();
+    diagnostic.bodyKind = isHtmlPageResponse(raw, response) ? "html-page" : /^https?:\/\//i.test(text) ? "text-url" : "text";
+    diagnostic.bodyTextLength = text.length;
+    diagnostic.bodyTextPreview = previewProviderText(text);
+  } else if (raw && typeof raw === "object") {
+    diagnostic.bodyKind = "json-object";
+  }
+  const contentType = response.headers?.["content-type"] ?? response.headers?.["Content-Type"];
+  if (contentType) {
+    diagnostic.contentType = contentType;
+  }
+  return diagnostic;
+}
+
+function previewProviderText(text) {
+  return text
+    .slice(0, 200)
+    .replace(/https?:\/\/\S+/gi, (value) => maskUrl(value));
+}
+
+function sha256Hex(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 function shouldMaskFieldValue(key, value) {
@@ -690,8 +930,10 @@ function positiveInt(value, fallback) {
 }
 
 function buildSmokeId(prefix, now) {
-  const date = formatFadadaTimestamp(now).slice(0, 8);
-  return `SUBAUTO_${prefix.toUpperCase()}_${date}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const kind = prefix === "tx" ? "SATX" : "SAES";
+  const timestamp = formatFadadaTimestamp(now);
+  const suffix = randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase();
+  return `${kind}${timestamp}${suffix}`;
 }
 
 function parseJsonObject(text) {
@@ -727,7 +969,25 @@ function stringField(raw, keys) {
 }
 
 function extractSignUrl(raw) {
+  if (typeof raw === "string" && /^https?:\/\//i.test(raw.trim())) {
+    return raw.trim();
+  }
   return stringField(raw, ["sign_url", "signUrl", "url"]);
+}
+
+function signUrlFromResponse(raw, response, request) {
+  const parsedUrl = extractSignUrl(raw);
+  if (parsedUrl) {
+    return parsedUrl;
+  }
+  return isHtmlPageResponse(raw, response) ? buildTransportRequest(request).url : undefined;
+}
+
+function isHtmlPageResponse(raw, response) {
+  if (typeof raw !== "string") return false;
+  const contentType = response.headers?.["content-type"] ?? response.headers?.["Content-Type"] ?? "";
+  const text = raw.trim();
+  return contentType.toLowerCase().includes("text/html") || /^<!doctype html\b|^<html\b|<title>签署文件<\/title>/i.test(text);
 }
 
 function providerCode(raw) {
@@ -743,8 +1003,11 @@ function providerMsg(raw) {
 }
 
 function isProviderSuccess(raw) {
+  if (typeof raw === "string" && /^https?:\/\//i.test(raw.trim())) {
+    return true;
+  }
   const code = providerCode(raw);
-  return code === "1" || code === "200" || code === "success";
+  return code === "1000";
 }
 
 function escapeMultipartName(value) {

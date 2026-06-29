@@ -34,7 +34,32 @@ describe("Fadada provider configuration", () => {
 });
 
 describe("Fadada provider B2-A flow", () => {
-  it("uploads the PDF artifact and creates a customer sign URL without touching real network", async () => {
+  it("rejects createSignTask before upload when provider customer id is unavailable", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(),
+      uploadDocs: vi.fn()
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn()
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService()), apiClient as never, pdfArtifactService as never);
+
+    await expect(provider.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    })).rejects.toThrow(/FADADA_SIGNER_CUSTOMER_ID_MISSING/);
+
+    expect(pdfArtifactService.getContractPdfArtifact).not.toHaveBeenCalled();
+    expect(apiClient.uploadDocs).not.toHaveBeenCalled();
+    expect(apiClient.createExternalSignUrl).not.toHaveBeenCalled();
+  });
+
+  it("uses the B5 smoke provider customer id only for the matching local customer", async () => {
     const apiClient = {
       createExternalSignUrl: vi.fn(async () => ({
         raw: { sign_url: "https://sign.example.test/customer" },
@@ -57,7 +82,11 @@ describe("Fadada provider B2-A flow", () => {
         source: "CONTRACT_VERSION_FILE" as const
       }))
     };
-    const provider = new FadadaESignProvider(loadFadadaConfig(configService()), apiClient as never, pdfArtifactService as never);
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_FULL_SIGNING_SMOKE: "1",
+      FADADA_TEST_CUSTOMER_ID: "fadada-provider-customer-1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1"
+    })), apiClient as never, pdfArtifactService as never);
 
     const result = await provider.createSignTask({
       callbackUrl: "https://api.example.test/esign/callback/fadada",
@@ -78,7 +107,7 @@ describe("Fadada provider B2-A flow", () => {
     });
     expect(apiClient.createExternalSignUrl).toHaveBeenCalledWith(expect.objectContaining({
       contractId: "ESG-1",
-      customerId: "customer-1",
+      customerId: "fadada-provider-customer-1",
       notifyUrl: "https://api.example.test/esign/callback/fadada",
       returnUrl: "https://app.example.test/portal/contracts/contract-1",
       transactionId: "ESG-1-1"
@@ -95,6 +124,78 @@ describe("Fadada provider B2-A flow", () => {
         signerType: "CUSTOMER"
       }]
     });
+  });
+
+  it("rejects the B5 smoke provider customer id when the local customer does not match", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(),
+      uploadDocs: vi.fn()
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn()
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_FULL_SIGNING_SMOKE: "1",
+      FADADA_TEST_CUSTOMER_ID: "fadada-provider-customer-1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-allowed"
+    })), apiClient as never, pdfArtifactService as never);
+
+    await expect(provider.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-denied", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    })).rejects.toThrow(/FADADA_TEST_CUSTOMER_ID_MISMATCH/);
+
+    expect(pdfArtifactService.getContractPdfArtifact).not.toHaveBeenCalled();
+    expect(apiClient.uploadDocs).not.toHaveBeenCalled();
+    expect(apiClient.createExternalSignUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects the B5 smoke provider customer id when smoke gates or ids are missing", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(),
+      uploadDocs: vi.fn()
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn()
+    };
+
+    const disabled = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_FULL_SIGNING_SMOKE: "0",
+      FADADA_TEST_CUSTOMER_ID: "fadada-provider-customer-1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1"
+    })), apiClient as never, pdfArtifactService as never);
+    await expect(disabled.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    })).rejects.toThrow(/FADADA_SIGNER_CUSTOMER_ID_MISSING/);
+
+    const missingProviderCustomer = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_FULL_SIGNING_SMOKE: "1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1"
+    })), apiClient as never, pdfArtifactService as never);
+    await expect(missingProviderCustomer.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    })).rejects.toThrow(/FADADA_SIGNER_CUSTOMER_ID_MISSING/);
+
+    expect(pdfArtifactService.getContractPdfArtifact).not.toHaveBeenCalled();
+    expect(apiClient.uploadDocs).not.toHaveBeenCalled();
+    expect(apiClient.createExternalSignUrl).not.toHaveBeenCalled();
   });
 
   it("returns an existing non-expired signer URL from local storage", async () => {

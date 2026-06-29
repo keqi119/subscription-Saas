@@ -110,6 +110,8 @@ test("runFadadaSandboxSmoke registers customer id, uploads PDF, creates masked s
     "uploaddocs.api",
     "extsign_validation.api"
   ]);
+  const signBody = String(calls[2]?.body ?? "");
+  assert.match(signBody, /doc_title=SubAuto\+Fadada\+Sandbox\+Smoke\+Test/);
   assert.equal(result.accountRegister.status, "success");
   assert.equal(result.uploadDocs.status, "success");
   assert.equal(result.extSignValidation.status, "success");

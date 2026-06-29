@@ -1,4 +1,11 @@
 import {
+  ESignProviderAccountStatus,
+  ESignProviderAccountType,
+  ESignProviderType,
+  ESignRealNameStatus
+} from "@prisma/client";
+
+import {
   CreateSignTaskInput,
   CreateSignTaskResult,
   ESignProvider,
@@ -37,9 +44,11 @@ export class FadadaESignProvider implements ESignProvider {
     if (!customerSigner?.customerId) {
       throw new Error("FADADA_CUSTOMER_SIGNER_MISSING: customer signer is required");
     }
+    const formalProviderCustomerId = await this.findVerifiedProviderCustomerId(customerSigner.customerId);
     const resolvedSignerCustomer = resolveFadadaSignerCustomerId({
       config: this.config,
       contractId: input.contractId,
+      formalProviderCustomerId,
       localCustomerId: customerSigner.customerId,
       mode: this.config.fullSigningSmokeEnabled ? "FULL_SIGNING_SMOKE" : "NORMAL",
       orderId: undefined
@@ -151,6 +160,27 @@ export class FadadaESignProvider implements ESignProvider {
       resultDescription,
       verified
     };
+  }
+
+  private async findVerifiedProviderCustomerId(customerId: string) {
+    if (!this.prisma) {
+      return undefined;
+    }
+
+    const account = await this.prisma.customerESignProviderAccount.findFirst({
+      select: { providerCustomerId: true },
+      where: {
+        accountType: ESignProviderAccountType.PERSONAL,
+        customerId,
+        deletedAt: null,
+        provider: ESignProviderType.FADADA,
+        providerCustomerId: { not: null },
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        registrationStatus: ESignProviderAccountStatus.REGISTERED
+      }
+    });
+
+    return account?.providerCustomerId ?? undefined;
   }
 }
 

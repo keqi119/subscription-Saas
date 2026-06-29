@@ -24,6 +24,7 @@ export function loadFadadaConfig(configService: ConfigService): FadadaConfig {
   }
 
   return {
+    accountRegisterEnabled: parseBoolean(configService.get<string>("FADADA_ACCOUNT_REGISTER_ENABLED"), false),
     apiVersion: trimmed(configService.get<string>("FADADA_API_VERSION")) ?? DEFAULT_API_VERSION,
     appId: appId!,
     appSecret: appSecret!,

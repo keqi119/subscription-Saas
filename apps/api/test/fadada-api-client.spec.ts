@@ -349,6 +349,7 @@ describe("Fadada API client", () => {
 
 function fadadaConfig(overrides: Partial<FadadaConfig> = {}): FadadaConfig {
   return {
+    accountRegisterEnabled: false,
     apiVersion: "2.0",
     appId: "app-123",
     appSecret: "secret-xyz",

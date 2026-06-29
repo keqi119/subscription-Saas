@@ -6,6 +6,7 @@ export type FadadaContentType =
 
 export interface FadadaConfig {
   apiVersion: string;
+  accountRegisterEnabled: boolean;
   appId: string;
   appSecret: string;
   authPersonCustomerId?: string;

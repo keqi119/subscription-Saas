@@ -1264,3 +1264,34 @@ production seed / migrate deploy / db push / reset: no
 ```
 
 Production runtime is now normalized to the mainline API image built from the PR #123 merge commit.
+
+## 22. Stage 10D-C1-A Provider Account Binding Start
+
+Stage 10D-C1-A introduces the formal customer-to-Fadada provider account binding foundation after the controlled B5-B validation.
+
+Result scope:
+
+```text
+CustomerESignProviderAccount model: added
+provider account / registration / real-name enums: added
+providerOpenId v1 rule: added
+binding service: added
+admin API: added
+Fadada account_register client: reused behind FADADA_ACCOUNT_REGISTER_ENABLED=false
+resolver formal binding priority: added
+backend UI: deferred to C1-B
+```
+
+Safety boundary:
+
+```text
+real Fadada account_register call: no by default
+upload/signUrl/signing: no
+production deploy: no
+production migration apply: no
+production seed: no
+bulk customer backfill: no
+PII / secret committed: no
+```
+
+Broad customer e-sign remains **No-Go** until provider binding records are registered and verified through the C2 real-name flow.

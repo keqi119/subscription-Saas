@@ -181,6 +181,7 @@ describe("Fadada request builder", () => {
 
 function fadadaConfig(): FadadaConfig {
   return {
+    accountRegisterEnabled: false,
     apiVersion: "2.0",
     appId: "app-123",
     appSecret: "secret-xyz",

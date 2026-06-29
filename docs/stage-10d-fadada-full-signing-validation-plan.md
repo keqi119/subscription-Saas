@@ -1125,3 +1125,20 @@ Next recommended stage:
 ```text
 Stage 10D-C1-A: CustomerESignProviderAccount formal provider-account binding
 ```
+
+### 11.22 C1-A Provider Account Binding
+
+Stage 10D-C1-A starts the formal provider account binding work needed before unrestricted customer e-sign can launch.
+
+Planned behavior:
+
+```text
+formal Customer -> Fadada provider customer_id binding
+stable non-PII providerOpenId
+manual attach and gated account_register
+resolver uses VERIFIED binding before smoke override
+no automatic registration during signing
+no production deploy or production migration in this stage
+```
+
+The B5 smoke override remains historical only. With `FADADA_FULL_SIGNING_SMOKE=0`, ordinary signing requires a registered and verified binding.

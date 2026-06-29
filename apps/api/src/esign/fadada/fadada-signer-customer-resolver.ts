@@ -6,6 +6,7 @@ export const FADADA_TEST_CUSTOMER_ID_MISMATCH = "FADADA_TEST_CUSTOMER_ID_MISMATC
 export interface ResolveFadadaSignerCustomerIdInput {
   config: FadadaConfig;
   contractId?: string;
+  formalProviderCustomerId?: string | null;
   localCustomerId?: string;
   mode: "FULL_SIGNING_SMOKE" | "NORMAL";
   orderId?: string;
@@ -13,12 +14,20 @@ export interface ResolveFadadaSignerCustomerIdInput {
 
 export interface ResolvedFadadaSignerCustomerId {
   providerCustomerId: string;
-  source: "ENV_TEST_SIGNER";
+  source: "ENV_TEST_SIGNER" | "FORMAL_BINDING";
 }
 
 export function resolveFadadaSignerCustomerId(
   input: ResolveFadadaSignerCustomerIdInput
 ): ResolvedFadadaSignerCustomerId {
+  const formalProviderCustomerId = normalize(input.formalProviderCustomerId);
+  if (formalProviderCustomerId) {
+    return {
+      providerCustomerId: formalProviderCustomerId,
+      source: "FORMAL_BINDING"
+    };
+  }
+
   if (input.mode !== "FULL_SIGNING_SMOKE" || !input.config.fullSigningSmokeEnabled) {
     throw new Error(`${FADADA_SIGNER_CUSTOMER_ID_MISSING}: provider customer_id mapping is required`);
   }
@@ -41,7 +50,7 @@ export function resolveFadadaSignerCustomerId(
   };
 }
 
-function normalize(value: string | undefined) {
+function normalize(value: string | null | undefined) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }

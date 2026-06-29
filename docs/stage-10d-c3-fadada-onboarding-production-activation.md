@@ -247,4 +247,6 @@ The system is ready for a later controlled activation test if all of the followi
 5. No production launch occurs without a separate activation plan.
 ```
 
+Stage 10D-C3-F controlled runtime validation is recorded in `docs/stage-10d-c3-fadada-onboarding-runtime-validation.md`.
+
 Unrestricted production e-sign remains **No-Go**.

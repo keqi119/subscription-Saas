@@ -1012,3 +1012,45 @@ confirm retry Stage 10D-B5-B full signing execution using the new controlled sam
 ```
 
 PR #123 remains Draft until the full signing result is separately reviewed.
+
+### 11.19 B5-B Full Signing Execution Retry Result
+
+Stage 10D-B5-B full signing execution retry later passed using the controlled sample.
+
+Result:
+
+```text
+Customer: 186****0212
+Order: b5698f...91c1
+Contract: 643f9d...2a3b
+ContractVersion: 5b591f...d6d8
+createSignTask: success
+uploaddocs.api: success
+extsign_validation.api: success
+signUrl generated/opened: yes
+manual signing completed: yes
+callback: verified=true, handled=true
+signer.status: SIGNED
+task.status: COMPLETED
+contract.status: SIGNED
+order.status: PENDING_PAYMENT
+signed PDF archive: success
+Admin PDF stream: HTTP 200
+Portal own-customer PDF stream: HTTP 200
+Portal no-cookie PDF stream: HTTP 401
+```
+
+Safety result:
+
+```text
+FADADA_AUTO_SIGN_ENABLED=false
+extsign_auto.api: not called
+PaymentRecord: unchanged
+PaymentWriteOff: unchanged
+ReceivableBill paidAmount / remainingAmount: unchanged
+seed / migrate deploy / db push / reset: no
+deploy / restart: no
+PII / secret / full signUrl / objectKey / provider raw response / PDF binary committed: no
+```
+
+Stage 10D-B5-B passed. PR #123 remains Draft until a separate Ready-for-review decision is made.

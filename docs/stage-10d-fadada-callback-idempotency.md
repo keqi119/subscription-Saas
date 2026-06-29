@@ -240,3 +240,33 @@ reason=UNVERIFIED
 The first B5-B full signing execution attempt did not reach a real signing callback. It stopped before `createSignTask` because there was no controlled pending-sign test contract/order sample for the approved tester.
 
 No real Fadada callback, provider business callback handling, contract/order advancement, payment mutation, or archive action occurred in that attempt.
+
+## 17. Stage 10D-B5-B Real Callback Result
+
+Stage 10D-B5-B full signing execution retry later reached a real Fadada signing callback from the controlled sample.
+
+Callback result:
+
+```text
+eventType=FADADA_SIGN_COMPLETED
+verified=true
+handled=true
+task.status=COMPLETED
+signer.status=SIGNED
+contract.status=SIGNED
+order.status=PENDING_PAYMENT
+```
+
+The callback matched the local task/signing records created by the formal `createSignTask` path. Invalid digest hardening remained in place; the successful callback was a verified callback and did not require any manual status change.
+
+Safety result:
+
+```text
+PaymentRecord unchanged
+PaymentWriteOff unchanged
+ReceivableBill paidAmount / remainingAmount unchanged
+extsign_auto.api not called
+no seed / migration / db push / reset
+```
+
+No full sign URL, provider raw response, full customer id, provider customer id, PII, storage object key, or PDF binary is recorded here.

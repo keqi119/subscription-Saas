@@ -187,3 +187,42 @@ contractFiling.api: not called
 ```
 
 Before archive can be validated in production, B5-B needs one approved `PENDING_SIGN` test order with a signable contract and a non-sensitive PDF artifact.
+
+## 14. Stage 10D-B5-B Real Signed PDF Archive Result
+
+Stage 10D-B5-B full signing execution retry later completed a real signed PDF archive after the verified Fadada signing callback.
+
+Archive result:
+
+```text
+task=4315fc...ddb9
+contract=643f9d...2a3b
+task.status=COMPLETED
+contract.status=SIGNED
+order.status=PENDING_PAYMENT
+archive executed=yes
+signedDocumentObjectKey present=yes
+evidenceObjectKey present=no
+```
+
+Download verification:
+
+```text
+Admin signed PDF preview: HTTP 200, application/pdf, %PDF-
+Portal own-customer signed PDF preview: HTTP 200, application/pdf, %PDF-
+Portal no-cookie signed PDF preview: HTTP 401
+objectKey exposed=no
+provider URL exposed=no
+```
+
+Finance and safety:
+
+```text
+PaymentRecord unchanged
+PaymentWriteOff unchanged
+ReceivableBill paidAmount / remainingAmount unchanged
+extsign_auto.api not called
+seed / migrate deploy / db push / reset not executed
+```
+
+No storage object key, full sign URL, provider raw response, PII, secret, full customer id, or PDF binary is recorded.

@@ -1031,3 +1031,136 @@ Next allowed step is a separate approval checkpoint:
 ```text
 confirm retry Stage 10D-B5-B full signing execution using the new controlled sample
 ```
+
+## 19. Stage 10D-B5-B Full Signing Execution Retry Success
+
+Stage 10D-B5-B full signing execution was retried after explicit approval using the controlled sample created in Stage 10D-B5-B-SAMPLE.
+
+### 19.1 Execution Scope
+
+| Field | Result |
+| --- | --- |
+| execution approved | yes |
+| production API image | `ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959` |
+| production DB schema | up to date, 54 migrations |
+| auto sign enabled | no, `FADADA_AUTO_SIGN_ENABLED=false` |
+| customer | `3c954f...810a`, mobile mask `186****0212` |
+| order | `b5698f...91c1` |
+| contract | `643f9d...2a3b` |
+| contract version | `5b591f...d6d8` |
+| PDF artifact | `2ff17a...82cc`, non-sensitive test PDF |
+| provider records / fee acceptance | accepted by approval |
+
+`Contract.status=GENERATED` was confirmed as accepted by the current `createSignTask` flow. The service signable statuses include `GENERATED` and `SIGNING`.
+
+### 19.2 Baseline
+
+Before `createSignTask`:
+
+| Check | Value |
+| --- | --- |
+| Order.status | `PENDING_SIGN` |
+| Contract.status | `GENERATED` |
+| Contract.signedAt | empty |
+| ContractESignTask count for contract | 0 |
+| ContractESignSigner count for contract | 0 |
+| PaymentOrder count | 12 |
+| PaymentRecord count | 8 |
+| PaymentWriteOff count | 8 |
+| ReceivableBill count | 10 |
+| ReceivableBill paid amount sum | 8 |
+| ReceivableBill remaining amount sum | 2 |
+| DepositLedger count | 0 |
+
+### 19.3 Create Sign Task And Manual Signing
+
+| Step | Result |
+| --- | --- |
+| createSignTask | success |
+| Fadada `uploaddocs.api` | called and succeeded |
+| Fadada `extsign_validation.api` | called and succeeded |
+| signUrl generated | yes |
+| complete signUrl recorded in docs/chat | no |
+| signUrl opened | yes, by tester after checkpoint |
+| signing completed | yes |
+| auto seal / `extsign_auto.api` | not enabled / not called |
+
+Task and signer after createSignTask:
+
+```text
+task=4315fc...ddb9
+task.status=WAITING_CUSTOMER
+signer=4b0f9c...5e05
+signer.status=SIGNING
+contract.status=SIGNING
+order.status=PENDING_SIGN
+```
+
+### 19.4 Callback And State Advancement
+
+Verified callback result:
+
+```text
+callback event=FADADA_SIGN_COMPLETED
+callback verified=true
+callback handled=true
+task.status=COMPLETED
+signer.status=SIGNED
+contract.status=SIGNED
+order.status=PENDING_PAYMENT
+```
+
+The callback advanced only the approved contract/order signing state.
+
+### 19.5 Signed PDF Archive
+
+Archive result:
+
+| Check | Result |
+| --- | --- |
+| archive endpoint | success |
+| signedDocumentObjectKey | present |
+| evidenceObjectKey | empty / not available |
+| Admin signed PDF stream | HTTP 200, `application/pdf`, `%PDF-` |
+| Portal own-customer signed PDF stream | HTTP 200, `application/pdf`, `%PDF-` |
+| Portal no-cookie signed PDF stream | HTTP 401 |
+| objectKey exposed to customer | no |
+| provider URL exposed | no |
+
+The archive step called the approved signed-PDF provider retrieval/filing path. No object key, provider URL, raw provider response, or PDF binary was recorded.
+
+### 19.6 Finance Side-Effect Check
+
+| Check | Before | After | Result |
+| --- | --- | --- | --- |
+| PaymentOrder count | 12 | 12 | unchanged |
+| PaymentRecord count | 8 | 8 | unchanged |
+| PaymentWriteOff count | 8 | 8 | unchanged |
+| ReceivableBill count | 10 | 10 | unchanged |
+| ReceivableBill paid amount sum | 8 | 8 | unchanged |
+| ReceivableBill remaining amount sum | 2 | 2 | unchanged |
+| DepositLedger count | 0 | 0 | unchanged |
+
+No real payment capture, PaymentRecord creation, PaymentWriteOff creation, or ReceivableBill payment mutation occurred.
+
+### 19.7 Actions Not Executed
+
+- no non-controlled customer used;
+- no real business contract PDF used;
+- no PDF containing PII was uploaded;
+- no `extsign_auto.api` call;
+- no automatic seal;
+- no production seed;
+- no production migration deploy;
+- no Prisma DB push or migrate reset;
+- no API/Web deploy or container restart;
+- no PaymentRecord or PaymentWriteOff creation;
+- no ReceivableBill paid amount mutation;
+- no ROE, BaaS, depreciation, or unrelated finance mutation;
+- no secret, PII, full customer id, full provider customer id, full signUrl, provider raw response, storage objectKey, or PDF binary committed.
+
+### 19.8 Gate Decision
+
+Stage 10D-B5-B passed: **yes**.
+
+PR #123 remains Draft until the final PR readiness decision is explicitly made.

@@ -691,4 +691,6 @@ EnterpriseSeal + SealAuthority + SignaturePolicy
 
 This keeps C4 as an enterprise governance layer above the already validated B5 engine and the C1/C2/C3 readiness stack.
 
+Stage 10D-C4-B schema and policy engine implementation planning is recorded in `docs/stage-10d-c4-fadada-enterprise-seal-implementation-plan.md`.
+
 Unrestricted enterprise seal or auto-seal production launch remains **No-Go** until later C4 implementation, validation, and production approval stages are complete.

@@ -72,6 +72,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-c1-fadada-provider-account-binding.md`: Stage 10D-C1-A formal Customer -> Fadada provider account binding foundation
 - `docs/stage-10d-c2-fadada-realname-lifecycle.md`: Stage 10D-C2 Fadada real-name verification lifecycle automation
 - `docs/stage-10d-c2-fadada-integration-test.md`: Stage 10D-C2-B controlled Fadada real-name integration boundary validation
+- `docs/stage-10d-c2-fadada-production-readiness-hardening.md`: Stage 10D-C2-C production Fadada real-name signing gate hardening
 - `docs/stage-10d-fadada-production-migration-preflight.md`: Stage 10D-B5-B-MIGRATION-PREFLIGHT production pending migration impact review and isolated clone rehearsal
 - `docs/stage-10d-fadada-production-migration-apply.md`: Stage 10D-B5-B-MIGRATION-APPLY production no-seed migrate deploy result and ENV-B follow-up
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  AuditAction,
   CustomerESignProviderAccount,
   ESignProviderAccountSource,
   ESignProviderAccountStatus,
@@ -10,6 +11,7 @@ import {
   Prisma
 } from "@prisma/client";
 
+import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { createFadadaProviderOpenId } from "./esign-provider-open-id";
 import { FadadaApiClient } from "./fadada/fadada-api.client";
@@ -94,7 +96,8 @@ export class CustomerESignProviderAccountService {
     private readonly fadadaApiClient?: Pick<
       FadadaApiClient,
       "applyCert" | "findPersonCertInfo" | "getPersonVerifyUrl" | "registerAccount"
-    >
+    >,
+    @Optional() private readonly auditService?: AuditService
   ) {}
 
   async listCustomerProviderAccounts(customerId: string) {
@@ -238,6 +241,7 @@ export class CustomerESignProviderAccountService {
         },
         where: { id: existing.id }
       });
+      await this.auditProviderAccountOverride("manual_attach", updated, actorId, existing);
       return toView(updated);
     }
 
@@ -256,6 +260,7 @@ export class CustomerESignProviderAccountService {
         ...(verifiedAt ? { verifiedAt } : {})
       }
     });
+    await this.auditProviderAccountOverride("manual_attach", created, actorId);
     return toView(created);
   }
 
@@ -271,6 +276,7 @@ export class CustomerESignProviderAccountService {
       },
       where: { id: binding.id }
     });
+    await this.auditProviderAccountOverride("manual_real_name_status", updated, actorId, binding);
     return toView(updated);
   }
 
@@ -581,6 +587,32 @@ export class CustomerESignProviderAccountService {
       explicitSortString: transactionNo,
       receivedMsgDigest,
       timestamp
+    });
+  }
+
+  private async auditProviderAccountOverride(
+    overrideType: "manual_attach" | "manual_real_name_status",
+    after: CustomerESignProviderAccount,
+    actorId?: string,
+    before?: CustomerESignProviderAccount
+  ) {
+    if (!this.auditService) {
+      return;
+    }
+    await this.auditService.write({
+      action: AuditAction.UPDATE,
+      after: {
+        account: toView(after),
+        overrideType
+      },
+      before: before ? {
+        account: toView(before),
+        overrideType
+      } : undefined,
+      entityId: after.id,
+      entityType: "customer_esign_provider_account",
+      module: "esign",
+      operatorId: actorId
     });
   }
 }

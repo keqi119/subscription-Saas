@@ -2,6 +2,7 @@ import { FadadaConfig } from "./fadada.types";
 
 export const FADADA_SIGNER_CUSTOMER_ID_MISSING = "FADADA_SIGNER_CUSTOMER_ID_MISSING";
 export const FADADA_TEST_CUSTOMER_ID_MISMATCH = "FADADA_TEST_CUSTOMER_ID_MISMATCH";
+export const FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED = "FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED";
 
 export interface ResolveFadadaSignerCustomerIdInput {
   config: FadadaConfig;
@@ -30,6 +31,9 @@ export function resolveFadadaSignerCustomerId(
 
   if (input.mode !== "FULL_SIGNING_SMOKE" || !input.config.fullSigningSmokeEnabled) {
     throw new Error(`${FADADA_SIGNER_CUSTOMER_ID_MISSING}: provider customer_id mapping is required`);
+  }
+  if (input.config.env === "production") {
+    throw new Error(`${FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED}: production signing requires a verified provider binding`);
   }
 
   const localCustomerId = normalize(input.localCustomerId);

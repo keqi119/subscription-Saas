@@ -75,7 +75,7 @@ The Fadada signer resolver path validates:
 
 - `REGISTERED + VERIFIED` binding is queried before smoke override;
 - the formal binding provider customer id is used when present;
-- smoke override is used only when `FADADA_FULL_SIGNING_SMOKE=1` and the local customer matches the allowlisted test customer;
+- smoke override is used only in non-production when `FADADA_FULL_SIGNING_SMOKE=1` and the local customer matches the allowlisted test customer;
 - with smoke disabled, missing or unverified binding fails before PDF artifact lookup, upload, or sign URL request.
 
 This confirms signing readiness:
@@ -128,6 +128,7 @@ Stage 10D-C2-B result:
 Controlled real-name integration boundary: passed
 Signing readiness with VERIFIED binding: passed
 Smoke override still gated: yes
+Production smoke fallback: hard rejected
 Unrestricted production e-sign launch: No-Go
 ```
 
@@ -142,4 +143,3 @@ or, with separate approval:
 ```text
 Controlled production real-name verification test for one tester
 ```
-

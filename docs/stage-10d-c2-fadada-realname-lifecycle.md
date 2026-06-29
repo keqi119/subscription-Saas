@@ -205,6 +205,13 @@ VERIFIED cannot be downgraded by callback or status query.
 
 The existing C1-A manual status endpoint remains an admin override, not the normal lifecycle path.
 
+Stage 10D-C2-C makes that override auditable:
+
+- `manual-attach` writes an `audit_log` entry;
+- manual real-name status override writes an `audit_log` entry;
+- audit snapshots use masked account views;
+- full provider customer ids, real names, mobile numbers, ID card numbers, and provider raw response bodies are not written into the audit payload.
+
 ## Security Boundary
 
 C2 does not:
@@ -258,3 +265,32 @@ The C2-B validation is mock-only and confirms:
 - no Fadada calls, sign URLs, signing, production DB writes, Contract / Order advancement, or payment side effects.
 
 This validates the integration boundary but still does not open unrestricted production e-sign.
+
+## C2-C Production Hardening
+
+Production signing now has one allowed readiness path:
+
+```text
+CustomerESignProviderAccount
+provider=FADADA
+accountType=PERSONAL
+registrationStatus=REGISTERED
+realNameStatus=VERIFIED
+providerCustomerId present
+```
+
+Smoke override behavior:
+
+```text
+FADADA_ENV=production
+FADADA_FULL_SIGNING_SMOKE=1
+-> rejected with FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED
+```
+
+This rejection happens before PDF artifact lookup, `uploaddocs.api`, or sign URL creation. In production, missing or unverified provider bindings fail closed.
+
+The production invariant is:
+
+```text
+REGISTERED + VERIFIED binding is the only Fadada signing readiness source.
+```

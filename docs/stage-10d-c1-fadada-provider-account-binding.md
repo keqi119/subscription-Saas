@@ -111,11 +111,20 @@ Fadada signing now resolves the signer customer id in this order:
    - `registrationStatus=REGISTERED`
    - `realNameStatus=VERIFIED`
    - `providerCustomerId` present
-2. Controlled smoke override only when `FADADA_FULL_SIGNING_SMOKE=1` and the local customer id matches `FADADA_TEST_LOCAL_CUSTOMER_ID`.
+2. Controlled smoke override only in non-production environments when `FADADA_FULL_SIGNING_SMOKE=1` and the local customer id matches `FADADA_TEST_LOCAL_CUSTOMER_ID`.
 3. Otherwise fail before PDF loading, upload, or sign URL creation:
    - `FADADA_SIGNER_CUSTOMER_ID_MISSING`
 
 The formal binding path is preferred over the smoke override.
+
+Production invariant:
+
+```text
+FADADA_ENV=production
+-> REGISTERED + VERIFIED binding is required
+-> FADADA_FULL_SIGNING_SMOKE is rejected even if set
+-> no silent fallback to test customer env is allowed
+```
 
 ## Admin API
 
@@ -204,3 +213,14 @@ FADADA_REALNAME_VERIFY_ENABLED=false by default
 ```
 
 The signing resolver still requires `REGISTERED + VERIFIED` formal binding before ordinary Fadada signing can start. C2 does not upload contracts, generate sign URLs, sign, advance Contract/Order, or mutate payment state.
+
+## Stage 10D-C2-C Production Hardening
+
+Stage 10D-C2-C hardens the production contract:
+
+- production signing is binding-only;
+- `FADADA_FULL_SIGNING_SMOKE` is non-production only and hard-rejected in production;
+- manual provider customer id attach and manual real-name status override are audited;
+- audit snapshots use masked account views and must not include PII or full provider customer ids.
+
+This keeps the C1-A manual recovery path available for controlled operations while making it traceable.

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  AuditAction,
   ESignProviderAccountStatus,
   ESignProviderAccountSource,
   ESignProviderAccountType,
@@ -130,7 +131,7 @@ describe("CustomerESignProviderAccountService", () => {
   });
 
   it("manual attach creates a registered manual binding without calling provider", async () => {
-    const { apiClient, service, state } = createServiceFixture();
+    const { apiClient, auditService, service, state } = createServiceFixture();
 
     const view = await service.manuallyAttachFadadaPersonalAccount({
       customerId: "customer-1",
@@ -146,6 +147,15 @@ describe("CustomerESignProviderAccountService", () => {
       source: ESignProviderAccountSource.MANUAL
     });
     expect(view.providerCustomerId).toMatch(/^fadad.*al-1$/);
+    expect(auditService.write).toHaveBeenCalledWith(expect.objectContaining({
+      action: AuditAction.UPDATE,
+      entityId: "binding-1",
+      entityType: "customer_esign_provider_account",
+      module: "esign",
+      operatorId: "operator-1"
+    }));
+    expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("fadada-manual-1");
+    expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("18616570212");
   });
 
   it("manual attach refuses to overwrite an existing provider customer id", async () => {
@@ -165,7 +175,7 @@ describe("CustomerESignProviderAccountService", () => {
   });
 
   it("marks real-name status without storing PII", async () => {
-    const { service, state } = createServiceFixture();
+    const { auditService, service, state } = createServiceFixture();
     await service.ensureFadadaPersonalPendingBinding("customer-1", "operator-1");
 
     const view = await service.markRealNameStatus({
@@ -180,6 +190,14 @@ describe("CustomerESignProviderAccountService", () => {
     });
     expect(view.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
     expect(JSON.stringify(view)).not.toContain("18616570212");
+    expect(auditService.write).toHaveBeenCalledWith(expect.objectContaining({
+      action: AuditAction.UPDATE,
+      entityId: "binding-1",
+      entityType: "customer_esign_provider_account",
+      module: "esign",
+      operatorId: "operator-1"
+    }));
+    expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("18616570212");
   });
 
   it("does not start real-name verification when FADADA_REALNAME_VERIFY_ENABLED is false", async () => {
@@ -413,13 +431,25 @@ function createServiceFixture(input: {
     getPersonVerifyUrl: vi.fn(),
     registerAccount: vi.fn()
   };
-  const service = new CustomerESignProviderAccountService(
+  const auditService = {
+    write: vi.fn(async (input: unknown) => {
+      void input;
+    })
+  };
+  const ServiceCtor = CustomerESignProviderAccountService as unknown as new (
+    prisma: unknown,
+    configService: ConfigService,
+    apiClient: unknown,
+    auditService: unknown
+  ) => CustomerESignProviderAccountService;
+  const service = new ServiceCtor(
     prisma as never,
     new ConfigService(input.env ?? {}),
-    apiClient as never
+    apiClient as never,
+    auditService as never
   );
 
-  return { apiClient, prisma, service, state };
+  return { apiClient, auditService, prisma, service, state };
 }
 
 interface FakeAccount {

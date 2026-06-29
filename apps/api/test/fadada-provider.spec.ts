@@ -126,6 +126,36 @@ describe("Fadada provider B2-A flow", () => {
     });
   });
 
+  it("rejects the B5 smoke override in production even when smoke env is enabled", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(),
+      uploadDocs: vi.fn()
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn()
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_ENV: "production",
+      FADADA_FULL_SIGNING_SMOKE: "1",
+      FADADA_TEST_CUSTOMER_ID: "fadada-provider-customer-1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1"
+    })), apiClient as never, pdfArtifactService as never);
+
+    await expect(provider.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    })).rejects.toThrow(/FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED/);
+
+    expect(pdfArtifactService.getContractPdfArtifact).not.toHaveBeenCalled();
+    expect(apiClient.uploadDocs).not.toHaveBeenCalled();
+    expect(apiClient.createExternalSignUrl).not.toHaveBeenCalled();
+  });
+
   it("uses a verified formal binding before the B5 smoke override", async () => {
     const apiClient = {
       createExternalSignUrl: vi.fn(async () => ({

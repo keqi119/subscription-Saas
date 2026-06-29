@@ -352,3 +352,11 @@ The system is ready for Stage 10D-C3-D integration wiring if the following are a
 ```
 
 Unrestricted production e-sign remains **No-Go** until C3 onboarding is wired, validated with a controlled customer, and operational approval is granted.
+
+Stage 10D-C3-D integration wiring result:
+
+```text
+docs/stage-10d-c3-fadada-onboarding-orchestration-wiring.md
+```
+
+C3-D adds a real C3 -> C2 service invocation point behind `FADADA_ONBOARDING_REALNAME_C2_ENABLED=false` by default, and restricts the C3-C mock real-name retry path to explicit `NODE_ENV=test` usage.

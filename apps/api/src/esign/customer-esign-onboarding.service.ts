@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   AuditAction,
   ESignProviderAccountStatus,
@@ -12,7 +13,10 @@ import {
   CustomerESignProviderAccountService,
   CustomerESignProviderAccountView
 } from "./customer-esign-provider-account.service";
-import { CustomerESignOnboardingRetryStep } from "./customer-esign-onboarding.dto";
+import {
+  CustomerESignOnboardingRetryStep,
+  StartCustomerESignOnboardingRealNameDto
+} from "./customer-esign-onboarding.dto";
 
 export enum CustomerESignOnboardingState {
   ACCOUNT_CREATED = "ACCOUNT_CREATED",
@@ -45,6 +49,7 @@ export interface CustomerESignOnboardingStatus {
   providerCustomerId: string | null;
   providerOpenId: string | null;
   realNameFlow?: {
+    c2ServiceInvoked: boolean;
     mockOnly: boolean;
     providerCallExecuted: boolean;
   };
@@ -53,6 +58,8 @@ export interface CustomerESignOnboardingStatus {
   signingEligible: boolean;
   state: CustomerESignOnboardingState;
   verifiedAt: Date | null;
+  verifyUrlMasked?: string;
+  verifyUrlPresent?: boolean;
   verificationSerialNo: string | null;
   verificationTransactionNo: string | null;
 }
@@ -61,7 +68,8 @@ export interface CustomerESignOnboardingStatus {
 export class CustomerESignOnboardingService {
   constructor(
     private readonly accountService: CustomerESignProviderAccountService,
-    @Optional() private readonly auditService?: AuditService
+    @Optional() private readonly auditService?: AuditService,
+    @Optional() private readonly configService?: ConfigService
   ) {}
 
   async getOnboardingStatus(customerId: string) {
@@ -99,11 +107,50 @@ export class CustomerESignOnboardingService {
     }
   }
 
+  async startRealNameVerification(
+    customerId: string,
+    input: StartCustomerESignOnboardingRealNameDto,
+    actorId?: string
+  ) {
+    if (!this.enabled("FADADA_ONBOARDING_REALNAME_C2_ENABLED")) {
+      throw new BadRequestException(
+        "ESIGN_ONBOARDING_REALNAME_C2_DISABLED: onboarding real-name C2 wiring is disabled"
+      );
+    }
+    const previousStatus = await this.getOnboardingStatus(customerId);
+    const result = await this.accountService.startFadadaPersonalRealNameVerification(customerId, input, actorId);
+    const status: CustomerESignOnboardingStatus = {
+      ...this.toStatus(customerId, result.account),
+      realNameFlow: {
+        c2ServiceInvoked: true,
+        mockOnly: false,
+        providerCallExecuted: false
+      },
+      verifyUrlMasked: result.verifyUrlMasked,
+      verifyUrlPresent: result.verifyUrlPresent
+    };
+    await this.writeAudit({
+      action: AuditAction.UPDATE,
+      actorId,
+      customerId,
+      event: "esign.onboarding.c2.realname_start",
+      nextStatus: status,
+      previousStatus
+    });
+    return status;
+  }
+
   async triggerRealNameFlow(customerId: string, actorId?: string) {
+    if (!this.isMockRealNameAllowed()) {
+      throw new BadRequestException(
+        "ESIGN_ONBOARDING_REALNAME_INPUT_REQUIRED: use the verify endpoint to invoke C2 real-name service"
+      );
+    }
     const current = await this.getOnboardingStatus(customerId);
     const status: CustomerESignOnboardingStatus = {
       ...current,
       realNameFlow: {
+        c2ServiceInvoked: false,
         mockOnly: true,
         providerCallExecuted: false
       }
@@ -212,6 +259,16 @@ export class CustomerESignOnboardingService {
       module: "esign",
       operatorId: input.actorId
     });
+  }
+
+  private isMockRealNameAllowed() {
+    return this.enabled("FADADA_ONBOARDING_MOCK_REALNAME_ENABLED") &&
+      this.configService?.get<string>("NODE_ENV") === "test";
+  }
+
+  private enabled(key: string) {
+    const normalized = this.configService?.get<string>(key)?.trim().toLowerCase();
+    return ["1", "true", "yes", "on"].includes(normalized ?? "");
   }
 }
 

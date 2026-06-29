@@ -4,7 +4,10 @@ import { PermissionCode } from "@subscription-saas/shared";
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
-import { RetryCustomerESignOnboardingDto } from "./customer-esign-onboarding.dto";
+import {
+  RetryCustomerESignOnboardingDto,
+  StartCustomerESignOnboardingRealNameDto
+} from "./customer-esign-onboarding.dto";
 import { CustomerESignOnboardingService } from "./customer-esign-onboarding.service";
 
 @Controller()
@@ -25,6 +28,16 @@ export class CustomerESignOnboardingController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.onboardingService.startOnboarding(id, request.user.id);
+  }
+
+  @Post("customers/:id/esign-onboarding/verify")
+  @RequirePermissions(PermissionCode.CUSTOMER_MANAGE)
+  startRealNameVerification(
+    @Param("id") id: string,
+    @Body() dto: StartCustomerESignOnboardingRealNameDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.onboardingService.startRealNameVerification(id, dto, request.user.id);
   }
 
   @Post("customers/:id/esign-onboarding/retry")

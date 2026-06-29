@@ -5,6 +5,7 @@ import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
+  CustomerESignOnboardingTriggerSource,
   RetryCustomerESignOnboardingDto,
   StartCustomerESignOnboardingRealNameDto
 } from "./customer-esign-onboarding.dto";
@@ -18,7 +19,9 @@ export class CustomerESignOnboardingController {
   @Get("customers/:id/esign-onboarding/status")
   @RequirePermissions(PermissionCode.CUSTOMER_VIEW)
   getOnboardingStatus(@Param("id") id: string) {
-    return this.onboardingService.getOnboardingStatus(id);
+    return this.onboardingService.getOnboardingStatus(id, {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
   }
 
   @Post("customers/:id/esign-onboarding/start")
@@ -27,7 +30,9 @@ export class CustomerESignOnboardingController {
     @Param("id") id: string,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.onboardingService.startOnboarding(id, request.user.id);
+    return this.onboardingService.startOnboarding(id, request.user.id, {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
   }
 
   @Post("customers/:id/esign-onboarding/verify")
@@ -37,7 +42,9 @@ export class CustomerESignOnboardingController {
     @Body() dto: StartCustomerESignOnboardingRealNameDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.onboardingService.startRealNameVerification(id, dto, request.user.id);
+    return this.onboardingService.startRealNameVerification(id, dto, request.user.id, {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
   }
 
   @Post("customers/:id/esign-onboarding/retry")
@@ -47,6 +54,8 @@ export class CustomerESignOnboardingController {
     @Body() dto: RetryCustomerESignOnboardingDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.onboardingService.retryOnboarding(id, dto, request.user.id);
+    return this.onboardingService.retryOnboarding(id, dto, request.user.id, {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
   }
 }

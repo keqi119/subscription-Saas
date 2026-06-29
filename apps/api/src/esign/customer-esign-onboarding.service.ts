@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Optional } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   AuditAction,
@@ -9,12 +9,14 @@ import {
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
+import { PrismaService } from "../prisma/prisma.service";
 import {
   CustomerESignProviderAccountService,
   CustomerESignProviderAccountView
 } from "./customer-esign-provider-account.service";
 import {
   CustomerESignOnboardingRetryStep,
+  CustomerESignOnboardingTriggerSource,
   StartCustomerESignOnboardingRealNameDto
 } from "./customer-esign-onboarding.dto";
 
@@ -56,6 +58,7 @@ export interface CustomerESignOnboardingStatus {
   realNameStatus: ESignRealNameStatus | null;
   registrationStatus: ESignProviderAccountStatus | null;
   signingEligible: boolean;
+  source?: CustomerESignOnboardingTriggerSource;
   state: CustomerESignOnboardingState;
   verifiedAt: Date | null;
   verifyUrlMasked?: string;
@@ -64,44 +67,114 @@ export interface CustomerESignOnboardingStatus {
   verificationTransactionNo: string | null;
 }
 
+export interface CustomerESignOnboardingEntryOptions {
+  allowAlreadySigningEnabled?: boolean;
+  source?: CustomerESignOnboardingTriggerSource;
+}
+
 @Injectable()
 export class CustomerESignOnboardingService {
   constructor(
     private readonly accountService: CustomerESignProviderAccountService,
     @Optional() private readonly auditService?: AuditService,
-    @Optional() private readonly configService?: ConfigService
+    @Optional() private readonly configService?: ConfigService,
+    @Optional() private readonly prismaService?: PrismaService
   ) {}
 
-  async getOnboardingStatus(customerId: string) {
+  async getOnboardingStatus(customerId: string, options: CustomerESignOnboardingEntryOptions = {}) {
     const account = await this.accountService.getFadadaPersonalBinding(customerId);
-    return this.toStatus(customerId, account);
+    const status = this.toStatus(customerId, account, options.source);
+    if (options.source) {
+      await this.writeAudit({
+        action: AuditAction.UPDATE,
+        customerId,
+        event: "esign.onboarding.status",
+        nextStatus: status,
+        source: options.source
+      });
+    }
+    return status;
   }
 
-  async startOnboarding(customerId: string, actorId?: string) {
+  async canStartOnboarding(customerId: string, options: CustomerESignOnboardingEntryOptions = {}) {
+    const status = await this.getOnboardingStatus(customerId);
+    if (
+      status.state === CustomerESignOnboardingState.SIGNING_ENABLED &&
+      !options.allowAlreadySigningEnabled
+    ) {
+      return {
+        allowed: false,
+        reason: "ESIGN_ONBOARDING_ALREADY_SIGNING_ENABLED",
+        status
+      };
+    }
+    if (status.state === CustomerESignOnboardingState.DISABLED) {
+      return {
+        allowed: false,
+        reason: "ESIGN_ONBOARDING_CUSTOMER_DISABLED",
+        status
+      };
+    }
+    return {
+      allowed: true,
+      reason: null,
+      status
+    };
+  }
+
+  async startOnboarding(
+    customerId: string,
+    actorId?: string,
+    options: CustomerESignOnboardingEntryOptions = {}
+  ) {
+    const source = options.source ?? CustomerESignOnboardingTriggerSource.ADMIN;
+    const gate = await this.canStartOnboarding(customerId, options);
+    if (!gate.allowed) {
+      throw new BadRequestException(`${gate.reason}: onboarding cannot start from ${source}`);
+    }
     const account = await this.accountService.ensureFadadaPersonalPendingBinding(customerId, actorId);
-    const status = this.toStatus(customerId, account);
+    const status = this.toStatus(customerId, account, source);
     await this.writeAudit({
       action: AuditAction.CREATE,
       actorId,
       customerId,
       event: "esign.onboarding.start",
-      nextStatus: status
+      nextStatus: status,
+      previousStatus: gate.status,
+      source
     });
     return status;
+  }
+
+  async startOnboardingForOrder(orderId: string, actorId?: string) {
+    if (!this.prismaService) {
+      throw new BadRequestException("ESIGN_ONBOARDING_ORDER_LOOKUP_UNAVAILABLE");
+    }
+    const order = await this.prismaService.subscriptionOrder.findUnique({
+      select: { customerId: true, id: true },
+      where: { id: orderId }
+    });
+    if (!order) {
+      throw new NotFoundException("ORDER_NOT_FOUND");
+    }
+    return this.startOnboarding(order.customerId, actorId, {
+      source: CustomerESignOnboardingTriggerSource.ORDER
+    });
   }
 
   async retryOnboarding(
     customerId: string,
     input: { step: CustomerESignOnboardingRetryStep | `${CustomerESignOnboardingRetryStep}` },
-    actorId?: string
+    actorId?: string,
+    options: CustomerESignOnboardingEntryOptions = {}
   ) {
     switch (input.step) {
       case CustomerESignOnboardingRetryStep.START:
-        return this.startOnboarding(customerId, actorId);
+        return this.startOnboarding(customerId, actorId, options);
       case CustomerESignOnboardingRetryStep.REALNAME_VERIFY:
-        return this.triggerRealNameFlow(customerId, actorId);
+        return this.triggerRealNameFlow(customerId, actorId, options);
       case CustomerESignOnboardingRetryStep.STATUS_REFRESH:
-        return this.getOnboardingStatus(customerId);
+        return this.getOnboardingStatus(customerId, options);
       default:
         throw new BadRequestException(`ESIGN_ONBOARDING_STEP_NOT_ALLOWED: ${input.step}`);
     }
@@ -110,17 +183,19 @@ export class CustomerESignOnboardingService {
   async startRealNameVerification(
     customerId: string,
     input: StartCustomerESignOnboardingRealNameDto,
-    actorId?: string
+    actorId?: string,
+    options: CustomerESignOnboardingEntryOptions = {}
   ) {
     if (!this.enabled("FADADA_ONBOARDING_REALNAME_C2_ENABLED")) {
       throw new BadRequestException(
         "ESIGN_ONBOARDING_REALNAME_C2_DISABLED: onboarding real-name C2 wiring is disabled"
       );
     }
+    const source = options.source ?? CustomerESignOnboardingTriggerSource.ADMIN;
     const previousStatus = await this.getOnboardingStatus(customerId);
     const result = await this.accountService.startFadadaPersonalRealNameVerification(customerId, input, actorId);
     const status: CustomerESignOnboardingStatus = {
-      ...this.toStatus(customerId, result.account),
+      ...this.toStatus(customerId, result.account, source),
       realNameFlow: {
         c2ServiceInvoked: true,
         mockOnly: false,
@@ -135,17 +210,23 @@ export class CustomerESignOnboardingService {
       customerId,
       event: "esign.onboarding.c2.realname_start",
       nextStatus: status,
-      previousStatus
+      previousStatus,
+      source
     });
     return status;
   }
 
-  async triggerRealNameFlow(customerId: string, actorId?: string) {
+  async triggerRealNameFlow(
+    customerId: string,
+    actorId?: string,
+    options: CustomerESignOnboardingEntryOptions = {}
+  ) {
     if (!this.isMockRealNameAllowed()) {
       throw new BadRequestException(
         "ESIGN_ONBOARDING_REALNAME_INPUT_REQUIRED: use the verify endpoint to invoke C2 real-name service"
       );
     }
+    const source = options.source ?? CustomerESignOnboardingTriggerSource.ADMIN;
     const current = await this.getOnboardingStatus(customerId);
     const status: CustomerESignOnboardingStatus = {
       ...current,
@@ -153,7 +234,8 @@ export class CustomerESignOnboardingService {
         c2ServiceInvoked: false,
         mockOnly: true,
         providerCallExecuted: false
-      }
+      },
+      source
     };
     await this.writeAudit({
       action: AuditAction.UPDATE,
@@ -161,7 +243,8 @@ export class CustomerESignOnboardingService {
       customerId,
       event: "esign.onboarding.realname_mock",
       nextStatus: status,
-      previousStatus: current
+      previousStatus: current,
+      source
     });
     return status;
   }
@@ -210,7 +293,8 @@ export class CustomerESignOnboardingService {
 
   private toStatus(
     customerId: string,
-    account: CustomerESignProviderAccountView | null
+    account: CustomerESignProviderAccountView | null,
+    source?: CustomerESignOnboardingTriggerSource
   ): CustomerESignOnboardingStatus {
     const state = this.resolveState(account);
     return {
@@ -225,6 +309,7 @@ export class CustomerESignOnboardingService {
       realNameStatus: account?.realNameStatus ?? null,
       registrationStatus: account?.registrationStatus ?? null,
       signingEligible: state === CustomerESignOnboardingState.SIGNING_ENABLED,
+      source,
       state,
       verifiedAt: account?.verifiedAt ?? null,
       verificationSerialNo: account?.verificationSerialNo ?? null,
@@ -239,6 +324,7 @@ export class CustomerESignOnboardingService {
     event: string;
     nextStatus: CustomerESignOnboardingStatus;
     previousStatus?: CustomerESignOnboardingStatus;
+    source?: CustomerESignOnboardingTriggerSource;
   }) {
     if (!this.auditService) {
       return;
@@ -248,11 +334,13 @@ export class CustomerESignOnboardingService {
       after: {
         customerId: maskIdentifier(input.customerId),
         event: input.event,
+        source: input.source,
         status: input.nextStatus
       },
       before: input.previousStatus ? {
         customerId: maskIdentifier(input.customerId),
         event: input.event,
+        source: input.source,
         status: input.previousStatus
       } : undefined,
       entityType: "customer_esign_onboarding",

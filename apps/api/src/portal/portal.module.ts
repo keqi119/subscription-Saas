@@ -23,6 +23,7 @@ import { PortalCatalogController } from "./portal-catalog.controller";
 import { PortalCatalogService } from "./portal-catalog.service";
 import { PortalContractController } from "./portal-contract.controller";
 import { PortalController } from "./portal.controller";
+import { PortalESignOnboardingController } from "./portal-esign-onboarding.controller";
 import { PortalPaymentController } from "./portal-payment.controller";
 import { PortalOrderDocumentController } from "./portal-order-document.controller";
 import { PortalProfileMaterialController } from "./portal-profile-material.controller";
@@ -44,7 +45,8 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalServiceCaseController,
     PortalWechatCallbackController,
     PortalWechatController,
-    PortalController
+    PortalController,
+    PortalESignOnboardingController
   ],
   exports: [CustomerAuthGuard, PortalAuthService],
   imports: [

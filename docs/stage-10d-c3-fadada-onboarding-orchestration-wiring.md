@@ -311,4 +311,6 @@ keep signing separate
 no production launch until separate approval
 ```
 
+Stage 10D-C3-E is now recorded in `docs/stage-10d-c3-fadada-onboarding-production-activation.md`.
+
 Unrestricted production e-sign remains **No-Go**.

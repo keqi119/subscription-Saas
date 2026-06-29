@@ -14,10 +14,13 @@ import {
 } from "../src/esign/customer-esign-onboarding.service";
 import {
   CustomerESignOnboardingRetryStep,
+  CustomerESignOnboardingTriggerSource,
   StartCustomerESignOnboardingRealNameDto
 } from "../src/esign/customer-esign-onboarding.dto";
 import type { CustomerESignProviderAccountView } from "../src/esign/customer-esign-provider-account.service";
 import { CustomerESignOnboardingController } from "../src/esign/customer-esign-onboarding.controller";
+import { OrderController } from "../src/order/order.controller";
+import { PortalESignOnboardingController } from "../src/portal/portal-esign-onboarding.controller";
 
 describe("CustomerESignOnboardingService", () => {
   it("returns NOT_STARTED without creating binding or calling provider mechanics", async () => {
@@ -39,6 +42,7 @@ describe("CustomerESignOnboardingService", () => {
 
   it("starts onboarding by creating a pending binding and writing a masked audit entry", async () => {
     const { accountService, auditService, service } = createFixture();
+    accountService.getFadadaPersonalBinding.mockResolvedValueOnce(null);
     accountService.ensureFadadaPersonalPendingBinding.mockResolvedValueOnce(fakeView({
       providerOpenId: "subauto_person_v1_abcdef1234567890abcdef12"
     }));
@@ -58,9 +62,59 @@ describe("CustomerESignOnboardingService", () => {
       module: "esign",
       operatorId: "operator-1"
     }));
+    expect(auditService.write.mock.calls[0]?.[0]).toMatchObject({
+      after: expect.objectContaining({
+        source: CustomerESignOnboardingTriggerSource.ADMIN
+      })
+    });
     expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("customer-1");
     expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("subauto_person_v1_abcdef1234567890abcdef12");
     expect(accountService.registerFadadaPersonalAccount).not.toHaveBeenCalled();
+    expect(accountService.startFadadaPersonalRealNameVerification).not.toHaveBeenCalled();
+  });
+
+  it("rejects onboarding start for customers that are already signing enabled", async () => {
+    const { accountService, service } = createFixture();
+    accountService.getFadadaPersonalBinding.mockResolvedValueOnce(fakeView({
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED
+    }));
+
+    await expect(service.startOnboarding("customer-1", "operator-1", {
+      source: CustomerESignOnboardingTriggerSource.ORDER
+    })).rejects.toThrow("ESIGN_ONBOARDING_ALREADY_SIGNING_ENABLED");
+
+    expect(accountService.ensureFadadaPersonalPendingBinding).not.toHaveBeenCalled();
+    expect(accountService.startFadadaPersonalRealNameVerification).not.toHaveBeenCalled();
+  });
+
+  it("starts onboarding from an order entry without mutating the order", async () => {
+    const { accountService, auditService, prismaService, service } = createFixture();
+    prismaService.subscriptionOrder.findUnique.mockResolvedValueOnce({
+      customerId: "customer-1",
+      id: "order-1"
+    });
+    accountService.getFadadaPersonalBinding.mockResolvedValueOnce(null);
+    accountService.ensureFadadaPersonalPendingBinding.mockResolvedValueOnce(fakeView());
+
+    const status = await service.startOnboardingForOrder("order-1", "operator-1");
+
+    expect(status).toMatchObject({
+      nextAction: "REGISTER_PROVIDER_ACCOUNT",
+      state: CustomerESignOnboardingState.ONBOARDING
+    });
+    expect(prismaService.subscriptionOrder.findUnique).toHaveBeenCalledWith({
+      select: { customerId: true, id: true },
+      where: { id: "order-1" }
+    });
+    expect(prismaService.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(accountService.ensureFadadaPersonalPendingBinding).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(auditService.write.mock.calls[0]?.[0]).toMatchObject({
+      after: expect.objectContaining({
+        source: CustomerESignOnboardingTriggerSource.ORDER
+      })
+    });
     expect(accountService.startFadadaPersonalRealNameVerification).not.toHaveBeenCalled();
   });
 
@@ -244,18 +298,63 @@ describe("CustomerESignOnboardingController", () => {
       request as never
     );
 
-    expect(service.getOnboardingStatus).toHaveBeenCalledWith("customer-1");
-    expect(service.startOnboarding).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(service.getOnboardingStatus).toHaveBeenCalledWith("customer-1", {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
+    expect(service.startOnboarding).toHaveBeenCalledWith("customer-1", "operator-1", {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
     expect(service.startRealNameVerification).toHaveBeenCalledWith("customer-1", {
       idCardNo: "110101199001011234",
       mobile: "18616570212",
       name: "Controlled Tester"
-    }, "operator-1");
+    }, "operator-1", {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
     expect(service.retryOnboarding).toHaveBeenCalledWith(
       "customer-1",
       { step: CustomerESignOnboardingRetryStep.REALNAME_VERIFY },
-      "operator-1"
+      "operator-1",
+      { source: CustomerESignOnboardingTriggerSource.ADMIN }
     );
+  });
+});
+
+describe("onboarding product entry controllers", () => {
+  it("maps order entry to source-aware onboarding start", async () => {
+    const orderService = {};
+    const onboardingService = {
+      startOnboardingForOrder: vi.fn(async () => ({ state: CustomerESignOnboardingState.ONBOARDING }))
+    };
+    const controller = new OrderController(orderService as never, onboardingService as never);
+
+    const result = await controller.startOrderESignOnboarding("order-1", {
+      user: { id: "operator-1" }
+    } as never);
+
+    expect(result).toEqual({ state: CustomerESignOnboardingState.ONBOARDING });
+    expect(onboardingService.startOnboardingForOrder).toHaveBeenCalledWith("order-1", "operator-1");
+  });
+
+  it("maps portal status entry to a source-aware read without starting onboarding", async () => {
+    const onboardingService = {
+      getOnboardingStatus: vi.fn(async () => ({ state: CustomerESignOnboardingState.NOT_STARTED })),
+      startOnboarding: vi.fn()
+    };
+    const controller = new PortalESignOnboardingController(onboardingService as never);
+
+    const result = await controller.getOnboardingStatus({
+      accountStatus: "ACTIVE",
+      customerAccountId: "customer-account-1",
+      customerId: "customer-1",
+      phone: "18616570212"
+    } as never);
+
+    expect(result).toEqual({ state: CustomerESignOnboardingState.NOT_STARTED });
+    expect(onboardingService.getOnboardingStatus).toHaveBeenCalledWith("customer-1", {
+      source: CustomerESignOnboardingTriggerSource.PORTAL
+    });
+    expect(onboardingService.startOnboarding).not.toHaveBeenCalled();
   });
 });
 
@@ -273,14 +372,21 @@ function createFixture(input: { env?: Record<string, string> } = {}) {
       void input;
     })
   };
+  const prismaService = {
+    subscriptionOrder: {
+      findUnique: vi.fn(),
+      update: vi.fn()
+    }
+  };
   const ServiceCtor = CustomerESignOnboardingService as unknown as new (
     accountService: unknown,
     auditService: unknown,
-    configService: unknown
+    configService: unknown,
+    prismaService: unknown
   ) => CustomerESignOnboardingService;
-  const service = new ServiceCtor(accountService, auditService, new ConfigService(input.env ?? {}));
+  const service = new ServiceCtor(accountService, auditService, new ConfigService(input.env ?? {}), prismaService);
 
-  return { accountService, auditService, service };
+  return { accountService, auditService, prismaService, service };
 }
 
 function fakeView(overrides: Partial<CustomerESignProviderAccountView> = {}): CustomerESignProviderAccountView {

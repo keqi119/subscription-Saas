@@ -4,6 +4,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
+import { CustomerESignOnboardingService } from "../esign/customer-esign-onboarding.service";
 import {
   ArchiveContractDto,
   CancelOrderDto,
@@ -27,7 +28,10 @@ import { OrderService } from "./order.service";
 @Controller()
 @UseGuards(AuthGuard, PermissionsGuard)
 export class OrderController {
-  constructor(private readonly orderService: OrderService) {}
+  constructor(
+    private readonly orderService: OrderService,
+    private readonly onboardingService: CustomerESignOnboardingService
+  ) {}
 
   @Get("orders")
   @RequirePermissions(PermissionCode.ORDER_VIEW)
@@ -178,6 +182,12 @@ export class OrderController {
   @RequirePermissions(PermissionCode.ORDER_CONFIRM_FINAL_PLAN)
   confirmCustomerOrder(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.confirmCustomerOrder(id, request.user, requestContext(request));
+  }
+
+  @Post("orders/:id/esign-onboarding/start")
+  @RequirePermissions(PermissionCode.ORDER_CONFIRM_FINAL_PLAN)
+  startOrderESignOnboarding(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.onboardingService.startOnboardingForOrder(id, request.user.id);
   }
 
   @Post("orders/from-quote/:quoteId")

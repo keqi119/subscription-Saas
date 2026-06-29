@@ -1,5 +1,11 @@
 import { IsBoolean, IsEnum, IsOptional, IsString, MaxLength } from "class-validator";
 
+export enum CustomerESignOnboardingTriggerSource {
+  ADMIN = "ADMIN",
+  ORDER = "ORDER",
+  PORTAL = "PORTAL"
+}
+
 export enum CustomerESignOnboardingRetryStep {
   REALNAME_VERIFY = "REALNAME_VERIFY",
   START = "START",

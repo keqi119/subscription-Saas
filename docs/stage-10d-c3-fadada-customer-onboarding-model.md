@@ -503,5 +503,12 @@ provider registration and real-name provider calls remain gated
 production signing remains binding-only
 ```
 
-Unrestricted production e-sign remains **No-Go** until C3 onboarding controls, operational policy, and limited-cohort validation are complete.
+C3-B implementation blueprint:
 
+```text
+docs/stage-10d-c3-fadada-onboarding-orchestration-implementation-plan.md
+```
+
+Stage 10D-C3-B keeps C3 as the product-facing onboarding layer while C1/C2 remain lower-level binding and real-name mechanics. The first C3-C implementation can remain migration-free if it derives onboarding state from `CustomerESignProviderAccount`, uses existing audit infrastructure, and keeps idempotency state-derived.
+
+Unrestricted production e-sign remains **No-Go** until C3 onboarding controls, operational policy, and limited-cohort validation are complete.

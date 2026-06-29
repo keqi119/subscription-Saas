@@ -146,3 +146,8 @@ Next recommended stage:
 Stage 10D-C3 production onboarding / activation design
 ```
 
+Stage 10D-C3-A design record:
+
+```text
+docs/stage-10d-c3-fadada-customer-onboarding-model.md
+```

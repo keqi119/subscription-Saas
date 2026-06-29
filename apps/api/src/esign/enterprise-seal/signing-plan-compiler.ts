@@ -1,4 +1,5 @@
 import type {
+  ApprovedSigningPlanRef,
   EnterpriseSealView,
   SignaturePolicyEngineDecision,
   SignaturePolicyView,
@@ -72,6 +73,23 @@ export function createSigningPlanGenerationAuditLog(
     sealId: plan.sealId ?? null,
     source: context.source,
     stepCount: plan.steps.length
+  };
+}
+
+export function toApprovedSigningPlanRef(plan: SigningPlan): ApprovedSigningPlanRef {
+  return {
+    executionMode: plan.executionMode,
+    planHash: plan.hash,
+    policyId: plan.policyId,
+    signingPlanId: plan.planId,
+    steps: plan.steps.map((step) => ({
+      customerId: step.customerId,
+      required: step.required,
+      sealId: step.sealId,
+      signerRole: step.signerRole,
+      signerType: step.signerType,
+      stepOrder: step.stepOrder
+    }))
   };
 }
 

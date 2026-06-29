@@ -226,4 +226,6 @@ C3-F validates that the onboarding platform can be exercised through product ent
 
 The system can proceed to C4 enterprise seal / multi-sign strategy design when the wider local verification gate is accepted.
 
+Stage 10D-C4-A enterprise seal / multi-signature model design is recorded in `docs/stage-10d-c4-fadada-enterprise-seal-model.md`.
+
 Unrestricted production e-sign remains **No-Go** until the remaining production activation and business rollout gates are approved separately.

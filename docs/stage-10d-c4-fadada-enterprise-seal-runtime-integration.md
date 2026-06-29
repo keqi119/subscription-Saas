@@ -136,7 +136,13 @@ Stage 10D-C4-D confirms that the C4 policy runtime can drive the B5 execution re
 Recommended next stage:
 
 ```text
-Stage 10D-C4-E: enterprise seal policy persistence / dry-run enforcement gate
+Stage 10D-C5-A: multi-tenant enterprise signing architecture
 ```
 
-Production enterprise seal launch remains **No-Go** until persistence, enforcement rollout, provider-specific enterprise seal preflight, and production approval are complete.
+Stage 10D-C5-A is recorded in:
+
+```text
+docs/stage-10d-c5-fadada-multi-tenant-signing-architecture.md
+```
+
+Production enterprise seal launch remains **No-Go** until tenant isolation, persistence, enforcement rollout, provider-specific enterprise seal preflight, and production approval are complete.

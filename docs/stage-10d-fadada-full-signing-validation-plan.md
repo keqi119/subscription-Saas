@@ -1054,3 +1054,42 @@ PII / secret / full signUrl / objectKey / provider raw response / PDF binary com
 ```
 
 Stage 10D-B5-B passed. PR #123 remains Draft until a separate Ready-for-review decision is made.
+
+### 11.20 B5-C Post-Validation Runtime Safety Closeout
+
+Stage 10D-B5-C was approved after B5-B passed.
+
+Closeout scope:
+
+```text
+record B5-B success
+close production runtime smoke override
+verify API health
+do not call Fadada
+do not write production DB
+do not seed / migrate / db push / reset
+do not create task / signUrl / signing / archive side effects
+```
+
+Execution result:
+
+```text
+production API image: ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959
+FADADA_FULL_SIGNING_SMOKE: 1 -> 0
+FADADA_AUTO_SIGN_ENABLED: false
+API-only restart: yes
+Web restart: no
+Postgres restart: no
+API health: healthy, status=ok
+Fadada business APIs called: no
+production DB writes: no
+```
+
+PR #123 may be marked Ready for review after the closeout documentation is pushed.
+
+Remaining launch gate:
+
+```text
+controlled full signing path: passed
+unrestricted customer e-sign launch: still gated by customer-provider account binding / real-name mapping
+```

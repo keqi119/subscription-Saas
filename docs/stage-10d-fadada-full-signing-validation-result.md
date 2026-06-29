@@ -1164,3 +1164,62 @@ No real payment capture, PaymentRecord creation, PaymentWriteOff creation, or Re
 Stage 10D-B5-B passed: **yes**.
 
 PR #123 remains Draft until the final PR readiness decision is explicitly made.
+
+## 20. Stage 10D-B5-C Post-Validation Runtime Safety Closeout
+
+Stage 10D-B5-C was executed after Stage 10D-B5-B passed. The goal was to close the controlled smoke override used for the single tester validation while leaving the production API healthy.
+
+### 20.1 Closeout Result
+
+| Check | Result |
+| --- | --- |
+| B5-B success recorded | yes |
+| PR #123 Ready-for-review decision | approved |
+| production API image | `ghcr.io/keqi119/subscription-api:fadada-pr123-envb-20260628-e4bf959` |
+| env backup path | `/opt/subscription-saas/deploy-backups/fadada-b5c-20260629103936` |
+| API-only restart | yes |
+| Web restart | no |
+| Postgres restart | no |
+| API health after restart | healthy, public health `status=ok` |
+
+### 20.2 Runtime Smoke Override Status
+
+Before closeout:
+
+```text
+FADADA_FULL_SIGNING_SMOKE=1
+FADADA_AUTO_SIGN_ENABLED=false
+FADADA_TEST_LOCAL_CUSTOMER_ID=present
+FADADA_TEST_CUSTOMER_ID=present
+```
+
+After closeout:
+
+```text
+FADADA_FULL_SIGNING_SMOKE=0
+FADADA_AUTO_SIGN_ENABLED=false
+FADADA_TEST_LOCAL_CUSTOMER_ID=present, inactive without full-signing smoke override
+FADADA_TEST_CUSTOMER_ID=present, inactive without full-signing smoke override
+```
+
+No app secret, full local customer id, full provider customer id, PII, sign URL, provider response, storage object key, or PDF binary was printed or committed.
+
+### 20.3 Actions Not Executed
+
+- no Fadada business API call;
+- no sign URL generation or opening;
+- no signing;
+- no archive call;
+- no production DB write;
+- no production seed;
+- no production migration deploy;
+- no Prisma DB push or migrate reset;
+- no API candidate rebuild or Web deploy.
+
+### 20.4 Final Gate Decision
+
+Stage 10D-B5-C passed.
+
+PR #123 can move from Draft to Ready for review from the B5-B validation perspective.
+
+This is not an unrestricted production e-sign launch. Broad Fadada signing remains gated by a proper customer-provider account binding / real-name mapping flow instead of the controlled smoke override.

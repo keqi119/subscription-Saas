@@ -45,6 +45,7 @@ import {
 } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 import { ReportController } from "../src/report/report.controller";
 import { escapeCsvCell, toCsv } from "../src/report/report-csv";
 import { ReportService } from "../src/report/report.service";
@@ -198,6 +199,7 @@ describe("reporting dashboard APIs", () => {
   });
 
   it("resolves legacy order report filters through VehicleModelDefinition before filtering", async () => {
+    vehicleModelUsageTracker.reset();
     const { prisma, service } = createReportHarness();
     mockOrderReport(prisma);
 
@@ -222,6 +224,10 @@ describe("reporting dashboard APIs", () => {
         })
       })
     );
+    expect(vehicleModelUsageTracker.report()).toMatchObject({
+      businessDecisionUsageCount: 0,
+      fallbackUsageCount: 1
+    });
   });
 
   it("finance report calculates receivable, paid, and unpaid totals from ReceivableBill", async () => {

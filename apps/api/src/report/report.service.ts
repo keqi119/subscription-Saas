@@ -181,6 +181,11 @@ export class ReportService {
       { modelDefinitionId, vehicleModel },
       {
         allowDisabled: true,
+        evidenceContext: {
+          module: "report",
+          operation: "report.filter.resolve",
+          usageKind: "API_ENUM_FILTER"
+        },
         missingMessage: "车型主数据不存在",
         mismatchMessage: "modelDefinitionId 与 vehicleModel 不一致"
       }

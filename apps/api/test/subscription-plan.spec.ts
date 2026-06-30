@@ -22,6 +22,7 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
+import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 import { ProductService } from "../src/product/product.service";
 
 const now = new Date("2026-06-02T00:00:00.000Z");
@@ -329,6 +330,7 @@ describe("subscription plan backend flow", () => {
   });
 
   it("resolves direct price-rule quotes to modelDefinitionId before querying ProductPriceRule", async () => {
+    vehicleModelUsageTracker.reset();
     const modelDefinition = makeModelDefinition({ id: "model-et5" });
     const priceRule = makePriceRule({ modelDefinition, modelDefinitionId: modelDefinition.id });
     const { prisma, service } = makeService({
@@ -377,6 +379,10 @@ describe("subscription plan backend flow", () => {
         })
       })
     );
+    expect(vehicleModelUsageTracker.report()).toMatchObject({
+      businessDecisionUsageCount: 1,
+      fallbackUsageCount: 1
+    });
   });
 
   it("quote response exposes snapshot display metadata before runtime vehicle display", async () => {

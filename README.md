@@ -85,6 +85,7 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-c4-fadada-enterprise-seal-runtime-integration.md`: Stage 10D-C4-D C4 policy to B5 execution reference runtime validation
 - `docs/stage-10d-c5-fadada-multi-tenant-signing-architecture.md`: Stage 10D-C5-A multi-tenant enterprise signing platform architecture
 - `docs/stage-10d-lease-saas-cps-compliance-system-design.md`: Stage 10D Lease SaaS + Signing + CPS certificate compliance architecture
+- `docs/stage-10d-lease-saas-cps-compliance-system-design.zh-CN.md`: Stage 10D 租赁 SaaS + 电子签 + CPS 证书合规中文架构设计
 - `docs/stage-10d-fadada-production-migration-preflight.md`: Stage 10D-B5-B-MIGRATION-PREFLIGHT production pending migration impact review and isolated clone rehearsal
 - `docs/stage-10d-fadada-production-migration-apply.md`: Stage 10D-B5-B-MIGRATION-APPLY production no-seed migrate deploy result and ENV-B follow-up
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep

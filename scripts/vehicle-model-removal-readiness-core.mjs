@@ -40,7 +40,10 @@ export function buildVehicleModelRemovalReadinessReport({ externalUsage, runtime
     (event) => event.usageKind === "BUSINESS_DECISION" && event.decisionPath === "LEGACY_ENUM"
   ).length;
   const fallbackUsageCount = events.filter((event) => event.usageKind === "FALLBACK").length;
-  const externalUsageCount = externalEvents.length;
+  const externalRuntimeWarningCount = runtimeEvents.filter(
+    (event) => event.usageKind === "EXTERNAL_CONTRACT_DEPRECATION_WARNING"
+  ).length;
+  const externalUsageCount = externalEvents.length + externalRuntimeWarningCount;
   const displayOnlyEnumUsageCount = events.filter(
     (event) => isEnumUsageEvent(event) && event.usageKind === "DISPLAY"
   ).length;
@@ -70,6 +73,40 @@ export function buildVehicleModelRemovalReadinessReport({ externalUsage, runtime
   };
 }
 
+const blockingMigrationStatuses = new Set(["Discovered", "No owner", "Unknown usage", "Requires legacy enum", "Exception rejected"]);
+const hardRemovalStatuses = new Set(["Signed off", "Exception approved"]);
+
+export function validateExternalConsumerRegistry({ externalUsage, consumers }) {
+  const normalizedConsumerPaths = new Map();
+  for (const consumer of consumers) {
+    const paths = normalizeConsumerEvidencePaths(consumer);
+    for (const evidencePath of paths) {
+      normalizedConsumerPaths.set(evidencePath, consumer);
+    }
+  }
+
+  const missingReferences = [];
+  for (const item of externalUsage.items) {
+    if (!normalizedConsumerPaths.has(normalizePath(item.path))) {
+      missingReferences.push(item);
+    }
+  }
+
+  const blockingConsumers = consumers.filter((consumer) => isWarningModeBlockingConsumer(consumer));
+  const hardRemovalBlockingConsumers = consumers.filter((consumer) => !isHardRemovalCompleteConsumer(consumer));
+
+  return {
+    blockingConsumers,
+    hardRemovalBlockingConsumers,
+    hardRemovalReady: missingReferences.length === 0 && hardRemovalBlockingConsumers.length === 0,
+    missingReferences,
+    registeredReferences: externalUsage.items.length - missingReferences.length,
+    totalConsumers: consumers.length,
+    totalExternalReferences: externalUsage.totalReferences,
+    warningModeReady: missingReferences.length === 0 && blockingConsumers.length === 0
+  };
+}
+
 function hasVehicleModelReference(content) {
   return /\bVehicleModel\b|\bvehicleModel\b|\blegacyVehicleModel\b/.test(content);
 }
@@ -77,6 +114,10 @@ function hasVehicleModelReference(content) {
 function classifyExternalUsage(path, content) {
   const normalizedPath = path.replaceAll("\\", "/").toLowerCase();
   const lowerContent = content.toLowerCase();
+
+  if (isInternalVehicleModelEvidenceFile(normalizedPath)) {
+    return null;
+  }
 
   if (normalizedPath.includes("external") || normalizedPath.includes("integration") || normalizedPath.includes("webhook")) {
     return "EXTERNAL_INTEGRATION";
@@ -91,6 +132,14 @@ function classifyExternalUsage(path, content) {
     return "REPORTS_API";
   }
   return null;
+}
+
+function isInternalVehicleModelEvidenceFile(normalizedPath) {
+  return (
+    normalizedPath.includes("vehicle-model-usage-tracker") ||
+    normalizedPath.includes("vehicle-model-removal-readiness") ||
+    normalizedPath.includes("vehicle-model-contract-governance")
+  );
 }
 
 function riskLevelForCategory(category) {
@@ -110,6 +159,7 @@ function isEnumUsageEvent(event) {
       event.usageKind === "API_ENUM_FILTER" ||
       event.usageKind === "ENUM_RESOLVE" ||
       event.usageKind === "EXTERNAL_CONTRACT" ||
+      event.usageKind === "EXTERNAL_CONTRACT_DEPRECATION_WARNING" ||
       event.usageKind === "FALLBACK" ||
       event.usageKind === "PRODUCT_PRICE_RULE_INPUT"
   );
@@ -127,4 +177,49 @@ function classifyRisk(input) {
 
 function clampReadinessScore(value) {
   return Math.max(0, Math.min(100, value));
+}
+
+function isWarningModeBlockingConsumer(consumer) {
+  const risk = normalizeRisk(consumer.risk);
+  if (risk !== "MEDIUM" && risk !== "HIGH") {
+    return false;
+  }
+
+  return (
+    !String(consumer.owner ?? "").trim() ||
+    !String(consumer.replacement ?? "").trim() ||
+    blockingMigrationStatuses.has(String(consumer.migrationStatus ?? ""))
+  );
+}
+
+function isHardRemovalCompleteConsumer(consumer) {
+  const status = String(consumer.migrationStatus ?? "");
+  if (!hardRemovalStatuses.has(status)) {
+    return false;
+  }
+
+  if (status === "Exception approved") {
+    return Boolean(consumer.acceptedNonEnumReplacement);
+  }
+
+  return true;
+}
+
+function normalizeConsumerEvidencePaths(consumer) {
+  const paths = [];
+  if (consumer.evidencePath) {
+    paths.push(consumer.evidencePath);
+  }
+  if (Array.isArray(consumer.evidencePaths)) {
+    paths.push(...consumer.evidencePaths);
+  }
+  return paths.map(normalizePath);
+}
+
+function normalizePath(value) {
+  return String(value ?? "").replaceAll("\\", "/").toLowerCase();
+}
+
+function normalizeRisk(value) {
+  return String(value ?? "").toUpperCase();
 }

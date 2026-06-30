@@ -508,6 +508,22 @@ enum DeliveryStatus {
   @@map("delivery_status")
 }
 
+enum LeaseStatus {
+  NOT_ACTIVE
+  READY
+  ACTIVE
+
+  @@map("lease_status")
+}
+
+enum VehicleInspectionStatus {
+  PENDING
+  PASSED
+  FAILED
+
+  @@map("vehicle_inspection_status")
+}
+
 enum VehicleReturnStatus {
   PENDING
   READY
@@ -3828,6 +3844,8 @@ model SubscriptionOrder {
   actualDeliveryAt           DateTime?             @map("actual_delivery_at") @db.Timestamptz(6)
   actualReturnAt             DateTime?             @map("actual_return_at") @db.Timestamptz(6)
   deliveries                 VehicleDelivery[]
+  lease                      Lease?
+  vehicleInspection          VehicleInspection?
   returns                    VehicleReturn[]
   returnDamages              VehicleReturnDamage[]
   receivableBills            ReceivableBill[]
@@ -4466,6 +4484,23 @@ model NotificationEvent {
   @@map("notification_event")
 }
 
+model Lease {
+  id          String            @id @default(uuid()) @db.Uuid
+  orderId     String            @unique @map("order_id") @db.Uuid
+  order       SubscriptionOrder @relation(fields: [orderId], references: [id])
+  status      LeaseStatus       @default(NOT_ACTIVE)
+  activatedAt DateTime?         @map("activated_at") @db.Timestamptz(6)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?           @map("created_by") @db.Uuid
+  updatedBy   String?           @map("updated_by") @db.Uuid
+  deletedAt   DateTime?         @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([activatedAt])
+  @@map("lease")
+}
+
 model VehicleDelivery {
   id                               String            @id @default(uuid()) @db.Uuid
   deliveryNo                       String            @unique @map("delivery_no") @db.VarChar(64)
@@ -4502,6 +4537,23 @@ model VehicleDelivery {
   @@index([scheduledAt])
   @@index([deliveredAt])
   @@map("vehicle_delivery")
+}
+
+model VehicleInspection {
+  id          String                  @id @default(uuid()) @db.Uuid
+  orderId     String                  @unique @map("order_id") @db.Uuid
+  order       SubscriptionOrder       @relation(fields: [orderId], references: [id])
+  status      VehicleInspectionStatus @default(PENDING)
+  inspectedAt DateTime?               @map("inspected_at") @db.Timestamptz(6)
+  createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?                 @map("created_by") @db.Uuid
+  updatedBy   String?                 @map("updated_by") @db.Uuid
+  deletedAt   DateTime?               @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([inspectedAt])
+  @@map("vehicle_inspection")
 }
 
 model VehicleReturn {

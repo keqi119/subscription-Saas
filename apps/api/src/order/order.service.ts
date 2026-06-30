@@ -1148,7 +1148,13 @@ export class OrderService {
       throw new BadRequestException("Selected vehicle is missing legacy compatibility model.");
     }
     const vehicleModel = vehicle.vehicleModel;
-    if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
+    if (
+      !vehicleModelReadPathMatches(vehicle, plan.vehiclePackage, {
+        businessDecision: true,
+        module: "order",
+        operation: "order.customerOrder.package.match"
+      })
+    ) {
       throw new BadRequestException("所选套餐不适用于该车型");
     }
     const modelSnapshot = buildVehicleModelSnapshot(vehicle);
@@ -3835,7 +3841,13 @@ async function assertCustomerOrderProductStillMatches(
       modelDefinitionId: order.modelDefinitionIdSnapshot,
       vehicleModel: order.vehicleModel
     };
-  if (!vehicleModelReadPathMatches(vehicleModelSource, quote.subscriptionPlan.vehiclePackage)) {
+  if (
+    !vehicleModelReadPathMatches(vehicleModelSource, quote.subscriptionPlan.vehiclePackage, {
+      businessDecision: true,
+      module: "order",
+      operation: "order.change.package.match"
+    })
+  ) {
     throw new BadRequestException("套餐仍需匹配订单车辆车型。");
   }
 }

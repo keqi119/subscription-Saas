@@ -45,6 +45,8 @@
     "quote-order:model-code-snapshot-backfill:test": "node --test scripts/quote-order-model-code-snapshot-backfill-core.test.mjs",
     "vehicle-model:enum-freeze": "node scripts/check-vehicle-model-enum-freeze.mjs",
     "vehicle-model:enum-freeze:test": "node --test scripts/check-vehicle-model-enum-freeze.test.mjs",
+    "vehicle-model:removal-readiness": "node scripts/vehicle-model-removal-readiness.mjs",
+    "vehicle-model:removal-readiness:test": "node --test scripts/vehicle-model-removal-readiness-core.test.mjs",
     "quality:gate": "pnpm -r lint && pnpm prisma:validate && pnpm prisma:generate && pnpm --filter @subscription-saas/api typecheck && pnpm --filter @subscription-saas/web typecheck && pnpm --filter @subscription-saas/api test && pnpm prisma:migrate:status",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",

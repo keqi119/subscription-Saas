@@ -6,6 +6,7 @@ import {
   vehicleModelReadPathMatches,
   VehicleModelLegacyAdapter
 } from "../src/common/vehicle-model-resolver";
+import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 
 describe("VehicleModelResolver", () => {
   it("uses modelDefinitionId as the primary model identity", () => {
@@ -56,12 +57,19 @@ describe("VehicleModelResolver", () => {
   });
 
   it("uses legacy enum matching only when both sides are legacy-only", () => {
+    vehicleModelUsageTracker.reset();
+
     expect(
       vehicleModelReadPathMatches(
         { modelDefinitionId: null, vehicleModel: VehicleModel.ET5 },
-        { modelDefinitionId: null, vehicleModel: VehicleModel.ET5 }
+        { modelDefinitionId: null, vehicleModel: VehicleModel.ET5 },
+        { businessDecision: true, module: "order", operation: "pricing.package.match" }
       )
     ).toBe(true);
+    expect(vehicleModelUsageTracker.report()).toMatchObject({
+      businessDecisionUsageCount: 1,
+      fallbackUsageCount: 1
+    });
   });
 });
 
@@ -83,13 +91,26 @@ describe("VehicleModelLegacyAdapter", () => {
       }
     };
 
+    vehicleModelUsageTracker.reset();
+
     await expect(
       VehicleModelLegacyAdapter.resolveModelDefinitionInput(prisma as never, {
         vehicleModel: VehicleModel.ET5
+      }, {
+        evidenceContext: {
+          businessDecision: true,
+          module: "product",
+          operation: "quote.priceRule.resolve",
+          usageKind: "PRODUCT_PRICE_RULE_INPUT"
+        }
       })
     ).resolves.toMatchObject({
       legacyVehicleModel: VehicleModel.ET5,
       modelDefinitionId: "model-et5"
+    });
+    expect(vehicleModelUsageTracker.report()).toMatchObject({
+      businessDecisionUsageCount: 1,
+      fallbackUsageCount: 1
     });
   });
 });

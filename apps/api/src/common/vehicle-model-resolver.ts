@@ -1,6 +1,13 @@
 import { BadRequestException } from "@nestjs/common";
 import { Prisma, VehicleModel } from "@prisma/client";
 
+import {
+  trackVehicleModelUsage,
+  type VehicleModelEvidenceModule,
+  type VehicleModelRiskLevel,
+  type VehicleModelUsageKind
+} from "./vehicle-model-usage-tracker";
+
 export const vehicleModelResolverDefinitionSelect = {
   deletedAt: true,
   displayName: true,
@@ -54,9 +61,18 @@ type ResolveModelDefinitionInput = {
 
 type ResolveModelDefinitionOptions = {
   allowDisabled?: boolean;
+  evidenceContext?: VehicleModelEvidenceContext;
   missingMessage?: string;
   mismatchMessage?: string;
   requireLegacyVehicleModel?: boolean;
+};
+
+type VehicleModelEvidenceContext = {
+  businessDecision?: boolean;
+  module: VehicleModelEvidenceModule;
+  operation: string;
+  riskLevel?: VehicleModelRiskLevel;
+  usageKind?: VehicleModelUsageKind;
 };
 
 export type ResolvedVehicleModelDefinitionInput = {
@@ -110,16 +126,30 @@ export function resolveVehicleModelLegacyCode(source: VehicleModelComparable): s
   return legacyVehicleModel ? String(legacyVehicleModel) : null;
 }
 
-export function vehicleModelReadPathMatches(left: VehicleModelComparable, right: VehicleModelComparable): boolean {
+export function vehicleModelReadPathMatches(
+  left: VehicleModelComparable,
+  right: VehicleModelComparable,
+  evidenceContext?: VehicleModelEvidenceContext
+): boolean {
   const leftModelDefinitionId = resolveVehicleModelDefinitionId(left);
   const rightModelDefinitionId = resolveVehicleModelDefinitionId(right);
 
   if (leftModelDefinitionId && rightModelDefinitionId) {
+    trackReadPathDecision(evidenceContext, {
+      decisionPath: "MODEL_DEFINITION_ID",
+      modelDefinitionId: leftModelDefinitionId
+    });
     return leftModelDefinitionId === rightModelDefinitionId;
   }
 
   const leftLegacyCode = resolveVehicleModelLegacyCode(left);
   const rightLegacyCode = resolveVehicleModelLegacyCode(right);
+  if (leftLegacyCode && rightLegacyCode) {
+    trackReadPathDecision(evidenceContext, {
+      decisionPath: "LEGACY_ENUM",
+      legacyVehicleModelCode: leftLegacyCode
+    });
+  }
   return Boolean(leftLegacyCode && rightLegacyCode && leftLegacyCode === rightLegacyCode);
 }
 
@@ -129,6 +159,8 @@ export class VehicleModelLegacyAdapter {
     input: ResolveModelDefinitionInput,
     options: ResolveModelDefinitionOptions = {}
   ): Promise<ResolvedVehicleModelDefinitionInput> {
+    trackAdapterInput(input, options.evidenceContext);
+
     const modelDefinition = input.modelDefinitionId
       ? await prisma.vehicleModelDefinition.findFirst({
           select: vehicleModelResolverDefinitionSelect,
@@ -161,5 +193,75 @@ export class VehicleModelLegacyAdapter {
       modelDefinitionId: modelDefinition.id,
       modelDisplayName: modelDefinition.displayName
     };
+  }
+}
+
+function trackAdapterInput(input: ResolveModelDefinitionInput, evidenceContext: VehicleModelEvidenceContext | undefined) {
+  if (!evidenceContext) {
+    return;
+  }
+
+  if (input.vehicleModel) {
+    trackVehicleModelUsage({
+      decisionPath: input.modelDefinitionId ? "MODEL_DEFINITION_ID" : "LEGACY_ENUM",
+      legacyVehicleModelCode: String(input.vehicleModel),
+      modelDefinitionId: input.modelDefinitionId ?? null,
+      module: evidenceContext.module,
+      operation: evidenceContext.operation,
+      riskLevel: evidenceContext.riskLevel ?? (evidenceContext.businessDecision ? "HIGH" : "MEDIUM"),
+      usageKind: evidenceContext.usageKind ?? "ENUM_RESOLVE"
+    });
+  }
+
+  if (!input.modelDefinitionId && input.vehicleModel) {
+    trackVehicleModelUsage({
+      decisionPath: "LEGACY_ENUM",
+      legacyVehicleModelCode: String(input.vehicleModel),
+      module: evidenceContext.module,
+      operation: `${evidenceContext.operation}.fallback`,
+      riskLevel: "MEDIUM",
+      usageKind: "FALLBACK"
+    });
+
+    if (evidenceContext.businessDecision) {
+      trackVehicleModelUsage({
+        decisionPath: "LEGACY_ENUM",
+        legacyVehicleModelCode: String(input.vehicleModel),
+        module: evidenceContext.module,
+        operation: `${evidenceContext.operation}.businessDecision`,
+        riskLevel: "HIGH",
+        usageKind: "BUSINESS_DECISION"
+      });
+    }
+  }
+}
+
+function trackReadPathDecision(
+  evidenceContext: VehicleModelEvidenceContext | undefined,
+  input: { decisionPath: "LEGACY_ENUM" | "MODEL_DEFINITION_ID"; legacyVehicleModelCode?: string; modelDefinitionId?: string }
+) {
+  if (!evidenceContext) {
+    return;
+  }
+
+  trackVehicleModelUsage({
+    decisionPath: input.decisionPath,
+    legacyVehicleModelCode: input.legacyVehicleModelCode ?? null,
+    modelDefinitionId: input.modelDefinitionId ?? null,
+    module: evidenceContext.module,
+    operation: `${evidenceContext.operation}.readPath`,
+    riskLevel: input.decisionPath === "LEGACY_ENUM" ? "MEDIUM" : "LOW",
+    usageKind: input.decisionPath === "LEGACY_ENUM" ? "FALLBACK" : "BUSINESS_DECISION"
+  });
+
+  if (input.decisionPath === "LEGACY_ENUM" && evidenceContext.businessDecision) {
+    trackVehicleModelUsage({
+      decisionPath: "LEGACY_ENUM",
+      legacyVehicleModelCode: input.legacyVehicleModelCode ?? null,
+      module: evidenceContext.module,
+      operation: `${evidenceContext.operation}.businessDecision`,
+      riskLevel: "HIGH",
+      usageKind: "BUSINESS_DECISION"
+    });
   }
 }

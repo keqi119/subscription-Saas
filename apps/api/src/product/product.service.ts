@@ -32,6 +32,7 @@ import {
   vehicleModelReadPathMatches,
   VehicleModelLegacyAdapter
 } from "../common/vehicle-model-resolver";
+import { trackVehicleModelUsage } from "../common/vehicle-model-usage-tracker";
 import {
   buildQuoteOrderModelDisplay,
   buildVehicleModelSnapshot,
@@ -1174,7 +1175,13 @@ export class ProductService {
       const vehicle = await this.findAvailableVehicleForQuote(dto.vehicleId);
       const plan = await this.findSubscriptionPlanOrThrow(dto.subscriptionPlanId);
       ensureSubscriptionPlanAvailableForQuote(plan);
-      if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
+      if (
+        !vehicleModelReadPathMatches(vehicle, plan.vehiclePackage, {
+          businessDecision: true,
+          module: "quote",
+          operation: "quote.subscriptionPlan.package.match"
+        })
+      ) {
         throw new BadRequestException("所选套餐不适用于该车型");
       }
       if (!vehicle.vehicleModel) {
@@ -1750,6 +1757,12 @@ export class ProductService {
       this.prisma,
       { modelDefinitionId, vehicleModel },
       {
+        evidenceContext: {
+          businessDecision: true,
+          module: "product",
+          operation: "quote.priceRule.resolve",
+          usageKind: "PRODUCT_PRICE_RULE_INPUT"
+        },
         missingMessage: "车型主数据缺失，无法按车型主数据查询价格规则。",
         mismatchMessage: "车型主数据与 legacy 车型不一致。",
         requireLegacyVehicleModel: true
@@ -1758,6 +1771,15 @@ export class ProductService {
   }
 
   private async findActivePriceRule(productVersionId: string, modelDefinitionId: string) {
+    trackVehicleModelUsage({
+      decisionPath: "MODEL_DEFINITION_ID",
+      modelDefinitionId,
+      module: "product",
+      operation: "productPriceRule.activeLookup",
+      riskLevel: "LOW",
+      usageKind: "BUSINESS_DECISION"
+    });
+
     const version = await this.findVersionOrThrow(productVersionId);
     ensureSubscriptionProductType(version.product.productType);
     if (version.product.status !== ProductStatus.ACTIVE || version.status !== ProductVersionStatus.ACTIVE) {

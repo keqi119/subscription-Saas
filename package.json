@@ -50,6 +50,8 @@
     "vehicle-model:removal-readiness:test": "node --test scripts/vehicle-model-removal-readiness-core.test.mjs",
     "product-price-rule:constraint-readiness": "node scripts/product-price-rule-constraint-readiness.mjs",
     "product-price-rule:constraint-readiness:test": "node --test scripts/product-price-rule-constraint-readiness-core.test.mjs",
+    "product-price-rule:constraint-decommission": "node scripts/product-price-rule-constraint-decommission-check.mjs",
+    "product-price-rule:constraint-decommission:test": "node --test scripts/product-price-rule-constraint-decommission-core.test.mjs",
     "quality:gate": "pnpm -r lint && pnpm prisma:validate && pnpm prisma:generate && pnpm --filter @subscription-saas/api typecheck && pnpm --filter @subscription-saas/web typecheck && pnpm --filter @subscription-saas/api test && pnpm prisma:migrate:status",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",

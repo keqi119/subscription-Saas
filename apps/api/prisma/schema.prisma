@@ -2445,7 +2445,6 @@ model ProductPriceRule {
   updatedBy            String?        @map("updated_by") @db.Uuid
   deletedAt            DateTime?      @map("deleted_at") @db.Timestamptz(6)
 
-  @@unique([productVersionId, vehicleModel])
   @@unique([productVersionId, modelDefinitionId], map: "product_price_rule_product_version_model_definition_key")
   @@index([productVersionId])
   @@index([vehicleModel])

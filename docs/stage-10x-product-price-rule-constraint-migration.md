@@ -231,7 +231,7 @@ After this stage:
 
 | Stage | Goal |
 | --- | --- |
-| 10X-W | Quote / Order enum snapshot read deprecation completion |
+| 10X-W | Decommission legacy ProductPriceRule `productVersionId + vehicleModel` unique constraint |
 | 10X-X | API / CSV v2 contract cutover and legacy response removal |
 | 10X-Y | final enum removal dry-run on production-like clone |
 

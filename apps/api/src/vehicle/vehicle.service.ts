@@ -151,6 +151,25 @@ export class VehicleService {
     return vehicles.map((vehicle) => toVehicleView(vehicle, today));
   }
 
+  async listVehicleModelDefinitionOptions() {
+    const items = await this.prisma.vehicleModelDefinition.findMany({
+      orderBy: [{ sortOrder: "asc" }, { modelCode: "asc" }],
+      select: vehicleModelDefinitionSelect,
+      where: {
+        deletedAt: null,
+        enabled: true,
+        legacyVehicleModel: { not: null }
+      }
+    });
+
+    return {
+      items: items.map(toVehicleModelDefinitionView),
+      page: 1,
+      pageSize: items.length,
+      total: items.length
+    };
+  }
+
   async createVehicle(dto: CreateVehicleDto, user: RequestUser, context: RequestContext) {
     assertRequiredString(dto.vin, "VIN 必填");
     const modelContext = await this.resolveModelContextForCreate(dto.modelDefinitionId, dto.vehicleModel);

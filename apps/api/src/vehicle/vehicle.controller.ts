@@ -49,6 +49,12 @@ export class VehicleController {
     return this.vehicleService.listDueSalePriceReviews();
   }
 
+  @Get("vehicles/model-definitions/options")
+  @RequireAnyPermissions(PermissionCode.VEHICLE_VIEW, PermissionCode.VEHICLE_CREATE, PermissionCode.VEHICLE_UPDATE)
+  listVehicleModelDefinitionOptions() {
+    return this.vehicleService.listVehicleModelDefinitionOptions();
+  }
+
   @Get("vehicles/:id/sale-price-history")
   @RequirePermissions(PermissionCode.VEHICLE_HISTORY_VIEW)
   listSalePriceHistory(@Param("id") id: string) {

@@ -250,8 +250,6 @@ interface CreateVehicleValues {
   model?: string | null;
   modelYear?: number | null;
   plateNo?: string | null;
-  insuranceEndDate?: Dayjs | null;
-  insuranceStartDate?: Dayjs | null;
   purchaseDate?: Dayjs | null;
   purchasePriceAmountYuan: number;
   registrationDate?: Dayjs | null;
@@ -1147,7 +1145,6 @@ export default function VehiclesPage() {
   const vehicleModelDefinitionOptions = useMemo(
     () =>
       vehicleModelDefinitions
-        .filter((definition) => definition.legacyVehicleModel)
         .map((definition) => ({
           label: vehicleModelDefinitionOptionLabel(definition),
           value: definition.id
@@ -1188,14 +1185,10 @@ export default function VehiclesPage() {
       setVehicles(vehicleRows);
       setDueReviews(dueRows);
       setMe(nextMe);
-      if (nextMe.user.permissions.includes("vehicle_model:view")) {
-        const definitionResult = await apiFetch<VehicleModelDefinitionListResponse>(
-          "/vehicle-model-definitions?enabled=true&pageSize=200"
-        );
-        setVehicleModelDefinitions(definitionResult.items);
-      } else {
-        setVehicleModelDefinitions([]);
-      }
+      const definitionResult = await apiFetch<VehicleModelDefinitionListResponse>(
+        "/vehicles/model-definitions/options"
+      );
+      setVehicleModelDefinitions(definitionResult.items);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -1218,6 +1211,8 @@ export default function VehiclesPage() {
     const definition = vehicleModelDefinitionById.get(modelDefinitionId);
     if (definition?.legacyVehicleModel) {
       form.setFieldsValue({ vehicleModel: definition.legacyVehicleModel });
+    } else {
+      form.setFieldsValue({ vehicleModel: null });
     }
   }
 
@@ -1473,8 +1468,6 @@ export default function VehiclesPage() {
       brand: "NIO",
       batteryUsageType: "BUYOUT",
       currentMileageKm: 0,
-      insuranceEndDate: dayjs().add(1, "year"),
-      insuranceStartDate: dayjs(),
       modelDefinitionId: null,
       vehicleModel: null
     });
@@ -1500,8 +1493,6 @@ export default function VehiclesPage() {
           batteryUsageType: values.batteryUsageType,
           brand: values.brand,
           currentMileageKm: values.currentMileageKm ?? 0,
-          insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
-          insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
           latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
           model: values.model,
           modelDefinitionId: values.modelDefinitionId,
@@ -1881,8 +1872,6 @@ export default function VehiclesPage() {
       modelDefinitionId: vehicle.modelDefinitionId ?? null,
       modelYear: vehicle.modelYear,
       plateNo: vehicle.plateNo,
-      insuranceEndDate: vehicle.insuranceEndDate ? dayjs(vehicle.insuranceEndDate) : null,
-      insuranceStartDate: vehicle.insuranceStartDate ? dayjs(vehicle.insuranceStartDate) : null,
       latestRegistrationDate: vehicle.latestRegistrationDate ? dayjs(vehicle.latestRegistrationDate) : null,
       purchaseDate: vehicle.purchaseDate ? dayjs(vehicle.purchaseDate) : null,
       purchasePriceAmountYuan: vehicle.purchasePriceAmount / 100,
@@ -1904,8 +1893,6 @@ export default function VehiclesPage() {
       batteryUsageType: values.batteryUsageType,
       brand: values.brand,
       currentMileageKm: values.currentMileageKm ?? 0,
-      insuranceEndDate: values.insuranceEndDate?.format("YYYY-MM-DD"),
-      insuranceStartDate: values.insuranceStartDate?.format("YYYY-MM-DD"),
       latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
       model: values.model,
       modelYear: values.modelYear,
@@ -2403,12 +2390,12 @@ export default function VehiclesPage() {
           >
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
-            <DatePicker style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="保险止期" name="insuranceEndDate" rules={[{ required: true, message: "请选择保险止期" }]}>
-            <DatePicker style={{ width: "100%" }} />
-          </Form.Item>
+          <Alert
+            message="保险起止期请在保单管理中关联车辆保单后自动带出，车辆新增不再手工填写。"
+            showIcon
+            style={{ marginBottom: 16 }}
+            type="info"
+          />
           <Form.Item label="当前里程" name="currentMileageKm">
             <InputNumber min={0} style={{ width: "100%" }} />
           </Form.Item>
@@ -2459,7 +2446,7 @@ export default function VehiclesPage() {
                 { label: "初次上牌日期", children: formatDate(detailVehicle.registrationDate) },
                 { label: "最近一次上牌日期", children: formatDate(detailVehicle.latestRegistrationDate) },
                 { label: "取得方式", children: labelOf(VEHICLE_ACQUISITION_MODE_LABELS, detailVehicle.acquisitionMode) },
-                { label: "保险有效期", children: formatInsurancePeriod(detailVehicle) },
+                { label: "保单有效期（关联）", children: formatInsurancePeriod(detailVehicle) },
                 { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
                 { label: "当前里程", children: `${detailVehicle.currentMileageKm.toLocaleString("zh-CN")} km` },
                 { label: "车辆状态", children: labelOf(STATUS_LABELS, detailVehicle.status) },
@@ -2962,12 +2949,12 @@ export default function VehiclesPage() {
           >
             <DatePicker style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item label="保险起期" name="insuranceStartDate" rules={[{ required: true, message: "请选择保险起期" }]}>
-            <DatePicker style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="保险止期" name="insuranceEndDate" rules={[{ required: true, message: "请选择保险止期" }]}>
-            <DatePicker style={{ width: "100%" }} />
-          </Form.Item>
+          <Alert
+            message="保险起止期请在保单管理中维护车辆保单关联，本表单不再手工编辑。"
+            showIcon
+            style={{ marginBottom: 16 }}
+            type="info"
+          />
           <Form.Item label="当前里程" name="currentMileageKm">
             <InputNumber min={0} style={{ width: "100%" }} />
           </Form.Item>
@@ -6085,7 +6072,7 @@ function buildVehicleColumns(
     { render: (_, record) => batteryUsageTypeLabel(record), title: "电池使用方式", width: 140 },
     { dataIndex: "acquisitionMode", render: (value: string | null) => labelOf(VEHICLE_ACQUISITION_MODE_LABELS, value), title: "取得方式", width: 190 },
     { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 140 },
-    { render: (_, record) => formatInsurancePeriod(record), title: "保险有效期", width: 230 },
+    { render: (_, record) => formatInsurancePeriod(record), title: "保单有效期（关联）", width: 230 },
     { dataIndex: "currentSalePriceReviewedAt", render: formatDateTime, title: "最近复核时间", width: 170 },
     { dataIndex: "nextSalePriceReviewAt", render: formatDate, title: "下次复核时间", width: 140 },
     {

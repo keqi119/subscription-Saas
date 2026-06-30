@@ -181,6 +181,7 @@ describe("Fadada request builder", () => {
 
 function fadadaConfig(): FadadaConfig {
   return {
+    accountRegisterEnabled: false,
     apiVersion: "2.0",
     appId: "app-123",
     appSecret: "secret-xyz",
@@ -189,6 +190,7 @@ function fadadaConfig(): FadadaConfig {
     env: "sandbox",
     fullSigningSmokeEnabled: false,
     requestTimeoutMs: 15000,
+    realNameVerifyEnabled: false,
     signUrlQuantity: 1,
     signUrlValidityMinutes: 30
   };

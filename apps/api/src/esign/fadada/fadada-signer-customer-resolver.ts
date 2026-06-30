@@ -2,10 +2,12 @@ import { FadadaConfig } from "./fadada.types";
 
 export const FADADA_SIGNER_CUSTOMER_ID_MISSING = "FADADA_SIGNER_CUSTOMER_ID_MISSING";
 export const FADADA_TEST_CUSTOMER_ID_MISMATCH = "FADADA_TEST_CUSTOMER_ID_MISMATCH";
+export const FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED = "FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED";
 
 export interface ResolveFadadaSignerCustomerIdInput {
   config: FadadaConfig;
   contractId?: string;
+  formalProviderCustomerId?: string | null;
   localCustomerId?: string;
   mode: "FULL_SIGNING_SMOKE" | "NORMAL";
   orderId?: string;
@@ -13,14 +15,25 @@ export interface ResolveFadadaSignerCustomerIdInput {
 
 export interface ResolvedFadadaSignerCustomerId {
   providerCustomerId: string;
-  source: "ENV_TEST_SIGNER";
+  source: "ENV_TEST_SIGNER" | "FORMAL_BINDING";
 }
 
 export function resolveFadadaSignerCustomerId(
   input: ResolveFadadaSignerCustomerIdInput
 ): ResolvedFadadaSignerCustomerId {
+  const formalProviderCustomerId = normalize(input.formalProviderCustomerId);
+  if (formalProviderCustomerId) {
+    return {
+      providerCustomerId: formalProviderCustomerId,
+      source: "FORMAL_BINDING"
+    };
+  }
+
   if (input.mode !== "FULL_SIGNING_SMOKE" || !input.config.fullSigningSmokeEnabled) {
     throw new Error(`${FADADA_SIGNER_CUSTOMER_ID_MISSING}: provider customer_id mapping is required`);
+  }
+  if (input.config.env === "production") {
+    throw new Error(`${FADADA_PRODUCTION_SMOKE_OVERRIDE_DISABLED}: production signing requires a verified provider binding`);
   }
 
   const localCustomerId = normalize(input.localCustomerId);
@@ -41,7 +54,7 @@ export function resolveFadadaSignerCustomerId(
   };
 }
 
-function normalize(value: string | undefined) {
+function normalize(value: string | null | undefined) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }

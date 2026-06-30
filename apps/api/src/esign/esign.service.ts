@@ -27,6 +27,7 @@ import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
 import { ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
+import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
 
 const contractForESignInclude = {
   customer: { select: { id: true, mobile: true, name: true } },
@@ -124,7 +125,12 @@ export class ESignService {
     @Optional() private readonly notificationService?: NotificationService
   ) {}
 
-  async createTaskForContract(contractId: string, user: RequestUser, context: RequestContext) {
+  async createTaskForContract(
+    contractId: string,
+    user: RequestUser,
+    context: RequestContext,
+    approvedSigningPlan?: ApprovedSigningPlanRef
+  ) {
     const contract = await this.findContractForESign(contractId);
     this.assertContractCanStartESign(contract);
 
@@ -137,7 +143,7 @@ export class ESignService {
     }
 
     const documentName = contract.contractTitle || `合同 ${contract.contractNo}`;
-    const requestSnapshot = toJsonValue({
+    const requestSnapshotInput: Record<string, unknown> = {
       contractId: contract.id,
       contractNo: contract.contractNo,
       customerId: contract.customerId,
@@ -145,7 +151,11 @@ export class ESignService {
       orderId: contract.orderId,
       orderNo: contract.order.orderNo,
       provider: this.providerType
-    });
+    };
+    if (approvedSigningPlan) {
+      requestSnapshotInput.enterpriseSigningPlan = toEnterpriseSigningPlanSnapshot(approvedSigningPlan);
+    }
+    const requestSnapshot = toJsonValue(requestSnapshotInput);
 
     const task = await withUniqueBusinessNoRetry(() =>
       this.prisma.contractESignTask.create({
@@ -181,6 +191,7 @@ export class ESignService {
 
     try {
       const providerResult = await this.provider.createSignTask({
+        approvedSigningPlan,
         callbackUrl: this.buildCallbackUrl(),
         contractId: contract.id,
         documentName,
@@ -1215,6 +1226,20 @@ function stringOrNull(value: unknown) {
 
 function maskPhone(phone: string) {
   return phone.replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2");
+}
+
+function toEnterpriseSigningPlanSnapshot(plan: ApprovedSigningPlanRef) {
+  return {
+    executionMode: plan.executionMode,
+    planHash: plan.planHash,
+    policyId: plan.policyId,
+    signingPlanId: plan.signingPlanId,
+    stepSummary: plan.steps.map((step) => ({
+      required: step.required,
+      signerRole: step.signerRole,
+      stepOrder: step.stepOrder
+    }))
+  };
 }
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {

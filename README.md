@@ -69,6 +69,21 @@ Stage 9 / Production readiness：
 - `docs/stage-10d-fadada-full-signing-validation-plan.md`: Stage 10D-B5-A/B5-A-R1 Fadada full signing validation plan and signer customer_id resolver gate
 - `docs/stage-10d-fadada-full-signing-validation-result.md`: Stage 10D-B5-B Fadada controlled full signing execution result / ENV-A blocker / H1 hardening / ENV-B readiness / pending-sign sample creation / full signing success / B5-C post-validation runtime closeout / B5-D mainline API promotion
 - `docs/stage-10d-fadada-post-merge-mainline-api-promotion.md`: Stage 10D-B5-D post-merge mainline API image promotion result
+- `docs/stage-10d-c1-fadada-provider-account-binding.md`: Stage 10D-C1-A formal Customer -> Fadada provider account binding foundation
+- `docs/stage-10d-c2-fadada-realname-lifecycle.md`: Stage 10D-C2 Fadada real-name verification lifecycle automation
+- `docs/stage-10d-c2-fadada-integration-test.md`: Stage 10D-C2-B controlled Fadada real-name integration boundary validation
+- `docs/stage-10d-c2-fadada-production-readiness-hardening.md`: Stage 10D-C2-C production Fadada real-name signing gate hardening
+- `docs/stage-10d-c3-fadada-customer-onboarding-model.md`: Stage 10D-C3-A production customer onboarding / activation model design for Fadada e-sign
+- `docs/stage-10d-c3-fadada-onboarding-orchestration-implementation-plan.md`: Stage 10D-C3-B implementation blueprint for customer onboarding orchestration
+- `docs/stage-10d-c3-fadada-onboarding-orchestration-mvp.md`: Stage 10D-C3-C control-plane MVP implementation for customer onboarding orchestration
+- `docs/stage-10d-c3-fadada-onboarding-orchestration-wiring.md`: Stage 10D-C3-D C3 -> C2/C1 integration wiring with test-only mock separation
+- `docs/stage-10d-c3-fadada-onboarding-production-activation.md`: Stage 10D-C3-E production entry activation wiring for customer onboarding orchestration
+- `docs/stage-10d-c3-fadada-onboarding-runtime-validation.md`: Stage 10D-C3-F controlled runtime validation for customer onboarding product entry paths
+- `docs/stage-10d-c4-fadada-enterprise-seal-model.md`: Stage 10D-C4-A enterprise seal and multi-signature strategy model design
+- `docs/stage-10d-c4-fadada-enterprise-seal-implementation-plan.md`: Stage 10D-C4-B enterprise seal schema and policy engine implementation plan
+- `docs/stage-10d-c4-fadada-enterprise-seal-policy-engine-mvp.md`: Stage 10D-C4-C provider-free enterprise seal policy engine MVP implementation
+- `docs/stage-10d-c4-fadada-enterprise-seal-runtime-integration.md`: Stage 10D-C4-D C4 policy to B5 execution reference runtime validation
+- `docs/stage-10d-c5-fadada-multi-tenant-signing-architecture.md`: Stage 10D-C5-A multi-tenant enterprise signing platform architecture
 - `docs/stage-10d-fadada-production-migration-preflight.md`: Stage 10D-B5-B-MIGRATION-PREFLIGHT production pending migration impact review and isolated clone rehearsal
 - `docs/stage-10d-fadada-production-migration-apply.md`: Stage 10D-B5-B-MIGRATION-APPLY production no-seed migrate deploy result and ENV-B follow-up
 - `docs/stage-10d-c1-fadada-test-signer-realname-prep.md`: Stage 10D-C1 Fadada production-host test signer real-name prep

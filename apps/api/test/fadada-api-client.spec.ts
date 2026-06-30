@@ -152,6 +152,39 @@ describe("Fadada API client", () => {
     expect(String(request?.body)).not.toContain("secret-xyz");
   });
 
+  it("applies a personal certificate binding through mocked transport", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: "1",
+        data: {
+          customer_id: "CUSTOMER-1234567890",
+          verified_serialno: "VERIFY-TX-1"
+        },
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.applyCert({
+      customerId: "CUSTOMER-1234567890",
+      verifiedSerialNo: "VERIFY-TX-1"
+    });
+
+    expect(result).toMatchObject({
+      customerId: "CUSTOMER-1234567890",
+      resultCode: "1",
+      resultDesc: "success",
+      verifiedSerialNo: "VERIFY-TX-1"
+    });
+    const request = vi.mocked(transport).mock.calls[0]?.[0];
+    expect(request?.url).toBe("https://testapi.fadada.com:8443/api/apply_cert.api");
+    expect(String(request?.body)).toContain("customer_id=CUSTOMER-1234567890");
+    expect(String(request?.body)).toContain("verified_serialno=VERIFY-TX-1");
+    expect(String(request?.body)).not.toContain("secret-xyz");
+  });
+
   it("builds uploadDocs multipart requests through mocked transport", async () => {
     const transport: FadadaTransport = vi.fn(async () => ({
       bodyText: "{\"result\":\"kept-raw\"}",
@@ -349,6 +382,7 @@ describe("Fadada API client", () => {
 
 function fadadaConfig(overrides: Partial<FadadaConfig> = {}): FadadaConfig {
   return {
+    accountRegisterEnabled: false,
     apiVersion: "2.0",
     appId: "app-123",
     appSecret: "secret-xyz",
@@ -357,6 +391,7 @@ function fadadaConfig(overrides: Partial<FadadaConfig> = {}): FadadaConfig {
     env: "sandbox",
     fullSigningSmokeEnabled: false,
     requestTimeoutMs: 15000,
+    realNameVerifyEnabled: false,
     signUrlQuantity: 1,
     signUrlValidityMinutes: 30,
     ...overrides

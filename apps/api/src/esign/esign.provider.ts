@@ -1,6 +1,9 @@
+import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
+
 export const ESIGN_PROVIDER_CLIENT = Symbol("ESIGN_PROVIDER_CLIENT");
 
 export interface CreateSignTaskInput {
+  approvedSigningPlan?: ApprovedSigningPlanRef;
   callbackUrl?: string;
   contractId: string;
   documentName: string;

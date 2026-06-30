@@ -6,6 +6,7 @@ export type FadadaContentType =
 
 export interface FadadaConfig {
   apiVersion: string;
+  accountRegisterEnabled: boolean;
   appId: string;
   appSecret: string;
   authPersonCustomerId?: string;
@@ -16,6 +17,7 @@ export interface FadadaConfig {
   platformCustomerId?: string;
   platformSignatureId?: string;
   requestTimeoutMs: number;
+  realNameVerifyEnabled: boolean;
   signNotifyUrl?: string;
   signReturnUrl?: string;
   signUrlQuantity: number;

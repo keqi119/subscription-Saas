@@ -8,6 +8,10 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageModule } from "../storage/storage.module";
 import { ContractPdfArtifactService } from "./contract-pdf-artifact.service";
+import { CustomerESignProviderAccountController } from "./customer-esign-provider-account.controller";
+import { CustomerESignProviderAccountService } from "./customer-esign-provider-account.service";
+import { CustomerESignOnboardingController } from "./customer-esign-onboarding.controller";
+import { CustomerESignOnboardingService } from "./customer-esign-onboarding.service";
 import { ESignAdminController, ESignCallbackController } from "./esign.controller";
 import { ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
 import { ESignService } from "./esign.service";
@@ -41,11 +45,18 @@ export function createESignProviderClient(
 }
 
 @Module({
-  controllers: [ESignAdminController, ESignCallbackController],
-  exports: [ESignService, FadadaSignedArtifactService],
+  controllers: [
+    ESignAdminController,
+    ESignCallbackController,
+    CustomerESignProviderAccountController,
+    CustomerESignOnboardingController
+  ],
+  exports: [ESignService, CustomerESignOnboardingService, FadadaSignedArtifactService],
   imports: [AuditModule, AuthModule, NotificationModule, PrismaModule, StorageModule],
   providers: [
     ContractPdfArtifactService,
+    CustomerESignProviderAccountService,
+    CustomerESignOnboardingService,
     ESignService,
     FadadaSignedArtifactService,
     {

@@ -863,6 +863,39 @@ enum ESignProviderType {
   @@map("esign_provider_type")
 }
 
+enum ESignProviderAccountType {
+  PERSONAL
+  ENTERPRISE
+
+  @@map("esign_provider_account_type")
+}
+
+enum ESignProviderAccountStatus {
+  PENDING
+  REGISTERED
+  FAILED
+  DISABLED
+
+  @@map("esign_provider_account_status")
+}
+
+enum ESignRealNameStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  FAILED
+  EXPIRED
+
+  @@map("esign_real_name_status")
+}
+
+enum ESignProviderAccountSource {
+  SYSTEM_REGISTER
+  MANUAL
+
+  @@map("esign_provider_account_source")
+}
+
 enum ESignTaskStatus {
   CREATED
   WAITING_CUSTOMER
@@ -1699,6 +1732,7 @@ model Customer {
   entitlementAccounts OrderEntitlementAccount[]
   entitlementGrants   OrderEntitlementGrant[]
   entitlementUsages   OrderEntitlementUsage[]
+  esignProviderAccounts CustomerESignProviderAccount[]
   insuranceClaims  InsuranceClaim[]
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1736,6 +1770,39 @@ model CustomerAccount {
   @@index([wechatUnionId])
   @@index([accountStatus])
   @@map("customer_account")
+}
+
+model CustomerESignProviderAccount {
+  id                        String                     @id @default(uuid()) @db.Uuid
+  customerId                String                     @map("customer_id") @db.Uuid
+  customer                  Customer                   @relation(fields: [customerId], references: [id])
+  provider                  ESignProviderType
+  accountType               ESignProviderAccountType   @default(PERSONAL) @map("account_type")
+  source                    ESignProviderAccountSource @default(SYSTEM_REGISTER)
+  providerOpenId            String                     @map("provider_open_id") @db.VarChar(96)
+  providerCustomerId        String?                    @map("provider_customer_id") @db.VarChar(128)
+  registrationStatus        ESignProviderAccountStatus @default(PENDING) @map("registration_status")
+  realNameStatus            ESignRealNameStatus        @default(UNVERIFIED) @map("real_name_status")
+  verificationSerialNo      String?                    @map("verification_serial_no") @db.VarChar(128)
+  verificationTransactionNo String?                    @map("verification_transaction_no") @db.VarChar(128)
+  verifiedAt                DateTime?                  @map("verified_at") @db.Timestamptz(6)
+  lastErrorCode             String?                    @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage          String?                    @map("last_error_message") @db.Text
+  providerSnapshot          Json?                      @map("provider_snapshot")
+  createdAt                 DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                 String?                    @map("created_by") @db.Uuid
+  updatedBy                 String?                    @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([provider, customerId, accountType])
+  @@unique([provider, providerOpenId])
+  @@unique([provider, providerCustomerId])
+  @@index([customerId])
+  @@index([provider])
+  @@index([registrationStatus])
+  @@index([realNameStatus])
+  @@map("customer_esign_provider_account")
 }
 
 model CustomerVerificationCode {

@@ -224,6 +224,10 @@ export class CreateQuoteDto {
 
   @IsOptional()
   @IsUUID()
+  modelDefinitionId?: string;
+
+  @IsOptional()
+  @IsUUID()
   vehiclePackageId?: string;
 
   @IsOptional()

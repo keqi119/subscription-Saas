@@ -182,8 +182,8 @@ describe("reporting dashboard APIs", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           OR: [
-            { vehicle: { modelDefinitionId: "model-et5" } },
-            { vehicleModel: VehicleModel.ET5 }
+            { modelDefinitionIdSnapshot: "model-et5" },
+            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } }
           ]
         })
       })
@@ -195,6 +195,33 @@ describe("reporting dashboard APIs", () => {
         vehicleModel: VehicleModel.ES6
       })
     ).rejects.toThrow("modelDefinitionId");
+  });
+
+  it("resolves legacy order report filters through VehicleModelDefinition before filtering", async () => {
+    const { prisma, service } = createReportHarness();
+    mockOrderReport(prisma);
+
+    await service.getOrderReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01",
+      vehicleModel: VehicleModel.ET5
+    });
+
+    expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
+      })
+    );
+    expect(prisma.subscriptionOrder.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            { modelDefinitionIdSnapshot: "model-et5" },
+            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } }
+          ]
+        })
+      })
+    );
   });
 
   it("finance report calculates receivable, paid, and unpaid totals from ReceivableBill", async () => {
@@ -454,8 +481,8 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          status: VehicleStatus.LEASED,
-          vehicleModel: VehicleModel.ET5
+          modelDefinitionId: "model-et5",
+          status: VehicleStatus.LEASED
         })
       })
     );
@@ -490,10 +517,7 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [
-            { modelDefinitionId: definition.id },
-            { modelDefinitionId: null, vehicleModel: VehicleModel.ET5 }
-          ]
+          modelDefinitionId: definition.id
         })
       })
     );
@@ -2484,8 +2508,8 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          status: VehicleStatus.LEASED,
-          vehicleModel: VehicleModel.ET5
+          modelDefinitionId: "model-et5",
+          status: VehicleStatus.LEASED
         })
       })
     );
@@ -2735,8 +2759,8 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          status: VehicleStatus.LEASED,
-          vehicleModel: VehicleModel.ET5
+          modelDefinitionId: "model-et5",
+          status: VehicleStatus.LEASED
         })
       })
     );
@@ -3732,10 +3756,13 @@ function createReportHarness() {
       groupBy: vi.fn()
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: VehicleModel } }) =>
         where.id === "missing-model-definition"
           ? null
-          : reportModelDefinition({ id: where.id ?? "model-et5" })
+          : reportModelDefinition({
+              id: where.id ?? (where.legacyVehicleModel ? `model-${String(where.legacyVehicleModel).toLowerCase()}` : "model-et5"),
+              legacyVehicleModel: where.legacyVehicleModel ?? VehicleModel.ET5
+            })
       )
     },
     vehicleCapitalEvent: {

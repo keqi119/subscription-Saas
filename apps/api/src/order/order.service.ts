@@ -42,6 +42,10 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
+  resolveVehicleModelDefinitionId,
+  vehicleModelReadPathMatches
+} from "../common/vehicle-model-resolver";
+import {
   buildQuoteOrderModelDisplay,
   buildVehicleModelSnapshot,
   freezeQuoteVehicleModelSnapshot,
@@ -1137,11 +1141,14 @@ export class OrderService {
     assertVehicleAvailableForCustomerOrder(vehicle);
     assertSubscriptionPlanAvailableForCustomerOrder(plan);
 
-    if (!vehicle.vehicleModel) {
+    if (!resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
       throw new BadRequestException("所选车辆缺少车型信息，无法下单");
     }
+    if (!vehicle.vehicleModel) {
+      throw new BadRequestException("Selected vehicle is missing legacy compatibility model.");
+    }
     const vehicleModel = vehicle.vehicleModel;
-    if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
+    if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
       throw new BadRequestException("所选套餐不适用于该车型");
     }
     const modelSnapshot = buildVehicleModelSnapshot(vehicle);
@@ -2147,10 +2154,14 @@ export class OrderService {
     ensureUserPermission(user, PermissionCode.ORDER_CHANGE_CREATE);
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrder(order, user);
-    if (!order.vehicleId || !order.vehicle?.vehicleModel) {
+    const orderVehicleModelDefinitionId = order.vehicle ? resolveVehicleModelDefinitionId(order.vehicle) : null;
+    if (!order.vehicleId || !order.vehicle || (!orderVehicleModelDefinitionId && !order.vehicle.vehicleModel)) {
       throw new BadRequestException("当前订单未绑定车辆，无法发起套餐变更。");
     }
 
+    const vehiclePackageWhere: Prisma.VehiclePackageWhereInput = orderVehicleModelDefinitionId
+      ? { modelDefinitionId: orderVehicleModelDefinitionId }
+      : { vehicleModel: order.vehicle.vehicleModel! };
     const today = new Date();
     const plans = await this.prisma.subscriptionPlan.findMany({
       include: subscriptionPlanInclude,
@@ -2162,7 +2173,7 @@ export class OrderService {
         product: { deletedAt: null, status: ProductStatus.ACTIVE },
         productVersion: { deletedAt: null, status: ProductVersionStatus.ACTIVE },
         status: SubscriptionPlanStatus.ACTIVE,
-        vehiclePackage: { vehicleModel: order.vehicle.vehicleModel }
+        vehiclePackage: vehiclePackageWhere
       }
     });
 
@@ -3817,8 +3828,14 @@ async function assertCustomerOrderProductStillMatches(
 
   assertSubscriptionPlanAvailableForCustomerOrder(quote.subscriptionPlan);
 
-  const vehicleModel = order.vehicle?.vehicleModel ?? quote.vehicle?.vehicleModel ?? order.vehicleModel;
-  if (vehicleModel !== quote.subscriptionPlan.vehiclePackage.vehicleModel) {
+  const vehicleModelSource =
+    order.vehicle ??
+    quote.vehicle ??
+    {
+      modelDefinitionId: order.modelDefinitionIdSnapshot,
+      vehicleModel: order.vehicleModel
+    };
+  if (!vehicleModelReadPathMatches(vehicleModelSource, quote.subscriptionPlan.vehiclePackage)) {
     throw new BadRequestException("套餐仍需匹配订单车辆车型。");
   }
 }

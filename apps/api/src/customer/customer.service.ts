@@ -41,6 +41,10 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
+  resolveVehicleModelDefinitionId,
+  vehicleModelReadPathMatches
+} from "../common/vehicle-model-resolver";
+import {
   buildVehicleModelSnapshot,
   type VehicleModelSnapshotDefinition,
   vehicleModelSnapshotDefinitionSelect
@@ -1098,11 +1102,11 @@ export class CustomerService {
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
 
-    if (!vehicle.vehicleModel) {
+    if (!resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
       throw new BadRequestException("所选车辆缺少车型信息，无法提交自助进件");
     }
     const vehicleModel = vehicle.vehicleModel;
-    if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
+    if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
       throw new BadRequestException("所选套餐不适用于该车辆车型");
     }
     assertSelfServicePeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
@@ -1314,11 +1318,11 @@ export class CustomerService {
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
 
-    if (!vehicle.vehicleModel) {
+    if (!resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
       throw new BadRequestException("所选车辆缺少车型信息，无法提交自助进件");
     }
     const vehicleModel = vehicle.vehicleModel;
-    if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
+    if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
       throw new BadRequestException("所选套餐不适用于该车辆车型");
     }
     if (dto.periodMonths !== undefined) {
@@ -2244,7 +2248,7 @@ async function loadApplicationFinalPlanDetails(
   assertSelfServiceSubscriptionPlanAvailable(plan);
   assertApplicationVehicleExists(vehicle);
   const vehicleModel = assertVehicleModel(vehicle.vehicleModel);
-  if (vehicleModel !== plan.vehiclePackage.vehicleModel) {
+  if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
     throw new BadRequestException("所选套餐不适用于该车辆车型。");
   }
   assertSelfServicePeriodInRange(input.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);

@@ -90,7 +90,7 @@ export function buildQuoteOrderModelDisplay(source: VehicleModelSnapshotSource) 
     };
   }
 
-  if (source.modelDefinition?.displayName) {
+  if (source.modelDefinitionIdSnapshot && source.modelDefinition?.displayName) {
     return {
       legacyVehicleModel,
       legacyVehicleModelCode,
@@ -117,6 +117,16 @@ export function buildQuoteOrderModelDisplay(source: VehicleModelSnapshotSource) 
       modelDefinitionId,
       modelDisplayName: source.legacyVehicleModelSnapshot,
       modelDisplaySource: "SNAPSHOT_LEGACY_ENUM" as const
+    };
+  }
+
+  if (source.modelDefinition?.displayName) {
+    return {
+      legacyVehicleModel,
+      legacyVehicleModelCode,
+      modelDefinitionId,
+      modelDisplayName: source.modelDefinition.displayName,
+      modelDisplaySource: "RUNTIME_MODEL_DEFINITION" as const
     };
   }
 

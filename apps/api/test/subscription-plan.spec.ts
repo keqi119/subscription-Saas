@@ -63,7 +63,7 @@ const version = {
   priceRules: [],
   product,
   productId: "product-1",
-  status: ProductVersionStatus.APPROVED,
+  status: ProductVersionStatus.APPROVED as ProductVersionStatus,
   updatedAt: now,
   updatedBy: "user-1",
   vehiclePackages: [],
@@ -130,7 +130,7 @@ describe("subscription plan backend flow", () => {
       status: ProductVersionStatus.ACTIVE
     });
     expect(prisma.productVersion.findUnique).toHaveBeenCalled();
-    expect("findFirst" in prisma.productPriceRule).toBe(false);
+    expect(prisma.productPriceRule.findFirst).not.toHaveBeenCalled();
   });
 
   it("rejects activating product versions without an active subscription plan", async () => {
@@ -298,7 +298,11 @@ describe("subscription plan backend flow", () => {
   });
 
   it("falls back to the legacy vehicle model snapshot when quote vehicle has no model definition", async () => {
-    const { prisma, service } = makeService();
+    const legacyVehiclePackage = makeVehiclePackage({ modelDefinition: null, modelDefinitionId: null });
+    const { prisma, service } = makeService({
+      plan: makeSubscriptionPlan({ vehiclePackage: legacyVehiclePackage }),
+      vehicle: makeVehicle({ modelDefinition: null, modelDefinitionId: null })
+    });
 
     await service.createQuote(
       "application-1",
@@ -319,6 +323,57 @@ describe("subscription plan backend flow", () => {
           legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
           modelDefinitionIdSnapshot: null,
           modelDisplayNameSnapshot: VehicleModel.ET5
+        })
+      })
+    );
+  });
+
+  it("resolves direct price-rule quotes to modelDefinitionId before querying ProductPriceRule", async () => {
+    const modelDefinition = makeModelDefinition({ id: "model-et5" });
+    const priceRule = makePriceRule({ modelDefinition, modelDefinitionId: modelDefinition.id });
+    const { prisma, service } = makeService({
+      modelDefinitions: [modelDefinition],
+      priceRule,
+      version: { ...version, status: ProductVersionStatus.ACTIVE }
+    });
+
+    await service.createQuote(
+      "application-1",
+      {
+        monthlyFeeAmount: 420000,
+        periodMonths: 12,
+        productVersionId: "version-1",
+        vehicleModel: VehicleModel.ET5,
+        vehiclePurchasePriceAmount: 12000000
+      },
+      user,
+      context
+    );
+
+    expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
+      })
+    );
+    expect(prisma.productPriceRule.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          modelDefinitionId: modelDefinition.id,
+          productVersionId: "version-1"
+        })
+      })
+    );
+    expect(prisma.productPriceRule.findFirst).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ vehicleModel: VehicleModel.ET5 })
+      })
+    );
+    expect(prisma.subscriptionQuote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionIdSnapshot: modelDefinition.id,
+          modelDisplayNameSnapshot: modelDefinition.displayName,
+          vehicleModel: VehicleModel.ET5
         })
       })
     );
@@ -570,7 +625,19 @@ describe("subscription plan backend flow", () => {
   });
 
   it("rejects subscription plans that do not match selected vehicle model", async () => {
-    const { service } = makeService({ vehicle: makeVehicle({ vehicleModel: VehicleModel.ET7 }) });
+    const et7Definition = makeModelDefinition({
+      displayName: "NIO ET7",
+      id: "model-et7",
+      legacyVehicleModel: VehicleModel.ET7,
+      modelCode: "NIO_ET7"
+    });
+    const { service } = makeService({
+      vehicle: makeVehicle({
+        modelDefinition: et7Definition,
+        modelDefinitionId: et7Definition.id,
+        vehicleModel: VehicleModel.ET7
+      })
+    });
 
     await expect(
       service.createQuote(
@@ -681,6 +748,7 @@ function makeService(seed: Partial<MockSeed> = {}) {
       findUnique: vi.fn().mockResolvedValue(seed.product ?? product)
     },
     productPriceRule: {
+      findFirst: vi.fn().mockResolvedValue(seed.priceRule ?? makePriceRule()),
       findMany: vi.fn()
     },
     productVersion: {
@@ -706,6 +774,16 @@ function makeService(seed: Partial<MockSeed> = {}) {
     },
     vehiclePackage: {
       findUnique: vi.fn().mockResolvedValue(seed.vehiclePackage ?? makeVehiclePackage())
+    },
+    vehicleModelDefinition: {
+      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: VehicleModel } }) =>
+        (seed.modelDefinitions ?? [makeModelDefinition()]).find(
+          (definition) =>
+            (where.id === undefined || definition.id === where.id) &&
+            (where.legacyVehicleModel === undefined || definition.legacyVehicleModel === where.legacyVehicleModel) &&
+            (where.deletedAt !== null || definition.deletedAt === null)
+        ) ?? null
+      )
     }
   };
   prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) => callback(prisma));
@@ -772,6 +850,7 @@ function makeSubscriptionPlan(overrides: Record<string, unknown> = {}) {
 }
 
 function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
+  const modelDefinition = makeModelDefinition();
   return {
     brand: null,
     configName: null,
@@ -783,6 +862,8 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     maxPurchasePriceAmount: BigInt(18000000),
     minPeriodMonths: 12,
     minPurchasePriceAmount: BigInt(12000000),
+    modelDefinition,
+    modelDefinitionId: modelDefinition.id,
     monthlyFeeRate: new Prisma.Decimal("0.035"),
     packageName: "ET5 standard",
     packageNo: "VPK2026060200001",
@@ -919,6 +1000,7 @@ function makeDepositRule(overrides: Record<string, unknown> = {}) {
 }
 
 function makeVehicle(overrides: Record<string, unknown> = {}) {
+  const modelDefinition = makeModelDefinition();
   return {
     assetLocation: "Shanghai",
     batteryCapacityKwh: new Prisma.Decimal(75),
@@ -935,6 +1017,8 @@ function makeVehicle(overrides: Record<string, unknown> = {}) {
     insuranceEndDate: null,
     insuranceStartDate: null,
     model: null,
+    modelDefinition,
+    modelDefinitionId: modelDefinition.id,
     modelYear: null,
     nextSalePriceReviewAt: now,
     plateNo: "沪A12345",
@@ -956,10 +1040,38 @@ function makeVehicle(overrides: Record<string, unknown> = {}) {
 
 function makeModelDefinition(overrides: Record<string, unknown> = {}) {
   return {
+    deletedAt: null,
     displayName: "NIO ET5",
+    enabled: true,
     id: "model-et5",
     legacyVehicleModel: VehicleModel.ET5,
     modelCode: "NIO_ET5",
+    ...overrides
+  };
+}
+
+function makePriceRule(overrides: Record<string, unknown> = {}) {
+  const modelDefinition = makeModelDefinition();
+  return {
+    baseMileageKm: 1500,
+    createdAt: now,
+    createdBy: "user-1",
+    deletedAt: null,
+    energyLimitCount: 8,
+    energyLimitKwh: 300,
+    id: "rule-1",
+    maxPeriodMonths: 36,
+    minPeriodMonths: 12,
+    modelDefinition,
+    modelDefinitionId: modelDefinition.id,
+    monthlyFeeRate: new Prisma.Decimal("0.035"),
+    overMileageFeeAmount: BigInt(100),
+    productVersion: { ...version, product },
+    productVersionId: "version-1",
+    status: RecordStatus.ACTIVE,
+    updatedAt: now,
+    updatedBy: "user-1",
+    vehicleModel: VehicleModel.ET5,
     ...overrides
   };
 }
@@ -1038,6 +1150,8 @@ interface MockSeed {
   mileagePackage: ReturnType<typeof makeMileagePackage>;
   plan: ReturnType<typeof makeSubscriptionPlan>;
   plans: ReturnType<typeof makeSubscriptionPlan>[];
+  modelDefinitions: ReturnType<typeof makeModelDefinition>[];
+  priceRule: ReturnType<typeof makePriceRule>;
   product: typeof product;
   quote: ReturnType<typeof makeQuote>;
   vehicle: ReturnType<typeof makeVehicle>;

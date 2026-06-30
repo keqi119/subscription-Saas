@@ -12,6 +12,8 @@ const requiredSteps = [
   ["VehicleModel removal readiness syntax", "node", ["--check", "scripts/vehicle-model-removal-readiness.mjs"]],
   ["VehicleModel removal readiness core syntax", "node", ["--check", "scripts/vehicle-model-removal-readiness-core.mjs"]],
   ["VehicleModel removal readiness tests", "pnpm", ["vehicle-model:removal-readiness:test"]],
+  ["VehicleModel external contract governance syntax", "node", ["--check", "scripts/vehicle-model-contract-governance.mjs"]],
+  ["VehicleModel external contract governance", "pnpm", ["vehicle-model:contract-governance"]],
   ["ModelDefinition backfill syntax", "node", ["--check", "scripts/model-definition-backfill.mjs"]],
   ["ModelDefinition backfill dry-run syntax", "node", ["--check", "scripts/model-definition-backfill-dry-run.mjs"]],
   ["ModelDefinition backfill tests", "pnpm", ["model-definition:backfill:test"]],

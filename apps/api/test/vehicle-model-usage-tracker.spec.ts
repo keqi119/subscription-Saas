@@ -65,6 +65,34 @@ describe("VehicleModelUsageTracker", () => {
     expect(report.readinessScore).toBeGreaterThanOrEqual(90);
   });
 
+  it("counts external deprecation warnings without marking them as business decisions", () => {
+    const tracker = new VehicleModelUsageTracker();
+
+    tracker.record({
+      decisionPath: "LEGACY_ENUM",
+      legacyVehicleModelCode: "ET5",
+      metadata: {
+        consumerId: "report-api-vehicle-model-filter",
+        field: "vehicleModel",
+        replacement: "modelDefinitionId",
+        surface: "REPORT_FILTER"
+      },
+      module: "report",
+      operation: "DEPRECATED_VEHICLE_MODEL_FILTER",
+      riskLevel: "MEDIUM",
+      usageKind: "EXTERNAL_CONTRACT_DEPRECATION_WARNING"
+    });
+
+    expect(tracker.report()).toMatchObject({
+      businessDecisionUsageCount: 0,
+      decision: "NOT_READY",
+      enumUsageCount: 1,
+      externalUsageCount: 1,
+      fallbackUsageCount: 0,
+      riskClassification: "MEDIUM"
+    });
+  });
+
   it("keeps an immutable copy of recorded events in the report", () => {
     const tracker = new VehicleModelUsageTracker();
     tracker.record({

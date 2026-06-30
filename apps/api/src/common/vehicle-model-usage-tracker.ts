@@ -17,6 +17,7 @@ export type VehicleModelUsageKind =
   | "DISPLAY"
   | "ENUM_RESOLVE"
   | "EXTERNAL_CONTRACT"
+  | "EXTERNAL_CONTRACT_DEPRECATION_WARNING"
   | "FALLBACK"
   | "PRODUCT_PRICE_RULE_INPUT";
 
@@ -32,6 +33,17 @@ export type VehicleModelUsageEvent = {
   riskLevel: VehicleModelRiskLevel;
   timestamp?: string;
   usageKind: VehicleModelUsageKind;
+};
+
+export type VehicleModelExternalContractWarningInput = {
+  consumerId?: string | null;
+  legacyVehicleModelCode?: string | null;
+  metadata?: Record<string, string | number | boolean | null>;
+  module: VehicleModelEvidenceModule;
+  operation: string;
+  replacement?: string;
+  riskLevel?: VehicleModelRiskLevel;
+  surface: "API_REQUEST" | "API_RESPONSE" | "CSV_EXPORT" | "REPORT_FILTER";
 };
 
 export type VehicleModelRemovalReadinessDecision = "READY" | "NOT_READY";
@@ -73,6 +85,25 @@ export function trackVehicleModelUsage(event: VehicleModelUsageEvent) {
   vehicleModelUsageTracker.record(event);
 }
 
+export function trackVehicleModelExternalContractWarning(input: VehicleModelExternalContractWarningInput) {
+  trackVehicleModelUsage({
+    decisionPath: input.legacyVehicleModelCode ? "LEGACY_ENUM" : "UNKNOWN",
+    legacyVehicleModelCode: input.legacyVehicleModelCode ?? null,
+    metadata: {
+      consumerId: input.consumerId ?? null,
+      deprecationStage: "warning",
+      field: "vehicleModel",
+      replacement: input.replacement ?? "modelDefinitionId",
+      surface: input.surface,
+      ...(input.metadata ?? {})
+    },
+    module: input.module,
+    operation: input.operation,
+    riskLevel: input.riskLevel ?? "MEDIUM",
+    usageKind: "EXTERNAL_CONTRACT_DEPRECATION_WARNING"
+  });
+}
+
 export function calculateVehicleModelRemovalReadiness(
   events: VehicleModelUsageEvent[]
 ): VehicleModelRemovalReadinessReport {
@@ -81,7 +112,9 @@ export function calculateVehicleModelRemovalReadiness(
     (event) => event.usageKind === "BUSINESS_DECISION" && event.decisionPath === "LEGACY_ENUM"
   ).length;
   const fallbackUsageCount = events.filter((event) => event.usageKind === "FALLBACK").length;
-  const externalUsageCount = events.filter((event) => event.usageKind === "EXTERNAL_CONTRACT").length;
+  const externalUsageCount = events.filter(
+    (event) => event.usageKind === "EXTERNAL_CONTRACT" || event.usageKind === "EXTERNAL_CONTRACT_DEPRECATION_WARNING"
+  ).length;
 
   const displayOnlyEnumUsageCount = events.filter(
     (event) => isEnumUsageEvent(event) && event.usageKind === "DISPLAY"
@@ -118,6 +151,7 @@ function isEnumUsageEvent(event: VehicleModelUsageEvent) {
       event.usageKind === "API_ENUM_FILTER" ||
       event.usageKind === "ENUM_RESOLVE" ||
       event.usageKind === "EXTERNAL_CONTRACT" ||
+      event.usageKind === "EXTERNAL_CONTRACT_DEPRECATION_WARNING" ||
       event.usageKind === "FALLBACK" ||
       event.usageKind === "PRODUCT_PRICE_RULE_INPUT"
   );

@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { Prisma, VehicleModel } from "@prisma/client";
 
 import {
+  trackVehicleModelExternalContractWarning,
   trackVehicleModelUsage,
   type VehicleModelEvidenceModule,
   type VehicleModelRiskLevel,
@@ -202,6 +203,19 @@ function trackAdapterInput(input: ResolveModelDefinitionInput, evidenceContext: 
   }
 
   if (input.vehicleModel) {
+    if (evidenceContext.usageKind === "API_ENUM_FILTER") {
+      trackVehicleModelExternalContractWarning({
+        legacyVehicleModelCode: String(input.vehicleModel),
+        metadata: {
+          resolverOperation: evidenceContext.operation
+        },
+        module: evidenceContext.module,
+        operation: `${evidenceContext.operation}.externalContractWarning`,
+        riskLevel: evidenceContext.riskLevel ?? "MEDIUM",
+        surface: "REPORT_FILTER"
+      });
+    }
+
     trackVehicleModelUsage({
       decisionPath: input.modelDefinitionId ? "MODEL_DEFINITION_ID" : "LEGACY_ENUM",
       legacyVehicleModelCode: String(input.vehicleModel),

@@ -40,6 +40,7 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { VehicleModelLegacyAdapter } from "../common/vehicle-model-resolver";
 import { buildQuoteOrderModelDisplay } from "../common/vehicle-model-snapshot";
 import {
   buildVehicleAssetCostProfilePreview,
@@ -167,36 +168,48 @@ export class ReportService {
     return definition;
   }
 
+  private async resolveReportModelDefinitionIdentity(
+    modelDefinitionId: string | undefined,
+    vehicleModel: VehicleModel | undefined
+  ) {
+    if (!modelDefinitionId && !vehicleModel) {
+      return null;
+    }
+
+    return VehicleModelLegacyAdapter.resolveModelDefinitionInput(
+      this.prisma,
+      { modelDefinitionId, vehicleModel },
+      {
+        allowDisabled: true,
+        missingMessage: "车型主数据不存在",
+        mismatchMessage: "modelDefinitionId 与 vehicleModel 不一致"
+      }
+    );
+  }
+
   private async reportVehicleModelWhere(
     query: Pick<AssetProfitabilityQueryDto, "modelDefinitionId" | "vehicleModel">
   ): Promise<Prisma.VehicleWhereInput> {
-    const definition = await this.resolveReportModelDefinition(query.modelDefinitionId, query.vehicleModel);
+    const definition = await this.resolveReportModelDefinitionIdentity(query.modelDefinitionId, query.vehicleModel);
     if (!definition) {
-      return query.vehicleModel ? { vehicleModel: query.vehicleModel } : {};
+      return {};
     }
 
-    return {
-      OR: [
-        { modelDefinitionId: definition.id },
-        ...(definition.legacyVehicleModel
-          ? [{ modelDefinitionId: null, vehicleModel: definition.legacyVehicleModel }]
-          : [])
-      ]
-    };
+    return { modelDefinitionId: definition.modelDefinitionId };
   }
 
   private async reportOrderModelWhere(
     query: Pick<OrderReportQueryDto, "modelDefinitionId" | "vehicleModel">
   ): Promise<Prisma.SubscriptionOrderWhereInput> {
-    const definition = await this.resolveReportModelDefinition(query.modelDefinitionId, query.vehicleModel);
+    const definition = await this.resolveReportModelDefinitionIdentity(query.modelDefinitionId, query.vehicleModel);
     if (!definition) {
-      return query.vehicleModel ? { vehicleModel: query.vehicleModel } : {};
+      return {};
     }
 
     return {
       OR: [
-        { vehicle: { modelDefinitionId: definition.id } },
-        ...(definition.legacyVehicleModel ? [{ vehicleModel: definition.legacyVehicleModel }] : [])
+        { modelDefinitionIdSnapshot: definition.modelDefinitionId },
+        { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: definition.modelDefinitionId } }
       ]
     };
   }

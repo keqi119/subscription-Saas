@@ -13,6 +13,7 @@ import {
 import type { Readable } from "node:stream";
 
 import { RequestUser } from "../auth/auth.types";
+import { resolveVehicleModelDefinitionId } from "../common/vehicle-model-resolver";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import {
@@ -443,11 +444,15 @@ export class VehicleListingService {
     ]);
   }
 
-  private async findAvailablePlansForVehicle(vehicle: Pick<Vehicle, "vehicleModel">) {
-    if (!vehicle.vehicleModel) {
+  private async findAvailablePlansForVehicle(vehicle: Pick<Vehicle, "modelDefinitionId" | "vehicleModel">) {
+    const modelDefinitionId = resolveVehicleModelDefinitionId(vehicle);
+    if (!modelDefinitionId && !vehicle.vehicleModel) {
       return [];
     }
 
+    const vehiclePackageWhere: Prisma.VehiclePackageWhereInput = modelDefinitionId
+      ? { modelDefinitionId }
+      : { vehicleModel: vehicle.vehicleModel! };
     const today = new Date();
     const plans = await this.prisma.subscriptionPlan.findMany({
       include: activePlanInclude,
@@ -466,7 +471,7 @@ export class VehicleListingService {
           status: ProductVersionStatus.ACTIVE
         },
         status: SubscriptionPlanStatus.ACTIVE,
-        vehiclePackage: { vehicleModel: vehicle.vehicleModel }
+        vehiclePackage: vehiclePackageWhere
       }
     });
 

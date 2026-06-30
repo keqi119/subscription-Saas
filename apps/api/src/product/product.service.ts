@@ -28,6 +28,11 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
+  resolveVehicleModelDefinitionId,
+  vehicleModelReadPathMatches,
+  VehicleModelLegacyAdapter
+} from "../common/vehicle-model-resolver";
+import {
   buildQuoteOrderModelDisplay,
   buildVehicleModelSnapshot,
   vehicleModelSnapshotDefinitionSelect,
@@ -110,7 +115,7 @@ const versionInclude = {
   approver: { select: { id: true, name: true, username: true } },
   priceRules: {
     include: priceRuleListInclude,
-    orderBy: { vehicleModel: "asc" as const },
+    orderBy: { modelDefinitionId: "asc" as const },
     where: { deletedAt: null }
   },
   benefitPackages: { include: packageInclude, where: { deletedAt: null } },
@@ -413,7 +418,7 @@ export class ProductService {
     await this.findVersionOrThrow(versionId);
     const rules = await this.prisma.productPriceRule.findMany({
       include: priceRuleInclude,
-      orderBy: { vehicleModel: "asc" },
+      orderBy: { modelDefinitionId: "asc" },
       where: { deletedAt: null, productVersionId: versionId }
     });
     return rules.map((rule) => toPriceRuleView(rule)).filter(isNonNullable);
@@ -1018,6 +1023,10 @@ export class ProductService {
     }
 
     const vehicle = vehicleId ? await this.findAvailableVehicleForQuote(vehicleId) : null;
+    const vehicleModelDefinitionId = vehicle ? resolveVehicleModelDefinitionId(vehicle) : null;
+    if (vehicle && !vehicleModelDefinitionId && !vehicle.vehicleModel) {
+      return [];
+    }
     const today = new Date();
     const plans = await this.prisma.subscriptionPlan.findMany({
       include: subscriptionPlanInclude,
@@ -1029,7 +1038,11 @@ export class ProductService {
         product: { deletedAt: null, status: ProductStatus.ACTIVE },
         productVersion: { deletedAt: null, status: ProductVersionStatus.ACTIVE },
         status: SubscriptionPlanStatus.ACTIVE,
-        ...(vehicle?.vehicleModel ? { vehiclePackage: { vehicleModel: vehicle.vehicleModel } } : {})
+        ...(vehicleModelDefinitionId
+          ? { vehiclePackage: { modelDefinitionId: vehicleModelDefinitionId } }
+          : vehicle?.vehicleModel
+            ? { vehiclePackage: { vehicleModel: vehicle.vehicleModel } }
+            : {})
       }
     });
 
@@ -1139,7 +1152,7 @@ export class ProductService {
       vehicleBaseFeeAmount?: bigint;
       vehicleBaseFeeCapAmount?: bigint;
       vehicleId?: string | null;
-      vehicleModel: NonNullable<CreateQuoteDto["vehicleModel"]>;
+      vehicleModel: VehicleModel;
       modelDefinitionIdSnapshot?: string | null;
       modelDisplayNameSnapshot?: string | null;
       legacyVehicleModelSnapshot?: VehicleModel | null;
@@ -1161,8 +1174,11 @@ export class ProductService {
       const vehicle = await this.findAvailableVehicleForQuote(dto.vehicleId);
       const plan = await this.findSubscriptionPlanOrThrow(dto.subscriptionPlanId);
       ensureSubscriptionPlanAvailableForQuote(plan);
-      if (!vehicle.vehicleModel || vehicle.vehicleModel !== plan.vehiclePackage.vehicleModel) {
+      if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
         throw new BadRequestException("所选套餐不适用于该车型");
+      }
+      if (!vehicle.vehicleModel) {
+        throw new BadRequestException("Selected vehicle is missing legacy compatibility model.");
       }
       ensurePeriodInRange(dto.periodMonths, plan);
       const vehicleSalePriceAmount = vehicle.currentSalePriceAmount;
@@ -1315,10 +1331,11 @@ export class ProductService {
     } else {
       const vehiclePurchasePriceAmount = requirePositiveInteger(dto.vehiclePurchasePriceAmount, "车辆采购价必须大于 0");
       const monthlyFeeAmount = requirePositiveInteger(dto.monthlyFeeAmount, "报价月费必须大于 0");
-      if (!dto.productVersionId || !dto.vehicleModel) {
+      if (!dto.productVersionId || (!dto.modelDefinitionId && !dto.vehicleModel)) {
         throw new BadRequestException("请选择产品版本和车辆型号。");
       }
-      const priceRule = await this.findActivePriceRule(dto.productVersionId, dto.vehicleModel);
+      const modelContext = await this.resolveQuotePriceRuleModelContext(dto.modelDefinitionId, dto.vehicleModel);
+      const priceRule = await this.findActivePriceRule(dto.productVersionId, modelContext.modelDefinitionId);
       ensurePeriodInRange(dto.periodMonths, priceRule);
       assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, priceRule.monthlyFeeRate);
       const modelSnapshot = buildVehicleModelSnapshot(priceRule);
@@ -1332,7 +1349,7 @@ export class ProductService {
         overMileageFeeAmount: priceRule.overMileageFeeAmount,
         productId: priceRule.productVersion.productId,
         productVersionId: dto.productVersionId,
-        vehicleModel: dto.vehicleModel,
+        vehicleModel: priceRule.vehicleModel,
         vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount)
       };
     }
@@ -1397,7 +1414,11 @@ export class ProductService {
       ensureSubscriptionPlanAvailableForQuote(before.subscriptionPlan);
       ensurePeriodInRange(periodMonths, before.subscriptionPlan);
     } else {
-      const priceRule = await this.findActivePriceRule(before.productVersionId, before.vehicleModel);
+      const modelContext = await this.resolveQuotePriceRuleModelContext(
+        before.modelDefinitionIdSnapshot,
+        before.vehicleModel
+      );
+      const priceRule = await this.findActivePriceRule(before.productVersionId, modelContext.modelDefinitionId);
       ensurePeriodInRange(periodMonths, priceRule);
     }
     assertMonthlyFeeWithinCap(
@@ -1721,7 +1742,22 @@ export class ProductService {
     return {};
   }
 
-  private async findActivePriceRule(productVersionId: string, vehicleModel: NonNullable<CreateQuoteDto["vehicleModel"]>) {
+  private async resolveQuotePriceRuleModelContext(
+    modelDefinitionId: string | null | undefined,
+    vehicleModel: VehicleModel | null | undefined
+  ) {
+    return VehicleModelLegacyAdapter.resolveModelDefinitionInput(
+      this.prisma,
+      { modelDefinitionId, vehicleModel },
+      {
+        missingMessage: "车型主数据缺失，无法按车型主数据查询价格规则。",
+        mismatchMessage: "车型主数据与 legacy 车型不一致。",
+        requireLegacyVehicleModel: true
+      }
+    );
+  }
+
+  private async findActivePriceRule(productVersionId: string, modelDefinitionId: string) {
     const version = await this.findVersionOrThrow(productVersionId);
     ensureSubscriptionProductType(version.product.productType);
     if (version.product.status !== ProductStatus.ACTIVE || version.status !== ProductVersionStatus.ACTIVE) {
@@ -1731,13 +1767,13 @@ export class ProductService {
       include: priceRuleInclude,
       where: {
         deletedAt: null,
+        modelDefinitionId,
         productVersionId,
-        status: RecordStatus.ACTIVE,
-        vehicleModel
+        status: RecordStatus.ACTIVE
       }
     });
     if (!rule) {
-      throw new BadRequestException(`No active price rule found for ${vehicleModel}.`);
+      throw new BadRequestException(`No active price rule found for modelDefinitionId ${modelDefinitionId}.`);
     }
     return rule;
   }

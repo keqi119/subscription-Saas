@@ -468,7 +468,7 @@ All items must be checked before enum deletion implementation begins:
 | Stage | Goal | Schema change? | Risk |
 | --- | --- | --- | --- |
 | 10X-V | ProductPriceRule additive uniqueness migration to modelDefinitionId while retaining legacy uniqueness | Yes | High |
-| 10X-W | Quote / Order enum snapshot read deprecation completion | Maybe | Medium |
+| 10X-W | Decommission legacy ProductPriceRule `productVersionId + vehicleModel` unique constraint | Yes | Medium |
 | 10X-X | API / CSV v2 contract cutover and legacy response removal | No to Medium | Medium |
 | 10X-Y | final enum removal dry-run on production-like clone | Yes, dry-run only first | High |
 | 10X-Z | production enum removal, only if all gates pass | Yes | High |

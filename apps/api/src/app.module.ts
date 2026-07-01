@@ -7,6 +7,7 @@ import { AuditModule } from "./audit/audit.module";
 import { AuthModule } from "./auth/auth.module";
 import { CustomerModule } from "./customer/customer.module";
 import { ESignModule } from "./esign/esign.module";
+import { FleetOpsModule } from "./fleet-ops/fleet-ops.module";
 import { FinanceModule } from "./finance/finance.module";
 import { FinancingModule } from "./financing/financing.module";
 import { LeaseModule } from "./lease/lease.module";
@@ -41,6 +42,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     AuthModule,
     CustomerModule,
     ESignModule,
+    FleetOpsModule,
     FinanceModule,
     FinancingModule,
     LeaseModule,

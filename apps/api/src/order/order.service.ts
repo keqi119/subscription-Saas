@@ -3388,7 +3388,7 @@ function firstReturnBlockingReason(check: ReturnType<typeof buildReturnCheck>, f
 function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetails | null, targetAt?: Date) {
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
-  const deliveryCheckAt = targetAt ?? delivery?.deliveredAt ?? delivery?.scheduledAt ?? new Date();
+  const deliveryCheckAt = targetAt ?? delivery?.deliveredAt ?? delivery?.scheduledAt ?? order.startDate ?? order.createdAt;
   const alreadyDelivered = Boolean(
     order.actualDeliveryAt ||
       order.orderStatus === OrderStatus.ACTIVE ||

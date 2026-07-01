@@ -204,20 +204,26 @@ describe("vehicle delivery handover workflow", () => {
 
   it("delivery-check still returns normal blockers when delivery has not been prepared", async () => {
     const harness = createDeliveryHarness();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
 
-    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
-      alreadyDelivered: boolean;
-      blockingReasons: string[];
-      canConfirmDelivery: boolean;
-      canPrepareDelivery: boolean;
-      deliveryStatus: DeliveryStatus | null;
-    };
+    try {
+      const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+        alreadyDelivered: boolean;
+        blockingReasons: string[];
+        canConfirmDelivery: boolean;
+        canPrepareDelivery: boolean;
+        deliveryStatus: DeliveryStatus | null;
+      };
 
-    expect(check.alreadyDelivered).toBe(false);
-    expect(check.deliveryStatus).toBeNull();
-    expect(check.canPrepareDelivery).toBe(true);
-    expect(check.canConfirmDelivery).toBe(false);
-    expect(check.blockingReasons).toEqual(expect.arrayContaining(["请先准备交付", "押金尚未确认收取"]));
+      expect(check.alreadyDelivered).toBe(false);
+      expect(check.deliveryStatus).toBeNull();
+      expect(check.canPrepareDelivery).toBe(true);
+      expect(check.canConfirmDelivery).toBe(false);
+      expect(check.blockingReasons).toEqual(expect.arrayContaining(["请先准备交付", "押金尚未确认收取"]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("delivery-check keeps READY orders confirmable", async () => {

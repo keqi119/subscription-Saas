@@ -1,0 +1,684 @@
+# Fleet Ops OS 下一阶段 Codex 任务包（codex_tasks.md）
+
+生成日期：2026-07-01  
+执行方式：每个任务按 `PLAN -> BUILD -> VERIFY` 三段式执行。  
+事实基线：当前代码尚未形成独立 Fleet Ops OS 引擎层，下一阶段优先从只读引擎抽象开始。
+
+---
+
+## 0. 全局 Codex 约束
+
+每个任务开头都必须附带：
+
+```text
+You are working in a production TypeScript + NestJS backend repository.
+
+GLOBAL CONSTRAINTS:
+- DO NOT modify database schema.
+- DO NOT add migrations.
+- DO NOT write to database unless explicitly allowed. For current Fleet Ops tasks, writes are NOT allowed.
+- DO NOT replace existing Order / Lease / Finance / Report write flows.
+- Build read-only Fleet Ops logic layers on top of existing models and services.
+- Every output must be explainable with evidence, confidence, warnings, and conflicts where applicable.
+- Keep changes small and PR-scoped.
+```
+
+---
+
+## Task 00 — Repository Survey & P0 Plan
+
+### 目标
+
+在写代码前确认现有模型、服务、测试工具、模块注册方式，生成 P0 实施计划。
+
+### PLAN Prompt
+
+```text
+TASK: Fleet Ops OS Task 00 - Repository Survey and P0 Implementation Plan
+
+MODE: PLAN ONLY. Do not write code or modify files.
+
+Inspect the repository structure and identify:
+1. Existing module registration pattern in app.module.ts.
+2. Existing Prisma service / repository usage pattern.
+3. Existing test framework and test file conventions.
+4. Available entities and services for Vehicle, Lease, SubscriptionOrder, ServiceCase, VehicleConditionReport, ReceivableBill, PaymentRecord.
+5. Best location for apps/api/src/fleet-ops.
+6. P0 implementation order for PR-1, PR-2, PR-9, and PR-10 baseline diagnostics.
+
+Output:
+- repo findings
+- proposed file structure
+- risks
+- exact BUILD tasks for PR-1
+
+Do not change files.
+```
+
+### 验收
+
+- 输出不包含代码 diff。
+- 明确 P0 文件结构。
+- 明确可复用现有 service / prisma 模式。
+
+---
+
+## Task 01 — PR-1 Vehicle Operational State Engine
+
+### 目标
+
+实现只读车辆运营状态引擎。
+
+### PLAN Prompt
+
+```text
+TASK: Fleet Ops OS PR-1 - Vehicle Operational State Engine
+
+MODE: PLAN ONLY. Do not write code.
+
+Design a read-only vehicle operational state engine using only:
+- Vehicle
+- Lease
+- SubscriptionOrder
+- ServiceCase
+- VehicleConditionReport
+
+Required layers:
+- types
+- rules
+- resolver
+- confidence
+- repository
+- service
+
+Output:
+1. Exact files to create.
+2. Data loading strategy.
+3. Deterministic state priority:
+   RETIRED > LEASED > MAINTENANCE > RESERVED > REVIEW_RESERVED > AVAILABLE > IN_PREPARATION > UNKNOWN
+4. Evidence and conflict model.
+5. Confidence scoring model.
+6. Test cases.
+7. Read-only safety checks.
+
+Strictly no code.
+```
+
+### BUILD Prompt
+
+```text
+TASK: Fleet Ops OS PR-1 - Vehicle Operational State Engine
+
+MODE: BUILD.
+
+Implement the PR-1 plan exactly.
+
+Create files under:
+apps/api/src/fleet-ops/state/
+
+Required files:
+- vehicle-operational-state.types.ts
+- vehicle-operational-state.rules.ts
+- vehicle-operational-state.resolver.ts
+- vehicle-operational-state.confidence.ts
+- vehicle-operational-state.repository.ts
+- vehicle-operational-state.service.ts
+
+Create test:
+apps/api/test/fleet-ops/vehicle-operational-state.spec.ts
+
+Rules:
+- Read-only only.
+- Repository may only load data.
+- Resolver must be pure and deterministic.
+- Output must include state, priorityReason, evidence, confidence, conflicts, warnings.
+- Do not modify Vehicle.status.
+- Do not call lease activation or order transition.
+```
+
+### VERIFY Prompt
+
+```text
+TASK: Fleet Ops OS PR-1 - Verification
+
+Check:
+1. No schema changes.
+2. No database writes.
+3. No mutation of source entities.
+4. Resolver deterministic.
+5. Evidence/confidence/conflicts present.
+6. Tests cover retired vs active lease, available vs service case, reservation, unknown, and conflicts.
+
+Run or report commands:
+- pnpm --filter @subscription-saas/api typecheck
+- pnpm --filter @subscription-saas/api lint
+- pnpm --filter @subscription-saas/api test -- vehicle-operational-state.spec.ts
+```
+
+---
+
+## Task 02 — PR-2 Vehicle Timeline / Digital Twin Engine
+
+### 目标
+
+实现只读车辆 canonical timeline aggregator。
+
+### PLAN Prompt
+
+```text
+TASK: Fleet Ops OS PR-2 - Vehicle Timeline / Digital Twin Engine
+
+MODE: PLAN ONLY. Do not write code.
+
+Design a read-only vehicle timeline engine that aggregates existing data into canonical events.
+
+Sources:
+- Vehicle
+- Lease
+- SubscriptionOrder
+- VehicleDelivery / return data if available
+- ServiceCase
+- VehicleConditionReport
+- ReceivableBill
+- PaymentRecord if safely linkable
+- AuditLog if available
+
+Output must include:
+- eventId
+- vehicleId
+- occurredAt
+- eventType
+- sourceEntity
+- sourceId
+- evidence
+- confidence
+- warnings
+
+Rules:
+- Sort chronologically.
+- Deduplicate same source event.
+- Keep source evidence.
+- Mark UNKNOWN_GAP for missing lifecycle evidence.
+- Do not infer historical truth from current Vehicle.status.
+
+Output file plan, event taxonomy, gap rules, test cases.
+```
+
+### BUILD Prompt
+
+```text
+TASK: Fleet Ops OS PR-2 - Vehicle Timeline / Digital Twin Engine
+
+MODE: BUILD.
+
+Implement the PR-2 plan under:
+apps/api/src/fleet-ops/timeline/
+
+Required files:
+- vehicle-timeline.types.ts
+- vehicle-timeline.event-builder.ts
+- vehicle-timeline.normalizer.ts
+- vehicle-timeline.resolver.ts
+- vehicle-timeline.service.ts
+
+Test file:
+apps/api/test/fleet-ops/vehicle-timeline.spec.ts
+
+Rules:
+- Read-only only.
+- No new event table.
+- No writes.
+- Keep source entity/source id.
+- Timeline must be deterministic for same input.
+```
+
+### VERIFY Prompt
+
+```text
+TASK: Fleet Ops OS PR-2 - Verification
+
+Check:
+1. No schema changes.
+2. No database writes.
+3. Timeline events are source-backed.
+4. Sorting is stable.
+5. Deduplication is deterministic.
+6. UNKNOWN_GAP or warnings appear for missing lifecycle evidence.
+7. Tests cover overlapping events, missing dates, duplicate source events, service case timeline, order/lease lifecycle.
+```
+
+---
+
+## Task 03 — PR-9 Fleet Facade + Health + Invariants
+
+### 目标
+
+P0 阶段提前建立统一只读集成面和诊断能力。
+
+### PLAN Prompt
+
+```text
+TASK: Fleet Ops OS PR-9 - Fleet Facade + Health + Invariants
+
+MODE: PLAN ONLY. Do not write code.
+
+Design a read-only Fleet Ops integration boundary.
+
+Required files:
+- fleet-ops.module.ts
+- fleet-ops.facade.ts
+- fleet-ops.health.service.ts
+- fleet-ops.contracts.ts
+- fleet-ops.errors.ts
+- fleet-ops.invariants.ts
+
+Facade methods:
+- getVehicleOperationalState(vehicleId, asOf?)
+- getVehicleTimeline(vehicleId, range)
+- getVehicleFleetSummary(vehicleId, range)
+- getFleetDiagnostics(range?)
+- getFleetInvariantReport(range?)
+
+Invariants:
+- Fleet Ops modules do not write DB.
+- PR-1 resolver deterministic.
+- PR-2 timeline source-backed.
+- PR-3 must not count deposit as revenue when implemented.
+- PR-4 must not rely only on BillStatus.OVERDUE when implemented.
+- PR-5 must not execute actions when implemented.
+
+Output exact plan, contracts, tests.
+```
+
+### BUILD Prompt
+
+```text
+TASK: Fleet Ops OS PR-9 - Fleet Facade + Health + Invariants
+
+MODE: BUILD.
+
+Implement the facade and diagnostics layer under:
+apps/api/src/fleet-ops/
+
+Required files:
+- fleet-ops.module.ts
+- fleet-ops.facade.ts
+- fleet-ops.health.service.ts
+- fleet-ops.contracts.ts
+- fleet-ops.errors.ts
+- fleet-ops.invariants.ts
+
+Tests:
+- apps/api/test/fleet-ops/fleet-ops.facade.spec.ts
+- apps/api/test/fleet-ops/fleet-ops.invariants.spec.ts
+- apps/api/test/fleet-ops/fleet-ops.readonly.spec.ts
+
+Rules:
+- Facade only orchestrates read-only engines.
+- Health service must not trigger heavy recomputation.
+- Do not expose public API controller in this PR.
+- Do not call PR-5 execution paths.
+```
+
+### VERIFY Prompt
+
+```text
+TASK: Fleet Ops OS PR-9 - Verification
+
+Check:
+1. FleetOpsModule compiles.
+2. FleetOpsFacade is injectable.
+3. Health service returns state/timeline readiness.
+4. Invariant tests pass.
+5. Read-only scan covers apps/api/src/fleet-ops.
+6. No schema changes.
+```
+
+---
+
+## Task 04 — PR-10 P0 Release Readiness Baseline
+
+### 目标
+
+从 P0 开始建立专项测试、smoke、diagnostics 文档，避免后续堆功能后无法上线。
+
+### Prompt
+
+```text
+TASK: Fleet Ops OS PR-10 Baseline - Release Readiness for P0
+
+Implement release readiness artifacts for the current Fleet Ops P0 modules.
+
+Add:
+- apps/api/src/fleet-ops/fleet-ops.diagnostics.ts
+- apps/api/src/fleet-ops/fleet-ops.observability.ts
+- apps/api/src/fleet-ops/fleet-ops.readme.md
+- apps/api/src/fleet-ops/fleet-ops.release-checklist.md
+- apps/api/test/fleet-ops/fleet-ops.bootstrap.spec.ts
+- apps/api/test/fleet-ops/fleet-ops.observability.spec.ts
+
+Rules:
+- No new intelligence layer.
+- No DB writes.
+- No public API exposure.
+- No execution path.
+- Document commands for PR-1/PR-2/PR-9 tests.
+```
+
+---
+
+## Task 05 — PR-3 KPI / Economic Engine Extraction
+
+### 目标
+
+从 ReportService 抽出可复用经济引擎，但保持现有报表输出兼容。
+
+### PLAN Prompt
+
+```text
+TASK: Fleet Ops OS PR-3 - KPI / Economic Engine Extraction
+
+MODE: PLAN ONLY.
+
+Inspect ReportService KPI / asset income / utilization / ROA / ROE / depreciation / residual / BaaS / capital occupation logic.
+
+Design a read-only Fleet KPI engine under:
+apps/api/src/fleet-ops/economics/
+
+Must support:
+- utilization rate
+- downtime rate
+- ROI per vehicle
+- ROE per vehicle
+- fleet IRR or placeholder calculator with explicit limitation
+- planned vs actual cashflow
+- depreciation and cost allocation
+
+Financial rules:
+- ReceivableBill is planned cashflow, not realized revenue.
+- PaymentRecord / write-off facts drive actual cashflow.
+- Deposit is not operating revenue.
+- Fleet ROI aggregation must be weighted, not simple average.
+
+Do not write code.
+```
+
+### BUILD Prompt
+
+```text
+TASK: Fleet Ops OS PR-3 - KPI / Economic Engine Extraction
+
+MODE: BUILD.
+
+Implement economics module under:
+apps/api/src/fleet-ops/economics/
+
+Required files:
+- fleet-kpi.types.ts
+- fleet-kpi.service.ts
+- fleet-kpi.calculator.ts
+- revenue-attribution.model.ts
+- cost-allocation.model.ts
+- downtime-cost.model.ts
+- cashflow.model.ts
+
+Test:
+apps/api/test/fleet-ops/fleet-kpi.spec.ts
+
+Rules:
+- Do not break ReportService behavior.
+- Do not modify payment callbacks.
+- Do not count deposit as revenue.
+- Do not count receivables as actual revenue.
+- Consume PR-1/PR-2 outputs where available.
+```
+
+---
+
+## Task 06 — PR-4 Collection Intelligence
+
+### 目标
+
+建立只读逾期风险识别和催收策略建议。
+
+### PLAN Prompt
+
+```text
+TASK: Fleet Ops OS PR-4 - Collection Intelligence
+
+MODE: PLAN ONLY.
+
+Design a read-only collection risk engine under:
+apps/api/src/fleet-ops/risk/
+
+Use existing:
+- ReceivableBill
+- PaymentRecord
+- CollectionCase
+- CollectionAction
+- Lease
+- Vehicle
+- Customer data if available
+
+Overdue fact must be:
+dueDate < asOfDate AND remainingAmount > 0 AND billStatus != CANCELLED
+
+Do not rely only on BillStatus.OVERDUE.
+
+Output:
+- risk score
+- D1-D5 collection level
+- arrears pipeline summary
+- suggested strategy
+- evidence
+- warnings
+
+Do not modify existing FinanceService write flow.
+```
+
+### BUILD Prompt
+
+```text
+TASK: Fleet Ops OS PR-4 - Collection Intelligence
+
+MODE: BUILD.
+
+Implement under:
+apps/api/src/fleet-ops/risk/
+
+Required files:
+- fleet-risk.types.ts
+- overdue-detector.model.ts
+- collection-priority.model.ts
+- risk-score.model.ts
+- arrears-pipeline.model.ts
+- fleet-risk.service.ts
+
+Test:
+apps/api/test/fleet-ops/fleet-risk.spec.ts
+
+Rules:
+- Read-only only.
+- No CollectionCase create/update.
+- No ReceivableBill status update.
+- No dependency on overdue refresh job as source of truth.
+```
+
+---
+
+## Task 07 — PR-5 Guarded Action Plan Evaluator
+
+### 目标
+
+只输出动作建议，不执行动作。
+
+### Prompt
+
+```text
+TASK: Fleet Ops OS PR-5 - Guarded Action Plan Evaluator
+
+Build a read-only action planning layer under:
+apps/api/src/fleet-ops/guarded-actions/
+
+Required files:
+- guarded-action-plan.types.ts
+- guarded-action-plan.evaluator.ts
+- vehicle-allocation.guard.ts
+- lease-activation.guard.ts
+- order-transition.guard.ts
+
+Outputs:
+{
+  actionType,
+  allowed,
+  severity,
+  reasons,
+  evidence,
+  requiredHumanReview
+}
+
+Rules:
+- Do not execute actions.
+- Do not call write-side services.
+- Do not create audit logs.
+- Use PR-1 state, PR-2 timeline, PR-4 risk where available.
+```
+
+---
+
+## Task 08 — PR-6 Advisory Engine（延后到 P2）
+
+### Prompt
+
+```text
+TASK: Fleet Ops OS PR-6 - Advisory Engine
+
+Only start this after PR-1, PR-2, PR-3, and PR-4 are stable.
+
+Build advisory recommendations under:
+apps/api/src/fleet-ops/advisory/
+
+Recommendations:
+- idle reduction
+- maintenance attention
+- overdue risk attention
+- revenue leakage review
+- low ROI asset review
+
+Rules:
+- Recommendation only.
+- No execution.
+- Must include evidence, confidence, expected impact, warnings.
+```
+
+---
+
+## Task 09 — PR-7 Policy Registry（延后到 P2）
+
+### Prompt
+
+```text
+TASK: Fleet Ops OS PR-7 - Fleet Policy Registry
+
+Build read-only policy registry under:
+apps/api/src/fleet-ops/governance/
+
+Use existing policy-like concepts:
+- signing policy
+- deposit rules
+- depreciation policy
+- collection level rules
+
+Output:
+- policy id
+- version
+- domain
+- scope
+- effective status
+- source evidence
+- warnings
+
+Rules:
+- Do not modify live policies.
+- Do not create policy tables.
+- Registry is logical/read-only only.
+```
+
+---
+
+## Task 10 — PR-8 Coordination Protocol（P3，最后）
+
+### Prompt
+
+```text
+TASK: Fleet Ops OS PR-8 - Coordination Protocol Only
+
+Only start after PR-1 to PR-7 are stable.
+
+Build only protocol and context definitions under:
+apps/api/src/fleet-ops/coordination/
+
+Do not build autonomous agent execution.
+
+Required:
+- agent-context.types.ts
+- agent-output.types.ts
+- coordination-contracts.ts
+- coordination-readme.md
+
+Rules:
+- Read-only.
+- No agent memory table.
+- No dynamic agent execution.
+- No override of PR-4 or PR-5.
+```
+
+---
+
+## 11. Suggested PR Order
+
+```text
+PR-A0: Repository survey and P0 module skeleton plan
+PR-A1: Vehicle Operational State Engine
+PR-A2: Vehicle Timeline / Digital Twin Engine
+PR-A3: Fleet Facade + Health + Invariants
+PR-A4: P0 Release Readiness Baseline
+PR-A5: KPI / Economic Engine Extraction
+PR-A6: Collection Intelligence
+PR-A7: Guarded Action Plan Evaluator
+PR-A8: Advisory Engine
+PR-A9: Policy Registry
+PR-A10: Coordination Protocol
+```
+
+---
+
+## 12. Per-PR Pull Request Template
+
+```md
+# Fleet Ops OS: <PR title>
+
+## Objective
+
+## Scope
+
+## Files changed
+
+## Read-only guarantee
+- [ ] No schema changes
+- [ ] No migrations
+- [ ] No DB write paths
+- [ ] No existing business flow replacement
+
+## Evidence / Confidence / Warning behavior
+
+## Tests
+- [ ] typecheck
+- [ ] lint
+- [ ] focused tests
+- [ ] read-only scan
+
+## Risks
+
+## Rollback plan
+```

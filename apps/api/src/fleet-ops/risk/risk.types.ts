@@ -1,6 +1,9 @@
 import {
   BillStatus,
   BillType,
+  CollectionActionResult,
+  CollectionActionType,
+  CollectionCaseStatus,
   LeaseStatus,
   OrderStatus,
   PaymentStatus,
@@ -20,10 +23,12 @@ export enum RiskSignalCode {
   ROI_COLLAPSE_SIGNAL = "ROI_COLLAPSE_SIGNAL",
   UTILIZATION_DROP_SIGNAL = "UTILIZATION_DROP_SIGNAL",
   CONDITION_DEGRADATION_SIGNAL = "CONDITION_DEGRADATION_SIGNAL",
+  ECONOMIC_WARNING_SIGNAL = "ECONOMIC_WARNING_SIGNAL",
   PAYMENT_INCONSISTENCY_SIGNAL = "PAYMENT_INCONSISTENCY_SIGNAL"
 }
 
 export enum CollectionPriorityLevel {
+  NONE = "NONE",
   D1 = "D1",
   D2 = "D2",
   D3 = "D3",
@@ -56,6 +61,7 @@ export interface RiskTimelineDay {
   date: string;
   sourceEvents: string[];
   state: string;
+  warnings?: string[];
 }
 
 export interface RiskReceivableBill {
@@ -67,6 +73,7 @@ export interface RiskReceivableBill {
   paidAmount: number;
   remainingAmount: number;
   vehicleId: string | null;
+  writeOffs?: RiskPaymentWriteOffEvidence[];
 }
 
 export interface RiskPaymentRecord {
@@ -117,6 +124,7 @@ export interface RiskConditionReportInput {
 
 export interface FleetRiskInput {
   asOf: Date;
+  collectionCases?: RiskCollectionCaseInput[];
   conditionReports: RiskConditionReportInput[];
   fleetKpis: FleetKpiReport;
   leases: RiskLeaseInput[];
@@ -138,12 +146,90 @@ export interface RiskSignal {
   weight: number;
 }
 
+export interface RiskEvidence {
+  amount?: number;
+  observedAt?: Date | string | null;
+  reason: string;
+  source: "collection_action" | "collection_case" | "collection_case_bill" | "payment_record" | "payment_write_off" | "receivable_bill" | "timeline" | "economics";
+  sourceId: string;
+}
+
+export interface RiskWarning {
+  code: string;
+  message: string;
+  sourceId?: string;
+}
+
+export interface RiskOverdueBillRef {
+  billId: string;
+  dueDate: Date;
+  overdueDays: number;
+  paidAmount: number;
+  remainingAmount: number;
+  sourceStatus: BillStatus;
+}
+
+export interface RiskPaymentWriteOffEvidence {
+  amount: number;
+  billId: string | null;
+  id: string;
+  paymentId: string | null;
+  writeOffAt: Date | null;
+}
+
+export interface RiskCollectionCaseBillInput {
+  billId: string;
+  overdueAmount: number;
+  overdueDays: number;
+}
+
+export interface RiskCollectionActionInput {
+  actionResult: CollectionActionResult;
+  actionType: CollectionActionType;
+  caseId: string;
+  id: string;
+  promisedAmount?: number | null;
+  promisedPayAt?: Date | null;
+}
+
+export interface RiskCollectionCaseInput {
+  actions: RiskCollectionActionInput[];
+  bills: RiskCollectionCaseBillInput[];
+  caseStatus: CollectionCaseStatus;
+  collectionLevel: CollectionPriorityLevel;
+  id: string;
+  maxOverdueDays: number;
+  orderId: string;
+  totalOverdueAmount: number;
+  vehicleId: string | null;
+}
+
+export interface RiskArrearsPipeline {
+  actionRefs: Array<{ actionId: string; actionType: CollectionActionType; result: CollectionActionResult }>;
+  billRefs: RiskOverdueBillRef[];
+  caseRefs: Array<{ caseId: string; caseStatus: CollectionCaseStatus; collectionLevel: CollectionPriorityLevel }>;
+  evidence: RiskEvidence[];
+  paymentRefs: Array<{ paymentId: string }>;
+  promiseToPayRefs: Array<{ actionId: string; promisedAmount: number | null; promisedPayAt: Date | null }>;
+  stage: "NO_OVERDUE" | "OVERDUE_WITHOUT_CASE" | "OVERDUE_WITH_ACTIVE_CASE" | "OVERDUE_WITH_STALE_CASE" | "ESCALATED";
+  vehicleId: string;
+  warnings: RiskWarning[];
+  writeOffRefs: RiskPaymentWriteOffEvidence[];
+}
+
 export interface RiskExposure {
+  evidence: RiskEvidence[];
   maxOverdueDays: number;
   overdueAmount: number;
+  overdueBillCount: number;
+  overdueBillRefs: RiskOverdueBillRef[];
+  overdueRemainingAmount: number;
   partialPaymentCount: number;
+  partialPaymentEvidence: RiskEvidence[];
   score: number;
   unpaidAmount: number;
+  warnings: RiskWarning[];
+  writeOffEvidence: RiskPaymentWriteOffEvidence[];
 }
 
 export interface RiskScoreComponents {
@@ -153,13 +239,18 @@ export interface RiskScoreComponents {
 }
 
 export interface RiskOutput {
+  agingBucket?: CollectionPriorityLevel;
+  arrearsPipeline?: RiskArrearsPipeline;
   collectionLevel: CollectionPriorityLevel;
   confidence: number;
   controlDecision: ControlDecision;
+  evidence?: RiskEvidence[];
+  exposureDetail?: RiskExposure;
   exposureScore: number;
   reasons: string[];
   riskScore: number;
   signals: RiskSignalCode[];
+  warnings?: RiskWarning[];
   vehicleId: string;
 }
 

@@ -20,6 +20,11 @@ describe("Fleet Ops production invariants", () => {
       FleetOpsInvariantId.PR6_NO_PR5_EXECUTION,
       FleetOpsInvariantId.PR5_REQUIRES_PR4_SNAPSHOT,
       FleetOpsInvariantId.PR4_NO_UPSTREAM_MUTATION,
+      FleetOpsInvariantId.PR4_REFRESH_INDEPENDENT_OVERDUE,
+      FleetOpsInvariantId.PR4_CANCELLED_AND_SETTLED_EXCLUDED,
+      FleetOpsInvariantId.PR4_D1_D5_THRESHOLDS,
+      FleetOpsInvariantId.PR4_COLLECTION_CASE_SUPPORTING_ONLY,
+      FleetOpsInvariantId.PR4_AGING_BUCKET_NOT_RISK_ESCALATION,
       FleetOpsInvariantId.PR3_REALIZED_PAYMENT_REVENUE_ONLY,
       FleetOpsInvariantId.PR3_NO_RECEIVABLE_ONLY_REVENUE,
       FleetOpsInvariantId.PR3_CONFIRMED_PAYMENT_STATUS_ONLY,
@@ -82,6 +87,91 @@ describe("Fleet Ops production invariants", () => {
     });
 
     expect(statusById(results)[FleetOpsInvariantId.PR3_REALIZED_PAYMENT_REVENUE_ONLY]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-4 overdue detection relies only on refreshed BillStatus.OVERDUE", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr4: `
+          function detect(bill) {
+            return bill.billStatus === BillStatus.OVERDUE;
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR4_REFRESH_INDEPENDENT_OVERDUE]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-4 lets cancelled or settled bills contribute exposure", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr4: `
+          function exposure(bill) {
+            overdueAmount += bill.remainingAmount;
+            return overdueAmount;
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR4_CANCELLED_AND_SETTLED_EXCLUDED]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-4 D1-D5 aging thresholds drift", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr4: `
+          function level(days) {
+            if (days >= 30) return CollectionPriorityLevel.D5;
+            if (days >= 15) return CollectionPriorityLevel.D4;
+            return CollectionPriorityLevel.D3;
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR4_D1_D5_THRESHOLDS]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-4 collection case status suppresses unpaid bill facts", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr4: `
+          function detect(caseRecord, bill) {
+            if (caseRecord.caseStatus === CollectionCaseStatus.CLOSED) return [];
+            return bill.remainingAmount > 0 ? [bill] : [];
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR4_COLLECTION_CASE_SUPPORTING_ONLY]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-4 risk score escalation mutates the aging bucket", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr4: `
+          function assign(exposure, riskScore) {
+            if (riskScore >= 85) return CollectionPriorityLevel.D5;
+            if (exposure.maxOverdueDays <= 3) return CollectionPriorityLevel.D1;
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR4_AGING_BUCKET_NOT_RISK_ESCALATION]).toBe(FleetOpsInvariantStatus.FAIL);
   });
 
   it("fails when PR-3 economics appears to count receivable bills as realized revenue", () => {
@@ -188,7 +278,8 @@ function compliantInvariantInput(): FleetOpsInvariantInput {
       pr2: "VehicleTimelineCalculator calculateTimeline(events, rawInput) { return eachDay(from, to); }",
       pr3:
         "PaymentStatus.CONFIRMED realized payments only; isDeposit payments are excluded from operating revenue; fleet ROI = total net income / total invested capital; CURRENT_STATUS_PROJECTED_ACROSS_RANGE warning propagates into economics confidence;",
-      pr4: "FleetRiskCalculator calculate(input) { return cloneRiskOutput(input); }",
+      pr4:
+        "OverdueDetectorModel uses dueDate < asOfDate and remainingAmount > 0 while excluding BillStatus.CANCELLED and BillStatus.PAID; D1 <= 3, D2 <= 7, D3 <= 15, D4 <= 30, CollectionPriorityLevel.D5 otherwise; CollectionCase is supporting evidence only; aging bucket ignores riskScore escalation;",
       pr5: "ActionOrchestrator execute(request, riskSnapshot) { if (!riskSnapshot) throw new Error(); }",
       pr6: "OptimizationEngine optimize(input) { return advisoryRecommendations; }",
       pr7: "PolicyEngine evaluate(input) { return proposed policy updates only; }",

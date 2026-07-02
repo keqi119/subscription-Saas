@@ -55,6 +55,10 @@ function calculateOperationalRisk(
     score += 15;
   }
 
+  if (timeline.some((day) => (day.warnings ?? []).length > 0)) {
+    score += 8;
+  }
+
   if (hasOperationalMismatch(vehicleId, input, timeline)) {
     score += 10;
   }
@@ -79,6 +83,10 @@ function calculateAssetRisk(kpi: FleetKpiVehicleResult) {
 
   if (kpi.attribution.writeOffImpact < 0) {
     score += 15;
+  }
+
+  if ((kpi.warnings ?? []).length > 0) {
+    score += Math.min(15, (kpi.warnings ?? []).length * 5);
   }
 
   if (kpi.economics.cost > kpi.economics.revenue && kpi.economics.revenue > 0) {

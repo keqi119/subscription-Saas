@@ -2,22 +2,30 @@ import { CollectionPriorityLevel, type RiskExposure } from "./risk.types";
 
 export class CollectionPriorityModel {
   assign(input: { exposure: RiskExposure; exposureScore: number; riskScore: number }): CollectionPriorityLevel {
-    if (input.exposure.maxOverdueDays >= 30 || input.exposureScore >= 85 || input.riskScore >= 85) {
-      return CollectionPriorityLevel.D5;
+    return this.assignByOverdueDays(input.exposure.maxOverdueDays);
+  }
+
+  assignByOverdueDays(overdueDays: number): CollectionPriorityLevel {
+    if (overdueDays <= 0) {
+      return CollectionPriorityLevel.NONE;
     }
 
-    if (input.exposure.maxOverdueDays >= 15 || input.exposureScore >= 70 || input.riskScore >= 75) {
-      return CollectionPriorityLevel.D4;
+    if (overdueDays <= 3) {
+      return CollectionPriorityLevel.D1;
     }
 
-    if (input.exposure.maxOverdueDays > 0 || input.exposureScore >= 50 || input.riskScore >= 60) {
-      return CollectionPriorityLevel.D3;
-    }
-
-    if (input.exposureScore >= 25 || input.riskScore >= 40) {
+    if (overdueDays <= 7) {
       return CollectionPriorityLevel.D2;
     }
 
-    return CollectionPriorityLevel.D1;
+    if (overdueDays <= 15) {
+      return CollectionPriorityLevel.D3;
+    }
+
+    if (overdueDays <= 30) {
+      return CollectionPriorityLevel.D4;
+    }
+
+    return CollectionPriorityLevel.D5;
   }
 }

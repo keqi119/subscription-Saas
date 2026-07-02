@@ -1,4 +1,5 @@
 import type { FleetKpiVehicleResult } from "../economics/economics.types";
+import { ArrearsPipelineModel } from "./arrears-pipeline.model";
 import { CollectionPriorityModel } from "./collection-priority.model";
 import { ControlGuardEngine } from "./control-guard.engine";
 import { ExposureModel } from "./exposure.model";
@@ -7,6 +8,7 @@ import { hasTimelineConflict, RiskSignalsBuilder } from "./risk-signals.builder"
 import { ControlDecision, type FleetRiskAggregate, type FleetRiskInput, type FleetRiskReport, type RiskOutput, type RiskVehicleContext } from "./risk.types";
 
 export class FleetRiskCalculator {
+  private readonly arrearsPipelineModel = new ArrearsPipelineModel();
   private readonly collectionPriorityModel = new CollectionPriorityModel();
   private readonly controlGuardEngine = new ControlGuardEngine();
   private readonly exposureModel = new ExposureModel();
@@ -26,6 +28,14 @@ export class FleetRiskCalculator {
     const kpi = input.fleetKpis.vehicles.find((vehicle) => vehicle.vehicleId === vehicleId) ?? emptyKpi(vehicleId);
     const timeline = input.timelines[vehicleId] ?? [];
     const exposure = this.exposureModel.calculate(vehicleId, input, kpi.economics.revenue);
+    const arrearsPipeline = this.arrearsPipelineModel.build({
+      asOf: input.asOf,
+      collectionCases: input.collectionCases ?? [],
+      overdueFacts: exposure.overdueBillRefs,
+      payments: input.paymentRecords,
+      vehicleId,
+      writeOffs: exposure.writeOffEvidence
+    });
     const signals = this.riskSignalsBuilder.buildVehicleSignals(vehicleId, input, kpi, exposure);
     const components = this.riskScoreModel.calculateComponents({
       exposure,
@@ -36,7 +46,7 @@ export class FleetRiskCalculator {
       vehicleId
     });
     const riskScore = this.riskScoreModel.calculateWeightedScore(components);
-    const collectionLevel = this.collectionPriorityModel.assign({
+    const agingBucket = this.collectionPriorityModel.assign({
       exposure,
       exposureScore: exposure.score,
       riskScore
@@ -50,22 +60,34 @@ export class FleetRiskCalculator {
       timeline,
       vehicleId
     };
-    const controlDecision = this.controlGuardEngine.decide(context, collectionLevel, riskScore);
+    const controlDecision = this.controlGuardEngine.decide(context, agingBucket, riskScore);
+    const warnings = uniqueWarnings([
+      ...exposure.warnings,
+      ...arrearsPipeline.warnings,
+      ...timeline.flatMap((day) => (day.warnings ?? []).map((warning) => ({ code: warning, message: "Timeline warning propagated into risk confidence." }))),
+      ...(kpi.warnings ?? []).map((warning) => ({ code: String(warning), message: "Economic warning propagated into risk confidence." }))
+    ]);
+    const evidence = [...exposure.evidence, ...arrearsPipeline.evidence, ...economicsEvidence(kpi), ...timelineEvidence(timeline)];
 
     return {
-      collectionLevel,
-      confidence: calculateConfidence(context, controlDecision.controlDecision),
+      agingBucket,
+      arrearsPipeline,
+      collectionLevel: agingBucket,
+      confidence: calculateConfidence(context, controlDecision.controlDecision, warnings),
       controlDecision: controlDecision.controlDecision,
+      evidence,
+      exposureDetail: exposure,
       exposureScore: exposure.score,
       reasons: controlDecision.reasons,
       riskScore,
       signals: signals.map((signal) => signal.code),
+      warnings,
       vehicleId
     };
   }
 }
 
-function calculateConfidence(context: RiskVehicleContext, controlDecision: ControlDecision) {
+function calculateConfidence(context: RiskVehicleContext, controlDecision: ControlDecision, warnings: Array<{ code: string }>) {
   let score = 0;
 
   if (context.operationalState) {
@@ -92,6 +114,10 @@ function calculateConfidence(context: RiskVehicleContext, controlDecision: Contr
     score -= 25;
   }
 
+  if (warnings.length > 0) {
+    score -= Math.min(15, warnings.length * 5);
+  }
+
   return Math.min(100, Math.max(0, Math.round(score)));
 }
 
@@ -116,6 +142,42 @@ function aggregateFleetRisk(vehicles: RiskOutput[]): FleetRiskAggregate {
     vehicleCount,
     warnedVehicles: vehicles.filter((vehicle) => vehicle.controlDecision === ControlDecision.WARN).length
   };
+}
+
+function economicsEvidence(kpi: FleetKpiVehicleResult) {
+  return (kpi.evidence ?? []).map((item) => ({
+    amount: item.amount,
+    reason: item.reason,
+    source: "economics" as const,
+    sourceId: item.sourceId
+  }));
+}
+
+function timelineEvidence(timeline: RiskVehicleContext["timeline"]) {
+  return timeline.flatMap((day) =>
+    day.sourceEvents.map((sourceEvent) => ({
+      observedAt: day.date,
+      reason: "timeline source event contributes to PR-4 risk context",
+      source: "timeline" as const,
+      sourceId: sourceEvent
+    }))
+  );
+}
+
+function uniqueWarnings<T extends { code: string; sourceId?: string }>(warnings: T[]): T[] {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+
+  for (const warning of warnings) {
+    const key = `${warning.code}:${warning.sourceId ?? ""}`;
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(warning);
+    }
+  }
+
+  return unique;
 }
 
 function emptyKpi(vehicleId: string): FleetKpiVehicleResult {

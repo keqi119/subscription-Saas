@@ -14,7 +14,11 @@ import { describe, expect, it, vi } from "vitest";
 import { VehicleTimelineBuilder } from "../src/fleet-ops/timeline/vehicle-timeline.builder";
 import { VehicleTimelineCalculator } from "../src/fleet-ops/timeline/vehicle-timeline.calculator";
 import { VehicleTimelineService } from "../src/fleet-ops/timeline/vehicle-timeline.service";
-import { TimelineState, type VehicleTimelineRawInput } from "../src/fleet-ops/timeline/vehicle-timeline.types";
+import {
+  TIMELINE_CURRENT_STATUS_PROJECTED_WARNING,
+  TimelineState,
+  type VehicleTimelineRawInput
+} from "../src/fleet-ops/timeline/vehicle-timeline.types";
 
 const from = new Date("2026-07-01T00:00:00.000Z");
 const to = new Date("2026-07-05T00:00:00.000Z");
@@ -106,6 +110,45 @@ describe("VehicleTimelineCalculator", () => {
       state: TimelineState.SERVICE_BLOCKED
     });
     expect(timeline[2]!.sourceEvents).toEqual(["condition_report:condition-report-1", "vehicle:vehicle-1"]);
+  });
+
+  it("marks current vehicle status fallback as projected low-confidence evidence", () => {
+    const timeline = buildTimeline({});
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        confidence: 50,
+        sourceEvents: ["vehicle:vehicle-1"],
+        state: TimelineState.AVAILABLE,
+        warnings: expect.arrayContaining([TIMELINE_CURRENT_STATUS_PROJECTED_WARNING])
+      })
+    );
+  });
+
+  it("keeps projected fallback warning when stronger dated events override it", () => {
+    const timeline = buildTimeline({
+      leases: [
+        lease({
+          order: order({ endDate: new Date("2026-07-03T00:00:00.000Z"), startDate: from })
+        })
+      ]
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        sourceEvents: ["lease:lease-1", "vehicle:vehicle-1"],
+        state: TimelineState.LEASED,
+        warnings: expect.arrayContaining([TIMELINE_CURRENT_STATUS_PROJECTED_WARNING])
+      })
+    );
+    expect(timeline[0]!.conflicts).toEqual([
+      expect.objectContaining({
+        loserEventId: "vehicle:vehicle-1",
+        loserState: TimelineState.AVAILABLE,
+        winnerEventId: "lease:lease-1",
+        winnerState: TimelineState.LEASED
+      })
+    ]);
   });
 });
 

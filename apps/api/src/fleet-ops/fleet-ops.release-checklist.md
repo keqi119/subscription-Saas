@@ -19,6 +19,17 @@ Fleet Ops OS v1 includes PR-1 through PR-10:
 
 PR-10 does not add a new intelligence layer and does not add a new execution path.
 
+## Docs traceability
+
+Confirm the Fleet Ops runtime docs remain linked to the repository-local source-of-truth docs:
+
+- `docs/fleet-ops/source/plan_design.md`
+- `docs/fleet-ops/source/code_review_202607011626.md`
+- `docs/fleet-ops/next-stage/dev_spec.md`
+- `docs/fleet-ops/next-stage/agents.md`
+- `docs/fleet-ops/next-stage/codex_tasks.md`
+- `docs/fleet-ops/README.md`
+
 ## Required Commands
 
 Run typecheck:
@@ -42,7 +53,7 @@ pnpm --filter @subscription-saas/api exec vitest run test/vehicle-operational-st
 Run the read-only safety scan:
 
 ```bash
-rg -n -g '*.ts' '\.create\(|\.update\(|\.delete\(|\.upsert\(|\$executeRaw|\$queryRawUnsafe' apps/api/src/fleet-ops
+rg -n -g '*.ts' -g '*.tsx' '\.create\(|\.update\(|\.delete\(|\.upsert\(|\.createMany\(|\.updateMany\(|\.deleteMany\(|\$executeRaw|\$queryRawUnsafe|\$transaction|save\(|persist\(|mutate\(|setStatus\(|updateStatus\(|auditSink\??\.write\(|auditLog|writeAudit' apps/api/src/fleet-ops
 ```
 
 Expected result: no matches. `rg` exit code `1` is acceptable for no matches.

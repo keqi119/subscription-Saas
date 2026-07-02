@@ -15,6 +15,9 @@ interface ExecutionAuditSink {
   }): Promise<void>;
 }
 
+export const FLEET_EXECUTION_AUDIT_ENTITY_TYPE = "FleetExecution";
+export const FLEET_EXECUTION_AUDIT_MODULE = "fleet_ops_execution";
+
 @Injectable()
 export class ExecutionLogService {
   private readonly logs: ExecutionLogEntry[] = [];
@@ -38,8 +41,8 @@ export class ExecutionLogService {
       action: AuditAction.CREATE,
       after: clonedEntry,
       entityId: clonedEntry.vehicleId,
-      entityType: "FleetExecution",
-      module: "fleet_ops_execution"
+      entityType: FLEET_EXECUTION_AUDIT_ENTITY_TYPE,
+      module: FLEET_EXECUTION_AUDIT_MODULE
     });
   }
 

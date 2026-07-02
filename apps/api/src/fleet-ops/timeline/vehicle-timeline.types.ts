@@ -27,6 +27,8 @@ export enum TimelineEventSource {
   VEHICLE = "vehicle"
 }
 
+export const TIMELINE_CURRENT_STATUS_PROJECTED_WARNING = "CURRENT_STATUS_PROJECTED_ACROSS_RANGE";
+
 export interface TimelineDay {
   confidence: number;
   conflicts: TimelineConflict[];

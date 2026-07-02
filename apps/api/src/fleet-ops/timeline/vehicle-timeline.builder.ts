@@ -11,6 +11,7 @@ import {
 } from "@prisma/client";
 
 import {
+  TIMELINE_CURRENT_STATUS_PROJECTED_WARNING,
   TimelineEventSource,
   TimelineState,
   type TimelineEvent,
@@ -85,7 +86,10 @@ export class VehicleTimelineBuilder {
         startDate: toDateKey(fallbackStart),
         state,
         timestamp: input.vehicle.updatedAt ?? input.vehicle.createdAt ?? null,
-        warnings: input.vehicle.deletedAt ? ["Vehicle is inactive or deleted in this period."] : []
+        warnings: [
+          TIMELINE_CURRENT_STATUS_PROJECTED_WARNING,
+          ...(input.vehicle.deletedAt ? ["Vehicle is inactive or deleted in this period."] : [])
+        ]
       })
     ];
   }

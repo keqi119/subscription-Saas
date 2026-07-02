@@ -2,6 +2,17 @@
 
 Fleet Ops is a production subsystem boundary that exposes PR-1 to PR-8 through `FleetOpsModule` and `FleetOpsFacade`.
 
+## Source of Truth
+
+Fleet Ops implementation and hardening work must stay traceable to these repository-local documents:
+
+- `docs/fleet-ops/source/plan_design.md`
+- `docs/fleet-ops/source/code_review_202607011626.md`
+- `docs/fleet-ops/next-stage/dev_spec.md`
+- `docs/fleet-ops/next-stage/agents.md`
+- `docs/fleet-ops/next-stage/codex_tasks.md`
+- `docs/fleet-ops/README.md`
+
 ## Layer Responsibilities
 
 - PR-1 State Engine: resolves the current vehicle operational state from existing read entities.

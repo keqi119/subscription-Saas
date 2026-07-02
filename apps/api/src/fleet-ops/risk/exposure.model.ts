@@ -1,16 +1,31 @@
 import { BillStatus } from "@prisma/client";
 
 import type { FleetRiskInput, RiskExposure } from "./risk.types";
+import { OverdueDetectorModel } from "./overdue-detector.model";
 
 export class ExposureModel {
+  private readonly overdueDetector = new OverdueDetectorModel();
+
   calculate(vehicleId: string, input: FleetRiskInput, recognizedRevenue: number): RiskExposure {
     const bills = input.receivableBills.filter((bill) => bill.vehicleId === vehicleId);
     const unpaidBills = bills.filter((bill) => isUnpaidBill(bill.billStatus) && bill.remainingAmount > 0);
-    const overdueBills = unpaidBills.filter((bill) => bill.dueDate < input.asOf);
-    const overdueAmount = sum(overdueBills, (bill) => bill.remainingAmount);
+    const overdueDetection = this.overdueDetector.detect({ asOf: input.asOf, bills, vehicleId });
+    const overdueBillIds = new Set(overdueDetection.overdueFacts.map((fact) => fact.billId));
+    const overdueBills = bills.filter((bill) => overdueBillIds.has(bill.id));
+    const overdueAmount = sum(overdueDetection.overdueFacts, (bill) => bill.remainingAmount);
     const unpaidAmount = sum(unpaidBills, (bill) => bill.remainingAmount);
     const partialPaymentCount = unpaidBills.filter((bill) => bill.billStatus === BillStatus.PARTIALLY_PAID || bill.paidAmount > 0).length;
-    const maxOverdueDays = overdueBills.reduce((max, bill) => Math.max(max, daysBetween(bill.dueDate, input.asOf)), 0);
+    const partialPaymentEvidence = unpaidBills
+      .filter((bill) => bill.billStatus === BillStatus.PARTIALLY_PAID || bill.paidAmount > 0)
+      .map((bill) => ({
+        amount: bill.paidAmount,
+        observedAt: input.asOf,
+        reason: "bill has partial payment evidence but remaining amount is still open",
+        source: "receivable_bill" as const,
+        sourceId: bill.id
+      }));
+    const writeOffEvidence = overdueBills.flatMap((bill) => bill.writeOffs ?? []);
+    const maxOverdueDays = overdueDetection.overdueFacts.reduce((max, bill) => Math.max(max, bill.overdueDays), 0);
     const score = calculateExposureScore({
       maxOverdueDays,
       overdueAmount,
@@ -20,11 +35,28 @@ export class ExposureModel {
     });
 
     return {
+      evidence: [...overdueDetection.evidence, ...partialPaymentEvidence],
       maxOverdueDays,
       overdueAmount: roundMoney(overdueAmount),
+      overdueBillCount: overdueDetection.overdueFacts.length,
+      overdueBillRefs: overdueDetection.overdueFacts,
+      overdueRemainingAmount: roundMoney(overdueAmount),
       partialPaymentCount,
+      partialPaymentEvidence,
       score,
-      unpaidAmount: roundMoney(unpaidAmount)
+      unpaidAmount: roundMoney(unpaidAmount),
+      warnings: [
+        ...overdueDetection.warnings,
+        ...(writeOffEvidence.length === 0 && overdueDetection.overdueFacts.length > 0
+          ? [
+              {
+                code: "WRITE_OFF_LINKAGE_UNAVAILABLE",
+                message: "No write-off allocation evidence was available for open overdue bills; exposure uses current remaining amount only."
+              }
+            ]
+          : [])
+      ],
+      writeOffEvidence
     };
   }
 }
@@ -75,16 +107,6 @@ function calculateExposureScore(input: {
 
 function isUnpaidBill(status: BillStatus) {
   return status !== BillStatus.PAID && status !== BillStatus.CANCELLED;
-}
-
-function daysBetween(from: Date, to: Date) {
-  const millisecondsPerDay = 24 * 60 * 60 * 1000;
-
-  return Math.max(0, Math.floor((startOfUtcDay(to).getTime() - startOfUtcDay(from).getTime()) / millisecondsPerDay));
-}
-
-function startOfUtcDay(date: Date) {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
 function sum<T>(items: T[], projector: (item: T) => number) {

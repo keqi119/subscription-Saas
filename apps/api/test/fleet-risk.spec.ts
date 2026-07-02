@@ -24,6 +24,7 @@ import {
   RiskSignalCode,
   type FleetRiskInput
 } from "../src/fleet-ops/risk/risk.types";
+import { TIMELINE_CURRENT_STATUS_PROJECTED_WARNING } from "../src/fleet-ops/timeline/vehicle-timeline.types";
 import { VehicleTimelineService } from "../src/fleet-ops/timeline/vehicle-timeline.service";
 import { VehicleComputedOperationalState } from "../src/fleet-ops/vehicle-operational-state.types";
 import { VehicleOperationalStateService } from "../src/fleet-ops/vehicle-operational-state.service";
@@ -39,7 +40,7 @@ describe("FleetRiskCalculator", () => {
     expect(vehicle).toEqual(
       expect.objectContaining({
         collectionLevel: CollectionPriorityLevel.D5,
-        confidence: 45,
+        confidence: 35,
         controlDecision: ControlDecision.BLOCK,
         exposureScore: 100,
         riskScore: 99,
@@ -71,7 +72,8 @@ describe("FleetRiskCalculator", () => {
     const vehicle = first.vehicles[0]!;
 
     expect(first).toEqual(second);
-    expect(vehicle.collectionLevel).toBe(CollectionPriorityLevel.D1);
+    expect(vehicle.collectionLevel).toBe(CollectionPriorityLevel.NONE);
+    expect(vehicle.agingBucket).toBe(CollectionPriorityLevel.NONE);
     expect(vehicle.controlDecision).toBe(ControlDecision.ALLOW);
     expect(vehicle.riskScore).toBeLessThan(25);
     expect(vehicle.exposureScore).toBe(0);
@@ -93,6 +95,26 @@ describe("FleetRiskCalculator", () => {
     );
     expect(guard.canActivateLease("lease-1").allowed).toBe(false);
     expect(guard.canProceedWithOrder("order-1").allowed).toBe(false);
+  });
+
+  it("propagates PR-2 timeline and PR-3 economics warnings into risk output", () => {
+    const input = healthyRiskInput();
+    input.timelines["vehicle-2"] = [day("2026-07-01", EconomicTimelineState.LEASED, ["vehicle-status-fallback"], 0, [TIMELINE_CURRENT_STATUS_PROJECTED_WARNING])];
+    input.fleetKpis.vehicles[0] = {
+      ...input.fleetKpis.vehicles[0]!,
+      warnings: ["UNASSIGNED_PAYMENT_EXCLUDED"]
+    };
+
+    const vehicle = new FleetRiskCalculator().calculate(input).vehicles[0]!;
+
+    expect(vehicle.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: TIMELINE_CURRENT_STATUS_PROJECTED_WARNING }),
+        expect.objectContaining({ code: "UNASSIGNED_PAYMENT_EXCLUDED" })
+      ])
+    );
+    expect(vehicle.signals).toEqual(expect.arrayContaining([RiskSignalCode.ECONOMIC_WARNING_SIGNAL, RiskSignalCode.TIMELINE_CONFLICT_SIGNAL]));
+    expect(vehicle.confidence).toBeLessThan(90);
   });
 });
 
@@ -123,6 +145,7 @@ describe("FleetRiskService", () => {
     expect(kpiService.getFleetKpis).toHaveBeenCalledWith(["vehicle-1"], from, to);
     expect(prisma.receivableBill.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.paymentRecord.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.collectionCase.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.lease.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.subscriptionOrder.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.serviceCase.findMany).toHaveBeenCalledTimes(1);
@@ -208,13 +231,14 @@ function timelineDays() {
   ];
 }
 
-function day(date: string, state: EconomicTimelineState, sourceEvents: string[] = [], conflictCount = 0) {
+function day(date: string, state: EconomicTimelineState, sourceEvents: string[] = [], conflictCount = 0, warnings: string[] = []) {
   return {
     confidence: conflictCount > 0 ? 55 : 90,
     conflicts: Array.from({ length: conflictCount }, (_, index) => ({ id: `conflict-${date}-${index}` })),
     date,
     sourceEvents,
-    state
+    state,
+    warnings
   };
 }
 
@@ -409,10 +433,14 @@ function createPrismaHarness() {
           id: "bill-1",
           order: { vehicleId: "vehicle-1" },
           paidAmount: 0n,
-          remainingAmount: 10000n
+          remainingAmount: 10000n,
+          writeOffs: []
         }
       ]),
       update: vi.fn()
+    },
+    collectionCase: {
+      findMany: vi.fn(async () => [])
     },
     serviceCase: {
       findMany: vi.fn(async () => [urgentServiceCase()])

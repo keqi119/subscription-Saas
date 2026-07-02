@@ -6,8 +6,10 @@ import { VehicleTimelineService } from "../timeline/vehicle-timeline.service";
 import { VehicleOperationalStateService } from "../vehicle-operational-state.service";
 import { FleetRiskCalculator } from "./fleet-risk.calculator";
 import {
+  CollectionPriorityLevel,
   type FleetRiskInput,
   type FleetRiskReport,
+  type RiskCollectionCaseInput,
   type RiskConditionReportInput,
   type RiskLeaseInput,
   type RiskOperationalStateInput,
@@ -36,12 +38,13 @@ export class FleetRiskService {
       return this.calculator.calculate(emptyRiskInput(from, to));
     }
 
-    const [operationalStates, timelines, fleetKpis, receivableBills, paymentRecords, leases, orders, serviceCases, conditionReports] = await Promise.all([
+    const [operationalStates, timelines, fleetKpis, receivableBills, paymentRecords, collectionCases, leases, orders, serviceCases, conditionReports] = await Promise.all([
       this.loadOperationalStates(normalizedVehicleIds, to),
       this.loadTimelines(normalizedVehicleIds, from, to),
       this.kpiService.getFleetKpis(normalizedVehicleIds, from, to),
       this.loadReceivableBills(normalizedVehicleIds),
       this.loadPaymentRecords(normalizedVehicleIds, from, to),
+      this.loadCollectionCases(normalizedVehicleIds),
       this.loadLeases(normalizedVehicleIds),
       this.loadOrders(normalizedVehicleIds),
       this.loadServiceCases(normalizedVehicleIds),
@@ -50,6 +53,7 @@ export class FleetRiskService {
 
     return this.calculator.calculate({
       asOf: to,
+      collectionCases,
       conditionReports,
       fleetKpis,
       leases,
@@ -104,7 +108,19 @@ export class FleetRiskService {
           }
         },
         paidAmount: true,
-        remainingAmount: true
+        remainingAmount: true,
+        writeOffs: {
+          select: {
+            billId: true,
+            id: true,
+            paymentId: true,
+            writeOffAmount: true,
+            writeOffAt: true
+          },
+          where: {
+            deletedAt: null
+          }
+        }
       },
       where: {
         deletedAt: null,
@@ -122,7 +138,14 @@ export class FleetRiskService {
       id: bill.id,
       paidAmount: amountToNumber(bill.paidAmount),
       remainingAmount: amountToNumber(bill.remainingAmount),
-      vehicleId: bill.order.vehicleId
+      vehicleId: bill.order.vehicleId,
+      writeOffs: bill.writeOffs.map((writeOff) => ({
+        amount: amountToNumber(writeOff.writeOffAmount),
+        billId: writeOff.billId,
+        id: writeOff.id,
+        paymentId: writeOff.paymentId,
+        writeOffAt: writeOff.writeOffAt
+      }))
     }));
   }
 
@@ -158,6 +181,78 @@ export class FleetRiskService {
       paymentStatus: payment.paymentStatus,
       receivedAt: payment.receivedAt,
       vehicleId: payment.order.vehicleId
+    }));
+  }
+
+  private async loadCollectionCases(vehicleIds: string[]): Promise<RiskCollectionCaseInput[]> {
+    const collectionCases = await this.prisma.collectionCase.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        actions: {
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: {
+            actionResult: true,
+            actionType: true,
+            caseId: true,
+            id: true,
+            promisedAmount: true,
+            promisedPayAt: true
+          },
+          where: {
+            deletedAt: null
+          }
+        },
+        bills: {
+          select: {
+            billId: true,
+            overdueAmount: true,
+            overdueDays: true
+          },
+          where: {
+            deletedAt: null
+          }
+        },
+        caseStatus: true,
+        collectionLevel: true,
+        id: true,
+        maxOverdueDays: true,
+        order: {
+          select: {
+            vehicleId: true
+          }
+        },
+        orderId: true,
+        totalOverdueAmount: true
+      },
+      where: {
+        deletedAt: null,
+        order: {
+          vehicleId: { in: vehicleIds }
+        }
+      }
+    });
+
+    return collectionCases.map((collectionCase) => ({
+      actions: collectionCase.actions.map((action) => ({
+        actionResult: action.actionResult,
+        actionType: action.actionType,
+        caseId: action.caseId,
+        id: action.id,
+        promisedAmount: action.promisedAmount === null ? null : amountToNumber(action.promisedAmount),
+        promisedPayAt: action.promisedPayAt
+      })),
+      bills: collectionCase.bills.map((bill) => ({
+        billId: bill.billId,
+        overdueAmount: amountToNumber(bill.overdueAmount),
+        overdueDays: bill.overdueDays
+      })),
+      caseStatus: collectionCase.caseStatus,
+      collectionLevel: collectionCase.collectionLevel as CollectionPriorityLevel,
+      id: collectionCase.id,
+      maxOverdueDays: collectionCase.maxOverdueDays,
+      orderId: collectionCase.orderId,
+      totalOverdueAmount: amountToNumber(collectionCase.totalOverdueAmount),
+      vehicleId: collectionCase.order.vehicleId
     }));
   }
 
@@ -280,6 +375,7 @@ export class FleetRiskService {
 function emptyRiskInput(from: Date, to: Date): FleetRiskInput {
   return {
     asOf: to,
+    collectionCases: [],
     conditionReports: [],
     fleetKpis: {
       fleet: {
@@ -314,13 +410,15 @@ function toRiskTimelineDay(day: {
   date: string;
   sourceEvents: string[];
   state: string;
+  warnings?: string[];
 }): RiskTimelineDay {
   return {
     confidence: day.confidence,
     conflicts: [...(day.conflicts ?? [])],
     date: day.date,
     sourceEvents: [...day.sourceEvents],
-    state: day.state
+    state: day.state,
+    warnings: [...(day.warnings ?? [])]
   };
 }
 

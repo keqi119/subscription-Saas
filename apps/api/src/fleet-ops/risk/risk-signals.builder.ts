@@ -23,6 +23,10 @@ export class RiskSignalsBuilder {
       signals.push(signal(vehicleId, RiskSignalCode.TIMELINE_CONFLICT_SIGNAL, "Timeline contains overlapping or conflicting operational events.", 15, RiskSignalSeverity.HIGH));
     }
 
+    if (timeline.some((day) => (day.warnings ?? []).length > 0)) {
+      signals.push(signal(vehicleId, RiskSignalCode.TIMELINE_CONFLICT_SIGNAL, "Timeline warnings reduce PR-4 confidence.", 10, RiskSignalSeverity.MEDIUM));
+    }
+
     if (kpi.economics.roi < 0) {
       signals.push(signal(vehicleId, RiskSignalCode.ROI_COLLAPSE_SIGNAL, "Vehicle ROI is negative for the evaluated period.", 45, RiskSignalSeverity.CRITICAL));
     }
@@ -37,6 +41,10 @@ export class RiskSignalsBuilder {
 
     if (hasPaymentInconsistency(vehicleId, input, exposure)) {
       signals.push(signal(vehicleId, RiskSignalCode.PAYMENT_INCONSISTENCY_SIGNAL, "Payment behavior is inconsistent with open receivables.", 20, RiskSignalSeverity.HIGH));
+    }
+
+    if ((kpi.warnings ?? []).length > 0 || exposure.warnings.length > 0) {
+      signals.push(signal(vehicleId, RiskSignalCode.ECONOMIC_WARNING_SIGNAL, "Economic or exposure warning requires risk review.", 10, RiskSignalSeverity.MEDIUM));
     }
 
     return signals;

@@ -4,6 +4,11 @@ export enum FleetOpsInvariantId {
   PR6_NO_PR5_EXECUTION = "PR6_NO_PR5_EXECUTION",
   PR5_REQUIRES_PR4_SNAPSHOT = "PR5_REQUIRES_PR4_SNAPSHOT",
   PR4_NO_UPSTREAM_MUTATION = "PR4_NO_UPSTREAM_MUTATION",
+  PR4_REFRESH_INDEPENDENT_OVERDUE = "PR4_REFRESH_INDEPENDENT_OVERDUE",
+  PR4_CANCELLED_AND_SETTLED_EXCLUDED = "PR4_CANCELLED_AND_SETTLED_EXCLUDED",
+  PR4_D1_D5_THRESHOLDS = "PR4_D1_D5_THRESHOLDS",
+  PR4_COLLECTION_CASE_SUPPORTING_ONLY = "PR4_COLLECTION_CASE_SUPPORTING_ONLY",
+  PR4_AGING_BUCKET_NOT_RISK_ESCALATION = "PR4_AGING_BUCKET_NOT_RISK_ESCALATION",
   PR3_REALIZED_PAYMENT_REVENUE_ONLY = "PR3_REALIZED_PAYMENT_REVENUE_ONLY",
   PR3_NO_RECEIVABLE_ONLY_REVENUE = "PR3_NO_RECEIVABLE_ONLY_REVENUE",
   PR3_CONFIRMED_PAYMENT_STATUS_ONLY = "PR3_CONFIRMED_PAYMENT_STATUS_ONLY",
@@ -122,6 +127,11 @@ export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): 
       /\binput\.[A-Za-z0-9_]+\s*=|upstream.*\.push\s*\(|upstream.*\.splice\s*\(/,
       "PR-4 risk must not mutate upstream PR outputs."
     ),
+    evaluatePr4RefreshIndependentOverdueInvariant(sourceForLayer(input, "pr4")),
+    evaluatePr4CancelledAndSettledExclusionInvariant(sourceForLayer(input, "pr4")),
+    evaluatePr4D1D5ThresholdInvariant(sourceForLayer(input, "pr4")),
+    evaluatePr4CollectionCaseSupportingInvariant(sourceForLayer(input, "pr4")),
+    evaluatePr4AgingBucketInvariant(sourceForLayer(input, "pr4")),
     evaluatePr3RevenueInvariant(sourceForLayer(input, "pr3")),
     evaluateReceivableOnlyRevenueInvariant(sourceForLayer(input, "pr3")),
     evaluateConfirmedPaymentOnlyInvariant(sourceForLayer(input, "pr3")),
@@ -136,6 +146,82 @@ export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): 
       "PR-1 state resolution must remain deterministic for the same snapshot."
     )
   ];
+}
+
+function evaluatePr4RefreshIndependentOverdueInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR4_REFRESH_INDEPENDENT_OVERDUE;
+
+  if (!sourceText) {
+    return pass(id, "PR-4 overdue detection must use dueDate, remainingAmount, and cancellation status. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const hasDueDateFact = /dueDate[\s\S]{0,120}(?:<|>=)[\s\S]{0,120}asOf|asOf[\s\S]{0,120}(?:>|<=)[\s\S]{0,120}dueDate/i.test(sourceText);
+  const hasRemainingFact = /remainingAmount\s*(?:>|<=)\s*0/.test(sourceText);
+  const excludesCancelled = /BillStatus\.CANCELLED/.test(sourceText);
+  const onlyOverdueStatus = /billStatus\s*={2,3}\s*BillStatus\.OVERDUE/.test(sourceText) && !(hasDueDateFact && hasRemainingFact);
+
+  return hasDueDateFact && hasRemainingFact && excludesCancelled && !onlyOverdueStatus
+    ? pass(id, "PR-4 overdue facts are refresh-independent and do not require BillStatus.OVERDUE.")
+    : fail(id, "PR-4 overdue detection must not rely only on refreshed BillStatus.OVERDUE.");
+}
+
+function evaluatePr4CancelledAndSettledExclusionInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR4_CANCELLED_AND_SETTLED_EXCLUDED;
+
+  if (!sourceText) {
+    return pass(id, "PR-4 exposure must exclude cancelled, paid, and zero-remaining bills. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const excludesCancelled = /BillStatus\.CANCELLED/.test(sourceText);
+  const excludesPaid = /BillStatus\.PAID/.test(sourceText);
+  const excludesZeroRemaining = /remainingAmount\s*<=\s*0|remainingAmount\s*>\s*0/.test(sourceText);
+
+  return excludesCancelled && excludesPaid && excludesZeroRemaining
+    ? pass(id, "PR-4 exposure excludes cancelled, paid, and zero-remaining bills.")
+    : fail(id, "PR-4 exposure must exclude cancelled, fully paid, and zero-remaining bills.");
+}
+
+function evaluatePr4D1D5ThresholdInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR4_D1_D5_THRESHOLDS;
+
+  if (!sourceText) {
+    return pass(id, "PR-4 D1-D5 threshold source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const hasThresholds = [/<=\s*3/, /<=\s*7/, /<=\s*15/, /<=\s*30/, /CollectionPriorityLevel\.D5/].every((pattern) => pattern.test(sourceText));
+
+  return hasThresholds
+    ? pass(id, "PR-4 D1-D5 aging thresholds match 1-3, 4-7, 8-15, 16-30, and >30 days.")
+    : fail(id, "PR-4 D1-D5 aging thresholds must match 1-3, 4-7, 8-15, 16-30, and >30 days.");
+}
+
+function evaluatePr4CollectionCaseSupportingInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR4_COLLECTION_CASE_SUPPORTING_ONLY;
+
+  if (!sourceText) {
+    return pass(id, "PR-4 collection case source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const suppressesBillFacts = /caseStatus\s*={2,3}\s*CollectionCaseStatus\.CLOSED[\s\S]{0,180}return\s*(?:\[\]|0|null|undefined)/.test(sourceText);
+  const hasSupportingEvidence = /supporting evidence only|CLOSED_COLLECTION_CASE_WITH_OPEN_OVERDUE_BILL|receivable bill remains the source of overdue truth/i.test(sourceText);
+
+  return !suppressesBillFacts && hasSupportingEvidence
+    ? pass(id, "PR-4 treats CollectionCase and CollectionAction as supporting evidence only.")
+    : fail(id, "PR-4 CollectionCase status must not suppress open bill-level overdue facts.");
+}
+
+function evaluatePr4AgingBucketInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR4_AGING_BUCKET_NOT_RISK_ESCALATION;
+
+  if (!sourceText) {
+    return pass(id, "PR-4 aging bucket source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const scoreEscalatesBucket = /(?:riskScore|exposureScore)\s*(?:>=|>|<=|<)[\s\S]{0,160}CollectionPriorityLevel\.D[1-5]/.test(sourceText);
+
+  return scoreEscalatesBucket
+    ? fail(id, "PR-4 risk score escalation must not mutate D1-D5 aging bucket.")
+    : pass(id, "PR-4 keeps aging bucket separate from risk score escalation.");
 }
 
 function evaluateReceivableOnlyRevenueInvariant(sourceText: string | undefined): FleetOpsInvariantResult {

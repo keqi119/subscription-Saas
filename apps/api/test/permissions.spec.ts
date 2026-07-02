@@ -1185,6 +1185,7 @@ describe("report permissions", () => {
 
 describe("seed permission calibration", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
+  const fleetOpsAccessSyncPath = path.resolve(__dirname, "../prisma/sync-fleet-ops-access.mjs");
   const sharedAuthSource = fs.readFileSync(
     path.resolve(__dirname, "../../../packages/shared/src/auth.ts"),
     "utf8"
@@ -1193,6 +1194,9 @@ describe("seed permission calibration", () => {
     path.resolve(__dirname, "../src/fleet-ops/fleet-ops.api.types.ts"),
     "utf8"
   );
+  const apiPackageJson = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, "../package.json"), "utf8")
+  ) as { scripts?: Record<string, string> };
 
   it("seeds baseline users for each operating role", () => {
     for (const marker of [
@@ -1321,6 +1325,56 @@ describe("seed permission calibration", () => {
       "fleet_ops:action"
     ]) {
       expect(seedSource).not.toContain(forbiddenPermission);
+    }
+  });
+
+  it("provides a narrow idempotent Fleet Ops access sync command for existing databases", () => {
+    expect(fs.existsSync(fleetOpsAccessSyncPath)).toBe(true);
+    expect(apiPackageJson.scripts?.["prisma:sync:fleet-ops-access"]).toBe(
+      "node prisma/sync-fleet-ops-access.mjs"
+    );
+
+    const syncSource = fs.readFileSync(fleetOpsAccessSyncPath, "utf8");
+
+    expect(syncSource).toContain(FLEET_OPS_READ_PERMISSION);
+    expect(syncSource).toContain(FLEET_OPS_MENU_CODE);
+    expect(syncSource).toContain("/fleet-ops");
+    expect(syncSource).toContain("车队运营");
+    expect(syncSource).toContain("车队运营查看");
+    expect(syncSource).toContain("upsert");
+    expect(syncSource).toContain("rolePermission.upsert");
+    expect(syncSource).toContain("roleMenu.upsert");
+    expect(syncSource).toContain("deletedAt: null");
+    expect(syncSource).not.toContain('import "./seed.mjs"');
+    expect(syncSource).not.toContain('from "./seed.mjs"');
+    expect(syncSource).not.toContain("seedDefaultUsers");
+
+    for (const roleCode of ["ADMIN", "OP", "GM"]) {
+      expect(syncSource).toContain(`"${roleCode}"`);
+    }
+
+    for (const forbiddenRoleCode of [
+      "AS",
+      "FI",
+      "SA",
+      "RC",
+      "CS",
+      "CUSTOMER",
+      "PUBLIC",
+      "PORTAL"
+    ]) {
+      expect(syncSource).not.toContain(`"${forbiddenRoleCode}"`);
+    }
+
+    for (const forbiddenPermission of [
+      "fleet_ops:write",
+      "fleet_ops:execute",
+      "fleet_ops:admin",
+      "fleet_ops:allocate",
+      "fleet_ops:collect",
+      "fleet_ops:action"
+    ]) {
+      expect(syncSource).not.toContain(forbiddenPermission);
     }
   });
 

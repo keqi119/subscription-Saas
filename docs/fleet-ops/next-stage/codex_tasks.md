@@ -754,3 +754,26 @@ pnpm --filter @subscription-saas/web lint
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 ```
+
+## 15. Fleet Ops Existing DB Access Sync Tasks
+
+P1-H10.1 is the approved repair path when an existing local or staging database was seeded before P1-H10 and an admin still lacks `fleet_ops:read` or the `/fleet-ops` / `车队运营` menu entry.
+
+Rules:
+- Fix the provisioning source of truth; do not bypass the frontend permission check.
+- Use the narrow idempotent command `pnpm --filter @subscription-saas/api prisma:sync:fleet-ops-access`.
+- The sync command may upsert only `fleet_ops:read`, `vehicles.fleet_ops` / `/fleet-ops`, and role links for `ADMIN`, `OP`, and `GM`.
+- Do not run the broad seed as the H10.1 repair path unless a human explicitly requests it.
+- Do not add Fleet Ops write, execute, admin, action, allocate, or collect permissions.
+- Do not add execution submenus, mutation routes, customer/public portal menus, schema changes, migrations, AppModule changes, or Fleet Ops API/UI business logic changes.
+- After syncing, require users to log out and log in so `/auth/me` reloads DB-backed permissions and menus.
+- Keep push, PR creation, and merge human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api typecheck
+pnpm --filter @subscription-saas/api lint
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+```

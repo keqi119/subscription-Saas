@@ -30,7 +30,9 @@ Confirm the Fleet Ops runtime docs remain linked to the repository-local source-
 - `docs/fleet-ops/next-stage/codex_tasks.md`
 - `docs/fleet-ops/README.md`
 
-## Required Commands
+## Canonical Release Candidate Gate
+
+Run the Fleet Ops release candidate gate before promotion or before marking a Fleet Ops hardening branch ready.
 
 Run typecheck:
 
@@ -44,17 +46,21 @@ Run lint:
 pnpm --filter @subscription-saas/api lint
 ```
 
-Run the full Fleet Ops regression suite:
+Run the focused Fleet Ops regression gate:
 
 ```bash
-pnpm --filter @subscription-saas/api exec vitest run test/vehicle-operational-state.spec.ts test/vehicle-timeline.spec.ts test/fleet-kpi.spec.ts test/fleet-risk.spec.ts test/fleet-execution.spec.ts test/fleet-optimization.spec.ts test/fleet-governance.spec.ts test/fleet-coordination.spec.ts test/fleet-ops.integration.spec.ts test/fleet-ops.invariants.spec.ts test/fleet-ops.readonly.spec.ts test/fleet-ops.bootstrap.spec.ts test/fleet-ops.facade-contract.spec.ts test/fleet-ops.health.spec.ts test/fleet-ops.observability.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
 ```
 
-Run the focused P1-H6 end-to-end contract and smoke readiness suite:
+The `test:fleet-ops` script is the canonical focused gate. It covers vehicle operational state, vehicle timeline, Fleet Ops economics/KPI, risk/collection, convergence/facade, E2E/smoke, invariants, read-only, boundary, no-schema, health, and facade-contract tests through direct focused test targets in `apps/api/package.json`.
+
+Do not use this command as the release candidate gate:
 
 ```bash
-pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.e2e-contract.spec.ts test/fleet-ops.smoke.spec.ts test/fleet-ops.facade.spec.ts test/fleet-ops.snapshot.spec.ts test/fleet-ops.convergence-parity.spec.ts test/fleet-ops.readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.no-schema.spec.ts
+pnpm --filter @subscription-saas/api test -- fleet-ops
 ```
+
+Package test argument narrowing has been unreliable in this repository and can run an unintended test set.
 
 Run the read-only safety scan:
 
@@ -64,13 +70,24 @@ rg -n -g '*.ts' -g '*.tsx' '\.create\(|\.update\(|\.delete\(|\.upsert\(|\.create
 
 Expected result: no matches. `rg` exit code `1` is acceptable for no matches.
 
-Run the schema diff check:
+Run the safety diff checks:
 
 ```bash
-git -c safe.directory=D:/Projects/auto-subscription-platform -C D:/Projects/auto-subscription-platform diff -- apps/api/prisma
+git status --short --branch --untracked-files=all
+git diff --name-status
+git diff --stat
+git diff --ignore-space-at-eol --stat
+git diff --check
+git diff -- apps/api/prisma/schema.prisma
+git diff -- apps/api/prisma/migrations
+git diff -- prisma/schema.prisma
+git diff -- prisma/migrations
+git diff -- apps/api/src/app.module.ts
 ```
 
-Expected result: empty diff.
+Expected result: clean scope, no whitespace errors, no EOL churn, no schema diff, no migration diff, and no AppModule diff.
+
+Codex may create local commits for approved Fleet Ops tasks only. Push, pull request creation, merge, and release promotion remain human-owned remote actions.
 
 ## Bootstrap Smoke Check
 

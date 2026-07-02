@@ -13,13 +13,23 @@
 
 All Codex tasks must read `docs/fleet-ops/next-stage/codex_workflow_rules.md` before branch prep, build, verify, recovery, or local commit work. Branch policy, approved file lists, EOL checks, explicit-path staging, and human-only push / PR / merge rules must follow that document.
 
-P1-H6 and later release-readiness tasks should use the focused Fleet Ops end-to-end contract and smoke command instead of broad package test narrowing:
+P1-H7 and later Fleet Ops BUILD, VERIFY, LOCAL_COMMIT, and release-readiness tasks should use the canonical Fleet Ops release candidate gate instead of broad package test narrowing:
 
 ```bash
-pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.e2e-contract.spec.ts test/fleet-ops.smoke.spec.ts test/fleet-ops.facade.spec.ts test/fleet-ops.snapshot.spec.ts test/fleet-ops.convergence-parity.spec.ts test/fleet-ops.readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.no-schema.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
 ```
 
-This command is test-only readiness coverage. It must not be used to justify schema changes, DB writes, PR-1 to PR-5 logic rewrites, controller exposure, or remote push / PR / merge actions by Codex.
+Codex must still run `pnpm --filter @subscription-saas/api typecheck`, `pnpm --filter @subscription-saas/api lint`, task-specific focused tests when a task requires narrower validation, and pre-commit diff/safety checks.
+
+Do not use this as the Fleet Ops release candidate gate:
+
+```bash
+pnpm --filter @subscription-saas/api test -- fleet-ops
+```
+
+Package test argument narrowing has been unreliable in this repository and can run an unintended test set.
+
+The canonical command is test-only readiness coverage. It must not be used to justify schema changes, DB writes, PR-1 to PR-5 logic rewrites, controller exposure, or remote push / PR / merge actions by Codex.
 
 ```text
 You are working in a production TypeScript + NestJS backend repository.

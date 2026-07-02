@@ -72,6 +72,20 @@ Optional dependencies must degrade safely and must not change core decision beha
 - Governance proposals must include simulation output before adoption.
 - Invariant and read-only safety tests must run as production readiness checks before promotion.
 
+## Release Candidate Gate
+
+Run the canonical Fleet Ops release candidate gate before promotion or before marking Fleet Ops hardening work ready:
+
+```bash
+pnpm --filter @subscription-saas/api typecheck
+pnpm --filter @subscription-saas/api lint
+pnpm --filter @subscription-saas/api test:fleet-ops
+```
+
+`test:fleet-ops` is a focused Fleet Ops regression gate. It is not a broad full-suite replacement, and it must not be replaced with `pnpm --filter @subscription-saas/api test -- fleet-ops` because package test argument narrowing has been unreliable in this repository.
+
+Release candidate safety checks must also confirm no Prisma schema diff, no migration diff, and no `AppModule` diff unless a task explicitly approves those changes. Codex may create local commits only when explicitly requested; push, PR creation, merge, and release promotion remain human-owned remote actions.
+
 ## End-to-End Contract Smoke Gate
 
 P1-H6 readiness is test and documentation only. It does not add runtime behavior, schema changes, controllers, execution paths, or PR-1 to PR-5 logic changes.

@@ -42,14 +42,18 @@ describe("Fleet Ops dependency boundaries", () => {
     expect(violations).toEqual([]);
   });
 
-  it("does not expose Fleet Ops controllers and keeps AppModule registration unchanged", async () => {
+  it("exposes only the controlled read-only Fleet Ops controller and keeps AppModule registration unchanged", async () => {
     const sourceFiles = await listFiles(join(process.cwd(), "src", "fleet-ops"));
     const controllerFiles = sourceFiles.filter((file) => /controller\.ts$/.test(file));
-    const controllerDecorators = await grepFiles(sourceFiles, /@Controller\s*\(/);
+    const controllerSource = await readFile(join(process.cwd(), "src", "fleet-ops", "fleet-ops.controller.ts"), "utf8");
     const appModule = await readFile(join(process.cwd(), "src", "app.module.ts"), "utf8");
 
-    expect(controllerFiles).toEqual([]);
-    expect(controllerDecorators).toEqual([]);
+    expect(controllerFiles.map((file) => relative(process.cwd(), file).replaceAll("\\", "/"))).toEqual([
+      "src/fleet-ops/fleet-ops.controller.ts"
+    ]);
+    expect(controllerSource).toContain("@Controller(\"fleet-ops\")");
+    expect(controllerSource).not.toMatch(/@(Post|Patch|Put|Delete)\s*\(/);
+    expect(controllerSource).not.toMatch(/executeAction|FleetExecutionService|ActionOrchestratorService|action\.handlers/);
     expect(appModule.match(/FleetOpsModule/g)).toHaveLength(2);
   });
 });

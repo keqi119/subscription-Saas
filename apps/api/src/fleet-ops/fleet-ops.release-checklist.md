@@ -54,6 +54,15 @@ pnpm --filter @subscription-saas/api test:fleet-ops
 
 The `test:fleet-ops` script is the canonical focused gate. It covers vehicle operational state, vehicle timeline, Fleet Ops economics/KPI, risk/collection, convergence/facade, E2E/smoke, invariants, read-only, boundary, no-schema, health, and facade-contract tests through direct focused test targets in `apps/api/package.json`.
 
+For controlled read-only API exposure, the same gate must include:
+
+- `test/fleet-ops.controller.spec.ts`
+- `test/fleet-ops.api-contract.spec.ts`
+- `test/fleet-ops.api-readonly.spec.ts`
+- `test/fleet-ops.api-feature-gate.spec.ts`
+
+Confirm the API remains disabled by default through `FLEET_OPS_API_ENABLED`, guarded by `fleet_ops:read`, GET-only, and facade-only for business data.
+
 Do not use this command as the release candidate gate:
 
 ```bash
@@ -97,6 +106,18 @@ The release smoke suite must verify:
 - `FleetOpsFacade` is injectable.
 - `FleetOpsHealthService` is injectable.
 - No provider constructor performs Prisma delegate calls during bootstrap.
+
+## Controlled API Exposure Readiness
+
+Before enabling `FLEET_OPS_API_ENABLED` outside local development, confirm:
+
+- Only `/fleet-ops` GET endpoints are registered.
+- Health may return `enabled:false` while business and diagnostics endpoints are blocked when disabled.
+- Business data endpoints call only the root Nest `FleetOpsFacade`.
+- The controller does not inject lower-layer Fleet Ops services, PR-5 execution services, Prisma, Finance, Payment, Report, or Order services.
+- No execution action, allocation, lease activation, collection action, POST, PATCH, PUT, DELETE, public portal, or customer-facing endpoint is exposed.
+- Response envelopes include `generatedAt` and optional `requestId`, `traceId`, and `warnings`.
+- Timeline/economics/risk range requests enforce the 366-day maximum.
 
 ## P1-H6 Contract Smoke Readiness
 

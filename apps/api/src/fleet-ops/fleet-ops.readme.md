@@ -86,6 +86,30 @@ pnpm --filter @subscription-saas/api test:fleet-ops
 
 Release candidate safety checks must also confirm no Prisma schema diff, no migration diff, and no `AppModule` diff unless a task explicitly approves those changes. Codex may create local commits only when explicitly requested; push, PR creation, merge, and release promotion remain human-owned remote actions.
 
+## Controlled Read-Only API Exposure
+
+Fleet Ops may be exposed to internal/admin operators through the controlled read-only controller at `/fleet-ops`.
+
+The API is disabled by default and requires:
+
+- `FLEET_OPS_API_ENABLED=true`
+- existing `AuthGuard` and `PermissionsGuard`
+- permission `fleet_ops:read`
+
+Business data endpoints must call the root Nest `FleetOpsFacade` only. The controller must not inject PR-1 state, PR-2 timeline, PR-3 economics, PR-4 risk, PR-5 execution, Prisma, Finance, Payment, Report, or Order services directly.
+
+Allowed API endpoints are GET-only:
+
+- `GET /fleet-ops/health`
+- `GET /fleet-ops/diagnostics`
+- `GET /fleet-ops/vehicles/:vehicleId/snapshot`
+- `GET /fleet-ops/vehicles/:vehicleId/state`
+- `GET /fleet-ops/vehicles/:vehicleId/timeline`
+- `GET /fleet-ops/vehicles/:vehicleId/economics`
+- `GET /fleet-ops/vehicles/:vehicleId/risk`
+
+No execution, allocation, lease activation, collection action, POST, PATCH, PUT, DELETE, public portal, or customer-facing Fleet Ops endpoints are allowed in this exposure layer.
+
 ## End-to-End Contract Smoke Gate
 
 P1-H6 readiness is test and documentation only. It does not add runtime behavior, schema changes, controllers, execution paths, or PR-1 to PR-5 logic changes.

@@ -777,3 +777,25 @@ pnpm --filter @subscription-saas/api lint
 pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 ```
+
+## 16. Fleet Ops Staging Smoke Runbook Tasks
+
+P1-H11 is a docs/runbook-only staging enablement task for the read-only Fleet Ops API and admin UI.
+
+Rules:
+- Keep the runbook at `docs/fleet-ops/runbooks/staging-smoke.md`.
+- Document staging enablement with `FLEET_OPS_API_ENABLED=true`, but do not change the feature flag default.
+- Document the existing access sync command for human/operator use only: `pnpm --filter @subscription-saas/api prisma:sync:fleet-ops-access`.
+- Codex automated verification must not run the live DB access sync command.
+- Do not modify Fleet Ops API/controller/facade/module logic, Fleet Ops UI behavior, frontend API clients, seed behavior, permissions, menus, schema, migrations, AppModule, package scripts, or CI.
+- Do not add Fleet Ops write, execute, admin, action, allocate, or collect permissions.
+- Do not add execution endpoints, mutation controls, customer/public routes, or production data mutation steps.
+- Keep push, PR creation, and merge human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
+```

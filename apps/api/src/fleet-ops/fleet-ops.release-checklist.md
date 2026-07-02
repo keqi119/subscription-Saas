@@ -202,6 +202,25 @@ It must not run the full seed, add migrations, change schema, add runtime DB wri
 
 After the command runs, log out and log in again so `/auth/me` reloads DB-backed role permissions and menus. Verify `/auth/me` includes `fleet_ops:read`, `/auth/me` menus include `/fleet-ops`, the sidebar shows `车队运营`, and `/fleet-ops` no longer shows the permission-denied state for the intended admin user. If `FLEET_OPS_API_ENABLED` is off, the page may still show the expected API disabled state.
 
+## P1-H11 Staging Smoke Check
+
+Use `docs/fleet-ops/runbooks/staging-smoke.md` before enabling Fleet Ops for staging operators.
+
+Before release or staging validation, confirm:
+
+- API and Web are deployed from the same P1-H10.1-or-newer commit family.
+- Run `pnpm --filter @subscription-saas/api prisma:sync:fleet-ops-access` only if `/system/permissions`, `/auth/me`, or the sidebar is missing Fleet Ops access.
+- `FLEET_OPS_API_ENABLED=true` is set for staging API enablement.
+- `/system/permissions` shows `车队运营查看 / fleet_ops:read`.
+- `/auth/me` permissions include `fleet_ops:read`.
+- `/auth/me` menus include `/fleet-ops` or `vehicles.fleet_ops`.
+- Sidebar shows `车队运营`.
+- `/fleet-ops` opens for ADMIN, OP, and GM.
+- A non-granted role is denied or does not see the Fleet Ops menu.
+- `/fleet-ops` shows disabled, permission-denied, empty vehicle, and valid vehicle smoke states as applicable.
+- No execution, write, mutation, customer portal, or public Fleet Ops controls are exposed.
+- Rollback is `FLEET_OPS_API_ENABLED=false` followed by restart/redeploy as needed; no schema rollback is required.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

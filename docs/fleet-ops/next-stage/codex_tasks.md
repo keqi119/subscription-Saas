@@ -711,7 +711,7 @@ PR-A10: Coordination Protocol
 Fleet Ops admin UI tasks must keep backend business behavior unchanged and use the controlled P1-H8 API only.
 
 Rules:
-- Use the direct `/fleet-ops` admin route unless a later task explicitly approves menu or seed provisioning.
+- Use the direct `/fleet-ops` admin route unless the task is the approved P1-H10 menu/permission provisioning pass.
 - Use the existing web `apiFetch` pattern and define GET helpers only.
 - Handle disabled API and `fleet_ops:read` permission-denied states before loading business data.
 - Do not add execution controls, mutation controls, public/customer portal routes, shared menu changes, seed changes, or shared permission enum changes.
@@ -723,5 +723,34 @@ Focused verification:
 pnpm --filter @subscription-saas/web typecheck
 pnpm --filter @subscription-saas/web lint
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-readonly.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+```
+
+## 14. Fleet Ops Controlled Menu Permission Tasks
+
+P1-H10 is the only approved pass that provisions Fleet Ops in shared permissions, shared menus, and seed baseline data.
+
+Rules:
+- Add only `fleet_ops:read`; do not add Fleet Ops write, execute, admin, action, allocate, or collect permissions.
+- Use Chinese visible menu wording. The approved label is `车队运营`.
+- Place `/fleet-ops` under the existing vehicle/admin menu structure when available.
+- Seed ADMIN through the existing all-access convention.
+- Assign OP and GM only when seed conventions clearly show comparable internal vehicle/operations/management access.
+- Do not assign Fleet Ops access to AS, FI, SA, RC, customer-like, or public roles in this pass.
+- Do not modify Fleet Ops API/controller/facade logic, PR-1 to PR-5 logic, AppModule, schema, migrations, CI, root package scripts, or web test tooling.
+- Keep push, PR creation, and merge human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/shared typecheck
+pnpm --filter @subscription-saas/shared lint
+pnpm --filter @subscription-saas/shared exec vitest run test/auth.spec.ts test/menus.spec.ts
+pnpm --filter @subscription-saas/api typecheck
+pnpm --filter @subscription-saas/api lint
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/web typecheck
+pnpm --filter @subscription-saas/web lint
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 ```

@@ -68,6 +68,8 @@ const RESIDUAL_MODEL_RUN_MANAGE_PERMISSION = "residual_model_run:manage";
 const VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION = "vehicle_valuation_review:view";
 const VEHICLE_VALUATION_REVIEW_CREATE_PERMISSION = "vehicle_valuation_review:create";
 const VEHICLE_VALUATION_REVIEW_APPROVE_PERMISSION = "vehicle_valuation_review:approve";
+const FLEET_OPS_READ_PERMISSION = "fleet_ops:read";
+const FLEET_OPS_MENU_CODE = "vehicles.fleet_ops";
 
 describe("hasRequiredPermissions", () => {
   it("allows requests with every required permission", () => {
@@ -1183,6 +1185,14 @@ describe("report permissions", () => {
 
 describe("seed permission calibration", () => {
   const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
+  const sharedAuthSource = fs.readFileSync(
+    path.resolve(__dirname, "../../../packages/shared/src/auth.ts"),
+    "utf8"
+  );
+  const fleetOpsApiTypesSource = fs.readFileSync(
+    path.resolve(__dirname, "../src/fleet-ops/fleet-ops.api.types.ts"),
+    "utf8"
+  );
 
   it("seeds baseline users for each operating role", () => {
     for (const marker of [
@@ -1275,6 +1285,43 @@ describe("seed permission calibration", () => {
     }
     expect(seedSource).toContain("const allPermissions = await prisma.permission.findMany()");
     expect(seedSource).toContain("allPermissions.map((permission)");
+  });
+
+  it("provisions Fleet Ops as a read-only internal vehicle operations menu", () => {
+    expect(sharedAuthSource).toContain(`FLEET_OPS_READ = "${FLEET_OPS_READ_PERMISSION}"`);
+    expect(fleetOpsApiTypesSource).toContain(
+      `FLEET_OPS_READ_PERMISSION = "${FLEET_OPS_READ_PERMISSION}"`
+    );
+    expect(seedSource).toContain(
+      `["${FLEET_OPS_READ_PERMISSION}", "车队运营查看", "fleet_ops", "read"]`
+    );
+    expect(seedSource).toContain(
+      `["${FLEET_OPS_MENU_CODE}", "车队运营", "/fleet-ops", "dashboard", 45, "${FLEET_OPS_READ_PERMISSION}", "vehicles"]`
+    );
+    expect(seedSource).toContain(`const fleetOpsReadPermissions = ["${FLEET_OPS_READ_PERMISSION}"]`);
+    expect(seedSource).toContain(`const fleetOpsMenuCodes = ["${FLEET_OPS_MENU_CODE}"]`);
+    expectRolePermissions("OP", [FLEET_OPS_READ_PERMISSION]);
+    expectRolePermissions("GM", [FLEET_OPS_READ_PERMISSION]);
+    expect(roleHasMenu(roleMenuArray("OP"), FLEET_OPS_MENU_CODE)).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), FLEET_OPS_MENU_CODE)).toBe(true);
+
+    for (const roleCode of ["SA", "RC"]) {
+      expect(roleHasPermission(rolePermissionArray(roleCode), FLEET_OPS_READ_PERMISSION)).toBe(false);
+      expect(roleHasMenu(roleMenuArray(roleCode), FLEET_OPS_MENU_CODE)).toBe(false);
+    }
+    expect(roleLoopSource(["FI", "AS"])).not.toContain("fleetOpsReadPermissions");
+    expect(roleLoopSource(["FI", "AS"])).not.toContain("fleetOpsMenuCodes");
+
+    for (const forbiddenPermission of [
+      "fleet_ops:write",
+      "fleet_ops:execute",
+      "fleet_ops:admin",
+      "fleet_ops:allocate",
+      "fleet_ops:collect",
+      "fleet_ops:action"
+    ]) {
+      expect(seedSource).not.toContain(forbiddenPermission);
+    }
   });
 
   it("gives OP and SA quote, vehicle, application, and subscription plan access", () => {
@@ -1817,6 +1864,16 @@ describe("seed permission calibration", () => {
 
   function roleHasPermission(source: string, permissionCode: string, seen = new Set<string>()) {
     return sourceHasValue(source, permissionCode, seen);
+  }
+
+  function roleLoopSource(roleCodes: string[]) {
+    const roles = roleCodes.map((roleCode) => `"${escapeRegExp(roleCode)}"`).join(", ");
+    const pattern = new RegExp(`for \\(const roleCode of \\[${roles}\\]\\) \\{([\\s\\S]*?)\\n  \\}`);
+    const match = seedSource.match(pattern);
+    const source = match?.[1];
+
+    expect(source).toBeDefined();
+    return source ?? "";
   }
 
   function sourceHasValue(source: string, value: string, seen = new Set<string>()) {

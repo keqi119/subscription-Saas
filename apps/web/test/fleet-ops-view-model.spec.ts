@@ -87,7 +87,7 @@ describe("fleet ops view model", () => {
 
     expect(validateFleetOpsDateRange({ from: "2026-01-01", to: "2027-01-03" })).toEqual({
       days: 367,
-      reason: "Fleet Ops date range must not exceed 366 days.",
+      reason: "车队运营日期范围不能超过 366 天。",
       valid: false
     });
   });

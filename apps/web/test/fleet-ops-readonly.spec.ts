@@ -8,7 +8,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
 
 const approvedChangedFiles = new Set([
-  "apps/web/src/lib/fleet-ops-api.ts",
+  "packages/shared/src/auth.ts",
+  "packages/shared/src/menus.ts",
+  "packages/shared/test/auth.spec.ts",
+  "packages/shared/test/menus.spec.ts",
+  "apps/api/prisma/seed.mjs",
+  "apps/api/test/permissions.spec.ts",
+  "apps/web/test/fleet-ops-readonly.spec.ts",
+  "apps/web/test/fleet-ops-view-model.spec.ts",
   "apps/web/src/lib/fleet-ops-view-model.ts",
   "apps/web/src/app/fleet-ops/page.tsx",
   "apps/web/src/components/fleet-ops/fleet-ops-overview.tsx",
@@ -17,9 +24,6 @@ const approvedChangedFiles = new Set([
   "apps/web/src/components/fleet-ops/fleet-ops-economics-card.tsx",
   "apps/web/src/components/fleet-ops/fleet-ops-risk-card.tsx",
   "apps/web/src/components/fleet-ops/fleet-ops-evidence-panel.tsx",
-  "apps/web/test/fleet-ops-api.spec.ts",
-  "apps/web/test/fleet-ops-view-model.spec.ts",
-  "apps/web/test/fleet-ops-readonly.spec.ts",
   "apps/api/src/fleet-ops/fleet-ops.release-checklist.md",
   "docs/fleet-ops/next-stage/codex_tasks.md",
   "docs/permission-matrix.md"
@@ -38,11 +42,11 @@ const fleetOpsUiFiles = [
 ];
 
 describe("fleet ops admin ui readonly boundary", () => {
-  it("keeps current P1-H9 changes inside the approved file list", () => {
+  it("keeps current P1-H10 changes inside the approved file list", () => {
     const changedFiles = changedOrUntrackedFiles();
 
     for (const file of changedFiles) {
-      expect(approvedChangedFiles.has(file), `${file} is outside the approved P1-H9 file list`).toBe(true);
+      expect(approvedChangedFiles.has(file), `${file} is outside the approved P1-H10 file list`).toBe(true);
     }
   });
 
@@ -80,15 +84,35 @@ describe("fleet ops admin ui readonly boundary", () => {
     expect(gitDiffNames(["apps/web/src/app/portal"])).toEqual([]);
   });
 
-  it("does not change shared menu seed or backend Fleet Ops runtime files", () => {
+  it("allows only approved shared menu seed provisioning and no backend Fleet Ops runtime files", () => {
+    expect(gitDiffNames(["packages/shared/src/auth.ts"])).toEqual(["packages/shared/src/auth.ts"]);
+    expect(gitDiffNames(["packages/shared/src/menus.ts"])).toEqual(["packages/shared/src/menus.ts"]);
+    expect(gitDiffNames(["apps/api/prisma/seed.mjs"])).toEqual(["apps/api/prisma/seed.mjs"]);
     expect(
       gitDiffNames([
-        "packages/shared/src/auth.ts",
-        "packages/shared/src/menus.ts",
-        "apps/api/prisma/seed.mjs",
         "apps/api/src/fleet-ops"
       ]).filter((file) => file !== "apps/api/src/fleet-ops/fleet-ops.release-checklist.md")
     ).toEqual([]);
+  });
+
+  it("keeps Fleet Ops provisioning read-only with Chinese UI labels", () => {
+    const provisioningSource = [
+      "packages/shared/src/auth.ts",
+      "packages/shared/src/menus.ts",
+      "apps/api/prisma/seed.mjs"
+    ]
+      .map(readApprovedFile)
+      .join("\n");
+
+    expect(provisioningSource).toContain("fleet_ops:read");
+    expect(provisioningSource).toContain("车队运营");
+    expect(provisioningSource).not.toMatch(/fleet_ops:(?:write|execute|admin|allocate|collect|action)/);
+    expect(provisioningSource).not.toMatch(/fleet[_-]ops.*(?:portal|customer)/i);
+
+    const uiSource = fleetOpsUiFiles.map(readApprovedFile).join("\n");
+    expect(uiSource).toContain("车队运营");
+    expect(uiSource).toContain("只读");
+    expect(uiSource).not.toMatch(/Fleet Ops overview|Read-only admin view|Permission denied/);
   });
 });
 

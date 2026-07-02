@@ -39,6 +39,7 @@
 | order_change | `order_change:view/create/approve/reject/execute` |
 | contract | `contract:view/generate/sign/archive/cancel`、`contract_template:*` |
 | vehicle | `vehicle:view/create/update/delete/update_status/initialize_sale_price/review_sale_price/history_view/manage` |
+| fleet_ops | `fleet_ops:read` |
 | delivery | `delivery:view/prepare/confirm` |
 | return | `vehicle_return:view/prepare/confirm/damage_record` |
 | billing | `billing:view/generate` |
@@ -196,6 +197,7 @@
 | 产品中心 | `/products` | `product:view` |
 | 订阅套餐 | `/products?tab=subscription-plans` | `subscription_plan:view` |
 | 车辆资产台账 | `/vehicles` | `vehicle:view` |
+| 车队运营 | `/fleet-ops` | `fleet_ops:read` |
 | 车辆资产池 | `/vehicle-asset-pools` | `vehicle_asset_pool:view` |
 | 市场残值样本 | `/residual-market` | `residual_market:view` |
 | 估值复核 | `/vehicle-valuation-reviews` | `vehicle_valuation_review:view` |
@@ -240,13 +242,17 @@ pnpm prisma:seed
 - 报表 CSV 导出权限是否与查看权限一致；
 - seed 后重新登录是否刷新权限。
 
-## 7. Fleet Ops Direct Admin Route Note
+## 7. Fleet Ops Controlled Menu Permission
 
-P1-H9 documents a direct read-only admin UI route at `/fleet-ops`.
+P1-H10 provisions the read-only Fleet Ops admin menu for the existing `/fleet-ops` route.
 
+- Permission code: `fleet_ops:read`.
+- Chinese label: 车队运营查看.
+- Menu label: 车队运营.
+- Route: `/fleet-ops`.
 - Required API flag: `FLEET_OPS_API_ENABLED`.
-- Required backend permission: `fleet_ops:read`.
-- This route is not added to `packages/shared/src/menus.ts` in P1-H9.
-- This route is not provisioned in `apps/api/prisma/seed.mjs` in P1-H9.
-- Manual or later-PR menu and permission provisioning is required before the route is discoverable from the shared admin menu.
-- The UI is read-only and must not expose Fleet Ops execution or mutation controls.
+- ADMIN receives access through the existing all-permissions/all-menus seed convention.
+- OP and GM receive explicit internal/admin read access because they already receive comparable vehicle, operations, and management visibility.
+- SA, RC, FI, AS, CS, customer-like, and public roles are not granted Fleet Ops access in this provisioning pass.
+- No `fleet_ops:write`, `fleet_ops:execute`, `fleet_ops:admin`, `fleet_ops:allocate`, `fleet_ops:collect`, or `fleet_ops:action` permission exists.
+- The menu is read-only and must not expose execution, mutation, customer portal, or public Fleet Ops entry points.

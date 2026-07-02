@@ -6,12 +6,12 @@ import type { FleetOpsTimelineSummary } from "../../lib/fleet-ops-view-model";
 
 export function FleetOpsTimelineCard({ timeline }: Readonly<{ timeline: FleetOpsTimelineSummary }>) {
   return (
-    <Card title="Timeline">
+    <Card title="时间线">
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <Descriptions bordered column={3} size="small">
-          <Descriptions.Item label="Range days">{timeline.rangeDays ?? "-"}</Descriptions.Item>
-          <Descriptions.Item label="Events">{timeline.eventCount}</Descriptions.Item>
-          <Descriptions.Item label="Fallback days">{timeline.fallbackWarningDays}</Descriptions.Item>
+          <Descriptions.Item label="范围天数">{timeline.rangeDays ?? "-"}</Descriptions.Item>
+          <Descriptions.Item label="事件数">{timeline.eventCount}</Descriptions.Item>
+          <Descriptions.Item label="回退天数">{timeline.fallbackWarningDays}</Descriptions.Item>
         </Descriptions>
         {timeline.warnings.length ? (
           <Space wrap>

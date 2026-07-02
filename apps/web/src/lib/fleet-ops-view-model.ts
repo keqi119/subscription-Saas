@@ -210,16 +210,16 @@ export function validateFleetOpsDateRange(input: FleetOpsDateRangeInput): FleetO
   const start = Date.parse(`${input.from}T00:00:00.000Z`);
   const end = Date.parse(`${input.to}T00:00:00.000Z`);
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
-    return { reason: "Fleet Ops dates must use YYYY-MM-DD.", valid: false };
+    return { reason: "车队运营日期必须使用 YYYY-MM-DD。", valid: false };
   }
 
   const days = Math.round((end - start) / 86_400_000);
   if (days < 0) {
-    return { days, reason: "Fleet Ops end date must be on or after start date.", valid: false };
+    return { days, reason: "车队运营结束日期不能早于开始日期。", valid: false };
   }
 
   if (days > 366) {
-    return { days, reason: "Fleet Ops date range must not exceed 366 days.", valid: false };
+    return { days, reason: "车队运营日期范围不能超过 366 天。", valid: false };
   }
 
   return { days, valid: true };

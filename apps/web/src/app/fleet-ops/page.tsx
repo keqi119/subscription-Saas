@@ -91,7 +91,7 @@ export default function FleetOpsPage() {
     }
 
     if (!rangeValidation.valid) {
-      setErrorMessage(rangeValidation.reason ?? "Fleet Ops date range is invalid.");
+      setErrorMessage(rangeValidation.reason ?? "车队运营日期范围无效。");
       return;
     }
 
@@ -122,51 +122,51 @@ export default function FleetOpsPage() {
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <Space direction="vertical" size={4}>
           <Typography.Title level={4} style={{ margin: 0 }}>
-            Fleet Ops
+            车队运营
           </Typography.Title>
           <Typography.Text type="secondary">
-            Internal read-only view for Fleet Ops snapshot, evidence, warnings, confidence, and collection diagnostics.
+            内部只读视图，用于查看车辆运营快照、证据、预警、置信度与逾期诊断信息。
           </Typography.Text>
         </Space>
 
-        <Card title="Lookup">
+        <Card title="查询条件">
           <Space direction="vertical" size={12} style={{ width: "100%" }}>
             <Space wrap>
               <Input
                 allowClear
                 onChange={(event) => setVehicleId(event.target.value)}
                 onPressEnter={loadSnapshot}
-                placeholder="Vehicle ID"
+                placeholder="车辆 ID"
                 style={{ width: 280 }}
                 value={vehicleId}
               />
               <DatePicker
                 allowClear
                 onChange={setAsOf}
-                placeholder="As of"
+                placeholder="快照日期"
                 value={asOf}
               />
               <DatePicker
                 allowClear
                 onChange={setFrom}
-                placeholder="From"
+                placeholder="开始日期"
                 value={from}
               />
               <DatePicker
                 allowClear
                 onChange={setTo}
-                placeholder="To"
+                placeholder="结束日期"
                 value={to}
               />
               <Button icon={<SearchOutlined />} loading={loadingSnapshot} onClick={loadSnapshot} type="primary">
-                Load snapshot
+                加载快照
               </Button>
               <Button icon={<ReloadOutlined />} loading={loadingHealth} onClick={loadHealth}>
-                Refresh health
+                刷新服务状态
               </Button>
             </Space>
             <Typography.Text type={rangeValidation.valid ? "secondary" : "danger"}>
-              Timeline query range must be 366 days or less.
+              时间线查询范围不能超过 366 天。
             </Typography.Text>
           </Space>
         </Card>
@@ -175,8 +175,8 @@ export default function FleetOpsPage() {
 
         {apiDisabled ? (
           <Alert
-            message="Fleet Ops API is disabled"
-            description="Set FLEET_OPS_API_ENABLED for internal admin access. Business data panels are hidden while disabled."
+            message="车队运营 API 未启用"
+            description="请为内部管理访问启用 FLEET_OPS_API_ENABLED。未启用时业务数据面板不会展示。"
             showIcon
             type="warning"
           />
@@ -184,8 +184,8 @@ export default function FleetOpsPage() {
 
         {permissionDenied ? (
           <Alert
-            message="Permission denied"
-            description="The current account needs fleet_ops:read for this internal view."
+            message="无权访问"
+            description="当前账号需要 fleet_ops:read 才能访问该内部只读视图。"
             showIcon
             type="error"
           />
@@ -195,14 +195,14 @@ export default function FleetOpsPage() {
 
         {health && !apiDisabled ? (
           <Alert
-            message={`Fleet Ops API health: ${health.status ?? "available"}`}
+            message={`车队运营 API 服务状态：${health.status ?? "available"}`}
             showIcon
             type="success"
           />
         ) : null}
 
         {!summary && !loadingSnapshot && !apiDisabled && !permissionDenied ? (
-          <Empty description="Enter a vehicle ID to inspect the Fleet Ops snapshot." />
+          <Empty description="输入车辆 ID 以查看车队运营快照。" />
         ) : null}
 
         {summary ? (
@@ -221,5 +221,5 @@ export default function FleetOpsPage() {
 }
 
 function getErrorMessage(error: unknown) {
-  return error instanceof ApiError ? error.message : "Fleet Ops request failed.";
+  return error instanceof ApiError ? error.message : "车队运营请求失败。";
 }

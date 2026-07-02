@@ -151,6 +151,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         label: "估值复核",
         path: "/vehicle-valuation-reviews",
         permissionCode: PermissionCode.VEHICLE_VALUATION_REVIEW_VIEW
+      },
+      {
+        code: "vehicles.fleet_ops",
+        icon: "dashboard",
+        label: "车队运营",
+        path: "/fleet-ops",
+        permissionCode: PermissionCode.FLEET_OPS_READ
       }
     ]
   },

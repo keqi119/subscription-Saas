@@ -2,8 +2,11 @@ import type { FleetOpsConfidenceBand } from "../fleet-ops.shared-contracts";
 import type { FleetOpsConfidenceMergeInput, FleetOpsConfidenceMergeResult } from "./fleet-ops.snapshot.types";
 
 const CONFLICT_PENALTY = 5;
+const ECONOMICS_WARNING_PENALTY = 2;
 const FALLBACK_PENALTY = 4;
+const MISSING_DETAIL_PENALTY = 6;
 const MISSING_DATA_PENALTY = 8;
+const RISK_WARNING_PENALTY = 2;
 
 export function mergeFleetOpsConfidence(input: FleetOpsConfidenceMergeInput): FleetOpsConfidenceMergeResult {
   const validInputs = input.inputs.filter((item) => typeof item.score === "number" && Number.isFinite(item.score));
@@ -13,19 +16,28 @@ export function mergeFleetOpsConfidence(input: FleetOpsConfidenceMergeInput): Fl
       ? 0
       : validInputs.reduce((total, item) => total + clampScore(item.score ?? 0) * item.weight, 0) / validWeight;
   const conflictCount = input.conflictCount ?? 0;
+  const economicsWarningCount = input.economicsWarningCount ?? 0;
   const missingDataCount = input.missingDataCount ?? 0;
+  const missingDetailCount = input.missingDetailCount ?? 0;
   const fallbackPenaltyCount = input.fallbackPenaltyCount ?? 0;
+  const riskWarningCount = input.riskWarningCount ?? 0;
   const score = clampScore(
     baseScore -
       conflictCount * CONFLICT_PENALTY -
       missingDataCount * MISSING_DATA_PENALTY -
-      fallbackPenaltyCount * FALLBACK_PENALTY
+      fallbackPenaltyCount * FALLBACK_PENALTY -
+      economicsWarningCount * ECONOMICS_WARNING_PENALTY -
+      riskWarningCount * RISK_WARNING_PENALTY -
+      missingDetailCount * MISSING_DETAIL_PENALTY
   );
   const reasons = [
     `Weighted ${validInputs.length} confidence source(s).`,
     ...(conflictCount > 0 ? [`Applied conflict penalty for ${conflictCount} conflict(s).`] : []),
     ...(missingDataCount > 0 ? [`Applied missing data penalty for ${missingDataCount} missing source(s).`] : []),
-    ...(fallbackPenaltyCount > 0 ? [`Applied fallback evidence penalty for ${fallbackPenaltyCount} projected day(s).`] : [])
+    ...(fallbackPenaltyCount > 0 ? [`Applied fallback evidence penalty for ${fallbackPenaltyCount} projected day(s).`] : []),
+    ...(economicsWarningCount > 0 ? [`Applied economics warning penalty for ${economicsWarningCount} warning(s).`] : []),
+    ...(riskWarningCount > 0 ? [`Applied risk warning penalty for ${riskWarningCount} warning(s).`] : []),
+    ...(missingDetailCount > 0 ? [`Applied missing detail penalty for ${missingDetailCount} missing detail source(s).`] : [])
   ];
 
   return {

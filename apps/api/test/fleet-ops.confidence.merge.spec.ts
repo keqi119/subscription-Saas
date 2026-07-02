@@ -49,6 +49,33 @@ describe("mergeFleetOpsConfidence", () => {
     );
   });
 
+  it("penalizes economics, risk, and missing-detail warnings with explicit reasons", () => {
+    const baseline = mergeFleetOpsConfidence({
+      inputs: [
+        { label: "state", score: 90, weight: 0.5 },
+        { label: "timeline", score: 70, weight: 0.5 }
+      ]
+    });
+    const confidence = mergeFleetOpsConfidence({
+      economicsWarningCount: 2,
+      inputs: [
+        { label: "state", score: 90, weight: 0.5 },
+        { label: "timeline", score: 70, weight: 0.5 }
+      ],
+      missingDetailCount: 1,
+      riskWarningCount: 1
+    });
+
+    expect(confidence.score).toBeLessThan(baseline.score);
+    expect(confidence.reasons).toEqual(
+      expect.arrayContaining([
+        "Applied economics warning penalty for 2 warning(s).",
+        "Applied risk warning penalty for 1 warning(s).",
+        "Applied missing detail penalty for 1 missing detail source(s)."
+      ])
+    );
+  });
+
   it("returns UNKNOWN when no confidence source is present", () => {
     expect(
       mergeFleetOpsConfidence({

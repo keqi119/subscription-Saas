@@ -3,6 +3,10 @@ export enum FleetOpsInvariantId {
   PR7_NO_PR4_OVERRIDE = "PR7_NO_PR4_OVERRIDE",
   PR6_NO_PR5_EXECUTION = "PR6_NO_PR5_EXECUTION",
   PR5_REQUIRES_PR4_SNAPSHOT = "PR5_REQUIRES_PR4_SNAPSHOT",
+  PR9_CONVERGENCE_PRESERVES_ECONOMICS = "PR9_CONVERGENCE_PRESERVES_ECONOMICS",
+  PR9_CONVERGENCE_PRESERVES_RISK = "PR9_CONVERGENCE_PRESERVES_RISK",
+  PR9_CONVERGENCE_AGGREGATION_ONLY = "PR9_CONVERGENCE_AGGREGATION_ONLY",
+  PR9_FACADE_NO_EXECUTION_ACTIONS = "PR9_FACADE_NO_EXECUTION_ACTIONS",
   PR4_NO_UPSTREAM_MUTATION = "PR4_NO_UPSTREAM_MUTATION",
   PR4_REFRESH_INDEPENDENT_OVERDUE = "PR4_REFRESH_INDEPENDENT_OVERDUE",
   PR4_CANCELLED_AND_SETTLED_EXCLUDED = "PR4_CANCELLED_AND_SETTLED_EXCLUDED",
@@ -24,7 +28,7 @@ export enum FleetOpsInvariantStatus {
   PASS = "PASS"
 }
 
-export type FleetOpsLayerId = "pr1" | "pr2" | "pr3" | "pr4" | "pr5" | "pr6" | "pr7" | "pr8";
+export type FleetOpsLayerId = "pr1" | "pr2" | "pr3" | "pr4" | "pr5" | "pr6" | "pr7" | "pr8" | "pr9";
 
 export interface FleetOpsTimelineCoverageInput {
   days: Array<{ date: string }>;
@@ -121,6 +125,15 @@ export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): 
       /riskSnapshot|PR-4|PR4/,
       "PR-5 execution must require a PR-4 risk snapshot."
     ),
+    evaluatePr9EconomicsParityInvariant(sourceForLayer(input, "pr9")),
+    evaluatePr9RiskParityInvariant(sourceForLayer(input, "pr9")),
+    evaluatePr9AggregationOnlyInvariant(sourceForLayer(input, "pr9")),
+    evaluateForbiddenSourcePattern(
+      FleetOpsInvariantId.PR9_FACADE_NO_EXECUTION_ACTIONS,
+      sourceForLayer(input, "pr9"),
+      /executeAction\s*\(|FleetExecutionService|executionService\.execute|action\.execute\s*\(/,
+      "PR-9 convergence facade must not call PR-5 execution actions."
+    ),
     evaluateForbiddenSourcePattern(
       FleetOpsInvariantId.PR4_NO_UPSTREAM_MUTATION,
       sourceForLayer(input, "pr4"),
@@ -146,6 +159,48 @@ export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): 
       "PR-1 state resolution must remain deterministic for the same snapshot."
     )
   ];
+}
+
+function evaluatePr9EconomicsParityInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR9_CONVERGENCE_PRESERVES_ECONOMICS;
+
+  if (!sourceText) {
+    return pass(id, "PR-9 convergence must preserve PR-3 economics cashflow, warnings, denominator evidence, and attribution details. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const requiredPatterns = [/cashflow/, /denominatorEvidence/, /warnings/, /attribution/, /reportParity/];
+
+  return requiredPatterns.every((pattern) => pattern.test(sourceText))
+    ? pass(id, "PR-9 convergence preserves PR-3 economics detail fields.")
+    : fail(id, "PR-9 convergence must not drop PR-3 economics cashflow, warnings, denominator evidence, attribution, or report parity fields.");
+}
+
+function evaluatePr9RiskParityInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR9_CONVERGENCE_PRESERVES_RISK;
+
+  if (!sourceText) {
+    return pass(id, "PR-9 convergence must preserve PR-4 risk exposure, aging bucket, arrears pipeline, warnings, and evidence. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const requiredPatterns = [/exposureDetail/, /agingBucket/, /arrearsPipeline/, /warnings/, /evidence/];
+
+  return requiredPatterns.every((pattern) => pattern.test(sourceText))
+    ? pass(id, "PR-9 convergence preserves PR-4 risk detail fields.")
+    : fail(id, "PR-9 convergence must not drop PR-4 exposure detail, aging bucket, arrears pipeline, warnings, or evidence.");
+}
+
+function evaluatePr9AggregationOnlyInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR9_CONVERGENCE_AGGREGATION_ONLY;
+
+  if (!sourceText) {
+    return pass(id, "PR-9 convergence must aggregate existing PR outputs without recomputing PR-3 or PR-4 logic. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const recomputesBusinessLogic = /new\s+(?:CashflowModel|OverdueDetectorModel|CollectionPriorityModel|RiskScoreModel)|\b(?:roi|roe)\s*=\s*[^;\n]+\/|detectOverdue\s*\(|calculateVehicleRisk\s*\(|assignByOverdueDays\s*\(/i.test(sourceText);
+
+  return recomputesBusinessLogic
+    ? fail(id, "PR-9 convergence must not recompute PR-3 economics or PR-4 risk formulas.")
+    : pass(id, "PR-9 convergence remains aggregation-only over existing PR outputs.");
 }
 
 function evaluatePr4RefreshIndependentOverdueInvariant(sourceText: string | undefined): FleetOpsInvariantResult {

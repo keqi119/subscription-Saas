@@ -1,6 +1,24 @@
-import type { FleetKpiVehicleResult } from "../economics/economics.types";
+import type {
+  FleetKpiAttribution,
+  FleetKpiCashflow,
+  FleetKpiDowntimeTrace,
+  FleetKpiEvidence,
+  FleetKpiReportParity,
+  FleetKpiVehicleResult,
+  FleetKpiWarning
+} from "../economics/economics.types";
 import type { ExecutionActionType, ExecutionGuardResult } from "../execution/execution.types";
-import type { ControlDecision, RiskOutput, RiskSignalCode } from "../risk/risk.types";
+import type {
+  CollectionPriorityLevel,
+  ControlDecision,
+  RiskArrearsPipeline,
+  RiskEvidence,
+  RiskExposure,
+  RiskOutput,
+  RiskOverdueBillRef,
+  RiskSignalCode,
+  RiskWarning
+} from "../risk/risk.types";
 import type { TimelineConflict, TimelineDay, TimelineState } from "../timeline/vehicle-timeline.types";
 import type {
   VehicleComputedOperationalState,
@@ -13,6 +31,7 @@ import type { FleetOpsConfidence, FleetOpsConfidenceBand, FleetOpsConflictSeveri
 export type FleetOpsSnapshotLayer = "STATE" | "TIMELINE" | "ECONOMICS" | "RISK" | "EXECUTION" | "SYSTEM";
 
 export interface FleetOpsSnapshotEvidence {
+  evidenceType?: string;
   fields?: Record<string, unknown>;
   layers: FleetOpsSnapshotLayer[];
   observedAt?: Date | null;
@@ -61,23 +80,43 @@ export interface FleetOpsSnapshotTimeline {
 
 export interface FleetOpsSnapshotCashflow {
   actual: number | null;
+  actualDetail: FleetKpiCashflow["actual"] | null;
   deposit: number | null;
+  evidence: FleetKpiEvidence[];
   planned: number | null;
+  plannedDetail: FleetKpiCashflow["planned"] | null;
+  warnings: FleetKpiWarning[];
+  writeOff: FleetKpiCashflow["writeOff"] | null;
 }
 
 export interface FleetOpsSnapshotEconomics {
+  attribution: FleetKpiAttribution | null;
   cashflow: FleetOpsSnapshotCashflow;
   confidence: FleetOpsConfidence;
   cost: number | null;
+  denominatorEvidence: FleetKpiEvidence[];
+  downtimeTrace: FleetKpiDowntimeTrace[];
+  evidence: FleetKpiEvidence[];
   revenue: number | null;
+  reportParity: FleetKpiReportParity | null;
   roe: number | null;
   roi: number | null;
+  warnings: FleetKpiWarning[];
 }
 
 export interface FleetOpsSnapshotRisk {
+  agingBucket: CollectionPriorityLevel | null;
+  arrearsPipeline: RiskArrearsPipeline | null;
+  collectionLevel: CollectionPriorityLevel | null;
+  evidence: RiskEvidence[];
+  exposureDetail: RiskExposure | null;
   level: string | null;
+  maxOverdueDays: number | null;
+  overdueBillRefs: RiskOverdueBillRef[];
+  overdueRemainingAmount: number | null;
   score: number | null;
   signals: RiskSignalCode[];
+  warnings: RiskWarning[];
 }
 
 export interface FleetOpsSnapshotExecutionAction {
@@ -140,13 +179,16 @@ export interface FleetOpsStateEvidenceInput {
 
 export interface FleetOpsConfidenceMergeInput {
   conflictCount?: number;
+  economicsWarningCount?: number;
   fallbackPenaltyCount?: number;
   inputs: Array<{
     label: string;
     score?: number | null;
     weight: number;
   }>;
+  missingDetailCount?: number;
   missingDataCount?: number;
+  riskWarningCount?: number;
 }
 
 export interface FleetOpsConfidenceMergeResult extends FleetOpsConfidence {

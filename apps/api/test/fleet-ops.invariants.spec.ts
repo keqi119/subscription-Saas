@@ -19,6 +19,10 @@ describe("Fleet Ops production invariants", () => {
       FleetOpsInvariantId.PR7_NO_PR4_OVERRIDE,
       FleetOpsInvariantId.PR6_NO_PR5_EXECUTION,
       FleetOpsInvariantId.PR5_REQUIRES_PR4_SNAPSHOT,
+      FleetOpsInvariantId.PR9_CONVERGENCE_PRESERVES_ECONOMICS,
+      FleetOpsInvariantId.PR9_CONVERGENCE_PRESERVES_RISK,
+      FleetOpsInvariantId.PR9_CONVERGENCE_AGGREGATION_ONLY,
+      FleetOpsInvariantId.PR9_FACADE_NO_EXECUTION_ACTIONS,
       FleetOpsInvariantId.PR4_NO_UPSTREAM_MUTATION,
       FleetOpsInvariantId.PR4_REFRESH_INDEPENDENT_OVERDUE,
       FleetOpsInvariantId.PR4_CANCELLED_AND_SETTLED_EXCLUDED,
@@ -47,7 +51,8 @@ describe("Fleet Ops production invariants", () => {
         pr5: await readLayerFiles("execution"),
         pr6: await readLayerFiles("optimization"),
         pr7: await readLayerFiles("governance"),
-        pr8: await readLayerFiles("coordination")
+        pr8: await readLayerFiles("coordination"),
+        pr9: await readLayerFiles("facade")
       },
       timelineCoverage: compliantInvariantInput().timelineCoverage
     });
@@ -69,6 +74,54 @@ describe("Fleet Ops production invariants", () => {
     expect(statusById(results)[FleetOpsInvariantId.PR8_NO_ACTION_EXECUTION]).toBe(FleetOpsInvariantStatus.FAIL);
     expect(statusById(results)[FleetOpsInvariantId.PR7_NO_PR4_OVERRIDE]).toBe(FleetOpsInvariantStatus.FAIL);
     expect(statusById(results)[FleetOpsInvariantId.PR6_NO_PR5_EXECUTION]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when convergence drops economics cashflow or warnings", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr9: "function economicsSnapshot(economics) { return { revenue: economics.economics.revenue, roi: economics.economics.roi }; }"
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR9_CONVERGENCE_PRESERVES_ECONOMICS]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when convergence drops risk exposure or arrears pipeline", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr9: "function riskSnapshot(risk) { return { level: risk.collectionLevel, score: risk.riskScore, signals: risk.signals }; }"
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR9_CONVERGENCE_PRESERVES_RISK]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when convergence recomputes economics or risk formulas", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr9: "function buildSnapshot(input) { const roi = input.netIncome / input.investedCapital; const overdue = detectOverdue(input.bills); return { roi, overdue }; }"
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR9_CONVERGENCE_AGGREGATION_ONLY]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when facade calls execution actions", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr9: "class FleetOpsFacade { query() { return this.executionService.executeAction(); } }"
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR9_FACADE_NO_EXECUTION_ACTIONS]).toBe(FleetOpsInvariantStatus.FAIL);
   });
 
   it("fails when PR-3 economics appears to count deposits as operating revenue", () => {
@@ -283,7 +336,9 @@ function compliantInvariantInput(): FleetOpsInvariantInput {
       pr5: "ActionOrchestrator execute(request, riskSnapshot) { if (!riskSnapshot) throw new Error(); }",
       pr6: "OptimizationEngine optimize(input) { return advisoryRecommendations; }",
       pr7: "PolicyEngine evaluate(input) { return proposed policy updates only; }",
-      pr8: "CoordinationEngine synthesize(outputs) { return advisory consensus; }"
+      pr8: "CoordinationEngine synthesize(outputs) { return advisory consensus; }",
+      pr9:
+        "buildFleetOpsSnapshot forwards economics.cashflow, economics.denominatorEvidence, economics.warnings, economics.attribution, economics.reportParity, risk.exposureDetail, risk.agingBucket, risk.arrearsPipeline, risk.warnings, risk.evidence, and has no PR-5 execution action calls; convergence aggregation-only no formula recomputation;"
     },
     timelineCoverage: {
       days: [{ date: "2026-07-01" }, { date: "2026-07-02" }, { date: "2026-07-03" }],

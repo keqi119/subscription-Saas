@@ -5,10 +5,13 @@ export class UtilizationMetricsService {
     const operatingDays = timeline.length;
     const leasedDays = timeline.filter((day) => day.state === EconomicTimelineState.LEASED).length;
     const revenueDays = attribution.leaseRevenue > 0 ? leasedDays : 0;
+    const timelineWarningCount = timeline.reduce((total, day) => total + (day.warnings?.length ?? 0), 0);
 
     return {
+      economicUtilizationSource: "timeline_leased_days_with_revenue_support",
       leasedDays,
       operatingDays,
+      timelineWarningCount,
       utilizationRate: operatingDays > 0 ? roundRatio(revenueDays / operatingDays) : 0
     };
   }

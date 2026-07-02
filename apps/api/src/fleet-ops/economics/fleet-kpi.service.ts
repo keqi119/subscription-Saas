@@ -1,14 +1,16 @@
 import { Injectable } from "@nestjs/common";
-import { PaymentStatus } from "@prisma/client";
+import { DepositTransactionStatus, DepositTransactionType } from "@prisma/client";
 
 import { PrismaService } from "../../prisma/prisma.service";
 import { VehicleTimelineService } from "../timeline/vehicle-timeline.service";
 import { VehicleOperationalStateService } from "../vehicle-operational-state.service";
 import {
   EconomicTimelineState,
+  type EconomicDepositLedger,
   type EconomicDepreciationRecord,
   type EconomicOperationalStateSnapshot,
   type EconomicPaymentRecord,
+  type EconomicReceivableBill,
   type EconomicServiceCase,
   type EconomicTimelineDay,
   type FleetKpiReport,
@@ -35,32 +37,39 @@ export class FleetKpiService {
         from,
         operationalStates: [],
         paymentRecords: [],
+        receivableBills: [],
         serviceCases: [],
         timelines: {},
         to,
         vehicles: [],
+        writeOffAllocations: [],
         writeOffAdjustments: []
       });
     }
 
-    const [vehicles, operationalStates, timelines, paymentRecords, depreciationRecords, serviceCases] = await Promise.all([
+    const [vehicles, operationalStates, timelines, paymentRecords, receivableBills, depositLedgers, depreciationRecords, serviceCases] = await Promise.all([
       this.loadVehicles(normalizedVehicleIds),
       this.loadOperationalStates(normalizedVehicleIds, to),
       this.loadTimelines(normalizedVehicleIds, from, to),
       this.loadPaymentRecords(normalizedVehicleIds, from, to),
+      this.loadReceivableBills(normalizedVehicleIds, from, to),
+      this.loadDepositLedgers(normalizedVehicleIds, from, to),
       this.loadDepreciationRecords(normalizedVehicleIds, from, to),
       this.loadServiceCases(normalizedVehicleIds)
     ]);
 
     return this.calculator.calculate({
+      depositLedgers,
       depreciationRecords,
       from,
       operationalStates,
       paymentRecords,
+      receivableBills,
       serviceCases,
       timelines,
       to,
       vehicles,
+      writeOffAllocations: [],
       writeOffAdjustments: []
     });
   }
@@ -152,7 +161,6 @@ export class FleetKpiService {
         order: {
           vehicleId: { in: vehicleIds }
         },
-        paymentStatus: PaymentStatus.CONFIRMED,
         receivedAt: {
           gte: from,
           lte: to
@@ -183,6 +191,80 @@ export class FleetKpiService {
         vehicleId: writeOff.order?.vehicleId ?? paymentRecord.order.vehicleId
       }));
     });
+  }
+
+  private async loadReceivableBills(vehicleIds: string[], from: Date, to: Date): Promise<EconomicReceivableBill[]> {
+    const bills = await this.prisma.receivableBill.findMany({
+      orderBy: [{ dueDate: "asc" }, { id: "asc" }],
+      select: {
+        amount: true,
+        billType: true,
+        dueDate: true,
+        id: true,
+        order: {
+          select: {
+            vehicleId: true
+          }
+        }
+      },
+      where: {
+        deletedAt: null,
+        dueDate: {
+          gte: from,
+          lte: to
+        },
+        order: {
+          vehicleId: { in: vehicleIds }
+        }
+      }
+    });
+
+    return bills.map((bill) => ({
+      amount: amountToNumber(bill.amount),
+      billType: bill.billType,
+      dueDate: bill.dueDate,
+      id: bill.id,
+      vehicleId: bill.order.vehicleId
+    }));
+  }
+
+  private async loadDepositLedgers(vehicleIds: string[], from: Date, to: Date): Promise<EconomicDepositLedger[]> {
+    const ledgers = await this.prisma.depositLedger.findMany({
+      orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+      select: {
+        amount: true,
+        id: true,
+        occurredAt: true,
+        order: {
+          select: {
+            vehicleId: true
+          }
+        },
+        transactionStatus: true,
+        transactionType: true
+      },
+      where: {
+        deletedAt: null,
+        occurredAt: {
+          gte: from,
+          lte: to
+        },
+        order: {
+          vehicleId: { in: vehicleIds }
+        },
+        transactionStatus: DepositTransactionStatus.CONFIRMED,
+        transactionType: DepositTransactionType.COLLECT
+      }
+    });
+
+    return ledgers.map((ledger) => ({
+      amount: amountToNumber(ledger.amount),
+      id: ledger.id,
+      occurredAt: ledger.occurredAt,
+      transactionStatus: ledger.transactionStatus,
+      transactionType: ledger.transactionType,
+      vehicleId: ledger.order.vehicleId
+    }));
   }
 
   private async loadDepreciationRecords(vehicleIds: string[], from: Date, to: Date): Promise<EconomicDepreciationRecord[]> {
@@ -232,12 +314,14 @@ export class FleetKpiService {
   }
 }
 
-function toEconomicTimelineDay(day: { confidence: number; date: string; sourceEvents: string[]; state: string }): EconomicTimelineDay {
+function toEconomicTimelineDay(day: { confidence: number; conflicts?: unknown[]; date: string; sourceEvents: string[]; state: string; warnings?: string[] }): EconomicTimelineDay {
   return {
     confidence: day.confidence,
+    conflicts: day.conflicts ? [...day.conflicts] : [],
     date: day.date,
     sourceEvents: [...day.sourceEvents],
-    state: toEconomicTimelineState(day.state)
+    state: toEconomicTimelineState(day.state),
+    warnings: day.warnings ? [...day.warnings] : []
   };
 }
 

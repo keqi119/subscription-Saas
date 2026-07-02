@@ -156,6 +156,8 @@ pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-api.spec.ts 
 pnpm --filter @subscription-saas/api test:fleet-ops
 ```
 
+`apps/web/test/fleet-ops-readonly.spec.ts` is a long-lived UI/client source-state safety guard. It verifies the Fleet Ops frontend stays GET-only, does not expose execution or mutation controls, does not add customer/public portal Fleet Ops routes, and does not introduce forbidden Fleet Ops write/execute/admin/action permissions in shared or provisioning sources. It must not require specific PR diff files, so docs-only Fleet Ops PRs should pass the guard.
+
 ## P1-H10 Menu And Permission Provisioning Check
 
 P1-H10 makes the existing read-only admin UI discoverable through the shared menu and seed baseline. It must not change Fleet Ops API, facade, controller, PR-1 to PR-5 logic, schema, migrations, AppModule, or write flows.

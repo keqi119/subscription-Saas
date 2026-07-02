@@ -6,6 +6,7 @@ export enum FleetOpsInvariantId {
   PR4_NO_UPSTREAM_MUTATION = "PR4_NO_UPSTREAM_MUTATION",
   PR3_REALIZED_PAYMENT_REVENUE_ONLY = "PR3_REALIZED_PAYMENT_REVENUE_ONLY",
   PR2_TIMELINE_FULL_COVERAGE = "PR2_TIMELINE_FULL_COVERAGE",
+  PR2_TIMELINE_FALLBACK_MARKED = "PR2_TIMELINE_FALLBACK_MARKED",
   PR1_STATE_DETERMINISTIC = "PR1_STATE_DETERMINISTIC"
 }
 
@@ -23,8 +24,14 @@ export interface FleetOpsTimelineCoverageInput {
 }
 
 export interface FleetOpsInvariantInput {
+  sourceFilesByLayer?: Partial<Record<FleetOpsLayerId, FleetOpsSourceFile[]>>;
   sourceTextByLayer?: Partial<Record<FleetOpsLayerId, string>>;
   timelineCoverage?: FleetOpsTimelineCoverageInput;
+}
+
+export interface FleetOpsSourceFile {
+  content: string;
+  path: string;
 }
 
 export interface FleetOpsInvariantResult {
@@ -33,52 +40,76 @@ export interface FleetOpsInvariantResult {
   status: FleetOpsInvariantStatus;
 }
 
+const REALIZED_PAYMENT_EVIDENCE_PATTERN = /PaymentStatus\.CONFIRMED|realized payments only/i;
+
+const DEPOSIT_EXCLUSION_EVIDENCE_PATTERN = new RegExp(
+  [
+    String.raw`isDeposit\s*\(`,
+    String.raw`deposit\s+(?:payments\s+are\s+)?(?:excluded|ignored|is\s+not\s+revenue|not\s+operating\s+revenue)`,
+    String.raw`DepositLedger[\s\S]{0,120}(?:separate|handled\s+separately)`,
+    String.raw`BillType\.DEPOSIT[\s\S]{0,200}ignoredRevenue`
+  ].join("|"),
+  "i"
+);
+
+const DEPOSIT_COUNTED_AS_REVENUE_PATTERN = new RegExp(
+  [
+    String.raw`isDeposit\s*\([^)]*\)\s*\)\s*\{[^}]{0,200}\b(?:revenue|leaseRevenue|penaltyRevenue)\s*(?:\+=|=)`,
+    String.raw`(?:billType|bill\.type|payment\.billType)\s*={2,3}\s*(?:BillType\.DEPOSIT|["']DEPOSIT["'])\s*\)\s*\{[^}]{0,200}\b(?:revenue|leaseRevenue|penaltyRevenue)\s*(?:\+=|=)`
+  ].join("|"),
+  "i"
+);
+
 export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): FleetOpsInvariantResult[] {
   return [
     evaluateForbiddenSourcePattern(
       FleetOpsInvariantId.PR8_NO_ACTION_EXECUTION,
-      input.sourceTextByLayer?.pr8,
+      sourceForLayer(input, "pr8"),
       /executeAction\s*\(|\.execute\s*\(/,
       "PR-8 coordination must not execute actions."
     ),
     evaluateForbiddenSourcePattern(
       FleetOpsInvariantId.PR7_NO_PR4_OVERRIDE,
-      input.sourceTextByLayer?.pr7,
-      /overrideControlDecision|controlDecision\s*=|ControlDecision\.(ALLOW|WARN|BLOCK)/,
+      sourceForLayer(input, "pr7"),
+      /overrideControlDecision|controlDecision\s*=\s*ControlDecision\.(ALLOW|WARN|BLOCK)/,
       "PR-7 governance must not override PR-4 control decisions."
     ),
     evaluateForbiddenSourcePattern(
       FleetOpsInvariantId.PR6_NO_PR5_EXECUTION,
-      input.sourceTextByLayer?.pr6,
+      sourceForLayer(input, "pr6"),
       /FleetExecutionService|executeAction\s*\(|\.execute\s*\(/,
       "PR-6 optimization must not call PR-5 execution."
     ),
     evaluateRequiredSourcePattern(
       FleetOpsInvariantId.PR5_REQUIRES_PR4_SNAPSHOT,
-      input.sourceTextByLayer?.pr5,
+      sourceForLayer(input, "pr5"),
       /riskSnapshot|PR-4|PR4/,
       "PR-5 execution must require a PR-4 risk snapshot."
     ),
     evaluateForbiddenSourcePattern(
       FleetOpsInvariantId.PR4_NO_UPSTREAM_MUTATION,
-      input.sourceTextByLayer?.pr4,
+      sourceForLayer(input, "pr4"),
       /\binput\.[A-Za-z0-9_]+\s*=|upstream.*\.push\s*\(|upstream.*\.splice\s*\(/,
       "PR-4 risk must not mutate upstream PR outputs."
     ),
-    evaluateRequiredSourcePattern(
-      FleetOpsInvariantId.PR3_REALIZED_PAYMENT_REVENUE_ONLY,
-      input.sourceTextByLayer?.pr3,
-      /PaymentStatus\.CONFIRMED|realized payments only/i,
-      "PR-3 economics must recognize revenue only from realized payments."
-    ),
+    evaluatePr3RevenueInvariant(sourceForLayer(input, "pr3")),
     evaluateTimelineCoverage(input.timelineCoverage),
+    evaluateTimelineFallbackMarked(input.sourceFilesByLayer?.pr2),
     evaluateForbiddenSourcePattern(
       FleetOpsInvariantId.PR1_STATE_DETERMINISTIC,
-      input.sourceTextByLayer?.pr1,
+      sourceForLayer(input, "pr1"),
       /Math\.random|Date\.now|crypto\.randomUUID/,
       "PR-1 state resolution must remain deterministic for the same snapshot."
     )
   ];
+}
+
+function sourceForLayer(input: FleetOpsInvariantInput, layer: FleetOpsLayerId) {
+  const sourceText = input.sourceTextByLayer?.[layer] ?? "";
+  const sourceFiles = input.sourceFilesByLayer?.[layer]?.map((file) => file.content).join("\n") ?? "";
+  const combined = [sourceText, sourceFiles].filter(Boolean).join("\n");
+
+  return combined.length > 0 ? combined : undefined;
 }
 
 function evaluateForbiddenSourcePattern(
@@ -107,6 +138,31 @@ function evaluateRequiredSourcePattern(
   return requiredPattern.test(sourceText) ? pass(id, reason) : fail(id, reason);
 }
 
+function evaluatePr3RevenueInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR3_REALIZED_PAYMENT_REVENUE_ONLY;
+
+  if (!sourceText) {
+    return pass(
+      id,
+      "PR-3 economics must recognize revenue from realized payments and exclude deposits. Source evidence was not provided, so the invariant is treated as contract-only."
+    );
+  }
+
+  if (DEPOSIT_COUNTED_AS_REVENUE_PATTERN.test(sourceText)) {
+    return fail(id, "PR-3 economics must not count deposits as operating revenue.");
+  }
+
+  if (!REALIZED_PAYMENT_EVIDENCE_PATTERN.test(sourceText)) {
+    return fail(id, "PR-3 economics must recognize revenue only from realized payments.");
+  }
+
+  if (!DEPOSIT_EXCLUSION_EVIDENCE_PATTERN.test(sourceText)) {
+    return fail(id, "PR-3 economics must explicitly exclude deposits from operating revenue.");
+  }
+
+  return pass(id, "PR-3 economics recognizes realized payment revenue and excludes deposits from operating revenue.");
+}
+
 function evaluateTimelineCoverage(coverage: FleetOpsTimelineCoverageInput | undefined): FleetOpsInvariantResult {
   const id = FleetOpsInvariantId.PR2_TIMELINE_FULL_COVERAGE;
 
@@ -122,6 +178,24 @@ function evaluateTimelineCoverage(coverage: FleetOpsTimelineCoverageInput | unde
   }
 
   return pass(id, "PR-2 timeline fully covers the requested date range.");
+}
+
+function evaluateTimelineFallbackMarked(files: FleetOpsSourceFile[] | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR2_TIMELINE_FALLBACK_MARKED;
+
+  if (!files || files.length === 0) {
+    return pass(id, "PR-2 fallback source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const sourceText = files.map((file) => file.content).join("\n");
+  const hasFallbackBuilder = /buildVehicleFallbackEvents|isFallback:\s*true/.test(sourceText);
+  const hasProjectionWarning = /CURRENT_STATUS_PROJECTED_ACROSS_RANGE|TIMELINE_CURRENT_STATUS_PROJECTED_WARNING/.test(sourceText);
+
+  if (hasFallbackBuilder && !hasProjectionWarning) {
+    return fail(id, "PR-2 current Vehicle.status fallback must be marked as projected evidence.");
+  }
+
+  return pass(id, "PR-2 current Vehicle.status fallback is explicitly marked as projected evidence.");
 }
 
 function pass(id: FleetOpsInvariantId, reason: string): FleetOpsInvariantResult {

@@ -6,8 +6,31 @@ import type { VehicleOptimizationOutput } from "./optimization/optimization.type
 import type { RiskOutput } from "./risk/risk.types";
 import type { TimelineDay } from "./timeline/vehicle-timeline.types";
 import type { VehicleOperationalStateResult } from "./vehicle-operational-state.types";
+import type { FleetOpsEngineHealthStatus } from "./fleet-ops.shared-contracts";
 
-export type FleetOpsEngineHealthStatus = "OK" | "WARN" | "ERROR";
+export {
+  FLEET_OPS_FORBIDDEN_WRITE_PATTERNS,
+  classifyFleetOpsStaticScanHit
+} from "./fleet-ops.shared-contracts";
+export type {
+  FleetOpsConfidence,
+  FleetOpsConfidenceBand,
+  FleetOpsConflict,
+  FleetOpsConflictSeverity,
+  FleetOpsDateRange,
+  FleetOpsEngineHealth,
+  FleetOpsEngineHealthStatus,
+  FleetOpsEntityRef,
+  FleetOpsEvidence,
+  FleetOpsEvidenceSource,
+  FleetOpsForbiddenWritePattern,
+  FleetOpsReadOnlyResult,
+  FleetOpsSharedInvariantResult,
+  FleetOpsSharedInvariantStatus,
+  FleetOpsStaticScanClassification,
+  FleetOpsStaticScanFinding,
+  FleetOpsWarning
+} from "./fleet-ops.shared-contracts";
 
 export interface FleetOpsHealthContract {
   coordinationEngine: FleetOpsEngineHealthStatus;
@@ -35,17 +58,3 @@ export type FleetOpsVehicleOptimizationContract = VehicleOptimizationOutput;
 export type FleetOpsGovernanceContract = FleetGovernanceReport;
 export type FleetOpsCoordinationInputContract = MultiAgentCoordinationRequest;
 export type FleetOpsCoordinationContract = CoordinationOutput;
-
-export interface FleetOpsForbiddenWritePattern {
-  expression: RegExp;
-  label: string;
-}
-
-export const FLEET_OPS_FORBIDDEN_WRITE_PATTERNS: FleetOpsForbiddenWritePattern[] = [
-  { expression: /\.create\s*\(/, label: "prisma-create-call" },
-  { expression: /\.update\s*\(/, label: "prisma-update-call" },
-  { expression: /\.delete\s*\(/, label: "prisma-delete-call" },
-  { expression: /\.upsert\s*\(/, label: "prisma-upsert-call" },
-  { expression: new RegExp("\\$" + "executeRaw\\b"), label: "raw-execute-call" },
-  { expression: new RegExp("\\$" + "queryRawUnsafe\\b"), label: "unsafe-raw-query-call" }
-];

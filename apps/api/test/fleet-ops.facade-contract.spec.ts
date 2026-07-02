@@ -17,9 +17,11 @@ describe("FleetOpsFacade contract readiness", () => {
       "getVehicleOptimization",
       "getVehicleRisk",
       "getVehicleState",
-      "getVehicleTimeline"
+      "getVehicleTimeline",
+      "query"
     ]);
     expect(facade.getVehicleState).toBeTypeOf("function");
+    expect(facade.query).toBeTypeOf("function");
     expect(facade.coordinateFleetDecision).toBeTypeOf("function");
   });
 
@@ -87,6 +89,38 @@ describe("FleetOpsFacade contract readiness", () => {
         agentContributions: expect.any(Array),
         confidenceScore: expect.any(Number),
         consensusRecommendations: expect.any(Array)
+      })
+    );
+  });
+
+  it("bridges query through the convergence snapshot builder without a real database", async () => {
+    const facade = createFacade();
+    const from = new Date("2026-07-01T00:00:00.000Z");
+    const to = new Date("2026-07-03T00:00:00.000Z");
+
+    await expect(
+      facade.query("vehicle-1", {
+        from,
+        generatedAt: to,
+        to
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        economics: expect.objectContaining({
+          revenue: expect.any(Number)
+        }),
+        risk: expect.objectContaining({
+          collectionLevel: CollectionPriorityLevel.D1
+        }),
+        state: expect.objectContaining({
+          computedState: VehicleComputedOperationalState.AVAILABLE
+        }),
+        system: expect.objectContaining({
+          overallConfidence: expect.objectContaining({
+            score: expect.any(Number)
+          })
+        }),
+        vehicleId: "vehicle-1"
       })
     );
   });

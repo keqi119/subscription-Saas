@@ -8,6 +8,11 @@ import { FleetRiskService } from "./risk/fleet-risk.service";
 import { VehicleTimelineService } from "./timeline/vehicle-timeline.service";
 import { VehicleOperationalStateService } from "./vehicle-operational-state.service";
 import { FleetOpsInvalidRangeError } from "./fleet-ops.errors";
+import {
+  FleetOpsFacade as FleetOpsConvergenceFacade,
+  type FleetOpsQueryOptions
+} from "./facade/fleet-ops.facade";
+import type { FleetOpsSnapshot } from "./facade/fleet-ops.snapshot.types";
 import type {
   FleetOpsCoordinationContract,
   FleetOpsCoordinationInputContract,
@@ -32,8 +37,19 @@ export class FleetOpsFacade {
     private readonly coordinatorService: MultiAgentCoordinatorService
   ) {}
 
-  async getVehicleState(vehicleId: string): Promise<FleetOpsVehicleStateContract> {
-    return this.stateService.resolveVehicleOperationalState(vehicleId);
+  async query(vehicleId: string, options: FleetOpsQueryOptions = {}): Promise<FleetOpsSnapshot> {
+    const convergenceFacade = new FleetOpsConvergenceFacade({
+      kpiService: this.kpiService,
+      riskService: this.riskService,
+      stateService: this.stateService,
+      timelineService: this.timelineService
+    });
+
+    return convergenceFacade.query(vehicleId, options);
+  }
+
+  async getVehicleState(vehicleId: string, asOf?: Date): Promise<FleetOpsVehicleStateContract> {
+    return this.stateService.resolveVehicleOperationalState(vehicleId, asOf);
   }
 
   async getVehicleTimeline(vehicleId: string, from: Date, to: Date): Promise<FleetOpsTimelineContract> {

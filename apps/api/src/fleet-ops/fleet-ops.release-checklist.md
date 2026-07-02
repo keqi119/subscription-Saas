@@ -135,6 +135,27 @@ The P1-H6 smoke suite must verify:
 
 Codex may create local commits for approved Fleet Ops tasks only. Push, pull request creation, merge, and release promotion remain human-owned remote actions.
 
+## P1-H9 Admin UI Read-Only Check
+
+P1-H9 adds the direct admin route `/fleet-ops` in the web app only. It does not add shared menu entries, seed permissions, backend runtime behavior, schema changes, or write paths.
+
+Before release, confirm:
+
+- `FLEET_OPS_API_ENABLED` is enabled only for intended internal/admin environments.
+- The current admin account has `fleet_ops:read`.
+- `/fleet-ops` shows health, disabled, permission-denied, empty, and error states cleanly.
+- Snapshot panels remain read-only and display state, timeline warnings, economics cashflow/deposit/ROI/ROE, risk exposure/D1-D5/arrears pipeline, evidence, warnings, confidence, and consistency diagnostics.
+- No execution, mutation, customer portal, shared menu, seed, or shared permission provisioning change is included in the UI PR.
+
+Focused web checks:
+
+```bash
+pnpm --filter @subscription-saas/web typecheck
+pnpm --filter @subscription-saas/web lint
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-readonly.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

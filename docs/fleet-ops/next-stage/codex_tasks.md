@@ -703,3 +703,25 @@ PR-A10: Coordination Protocol
 
 ## Rollback plan
 ```
+
+---
+
+## 13. Fleet Ops Admin UI Read-Only Tasks
+
+Fleet Ops admin UI tasks must keep backend business behavior unchanged and use the controlled P1-H8 API only.
+
+Rules:
+- Use the direct `/fleet-ops` admin route unless a later task explicitly approves menu or seed provisioning.
+- Use the existing web `apiFetch` pattern and define GET helpers only.
+- Handle disabled API and `fleet_ops:read` permission-denied states before loading business data.
+- Do not add execution controls, mutation controls, public/customer portal routes, shared menu changes, seed changes, or shared permission enum changes.
+- Keep tests in the existing Vitest node setup; do not add jsdom, testing-library, or test environment changes for read-only helper coverage.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/web typecheck
+pnpm --filter @subscription-saas/web lint
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-readonly.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+```

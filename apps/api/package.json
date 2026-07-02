@@ -16,6 +16,7 @@
     "prisma:migrate:status": "prisma migrate status --schema prisma/schema.prisma",
     "prisma:seed": "node prisma/seed.mjs",
     "prisma:seed:verify": "node prisma/verify-seed-baseline.mjs",
+    "prisma:sync:fleet-ops-access": "node prisma/sync-fleet-ops-access.mjs",
     "prisma:validate": "prisma validate --schema prisma/schema.prisma"
   },
   "dependencies": {

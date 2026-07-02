@@ -182,6 +182,26 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
 ```
 
+## P1-H10.1 Existing DB Access Sync
+
+P1-H10.1 repairs existing local or staging databases that were seeded before the Fleet Ops read permission and menu existed. Use it when an admin account still sees `无权访问` on `/fleet-ops` or the sidebar does not show `车队运营` after P1-H10 is merged.
+
+Run the narrow idempotent sync command:
+
+```bash
+pnpm --filter @subscription-saas/api prisma:sync:fleet-ops-access
+```
+
+The command must only upsert:
+
+- Permission: `fleet_ops:read` / `车队运营查看`.
+- Menu: `vehicles.fleet_ops` / `车队运营` / `/fleet-ops`.
+- Role links for `ADMIN`, `OP`, and `GM`.
+
+It must not run the full seed, add migrations, change schema, add runtime DB writes, add Fleet Ops write/execute/admin/action permissions, create execution submenus, or grant customer/public portal access.
+
+After the command runs, log out and log in again so `/auth/me` reloads DB-backed role permissions and menus. Verify `/auth/me` includes `fleet_ops:read`, `/auth/me` menus include `/fleet-ops`, the sidebar shows `车队运营`, and `/fleet-ops` no longer shows the permission-denied state for the intended admin user. If `FLEET_OPS_API_ENABLED` is off, the page may still show the expected API disabled state.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

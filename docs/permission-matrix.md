@@ -256,3 +256,23 @@ P1-H10 provisions the read-only Fleet Ops admin menu for the existing `/fleet-op
 - SA, RC, FI, AS, CS, customer-like, and public roles are not granted Fleet Ops access in this provisioning pass.
 - No `fleet_ops:write`, `fleet_ops:execute`, `fleet_ops:admin`, `fleet_ops:allocate`, `fleet_ops:collect`, or `fleet_ops:action` permission exists.
 - The menu is read-only and must not expose execution, mutation, customer portal, or public Fleet Ops entry points.
+
+## 8. Fleet Ops Existing DB Access Sync
+
+P1-H10.1 adds a narrow idempotent repair command for existing local or staging databases that were seeded before `fleet_ops:read` and `/fleet-ops` existed.
+
+Run this command after deploying or checking out the P1-H10/P1-H10.1 baseline when an existing admin still lacks Fleet Ops access:
+
+```powershell
+pnpm --filter @subscription-saas/api prisma:sync:fleet-ops-access
+```
+
+The command syncs only:
+
+- Permission: `fleet_ops:read` / 车队运营查看.
+- Menu: `vehicles.fleet_ops` / 车队运营 / `/fleet-ops`.
+- Roles: `ADMIN`, `OP`, `GM`.
+
+It does not run the full seed, does not add migrations, does not grant Fleet Ops write/execute/admin/action permissions, and does not grant customer/public portal access.
+
+After running it, users must log out and log in again so `/auth/me` reloads DB-backed role permissions and menus. Verify `/auth/me` includes `fleet_ops:read`, `/auth/me` menus include `/fleet-ops`, and the sidebar shows 车队运营. If `FLEET_OPS_API_ENABLED` is off, the page may still show the expected API disabled state.

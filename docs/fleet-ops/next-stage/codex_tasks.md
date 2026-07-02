@@ -716,6 +716,11 @@ Rules:
 - Handle disabled API and `fleet_ops:read` permission-denied states before loading business data.
 - Do not add execution controls, mutation controls, public/customer portal routes, shared menu changes, seed changes, or shared permission enum changes.
 - Keep tests in the existing Vitest node setup; do not add jsdom, testing-library, or test environment changes for read-only helper coverage.
+- Long-lived static guards must scan current source state, not encode PR-specific changed-file expectations.
+- Do not commit reusable Fleet Ops safety tests that require one PR's approved diff list, such as shared permission/menu/seed files, to appear in every future working tree.
+- PR-specific diff allowlists may be used only as task-local verification and must not become reusable guards.
+- `apps/web/test/fleet-ops-readonly.spec.ts` must stay compatible with clean main, docs-only PRs, copy-only PRs, layout-only read-only PRs, and tests-only PRs.
+- Positive Fleet Ops permission/menu/seed provisioning assertions belong in `apps/api/test/permissions.spec.ts` and `packages/shared/test/auth.spec.ts` / `packages/shared/test/menus.spec.ts`; the web readonly guard should only scan shared/provisioning sources for forbidden write/execution exposure.
 
 Focused verification:
 

@@ -1,5 +1,7 @@
-import { ServiceCasePriority, ServiceCaseType, VehicleDepreciationRecordStatus } from "@prisma/client";
+import { BillType, ServiceCasePriority, ServiceCaseType, VehicleDepreciationRecordStatus } from "@prisma/client";
 
+import { TIMELINE_CURRENT_STATUS_PROJECTED_WARNING } from "../timeline/vehicle-timeline.types";
+import { CashflowModel } from "./cashflow.model";
 import { DowntimeCostModel } from "./downtime-cost.model";
 import {
   type EconomicConfidenceBand,
@@ -9,8 +11,11 @@ import {
   type EconomicTimelineDay,
   type FleetEconomicInput,
   type FleetKpiAggregate,
+  type FleetKpiCashflow,
   type FleetKpiConfidence,
+  type FleetKpiEvidence,
   type FleetKpiReport,
+  type FleetKpiWarning,
   type FleetKpiVehicleInput,
   type FleetKpiVehicleResult,
   type RevenueAttributionResult
@@ -25,6 +30,7 @@ const VALID_DEPRECIATION_RECORD_STATUSES = new Set<VehicleDepreciationRecordStat
 ]);
 
 export class FleetKpiCalculator {
+  private readonly cashflowModel = new CashflowModel();
   private readonly downtimeCostModel = new DowntimeCostModel();
   private readonly revenueAttributionModel = new RevenueAttributionModel();
   private readonly roiModel = new RoiModel();
@@ -52,26 +58,55 @@ export class FleetKpiCalculator {
     const utilization = this.utilizationMetricsService.calculate(timeline, attribution);
     const serviceCases = input.serviceCases.filter((serviceCase) => serviceCase.vehicleId === vehicle.vehicleId);
     const downtime = this.downtimeCostModel.calculate(vehicle.vehicleId, timeline, attribution, serviceCases);
+    const cashflow = this.cashflowModel.calculate({
+      depositLedgers: input.depositLedgers ?? [],
+      from: input.from,
+      paymentRecords: input.paymentRecords,
+      receivableBills: input.receivableBills ?? [],
+      to: input.to,
+      vehicleId: vehicle.vehicleId,
+      writeOffAllocations: input.writeOffAllocations ?? []
+    });
     const depreciationCost = calculateDepreciationCost(vehicle.vehicleId, input.depreciationRecords);
     const serviceCaseCost = calculateServiceCaseCost(serviceCases);
     const cost = roundMoney(depreciationCost + serviceCaseCost + downtime.downtimeCost);
     const revenue = roundMoney(attribution.leaseRevenue + attribution.penaltyRevenue);
     const netIncome = roundMoney(revenue + attribution.writeOffImpact - cost);
     const { roe, roi } = this.roiModel.calculate(netIncome, vehicle.investedCapital, vehicle.equityBase);
+    const denominatorEvidence = denominatorEvidenceForVehicle(vehicle);
+    const warnings = collectVehicleWarnings({
+      attribution,
+      cashflow,
+      denominatorEvidence,
+      timeline
+    });
+    const evidence = [
+      ...attribution.evidence,
+      ...cashflow.evidence,
+      ...denominatorEvidence,
+      ...timelineEvidence(timeline)
+    ];
 
     return {
       attribution: {
+        depositExcludedRevenue: attribution.depositExcludedRevenue,
+        ignoredRevenue: attribution.ignoredRevenue,
         leaseRevenue: attribution.leaseRevenue,
         penaltyRevenue: attribution.penaltyRevenue,
+        recognizedPaymentCount: attribution.recognizedPaymentCount,
+        unassignedRevenue: attribution.unassignedRevenue,
         writeOffImpact: attribution.writeOffImpact
       },
+      cashflow,
       confidence: calculateConfidence({
         attribution,
         depreciationCost,
         operationalState,
         timeline,
-        vehicle
+        vehicle,
+        warnings
       }),
+      denominatorEvidence,
       downtime,
       economics: {
         cost,
@@ -80,8 +115,19 @@ export class FleetKpiCalculator {
         roe,
         roi
       },
+      evidence,
+      reportParity: {
+        depositIncludedInOperatingRevenue: false,
+        operatingRevenueBillTypes: [
+          BillType.FIRST_MONTHLY_FEE,
+          BillType.MONTHLY_RENT,
+          BillType.DAMAGE_FEE,
+          BillType.OTHER
+        ]
+      },
       utilization,
-      vehicleId: vehicle.vehicleId
+      vehicleId: vehicle.vehicleId,
+      warnings
     };
   }
 
@@ -97,9 +143,26 @@ export class FleetKpiCalculator {
     const totalEquityBase = sum(vehicleInputs, (vehicle) => vehicle.equityBase);
     const totalInvestedCapital = sum(vehicleInputs, (vehicle) => vehicle.investedCapital);
     const { roe, roi } = this.roiModel.calculate(netIncome, totalInvestedCapital, totalEquityBase);
+    const cashflow = aggregateCashflow(vehicles);
+    const warnings = uniqueStrings(vehicles.flatMap((vehicle) => vehicle.warnings ?? []));
 
     return {
+      cashflow,
       cost: roundMoney(cost),
+      denominatorEvidence: [
+        {
+          amount: roundMoney(totalInvestedCapital),
+          reason: "fleet ROI = total net income / total invested capital",
+          source: "denominator",
+          sourceId: "fleet:invested_capital"
+        },
+        {
+          amount: roundMoney(totalEquityBase),
+          reason: "fleet ROE = total platform net income / total equity base",
+          source: "denominator",
+          sourceId: "fleet:equity_base"
+        }
+      ],
       downtimeCost: roundMoney(downtimeCost),
       downtimeDays,
       leasedDays,
@@ -109,7 +172,8 @@ export class FleetKpiCalculator {
       roe,
       roi,
       utilizationRate: operatingDays > 0 ? roundRatio(revenueWeightedDays / operatingDays) : 0,
-      vehicleCount: vehicles.length
+      vehicleCount: vehicles.length,
+      warnings
     };
   }
 }
@@ -150,8 +214,10 @@ function calculateConfidence(input: {
   operationalState: EconomicOperationalStateSnapshot | undefined;
   timeline: EconomicTimelineDay[];
   vehicle: FleetKpiVehicleInput;
+  warnings: FleetKpiWarning[];
 }): FleetKpiConfidence {
   const recognizedRevenue = input.attribution.leaseRevenue + input.attribution.penaltyRevenue;
+  const reasons: string[] = [];
   let score = 50;
 
   score += input.timeline.length > 0 ? 15 : -20;
@@ -163,6 +229,21 @@ function calculateConfidence(input: {
 
   if (input.attribution.unassignedRevenue > 0 && recognizedRevenue === 0) {
     score -= 10;
+    reasons.push("unassigned payments are excluded from vehicle revenue");
+  }
+
+  if (input.warnings.includes(TIMELINE_CURRENT_STATUS_PROJECTED_WARNING)) {
+    score -= 25;
+    reasons.push("timeline current-status fallback warning reduced economic confidence");
+  }
+
+  if (input.warnings.includes("NON_CONFIRMED_PAYMENT_EXCLUDED")) {
+    score -= 5;
+    reasons.push("non-confirmed payments were excluded from realized revenue");
+  }
+
+  if (input.vehicle.investedCapital <= 0 || input.vehicle.equityBase <= 0) {
+    reasons.push("zero or missing denominator limits return metric confidence");
   }
 
   if (recognizedRevenue === 0) {
@@ -173,8 +254,89 @@ function calculateConfidence(input: {
 
   return {
     band: confidenceBand(boundedScore),
+    reasons,
     score: boundedScore
   };
+}
+
+function collectVehicleWarnings(input: {
+  attribution: RevenueAttributionResult;
+  cashflow: FleetKpiCashflow;
+  denominatorEvidence: FleetKpiEvidence[];
+  timeline: EconomicTimelineDay[];
+}) {
+  const timelineWarnings = input.timeline.flatMap((day) => day.warnings ?? []);
+  const denominatorWarnings = input.denominatorEvidence.some((item) => item.reason.includes("zero or missing"))
+    ? ["ZERO_OR_MISSING_DENOMINATOR"]
+    : [];
+
+  return uniqueStrings([
+    ...input.attribution.warnings,
+    ...input.cashflow.warnings,
+    ...timelineWarnings,
+    ...(timelineWarnings.includes(TIMELINE_CURRENT_STATUS_PROJECTED_WARNING) ? ["TIMELINE_FALLBACK_CONFIDENCE_PENALTY"] : []),
+    ...denominatorWarnings
+  ]);
+}
+
+function denominatorEvidenceForVehicle(vehicle: FleetKpiVehicleInput): FleetKpiEvidence[] {
+  return [
+    {
+      amount: roundMoney(vehicle.investedCapital),
+      reason:
+        vehicle.investedCapital > 0
+          ? "vehicle ROI = vehicle net income / invested capital"
+          : "zero or missing invested capital denominator",
+      source: "denominator",
+      sourceId: `${vehicle.vehicleId}:invested_capital`
+    },
+    {
+      amount: roundMoney(vehicle.equityBase),
+      reason:
+        vehicle.equityBase > 0
+          ? "vehicle ROE = platform net income / equity base"
+          : "zero or missing equity base denominator",
+      source: "denominator",
+      sourceId: `${vehicle.vehicleId}:equity_base`
+    }
+  ];
+}
+
+function timelineEvidence(timeline: EconomicTimelineDay[]): FleetKpiEvidence[] {
+  return timeline.flatMap((day) =>
+    (day.warnings ?? []).map((warning) => ({
+      reason: warning,
+      source: "timeline" as const,
+      sourceId: `${day.date}:${day.sourceEvents.join(",") || "timeline"}`
+    }))
+  );
+}
+
+function aggregateCashflow(vehicles: FleetKpiVehicleResult[]): FleetKpiCashflow {
+  const cashflows = vehicles.map((vehicle) => vehicle.cashflow).filter((cashflow): cashflow is FleetKpiCashflow => Boolean(cashflow));
+
+  return {
+    actual: {
+      deposit: roundMoney(sum(cashflows, (cashflow) => cashflow.actual.deposit)),
+      operating: roundMoney(sum(cashflows, (cashflow) => cashflow.actual.operating)),
+      unassigned: roundMoney(sum(cashflows, (cashflow) => cashflow.actual.unassigned ?? 0))
+    },
+    evidence: cashflows.flatMap((cashflow) => cashflow.evidence),
+    planned: {
+      deposit: roundMoney(sum(cashflows, (cashflow) => cashflow.planned.deposit)),
+      operating: roundMoney(sum(cashflows, (cashflow) => cashflow.planned.operating))
+    },
+    warnings: uniqueStrings(cashflows.flatMap((cashflow) => cashflow.warnings)),
+    writeOff: {
+      appliedDeposit: roundMoney(sum(cashflows, (cashflow) => cashflow.writeOff.appliedDeposit)),
+      appliedOperating: roundMoney(sum(cashflows, (cashflow) => cashflow.writeOff.appliedOperating)),
+      unlinked: roundMoney(sum(cashflows, (cashflow) => cashflow.writeOff.unlinked))
+    }
+  };
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)].sort();
 }
 
 function scoreOperationalState(operationalState: EconomicOperationalStateSnapshot | undefined) {

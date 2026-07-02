@@ -21,6 +21,10 @@ describe("Fleet Ops production invariants", () => {
       FleetOpsInvariantId.PR5_REQUIRES_PR4_SNAPSHOT,
       FleetOpsInvariantId.PR4_NO_UPSTREAM_MUTATION,
       FleetOpsInvariantId.PR3_REALIZED_PAYMENT_REVENUE_ONLY,
+      FleetOpsInvariantId.PR3_NO_RECEIVABLE_ONLY_REVENUE,
+      FleetOpsInvariantId.PR3_CONFIRMED_PAYMENT_STATUS_ONLY,
+      FleetOpsInvariantId.PR3_NO_SIMPLE_AVERAGE_RETURN,
+      FleetOpsInvariantId.PR3_TIMELINE_FALLBACK_WARNING_PROPAGATED,
       FleetOpsInvariantId.PR2_TIMELINE_FULL_COVERAGE,
       FleetOpsInvariantId.PR2_TIMELINE_FALLBACK_MARKED,
       FleetOpsInvariantId.PR1_STATE_DETERMINISTIC
@@ -80,6 +84,73 @@ describe("Fleet Ops production invariants", () => {
     expect(statusById(results)[FleetOpsInvariantId.PR3_REALIZED_PAYMENT_REVENUE_ONLY]).toBe(FleetOpsInvariantStatus.FAIL);
   });
 
+  it("fails when PR-3 economics appears to count receivable bills as realized revenue", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr3: `
+          function calculateRevenue(receivableBill) {
+            operatingRevenue += receivableBill.amount;
+            return operatingRevenue;
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR3_NO_RECEIVABLE_ONLY_REVENUE]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-3 economics appears to count non-confirmed payments as realized revenue", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr3: `
+          function recognize(payment) {
+            if (payment.paymentStatus === PaymentStatus.PENDING_CONFIRM) {
+              leaseRevenue += payment.amount;
+            }
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR3_CONFIRMED_PAYMENT_STATUS_ONLY]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-3 fleet return aggregation uses a simple average of vehicle ROI", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr3: `
+          function aggregateFleetKpi(vehicles) {
+            return vehicles.reduce((total, vehicle) => total + vehicle.economics.roi, 0) / vehicles.length;
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR3_NO_SIMPLE_AVERAGE_RETURN]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
+  it("fails when PR-3 economics drops PR-2 timeline fallback warnings before confidence scoring", () => {
+    const results = evaluateFleetOpsInvariants({
+      ...compliantInvariantInput(),
+      sourceTextByLayer: {
+        ...compliantInvariantInput().sourceTextByLayer,
+        pr3: `
+          function toEconomicTimelineDay(day) {
+            return { confidence: day.confidence, date: day.date, state: day.state };
+          }
+        `
+      }
+    });
+
+    expect(statusById(results)[FleetOpsInvariantId.PR3_TIMELINE_FALLBACK_WARNING_PROPAGATED]).toBe(FleetOpsInvariantStatus.FAIL);
+  });
+
   it("fails when PR-2 timeline output does not cover every day in the requested date range", () => {
     const results = evaluateFleetOpsInvariants({
       ...compliantInvariantInput(),
@@ -115,7 +186,8 @@ function compliantInvariantInput(): FleetOpsInvariantInput {
     sourceTextByLayer: {
       pr1: "VehicleOperationalStateResolver resolve(snapshot) { return deterministicSignals.sort(); }",
       pr2: "VehicleTimelineCalculator calculateTimeline(events, rawInput) { return eachDay(from, to); }",
-      pr3: "PaymentStatus.CONFIRMED realized payments only; isDeposit payments are excluded from operating revenue;",
+      pr3:
+        "PaymentStatus.CONFIRMED realized payments only; isDeposit payments are excluded from operating revenue; fleet ROI = total net income / total invested capital; CURRENT_STATUS_PROJECTED_ACROSS_RANGE warning propagates into economics confidence;",
       pr4: "FleetRiskCalculator calculate(input) { return cloneRiskOutput(input); }",
       pr5: "ActionOrchestrator execute(request, riskSnapshot) { if (!riskSnapshot) throw new Error(); }",
       pr6: "OptimizationEngine optimize(input) { return advisoryRecommendations; }",

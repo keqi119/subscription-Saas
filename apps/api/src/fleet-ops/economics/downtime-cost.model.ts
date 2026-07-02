@@ -24,26 +24,39 @@ export class DowntimeCostModel {
     const averageDailyLeaseRevenue = calculateAverageDailyLeaseRevenue(timeline, attribution);
     const serviceMultiplier = serviceCases.some((serviceCase) => serviceCase.vehicleId === vehicleId) ? 1.1 : 1;
     let downtimeCost = 0;
+    const trace: FleetKpiDowntime["trace"] = [];
 
     for (const day of timeline) {
+      let dailyCost = 0;
       if (day.state === EconomicTimelineState.MAINTENANCE) {
         breakdown.MAINTENANCE += 1;
-        downtimeCost += MAINTENANCE_DIRECT_COST_PER_DAY;
+        dailyCost = MAINTENANCE_DIRECT_COST_PER_DAY;
       } else if (day.state === EconomicTimelineState.SERVICE_BLOCKED) {
         breakdown.SERVICE += 1;
-        downtimeCost += (averageDailyLeaseRevenue + SERVICE_DIRECT_COST_PER_DAY) * serviceMultiplier;
+        dailyCost = (averageDailyLeaseRevenue + SERVICE_DIRECT_COST_PER_DAY) * serviceMultiplier;
       } else if (day.state === EconomicTimelineState.RESERVED) {
         breakdown.RESERVED += 1;
-        downtimeCost += Math.max(averageDailyLeaseRevenue * RESERVED_SOFT_OPPORTUNITY_COST_RATE, 25);
+        dailyCost = Math.max(averageDailyLeaseRevenue * RESERVED_SOFT_OPPORTUNITY_COST_RATE, 25);
       } else if (day.state === EconomicTimelineState.AVAILABLE) {
         breakdown.IDLE += 1;
-        downtimeCost += Math.max(averageDailyLeaseRevenue * IDLE_OPPORTUNITY_COST_RATE, 50);
+        dailyCost = Math.max(averageDailyLeaseRevenue * IDLE_OPPORTUNITY_COST_RATE, 50);
+      }
+
+      if (dailyCost > 0) {
+        downtimeCost += dailyCost;
+        trace.push({
+          cost: roundMoney(dailyCost),
+          date: day.date,
+          sourceEvents: [...day.sourceEvents],
+          state: day.state
+        });
       }
     }
 
     return {
       breakdown,
       downtimeCost: roundMoney(downtimeCost),
+      trace,
       totalDowntimeDays: breakdown.IDLE + breakdown.MAINTENANCE + breakdown.RESERVED + breakdown.SERVICE
     };
   }

@@ -5,6 +5,10 @@ export enum FleetOpsInvariantId {
   PR5_REQUIRES_PR4_SNAPSHOT = "PR5_REQUIRES_PR4_SNAPSHOT",
   PR4_NO_UPSTREAM_MUTATION = "PR4_NO_UPSTREAM_MUTATION",
   PR3_REALIZED_PAYMENT_REVENUE_ONLY = "PR3_REALIZED_PAYMENT_REVENUE_ONLY",
+  PR3_NO_RECEIVABLE_ONLY_REVENUE = "PR3_NO_RECEIVABLE_ONLY_REVENUE",
+  PR3_CONFIRMED_PAYMENT_STATUS_ONLY = "PR3_CONFIRMED_PAYMENT_STATUS_ONLY",
+  PR3_NO_SIMPLE_AVERAGE_RETURN = "PR3_NO_SIMPLE_AVERAGE_RETURN",
+  PR3_TIMELINE_FALLBACK_WARNING_PROPAGATED = "PR3_TIMELINE_FALLBACK_WARNING_PROPAGATED",
   PR2_TIMELINE_FULL_COVERAGE = "PR2_TIMELINE_FULL_COVERAGE",
   PR2_TIMELINE_FALLBACK_MARKED = "PR2_TIMELINE_FALLBACK_MARKED",
   PR1_STATE_DETERMINISTIC = "PR1_STATE_DETERMINISTIC"
@@ -60,6 +64,32 @@ const DEPOSIT_COUNTED_AS_REVENUE_PATTERN = new RegExp(
   "i"
 );
 
+const RECEIVABLE_ONLY_REVENUE_PATTERN = new RegExp(
+  [
+    String.raw`\b(?:operatingRevenue|revenue|leaseRevenue|penaltyRevenue)\s*(?:\+=|=)[^;\n]{0,160}\b(?:receivableBill|bill)\.(?:amount|paidAmount)`,
+    String.raw`\b(?:receivableBill|bill)\.(?:amount|paidAmount)[^;\n]{0,160}\b(?:operatingRevenue|revenue|leaseRevenue|penaltyRevenue)\s*(?:\+=|=)`
+  ].join("|"),
+  "i"
+);
+
+const NON_CONFIRMED_PAYMENT_REVENUE_PATTERN = new RegExp(
+  [
+    String.raw`PaymentStatus\.(?:PENDING_CONFIRM|CANCELLED)[\s\S]{0,200}\b(?:operatingRevenue|revenue|leaseRevenue|penaltyRevenue)\s*(?:\+=|=)`,
+    String.raw`paymentStatus\s*!==\s*PaymentStatus\.CONFIRMED[\s\S]{0,200}\b(?:operatingRevenue|revenue|leaseRevenue|penaltyRevenue)\s*(?:\+=|=)`
+  ].join("|"),
+  "i"
+);
+
+const SIMPLE_AVERAGE_RETURN_PATTERN = new RegExp(
+  [
+    String.raw`(?:vehicles|rows)\.reduce[\s\S]{0,240}\.economics\.(?:roi|roe)[\s\S]{0,120}\/\s*(?:vehicles|rows)\.length`,
+    String.raw`reduce\s*\([^)]*(?:roi|roe)[^)]*\)\s*\/\s*(?:vehicles|rows)\.length`,
+    String.raw`(?:average|avg)[A-Za-z0-9_]*(?:Roi|ROI|Roe|ROE)`,
+    String.raw`(?:roi|roe)[A-Za-z0-9_]*Average`
+  ].join("|"),
+  "i"
+);
+
 export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): FleetOpsInvariantResult[] {
   return [
     evaluateForbiddenSourcePattern(
@@ -93,6 +123,10 @@ export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): 
       "PR-4 risk must not mutate upstream PR outputs."
     ),
     evaluatePr3RevenueInvariant(sourceForLayer(input, "pr3")),
+    evaluateReceivableOnlyRevenueInvariant(sourceForLayer(input, "pr3")),
+    evaluateConfirmedPaymentOnlyInvariant(sourceForLayer(input, "pr3")),
+    evaluateFleetReturnAggregationInvariant(sourceForLayer(input, "pr3")),
+    evaluateEconomicsTimelineWarningInvariant(sourceForLayer(input, "pr3")),
     evaluateTimelineCoverage(input.timelineCoverage),
     evaluateTimelineFallbackMarked(input.sourceFilesByLayer?.pr2),
     evaluateForbiddenSourcePattern(
@@ -102,6 +136,57 @@ export function evaluateFleetOpsInvariants(input: FleetOpsInvariantInput = {}): 
       "PR-1 state resolution must remain deterministic for the same snapshot."
     )
   ];
+}
+
+function evaluateReceivableOnlyRevenueInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR3_NO_RECEIVABLE_ONLY_REVENUE;
+
+  if (!sourceText) {
+    return pass(id, "PR-3 economics must not count receivable bills as realized revenue. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  return RECEIVABLE_ONLY_REVENUE_PATTERN.test(sourceText)
+    ? fail(id, "PR-3 economics must not count receivable bills as realized operating revenue.")
+    : pass(id, "PR-3 economics keeps receivable bills in planned cashflow rather than realized revenue.");
+}
+
+function evaluateConfirmedPaymentOnlyInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR3_CONFIRMED_PAYMENT_STATUS_ONLY;
+
+  if (!sourceText) {
+    return pass(id, "PR-3 economics must only count confirmed payments as realized revenue. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  return NON_CONFIRMED_PAYMENT_REVENUE_PATTERN.test(sourceText)
+    ? fail(id, "PR-3 economics must not count pending or cancelled payments as realized revenue.")
+    : pass(id, "PR-3 economics excludes non-confirmed payments from realized revenue.");
+}
+
+function evaluateFleetReturnAggregationInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR3_NO_SIMPLE_AVERAGE_RETURN;
+
+  if (!sourceText) {
+    return pass(id, "PR-3 fleet ROI/ROE must be total-return based, not simple vehicle-ratio averages. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  return SIMPLE_AVERAGE_RETURN_PATTERN.test(sourceText)
+    ? fail(id, "PR-3 fleet ROI/ROE must not use a simple average of vehicle ROI/ROE.")
+    : pass(id, "PR-3 fleet ROI/ROE aggregation avoids simple vehicle-ratio averaging.");
+}
+
+function evaluateEconomicsTimelineWarningInvariant(sourceText: string | undefined): FleetOpsInvariantResult {
+  const id = FleetOpsInvariantId.PR3_TIMELINE_FALLBACK_WARNING_PROPAGATED;
+
+  if (!sourceText) {
+    return pass(id, "PR-3 economics must propagate PR-2 fallback warnings into economic warnings or confidence. Source evidence was not provided, so the invariant is treated as contract-only.");
+  }
+
+  const mapsTimeline = /toEconomicTimelineDay|EconomicTimelineDay|timeline/i.test(sourceText);
+  const propagatesWarning = /CURRENT_STATUS_PROJECTED_ACROSS_RANGE|TIMELINE_CURRENT_STATUS_PROJECTED_WARNING|TIMELINE_FALLBACK_CONFIDENCE_PENALTY/.test(sourceText);
+
+  return mapsTimeline && !propagatesWarning
+    ? fail(id, "PR-3 economics must not drop PR-2 current-status projection warnings before confidence scoring.")
+    : pass(id, "PR-3 economics preserves PR-2 fallback warning evidence.");
 }
 
 function sourceForLayer(input: FleetOpsInvariantInput, layer: FleetOpsLayerId) {

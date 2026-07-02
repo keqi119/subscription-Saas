@@ -8,6 +8,7 @@ import {
   type FleetEconomicInput,
   type FleetKpiVehicleInput
 } from "../src/fleet-ops/economics/economics.types";
+import { TIMELINE_CURRENT_STATUS_PROJECTED_WARNING } from "../src/fleet-ops/timeline/vehicle-timeline.types";
 
 const from = new Date("2026-07-01T00:00:00.000Z");
 const to = new Date("2026-07-05T00:00:00.000Z");
@@ -17,12 +18,12 @@ describe("FleetKpiCalculator", () => {
     const report = new FleetKpiCalculator().calculate(fleetInput());
     const vehicle = report.vehicles.find((row) => row.vehicleId === "vehicle-1")!;
 
-    expect(vehicle.utilization).toEqual({
+    expect(vehicle.utilization).toMatchObject({
       leasedDays: 2,
       operatingDays: 5,
       utilizationRate: 0.4
     });
-    expect(vehicle.attribution).toEqual({
+    expect(vehicle.attribution).toMatchObject({
       leaseRevenue: 1000,
       penaltyRevenue: 150,
       writeOffImpact: -100
@@ -60,15 +61,98 @@ describe("FleetKpiCalculator", () => {
       ...fleetInput(),
       paymentRecords: [
         payment({ amount: 500, billType: BillType.DEPOSIT }),
+        payment({ amount: 600, id: "payment-pending", paymentStatus: PaymentStatus.PENDING_CONFIRM }),
         payment({ amount: 700, paymentStatus: PaymentStatus.CANCELLED }),
-        payment({ amount: 900, vehicleId: null })
+        payment({ amount: 900, id: "payment-unassigned", vehicleId: null })
       ]
     });
     const vehicle = report.vehicles.find((row) => row.vehicleId === "vehicle-1")!;
 
     expect(vehicle.economics.revenue).toBe(0);
     expect(vehicle.attribution.leaseRevenue).toBe(0);
+    expect(vehicle.attribution).toMatchObject({
+      depositExcludedRevenue: 500,
+      unassignedRevenue: 900
+    });
+    expect(vehicle.warnings).toEqual(
+      expect.arrayContaining([
+        "DEPOSIT_EXCLUDED_FROM_OPERATING_REVENUE",
+        "NON_CONFIRMED_PAYMENT_EXCLUDED",
+        "UNASSIGNED_PAYMENT_EXCLUDED"
+      ])
+    );
+    expect(vehicle.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "payment_record", sourceId: "payment-1" }),
+        expect.objectContaining({ source: "payment_record", sourceId: "payment-unassigned" })
+      ])
+    );
     expect(vehicle.confidence.band).toBe("LOW");
+  });
+
+  it("aggregates ROI and ROE from fleet totals rather than averaging vehicle ratios", () => {
+    const report = new FleetKpiCalculator().calculate({
+      ...fleetInput(),
+      depreciationRecords: [],
+      paymentRecords: [
+        payment({ amount: 1000, id: "payment-small", vehicleId: "vehicle-1" }),
+        payment({ amount: 10000, id: "payment-large", vehicleId: "vehicle-2" })
+      ],
+      timelines: {
+        "vehicle-1": [day("2026-07-01", EconomicTimelineState.LEASED)],
+        "vehicle-2": [day("2026-07-01", EconomicTimelineState.LEASED)]
+      },
+      vehicles: [
+        vehicleInput({ equityBase: 1000, investedCapital: 1000, vehicleId: "vehicle-1" }),
+        vehicleInput({ equityBase: 100000, investedCapital: 100000, vehicleId: "vehicle-2" })
+      ],
+      writeOffAdjustments: []
+    });
+
+    const simpleAverageRoi =
+      report.vehicles.reduce((total, vehicle) => total + vehicle.economics.roi, 0) / report.vehicles.length;
+    const simpleAverageRoe =
+      report.vehicles.reduce((total, vehicle) => total + vehicle.economics.roe, 0) / report.vehicles.length;
+
+    expect(report.fleet.roi).toBeCloseTo(report.fleet.netIncome / 101000, 6);
+    expect(report.fleet.roe).toBeCloseTo(report.fleet.netIncome / 101000, 6);
+    expect(report.fleet.roi).not.toBeCloseTo(simpleAverageRoi, 6);
+    expect(report.fleet.roe).not.toBeCloseTo(simpleAverageRoe, 6);
+    expect(report.fleet.denominatorEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "denominator", reason: expect.stringContaining("total invested capital") }),
+        expect.objectContaining({ source: "denominator", reason: expect.stringContaining("total equity base") })
+      ])
+    );
+  });
+
+  it("propagates projected timeline fallback warnings into economics confidence", () => {
+    const fallbackInput = {
+      ...fleetInput(),
+      timelines: {
+        "vehicle-1": [
+          day("2026-07-01", EconomicTimelineState.LEASED, {
+            confidence: 45,
+            sourceEvents: ["vehicle:vehicle-1"],
+            warnings: [TIMELINE_CURRENT_STATUS_PROJECTED_WARNING]
+          })
+        ],
+        "vehicle-2": []
+      }
+    };
+    const cleanInput = {
+      ...fallbackInput,
+      timelines: {
+        "vehicle-1": [day("2026-07-01", EconomicTimelineState.LEASED)],
+        "vehicle-2": []
+      }
+    };
+
+    const fallbackVehicle = new FleetKpiCalculator().calculate(fallbackInput).vehicles[0]!;
+    const cleanVehicle = new FleetKpiCalculator().calculate(cleanInput).vehicles[0]!;
+
+    expect(fallbackVehicle.warnings).toEqual(expect.arrayContaining([TIMELINE_CURRENT_STATUS_PROJECTED_WARNING]));
+    expect(fallbackVehicle.confidence.score).toBeLessThan(cleanVehicle.confidence.score);
   });
 });
 
@@ -93,6 +177,8 @@ describe("FleetKpiService", () => {
     expect(operationalStateService.resolveVehicleOperationalState).toHaveBeenCalledWith("vehicle-1", to);
     expect(timelineService.getVehicleTimeline).toHaveBeenCalledWith("vehicle-1", from, to);
     expect(prisma.paymentRecord.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.receivableBill.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.depositLedger.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.vehicleDepreciationRecord.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.serviceCase.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.vehicle.update).not.toHaveBeenCalled();
@@ -188,8 +274,12 @@ function availableTimelineDays() {
   ];
 }
 
-function day(date: string, state: EconomicTimelineState) {
-  return { confidence: 90, date, sourceEvents: [], state };
+function day(
+  date: string,
+  state: EconomicTimelineState,
+  overrides: Partial<FleetEconomicInput["timelines"][string][number]> = {}
+) {
+  return { confidence: 90, date, sourceEvents: [], state, ...overrides };
 }
 
 function createPrismaHarness() {
@@ -221,6 +311,12 @@ function createPrismaHarness() {
           vehicleId: "vehicle-1"
         }
       ])
+    },
+    receivableBill: {
+      findMany: vi.fn(async () => [])
+    },
+    depositLedger: {
+      findMany: vi.fn(async () => [])
     },
     vehicle: {
       findMany: vi.fn(async () => [

@@ -239,3 +239,14 @@ pnpm prisma:seed
 - `GM` 是否能审核估值复核但不具备系统管理写权限；
 - 报表 CSV 导出权限是否与查看权限一致；
 - seed 后重新登录是否刷新权限。
+
+## 7. Fleet Ops Direct Admin Route Note
+
+P1-H9 documents a direct read-only admin UI route at `/fleet-ops`.
+
+- Required API flag: `FLEET_OPS_API_ENABLED`.
+- Required backend permission: `fleet_ops:read`.
+- This route is not added to `packages/shared/src/menus.ts` in P1-H9.
+- This route is not provisioned in `apps/api/prisma/seed.mjs` in P1-H9.
+- Manual or later-PR menu and permission provisioning is required before the route is discoverable from the shared admin menu.
+- The UI is read-only and must not expose Fleet Ops execution or mutation controls.

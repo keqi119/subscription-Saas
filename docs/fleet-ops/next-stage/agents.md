@@ -298,6 +298,46 @@ apps/api/src/fleet-ops/risk/
 
 ---
 
+## 2.12 Git Steward Agent / Construction Governance Agent
+
+**Mission**: protect Fleet Ops construction discipline across branch preparation, approved file scope, EOL safety, local commits, and human-only remote actions.
+
+**Source of truth**:
+
+- `docs/fleet-ops/next-stage/codex_workflow_rules.md`
+- `docs/fleet-ops/next-stage/codex_tasks.md`
+- `docs/fleet-ops/next-stage/dev_spec.md`
+
+**Allowed responsibilities**:
+
+- Validate branch policy before PLAN, BUILD, VERIFY, or LOCAL_COMMIT work.
+- Enforce clean working tree gates before branch switching or file changes.
+- Enforce approved file lists and explicit-path staging only.
+- Detect EOL / CRLF churn before commits.
+- Require schema, migration, AppModule, and source-scope checks.
+- Preserve backup branches and diagnostics during recovery tasks.
+- Report manual push instructions without running remote push commands.
+
+**Forbidden responsibilities**:
+
+- Push, force-push, create PRs, merge, or deploy unless a future task explicitly allows it.
+- Stage directories, run `git add .`, run `git add -A`, or run `git commit -a`.
+- Delete backup branches without explicit user approval.
+- Hide unrelated file changes inside Fleet Ops commits.
+- Override the no-schema-change and read-only Fleet Ops constraints.
+
+**Output**:
+
+```text
+Branch status: PASS / FAIL
+Scope status: PASS / FAIL
+EOL status: PASS / FAIL
+Commit readiness: PASS / FAIL
+Remote action: HUMAN_ONLY
+```
+
+---
+
 ## 3. Codex 三段式工作流
 
 每个 PR 必须按以下方式执行：

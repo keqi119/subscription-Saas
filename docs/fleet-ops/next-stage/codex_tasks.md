@@ -10,6 +10,9 @@
 
 每个任务开头都必须附带：
 
+
+All Codex tasks must read `docs/fleet-ops/next-stage/codex_workflow_rules.md` before branch prep, build, verify, recovery, or local commit work. Branch policy, approved file lists, EOL checks, explicit-path staging, and human-only push / PR / merge rules must follow that document.
+
 ```text
 You are working in a production TypeScript + NestJS backend repository.
 

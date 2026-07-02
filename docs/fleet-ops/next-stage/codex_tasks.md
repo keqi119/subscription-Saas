@@ -13,6 +13,14 @@
 
 All Codex tasks must read `docs/fleet-ops/next-stage/codex_workflow_rules.md` before branch prep, build, verify, recovery, or local commit work. Branch policy, approved file lists, EOL checks, explicit-path staging, and human-only push / PR / merge rules must follow that document.
 
+P1-H6 and later release-readiness tasks should use the focused Fleet Ops end-to-end contract and smoke command instead of broad package test narrowing:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.e2e-contract.spec.ts test/fleet-ops.smoke.spec.ts test/fleet-ops.facade.spec.ts test/fleet-ops.snapshot.spec.ts test/fleet-ops.convergence-parity.spec.ts test/fleet-ops.readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.no-schema.spec.ts
+```
+
+This command is test-only readiness coverage. It must not be used to justify schema changes, DB writes, PR-1 to PR-5 logic rewrites, controller exposure, or remote push / PR / merge actions by Codex.
+
 ```text
 You are working in a production TypeScript + NestJS backend repository.
 

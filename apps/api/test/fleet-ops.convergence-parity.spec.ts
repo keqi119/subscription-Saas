@@ -116,6 +116,20 @@ describe("FleetOps convergence snapshot parity", () => {
         expect.objectContaining({ source: "collection_action", sourceId: "action-1" })
       ])
     );
+    expect(sourceEvidenceTypes(snapshot.evidence)).toEqual(
+      expect.arrayContaining([
+        "collection_action:arrears_action",
+        "collection_case:arrears_case",
+        "deposit_ledger:deposit_ledger",
+        "denominator:denominator",
+        "payment_record:arrears_payment",
+        "payment_record:payment_record",
+        "payment_write_off:payment_write_off",
+        "payment_write_off:write_off_allocation",
+        "receivable_bill:arrears_bill",
+        "receivable_bill:overdue_bill"
+      ])
+    );
     expect(snapshot.warnings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -443,4 +457,8 @@ function timelineDay(overrides: Partial<TimelineDay> = {}): TimelineDay {
     warnings: [],
     ...overrides
   };
+}
+
+function sourceEvidenceTypes(evidence: Array<{ evidenceType?: string; source: string }>) {
+  return evidence.map((item) => `${item.source}:${item.evidenceType ?? "summary"}`).sort();
 }

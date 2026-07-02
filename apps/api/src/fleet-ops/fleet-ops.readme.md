@@ -71,3 +71,17 @@ Optional dependencies must degrade safely and must not change core decision beha
 - Execution logs must trace the PR-4 decision snapshot used by PR-5.
 - Governance proposals must include simulation output before adoption.
 - Invariant and read-only safety tests must run as production readiness checks before promotion.
+
+## End-to-End Contract Smoke Gate
+
+P1-H6 readiness is test and documentation only. It does not add runtime behavior, schema changes, controllers, execution paths, or PR-1 to PR-5 logic changes.
+
+The focused smoke gate verifies `state -> timeline -> economics -> risk -> convergence snapshot` using mocked services and pure fixtures. It must preserve evidence, warnings, confidence, cashflow, deposit exclusion details, overdue exposure, D1-D5 aging bucket, arrears pipeline, and consistency diagnostics in `FleetOpsSnapshot`.
+
+Run the focused P1-H6 suite before release promotion:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.e2e-contract.spec.ts test/fleet-ops.smoke.spec.ts test/fleet-ops.facade.spec.ts test/fleet-ops.snapshot.spec.ts test/fleet-ops.convergence-parity.spec.ts test/fleet-ops.readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.no-schema.spec.ts
+```
+
+Codex may perform local commits only when explicitly requested. Push, PR creation, merge, and release promotion remain human-owned remote actions.

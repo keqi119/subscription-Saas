@@ -37,11 +37,12 @@ describe("FleetOpsFacade convergence query", () => {
           blockedActions: expect.any(Array),
           guardDecision: ControlDecision.BLOCK
         }),
-        risk: {
+        risk: expect.objectContaining({
+          collectionLevel: CollectionPriorityLevel.D2,
           level: CollectionPriorityLevel.D2,
           score: 42,
           signals: [RiskSignalCode.OVERDUE_SIGNAL]
-        },
+        }),
         state: expect.objectContaining({
           computedState: VehicleComputedOperationalState.LEASED_ACTIVE,
           confidence: expect.objectContaining({ score: 88 })
@@ -66,6 +67,7 @@ describe("FleetOpsFacade convergence query", () => {
         ExecutionActionType.VEHICLE_ALLOCATION
       ])
     );
+    expect("executeAction" in facade).toBe(false);
   });
 
   it("does not mutate underlying PR outputs and stays deterministic", async () => {

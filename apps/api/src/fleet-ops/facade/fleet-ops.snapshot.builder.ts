@@ -1,7 +1,14 @@
 import { ACTION_REGISTRY } from "../execution/action.registry";
 import { ExecutionGatewayGuard } from "../execution/execution-gateway.guard";
+import type { FleetKpiEvidence, FleetKpiWarning } from "../economics/economics.types";
 import type { ExecutionGuardResult, FleetExecutionRequest } from "../execution/execution.types";
-import type { RiskOutput } from "../risk/risk.types";
+import type {
+  RiskArrearsPipeline,
+  RiskEvidence,
+  RiskOutput,
+  RiskPaymentWriteOffEvidence,
+  RiskWarning
+} from "../risk/risk.types";
 import { TimelineState, type TimelineConflict, type TimelineDay } from "../timeline/vehicle-timeline.types";
 import type {
   VehicleOperationalStateConflict,
@@ -43,14 +50,19 @@ export function buildFleetOpsSnapshot(input: FleetOpsSnapshotBuilderInput): Flee
   const stateConflicts = stateConflictsFor(input.state.conflicts, evidence);
   const timelineConflicts = timelineConflictsFor(input.timeline, evidence);
   const consistency = checkFleetOpsConsistency({
+    economics: input.economics,
     evidence,
+    risk: input.risk,
     state: input.state,
     timeline: input.timeline
   });
   const conflicts = [...stateConflicts, ...timelineConflicts, ...consistency.conflicts].sort(compareConflicts);
   const missingDataCount = [input.economics, input.risk, input.timeline.length > 0 ? input.timeline : null].filter((value) => !value).length;
+  const economicsWarnings = economicsWarningsFor(input.economics);
+  const riskWarnings = riskWarningsFor(input.risk);
   const overallConfidence = mergeFleetOpsConfidence({
     conflictCount: conflicts.length,
+    economicsWarningCount: economicsWarnings.length,
     fallbackPenaltyCount: consistency.confidencePenaltyCount,
     inputs: [
       { label: "state", score: input.state.confidenceScore, weight: 0.35 },
@@ -58,11 +70,15 @@ export function buildFleetOpsSnapshot(input: FleetOpsSnapshotBuilderInput): Flee
       { label: "economics", score: input.economics?.confidence.score, weight: 0.2 },
       { label: "risk", score: input.risk?.confidence, weight: 0.2 }
     ],
-    missingDataCount
+    missingDataCount,
+    missingDetailCount: missingDetailCountFor(input.economics, input.risk),
+    riskWarningCount: riskWarnings.length
   });
   const warnings = [
     ...warningsFromStrings("STATE_WARNING", input.state.warnings),
     ...warningsFromStrings("TIMELINE_WARNING", timeline.warnings),
+    ...warningsFromKpiWarnings(economicsWarnings),
+    ...warningsFromRiskWarnings(riskWarnings),
     ...consistency.warnings
   ].sort(compareWarnings);
 
@@ -76,11 +92,7 @@ export function buildFleetOpsSnapshot(input: FleetOpsSnapshotBuilderInput): Flee
       from: cloneDate(input.from),
       to: cloneDate(input.to)
     },
-    risk: {
-      level: input.risk?.collectionLevel ?? null,
-      score: input.risk?.riskScore ?? null,
-      signals: [...(input.risk?.signals ?? [])].sort()
-    },
+    risk: riskSnapshot(input.risk),
     state: {
       computedState: input.state.computedState,
       confidence: confidenceFromState(input.state),
@@ -129,8 +141,16 @@ function economicsEvidenceFor(economics: FleetOpsSnapshotBuilderInput["economics
     return [];
   }
 
+  const evidenceItems = [
+    ...(economics.evidence ?? []),
+    ...(economics.denominatorEvidence ?? []),
+    ...(economics.cashflow?.evidence ?? [])
+  ];
+
   return [
+    ...evidenceItems.map((evidence) => kpiEvidenceToSnapshotEvidence(evidence)),
     {
+      evidenceType: "summary",
       fields: {
         cost: economics.economics.cost,
         revenue: economics.economics.revenue,
@@ -150,11 +170,39 @@ function riskEvidenceFor(risk: RiskOutput | null | undefined): FleetOpsSnapshotE
     return [];
   }
 
+  const riskEvidence = [
+    ...(risk.evidence ?? []),
+    ...(risk.exposureDetail?.evidence ?? []),
+    ...(risk.exposureDetail?.partialPaymentEvidence ?? []),
+    ...(risk.arrearsPipeline?.evidence ?? [])
+  ];
+
   return [
-    {
+    ...riskEvidence.map((evidence) => riskEvidenceToSnapshotEvidence(evidence)),
+    ...(risk.exposureDetail?.overdueBillRefs ?? []).map((billRef) => ({
+      evidenceType: "overdue_bill",
       fields: {
+        dueDate: cloneDate(billRef.dueDate),
+        overdueDays: billRef.overdueDays,
+        paidAmount: billRef.paidAmount,
+        remainingAmount: billRef.remainingAmount,
+        sourceStatus: billRef.sourceStatus
+      },
+      layers: ["RISK" as const],
+      source: "receivable_bill",
+      sourceId: billRef.billId,
+      summary: "PR-4 overdue bill reference contributed to risk exposure."
+    })),
+    ...(risk.exposureDetail?.writeOffEvidence ?? []).map(riskWriteOffToSnapshotEvidence),
+    ...(risk.arrearsPipeline ? arrearsPipelineEvidenceFor(risk.arrearsPipeline) : []),
+    {
+      evidenceType: "summary",
+      fields: {
+        agingBucket: risk.agingBucket,
         collectionLevel: risk.collectionLevel,
         controlDecision: risk.controlDecision,
+        maxOverdueDays: risk.exposureDetail?.maxOverdueDays,
+        overdueRemainingAmount: risk.exposureDetail?.overdueRemainingAmount,
         riskScore: risk.riskScore,
         signals: [...risk.signals].sort()
       },
@@ -163,6 +211,100 @@ function riskEvidenceFor(risk: RiskOutput | null | undefined): FleetOpsSnapshotE
       sourceId: risk.vehicleId,
       summary: "PR-4 risk output contributed to the snapshot."
     }
+  ];
+}
+
+function kpiEvidenceToSnapshotEvidence(evidence: FleetKpiEvidence): FleetOpsSnapshotEvidence {
+  return {
+    evidenceType: evidence.source,
+    fields: {
+      amount: evidence.amount,
+      reason: evidence.reason
+    },
+    layers: ["ECONOMICS"],
+    source: evidence.source,
+    sourceId: evidence.sourceId,
+    summary: evidence.reason
+  };
+}
+
+function riskEvidenceToSnapshotEvidence(evidence: RiskEvidence): FleetOpsSnapshotEvidence {
+  return {
+    evidenceType: evidence.source,
+    fields: {
+      amount: evidence.amount,
+      observedAt: cloneObservedAt(evidence.observedAt),
+      reason: evidence.reason
+    },
+    layers: ["RISK"],
+    source: evidence.source,
+    sourceId: evidence.sourceId,
+    summary: evidence.reason
+  };
+}
+
+function riskWriteOffToSnapshotEvidence(writeOff: RiskPaymentWriteOffEvidence): FleetOpsSnapshotEvidence {
+  return {
+    evidenceType: "write_off_allocation",
+    fields: {
+      amount: writeOff.amount,
+      billId: writeOff.billId,
+      paymentId: writeOff.paymentId,
+      writeOffAt: cloneDateOrNull(writeOff.writeOffAt)
+    },
+    layers: ["RISK"],
+    source: "payment_write_off",
+    sourceId: writeOff.id,
+    summary: "PR-4 write-off evidence contributed to overdue exposure traceability."
+  };
+}
+
+function arrearsPipelineEvidenceFor(pipeline: RiskArrearsPipeline): FleetOpsSnapshotEvidence[] {
+  return [
+    ...pipeline.billRefs.map((billRef) => ({
+      evidenceType: "arrears_bill",
+      fields: {
+        dueDate: cloneDate(billRef.dueDate),
+        overdueDays: billRef.overdueDays,
+        paidAmount: billRef.paidAmount,
+        remainingAmount: billRef.remainingAmount,
+        sourceStatus: billRef.sourceStatus
+      },
+      layers: ["RISK" as const],
+      source: "receivable_bill",
+      sourceId: billRef.billId,
+      summary: "PR-4 arrears pipeline includes overdue bill evidence."
+    })),
+    ...pipeline.caseRefs.map((caseRef) => ({
+      evidenceType: "arrears_case",
+      fields: {
+        caseStatus: caseRef.caseStatus,
+        collectionLevel: caseRef.collectionLevel
+      },
+      layers: ["RISK" as const],
+      source: "collection_case",
+      sourceId: caseRef.caseId,
+      summary: "PR-4 arrears pipeline includes collection case evidence."
+    })),
+    ...pipeline.actionRefs.map((actionRef) => ({
+      evidenceType: "arrears_action",
+      fields: {
+        actionType: actionRef.actionType,
+        result: actionRef.result
+      },
+      layers: ["RISK" as const],
+      source: "collection_action",
+      sourceId: actionRef.actionId,
+      summary: "PR-4 arrears pipeline includes collection action evidence."
+    })),
+    ...pipeline.paymentRefs.map((paymentRef) => ({
+      evidenceType: "arrears_payment",
+      layers: ["RISK" as const],
+      source: "payment_record",
+      sourceId: paymentRef.paymentId,
+      summary: "PR-4 arrears pipeline includes payment evidence."
+    })),
+    ...pipeline.writeOffRefs.map(riskWriteOffToSnapshotEvidence)
   ];
 }
 
@@ -218,24 +360,44 @@ function toTimelineEvent(day: TimelineDay): FleetOpsSnapshotTimelineEvent {
 function economicsSnapshot(economics: FleetOpsSnapshotBuilderInput["economics"]): FleetOpsSnapshotEconomics {
   if (!economics) {
     return {
+      attribution: null,
       cashflow: {
         actual: null,
+        actualDetail: null,
         deposit: null,
-        planned: null
+        evidence: [],
+        planned: null,
+        plannedDetail: null,
+        warnings: [],
+        writeOff: null
       },
       confidence: unknownConfidence("PR-3 economic output is missing."),
       cost: null,
+      denominatorEvidence: [],
+      downtimeTrace: [],
+      evidence: [],
       revenue: null,
+      reportParity: null,
       roe: null,
-      roi: null
+      roi: null,
+      warnings: []
     };
   }
 
+  const cashflow = economics.cashflow;
+  const warnings = economicsWarningsFor(economics);
+
   return {
+    attribution: { ...economics.attribution },
     cashflow: {
-      actual: economics.economics.revenue,
-      deposit: null,
-      planned: null
+      actual: cashflow?.actual.operating ?? economics.economics.revenue,
+      actualDetail: cashflow ? { ...cashflow.actual } : null,
+      deposit: cashflow ? roundMoney(cashflow.actual.deposit + cashflow.planned.deposit) : null,
+      evidence: cloneKpiEvidence(cashflow?.evidence ?? []),
+      planned: cashflow?.planned.operating ?? null,
+      plannedDetail: cashflow ? { ...cashflow.planned } : null,
+      warnings: uniqueStrings(cashflow?.warnings ?? []) as FleetKpiWarning[],
+      writeOff: cashflow ? { ...cashflow.writeOff } : null
     },
     confidence: {
       band: economics.confidence.band,
@@ -243,9 +405,58 @@ function economicsSnapshot(economics: FleetOpsSnapshotBuilderInput["economics"])
       score: economics.confidence.score
     },
     cost: economics.economics.cost,
+    denominatorEvidence: cloneKpiEvidence(economics.denominatorEvidence ?? []),
+    downtimeTrace: (economics.downtime.trace ?? []).map((trace) => ({
+      ...trace,
+      sourceEvents: [...trace.sourceEvents].sort()
+    })),
+    evidence: cloneKpiEvidence(economics.evidence ?? []),
     revenue: economics.economics.revenue,
+    reportParity: economics.reportParity
+      ? {
+          depositIncludedInOperatingRevenue: economics.reportParity.depositIncludedInOperatingRevenue,
+          operatingRevenueBillTypes: [...economics.reportParity.operatingRevenueBillTypes]
+        }
+      : null,
     roe: economics.economics.roe,
-    roi: economics.economics.roi
+    roi: economics.economics.roi,
+    warnings
+  };
+}
+
+function riskSnapshot(risk: RiskOutput | null | undefined) {
+  if (!risk) {
+    return {
+      agingBucket: null,
+      arrearsPipeline: null,
+      collectionLevel: null,
+      evidence: [],
+      exposureDetail: null,
+      level: null,
+      maxOverdueDays: null,
+      overdueBillRefs: [],
+      overdueRemainingAmount: null,
+      score: null,
+      signals: [],
+      warnings: []
+    };
+  }
+
+  const exposureDetail = risk.exposureDetail ? cloneRiskExposure(risk.exposureDetail) : null;
+
+  return {
+    agingBucket: risk.agingBucket ?? null,
+    arrearsPipeline: risk.arrearsPipeline ? cloneArrearsPipeline(risk.arrearsPipeline) : null,
+    collectionLevel: risk.collectionLevel,
+    evidence: cloneRiskEvidence(risk.evidence ?? []),
+    exposureDetail,
+    level: risk.collectionLevel,
+    maxOverdueDays: exposureDetail?.maxOverdueDays ?? null,
+    overdueBillRefs: exposureDetail?.overdueBillRefs ?? [],
+    overdueRemainingAmount: exposureDetail?.overdueRemainingAmount ?? null,
+    score: risk.riskScore,
+    signals: [...risk.signals].sort(),
+    warnings: cloneRiskWarnings(risk.warnings ?? [])
   };
 }
 
@@ -366,6 +577,114 @@ function warningsFromStrings(code: string, warnings: string[]): FleetOpsWarning[
   }));
 }
 
+function warningsFromKpiWarnings(warnings: FleetKpiWarning[]): FleetOpsWarning[] {
+  return uniqueStrings(warnings).map((warning) => ({
+    code: "ECONOMICS_WARNING",
+    message: warning
+  }));
+}
+
+function warningsFromRiskWarnings(warnings: RiskWarning[]): FleetOpsWarning[] {
+  return warnings
+    .map((warning) => ({
+      code: "RISK_WARNING",
+      message: warning.code
+    }))
+    .sort(compareWarnings);
+}
+
+function economicsWarningsFor(economics: FleetOpsSnapshotBuilderInput["economics"]): FleetKpiWarning[] {
+  if (!economics) {
+    return [];
+  }
+
+  return uniqueStrings([...(economics.warnings ?? []), ...(economics.cashflow?.warnings ?? [])]) as FleetKpiWarning[];
+}
+
+function riskWarningsFor(risk: RiskOutput | null | undefined): RiskWarning[] {
+  return cloneRiskWarnings(risk?.warnings ?? []);
+}
+
+function missingDetailCountFor(economics: FleetOpsSnapshotBuilderInput["economics"], risk: RiskOutput | null | undefined) {
+  return [
+    economics && !economics.cashflow,
+    economics && !economics.denominatorEvidence,
+    risk && !risk.exposureDetail,
+    risk && !risk.arrearsPipeline
+  ].filter(Boolean).length;
+}
+
+function cloneKpiEvidence(evidence: FleetKpiEvidence[]): FleetKpiEvidence[] {
+  return evidence.map((item) => ({ ...item }));
+}
+
+function cloneRiskEvidence(evidence: RiskEvidence[]): RiskEvidence[] {
+  return evidence.map((item) => ({
+    ...item,
+    observedAt: cloneObservedAt(item.observedAt)
+  }));
+}
+
+function cloneRiskWarnings(warnings: RiskWarning[]): RiskWarning[] {
+  return warnings.map((warning) => ({ ...warning })).sort((left, right) => {
+    const codeDelta = left.code.localeCompare(right.code);
+    if (codeDelta !== 0) {
+      return codeDelta;
+    }
+
+    return (left.sourceId ?? "").localeCompare(right.sourceId ?? "");
+  });
+}
+
+function cloneRiskExposure(exposure: NonNullable<RiskOutput["exposureDetail"]>): NonNullable<RiskOutput["exposureDetail"]> {
+  return {
+    ...exposure,
+    evidence: cloneRiskEvidence(exposure.evidence),
+    overdueBillRefs: exposure.overdueBillRefs.map((billRef) => ({
+      ...billRef,
+      dueDate: cloneDate(billRef.dueDate)
+    })),
+    partialPaymentEvidence: cloneRiskEvidence(exposure.partialPaymentEvidence),
+    warnings: cloneRiskWarnings(exposure.warnings),
+    writeOffEvidence: exposure.writeOffEvidence.map(cloneRiskWriteOffEvidence)
+  };
+}
+
+function cloneArrearsPipeline(pipeline: RiskArrearsPipeline): RiskArrearsPipeline {
+  return {
+    ...pipeline,
+    actionRefs: pipeline.actionRefs.map((actionRef) => ({ ...actionRef })),
+    billRefs: pipeline.billRefs.map((billRef) => ({
+      ...billRef,
+      dueDate: cloneDate(billRef.dueDate)
+    })),
+    caseRefs: pipeline.caseRefs.map((caseRef) => ({ ...caseRef })),
+    evidence: cloneRiskEvidence(pipeline.evidence),
+    paymentRefs: pipeline.paymentRefs.map((paymentRef) => ({ ...paymentRef })),
+    promiseToPayRefs: pipeline.promiseToPayRefs.map((promiseRef) => ({
+      ...promiseRef,
+      promisedPayAt: cloneDateOrNull(promiseRef.promisedPayAt)
+    })),
+    warnings: cloneRiskWarnings(pipeline.warnings),
+    writeOffRefs: pipeline.writeOffRefs.map(cloneRiskWriteOffEvidence)
+  };
+}
+
+function cloneRiskWriteOffEvidence(writeOff: RiskPaymentWriteOffEvidence): RiskPaymentWriteOffEvidence {
+  return {
+    ...writeOff,
+    writeOffAt: cloneDateOrNull(writeOff.writeOffAt)
+  };
+}
+
+function cloneObservedAt(observedAt: Date | string | null | undefined) {
+  if (observedAt instanceof Date) {
+    return cloneDate(observedAt);
+  }
+
+  return observedAt ?? null;
+}
+
 function compareConflicts(left: FleetOpsSnapshotConflict, right: FleetOpsSnapshotConflict) {
   const codeDelta = left.code.localeCompare(right.code);
   if (codeDelta !== 0) {
@@ -401,6 +720,10 @@ function cloneDateOrNull(date: Date | null | undefined) {
 
 function roundScore(value: number) {
   return Math.round(value);
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function uniqueStrings(values: string[]) {

@@ -31,7 +31,7 @@ export function mergeFleetOpsEvidence(evidenceGroups: FleetOpsSnapshotEvidence[]
 }
 
 function evidenceKey(evidence: FleetOpsSnapshotEvidence) {
-  return `${evidence.source}:${evidence.sourceId ?? evidence.summary}`;
+  return `${evidence.source}:${evidence.sourceId ?? evidence.summary}:${evidence.evidenceType ?? evidence.summary}`;
 }
 
 function compareEvidence(left: FleetOpsSnapshotEvidence, right: FleetOpsSnapshotEvidence) {

@@ -31,6 +31,15 @@ export type {
   FleetOpsStaticScanFinding,
   FleetOpsWarning
 } from "./fleet-ops.shared-contracts";
+export type {
+  FleetOpsSnapshot,
+  FleetOpsSnapshotCashflow,
+  FleetOpsSnapshotEconomics,
+  FleetOpsSnapshotEvidence,
+  FleetOpsSnapshotRisk,
+  FleetOpsSnapshotSystem,
+  FleetOpsSnapshotTimeline
+} from "./facade/fleet-ops.snapshot.types";
 
 export interface FleetOpsHealthContract {
   coordinationEngine: FleetOpsEngineHealthStatus;

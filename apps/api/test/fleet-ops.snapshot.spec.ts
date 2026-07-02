@@ -37,11 +37,14 @@ describe("buildFleetOpsSnapshot", () => {
           blockedActions: expect.any(Array),
           guardDecision: ControlDecision.ALLOW
         }),
-        risk: {
+        risk: expect.objectContaining({
+          agingBucket: null,
+          collectionLevel: CollectionPriorityLevel.D1,
+          exposureDetail: null,
           level: CollectionPriorityLevel.D1,
           score: 15,
           signals: [RiskSignalCode.UTILIZATION_DROP_SIGNAL]
-        },
+        }),
         state: expect.objectContaining({
           computedState: VehicleComputedOperationalState.AVAILABLE,
           evidence: expect.any(Array)
@@ -60,6 +63,14 @@ describe("buildFleetOpsSnapshot", () => {
           warnings: expect.arrayContaining([TIMELINE_CURRENT_STATUS_PROJECTED_WARNING])
         }),
         vehicleId: "vehicle-1"
+      })
+    );
+    expect(snapshot.economics).toEqual(
+      expect.objectContaining({
+        attribution: expect.objectContaining({ leaseRevenue: 1200 }),
+        denominatorEvidence: [],
+        evidence: [],
+        warnings: []
       })
     );
     expect(snapshot.execution.allowedActions.map((action) => action.actionType).sort()).toContain("VEHICLE_ALLOCATION");

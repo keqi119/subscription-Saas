@@ -156,6 +156,32 @@ pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-api.spec.ts 
 pnpm --filter @subscription-saas/api test:fleet-ops
 ```
 
+## P1-H10 Menu And Permission Provisioning Check
+
+P1-H10 makes the existing read-only admin UI discoverable through the shared menu and seed baseline. It must not change Fleet Ops API, facade, controller, PR-1 to PR-5 logic, schema, migrations, AppModule, or write flows.
+
+Before release, confirm:
+
+- Shared permission includes only `fleet_ops:read` for Fleet Ops.
+- Shared menu includes `vehicles.fleet_ops` with Chinese label `车队运营`, path `/fleet-ops`, and permission `fleet_ops:read`.
+- Seed includes the Fleet Ops read permission and menu row.
+- ADMIN receives access through existing all-access seed behavior.
+- OP and GM receive explicit internal/admin read access.
+- SA, RC, FI, AS, CS, customer-like, and public roles are not granted Fleet Ops access in this PR.
+- No Fleet Ops write, execute, admin, action, allocate, or collect permission exists.
+- No execution submenu, mutation menu, customer portal menu, or public route is introduced.
+- `FLEET_OPS_API_ENABLED` still controls API availability; the UI may show disabled state while the menu is visible.
+
+Focused provisioning checks:
+
+```bash
+pnpm --filter @subscription-saas/shared typecheck
+pnpm --filter @subscription-saas/shared lint
+pnpm --filter @subscription-saas/shared exec vitest run test/auth.spec.ts test/menus.spec.ts
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

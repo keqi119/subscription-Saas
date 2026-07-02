@@ -159,6 +159,7 @@ permissionRows.push(
   ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
+  ["fleet_ops:read", "车队运营查看", "fleet_ops", "read"],
   ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
   ["vehicle_model:manage", "管理车型代码", "vehicle_model", "manage"],
   ["vehicle_insurance:view", "查看车辆保单", "vehicle_insurance", "view"],
@@ -244,6 +245,7 @@ const menuRows = [
   ["vehicles.baas_contracts", "BaaS合同", "/vehicle-baas-contracts", "file", 28, "vehicle_baas:view", "vehicles"],
   ["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"],
   ["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"],
+  ["vehicles.fleet_ops", "车队运营", "/fleet-ops", "dashboard", 45, "fleet_ops:read", "vehicles"],
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
@@ -649,6 +651,7 @@ const vehicleValuationReviewManagementPermissions = [
   "vehicle_valuation_review:create",
   "vehicle_valuation_review:approve"
 ];
+const fleetOpsReadPermissions = ["fleet_ops:read"];
 const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
 const vehicleModelMenuCodes = ["vehicles.model_definitions"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
@@ -657,6 +660,7 @@ const vehicleBaasMenuCodes = ["vehicles.baas_contracts"];
 const vehicleDepreciationMenuCodes = ["vehicles.depreciation_policies"];
 const residualMarketMenuCodes = ["vehicles.residual_market"];
 const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"];
+const fleetOpsMenuCodes = ["vehicles.fleet_ops"];
 
 const capitalStructureViewPermissions = ["capital_structure:view"];
 
@@ -852,6 +856,7 @@ async function main() {
       ...vehicleDepreciationManagementPermissions,
       ...insuranceClaimManagementPermissions,
       ...vehicleValuationReviewManagementPermissions,
+      ...fleetOpsReadPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
       ...entitlementOperationPermissions,
@@ -900,6 +905,7 @@ async function main() {
       ...vehicleAssetPoolMenuCodes,
       ...residualMarketMenuCodes,
       ...vehicleValuationReviewMenuCodes,
+      ...fleetOpsMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
@@ -1014,6 +1020,7 @@ async function main() {
       ...vehicleDepreciationViewPermissions,
       ...insuranceClaimViewPermissions,
       ...vehicleValuationReviewApprovePermissions,
+      ...fleetOpsReadPermissions,
       ...capitalStructureViewPermissions,
       ...financingViewPermissions,
       ...vehicleAssetPoolViewPermissions,
@@ -1058,6 +1065,7 @@ async function main() {
       ...vehicleAssetPoolMenuCodes,
       ...residualMarketMenuCodes,
       ...vehicleValuationReviewMenuCodes,
+      ...fleetOpsMenuCodes,
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]

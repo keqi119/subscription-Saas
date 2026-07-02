@@ -50,6 +50,12 @@ Run the full Fleet Ops regression suite:
 pnpm --filter @subscription-saas/api exec vitest run test/vehicle-operational-state.spec.ts test/vehicle-timeline.spec.ts test/fleet-kpi.spec.ts test/fleet-risk.spec.ts test/fleet-execution.spec.ts test/fleet-optimization.spec.ts test/fleet-governance.spec.ts test/fleet-coordination.spec.ts test/fleet-ops.integration.spec.ts test/fleet-ops.invariants.spec.ts test/fleet-ops.readonly.spec.ts test/fleet-ops.bootstrap.spec.ts test/fleet-ops.facade-contract.spec.ts test/fleet-ops.health.spec.ts test/fleet-ops.observability.spec.ts
 ```
 
+Run the focused P1-H6 end-to-end contract and smoke readiness suite:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.e2e-contract.spec.ts test/fleet-ops.smoke.spec.ts test/fleet-ops.facade.spec.ts test/fleet-ops.snapshot.spec.ts test/fleet-ops.convergence-parity.spec.ts test/fleet-ops.readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.no-schema.spec.ts
+```
+
 Run the read-only safety scan:
 
 ```bash
@@ -74,6 +80,22 @@ The release smoke suite must verify:
 - `FleetOpsFacade` is injectable.
 - `FleetOpsHealthService` is injectable.
 - No provider constructor performs Prisma delegate calls during bootstrap.
+
+## P1-H6 Contract Smoke Readiness
+
+P1-H6 adds no runtime behavior and must not modify PR-1 to PR-5 logic. It only hardens tests and readiness documentation for the state -> timeline -> economics -> risk -> convergence snapshot contract.
+
+The P1-H6 smoke suite must verify:
+
+- `FleetOpsFacade.query(vehicleId)` preserves PR-1 state, PR-2 timeline, PR-3 economics, and PR-4 risk outputs in `FleetOpsSnapshot`.
+- Evidence remains source-distinguishable across lease, vehicle, payment, deposit, receivable bill, collection case, collection action, and write-off signals.
+- Warnings and confidence penalties propagate for current-status timeline fallback, economics warnings, and risk warnings.
+- Deposit cashflow is visible separately from operating revenue.
+- Overdue exposure uses remaining amount and keeps D1-D5 aging bucket plus arrears pipeline evidence.
+- Conflicts are flagged and surfaced as consistency diagnostics without being resolved.
+- No smoke test relies on live DB fixtures or calls PR-5 execution actions.
+
+Codex may create local commits for approved Fleet Ops tasks only. Push, pull request creation, merge, and release promotion remain human-owned remote actions.
 
 ## Known Baseline Issue
 

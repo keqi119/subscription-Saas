@@ -16,3 +16,4 @@ This directory contains the architecture source, current review conclusion, and 
 
 \- next-stage/codex\_tasks.md: Codex task backlog and prompts
 
+\- docs/fleet-ops/next-stage/codex_workflow_rules.md: Codex branch, build, verify, recovery, and local commit governance rules

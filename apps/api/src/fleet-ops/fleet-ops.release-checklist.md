@@ -223,6 +223,23 @@ Before release or staging validation, confirm:
 - No execution, write, mutation, customer portal, or public Fleet Ops controls are exposed.
 - Rollback is `FLEET_OPS_API_ENABLED=false` followed by restart/redeploy as needed; no schema rollback is required.
 
+## P1-H14 Production Readiness Check
+
+Use `docs/fleet-ops/runbooks/production-readiness.md` before any controlled production enablement decision. P1-H14 is documentation and checklist only; it must not enable production or change Fleet Ops runtime behavior.
+
+Before production go/no-go, confirm:
+
+- P1-H13 staging smoke evidence is captured.
+- Mandatory automated gates are current:
+  - `pnpm --filter @subscription-saas/api test:fleet-ops`
+  - `pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts`
+  - `pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts`
+- Production DB target is confirmed before any access sync command is run.
+- Codex automated verification does not run live DB sync.
+- `FLEET_OPS_API_ENABLED` remains disabled in production until an approved GO decision.
+- Production smoke checks verify `fleet_ops:read`, `/fleet-ops`, sidebar `车队运营`, ADMIN / OP / GM access according to policy, non-granted role denial, API health, valid vehicle snapshot, evidence/warnings/confidence, and no execution/write controls.
+- Rollback is `FLEET_OPS_API_ENABLED=false` followed by restart/redeploy as needed; permission/menu entries may remain and no schema or data rollback is required.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

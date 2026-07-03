@@ -21,30 +21,32 @@ This record explicitly excludes:
 - Production data mutation by Fleet Ops.
 - Schema or migration changes.
 
-Default decision status: `PENDING`.
+Decision status: `GO`.
 
-P1-H16 completion note:
+P1-H17 finalization note:
 
-- This record is not production approval.
+- This record captures the explicit human GO decision for controlled read-only Fleet Ops production readiness.
+- This record does not itself enable production.
 - This PR does not enable production.
-- The production feature flag remains disabled unless a later human/operator decision changes it.
+- The production feature flag remains operator-controlled.
+- Production access sync remains operator-controlled.
 - No live database sync is run by this PR.
-- The final decision owner is still required.
+- No production database query is run by this PR.
 - Known evidence below is a P1-H13 local/staging evidence baseline, not production smoke evidence.
 
 ## Release Candidate Identity
 
 | Field | Value |
 | --- | --- |
-| Record date | TBD - human required |
-| Prepared by | TBD - human required |
-| Reviewer(s) | TBD - human required |
-| API commit or image tag | TBD - human required |
-| Web commit or image tag | TBD - human required |
-| Shared package commit or version, if relevant | TBD - human required |
-| Production DB target | TBD - human required |
-| Environment | production - TBD human confirmation required |
-| Decision status | PENDING |
+| Record date | TBD - human to fill at execution time |
+| Prepared by | TBD - human to fill at execution time |
+| Reviewer(s) | TBD - human to fill at execution time |
+| API commit or image tag | TBD - human to fill at execution time |
+| Web commit or image tag | TBD - human to fill at execution time |
+| Shared package commit or version, if relevant | TBD - human to fill at execution time |
+| Production DB target | `prod-primary` alias only. Operator must confirm the target before access sync; do not record plaintext DSN, password, token, or connection string. |
+| Environment | production |
+| Decision status | GO |
 
 Allowed decision statuses:
 
@@ -70,7 +72,7 @@ The evidence below is the P1-H13 local/staging evidence baseline provided for pr
 | UI permission state | `/fleet-ops` no longer showed permission denied for authorized access. | P1-H13 local/staging evidence provided by user: `/fleet-ops` no longer showed permission denied. Production evidence: TBD - production run required. |
 | Screenshot links | Permission page, sidebar, and `/fleet-ops` screenshots captured. | TBD - human required for production evidence links. |
 | `/auth/me` snippets | Permissions and menus snippets captured without tokens or cookies. | P1-H13 local/staging baseline confirmed by user; production redacted snippets remain TBD - human required. |
-| Selected vehicleId | Known safe or anonymized vehicle selected for smoke. | TBD - human required for production. |
+| Selected vehicleId | Known safe or anonymized vehicle selected for smoke. | Actual vehicleId: TBD - pre-enable confirmation required. Selection rule: choose the most recently registered vehicle from the `prod-primary` vehicle library before production smoke. |
 | Production smoke evidence | To be captured after approved production enablement. | TBD - production run required. |
 
 ## Mandatory Gate Results
@@ -98,10 +100,10 @@ Known local/staging gate results are recorded as baseline evidence only. Product
 | Known local/staging baseline | Permission `fleet_ops:read`, menu `vehicles.fleet_ops` / `/fleet-ops`, and roles OP / GM / ADMIN were confirmed in P1-H13 local/staging evidence. |
 | Provisioned roles | `ADMIN`, `OP`, `GM` |
 | Excluded roles | `AS`, `FI`, `SA`, `RC`, `CS`, customer-like, and public roles unless separately approved. |
-| Production access policy approval | TBD - human required |
-| Production DB target confirmed | TBD - human required |
-| Access sync required | TBD - human required |
-| Access sync operator | TBD - human required |
+| Production access policy approval | GO recorded for controlled read-only readiness from explicit human decision input; production enablement actions remain operator-controlled. |
+| Production DB target confirmed | `prod-primary` alias recorded. Operator must confirm the actual production DB target before access sync; do not record plaintext DSN, password, token, or connection string. |
+| Access sync required | TBD - operator to decide after checking `prod-primary` permissions and menus. |
+| Access sync operator | TBD - human to fill at execution time |
 | Logout/login completed after sync | P1-H13 local/staging baseline confirmed after sync; production TBD - human required. |
 
 Access sync command for authorized human operators only:
@@ -129,13 +131,33 @@ Access sync rules:
 | Current default | Disabled unless approved. |
 | Enable key | `FLEET_OPS_API_ENABLED=true` |
 | Rollback key | `FLEET_OPS_API_ENABLED=false` |
-| Feature flag owner | TBD - human required |
-| Rollback owner | TBD - human required |
-| Planned enable time | TBD - human required |
-| Planned observation window | TBD - human required |
-| Current decision | not enabled / PENDING |
+| Feature flag owner | Ke Li |
+| Rollback owner | Ke Li |
+| Planned enable time | `2026-01-01 00:00 UTC+08` |
+| Planned observation window | Active observation: 2 hours; passive observation: 24 hours. |
+| Current decision | GO recorded for controlled read-only readiness; production feature flag is not enabled by this PR. |
 
 This PR and this record do not enable production. Production enablement remains a separate human/operator action after an approved decision.
+
+The planned enable time `2026-01-01 00:00 UTC+08` is already elapsed and must be re-confirmed by Ke Li before actual production enablement.
+
+## Pre-Enable Conditions
+
+Before any operator enables production:
+
+- Confirm the `prod-primary` DB target before running access sync.
+- Confirm the actual selected production vehicleId before production smoke.
+- Run access sync only against the confirmed production DB if needed:
+
+```bash
+pnpm --filter @subscription-saas/api prisma:sync:fleet-ops-access
+```
+
+- Enable `FLEET_OPS_API_ENABLED=true` only in the approved operator window.
+- Restart or redeploy API/Web if required.
+- Re-login after sync or feature flag changes.
+- Run production smoke.
+- Roll back by setting `FLEET_OPS_API_ENABLED=false`.
 
 ## Production Smoke Checklist
 
@@ -150,7 +172,7 @@ This PR and this record do not enable production. Production enablement remains 
 | `/fleet-ops` GM | `GM`, if policy approved | Opens without permission denied. | P1-H13 local/staging access sync baseline completed; production actual TBD - production run required. | Baseline captured; production TBD. | Production GM policy approval TBD - human required. |
 | Non-granted role | AS/FI/SA/RC/CS/customer-like/public | Denied or menu hidden. | TBD - production run required. | TBD |  |
 | Empty vehicle state | Authorized role, flag on | Empty state appears without error. | TBD - production run required. | TBD |  |
-| Valid vehicle snapshot | Authorized role, safe vehicleId | Snapshot loads. | TBD - production run required. | TBD | Selected production vehicleId: TBD - human required. |
+| Valid vehicle snapshot | Authorized role, safe vehicleId | Snapshot loads. | TBD - production run required. | TBD | Actual vehicleId: TBD - pre-enable confirmation required. Selection rule: choose the most recently registered vehicle from the `prod-primary` vehicle library before production smoke. |
 | State card | Valid vehicleId | State section visible where data exists. | TBD - production run required. | TBD |  |
 | Timeline card | Valid vehicleId | Timeline section visible where data exists. | TBD - production run required. | TBD |  |
 | Economics card | Valid vehicleId | Economics section visible where data exists. | TBD - production run required. | TBD |  |
@@ -171,7 +193,7 @@ Confirm each item before marking GO:
 | Action controls | No execution, allocation, activation, collection action, mutation, recovery, or workflow trigger controls. | P1-H13 local/staging baseline captured; production visual confirmation TBD. | Production screenshot/checklist remains TBD - production run required. |
 | Customer/public exposure | No customer/public portal Fleet Ops route or menu. | P1-H13 local/staging baseline captured; production confirmation TBD. | Web readonly guard passed in P1-H13 evidence. |
 | Permissions | No Fleet Ops write, execute, admin, action, allocate, or collect permissions. | P1-H13 local/staging baseline captured; production confirmation TBD. | API permissions test passed in P1-H13 evidence. |
-| Runtime scope | Fleet Ops remains read-only. | P1-H13 local/staging baseline captured; production confirmation TBD. | Production enablement decision remains PENDING. |
+| Runtime scope | Fleet Ops remains read-only. | P1-H13 local/staging baseline captured; production confirmation TBD. | GO approves controlled read-only readiness only; production enablement remains operator-controlled. |
 
 ## Risks And Limitations
 
@@ -181,11 +203,12 @@ Confirm each item before marking GO:
 | API/Web version mismatch | UI may call incompatible API contract. | Confirm API/Web commit family before smoke. | Production API/Web commits TBD - human required. |
 | Wrong DB sync target | Access sync could affect the wrong environment. | Confirm production DB target before any sync. | Production DB target TBD - human required. |
 | Stale login/session | `/auth/me` may not show updated permissions. | Logout/login after sync and flag changes. | Production smoke procedure TBD - human required. |
-| Feature flag confusion | Disabled state may be mistaken for failure, or flag may be enabled prematurely. | Record feature flag owner and planned enable time. | Feature flag owner and planned enable time TBD - human required. |
-| Operators mistake dashboard for action workflow | Read-only view could imply operational actions. | Confirm no action controls and communicate read-only scope. | Communication owner TBD - human required. |
+| Feature flag confusion | Disabled state may be mistaken for failure, or flag may be enabled prematurely. | Ke Li owns the feature flag decision; planned enable time requires re-confirmation before any change. | Owner captured; actual feature flag change remains operator-controlled. |
+| Elapsed planned enable time | The supplied `2026-01-01 00:00 UTC+08` timestamp is already elapsed. | Ke Li must re-confirm the actual enable window before any `FLEET_OPS_API_ENABLED=true` change. | GO record captured; actual enablement blocked until re-confirmed. |
+| Operators mistake dashboard for action workflow | Read-only view could imply operational actions. | Ke Li owns communication; confirm no action controls and communicate read-only scope. | Communication owner captured; operator communication still pending. |
 | Evidence not captured | Decision becomes hard to audit. | Require screenshots/snippets before GO. | Production evidence TBD - production run required. |
 | Role policy not approved | Unauthorized or overbroad access risk. | Require security/permission owner sign-off. | Production access policy approval TBD - human required. |
-| `GO_WITH_LIMITATIONS` overuse | Launch could proceed with unclear risk. | Require explicit limitations, owners, and due dates. | Final decision remains PENDING. |
+| `GO_WITH_LIMITATIONS` overuse | Launch could proceed with unclear risk. | Require explicit limitations, owners, and due dates. | Not selected for this decision record. |
 
 ## Go / No-Go Decision
 
@@ -197,14 +220,14 @@ Selectable outcomes:
 
 | Field | Value |
 | --- | --- |
-| Decision | PENDING |
-| Decision owner | TBD - human required |
-| Decision timestamp | TBD - human required |
-| Rationale | Known P1-H13 local/staging evidence baseline is captured; production decision remains pending human approval and production-specific evidence. |
-| Conditions / limitations | TBD - human required |
+| Decision | GO |
+| Decision owner | Ke Li |
+| Decision timestamp | TBD - human to fill at execution time |
+| Rationale | Fleet Ops read-only API/UI, permission/menu provisioning, idempotent access sync, RC gates, staging/local smoke, readonly static guard, production readiness checklist, and decision record baseline are complete. |
+| Conditions / limitations | Production enablement remains operator-controlled; complete the pre-enable conditions before sync, feature flag change, restart/redeploy, and smoke. |
 | Required follow-ups | See Follow-Up Items. |
-| Rollback owner | TBD - human required |
-| Communication owner | TBD - human required |
+| Rollback owner | Ke Li |
+| Communication owner | Ke Li |
 
 Decision rules:
 
@@ -212,7 +235,9 @@ Decision rules:
 - `GO_WITH_LIMITATIONS` requires explicit limitations, owners, due dates, and evidence that read-only safety is preserved.
 - `NO-GO` should list blocking reasons, retry criteria, and the next review owner.
 
-The final decision remains `PENDING` until explicit human production approval exists. `GO` or `GO_WITH_LIMITATIONS` requires completed production fields, owners, limitations if any, and production smoke evidence.
+Selected decision: `GO`.
+
+The selected `GO` approves controlled read-only Fleet Ops production readiness only. `GO` does not enable production by itself. Actual access sync, feature flag enablement, restart/redeploy, production smoke, and rollback remain human/operator-controlled. `GO_WITH_LIMITATIONS` is not selected.
 
 ## Rollback
 
@@ -235,19 +260,21 @@ Permission and menu DB entries may remain. No schema rollback is needed. No data
 | Engineering owner | TBD - human required | PENDING | TBD - human required | Required before production approval. |
 | Data / DB owner | TBD - human required | PENDING | TBD - human required | Must confirm production DB target before any sync. |
 | Security / permission owner | TBD - human required | PENDING | TBD - human required | Must approve production access policy. |
-| Feature flag owner | TBD - human required | PENDING | TBD - human required | Must own enablement and rollback flag changes. |
-| Rollback owner | TBD - human required | PENDING | TBD - human required | Must be identified before enablement. |
-| Communication owner | TBD - human required | PENDING | TBD - human required | Must own operator communication. |
+| Decision owner | Ke Li | GO | TBD - human to fill at execution time | GO recorded from explicit human decision input; production enablement remains separate. |
+| Feature flag owner | Ke Li | GO | TBD - human to fill at execution time | Owns enablement and rollback flag changes. |
+| Rollback owner | Ke Li | GO | TBD - human to fill at execution time | Must confirm rollback readiness before enablement. |
+| Communication owner | Ke Li | GO | TBD - human to fill at execution time | Must own operator communication. |
 
 ## Follow-Up Items
 
 | Item | Owner | Severity | Due date | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Confirm production DB target before any access sync | TBD - human required | High | TBD - human required | PENDING | Required to avoid syncing the wrong environment. |
+| Confirm production DB target before any access sync | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | `prod-primary` alias is recorded; operator must confirm the actual target before sync. |
 | Confirm production API/Web commit family | TBD - human required | High | TBD - human required | PENDING | API and Web commits or image tags must be recorded. |
-| Assign production decision, feature flag, rollback, and communication owners | TBD - human required | High | TBD - human required | PENDING | Required before production approval. |
-| Decide whether production access sync is required | TBD - human required | High | TBD - human required | PENDING | If required, it must be run by an authorized operator only. |
-| Decide whether and when to enable `FLEET_OPS_API_ENABLED=true` | TBD - human required | High | TBD - human required | PENDING | This PR does not enable production. |
-| Capture production smoke evidence | TBD - human required | High | TBD - human required | PENDING | Include `/auth/me`, sidebar, `/fleet-ops`, API health, and read-only boundary evidence. |
-| Confirm rollback drill or rollback procedure | TBD - human required | Medium | TBD - human required | PENDING | Rollback is `FLEET_OPS_API_ENABLED=false` plus restart/redeploy if needed. |
-| Prepare operator communication plan | TBD - human required | Medium | TBD - human required | PENDING | Must state Fleet Ops is read-only and not an action workflow. |
+| Confirm actual production vehicleId | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | Choose the most recently registered vehicle from the `prod-primary` vehicle library before production smoke; actual vehicleId remains TBD. |
+| Re-confirm planned enable time | Ke Li | High | TBD - human to fill at execution time | PENDING | Supplied time `2026-01-01 00:00 UTC+08` is already elapsed and must be re-confirmed before enablement. |
+| Decide whether production access sync is required | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | If required, run only against confirmed `prod-primary`. |
+| Decide whether and when to enable `FLEET_OPS_API_ENABLED=true` | Ke Li | High | TBD - human to fill at execution time | PENDING | This PR does not enable production. |
+| Capture production smoke evidence | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | Include `/auth/me`, sidebar, `/fleet-ops`, API health, and read-only boundary evidence. |
+| Confirm rollback readiness before enablement | Ke Li | Medium | TBD - human to fill at execution time | PENDING | Rollback is `FLEET_OPS_API_ENABLED=false` plus restart/redeploy if needed. |
+| Communicate read-only nature to ADMIN / OP / GM | Ke Li | Medium | TBD - human to fill at execution time | PENDING | Must state Fleet Ops is read-only and not an action workflow. |

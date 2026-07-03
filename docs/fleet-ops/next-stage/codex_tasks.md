@@ -827,3 +827,27 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
 ```
+
+## 18. Fleet Ops Production GO / NO-GO Record Tasks
+
+P1-H15 is a docs/record-only task for capturing a later human production decision.
+
+Rules:
+- Keep the record at `docs/fleet-ops/runbooks/production-go-no-go-record.md`.
+- The default decision status must be `PENDING`.
+- The record does not enable production and is not approval by itself.
+- Do not run live DB sync during Codex automated verification.
+- Do not change the `FLEET_OPS_API_ENABLED` default or enable the production feature flag.
+- Do not modify Fleet Ops API/controller/facade/module logic, Fleet Ops UI behavior, frontend API clients, permission model, seed behavior, sync script behavior, schema, migrations, AppModule, package scripts, generic production docs, or CI.
+- Do not add Fleet Ops write, execute, admin, action, allocate, or collect permissions.
+- Do not add execution endpoints, mutation controls, customer/public routes, or production data mutation steps.
+- GO / NO-GO / GO_WITH_LIMITATIONS decisions are human-owned and must include owners, rationale, rollback owner, communication owner, limitations, and follow-up items.
+- Keep push, PR creation, and merge human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
+```

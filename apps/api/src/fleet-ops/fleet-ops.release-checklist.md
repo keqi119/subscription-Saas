@@ -256,6 +256,20 @@ Before marking anything other than `PENDING`, confirm:
 - This PR does not enable production, change `FLEET_OPS_API_ENABLED` defaults, or modify Fleet Ops runtime behavior.
 - No execution/write controls, permissions, customer/public exposure, schema changes, migrations, seed changes, sync script changes, or package script changes are introduced.
 
+## P1-H16 Production Decision Record Completion
+
+Use P1-H16 only to complete the production decision record baseline with known P1-H13 local/staging evidence. Completion of this baseline must not be treated as production approval.
+
+Before committing a P1-H16 update, confirm:
+
+- The production go/no-go record still shows final decision status `PENDING`.
+- Known P1-H13 local/staging evidence may be filled into the record.
+- Production-specific fields remain `TBD - human required` unless explicit human production evidence is provided.
+- Production DB target, production API/Web commits, selected production vehicleId, feature flag owner, rollback owner, decision owner, communication owner, access policy approval, planned enable time, observation window, and production smoke evidence remain human-owned fields.
+- Codex automated verification does not run live DB sync.
+- This PR does not enable production or change `FLEET_OPS_API_ENABLED` defaults.
+- No production feature flag enablement, runtime behavior change, permission model change, seed/sync behavior change, schema change, migration, execution/write permission, or customer/public exposure is introduced.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

@@ -876,3 +876,26 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
 ```
+
+## 20. Fleet Ops Production Decision Finalization Tasks
+
+P1-H17 is a docs/record-only task for finalizing the production GO / NO-GO record from explicit human decision input.
+
+Rules:
+- A `GO` decision may be recorded only when explicit human decision input is provided.
+- Recording `GO` does not automatically enable production.
+- Production access sync, production DB target confirmation, feature flag enablement, restart/redeploy, production smoke, and rollback remain human/operator actions.
+- Do not run live DB sync during Codex automated verification.
+- Do not query the production database.
+- Do not change feature flags or the `FLEET_OPS_API_ENABLED` default.
+- Do not modify Fleet Ops API/controller/facade/module logic, Fleet Ops UI behavior, frontend API clients, permission model, seed behavior, sync script behavior, schema, migrations, AppModule, package scripts, generic production docs, or CI.
+- Do not add Fleet Ops write, execute, admin, action, allocate, or collect permissions.
+- Keep push, PR creation, and merge human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
+```

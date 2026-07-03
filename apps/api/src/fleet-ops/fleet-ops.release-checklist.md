@@ -270,6 +270,20 @@ Before committing a P1-H16 update, confirm:
 - This PR does not enable production or change `FLEET_OPS_API_ENABLED` defaults.
 - No production feature flag enablement, runtime behavior change, permission model change, seed/sync behavior change, schema change, migration, execution/write permission, or customer/public exposure is introduced.
 
+## P1-H17 Production Decision Finalization
+
+Use P1-H17 only to record an explicit human GO decision in `docs/fleet-ops/runbooks/production-go-no-go-record.md`. Recording GO approves controlled read-only production readiness; it does not enable production by itself.
+
+Before committing a P1-H17 update, confirm:
+
+- GO is recorded only from explicit human decision input.
+- Production access sync and feature flag changes remain operator-controlled.
+- If the planned enable time is already elapsed, it is clearly marked for human re-confirmation before enablement.
+- Codex automated verification does not run live DB sync.
+- Codex does not query the production database.
+- This PR does not enable production or change `FLEET_OPS_API_ENABLED` defaults.
+- No production feature flag enablement, runtime behavior change, permission model change, seed/sync behavior change, schema change, migration, execution/write permission, or customer/public exposure is introduced.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

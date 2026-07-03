@@ -55,6 +55,8 @@ Known evidence categories:
 
 Record links or screenshots for the actual P1-H13 evidence packet in the production go/no-go notes.
 
+After this checklist is complete, record the human production decision in `docs/fleet-ops/runbooks/production-go-no-go-record.md`. That record defaults to `PENDING`; production enablement remains human/operator-controlled.
+
 ## Mandatory Automated Gates
 
 Run these non-live gates before production enablement:

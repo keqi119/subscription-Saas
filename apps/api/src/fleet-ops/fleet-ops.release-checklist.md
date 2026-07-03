@@ -240,6 +240,22 @@ Before production go/no-go, confirm:
 - Production smoke checks verify `fleet_ops:read`, `/fleet-ops`, sidebar `车队运营`, ADMIN / OP / GM access according to policy, non-granted role denial, API health, valid vehicle snapshot, evidence/warnings/confidence, and no execution/write controls.
 - Rollback is `FLEET_OPS_API_ENABLED=false` followed by restart/redeploy as needed; permission/menu entries may remain and no schema or data rollback is required.
 
+## P1-H15 Production GO / NO-GO Record
+
+Use `docs/fleet-ops/runbooks/production-go-no-go-record.md` to capture the human production decision after P1-H13 smoke evidence and P1-H14 production readiness review.
+
+Before marking anything other than `PENDING`, confirm:
+
+- The record defaults to `PENDING` and does not enable production by itself.
+- P1-H13 and P1-H14 evidence is linked or captured.
+- Mandatory automated gates are current.
+- Owner sign-offs are captured for product/operations, engineering, data/DB, security/permission, feature flag, rollback, and communication.
+- Production DB target is confirmed before any access sync command is run.
+- Feature flag owner and rollback owner are identified.
+- Codex automated verification does not run live DB sync.
+- This PR does not enable production, change `FLEET_OPS_API_ENABLED` defaults, or modify Fleet Ops runtime behavior.
+- No execution/write controls, permissions, customer/public exposure, schema changes, migrations, seed changes, sync script changes, or package script changes are introduced.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

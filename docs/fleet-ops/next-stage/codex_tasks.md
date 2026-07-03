@@ -804,3 +804,26 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
 ```
+
+## 17. Fleet Ops Production Readiness Checklist Tasks
+
+P1-H14 is a docs/checklist-only task for preparing a later controlled production enablement decision.
+
+Rules:
+- Keep the runbook at `docs/fleet-ops/runbooks/production-readiness.md`.
+- Do not enable production.
+- Do not run live DB sync during Codex automated verification.
+- Do not change the `FLEET_OPS_API_ENABLED` default.
+- Do not modify Fleet Ops API/controller/facade/module logic, Fleet Ops UI behavior, frontend API clients, permission model, seed behavior, sync script behavior, schema, migrations, AppModule, package scripts, or CI.
+- Do not add Fleet Ops write, execute, admin, action, allocate, or collect permissions.
+- Do not add execution endpoints, mutation controls, customer/public routes, or production data mutation steps.
+- Human operators own production access sync and feature flag enablement.
+- Keep push, PR creation, and merge human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
+```

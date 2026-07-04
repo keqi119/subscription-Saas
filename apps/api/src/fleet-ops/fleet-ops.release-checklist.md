@@ -284,6 +284,22 @@ Before committing a P1-H17 update, confirm:
 - This PR does not enable production or change `FLEET_OPS_API_ENABLED` defaults.
 - No production feature flag enablement, runtime behavior change, permission model change, seed/sync behavior change, schema change, migration, execution/write permission, or customer/public exposure is introduced.
 
+## P1-H18 Production Image Alignment
+
+Use `docs/fleet-ops/runbooks/production-image-alignment.md` to align production API/Web images before any Fleet Ops production enablement.
+
+Before production access sync or feature flag enablement, confirm:
+
+- Current production API/Web images are not aligned and must not be used for Fleet Ops enablement.
+- Target commit and image tags are captured.
+- API and Web images come from the same commit family.
+- Migration/preflight is completed or explicitly resolved by the operator.
+- `FLEET_OPS_API_ENABLED=false` remains in place during image alignment.
+- Access sync is not run during image alignment.
+- Rollback API/Web image pair is captured.
+- Post-alignment smoke passes before any Fleet Ops enablement step.
+- Image alignment does not change runtime behavior, API behavior, UI behavior, permission model, seed/sync behavior, package scripts, CI, Dockerfiles, compose files, schema, or migrations.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

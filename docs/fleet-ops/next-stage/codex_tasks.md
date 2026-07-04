@@ -899,3 +899,29 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
 ```
+
+## 21. Fleet Ops Production Image Alignment Tasks
+
+P1-H18 is a docs/checklist-only task for aligning production API/Web images before any Fleet Ops production enablement.
+
+Rules:
+- Keep the runbook at `docs/fleet-ops/runbooks/production-image-alignment.md`.
+- Production image alignment is not Fleet Ops feature enablement.
+- Do not build Docker images from Codex.
+- Do not pull production images from Codex.
+- Do not push images to GHCR from Codex.
+- Do not deploy or restart production services from Codex.
+- Do not run live DB sync during Codex automated verification.
+- Do not query the production database.
+- Do not change feature flags or the `FLEET_OPS_API_ENABLED` default.
+- Do not modify Fleet Ops API/controller/facade/module logic, Fleet Ops UI behavior, frontend API clients, permission model, seed behavior, sync script behavior, package scripts, CI, Dockerfiles, compose files, schema, or migrations.
+- API and Web must be aligned from the same target commit family before Fleet Ops enablement.
+- Human operators own GitHub Actions image build/publish, digest capture, production deployment, migration/preflight execution, access sync, feature flag enablement, production smoke, rollback, push, PR creation, and merge.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
+```

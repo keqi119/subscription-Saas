@@ -34,6 +34,25 @@ P1-H17 finalization note:
 - No production database query is run by this PR.
 - Known evidence below is a P1-H13 local/staging evidence baseline, not production smoke evidence.
 
+## P1-H18 Production Image Alignment Dependency
+
+Actual Fleet Ops production enablement must not proceed until production API/Web image alignment is completed.
+
+Current P1-H18 target:
+
+| Field | Value |
+| --- | --- |
+| Target commit | `67a9f6b36fc87312c58a46c2634b68246ef63887` |
+| Required image relationship | API and Web images must come from the same commit family. |
+| Image alignment runbook | `docs/fleet-ops/runbooks/production-image-alignment.md` |
+
+Image alignment guardrails:
+
+- `FLEET_OPS_API_ENABLED` remains false during image alignment.
+- Production access sync remains a later operator action.
+- Feature flag enablement remains a later operator action.
+- Image alignment is not Fleet Ops enablement.
+
 ## Release Candidate Identity
 
 | Field | Value |
@@ -272,6 +291,7 @@ Permission and menu DB entries may remain. No schema rollback is needed. No data
 | --- | --- | --- | --- | --- | --- |
 | Confirm production DB target before any access sync | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | `prod-primary` alias is recorded; operator must confirm the actual target before sync. |
 | Confirm production API/Web commit family | TBD - human required | High | TBD - human required | PENDING | API and Web commits or image tags must be recorded. |
+| Complete production image alignment | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | Complete `docs/fleet-ops/runbooks/production-image-alignment.md` before production access sync or feature flag enablement. |
 | Confirm actual production vehicleId | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | Choose the most recently registered vehicle from the `prod-primary` vehicle library before production smoke; actual vehicleId remains TBD. |
 | Execute planned enable window | Ke Li | High | `2026-07-05 00:00 UTC+08` | PENDING | Planned enable time is confirmed by Ke Li; actual enablement, feature flag change, access sync if needed, and production smoke remain manual/operator-controlled. |
 | Decide whether production access sync is required | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | If required, run only against confirmed `prod-primary`. |

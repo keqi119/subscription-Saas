@@ -30,6 +30,7 @@ Confirm these before any production go/no-go meeting:
 | P1-H13 staging smoke | Completed and evidence captured. |
 | Code baseline | Latest main includes P1-H12 or newer. |
 | API/Web alignment | API and Web are deployed from the same commit family. |
+| Production image alignment | `docs/fleet-ops/runbooks/production-image-alignment.md` is completed before Fleet Ops enablement. |
 | Production DB target | Confirmed before any access sync command is run. |
 | Backup and rollback policy | Production backup, restore, and application rollback owners understand the existing production runbooks. |
 | Access policy | ADMIN / OP / GM production Fleet Ops read access is approved. |
@@ -79,6 +80,22 @@ pnpm --filter @subscription-saas/shared lint
 ```
 
 Do not run broad production data sync, full seed, or live DB mutation commands as automated verification for this checklist.
+
+## Production Image Alignment Gate
+
+Before production access sync or feature flag enablement, complete:
+
+```text
+docs/fleet-ops/runbooks/production-image-alignment.md
+```
+
+Image alignment requirements:
+
+- API and Web images must be aligned to the same approved main commit family.
+- Migration/preflight must be resolved before image rollout.
+- `FLEET_OPS_API_ENABLED=false` must remain in place during image alignment.
+- Production image alignment is not Fleet Ops feature enablement.
+- Access sync and setting `FLEET_OPS_API_ENABLED=true` remain later operator actions.
 
 ## Production Access Sync Readiness
 
@@ -181,6 +198,7 @@ Capture the production readiness evidence packet without storing passwords, bear
 Mark GO only if all of these are true:
 
 - Mandatory automated gates pass.
+- Production API/Web image alignment is completed.
 - P1-H13 staging smoke evidence exists.
 - ADMIN / OP / GM access policy is approved.
 - Rollback owner is identified.
@@ -198,6 +216,7 @@ Mark NO-GO if any of these are true:
 - A non-granted role can access Fleet Ops.
 - Execution or write controls appear.
 - API/Web versions are mismatched.
+- Production image alignment has not been completed.
 - Selected vehicle snapshot fails unexpectedly.
 - Evidence, warnings, or confidence are missing from expected read-only outputs.
 - Rollback owner or feature flag owner is not confirmed.

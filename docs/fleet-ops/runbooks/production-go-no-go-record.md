@@ -133,13 +133,14 @@ Access sync rules:
 | Rollback key | `FLEET_OPS_API_ENABLED=false` |
 | Feature flag owner | Ke Li |
 | Rollback owner | Ke Li |
-| Planned enable time | `2026-01-01 00:00 UTC+08` |
+| Planned enable time | `2026-07-05 00:00 UTC+08` |
+| Confirmed by | Ke Li |
 | Planned observation window | Active observation: 2 hours; passive observation: 24 hours. |
 | Current decision | GO recorded for controlled read-only readiness; production feature flag is not enabled by this PR. |
 
 This PR and this record do not enable production. Production enablement remains a separate human/operator action after an approved decision.
 
-The planned enable time `2026-01-01 00:00 UTC+08` is already elapsed and must be re-confirmed by Ke Li before actual production enablement.
+The planned enable time `2026-07-05 00:00 UTC+08` is confirmed by Ke Li. Actual production enablement remains a separate human/operator action. Setting `FLEET_OPS_API_ENABLED=true`, running production access sync, and completing production smoke remain manual/operator-controlled.
 
 ## Pre-Enable Conditions
 
@@ -203,8 +204,8 @@ Confirm each item before marking GO:
 | API/Web version mismatch | UI may call incompatible API contract. | Confirm API/Web commit family before smoke. | Production API/Web commits TBD - human required. |
 | Wrong DB sync target | Access sync could affect the wrong environment. | Confirm production DB target before any sync. | Production DB target TBD - human required. |
 | Stale login/session | `/auth/me` may not show updated permissions. | Logout/login after sync and flag changes. | Production smoke procedure TBD - human required. |
-| Feature flag confusion | Disabled state may be mistaken for failure, or flag may be enabled prematurely. | Ke Li owns the feature flag decision; planned enable time requires re-confirmation before any change. | Owner captured; actual feature flag change remains operator-controlled. |
-| Elapsed planned enable time | The supplied `2026-01-01 00:00 UTC+08` timestamp is already elapsed. | Ke Li must re-confirm the actual enable window before any `FLEET_OPS_API_ENABLED=true` change. | GO record captured; actual enablement blocked until re-confirmed. |
+| Feature flag confusion | Disabled state may be mistaken for failure, or flag may be enabled outside the planned operator window. | Ke Li owns the feature flag decision; planned enable time is confirmed as `2026-07-05 00:00 UTC+08`. | Owner captured; actual feature flag change remains operator-controlled. |
+| Manual enablement boundary | The GO decision and confirmed time could be mistaken for automatic enablement. | Keep access sync, `FLEET_OPS_API_ENABLED=true`, restart/redeploy, and production smoke as manual/operator-controlled actions. | Boundary captured; production enablement not performed by this record. |
 | Operators mistake dashboard for action workflow | Read-only view could imply operational actions. | Ke Li owns communication; confirm no action controls and communicate read-only scope. | Communication owner captured; operator communication still pending. |
 | Evidence not captured | Decision becomes hard to audit. | Require screenshots/snippets before GO. | Production evidence TBD - production run required. |
 | Role policy not approved | Unauthorized or overbroad access risk. | Require security/permission owner sign-off. | Production access policy approval TBD - human required. |
@@ -272,7 +273,7 @@ Permission and menu DB entries may remain. No schema rollback is needed. No data
 | Confirm production DB target before any access sync | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | `prod-primary` alias is recorded; operator must confirm the actual target before sync. |
 | Confirm production API/Web commit family | TBD - human required | High | TBD - human required | PENDING | API and Web commits or image tags must be recorded. |
 | Confirm actual production vehicleId | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | Choose the most recently registered vehicle from the `prod-primary` vehicle library before production smoke; actual vehicleId remains TBD. |
-| Re-confirm planned enable time | Ke Li | High | TBD - human to fill at execution time | PENDING | Supplied time `2026-01-01 00:00 UTC+08` is already elapsed and must be re-confirmed before enablement. |
+| Execute planned enable window | Ke Li | High | `2026-07-05 00:00 UTC+08` | PENDING | Planned enable time is confirmed by Ke Li; actual enablement, feature flag change, access sync if needed, and production smoke remain manual/operator-controlled. |
 | Decide whether production access sync is required | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | If required, run only against confirmed `prod-primary`. |
 | Decide whether and when to enable `FLEET_OPS_API_ENABLED=true` | Ke Li | High | TBD - human to fill at execution time | PENDING | This PR does not enable production. |
 | Capture production smoke evidence | Ke Li / authorized operator | High | TBD - human to fill at execution time | PENDING | Include `/auth/me`, sidebar, `/fleet-ops`, API health, and read-only boundary evidence. |

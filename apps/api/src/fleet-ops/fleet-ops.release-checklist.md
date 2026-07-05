@@ -325,6 +325,31 @@ Remaining notes:
 - Current UI requires manual vehicleId input.
 - Follow-up P1-H23 should implement Fleet Ops vehicle selector/lookup.
 
+## P1-H23 Vehicle Lookup / Drilldown Entry
+
+P1-H23 makes the read-only `/fleet-ops` surface usable without manually discovering an internal vehicle ID.
+
+Before release, confirm:
+
+- `/fleet-ops` supports lookup by internal vehicle ID, vehicle number, VIN, and license plate.
+- Lookup responses include only minimal safe identity fields.
+- VIN is returned as suffix only, and plate is masked.
+- Selecting a lookup result loads the existing single-vehicle snapshot.
+- `/fleet-ops?vehicleId=<id>` loads the same single-vehicle snapshot.
+- `fleet_ops:read` remains the only Fleet Ops permission required.
+- `FLEET_OPS_API_ENABLED` gates the lookup endpoint with the other Fleet Ops business endpoints.
+- No customer, finance, lease, payment, full VIN, full plate, or sensitive evidence payload is returned by lookup.
+- No Fleet Ops write/execution endpoints, mutation controls, saved custom views, customer/public exposure, schema changes, migrations, seed/sync changes, AppModule changes, package script changes beyond the focused Fleet Ops test list, CI, Dockerfile, or compose changes are introduced.
+- P2 pool overview / dynamic cohort remains out of scope.
+- P3 saved custom views remain deferred pending P2 effectiveness.
+
+Focused checks:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.vehicle-lookup.spec.ts test/fleet-ops.api-readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.controller.spec.ts
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-vehicle-lookup.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

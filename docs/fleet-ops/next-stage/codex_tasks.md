@@ -953,3 +953,31 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
 ```
+
+## 23. Fleet Ops Vehicle Lookup / Drilldown Entry Tasks
+
+P1-H23 implements a read-only vehicle selector for the production-enabled Fleet Ops diagnostic surface.
+
+Rules:
+- Add only a GET lookup endpoint under `/fleet-ops`.
+- Require `fleet_ops:read` and respect `FLEET_OPS_API_ENABLED`.
+- Search by internal vehicle ID, vehicle number, VIN, and license plate when those fields exist.
+- Return only minimal safe identity fields: vehicle ID, vehicle number, masked plate, VIN suffix, brand/model/model year, and status/operational state label.
+- Do not return customer, finance, lease, payment, evidence payload, full VIN, or full plate data.
+- Do not modify schema, migrations, seed, sync, permissions, AppModule, Docker/compose, CI, or root package scripts.
+- Do not add Fleet Ops POST/PATCH/PUT/DELETE endpoints, execution/write/admin/action permissions, mutation controls, customer/public exposure, saved custom views, or P2 pool aggregation.
+- Direct `/fleet-ops?vehicleId=<id>` may load the existing single-vehicle snapshot.
+- P2 pool overview / dynamic cohort remains next-stage design work.
+- P3 saved custom views remain deferred until P2 proves useful.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api typecheck
+pnpm --filter @subscription-saas/api lint
+pnpm --filter @subscription-saas/web typecheck
+pnpm --filter @subscription-saas/web lint
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts test/fleet-ops.vehicle-lookup.spec.ts test/fleet-ops.api-readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.controller.spec.ts
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-vehicle-lookup.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
+```

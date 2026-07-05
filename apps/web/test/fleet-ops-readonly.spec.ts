@@ -57,6 +57,7 @@ describe("fleet ops admin ui readonly boundary", () => {
     expect(files).toContain("apps/web/src/lib/fleet-ops-view-model.ts");
     expect(files).toContain("apps/web/src/app/fleet-ops/page.tsx");
     expect(files).toContain("apps/web/src/components/fleet-ops/fleet-ops-overview.tsx");
+    expect(files).toContain("apps/web/src/components/fleet-ops/fleet-ops-vehicle-lookup.tsx");
   });
 
   it("keeps the Fleet Ops frontend API client GET-only", () => {

@@ -21,9 +21,11 @@ import {
 } from "./fleet-ops.api.types";
 import { FleetOpsFacade } from "./fleet-ops.facade";
 import { FleetOpsHealthService } from "./fleet-ops.health.service";
+import { FleetOpsVehicleLookupService } from "./fleet-ops.vehicle-lookup.service";
 import type { FleetOpsHealthContract } from "./fleet-ops.contracts";
 import { FleetOpsQueryDto, FleetOpsVehicleParamDto } from "./dto/fleet-ops-query.dto";
 import { FleetOpsRangeQueryDto } from "./dto/fleet-ops-range-query.dto";
+import { FleetOpsVehicleLookupQueryDto } from "./dto/fleet-ops-vehicle-lookup.dto";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -34,6 +36,7 @@ export class FleetOpsController {
   constructor(
     private readonly facade: FleetOpsFacade,
     private readonly healthService: FleetOpsHealthService,
+    private readonly vehicleLookupService: FleetOpsVehicleLookupService,
     private readonly config: ConfigService
   ) {}
 
@@ -71,6 +74,12 @@ export class FleetOpsController {
       },
       query
     );
+  }
+
+  @Get("vehicles/lookup")
+  @UseGuards(FleetOpsApiEnabledGuard)
+  async lookupVehicles(@Query() query: FleetOpsVehicleLookupQueryDto) {
+    return responseEnvelope(await this.vehicleLookupService.lookup(query));
   }
 
   @Get("vehicles/:vehicleId/snapshot")

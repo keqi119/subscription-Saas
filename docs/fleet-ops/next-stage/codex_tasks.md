@@ -1078,3 +1078,28 @@ pnpm --filter @subscription-saas/web lint
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 ```
+
+## 27. Fleet Ops P2-H4 Pool Overview Smoke And Metric Calibration Tasks
+
+P2-H4 is docs/runbook-only. It defines how operators smoke and calibrate the P2-H2 backend and P2-H3 frontend after deployment.
+
+Rules:
+- Keep the smoke runbook at `docs/fleet-ops/runbooks/p2-pool-overview-smoke.md`.
+- Keep the calibration record template at `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record.md`.
+- Do not modify backend runtime, frontend runtime, schema, migrations, seed, sync, permissions, package scripts, CI, Docker, compose, or deployment configuration.
+- Do not add POST/PATCH/PUT/DELETE Fleet Ops operations, write/execution/admin/action permissions, customer/public exposure, mutation controls, or saved custom views.
+- Codex must not run production commands, query production DB, run live DB sync, run access sync, deploy, restart services, or change feature flags.
+- Operators execute environment-specific smoke commands manually and paste redacted evidence.
+- Smoke must cover API routes, Web routes, `ADMIN`/`OP`/`GM` access, non-granted role denial, feature flag behavior, and read-only safety.
+- Calibration must cover vehicle counts, economics, cashflow, ROI/ROE, deposit treatment, overdue/D1-D5, data quality, anomaly lists, and single-vehicle drilldown.
+- P2-H5 owns post-smoke correction or production hardening if evidence shows material gaps.
+- P3 saved custom views remain deferred pending P2 effectiveness.
+- Push, PR creation, merge, deployment, production commands, live DB sync, production DB query, and feature-flag operations remain human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.api-contract.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-readonly.spec.ts
+```

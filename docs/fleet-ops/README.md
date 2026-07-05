@@ -73,3 +73,19 @@ P2-H3 adds the frontend read-only pool/cohort overview surface on top of the P2-
 - The UI remains read-only: no saved custom views, no batch operations, no execution/write controls, and no customer/public exposure.
 - P2-H4 production smoke and metric calibration remain next.
 - P3 saved custom views remain deferred pending P2 effectiveness.
+
+## P2-H4 Pool Overview Smoke And Metric Calibration
+
+P2-H4 is documented in:
+
+- `docs/fleet-ops/runbooks/p2-pool-overview-smoke.md`
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record.md`
+
+P2-H4 validates the P2-H2 backend and P2-H3 frontend after operator-controlled deployment.
+
+- Smoke scope includes `/fleet-ops`, `/fleet-ops?vehicleId=<id>`, `/fleet-ops/overview`, `/fleet-ops/pools`, and `/fleet-ops/pools/[poolId]`.
+- API smoke includes `GET /fleet-ops/health`, `GET /fleet-ops/overview`, `GET /fleet-ops/pools`, `GET /fleet-ops/pools/:poolId`, `GET /fleet-ops/overview/vehicles`, and `GET /fleet-ops/vehicles/lookup`.
+- Calibration checks pool/cohort metrics, ROI/ROE total-based aggregation, deposit exclusion from operating revenue, overdue/D1-D5 semantics, data quality, anomaly lists, and drilldown to the single-vehicle snapshot.
+- P2-H4 remains docs/runbook-only for Codex: no production commands, no DB queries, no live access sync, no feature flag changes, no deployment, and no runtime changes.
+- P2-H5 owns post-smoke correction or production hardening if evidence shows gaps.
+- P3 saved custom views remain deferred pending P2 effectiveness.

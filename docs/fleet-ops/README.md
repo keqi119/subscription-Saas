@@ -50,3 +50,14 @@ P2-H1 is documented in `docs/fleet-ops/next-stage/p2_pool_overview_design.md`.
 - The design distinguishes formal `车辆池 / Vehicle Pool`, temporary `车辆分群 / Dynamic Cohort`, and P3-only `自定义视图 / Saved Custom View`.
 - The first P2 implementation phases must remain read-only, keep `fleet_ops:read`, respect `FLEET_OPS_API_ENABLED`, and avoid execution/write controls.
 - P3 saved custom views remain deferred pending P2 effectiveness because they require write scope, ownership, audit, permission, and persistence design.
+
+## P2-H2 Pool Overview Backend
+
+P2-H2 adds the backend read-only aggregation surface for future pool/cohort UI work.
+
+- MVP endpoints: `GET /fleet-ops/overview`, `GET /fleet-ops/pools`, `GET /fleet-ops/pools/:poolId`, and `GET /fleet-ops/overview/vehicles`.
+- Formal pool source: `VehicleAssetPool` plus active `VehicleAssetPoolVehicle` membership.
+- Dynamic cohort MVP filters: pool, brand, model, model year, vehicle status, registration date range, created date range, and asset location.
+- Performance caps: scope default 300, hard scope cap 500, `topN` default 10/max 50, page size max 100, date range max 366 days.
+- Aggregation reuses existing Fleet Ops KPI/risk services; direct Prisma reads are limited to scope, pool membership, and safe vehicle identity filters.
+- P2-H2 remains GET-only, requires `fleet_ops:read`, respects `FLEET_OPS_API_ENABLED`, adds no schema/migration/write path, and does not implement Web UI or saved custom views.

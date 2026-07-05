@@ -77,6 +77,29 @@ describe("FleetOpsController", () => {
     expect(facade.query).not.toHaveBeenCalled();
   });
 
+  it("routes pool overview reads through the read-only overview service", async () => {
+    const { controller, facade, overviewService } = createController("true");
+
+    await expect(controller.getOverview({ scopeType: "ALL", topN: 5 })).resolves.toEqual(
+      expect.objectContaining({ data: expect.objectContaining({ scope: expect.objectContaining({ type: "ALL" }) }) })
+    );
+    await expect(controller.listPools({ page: 1, pageSize: 20 })).resolves.toEqual(
+      expect.objectContaining({ data: expect.objectContaining({ items: expect.any(Array) }) })
+    );
+    await expect(controller.getPoolDetail({ poolId: "00000000-0000-4000-8000-000000000010" }, { scopeType: "POOL" })).resolves.toEqual(
+      expect.objectContaining({ data: expect.objectContaining({ pool: expect.objectContaining({ poolId: "pool-1" }) }) })
+    );
+    await expect(controller.listOverviewVehicles({ scopeType: "ALL", page: 1, pageSize: 10 })).resolves.toEqual(
+      expect.objectContaining({ data: expect.objectContaining({ items: expect.any(Array) }) })
+    );
+
+    expect(overviewService.getOverview).toHaveBeenCalledWith({ scopeType: "ALL", topN: 5 });
+    expect(overviewService.listPools).toHaveBeenCalledWith({ page: 1, pageSize: 20 });
+    expect(overviewService.getPoolDetail).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000010", { scopeType: "POOL" });
+    expect(overviewService.listOverviewVehicles).toHaveBeenCalledWith({ scopeType: "ALL", page: 1, pageSize: 10 });
+    expect(facade.query).not.toHaveBeenCalled();
+  });
+
   it("keeps diagnostics away from business and execution paths", () => {
     const { controller, facade, healthService } = createController("true");
 
@@ -127,15 +150,41 @@ function createController(featureFlag?: string) {
       query: "VEH-DEMO"
     })
   };
+  const overviewService = {
+    getOverview: vi.fn().mockResolvedValue({
+      evidenceSummary: { fullEvidenceIncluded: false },
+      scope: { type: "ALL" },
+      vehicleCounts: { total: 0 }
+    }),
+    getPoolDetail: vi.fn().mockResolvedValue({
+      overview: { scope: { type: "POOL" } },
+      pool: { poolId: "pool-1" }
+    }),
+    listOverviewVehicles: vi.fn().mockResolvedValue({
+      items: [],
+      pagination: { page: 1, pageSize: 10, total: 0 }
+    }),
+    listPools: vi.fn().mockResolvedValue({
+      items: [],
+      pagination: { page: 1, pageSize: 20, total: 0 }
+    })
+  };
   const config = {
     get: vi.fn((key: string) => (key === "FLEET_OPS_API_ENABLED" ? featureFlag : undefined))
   };
 
   return {
     config,
-    controller: new FleetOpsController(facade as never, healthService as never, vehicleLookupService as never, config as never),
+    controller: new FleetOpsController(
+      facade as never,
+      healthService as never,
+      vehicleLookupService as never,
+      overviewService as never,
+      config as never
+    ),
     facade,
     healthService,
+    overviewService,
     vehicleLookupService
   };
 }

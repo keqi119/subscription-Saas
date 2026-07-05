@@ -16,6 +16,9 @@ import { FleetOpsApiEnabledGuard } from "./fleet-ops.api.guard";
 import { FleetOpsController } from "./fleet-ops.controller";
 import { FleetOpsFacade } from "./fleet-ops.facade";
 import { FleetOpsHealthService } from "./fleet-ops.health.service";
+import { FleetOpsOverviewService } from "./fleet-ops.overview.service";
+import { FleetOpsPoolAggregatorService } from "./fleet-ops.pool-aggregator.service";
+import { FleetOpsScopeResolverService } from "./fleet-ops.scope-resolver.service";
 import { FleetOpsVehicleLookupService } from "./fleet-ops.vehicle-lookup.service";
 import { VehicleOperationalStateRepository } from "./vehicle-operational-state.repository";
 import { VehicleOperationalStateService } from "./vehicle-operational-state.service";
@@ -40,6 +43,9 @@ import { VehicleOperationalStateService } from "./vehicle-operational-state.serv
     FleetOpsApiEnabledGuard,
     FleetOpsFacade,
     FleetOpsHealthService,
+    FleetOpsOverviewService,
+    FleetOpsPoolAggregatorService,
+    FleetOpsScopeResolverService,
     FleetOpsVehicleLookupService
   ]
 })

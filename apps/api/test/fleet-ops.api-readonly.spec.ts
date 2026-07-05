@@ -14,7 +14,13 @@ const apiFiles = [
   "src/fleet-ops/fleet-ops.api.guard.ts",
   "src/fleet-ops/fleet-ops.api.errors.ts",
   "src/fleet-ops/fleet-ops.api.types.ts",
+  "src/fleet-ops/fleet-ops.overview.service.ts",
+  "src/fleet-ops/fleet-ops.pool-aggregator.service.ts",
+  "src/fleet-ops/fleet-ops.pool-read-model.ts",
+  "src/fleet-ops/fleet-ops.scope-resolver.service.ts",
   "src/fleet-ops/fleet-ops.vehicle-lookup.service.ts",
+  "src/fleet-ops/dto/fleet-ops-overview-query.dto.ts",
+  "src/fleet-ops/dto/fleet-ops-pool-query.dto.ts",
   "src/fleet-ops/dto/fleet-ops-query.dto.ts",
   "src/fleet-ops/dto/fleet-ops-range-query.dto.ts",
   "src/fleet-ops/dto/fleet-ops-response.dto.ts",
@@ -55,6 +61,7 @@ describe("Fleet Ops API read-only boundary", () => {
     expect(controllerSource).toContain("FleetOpsFacade");
     expect(controllerSource).toContain("FleetOpsHealthService");
     expect(controllerSource).toContain("FleetOpsVehicleLookupService");
+    expect(controllerSource).toContain("FleetOpsOverviewService");
     expect(controllerSource).not.toMatch(
       /VehicleOperationalStateService|VehicleTimelineService|FleetKpiService|FleetRiskService|FleetExecutionService|ActionOrchestratorService|PrismaService|FinanceService|PaymentService|ReportService|OrderService/
     );

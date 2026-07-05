@@ -377,6 +377,32 @@ pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
 ```
 
+## P2-H2 Pool Overview Backend Check
+
+P2-H2 adds backend-only read-only aggregation for pool overview and dynamic cohorts.
+
+Before release or frontend integration, confirm:
+
+- `GET /fleet-ops/overview`, `GET /fleet-ops/pools`, `GET /fleet-ops/pools/:poolId`, and `GET /fleet-ops/overview/vehicles` are the only new Fleet Ops pool/cohort endpoints.
+- All new endpoints are GET-only, guarded by `fleet_ops:read`, and gated by `FLEET_OPS_API_ENABLED`.
+- Formal pools use `VehicleAssetPool` and active `VehicleAssetPoolVehicle` membership.
+- Dynamic cohort MVP filters are pool, brand, model, model year, vehicle status, registration date range, created date range, and asset location.
+- Scope caps remain default 300 and hard max 500; `topN` remains default 10/max 50; page size max remains 100; date range max remains 366 days.
+- Direct Prisma reads are limited to scope, pool membership, safe vehicle identity filters, pagination, and counts.
+- KPI/risk/economics semantics remain in the existing Fleet Ops KPI/risk services or approved summaries.
+- ROI/ROE remain total-based, deposits remain separate from operating revenue, and overdue/D1-D5 semantics preserve the existing Fleet Ops risk rules.
+- Overview/list responses do not include full evidence payloads.
+- No schema, migration, seed, sync, permission, AppModule, Web runtime, write endpoint, execution endpoint, saved custom view, customer/public exposure, CI, Docker, compose, or deployment change is introduced.
+
+Focused P2-H2 checks:
+
+```bash
+pnpm --filter @subscription-saas/api typecheck
+pnpm --filter @subscription-saas/api lint
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts test/fleet-ops.pool-scope.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-economics.spec.ts test/fleet-ops.pool-risk.spec.ts test/fleet-ops.pool-readonly.spec.ts test/fleet-ops.api-contract.spec.ts test/fleet-ops.api-readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.controller.spec.ts
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

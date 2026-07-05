@@ -1054,3 +1054,27 @@ pnpm --filter @subscription-saas/api lint
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts test/fleet-ops.pool-scope.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-economics.spec.ts test/fleet-ops.pool-risk.spec.ts test/fleet-ops.pool-readonly.spec.ts test/fleet-ops.api-contract.spec.ts test/fleet-ops.api-readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.controller.spec.ts
 ```
+
+## 26. Fleet Ops P2-H3 Pool Overview Frontend UI Tasks
+
+P2-H3 implements the frontend-only read-only pool/cohort overview UI that consumes the P2-H2 backend endpoints.
+
+Rules:
+- Keep `/fleet-ops` as the existing single-vehicle diagnostic page.
+- Add `/fleet-ops/overview`, `/fleet-ops/pools`, and `/fleet-ops/pools/[poolId]`.
+- Keep drilldown links passive and pointed at `/fleet-ops?vehicleId=<id>`.
+- Use GET-only helpers for `GET /fleet-ops/overview`, `GET /fleet-ops/pools`, `GET /fleet-ops/pools/:poolId`, and `GET /fleet-ops/overview/vehicles`.
+- Do not modify backend runtime, schema, migrations, seed, sync, shared auth/menu permissions, package scripts, CI, Docker, or compose configuration.
+- Do not add mutation API helpers, saved-view helpers, batch operation UI, execution/action buttons, write controls, or customer/public exposure.
+- P2-H4 owns production smoke and metric calibration.
+- P3 saved custom views remain deferred pending P2 effectiveness.
+- Push, PR creation, merge, deployment, production commands, live DB sync, production DB query, and feature-flag operations remain human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/web typecheck
+pnpm --filter @subscription-saas/web lint
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+```

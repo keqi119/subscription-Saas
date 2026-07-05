@@ -80,6 +80,7 @@ P2-H4 is documented in:
 
 - `docs/fleet-ops/runbooks/p2-pool-overview-smoke.md`
 - `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record.md`
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record-20260705.md`
 
 P2-H4 validates the P2-H2 backend and P2-H3 frontend after operator-controlled deployment.
 
@@ -89,3 +90,5 @@ P2-H4 validates the P2-H2 backend and P2-H3 frontend after operator-controlled d
 - P2-H4 remains docs/runbook-only for Codex: no production commands, no DB queries, no live access sync, no feature flag changes, no deployment, and no runtime changes.
 - P2-H5 owns post-smoke correction or production hardening if evidence shows gaps.
 - P3 saved custom views remain deferred pending P2 effectiveness.
+
+The 2026-07-05 production smoke/calibration record is completed as `PASS_WITH_NOTES`. No rollback or feature disable was required. P2-H5 should be evidence-based and selected after passive observation; P3 saved custom views remain deferred.

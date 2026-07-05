@@ -494,6 +494,13 @@ P2-H4 validates the deployed P2-H2/P2-H3 experience across API routes, Web route
 
 P2-H5 should be opened only when P2-H4 evidence shows post-smoke correction, metric calibration refinement, or production hardening is needed. P3 saved custom views remain deferred pending P2 effectiveness.
 
+Production smoke record:
+
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record-20260705.md`
+- Final classification: `PASS_WITH_NOTES`
+- No rollback or feature disable required.
+- Next decision: P2-H5 hardening/calibration follow-up based on evidence and passive observation.
+
 ### 4.5 Safety Checklist
 
 - no schema changes

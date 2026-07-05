@@ -321,3 +321,7 @@ P3 must be planned separately because saved views require:
 - Permission design.
 - Persistence lifecycle.
 - Deletion and retention policy.
+
+## 19. Completed Records
+
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record-20260705.md`: production smoke and metric calibration completed as `PASS_WITH_NOTES` on 2026-07-05.

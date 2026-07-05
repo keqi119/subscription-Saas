@@ -981,3 +981,36 @@ pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts test/fleet-ops.vehicle-lookup.spec.ts test/fleet-ops.api-readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.controller.spec.ts
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-vehicle-lookup.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
 ```
+
+## 24. Fleet Ops P2-H1 Pool Overview / Dynamic Cohort Design Tasks
+
+P2-H1 is a docs/design-only task that defines how Fleet Ops moves from single-vehicle diagnosis toward pool/cohort overview, anomaly ranking, vehicle list, and single-vehicle snapshot drilldown.
+
+Rules:
+- Keep the design at `docs/fleet-ops/next-stage/p2_pool_overview_design.md`.
+- P2-H1 must not implement runtime API, runtime UI, backend aggregation, package scripts, CI, Dockerfiles, compose files, schema, migrations, seed behavior, sync behavior, permission changes, or deployment changes.
+- Do not add Fleet Ops POST/PATCH/PUT/DELETE operations, execution/write/admin/action permissions, customer/public exposure, mutation controls, or saved custom views.
+- P3 saved custom views remain deferred pending P2 effectiveness and require separate write-scope, ownership, audit, permission, sharing, and persistence design.
+- Future P2-H2 backend aggregation must remain read-only, GET-only externally, use `fleet_ops:read`, respect `FLEET_OPS_API_ENABLED`, and preserve existing Fleet Ops KPI/risk semantics.
+- Future P2-H3 UI must not add saved-view, execution, mutation, or customer/public controls.
+- Push, PR creation, merge, deployment, production commands, live DB sync, production DB query, and feature-flag operations remain human-only.
+
+Recommended future backend components:
+- `FleetOpsScopeResolver`
+- `FleetOpsPoolAggregator`
+- `FleetOpsOverviewService`
+- `FleetOpsPoolReadModel` contracts
+
+Recommended future endpoints:
+- `GET /fleet-ops/overview`
+- `GET /fleet-ops/pools`
+- `GET /fleet-ops/pools/:poolId`
+- Optional `GET /fleet-ops/vehicles` for a paginated scoped vehicle/anomaly list.
+
+Focused verification for P2-H1 docs-only work:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+```

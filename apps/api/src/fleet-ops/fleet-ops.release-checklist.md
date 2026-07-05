@@ -350,6 +350,33 @@ pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.vehicle-look
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-vehicle-lookup.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts
 ```
 
+## P2-H1 Pool Overview / Dynamic Cohort Design
+
+Use `docs/fleet-ops/next-stage/p2_pool_overview_design.md` as the P2-H1 design source for pool overview and dynamic cohort work.
+
+P2-H1 does not alter runtime behavior. It does not change Fleet Ops API/controller/facade/module logic, Fleet Ops UI behavior, schema, migrations, seed behavior, sync behavior, permission model, package scripts, CI, Dockerfiles, compose files, or deployment configuration.
+
+Before starting P2-H2 or P2-H3 implementation, confirm:
+
+- Pool overview and dynamic cohort work remains read-only.
+- New Fleet Ops business endpoints remain GET-only.
+- `fleet_ops:read` remains the only Fleet Ops permission required.
+- `FLEET_OPS_API_ENABLED` gates the new Fleet Ops business endpoints.
+- No execution, write, admin, action, allocation, or collection permission is added.
+- No execution, mutation, customer portal, public route, or saved-view control is exposed.
+- No saved custom view persistence is added in P2-H2 or P2-H3.
+- KPI aggregation preserves total-based ROI/ROE and does not use a simple average of vehicle ROI/ROE.
+- Deposits remain separate from operating revenue.
+- Overdue detection keeps using factual overdue semantics instead of relying only on `BillStatus.OVERDUE`.
+
+Focused P2-H1 docs-only checks:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

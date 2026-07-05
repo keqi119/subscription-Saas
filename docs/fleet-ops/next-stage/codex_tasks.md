@@ -925,3 +925,31 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
 ```
+
+## 22. Fleet Ops Production Enablement Record Tasks
+
+P1-H22 is a docs-only task for recording completed human/operator production enablement evidence after image alignment, migration preflight, access sync, feature flag enablement, API health, and Fleet Ops UI smoke have already been performed by the operator.
+
+Rules:
+- Keep the record at `docs/fleet-ops/runbooks/production-enablement-record-20260705.md`.
+- Production enablement records are docs-only.
+- Codex must not execute production actions.
+- Record human/operator evidence only.
+- Do not include secrets, plaintext DSNs, passwords, tokens, cookies, registry credentials, or full DB connection strings.
+- Do not modify runtime, API, UI, permission, seed, sync, package, Dockerfile, compose, deployment, schema, migration, or CI files.
+- Do not run live DB sync during Codex automated verification.
+- Do not query the production database.
+- Do not change feature flags or the `FLEET_OPS_API_ENABLED` default.
+- Do not add Fleet Ops write, execute, admin, action, allocate, or collect permissions.
+- Do not add execution endpoints, mutation controls, customer/public routes, or production data mutation steps.
+- Record OP/GM access smoke, non-granted role denial, sparse-data notes, vehicleId lookup friction, and other gaps as follow-ups when evidence is incomplete.
+- Record P1-H23 vehicle selector/lookup separately; do not implement it in the enablement record task.
+- Keep push, PR creation, merge, deployment, production sync, and feature flag operations human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts
+```

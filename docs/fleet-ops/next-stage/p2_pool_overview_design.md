@@ -131,6 +131,14 @@ P2-H3 should implement the frontend pool overview UI:
 - drilldown links
 - frontend read-only tests
 
+P2-H3 implementation note:
+
+- Routes are `/fleet-ops/overview`, `/fleet-ops/pools`, and `/fleet-ops/pools/[poolId]`.
+- Existing `/fleet-ops` remains the single-vehicle diagnostic route.
+- Drilldown remains `/fleet-ops?vehicleId=<id>`.
+- The UI consumes only the P2-H2 GET-only backend endpoints.
+- The UI must not add backend runtime changes, mutation helpers, saved custom views, batch operations, execution/write controls, or customer/public exposure.
+
 P2-H4 should be a production trial and metric calibration phase after P2-H2/P2-H3 are validated.
 
 ### 2.6 P3 Deferred Pending P2 Effectiveness

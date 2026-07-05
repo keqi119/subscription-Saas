@@ -403,6 +403,30 @@ pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts test/fleet-ops.pool-scope.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-economics.spec.ts test/fleet-ops.pool-risk.spec.ts test/fleet-ops.pool-readonly.spec.ts test/fleet-ops.api-contract.spec.ts test/fleet-ops.api-readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.controller.spec.ts
 ```
 
+## P2-H3 Pool Overview Frontend UI Check
+
+P2-H3 adds frontend-only read-only pool overview UI.
+
+Before release or production smoke, confirm:
+
+- `/fleet-ops/overview`, `/fleet-ops/pools`, and `/fleet-ops/pools/[poolId]` are available.
+- Existing `/fleet-ops` remains the single-vehicle diagnostic page.
+- Drilldown remains `/fleet-ops?vehicleId=<id>`.
+- The UI consumes only the P2-H2 GET-only backend endpoints.
+- The UI remains read-only and preserves `fleet_ops:read`, `FLEET_OPS_API_ENABLED`, disabled-state handling, and permission denied handling.
+- No schema, migration, seed, sync, permission, backend runtime, package script, saved custom view, batch operation, execution/write control, customer/public exposure, CI, Docker, compose, or deployment change is introduced.
+- P2-H4 production smoke and metric calibration remain next.
+- P3 saved custom views remain deferred pending P2 effectiveness.
+
+Focused P2-H3 checks:
+
+```bash
+pnpm --filter @subscription-saas/web typecheck
+pnpm --filter @subscription-saas/web lint
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+pnpm --filter @subscription-saas/api test:fleet-ops
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

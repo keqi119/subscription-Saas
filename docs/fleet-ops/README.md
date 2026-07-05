@@ -61,3 +61,15 @@ P2-H2 adds the backend read-only aggregation surface for future pool/cohort UI w
 - Performance caps: scope default 300, hard scope cap 500, `topN` default 10/max 50, page size max 100, date range max 366 days.
 - Aggregation reuses existing Fleet Ops KPI/risk services; direct Prisma reads are limited to scope, pool membership, and safe vehicle identity filters.
 - P2-H2 remains GET-only, requires `fleet_ops:read`, respects `FLEET_OPS_API_ENABLED`, adds no schema/migration/write path, and does not implement Web UI or saved custom views.
+
+## P2-H3 Pool Overview Frontend UI
+
+P2-H3 adds the frontend read-only pool/cohort overview surface on top of the P2-H2 GET-only backend.
+
+- New routes: `/fleet-ops/overview`, `/fleet-ops/pools`, and `/fleet-ops/pools/[poolId]`.
+- Existing `/fleet-ops` remains the single-vehicle diagnostic page.
+- Drilldown remains `/fleet-ops?vehicleId=<id>`.
+- The UI consumes `GET /fleet-ops/overview`, `GET /fleet-ops/pools`, `GET /fleet-ops/pools/:poolId`, and `GET /fleet-ops/overview/vehicles`.
+- The UI remains read-only: no saved custom views, no batch operations, no execution/write controls, and no customer/public exposure.
+- P2-H4 production smoke and metric calibration remain next.
+- P3 saved custom views remain deferred pending P2 effectiveness.

@@ -7,7 +7,7 @@ export interface FleetOpsApiEnvelope<TData = unknown> {
   generatedAt?: string;
   requestId?: string;
   traceId?: string;
-  warnings?: FleetOpsApiWarning[];
+  warnings?: Array<FleetOpsApiWarning | string>;
 }
 
 export interface FleetOpsApiWarning {
@@ -60,6 +60,125 @@ export interface FleetOpsVehicleLookupItem {
   vinSuffix?: string;
 }
 
+export type FleetOpsScopeType = "ALL" | "COHORT" | "POOL";
+export type FleetOpsAgingBucket = "D1" | "D2" | "D3" | "D4" | "D5" | "NONE";
+export type FleetOpsConfidenceBand = "HIGH" | "LOW" | "MEDIUM" | "UNKNOWN";
+
+export interface FleetOpsOverviewQuery extends FleetOpsApiQuery {
+  agingBucket?: FleetOpsAgingBucket;
+  assetLocation?: string;
+  brand?: string;
+  collectionLevel?: FleetOpsAgingBucket;
+  confidenceBand?: FleetOpsConfidenceBand;
+  createdFrom?: string;
+  createdTo?: string;
+  evidenceMissing?: boolean;
+  limit?: number;
+  model?: string;
+  modelYear?: number;
+  overdueStatus?: "NONE" | "OVERDUE";
+  page?: number;
+  pageSize?: number;
+  poolId?: string;
+  registrationDateFrom?: string;
+  registrationDateTo?: string;
+  riskLevel?: string;
+  scopeType?: FleetOpsScopeType;
+  topN?: number;
+  vehicleStatus?: string;
+  warningType?: string;
+}
+
+export interface FleetOpsPoolListQuery extends Pick<FleetOpsApiQuery, "requestId" | "traceId"> {
+  page?: number;
+  pageSize?: number;
+  poolStatus?: string;
+  poolType?: string;
+}
+
+export interface FleetOpsPagination {
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface FleetOpsPoolIdentity {
+  activeVehicleCount: number;
+  poolId: string;
+  poolName: string;
+  poolNo: string;
+  poolStatus: string;
+  poolType: string;
+}
+
+export interface FleetOpsVehicleScopeItem {
+  assetLocation?: string;
+  brand?: string;
+  model?: string;
+  modelYear?: number;
+  status?: string;
+  vehicleId: string;
+  vehicleNo?: string;
+  vinSuffix?: string;
+}
+
+export interface FleetOpsOverviewAnomalyItem {
+  collectionLevel?: string;
+  confidence?: number;
+  issueCount?: number;
+  overdueRemainingAmount?: number;
+  riskScore?: number;
+  roe?: number;
+  roi?: number;
+  vehicleId: string;
+  vehicleNo?: string;
+}
+
+export interface FleetOpsOverviewReadModel {
+  anomalies: Record<string, FleetOpsOverviewAnomalyItem[]>;
+  cashflow: Record<string, number>;
+  dataQuality: Record<string, number>;
+  distributions: Record<string, Record<string, number>>;
+  evidenceSummary: Record<string, number | boolean>;
+  generatedAt: string;
+  kpis: Record<string, number>;
+  pagination?: FleetOpsPagination;
+  range: {
+    from: string;
+    to: string;
+  };
+  risk: Record<string, number | Record<string, number>>;
+  scope: {
+    filters?: Record<string, unknown>;
+    pool?: FleetOpsPoolIdentity;
+    type: FleetOpsScopeType;
+  };
+  vehicleCounts: Record<string, number>;
+  warnings: string[];
+}
+
+export interface FleetOpsPoolListReadModel {
+  generatedAt: string;
+  items: FleetOpsPoolIdentity[];
+  pagination: FleetOpsPagination;
+}
+
+export interface FleetOpsPoolDetailReadModel {
+  activeVehicleCount: number;
+  generatedAt: string;
+  overview: FleetOpsOverviewReadModel;
+  pool: FleetOpsPoolIdentity;
+  warnings: string[];
+}
+
+export interface FleetOpsScopedVehicleListReadModel {
+  generatedAt: string;
+  items: FleetOpsVehicleScopeItem[];
+  pagination: FleetOpsPagination;
+  scope: FleetOpsOverviewReadModel["scope"];
+  warnings: string[];
+}
+
 export type FleetOpsSnapshotEnvelope = FleetOpsApiEnvelope<FleetOpsSnapshot>;
 
 export interface FleetOpsSnapshot {
@@ -91,6 +210,31 @@ export async function getFleetOpsVehicleLookup(query: FleetOpsVehicleLookupQuery
   return apiFetch<FleetOpsVehicleLookupEnvelope>(`/fleet-ops/vehicles/lookup${buildFleetOpsLookupQuery(query)}`);
 }
 
+export async function getFleetOpsOverview(query?: FleetOpsOverviewQuery) {
+  assertFleetOpsRange(query);
+  return apiFetch<FleetOpsApiEnvelope<FleetOpsOverviewReadModel>>(
+    `/fleet-ops/overview${buildFleetOpsOverviewQuery(query)}`
+  );
+}
+
+export async function getFleetOpsOverviewVehicles(query?: FleetOpsOverviewQuery) {
+  assertFleetOpsRange(query);
+  return apiFetch<FleetOpsApiEnvelope<FleetOpsScopedVehicleListReadModel>>(
+    `/fleet-ops/overview/vehicles${buildFleetOpsOverviewQuery(query)}`
+  );
+}
+
+export async function getFleetOpsPools(query?: FleetOpsPoolListQuery) {
+  return apiFetch<FleetOpsApiEnvelope<FleetOpsPoolListReadModel>>(`/fleet-ops/pools${buildFleetOpsPoolQuery(query)}`);
+}
+
+export async function getFleetOpsPoolDetail(poolId: string, query?: FleetOpsOverviewQuery) {
+  assertFleetOpsRange(query);
+  return apiFetch<FleetOpsApiEnvelope<FleetOpsPoolDetailReadModel>>(
+    `/fleet-ops/pools/${encodeURIComponent(poolId)}${buildFleetOpsOverviewQuery(query)}`
+  );
+}
+
 export async function getFleetOpsSnapshot(vehicleId: string, query?: FleetOpsApiQuery) {
   assertFleetOpsRange(query);
   return apiFetch<FleetOpsSnapshotEnvelope>(
@@ -107,6 +251,71 @@ export function buildFleetOpsLookupQuery(query: FleetOpsVehicleLookupQuery) {
   }
 
   return `?${params.toString()}`;
+}
+
+export function buildFleetOpsOverviewQuery(query?: FleetOpsOverviewQuery) {
+  if (!query) {
+    return "";
+  }
+
+  const params = new URLSearchParams();
+  const entries: Array<[keyof FleetOpsOverviewQuery, string]> = [
+    ["scopeType", "scopeType"],
+    ["poolId", "poolId"],
+    ["brand", "brand"],
+    ["model", "model"],
+    ["modelYear", "modelYear"],
+    ["vehicleStatus", "vehicleStatus"],
+    ["registrationDateFrom", "registrationDateFrom"],
+    ["registrationDateTo", "registrationDateTo"],
+    ["createdFrom", "createdFrom"],
+    ["createdTo", "createdTo"],
+    ["assetLocation", "assetLocation"],
+    ["riskLevel", "riskLevel"],
+    ["collectionLevel", "collectionLevel"],
+    ["agingBucket", "agingBucket"],
+    ["confidenceBand", "confidenceBand"],
+    ["warningType", "warningType"],
+    ["evidenceMissing", "evidenceMissing"],
+    ["overdueStatus", "overdueStatus"],
+    ["from", "from"],
+    ["to", "to"],
+    ["asOf", "asOf"],
+    ["limit", "limit"],
+    ["topN", "topN"],
+    ["page", "page"],
+    ["pageSize", "pageSize"],
+    ["traceId", "traceId"],
+    ["requestId", "requestId"]
+  ];
+
+  appendQueryEntries(params, entries, query);
+
+  const value = params.toString();
+  return value ? `?${value}` : "";
+}
+
+export function buildFleetOpsPoolQuery(query?: FleetOpsPoolListQuery) {
+  if (!query) {
+    return "";
+  }
+
+  const params = new URLSearchParams();
+  appendQueryEntries(
+    params,
+    [
+      ["page", "page"],
+      ["pageSize", "pageSize"],
+      ["poolStatus", "poolStatus"],
+      ["poolType", "poolType"],
+      ["traceId", "traceId"],
+      ["requestId", "requestId"]
+    ],
+    query
+  );
+
+  const value = params.toString();
+  return value ? `?${value}` : "";
 }
 
 export async function getFleetOpsState(vehicleId: string, query?: FleetOpsApiQuery) {
@@ -148,9 +357,10 @@ export function isFleetOpsApiDisabled(value: unknown) {
 
   const envelope = value as unknown as FleetOpsApiEnvelope<FleetOpsApiHealth>;
   const disabledByHealth = isObject(envelope.data) && envelope.data.enabled === false;
-  const disabledByWarning = (envelope.warnings ?? []).some((warning) =>
-    [warning.code, warning.message].some((item) => typeof item === "string" && /disabled|not enabled/i.test(item))
-  );
+  const disabledByWarning = (envelope.warnings ?? []).some((warning) => {
+    const candidates = typeof warning === "string" ? [warning] : [warning.code, warning.message];
+    return candidates.some((item) => typeof item === "string" && /disabled|not enabled/i.test(item));
+  });
 
   return disabledByHealth || disabledByWarning;
 }
@@ -207,6 +417,20 @@ function daysBetween(from: string, to: string) {
     return 0;
   }
   return Math.round((end - start) / 86_400_000);
+}
+
+function appendQueryEntries<TQuery extends object>(
+  params: URLSearchParams,
+  entries: Array<[keyof TQuery, string]>,
+  query: TQuery
+) {
+  for (const [key, param] of entries) {
+    const value = query[key];
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    params.set(param, String(value));
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

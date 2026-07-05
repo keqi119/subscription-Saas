@@ -1,4 +1,12 @@
-import type { FleetOpsApiEnvelope, FleetOpsEvidence, FleetOpsSnapshot, FleetOpsVehicleLookupItem } from "./fleet-ops-api";
+import type {
+  FleetOpsApiEnvelope,
+  FleetOpsEvidence,
+  FleetOpsOverviewAnomalyItem,
+  FleetOpsPoolIdentity,
+  FleetOpsSnapshot,
+  FleetOpsVehicleLookupItem,
+  FleetOpsVehicleScopeItem
+} from "./fleet-ops-api";
 
 export const FLEET_OPS_READ_ONLY_SECTION_KEYS = [
   "overview",
@@ -100,6 +108,30 @@ export interface FleetOpsLookupValidation {
   valid: boolean;
 }
 
+export interface FleetOpsAnomalyTableRow {
+  collectionLevel?: string;
+  confidence?: number;
+  drilldownHref: string;
+  issueCount?: number;
+  overdueRemainingAmount?: number;
+  riskScore?: number;
+  roe?: number;
+  roi?: number;
+  vehicleId: string;
+  vehicleLabel: string;
+}
+
+export interface FleetOpsPoolTableRow extends FleetOpsPoolIdentity {
+  detailHref: string;
+  poolLabel: string;
+}
+
+export interface FleetOpsScopedVehicleTableRow extends FleetOpsVehicleScopeItem {
+  drilldownHref: string;
+  modelLabel: string;
+  vehicleLabel: string;
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function validateFleetOpsLookupQuery(input: string): FleetOpsLookupValidation {
@@ -136,6 +168,133 @@ export function buildFleetOpsVehicleSelectionSummary(item: FleetOpsVehicleLookup
   ]
     .filter((value): value is string => Boolean(value))
     .join(" / ");
+}
+
+export function formatFleetOpsMoney(value: unknown) {
+  const amount = numberOrNull(value);
+  if (amount === null) {
+    return "-";
+  }
+
+  return `${(amount / 100).toLocaleString("zh-CN", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2
+  })} 元`;
+}
+
+export function formatFleetOpsCount(value: unknown) {
+  const count = numberOrNull(value);
+  return count === null ? "-" : count.toLocaleString("zh-CN");
+}
+
+export function formatFleetOpsRatio(value: unknown) {
+  const ratio = numberOrNull(value);
+  return ratio === null ? "-" : `${(ratio * 100).toFixed(2)}%`;
+}
+
+export function formatFleetOpsScore(value: unknown) {
+  const score = numberOrNull(value);
+  return score === null ? "-" : score.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+}
+
+export function formatFleetOpsRoiLabel() {
+  return "ROI（池/分群总额口径）";
+}
+
+export function formatFleetOpsRoeLabel() {
+  return "ROE（非单车简单平均）";
+}
+
+export function formatFleetOpsDepositTreatmentNote() {
+  return "押金已单列，不计入经营收入";
+}
+
+export function formatFleetOpsAgingBucketLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    D1: "D1 1-3 天",
+    D2: "D2 4-7 天",
+    D3: "D3 8-15 天",
+    D4: "D4 16-30 天",
+    D5: "D5 30 天以上",
+    NONE: "无逾期"
+  };
+
+  return value ? labels[value] ?? value : "-";
+}
+
+export function formatFleetOpsConfidenceBandLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    HIGH: "高置信",
+    LOW: "低置信",
+    MEDIUM: "中置信",
+    UNKNOWN: "未知"
+  };
+
+  return value ? labels[value] ?? value : "-";
+}
+
+export function formatFleetOpsRiskLevelLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    HIGH: "高风险",
+    LOW: "低风险",
+    MEDIUM: "中风险",
+    NONE: "无风险",
+    UNKNOWN: "未知"
+  };
+
+  return value ? labels[value] ?? value : "-";
+}
+
+export function summarizeFleetOpsWarnings(warnings: readonly unknown[] = []) {
+  return warnings
+    .map((warning) => {
+      if (typeof warning === "string") {
+        return warning;
+      }
+      if (!isRecord(warning)) {
+        return undefined;
+      }
+      return stringOrUndefined(warning.code ?? warning.message);
+    })
+    .filter((value): value is string => Boolean(value));
+}
+
+export function buildFleetOpsVehicleDrilldownHref(vehicleId: string) {
+  return `/fleet-ops?vehicleId=${encodeURIComponent(vehicleId)}`;
+}
+
+export function mapFleetOpsAnomalyRows(items: readonly FleetOpsOverviewAnomalyItem[] = []): FleetOpsAnomalyTableRow[] {
+  return items.map((item) => ({
+    collectionLevel: item.collectionLevel,
+    confidence: item.confidence,
+    drilldownHref: buildFleetOpsVehicleDrilldownHref(item.vehicleId),
+    issueCount: item.issueCount,
+    overdueRemainingAmount: item.overdueRemainingAmount,
+    riskScore: item.riskScore,
+    roe: item.roe,
+    roi: item.roi,
+    vehicleId: item.vehicleId,
+    vehicleLabel: item.vehicleNo ?? item.vehicleId
+  }));
+}
+
+export function mapFleetOpsPoolRows(items: readonly FleetOpsPoolIdentity[] = []): FleetOpsPoolTableRow[] {
+  return items.map((item) => ({
+    ...item,
+    detailHref: `/fleet-ops/pools/${encodeURIComponent(item.poolId)}`,
+    poolLabel: [item.poolNo, item.poolName].filter(Boolean).join(" / ")
+  }));
+}
+
+export function mapFleetOpsScopedVehicleRows(items: readonly FleetOpsVehicleScopeItem[] = []): FleetOpsScopedVehicleTableRow[] {
+  return items.map((item) => ({
+    ...item,
+    drilldownHref: buildFleetOpsVehicleDrilldownHref(item.vehicleId),
+    modelLabel: [item.brand, item.model, item.modelYear ? String(item.modelYear) : undefined]
+      .filter((value): value is string => Boolean(value))
+      .join(" / "),
+    vehicleLabel: item.vehicleNo ?? item.vehicleId
+  }));
 }
 
 export function summarizeFleetOpsSnapshot(snapshot: FleetOpsSnapshot): FleetOpsSnapshotSummary {

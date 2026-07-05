@@ -1103,3 +1103,10 @@ pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
 pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.api-contract.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-readonly.spec.ts
 ```
+
+Production status:
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record-20260705.md` records the operator-provided production smoke and metric calibration result.
+- Final classification is `PASS_WITH_NOTES`.
+- No rollback or feature disable was required.
+- P2-H5 should be selected from the evidence and passive observation: production hardening/release record, metric label correction, sparse-data UX refinement, or anomaly ranking tuning.
+- P3 saved custom views remain deferred pending P2 effectiveness.

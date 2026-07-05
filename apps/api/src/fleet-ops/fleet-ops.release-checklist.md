@@ -456,6 +456,17 @@ pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spe
 pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.api-contract.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-readonly.spec.ts
 ```
 
+Production smoke record:
+
+- Record path: `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record-20260705.md`.
+- Final classification: `PASS_WITH_NOTES`.
+- Production images: `prod-20260705-aa8dc89` API/Web.
+- `FLEET_OPS_API_ENABLED=true`.
+- Core routes, role access, read-only safety, metric semantics, and anomaly drilldown were operator-smoked.
+- No rollback or feature disable was required.
+- P2-H5 should be evidence-based after passive observation.
+- P3 saved custom views remain deferred pending P2 effectiveness.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

@@ -2,6 +2,10 @@
 
 Status: `PENDING`
 
+This is the reusable P2 pool overview calibration template. Completed records:
+
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record-20260705.md`: production smoke completed as `PASS_WITH_NOTES`.
+
 Allowed final statuses: `PENDING`, `PASS`, `PASS_WITH_NOTES`, `NO_GO`, `ROLLBACK_REQUIRED`.
 
 Do not record secrets, raw DB URLs, passwords, tokens, cookies, registry credentials, customer personal data, full VINs, full plates, or unredacted authorization headers.

@@ -1014,3 +1014,43 @@ pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts
 pnpm --filter @subscription-saas/api test:fleet-ops
 pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
 ```
+
+## 25. Fleet Ops P2-H2 Pool Overview Backend Read-only Aggregation Tasks
+
+P2-H2 implements the backend-only read-only aggregation surface for pool overview and dynamic cohort analysis. P2-H3 owns the frontend UI.
+
+Rules:
+- Keep all P2-H2 external Fleet Ops APIs GET-only.
+- Require `fleet_ops:read` and respect `FLEET_OPS_API_ENABLED`.
+- Use `VehicleAssetPool` and active `VehicleAssetPoolVehicle` membership as the MVP formal pool source.
+- Dynamic cohort MVP filters are pool, brand, model, model year, vehicle status, registration date range, created date range, and asset location.
+- Direct Prisma reads are allowed only for scope membership, pool identity, pagination/counts, and safe vehicle identity filters.
+- KPI, cashflow, ROI/ROE, risk, overdue, and D1-D5 semantics must come from existing Fleet Ops KPI/risk services or approved summaries.
+- Do not modify schema, migrations, seed, sync, shared auth/menu permissions, AppModule, CI, Docker, compose, Web runtime, or Web tests.
+- Do not add POST/PATCH/PUT/DELETE Fleet Ops operations, write/execution/admin/action permissions, customer/public exposure, or saved custom views.
+- P2-H3 must not add saved-view or execution controls.
+- P3 saved custom views remain deferred pending P2 effectiveness.
+- Push, PR creation, merge, deployment, production commands, live DB sync, production DB query, and feature-flag operations remain human-only.
+
+MVP endpoints:
+- `GET /fleet-ops/overview`
+- `GET /fleet-ops/pools`
+- `GET /fleet-ops/pools/:poolId`
+- `GET /fleet-ops/overview/vehicles`
+
+Performance caps:
+- synchronous scope default 300
+- synchronous scope hard cap 500
+- `topN` default 10, max 50
+- page size max 100
+- date range max 366 days
+- overview/list responses must not return full evidence payloads
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api typecheck
+pnpm --filter @subscription-saas/api lint
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/api exec vitest run test/permissions.spec.ts test/fleet-ops.pool-scope.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-economics.spec.ts test/fleet-ops.pool-risk.spec.ts test/fleet-ops.pool-readonly.spec.ts test/fleet-ops.api-contract.spec.ts test/fleet-ops.api-readonly.spec.ts test/fleet-ops.boundary.spec.ts test/fleet-ops.controller.spec.ts
+```

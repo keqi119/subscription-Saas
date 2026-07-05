@@ -21,8 +21,11 @@ import {
 } from "./fleet-ops.api.types";
 import { FleetOpsFacade } from "./fleet-ops.facade";
 import { FleetOpsHealthService } from "./fleet-ops.health.service";
+import { FleetOpsOverviewService } from "./fleet-ops.overview.service";
 import { FleetOpsVehicleLookupService } from "./fleet-ops.vehicle-lookup.service";
 import type { FleetOpsHealthContract } from "./fleet-ops.contracts";
+import { FleetOpsOverviewQueryDto } from "./dto/fleet-ops-overview-query.dto";
+import { FleetOpsPoolParamDto, FleetOpsPoolQueryDto } from "./dto/fleet-ops-pool-query.dto";
 import { FleetOpsQueryDto, FleetOpsVehicleParamDto } from "./dto/fleet-ops-query.dto";
 import { FleetOpsRangeQueryDto } from "./dto/fleet-ops-range-query.dto";
 import { FleetOpsVehicleLookupQueryDto } from "./dto/fleet-ops-vehicle-lookup.dto";
@@ -37,6 +40,7 @@ export class FleetOpsController {
     private readonly facade: FleetOpsFacade,
     private readonly healthService: FleetOpsHealthService,
     private readonly vehicleLookupService: FleetOpsVehicleLookupService,
+    private readonly overviewService: FleetOpsOverviewService,
     private readonly config: ConfigService
   ) {}
 
@@ -80,6 +84,30 @@ export class FleetOpsController {
   @UseGuards(FleetOpsApiEnabledGuard)
   async lookupVehicles(@Query() query: FleetOpsVehicleLookupQueryDto) {
     return responseEnvelope(await this.vehicleLookupService.lookup(query));
+  }
+
+  @Get("overview")
+  @UseGuards(FleetOpsApiEnabledGuard)
+  async getOverview(@Query() query: FleetOpsOverviewQueryDto) {
+    return responseEnvelope(await this.overviewService.getOverview(query), query);
+  }
+
+  @Get("overview/vehicles")
+  @UseGuards(FleetOpsApiEnabledGuard)
+  async listOverviewVehicles(@Query() query: FleetOpsOverviewQueryDto) {
+    return responseEnvelope(await this.overviewService.listOverviewVehicles(query), query);
+  }
+
+  @Get("pools")
+  @UseGuards(FleetOpsApiEnabledGuard)
+  async listPools(@Query() query: FleetOpsPoolQueryDto) {
+    return responseEnvelope(await this.overviewService.listPools(query), query);
+  }
+
+  @Get("pools/:poolId")
+  @UseGuards(FleetOpsApiEnabledGuard)
+  async getPoolDetail(@Param() params: FleetOpsPoolParamDto, @Query() query: FleetOpsOverviewQueryDto) {
+    return responseEnvelope(await this.overviewService.getPoolDetail(params.poolId, query), query);
   }
 
   @Get("vehicles/:vehicleId/snapshot")

@@ -70,6 +70,24 @@ describe("Fleet Ops dependency boundaries", () => {
     expect(controllerSource).toContain("FleetOpsVehicleLookupService");
     expect(controllerSource).not.toMatch(/constructor\([\s\S]*PrismaService/);
   });
+
+  it("keeps pool overview Prisma access limited to scope resolution and existing Fleet Ops services", async () => {
+    const scopeResolverSource = await readFile(join(process.cwd(), "src", "fleet-ops", "fleet-ops.scope-resolver.service.ts"), "utf8");
+    const aggregatorSource = await readFile(join(process.cwd(), "src", "fleet-ops", "fleet-ops.pool-aggregator.service.ts"), "utf8");
+    const overviewSource = await readFile(join(process.cwd(), "src", "fleet-ops", "fleet-ops.overview.service.ts"), "utf8");
+    const controllerSource = await readFile(join(process.cwd(), "src", "fleet-ops", "fleet-ops.controller.ts"), "utf8");
+
+    expect(scopeResolverSource).toContain("PrismaService");
+    expect(scopeResolverSource).toMatch(/\.findMany\s*\(/);
+    expect(aggregatorSource).not.toContain("PrismaService");
+    expect(aggregatorSource).toContain("FleetKpiService");
+    expect(aggregatorSource).toContain("FleetRiskService");
+    expect(overviewSource).not.toContain("PrismaService");
+    expect(controllerSource).not.toMatch(/constructor\([\s\S]*PrismaService/);
+    expect(`${scopeResolverSource}\n${aggregatorSource}\n${overviewSource}`).not.toMatch(
+      /\.create\s*\(|\.update\s*\(|\.delete\s*\(|\.upsert\s*\(|\.createMany\s*\(|\.updateMany\s*\(|\.deleteMany\s*\(|\$executeRaw|\$queryRawUnsafe|\$transaction/
+    );
+  });
 });
 
 async function findImports(pattern: RegExp) {

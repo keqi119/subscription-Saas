@@ -15,6 +15,10 @@ describe("Fleet Ops API contract", () => {
     expect(controllerRoutes()).toEqual([
       { method: RequestMethod.GET, path: "diagnostics" },
       { method: RequestMethod.GET, path: "health" },
+      { method: RequestMethod.GET, path: "overview" },
+      { method: RequestMethod.GET, path: "overview/vehicles" },
+      { method: RequestMethod.GET, path: "pools" },
+      { method: RequestMethod.GET, path: "pools/:poolId" },
       { method: RequestMethod.GET, path: "vehicles/:vehicleId/economics" },
       { method: RequestMethod.GET, path: "vehicles/:vehicleId/risk" },
       { method: RequestMethod.GET, path: "vehicles/:vehicleId/snapshot" },
@@ -42,6 +46,23 @@ describe("Fleet Ops API contract", () => {
       message: "Fleet Ops timeline range must not exceed 366 days.",
       requestId: "req-2"
     });
+  });
+
+  it("returns stable pool overview response envelope shapes", async () => {
+    const controller = createController();
+
+    await expect(controller.getOverview({ requestId: "overview-1", scopeType: "ALL" })).resolves.toEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          anomalies: expect.any(Object),
+          evidenceSummary: expect.objectContaining({ fullEvidenceIncluded: false }),
+          scope: expect.objectContaining({ type: "ALL" }),
+          vehicleCounts: expect.objectContaining({ total: 0 })
+        }),
+        generatedAt: expect.any(String),
+        requestId: "overview-1"
+      })
+    );
   });
 
   it("validates date inputs and the 366-day max range before facade calls", async () => {
@@ -93,6 +114,17 @@ function createController() {
     } as never,
     {
       lookup: vi.fn().mockResolvedValue({ items: [], limit: 10, query: "VEH" })
+    } as never,
+    {
+      getOverview: vi.fn().mockResolvedValue({
+        anomalies: {},
+        evidenceSummary: { fullEvidenceIncluded: false },
+        scope: { type: "ALL" },
+        vehicleCounts: { total: 0 }
+      }),
+      getPoolDetail: vi.fn(),
+      listPools: vi.fn(),
+      listOverviewVehicles: vi.fn()
     } as never,
     {
       get: vi.fn(() => "true")

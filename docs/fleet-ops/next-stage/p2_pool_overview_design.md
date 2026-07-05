@@ -113,6 +113,14 @@ P2-H2 should implement the read-only backend aggregation surface:
 - API contract tests
 - read-only and boundary tests
 
+P2-H2 implementation note:
+
+- MVP endpoints are `GET /fleet-ops/overview`, `GET /fleet-ops/pools`, `GET /fleet-ops/pools/:poolId`, and `GET /fleet-ops/overview/vehicles`.
+- Formal pools use `VehicleAssetPool` and active `VehicleAssetPoolVehicle` membership.
+- Direct Prisma reads are limited to scope, pool membership, safe vehicle identity filters, pagination, and counts.
+- KPI/risk/economics semantics are preserved by aggregating existing Fleet Ops KPI/risk outputs rather than reimplementing those calculations from raw Prisma.
+- Runtime remains read-only, GET-only, `fleet_ops:read` protected, and `FLEET_OPS_API_ENABLED` gated.
+
 P2-H3 should implement the frontend pool overview UI:
 
 - overview route
@@ -399,9 +407,10 @@ The UI must not render write, execution, mutation, or saved-view controls in P2.
 - default `asOf`: server date
 - default range: operational range selected by the backend/frontend contract
 - max range: 366 days
-- synchronous vehicle scope cap: recommended first cap 200-500 vehicles
+- synchronous vehicle scope cap: default 300 vehicles, hard cap 500 vehicles
 - anomaly top N: default 10, max 50
 - vehicle lists: paginated
+- vehicle list page size: max 100
 - overview response: no full evidence payload
 - too-large scope: return a clear limit response or summary-only fallback
 - no caching or persistence in P2-H1

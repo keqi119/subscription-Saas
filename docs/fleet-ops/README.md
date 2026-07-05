@@ -25,3 +25,5 @@ This directory contains the architecture source, current review conclusion, and 
 \- runbooks/production-go-no-go-record.md: P1-H15 production GO / NO-GO decision record to complete after the production readiness checklist. The record defaults to `PENDING`, does not enable production by itself, and keeps Fleet Ops read-only.
 
 \- runbooks/production-image-alignment.md: P1-H18 production API/Web image alignment runbook to use before production access sync and feature flag enablement. It keeps `FLEET_OPS_API_ENABLED=false` during image rollout and separates image alignment from Fleet Ops enablement.
+
+\- runbooks/production-enablement-record-20260705.md: P1-H22 production enablement record. It records the operator-completed production enablement outcome with conclusion `PASS_WITH_NOTES` and tracks follow-up P1-H23 vehicle selector/lookup work.

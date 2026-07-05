@@ -300,6 +300,31 @@ Before production access sync or feature flag enablement, confirm:
 - Post-alignment smoke passes before any Fleet Ops enablement step.
 - Image alignment does not change runtime behavior, API behavior, UI behavior, permission model, seed/sync behavior, package scripts, CI, Dockerfiles, compose files, schema, or migrations.
 
+## P1-H22 Production Enablement Record
+
+Use `docs/fleet-ops/runbooks/production-enablement-record-20260705.md` to record the operator-completed production enablement outcome.
+
+Recorded outcome:
+
+- Conclusion: `PASS_WITH_NOTES`.
+- Feature flag enabled by operator: `FLEET_OPS_API_ENABLED=true`.
+- Fleet Ops access sync completed for permission `fleet_ops:read`, menu `vehicles.fleet_ops` / `/fleet-ops`, and roles `OP`, `GM`, and `ADMIN`.
+- API/Web production images aligned to `prod-20260704-d444f59`.
+- Migration status recorded as up to date.
+- API health after enablement recorded as 200 OK.
+- Fleet Ops production UI smoke generated a vehicle snapshot for selected vehicleId `5e354d25-41ce-4432-9fc5-ea70e49a1b40`.
+- Snapshot rendered state, timeline, economics, risk, warnings, confidence, consistency, and evidence groups.
+- No execution/write controls were reported.
+- `EXECUTION_GUARD` appeared as diagnostic evidence only, not as an action control.
+
+Remaining notes:
+
+- Selected vehicle has sparse operational/economic history, so LOW confidence and timeline fallback warning are expected.
+- OP / GM access smoke still needs explicit production confirmation if not yet tested.
+- Non-granted role denial still needs explicit production confirmation if not yet tested.
+- Current UI requires manual vehicleId input.
+- Follow-up P1-H23 should implement Fleet Ops vehicle selector/lookup.
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

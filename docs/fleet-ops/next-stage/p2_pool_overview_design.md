@@ -485,6 +485,15 @@ Do not run production commands, query production DB, run access sync, change fea
 - Confirm no write, execution, mutation, or saved-view controls appear.
 - Confirm disabled and permission-denied behavior follows the existing Fleet Ops pattern.
 
+P2-H4 adds dedicated smoke and calibration runbooks:
+
+- `docs/fleet-ops/runbooks/p2-pool-overview-smoke.md`
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record.md`
+
+P2-H4 validates the deployed P2-H2/P2-H3 experience across API routes, Web routes, role access, feature flag behavior, read-only safety, pool/cohort sample selection, ROI/ROE total-based aggregation, deposit exclusion, overdue/D1-D5 semantics, data quality, anomaly lists, and drilldown to `/fleet-ops?vehicleId=<id>`.
+
+P2-H5 should be opened only when P2-H4 evidence shows post-smoke correction, metric calibration refinement, or production hardening is needed. P3 saved custom views remain deferred pending P2 effectiveness.
+
 ### 4.5 Safety Checklist
 
 - no schema changes

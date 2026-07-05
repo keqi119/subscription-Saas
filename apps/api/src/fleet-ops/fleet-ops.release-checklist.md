@@ -427,6 +427,35 @@ pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spe
 pnpm --filter @subscription-saas/api test:fleet-ops
 ```
 
+## P2-H4 Pool Overview Smoke And Metric Calibration Check
+
+P2-H4 adds docs/runbook coverage for post-deployment smoke and metric calibration.
+
+Before accepting P2 pool overview in staging or production, confirm:
+
+- `docs/fleet-ops/runbooks/p2-pool-overview-smoke.md` exists and is followed by the operator.
+- `docs/fleet-ops/runbooks/p2-pool-overview-calibration-record.md` is completed with redacted evidence.
+- API smoke covers `GET /fleet-ops/health`, `GET /fleet-ops/overview`, `GET /fleet-ops/pools`, `GET /fleet-ops/pools/:poolId`, `GET /fleet-ops/overview/vehicles`, and `GET /fleet-ops/vehicles/lookup`.
+- Web smoke covers `/fleet-ops`, `/fleet-ops?vehicleId=<id>`, `/fleet-ops/overview`, `/fleet-ops/pools`, and `/fleet-ops/pools/[poolId]`.
+- Role smoke covers `ADMIN`, `OP`, `GM`, a non-granted internal role when available, and customer/public non-exposure.
+- Feature flag smoke confirms `FLEET_OPS_API_ENABLED` behavior without Codex changing production flags.
+- Read-only smoke confirms no saved custom view, batch operation, execution/write, collection, pool mutation, or vehicle assignment controls.
+- Metric calibration samples at least one formal active pool and one dynamic cohort when data exists.
+- KPI calibration checks vehicle counts, economics, cashflow, ROI/ROE, deposit exclusion, overdue amount, overdue counts, D1-D5 distribution, confidence, warnings, and evidence summary behavior.
+- Anomaly validation checks highest overdue exposure, highest risk, lowest ROI, lowest confidence, missing evidence, cashflow anomaly, and timeline fallback lists.
+- Drilldown remains passive and opens `/fleet-ops?vehicleId=<id>`.
+- Rollback/disable guidance remains operator-only, with `FLEET_OPS_API_ENABLED=false` as the first disable path when appropriate.
+- P2-H5 owns post-smoke correction or production hardening if evidence shows gaps.
+- P3 saved custom views remain deferred pending P2 effectiveness.
+
+Focused P2-H4 checks:
+
+```bash
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.api-contract.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-readonly.spec.ts
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

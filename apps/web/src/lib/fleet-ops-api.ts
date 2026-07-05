@@ -35,6 +35,31 @@ export interface FleetOpsApiQuery {
   traceId?: string;
 }
 
+export interface FleetOpsVehicleLookupQuery {
+  limit?: number;
+  q: string;
+}
+
+export type FleetOpsVehicleLookupEnvelope = FleetOpsApiEnvelope<FleetOpsVehicleLookupPayload>;
+
+export interface FleetOpsVehicleLookupPayload {
+  items: FleetOpsVehicleLookupItem[];
+  limit: number;
+  query: string;
+}
+
+export interface FleetOpsVehicleLookupItem {
+  brand?: string;
+  model?: string;
+  modelYear?: number;
+  operationalState?: string;
+  plateMasked?: string;
+  statusLabel?: string;
+  vehicleId: string;
+  vehicleNo?: string;
+  vinSuffix?: string;
+}
+
 export type FleetOpsSnapshotEnvelope = FleetOpsApiEnvelope<FleetOpsSnapshot>;
 
 export interface FleetOpsSnapshot {
@@ -62,11 +87,26 @@ export async function getFleetOpsHealth(query?: Pick<FleetOpsApiQuery, "requestI
   return apiFetch<FleetOpsApiEnvelope<FleetOpsApiHealth>>(`/fleet-ops/health${buildFleetOpsQuery(query)}`);
 }
 
+export async function getFleetOpsVehicleLookup(query: FleetOpsVehicleLookupQuery) {
+  return apiFetch<FleetOpsVehicleLookupEnvelope>(`/fleet-ops/vehicles/lookup${buildFleetOpsLookupQuery(query)}`);
+}
+
 export async function getFleetOpsSnapshot(vehicleId: string, query?: FleetOpsApiQuery) {
   assertFleetOpsRange(query);
   return apiFetch<FleetOpsSnapshotEnvelope>(
     `/fleet-ops/vehicles/${encodeURIComponent(vehicleId)}/snapshot${buildFleetOpsQuery(query)}`
   );
+}
+
+export function buildFleetOpsLookupQuery(query: FleetOpsVehicleLookupQuery) {
+  const params = new URLSearchParams();
+  params.set("q", query.q.trim());
+
+  if (query.limit !== undefined && query.limit !== null) {
+    params.set("limit", String(query.limit));
+  }
+
+  return `?${params.toString()}`;
 }
 
 export async function getFleetOpsState(vehicleId: string, query?: FleetOpsApiQuery) {

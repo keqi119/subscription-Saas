@@ -4,10 +4,13 @@ import {
   getFleetOpsHealth,
   getFleetOpsSnapshot,
   getFleetOpsState,
+  getFleetOpsVehicleLookup,
   isFleetOpsApiDisabled,
   isFleetOpsPermissionDenied
 } from "../src/lib/fleet-ops-api";
 import { ApiError } from "../src/lib/api";
+
+const vehicleId = "00000000-0000-4000-8000-000000000001";
 
 describe("fleet ops api client", () => {
   afterEach(() => {
@@ -87,6 +90,25 @@ describe("fleet ops api client", () => {
       "http://localhost:3001/api/fleet-ops/vehicles/vehicle-1/state?asOf=2026-07-02"
     );
     expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty("method");
+  });
+
+  it("calls the vehicle lookup endpoint with encoded GET-only query parameters", async () => {
+    const fetchMock = mockJsonResponse({
+      data: {
+        items: [{ vehicleId, vehicleNo: "VEH-DEMO-001", vinSuffix: "000001" }],
+        limit: 10,
+        query: "TEST VIN"
+      },
+      generatedAt: "2026-07-05T00:00:00.000Z"
+    });
+
+    const result = await getFleetOpsVehicleLookup({ limit: 10, q: "TEST VIN" });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://localhost:3001/api/fleet-ops/vehicles/lookup?q=TEST+VIN&limit=10"
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty("method");
+    expect(result.data.items[0]).toEqual(expect.objectContaining({ vehicleId, vinSuffix: "000001" }));
   });
 
   it("recognizes permission-denied API errors without exposing stack traces", () => {

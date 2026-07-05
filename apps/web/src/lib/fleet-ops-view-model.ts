@@ -1,4 +1,4 @@
-import type { FleetOpsApiEnvelope, FleetOpsEvidence, FleetOpsSnapshot } from "./fleet-ops-api";
+import type { FleetOpsApiEnvelope, FleetOpsEvidence, FleetOpsSnapshot, FleetOpsVehicleLookupItem } from "./fleet-ops-api";
 
 export const FLEET_OPS_READ_ONLY_SECTION_KEYS = [
   "overview",
@@ -92,6 +92,50 @@ export interface FleetOpsDateRangeValidation {
   days?: number;
   reason?: string;
   valid: boolean;
+}
+
+export interface FleetOpsLookupValidation {
+  query?: string;
+  reason?: string;
+  valid: boolean;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function validateFleetOpsLookupQuery(input: string): FleetOpsLookupValidation {
+  const query = input.trim();
+  if (!query) {
+    return { reason: "请输入车辆编号、VIN、车牌号或内部 ID。", valid: false };
+  }
+
+  if (query.length < 2 && !UUID_PATTERN.test(query)) {
+    return { reason: "请输入至少 2 个字符，或输入完整内部车辆 ID。", valid: false };
+  }
+
+  return { query, valid: true };
+}
+
+export function buildFleetOpsLookupOptionLabel(item: FleetOpsVehicleLookupItem) {
+  return [
+    item.vehicleNo ?? item.vehicleId,
+    item.plateMasked,
+    item.vinSuffix ? `VIN后6位 ${item.vinSuffix}` : undefined,
+    buildFleetOpsLookupModelLabel(item),
+    item.statusLabel ?? item.operationalState
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" / ");
+}
+
+export function buildFleetOpsVehicleSelectionSummary(item: FleetOpsVehicleLookupItem) {
+  return [
+    item.vehicleNo ?? item.vehicleId,
+    item.plateMasked,
+    item.vinSuffix ? `VIN后6位 ${item.vinSuffix}` : undefined,
+    buildFleetOpsLookupModelLabel(item)
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" / ");
 }
 
 export function summarizeFleetOpsSnapshot(snapshot: FleetOpsSnapshot): FleetOpsSnapshotSummary {
@@ -270,6 +314,12 @@ function collectWarningCodes(value: unknown): string[] {
       return stringOrUndefined(item.code ?? item.message);
     })
     .filter((item): item is string => Boolean(item));
+}
+
+function buildFleetOpsLookupModelLabel(item: FleetOpsVehicleLookupItem) {
+  return [item.brand, item.model, item.modelYear ? String(item.modelYear) : undefined]
+    .filter((value): value is string => Boolean(value))
+    .join(" / ");
 }
 
 function isEnvelope(value: unknown): value is FleetOpsApiEnvelope<FleetOpsSnapshot> {

@@ -1,10 +1,10 @@
 "use client";
 
-import { ReloadOutlined, SearchOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, DatePicker, Empty, Input, Space, Spin, Typography } from "antd";
+import { ReloadOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, DatePicker, Empty, Space, Spin, Typography } from "antd";
 import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { FleetOpsEconomicsCard } from "../../components/fleet-ops/fleet-ops-economics-card";
 import { FleetOpsEvidencePanel } from "../../components/fleet-ops/fleet-ops-evidence-panel";
@@ -12,6 +12,7 @@ import { FleetOpsOverview } from "../../components/fleet-ops/fleet-ops-overview"
 import { FleetOpsRiskCard } from "../../components/fleet-ops/fleet-ops-risk-card";
 import { FleetOpsStateCard } from "../../components/fleet-ops/fleet-ops-state-card";
 import { FleetOpsTimelineCard } from "../../components/fleet-ops/fleet-ops-timeline-card";
+import { FleetOpsVehicleLookup } from "../../components/fleet-ops/fleet-ops-vehicle-lookup";
 import { ProtectedShell } from "../../components/protected-shell";
 import { ApiError } from "../../lib/api";
 import {
@@ -41,6 +42,7 @@ export default function FleetOpsPage() {
   const [apiDisabled, setApiDisabled] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const loadedQueryVehicleIdRef = useRef<string | null>(null);
 
   const loadHealth = useCallback(async () => {
     setLoadingHealth(true);
@@ -84,8 +86,8 @@ export default function FleetOpsPage() {
     [snapshot]
   );
 
-  async function loadSnapshot() {
-    const normalizedVehicleId = vehicleId.trim();
+  const loadSnapshot = useCallback(async (vehicleIdOverride?: string) => {
+    const normalizedVehicleId = (vehicleIdOverride ?? vehicleId).trim();
     if (!normalizedVehicleId || apiDisabled || permissionDenied) {
       return;
     }
@@ -97,11 +99,13 @@ export default function FleetOpsPage() {
 
     setLoadingSnapshot(true);
     setErrorMessage(null);
+    setVehicleId(normalizedVehicleId);
 
     try {
       const result = await getFleetOpsSnapshot(normalizedVehicleId, query);
       setSnapshot(result.data);
       setApiDisabled(isFleetOpsApiDisabled(result));
+      setFleetOpsVehicleIdUrl(normalizedVehicleId);
     } catch (error) {
       if (isFleetOpsApiDisabled(error)) {
         setApiDisabled(true);
@@ -115,7 +119,22 @@ export default function FleetOpsPage() {
     } finally {
       setLoadingSnapshot(false);
     }
-  }
+  }, [apiDisabled, permissionDenied, query, rangeValidation.reason, rangeValidation.valid, vehicleId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || loadingHealth) {
+      return;
+    }
+
+    const queryVehicleId = new URLSearchParams(window.location.search).get("vehicleId")?.trim();
+    if (!queryVehicleId || apiDisabled || permissionDenied || loadedQueryVehicleIdRef.current === queryVehicleId) {
+      return;
+    }
+
+    loadedQueryVehicleIdRef.current = queryVehicleId;
+    setVehicleId(queryVehicleId);
+    void loadSnapshot(queryVehicleId);
+  }, [apiDisabled, loadSnapshot, loadingHealth, permissionDenied]);
 
   return (
     <ProtectedShell>
@@ -132,12 +151,12 @@ export default function FleetOpsPage() {
         <Card title="查询条件">
           <Space direction="vertical" size={12} style={{ width: "100%" }}>
             <Space wrap>
-              <Input
-                allowClear
-                onChange={(event) => setVehicleId(event.target.value)}
-                onPressEnter={loadSnapshot}
-                placeholder="车辆 ID"
-                style={{ width: 280 }}
+              <FleetOpsVehicleLookup
+                disabled={apiDisabled || permissionDenied}
+                loading={loadingSnapshot}
+                onChange={setVehicleId}
+                onError={setErrorMessage}
+                onLoad={loadSnapshot}
                 value={vehicleId}
               />
               <DatePicker
@@ -158,9 +177,6 @@ export default function FleetOpsPage() {
                 placeholder="结束日期"
                 value={to}
               />
-              <Button icon={<SearchOutlined />} loading={loadingSnapshot} onClick={loadSnapshot} type="primary">
-                加载快照
-              </Button>
               <Button icon={<ReloadOutlined />} loading={loadingHealth} onClick={loadHealth}>
                 刷新服务状态
               </Button>
@@ -202,7 +218,7 @@ export default function FleetOpsPage() {
         ) : null}
 
         {!summary && !loadingSnapshot && !apiDisabled && !permissionDenied ? (
-          <Empty description="输入车辆 ID 以查看车队运营快照。" />
+          <Empty description="请选择车辆或输入车辆编号、VIN/车牌号" />
         ) : null}
 
         {summary ? (
@@ -222,4 +238,14 @@ export default function FleetOpsPage() {
 
 function getErrorMessage(error: unknown) {
   return error instanceof ApiError ? error.message : "车队运营请求失败。";
+}
+
+function setFleetOpsVehicleIdUrl(vehicleId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("vehicleId", vehicleId);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }

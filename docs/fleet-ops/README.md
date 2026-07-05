@@ -27,3 +27,15 @@ This directory contains the architecture source, current review conclusion, and 
 \- runbooks/production-image-alignment.md: P1-H18 production API/Web image alignment runbook to use before production access sync and feature flag enablement. It keeps `FLEET_OPS_API_ENABLED=false` during image rollout and separates image alignment from Fleet Ops enablement.
 
 \- runbooks/production-enablement-record-20260705.md: P1-H22 production enablement record. It records the operator-completed production enablement outcome with conclusion `PASS_WITH_NOTES` and tracks follow-up P1-H23 vehicle selector/lookup work.
+
+## P1-H23 Vehicle Lookup / Drilldown Entry
+
+P1-H23 adds a read-only Fleet Ops vehicle lookup entry for `/fleet-ops`.
+
+- Users may search by internal vehicle ID, vehicle number, VIN, or license plate.
+- Lookup responses are minimal and masked: VIN suffix only and masked plate only.
+- Selecting a result loads the existing single-vehicle Fleet Ops snapshot.
+- `/fleet-ops?vehicleId=<id>` opens the same single-vehicle snapshot.
+- Fleet Ops remains read-only: no execution/write buttons, no new permissions beyond `fleet_ops:read`, and no customer/public exposure.
+- P2 pool overview / dynamic cohort views remain next-stage work.
+- P3 saved custom views remain deferred pending P2 effectiveness.

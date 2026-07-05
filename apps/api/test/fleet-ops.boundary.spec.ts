@@ -56,6 +56,20 @@ describe("Fleet Ops dependency boundaries", () => {
     expect(controllerSource).not.toMatch(/executeAction|FleetExecutionService|ActionOrchestratorService|action\.handlers/);
     expect(appModule.match(/FleetOpsModule/g)).toHaveLength(2);
   });
+
+  it("keeps vehicle lookup as a narrow identity read helper without execution exposure", async () => {
+    const lookupSource = await readFile(join(process.cwd(), "src", "fleet-ops", "fleet-ops.vehicle-lookup.service.ts"), "utf8");
+    const controllerSource = await readFile(join(process.cwd(), "src", "fleet-ops", "fleet-ops.controller.ts"), "utf8");
+
+    expect(lookupSource).toContain("PrismaService");
+    expect(lookupSource).toMatch(/\.findMany\s*\(/);
+    expect(lookupSource).not.toMatch(
+      /\.create\s*\(|\.update\s*\(|\.delete\s*\(|\.upsert\s*\(|\.createMany\s*\(|\.updateMany\s*\(|\.deleteMany\s*\(|\$executeRaw|\$queryRawUnsafe|\$transaction/
+    );
+    expect(lookupSource).not.toMatch(/ActionOrchestratorService|FleetExecutionService|executeAction|action\.handlers/);
+    expect(controllerSource).toContain("FleetOpsVehicleLookupService");
+    expect(controllerSource).not.toMatch(/constructor\([\s\S]*PrismaService/);
+  });
 });
 
 async function findImports(pattern: RegExp) {

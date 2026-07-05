@@ -60,6 +60,23 @@ describe("FleetOpsController", () => {
     expect(facade.getVehicleRisk).toHaveBeenCalledWith(vehicleId, { from: new Date(from), to: new Date(to) });
   });
 
+  it("routes vehicle lookup through the read-only lookup service", async () => {
+    const { controller, facade, vehicleLookupService } = createController("true");
+
+    await expect(controller.lookupVehicles({ limit: 5, q: "VEH-DEMO" })).resolves.toEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          items: [expect.objectContaining({ vehicleId, vehicleNo: "VEH-DEMO-001" })],
+          limit: 5,
+          query: "VEH-DEMO"
+        })
+      })
+    );
+
+    expect(vehicleLookupService.lookup).toHaveBeenCalledWith({ limit: 5, q: "VEH-DEMO" });
+    expect(facade.query).not.toHaveBeenCalled();
+  });
+
   it("keeps diagnostics away from business and execution paths", () => {
     const { controller, facade, healthService } = createController("true");
 
@@ -103,14 +120,22 @@ function createController(featureFlag?: string) {
       timelineEngine: "OK"
     })
   };
+  const vehicleLookupService = {
+    lookup: vi.fn().mockResolvedValue({
+      items: [{ vehicleId, vehicleNo: "VEH-DEMO-001" }],
+      limit: 5,
+      query: "VEH-DEMO"
+    })
+  };
   const config = {
     get: vi.fn((key: string) => (key === "FLEET_OPS_API_ENABLED" ? featureFlag : undefined))
   };
 
   return {
     config,
-    controller: new FleetOpsController(facade as never, healthService as never, config as never),
+    controller: new FleetOpsController(facade as never, healthService as never, vehicleLookupService as never, config as never),
     facade,
-    healthService
+    healthService,
+    vehicleLookupService
   };
 }

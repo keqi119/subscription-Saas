@@ -19,7 +19,8 @@ describe("Fleet Ops API contract", () => {
       { method: RequestMethod.GET, path: "vehicles/:vehicleId/risk" },
       { method: RequestMethod.GET, path: "vehicles/:vehicleId/snapshot" },
       { method: RequestMethod.GET, path: "vehicles/:vehicleId/state" },
-      { method: RequestMethod.GET, path: "vehicles/:vehicleId/timeline" }
+      { method: RequestMethod.GET, path: "vehicles/:vehicleId/timeline" },
+      { method: RequestMethod.GET, path: "vehicles/lookup" }
     ]);
   });
 
@@ -89,6 +90,9 @@ function createController() {
     } as never,
     {
       getHealth: vi.fn().mockReturnValue({ stateEngine: "OK" })
+    } as never,
+    {
+      lookup: vi.fn().mockResolvedValue({ items: [], limit: 10, query: "VEH" })
     } as never,
     {
       get: vi.fn(() => "true")

@@ -92,3 +92,15 @@ P2-H4 validates the P2-H2 backend and P2-H3 frontend after operator-controlled d
 - P3 saved custom views remain deferred pending P2 effectiveness.
 
 The 2026-07-05 production smoke/calibration record is completed as `PASS_WITH_NOTES`. No rollback or feature disable was required. P2-H5 should be evidence-based and selected after passive observation; P3 saved custom views remain deferred.
+
+## P2-H5 Production Closeout
+
+P2-H5 is documented in:
+
+- `docs/fleet-ops/runbooks/p2-production-closeout-20260705.md`
+
+The P2 production closeout is completed as `PASS_WITH_NOTES`. No immediate runtime hardening was required because production smoke did not report route, role, feature flag, read-only safety, customer/public exposure, metric semantics, or anomaly drilldown failures.
+
+P2-H6 should be opened only from new evidence such as passive-observation failures, raw numeric metric mismatch, operator copy confusion, sparse/too-large data UX gaps, anomaly ranking concerns, or repeated smoke gaps that need test coverage.
+
+P3 saved custom views remain deferred pending explicit operator evidence that persistent named/shared filter sets are required and separately approved for write scope, ownership, audit, lifecycle, and permissions.

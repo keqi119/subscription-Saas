@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeftOutlined, CloudDownloadOutlined, EyeOutlined, FileDoneOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Card, Descriptions, Empty, List, Space, Spin, Tag, Typography } from "antd";
+import { App, Button, Card, Descriptions, Empty, List, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -354,15 +354,6 @@ export default function ContractDetailPage() {
     () => esignTasks.find((task) => task.hasSignedDocument) ?? null,
     [esignTasks]
   );
-  const completedFadadaTaskWithoutArchive = useMemo(
-    () => esignTasks.find((task) =>
-      !task.hasSignedDocument &&
-      task.provider.toUpperCase() === "FADADA" &&
-      task.taskStatus === "COMPLETED"
-    ) ?? null,
-    [esignTasks]
-  );
-
   const loadContract = useCallback(async () => {
     setLoading(true);
     try {
@@ -505,51 +496,6 @@ export default function ContractDetailPage() {
               : []
           }
             />
-          </Card>
-        ) : null}
-
-        {!loading && contract && contract.status === "SIGNED" ? (
-          <Card title="已签署合同原件">
-            {signedDocumentTask ? (
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                <Alert
-                  message="双方已签署完成的 PDF 原件已归档，可用于合同版本核对和取证。"
-                  showIcon
-                  type="success"
-                />
-                <Space size={[8, 8]} wrap>
-                  <Button icon={<EyeOutlined />} onClick={() => openSignedContract(signedDocumentTask.id)} type="primary">
-                    查看已签署PDF
-                  </Button>
-                  <Tag color="green">PDF 原件已归档</Tag>
-                  <Tag>{signedDocumentTask.taskNo}</Tag>
-                  <Tag>{formatTime(signedDocumentTask.completedAt)}</Tag>
-                </Space>
-              </Space>
-            ) : completedFadadaTaskWithoutArchive ? (
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                <Alert
-                  message="签署已完成，但双方签署完成的 PDF 原件尚未归档。归档后即可查看 PDF 原件。"
-                  showIcon
-                  type="warning"
-                />
-                <Button
-                  disabled={!permissions.has("contract:archive")}
-                  icon={<FileDoneOutlined />}
-                  loading={archivingTaskId === completedFadadaTaskWithoutArchive.id}
-                  onClick={() => archiveSignedArtifacts(completedFadadaTaskWithoutArchive.id)}
-                  type="primary"
-                >
-                  归档已签合同
-                </Button>
-              </Space>
-            ) : (
-              <Alert
-                message="当前合同已签署，但暂未找到可查看的已签署 PDF 原件。请确认电子签任务是否已完成并归档。"
-                showIcon
-                type="info"
-              />
-            )}
           </Card>
         ) : null}
 

@@ -21,7 +21,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
@@ -232,6 +232,31 @@ const packageMeta: Record<PackageKind, { createText: string; endpoint: string; t
 
 const monthlyFeeModeLabels = VEHICLE_BASE_FEE_MODE_LABELS;
 
+type ProductCenterTabKey =
+  | "benefit-packages"
+  | "energy-packages"
+  | "mileage-packages"
+  | "products"
+  | "subscription-plans"
+  | "vehicle-packages"
+  | "versions";
+
+const productCenterTabPermissions: Record<ProductCenterTabKey, string> = {
+  "benefit-packages": "benefit_package:view",
+  "energy-packages": "energy_package:view",
+  "mileage-packages": "mileage_package:view",
+  products: "product:view",
+  "subscription-plans": "subscription_plan:view",
+  "vehicle-packages": "vehicle_package:view",
+  versions: "product_version:view"
+};
+
+const productCenterTabKeys = Object.keys(productCenterTabPermissions) as ProductCenterTabKey[];
+
+function normalizeProductCenterTab(tab: string | null): ProductCenterTabKey {
+  return productCenterTabKeys.includes(tab as ProductCenterTabKey) ? (tab as ProductCenterTabKey) : "products";
+}
+
 function formatRate(value?: number | null) {
   return value === undefined || value === null ? "-" : `${(value * 100).toFixed(2)}%`;
 }
@@ -298,9 +323,11 @@ function ProductsPageContent() {
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionProductLocked, setVersionProductLocked] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const [authLoaded, setAuthLoaded] = useState(false);
+  const [tabError, setTabError] = useState<string | null>(null);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
 
-  const activeTab = searchParams.get("tab") ?? "products";
+  const activeTab = normalizeProductCenterTab(searchParams.get("tab"));
   const selectedPackageProductId = Form.useWatch("productId", packageForm);
   const selectedPackageProduct = products.find((product) => product.id === selectedPackageProductId);
   const selectedPlanProductId = Form.useWatch("productId", planForm);
@@ -319,46 +346,119 @@ function ProductsPageContent() {
   const planEnergyOptions = energyPackages.filter((row) => row.productVersionId === selectedPlanVersionId);
   const planBenefitOptions = benefitPackages.filter((row) => row.productVersionId === selectedPlanVersionId);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadCurrentUser = useCallback(async () => {
     try {
-      const [
-        productRows,
-        vehicleRows,
-        mileageRows,
-        energyRows,
-        benefitRows,
-        planRows,
-        modelDefinitionResult,
-        nextMe
-      ] = await Promise.all([
-        apiFetch<Product[]>("/products"),
-        apiFetch<PackageRow[]>("/vehicle-packages"),
-        apiFetch<PackageRow[]>("/mileage-packages"),
-        apiFetch<PackageRow[]>("/energy-packages"),
-        apiFetch<PackageRow[]>("/benefit-packages"),
-        apiFetch<SubscriptionPlan[]>("/subscription-plans"),
-        apiFetch<ListResponse<VehicleModelDefinitionSummary>>("/vehicle-model-definitions?enabled=true&pageSize=100"),
-        apiFetch<AuthMeResponse>("/auth/me")
-      ]);
-      setProducts(productRows);
-      setVehiclePackages(vehicleRows);
-      setMileagePackages(mileageRows);
-      setEnergyPackages(energyRows);
-      setBenefitPackages(benefitRows);
-      setSubscriptionPlans(planRows);
-      setVehicleModelDefinitions(modelDefinitionResult.items);
-      setMe(nextMe);
+      setMe(await apiFetch<AuthMeResponse>("/auth/me"));
     } catch (error) {
-      void message.error(getErrorMessage(error));
+      const messageText = getErrorMessage(error);
+      setTabError(error instanceof ApiError && error.status === 403 ? `403: ${messageText}` : messageText);
+      void message.error(messageText);
     } finally {
-      setLoading(false);
+      setAuthLoaded(true);
     }
   }, [message]);
 
+  const setPackageRows = useCallback((kind: PackageKind, rows: PackageRow[]) => {
+    if (kind === "benefit") {
+      setBenefitPackages(rows);
+      return;
+    }
+    if (kind === "energy") {
+      setEnergyPackages(rows);
+      return;
+    }
+    if (kind === "mileage") {
+      setMileagePackages(rows);
+      return;
+    }
+    setVehiclePackages(rows);
+  }, []);
+
+  const loadProducts = useCallback(async () => {
+    const productRows = await apiFetch<Product[]>("/products");
+    setProducts(productRows);
+    return productRows;
+  }, []);
+
+  const loadPackageRows = useCallback(
+    async (kind: PackageKind) => {
+      const rows = await apiFetch<PackageRow[]>(`/${packageMeta[kind].endpoint}`);
+      setPackageRows(kind, rows);
+      return rows;
+    },
+    [setPackageRows]
+  );
+
+  const loadVehicleModelDefinitions = useCallback(async () => {
+    const modelDefinitionResult = await apiFetch<ListResponse<VehicleModelDefinitionSummary>>(
+      "/vehicle-model-definitions?enabled=true&pageSize=100"
+    );
+    setVehicleModelDefinitions(modelDefinitionResult.items);
+    return modelDefinitionResult.items;
+  }, []);
+
+  const loadPlanDependencies = useCallback(async () => {
+    const [productRows, vehicleRows, mileageRows, energyRows, benefitRows] = await Promise.all([
+      apiFetch<Product[]>("/products"),
+      apiFetch<PackageRow[]>("/vehicle-packages"),
+      apiFetch<PackageRow[]>("/mileage-packages"),
+      apiFetch<PackageRow[]>("/energy-packages"),
+      apiFetch<PackageRow[]>("/benefit-packages")
+    ]);
+    setProducts(productRows);
+    setVehiclePackages(vehicleRows);
+    setMileagePackages(mileageRows);
+    setEnergyPackages(energyRows);
+    setBenefitPackages(benefitRows);
+  }, []);
+
+  const loadData = useCallback(async () => {
+    if (!me) {
+      return;
+    }
+
+    const requiredPermission = productCenterTabPermissions[activeTab];
+    if (!permissions.has(requiredPermission)) {
+      setLoading(false);
+      setTabError("403: 无权限访问当前产品中心页签");
+      return;
+    }
+
+    setLoading(true);
+    setTabError(null);
+    try {
+      if (activeTab === "products" || activeTab === "versions") {
+        await loadProducts();
+        return;
+      }
+
+      const activePackageKind = packageKindFromTab(activeTab);
+      if (activePackageKind) {
+        await loadPackageRows(activePackageKind);
+        return;
+      }
+
+      if (activeTab === "subscription-plans") {
+        setSubscriptionPlans(await apiFetch<SubscriptionPlan[]>("/subscription-plans"));
+      }
+    } catch (error) {
+      const messageText = getErrorMessage(error);
+      setTabError(error instanceof ApiError && error.status === 403 ? `403: ${messageText}` : messageText);
+      void message.error(messageText);
+    } finally {
+      setLoading(false);
+    }
+  }, [activeTab, loadPackageRows, loadProducts, me, message, permissions]);
+
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    void loadCurrentUser();
+  }, [loadCurrentUser]);
+
+  useEffect(() => {
+    if (authLoaded) {
+      void loadData();
+    }
+  }, [authLoaded, loadData]);
 
   useEffect(() => {
     if (!selectedPlanVehiclePackage) {
@@ -483,9 +583,14 @@ function ProductsPageContent() {
 
   async function transitionVersion(version: ProductVersion, action: "approve" | "activate" | "deactivate") {
     try {
+      let plansForValidation = subscriptionPlans;
+      if (action === "activate" && plansForValidation.length === 0) {
+        plansForValidation = await apiFetch<SubscriptionPlan[]>("/subscription-plans");
+        setSubscriptionPlans(plansForValidation);
+      }
       if (
         action === "activate" &&
-        !subscriptionPlans.some((plan) => plan.productVersionId === version.id && plan.status === "ACTIVE")
+        !plansForValidation.some((plan) => plan.productVersionId === version.id && plan.status === "ACTIVE")
       ) {
         void message.error("当前产品版本尚未启用订阅套餐，请先配置并启用至少一个订阅套餐");
         return;
@@ -503,21 +608,29 @@ function ProductsPageContent() {
     }
   }
 
-  function openPackageModal(kind: PackageKind, row?: PackageRow) {
-    setPackageKind(kind);
-    setEditingPackage(row ?? null);
-    packageForm.setFieldsValue(
-      row
-        ? {
-            ...row,
-            maxPurchasePriceAmountYuan: row.maxPurchasePriceAmount ? row.maxPurchasePriceAmount / 100 : null,
-            minPurchasePriceAmountYuan: row.minPurchasePriceAmount ? row.minPurchasePriceAmount / 100 : null,
-            overMileageFeeAmountYuan: row.overMileageFeeAmount ? row.overMileageFeeAmount / 100 : undefined,
-            priceAmountYuan: row.priceAmount ? row.priceAmount / 100 : 0
-          }
-        : defaultPackageValues(kind)
-    );
-    setPackageOpen(true);
+  async function openPackageModal(kind: PackageKind, row?: PackageRow) {
+    try {
+      await loadProducts();
+      if (kind === "vehicle") {
+        await loadVehicleModelDefinitions();
+      }
+      setPackageKind(kind);
+      setEditingPackage(row ?? null);
+      packageForm.setFieldsValue(
+        row
+          ? {
+              ...row,
+              maxPurchasePriceAmountYuan: row.maxPurchasePriceAmount ? row.maxPurchasePriceAmount / 100 : null,
+              minPurchasePriceAmountYuan: row.minPurchasePriceAmount ? row.minPurchasePriceAmount / 100 : null,
+              overMileageFeeAmountYuan: row.overMileageFeeAmount ? row.overMileageFeeAmount / 100 : undefined,
+              priceAmountYuan: row.priceAmount ? row.priceAmount / 100 : 0
+            }
+          : defaultPackageValues(kind)
+      );
+      setPackageOpen(true);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
   }
 
   async function savePackage(values: PackageValues) {
@@ -564,7 +677,13 @@ function ProductsPageContent() {
     }
   }
 
-  function openPlanModal(plan?: SubscriptionPlan) {
+  async function openPlanModal(plan?: SubscriptionPlan) {
+    try {
+      await loadPlanDependencies();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+      return;
+    }
     setEditingPlan(plan ?? null);
     planForm.setFieldsValue(
       plan
@@ -739,7 +858,14 @@ function ProductsPageContent() {
             审批
           </ActionButton>
           <ActionButton
-            availability={canActivateProductVersion(record, subscriptionPlans, permissions)}
+            availability={
+              subscriptionPlans.length > 0
+                ? canActivateProductVersion(record, subscriptionPlans, permissions)
+                : actionAvailability({
+                    permission: "product_version:activate",
+                    permissions
+                  })
+            }
             onClick={() => transitionVersion(record, "activate")}
             size="small"
           >
@@ -825,6 +951,21 @@ function ProductsPageContent() {
     }
   ];
 
+  function canAccessTab(tab: ProductCenterTabKey) {
+    return !me || permissions.has(productCenterTabPermissions[tab]);
+  }
+
+  function isTabDisabled(tab: ProductCenterTabKey) {
+    return Boolean(me) && activeTab !== tab && !canAccessTab(tab);
+  }
+
+  function renderTabContent(tab: ProductCenterTabKey, content: ReactNode) {
+    if (activeTab === tab && tabError) {
+      return <Alert showIcon message={tabError} type={tabError.includes("403") ? "warning" : "error"} />;
+    }
+    return content;
+  }
+
   return (
     <ProtectedShell>
       <Space orientation="vertical" size={16} style={{ width: "100%" }}>
@@ -882,13 +1023,69 @@ function ProductsPageContent() {
           activeKey={activeTab}
           onChange={(key) => router.push(`/products?tab=${key}`)}
           items={[
-            { key: "products", label: "订阅产品", children: <Table columns={productColumns} dataSource={products} loading={loading} rowKey="id" scroll={{ x: 1200 }} /> },
-            { key: "versions", label: "产品版本", children: <Table columns={versionColumns} dataSource={versionRows} loading={loading} rowKey="id" scroll={{ x: 1300 }} /> },
-            { key: "vehicle-packages", label: "车型包", children: packageTable("vehicle", vehiclePackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
-            { key: "mileage-packages", label: "里程包", children: packageTable("mileage", mileagePackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
-            { key: "energy-packages", label: "补能包", children: packageTable("energy", energyPackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
-            { key: "benefit-packages", label: "权益包", children: packageTable("benefit", benefitPackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions) },
-            { key: "subscription-plans", label: "订阅套餐", children: <Table columns={planColumns} dataSource={subscriptionPlans} loading={loading} rowKey="id" scroll={{ x: 2100 }} /> }
+            {
+              children: renderTabContent(
+                "products",
+                <Table columns={productColumns} dataSource={products} loading={loading} rowKey="id" scroll={{ x: 1200 }} />
+              ),
+              disabled: isTabDisabled("products"),
+              key: "products",
+              label: "订阅产品"
+            },
+            {
+              children: renderTabContent(
+                "versions",
+                <Table columns={versionColumns} dataSource={versionRows} loading={loading} rowKey="id" scroll={{ x: 1300 }} />
+              ),
+              disabled: isTabDisabled("versions"),
+              key: "versions",
+              label: "产品版本"
+            },
+            {
+              children: renderTabContent(
+                "vehicle-packages",
+                packageTable("vehicle", vehiclePackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions)
+              ),
+              disabled: isTabDisabled("vehicle-packages"),
+              key: "vehicle-packages",
+              label: "车型包"
+            },
+            {
+              children: renderTabContent(
+                "mileage-packages",
+                packageTable("mileage", mileagePackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions)
+              ),
+              disabled: isTabDisabled("mileage-packages"),
+              key: "mileage-packages",
+              label: "里程包"
+            },
+            {
+              children: renderTabContent(
+                "energy-packages",
+                packageTable("energy", energyPackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions)
+              ),
+              disabled: isTabDisabled("energy-packages"),
+              key: "energy-packages",
+              label: "补能包"
+            },
+            {
+              children: renderTabContent(
+                "benefit-packages",
+                packageTable("benefit", benefitPackages, openPackageModal, setPackageStatus, deletePackage, loading, permissions)
+              ),
+              disabled: isTabDisabled("benefit-packages"),
+              key: "benefit-packages",
+              label: "权益包"
+            },
+            {
+              children: renderTabContent(
+                "subscription-plans",
+                <Table columns={planColumns} dataSource={subscriptionPlans} loading={loading} rowKey="id" scroll={{ x: 2100 }} />
+              ),
+              disabled: isTabDisabled("subscription-plans"),
+              key: "subscription-plans",
+              label: "订阅套餐"
+            }
           ]}
         />
       </Space>

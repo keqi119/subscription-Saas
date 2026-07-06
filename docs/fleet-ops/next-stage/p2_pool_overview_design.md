@@ -501,6 +501,15 @@ Production smoke record:
 - No rollback or feature disable required.
 - Next decision: P2-H5 hardening/calibration follow-up based on evidence and passive observation.
 
+P2-H5 production closeout:
+
+- `docs/fleet-ops/runbooks/p2-production-closeout-20260705.md`
+- Production smoke completed as `PASS_WITH_NOTES`.
+- P2 is sufficient for continued controlled internal management use and observation.
+- No immediate runtime hardening is required.
+- P2-H6 should be opened only from new evidence such as passive-observation failure, raw metric mismatch, operator confusion, sparse/too-large data UX issues, anomaly ranking concerns, or repeated smoke gaps.
+- P3 saved custom views remain deferred.
+
 ### 4.5 Safety Checklist
 
 - no schema changes

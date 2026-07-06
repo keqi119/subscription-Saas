@@ -1110,3 +1110,24 @@ Production status:
 - No rollback or feature disable was required.
 - P2-H5 should be selected from the evidence and passive observation: production hardening/release record, metric label correction, sparse-data UX refinement, or anomaly ranking tuning.
 - P3 saved custom views remain deferred pending P2 effectiveness.
+
+## 28. Fleet Ops P2-H5 Production Hardening And Closeout Tasks
+
+P2-H5 is docs-only closeout when P2-H4 evidence is `PASS_WITH_NOTES` without confirmed runtime defects.
+
+Task rules:
+
+- Use `docs/fleet-ops/runbooks/p2-production-closeout-20260705.md` to record the P2 closeout decision.
+- Do not make runtime changes for evidence-quality notes such as missing pasted raw metric values, pending passive observation, broad/default cohort samples, or no-overdue `EMPTY_EXPECTED` states.
+- Do not start P3 saved custom views.
+- P2-H6 must be evidence-triggered by a confirmed observation gap, operator confusion, metric mismatch, sparse/too-large data UX issue, anomaly ranking concern, role/feature flag regression, or repeated smoke gap.
+- Passive observation and raw numeric metric evidence gaps should be recorded as notes, not treated as bugs unless confirmed by later evidence.
+- Push, PR creation, merge, deployment, production commands, live DB sync, production DB query, and feature-flag operations remain human-only.
+
+Focused verification:
+
+```bash
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.api-contract.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-readonly.spec.ts
+```

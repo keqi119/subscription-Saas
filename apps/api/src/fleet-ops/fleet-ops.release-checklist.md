@@ -467,6 +467,28 @@ Production smoke record:
 - P2-H5 should be evidence-based after passive observation.
 - P3 saved custom views remain deferred pending P2 effectiveness.
 
+## P2-H5 Production Closeout Check
+
+P2-H5 records the production hardening and closeout decision after P2-H4 smoke.
+
+Before accepting P2 closeout, confirm:
+
+- `docs/fleet-ops/runbooks/p2-production-closeout-20260705.md` exists.
+- P2-H4 production smoke evidence was reviewed.
+- Final closeout classification remains `PASS_WITH_NOTES`.
+- No rollback or feature disable is required.
+- Runtime hardening is not required immediately.
+- P2-H6 trigger criteria are documented.
+- P3 saved custom views remain deferred.
+
+Focused P2-H5 checks:
+
+```bash
+pnpm --filter @subscription-saas/api test:fleet-ops
+pnpm --filter @subscription-saas/web exec vitest run test/fleet-ops-pool-api.spec.ts test/fleet-ops-pool-view-model.spec.ts test/fleet-ops-pool-overview.spec.ts test/fleet-ops-pool-readonly.spec.ts test/fleet-ops-api.spec.ts test/fleet-ops-readonly.spec.ts test/fleet-ops-view-model.spec.ts test/fleet-ops-vehicle-lookup.spec.ts
+pnpm --filter @subscription-saas/api exec vitest run test/fleet-ops.api-contract.spec.ts test/fleet-ops.pool-aggregation.spec.ts test/fleet-ops.pool-readonly.spec.ts
+```
+
 ## Known Baseline Issue
 
 The broader API test script can expose this unrelated existing failure:

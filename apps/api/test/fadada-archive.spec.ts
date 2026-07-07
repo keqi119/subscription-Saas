@@ -1,6 +1,13 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { ContractStatus, ESignProviderType, ESignTaskStatus, OrderStatus } from "@prisma/client";
+import {
+  ContractStatus,
+  ESignProviderType,
+  ESignSignerStatus,
+  ESignSignerType,
+  ESignTaskStatus,
+  OrderStatus
+} from "@prisma/client";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -22,6 +29,21 @@ describe("FadadaSignedArtifactService", () => {
     state.task.provider = ESignProviderType.MOCK;
 
     await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("requires all task signers to be signed before archiving signed artifacts", async () => {
+    const { service, state } = createFixture();
+    state.signers.push({
+      deletedAt: null,
+      id: "signer-platform-1",
+      signerStatus: ESignSignerStatus.PENDING,
+      signerType: ESignSignerType.PLATFORM,
+      taskId: "task-1"
+    });
+
+    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toThrow(
+      /FADADA_ARCHIVE_INVALID_TASK/
+    );
   });
 
   it("downloads, validates, stores and records a signed PDF without changing contract or order state", async () => {
@@ -194,6 +216,15 @@ function createFixture() {
         }
       ]
     },
+    signers: [
+      {
+        deletedAt: null as Date | null,
+        id: "signer-customer-1",
+        signerStatus: ESignSignerStatus.SIGNED as ESignSignerStatus,
+        signerType: ESignSignerType.CUSTOMER as ESignSignerType,
+        taskId: "task-1"
+      }
+    ],
     task: {
       callbackSnapshot: null as unknown,
       completedAt: new Date("2026-01-03T04:05:06.000Z"),
@@ -310,7 +341,8 @@ function createFixture() {
 function hydrateTask(state: ReturnType<typeof createFixture>["state"]) {
   return {
     ...state.task,
-    contract: state.contract
+    contract: state.contract,
+    signers: state.signers.filter((signer) => signer.taskId === state.task.id && !signer.deletedAt)
   };
 }
 

@@ -6,6 +6,7 @@ import {
   buildContractFilingRequest,
   buildContractStatusRequest,
   buildDownloadContractRequest,
+  buildExtSignAutoRequest,
   buildFadadaRequest,
   buildQuerySignResultRequest,
   FADADA_ENDPOINTS
@@ -264,6 +265,45 @@ export class FadadaApiClient {
       },
       signUrl,
       signUrlExpiresAt: new Date(Date.now() + Math.max(validity, 1) * 60_000),
+      transactionId: input.transactionId
+    };
+  }
+
+  async autoSealContract(input: {
+    contractId: string;
+    customerId: string;
+    docTitle?: string;
+    notifyUrl?: string;
+    signatureId: string;
+    transactionId: string;
+  }): Promise<{
+    contractId: string;
+    raw: unknown;
+    resultCode?: string;
+    resultDesc?: string;
+    transactionId: string;
+  }> {
+    const request = buildExtSignAutoRequest({
+      businessParams: {
+        contract_id: input.contractId,
+        customer_id: input.customerId,
+        signature_id: input.signatureId,
+        transaction_id: input.transactionId,
+        ...(input.docTitle ? { doc_title: input.docTitle } : {}),
+        ...(input.notifyUrl ? { notify_url: input.notifyUrl } : {})
+      },
+      config: this.config,
+      explicitSortString: input.customerId
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+
+    return {
+      contractId: input.contractId,
+      raw,
+      resultCode: stringField(raw, ["result_code", "resultCode", "result", "code"]),
+      resultDesc: stringField(raw, ["result_desc", "resultDesc", "message", "msg"]),
       transactionId: input.transactionId
     };
   }

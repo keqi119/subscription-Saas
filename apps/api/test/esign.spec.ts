@@ -142,6 +142,141 @@ describe("ESignService", () => {
     }));
   });
 
+  it("creates a pending platform signer when enterprise auto seal is enabled", async () => {
+    const provider = enterpriseAutoSealProvider();
+    const { service, state } = createESignFixture({
+      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PROVIDER: "fadada"
+    }, provider);
+
+    const result = await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext(),
+      approvedPlanRef()
+    );
+
+    expect(result.signers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        signerStatus: ESignSignerStatus.SIGNING,
+        signerType: ESignSignerType.CUSTOMER
+      }),
+      expect.objectContaining({
+        signerStatus: ESignSignerStatus.PENDING,
+        signerType: ESignSignerType.PLATFORM
+      })
+    ]));
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
+      signers: [expect.objectContaining({ signerType: "CUSTOMER" })]
+    }));
+  });
+
+  it("waits for platform auto seal before finalizing a Fadada customer callback", async () => {
+    const provider = enterpriseAutoSealProvider();
+    const { service, state } = createESignFixture({
+      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PROVIDER: "fadada"
+    }, provider);
+    const task = await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext(),
+      approvedPlanRef()
+    );
+
+    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(result).toMatchObject({ handled: true });
+    expect(provider.autoSealTask).toHaveBeenCalledOnce();
+    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toMatchObject({
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)).toMatchObject({
+      providerSignerId: "ESG-1-2",
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    expect(state.tasks[0]).toMatchObject({
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(state.contracts[0]).toMatchObject({
+      signedAt: expect.any(Date),
+      status: ContractStatus.SIGNED
+    });
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("keeps contract and order pending when platform auto seal fails", async () => {
+    const provider = enterpriseAutoSealProvider({ status: "FAILED", resultCode: "NO_SEAL", resultDescription: "seal missing" });
+    const { service, state } = createESignFixture({
+      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PROVIDER: "fadada"
+    }, provider);
+    const task = await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext(),
+      approvedPlanRef()
+    );
+
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toMatchObject({
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)).toMatchObject({
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(state.tasks[0]).toMatchObject({
+      completedAt: null,
+      taskStatus: ESignTaskStatus.SIGNING
+    });
+    expect(state.tasks[0]!.errorSnapshot).toMatchObject({
+      resultCode: "NO_SEAL"
+    });
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("does not duplicate platform auto seal or order advancement for duplicate callbacks", async () => {
+    const provider = enterpriseAutoSealProvider();
+    const { prisma, service, state } = createESignFixture({
+      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PROVIDER: "fadada"
+    }, provider);
+    const task = await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext(),
+      approvedPlanRef()
+    );
+
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(provider.autoSealTask).toHaveBeenCalledTimes(1);
+    expect(prisma.subscriptionOrder.updateMany).toHaveBeenCalledTimes(1);
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.COMPLETED);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
   it("validates the C4 policy to B5 execution reference loop without provider policy decisions", async () => {
     const policyEngine = new SignaturePolicyEngine();
     const policyInput = enterprisePolicyInput();
@@ -917,6 +1052,44 @@ function createFadadaESignFixture() {
   };
 
   return createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
+}
+
+function enterpriseAutoSealProvider(result: {
+  providerSignerId?: string;
+  rawResponse?: unknown;
+  resultCode?: string;
+  resultDescription?: string;
+  status: "COMPLETED" | "FAILED" | "PENDING";
+} = {
+  providerSignerId: "ESG-1-2",
+  rawResponse: { autoSeal: "ok" },
+  status: "COMPLETED"
+}) {
+  const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
+  return {
+    autoSealTask: vi.fn(async () => result),
+    createSignTask: vi.fn(async (input) => {
+      const transactionId = `${input.taskNo}-1`;
+      return {
+        providerEnvelopeId: input.taskNo,
+        providerTaskId: transactionId,
+        rawResponse: { provider: "fadada" },
+        signUrl: "https://sign.example.test/customer",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+        signers: [{
+          customerId: "customer-1",
+          providerSignerId: transactionId,
+          signUrl: "https://sign.example.test/customer",
+          signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+          signerType: "CUSTOMER" as const
+        }]
+      };
+    }),
+    getSignerUrl: vi.fn(),
+    verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
+  } satisfies ESignProvider & {
+    autoSealTask: ReturnType<typeof vi.fn>;
+  };
 }
 
 function fadadaConfigService() {

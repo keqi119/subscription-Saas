@@ -269,6 +269,41 @@ describe("Fadada API client", () => {
     });
   });
 
+  it("calls the Fadada auto-sign endpoint for platform seal requests", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        result: "3000",
+        result_desc: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.autoSealContract({
+      contractId: "CON-1",
+      customerId: "platform-customer-1",
+      docTitle: "Contract.pdf",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      signatureId: "platform-signature-1",
+      transactionId: "TX-2"
+    });
+
+    expect(result).toMatchObject({
+      contractId: "CON-1",
+      resultCode: "3000",
+      resultDesc: "success",
+      transactionId: "TX-2"
+    });
+    const request = vi.mocked(transport).mock.calls[0]?.[0];
+    expect(request?.url).toBe("https://testapi.fadada.com:8443/api/extsign_auto.api");
+    expect(String(request?.body)).toContain("contract_id=CON-1");
+    expect(String(request?.body)).toContain("customer_id=platform-customer-1");
+    expect(String(request?.body)).toContain("signature_id=platform-signature-1");
+    expect(String(request?.body)).toContain("transaction_id=TX-2");
+    expect(String(request?.body)).not.toContain("secret-xyz");
+  });
+
   it("queries sign result and keeps provider URLs inside the raw response only", async () => {
     const transport: FadadaTransport = vi.fn(async () => ({
       bodyText: JSON.stringify({

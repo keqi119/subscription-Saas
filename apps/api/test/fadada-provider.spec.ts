@@ -373,6 +373,62 @@ describe("Fadada provider B2-A flow", () => {
     );
   });
 
+  it("auto seals with configured platform account and signature IDs", async () => {
+    const apiClient = {
+      autoSealContract: vi.fn(async () => ({
+        contractId: "ESG-1",
+        raw: { result: "3000" },
+        resultCode: "3000",
+        resultDesc: "success",
+        transactionId: "ESG-1-2"
+      }))
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
+      FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1"
+    })), apiClient as never);
+
+    const result = await provider.autoSealTask?.({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      providerEnvelopeId: "ESG-1",
+      taskId: "task-1",
+      taskNo: "ESG-1",
+      transactionId: "ESG-1-2"
+    });
+
+    expect(apiClient.autoSealContract).toHaveBeenCalledWith(expect.objectContaining({
+      contractId: "ESG-1",
+      customerId: "platform-customer-1",
+      docTitle: "Contract.pdf",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      signatureId: "platform-signature-1",
+      transactionId: "ESG-1-2"
+    }));
+    expect(result).toMatchObject({
+      providerSignerId: "ESG-1-2",
+      resultCode: "3000",
+      status: "COMPLETED"
+    });
+  });
+
+  it("fails auto seal safely when platform config is missing", async () => {
+    const apiClient = {
+      autoSealContract: vi.fn()
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService()), apiClient as never);
+
+    await expect(provider.autoSealTask?.({
+      contractId: "contract-1",
+      providerEnvelopeId: "ESG-1",
+      taskId: "task-1",
+      taskNo: "ESG-1",
+      transactionId: "ESG-1-2"
+    })).rejects.toThrow(/FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING/);
+    expect(apiClient.autoSealContract).not.toHaveBeenCalled();
+  });
+
   it("verifies form callback digest without advancing business state", async () => {
     const provider = new FadadaESignProvider(loadFadadaConfig(configService()));
     const receivedMsgDigest = buildFadadaMsgDigest({

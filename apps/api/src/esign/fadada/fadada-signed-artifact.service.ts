@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { ContractStatus, ESignProviderType, ESignTaskStatus, Prisma } from "@prisma/client";
+import { ContractStatus, ESignProviderType, ESignSignerStatus, ESignTaskStatus, Prisma } from "@prisma/client";
 import type { Readable } from "node:stream";
 
 import { RequestUser } from "../../auth/auth.types";
@@ -28,6 +28,9 @@ const signedArtifactTaskInclude = {
         }
       }
     }
+  },
+  signers: {
+    where: { deletedAt: null }
   }
 } satisfies Prisma.ContractESignTaskInclude;
 
@@ -222,6 +225,9 @@ export class FadadaSignedArtifactService {
     }
     if (!force && task.taskStatus !== ESignTaskStatus.COMPLETED) {
       throw new BadRequestException(`${FADADA_ARCHIVE_INVALID_TASK}: task must be completed before archive`);
+    }
+    if (!force && task.signers.some((signer) => signer.signerStatus !== ESignSignerStatus.SIGNED)) {
+      throw new BadRequestException(`${FADADA_ARCHIVE_INVALID_TASK}: all required signers must be signed before archive`);
     }
   }
 

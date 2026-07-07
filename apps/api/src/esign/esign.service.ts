@@ -26,7 +26,7 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
-import { ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
+import { AutoSealTaskResult, ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
 import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
 
 const contractForESignInclude = {
@@ -113,6 +113,7 @@ const CALLBACK_COMPLETED_EVENTS = new Set([
 const FADADA_FAILED_EVENT = "FADADA_SIGN_FAILED";
 const FADADA_REJECTED_EVENT = "FADADA_SIGN_REJECTED";
 const FADADA_UNKNOWN_EVENT = "FADADA_SIGN_UNKNOWN";
+const ENTERPRISE_AUTO_SEAL_ENABLED_ENV = "ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED";
 
 @Injectable()
 export class ESignService {
@@ -155,7 +156,37 @@ export class ESignService {
     if (approvedSigningPlan) {
       requestSnapshotInput.enterpriseSigningPlan = toEnterpriseSigningPlanSnapshot(approvedSigningPlan);
     }
+    const enterpriseAutoSealEnabled = this.isEnterpriseAutoSealEnabled();
+    if (enterpriseAutoSealEnabled) {
+      requestSnapshotInput.enterpriseAutoSeal = { enabled: true };
+    }
     const requestSnapshot = toJsonValue(requestSnapshotInput);
+    const platformStep = findPlatformSigningStep(approvedSigningPlan);
+    const signerCreates: Prisma.ContractESignSignerCreateWithoutTaskInput[] = [{
+      customerId: contract.customerId,
+      signerName: contract.customer.name,
+      signerPhone: contract.customer.mobile,
+      signerStatus: ESignSignerStatus.PENDING,
+      signerType: ESignSignerType.CUSTOMER,
+      snapshot: toJsonValue({
+        customerId: contract.customerId,
+        mobileMasked: maskPhone(contract.customer.mobile),
+        name: contract.customer.name
+      })
+    }];
+    if (enterpriseAutoSealEnabled) {
+      signerCreates.push({
+        signerName: "Platform",
+        signerStatus: ESignSignerStatus.PENDING,
+        signerType: ESignSignerType.PLATFORM,
+        snapshot: toJsonValue({
+          required: true,
+          sealId: platformStep?.sealId,
+          signerRole: platformStep?.signerRole ?? "ENTERPRISE_SEAL",
+          stepOrder: platformStep?.stepOrder ?? 2
+        })
+      });
+    }
 
     const task = await withUniqueBusinessNoRetry(() =>
       this.prisma.contractESignTask.create({
@@ -168,18 +199,7 @@ export class ESignService {
           provider: this.providerType,
           requestSnapshot,
           signers: {
-            create: [{
-              customerId: contract.customerId,
-              signerName: contract.customer.name,
-              signerPhone: contract.customer.mobile,
-              signerStatus: ESignSignerStatus.PENDING,
-              signerType: ESignSignerType.CUSTOMER,
-              snapshot: toJsonValue({
-                customerId: contract.customerId,
-                mobileMasked: maskPhone(contract.customer.mobile),
-                name: contract.customer.name
-              })
-            }]
+            create: signerCreates
           },
           taskNo: createBusinessNo("ESG"),
           taskStatus: ESignTaskStatus.CREATED,
@@ -831,6 +851,7 @@ export class ESignService {
         throw new BadRequestException("当前电子签任务状态不允许签署完成。");
       }
 
+      const requiresPlatformAutoSeal = this.requiresPlatformAutoSeal(task);
       await tx.contractESignSigner.updateMany({
         data: {
           signedAt: now,
@@ -842,6 +863,44 @@ export class ESignService {
           taskId: task.id
         }
       });
+      if (requiresPlatformAutoSeal) {
+        await tx.contractESignTask.update({
+          data: {
+            callbackSnapshot: options.callbackPayload === undefined ? undefined : toJsonValue(options.callbackPayload),
+            taskStatus: ESignTaskStatus.SIGNING,
+            updatedBy: options.actorId
+          },
+          where: { id: task.id }
+        });
+        if (options.callbackLogId) {
+          await tx.contractESignCallbackLog.update({
+            data: {
+              handled: true,
+              handledAt: now,
+              taskId: task.id
+            },
+            where: { id: options.callbackLogId }
+          });
+        } else {
+          await tx.contractESignCallbackLog.create({
+            data: {
+              eventType: options.eventType,
+              handled: true,
+              handledAt: now,
+              payload: options.callbackPayload === undefined ? undefined : toJsonValue(options.callbackPayload),
+              provider: task.provider,
+              providerTaskId: options.providerTaskId ?? task.providerTaskId,
+              taskId: task.id,
+              verified: true
+            }
+          });
+        }
+
+        return tx.contractESignTask.findUniqueOrThrow({
+          include: esignTaskInclude,
+          where: { id: task.id }
+        });
+      }
       await tx.contractESignTask.update({
         data: {
           callbackSnapshot: options.callbackPayload === undefined ? undefined : toJsonValue(options.callbackPayload),
@@ -901,10 +960,18 @@ export class ESignService {
       });
     });
 
+    const finalResult = this.shouldTriggerPlatformAutoSeal(result)
+      ? await this.triggerPlatformAutoSeal(result, options)
+      : result;
+
+    if (finalResult.taskStatus !== ESignTaskStatus.COMPLETED) {
+      return finalResult;
+    }
+
     await this.auditService.write({
       action: AuditAction.APPROVE,
-      after: toESignTaskView(result),
-      entityId: result.id,
+      after: toESignTaskView(finalResult),
+      entityId: finalResult.id,
       entityType: "contract_esign_task",
       ipAddress: options.context?.ipAddress,
       module: "esign",
@@ -913,19 +980,222 @@ export class ESignService {
     });
 
     await this.safeNotifyCustomer({
-      aggregateId: result.orderId ?? result.contract.orderId,
-      aggregateNo: result.contract.order.orderNo,
+      aggregateId: finalResult.orderId ?? finalResult.contract.orderId,
+      aggregateNo: finalResult.contract.order.orderNo,
       aggregateType: "order",
       content: "合同已签署完成，订单进入待支付状态。",
-      customerId: result.customerId ?? result.contract.customerId,
+      customerId: finalResult.customerId ?? finalResult.contract.customerId,
       eventType: NotificationEventType.PAYMENT_PENDING,
       notificationType: NotificationType.PAYMENT_PENDING,
       status: OrderStatus.PENDING_PAYMENT,
       title: "订单待支付",
-      url: `/portal/orders/${result.orderId ?? result.contract.orderId}`
+      url: `/portal/orders/${finalResult.orderId ?? finalResult.contract.orderId}`
     });
 
-    return result;
+    return finalResult;
+  }
+
+  private requiresPlatformAutoSeal(task: ESignTaskWithDetails) {
+    return this.isEnterpriseAutoSealEnabled() && hasPlatformSigner(task);
+  }
+
+  private shouldTriggerPlatformAutoSeal(task: ESignTaskWithDetails) {
+    return this.requiresPlatformAutoSeal(task) &&
+      task.taskStatus !== ESignTaskStatus.COMPLETED &&
+      hasSignedCustomerSigner(task) &&
+      !hasSignedPlatformSigner(task);
+  }
+
+  private async triggerPlatformAutoSeal(
+    task: ESignTaskWithDetails,
+    options: {
+      actorId?: string;
+      context?: PortalRequestContext;
+      source: "portal_mock" | "provider_callback";
+    }
+  ) {
+    const platformSigner = getPlatformSigner(task);
+    const transactionId = platformSigner?.providerSignerId ?? `${task.taskNo}-2`;
+    if (!this.provider.autoSealTask) {
+      return this.recordPlatformAutoSealFailure(task.id, {
+        errorMessage: "ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED",
+        providerSignerId: transactionId,
+        status: "FAILED"
+      }, options.actorId);
+    }
+
+    try {
+      const result = await this.provider.autoSealTask({
+        callbackUrl: this.buildCallbackUrl(),
+        contractId: task.contractId,
+        documentName: task.documentName ?? undefined,
+        providerEnvelopeId: task.providerEnvelopeId ?? undefined,
+        sealId: readSealId(platformSigner?.snapshot),
+        taskId: task.id,
+        taskNo: task.taskNo,
+        transactionId
+      });
+      if (result.status === "COMPLETED") {
+        return this.finalizePlatformAutoSeal(task.id, result, options.actorId);
+      }
+
+      return this.recordPlatformAutoSealFailure(task.id, result, options.actorId);
+    } catch (error) {
+      return this.recordPlatformAutoSealFailure(task.id, {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        providerSignerId: transactionId,
+        status: "FAILED"
+      }, options.actorId);
+    }
+  }
+
+  private async finalizePlatformAutoSeal(taskId: string, result: AutoSealTaskResult, actorId?: string) {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const task = await tx.contractESignTask.findUnique({
+        include: esignTaskInclude,
+        where: { id: taskId }
+      });
+      if (!task || task.deletedAt) {
+        throw new NotFoundException("E-sign task not found.");
+      }
+      if (task.taskStatus === ESignTaskStatus.COMPLETED) {
+        return task;
+      }
+
+      await tx.contractESignSigner.updateMany({
+        data: {
+          providerSignerId: result.providerSignerId,
+          signedAt: now,
+          signerStatus: ESignSignerStatus.SIGNED
+        },
+        where: {
+          deletedAt: null,
+          signerType: ESignSignerType.PLATFORM,
+          taskId: task.id
+        }
+      });
+      await tx.contractESignTask.update({
+        data: {
+          errorSnapshot: Prisma.JsonNull,
+          responseSnapshot: toJsonValue(mergeSnapshot(task.responseSnapshot, {
+            enterpriseAutoSeal: {
+              providerSignerId: result.providerSignerId,
+              resultCode: result.resultCode,
+              resultDescription: result.resultDescription,
+              status: result.status
+            }
+          })),
+          taskStatus: ESignTaskStatus.SIGNING,
+          updatedBy: actorId
+        },
+        where: { id: task.id }
+      });
+
+      const signedTask = await tx.contractESignTask.findUniqueOrThrow({
+        include: esignTaskInclude,
+        where: { id: task.id }
+      });
+      if (!allRequiredSignersSigned(signedTask)) {
+        return signedTask;
+      }
+
+      await tx.contractESignTask.update({
+        data: {
+          completedAt: signedTask.completedAt ?? now,
+          taskStatus: ESignTaskStatus.COMPLETED,
+          updatedBy: actorId
+        },
+        where: { id: signedTask.id }
+      });
+      await tx.contract.update({
+        data: {
+          signedAt: signedTask.contract.signedAt ?? now,
+          status: ContractStatus.SIGNED,
+          updatedBy: actorId
+        },
+        where: { id: signedTask.contractId }
+      });
+      await tx.subscriptionOrder.updateMany({
+        data: {
+          orderStatus: OrderStatus.PENDING_PAYMENT,
+          updatedBy: actorId
+        },
+        where: {
+          contractId: signedTask.contractId,
+          deletedAt: null,
+          id: signedTask.orderId ?? signedTask.contract.orderId,
+          orderStatus: OrderStatus.PENDING_SIGN
+        }
+      });
+
+      return tx.contractESignTask.findUniqueOrThrow({
+        include: esignTaskInclude,
+        where: { id: signedTask.id }
+      });
+    });
+  }
+
+  private async recordPlatformAutoSealFailure(
+    taskId: string,
+    result: AutoSealTaskResult & { errorMessage?: string },
+    actorId?: string
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const task = await tx.contractESignTask.findUnique({
+        include: esignTaskInclude,
+        where: { id: taskId }
+      });
+      if (!task || task.deletedAt) {
+        throw new NotFoundException("E-sign task not found.");
+      }
+      if (task.taskStatus === ESignTaskStatus.COMPLETED) {
+        return task;
+      }
+
+      await tx.contractESignSigner.updateMany({
+        data: {
+          providerSignerId: result.providerSignerId,
+          signerStatus: result.status === "PENDING" ? ESignSignerStatus.SIGNING : ESignSignerStatus.PENDING
+        },
+        where: {
+          deletedAt: null,
+          signerType: ESignSignerType.PLATFORM,
+          taskId: task.id
+        }
+      });
+      await tx.contractESignTask.update({
+        data: {
+          errorSnapshot: toJsonValue({
+            errorMessage: result.errorMessage,
+            providerSignerId: result.providerSignerId,
+            resultCode: result.resultCode,
+            resultDescription: result.resultDescription,
+            status: result.status
+          }),
+          responseSnapshot: toJsonValue(mergeSnapshot(task.responseSnapshot, {
+            enterpriseAutoSeal: {
+              providerSignerId: result.providerSignerId,
+              resultCode: result.resultCode,
+              resultDescription: result.resultDescription,
+              status: result.status
+            }
+          })),
+          taskStatus: ESignTaskStatus.SIGNING,
+          updatedBy: actorId
+        },
+        where: { id: task.id }
+      });
+
+      return tx.contractESignTask.findUniqueOrThrow({
+        include: esignTaskInclude,
+        where: { id: task.id }
+      });
+    });
+  }
+
+  private isEnterpriseAutoSealEnabled() {
+    return parseBoolean(this.configService.get<string>(ENTERPRISE_AUTO_SEAL_ENABLED_ENV));
   }
 
   private async safeNotifyCustomer(input: {
@@ -1076,6 +1346,55 @@ function canViewAllOrders(user: RequestUser) {
   return user.roles.includes("admin") || user.permissions.includes("order:view:all");
 }
 
+function findPlatformSigningStep(plan?: ApprovedSigningPlanRef) {
+  return plan?.steps.find((step) => step.signerType === "PLATFORM" && step.required !== false);
+}
+
+function getPlatformSigner(task: ESignTaskWithDetails) {
+  return task.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM);
+}
+
+function hasPlatformSigner(task: ESignTaskWithDetails) {
+  return Boolean(getPlatformSigner(task));
+}
+
+function hasSignedCustomerSigner(task: ESignTaskWithDetails) {
+  return task.signers.some((signer) =>
+    signer.signerType === ESignSignerType.CUSTOMER &&
+    signer.signerStatus === ESignSignerStatus.SIGNED
+  );
+}
+
+function hasSignedPlatformSigner(task: ESignTaskWithDetails) {
+  return task.signers.some((signer) =>
+    signer.signerType === ESignSignerType.PLATFORM &&
+    signer.signerStatus === ESignSignerStatus.SIGNED
+  );
+}
+
+function allRequiredSignersSigned(task: ESignTaskWithDetails) {
+  return task.signers.length > 0 &&
+    task.signers.every((signer) => signer.signerStatus === ESignSignerStatus.SIGNED);
+}
+
+function readSealId(snapshot: unknown) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return undefined;
+  }
+  const sealId = (snapshot as Record<string, unknown>).sealId;
+  return typeof sealId === "string" && sealId.trim() ? sealId : undefined;
+}
+
+function mergeSnapshot(existing: unknown, patch: Record<string, unknown>) {
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+    return patch;
+  }
+  return {
+    ...(existing as Record<string, unknown>),
+    ...patch
+  };
+}
+
 function toESignTaskView(task: ESignTaskWithDetails) {
   return {
     callbacks: task.callbacks.map((callback) => ({
@@ -1208,6 +1527,10 @@ function parseProvider(value: string) {
     return ESignProviderType.OTHER;
   }
   throw new BadRequestException("不支持的电子签 provider。");
+}
+
+function parseBoolean(value: string | undefined) {
+  return ["1", "true", "yes", "on"].includes(value?.trim().toLowerCase() ?? "");
 }
 
 function trimTrailingSlash(value: string) {

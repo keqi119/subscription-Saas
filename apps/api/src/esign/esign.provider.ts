@@ -58,7 +58,29 @@ export interface VerifyCallbackResult {
   verified: boolean;
 }
 
+export interface AutoSealTaskInput {
+  callbackUrl?: string;
+  contractId: string;
+  documentName?: string;
+  platformCustomerId?: string;
+  platformSignatureId?: string;
+  providerEnvelopeId?: string;
+  sealId?: string;
+  taskId?: string;
+  taskNo: string;
+  transactionId: string;
+}
+
+export interface AutoSealTaskResult {
+  providerSignerId?: string;
+  rawResponse?: unknown;
+  resultCode?: string;
+  resultDescription?: string;
+  status: "COMPLETED" | "PENDING" | "FAILED";
+}
+
 export interface ESignProvider {
+  autoSealTask?(input: AutoSealTaskInput): Promise<AutoSealTaskResult>;
   createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult>;
   getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult>;
   verifyCallback(payload: unknown, headers?: Record<string, unknown>): Promise<VerifyCallbackResult>;

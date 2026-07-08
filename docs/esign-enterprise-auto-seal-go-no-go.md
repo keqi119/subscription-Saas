@@ -18,6 +18,7 @@ Status: pending operator validation.
 - [ ] Auto-sign API permission is enabled.
 - [ ] `FADADA_PLATFORM_CUSTOMER_ID` is configured outside the repository.
 - [ ] `FADADA_PLATFORM_SIGNATURE_ID` is configured outside the repository.
+- [ ] `ESIGN_PLATFORM_SEAL_KEYWORD` is configured outside the repository.
 - [ ] Callback endpoint is confirmed.
 - [ ] Seal placement or keyword rule is approved.
 - [ ] Provider sandbox run completed.
@@ -37,11 +38,13 @@ Status: pending operator validation.
 - [ ] Customer signing URL belongs to the customer signer.
 - [ ] Customer completion does not mark contract signed.
 - [ ] Customer completion does not move order to pending payment.
+- [ ] Generated signing PDF contains the approved platform seal keyword.
 - [ ] Platform auto seal succeeds.
 - [ ] Final PDF shows customer signature and company seal.
 - [ ] Archive works only after both signers complete.
 - [ ] Duplicate callback is idempotent.
 - [ ] Provider failure leaves retryable state.
+- [ ] Missing or invalid positioning leaves contract/order non-final.
 
 ## Production Go/No-Go
 

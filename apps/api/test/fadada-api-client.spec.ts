@@ -285,6 +285,10 @@ describe("Fadada API client", () => {
       customerId: "platform-customer-1",
       docTitle: "Contract.pdf",
       notifyUrl: "https://api.example.test/esign/callback/fadada",
+      placement: {
+        keyword: "出租方盖章",
+        type: "KEYWORD"
+      },
       signatureId: "platform-signature-1",
       transactionId: "TX-2"
     });
@@ -301,6 +305,9 @@ describe("Fadada API client", () => {
     expect(String(request?.body)).toContain("customer_id=platform-customer-1");
     expect(String(request?.body)).toContain("signature_id=platform-signature-1");
     expect(String(request?.body)).toContain("transaction_id=TX-2");
+    const params = new URLSearchParams(String(request?.body));
+    expect(params.get("position_type")).toBe("0");
+    expect(params.get("sign_keyword")).toBe("出租方盖章");
     expect(String(request?.body)).not.toContain("secret-xyz");
   });
 

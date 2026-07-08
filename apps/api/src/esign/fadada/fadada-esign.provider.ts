@@ -27,6 +27,7 @@ export const FADADA_SIGN_URL_STAGE_B2_REQUIRED = "FADADA_SIGN_URL_STAGE_B2_REQUI
 export const FADADA_PROVIDER_DEPENDENCY_MISSING = "FADADA_PROVIDER_DEPENDENCY_MISSING";
 export const FADADA_SIGN_URL_NOT_AVAILABLE = "FADADA_SIGN_URL_NOT_AVAILABLE";
 export const FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING = "FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING";
+export const FADADA_PLATFORM_AUTO_SEAL_POSITIONING_MISSING = "FADADA_PLATFORM_AUTO_SEAL_POSITIONING_MISSING";
 
 export class FadadaESignProvider implements ESignProvider {
   readonly providerType = "FADADA";
@@ -118,12 +119,16 @@ export class FadadaESignProvider implements ESignProvider {
     if (!platformCustomerId || !platformSignatureId) {
       throw new Error(`${FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING}: platform customer and signature IDs are required`);
     }
+    if (!input.placement?.keyword?.trim()) {
+      throw new Error(`${FADADA_PLATFORM_AUTO_SEAL_POSITIONING_MISSING}: platform seal keyword placement is required`);
+    }
 
     const result = await this.apiClient.autoSealContract({
       contractId: providerContractId,
       customerId: platformCustomerId,
       docTitle: input.documentName,
       notifyUrl: input.callbackUrl ?? this.config.signNotifyUrl,
+      placement: input.placement,
       signatureId: platformSignatureId,
       transactionId: input.transactionId
     });

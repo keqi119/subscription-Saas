@@ -392,6 +392,10 @@ describe("Fadada provider B2-A flow", () => {
       callbackUrl: "https://api.example.test/esign/callback/fadada",
       contractId: "contract-1",
       documentName: "Contract.pdf",
+      placement: {
+        keyword: "出租方盖章",
+        type: "KEYWORD"
+      },
       providerEnvelopeId: "ESG-1",
       taskId: "task-1",
       taskNo: "ESG-1",
@@ -403,6 +407,10 @@ describe("Fadada provider B2-A flow", () => {
       customerId: "platform-customer-1",
       docTitle: "Contract.pdf",
       notifyUrl: "https://api.example.test/esign/callback/fadada",
+      placement: {
+        keyword: "出租方盖章",
+        type: "KEYWORD"
+      },
       signatureId: "platform-signature-1",
       transactionId: "ESG-1-2"
     }));
@@ -411,6 +419,25 @@ describe("Fadada provider B2-A flow", () => {
       resultCode: "3000",
       status: "COMPLETED"
     });
+  });
+
+  it("fails auto seal safely when platform seal positioning is missing", async () => {
+    const apiClient = {
+      autoSealContract: vi.fn()
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
+      FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1"
+    })), apiClient as never);
+
+    await expect(provider.autoSealTask?.({
+      contractId: "contract-1",
+      providerEnvelopeId: "ESG-1",
+      taskId: "task-1",
+      taskNo: "ESG-1",
+      transactionId: "ESG-1-2"
+    })).rejects.toThrow(/FADADA_PLATFORM_AUTO_SEAL_POSITIONING_MISSING/);
+    expect(apiClient.autoSealContract).not.toHaveBeenCalled();
   });
 
   it("fails auto seal safely when platform config is missing", async () => {

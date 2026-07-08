@@ -16,11 +16,12 @@ This backend foundation supports that target without enabling production auto se
 Auto seal is disabled unless:
 
 - `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true`
+- `ESIGN_PLATFORM_SEAL_KEYWORD` is configured with the approved platform seal keyword
 - the active provider supports platform auto seal
 - provider configuration is present
 - sandbox validation and production go/no-go are completed
 
-Missing or false flag values keep the existing customer signing behavior.
+Missing or false flag values keep the existing customer signing behavior. When auto seal is enabled but the keyword is missing, the backend fails before the provider call and keeps the contract/order non-final.
 
 ## Required Provider Configuration
 
@@ -32,7 +33,9 @@ Values are operator-managed and must not be committed:
 - approved company seal/stamp
 - auto-sign API permission
 - callback endpoint confirmation
-- approved seal placement rule
+- approved seal placement keyword or rule
+
+The generated signing PDF must contain the approved keyword. Contract PDF artifact generation from `ContractVersion.contentTemplate` is tracked separately by Issue 4A.
 
 ## State Flow
 
@@ -51,6 +54,8 @@ When enterprise auto seal is enabled:
    - order moves to pending payment
 
 If platform auto seal fails, the task remains in a retryable signing state and records a diagnostic snapshot. The contract and order are not finalized.
+
+Provider positioning errors, including a missing or invalid keyword, must not advance the contract or order.
 
 ## Final PDF Rule
 
@@ -77,4 +82,5 @@ This foundation does not:
 - change production feature flags
 - deploy anything
 - change legal text
+- generate contract PDFs from legal templates
 - store provider secrets

@@ -58,10 +58,22 @@ export interface VerifyCallbackResult {
   verified: boolean;
 }
 
+export interface AutoSealKeywordPlacement {
+  keyx?: string;
+  keyy?: string;
+  keyword: string;
+  keywordStrategy?: "0" | "1" | "2" | "3";
+  searchIndex?: string;
+  type: "KEYWORD";
+}
+
+export type AutoSealPlacement = AutoSealKeywordPlacement;
+
 export interface AutoSealTaskInput {
   callbackUrl?: string;
   contractId: string;
   documentName?: string;
+  placement?: AutoSealPlacement;
   platformCustomerId?: string;
   platformSignatureId?: string;
   providerEnvelopeId?: string;

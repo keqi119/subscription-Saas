@@ -11,6 +11,7 @@ import {
   buildQuerySignResultRequest,
   FADADA_ENDPOINTS
 } from "./fadada-request-builder";
+import type { AutoSealPlacement } from "../esign.provider";
 import { FadadaHttpClient } from "./fadada-http-client";
 import { FadadaConfig } from "./fadada.types";
 
@@ -274,6 +275,7 @@ export class FadadaApiClient {
     customerId: string;
     docTitle?: string;
     notifyUrl?: string;
+    placement?: AutoSealPlacement;
     signatureId: string;
     transactionId: string;
   }): Promise<{
@@ -287,6 +289,7 @@ export class FadadaApiClient {
       businessParams: {
         contract_id: input.contractId,
         customer_id: input.customerId,
+        ...toFadadaAutoSealPlacementParams(input.placement),
         signature_id: input.signatureId,
         transaction_id: input.transactionId,
         ...(input.docTitle ? { doc_title: input.docTitle } : {}),
@@ -413,6 +416,29 @@ export class FadadaApiClient {
       raw
     };
   }
+}
+
+function toFadadaAutoSealPlacementParams(placement?: AutoSealPlacement) {
+  if (!placement) {
+    return {};
+  }
+  const params: Record<string, string> = {
+    position_type: "0",
+    sign_keyword: placement.keyword
+  };
+  if (placement.keywordStrategy) {
+    params.keyword_strategy = placement.keywordStrategy;
+  }
+  if (placement.searchIndex) {
+    params.search_index = placement.searchIndex;
+  }
+  if (placement.keyx) {
+    params.keyx = placement.keyx;
+  }
+  if (placement.keyy) {
+    params.keyy = placement.keyy;
+  }
+  return params;
 }
 
 function assertPdf(pdf: Buffer, fileName: string) {

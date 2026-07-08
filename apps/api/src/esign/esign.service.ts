@@ -26,7 +26,7 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
-import { AutoSealTaskResult, ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
+import { AutoSealPlacement, AutoSealTaskResult, ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
 import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
 
 const contractForESignInclude = {
@@ -114,6 +114,7 @@ const FADADA_FAILED_EVENT = "FADADA_SIGN_FAILED";
 const FADADA_REJECTED_EVENT = "FADADA_SIGN_REJECTED";
 const FADADA_UNKNOWN_EVENT = "FADADA_SIGN_UNKNOWN";
 const ENTERPRISE_AUTO_SEAL_ENABLED_ENV = "ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED";
+const PLATFORM_SEAL_KEYWORD_ENV = "ESIGN_PLATFORM_SEAL_KEYWORD";
 
 @Injectable()
 export class ESignService {
@@ -1024,11 +1025,23 @@ export class ESignService {
       }, options.actorId);
     }
 
+    const placement = this.resolvePlatformSealPlacement();
+    if (!placement) {
+      return this.recordPlatformAutoSealFailure(task.id, {
+        errorMessage: "ESIGN_PLATFORM_SEAL_KEYWORD_MISSING",
+        providerSignerId: transactionId,
+        resultCode: "PLATFORM_SEAL_POSITIONING_MISSING",
+        resultDescription: "Platform seal keyword is missing.",
+        status: "FAILED"
+      }, options.actorId);
+    }
+
     try {
       const result = await this.provider.autoSealTask({
         callbackUrl: this.buildCallbackUrl(),
         contractId: task.contractId,
         documentName: task.documentName ?? undefined,
+        placement,
         providerEnvelopeId: task.providerEnvelopeId ?? undefined,
         sealId: readSealId(platformSigner?.snapshot),
         taskId: task.id,
@@ -1196,6 +1209,17 @@ export class ESignService {
 
   private isEnterpriseAutoSealEnabled() {
     return parseBoolean(this.configService.get<string>(ENTERPRISE_AUTO_SEAL_ENABLED_ENV));
+  }
+
+  private resolvePlatformSealPlacement(): AutoSealPlacement | undefined {
+    const keyword = this.configService.get<string>(PLATFORM_SEAL_KEYWORD_ENV)?.trim();
+    if (!keyword) {
+      return undefined;
+    }
+    return {
+      keyword,
+      type: "KEYWORD"
+    };
   }
 
   private async safeNotifyCustomer(input: {

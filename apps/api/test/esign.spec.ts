@@ -177,6 +177,7 @@ describe("ESignService", () => {
     const provider = enterpriseAutoSealProvider();
     const { service, state } = createESignFixture({
       ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
       ESIGN_PROVIDER: "fadada"
     }, provider);
     const task = await service.createTaskForContract(
@@ -194,6 +195,12 @@ describe("ESignService", () => {
 
     expect(result).toMatchObject({ handled: true });
     expect(provider.autoSealTask).toHaveBeenCalledOnce();
+    expect(provider.autoSealTask).toHaveBeenCalledWith(expect.objectContaining({
+      placement: {
+        keyword: "出租方盖章",
+        type: "KEYWORD"
+      }
+    }));
     expect(state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toMatchObject({
       signerStatus: ESignSignerStatus.SIGNED
     });
@@ -211,10 +218,50 @@ describe("ESignService", () => {
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
   });
 
+  it("fails platform auto seal before provider call when the approved keyword is missing", async () => {
+    const provider = enterpriseAutoSealProvider();
+    const { service, state } = createESignFixture({
+      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PROVIDER: "fadada"
+    }, provider);
+    const task = await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext(),
+      approvedPlanRef()
+    );
+
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(provider.autoSealTask).not.toHaveBeenCalled();
+    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toMatchObject({
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)).toMatchObject({
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(state.tasks[0]).toMatchObject({
+      completedAt: null,
+      taskStatus: ESignTaskStatus.SIGNING
+    });
+    expect(state.tasks[0]!.errorSnapshot).toMatchObject({
+      errorMessage: "ESIGN_PLATFORM_SEAL_KEYWORD_MISSING",
+      resultCode: "PLATFORM_SEAL_POSITIONING_MISSING",
+      status: "FAILED"
+    });
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
   it("keeps contract and order pending when platform auto seal fails", async () => {
     const provider = enterpriseAutoSealProvider({ status: "FAILED", resultCode: "NO_SEAL", resultDescription: "seal missing" });
     const { service, state } = createESignFixture({
       ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
       ESIGN_PROVIDER: "fadada"
     }, provider);
     const task = await service.createTaskForContract(
@@ -251,6 +298,7 @@ describe("ESignService", () => {
     const provider = enterpriseAutoSealProvider();
     const { prisma, service, state } = createESignFixture({
       ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+      ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
       ESIGN_PROVIDER: "fadada"
     }, provider);
     const task = await service.createTaskForContract(

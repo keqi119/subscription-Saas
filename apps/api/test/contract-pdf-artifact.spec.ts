@@ -75,6 +75,156 @@ describe("ContractPdfArtifactService", () => {
 
     await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_NOT_PDF/);
   });
+
+  it("rejects contract-version fallback when enterprise auto seal requires a generated contract artifact", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      config: { ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true", FADADA_ENABLED: "true" },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/version-1.pdf",
+        originalName: "version-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(
+      /CONTRACT_PDF_ARTIFACT_GENERATED_REQUIRED/
+    );
+  });
+
+  it("rejects non-generated contract files when enterprise auto seal is enabled", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      config: { ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true", FADADA_ENABLED: "true" },
+      contract: { fileId: "file-1" },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/contract-1/manual/source.pdf",
+        originalName: "source.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(
+      /CONTRACT_PDF_ARTIFACT_INVALID_OBJECT_KEY/
+    );
+  });
+
+  it("accepts generated contract artifacts with storage prefixes when enterprise auto seal is enabled", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      config: { ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true", FADADA_ENABLED: "true" },
+      contract: { fileId: "file-1" },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "oss:private/contracts/contract-1/generated/CON-1.pdf",
+        originalName: "CON-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    const artifact = await service.getContractPdfArtifact("contract-1");
+
+    expect(artifact).toMatchObject({
+      objectKey: "oss:private/contracts/contract-1/generated/CON-1.pdf",
+      source: "CONTRACT_FILE"
+    });
+    expect(artifact.preflight).toMatchObject({
+      generatedContractArtifact: true,
+      source: "CONTRACT_FILE",
+      textExtractionVerified: false
+    });
+  });
+
+  it("rejects signed-artifact paths as generated signing source artifacts", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      config: { ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true", FADADA_ENABLED: "true" },
+      contract: { fileId: "file-1" },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/contract-1/esign/fadada/signed/CON-1.pdf",
+        originalName: "CON-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(
+      /CONTRACT_PDF_ARTIFACT_INVALID_OBJECT_KEY/
+    );
+  });
+
+  it("rejects oversized file objects before reading storage", async () => {
+    const { service, storageService } = createFixture({
+      config: { FADADA_ENABLED: "true" },
+      contract: { fileId: "file-1" },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/contract-1/generated/CON-1.pdf",
+        originalName: "CON-1.pdf",
+        sizeBytes: BigInt(20 * 1024 * 1024 + 1)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([minimalPdf()]) }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_TOO_LARGE/);
+    expect(storageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("requires application/pdf mime type for Fadada uploads", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      config: { FADADA_ENABLED: "true" },
+      contract: { fileId: "file-1" },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/octet-stream",
+        objectKey: "contracts/contract-1/generated/CON-1.pdf",
+        originalName: "CON-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_NOT_PDF/);
+  });
+
+  it("rejects obvious sandbox source PDFs for Fadada uploads", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      config: { FADADA_ENABLED: "true" },
+      contract: { fileId: "file-1" },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "uploads/sandbox-contract-0117.pdf",
+        originalName: "sandbox-contract-0117.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    await expect(service.getContractPdfArtifact("contract-1")).rejects.toThrow(
+      /CONTRACT_PDF_ARTIFACT_INVALID_SOURCE/
+    );
+  });
 });
 
 function createFixture(options: {

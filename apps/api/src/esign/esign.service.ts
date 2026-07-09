@@ -26,6 +26,7 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
+import { ContractPdfArtifactService } from "./contract-pdf-artifact.service";
 import { AutoSealPlacement, AutoSealTaskResult, ESIGN_PROVIDER_CLIENT, ESignProvider } from "./esign.provider";
 import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
 
@@ -124,7 +125,8 @@ export class ESignService {
     @Inject(ESIGN_PROVIDER_CLIENT)
     private readonly provider: ESignProvider,
     private readonly prisma: PrismaService,
-    @Optional() private readonly notificationService?: NotificationService
+    @Optional() private readonly notificationService?: NotificationService,
+    @Optional() private readonly contractPdfArtifactService?: ContractPdfArtifactService
   ) {}
 
   async createTaskForContract(
@@ -143,6 +145,7 @@ export class ESignService {
       const task = await this.findTaskOrThrow(existingTask.id);
       return toESignTaskView(task);
     }
+    await this.preflightSigningPdfArtifact(contract.id);
 
     const documentName = contract.contractTitle || `合同 ${contract.contractNo}`;
     const requestSnapshotInput: Record<string, unknown> = {
@@ -1209,6 +1212,24 @@ export class ESignService {
 
   private isEnterpriseAutoSealEnabled() {
     return parseBoolean(this.configService.get<string>(ENTERPRISE_AUTO_SEAL_ENABLED_ENV));
+  }
+
+  private async preflightSigningPdfArtifact(contractId: string) {
+    const fadadaEnabled = parseBoolean(this.configService.get<string>("FADADA_ENABLED"));
+    const enterpriseAutoSealEnabled = this.isEnterpriseAutoSealEnabled();
+    if (!fadadaEnabled && !enterpriseAutoSealEnabled) {
+      return;
+    }
+    if (!this.contractPdfArtifactService) {
+      throw new Error("CONTRACT_PDF_ARTIFACT_REQUIRED: signing PDF artifact preflight service is unavailable");
+    }
+
+    await this.contractPdfArtifactService.preflightContractPdfArtifact(contractId, {
+      enterpriseAutoSealEnabled,
+      fadadaEnabled,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: enterpriseAutoSealEnabled
+    });
   }
 
   private resolvePlatformSealPlacement(): AutoSealPlacement | undefined {

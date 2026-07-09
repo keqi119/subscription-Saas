@@ -92,6 +92,73 @@ describe("ESignService", () => {
     });
   });
 
+  it("preflights the signing PDF before calling the provider when Fadada is enabled", async () => {
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async () => ({
+        providerEnvelopeId: "ESG-1",
+        providerTaskId: "ESG-1-1",
+        signUrl: "https://sign.example.test/customer"
+      })),
+      getSignerUrl: vi.fn(),
+      verifyCallback: vi.fn()
+    };
+    const preflightContractPdfArtifact = vi.fn(async () => {
+      throw new Error("CONTRACT_PDF_ARTIFACT_GENERATED_REQUIRED: generated contract artifact is required");
+    });
+    const { service, state } = createESignFixture(
+      { ESIGN_PROVIDER: "fadada", FADADA_ENABLED: "true" },
+      provider,
+      { contractPdfArtifactService: { preflightContractPdfArtifact } }
+    );
+
+    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
+      /CONTRACT_PDF_ARTIFACT_GENERATED_REQUIRED/
+    );
+
+    expect(preflightContractPdfArtifact).toHaveBeenCalledWith("contract-1", expect.objectContaining({
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD"
+    }));
+    expect(provider.createSignTask).not.toHaveBeenCalled();
+    expect(state.tasks).toHaveLength(0);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("requires generated artifact preflight before enterprise auto seal provider calls", async () => {
+    const provider = enterpriseAutoSealProvider();
+    const preflightContractPdfArtifact = vi.fn(async () => ({
+      preflight: {
+        enterpriseAutoSealEnabled: true,
+        fadadaEnabled: true,
+        generatedContractArtifact: true,
+        maxBytes: 20 * 1024 * 1024,
+        purpose: "FADADA_UPLOAD",
+        source: "CONTRACT_FILE",
+        textExtractionVerified: false
+      }
+    }));
+    const { service } = createESignFixture(
+      {
+        ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+        ESIGN_PROVIDER: "fadada",
+        FADADA_ENABLED: "true"
+      },
+      provider,
+      { contractPdfArtifactService: { preflightContractPdfArtifact } }
+    );
+
+    await service.createTaskForContract("contract-1", adminUser(), requestContext(), approvedPlanRef());
+
+    expect(preflightContractPdfArtifact).toHaveBeenCalledWith("contract-1", expect.objectContaining({
+      enterpriseAutoSealEnabled: true,
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true
+    }));
+    expect(provider.createSignTask).toHaveBeenCalledOnce();
+  });
+
   it("stores enterprise signing plan metadata without making B5 evaluate policy", async () => {
     const provider: ESignProvider = {
       createSignTask: vi.fn(async (input) => ({
@@ -766,7 +833,15 @@ describe("ESignService", () => {
   });
 });
 
-function createESignFixture(env: Record<string, string> = {}, providerOverride?: ESignProvider) {
+function createESignFixture(
+  env: Record<string, string> = {},
+  providerOverride?: ESignProvider,
+  options: {
+    contractPdfArtifactService?: {
+      preflightContractPdfArtifact: ReturnType<typeof vi.fn>;
+    };
+  } = {}
+) {
   const state = {
     callbackLogs: [] as FakeCallbackLog[],
     contracts: [
@@ -954,14 +1029,19 @@ function createESignFixture(env: Record<string, string> = {}, providerOverride?:
     ...env
   });
   const auditService = { write: vi.fn(async () => undefined) };
+  const contractPdfArtifactService = options.contractPdfArtifactService ?? {
+    preflightContractPdfArtifact: vi.fn(async () => undefined)
+  };
   const service = new ESignService(
     auditService as never,
     configService,
     providerOverride ?? new MockESignProvider(configService),
-    prisma as never
+    prisma as never,
+    undefined,
+    contractPdfArtifactService as never
   );
 
-  return { auditService, prisma, service, state };
+  return { auditService, contractPdfArtifactService, prisma, service, state };
 }
 
 function hydrateContract(state: FakeState, contract: FakeContract) {

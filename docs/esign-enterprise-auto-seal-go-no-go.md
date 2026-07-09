@@ -31,6 +31,10 @@ Status: pending operator validation.
 - [ ] Focused e-sign/Fadada/archive/order tests pass.
 - [ ] No schema or migration changes are included.
 - [ ] No customer/public exposure is added.
+- [ ] `CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED` has generated the contract source PDF in sandbox.
+- [ ] E-sign artifact source preflight passes before provider upload.
+- [ ] `FADADA_ENABLED=true` does not allow `TEST_FIXTURE` upload.
+- [ ] Enterprise auto seal requires generated `Contract.fileId`, not `ContractVersion.fileId`.
 
 ## Sandbox Acceptance
 
@@ -39,6 +43,7 @@ Status: pending operator validation.
 - [ ] Customer completion does not mark contract signed.
 - [ ] Customer completion does not move order to pending payment.
 - [ ] Generated signing PDF contains the approved platform seal keyword.
+- [ ] Generated signing PDF source object key matches `contracts/{contractId}/generated/...`.
 - [ ] Platform auto seal succeeds.
 - [ ] Final PDF shows customer signature and company seal.
 - [ ] Archive works only after both signers complete.

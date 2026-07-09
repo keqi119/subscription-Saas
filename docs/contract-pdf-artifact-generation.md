@@ -135,19 +135,32 @@ The provider offset mapping is not writer responsibility. `keyx=60` and `keyy=0`
 
 The generated signing PDF size limit is a hard 20MB limit, aligned with Fadada upload requirements. The renderer and artifact writer must reject generated PDFs larger than 20MB before storage write.
 
-## E-Sign Upload Preflight Boundary
+## E-Sign Upload Preflight
 
-Future Issue 4A-1E must harden e-sign upload source selection before sending a document to Fadada:
+Issue 4A-1E hardens e-sign upload source selection before sending a document to Fadada:
 
 - PDF header starts with `%PDF-`
 - MIME type is `application/pdf`
 - size is `<=20MB`
-- source is a generated contract artifact
-- fixture fallback is not used for production/Fadada mode
-- renderer/artifact diagnostics show both anchors exist
-- if practical without unacceptable dependency risk, PDF text extraction confirms both anchors are searchable text
+- `TEST_FIXTURE` is never used when `FADADA_ENABLED=true`
+- obvious sandbox/test fixture artifact paths are rejected when identifiable
+- enterprise auto seal requires `Contract.fileId`
+- enterprise auto seal rejects `ContractVersion.fileId`
+- enterprise auto seal requires the generated object key pattern:
 
-This document does not implement the e-sign upload preflight.
+```text
+contracts/{contractId}/generated/{fileName}
+```
+
+Storage prefixes are allowed when the generated pattern is still present, for example:
+
+```text
+oss:<prefix>/contracts/{contractId}/generated/{fileName}
+```
+
+`ContractVersion.fileId` remains a legacy/manual fallback only when Fadada policy allows it and enterprise auto seal is disabled. It must still pass PDF MIME/header/size validation.
+
+PDF text extraction is intentionally deferred. The current preflight verifies artifact source and PDF envelope safety, but it does not prove the rendered PDF text is searchable or visually correct. Sandbox visual review remains required before production enablement.
 
 ## Signed PDF Archive Boundary
 
@@ -184,6 +197,15 @@ This OrderService integration foundation does:
 - write `Contract.fileId` only after writer success
 - move the order to `PENDING_SIGN` only after `Contract.fileId` succeeds
 
+This e-sign source hardening does:
+
+- apply Fadada upload policy before provider upload
+- block `TEST_FIXTURE` in Fadada mode
+- require generated `Contract.fileId` for enterprise auto seal
+- reject generated-source object keys for the wrong contract or signed archive path
+- enforce MIME/header/size checks before upload
+- keep pre-signing source PDF separate from final signed PDF archive
+
 This foundation does not:
 
 - modify `ContractVersion.fileId`
@@ -198,7 +220,7 @@ This foundation does not:
 
 Recommended follow-up sequence:
 
-1. E-sign preflight: require generated artifact source for real Fadada signing and validate signing anchors.
-2. Formal template import: import legal-approved contract text and appendix structure after external approval.
-3. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository.
+1. Formal template import: import legal-approved contract text and appendix structure after external approval.
+2. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository.
+3. Optional PDF text extraction preflight, only after dependency/security approval.
 4. Sandbox go/no-go: visually verify generated PDF and final signed PDF before production enablement.

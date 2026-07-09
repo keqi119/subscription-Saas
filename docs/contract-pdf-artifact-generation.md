@@ -1,6 +1,6 @@
 # Contract PDF Artifact Generation
 
-Status: renderer and artifact-writer foundation only. This document does not enable production contract PDF generation.
+Status: renderer, artifact-writer, and guarded OrderService integration foundation only. This document does not enable production contract PDF generation by default.
 
 ## Current Gap
 
@@ -36,7 +36,7 @@ The artifact writer foundation adds the internal path:
 ContractPdfRenderModel -> ContractPdfRendererService -> private Storage object -> FileObject
 ```
 
-The writer returns generated artifact metadata to callers, but it still does not update `Contract.fileId` and does not integrate with `OrderService.generateContract()`.
+The writer returns generated artifact metadata to callers. `OrderService.generateContract()` can now call the writer and bind the returned `FileObject` to `Contract.fileId` only when guarded artifact generation is explicitly enabled.
 
 Generated source PDFs are stored as private objects. This remains compatible with Fadada because provider upload can send file content and does not require a public `doc_url`.
 
@@ -47,6 +47,34 @@ contracts/{contractId}/generated/{safeFileName}
 ```
 
 If `FileObject` creation fails after storage succeeds, the writer performs best-effort private-object cleanup through `StorageService.deleteObject`. If cleanup also fails, an orphan private object may require operator cleanup.
+
+## OrderService Integration
+
+Generated signing PDF creation is guarded by:
+
+```text
+CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED=true
+```
+
+Default behavior is disabled:
+
+- missing flag = disabled
+- `false` = disabled
+- `true` = enabled
+
+When disabled, contract generation preserves the existing compatible flow and does not require `CONTRACT_PDF_CJK_FONT_PATH`.
+
+When enabled, `OrderService.generateContract()`:
+
+1. Creates the `Contract` in `GENERATED` state without `fileId`.
+2. Builds a `ContractPdfRenderModel` from `ContractVersion.contentTemplate` and a conservative order appendix.
+3. Calls `ContractPdfArtifactWriterService`.
+4. Writes `Contract.fileId` from the generated `FileObject`.
+5. Moves the order to `PENDING_SIGN` only after `Contract.fileId` succeeds.
+
+If rendering, storage, `FileObject` creation, or `Contract.fileId` update fails, the order is not advanced to `PENDING_SIGN`, no e-sign task is created by this flow, and the created contract is best-effort marked `CANCELLED` so a controlled retry can generate a fresh contract.
+
+This integration does not backfill existing contracts and must not be used to manually mark failed e-sign tasks successful.
 
 ## Legal Boundary
 
@@ -146,10 +174,18 @@ This artifact writer foundation does:
 - reject protected contract statuses
 - reject existing contract PDF artifacts unless regeneration is explicitly allowed
 
+This OrderService integration foundation does:
+
+- add `CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED`
+- keep the flag disabled by default
+- build a render model from the selected contract version and order snapshot
+- pass the approved signing anchors and platform offset metadata
+- call the artifact writer only when the flag is enabled
+- write `Contract.fileId` only after writer success
+- move the order to `PENDING_SIGN` only after `Contract.fileId` succeeds
+
 This foundation does not:
 
-- integrate with `OrderService.generateContract()`
-- write `Contract.fileId`
 - modify `ContractVersion.fileId`
 - call Fadada
 - trigger e-sign
@@ -162,9 +198,7 @@ This foundation does not:
 
 Recommended follow-up sequence:
 
-1. Order integration: call renderer/writer during contract generation and bind `Contract.fileId`.
-2. E-sign preflight: require generated artifact source for real Fadada signing and validate signing anchors.
-3. Offset config: wire platform seal offset values into provider placement if not already configured.
-4. Formal template import: import legal-approved contract text and appendix structure after external approval.
-5. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository.
-6. Sandbox go/no-go: visually verify generated PDF and final signed PDF before production enablement.
+1. E-sign preflight: require generated artifact source for real Fadada signing and validate signing anchors.
+2. Formal template import: import legal-approved contract text and appendix structure after external approval.
+3. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository.
+4. Sandbox go/no-go: visually verify generated PDF and final signed PDF before production enablement.

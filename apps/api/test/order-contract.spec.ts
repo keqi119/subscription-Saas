@@ -90,6 +90,112 @@ describe("subscription order and contract rules", () => {
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
   });
 
+  it("keeps legacy contract generation behavior when PDF artifact generation is disabled", async () => {
+    const harness = createOrderServiceHarness({
+      artifactWriter: createArtifactWriterMock()
+    });
+
+    const contract = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as Record<string, unknown>;
+
+    expect(contract.fileId).toBeNull();
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(harness.state.contractId).toBe(contract.id);
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("attaches a generated PDF artifact before moving the order to pending sign when enabled", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+
+    const contract = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as Record<string, unknown>;
+
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
+    type ArtifactWriterInput = {
+      renderModel: {
+        appendix: { sections: unknown[] };
+        contentTemplate: string;
+        signingAnchors: Record<string, unknown>;
+      };
+    } & Record<string, unknown>;
+    const calls = harness.artifactWriter.writeGeneratedContractPdfArtifact.mock.calls as unknown as Array<[ArtifactWriterInput]>;
+    const input = calls[0]?.[0];
+    if (!input) {
+      throw new Error("expected artifact writer input");
+    }
+    expect(input).toMatchObject({
+      contractStatus: ContractStatus.GENERATED,
+      existingContractFileId: null,
+      uploadedBy: harness.user.id
+    });
+    expect(input.renderModel).toMatchObject({
+      contractId: "contract-1",
+      contractNo: contract.contractNo,
+      contentTemplate: harness.template.contentTemplate,
+      orderNo: "ORD202606020800000001",
+      signingAnchors: {
+        customerSignatureKeyword: "订阅方盖章/签字",
+        platformSealKeyword: "服务提供方盖章",
+        platformSealOffsetX: 60,
+        platformSealOffsetY: 0
+      },
+      templateName: harness.template.templateName,
+      templateVersion: harness.template.versionNo
+    });
+    expect(input.renderModel.appendix.sections.length).toBeGreaterThan(0);
+    const searchableModel = JSON.stringify(input.renderModel);
+    expect(searchableModel).not.toContain("risk-result-1");
+    expect(searchableModel).not.toContain("VIN202606020000001");
+    expect(contract.fileId).toBe("generated-file-1");
+    expect(harness.state.contracts[0]!.fileId).toBe("generated-file-1");
+    expect(harness.state.contractId).toBe(contract.id);
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("does not advance the order when generated PDF artifact writing fails", async () => {
+    const writerError = new Error("writer failed");
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ error: writerError })
+    });
+
+    await expect(
+      harness.service.generateContract(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow(writerError);
+
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
+    expect(harness.state.contractId).toBeNull();
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
+    expect(harness.state.contracts[0]!.status).toBe(ContractStatus.CANCELLED);
+  });
+
+  it("does not advance the order when Contract.fileId update fails", async () => {
+    const updateError = new Error("contract file update failed");
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" }),
+      contractFileUpdateError: updateError
+    });
+
+    await expect(
+      harness.service.generateContract(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow(updateError);
+
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
+    expect(harness.state.contractId).toBeNull();
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
+    expect(harness.state.contracts[0]!.status).toBe(ContractStatus.CANCELLED);
+  });
+
   it("rejects cancelling an archived contract", async () => {
     const harness = createOrderServiceHarness();
     const contract = (await harness.service.generateContract(
@@ -320,6 +426,9 @@ describe("subscription order and contract rules", () => {
 });
 
 function createOrderServiceHarness(options: {
+  artifactGenerationEnabled?: boolean;
+  artifactWriter?: ReturnType<typeof createArtifactWriterMock>;
+  contractFileUpdateError?: Error;
   order?: Record<string, unknown>;
   quote?: Record<string, unknown>;
   vehicle?: Record<string, unknown>;
@@ -377,8 +486,8 @@ function createOrderServiceHarness(options: {
       currentSalePriceAmount: 10000000n,
       deletedAt: null,
       id: vehicleId,
-      licensePlateNo: "沪A00001",
       model: "ET5",
+      plateNo: "沪A00001",
       purchasePriceAmount: 12000000n,
       status: state.vehicleStatus,
       updatedAt: now,
@@ -529,6 +638,9 @@ function createOrderServiceHarness(options: {
         if (!contract) {
           throw new Error("Contract not found");
         }
+        if ("fileId" in data && options.contractFileUpdateError) {
+          throw options.contractFileUpdateError;
+        }
         Object.assign(contract, data);
         return buildContract(contract);
       })
@@ -567,6 +679,14 @@ function createOrderServiceHarness(options: {
       findUnique: vi.fn(async ({ where }) => {
         const contract = state.contracts.find((item) => item.id === where.id);
         return contract ? buildContract(contract) : null;
+      }),
+      update: vi.fn(async ({ data, where }) => {
+        const contract = state.contracts.find((item) => item.id === where.id);
+        if (!contract) {
+          throw new Error("Contract not found");
+        }
+        Object.assign(contract, data);
+        return buildContract(contract);
       })
     },
     contractVersion: {
@@ -588,7 +708,54 @@ function createOrderServiceHarness(options: {
     }
   };
   const auditService = { write: vi.fn(async () => undefined) };
-  const service = new OrderService(auditService as never, prisma as never);
+  const artifactWriter = options.artifactWriter ?? createArtifactWriterMock();
+  const configService = {
+    get: vi.fn((key: string) => {
+      if (key === "CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED") {
+        return options.artifactGenerationEnabled ? "true" : undefined;
+      }
+      return undefined;
+    })
+  };
+  const service = new OrderService(
+    auditService as never,
+    prisma as never,
+    artifactWriter as never,
+    configService as never
+  );
 
-  return { auditService, context, orderId, prisma, quoteId, service, state, tx, user, vehicleId };
+  return { artifactWriter, auditService, context, orderId, prisma, quoteId, service, state, template, tx, user, vehicleId };
+}
+
+function createArtifactWriterMock(options: { error?: Error; fileId?: string } = {}) {
+  return {
+    writeGeneratedContractPdfArtifact: vi.fn(async () => {
+      if (options.error) {
+        throw options.error;
+      }
+      return {
+        bucket: "application-materials",
+        diagnostics: {
+          anchorOccurrences: {
+            customerSignatureKeyword: 1,
+            platformSealKeyword: 1
+          },
+          renderDiagnostics: {
+            hasAppendix: true,
+            hasCjkContent: true,
+            hasCustomerSignatureKeyword: true,
+            hasLegalBody: true,
+            hasPlatformSealKeyword: true
+          },
+          searchableTextPdfRequired: true,
+          textExtractionVerified: false
+        },
+        fileId: options.fileId ?? "generated-file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/contract-1/generated/CON-TEST.pdf",
+        originalName: "CON-TEST.pdf",
+        sizeBytes: 1024
+      };
+    })
+  };
 }

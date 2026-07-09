@@ -1,4 +1,5 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { PermissionCode } from "@subscription-saas/shared";
 import {
   ApplicationActionType,
@@ -51,6 +52,13 @@ import {
   freezeQuoteVehicleModelSnapshot,
   vehicleModelSnapshotDefinitionSelect,
 } from "../common/vehicle-model-snapshot";
+import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
+import {
+  ContractPdfAppendixRow,
+  ContractPdfAppendixSection,
+  ContractPdfRenderModel,
+  ContractPdfValue
+} from "../contract/contract-pdf-render-model";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   ArchiveContractDto,
@@ -84,6 +92,13 @@ const CUSTOMER_ORDER_MANUAL_QUOTE_MESSAGE =
   "该套餐需后台报价确认，暂不支持客户自助提交。";
 const CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE =
   "所选车辆当前不可租用，请重新选择车辆";
+
+const CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV = "CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED";
+const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
+const CONTRACT_PDF_PLATFORM_SEAL_KEYWORD = "服务提供方盖章";
+const CONTRACT_PDF_CUSTOMER_SIGNATURE_KEYWORD = "订阅方盖章/签字";
+const CONTRACT_PDF_PLATFORM_SEAL_OFFSET_X = 60;
+const CONTRACT_PDF_PLATFORM_SEAL_OFFSET_Y = 0;
 
 const PRE_CONTRACT_CHANGE_STATUSES = new Set<OrderStatus>([
   OrderStatus.PENDING_REVIEW,
@@ -266,7 +281,9 @@ type MonthlyRenewalPlan = {
 export class OrderService {
   constructor(
     private readonly auditService: AuditService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    @Optional() private readonly contractPdfArtifactWriter?: ContractPdfArtifactWriterService,
+    @Optional() private readonly configService?: ConfigService
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -1966,7 +1983,49 @@ export class OrderService {
       quoteSnapshot: before.quoteSnapshot
     });
 
-    const contract = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+    const contract = this.isContractPdfArtifactGenerationEnabled()
+      ? await this.generateContractWithPdfArtifact(before, template, contractSnapshot, user)
+      : await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+        const created = await tx.contract.create({
+          data: {
+            businessType: BusinessType.SUBSCRIPTION,
+            contractNo: createBusinessNo("CON"),
+            contractSnapshot,
+            contractTitle: `${template.templateName} ${template.versionNo}`,
+            contractVersionId: template.id,
+            createdBy: user.id,
+            customerId: before.customerId,
+            orderId: before.id,
+            status: ContractStatus.GENERATED,
+            updatedBy: user.id
+          }
+        });
+        await tx.subscriptionOrder.update({
+          data: { contractId: created.id, orderStatus: OrderStatus.PENDING_SIGN, updatedBy: user.id },
+          where: { id: before.id }
+        });
+        return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id: created.id } });
+      }));
+
+    await this.writeAudit(AuditAction.CREATE, "contract", contract.id, toOrderView(before), toContractView(contract), user, context);
+    return toContractView(contract);
+  }
+
+  private isContractPdfArtifactGenerationEnabled() {
+    return parseBooleanFlag(this.configService?.get<string>(CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV));
+  }
+
+  private async generateContractWithPdfArtifact(
+    before: OrderWithDetails,
+    template: ContractWithDetails["contractVersion"],
+    contractSnapshot: Prisma.InputJsonValue,
+    user: RequestUser
+  ) {
+    if (!this.contractPdfArtifactWriter) {
+      throw new Error("CONTRACT_PDF_ARTIFACT_WRITER_MISSING: PDF artifact writer is not available");
+    }
+
+    const createdContract = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
       const created = await tx.contract.create({
         data: {
           businessType: BusinessType.SUBSCRIPTION,
@@ -1981,15 +2040,44 @@ export class OrderService {
           updatedBy: user.id
         }
       });
-      await tx.subscriptionOrder.update({
-        data: { contractId: created.id, orderStatus: OrderStatus.PENDING_SIGN, updatedBy: user.id },
-        where: { id: before.id }
-      });
       return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id: created.id } });
     }));
 
-    await this.writeAudit(AuditAction.CREATE, "contract", contract.id, toOrderView(before), toContractView(contract), user, context);
-    return toContractView(contract);
+    try {
+      const artifact = await this.contractPdfArtifactWriter.writeGeneratedContractPdfArtifact({
+        cjkFontPath: this.configService?.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV),
+        contractStatus: createdContract.status,
+        existingContractFileId: createdContract.fileId,
+        renderModel: buildContractPdfRenderModel(createdContract, before, template),
+        uploadedBy: user.id
+      });
+
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.contract.update({
+          data: { fileId: artifact.fileId, updatedBy: user.id },
+          where: { id: createdContract.id }
+        });
+        await tx.subscriptionOrder.update({
+          data: { contractId: createdContract.id, orderStatus: OrderStatus.PENDING_SIGN, updatedBy: user.id },
+          where: { id: before.id }
+        });
+        return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id: createdContract.id } });
+      });
+    } catch (error) {
+      await this.cancelContractAfterPdfArtifactFailure(createdContract.id, user.id);
+      throw error;
+    }
+  }
+
+  private async cancelContractAfterPdfArtifactFailure(contractId: string, userId: string) {
+    try {
+      await this.prisma.contract.update({
+        data: { status: ContractStatus.CANCELLED, updatedBy: userId },
+        where: { id: contractId }
+      });
+    } catch {
+      // Preserve the original renderer/writer/update error for the caller.
+    }
   }
 
   async listContracts(user: RequestUser) {
@@ -2738,6 +2826,126 @@ export function ensureAllowedChangeType(changeType: OrderChangeType) {
   if (DISALLOWED_CHANGE_TYPES.has(changeType)) {
     throw new BadRequestException("当前阶段暂未开放以租代购订单变更类型。");
   }
+}
+
+function parseBooleanFlag(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase() === "true";
+}
+
+function buildContractPdfRenderModel(
+  contract: ContractWithDetails,
+  order: OrderWithDetails,
+  template: ContractWithDetails["contractVersion"]
+): ContractPdfRenderModel {
+  return {
+    appendix: {
+      sections: [
+        buildAppendixSection("合同基础信息", [
+          appendixRow("合同编号", contract.contractNo),
+          appendixRow("订单编号", order.orderNo),
+          appendixRow("合同模板", template.templateName),
+          appendixRow("模板版本", template.versionNo),
+          appendixRow("生成时间", contract.createdAt)
+        ]),
+        buildAppendixSection("客户信息", [
+          appendixRow("客户姓名", order.customer.name),
+          appendixRow("客户手机号", maskPhone(order.customer.mobile), { applied: true, reason: "phone_masked" })
+        ]),
+        buildAppendixSection("订阅方案摘要", [
+          appendixRow("租期（月）", order.periodMonths),
+          appendixRow("月租金（分）", formatMinorAmount(order.monthlyFeeAmount)),
+          appendixRow("押金（分）", formatMinorAmount(order.depositAmount)),
+          appendixRow("里程额度（公里）", order.mileageLimitKm),
+          appendixRow("能源额度（kWh）", order.energyLimitKwh),
+          appendixRow("能源次数", order.energyLimitCount),
+          appendixRow("超里程费（分）", formatMinorAmount(order.overMileageFeeAmount)),
+          appendixRow("报价编号", order.quote?.quoteNo)
+        ]),
+        buildAppendixSection("车辆摘要", [
+          appendixRow("车辆编号", order.vehicle?.vehicleNo),
+          appendixRow("品牌", order.vehicle?.brand),
+          appendixRow("车型", order.vehicle?.model ?? formatValueForPdf(order.vehicleModel)),
+          appendixRow("车牌号", maskPlate(order.vehicle?.plateNo), { applied: true, reason: "plate_masked" })
+        ])
+      ]
+    },
+    contentTemplate: template.contentTemplate,
+    contractId: contract.id,
+    contractNo: contract.contractNo,
+    generatedAt: contract.createdAt,
+    orderNo: order.orderNo,
+    signingAnchors: {
+      customerSignatureKeyword: CONTRACT_PDF_CUSTOMER_SIGNATURE_KEYWORD,
+      platformSealKeyword: CONTRACT_PDF_PLATFORM_SEAL_KEYWORD,
+      platformSealOffsetX: CONTRACT_PDF_PLATFORM_SEAL_OFFSET_X,
+      platformSealOffsetY: CONTRACT_PDF_PLATFORM_SEAL_OFFSET_Y
+    },
+    templateName: template.templateName,
+    templateVersion: template.versionNo
+  };
+}
+
+function buildAppendixSection(title: string, rows: Array<ContractPdfAppendixRow | null>): ContractPdfAppendixSection {
+  return {
+    rows: rows.filter((row): row is ContractPdfAppendixRow => Boolean(row)),
+    title
+  };
+}
+
+function appendixRow(
+  label: string,
+  value: unknown,
+  redaction?: ContractPdfAppendixRow["redaction"]
+): ContractPdfAppendixRow | null {
+  const formatted = formatValueForPdf(value);
+  if (formatted === null || formatted === "") {
+    return null;
+  }
+
+  return {
+    label,
+    redaction,
+    value: formatted
+  };
+}
+
+function formatValueForPdf(value: unknown): ContractPdfValue | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  if (value instanceof Date || ["boolean", "number", "string"].includes(typeof value)) {
+    return value as ContractPdfValue;
+  }
+  return String(value);
+}
+
+function formatMinorAmount(value: bigint | number | null | undefined) {
+  return value === null || value === undefined ? null : value.toString();
+}
+
+function maskPhone(value: null | string | undefined) {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (normalized.length <= 7) {
+    return "***";
+  }
+  return `${normalized.slice(0, 3)}****${normalized.slice(-4)}`;
+}
+
+function maskPlate(value: null | string | undefined) {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (normalized.length <= 3) {
+    return "***";
+  }
+  return `${normalized.slice(0, 2)}***${normalized.slice(-1)}`;
 }
 
 function assertCanGenerateEntitlements(order: OrderWithDetails) {

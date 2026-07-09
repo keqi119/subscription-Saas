@@ -51,6 +51,21 @@ When to use:
 
 - Recommended production MVP after approval.
 
+Selected implementation for Issue 4A-1G-BUILD:
+
+- Deployment option: Option A.
+- Approved family/source for this deployment: Source Han Sans / 思源黑体, using Source Han Sans SC from Adobe Source Han Sans.
+- Recorded license for this approved source decision: SIL Open Font License 1.1.
+- Release tag: `2.005R`.
+- Release asset: `https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/09_SourceHanSansSC.zip`.
+- Release asset SHA256: `ef7364f7ac2564be1ae9c1d74276de2653fe38b73449070398c4fc0b7e032ff1`.
+- Extracted zip entry: `OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf`.
+- Target API image path: `/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf`.
+- Image default: `CONTRACT_PDF_CJK_FONT_PATH=/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf`.
+- Docker builds must verify the pinned SHA256 before extraction.
+- No font files are committed to this repository; the font is downloaded only during image build.
+- Sandbox container path/read checks and generated PDF visual review are still required before production enablement.
+
 ### Option B: Mount an approved CJK font file into the API container and set the env path
 
 Benefits:
@@ -113,7 +128,7 @@ Do not treat any example font family, package, or path as approved unless operat
 
 ## 4. Required Environment Variables
 
-- `CONTRACT_PDF_CJK_FONT_PATH`: absolute path to the approved CJK font file inside the API container.
+- `CONTRACT_PDF_CJK_FONT_PATH`: absolute path to the approved CJK font file inside the API container. The API image default is `/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf`.
 - `CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED`: enables generated source PDF creation when set to `true`; keep disabled until font validation passes.
 - `FADADA_ENABLED`: enables real Fadada transport paths; do not enable for font-only validation.
 - `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED`: enables enterprise auto seal behavior; keep disabled until sandbox go/no-go gates pass.
@@ -182,6 +197,7 @@ Production enablement requires all of the following:
 
 - Approved font family/package/file.
 - Font license approval recorded by operator/legal.
+- API image build evidence includes the pinned Source Han Sans SC release asset and SHA256 verification.
 - Sandbox container path recorded.
 - Production container path recorded.
 - API container read check passed.
@@ -216,7 +232,7 @@ Record sandbox evidence in `docs/esign-sandbox-validation-record.md`.
 
 Evidence should include:
 
-- Approved font source and license approval reference.
+- Approved font source, release tag, asset URL, SHA256, extracted file, and license approval reference.
 - Deployment option selected.
 - API image tag or mount details.
 - `CONTRACT_PDF_CJK_FONT_PATH` value used in sandbox.

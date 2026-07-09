@@ -95,21 +95,23 @@ If the legal-approved body already contains `服务提供方盖章` or `订阅�
 
 ## Font Boundary
 
-Chinese contract PDFs require an operator-supplied CJK font path.
+Chinese contract PDFs require a usable CJK font path.
 
-Recommended configuration:
+The API image now installs the operator-approved Source Han Sans SC Regular OTF from the Adobe Source Han Sans `2.005R` release during image build. The release asset is pinned to `09_SourceHanSansSC.zip` and verified with SHA256 `ef7364f7ac2564be1ae9c1d74276de2653fe38b73449070398c4fc0b7e032ff1` before extracting `OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf`.
+
+Default image configuration:
 
 ```text
-CONTRACT_PDF_CJK_FONT_PATH=/path/to/approved-cjk-font
+CONTRACT_PDF_CJK_FONT_PATH=/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf
 ```
 
 Font files are not committed to the repository and must not be shared in Codex output.
 
 If rendered content contains CJK characters and no usable CJK font path is configured, the renderer must fail fast instead of silently generating garbled Chinese output.
 
-Use `docs/cjk-font-deployment-checklist.md` for the operator deployment checklist, approval inputs, container validation commands, sandbox PDF review, production enablement gate, and rollback path. The exact font family, package, or file must be approved by operator/legal reviewers before use; this repository must not treat any font as approved by default.
+Use `docs/cjk-font-deployment-checklist.md` for the operator deployment checklist, approval inputs, container validation commands, sandbox PDF review, production enablement gate, and rollback path. The selected Source Han Sans SC deployment records the license as SIL Open Font License 1.1 for this approved operator decision; do not describe it as Apache 2.0 in repository docs.
 
-`CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED` must remain disabled for CJK legal content until the CJK font path has been verified inside the API runtime container and a generated sandbox PDF has passed visual review.
+`CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED` must remain disabled for CJK legal content until the CJK font path has been verified inside the API runtime container and a generated sandbox PDF has passed visual review. The image font install does not resolve the separate legal-template anchor placement risk; anchor uniqueness must still be verified before formal template activation.
 
 ## Signing Anchors
 

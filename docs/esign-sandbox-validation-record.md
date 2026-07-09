@@ -6,6 +6,8 @@ Codex must not write legal contract text, invent appendix wording, add font file
 
 Complete the CJK font deployment operator checklist in `docs/cjk-font-deployment-checklist.md` before recording generated PDF artifact evidence for Chinese/CJK contract content.
 
+For the approved image-install path, record Source Han Sans SC from the Adobe Source Han Sans `2.005R` release, license recorded as SIL Open Font License 1.1, release asset SHA256, and the runtime path `/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf`.
+
 ## 1. Basic Information
 
 | Field | Value |
@@ -58,6 +60,11 @@ Complete the CJK font deployment operator checklist in `docs/cjk-font-deployment
 | Check | Result | Evidence |
 | --- | --- | --- |
 | Font path | TBD | TBD |
+| Selected font source | Source Han Sans SC / Adobe Source Han Sans `2.005R` | TBD |
+| Release asset URL | `https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/09_SourceHanSansSC.zip` | TBD |
+| Release asset SHA256 | `ef7364f7ac2564be1ae9c1d74276de2653fe38b73449070398c4fc0b7e032ff1` | TBD |
+| Extracted image font file | `/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf` | TBD |
+| Image build checksum verification passed | TBD | TBD |
 | Font family/package/file approved by operator/legal | TBD | TBD |
 | Font license approval recorded | TBD | TBD |
 | Container path exists | TBD | TBD |

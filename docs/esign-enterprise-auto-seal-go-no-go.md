@@ -2,6 +2,8 @@
 
 Status: pending operator validation.
 
+This checklist must be completed before enabling enterprise auto seal in production. It does not replace legal approval, operator approval, or provider-console approval.
+
 ## Release Identity
 
 - Branch: TBD
@@ -22,6 +24,17 @@ Status: pending operator validation.
 - [ ] Callback endpoint is confirmed.
 - [ ] Seal placement or keyword rule is approved.
 - [ ] Provider sandbox run completed.
+- [ ] Fadada upload, signing, auto-signing, callback, download, and archive behavior has been checked against the local developer docs under `D:\Projects\document\fadada\doc`.
+
+Representative local Fadada docs to check before modifying or enabling related behavior:
+
+- Contract upload
+- Customer/manual signing
+- Platform auto signing
+- All-auto batch signing, if used
+- Signing result async notification / `notify_url`
+- Signed file download
+- Contract archive behavior
 
 ## Application Prerequisites
 
@@ -35,6 +48,24 @@ Status: pending operator validation.
 - [ ] E-sign artifact source preflight passes before provider upload.
 - [ ] `FADADA_ENABLED=true` does not allow `TEST_FIXTURE` upload.
 - [ ] Enterprise auto seal requires generated `Contract.fileId`, not `ContractVersion.fileId`.
+- [ ] Formal legal contract text is approved by legal and business reviewers.
+- [ ] Order appendix field structure is approved by legal and business reviewers.
+- [ ] `CONTRACT_PDF_CJK_FONT_PATH` is configured outside the repository and verified inside the runtime container.
+- [ ] Generated source PDF passes MIME, `%PDF-` header, size, and generated object-key preflight.
+- [ ] Generated source PDF is text-based, searchable, and not image-only.
+- [ ] Generated source PDF contains each required signing anchor exactly once.
+
+## Required Signing Anchors
+
+- Platform / service provider seal: `服务提供方盖章`
+- Customer signature: `订阅方盖章/签字`
+
+The platform seal area must reserve right-side blank space. Provider-side placement intent is:
+
+```text
+keyx=60
+keyy=0
+```
 
 ## Sandbox Acceptance
 
@@ -50,6 +81,31 @@ Status: pending operator validation.
 - [ ] Duplicate callback is idempotent.
 - [ ] Provider failure leaves retryable state.
 - [ ] Missing or invalid positioning leaves contract/order non-final.
+- [ ] Sandbox validation record is completed using `docs/esign-sandbox-validation-record.md`.
+- [ ] Generated source PDF path and final signed PDF archive path are distinct.
+- [ ] Final signed PDF is downloadable only by authorized admin users.
+- [ ] Customer signature is visible in the final signed PDF.
+- [ ] Platform/company seal is visible in the final signed PDF.
+
+## No-Go Conditions
+
+Any of the following means production enablement must stop:
+
+- Formal legal text is not approved.
+- Appendix field structure is not approved.
+- CJK font path is missing, unreadable, or not verified in the runtime container.
+- Generated PDF contains garbled Chinese.
+- Generated PDF is image-only or not searchable.
+- Either required signing anchor is missing or duplicated.
+- Generated artifact preflight fails.
+- `contract.fileId` is missing for enterprise auto seal.
+- Generated object key is a sandbox, test fixture, wrong-contract, or signed archive path.
+- Fadada upload/sign/auto-sign/callback/download/archive behavior has not been checked against local docs.
+- Customer signature is missing from the final signed PDF.
+- Platform/company seal is missing from the final signed PDF.
+- Final signed PDF archive is missing.
+- An old failed task is reused instead of creating a new controlled task.
+- Production rollback flags and operator process are not prepared.
 
 ## Production Go/No-Go
 
@@ -69,9 +125,12 @@ Production enablement must be operator-controlled. Codex must not deploy, change
 If auto seal causes issues:
 
 1. Set `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=false`.
-2. Restart/recreate API through the approved operator process.
-3. Verify customer signing behavior.
-4. Keep any DB recovery separate and DB-owner approved.
+2. If generated PDF artifact creation has issues, set `CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED=false`.
+3. Restart/recreate API through the approved operator process.
+4. Verify customer signing behavior.
+5. Keep any DB recovery separate and DB-owner approved.
+
+Do not manually mark failed e-sign tasks successful. Do not backfill old contracts automatically. After a fix, generate a new controlled order, contract, and signing task.
 
 ## Evidence Rules
 
@@ -83,3 +142,4 @@ Do not paste:
 - seal images or binaries
 - full customer identity documents
 - raw provider URLs containing tokens
+- private object download URLs

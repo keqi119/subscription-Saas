@@ -11,6 +11,22 @@ const LOCAL_BUCKET = "application-materials";
 const OSS_BUCKET_PREFIX = "oss:";
 const OSS_KEY_PREFIX = "oss:";
 
+export interface GeneratedContractPdfArtifactStorageInput extends Omit<UploadObjectInput, "key"> {
+  contractId: string;
+  contentType: "application/pdf";
+  objectKey?: string;
+  originalName: string;
+}
+
+export interface GeneratedContractPdfArtifactStorageResult {
+  bucket: string;
+  contentType: "application/pdf";
+  objectKey: string;
+  originalName: string;
+  sizeBytes: number;
+  stored: StoredObject;
+}
+
 @Injectable()
 export class StorageService {
   constructor(
@@ -112,6 +128,30 @@ export class StorageService {
       metadata: input.metadata,
       originalName: input.originalName
     });
+  }
+
+  async putGeneratedContractPdfArtifact(
+    input: GeneratedContractPdfArtifactStorageInput
+  ): Promise<GeneratedContractPdfArtifactStorageResult> {
+    const objectKey = normalizeGeneratedContractPdfObjectKey(
+      input.contractId,
+      input.objectKey ?? this.buildGeneratedContractPdfArtifactKey(input.contractId, input.originalName)
+    );
+    const stored = await this.putPrivateObject(objectKey, {
+      buffer: input.buffer,
+      contentType: input.contentType,
+      metadata: input.metadata,
+      originalName: input.originalName
+    });
+
+    return {
+      bucket: stored.bucket,
+      contentType: input.contentType,
+      objectKey: stored.objectKey,
+      originalName: input.originalName,
+      sizeBytes: input.buffer.length,
+      stored: stored.stored
+    };
   }
 
   getContractSignedArtifactStream(objectKey: string): Promise<DownloadObjectResult> {
@@ -217,6 +257,10 @@ export class StorageService {
     return `contracts/${sanitizeKeyPart(contractId)}/esign/${sanitizeKeyPart(provider)}/signed/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
+  private buildGeneratedContractPdfArtifactKey(contractId: string, originalName: string) {
+    return `contracts/${sanitizeKeyPart(contractId)}/generated/${sanitizeGeneratedPdfFilename(originalName)}`;
+  }
+
   private withOssPrefix(key: string) {
     const prefix = this.configService.get<string>("OSS_PREFIX")?.replace(/^\/+|\/+$/g, "");
     return prefix ? `${prefix}/${key}` : key;
@@ -232,6 +276,29 @@ function sanitizeFilename(name: string) {
   const base = parsed.name.replace(/[^\w.-]+/g, "_").slice(0, 80) || "file";
   const ext = parsed.ext.replace(/[^\w.]+/g, "").slice(0, 16);
   return `${base}${ext}`;
+}
+
+function sanitizeGeneratedPdfFilename(name: string) {
+  const normalized = name.replace(/[\\/]+/g, "_");
+  const parsed = path.parse(normalized);
+  const base = parsed.name.replace(/[^\w.-]+/g, "_").slice(0, 160) || "contract";
+  const ext = parsed.ext.replace(/[^\w.]+/g, "").slice(0, 16) || ".pdf";
+  return `${base}${ext === "." ? ".pdf" : ext}`;
+}
+
+function normalizeGeneratedContractPdfObjectKey(contractId: string, objectKey: string) {
+  const prefix = `contracts/${sanitizeKeyPart(contractId)}/generated/`;
+  const normalized = objectKey.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized.startsWith(prefix)) {
+    throw new BadRequestException("生成合同 PDF 存储路径无效。");
+  }
+  const fileName = normalized.slice(prefix.length);
+  const safeFileName = sanitizeGeneratedPdfFilename(fileName);
+  const safeKey = `${prefix}${safeFileName}`;
+  if (safeKey.length > 255) {
+    throw new BadRequestException("生成合同 PDF 存储路径过长。");
+  }
+  return safeKey;
 }
 
 function sanitizeKeyPart(value: string) {

@@ -53,6 +53,7 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] CJK font deployment checklist is completed using `docs/cjk-font-deployment-checklist.md`.
 - [ ] `CONTRACT_PDF_CJK_FONT_PATH` is configured outside the repository and verified inside the runtime container.
 - [ ] Font family/package/file and license approval are recorded by operator/legal reviewers.
+- [ ] API image build evidence shows Source Han Sans SC `2.005R` asset SHA256 verification and extraction to `/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf`.
 - [ ] Legal template anchor placement strategy is resolved before generated PDF artifact creation.
 - [ ] Generated source PDF passes MIME, `%PDF-` header, size, and generated object-key preflight.
 - [ ] Generated source PDF is text-based, searchable, and not image-only.
@@ -98,6 +99,7 @@ Any of the following means production enablement must stop:
 - Appendix field structure is not approved.
 - CJK font path is missing, unreadable, or not verified in the runtime container.
 - CJK font family/package/file or license approval is missing.
+- API image font install, checksum verification, or target path validation evidence is missing.
 - Legal template anchor strategy is unresolved.
 - The legal DOCX/body anchors are duplicated by renderer-generated anchors in the final render model.
 - Generated PDF contains garbled Chinese.

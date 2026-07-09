@@ -1,10 +1,10 @@
 # Contract PDF Artifact Generation
 
-Status: renderer, artifact-writer, and guarded OrderService integration foundation only. This document does not enable production contract PDF generation by default.
+Status: renderer, artifact-writer, guarded OrderService integration, and e-sign source hardening foundations are present. This document does not enable production contract PDF generation by default.
 
 ## Current Gap
 
-`ContractVersion.contentTemplate` is saved into `contractSnapshot.contentTemplate`, but the current contract generation flow does not render it into a signing PDF artifact.
+`ContractVersion.contentTemplate` is saved into `contractSnapshot.contentTemplate`. Production signing requires that snapshot content to be rendered into a formal signing PDF artifact before e-sign task creation.
 
 The e-sign upload path resolves PDF artifacts in this order:
 
@@ -26,7 +26,7 @@ The render model includes:
 - signing anchors
 - render diagnostics
 
-This renderer foundation does not create `FileObject`, does not write `Contract.fileId`, does not upload files, and does not change e-sign upload behavior.
+The renderer validates non-empty legal body, required signing anchors, CJK font readiness for Chinese content, PDF header, and size limit.
 
 ## Artifact Writer Foundation
 
@@ -36,7 +36,7 @@ The artifact writer foundation adds the internal path:
 ContractPdfRenderModel -> ContractPdfRendererService -> private Storage object -> FileObject
 ```
 
-The writer returns generated artifact metadata to callers. `OrderService.generateContract()` can now call the writer and bind the returned `FileObject` to `Contract.fileId` only when guarded artifact generation is explicitly enabled.
+The writer returns generated artifact metadata to callers. `OrderService.generateContract()` can call the writer and bind the returned `FileObject` to `Contract.fileId` only when guarded artifact generation is explicitly enabled.
 
 Generated source PDFs are stored as private objects. This remains compatible with Fadada because provider upload can send file content and does not require a public `doc_url`.
 
@@ -89,6 +89,8 @@ Codex must not invent:
 
 Synthetic test text is allowed only for automated renderer/writer tests and must not be used as a production contract template.
 
+Before production use, the formal template must follow the approval process in `docs/contract-template-legal-approval.md`. The approval record must include the template name, version number, effective date, legal approver, business approver, approved legal body, approved appendix field structure, approved signing anchors, and rollback version.
+
 ## Font Boundary
 
 Chinese contract PDFs require an operator-supplied CJK font path.
@@ -119,7 +121,7 @@ Each signing anchor must appear exactly once in the generated render model:
 - `服务提供方盖章`
 - `订阅方盖章/签字`
 
-If an anchor is missing or duplicated, artifact writing must fail before storage write and before `FileObject` creation. Keyword strategy support is deferred to a separately approved provider-positioning task.
+If an anchor is missing or duplicated, artifact writing must fail before storage write and before `FileObject` creation.
 
 The requested platform seal right offset is:
 
@@ -166,7 +168,41 @@ PDF text extraction is intentionally deferred. The current preflight verifies ar
 
 The artifact writer creates only the pre-signing source PDF. Final signed PDF archive remains separate and must continue to use the existing signed artifact/archive flow after customer signature and platform seal are both complete.
 
-## Current PR Boundary
+The sandbox validation record must capture both paths:
+
+- generated source PDF object key
+- final signed PDF archive object key
+
+These paths must not be mixed. A generated source PDF is not proof of signing completion, and a final signed PDF archive must not be reused as a new pre-signing source artifact.
+
+## Sandbox Validation And Go/No-Go
+
+Before production enablement, complete `docs/esign-sandbox-validation-record.md` and the checklist in `docs/esign-enterprise-auto-seal-go-no-go.md`.
+
+The validation record must include:
+
+- formal legal template approval evidence
+- appendix approval evidence
+- CJK font path verification
+- generated source PDF preflight result
+- signing anchor visual check
+- Fadada provider task and callback result
+- final signed PDF archive verification
+- reviewer result and go/no-go recommendation
+
+Old failed e-sign tasks must not be manually marked successful. Existing stale sandbox contracts must not be automatically backfilled. After fixes, create a new controlled order, contract, and signing task.
+
+## Fadada Documentation Boundary
+
+Before any future task implements or modifies Fadada upload, signing, auto-signing, callback, download, or archive behavior, check the local Fadada developer documentation under:
+
+```text
+D:\Projects\document\fadada\doc
+```
+
+Do not guess Fadada parameter semantics from memory.
+
+## Current Foundation Boundary
 
 This renderer foundation does:
 
@@ -222,5 +258,6 @@ Recommended follow-up sequence:
 
 1. Formal template import: import legal-approved contract text and appendix structure after external approval.
 2. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository.
-3. Optional PDF text extraction preflight, only after dependency/security approval.
-4. Sandbox go/no-go: visually verify generated PDF and final signed PDF before production enablement.
+3. Sandbox validation record: complete the generated source PDF and final signed PDF evidence trail.
+4. Optional PDF text extraction preflight, only after dependency/security approval.
+5. Production enablement runbook: enable only after legal, CJK, source hardening, double-sign, archive, and rollback gates pass.

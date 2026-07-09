@@ -46,6 +46,13 @@ keyy=0
 
 The legal body should avoid duplicating these exact anchor strings if the generated signing section already renders them.
 
+Legal DOCX source files may already contain signing anchors. The current PDF render path may also append signing anchors through the generated signing block. Before template activation, reviewers must choose one anchor placement strategy:
+
+- Keep anchors in the approved legal body and use a separately approved renderer/template strategy that avoids a duplicate generated anchor block.
+- Remove the exact anchor strings from the legal body and let the renderer append the signing block.
+
+The final render model must contain each required signing anchor exactly once before generated PDF artifact creation is enabled.
+
 ## Appendix Field Policy
 
 The appendix structure must be approved by legal and business reviewers before production use.
@@ -89,7 +96,9 @@ The appendix structure must be approved by legal and business reviewers before p
 - [ ] Business approval recorded.
 - [ ] Template version and effective date recorded.
 - [ ] Appendix field structure approved.
+- [ ] Anchor placement strategy selected.
 - [ ] Required signing anchors appear exactly once.
+- [ ] Final render model anchor uniqueness verified.
 - [ ] CJK font path verified in the runtime container.
 - [ ] Generated sandbox PDF reviewed visually.
 - [ ] Sandbox double-sign passed.

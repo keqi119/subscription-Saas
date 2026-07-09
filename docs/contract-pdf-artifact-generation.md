@@ -91,6 +91,8 @@ Synthetic test text is allowed only for automated renderer/writer tests and must
 
 Before production use, the formal template must follow the approval process in `docs/contract-template-legal-approval.md`. The approval record must include the template name, version number, effective date, legal approver, business approver, approved legal body, approved appendix field structure, approved signing anchors, and rollback version.
 
+If the legal-approved body already contains `服务提供方盖章` or `订阅方盖章/签字`, template activation must resolve anchor placement before enabling generated PDF artifacts. The current render model appends signing anchors separately, and the artifact writer requires each anchor to appear exactly once in the generated render model.
+
 ## Font Boundary
 
 Chinese contract PDFs require an operator-supplied CJK font path.
@@ -104,6 +106,10 @@ CONTRACT_PDF_CJK_FONT_PATH=/path/to/approved-cjk-font
 Font files are not committed to the repository and must not be shared in Codex output.
 
 If rendered content contains CJK characters and no usable CJK font path is configured, the renderer must fail fast instead of silently generating garbled Chinese output.
+
+Use `docs/cjk-font-deployment-checklist.md` for the operator deployment checklist, approval inputs, container validation commands, sandbox PDF review, production enablement gate, and rollback path. The exact font family, package, or file must be approved by operator/legal reviewers before use; this repository must not treat any font as approved by default.
+
+`CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED` must remain disabled for CJK legal content until the CJK font path has been verified inside the API runtime container and a generated sandbox PDF has passed visual review.
 
 ## Signing Anchors
 
@@ -181,9 +187,11 @@ Before production enablement, complete `docs/esign-sandbox-validation-record.md`
 
 The validation record must include:
 
+- CJK font deployment checklist evidence
 - formal legal template approval evidence
 - appendix approval evidence
 - CJK font path verification
+- anchor placement strategy and uniqueness evidence
 - generated source PDF preflight result
 - signing anchor visual check
 - Fadada provider task and callback result
@@ -256,8 +264,9 @@ This foundation does not:
 
 Recommended follow-up sequence:
 
-1. Formal template import: import legal-approved contract text and appendix structure after external approval.
-2. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository.
-3. Sandbox validation record: complete the generated source PDF and final signed PDF evidence trail.
-4. Optional PDF text extraction preflight, only after dependency/security approval.
-5. Production enablement runbook: enable only after legal, CJK, source hardening, double-sign, archive, and rollback gates pass.
+1. CJK font deployment checklist: complete `docs/cjk-font-deployment-checklist.md` evidence and choose the approved deployment method.
+2. Formal template import: import legal-approved contract text and appendix structure after external approval, including anchor placement strategy.
+3. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository and verify it inside the API container.
+4. Sandbox validation record: complete the generated source PDF and final signed PDF evidence trail.
+5. Optional PDF text extraction preflight, only after dependency/security approval.
+6. Production enablement runbook: enable only after legal, CJK, source hardening, double-sign, archive, and rollback gates pass.

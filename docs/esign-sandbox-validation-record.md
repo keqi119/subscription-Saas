@@ -4,6 +4,8 @@ Use this record before enabling enterprise auto seal in production. This is a te
 
 Codex must not write legal contract text, invent appendix wording, add font files, call Fadada, trigger e-sign, query production data, or mark failed tasks successful.
 
+Complete the CJK font deployment operator checklist in `docs/cjk-font-deployment-checklist.md` before recording generated PDF artifact evidence for Chinese/CJK contract content.
+
 ## 1. Basic Information
 
 | Field | Value |
@@ -39,6 +41,8 @@ Codex must not write legal contract text, invent appendix wording, add font file
 | Business approver | TBD |
 | Approval evidence location | TBD |
 | Confirmation that Codex did not write legal text | TBD |
+| Anchor placement strategy selected | TBD |
+| Final render model has each required anchor exactly once | TBD |
 
 ## 4. Appendix Approval
 
@@ -54,11 +58,14 @@ Codex must not write legal contract text, invent appendix wording, add font file
 | Check | Result | Evidence |
 | --- | --- | --- |
 | Font path | TBD | TBD |
+| Font family/package/file approved by operator/legal | TBD | TBD |
+| Font license approval recorded | TBD | TBD |
 | Container path exists | TBD | TBD |
 | API process can read path | TBD | TBD |
 | Generated PDF Chinese text is not garbled | TBD | TBD |
 | PDF remains searchable text | TBD | TBD |
 | No font file committed to repository | TBD | TBD |
+| CJK checklist evidence location | TBD | TBD |
 
 ## 6. Generated PDF Artifact
 
@@ -97,6 +104,7 @@ Required anchors:
 | `订阅方盖章/签字` appears exactly once | TBD | TBD |
 | Platform seal area has right-side blank space | TBD | TBD |
 | Platform offset intent: `keyx=60`, `keyy=0` | TBD | TBD |
+| DOCX/legal-body anchors do not duplicate renderer-generated anchors | TBD | TBD |
 | Screenshot/evidence location | TBD | TBD |
 
 ## 8. Fadada Task

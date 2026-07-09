@@ -50,7 +50,10 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] Enterprise auto seal requires generated `Contract.fileId`, not `ContractVersion.fileId`.
 - [ ] Formal legal contract text is approved by legal and business reviewers.
 - [ ] Order appendix field structure is approved by legal and business reviewers.
+- [ ] CJK font deployment checklist is completed using `docs/cjk-font-deployment-checklist.md`.
 - [ ] `CONTRACT_PDF_CJK_FONT_PATH` is configured outside the repository and verified inside the runtime container.
+- [ ] Font family/package/file and license approval are recorded by operator/legal reviewers.
+- [ ] Legal template anchor placement strategy is resolved before generated PDF artifact creation.
 - [ ] Generated source PDF passes MIME, `%PDF-` header, size, and generated object-key preflight.
 - [ ] Generated source PDF is text-based, searchable, and not image-only.
 - [ ] Generated source PDF contains each required signing anchor exactly once.
@@ -94,6 +97,9 @@ Any of the following means production enablement must stop:
 - Formal legal text is not approved.
 - Appendix field structure is not approved.
 - CJK font path is missing, unreadable, or not verified in the runtime container.
+- CJK font family/package/file or license approval is missing.
+- Legal template anchor strategy is unresolved.
+- The legal DOCX/body anchors are duplicated by renderer-generated anchors in the final render model.
 - Generated PDF contains garbled Chinese.
 - Generated PDF is image-only or not searchable.
 - Either required signing anchor is missing or duplicated.

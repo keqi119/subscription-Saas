@@ -223,6 +223,20 @@ D:\Projects\document\fadada\doc
 
 Do not guess Fadada parameter semantics from memory.
 
+## Fadada Protocol Foundation
+
+The Fadada protocol foundation now enforces safe provider transaction IDs and endpoint-specific request semantics before full Stage 1 multi-position mapping:
+
+- provider `transaction_id` must be 1-32 ASCII letters or digits
+- `extsign_auto.api` request digest includes its `transaction_id`
+- `extsign_auto.api` success is the documented provider code `1000`
+- `query_sign_result.api` requires `customer_id`, `contract_id`, and `transaction_id`
+- `query_sign_result.api` parses the documented `view_url`
+- unknown Fadada callback transactions are isolated and do not mutate tasks
+- callbacks with mismatched `contract_id` are isolated and do not mutate tasks
+
+Future Stage 1 provider mapping remains separate from PDF generation. The intended mapping is one customer `extsign.api` transaction with two `signature_positions`, plus one platform `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`. This has not been enabled by the PDF artifact foundation alone.
+
 ## Current Foundation Boundary
 
 This renderer foundation does:

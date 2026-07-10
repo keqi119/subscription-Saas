@@ -65,7 +65,7 @@ describe("Fadada provider B2-A flow", () => {
         raw: { sign_url: "https://sign.example.test/customer" },
         signUrl: "https://sign.example.test/customer",
         signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
-        transactionId: "ESG-1-1"
+        transactionId: "ESG1S1"
       })),
       uploadDocs: vi.fn(async () => ({
         contractId: "ESG-1",
@@ -110,20 +110,66 @@ describe("Fadada provider B2-A flow", () => {
       customerId: "fadada-provider-customer-1",
       notifyUrl: "https://api.example.test/esign/callback/fadada",
       returnUrl: "https://app.example.test/portal/contracts/contract-1",
-      transactionId: "ESG-1-1"
+      transactionId: "ESG1S1"
     }));
     expect(result).toMatchObject({
       documentObjectKey: "contracts/contract.pdf",
       providerEnvelopeId: "ESG-1",
-      providerTaskId: "ESG-1-1",
+      providerTaskId: "ESG1S1",
       signUrl: "https://sign.example.test/customer",
       signers: [{
         customerId: "customer-1",
-        providerSignerId: "ESG-1-1",
+        providerSignerId: "ESG1S1",
         signUrl: "https://sign.example.test/customer",
         signerType: "CUSTOMER"
       }]
     });
+  });
+
+  it("generates documented-safe transaction ids from long task numbers", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(async () => ({
+        raw: { sign_url: "https://sign.example.test/customer" },
+        signUrl: "https://sign.example.test/customer",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+        transactionId: "ignored-by-provider"
+      })),
+      uploadDocs: vi.fn(async () => ({
+        contractId: "ESG-1",
+        raw: { upload: "ok" }
+      }))
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn(async () => ({
+        buffer: Buffer.from("%PDF-1.4\n%%EOF\n"),
+        contentType: "application/pdf" as const,
+        fileName: "contract.pdf",
+        objectKey: "contracts/contract.pdf",
+        size: 15,
+        source: "CONTRACT_VERSION_FILE" as const
+      }))
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_FULL_SIGNING_SMOKE: "1",
+      FADADA_TEST_CUSTOMER_ID: "fadada-provider-customer-1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1"
+    })), apiClient as never, pdfArtifactService as never);
+
+    const result = await provider.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      taskId: "task-1",
+      taskNo: `ESG${"9".repeat(80)}`
+    });
+
+    expect(result.providerTaskId).toMatch(/^[A-Za-z0-9]{1,32}$/);
+    expect(result.providerTaskId.length).toBeLessThanOrEqual(32);
+    expect(result.providerTaskId.endsWith("S1")).toBe(true);
+    expect(apiClient.createExternalSignUrl).toHaveBeenCalledWith(expect.objectContaining({
+      transactionId: result.providerTaskId
+    }));
   });
 
   it("rejects the B5 smoke override in production even when smoke env is enabled", async () => {
@@ -162,7 +208,7 @@ describe("Fadada provider B2-A flow", () => {
         raw: { sign_url: "https://sign.example.test/customer" },
         signUrl: "https://sign.example.test/customer",
         signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
-        transactionId: "ESG-1-1"
+        transactionId: "ESG1S1"
       })),
       uploadDocs: vi.fn(async () => ({
         contractId: "ESG-1",
@@ -332,7 +378,7 @@ describe("Fadada provider B2-A flow", () => {
     const prisma = {
       contractESignSigner: {
         findFirst: vi.fn(async () => ({
-          providerSignerId: "ESG-1-1",
+          providerSignerId: "ESG1S1",
           signUrl: "https://sign.example.test/customer",
           signUrlExpiresAt: new Date(Date.now() + 60_000)
         }))
@@ -345,7 +391,7 @@ describe("Fadada provider B2-A flow", () => {
       prisma as never
     );
 
-    await expect(provider.getSignerUrl({ providerTaskId: "ESG-1-1", taskId: "task-1" })).resolves.toMatchObject({
+    await expect(provider.getSignerUrl({ providerTaskId: "ESG1S1", taskId: "task-1" })).resolves.toMatchObject({
       rawResponse: { source: "LOCAL_SIGNER_URL" },
       signUrl: "https://sign.example.test/customer"
     });
@@ -355,7 +401,7 @@ describe("Fadada provider B2-A flow", () => {
     const prisma = {
       contractESignSigner: {
         findFirst: vi.fn(async () => ({
-          providerSignerId: "ESG-1-1",
+          providerSignerId: "ESG1S1",
           signUrl: "https://sign.example.test/expired",
           signUrlExpiresAt: new Date(Date.now() - 60_000)
         }))
@@ -368,7 +414,7 @@ describe("Fadada provider B2-A flow", () => {
       prisma as never
     );
 
-    await expect(provider.getSignerUrl({ providerTaskId: "ESG-1-1", taskId: "task-1" })).rejects.toThrow(
+    await expect(provider.getSignerUrl({ providerTaskId: "ESG1S1", taskId: "task-1" })).rejects.toThrow(
       /FADADA_SIGN_URL_NOT_AVAILABLE/
     );
   });
@@ -377,10 +423,10 @@ describe("Fadada provider B2-A flow", () => {
     const apiClient = {
       autoSealContract: vi.fn(async () => ({
         contractId: "ESG-1",
-        raw: { result: "3000" },
-        resultCode: "3000",
+        raw: { code: "1000" },
+        resultCode: "1000",
         resultDesc: "success",
-        transactionId: "ESG-1-2"
+        transactionId: "ESG1S2"
       }))
     };
     const provider = new FadadaESignProvider(loadFadadaConfig(configService({
@@ -399,7 +445,7 @@ describe("Fadada provider B2-A flow", () => {
       providerEnvelopeId: "ESG-1",
       taskId: "task-1",
       taskNo: "ESG-1",
-      transactionId: "ESG-1-2"
+      transactionId: "ESG1S2"
     });
 
     expect(apiClient.autoSealContract).toHaveBeenCalledWith(expect.objectContaining({
@@ -412,11 +458,11 @@ describe("Fadada provider B2-A flow", () => {
         type: "KEYWORD"
       },
       signatureId: "platform-signature-1",
-      transactionId: "ESG-1-2"
+      transactionId: "ESG1S2"
     }));
     expect(result).toMatchObject({
-      providerSignerId: "ESG-1-2",
-      resultCode: "3000",
+      providerSignerId: "ESG1S2",
+      resultCode: "1000",
       status: "COMPLETED"
     });
   });
@@ -435,7 +481,7 @@ describe("Fadada provider B2-A flow", () => {
       providerEnvelopeId: "ESG-1",
       taskId: "task-1",
       taskNo: "ESG-1",
-      transactionId: "ESG-1-2"
+      transactionId: "ESG1S2"
     })).rejects.toThrow(/FADADA_PLATFORM_AUTO_SEAL_POSITIONING_MISSING/);
     expect(apiClient.autoSealContract).not.toHaveBeenCalled();
   });
@@ -451,7 +497,7 @@ describe("Fadada provider B2-A flow", () => {
       providerEnvelopeId: "ESG-1",
       taskId: "task-1",
       taskNo: "ESG-1",
-      transactionId: "ESG-1-2"
+      transactionId: "ESG1S2"
     })).rejects.toThrow(/FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING/);
     expect(apiClient.autoSealContract).not.toHaveBeenCalled();
   });

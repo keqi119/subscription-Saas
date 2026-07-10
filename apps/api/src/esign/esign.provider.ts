@@ -27,6 +27,7 @@ export interface CreateSignTaskResult {
   signUrlExpiresAt?: Date;
   signers?: Array<{
     customerId?: string;
+    providerCustomerId?: string;
     providerSignerId?: string;
     signUrl?: string;
     signUrlExpiresAt?: Date;

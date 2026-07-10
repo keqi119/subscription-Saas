@@ -17,7 +17,7 @@ import {
 } from "../esign.provider";
 import { ContractPdfArtifactService } from "../contract-pdf-artifact.service";
 import { PrismaService } from "../../prisma/prisma.service";
-import { FadadaApiClient } from "./fadada-api.client";
+import { assertFadadaTransactionId, FadadaApiClient, FADADA_TRANSACTION_ID_INVALID } from "./fadada-api.client";
 import { verifyFadadaCallbackDigest } from "./fadada-digest";
 import { resolveFadadaSignerCustomerId } from "./fadada-signer-customer-resolver";
 import { FadadaConfig, FadadaSignCallbackPayload } from "./fadada.types";
@@ -58,15 +58,15 @@ export class FadadaESignProvider implements ESignProvider {
       orderId: undefined
     });
 
-    const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId);
     const providerContractId = input.taskNo;
+    const transactionId = buildTransactionId(input.taskNo, 1);
+    const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId);
     const uploadResult = await this.apiClient.uploadDocs({
       contractId: providerContractId,
       docTitle: input.documentName,
       fileName: artifact.fileName,
       pdf: artifact.buffer
     });
-    const transactionId = buildTransactionId(input.taskNo, 1);
     const signUrlResult = await this.apiClient.createExternalSignUrl({
       contractId: providerContractId,
       customerId: resolvedSignerCustomer.providerCustomerId,
@@ -104,6 +104,7 @@ export class FadadaESignProvider implements ESignProvider {
         providerSignerId: transactionId,
         signUrl: signUrlResult.signUrl,
         signUrlExpiresAt: signUrlResult.signUrlExpiresAt,
+        providerCustomerId: resolvedSignerCustomer.providerCustomerId,
         signerType: "CUSTOMER"
       }]
     };
@@ -236,7 +237,7 @@ function mapFadadaResultCode(resultCode: string | undefined) {
 }
 
 function isSuccessfulAutoSealResult(resultCode: string | undefined) {
-  return resultCode === "3000" || resultCode === "1";
+  return resultCode === "1000";
 }
 
 function normalizeCallbackPayload(value: unknown): FadadaSignCallbackPayload {
@@ -271,7 +272,15 @@ function stringOrUndefined(value: unknown) {
 }
 
 function buildTransactionId(taskNo: string, index: number) {
-  return `${taskNo}-${index}`;
+  const suffix = `S${index}`;
+  const maxBaseLength = 32 - suffix.length;
+  const normalizedTaskNo = taskNo.replace(/[^A-Za-z0-9]/g, "");
+  if (!normalizedTaskNo || maxBaseLength <= 0) {
+    throw new Error(`${FADADA_TRANSACTION_ID_INVALID}: taskNo cannot produce a safe transaction_id`);
+  }
+  const transactionId = `${normalizedTaskNo.slice(0, maxBaseLength)}${suffix}`;
+  assertFadadaTransactionId(transactionId);
+  return transactionId;
 }
 
 function isExpired(value: Date | null | undefined) {

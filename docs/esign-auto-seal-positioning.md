@@ -49,14 +49,16 @@ For `extsign_auto.api`, success is the documented provider code `1000`. Signing 
 
 The auto-sign request digest must include the auto-sign `transaction_id` in the endpoint-specific MD5 seed as checked against the local Fadada automatic signing documentation. Unknown or ambiguous auto-sign result payloads must not be treated as success.
 
-Future Stage 1 multi-position mapping target:
+Stage 1 multi-position mapping target:
 
 - customer side: one `extsign.api` transaction with two `signature_positions`
 - platform side: one `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`
 
-The local task model now supports Stage 1 signing slots behind `ESIGN_STAGE1_MULTI_SLOT_ENABLED`. The flag defaults to false. When enabled in a future sandbox-only build, one provider transaction may cover multiple local slot rows; callbacks update rows by `transaction_id`, and the task completes only after every required slot row is signed.
+The local task model supports Stage 1 signing slots behind `ESIGN_STAGE1_MULTI_SLOT_ENABLED`. The flag defaults to false. One provider transaction may cover multiple local slot rows; callbacks update rows by `transaction_id`, and the task completes only after every required slot row is signed.
 
-The current Fadada provider still rejects Stage 1 slot-aware input before upload because real `signature_positions` request mapping is future work. This document still does not enable full Stage 1 multi-position provider mapping. The mapping remains a future build and must be sandbox-proven before production use.
+The customer-side coordinate mapping now builds one `extsign.api` signing URL with two `signature_positions` sourced from generated PDF artifact slot diagnostics. It covers only the two Stage 1 customer slots and must not recalculate coordinates, parse the PDF, or fall back to keyword search.
+
+Platform-side coordinate auto seal mapping remains future work. This document still does not enable full Stage 1 multi-position provider mapping. Do not enable production Stage 1 multi-slot signing before the platform `extsign_auto.api` coordinate mapping is implemented and the complete customer/platform flow is sandbox-proven.
 
 ## Failed Task Boundary
 

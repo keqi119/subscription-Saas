@@ -2,6 +2,7 @@ import { ConfigService } from "@nestjs/config";
 import { describe, expect, it, vi } from "vitest";
 
 import { createESignProviderClient } from "../src/esign/esign.module";
+import type { ESignSigningSlot, ESignSigningSlotCoordinate } from "../src/esign/esign.provider";
 import { buildFadadaMsgDigest } from "../src/esign/fadada/fadada-digest";
 import { FadadaESignProvider } from "../src/esign/fadada/fadada-esign.provider";
 import { loadFadadaConfig } from "../src/esign/fadada/fadada.config";
@@ -34,7 +35,7 @@ describe("Fadada provider configuration", () => {
 });
 
 describe("Fadada provider B2-A flow", () => {
-  it("rejects Stage 1 slot-aware input before upload because multi-position mapping is not implemented", async () => {
+  it("rejects Stage 1 customer mapping before upload when required customer slot data is incomplete", async () => {
     const apiClient = {
       createExternalSignUrl: vi.fn(),
       uploadDocs: vi.fn()
@@ -66,11 +67,91 @@ describe("Fadada provider B2-A flow", () => {
       }],
       taskId: "task-1",
       taskNo: "ESG-1"
-    })).rejects.toThrow(/FADADA_STAGE1_MULTI_SLOT_MAPPING_NOT_IMPLEMENTED/);
+    })).rejects.toThrow(/FADADA_STAGE1_CUSTOMER_SLOT/);
 
     expect(pdfArtifactService.getContractPdfArtifact).not.toHaveBeenCalled();
     expect(apiClient.uploadDocs).not.toHaveBeenCalled();
     expect(apiClient.createExternalSignUrl).not.toHaveBeenCalled();
+  });
+
+  it("maps Stage 1 customer slots to one coordinate-based manual signing transaction", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(async () => ({
+        raw: { endpoint: "extsign.api", signaturePositions: 2 },
+        signUrl: "https://sign.example.test/customer-stage1",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+        transactionId: "ESG1S1"
+      })),
+      uploadDocs: vi.fn(async () => ({
+        contractId: "ESG-1",
+        raw: { upload: "ok" }
+      }))
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn(async () => ({
+        buffer: Buffer.from("%PDF-1.4\n%%EOF\n"),
+        contentType: "application/pdf" as const,
+        fileName: "contract.pdf",
+        objectKey: "contracts/contract-1/generated/contract.pdf",
+        size: 15,
+        slotCoordinates: stage1SlotCoordinates(),
+        source: "CONTRACT_FILE" as const
+      }))
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_FULL_SIGNING_SMOKE: "1",
+      FADADA_TEST_CUSTOMER_ID: "fadada-provider-customer-1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1"
+    })), apiClient as never, pdfArtifactService as never);
+
+    const result = await provider.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      signingStage: "STAGE1_CONTRACT",
+      signingSlotCoordinates: stage1SlotCoordinates(),
+      signingSlots: stage1SigningSlots(),
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    });
+
+    expect(pdfArtifactService.getContractPdfArtifact).toHaveBeenCalledWith("contract-1", expect.objectContaining({
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true,
+      requireStage1SlotCoordinates: true
+    }));
+    expect(apiClient.uploadDocs).toHaveBeenCalledWith(expect.objectContaining({
+      contractId: "ESG-1",
+      fileName: "contract.pdf",
+      pdf: expect.any(Buffer)
+    }));
+    expect(apiClient.createExternalSignUrl).toHaveBeenCalledWith(expect.objectContaining({
+      contractId: "ESG-1",
+      customerId: "fadada-provider-customer-1",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      returnUrl: "https://app.example.test/portal/contracts/contract-1",
+      signaturePositions: [
+        { pagenum: 0, x: 520, y: 730 },
+        { pagenum: 2, x: 522, y: 732 }
+      ],
+      transactionId: "ESG1S1"
+    }));
+    expect(result).toMatchObject({
+      documentObjectKey: "contracts/contract-1/generated/contract.pdf",
+      providerEnvelopeId: "ESG-1",
+      providerTaskId: "ESG1S1",
+      signUrl: "https://sign.example.test/customer-stage1",
+      actions: [{
+        coveredSlotIds: ["STAGE1_BODY_CUSTOMER", "STAGE1_ATTACHMENT1_CUSTOMER"],
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerSignerId: "ESG1S1",
+        providerTransactionId: "ESG1S1",
+        signerType: "CUSTOMER",
+        signingStage: "STAGE1_CONTRACT"
+      }]
+    });
   });
 
   it("rejects createSignTask before upload when provider customer id is unavailable", async () => {
@@ -634,6 +715,76 @@ describe("Fadada provider B2-A flow", () => {
     });
   });
 });
+
+function stage1SigningSlots(): ESignSigningSlot[] {
+  return [
+    {
+      documentType: "CONTRACT_BODY",
+      keyword: "stage1-body-customer",
+      providerActionType: "CUSTOMER_MANUAL_SIGN",
+      required: true,
+      signerRole: "CUSTOMER",
+      signingStage: "STAGE1_CONTRACT",
+      slotId: "STAGE1_BODY_CUSTOMER"
+    },
+    {
+      documentType: "CONTRACT_BODY",
+      keyword: "stage1-body-platform",
+      providerActionType: "PLATFORM_AUTO_SEAL",
+      required: true,
+      signerRole: "PLATFORM",
+      signingStage: "STAGE1_CONTRACT",
+      slotId: "STAGE1_BODY_PLATFORM"
+    },
+    {
+      documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+      keyword: "stage1-attachment1-customer",
+      providerActionType: "CUSTOMER_MANUAL_SIGN",
+      required: true,
+      signerRole: "CUSTOMER",
+      signingStage: "STAGE1_CONTRACT",
+      slotId: "STAGE1_ATTACHMENT1_CUSTOMER"
+    },
+    {
+      documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+      keyword: "stage1-attachment1-platform",
+      providerActionType: "PLATFORM_AUTO_SEAL",
+      required: true,
+      signerRole: "PLATFORM",
+      signingStage: "STAGE1_CONTRACT",
+      slotId: "STAGE1_ATTACHMENT1_PLATFORM"
+    }
+  ];
+}
+
+function stage1SlotCoordinates(): ESignSigningSlotCoordinate[] {
+  return [
+    {
+      pageNumber: 0,
+      slotId: "STAGE1_BODY_CUSTOMER",
+      x: 520,
+      y: 730
+    },
+    {
+      pageNumber: 0,
+      slotId: "STAGE1_BODY_PLATFORM",
+      x: 521,
+      y: 731
+    },
+    {
+      pageNumber: 2,
+      slotId: "STAGE1_ATTACHMENT1_CUSTOMER",
+      x: 522,
+      y: 732
+    },
+    {
+      pageNumber: 2,
+      slotId: "STAGE1_ATTACHMENT1_PLATFORM",
+      x: 523,
+      y: 733
+    }
+  ];
+}
 
 function configService(overrides: Record<string, string> = {}) {
   return new ConfigService({

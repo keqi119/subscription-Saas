@@ -354,6 +354,75 @@ describe("ESignService", () => {
     expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
   });
 
+  it("passes generated Stage 1 slot coordinates into slot-aware provider input", async () => {
+    const provider = stage1SlotProvider();
+    const slotCoordinates = stage1SlotCoordinates();
+    const preflightContractPdfArtifact = vi.fn(async () => ({
+      slotCoordinates,
+      preflight: {
+        fadadaEnabled: true,
+        generatedContractArtifact: true,
+        maxBytes: 20 * 1024 * 1024,
+        purpose: "FADADA_UPLOAD",
+        source: "CONTRACT_FILE",
+        stage1SlotCoordinatesVerified: true,
+        textExtractionVerified: false
+      }
+    }));
+    const { service } = createESignFixture(
+      {
+        ESIGN_PROVIDER: "fadada",
+        ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true",
+        FADADA_ENABLED: "true"
+      },
+      provider,
+      { contractPdfArtifactService: { preflightContractPdfArtifact } }
+    );
+
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
+      signingSlotCoordinates: slotCoordinates
+    }));
+  });
+
+  it("keeps Stage 1 task incomplete after customer-only coordinate transaction callback", async () => {
+    const provider = stage1CustomerOnlyProvider();
+    const { service, state } = createESignFixture({
+      ESIGN_PROVIDER: "fadada",
+      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+    }, provider);
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const customerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "CUSTS1"
+    }));
+    const duplicateResult = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "CUSTS1"
+    }));
+
+    expect(customerResult).toMatchObject({ handled: true });
+    expect(duplicateResult).toMatchObject({ handled: true });
+    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED }),
+      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED })
+    ]));
+    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ providerSignerId: null, signerStatus: ESignSignerStatus.PENDING }),
+      expect.objectContaining({ providerSignerId: null, signerStatus: ESignSignerStatus.PENDING })
+    ]));
+    expect(state.tasks[0]).toMatchObject({
+      completedAt: null,
+      taskStatus: ESignTaskStatus.SIGNING
+    });
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
   it("stores enterprise signing plan metadata without making B5 evaluate policy", async () => {
     const provider: ESignProvider = {
       createSignTask: vi.fn(async (input) => ({
@@ -1415,6 +1484,15 @@ function readSnapshotField(snapshot: unknown, key: string) {
   return (snapshot as Record<string, unknown>)[key];
 }
 
+function stage1SlotCoordinates() {
+  return [
+    { pageNumber: 0, slotId: "STAGE1_BODY_CUSTOMER", x: 520, y: 730 },
+    { pageNumber: 0, slotId: "STAGE1_BODY_PLATFORM", x: 521, y: 731 },
+    { pageNumber: 2, slotId: "STAGE1_ATTACHMENT1_CUSTOMER", x: 522, y: 732 },
+    { pageNumber: 2, slotId: "STAGE1_ATTACHMENT1_PLATFORM", x: 523, y: 733 }
+  ];
+}
+
 function stage1SlotProvider() {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
   return {
@@ -1444,6 +1522,36 @@ function stage1SlotProvider() {
         providerEnvelopeId: input.taskNo,
         providerTaskId: "CUSTS1",
         rawResponse: { provider: "fadada", stage1Slots: true },
+        signUrl: "https://sign.example.test/customer-stage1",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
+      };
+    }),
+    getSignerUrl: vi.fn(),
+    verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
+  } satisfies ESignProvider & {
+    createSignTask: ReturnType<typeof vi.fn>;
+  };
+}
+
+function stage1CustomerOnlyProvider() {
+  const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
+  return {
+    createSignTask: vi.fn(async (input) => {
+      const actions: ESignProviderActionResult[] = [{
+        coveredSlotIds: ["STAGE1_BODY_CUSTOMER", "STAGE1_ATTACHMENT1_CUSTOMER"],
+        providerActionType: "CUSTOMER_MANUAL_SIGN" as const,
+        providerSignerId: "CUSTS1",
+        providerTransactionId: "CUSTS1",
+        signerType: "CUSTOMER" as const,
+        signingStage: "STAGE1_CONTRACT" as const,
+        signUrl: "https://sign.example.test/customer-stage1",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
+      }];
+      return {
+        actions,
+        providerEnvelopeId: input.taskNo,
+        providerTaskId: "CUSTS1",
+        rawResponse: { provider: "fadada", stage1CustomerOnly: true },
         signUrl: "https://sign.example.test/customer-stage1",
         signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
       };

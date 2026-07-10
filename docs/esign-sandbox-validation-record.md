@@ -180,18 +180,20 @@ Representative document categories to check:
 | Mismatched `contract_id` callback isolation check | TBD |
 | Local Stage 1 slot rows created from provider action result | TBD |
 | Customer provider transaction covers both customer slot rows | TBD |
+| Customer `extsign.api` request includes exactly two coordinate `signature_positions` | TBD |
+| Customer `signature_positions` are sourced from generated artifact diagnostics, not recalculated | TBD |
 | Platform provider transaction covers both platform slot rows | TBD |
 | Callback updates only rows with matching provider `transaction_id` | TBD |
 | Partial slot completion leaves task non-completed | TBD |
 | Task completes only after all required slot rows are signed | TBD |
 | Raw provider error, if any | TBD |
 
-Expected future Stage 1 provider mapping remains:
+Expected Stage 1 provider mapping:
 
-- customer: one `extsign.api` transaction with two `signature_positions`
-- platform: one `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`
+- customer: one `extsign.api` transaction with two coordinate `signature_positions` from generated PDF artifact diagnostics
+- platform: one future `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`
 
-`ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Current local slot completion support does not by itself prove that Fadada `signature_positions` mapping is implemented. Do not treat this protocol foundation or local slot row model as proof that full Stage 1 multi-position mapping has passed sandbox validation.
+`ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Customer coordinate mapping alone does not prove that the full customer/platform Stage 1 multi-position flow has passed sandbox validation. Platform auto-seal mapping remains future work, and archive/final completion must stay blocked until all required slot rows are signed.
 
 ## 9. Final Signed PDF Archive
 

@@ -25,6 +25,13 @@ export interface ESignSigningSlot {
   slotId: ESignSlotId;
 }
 
+export interface ESignSigningSlotCoordinate {
+  pageNumber: number;
+  slotId: ESignSlotId;
+  x: number;
+  y: number;
+}
+
 export interface ESignProviderActionResult {
   coveredSlotIds?: ESignSlotId[];
   providerActionType?: ESignProviderActionType;
@@ -49,6 +56,7 @@ export interface CreateSignTaskInput {
     signerType: "CUSTOMER" | "PLATFORM";
   }>;
   signingSlots?: ESignSigningSlot[];
+  signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingStage?: ESignSigningStage;
   taskId?: string;
   taskNo: string;

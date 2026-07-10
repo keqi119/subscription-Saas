@@ -1,4 +1,8 @@
-import { ContractPdfRenderDiagnostics, ContractPdfRenderModel } from "./contract-pdf-render-model";
+import {
+  ContractPdfRenderDiagnostics,
+  ContractPdfRenderModel,
+  ContractPdfStage1SigningSlotOccurrences
+} from "./contract-pdf-render-model";
 
 export const CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE = "CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE";
 export const CONTRACT_PDF_ARTIFACT_APPENDIX_MISSING = "CONTRACT_PDF_ARTIFACT_APPENDIX_MISSING";
@@ -21,8 +25,7 @@ export interface ContractPdfArtifactWriteInput {
 }
 
 export interface ContractPdfArtifactAnchorOccurrences {
-  customerSignatureKeyword: number;
-  platformSealKeyword: number;
+  stage1SigningSlots: ContractPdfStage1SigningSlotOccurrences;
 }
 
 export interface ContractPdfArtifactDiagnostics {

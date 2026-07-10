@@ -22,11 +22,11 @@ The render model includes:
 
 - contract identity
 - legal terms body from `contentTemplate`
-- order snapshot appendix sections and rows
-- signing anchors
+- Attachment 1 subscription plan / transaction terms snapshot sections and rows
+- Stage 1 signing slots
 - render diagnostics
 
-The renderer validates non-empty legal body, required signing anchors, CJK font readiness for Chinese content, PDF header, and size limit.
+The renderer validates non-empty legal body, required Stage 1 signing slots, CJK font readiness for Chinese content, PDF header, and size limit.
 
 ## Artifact Writer Foundation
 
@@ -89,9 +89,11 @@ Codex must not invent:
 
 Synthetic test text is allowed only for automated renderer/writer tests and must not be used as a production contract template.
 
-Before production use, the formal template must follow the approval process in `docs/contract-template-legal-approval.md`. The approval record must include the template name, version number, effective date, legal approver, business approver, approved legal body, approved appendix field structure, approved signing anchors, and rollback version.
+Before production use, the formal template must follow the approval process in `docs/contract-template-legal-approval.md`. The approval record must include the template name, version number, effective date, legal approver, business approver, approved legal body, approved appendix field structure, approved Stage 1 signing slot keywords, and rollback version.
 
-If the legal-approved body already contains `服务提供方盖章` or `订阅方盖章/签字`, template activation must resolve anchor placement before enabling generated PDF artifacts. The current render model appends signing anchors separately, and the artifact writer requires each anchor to appear exactly once in the generated render model.
+The Stage 1 PDF source contains the contract main body plus Attachment 1 subscription plan / transaction terms snapshot. Attachment 2 vehicle handover / delivery confirmation is excluded from Stage 1 and remains a future Stage 2 document/task.
+
+If the legal-approved body already contains older generic anchor strings such as `服务提供方盖章` or `订阅方盖章/签字`, those strings do not satisfy the Stage 1 slot model and must not drive provider placement. Template activation must verify the generated Stage 1 PDF contains each approved Stage 1 slot keyword exactly once.
 
 ## Font Boundary
 
@@ -111,25 +113,29 @@ If rendered content contains CJK characters and no usable CJK font path is confi
 
 Use `docs/cjk-font-deployment-checklist.md` for the operator deployment checklist, approval inputs, container validation commands, sandbox PDF review, production enablement gate, and rollback path. The selected Source Han Sans SC deployment records the license as SIL Open Font License 1.1 for this approved operator decision; do not describe it as Apache 2.0 in repository docs.
 
-`CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED` must remain disabled for CJK legal content until the CJK font path has been verified inside the API runtime container and a generated sandbox PDF has passed visual review. The image font install does not resolve the separate legal-template anchor placement risk; anchor uniqueness must still be verified before formal template activation.
+`CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED` must remain disabled for CJK legal content until the CJK font path has been verified inside the API runtime container and a generated sandbox PDF has passed visual review. The image font install does not resolve the separate legal-template slot placement risk; Stage 1 slot uniqueness must still be verified before formal template activation.
 
-## Signing Anchors
+## Stage 1 Signing Slots
 
-Approved anchor keywords:
+Approved Stage 1 slot keywords:
 
-- Platform / service provider seal: `服务提供方盖章`
-- Customer signature: `订阅方盖章/签字`
+- Contract body customer signature: `合同正文-订阅方签字`
+- Contract body platform/company seal: `合同正文-服务提供方盖章`
+- Attachment 1 customer signature: `附件1订阅方案-订阅方签字`
+- Attachment 1 platform/company seal: `附件1订阅方案-服务提供方盖章`
 
-The signing PDF must contain these keywords and reserve blank space on the right side for signing or sealing.
+The Stage 1 signing PDF must contain these four keywords and reserve blank space on the right side for signing or sealing where needed. Stage 1 must not rely on repeated generic anchors.
 
 Generated signing PDFs must be text-based and searchable. Image-only PDFs are not acceptable because Fadada keyword positioning requires the keyword to exist as searchable document text.
 
-Each signing anchor must appear exactly once in the generated render model:
+Each Stage 1 slot keyword must appear exactly once in the generated render model:
 
-- `服务提供方盖章`
-- `订阅方盖章/签字`
+- `合同正文-订阅方签字`
+- `合同正文-服务提供方盖章`
+- `附件1订阅方案-订阅方签字`
+- `附件1订阅方案-服务提供方盖章`
 
-If an anchor is missing or duplicated, artifact writing must fail before storage write and before `FileObject` creation.
+If a Stage 1 slot keyword is missing or duplicated, artifact writing must fail before storage write and before `FileObject` creation.
 
 The requested platform seal right offset is:
 
@@ -137,9 +143,13 @@ The requested platform seal right offset is:
 60px
 ```
 
-Provider-side placement must remain consistent with the generated PDF anchor layout.
+Provider-side placement must remain consistent with the generated PDF slot layout.
 
-The provider offset mapping is not writer responsibility. `keyx=60` and `keyy=0` belong to the e-sign/Fadada positioning layer.
+The provider offset mapping is not writer responsibility. `keyx=60` and `keyy=0` belong to the e-sign/Fadada positioning layer. Multi-position provider mapping for the four Stage 1 slots remains a future task.
+
+## Stage 2 Boundary
+
+Attachment 2 vehicle handover / delivery confirmation is not rendered in the Stage 1 contract PDF. It should become a separate future document/task for delivery evidence signing. Lease commencement and billing activation alignment must be based on the future delivery handover customer signed time, not on Stage 1 contract signing, and remain separate future work.
 
 ## Size Limit
 
@@ -193,9 +203,10 @@ The validation record must include:
 - formal legal template approval evidence
 - appendix approval evidence
 - CJK font path verification
-- anchor placement strategy and uniqueness evidence
+- Stage 1 slot strategy and uniqueness evidence
+- Stage 1 slot uniqueness evidence
 - generated source PDF preflight result
-- signing anchor visual check
+- Stage 1 signing slot visual check
 - Fadada provider task and callback result
 - final signed PDF archive verification
 - reviewer result and go/no-go recommendation
@@ -218,7 +229,7 @@ This renderer foundation does:
 
 - render deterministic PDF buffers from structured render models
 - validate non-empty legal body
-- validate non-empty signing anchors
+- validate non-empty Stage 1 signing slots
 - enforce CJK font configuration for CJK content
 - enforce generated buffer PDF header and size limit
 
@@ -228,7 +239,7 @@ This artifact writer foundation does:
 - write generated source PDFs to private Storage
 - create `FileObject`
 - validate required renderer diagnostics
-- validate signing anchor uniqueness in the render model
+- validate Stage 1 signing slot uniqueness in the render model
 - enforce the 20MB artifact size limit
 - reject protected contract statuses
 - reject existing contract PDF artifacts unless regeneration is explicitly allowed
@@ -238,7 +249,7 @@ This OrderService integration foundation does:
 - add `CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED`
 - keep the flag disabled by default
 - build a render model from the selected contract version and order snapshot
-- pass the approved signing anchors and platform offset metadata
+- pass the approved Stage 1 signing slots and platform offset metadata
 - call the artifact writer only when the flag is enabled
 - write `Contract.fileId` only after writer success
 - move the order to `PENDING_SIGN` only after `Contract.fileId` succeeds
@@ -267,8 +278,10 @@ This foundation does not:
 Recommended follow-up sequence:
 
 1. CJK font deployment checklist: complete `docs/cjk-font-deployment-checklist.md` evidence and choose the approved deployment method.
-2. Formal template import: import legal-approved contract text and appendix structure after external approval, including anchor placement strategy.
+2. Formal template import: import legal-approved contract text and appendix structure after external approval, including Stage 1 slot strategy.
 3. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository and verify it inside the API container.
-4. Sandbox validation record: complete the generated source PDF and final signed PDF evidence trail.
-5. Optional PDF text extraction preflight, only after dependency/security approval.
-6. Production enablement runbook: enable only after legal, CJK, source hardening, double-sign, archive, and rollback gates pass.
+4. Fadada provider multi-position mapping: map Stage 1 body and Attachment 1 customer/platform slots only after checking local Fadada docs.
+5. Sandbox validation record: complete the generated source PDF and final signed PDF evidence trail.
+6. Stage 2 delivery handover architecture: design Attachment 2 as a separate delivery document/task.
+7. Optional PDF text extraction preflight, only after dependency/security approval.
+8. Production enablement runbook: enable only after legal, CJK, source hardening, double-sign, archive, and rollback gates pass.

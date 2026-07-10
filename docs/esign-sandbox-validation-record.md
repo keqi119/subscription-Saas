@@ -43,8 +43,9 @@ For the approved image-install path, record Source Han Sans SC from the Adobe So
 | Business approver | TBD |
 | Approval evidence location | TBD |
 | Confirmation that Codex did not write legal text | TBD |
-| Anchor placement strategy selected | TBD |
-| Final render model has each required anchor exactly once | TBD |
+| Stage 1 slot strategy selected | TBD |
+| Stage 1 source PDF excludes Attachment 2 | TBD |
+| Final render model has each required Stage 1 slot keyword exactly once | TBD |
 
 ## 4. Appendix Approval
 
@@ -98,20 +99,28 @@ contracts/{contractId}/generated/{fileName}
 
 Storage prefixes are acceptable only when the generated artifact pattern remains present and the object is not a test, sandbox, or final signed archive path.
 
-## 7. Signing Anchors
+## 7. Stage 1 Signing Slots
 
-Required anchors:
+Required Stage 1 slot keywords:
 
-- `服务提供方盖章`
-- `订阅方盖章/签字`
+- Contract body customer signature: `合同正文-订阅方签字`
+- Contract body platform/company seal: `合同正文-服务提供方盖章`
+- Attachment 1 customer signature: `附件1订阅方案-订阅方签字`
+- Attachment 1 platform/company seal: `附件1订阅方案-服务提供方盖章`
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| `服务提供方盖章` appears exactly once | TBD | TBD |
-| `订阅方盖章/签字` appears exactly once | TBD | TBD |
-| Platform seal area has right-side blank space | TBD | TBD |
+| `合同正文-订阅方签字` appears exactly once | TBD | TBD |
+| `合同正文-服务提供方盖章` appears exactly once | TBD | TBD |
+| `附件1订阅方案-订阅方签字` appears exactly once | TBD | TBD |
+| `附件1订阅方案-服务提供方盖章` appears exactly once | TBD | TBD |
+| Stage 1 source PDF contains contract main body | TBD | TBD |
+| Stage 1 source PDF contains Attachment 1 subscription plan / transaction terms snapshot | TBD | TBD |
+| Stage 1 source PDF excludes Attachment 2 vehicle handover / delivery confirmation | TBD | TBD |
+| Platform seal slots have right-side blank space | TBD | TBD |
 | Platform offset intent: `keyx=60`, `keyy=0` | TBD | TBD |
-| DOCX/legal-body anchors do not duplicate renderer-generated anchors | TBD | TBD |
+| Older generic anchors do not drive Stage 1 provider placement | TBD | TBD |
+| Provider multi-position mapping checked separately before Fadada sandbox signing | TBD | TBD |
 | Screenshot/evidence location | TBD | TBD |
 
 ## 8. Fadada Task

@@ -7,6 +7,8 @@ import {
   ContractPdfAppendixRow,
   ContractPdfRenderDiagnostics,
   ContractPdfRenderModel,
+  ContractPdfSigningSlot,
+  ContractPdfSigningSlotId,
   ContractPdfValue
 } from "./contract-pdf-render-model";
 
@@ -17,12 +19,21 @@ export const CONTRACT_PDF_RENDER_CUSTOMER_SIGNATURE_KEYWORD_MISSING =
 export const CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED = "CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED";
 export const CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED = "CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED";
 export const CONTRACT_PDF_RENDER_NOT_PDF = "CONTRACT_PDF_RENDER_NOT_PDF";
+export const CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING = "CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING";
+export const CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE =
+  "CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE";
 export const CONTRACT_PDF_RENDER_TOO_LARGE = "CONTRACT_PDF_RENDER_TOO_LARGE";
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE = "A4";
 const EMPTY_VALUE = "-";
 const CJK_PATTERN = /[\u3400-\u9fff\uf900-\ufaff]/;
+const STAGE1_REQUIRED_SLOT_IDS: ContractPdfSigningSlotId[] = [
+  "STAGE1_BODY_CUSTOMER",
+  "STAGE1_BODY_PLATFORM",
+  "STAGE1_ATTACHMENT1_CUSTOMER",
+  "STAGE1_ATTACHMENT1_PLATFORM"
+];
 
 export interface ContractPdfRenderOptions {
   allowBuiltinFontForAsciiOnlyTests?: boolean;
@@ -60,6 +71,7 @@ export class ContractPdfRendererService {
 }
 
 function buildDiagnostics(model: ContractPdfRenderModel): ContractPdfRenderDiagnostics {
+  const stage1SigningSlotOccurrences = countStage1SlotOccurrences(model);
   const renderText = [
     model.contractId,
     model.contractNo,
@@ -67,8 +79,7 @@ function buildDiagnostics(model: ContractPdfRenderModel): ContractPdfRenderDiagn
     model.templateName,
     model.templateVersion,
     model.contentTemplate,
-    model.signingAnchors.platformSealKeyword,
-    model.signingAnchors.customerSignatureKeyword,
+    ...buildSigningSlotSearchableText(model.signingSlots),
     ...model.appendix.sections.flatMap((section) => [
       section.title,
       ...section.rows.flatMap((row) => [row.label, formatValue(row.value)])
@@ -78,9 +89,17 @@ function buildDiagnostics(model: ContractPdfRenderModel): ContractPdfRenderDiagn
   return {
     hasAppendix: model.appendix.sections.some((section) => section.rows.length > 0),
     hasCjkContent: CJK_PATTERN.test(renderText),
-    hasCustomerSignatureKeyword: model.signingAnchors.customerSignatureKeyword.trim().length > 0,
+    hasCustomerSignatureKeyword: model.signingSlots.some(
+      (slot) => slot.signerRole === "CUSTOMER" && slot.keyword.trim().length > 0
+    ),
     hasLegalBody: model.contentTemplate.trim().length > 0,
-    hasPlatformSealKeyword: model.signingAnchors.platformSealKeyword.trim().length > 0
+    hasPlatformSealKeyword: model.signingSlots.some(
+      (slot) => slot.signerRole === "PLATFORM" && slot.keyword.trim().length > 0
+    ),
+    hasStage1SigningSlots: STAGE1_REQUIRED_SLOT_IDS.every(
+      (slotId) => stage1SigningSlotOccurrences[slotId] === 1
+    ),
+    stage1SigningSlotOccurrences
   };
 }
 
@@ -97,6 +116,7 @@ function validateModel(model: ContractPdfRenderModel, diagnostics: ContractPdfRe
   if (!model.contractNo.trim()) {
     throw new Error("CONTRACT_PDF_RENDER_CONTRACT_NO_MISSING: contractNo is required");
   }
+  validateStage1SigningSlots(model, diagnostics);
 }
 
 function resolveFontPath(options: ContractPdfRenderOptions, diagnostics: ContractPdfRenderDiagnostics) {
@@ -151,24 +171,17 @@ async function renderPdf(
   }
 
   doc.info.Title = model.contractNo;
-  doc.info.Subject = "Subscription contract signing artifact";
+  doc.info.Subject = "Stage 1 subscription contract signing artifact";
   doc.info.Keywords = "contract,esign";
 
-  writeTitle(doc, "Contract Signing Artifact");
+  writeTitle(doc, "Stage 1 Contract Signing Source");
   writeMetadata(doc, model);
-  writeSection(doc, "Legal Terms Body");
+  writeSection(doc, "Contract Main Body");
   writeParagraph(doc, model.contentTemplate);
-  writeSection(doc, "Order Snapshot Appendix");
+  writeSection(doc, "Attachment 1: Subscription Plan / Transaction Terms Snapshot");
   writeAppendix(doc, model.appendix.sections);
-  writeSection(doc, "Signing Anchors");
-  writeSigningAnchor(doc, "Customer", model.signingAnchors.customerSignatureKeyword);
-  writeSigningAnchor(doc, "Platform", model.signingAnchors.platformSealKeyword);
-  if (model.signingAnchors.platformSealOffsetX !== undefined || model.signingAnchors.platformSealOffsetY !== undefined) {
-    writeParagraph(
-      doc,
-      `Platform seal offset: x=${model.signingAnchors.platformSealOffsetX ?? 0}, y=${model.signingAnchors.platformSealOffsetY ?? 0}`
-    );
-  }
+  writeSection(doc, "Stage 1 Signing Slots");
+  writeSigningSlots(doc, model.signingSlots);
   writeSection(doc, "Render Diagnostics");
   writeParagraph(doc, JSON.stringify(diagnostics));
 
@@ -229,10 +242,19 @@ function writeKeyValue(doc: PDFKit.PDFDocument, label: string, value: string) {
   });
 }
 
-function writeSigningAnchor(doc: PDFKit.PDFDocument, label: string, keyword: string) {
+function writeSigningSlots(doc: PDFKit.PDFDocument, slots: ContractPdfSigningSlot[]) {
+  for (const slot of slots) {
+    writeSigningSlot(doc, slot);
+  }
+}
+
+function writeSigningSlot(doc: PDFKit.PDFDocument, slot: ContractPdfSigningSlot) {
   ensureSpace(doc, 36);
-  doc.fontSize(10).text(`${label}: ${keyword}`, { continued: true });
+  doc.fontSize(10).text(`${slot.title} / ${slot.label}: ${slot.keyword}`, { continued: true });
   doc.text("    ______________________________");
+  if (slot.offsetX !== undefined || slot.offsetY !== undefined) {
+    doc.fontSize(8).text(`Offset intent: x=${slot.offsetX ?? 0}, y=${slot.offsetY ?? 0}`);
+  }
   doc.moveDown(0.8);
 }
 
@@ -251,6 +273,72 @@ function formatValue(value: ContractPdfValue) {
     return value.toISOString();
   }
   return String(value);
+}
+
+function countStage1SlotOccurrences(model: ContractPdfRenderModel) {
+  const text = [
+    model.contentTemplate,
+    ...model.appendix.sections.flatMap((section) => [
+      section.title,
+      ...section.rows.flatMap((row) => [row.label, formatValue(row.value)])
+    ]),
+    ...buildSigningSlotSearchableText(model.signingSlots)
+  ].join("\n");
+
+  return {
+    STAGE1_ATTACHMENT1_CUSTOMER: countOccurrences(
+      text,
+      findSlotKeyword(model.signingSlots, "STAGE1_ATTACHMENT1_CUSTOMER")
+    ),
+    STAGE1_ATTACHMENT1_PLATFORM: countOccurrences(
+      text,
+      findSlotKeyword(model.signingSlots, "STAGE1_ATTACHMENT1_PLATFORM")
+    ),
+    STAGE1_BODY_CUSTOMER: countOccurrences(text, findSlotKeyword(model.signingSlots, "STAGE1_BODY_CUSTOMER")),
+    STAGE1_BODY_PLATFORM: countOccurrences(text, findSlotKeyword(model.signingSlots, "STAGE1_BODY_PLATFORM"))
+  };
+}
+
+function validateStage1SigningSlots(model: ContractPdfRenderModel, diagnostics: ContractPdfRenderDiagnostics) {
+  if (model.signingStage !== "STAGE1_CONTRACT") {
+    throw new Error(`${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING}: Stage 1 signing stage is required`);
+  }
+
+  for (const slotId of STAGE1_REQUIRED_SLOT_IDS) {
+    const slots = model.signingSlots.filter((slot) => slot.slotId === slotId);
+    if (slots.length !== 1 || slots[0]!.keyword.trim().length === 0) {
+      throw new Error(`${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING}: ${slotId} is required`);
+    }
+    if (diagnostics.stage1SigningSlotOccurrences[slotId] !== 1) {
+      throw new Error(`${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE}: ${slotId} must render exactly once`);
+    }
+  }
+}
+
+function buildSigningSlotSearchableText(slots: ContractPdfSigningSlot[]) {
+  return slots.map((slot) => `${slot.title}\n${slot.label}\n${slot.keyword}`);
+}
+
+function findSlotKeyword(slots: ContractPdfSigningSlot[], slotId: ContractPdfSigningSlotId) {
+  return slots.find((slot) => slot.slotId === slotId)?.keyword.trim() ?? "";
+}
+
+function countOccurrences(text: string, keyword: string) {
+  if (!keyword) {
+    return 0;
+  }
+
+  let count = 0;
+  let index = 0;
+  while (index <= text.length) {
+    const found = text.indexOf(keyword, index);
+    if (found === -1) {
+      break;
+    }
+    count += 1;
+    index = found + keyword.length;
+  }
+  return count;
 }
 
 function validatePdfBuffer(buffer: Buffer, maxBytes: number) {

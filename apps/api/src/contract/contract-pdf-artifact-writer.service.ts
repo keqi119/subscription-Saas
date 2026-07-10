@@ -3,7 +3,14 @@ import path from "node:path";
 
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
-import { ContractPdfRenderModel, ContractPdfValue } from "./contract-pdf-render-model";
+import {
+  ContractPdfRenderModel,
+  ContractPdfSigningSlot,
+  ContractPdfSigningSlotId,
+  ContractPdfValue,
+  STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS,
+  STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS
+} from "./contract-pdf-render-model";
 import { ContractPdfRendererService } from "./contract-pdf-renderer.service";
 import {
   CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE,
@@ -111,16 +118,12 @@ function validateExistingFile(input: ContractPdfArtifactWriteInput) {
 
 function validateAnchorUniqueness(model: ContractPdfRenderModel): ContractPdfArtifactAnchorOccurrences {
   const text = buildRenderModelSearchableText(model);
-  const platformKeyword = model.signingAnchors.platformSealKeyword.trim();
-  const customerKeyword = model.signingAnchors.customerSignatureKeyword.trim();
-  const occurrences = {
-    customerSignatureKeyword: countOccurrences(text, customerKeyword),
-    platformSealKeyword: countOccurrences(text, platformKeyword)
-  };
+  validateStage1SigningSlotDefinitions(model.signingSlots);
+  const occurrences = buildStage1SlotOccurrences(text, model.signingSlots);
 
-  if (occurrences.platformSealKeyword !== 1 || occurrences.customerSignatureKeyword !== 1) {
+  if (STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.some((slotId) => occurrences.stage1SigningSlots[slotId] !== 1)) {
     throw new Error(
-      `${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: signing anchors must appear exactly once in the render model`
+      `${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: Stage 1 signing slots must appear exactly once in the render model`
     );
   }
 
@@ -134,8 +137,11 @@ function validateRenderDiagnostics(diagnostics: ContractPdfArtifactDiagnostics["
   if (!diagnostics.hasAppendix) {
     throw new Error(`${CONTRACT_PDF_ARTIFACT_APPENDIX_MISSING}: renderer did not confirm appendix`);
   }
-  if (!diagnostics.hasPlatformSealKeyword || !diagnostics.hasCustomerSignatureKeyword) {
-    throw new Error(`${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm signing anchors`);
+  if (!diagnostics.hasPlatformSealKeyword || !diagnostics.hasCustomerSignatureKeyword || !diagnostics.hasStage1SigningSlots) {
+    throw new Error(`${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm Stage 1 signing slots`);
+  }
+  if (STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.some((slotId) => diagnostics.stage1SigningSlotOccurrences[slotId] !== 1)) {
+    throw new Error(`${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm Stage 1 slots`);
   }
 }
 
@@ -165,9 +171,53 @@ function buildRenderModelSearchableText(model: ContractPdfRenderModel) {
       section.title,
       ...section.rows.flatMap((row) => [row.label, formatValue(row.value)])
     ]),
-    model.signingAnchors.platformSealKeyword,
-    model.signingAnchors.customerSignatureKeyword
+    ...buildSigningSlotSearchableText(model.signingSlots)
   ].join("\n");
+}
+
+function validateStage1SigningSlotDefinitions(slots: ContractPdfSigningSlot[]) {
+  for (const slotId of STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS) {
+    const matchingSlots = slots.filter((slot) => slot.slotId === slotId);
+    if (matchingSlots.length !== 1) {
+      throw new Error(`${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: ${slotId} must appear exactly once`);
+    }
+
+    const actual = matchingSlots[0]!;
+    const expected = STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.find((slot) => slot.slotId === slotId)!;
+    if (
+      actual.documentType !== expected.documentType ||
+      actual.keyword !== expected.keyword ||
+      actual.signerRole !== expected.signerRole ||
+      actual.stage !== expected.stage
+    ) {
+      throw new Error(`${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: ${slotId} does not match approved Stage 1 slot`);
+    }
+  }
+}
+
+function buildStage1SlotOccurrences(text: string, slots: ContractPdfSigningSlot[]): ContractPdfArtifactAnchorOccurrences {
+  return {
+    stage1SigningSlots: {
+      STAGE1_ATTACHMENT1_CUSTOMER: countOccurrences(
+        text,
+        findSlotKeyword(slots, "STAGE1_ATTACHMENT1_CUSTOMER")
+      ),
+      STAGE1_ATTACHMENT1_PLATFORM: countOccurrences(
+        text,
+        findSlotKeyword(slots, "STAGE1_ATTACHMENT1_PLATFORM")
+      ),
+      STAGE1_BODY_CUSTOMER: countOccurrences(text, findSlotKeyword(slots, "STAGE1_BODY_CUSTOMER")),
+      STAGE1_BODY_PLATFORM: countOccurrences(text, findSlotKeyword(slots, "STAGE1_BODY_PLATFORM"))
+    }
+  };
+}
+
+function buildSigningSlotSearchableText(slots: ContractPdfSigningSlot[]) {
+  return slots.map((slot) => `${slot.title}\n${slot.label}\n${slot.keyword}`);
+}
+
+function findSlotKeyword(slots: ContractPdfSigningSlot[], slotId: ContractPdfSigningSlotId) {
+  return slots.find((slot) => slot.slotId === slotId)?.keyword.trim() ?? "";
 }
 
 function formatValue(value: ContractPdfValue) {

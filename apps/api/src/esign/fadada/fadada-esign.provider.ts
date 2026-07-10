@@ -35,10 +35,17 @@ export const FADADA_STAGE1_MULTI_SLOT_MAPPING_NOT_IMPLEMENTED =
 export const FADADA_STAGE1_CUSTOMER_SLOT_MISSING = "FADADA_STAGE1_CUSTOMER_SLOT_MISSING";
 export const FADADA_STAGE1_CUSTOMER_SLOT_COORDINATES_MISSING =
   "FADADA_STAGE1_CUSTOMER_SLOT_COORDINATES_MISSING";
+export const FADADA_STAGE1_PLATFORM_SLOT_MISSING = "FADADA_STAGE1_PLATFORM_SLOT_MISSING";
+export const FADADA_STAGE1_PLATFORM_SLOT_COORDINATES_MISSING =
+  "FADADA_STAGE1_PLATFORM_SLOT_COORDINATES_MISSING";
 
 const STAGE1_CUSTOMER_SLOT_IDS: ESignSlotId[] = [
   "STAGE1_BODY_CUSTOMER",
   "STAGE1_ATTACHMENT1_CUSTOMER"
+];
+const STAGE1_PLATFORM_SLOT_IDS: ESignSlotId[] = [
+  "STAGE1_BODY_PLATFORM",
+  "STAGE1_ATTACHMENT1_PLATFORM"
 ];
 
 export class FadadaESignProvider implements ESignProvider {
@@ -234,6 +241,9 @@ export class FadadaESignProvider implements ESignProvider {
     if (!this.apiClient) {
       throw new Error(`${FADADA_PROVIDER_DEPENDENCY_MISSING}: Fadada auto seal dependencies are not wired`);
     }
+    if (input.signingStage === "STAGE1_CONTRACT" || (input.signingSlots?.length ?? 0) > 0) {
+      return this.autoSealStage1PlatformSlots(input);
+    }
     const providerContractId = input.providerEnvelopeId ?? input.taskNo;
     const platformCustomerId = input.platformCustomerId ?? this.config.platformCustomerId;
     const platformSignatureId = input.platformSignatureId ?? this.config.platformSignatureId ?? input.sealId;
@@ -260,6 +270,54 @@ export class FadadaESignProvider implements ESignProvider {
       rawResponse: result.raw,
       resultCode: result.resultCode,
       resultDescription: result.resultDesc,
+      status: completed ? "COMPLETED" : "FAILED"
+    };
+  }
+
+  private async autoSealStage1PlatformSlots(input: AutoSealTaskInput): Promise<AutoSealTaskResult> {
+    if (!this.apiClient) {
+      throw new Error(`${FADADA_PROVIDER_DEPENDENCY_MISSING}: Fadada auto seal dependencies are not wired`);
+    }
+    const platformSlots = resolveStage1PlatformSlots(input);
+    const providerContractId = input.providerEnvelopeId ?? input.taskNo;
+    const platformCustomerId = input.platformCustomerId ?? this.config.platformCustomerId;
+    const platformSignatureId = input.platformSignatureId ?? this.config.platformSignatureId ?? input.sealId;
+    if (!platformCustomerId || !platformSignatureId) {
+      throw new Error(`${FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING}: platform customer and signature IDs are required`);
+    }
+
+    const signaturePositions = platformSlots.map((slot) => {
+      const coordinate = findSlotCoordinate(input.signingSlotCoordinates, slot.slotId);
+      if (!coordinate) {
+        throw new Error(`${FADADA_STAGE1_PLATFORM_SLOT_COORDINATES_MISSING}: ${slot.slotId}`);
+      }
+      return {
+        pagenum: coordinate.pageNumber,
+        x: coordinate.x,
+        y: coordinate.y
+      };
+    });
+
+    const result = await this.apiClient.autoSealContract({
+      contractId: providerContractId,
+      customerId: platformCustomerId,
+      docTitle: input.documentName,
+      notifyUrl: input.callbackUrl ?? this.config.signNotifyUrl,
+      signatureId: platformSignatureId,
+      signaturePositions,
+      transactionId: input.transactionId
+    });
+    const completed = isSuccessfulAutoSealResult(result.resultCode);
+
+    return {
+      coveredSlotIds: STAGE1_PLATFORM_SLOT_IDS,
+      providerActionType: "PLATFORM_AUTO_SEAL",
+      providerSignerId: result.transactionId,
+      providerTransactionId: result.transactionId,
+      rawResponse: result.raw,
+      resultCode: result.resultCode,
+      resultDescription: result.resultDesc,
+      signingStage: "STAGE1_CONTRACT",
       status: completed ? "COMPLETED" : "FAILED"
     };
   }
@@ -372,6 +430,24 @@ function resolveStage1CustomerSlots(input: CreateSignTaskInput) {
   });
 
   return customerSlots;
+}
+
+function resolveStage1PlatformSlots(input: AutoSealTaskInput) {
+  const slots = input.signingSlots ?? [];
+  const platformSlots = STAGE1_PLATFORM_SLOT_IDS.map((slotId) => {
+    const slot = slots.find((item) =>
+      item.slotId === slotId &&
+      item.signingStage === "STAGE1_CONTRACT" &&
+      item.providerActionType === "PLATFORM_AUTO_SEAL" &&
+      item.signerRole === "PLATFORM"
+    );
+    if (!slot) {
+      throw new Error(`${FADADA_STAGE1_PLATFORM_SLOT_MISSING}: ${slotId}`);
+    }
+    return slot;
+  });
+
+  return platformSlots;
 }
 
 function findSlotCoordinate(

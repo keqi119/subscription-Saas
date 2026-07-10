@@ -183,6 +183,11 @@ Representative document categories to check:
 | Customer `extsign.api` request includes exactly two coordinate `signature_positions` | TBD |
 | Customer `signature_positions` are sourced from generated artifact diagnostics, not recalculated | TBD |
 | Platform provider transaction covers both platform slot rows | TBD |
+| Platform auto seal is triggered only after both customer slot rows are signed | TBD |
+| Platform `extsign_auto.api` request includes `position_type=1` | TBD |
+| Platform `extsign_auto.api` request includes explicit `signature_id` | TBD |
+| Platform `extsign_auto.api` request includes exactly two coordinate `signature_positions` | TBD |
+| Platform `signature_positions` are sourced from generated artifact diagnostics, not recalculated | TBD |
 | Callback updates only rows with matching provider `transaction_id` | TBD |
 | Partial slot completion leaves task non-completed | TBD |
 | Task completes only after all required slot rows are signed | TBD |
@@ -191,9 +196,9 @@ Representative document categories to check:
 Expected Stage 1 provider mapping:
 
 - customer: one `extsign.api` transaction with two coordinate `signature_positions` from generated PDF artifact diagnostics
-- platform: one future `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`
+- platform: one `extsign_auto.api` transaction with `position_type=1`, two coordinate `signature_positions` from generated PDF artifact diagnostics, and explicit `signature_id`
 
-`ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Customer coordinate mapping alone does not prove that the full customer/platform Stage 1 multi-position flow has passed sandbox validation. Platform auto-seal mapping remains future work, and archive/final completion must stay blocked until all required slot rows are signed.
+`ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Stage 1 platform auto-seal also requires `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true`. Provider-side customer/platform mapping being implemented does not prove production readiness; the complete customer signing, platform auto-seal, callback, final PDF, and archive flow must pass sandbox validation before production enablement.
 
 ## 9. Final Signed PDF Archive
 

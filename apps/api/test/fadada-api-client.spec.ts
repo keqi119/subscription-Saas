@@ -409,6 +409,59 @@ describe("Fadada API client", () => {
     expect(String(request?.body)).not.toContain("secret-xyz");
   });
 
+  it("builds coordinate-based auto-sign request with two platform signature positions", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: "1000",
+        msg: "success",
+        result: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.autoSealContract({
+      contractId: "CON-1",
+      customerId: "platform-customer-1",
+      docTitle: "Contract.pdf",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      signaturePositions: [
+        { pagenum: 0, x: 521, y: 731 },
+        { pagenum: 2, x: 523, y: 733 }
+      ],
+      signatureId: "platform-signature-1",
+      transactionId: "TX2"
+    });
+
+    expect(result).toMatchObject({
+      contractId: "CON-1",
+      resultCode: "1000",
+      transactionId: "TX2"
+    });
+    const request = vi.mocked(transport).mock.calls[0]?.[0];
+    const params = new URLSearchParams(String(request?.body));
+    expect(request?.url).toBe("https://testapi.fadada.com:8443/api/extsign_auto.api");
+    expect(params.get("transaction_id")).toBe("TX2");
+    expect(params.get("signature_id")).toBe("platform-signature-1");
+    expect(params.get("position_type")).toBe("1");
+    expect(params.get("sign_keyword")).toBeNull();
+    expect(params.get("signature_positions")).toBe(JSON.stringify([
+      { pagenum: 0, x: 521, y: 731 },
+      { pagenum: 2, x: 523, y: 733 }
+    ]));
+    expect(params.get("signature_positions")).not.toContain("520");
+    expect(params.get("signature_positions")).not.toContain("522");
+    expect(params.get("msg_digest")).toBe(buildFadadaMsgDigestFromParts({
+      appId: "app-123",
+      appSecret: "secret-xyz",
+      md5Seed: `TX2${params.get("timestamp")}`,
+      secretSortString: "platform-customer-1"
+    }));
+    expect(String(request?.body)).not.toContain("sign_keyword");
+    expect(String(request?.body)).not.toContain("secret-xyz");
+  });
+
   it("queries sign result and keeps provider URLs inside the raw response only", async () => {
     const transport: FadadaTransport = vi.fn(async () => ({
       bodyText: JSON.stringify({

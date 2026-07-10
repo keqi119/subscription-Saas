@@ -587,6 +587,80 @@ describe("Fadada provider B2-A flow", () => {
     });
   });
 
+  it("maps Stage 1 platform slots to one coordinate-based auto-seal transaction", async () => {
+    const apiClient = {
+      autoSealContract: vi.fn(async () => ({
+        contractId: "ESG-1",
+        raw: { code: "1000" },
+        resultCode: "1000",
+        resultDesc: "success",
+        transactionId: "ESG1S2"
+      }))
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
+      FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1"
+    })), apiClient as never);
+
+    const result = await provider.autoSealTask?.({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      providerEnvelopeId: "ESG-1",
+      signingSlotCoordinates: stage1SlotCoordinates(),
+      signingSlots: stage1SigningSlots(),
+      signingStage: "STAGE1_CONTRACT",
+      taskId: "task-1",
+      taskNo: "ESG-1",
+      transactionId: "ESG1S2"
+    } as never);
+
+    expect(apiClient.autoSealContract).toHaveBeenCalledWith(expect.objectContaining({
+      contractId: "ESG-1",
+      customerId: "platform-customer-1",
+      docTitle: "Contract.pdf",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      signatureId: "platform-signature-1",
+      signaturePositions: [
+        { pagenum: 0, x: 521, y: 731 },
+        { pagenum: 2, x: 523, y: 733 }
+      ],
+      transactionId: "ESG1S2"
+    }));
+    expect(result).toMatchObject({
+      coveredSlotIds: ["STAGE1_BODY_PLATFORM", "STAGE1_ATTACHMENT1_PLATFORM"],
+      providerActionType: "PLATFORM_AUTO_SEAL",
+      providerSignerId: "ESG1S2",
+      providerTransactionId: "ESG1S2",
+      status: "COMPLETED"
+    });
+  });
+
+  it("rejects Stage 1 platform auto seal before provider calls when platform coordinates are missing", async () => {
+    const apiClient = {
+      autoSealContract: vi.fn()
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
+      FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1"
+    })), apiClient as never);
+
+    await expect(provider.autoSealTask?.({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      providerEnvelopeId: "ESG-1",
+      signingSlotCoordinates: stage1SlotCoordinates().filter((coordinate) =>
+        coordinate.slotId !== "STAGE1_ATTACHMENT1_PLATFORM"
+      ),
+      signingSlots: stage1SigningSlots(),
+      signingStage: "STAGE1_CONTRACT",
+      taskId: "task-1",
+      taskNo: "ESG-1",
+      transactionId: "ESG1S2"
+    } as never)).rejects.toThrow(/FADADA_STAGE1_PLATFORM_SLOT_COORDINATES_MISSING/);
+    expect(apiClient.autoSealContract).not.toHaveBeenCalled();
+  });
+
   it("fails auto seal safely when platform seal positioning is missing", async () => {
     const apiClient = {
       autoSealContract: vi.fn()

@@ -320,6 +320,7 @@ export class FadadaApiClient {
     docTitle?: string;
     notifyUrl?: string;
     placement?: AutoSealPlacement;
+    signaturePositions?: FadadaManualSignPosition[];
     signatureId: string;
     transactionId: string;
   }): Promise<{
@@ -335,7 +336,7 @@ export class FadadaApiClient {
       businessParams: {
         contract_id: input.contractId,
         customer_id: input.customerId,
-        ...toFadadaAutoSealPlacementParams(input.placement),
+        ...toFadadaAutoSealPlacementParams(input.placement, input.signaturePositions),
         signature_id: input.signatureId,
         transaction_id: input.transactionId,
         ...(input.docTitle ? { doc_title: input.docTitle } : {}),
@@ -490,7 +491,16 @@ export class FadadaApiClient {
   }
 }
 
-function toFadadaAutoSealPlacementParams(placement?: AutoSealPlacement) {
+function toFadadaAutoSealPlacementParams(
+  placement?: AutoSealPlacement,
+  signaturePositions?: FadadaManualSignPosition[]
+) {
+  if (signaturePositions !== undefined) {
+    return {
+      position_type: "1",
+      signature_positions: JSON.stringify(normalizeManualSignPositions(signaturePositions))
+    };
+  }
   if (!placement) {
     return {};
   }

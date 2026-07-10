@@ -130,16 +130,23 @@ export interface AutoSealTaskInput {
   platformSignatureId?: string;
   providerEnvelopeId?: string;
   sealId?: string;
+  signingSlotCoordinates?: ESignSigningSlotCoordinate[];
+  signingSlots?: ESignSigningSlot[];
+  signingStage?: ESignSigningStage;
   taskId?: string;
   taskNo: string;
   transactionId: string;
 }
 
 export interface AutoSealTaskResult {
+  coveredSlotIds?: ESignSlotId[];
+  providerActionType?: ESignProviderActionType;
   providerSignerId?: string;
+  providerTransactionId?: string;
   rawResponse?: unknown;
   resultCode?: string;
   resultDescription?: string;
+  signingStage?: ESignSigningStage;
   status: "COMPLETED" | "PENDING" | "FAILED";
 }
 

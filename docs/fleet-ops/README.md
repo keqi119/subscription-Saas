@@ -18,6 +18,10 @@ This directory contains the architecture source, current review conclusion, and 
 
 \- docs/fleet-ops/next-stage/codex_workflow_rules.md: Codex branch, build, verify, recovery, and local commit governance rules
 
+- [Work Mode handover record](next-stage/work_mode_handover.md): Dated repository baseline, source precedence, approval gates, offline-safe verification scope, and current Fleet Ops / contract-e-sign readiness.
+
+- [Work Mode handover implementation plan](next-stage/work_mode_handover_plan.md): Docs-only preparation plan and the gated follow-up sequence for dependency setup, verification, provider-document intake, and review.
+
 \- next-stage/p2_pool_overview_design.md: P2-H1 pool overview and dynamic cohort design. It moves Fleet Ops from single-vehicle diagnostic toward pool/cohort overview, anomaly ranking, vehicle list, and single-vehicle drilldown while keeping P3 saved custom views deferred pending P2 effectiveness.
 
 \- runbooks/staging-smoke.md: P1-H11 staging enablement and smoke runbook for the read-only Fleet Ops API/UI after P1-H10.1 or newer. Use it to enable `FLEET_OPS_API_ENABLED=true`, run the existing access sync command when an existing DB lacks Fleet Ops access, verify ADMIN / OP / GM access, and confirm Fleet Ops remains read-only.

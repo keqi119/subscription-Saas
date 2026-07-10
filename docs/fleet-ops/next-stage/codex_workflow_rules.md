@@ -6,7 +6,14 @@ This document standardizes how Codex should prepare branches, execute Fleet Ops 
 
 These rules apply to Fleet Ops planning, build, verify, recovery, and local commit tasks.
 
-## 2. Source-of-truth Document Order
+## 2. Source-of-truth Documents And Precedence
+
+Resolve the active checkout before reading repository documents:
+
+```text
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+```
 
 Codex must read these documents before branch prep, build, verify, or local commit work:
 
@@ -16,9 +23,17 @@ Codex must read these documents before branch prep, build, verify, or local comm
 4. `docs/fleet-ops/next-stage/agents.md`
 5. `docs/fleet-ops/next-stage/codex_tasks.md`
 6. `docs/fleet-ops/next-stage/codex_workflow_rules.md`
-7. `docs/fleet-ops/README.md`
+7. `docs/fleet-ops/next-stage/work_mode_handover.md`
+8. `docs/fleet-ops/README.md`
 
 If any required source-of-truth document is missing, stop and report the missing file before making changes.
+
+The list above is required context, not a freshness ranking. Explicit task scope
+and user approvals control allowed actions. Current code, tests, configuration,
+and the newest dated completion or closeout record control current-state claims.
+Active specifications control intended constraints. Older plans, reviews, and
+task prompts remain historical evidence and must not override newer implemented
+or completed state.
 
 ## 3. Required Work Phases
 
@@ -282,7 +297,9 @@ Reports must distinguish verified facts from assumptions or network notes.
 Future Fleet Ops tasks may use this compact preamble:
 
 ```text
-You are working in D:\Projects\auto-subscription-platform.
+Resolve the active checkout before reading or changing files:
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
 Read and follow:
 - docs/fleet-ops/source/plan_design.md
@@ -291,6 +308,7 @@ Read and follow:
 - docs/fleet-ops/next-stage/agents.md
 - docs/fleet-ops/next-stage/codex_tasks.md
 - docs/fleet-ops/next-stage/codex_workflow_rules.md
+- docs/fleet-ops/next-stage/work_mode_handover.md
 - docs/fleet-ops/README.md
 
 Branch policy:

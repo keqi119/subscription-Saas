@@ -12,25 +12,63 @@ explicitly asks for it.
 
 ## Source Of Truth
 
-1. Read `DEV_SPEC.md` before modifying business logic.
-2. Treat the current local workspace under `D:\Projects\auto-subscription-platform` as the working baseline.
-3. Do not use the old OneDrive project directory.
-4. Do not delete existing features, `ProductPriceRule`, legacy quote fields, or `RENT_TO_OWN`.
-5. Work in small, reviewable increments and keep unrelated changes out of scope.
+1. Resolve the active checkout with `git rev-parse --show-toplevel`; never assume a drive, home directory, or stale project copy.
+2. Read `DEV_SPEC.md` before modifying business logic.
+3. Use this precedence when sources disagree:
+   - explicit task scope and user approvals define what actions are allowed;
+   - current code, schema, tests, and configuration define implemented behavior;
+   - the newest dated completion, closeout, or approval record defines verified delivery state;
+   - active specifications define intended constraints;
+   - older plans, reviews, prompts, and design documents are historical evidence, not proof of current behavior.
+4. Do not rewrite historical records to make them look current. Record superseding evidence in a new dated document and link both records.
+5. Contract/e-sign legal text must come from an approved legal source, and provider semantics must come from the original provider documentation. If either source is unavailable or conflicts with current code, stop and report the gap.
+6. Do not delete existing features, `ProductPriceRule`, legacy quote fields, or `RENT_TO_OWN`.
+7. Work in small, reviewable increments and keep unrelated changes out of scope.
 
 ## Required Preflight
 
-Before each development round, run and record:
+Before each work round, resolve the checkout and run the repository-only safety gate:
 
-```powershell
-git status --short
-pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma
-pnpm prisma:validate
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+git branch --show-current
+git status --short --branch --untracked-files=all
+git rev-parse HEAD
+git diff --name-status
+git diff --check
 ```
 
-If migration status fails or reports pending migrations, stop and report the
-exact state before changing business code. Never run `prisma migrate reset`
-unless the user explicitly approves it.
+Before editing, declare the task phase and branch policy: base branch, expected
+branch, whether a new or existing branch is required, whether stacking is
+allowed, and whether push is allowed. Stop if the branch is wrong, the tree
+contains unexpected changes, or the approved file list is unclear.
+
+Database, migration, seed, smoke, and provider preflights are conditional. Run
+them only when the task explicitly requires them and the environment is
+explicitly authorized for that access. A real database URL, provider credential,
+or feature flag in the environment is not permission to use it. Otherwise record
+the check as not run and explain the environment or approval blocker. Never run
+`prisma migrate reset` or `prisma db push` against shared or production data.
+
+## Work-Mode Safety Gates
+
+- Modify only approved paths. Re-run `git status`, `git diff --name-status`,
+  `git diff --stat`, and `git diff --check` before review and commit.
+- Stage explicit file paths only. Do not use `git add .`, `git add -A`, or
+  `git commit -a`.
+- Do not push, create a pull request, merge, or deploy unless the user explicitly
+  authorizes that remote action. A request for a local commit does not authorize
+  any remote action.
+- Do not connect to a real database, run a migration or seed, enable a feature
+  flag, or call a real provider unless both the task and target environment are
+  explicitly authorized.
+- Fleet Ops must remain internal, protected by `fleet_ops:read`, controlled by
+  `FLEET_OPS_API_ENABLED`, and read-only at its public controller boundary unless
+  a separately approved design changes those invariants.
+- Never invent contract/e-sign legal text, credentials, customer PII, seal IDs,
+  provider parameters, or provider callback/retry/billing semantics. Use approved
+  originals, redact sensitive evidence, and stop when required evidence is absent.
 
 ## Business Rules
 

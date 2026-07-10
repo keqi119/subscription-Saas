@@ -30,6 +30,8 @@ This checklist must be completed before enabling enterprise auto seal in product
 - [ ] `extsign_auto.api` success handling treats only documented success code `1000` as auto-sign success.
 - [ ] `query_sign_result.api` calls include `customer_id`, `contract_id`, and `transaction_id`.
 - [ ] Unknown or mismatched Fadada callback `transaction_id` values are isolated and do not mutate tasks.
+- [ ] Stage 1 slot completion evidence shows callbacks update only rows covered by the matching provider `transaction_id`.
+- [ ] Fadada Stage 1 slot-aware requests are rejected before upload until real `signature_positions` mapping is implemented and sandbox-proven.
 
 Representative local Fadada docs to check before modifying or enabling related behavior:
 
@@ -44,6 +46,7 @@ Representative local Fadada docs to check before modifying or enabling related b
 ## Application Prerequisites
 
 - [ ] `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED` remains false before go/no-go.
+- [ ] `ESIGN_STAGE1_MULTI_SLOT_ENABLED` remains false until provider multi-position mapping and sandbox proof are complete.
 - [ ] API typecheck passes.
 - [ ] API lint passes.
 - [ ] Focused e-sign/Fadada/archive/order tests pass.
@@ -94,6 +97,8 @@ keyy=0
 - [ ] Platform auto seal success evidence shows provider code `1000`.
 - [ ] Unknown transaction callback does not advance signer, task, contract, or order state.
 - [ ] Known transaction callback with mismatched `contract_id` does not advance signer, task, contract, or order state.
+- [ ] Local Stage 1 slot callbacks update only rows sharing the matching provider transaction id.
+- [ ] Stage 1 task completion waits for all required slot rows to be signed.
 - [ ] Final PDF shows customer signature and company seal.
 - [ ] Archive works only after both signers complete.
 - [ ] Duplicate callback is idempotent.
@@ -120,6 +125,8 @@ Any of the following means production enablement must stop:
 - Generated PDF contains garbled Chinese.
 - Generated PDF is image-only or not searchable.
 - Provider multi-position mapping for Stage 1 slots has not been checked against local Fadada docs.
+- `ESIGN_STAGE1_MULTI_SLOT_ENABLED` is enabled before Fadada customer/platform `signature_positions` mapping is implemented and sandbox-proven.
+- Local Stage 1 slot completion can complete a task before all required slot rows are signed.
 - Provider transaction IDs contain punctuation, Chinese characters, or exceed 32 characters.
 - Auto-sign success evidence is missing provider code `1000`.
 - `query_sign_result.api` evidence was collected without `customer_id`.

@@ -34,6 +34,45 @@ describe("Fadada provider configuration", () => {
 });
 
 describe("Fadada provider B2-A flow", () => {
+  it("rejects Stage 1 slot-aware input before upload because multi-position mapping is not implemented", async () => {
+    const apiClient = {
+      createExternalSignUrl: vi.fn(),
+      uploadDocs: vi.fn()
+    };
+    const pdfArtifactService = {
+      getContractPdfArtifact: vi.fn()
+    };
+    const provider = new FadadaESignProvider(loadFadadaConfig(configService({
+      FADADA_FULL_SIGNING_SMOKE: "1",
+      FADADA_TEST_CUSTOMER_ID: "fadada-provider-customer-1",
+      FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1"
+    })), apiClient as never, pdfArtifactService as never);
+
+    await expect(provider.createSignTask({
+      callbackUrl: "https://api.example.test/esign/callback/fadada",
+      contractId: "contract-1",
+      documentName: "Contract.pdf",
+      redirectUrl: "https://app.example.test/portal/contracts/contract-1",
+      signers: [{ customerId: "customer-1", name: "Customer", phone: "13800000000", signerType: "CUSTOMER" }],
+      signingStage: "STAGE1_CONTRACT",
+      signingSlots: [{
+        documentType: "CONTRACT_BODY",
+        keyword: "合同正文-订阅方签字",
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        required: true,
+        signerRole: "CUSTOMER",
+        signingStage: "STAGE1_CONTRACT",
+        slotId: "STAGE1_BODY_CUSTOMER"
+      }],
+      taskId: "task-1",
+      taskNo: "ESG-1"
+    })).rejects.toThrow(/FADADA_STAGE1_MULTI_SLOT_MAPPING_NOT_IMPLEMENTED/);
+
+    expect(pdfArtifactService.getContractPdfArtifact).not.toHaveBeenCalled();
+    expect(apiClient.uploadDocs).not.toHaveBeenCalled();
+    expect(apiClient.createExternalSignUrl).not.toHaveBeenCalled();
+  });
+
   it("rejects createSignTask before upload when provider customer id is unavailable", async () => {
     const apiClient = {
       createExternalSignUrl: vi.fn(),

@@ -237,6 +237,10 @@ The Fadada protocol foundation now enforces safe provider transaction IDs and en
 
 Future Stage 1 provider mapping remains separate from PDF generation. The intended mapping is one customer `extsign.api` transaction with two `signature_positions`, plus one platform `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`. This has not been enabled by the PDF artifact foundation alone.
 
+The local e-sign task model now has a guarded Stage 1 slot completion foundation behind `ESIGN_STAGE1_MULTI_SLOT_ENABLED`, which defaults to false. When enabled by a future provider-mapping build, multiple local slot rows may share one provider transaction id, callbacks update only rows with the matching transaction id, and final completion/archive remain blocked until all required slot rows are signed.
+
+The current Fadada provider still rejects Stage 1 slot-aware input before upload because real `signature_positions` request mapping remains future work. Do not enable the Stage 1 multi-slot flag in production before the customer `extsign.api` and platform `extsign_auto.api` multi-position payloads are implemented and sandbox-proven.
+
 ## Current Foundation Boundary
 
 This renderer foundation does:

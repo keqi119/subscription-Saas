@@ -12,7 +12,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { RequestUser } from "../src/auth/auth.types";
-import { ESignProvider } from "../src/esign/esign.provider";
+import { ESignProvider, ESignProviderActionResult } from "../src/esign/esign.provider";
 import { ESignService } from "../src/esign/esign.service";
 import type {
   ApprovedSigningPlanRef,
@@ -90,6 +90,171 @@ describe("ESignService", () => {
       signerStatus: ESignSignerStatus.SIGNING,
       signUrl: "https://sign.example.test/customer"
     });
+  });
+
+  it("keeps legacy provider input when Stage 1 multi-slot flag is disabled", async () => {
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async (input) => ({
+        providerEnvelopeId: input.taskNo,
+        providerTaskId: buildTestTransactionId(input.taskNo, 1),
+        signUrl: "https://sign.example.test/customer"
+      })),
+      getSignerUrl: vi.fn(),
+      verifyCallback: vi.fn()
+    };
+    const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
+
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    expect(provider.createSignTask).toHaveBeenCalledWith(expect.not.objectContaining({
+      signingSlots: expect.anything()
+    }));
+    expect(state.signers).toHaveLength(1);
+    expect(state.signers[0]!.snapshot).not.toMatchObject({
+      signingStage: "STAGE1_CONTRACT"
+    });
+  });
+
+  it("creates Stage 1 slot rows from slot-capable provider results", async () => {
+    const provider = stage1SlotProvider();
+    const { service, state } = createESignFixture({
+      ESIGN_PROVIDER: "fadada",
+      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+    }, provider);
+
+    const result = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    expect(result.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
+      signingStage: "STAGE1_CONTRACT",
+      signingSlots: expect.arrayContaining([
+        expect.objectContaining({ slotId: "STAGE1_BODY_CUSTOMER" }),
+        expect.objectContaining({ slotId: "STAGE1_BODY_PLATFORM" }),
+        expect.objectContaining({ slotId: "STAGE1_ATTACHMENT1_CUSTOMER" }),
+        expect.objectContaining({ slotId: "STAGE1_ATTACHMENT1_PLATFORM" })
+      ])
+    }));
+    expect(state.signers).toHaveLength(4);
+    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toHaveLength(2);
+    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)).toHaveLength(2);
+    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toHaveLength(2);
+    expect(state.signers.filter((signer) => signer.providerSignerId === "PLATS1")).toHaveLength(2);
+    expect(state.signers.find((signer) => readSnapshotField(signer.snapshot, "slotId") === "STAGE1_BODY_CUSTOMER")).toMatchObject({
+      signerStatus: ESignSignerStatus.SIGNING,
+      signUrl: "https://sign.example.test/customer-stage1"
+    });
+    expect(state.signers.find((signer) => readSnapshotField(signer.snapshot, "slotId") === "STAGE1_ATTACHMENT1_PLATFORM")).toMatchObject({
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(state.signers.map((signer) => signer.snapshot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        documentType: "CONTRACT_BODY",
+        keyword: "合同正文-订阅方签字",
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerTransactionId: "CUSTS1",
+        signingStage: "STAGE1_CONTRACT",
+        slotId: "STAGE1_BODY_CUSTOMER"
+      }),
+      expect.objectContaining({
+        documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+        keyword: "附件1订阅方案-服务提供方盖章",
+        providerActionType: "PLATFORM_AUTO_SEAL",
+        providerTransactionId: "PLATS1",
+        signingStage: "STAGE1_CONTRACT",
+        slotId: "STAGE1_ATTACHMENT1_PLATFORM"
+      })
+    ]));
+  });
+
+  it("completes Stage 1 slot rows by provider transaction before completing the task", async () => {
+    const provider = stage1SlotProvider();
+    const { service, state } = createESignFixture({
+      ESIGN_PROVIDER: "fadada",
+      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+    }, provider);
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const customerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "CUSTS1"
+    }));
+    const customerSignedAt = state.signers.find((signer) => signer.providerSignerId === "CUSTS1")!.signedAt;
+    const duplicateCustomerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "CUSTS1"
+    }));
+
+    expect(customerResult).toMatchObject({ handled: true });
+    expect(duplicateCustomerResult).toMatchObject({ handled: true });
+    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED, signedAt: customerSignedAt }),
+      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED, signedAt: customerSignedAt })
+    ]));
+    expect(state.signers.filter((signer) => signer.providerSignerId === "PLATS1")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ signerStatus: ESignSignerStatus.PENDING }),
+      expect.objectContaining({ signerStatus: ESignSignerStatus.PENDING })
+    ]));
+    expect(state.tasks[0]).toMatchObject({
+      completedAt: null,
+      taskStatus: ESignTaskStatus.SIGNING
+    });
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+
+    const platformResult = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "PLATS1"
+    }));
+
+    expect(platformResult).toMatchObject({ handled: true });
+    expect(state.signers.every((signer) => signer.signerStatus === ESignSignerStatus.SIGNED)).toBe(true);
+    expect(state.tasks[0]).toMatchObject({
+      completedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(state.contracts[0]).toMatchObject({
+      signedAt: expect.any(Date),
+      status: ContractStatus.SIGNED
+    });
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("keeps Stage 1 slot rows unchanged for unknown or mismatched callbacks", async () => {
+    const provider = stage1SlotProvider();
+    const { service, state } = createESignFixture({
+      ESIGN_PROVIDER: "fadada",
+      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+    }, provider);
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    const before = state.signers.map((signer) => ({
+      providerSignerId: signer.providerSignerId,
+      signedAt: signer.signedAt,
+      signerStatus: signer.signerStatus
+    }));
+
+    const unknown = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "UNKNOWNS1"
+    }));
+    const mismatch = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: "different-provider-contract",
+      resultCode: "3000",
+      transactionId: "CUSTS1"
+    }));
+
+    expect(unknown).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(mismatch).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(state.signers.map((signer) => ({
+      providerSignerId: signer.providerSignerId,
+      signedAt: signer.signedAt,
+      signerStatus: signer.signerStatus
+    }))).toEqual(before);
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
   });
 
   it("preflights the signing PDF before calling the provider when Fadada is enabled", async () => {
@@ -967,6 +1132,14 @@ function createESignFixture(
           task: task ? hydrateTask(state, task) : null
         };
       }),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+        const signer = state.signers.find((item) => item.id === where.id);
+        if (!signer) {
+          throw new Error("signer not found");
+        }
+        Object.assign(signer, data);
+        return signer;
+      }),
       updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
         const rows = state.signers.filter((signer) => matchesWhere(signer, where));
         rows.forEach((signer) => Object.assign(signer, data));
@@ -1203,6 +1376,53 @@ function buildTestTransactionId(taskNo: string, index: number) {
   const suffix = `S${index}`;
   const normalized = taskNo.replace(/[^A-Za-z0-9]/g, "");
   return `${normalized.slice(0, 32 - suffix.length)}${suffix}`;
+}
+
+function readSnapshotField(snapshot: unknown, key: string) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return undefined;
+  }
+  return (snapshot as Record<string, unknown>)[key];
+}
+
+function stage1SlotProvider() {
+  const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
+  return {
+    createSignTask: vi.fn(async (input) => {
+      const actions: ESignProviderActionResult[] = [
+        {
+          coveredSlotIds: ["STAGE1_BODY_CUSTOMER", "STAGE1_ATTACHMENT1_CUSTOMER"],
+          providerActionType: "CUSTOMER_MANUAL_SIGN" as const,
+          providerSignerId: "CUSTS1",
+          providerTransactionId: "CUSTS1",
+          signerType: "CUSTOMER" as const,
+          signingStage: "STAGE1_CONTRACT" as const,
+          signUrl: "https://sign.example.test/customer-stage1",
+          signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
+        },
+        {
+          coveredSlotIds: ["STAGE1_BODY_PLATFORM", "STAGE1_ATTACHMENT1_PLATFORM"],
+          providerActionType: "PLATFORM_AUTO_SEAL" as const,
+          providerSignerId: "PLATS1",
+          providerTransactionId: "PLATS1",
+          signerType: "PLATFORM" as const,
+          signingStage: "STAGE1_CONTRACT" as const
+        }
+      ];
+      return {
+        actions,
+        providerEnvelopeId: input.taskNo,
+        providerTaskId: "CUSTS1",
+        rawResponse: { provider: "fadada", stage1Slots: true },
+        signUrl: "https://sign.example.test/customer-stage1",
+        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
+      };
+    }),
+    getSignerUrl: vi.fn(),
+    verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
+  } satisfies ESignProvider & {
+    createSignTask: ReturnType<typeof vi.fn>;
+  };
 }
 
 function createFadadaESignFixture() {

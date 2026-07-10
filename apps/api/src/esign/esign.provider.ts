@@ -2,6 +2,40 @@ import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.t
 
 export const ESIGN_PROVIDER_CLIENT = Symbol("ESIGN_PROVIDER_CLIENT");
 
+export type ESignSigningStage = "STAGE1_CONTRACT";
+export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN";
+export type ESignSlotId =
+  | "STAGE1_BODY_CUSTOMER"
+  | "STAGE1_BODY_PLATFORM"
+  | "STAGE1_ATTACHMENT1_CUSTOMER"
+  | "STAGE1_ATTACHMENT1_PLATFORM";
+export type ESignSignerRole = "CUSTOMER" | "PLATFORM";
+export type ESignProviderActionType = "CUSTOMER_MANUAL_SIGN" | "PLATFORM_AUTO_SEAL";
+
+export interface ESignSigningSlot {
+  documentType: ESignDocumentType;
+  keyx?: string;
+  keyy?: string;
+  keyword: string;
+  positionType?: "KEYWORD" | "COORDINATE";
+  providerActionType: ESignProviderActionType;
+  required?: boolean;
+  signerRole: ESignSignerRole;
+  signingStage: ESignSigningStage;
+  slotId: ESignSlotId;
+}
+
+export interface ESignProviderActionResult {
+  coveredSlotIds?: ESignSlotId[];
+  providerActionType?: ESignProviderActionType;
+  providerSignerId?: string;
+  providerTransactionId?: string;
+  signUrl?: string;
+  signUrlExpiresAt?: Date;
+  signerType?: ESignSignerRole;
+  signingStage?: ESignSigningStage;
+}
+
 export interface CreateSignTaskInput {
   approvedSigningPlan?: ApprovedSigningPlanRef;
   callbackUrl?: string;
@@ -14,6 +48,8 @@ export interface CreateSignTaskInput {
     phone?: string;
     signerType: "CUSTOMER" | "PLATFORM";
   }>;
+  signingSlots?: ESignSigningSlot[];
+  signingStage?: ESignSigningStage;
   taskId?: string;
   taskNo: string;
 }
@@ -23,14 +59,21 @@ export interface CreateSignTaskResult {
   providerEnvelopeId?: string;
   providerTaskId: string;
   rawResponse?: unknown;
+  actions?: ESignProviderActionResult[];
   signUrl?: string;
   signUrlExpiresAt?: Date;
   signers?: Array<{
+    coveredSlotIds?: ESignSlotId[];
     customerId?: string;
+    documentType?: ESignDocumentType;
+    providerActionType?: ESignProviderActionType;
     providerCustomerId?: string;
     providerSignerId?: string;
+    providerTransactionId?: string;
     signUrl?: string;
     signUrlExpiresAt?: Date;
+    signingStage?: ESignSigningStage;
+    slotId?: ESignSlotId;
     signerType: "CUSTOMER" | "PLATFORM";
   }>;
 }

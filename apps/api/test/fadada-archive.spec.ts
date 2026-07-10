@@ -46,6 +46,55 @@ describe("FadadaSignedArtifactService", () => {
     );
   });
 
+  it("blocks archive until all required Stage 1 slot rows are signed", async () => {
+    const { service, state } = createFixture();
+    (state.signers as Array<Record<string, unknown>>).splice(
+      0,
+      state.signers.length,
+      {
+        deletedAt: null,
+        id: "slot-body-customer",
+        signerStatus: ESignSignerStatus.SIGNED,
+        signerType: ESignSignerType.CUSTOMER,
+        snapshot: { required: true, slotId: "STAGE1_BODY_CUSTOMER" },
+        taskId: "task-1"
+      },
+      {
+        deletedAt: null,
+        id: "slot-attachment1-customer",
+        signerStatus: ESignSignerStatus.SIGNED,
+        signerType: ESignSignerType.CUSTOMER,
+        snapshot: { required: true, slotId: "STAGE1_ATTACHMENT1_CUSTOMER" },
+        taskId: "task-1"
+      },
+      {
+        deletedAt: null,
+        id: "slot-body-platform",
+        signerStatus: ESignSignerStatus.SIGNED,
+        signerType: ESignSignerType.PLATFORM,
+        snapshot: { required: true, slotId: "STAGE1_BODY_PLATFORM" },
+        taskId: "task-1"
+      },
+      {
+        deletedAt: null,
+        id: "slot-attachment1-platform",
+        signerStatus: ESignSignerStatus.PENDING,
+        signerType: ESignSignerType.PLATFORM,
+        snapshot: { required: true, slotId: "STAGE1_ATTACHMENT1_PLATFORM" },
+        taskId: "task-1"
+      }
+    );
+
+    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toThrow(
+      /FADADA_ARCHIVE_INVALID_TASK/
+    );
+
+    state.signers[3]!.signerStatus = ESignSignerStatus.SIGNED;
+    await expect(service.archiveSignedContract({ taskId: "task-1" })).resolves.toMatchObject({
+      archived: true
+    });
+  });
+
   it("downloads, validates, stores and records a signed PDF without changing contract or order state", async () => {
     const { apiClient, service, state, storageService } = createFixture();
     const signedAt = state.contract.signedAt;

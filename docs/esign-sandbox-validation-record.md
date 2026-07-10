@@ -28,6 +28,7 @@ For the approved image-install path, record Source Han Sans SC from the Adobe So
 | `CONTRACT_PDF_CJK_FONT_PATH` | TBD | TBD |
 | `FADADA_ENABLED` | TBD | TBD |
 | `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED` | TBD | TBD |
+| `ESIGN_STAGE1_MULTI_SLOT_ENABLED` | TBD | TBD |
 | `ESIGN_PLATFORM_SEAL_KEYWORD` | TBD | TBD |
 | `ESIGN_PLATFORM_SEAL_KEYX` | TBD | TBD |
 | `ESIGN_PLATFORM_SEAL_KEYY` | TBD | TBD |
@@ -155,6 +156,12 @@ Representative document categories to check:
 | Callback idempotency check | TBD |
 | Unknown transaction callback isolation check | TBD |
 | Mismatched `contract_id` callback isolation check | TBD |
+| Local Stage 1 slot rows created from provider action result | TBD |
+| Customer provider transaction covers both customer slot rows | TBD |
+| Platform provider transaction covers both platform slot rows | TBD |
+| Callback updates only rows with matching provider `transaction_id` | TBD |
+| Partial slot completion leaves task non-completed | TBD |
+| Task completes only after all required slot rows are signed | TBD |
 | Raw provider error, if any | TBD |
 
 Expected future Stage 1 provider mapping remains:
@@ -162,7 +169,7 @@ Expected future Stage 1 provider mapping remains:
 - customer: one `extsign.api` transaction with two `signature_positions`
 - platform: one `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`
 
-Do not treat this protocol foundation as proof that full Stage 1 multi-position mapping has passed sandbox validation.
+`ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Current local slot completion support does not by itself prove that Fadada `signature_positions` mapping is implemented. Do not treat this protocol foundation or local slot row model as proof that full Stage 1 multi-position mapping has passed sandbox validation.
 
 ## 9. Final Signed PDF Archive
 
@@ -174,6 +181,8 @@ Do not treat this protocol foundation as proof that full Stage 1 multi-position 
 | Platform/company seal visible | TBD | TBD |
 | Final PDF downloadable by authorized admin | TBD | TBD |
 | No public exposure | TBD | TBD |
+| Archive blocked before all required Stage 1 slot rows are signed | TBD | TBD |
+| Archive allowed only after all required Stage 1 slot rows are signed | TBD | TBD |
 
 ## 10. Result
 

@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   ContractPdfRenderDiagnostics,
   ContractPdfRenderModel,
-  ContractPdfSigningSlot
+  ContractPdfSigningSlot,
+  ContractPdfSigningSlotCoordinate
 } from "../src/contract/contract-pdf-render-model";
 import { ContractPdfArtifactWriterService } from "../src/contract/contract-pdf-artifact-writer.service";
 import {
@@ -12,6 +13,8 @@ import {
   CONTRACT_PDF_ARTIFACT_EXISTING_FILE,
   CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING,
   CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS,
+  CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID,
+  CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING,
   CONTRACT_PDF_ARTIFACT_TOO_LARGE
 } from "../src/contract/contract-pdf-artifact.types";
 import { StorageService } from "../src/storage/storage.service";
@@ -115,6 +118,13 @@ describe("ContractPdfArtifactWriterService", () => {
         STAGE1_BODY_PLATFORM: 1
       }
     });
+    expect(result.diagnostics.slotCoordinates).toHaveLength(4);
+    expect(result.diagnostics.slotCoordinates.map((coordinate) => coordinate.slotId).sort()).toEqual([
+      "STAGE1_ATTACHMENT1_CUSTOMER",
+      "STAGE1_ATTACHMENT1_PLATFORM",
+      "STAGE1_BODY_CUSTOMER",
+      "STAGE1_BODY_PLATFORM"
+    ]);
   });
 
   it.each([
@@ -266,6 +276,46 @@ describe("ContractPdfArtifactWriterService", () => {
     expect(fileObjectCreate).not.toHaveBeenCalled();
   });
 
+  it("rejects missing Stage 1 slot coordinates before storage writes", async () => {
+    const { fileObjectCreate, renderer, storage, writer } = createWriter({
+      rendererResult: {
+        slotCoordinates: createSlotCoordinates().filter((coordinate) => coordinate.slotId !== "STAGE1_BODY_CUSTOMER")
+      }
+    });
+
+    await expect(writer.writeGeneratedContractPdfArtifact({
+      renderModel: createModel()
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING);
+
+    expect(renderer.render).toHaveBeenCalledOnce();
+    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(fileObjectCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["invalid page", { pageNumber: -1 }],
+    ["out-of-range x", { x: 801 }],
+    ["out-of-range y", { y: 1132 }],
+    ["invalid width", { width: 0 }],
+    ["invalid height", { height: 0 }]
+  ])("rejects %s in Stage 1 slot coordinates before storage writes", async (_label, coordinateOverride) => {
+    const { fileObjectCreate, renderer, storage, writer } = createWriter({
+      rendererResult: {
+        slotCoordinates: createSlotCoordinates({
+          STAGE1_BODY_CUSTOMER: coordinateOverride
+        })
+      }
+    });
+
+    await expect(writer.writeGeneratedContractPdfArtifact({
+      renderModel: createModel()
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID);
+
+    expect(renderer.render).toHaveBeenCalledOnce();
+    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(fileObjectCreate).not.toHaveBeenCalled();
+  });
+
   it("rejects protected contract statuses", async () => {
     const { renderer, storage, writer } = createWriter();
 
@@ -376,6 +426,7 @@ function createWriter(options: {
   rendererResult?: {
     buffer?: Buffer;
     diagnostics?: Partial<ContractPdfRenderDiagnostics>;
+    slotCoordinates?: ReturnType<typeof createSlotCoordinates>;
   };
   storageError?: Error;
 } = {}) {
@@ -397,6 +448,7 @@ function createWriter(options: {
       },
       ...options.rendererResult?.diagnostics
     },
+    slotCoordinates: options.rendererResult?.slotCoordinates ?? createSlotCoordinates(),
     fileName: "CON-TEST-001.pdf"
   };
   const renderer = {
@@ -442,6 +494,25 @@ function createWriter(options: {
     storage,
     writer: new ContractPdfArtifactWriterService(renderer as never, storage as never, prisma as never)
   };
+}
+
+function createSlotCoordinates(
+  overrides: Partial<Record<ContractPdfSigningSlot["slotId"], Partial<ContractPdfSigningSlotCoordinate>>> = {}
+): ContractPdfSigningSlotCoordinate[] {
+  return STAGE1_SIGNING_SLOTS.map((slot, index) => ({
+    coordinateSource: "PDFKIT_RENDERER" as const,
+    coordinateSystem: "FADADA_800_1131_TOP_LEFT" as const,
+    height: 24,
+    keyword: slot.keyword,
+    pageNumber: index < 2 ? 0 : 1,
+    pdfPageHeight: 841.89,
+    pdfPageWidth: 595.28,
+    slotId: slot.slotId,
+    width: 180,
+    x: 500,
+    y: 600 + index,
+    ...overrides[slot.slotId]
+  }));
 }
 
 function createModel(

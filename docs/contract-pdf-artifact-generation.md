@@ -147,6 +147,30 @@ Provider-side placement must remain consistent with the generated PDF slot layou
 
 The provider offset mapping is not writer responsibility. `keyx=60` and `keyy=0` belong to the e-sign/Fadada positioning layer. Multi-position provider mapping for the four Stage 1 slots remains a future task.
 
+## Stage 1 Slot Coordinate Metadata
+
+The contract PDF renderer captures deterministic Stage 1 signing slot coordinate metadata while it renders the PDF. The renderer must not parse the generated PDF after the fact to discover signing positions.
+
+Each required Stage 1 slot coordinate record contains:
+
+- `slotId`
+- `keyword`
+- `pageNumber`
+- `x`
+- `y`
+- `width`
+- `height`
+- `coordinateSource`
+- `coordinateSystem`
+- `pdfPageWidth`
+- `pdfPageHeight`
+
+The coordinate source is `PDFKIT_RENDERER`. The coordinate system is `FADADA_800_1131_TOP_LEFT`, which uses zero-based pages, a top-left origin, x values in the `0..800` range, and y values in the `0..1131` range.
+
+The recorded point represents the center of the signing or seal blank area, not the keyword text baseline and not the keyword text start position. Artifact writing must fail before storage if any required Stage 1 slot coordinate is missing, has an invalid page number, has out-of-range x/y values, or has non-positive width/height.
+
+This metadata prepares the source artifact for future Fadada `signature_positions` mapping. It does not by itself serialize `signature_positions`, call Fadada, trigger e-signing, or enable production Stage 1 multi-position signing.
+
 ## Stage 2 Boundary
 
 Attachment 2 vehicle handover / delivery confirmation is not rendered in the Stage 1 contract PDF. It should become a separate future document/task for delivery evidence signing. Lease commencement and billing activation alignment must be based on the future delivery handover customer signed time, not on Stage 1 contract signing, and remain separate future work.

@@ -1,6 +1,7 @@
 import {
   ContractPdfRenderDiagnostics,
   ContractPdfRenderModel,
+  ContractPdfSigningSlotCoordinate,
   ContractPdfStage1SigningSlotOccurrences
 } from "./contract-pdf-render-model";
 
@@ -10,6 +11,8 @@ export const CONTRACT_PDF_ARTIFACT_EXISTING_FILE = "CONTRACT_PDF_ARTIFACT_EXISTI
 export const CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING = "CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING";
 export const CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS = "CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS";
 export const CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING = "CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING";
+export const CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID = "CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID";
+export const CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING = "CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING";
 export const CONTRACT_PDF_ARTIFACT_STORAGE_OBJECT_EXISTS = "CONTRACT_PDF_ARTIFACT_STORAGE_OBJECT_EXISTS";
 export const CONTRACT_PDF_ARTIFACT_TOO_LARGE = "CONTRACT_PDF_ARTIFACT_TOO_LARGE";
 
@@ -32,6 +35,7 @@ export interface ContractPdfArtifactDiagnostics {
   anchorOccurrences: ContractPdfArtifactAnchorOccurrences;
   renderDiagnostics: ContractPdfRenderDiagnostics;
   searchableTextPdfRequired: true;
+  slotCoordinates: ContractPdfSigningSlotCoordinate[];
   textExtractionVerified: false;
 }
 

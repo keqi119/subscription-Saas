@@ -124,6 +124,23 @@ Required Stage 1 slot keywords:
 | Provider multi-position mapping checked separately before Fadada sandbox signing | TBD | TBD |
 | Screenshot/evidence location | TBD | TBD |
 
+## 7A. Stage 1 Slot Coordinates
+
+Renderer-produced coordinate metadata must be recorded before any future Fadada `signature_positions` sandbox call. Coordinates are generated during PDFKit rendering; do not use post-render PDF text parsing as the source of truth.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Four Stage 1 slot coordinate records exist | TBD | TBD |
+| Each coordinate record has `coordinateSource=PDFKIT_RENDERER` | TBD | TBD |
+| Each coordinate record has `coordinateSystem=FADADA_800_1131_TOP_LEFT` | TBD | TBD |
+| Each `pageNumber` is zero-based and `>=0` | TBD | TBD |
+| Each `x` is within `0..800` | TBD | TBD |
+| Each `y` is within `0..1131` | TBD | TBD |
+| Each `width` and `height` is positive | TBD | TBD |
+| Coordinates point to signing/seal blank area centers, not keyword text starts | TBD | TBD |
+| Contract body slot coordinates visually align with the body signing area | TBD | TBD |
+| Attachment 1 slot coordinates visually align with the Attachment 1 signing area | TBD | TBD |
+
 ## 8. Fadada Task
 
 Before recording a real sandbox result, the provider request and callback behavior must be checked against the local Fadada developer documentation under:

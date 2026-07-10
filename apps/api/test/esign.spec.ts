@@ -324,6 +324,36 @@ describe("ESignService", () => {
     expect(provider.createSignTask).toHaveBeenCalledOnce();
   });
 
+  it("requires Stage 1 slot coordinates before slot-aware provider calls", async () => {
+    const provider = stage1SlotProvider();
+    const preflightContractPdfArtifact = vi.fn(async () => {
+      throw new Error("CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING: generated slot coordinates are required");
+    });
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_PROVIDER: "fadada",
+        ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true",
+        FADADA_ENABLED: "true"
+      },
+      provider,
+      { contractPdfArtifactService: { preflightContractPdfArtifact } }
+    );
+
+    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
+      /CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING/
+    );
+
+    expect(preflightContractPdfArtifact).toHaveBeenCalledWith("contract-1", expect.objectContaining({
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true,
+      requireStage1SlotCoordinates: true
+    }));
+    expect(provider.createSignTask).not.toHaveBeenCalled();
+    expect(state.tasks).toHaveLength(0);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
+  });
+
   it("stores enterprise signing plan metadata without making B5 evaluate policy", async () => {
     const provider: ESignProvider = {
       createSignTask: vi.fn(async (input) => ({

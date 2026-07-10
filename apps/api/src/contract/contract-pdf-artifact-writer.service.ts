@@ -26,8 +26,10 @@ import {
   CONTRACT_PDF_ARTIFACT_TOO_LARGE,
   ContractPdfArtifactAnchorOccurrences,
   ContractPdfArtifactDiagnostics,
+  ContractPdfArtifactSlotCoordinateDiagnostic,
   ContractPdfArtifactWriteInput,
-  ContractPdfArtifactWriteResult
+  ContractPdfArtifactWriteResult,
+  CONTRACT_PDF_GENERATED_ARTIFACT_SOURCE
 } from "./contract-pdf-artifact.types";
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
@@ -89,7 +91,9 @@ export class ContractPdfArtifactWriterService {
         anchorOccurrences,
         renderDiagnostics: renderResult.diagnostics,
         searchableTextPdfRequired: true,
+        signingStage: "STAGE1_CONTRACT",
         slotCoordinates,
+        source: CONTRACT_PDF_GENERATED_ARTIFACT_SOURCE,
         textExtractionVerified: false
       };
 
@@ -152,7 +156,9 @@ function validateRenderDiagnostics(diagnostics: ContractPdfArtifactDiagnostics["
 
 function validateSlotCoordinates(
   coordinates: ContractPdfSigningSlotCoordinate[]
-): ContractPdfSigningSlotCoordinate[] {
+): ContractPdfArtifactSlotCoordinateDiagnostic[] {
+  const validated: ContractPdfArtifactSlotCoordinateDiagnostic[] = [];
+
   for (const slotId of STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS) {
     const matchingCoordinates = coordinates.filter((coordinate) => coordinate.slotId === slotId);
     if (matchingCoordinates.length !== 1) {
@@ -176,11 +182,16 @@ function validateSlotCoordinates(
     ) {
       throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID}: ${slotId} coordinate is invalid`);
     }
+
+    validated.push({
+      ...coordinate,
+      documentType: expected.documentType,
+      signerRole: expected.signerRole,
+      signingStage: expected.stage
+    });
   }
 
-  return STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.map((slotId) =>
-    coordinates.find((coordinate) => coordinate.slotId === slotId)!
-  );
+  return validated;
 }
 
 function isFiniteNumberInRange(value: number, min: number, max: number) {

@@ -171,6 +171,18 @@ The recorded point represents the center of the signing or seal blank area, not 
 
 This metadata prepares the source artifact for future Fadada `signature_positions` mapping. It does not by itself serialize `signature_positions`, call Fadada, trigger e-signing, or enable production Stage 1 multi-position signing.
 
+Generated Stage 1 source artifacts now propagate renderer-produced slot coordinates beyond the writer result. After successful artifact writing, `OrderService.generateContract()` stores the generated PDF artifact diagnostics in `Contract.contractSnapshot.generatedContractPdfArtifact`, including:
+
+- `source=GENERATED_CONTRACT_PDF`
+- generated `fileId`
+- generated source PDF `objectKey`
+- `signingStage=STAGE1_CONTRACT`
+- four Stage 1 `slotCoordinates`
+
+`ContractPdfArtifactService` reads this persisted diagnostic metadata for generated `Contract.fileId` artifacts and exposes the coordinates to future e-sign provider mapping. It does not invent coordinates for `ContractVersion.fileId` legacy fallback artifacts, parse the PDF after generation, recalculate positions, or fall back to keyword search.
+
+When future Stage 1 multi-slot signing is requested, missing or invalid persisted coordinates must fail preflight before provider calls. Fadada `signature_positions` serialization remains a separate future provider-mapping task.
+
 ## Stage 2 Boundary
 
 Attachment 2 vehicle handover / delivery confirmation is not rendered in the Stage 1 contract PDF. It should become a separate future document/task for delivery evidence signing. Lease commencement and billing activation alignment must be based on the future delivery handover customer signed time, not on Stage 1 contract signing, and remain separate future work.
@@ -191,6 +203,7 @@ Issue 4A-1E hardens e-sign upload source selection before sending a document to 
 - enterprise auto seal requires `Contract.fileId`
 - enterprise auto seal rejects `ContractVersion.fileId`
 - enterprise auto seal requires the generated object key pattern:
+- Stage 1 multi-slot signing preflight requires generated source artifact slot coordinate diagnostics
 
 ```text
 contracts/{contractId}/generated/{fileName}

@@ -53,6 +53,7 @@ import {
   vehicleModelSnapshotDefinitionSelect,
 } from "../common/vehicle-model-snapshot";
 import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
+import type { ContractPdfArtifactWriteResult } from "../contract/contract-pdf-artifact.types";
 import {
   ContractPdfAppendixRow,
   ContractPdfAppendixSection,
@@ -2051,7 +2052,11 @@ export class OrderService {
 
       return await this.prisma.$transaction(async (tx) => {
         await tx.contract.update({
-          data: { fileId: artifact.fileId, updatedBy: user.id },
+          data: {
+            contractSnapshot: buildContractSnapshotWithGeneratedPdfArtifact(createdContract.contractSnapshot, artifact),
+            fileId: artifact.fileId,
+            updatedBy: user.id
+          },
           where: { id: createdContract.id }
         });
         await tx.subscriptionOrder.update({
@@ -4515,6 +4520,31 @@ function toContractVersionView(version: Prisma.ContractVersionGetPayload<object>
 
 function toOrderChangeView(change: Prisma.OrderChangeGetPayload<object>): Record<string, unknown> {
   return toPlain(change) as Record<string, unknown>;
+}
+
+function buildContractSnapshotWithGeneratedPdfArtifact(
+  contractSnapshot: unknown,
+  artifact: ContractPdfArtifactWriteResult
+): Prisma.InputJsonValue {
+  const plainSnapshot = toPlain(contractSnapshot);
+  const baseSnapshot = isPlainRecord(plainSnapshot) ? plainSnapshot : {};
+  return toJsonValue({
+    ...baseSnapshot,
+    generatedContractPdfArtifact: {
+      fileId: artifact.fileId,
+      mimeType: artifact.mimeType,
+      objectKey: artifact.objectKey,
+      originalName: artifact.originalName,
+      signingStage: artifact.diagnostics.signingStage,
+      sizeBytes: artifact.sizeBytes,
+      slotCoordinates: artifact.diagnostics.slotCoordinates,
+      source: artifact.diagnostics.source
+    }
+  });
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {

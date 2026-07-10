@@ -138,6 +138,11 @@ Renderer-produced coordinate metadata must be recorded before any future Fadada 
 | Each `y` is within `0..1131` | TBD | TBD |
 | Each `width` and `height` is positive | TBD | TBD |
 | Coordinates point to signing/seal blank area centers, not keyword text starts | TBD | TBD |
+| Coordinates persisted in `Contract.contractSnapshot.generatedContractPdfArtifact` | TBD | TBD |
+| Persisted coordinate metadata includes `source=GENERATED_CONTRACT_PDF` | TBD | TBD |
+| Persisted coordinate metadata matches generated `contract.fileId` and source object key | TBD | TBD |
+| E-sign artifact resolver exposes the four persisted coordinates | TBD | TBD |
+| Stage 1 multi-slot preflight rejects missing coordinates before provider calls | TBD | TBD |
 | Contract body slot coordinates visually align with the body signing area | TBD | TBD |
 | Attachment 1 slot coordinates visually align with the Attachment 1 signing area | TBD | TBD |
 

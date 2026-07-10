@@ -41,6 +41,21 @@ Keyword placement is sent to Fadada auto seal as:
 
 Coordinate placement is intentionally left as a future extension. Do not add coordinate fields until the provider parameter mapping and placement rule are approved for production use.
 
+## Protocol Foundation
+
+Fadada protocol hardening requires provider `transaction_id` values to be 1-32 ASCII letters or digits. Do not use Chinese slot labels, raw keywords, spaces, or punctuation in provider transaction IDs.
+
+For `extsign_auto.api`, success is the documented provider code `1000`. Signing callback result codes such as `3000` are not auto-sign API success codes.
+
+The auto-sign request digest must include the auto-sign `transaction_id` in the endpoint-specific MD5 seed as checked against the local Fadada automatic signing documentation. Unknown or ambiguous auto-sign result payloads must not be treated as success.
+
+Future Stage 1 multi-position mapping target:
+
+- customer side: one `extsign.api` transaction with two `signature_positions`
+- platform side: one `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`
+
+This document still does not enable full Stage 1 multi-position provider mapping. The mapping remains a future build and must be sandbox-proven before production use.
+
 ## Failed Task Boundary
 
 Existing failed tasks should not be manually marked successful. After the PDF template and positioning are corrected, create a new e-sign task so the customer signs the corrected artifact.

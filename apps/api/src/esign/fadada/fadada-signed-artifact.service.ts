@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { ContractStatus, ESignProviderType, ESignSignerStatus, ESignTaskStatus, Prisma } from "@prisma/client";
+import { ContractStatus, ESignProviderType, ESignSignerStatus, ESignSignerType, ESignTaskStatus, Prisma } from "@prisma/client";
 import type { Readable } from "node:stream";
 
 import { RequestUser } from "../../auth/auth.types";
@@ -53,12 +53,13 @@ export interface FadadaSignedArtifactApi {
     raw: unknown;
     status?: string;
   }>;
-  querySignResult(input: { contractId: string; transactionId?: string }): Promise<{
+  querySignResult(input: { contractId: string; customerId?: string; transactionId?: string }): Promise<{
     contractId: string;
     downloadUrl?: string;
     raw: unknown;
     resultCode?: string;
     resultDesc?: string;
+    status?: "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN";
     transactionId?: string;
     viewPdfUrl?: string;
   }>;
@@ -106,9 +107,11 @@ export class FadadaSignedArtifactService {
     }
 
     const apiClient = this.getApiClient();
+    const providerCustomerId = findProviderCustomerId(task);
     const signResult = await apiClient.querySignResult({
       contractId: providerContractId,
-      transactionId: task.providerTaskId ?? undefined
+      ...(providerCustomerId ? { customerId: providerCustomerId } : {}),
+      ...(task.providerTaskId ? { transactionId: task.providerTaskId } : {})
     });
     const contractStatus = signResult.resultCode
       ? null
@@ -276,6 +279,16 @@ function mergeResponseSnapshot(existing: unknown, patch: Record<string, unknown>
     ...base,
     ...patch
   };
+}
+
+function findProviderCustomerId(task: SignedArtifactTask) {
+  const customerSigner = task.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER);
+  const snapshot = customerSigner?.snapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return undefined;
+  }
+  const providerCustomerId = (snapshot as Record<string, unknown>).providerCustomerId;
+  return typeof providerCustomerId === "string" && providerCustomerId.trim() ? providerCustomerId : undefined;
 }
 
 function sanitizeProviderPayload(value: unknown): unknown {

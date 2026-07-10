@@ -242,6 +242,14 @@ export class ESignService {
       if (customerSignerResult?.providerSignerId) {
         customerSignerUpdate.providerSignerId = customerSignerResult.providerSignerId;
       }
+      if (customerSignerResult?.providerCustomerId) {
+        customerSignerUpdate.snapshot = toJsonValue({
+          customerId: contract.customerId,
+          mobileMasked: maskPhone(contract.customer.mobile),
+          name: contract.customer.name,
+          providerCustomerId: customerSignerResult.providerCustomerId
+        });
+      }
 
       const updated = await this.prisma.$transaction(async (tx) => {
         await tx.contractESignTask.update({
@@ -780,6 +788,9 @@ export class ESignService {
       });
 
       if (signer?.task) {
+        if (!taskMatchesProviderContract(signer.task, providerContractId)) {
+          return null;
+        }
         return signer.task;
       }
 
@@ -793,8 +804,15 @@ export class ESignService {
       });
 
       if (task) {
+        if (!taskMatchesProviderContract(task, providerContractId)) {
+          return null;
+        }
         return task;
       }
+    }
+
+    if (provider === ESignProviderType.FADADA) {
+      return null;
     }
 
     if (providerContractId) {
@@ -1019,7 +1037,7 @@ export class ESignService {
     }
   ) {
     const platformSigner = getPlatformSigner(task);
-    const transactionId = platformSigner?.providerSignerId ?? `${task.taskNo}-2`;
+    const transactionId = platformSigner?.providerSignerId ?? buildProviderTransactionId(task.taskNo, 2);
     if (!this.provider.autoSealTask) {
       return this.recordPlatformAutoSealFailure(task.id, {
         errorMessage: "ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED",
@@ -1420,6 +1438,22 @@ function hasSignedPlatformSigner(task: ESignTaskWithDetails) {
 function allRequiredSignersSigned(task: ESignTaskWithDetails) {
   return task.signers.length > 0 &&
     task.signers.every((signer) => signer.signerStatus === ESignSignerStatus.SIGNED);
+}
+
+function taskMatchesProviderContract(task: ESignTaskWithDetails, providerContractId?: string | null) {
+  if (!providerContractId) {
+    return true;
+  }
+  return task.providerEnvelopeId === providerContractId || task.taskNo === providerContractId;
+}
+
+function buildProviderTransactionId(taskNo: string, index: number) {
+  const suffix = `S${index}`;
+  const normalized = taskNo.replace(/[^A-Za-z0-9]/g, "");
+  if (!normalized) {
+    throw new Error("ESIGN_PROVIDER_TRANSACTION_ID_INVALID: taskNo cannot produce a safe transaction_id");
+  }
+  return `${normalized.slice(0, 32 - suffix.length)}${suffix}`;
 }
 
 function readSealId(snapshot: unknown) {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FadadaApiClient } from "../src/esign/fadada/fadada-api.client";
+import { buildFadadaMsgDigestFromParts } from "../src/esign/fadada/fadada-digest";
 import { FadadaHttpClient, FadadaTransport } from "../src/esign/fadada/fadada-http-client";
 import { buildContractStatusRequest } from "../src/esign/fadada/fadada-request-builder";
 import { FadadaConfig } from "../src/esign/fadada/fadada.types";
@@ -249,16 +250,16 @@ describe("Fadada API client", () => {
       notifyUrl: "https://api.example.test/esign/callback/fadada",
       quantity: 1,
       returnUrl: "https://app.example.test/portal/contracts/contract-1",
-      transactionId: "TX-1",
+      transactionId: "TX1",
       validityMinutes: 30
     });
 
-    expect(result.transactionId).toBe("TX-1");
+    expect(result.transactionId).toBe("TX1");
     expect(result.signUrlExpiresAt).toBeInstanceOf(Date);
     expect(transport).not.toHaveBeenCalled();
     const url = new URL(result.signUrl);
     expect(`${url.origin}${url.pathname}`).toBe("https://testapi.fadada.com:8443/api/extsign_validation.api");
-    expect(url.searchParams.get("transaction_id")).toBe("TX-1");
+    expect(url.searchParams.get("transaction_id")).toBe("TX1");
     expect(url.searchParams.get("doc_title")).toBe("Contract.pdf");
     expect(url.searchParams.get("validity")).toBe("30");
     expect(url.searchParams.get("quantity")).toBe("1");
@@ -269,11 +270,43 @@ describe("Fadada API client", () => {
     });
   });
 
+  it("rejects provider transaction ids outside the documented Fadada format", async () => {
+    const transport: FadadaTransport = vi.fn();
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    await expect(apiClient.createExternalSignUrl({
+      contractId: "CON-1",
+      customerId: "fadada-customer-1",
+      docTitle: "Contract.pdf",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      quantity: 1,
+      returnUrl: "https://app.example.test/portal/contracts/contract-1",
+      transactionId: "TX-1",
+      validityMinutes: 30
+    })).rejects.toThrow(/FADADA_TRANSACTION_ID_INVALID/);
+
+    await expect(apiClient.autoSealContract({
+      contractId: "CON-1",
+      customerId: "platform-customer-1",
+      signatureId: "platform-signature-1",
+      transactionId: "交易1"
+    })).rejects.toThrow(/FADADA_TRANSACTION_ID_INVALID/);
+
+    await expect(apiClient.querySignResult({
+      contractId: "CON-1",
+      customerId: "fadada-customer-1",
+      transactionId: "X".repeat(33)
+    })).rejects.toThrow(/FADADA_TRANSACTION_ID_INVALID/);
+
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("calls the Fadada auto-sign endpoint for platform seal requests", async () => {
     const transport: FadadaTransport = vi.fn(async () => ({
       bodyText: JSON.stringify({
-        result: "3000",
-        result_desc: "success"
+        code: "1000",
+        msg: "success",
+        result: "success"
       }),
       headers: { "content-type": "application/json" },
       status: 200
@@ -290,23 +323,29 @@ describe("Fadada API client", () => {
         type: "KEYWORD"
       },
       signatureId: "platform-signature-1",
-      transactionId: "TX-2"
+      transactionId: "TX2"
     });
 
     expect(result).toMatchObject({
       contractId: "CON-1",
-      resultCode: "3000",
+      resultCode: "1000",
       resultDesc: "success",
-      transactionId: "TX-2"
+      transactionId: "TX2"
     });
     const request = vi.mocked(transport).mock.calls[0]?.[0];
     expect(request?.url).toBe("https://testapi.fadada.com:8443/api/extsign_auto.api");
     expect(String(request?.body)).toContain("contract_id=CON-1");
     expect(String(request?.body)).toContain("customer_id=platform-customer-1");
     expect(String(request?.body)).toContain("signature_id=platform-signature-1");
-    expect(String(request?.body)).toContain("transaction_id=TX-2");
+    expect(String(request?.body)).toContain("transaction_id=TX2");
     const params = new URLSearchParams(String(request?.body));
     expect(params.get("position_type")).toBe("0");
+    expect(params.get("msg_digest")).toBe(buildFadadaMsgDigestFromParts({
+      appId: "app-123",
+      appSecret: "secret-xyz",
+      md5Seed: `TX2${params.get("timestamp")}`,
+      secretSortString: "platform-customer-1"
+    }));
     expect(params.get("sign_keyword")).toBe("出租方盖章");
     expect(String(request?.body)).not.toContain("secret-xyz");
   });
@@ -317,7 +356,7 @@ describe("Fadada API client", () => {
         result: "3000",
         result_desc: "completed",
         download_url: "https://download.example.test/file.pdf?token=secret",
-        viewpdf_url: "https://view.example.test/file.pdf?token=secret"
+        view_url: "https://view.example.test/file.pdf?token=secret"
       }),
       headers: { "content-type": "application/json" },
       status: 200
@@ -326,7 +365,8 @@ describe("Fadada API client", () => {
 
     const result = await apiClient.querySignResult({
       contractId: "CON-1",
-      transactionId: "TX-1"
+      customerId: "fadada-customer-1",
+      transactionId: "TX1"
     });
 
     expect(result).toMatchObject({
@@ -334,7 +374,8 @@ describe("Fadada API client", () => {
       downloadUrl: "https://download.example.test/file.pdf?token=secret",
       resultCode: "3000",
       resultDesc: "completed",
-      transactionId: "TX-1",
+      status: "SIGNED",
+      transactionId: "TX1",
       viewPdfUrl: "https://view.example.test/file.pdf?token=secret"
     });
     expect(vi.mocked(transport).mock.calls[0]?.[0]).toMatchObject({
@@ -342,7 +383,8 @@ describe("Fadada API client", () => {
       url: "https://testapi.fadada.com:8443/api/query_sign_result.api"
     });
     expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("contract_id=CON-1");
-    expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("transaction_id=TX-1");
+    expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("customer_id=fadada-customer-1");
+    expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("transaction_id=TX1");
   });
 
   it("queries contract status through mocked transport", async () => {

@@ -272,7 +272,7 @@ describe("ESignService", () => {
       signerStatus: ESignSignerStatus.SIGNED
     });
     expect(state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)).toMatchObject({
-      providerSignerId: "ESG-1-2",
+      providerSignerId: "ESG1S2",
       signerStatus: ESignSignerStatus.SIGNED
     });
     expect(state.tasks[0]).toMatchObject({
@@ -757,6 +757,50 @@ describe("ESignService", () => {
     });
   });
 
+  it("isolates unknown Fadada transactions even when the contract id matches", async () => {
+    const { service, state } = createFadadaESignFixture();
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "unknowntransaction"
+    }));
+
+    expect(result).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(state.callbackLogs[0]).toMatchObject({
+      handled: false,
+      providerTaskId: "unknowntransaction",
+      taskId: null,
+      verified: true
+    });
+  });
+
+  it("isolates Fadada callbacks when a known transaction has a mismatched contract id", async () => {
+    const { service, state } = createFadadaESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: "different-provider-contract",
+      resultCode: "3000",
+      transactionId: task.providerTaskId
+    }));
+
+    expect(result).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(state.callbackLogs[0]).toMatchObject({
+      handled: false,
+      providerTaskId: task.providerTaskId,
+      taskId: null,
+      verified: true
+    });
+  });
+
   it("does not downgrade completed Fadada tasks from later failure or rejection callbacks", async () => {
     const { service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
@@ -1155,11 +1199,17 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
   });
 }
 
+function buildTestTransactionId(taskNo: string, index: number) {
+  const suffix = `S${index}`;
+  const normalized = taskNo.replace(/[^A-Za-z0-9]/g, "");
+  return `${normalized.slice(0, 32 - suffix.length)}${suffix}`;
+}
+
 function createFadadaESignFixture() {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
   const provider: ESignProvider = {
     createSignTask: vi.fn(async (input) => {
-      const transactionId = `${input.taskNo}-1`;
+      const transactionId = buildTestTransactionId(input.taskNo, 1);
       return {
         providerEnvelopeId: input.taskNo,
         providerTaskId: transactionId,
@@ -1189,7 +1239,7 @@ function enterpriseAutoSealProvider(result: {
   resultDescription?: string;
   status: "COMPLETED" | "FAILED" | "PENDING";
 } = {
-  providerSignerId: "ESG-1-2",
+  providerSignerId: "ESG1S2",
   rawResponse: { autoSeal: "ok" },
   status: "COMPLETED"
 }) {
@@ -1197,7 +1247,7 @@ function enterpriseAutoSealProvider(result: {
   return {
     autoSealTask: vi.fn(async () => result),
     createSignTask: vi.fn(async (input) => {
-      const transactionId = `${input.taskNo}-1`;
+      const transactionId = buildTestTransactionId(input.taskNo, 1);
       return {
         providerEnvelopeId: input.taskNo,
         providerTaskId: transactionId,

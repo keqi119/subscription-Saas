@@ -145,11 +145,24 @@ Representative document categories to check:
 | --- | --- |
 | Task number | TBD |
 | Provider request checked against local Fadada docs | TBD |
+| Provider `transaction_id` values are 1-32 ASCII letters/digits | TBD |
+| Request digest formula evidence captured | TBD |
+| `extsign_auto.api` success code is `1000` | TBD |
+| `query_sign_result.api` includes `customer_id`, `contract_id`, and `transaction_id` | TBD |
 | Customer signer status | TBD |
 | Platform signer status | TBD |
 | Callback status | TBD |
 | Callback idempotency check | TBD |
+| Unknown transaction callback isolation check | TBD |
+| Mismatched `contract_id` callback isolation check | TBD |
 | Raw provider error, if any | TBD |
+
+Expected future Stage 1 provider mapping remains:
+
+- customer: one `extsign.api` transaction with two `signature_positions`
+- platform: one `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`
+
+Do not treat this protocol foundation as proof that full Stage 1 multi-position mapping has passed sandbox validation.
 
 ## 9. Final Signed PDF Archive
 

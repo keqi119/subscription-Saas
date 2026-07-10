@@ -25,6 +25,11 @@ This checklist must be completed before enabling enterprise auto seal in product
 - [ ] Seal placement or keyword rule is approved.
 - [ ] Provider sandbox run completed.
 - [ ] Fadada upload, signing, auto-signing, callback, download, and archive behavior has been checked against the local developer docs under `D:\Projects\document\fadada\doc`.
+- [ ] Fadada provider `transaction_id` format is verified as 1-32 ASCII letters or digits.
+- [ ] Fadada request digest formulas are checked against the relevant local docs before any provider call.
+- [ ] `extsign_auto.api` success handling treats only documented success code `1000` as auto-sign success.
+- [ ] `query_sign_result.api` calls include `customer_id`, `contract_id`, and `transaction_id`.
+- [ ] Unknown or mismatched Fadada callback `transaction_id` values are isolated and do not mutate tasks.
 
 Representative local Fadada docs to check before modifying or enabling related behavior:
 
@@ -86,6 +91,9 @@ keyy=0
 - [ ] Generated signing PDF does not contain Attachment 2 delivery handover as part of Stage 1.
 - [ ] Generated signing PDF source object key matches `contracts/{contractId}/generated/...`.
 - [ ] Platform auto seal succeeds.
+- [ ] Platform auto seal success evidence shows provider code `1000`.
+- [ ] Unknown transaction callback does not advance signer, task, contract, or order state.
+- [ ] Known transaction callback with mismatched `contract_id` does not advance signer, task, contract, or order state.
 - [ ] Final PDF shows customer signature and company seal.
 - [ ] Archive works only after both signers complete.
 - [ ] Duplicate callback is idempotent.
@@ -112,6 +120,10 @@ Any of the following means production enablement must stop:
 - Generated PDF contains garbled Chinese.
 - Generated PDF is image-only or not searchable.
 - Provider multi-position mapping for Stage 1 slots has not been checked against local Fadada docs.
+- Provider transaction IDs contain punctuation, Chinese characters, or exceed 32 characters.
+- Auto-sign success evidence is missing provider code `1000`.
+- `query_sign_result.api` evidence was collected without `customer_id`.
+- Unknown or mismatched Fadada callbacks can mutate an e-sign task.
 - Generated artifact preflight fails.
 - `contract.fileId` is missing for enterprise auto seal.
 - Generated object key is a sandbox, test fixture, wrong-contract, or signed archive path.

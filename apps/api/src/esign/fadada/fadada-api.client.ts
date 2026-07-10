@@ -6,9 +6,7 @@ import {
   buildContractFilingRequest,
   buildContractStatusRequest,
   buildDownloadContractRequest,
-  buildExtSignAutoRequest,
   buildFadadaRequest,
-  buildQuerySignResultRequest,
   FADADA_ENDPOINTS
 } from "./fadada-request-builder";
 import type { AutoSealPlacement } from "../esign.provider";
@@ -21,8 +19,10 @@ export const FADADA_SIGN_URL_MISSING = "FADADA_SIGN_URL_MISSING";
 export const FADADA_DOWNLOAD_REQUIRES_PDF = "FADADA_DOWNLOAD_REQUIRES_PDF";
 export const FADADA_ACCOUNT_CUSTOMER_ID_MISSING = "FADADA_ACCOUNT_CUSTOMER_ID_MISSING";
 export const FADADA_PERSON_VERIFY_URL_MISSING = "FADADA_PERSON_VERIFY_URL_MISSING";
+export const FADADA_TRANSACTION_ID_INVALID = "FADADA_TRANSACTION_ID_INVALID";
 
 const MAX_FADADA_PDF_BYTES = 20 * 1024 * 1024;
+const FADADA_TRANSACTION_ID_PATTERN = /^[A-Za-z0-9]{1,32}$/;
 
 export class FadadaApiClient {
   constructor(
@@ -233,6 +233,7 @@ export class FadadaApiClient {
     signUrlExpiresAt?: Date;
     raw: unknown;
   }> {
+    assertFadadaTransactionId(input.transactionId);
     const validity = input.validityMinutes ?? this.config.signUrlValidityMinutes;
     const quantity = input.quantity ?? this.config.signUrlQuantity;
     const timestamp = fadadaTimestampNow();
@@ -285,7 +286,9 @@ export class FadadaApiClient {
     resultDesc?: string;
     transactionId: string;
   }> {
-    const request = buildExtSignAutoRequest({
+    assertFadadaTransactionId(input.transactionId);
+    const timestamp = fadadaTimestampNow();
+    const request = buildFadadaRequest({
       businessParams: {
         contract_id: input.contractId,
         customer_id: input.customerId,
@@ -296,7 +299,10 @@ export class FadadaApiClient {
         ...(input.notifyUrl ? { notify_url: input.notifyUrl } : {})
       },
       config: this.config,
-      explicitSortString: input.customerId
+      endpoint: FADADA_ENDPOINTS.extSignAuto,
+      explicitMd5Seed: `${input.transactionId}${timestamp}`,
+      explicitSortString: input.customerId,
+      timestamp
     });
     const response = await this.httpClient.send(request);
     assertHttpOk(response.status);
@@ -305,7 +311,7 @@ export class FadadaApiClient {
     return {
       contractId: input.contractId,
       raw,
-      resultCode: stringField(raw, ["result_code", "resultCode", "result", "code"]),
+      resultCode: providerCode(raw),
       resultDesc: stringField(raw, ["result_desc", "resultDesc", "message", "msg"]),
       transactionId: input.transactionId
     };
@@ -313,6 +319,7 @@ export class FadadaApiClient {
 
   async querySignResult(input: {
     contractId: string;
+    customerId?: string;
     transactionId?: string;
   }): Promise<{
     contractId: string;
@@ -320,28 +327,50 @@ export class FadadaApiClient {
     raw: unknown;
     resultCode?: string;
     resultDesc?: string;
+    status: "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN";
     transactionId?: string;
     viewPdfUrl?: string;
   }> {
-    const request = buildQuerySignResultRequest({
+    if (!input.customerId || !input.transactionId) {
+      return {
+        contractId: input.contractId,
+        raw: {
+          reason: !input.customerId
+            ? "FADADA_QUERY_SIGN_RESULT_CUSTOMER_ID_MISSING"
+            : "FADADA_QUERY_SIGN_RESULT_TRANSACTION_ID_MISSING",
+          skipped: true
+        },
+        status: "UNKNOWN",
+        transactionId: input.transactionId
+      };
+    }
+    assertFadadaTransactionId(input.transactionId);
+    const timestamp = fadadaTimestampNow();
+    const request = buildFadadaRequest({
       businessParams: {
         contract_id: input.contractId,
-        ...(input.transactionId ? { transaction_id: input.transactionId } : {})
+        customer_id: input.customerId,
+        transaction_id: input.transactionId
       },
-      config: this.config
+      config: this.config,
+      endpoint: FADADA_ENDPOINTS.querySignResult,
+      explicitSortString: `${input.contractId}${input.customerId}${input.transactionId}`,
+      timestamp
     });
     const response = await this.httpClient.send(request);
     assertHttpOk(response.status);
     const raw = response.parsedBody ?? response.bodyText;
+    const resultCode = stringField(raw, ["result_code", "resultCode", "result"]);
 
     return {
       contractId: input.contractId,
       downloadUrl: stringField(raw, ["download_url", "downloadUrl"]),
       raw,
-      resultCode: stringField(raw, ["result_code", "resultCode", "result"]),
+      resultCode,
       resultDesc: stringField(raw, ["result_desc", "resultDesc", "message", "msg"]),
+      status: mapQuerySignResultStatus(raw, resultCode),
       transactionId: input.transactionId,
-      viewPdfUrl: stringField(raw, ["viewpdf_url", "viewPdfUrl", "view_pdf_url"])
+      viewPdfUrl: stringField(raw, ["view_url", "viewUrl", "viewpdf_url", "viewPdfUrl", "view_pdf_url"])
     };
   }
 
@@ -456,6 +485,16 @@ function assertHttpOk(status: number) {
   }
 }
 
+export function isValidFadadaTransactionId(value: string) {
+  return FADADA_TRANSACTION_ID_PATTERN.test(value);
+}
+
+export function assertFadadaTransactionId(value: string) {
+  if (!isValidFadadaTransactionId(value)) {
+    throw new Error(`${FADADA_TRANSACTION_ID_INVALID}: transaction_id must be 1-32 ASCII letters or digits`);
+  }
+}
+
 function buildGetRequestUrl(baseUrl: string, params: Record<string, string>) {
   const url = new URL(baseUrl);
   for (const [key, value] of Object.entries(params)) {
@@ -510,6 +549,32 @@ function providerCode(raw: unknown) {
 
 function providerMsg(raw: unknown) {
   return stringField(raw, ["msg", "message", "result_desc", "resultDesc"]);
+}
+
+function mapQuerySignResultStatus(raw: unknown, resultCode: string | undefined): "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN" {
+  switch (resultCode) {
+    case "3000":
+      return "SIGNED";
+    case "3001":
+    case "3002":
+    case "3003":
+      return "FAILED";
+    default:
+      break;
+  }
+
+  const signStatus = stringField(raw, ["sign_status", "signStatus"]);
+  switch (signStatus) {
+    case "0":
+      return "SIGNING";
+    case "1":
+      return "SIGNED";
+    case "2":
+    case "3":
+      return "FAILED";
+    default:
+      return "UNKNOWN";
+  }
 }
 
 function decodeFadadaBase64Url(value?: string) {

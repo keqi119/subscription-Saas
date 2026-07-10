@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ContractPdfRenderDiagnostics, ContractPdfRenderModel } from "../src/contract/contract-pdf-render-model";
+import type {
+  ContractPdfRenderDiagnostics,
+  ContractPdfRenderModel,
+  ContractPdfSigningSlot
+} from "../src/contract/contract-pdf-render-model";
 import { ContractPdfArtifactWriterService } from "../src/contract/contract-pdf-artifact-writer.service";
 import {
   CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE,
@@ -12,6 +16,49 @@ import {
 } from "../src/contract/contract-pdf-artifact.types";
 import { StorageService } from "../src/storage/storage.service";
 import { UploadObjectInput } from "../src/storage/storage.types";
+
+const STAGE1_SIGNING_SLOTS: ContractPdfSigningSlot[] = [
+  {
+    documentType: "CONTRACT_BODY",
+    keyword: "合同正文-订阅方签字",
+    label: "订阅方签字",
+    signerRole: "CUSTOMER",
+    slotId: "STAGE1_BODY_CUSTOMER",
+    stage: "STAGE1_CONTRACT",
+    title: "合同正文签署区"
+  },
+  {
+    documentType: "CONTRACT_BODY",
+    keyword: "合同正文-服务提供方盖章",
+    label: "服务提供方盖章",
+    offsetX: 60,
+    offsetY: 0,
+    signerRole: "PLATFORM",
+    slotId: "STAGE1_BODY_PLATFORM",
+    stage: "STAGE1_CONTRACT",
+    title: "合同正文签署区"
+  },
+  {
+    documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+    keyword: "附件1订阅方案-订阅方签字",
+    label: "订阅方签字",
+    signerRole: "CUSTOMER",
+    slotId: "STAGE1_ATTACHMENT1_CUSTOMER",
+    stage: "STAGE1_CONTRACT",
+    title: "附件1订阅方案签署区"
+  },
+  {
+    documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+    keyword: "附件1订阅方案-服务提供方盖章",
+    label: "服务提供方盖章",
+    offsetX: 60,
+    offsetY: 0,
+    signerRole: "PLATFORM",
+    slotId: "STAGE1_ATTACHMENT1_PLATFORM",
+    stage: "STAGE1_CONTRACT",
+    title: "附件1订阅方案签署区"
+  }
+];
 
 describe("ContractPdfArtifactWriterService", () => {
   it("writes a generated PDF artifact to private storage and creates a FileObject", async () => {
@@ -61,20 +108,26 @@ describe("ContractPdfArtifactWriterService", () => {
       sizeBytes: 18
     });
     expect(result.diagnostics.anchorOccurrences).toEqual({
-      customerSignatureKeyword: 1,
-      platformSealKeyword: 1
+      stage1SigningSlots: {
+        STAGE1_ATTACHMENT1_CUSTOMER: 1,
+        STAGE1_ATTACHMENT1_PLATFORM: 1,
+        STAGE1_BODY_CUSTOMER: 1,
+        STAGE1_BODY_PLATFORM: 1
+      }
     });
   });
 
-  it("rejects missing platform anchor before rendering or storage writes", async () => {
+  it.each([
+    ["Stage 1 body customer", "STAGE1_BODY_CUSTOMER"],
+    ["Stage 1 body platform", "STAGE1_BODY_PLATFORM"],
+    ["Stage 1 Attachment 1 customer", "STAGE1_ATTACHMENT1_CUSTOMER"],
+    ["Stage 1 Attachment 1 platform", "STAGE1_ATTACHMENT1_PLATFORM"]
+  ])("rejects missing %s slot before rendering or storage writes", async (_label, slotId) => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
     await expect(writer.writeGeneratedContractPdfArtifact({
       renderModel: createModel({
-        signingAnchors: {
-          customerSignatureKeyword: "Customer signature",
-          platformSealKeyword: ""
-        }
+        signingSlots: STAGE1_SIGNING_SLOTS.filter((slot) => slot.slotId !== slotId)
       })
     })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
@@ -83,15 +136,12 @@ describe("ContractPdfArtifactWriterService", () => {
     expect(fileObjectCreate).not.toHaveBeenCalled();
   });
 
-  it("rejects missing customer anchor before rendering or storage writes", async () => {
+  it("rejects duplicate Stage 1 body platform slot before rendering or storage writes", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
     await expect(writer.writeGeneratedContractPdfArtifact({
       renderModel: createModel({
-        signingAnchors: {
-          customerSignatureKeyword: "",
-          platformSealKeyword: "Provider seal"
-        }
+        contentTemplate: "Synthetic non-legal text. 合同正文-服务提供方盖章 appears here too."
       })
     })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
@@ -100,28 +150,14 @@ describe("ContractPdfArtifactWriterService", () => {
     expect(fileObjectCreate).not.toHaveBeenCalled();
   });
 
-  it("rejects duplicate platform anchor before rendering or storage writes", async () => {
-    const { fileObjectCreate, renderer, storage, writer } = createWriter();
-
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel({
-        contentTemplate: "Synthetic non-legal text. Provider seal appears here too."
-      })
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
-
-    expect(renderer.render).not.toHaveBeenCalled();
-    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
-    expect(fileObjectCreate).not.toHaveBeenCalled();
-  });
-
-  it("rejects duplicate customer anchor before rendering or storage writes", async () => {
+  it("rejects duplicate Stage 1 attachment customer slot in appendix data before rendering or storage writes", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
     await expect(writer.writeGeneratedContractPdfArtifact({
       renderModel: createModel({
         appendix: {
           sections: [{
-            rows: [{ label: "Customer anchor duplicate", value: "Customer signature" }],
+            rows: [{ label: "Accidental slot duplicate", value: "附件1订阅方案-订阅方签字" }],
             title: "Synthetic appendix"
           }]
         }
@@ -129,6 +165,75 @@ describe("ContractPdfArtifactWriterService", () => {
     })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
     expect(renderer.render).not.toHaveBeenCalled();
+    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(fileObjectCreate).not.toHaveBeenCalled();
+  });
+
+  it("does not accept legacy signing anchor metadata as rendered Stage 1 slot text", async () => {
+    const { fileObjectCreate, renderer, storage, writer } = createWriter();
+
+    await expect(writer.writeGeneratedContractPdfArtifact({
+      renderModel: createModel({
+        signingAnchors: {
+          customerSignatureKeyword: "合同正文-订阅方签字",
+          platformSealKeyword: "合同正文-服务提供方盖章"
+        },
+        signingSlots: []
+      })
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+
+    expect(renderer.render).not.toHaveBeenCalled();
+    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(fileObjectCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate Stage 1 slot definitions before rendering or storage writes", async () => {
+    const { fileObjectCreate, renderer, storage, writer } = createWriter();
+
+    await expect(writer.writeGeneratedContractPdfArtifact({
+      renderModel: createModel({
+        signingSlots: [
+          ...STAGE1_SIGNING_SLOTS,
+          {
+            ...STAGE1_SIGNING_SLOTS[0]!
+          }
+        ]
+      })
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+
+    expect(renderer.render).not.toHaveBeenCalled();
+    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(fileObjectCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects an incomplete customer/platform slot pair before rendering or storage writes", async () => {
+    const { fileObjectCreate, renderer, storage, writer } = createWriter();
+
+    await expect(writer.writeGeneratedContractPdfArtifact({
+      renderModel: createModel({
+        signingSlots: STAGE1_SIGNING_SLOTS.filter((slot) => slot.slotId !== "STAGE1_ATTACHMENT1_PLATFORM")
+      })
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+
+    expect(renderer.render).not.toHaveBeenCalled();
+    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(fileObjectCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects renderer diagnostics without Stage 1 slots", async () => {
+    const { fileObjectCreate, renderer, storage, writer } = createWriter({
+      rendererResult: {
+        diagnostics: {
+          hasStage1SigningSlots: false
+        }
+      }
+    });
+
+    await expect(writer.writeGeneratedContractPdfArtifact({
+      renderModel: createModel()
+    })).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING/);
+
+    expect(renderer.render).toHaveBeenCalledOnce();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
     expect(fileObjectCreate).not.toHaveBeenCalled();
   });
@@ -283,6 +388,13 @@ function createWriter(options: {
       hasCustomerSignatureKeyword: true,
       hasLegalBody: true,
       hasPlatformSealKeyword: true,
+      hasStage1SigningSlots: true,
+      stage1SigningSlotOccurrences: {
+        STAGE1_ATTACHMENT1_CUSTOMER: 1,
+        STAGE1_ATTACHMENT1_PLATFORM: 1,
+        STAGE1_BODY_CUSTOMER: 1,
+        STAGE1_BODY_PLATFORM: 1
+      },
       ...options.rendererResult?.diagnostics
     },
     fileName: "CON-TEST-001.pdf"
@@ -332,7 +444,12 @@ function createWriter(options: {
   };
 }
 
-function createModel(overrides: Partial<ContractPdfRenderModel> = {}): ContractPdfRenderModel {
+function createModel(
+  overrides: Omit<Partial<ContractPdfRenderModel>, "signingSlots"> & {
+    signingSlots?: ContractPdfSigningSlot[];
+    signingStage?: string;
+  } = {}
+): ContractPdfRenderModel {
   return {
     appendix: {
       sections: [{
@@ -348,6 +465,8 @@ function createModel(overrides: Partial<ContractPdfRenderModel> = {}): ContractP
     contractNo: "CON-TEST-001",
     generatedAt: new Date("2026-07-09T00:00:00.000Z"),
     orderNo: "ORD-TEST-001",
+    signingStage: "STAGE1_CONTRACT",
+    signingSlots: STAGE1_SIGNING_SLOTS.map((slot) => ({ ...slot })),
     signingAnchors: {
       customerSignatureKeyword: "Customer signature",
       platformSealKeyword: "Provider seal",

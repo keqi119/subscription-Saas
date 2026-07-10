@@ -57,7 +57,8 @@ import {
   ContractPdfAppendixRow,
   ContractPdfAppendixSection,
   ContractPdfRenderModel,
-  ContractPdfValue
+  ContractPdfValue,
+  createStage1ContractPdfSigningSlots
 } from "../contract/contract-pdf-render-model";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -95,10 +96,6 @@ const CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE =
 
 const CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV = "CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED";
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
-const CONTRACT_PDF_PLATFORM_SEAL_KEYWORD = "服务提供方盖章";
-const CONTRACT_PDF_CUSTOMER_SIGNATURE_KEYWORD = "订阅方盖章/签字";
-const CONTRACT_PDF_PLATFORM_SEAL_OFFSET_X = 60;
-const CONTRACT_PDF_PLATFORM_SEAL_OFFSET_Y = 0;
 
 const PRE_CONTRACT_CHANGE_STATUSES = new Set<OrderStatus>([
   OrderStatus.PENDING_REVIEW,
@@ -2874,12 +2871,8 @@ function buildContractPdfRenderModel(
     contractNo: contract.contractNo,
     generatedAt: contract.createdAt,
     orderNo: order.orderNo,
-    signingAnchors: {
-      customerSignatureKeyword: CONTRACT_PDF_CUSTOMER_SIGNATURE_KEYWORD,
-      platformSealKeyword: CONTRACT_PDF_PLATFORM_SEAL_KEYWORD,
-      platformSealOffsetX: CONTRACT_PDF_PLATFORM_SEAL_OFFSET_X,
-      platformSealOffsetY: CONTRACT_PDF_PLATFORM_SEAL_OFFSET_Y
-    },
+    signingSlots: createStage1ContractPdfSigningSlots(),
+    signingStage: "STAGE1_CONTRACT",
     templateName: template.templateName,
     templateVersion: template.versionNo
   };

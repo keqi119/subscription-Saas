@@ -20,6 +20,13 @@ import {
   OrderService
 } from "../src/order/order.service";
 
+const STAGE1_SLOT_KEYWORDS = [
+  "合同正文-订阅方签字",
+  "合同正文-服务提供方盖章",
+  "附件1订阅方案-订阅方签字",
+  "附件1订阅方案-服务提供方盖章"
+];
+
 describe("subscription order and contract rules", () => {
   it("defaults order business type to subscription", () => {
     expect(ensureSubscriptionBusinessType()).toBe(BusinessType.SUBSCRIPTION);
@@ -124,7 +131,14 @@ describe("subscription order and contract rules", () => {
       renderModel: {
         appendix: { sections: unknown[] };
         contentTemplate: string;
-        signingAnchors: Record<string, unknown>;
+        signingSlots: Array<{
+          documentType: string;
+          keyword: string;
+          signerRole: string;
+          slotId: string;
+          stage: string;
+        }>;
+        signingStage: string;
       };
     } & Record<string, unknown>;
     const calls = harness.artifactWriter.writeGeneratedContractPdfArtifact.mock.calls as unknown as Array<[ArtifactWriterInput]>;
@@ -142,19 +156,49 @@ describe("subscription order and contract rules", () => {
       contractNo: contract.contractNo,
       contentTemplate: harness.template.contentTemplate,
       orderNo: "ORD202606020800000001",
-      signingAnchors: {
-        customerSignatureKeyword: "订阅方盖章/签字",
-        platformSealKeyword: "服务提供方盖章",
-        platformSealOffsetX: 60,
-        platformSealOffsetY: 0
-      },
+      signingStage: "STAGE1_CONTRACT",
       templateName: harness.template.templateName,
       templateVersion: harness.template.versionNo
     });
+    expect(input.renderModel.signingSlots).toEqual([
+      expect.objectContaining({
+        documentType: "CONTRACT_BODY",
+        keyword: "合同正文-订阅方签字",
+        signerRole: "CUSTOMER",
+        slotId: "STAGE1_BODY_CUSTOMER",
+        stage: "STAGE1_CONTRACT"
+      }),
+      expect.objectContaining({
+        documentType: "CONTRACT_BODY",
+        keyword: "合同正文-服务提供方盖章",
+        signerRole: "PLATFORM",
+        slotId: "STAGE1_BODY_PLATFORM",
+        stage: "STAGE1_CONTRACT"
+      }),
+      expect.objectContaining({
+        documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+        keyword: "附件1订阅方案-订阅方签字",
+        signerRole: "CUSTOMER",
+        slotId: "STAGE1_ATTACHMENT1_CUSTOMER",
+        stage: "STAGE1_CONTRACT"
+      }),
+      expect.objectContaining({
+        documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+        keyword: "附件1订阅方案-服务提供方盖章",
+        signerRole: "PLATFORM",
+        slotId: "STAGE1_ATTACHMENT1_PLATFORM",
+        stage: "STAGE1_CONTRACT"
+      })
+    ]);
+    expect(input.renderModel.signingSlots.map((slot) => slot.keyword)).toEqual(STAGE1_SLOT_KEYWORDS);
+    expect(input.renderModel.signingSlots.map((slot) => slot.keyword)).not.toContain("服务提供方盖章");
+    expect(input.renderModel.signingSlots.map((slot) => slot.keyword)).not.toContain("订阅方盖章/签字");
     expect(input.renderModel.appendix.sections.length).toBeGreaterThan(0);
     const searchableModel = JSON.stringify(input.renderModel);
     expect(searchableModel).not.toContain("risk-result-1");
     expect(searchableModel).not.toContain("VIN202606020000001");
+    expect(searchableModel).not.toContain("DELIVERY_HANDOVER");
+    expect(searchableModel).not.toContain("附件2");
     expect(contract.fileId).toBe("generated-file-1");
     expect(harness.state.contracts[0]!.fileId).toBe("generated-file-1");
     expect(harness.state.contractId).toBe(contract.id);
@@ -737,15 +781,20 @@ function createArtifactWriterMock(options: { error?: Error; fileId?: string } = 
         bucket: "application-materials",
         diagnostics: {
           anchorOccurrences: {
-            customerSignatureKeyword: 1,
-            platformSealKeyword: 1
+            stage1SigningSlots: {
+              STAGE1_ATTACHMENT1_CUSTOMER: 1,
+              STAGE1_ATTACHMENT1_PLATFORM: 1,
+              STAGE1_BODY_CUSTOMER: 1,
+              STAGE1_BODY_PLATFORM: 1
+            }
           },
           renderDiagnostics: {
             hasAppendix: true,
             hasCjkContent: true,
             hasCustomerSignatureKeyword: true,
             hasLegalBody: true,
-            hasPlatformSealKeyword: true
+            hasPlatformSealKeyword: true,
+            hasStage1SigningSlots: true
           },
           searchableTextPdfRequired: true,
           textExtractionVerified: false

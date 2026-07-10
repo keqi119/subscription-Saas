@@ -54,17 +54,22 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] `CONTRACT_PDF_CJK_FONT_PATH` is configured outside the repository and verified inside the runtime container.
 - [ ] Font family/package/file and license approval are recorded by operator/legal reviewers.
 - [ ] API image build evidence shows Source Han Sans SC `2.005R` asset SHA256 verification and extraction to `/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf`.
-- [ ] Legal template anchor placement strategy is resolved before generated PDF artifact creation.
+- [ ] Legal template Stage 1 slot strategy is resolved before generated PDF artifact creation.
+- [ ] Stage 1 generated source PDF contains contract main body plus Attachment 1 subscription plan / transaction terms snapshot.
+- [ ] Stage 1 generated source PDF excludes Attachment 2 vehicle handover / delivery confirmation.
 - [ ] Generated source PDF passes MIME, `%PDF-` header, size, and generated object-key preflight.
 - [ ] Generated source PDF is text-based, searchable, and not image-only.
-- [ ] Generated source PDF contains each required signing anchor exactly once.
+- [ ] Generated source PDF contains each required Stage 1 signing slot keyword exactly once.
+- [ ] Fadada/eSign provider multi-position mapping for Stage 1 slots is separately approved and checked against local provider docs before provider calls.
 
-## Required Signing Anchors
+## Required Stage 1 Signing Slots
 
-- Platform / service provider seal: `服务提供方盖章`
-- Customer signature: `订阅方盖章/签字`
+- Contract body customer signature: `合同正文-订阅方签字`
+- Contract body platform/company seal: `合同正文-服务提供方盖章`
+- Attachment 1 customer signature: `附件1订阅方案-订阅方签字`
+- Attachment 1 platform/company seal: `附件1订阅方案-服务提供方盖章`
 
-The platform seal area must reserve right-side blank space. Provider-side placement intent is:
+The platform seal slots must reserve right-side blank space. Provider-side placement intent is:
 
 ```text
 keyx=60
@@ -77,7 +82,8 @@ keyy=0
 - [ ] Customer signing URL belongs to the customer signer.
 - [ ] Customer completion does not mark contract signed.
 - [ ] Customer completion does not move order to pending payment.
-- [ ] Generated signing PDF contains the approved platform seal keyword.
+- [ ] Generated signing PDF contains the four approved Stage 1 slot keywords exactly once.
+- [ ] Generated signing PDF does not contain Attachment 2 delivery handover as part of Stage 1.
 - [ ] Generated signing PDF source object key matches `contracts/{contractId}/generated/...`.
 - [ ] Platform auto seal succeeds.
 - [ ] Final PDF shows customer signature and company seal.
@@ -100,11 +106,12 @@ Any of the following means production enablement must stop:
 - CJK font path is missing, unreadable, or not verified in the runtime container.
 - CJK font family/package/file or license approval is missing.
 - API image font install, checksum verification, or target path validation evidence is missing.
-- Legal template anchor strategy is unresolved.
-- The legal DOCX/body anchors are duplicated by renderer-generated anchors in the final render model.
+- Legal template Stage 1 slot strategy is unresolved.
+- Stage 1 generated source PDF includes Attachment 2 delivery handover content.
+- The final render model is missing or duplicates any approved Stage 1 slot keyword.
 - Generated PDF contains garbled Chinese.
 - Generated PDF is image-only or not searchable.
-- Either required signing anchor is missing or duplicated.
+- Provider multi-position mapping for Stage 1 slots has not been checked against local Fadada docs.
 - Generated artifact preflight fails.
 - `contract.fileId` is missing for enterprise auto seal.
 - Generated object key is a sandbox, test fixture, wrong-contract, or signed archive path.

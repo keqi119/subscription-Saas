@@ -15,7 +15,13 @@
 - Do not modify application source, Prisma schema, migrations, runtime configuration, legal templates, or contract/e-sign behavior.
 - Do not create a real `.env` file or import production credentials, PII, provider URLs, or tokens.
 - Do not connect to a database, run migrations or seeds, call Fadada/WeChat/other providers, enable feature flags, deploy, push, create a PR, or merge.
-- Use an intentionally unreachable loopback `DATABASE_URL` only for Prisma parse/generate commands that do not connect to a database.
+- During Task 3, export an inert, intentionally unreachable loopback
+  `DATABASE_URL` across the full ten-command suite to override any ambient real
+  database URL. Prisma validate/generate and API commands that load Prisma
+  configuration may read it; unrelated commands merely inherit it.
+- The placeholder never authorizes a connection. `prisma generate` is
+  non-connecting, but it writes the local generated client and artifacts under
+  ignored dependency state.
 - Modify and stage explicit approved paths only.
 - Approved tracked paths:
   - `AGENTS.md`
@@ -166,7 +172,7 @@ Expected: no dependency manifest or lockfile diff.
 - Consumes: installed workspace and current source tree.
 - Produces: static/type/test evidence without a live database or provider call.
 
-- [ ] **Step 1: Export a deliberately unreachable parse-only database URL**
+- [ ] **Step 1: Export an inert unreachable database URL across the suite**
 
 Use this environment for every command in this task:
 
@@ -174,6 +180,13 @@ Use this environment for every command in this task:
 export DATABASE_URL='postgresql://placeholder:placeholder@127.0.0.1:1/placeholder?schema=public'
 export COREPACK_HOME=/tmp/corepack-work-mode
 ```
+
+The placeholder is intentionally exported for all ten Task 3 commands to
+override any ambient real `DATABASE_URL`. Prisma validate/generate and API
+commands that load Prisma configuration may read it; unrelated commands merely
+inherit it. It does not authorize a database connection. `prisma generate` is
+non-connecting, but it writes the generated client and artifacts into ignored
+local dependency state.
 
 - [ ] **Step 2: Validate generated and static contracts**
 

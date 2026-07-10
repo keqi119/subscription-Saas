@@ -141,15 +141,17 @@ Required branch policy fields are `BASE_BRANCH`, `EXPECTED_BRANCH`,
 | Read-only repository inspection | Allowed within the assigned task. |
 | File edits or local commit | Task must approve the paths and requested write/commit scope. Stage explicit paths only. |
 | Dependency or generated-state writes | Task must explicitly authorize them; preserve manifests and lockfile unless separately approved. |
-| Parse-only Prisma validate/generate | Task must authorize it; use an unreachable placeholder URL, no real `.env`, and no real credentials. |
+| Offline placeholder `DATABASE_URL` and Prisma-generated state | Task must authorize the named suite. Export an inert unreachable placeholder URL across that suite to override any ambient real database URL; it never authorizes a connection. `prisma generate` is non-connecting but writes generated client/artifacts under ignored local dependency state. |
 | Any real database read | Explicit user authorization for the named command and independently verified target. |
 | Any database mutation, migration, seed, or backfill apply | Explicit user authorization, verified disposable/approved target, backup and rollback requirements appropriate to the environment. |
 | Any real provider or smoke call | Explicit user authorization for that run, approved sanitized inputs, original provider docs, and a named environment. |
 | Feature-flag change, access sync, deployment, push, PR, or merge | Explicit user authorization for the specific external action. None is implied by build or local-commit work. |
 | Legal text or provider semantic decision | Approved legal original or original provider documentation; never inference from a summary. |
 
-The presence of a database URL, credential, token, provider endpoint, or feature
-flag in the shell never grants permission to use it.
+Within an authorized offline suite, Prisma validate/generate and API commands
+that load Prisma configuration may read the placeholder URL; unrelated commands
+merely inherit it. The presence of a database URL, credential, token, provider
+endpoint, or feature flag in the shell never grants permission to use it.
 
 ## 8. Local Environment And Tool Matrix
 
@@ -184,9 +186,10 @@ only install concern was a non-fatal npm warning that the inherited
 `http-proxy` environment configuration will be unsupported in npm's next major
 version.
 
-Task 3 then ran the following ten offline-safe gates with the deliberately
-unreachable loopback `DATABASE_URL`, no real `.env` or credentials, and no live
-database or provider access:
+Task 3 then intentionally exported the inert, deliberately unreachable loopback
+`DATABASE_URL` across the following ten offline-safe gates to override any
+ambient real database URL. No real `.env`, live database/provider endpoint, or
+credentials were configured:
 
 ```bash
 export COREPACK_HOME=/tmp/corepack-work-mode
@@ -203,6 +206,11 @@ corepack pnpm --filter @subscription-saas/web test
 corepack pnpm --filter @subscription-saas/api test:fleet-ops
 corepack pnpm --filter @subscription-saas/api test
 ```
+
+Prisma validate/generate and API commands that load Prisma configuration may
+read the placeholder; unrelated commands merely inherit it. `prisma generate`
+is non-connecting, but it writes the generated client and artifacts into ignored
+local dependency state.
 
 All 10/10 gates exited `0`:
 
@@ -221,8 +229,9 @@ All 10/10 gates exited `0`:
 
 The test commands reported 169 file-runs and 1,347 test-runs, with intentional
 overlap because the Fleet Ops selection is included in the full API suite. The
-tracked tree remained clean after the gates. No unexpected connection attempt
-occurred. Do not substitute the aggregate `quality:gate` or `release:check`,
+tracked tree remained clean after the gates. No live endpoint or credentials
+were configured, and no command reported a database connection attempt or
+failure. Do not substitute the aggregate `quality:gate` or `release:check`,
 because their current definitions include database-backed checks.
 
 Documentation-only changes use this repository safety gate:

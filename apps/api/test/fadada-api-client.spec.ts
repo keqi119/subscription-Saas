@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FadadaApiClient } from "../src/esign/fadada/fadada-api.client";
-import { buildFadadaMsgDigestFromParts } from "../src/esign/fadada/fadada-digest";
+import { buildFadadaMsgDigest, buildFadadaMsgDigestFromParts } from "../src/esign/fadada/fadada-digest";
 import { FadadaHttpClient, FadadaTransport } from "../src/esign/fadada/fadada-http-client";
 import { buildContractStatusRequest } from "../src/esign/fadada/fadada-request-builder";
 import { FadadaConfig } from "../src/esign/fadada/fadada.types";
@@ -267,6 +267,65 @@ describe("Fadada API client", () => {
       endpoint: "extsign_validation.api",
       method: "GET",
       pageInterface: true
+    });
+  });
+
+  it("builds coordinate-based manual signing URL with two signature positions", async () => {
+    const transport: FadadaTransport = vi.fn(async () => {
+      throw new Error("extsign.api is a page URL and must not be prefetched");
+    });
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.createExternalSignUrl({
+      contractId: "CON-1",
+      customerId: "fadada-customer-1",
+      docTitle: "Contract.pdf",
+      notifyUrl: "https://api.example.test/esign/callback/fadada",
+      returnUrl: "https://app.example.test/portal/contracts/contract-1",
+      signaturePositions: [
+        { pagenum: 0, x: 520.25, y: 730.5 },
+        { pagenum: 2, x: 521.75, y: 731.25 }
+      ],
+      transactionId: "TX1",
+      validityMinutes: 30
+    });
+
+    expect(result.transactionId).toBe("TX1");
+    expect(transport).not.toHaveBeenCalled();
+    const url = new URL(result.signUrl);
+    expect(`${url.origin}${url.pathname}`).toBe("https://testapi.fadada.com:8443/api/extsign.api");
+    expect(url.searchParams.get("transaction_id")).toBe("TX1");
+    expect(url.searchParams.get("contract_id")).toBe("CON-1");
+    expect(url.searchParams.get("customer_id")).toBe("fadada-customer-1");
+    expect(url.searchParams.get("position_type")).toBe("1");
+    expect(url.searchParams.get("sign_keyword")).toBeNull();
+    expect(url.searchParams.get("signature_positions")).toBe(JSON.stringify([
+      { pagenum: 0, x: 520.25, y: 730.5 },
+      { pagenum: 2, x: 521.75, y: 731.25 }
+    ]));
+    expect(url.searchParams.get("msg_digest")).toBe(buildFadadaMsgDigest({
+      appId: "app-123",
+      appSecret: "secret-xyz",
+      businessParams: {
+        contract_id: "CON-1",
+        customer_id: "fadada-customer-1",
+        doc_title: "Contract.pdf",
+        notify_url: "https://api.example.test/esign/callback/fadada",
+        position_type: "1",
+        return_url: "https://app.example.test/portal/contracts/contract-1",
+        signature_positions: JSON.stringify([
+          { pagenum: 0, x: 520.25, y: 730.5 },
+          { pagenum: 2, x: 521.75, y: 731.25 }
+        ]),
+        transaction_id: "TX1"
+      },
+      timestamp: url.searchParams.get("timestamp") ?? ""
+    }));
+    expect(result.raw).toMatchObject({
+      endpoint: "extsign.api",
+      method: "GET",
+      pageInterface: true,
+      signaturePositions: 2
     });
   });
 

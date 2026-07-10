@@ -200,7 +200,7 @@ export class ESignService {
       const task = await this.findTaskOrThrow(existingTask.id);
       return toESignTaskView(task);
     }
-    await this.preflightSigningPdfArtifact(contract.id);
+    const signingPdfArtifact = await this.preflightSigningPdfArtifact(contract.id);
 
     const documentName = contract.contractTitle || `合同 ${contract.contractNo}`;
     const requestSnapshotInput: Record<string, unknown> = {
@@ -294,6 +294,12 @@ export class ESignService {
         }],
         ...(stage1MultiSlotEnabled
           ? {
+              signingSlotCoordinates: signingPdfArtifact?.slotCoordinates?.map((coordinate) => ({
+                pageNumber: coordinate.pageNumber,
+                slotId: coordinate.slotId,
+                x: coordinate.x,
+                y: coordinate.y
+              })),
               signingSlots,
               signingStage: STAGE1_SIGNING_STAGE
             }
@@ -488,7 +494,36 @@ export class ESignService {
       slot.required !== false && !coveredRequiredSlotIds.has(slot.slotId)
     );
     if (missingRequiredSlot) {
-      throw new Error(`ESIGN_STAGE1_SLOT_PROVIDER_RESULT_MISSING: ${missingRequiredSlot.slotId}`);
+      const missingSlots = input.signingSlots.filter((slot) =>
+        slot.required !== false && !coveredRequiredSlotIds.has(slot.slotId)
+      );
+      for (const slot of missingSlots) {
+        if (slot.providerActionType !== "PLATFORM_AUTO_SEAL" || slot.signerRole !== "PLATFORM") {
+          throw new Error(`ESIGN_STAGE1_SLOT_PROVIDER_RESULT_MISSING: ${slot.slotId}`);
+        }
+        const signer = input.task.signers.find((row) => readSnapshotString(row.snapshot, "slotId") === slot.slotId);
+        if (!signer) {
+          throw new Error(`ESIGN_STAGE1_SLOT_SIGNER_MISSING: missing signer row for ${slot.slotId}`);
+        }
+        await input.tx.contractESignSigner.update({
+          data: {
+            providerSignerId: null,
+            signerStatus: ESignSignerStatus.PENDING,
+            snapshot: toJsonValue(mergeSnapshot(signer.snapshot, {
+              documentType: slot.documentType,
+              keyword: slot.keyword,
+              pendingReason: "PLATFORM_MAPPING_NOT_IMPLEMENTED",
+              providerActionType: slot.providerActionType,
+              providerTransactionId: null,
+              required: slot.required !== false,
+              signerRole: slot.signerRole,
+              signingStage: slot.signingStage,
+              slotId: slot.slotId
+            }))
+          },
+          where: { id: signer.id }
+        });
+      }
     }
   }
 
@@ -1580,6 +1615,7 @@ export class ESignService {
         `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING}: generated Stage 1 slot coordinates are required`
       );
     }
+    return artifact;
   }
 
   private resolvePlatformSealPlacement(): AutoSealPlacement | undefined {

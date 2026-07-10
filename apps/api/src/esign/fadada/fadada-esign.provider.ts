@@ -11,6 +11,8 @@ import {
   CreateSignTaskInput,
   CreateSignTaskResult,
   ESignProvider,
+  ESignSlotId,
+  ESignSigningSlotCoordinate,
   GetSignerUrlInput,
   GetSignerUrlResult,
   VerifyCallbackResult
@@ -30,6 +32,14 @@ export const FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING = "FADADA_PLATFORM_AUTO_SE
 export const FADADA_PLATFORM_AUTO_SEAL_POSITIONING_MISSING = "FADADA_PLATFORM_AUTO_SEAL_POSITIONING_MISSING";
 export const FADADA_STAGE1_MULTI_SLOT_MAPPING_NOT_IMPLEMENTED =
   "FADADA_STAGE1_MULTI_SLOT_MAPPING_NOT_IMPLEMENTED";
+export const FADADA_STAGE1_CUSTOMER_SLOT_MISSING = "FADADA_STAGE1_CUSTOMER_SLOT_MISSING";
+export const FADADA_STAGE1_CUSTOMER_SLOT_COORDINATES_MISSING =
+  "FADADA_STAGE1_CUSTOMER_SLOT_COORDINATES_MISSING";
+
+const STAGE1_CUSTOMER_SLOT_IDS: ESignSlotId[] = [
+  "STAGE1_BODY_CUSTOMER",
+  "STAGE1_ATTACHMENT1_CUSTOMER"
+];
 
 export class FadadaESignProvider implements ESignProvider {
   readonly providerType = "FADADA";
@@ -43,9 +53,7 @@ export class FadadaESignProvider implements ESignProvider {
 
   async createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
     if (input.signingStage === "STAGE1_CONTRACT" || (input.signingSlots?.length ?? 0) > 0) {
-      throw new Error(
-        `${FADADA_STAGE1_MULTI_SLOT_MAPPING_NOT_IMPLEMENTED}: Stage 1 multi-position Fadada mapping is not implemented`
-      );
+      return this.createStage1CustomerSignTask(input);
     }
 
     if (!this.apiClient || !this.pdfArtifactService) {
@@ -114,6 +122,110 @@ export class FadadaESignProvider implements ESignProvider {
         signUrlExpiresAt: signUrlResult.signUrlExpiresAt,
         providerCustomerId: resolvedSignerCustomer.providerCustomerId,
         signerType: "CUSTOMER"
+      }]
+    };
+  }
+
+  private async createStage1CustomerSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
+    const customerSlots = resolveStage1CustomerSlots(input);
+    if (!this.apiClient || !this.pdfArtifactService) {
+      throw new Error(`${FADADA_PROVIDER_DEPENDENCY_MISSING}: Fadada B2-A dependencies are not wired`);
+    }
+
+    const customerSigner = input.signers.find((signer) => signer.signerType === "CUSTOMER");
+    if (!customerSigner?.customerId) {
+      throw new Error("FADADA_CUSTOMER_SIGNER_MISSING: customer signer is required");
+    }
+    const formalProviderCustomerId = await this.findVerifiedProviderCustomerId(customerSigner.customerId);
+    const resolvedSignerCustomer = resolveFadadaSignerCustomerId({
+      config: this.config,
+      contractId: input.contractId,
+      formalProviderCustomerId,
+      localCustomerId: customerSigner.customerId,
+      mode: this.config.fullSigningSmokeEnabled ? "FULL_SIGNING_SMOKE" : "NORMAL",
+      orderId: undefined
+    });
+
+    const providerContractId = input.taskNo;
+    const transactionId = buildTransactionId(input.taskNo, 1);
+    const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId, {
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true,
+      requireStage1SlotCoordinates: true
+    });
+    const coordinateSource = input.signingSlotCoordinates ?? artifact.slotCoordinates;
+    const signaturePositions = customerSlots.map((slot) => {
+      const coordinate = findSlotCoordinate(coordinateSource, slot.slotId);
+      if (!coordinate) {
+        throw new Error(`${FADADA_STAGE1_CUSTOMER_SLOT_COORDINATES_MISSING}: ${slot.slotId}`);
+      }
+      return {
+        pagenum: coordinate.pageNumber,
+        x: coordinate.x,
+        y: coordinate.y
+      };
+    });
+
+    const uploadResult = await this.apiClient.uploadDocs({
+      contractId: providerContractId,
+      docTitle: input.documentName,
+      fileName: artifact.fileName,
+      pdf: artifact.buffer
+    });
+    const signUrlResult = await this.apiClient.createExternalSignUrl({
+      contractId: providerContractId,
+      customerId: resolvedSignerCustomer.providerCustomerId,
+      docTitle: input.documentName,
+      notifyUrl: input.callbackUrl ?? this.config.signNotifyUrl ?? "",
+      returnUrl: input.redirectUrl ?? this.config.signReturnUrl ?? "",
+      signaturePositions,
+      signerMobile: customerSigner.phone,
+      signerName: customerSigner.name,
+      transactionId
+    });
+
+    return {
+      actions: [{
+        coveredSlotIds: STAGE1_CUSTOMER_SLOT_IDS,
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerSignerId: transactionId,
+        providerTransactionId: transactionId,
+        signUrl: signUrlResult.signUrl,
+        signUrlExpiresAt: signUrlResult.signUrlExpiresAt,
+        signerType: "CUSTOMER",
+        signingStage: "STAGE1_CONTRACT"
+      }],
+      documentObjectKey: artifact.objectKey,
+      providerEnvelopeId: providerContractId,
+      providerTaskId: transactionId,
+      rawResponse: {
+        artifact: {
+          fileName: artifact.fileName,
+          objectKey: artifact.objectKey,
+          size: artifact.size,
+          source: artifact.source,
+          slotCoordinates: signaturePositions.length
+        },
+        signerCustomer: {
+          source: resolvedSignerCustomer.source
+        },
+        signUrl: signUrlResult.raw,
+        upload: uploadResult.raw
+      },
+      signUrl: signUrlResult.signUrl,
+      signUrlExpiresAt: signUrlResult.signUrlExpiresAt,
+      signers: [{
+        coveredSlotIds: STAGE1_CUSTOMER_SLOT_IDS,
+        customerId: customerSigner.customerId,
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerCustomerId: resolvedSignerCustomer.providerCustomerId,
+        providerSignerId: transactionId,
+        providerTransactionId: transactionId,
+        signUrl: signUrlResult.signUrl,
+        signUrlExpiresAt: signUrlResult.signUrlExpiresAt,
+        signerType: "CUSTOMER",
+        signingStage: "STAGE1_CONTRACT"
       }]
     };
   }
@@ -244,6 +356,37 @@ function mapFadadaResultCode(resultCode: string | undefined) {
   }
 }
 
+function resolveStage1CustomerSlots(input: CreateSignTaskInput) {
+  const slots = input.signingSlots ?? [];
+  const customerSlots = STAGE1_CUSTOMER_SLOT_IDS.map((slotId) => {
+    const slot = slots.find((item) =>
+      item.slotId === slotId &&
+      item.signingStage === "STAGE1_CONTRACT" &&
+      item.providerActionType === "CUSTOMER_MANUAL_SIGN" &&
+      item.signerRole === "CUSTOMER"
+    );
+    if (!slot) {
+      throw new Error(`${FADADA_STAGE1_CUSTOMER_SLOT_MISSING}: ${slotId}`);
+    }
+    return slot;
+  });
+
+  return customerSlots;
+}
+
+function findSlotCoordinate(
+  coordinates: ReadonlyArray<Pick<ESignSigningSlotCoordinate, "pageNumber" | "slotId" | "x" | "y">> | undefined,
+  slotId: ESignSlotId
+) {
+  return coordinates?.find((coordinate) =>
+    coordinate.slotId === slotId &&
+    Number.isInteger(coordinate.pageNumber) &&
+    coordinate.pageNumber >= 0 &&
+    isFiniteNumberInRange(coordinate.x, 0, 800) &&
+    isFiniteNumberInRange(coordinate.y, 0, 1131)
+  );
+}
+
 function isSuccessfulAutoSealResult(resultCode: string | undefined) {
   return resultCode === "1000";
 }
@@ -277,6 +420,10 @@ function sanitizeCallbackPayload(payload: FadadaSignCallbackPayload): FadadaSign
 
 function stringOrUndefined(value: unknown) {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isFiniteNumberInRange(value: unknown, min: number, max: number) {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
 function buildTransactionId(taskNo: string, index: number) {

@@ -169,7 +169,7 @@ The coordinate source is `PDFKIT_RENDERER`. The coordinate system is `FADADA_800
 
 The recorded point represents the center of the signing or seal blank area, not the keyword text baseline and not the keyword text start position. Artifact writing must fail before storage if any required Stage 1 slot coordinate is missing, has an invalid page number, has out-of-range x/y values, or has non-positive width/height.
 
-This metadata prepares the source artifact for future Fadada `signature_positions` mapping. It does not by itself serialize `signature_positions`, call Fadada, trigger e-signing, or enable production Stage 1 multi-position signing.
+This metadata is the source of truth for Fadada `signature_positions` mapping. The customer-side Stage 1 mapping uses the persisted generated PDF artifact diagnostics directly and must not recalculate coordinates, parse the PDF, or use keyword fallback.
 
 Generated Stage 1 source artifacts now propagate renderer-produced slot coordinates beyond the writer result. After successful artifact writing, `OrderService.generateContract()` stores the generated PDF artifact diagnostics in `Contract.contractSnapshot.generatedContractPdfArtifact`, including:
 
@@ -181,7 +181,7 @@ Generated Stage 1 source artifacts now propagate renderer-produced slot coordina
 
 `ContractPdfArtifactService` reads this persisted diagnostic metadata for generated `Contract.fileId` artifacts and exposes the coordinates to future e-sign provider mapping. It does not invent coordinates for `ContractVersion.fileId` legacy fallback artifacts, parse the PDF after generation, recalculate positions, or fall back to keyword search.
 
-When future Stage 1 multi-slot signing is requested, missing or invalid persisted coordinates must fail preflight before provider calls. Fadada `signature_positions` serialization remains a separate future provider-mapping task.
+When Stage 1 multi-slot signing is requested, missing or invalid persisted coordinates must fail preflight before provider calls. Customer-side `extsign.api` mapping now serializes the two customer slot coordinates into one signing URL. Platform-side `extsign_auto.api` coordinate mapping remains a separate future provider-mapping task.
 
 ## Stage 2 Boundary
 
@@ -272,11 +272,11 @@ The Fadada protocol foundation now enforces safe provider transaction IDs and en
 - unknown Fadada callback transactions are isolated and do not mutate tasks
 - callbacks with mismatched `contract_id` are isolated and do not mutate tasks
 
-Future Stage 1 provider mapping remains separate from PDF generation. The intended mapping is one customer `extsign.api` transaction with two `signature_positions`, plus one platform `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`. This has not been enabled by the PDF artifact foundation alone.
+Stage 1 provider mapping remains separate from PDF generation. The customer side now maps one `extsign.api` transaction with two `signature_positions` from generated artifact coordinates. The platform side remains one future `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`. This has not been enabled by the PDF artifact foundation alone.
 
-The local e-sign task model now has a guarded Stage 1 slot completion foundation behind `ESIGN_STAGE1_MULTI_SLOT_ENABLED`, which defaults to false. When enabled by a future provider-mapping build, multiple local slot rows may share one provider transaction id, callbacks update only rows with the matching transaction id, and final completion/archive remain blocked until all required slot rows are signed.
+The local e-sign task model has a guarded Stage 1 slot completion foundation behind `ESIGN_STAGE1_MULTI_SLOT_ENABLED`, which defaults to false. When enabled, multiple local slot rows may share one provider transaction id, callbacks update only rows with the matching transaction id, and final completion/archive remain blocked until all required slot rows are signed.
 
-The current Fadada provider still rejects Stage 1 slot-aware input before upload because real `signature_positions` request mapping remains future work. Do not enable the Stage 1 multi-slot flag in production before the customer `extsign.api` and platform `extsign_auto.api` multi-position payloads are implemented and sandbox-proven.
+The current Fadada provider supports only the customer-side coordinate mapping. Platform rows remain pending until the future platform auto-seal mapping is implemented. Do not enable the Stage 1 multi-slot flag in production before the complete customer and platform multi-position flow is implemented and sandbox-proven.
 
 ## Current Foundation Boundary
 

@@ -20,9 +20,16 @@ export const FADADA_DOWNLOAD_REQUIRES_PDF = "FADADA_DOWNLOAD_REQUIRES_PDF";
 export const FADADA_ACCOUNT_CUSTOMER_ID_MISSING = "FADADA_ACCOUNT_CUSTOMER_ID_MISSING";
 export const FADADA_PERSON_VERIFY_URL_MISSING = "FADADA_PERSON_VERIFY_URL_MISSING";
 export const FADADA_TRANSACTION_ID_INVALID = "FADADA_TRANSACTION_ID_INVALID";
+export const FADADA_SIGNATURE_POSITIONS_INVALID = "FADADA_SIGNATURE_POSITIONS_INVALID";
 
 const MAX_FADADA_PDF_BYTES = 20 * 1024 * 1024;
 const FADADA_TRANSACTION_ID_PATTERN = /^[A-Za-z0-9]{1,32}$/;
+
+export interface FadadaManualSignPosition {
+  pagenum: number;
+  x: number;
+  y: number;
+}
 
 export class FadadaApiClient {
   constructor(
@@ -225,6 +232,7 @@ export class FadadaApiClient {
     notifyUrl: string;
     validityMinutes?: number;
     quantity?: number;
+    signaturePositions?: FadadaManualSignPosition[];
     signerName?: string;
     signerMobile?: string;
   }): Promise<{
@@ -234,6 +242,41 @@ export class FadadaApiClient {
     raw: unknown;
   }> {
     assertFadadaTransactionId(input.transactionId);
+    const signaturePositions = normalizeManualSignPositions(input.signaturePositions);
+    if (signaturePositions) {
+      const timestamp = fadadaTimestampNow();
+      const request = buildFadadaRequest({
+        businessParams: {
+          contract_id: input.contractId,
+          customer_id: input.customerId,
+          doc_title: input.docTitle,
+          notify_url: input.notifyUrl,
+          position_type: "1",
+          return_url: input.returnUrl,
+          signature_positions: JSON.stringify(signaturePositions),
+          transaction_id: input.transactionId,
+          ...(input.signerName ? { signer_name: input.signerName } : {}),
+          ...(input.signerMobile ? { signer_mobile: input.signerMobile } : {})
+        },
+        config: this.config,
+        endpoint: FADADA_ENDPOINTS.extSign,
+        method: "GET",
+        timestamp
+      });
+      const signUrl = buildGetRequestUrl(request.url, request.params);
+
+      return {
+        raw: {
+          endpoint: request.endpoint,
+          method: request.method,
+          pageInterface: true,
+          signaturePositions: signaturePositions.length
+        },
+        signUrl,
+        transactionId: input.transactionId
+      };
+    }
+
     const validity = input.validityMinutes ?? this.config.signUrlValidityMinutes;
     const quantity = input.quantity ?? this.config.signUrlQuantity;
     const timestamp = fadadaTimestampNow();
@@ -470,6 +513,32 @@ function toFadadaAutoSealPlacementParams(placement?: AutoSealPlacement) {
   return params;
 }
 
+function normalizeManualSignPositions(value: FadadaManualSignPosition[] | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${FADADA_SIGNATURE_POSITIONS_INVALID}: signature_positions must include at least one coordinate`);
+  }
+
+  return value.map((position) => {
+    if (
+      !Number.isInteger(position.pagenum) ||
+      position.pagenum < 0 ||
+      !isFiniteNumberInRange(position.x, 0, 800) ||
+      !isFiniteNumberInRange(position.y, 0, 1131)
+    ) {
+      throw new Error(`${FADADA_SIGNATURE_POSITIONS_INVALID}: invalid SearchLocation coordinate`);
+    }
+
+    return {
+      pagenum: position.pagenum,
+      x: position.x,
+      y: position.y
+    };
+  });
+}
+
 function assertPdf(pdf: Buffer, fileName: string) {
   if (pdf.length > MAX_FADADA_PDF_BYTES) {
     throw new Error(`${FADADA_UPLOAD_FILE_TOO_LARGE}: PDF must be <= 20MB`);
@@ -501,6 +570,10 @@ function buildGetRequestUrl(baseUrl: string, params: Record<string, string>) {
     url.searchParams.set(key, value);
   }
   return url.toString();
+}
+
+function isFiniteNumberInRange(value: unknown, min: number, max: number) {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
 function assertDownloadedPdf(buffer: Buffer, contentType?: string) {

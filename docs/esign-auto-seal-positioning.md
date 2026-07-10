@@ -1,10 +1,10 @@
 # eSign Platform Auto Seal Positioning
 
-Status: backend positioning support only. Production auto seal remains disabled until sandbox validation and go/no-go are completed.
+Status: backend positioning and Stage 1 coordinate auto-seal support only. Production auto seal remains disabled until sandbox validation and go/no-go are completed.
 
 ## Purpose
 
-Fadada enterprise auto seal requires an approved signing position. The MVP uses keyword-based positioning and maps it to `extsign_auto.api`.
+Fadada enterprise auto seal requires an approved signing position. Legacy non-slot signing uses keyword-based positioning and maps it to `extsign_auto.api`. Stage 1 multi-slot signing uses generated PDF coordinates.
 
 ## Configuration
 
@@ -39,7 +39,13 @@ Keyword placement is sent to Fadada auto seal as:
 - `position_type=0`
 - `sign_keyword=<approved keyword>`
 
-Coordinate placement is intentionally left as a future extension. Do not add coordinate fields until the provider parameter mapping and placement rule are approved for production use.
+Stage 1 platform coordinate placement is sent to Fadada auto seal as:
+
+- `position_type=1`
+- `signature_id=<configured platform signature id>`
+- `signature_positions=<JSON array of SearchLocation>`
+
+Those coordinates are sourced from generated PDF artifact diagnostics for the two platform slots. Do not recalculate coordinates, parse the PDF after rendering, or fall back to keyword search for Stage 1 platform placement.
 
 ## Protocol Foundation
 
@@ -58,7 +64,7 @@ The local task model supports Stage 1 signing slots behind `ESIGN_STAGE1_MULTI_S
 
 The customer-side coordinate mapping now builds one `extsign.api` signing URL with two `signature_positions` sourced from generated PDF artifact slot diagnostics. It covers only the two Stage 1 customer slots and must not recalculate coordinates, parse the PDF, or fall back to keyword search.
 
-Platform-side coordinate auto seal mapping remains future work. This document still does not enable full Stage 1 multi-position provider mapping. Do not enable production Stage 1 multi-slot signing before the platform `extsign_auto.api` coordinate mapping is implemented and the complete customer/platform flow is sandbox-proven.
+Platform-side coordinate auto seal mapping now builds one `extsign_auto.api` request with `position_type=1`, explicit `signature_id`, and two `signature_positions` sourced from generated PDF artifact slot diagnostics. The Stage 1 task completes only after both customer slot rows and both platform slot rows are signed. Do not enable production Stage 1 multi-slot signing before the complete customer/platform flow is sandbox-proven.
 
 ## Failed Task Boundary
 

@@ -181,7 +181,7 @@ Generated Stage 1 source artifacts now propagate renderer-produced slot coordina
 
 `ContractPdfArtifactService` reads this persisted diagnostic metadata for generated `Contract.fileId` artifacts and exposes the coordinates to future e-sign provider mapping. It does not invent coordinates for `ContractVersion.fileId` legacy fallback artifacts, parse the PDF after generation, recalculate positions, or fall back to keyword search.
 
-When Stage 1 multi-slot signing is requested, missing or invalid persisted coordinates must fail preflight before provider calls. Customer-side `extsign.api` mapping now serializes the two customer slot coordinates into one signing URL. Platform-side `extsign_auto.api` coordinate mapping remains a separate future provider-mapping task.
+When Stage 1 multi-slot signing is requested, missing or invalid persisted coordinates must fail preflight before provider calls. Customer-side `extsign.api` mapping serializes the two customer slot coordinates into one signing URL. Platform-side `extsign_auto.api` mapping serializes the two platform slot coordinates into one auto-seal request with `position_type=1` and explicit `signature_id`.
 
 ## Stage 2 Boundary
 
@@ -272,11 +272,11 @@ The Fadada protocol foundation now enforces safe provider transaction IDs and en
 - unknown Fadada callback transactions are isolated and do not mutate tasks
 - callbacks with mismatched `contract_id` are isolated and do not mutate tasks
 
-Stage 1 provider mapping remains separate from PDF generation. The customer side now maps one `extsign.api` transaction with two `signature_positions` from generated artifact coordinates. The platform side remains one future `extsign_auto.api` transaction with `position_type=1`, two `signature_positions`, and explicit `signature_id`. This has not been enabled by the PDF artifact foundation alone.
+Stage 1 provider mapping remains separate from PDF generation. The customer side maps one `extsign.api` transaction with two `signature_positions` from generated artifact coordinates. The platform side maps one `extsign_auto.api` transaction with `position_type=1`, two `signature_positions` from generated artifact coordinates, and explicit `signature_id`. This still has not been production-enabled by the PDF artifact foundation alone.
 
 The local e-sign task model has a guarded Stage 1 slot completion foundation behind `ESIGN_STAGE1_MULTI_SLOT_ENABLED`, which defaults to false. When enabled, multiple local slot rows may share one provider transaction id, callbacks update only rows with the matching transaction id, and final completion/archive remain blocked until all required slot rows are signed.
 
-The current Fadada provider supports only the customer-side coordinate mapping. Platform rows remain pending until the future platform auto-seal mapping is implemented. Do not enable the Stage 1 multi-slot flag in production before the complete customer and platform multi-position flow is implemented and sandbox-proven.
+The current Fadada provider supports customer-side and platform-side Stage 1 coordinate mapping. Platform auto seal is triggered only after both customer slot rows are signed and both `ESIGN_STAGE1_MULTI_SLOT_ENABLED=true` and `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true` are configured. Do not enable the Stage 1 multi-slot flow in production before the complete customer and platform multi-position flow is sandbox-proven and go/no-go approved.
 
 ## Current Foundation Boundary
 
@@ -335,7 +335,7 @@ Recommended follow-up sequence:
 1. CJK font deployment checklist: complete `docs/cjk-font-deployment-checklist.md` evidence and choose the approved deployment method.
 2. Formal template import: import legal-approved contract text and appendix structure after external approval, including Stage 1 slot strategy.
 3. CJK font deployment: configure `CONTRACT_PDF_CJK_FONT_PATH` outside the repository and verify it inside the API container.
-4. Fadada provider multi-position mapping: map Stage 1 body and Attachment 1 customer/platform slots only after checking local Fadada docs.
+4. Stage 1 Fadada sandbox validation: prove customer two-position signing, platform two-position auto seal, callbacks, final PDF, and archive behavior against the local Fadada docs.
 5. Sandbox validation record: complete the generated source PDF and final signed PDF evidence trail.
 6. Stage 2 delivery handover architecture: design Attachment 2 as a separate delivery document/task.
 7. Optional PDF text extraction preflight, only after dependency/security approval.

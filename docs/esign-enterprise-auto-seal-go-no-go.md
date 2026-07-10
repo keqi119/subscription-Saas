@@ -20,7 +20,7 @@ This checklist must be completed before enabling enterprise auto seal in product
 - [ ] Auto-sign API permission is enabled.
 - [ ] `FADADA_PLATFORM_CUSTOMER_ID` is configured outside the repository.
 - [ ] `FADADA_PLATFORM_SIGNATURE_ID` is configured outside the repository.
-- [ ] `ESIGN_PLATFORM_SEAL_KEYWORD` is configured outside the repository.
+- [ ] `ESIGN_PLATFORM_SEAL_KEYWORD` is configured outside the repository if a legacy keyword-based flow is used.
 - [ ] Callback endpoint is confirmed.
 - [ ] Seal placement or keyword rule is approved.
 - [ ] Provider sandbox run completed.
@@ -32,7 +32,7 @@ This checklist must be completed before enabling enterprise auto seal in product
 - [ ] Unknown or mismatched Fadada callback `transaction_id` values are isolated and do not mutate tasks.
 - [ ] Stage 1 slot completion evidence shows callbacks update only rows covered by the matching provider `transaction_id`.
 - [ ] Fadada Stage 1 customer slot-aware requests use generated artifact coordinates for two `extsign.api` `signature_positions`.
-- [ ] Fadada Stage 1 platform slot-aware requests remain blocked until `extsign_auto.api` coordinate mapping is implemented and sandbox-proven.
+- [ ] Fadada Stage 1 platform slot-aware requests use generated artifact coordinates for two `extsign_auto.api` `signature_positions` with explicit `signature_id`.
 
 Representative local Fadada docs to check before modifying or enabling related behavior:
 
@@ -47,7 +47,7 @@ Representative local Fadada docs to check before modifying or enabling related b
 ## Application Prerequisites
 
 - [ ] `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED` remains false before go/no-go.
-- [ ] `ESIGN_STAGE1_MULTI_SLOT_ENABLED` remains false in production until complete customer/platform provider multi-position mapping and sandbox proof are complete.
+- [ ] `ESIGN_STAGE1_MULTI_SLOT_ENABLED` remains false in production until complete customer/platform provider multi-position mapping has passed sandbox proof and go/no-go.
 - [ ] API typecheck passes.
 - [ ] API lint passes.
 - [ ] Focused e-sign/Fadada/archive/order tests pass.
@@ -92,6 +92,9 @@ keyy=0
 - [ ] Customer signing URL maps both customer slots through one `extsign.api` transaction.
 - [ ] Customer completion does not mark contract signed.
 - [ ] Customer completion does not move order to pending payment.
+- [ ] Customer completion triggers exactly one platform auto-seal request only when `ESIGN_STAGE1_MULTI_SLOT_ENABLED=true` and `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true`.
+- [ ] Platform auto seal maps both platform slots through one `extsign_auto.api` transaction.
+- [ ] Platform auto seal uses `position_type=1`, explicit `signature_id`, and two generated-coordinate `signature_positions`.
 - [ ] Generated signing PDF contains the four approved Stage 1 slot keywords exactly once.
 - [ ] Generated signing PDF does not contain Attachment 2 delivery handover as part of Stage 1.
 - [ ] Generated signing PDF source object key matches `contracts/{contractId}/generated/...`.
@@ -127,8 +130,8 @@ Any of the following means production enablement must stop:
 - Generated PDF contains garbled Chinese.
 - Generated PDF is image-only or not searchable.
 - Provider multi-position mapping for Stage 1 slots has not been checked against local Fadada docs.
-- `ESIGN_STAGE1_MULTI_SLOT_ENABLED` is enabled in production before Fadada customer/platform `signature_positions` mapping is fully implemented and sandbox-proven.
-- Platform `extsign_auto.api` coordinate mapping is missing or not sandbox-proven.
+- `ESIGN_STAGE1_MULTI_SLOT_ENABLED` is enabled in production before Fadada customer/platform `signature_positions` mapping is sandbox-proven and go/no-go approved.
+- Platform `extsign_auto.api` coordinate mapping is not sandbox-proven.
 - Local Stage 1 slot completion can complete a task before all required slot rows are signed.
 - Provider transaction IDs contain punctuation, Chinese characters, or exceed 32 characters.
 - Auto-sign success evidence is missing provider code `1000`.

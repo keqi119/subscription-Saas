@@ -1,6 +1,9 @@
 import {
+  ContractPdfDocumentType,
   ContractPdfRenderDiagnostics,
   ContractPdfRenderModel,
+  ContractPdfSignerRole,
+  ContractPdfSigningStage,
   ContractPdfSigningSlotCoordinate,
   ContractPdfStage1SigningSlotOccurrences
 } from "./contract-pdf-render-model";
@@ -15,6 +18,7 @@ export const CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID = "CONTRACT_PDF_ARTIF
 export const CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING = "CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING";
 export const CONTRACT_PDF_ARTIFACT_STORAGE_OBJECT_EXISTS = "CONTRACT_PDF_ARTIFACT_STORAGE_OBJECT_EXISTS";
 export const CONTRACT_PDF_ARTIFACT_TOO_LARGE = "CONTRACT_PDF_ARTIFACT_TOO_LARGE";
+export const CONTRACT_PDF_GENERATED_ARTIFACT_SOURCE = "GENERATED_CONTRACT_PDF";
 
 export interface ContractPdfArtifactWriteInput {
   allowBuiltinFontForAsciiOnlyTests?: boolean;
@@ -31,11 +35,19 @@ export interface ContractPdfArtifactAnchorOccurrences {
   stage1SigningSlots: ContractPdfStage1SigningSlotOccurrences;
 }
 
+export interface ContractPdfArtifactSlotCoordinateDiagnostic extends ContractPdfSigningSlotCoordinate {
+  documentType: ContractPdfDocumentType;
+  signerRole: ContractPdfSignerRole;
+  signingStage: ContractPdfSigningStage;
+}
+
 export interface ContractPdfArtifactDiagnostics {
   anchorOccurrences: ContractPdfArtifactAnchorOccurrences;
   renderDiagnostics: ContractPdfRenderDiagnostics;
   searchableTextPdfRequired: true;
-  slotCoordinates: ContractPdfSigningSlotCoordinate[];
+  signingStage: ContractPdfSigningStage;
+  slotCoordinates: ContractPdfArtifactSlotCoordinateDiagnostic[];
+  source: typeof CONTRACT_PDF_GENERATED_ARTIFACT_SOURCE;
   textExtractionVerified: false;
 }
 

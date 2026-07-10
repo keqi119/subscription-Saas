@@ -2,6 +2,7 @@ import { ConfigService } from "@nestjs/config";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
+import { STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS } from "../src/contract/contract-pdf-render-model";
 import { ContractPdfArtifactService } from "../src/esign/contract-pdf-artifact.service";
 
 describe("ContractPdfArtifactService", () => {
@@ -146,6 +147,96 @@ describe("ContractPdfArtifactService", () => {
     });
   });
 
+  it("returns persisted Stage 1 slot coordinates for generated contract files", async () => {
+    const pdf = minimalPdf();
+    const objectKey = "contracts/contract-1/generated/CON-1.pdf";
+    const slotCoordinates = createSlotCoordinates();
+    const { service } = createFixture({
+      config: { FADADA_ENABLED: "true" },
+      contract: {
+        contractSnapshot: generatedArtifactSnapshot({
+          fileId: "file-1",
+          objectKey,
+          slotCoordinates
+        }),
+        fileId: "file-1"
+      },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey,
+        originalName: "CON-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    const artifact = await service.preflightContractPdfArtifact("contract-1", {
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true,
+      requireStage1SlotCoordinates: true
+    });
+
+    expect(artifact.slotCoordinates).toEqual(slotCoordinates);
+    expect(artifact.preflight).toMatchObject({
+      generatedContractArtifact: true,
+      source: "CONTRACT_FILE",
+      stage1SlotCoordinatesVerified: true
+    });
+    expect(artifact.preflight?.slotCoordinates).toEqual(slotCoordinates);
+  });
+
+  it("does not invent slot coordinates for ContractVersion fallback artifacts", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/version-1.pdf",
+        originalName: "version-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    const artifact = await service.getContractPdfArtifact("contract-1");
+
+    expect(artifact.source).toBe("CONTRACT_VERSION_FILE");
+    expect(artifact.slotCoordinates).toBeUndefined();
+    expect(artifact.preflight?.slotCoordinates).toBeUndefined();
+    expect(artifact.preflight?.stage1SlotCoordinatesVerified).toBe(false);
+  });
+
+  it("fails slot-aware preflight when a generated artifact lacks persisted coordinates", async () => {
+    const pdf = minimalPdf();
+    const { service } = createFixture({
+      config: { FADADA_ENABLED: "true" },
+      contract: {
+        contractSnapshot: {},
+        fileId: "file-1"
+      },
+      fileObject: {
+        bucket: "application-materials",
+        id: "file-1",
+        mimeType: "application/pdf",
+        objectKey: "contracts/contract-1/generated/CON-1.pdf",
+        originalName: "CON-1.pdf",
+        sizeBytes: BigInt(pdf.length)
+      },
+      storageObject: { contentType: "application/pdf", stream: Readable.from([pdf]) }
+    });
+
+    await expect(service.preflightContractPdfArtifact("contract-1", {
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true,
+      requireStage1SlotCoordinates: true
+    })).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING/);
+  });
+
   it("rejects signed-artifact paths as generated signing source artifacts", async () => {
     const pdf = minimalPdf();
     const { service } = createFixture({
@@ -235,6 +326,7 @@ function createFixture(options: {
 } = {}) {
   const contract = {
     contractNo: "CON-1",
+    contractSnapshot: {},
     contractTitle: "Subscription Contract",
     contractVersion: { fileId: "file-1" },
     deletedAt: null,
@@ -268,4 +360,41 @@ function createFixture(options: {
 
 function minimalPdf() {
   return Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n", "utf8");
+}
+
+function createSlotCoordinates() {
+  return STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.map((slot, index) => ({
+    coordinateSource: "PDFKIT_RENDERER",
+    coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+    documentType: slot.documentType,
+    height: 48,
+    keyword: slot.keyword,
+    pageNumber: index < 2 ? 0 : 1,
+    pdfPageHeight: 841.89,
+    pdfPageWidth: 595.28,
+    signerRole: slot.signerRole,
+    signingStage: "STAGE1_CONTRACT",
+    slotId: slot.slotId,
+    width: 160,
+    x: 520 + index,
+    y: 730 + index
+  }));
+}
+
+function generatedArtifactSnapshot(input: {
+  fileId: string;
+  objectKey: string;
+  slotCoordinates: ReturnType<typeof createSlotCoordinates>;
+}) {
+  return {
+    generatedContractPdfArtifact: {
+      fileId: input.fileId,
+      mimeType: "application/pdf",
+      objectKey: input.objectKey,
+      originalName: "CON-1.pdf",
+      signingStage: "STAGE1_CONTRACT",
+      slotCoordinates: input.slotCoordinates,
+      source: "GENERATED_CONTRACT_PDF"
+    }
+  };
 }

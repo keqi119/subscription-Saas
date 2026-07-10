@@ -125,6 +125,24 @@ describe("ContractPdfArtifactWriterService", () => {
       "STAGE1_BODY_CUSTOMER",
       "STAGE1_BODY_PLATFORM"
     ]);
+    expect(result.diagnostics).toMatchObject({
+      signingStage: "STAGE1_CONTRACT",
+      source: "GENERATED_CONTRACT_PDF"
+    });
+    expect(result.diagnostics.slotCoordinates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        documentType: "CONTRACT_BODY",
+        signerRole: "CUSTOMER",
+        signingStage: "STAGE1_CONTRACT",
+        slotId: "STAGE1_BODY_CUSTOMER"
+      }),
+      expect.objectContaining({
+        documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+        signerRole: "PLATFORM",
+        signingStage: "STAGE1_CONTRACT",
+        slotId: "STAGE1_ATTACHMENT1_PLATFORM"
+      })
+    ]));
   });
 
   it.each([

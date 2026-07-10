@@ -14,6 +14,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../src/common/business-number";
+import { STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS } from "../src/contract/contract-pdf-render-model";
 import {
   ensureAllowedChangeType,
   ensureSubscriptionBusinessType,
@@ -205,6 +206,35 @@ describe("subscription order and contract rules", () => {
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
   });
 
+  it("persists generated PDF slot coordinates in the contract snapshot", async () => {
+    const slotCoordinates = createSlotCoordinates();
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({
+        fileId: "generated-file-1",
+        slotCoordinates
+      })
+    });
+
+    const contract = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as Record<string, unknown>;
+
+    expect(contract.fileId).toBe("generated-file-1");
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(harness.state.contracts[0]!.contractSnapshot).toMatchObject({
+      generatedContractPdfArtifact: {
+        fileId: "generated-file-1",
+        objectKey: "contracts/contract-1/generated/CON-TEST.pdf",
+        signingStage: "STAGE1_CONTRACT",
+        slotCoordinates,
+        source: "GENERATED_CONTRACT_PDF"
+      }
+    });
+  });
+
   it("does not advance the order when generated PDF artifact writing fails", async () => {
     const writerError = new Error("writer failed");
     const harness = createOrderServiceHarness({
@@ -228,6 +258,24 @@ describe("subscription order and contract rules", () => {
       artifactGenerationEnabled: true,
       artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" }),
       contractFileUpdateError: updateError
+    });
+
+    await expect(
+      harness.service.generateContract(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow(updateError);
+
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
+    expect(harness.state.contractId).toBeNull();
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
+    expect(harness.state.contracts[0]!.status).toBe(ContractStatus.CANCELLED);
+  });
+
+  it("does not advance the order when slot coordinate persistence fails", async () => {
+    const updateError = new Error("contract snapshot update failed");
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" }),
+      contractSnapshotUpdateError: updateError
     });
 
     await expect(
@@ -473,6 +521,7 @@ function createOrderServiceHarness(options: {
   artifactGenerationEnabled?: boolean;
   artifactWriter?: ReturnType<typeof createArtifactWriterMock>;
   contractFileUpdateError?: Error;
+  contractSnapshotUpdateError?: Error;
   order?: Record<string, unknown>;
   quote?: Record<string, unknown>;
   vehicle?: Record<string, unknown>;
@@ -685,6 +734,9 @@ function createOrderServiceHarness(options: {
         if ("fileId" in data && options.contractFileUpdateError) {
           throw options.contractFileUpdateError;
         }
+        if ("contractSnapshot" in data && options.contractSnapshotUpdateError) {
+          throw options.contractSnapshotUpdateError;
+        }
         Object.assign(contract, data);
         return buildContract(contract);
       })
@@ -771,7 +823,11 @@ function createOrderServiceHarness(options: {
   return { artifactWriter, auditService, context, orderId, prisma, quoteId, service, state, template, tx, user, vehicleId };
 }
 
-function createArtifactWriterMock(options: { error?: Error; fileId?: string } = {}) {
+function createArtifactWriterMock(options: {
+  error?: Error;
+  fileId?: string;
+  slotCoordinates?: ReturnType<typeof createSlotCoordinates>;
+} = {}) {
   return {
     writeGeneratedContractPdfArtifact: vi.fn(async () => {
       if (options.error) {
@@ -797,6 +853,9 @@ function createArtifactWriterMock(options: { error?: Error; fileId?: string } = 
             hasStage1SigningSlots: true
           },
           searchableTextPdfRequired: true,
+          signingStage: "STAGE1_CONTRACT",
+          slotCoordinates: options.slotCoordinates ?? createSlotCoordinates(),
+          source: "GENERATED_CONTRACT_PDF",
           textExtractionVerified: false
         },
         fileId: options.fileId ?? "generated-file-1",
@@ -807,4 +866,23 @@ function createArtifactWriterMock(options: { error?: Error; fileId?: string } = 
       };
     })
   };
+}
+
+function createSlotCoordinates() {
+  return STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.map((slot, index) => ({
+    coordinateSource: "PDFKIT_RENDERER",
+    coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+    documentType: slot.documentType,
+    height: 48,
+    keyword: slot.keyword,
+    pageNumber: slot.documentType === "CONTRACT_BODY" ? 0 : 1,
+    pdfPageHeight: 841.89,
+    pdfPageWidth: 595.28,
+    signerRole: slot.signerRole,
+    signingStage: "STAGE1_CONTRACT",
+    slotId: slot.slotId,
+    width: 160,
+    x: slot.signerRole === "CUSTOMER" ? 520 : 620,
+    y: 720 + index
+  }));
 }

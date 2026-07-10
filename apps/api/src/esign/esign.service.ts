@@ -26,7 +26,10 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
-import { ContractPdfArtifactService } from "./contract-pdf-artifact.service";
+import {
+  CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING,
+  ContractPdfArtifactService
+} from "./contract-pdf-artifact.service";
 import {
   AutoSealPlacement,
   AutoSealTaskResult,
@@ -1557,19 +1560,26 @@ export class ESignService {
   private async preflightSigningPdfArtifact(contractId: string) {
     const fadadaEnabled = parseBoolean(this.configService.get<string>("FADADA_ENABLED"));
     const enterpriseAutoSealEnabled = this.isEnterpriseAutoSealEnabled();
-    if (!fadadaEnabled && !enterpriseAutoSealEnabled) {
+    const stage1MultiSlotEnabled = this.isStage1MultiSlotEnabled();
+    if (!fadadaEnabled && !enterpriseAutoSealEnabled && !stage1MultiSlotEnabled) {
       return;
     }
     if (!this.contractPdfArtifactService) {
       throw new Error("CONTRACT_PDF_ARTIFACT_REQUIRED: signing PDF artifact preflight service is unavailable");
     }
 
-    await this.contractPdfArtifactService.preflightContractPdfArtifact(contractId, {
+    const artifact = await this.contractPdfArtifactService.preflightContractPdfArtifact(contractId, {
       enterpriseAutoSealEnabled,
       fadadaEnabled,
       purpose: "FADADA_UPLOAD",
-      requireGeneratedContractArtifact: enterpriseAutoSealEnabled
+      requireGeneratedContractArtifact: enterpriseAutoSealEnabled || stage1MultiSlotEnabled,
+      requireStage1SlotCoordinates: stage1MultiSlotEnabled
     });
+    if (stage1MultiSlotEnabled && artifact && !hasRequiredStage1SlotCoordinates(artifact.slotCoordinates)) {
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING}: generated Stage 1 slot coordinates are required`
+      );
+    }
   }
 
   private resolvePlatformSealPlacement(): AutoSealPlacement | undefined {
@@ -1845,6 +1855,20 @@ function isRequiredSignerRow(signer: { snapshot: unknown }) {
 function isStage1SlotAwareTask(task: ESignTaskWithDetails) {
   return readSnapshotValue(task.requestSnapshot, "stage1MultiSlot") !== undefined ||
     task.signers.some((signer) => readSnapshotString(signer.snapshot, "signingStage") === STAGE1_SIGNING_STAGE);
+}
+
+function hasRequiredStage1SlotCoordinates(coordinates: unknown) {
+  if (!Array.isArray(coordinates)) {
+    return false;
+  }
+  return STAGE1_SIGNING_SLOTS.every((slot) =>
+    coordinates.some((coordinate) =>
+      Boolean(coordinate) &&
+      typeof coordinate === "object" &&
+      !Array.isArray(coordinate) &&
+      (coordinate as Record<string, unknown>).slotId === slot.slotId
+    )
+  );
 }
 
 function readSnapshotString(snapshot: unknown, key: string) {

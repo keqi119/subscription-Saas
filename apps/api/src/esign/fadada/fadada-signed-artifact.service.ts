@@ -229,7 +229,9 @@ export class FadadaSignedArtifactService {
     if (!force && task.taskStatus !== ESignTaskStatus.COMPLETED) {
       throw new BadRequestException(`${FADADA_ARCHIVE_INVALID_TASK}: task must be completed before archive`);
     }
-    if (!force && task.signers.some((signer) => signer.signerStatus !== ESignSignerStatus.SIGNED)) {
+    if (!force && task.signers.some((signer) =>
+      isRequiredSignerRow(signer) && signer.signerStatus !== ESignSignerStatus.SIGNED
+    )) {
       throw new BadRequestException(`${FADADA_ARCHIVE_INVALID_TASK}: all required signers must be signed before archive`);
     }
   }
@@ -289,6 +291,14 @@ function findProviderCustomerId(task: SignedArtifactTask) {
   }
   const providerCustomerId = (snapshot as Record<string, unknown>).providerCustomerId;
   return typeof providerCustomerId === "string" && providerCustomerId.trim() ? providerCustomerId : undefined;
+}
+
+function isRequiredSignerRow(signer: { snapshot?: unknown }) {
+  const snapshot = signer.snapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return true;
+  }
+  return (snapshot as Record<string, unknown>).required !== false;
 }
 
 function sanitizeProviderPayload(value: unknown): unknown {

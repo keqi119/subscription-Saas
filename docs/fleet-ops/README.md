@@ -8,7 +8,7 @@ This directory contains the architecture source, current review conclusion, and 
 
 \- source/plan\_design.md: Plan A architecture design
 
-\- source/code\_review\_202607011626.md: Current code review conclusion
+\- source/code\_review\_202607011626.md: Historical July 1 review evidence; use later completion records and current code for current-state claims
 
 \- next-stage/dev\_spec.md: Development specification
 

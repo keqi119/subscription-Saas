@@ -113,6 +113,13 @@ Every future task must declare its current phase and branch policy before writes
 
 `BASELINE -> PLAN -> BUILD -> REVIEW -> FIX -> VERIFY -> HANDOFF`
 
+This sequence is the Work orchestration lifecycle, not a replacement for the
+execution modes in `codex_workflow_rules.md`. Use the explicit mapping in that
+document: baseline work is `BRANCH_PREP` or read-only preflight; review is
+read-only `VERIFY`; fixes require a separately authorized `BUILD` pass followed
+by `VERIFY`; and handoff is reporting with an optional authorized `LOCAL_COMMIT`.
+`HUMAN_PUSH_PR_MERGE` remains human-owned unless separately authorized.
+
 | Phase | Required outcome |
 | --- | --- |
 | `BASELINE` | Resolve checkout; record branch, status, HEAD, divergence, approved paths, and environment limits. |

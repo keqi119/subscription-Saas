@@ -37,7 +37,20 @@ or completed state.
 
 ## 3. Required Work Phases
 
-Every Codex task must declare one or more phases.
+Every Codex task must declare one or more execution modes from this section.
+These modes do not replace the Work orchestration gates in
+`work_mode_handover.md`; a task should report both its current orchestration gate
+and its applicable execution mode.
+
+| Work orchestration gate | Workflow execution mode | Mapping rule |
+| --- | --- | --- |
+| `BASELINE` | `BRANCH_PREP` or read-only preflight | Use `BRANCH_PREP` when preparing or changing a branch; otherwise gather the baseline without mutation before entering another execution mode. |
+| `PLAN` | `PLAN` | Inspect and plan without implementation writes. |
+| `BUILD` | `BUILD` | Make only the approved implementation changes. |
+| `REVIEW` | `VERIFY` | Review is read-only. Record findings; do not fix them while in `VERIFY`. |
+| `FIX` | Explicitly authorized `BUILD`, followed by `VERIFY` | Apply only substantiated review fixes in a separately authorized build pass, then return to verification. |
+| `VERIFY` | `VERIFY` | Run focused checks and inspect scope without unapproved fixes. |
+| `HANDOFF` | Reporting, optionally `LOCAL_COMMIT`; remote actions remain `HUMAN_PUSH_PR_MERGE` | Create a local commit only when authorized and all gates pass. Push, PR, merge, and deploy remain human-owned unless separately authorized. |
 
 ### BRANCH_PREP
 

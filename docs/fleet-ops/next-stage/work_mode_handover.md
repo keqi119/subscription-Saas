@@ -153,17 +153,18 @@ flag in the shell never grants permission to use it.
 
 ## 8. Local Environment And Tool Matrix
 
-Snapshot recorded on 2026-07-10 before dependency setup:
+Snapshot recorded on 2026-07-10 after the authorized offline dependency setup
+and verification:
 
 | Component | Work checkout | Declared or reference baseline | Readiness note |
 | --- | --- | --- | --- |
 | Host | Linux `6.12.47`, x86_64 | CI uses Ubuntu | Available |
-| Node.js | `v24.14.0` | `>=20.9.0`; CI uses Node 22 | Engine-compatible, but not CI-parity |
+| Node.js | `v24.14.0` | `>=20.9.0`; CI uses Node 22 | Engine-compatible, but Node 24 versus CI Node 22 remains an explicit parity drift |
 | npm | `11.9.0` | Not the workspace package manager | Available, not selected |
-| pnpm | `11.7.0` | `packageManager: pnpm@11.4.0`; CI uses 11.4.0 | Version mismatch; use pinned Corepack pnpm for follow-up |
+| pnpm | Corepack-resolved `11.4.0` | `packageManager: pnpm@11.4.0`; CI uses 11.4.0 | Pinned version used for install and all offline gates |
 | Corepack | `0.34.6` | Used to resolve pnpm 11.4.0 | Available |
 | Git | `2.51.1` | Required | Available |
-| Workspace dependencies | root `node_modules/` absent | Frozen lockfile install required | Not installed; no build/test claim |
+| Workspace dependencies | root `node_modules/` present | Frozen lockfile install required | 853 lockfile entries verified and 794 packages installed; manifests and lockfile unchanged |
 | Docker / Compose | Not installed | Needed for the documented local service path | Environment blocker |
 | `psql` / `pg_isready` | Not installed | Useful for independent DB target checks | Environment blocker |
 | PostgreSQL | No local target | CI: 16; Compose: 17; deployment guide: 16 | Target/version must be selected before DB checks |
@@ -173,12 +174,19 @@ Snapshot recorded on 2026-07-10 before dependency setup:
 
 ## 9. Safe Non-Live Verification
 
-These commands are the planned non-live gate after dependency setup is
-explicitly authorized and completed with pnpm 11.4.0. They were not executed by
-this docs-only handover task; their exact Task 2/Task 3 results are
-`PENDING_OFFLINE_GATE` and must be replaced by Task 4. Run them without a real `.env` or credentials and
-with outbound provider access disabled. The loopback URL is deliberately
-unreachable and is for Prisma configuration parsing only:
+Task 2 first resolved the pinned pnpm `11.4.0`. Its initial frozen install
+stopped with exit `254` because pnpm could not create `/root/.local`. The
+authorized retry redirected `PNPM_HOME`, the XDG data/cache/config directories,
+and the pnpm store to writable temporary paths. That retry exited `0`, verified
+all 853 lockfile entries, installed 794 packages, and completed lifecycle
+scripts. The dependency manifests and `pnpm-lock.yaml` remained unchanged. The
+only install concern was a non-fatal npm warning that the inherited
+`http-proxy` environment configuration will be unsupported in npm's next major
+version.
+
+Task 3 then ran the following ten offline-safe gates with the deliberately
+unreachable loopback `DATABASE_URL`, no real `.env` or credentials, and no live
+database or provider access:
 
 ```bash
 export COREPACK_HOME=/tmp/corepack-work-mode
@@ -196,9 +204,26 @@ corepack pnpm --filter @subscription-saas/api test:fleet-ops
 corepack pnpm --filter @subscription-saas/api test
 ```
 
-Stop on the first unexpected connection attempt or failure. Do not substitute
-the aggregate `quality:gate` or `release:check`, because their current definitions
-include database-backed checks.
+All 10/10 gates exited `0`:
+
+| Gate | Exact result |
+| --- | --- |
+| Vehicle-model enum freeze | PASS; 1 gate passed, 0 failed |
+| Prisma validate | PASS; 1 schema passed, 0 failed |
+| Prisma generate | PASS; Prisma Client v7.8.0 generated |
+| Recursive lint | PASS; shared, API, and web completed |
+| API typecheck | PASS; shared build, Prisma generation, and API TypeScript check completed |
+| Web typecheck | PASS; web TypeScript check completed |
+| Shared tests | PASS; 3/3 files and 7/7 tests |
+| Web tests | PASS; 13/13 files and 64/64 tests |
+| Canonical Fleet Ops tests | PASS; 40/40 files and 156/156 tests |
+| Full API tests | PASS; 113/113 files and 1,120/1,120 tests |
+
+The test commands reported 169 file-runs and 1,347 test-runs, with intentional
+overlap because the Fleet Ops selection is included in the full API suite. The
+tracked tree remained clean after the gates. No unexpected connection attempt
+occurred. Do not substitute the aggregate `quality:gate` or `release:check`,
+because their current definitions include database-backed checks.
 
 Documentation-only changes use this repository safety gate:
 
@@ -233,7 +258,9 @@ remove this blocker. Use a separately approved disposable/test environment.
 ## 11. Fadada Intake Gate For Issue 4A-1F-E
 
 Issue 4A-1F-E is `PLAN BLOCKED` until original provider documents are available.
-The minimum intake package is:
+The original PDFs are absent from Work mode. A Library search on 2026-07-10
+identified no original Fadada API PDFs, only prior derived Markdown summaries,
+which are not authoritative. The minimum intake package is:
 
 - `3.7.3 API文档_合同签署_自动签署.pdf`;
 - `4.2.7 扩展接口列表_签署_文档签署接口（含有效期和次数）.pdf`;
@@ -245,6 +272,10 @@ The minimum intake package is:
 - every separate PDF or example whose title contains `多位置`, `关键字定位`,
   `坐标定位`, `批量自动签`, `全自动签`, `extsign_auto`, or
   `extBatchSignAuto`.
+
+The authorization materials numbered `3.7.2.1` and `3.7.2.4` are outside the
+positioning-only scope and are not required unless Issue 4A-1F-E expands to
+authorization behavior.
 
 The intake must contain documentation only: no credentials, tokens, live URLs,
 customer PII, provider customer IDs, signature IDs, PDF contracts, or raw
@@ -269,14 +300,14 @@ gate or authorize a provider call.
 | --- | --- |
 | Portable docs-only governance | `READY` after the Task 1 local commit and verification |
 | Runtime behavior | `UNCHANGED` by this handover |
-| Dependency-backed static/type/test baseline | `PENDING_OFFLINE_GATE`; dependencies are absent and Task 4 must record exact Task 2/Task 3 results |
+| Dependency-backed static/type/test baseline | `PASS`; pinned pnpm 11.4.0 frozen install completed and all 10/10 offline gates passed |
 | Migration/database verification | `NOT_RUN_ENVIRONMENT_BLOCKED` |
 | Real provider verification | `NOT_RUN_APPROVAL_AND_ENVIRONMENT_BLOCKED` |
 | Fleet Ops P2 | `PASS_WITH_NOTES`; controlled internal read-only use, with P3 deferred |
 | Issue 4A-1F-E | `PLAN BLOCKED` pending the original Fadada intake package |
 
-Next action: with explicit task authorization, resolve pnpm 11.4.0 in the
-temporary Corepack cache, install the frozen workspace without manifest or
-lockfile changes, and run the non-live verification gate above. In parallel, the
-user may supply the sanitized Fadada documentation intake package. Do not begin
-database-backed or provider work as part of either next step.
+Next action: the user may supply the sanitized original Fadada intake package
+listed above. Review those originals before planning provider positioning
+behavior. Treat Node 24 versus CI Node 22 as an explicit parity drift, and do not
+begin database-backed or provider work without separate authorization and a
+verified environment.

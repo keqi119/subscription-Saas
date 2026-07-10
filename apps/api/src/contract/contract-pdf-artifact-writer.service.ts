@@ -6,6 +6,7 @@ import { StorageService } from "../storage/storage.service";
 import {
   ContractPdfRenderModel,
   ContractPdfSigningSlot,
+  ContractPdfSigningSlotCoordinate,
   ContractPdfSigningSlotId,
   ContractPdfValue,
   STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS,
@@ -19,6 +20,8 @@ import {
   CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING,
   CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS,
   CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING,
+  CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID,
+  CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING,
   CONTRACT_PDF_ARTIFACT_STORAGE_OBJECT_EXISTS,
   CONTRACT_PDF_ARTIFACT_TOO_LARGE,
   ContractPdfArtifactAnchorOccurrences,
@@ -49,6 +52,7 @@ export class ContractPdfArtifactWriterService {
       maxBytes: input.maxBytes
     });
     validateRenderDiagnostics(renderResult.diagnostics);
+    const slotCoordinates = validateSlotCoordinates(renderResult.slotCoordinates ?? []);
     validateMaxBytes(renderResult.buffer, input.maxBytes ?? DEFAULT_MAX_BYTES);
 
     const objectKey = buildGeneratedContractPdfObjectKey(input.renderModel, renderResult.fileName);
@@ -85,6 +89,7 @@ export class ContractPdfArtifactWriterService {
         anchorOccurrences,
         renderDiagnostics: renderResult.diagnostics,
         searchableTextPdfRequired: true,
+        slotCoordinates,
         textExtractionVerified: false
       };
 
@@ -143,6 +148,47 @@ function validateRenderDiagnostics(diagnostics: ContractPdfArtifactDiagnostics["
   if (STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.some((slotId) => diagnostics.stage1SigningSlotOccurrences[slotId] !== 1)) {
     throw new Error(`${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm Stage 1 slots`);
   }
+}
+
+function validateSlotCoordinates(
+  coordinates: ContractPdfSigningSlotCoordinate[]
+): ContractPdfSigningSlotCoordinate[] {
+  for (const slotId of STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS) {
+    const matchingCoordinates = coordinates.filter((coordinate) => coordinate.slotId === slotId);
+    if (matchingCoordinates.length !== 1) {
+      throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING}: ${slotId} coordinate is required`);
+    }
+
+    const coordinate = matchingCoordinates[0]!;
+    const expected = STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.find((slot) => slot.slotId === slotId)!;
+    if (
+      coordinate.keyword !== expected.keyword ||
+      coordinate.coordinateSource !== "PDFKIT_RENDERER" ||
+      coordinate.coordinateSystem !== "FADADA_800_1131_TOP_LEFT" ||
+      !Number.isInteger(coordinate.pageNumber) ||
+      coordinate.pageNumber < 0 ||
+      !isFiniteNumberInRange(coordinate.x, 0, 800) ||
+      !isFiniteNumberInRange(coordinate.y, 0, 1131) ||
+      !isFinitePositiveNumber(coordinate.width) ||
+      !isFinitePositiveNumber(coordinate.height) ||
+      !isFinitePositiveNumber(coordinate.pdfPageWidth) ||
+      !isFinitePositiveNumber(coordinate.pdfPageHeight)
+    ) {
+      throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID}: ${slotId} coordinate is invalid`);
+    }
+  }
+
+  return STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.map((slotId) =>
+    coordinates.find((coordinate) => coordinate.slotId === slotId)!
+  );
+}
+
+function isFiniteNumberInRange(value: number, min: number, max: number) {
+  return Number.isFinite(value) && value >= min && value <= max;
+}
+
+function isFinitePositiveNumber(value: number) {
+  return Number.isFinite(value) && value > 0;
 }
 
 function validateMaxBytes(buffer: Buffer, maxBytes: number) {

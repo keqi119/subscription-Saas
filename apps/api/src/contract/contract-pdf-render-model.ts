@@ -42,6 +42,23 @@ export interface ContractPdfSigningSlot {
   title: string;
 }
 
+export type ContractPdfSigningSlotCoordinateSource = "PDFKIT_RENDERER";
+export type ContractPdfSigningSlotCoordinateSystem = "FADADA_800_1131_TOP_LEFT";
+
+export interface ContractPdfSigningSlotCoordinate {
+  coordinateSource: ContractPdfSigningSlotCoordinateSource;
+  coordinateSystem: ContractPdfSigningSlotCoordinateSystem;
+  height: number;
+  keyword: string;
+  pageNumber: number;
+  pdfPageHeight: number;
+  pdfPageWidth: number;
+  slotId: ContractPdfSigningSlotId;
+  width: number;
+  x: number;
+  y: number;
+}
+
 export interface ContractPdfSigningAnchors {
   customerSignatureKeyword: string;
   platformSealKeyword: string;

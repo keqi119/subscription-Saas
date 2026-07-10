@@ -102,6 +102,58 @@ describe("ContractPdfRendererService", () => {
         STAGE1_BODY_PLATFORM: 1
       }
     });
+    expect(result.slotCoordinates).toHaveLength(4);
+    expect(result.slotCoordinates.map((coordinate) => coordinate.slotId).sort()).toEqual([
+      "STAGE1_ATTACHMENT1_CUSTOMER",
+      "STAGE1_ATTACHMENT1_PLATFORM",
+      "STAGE1_BODY_CUSTOMER",
+      "STAGE1_BODY_PLATFORM"
+    ]);
+    for (const coordinate of result.slotCoordinates) {
+      expect(coordinate.coordinateSource).toBe("PDFKIT_RENDERER");
+      expect(coordinate.coordinateSystem).toBe("FADADA_800_1131_TOP_LEFT");
+      expect(coordinate.pageNumber).toBeGreaterThanOrEqual(0);
+      expect(coordinate.x).toBeGreaterThanOrEqual(0);
+      expect(coordinate.x).toBeLessThanOrEqual(800);
+      expect(coordinate.y).toBeGreaterThanOrEqual(0);
+      expect(coordinate.y).toBeLessThanOrEqual(1131);
+      expect(coordinate.width).toBeGreaterThan(0);
+      expect(coordinate.height).toBeGreaterThan(0);
+      expect(coordinate.pdfPageWidth).toBeGreaterThan(0);
+      expect(coordinate.pdfPageHeight).toBeGreaterThan(0);
+    }
+  });
+
+  it("tracks slot pages from the rendered PDF layout for long contracts", async () => {
+    const renderer = new ContractPdfRendererService();
+    const longBody = Array.from(
+      { length: 180 },
+      (_, index) => `Synthetic non-legal contract paragraph ${index + 1}.`
+    ).join("\n");
+    const longAppendixRows = Array.from({ length: 80 }, (_, index) => ({
+      label: `Appendix field ${index + 1}`,
+      value: `Synthetic value ${index + 1}`
+    }));
+
+    const result = await renderer.render(createAsciiModel({
+      appendix: {
+        sections: [{
+          rows: longAppendixRows,
+          title: "Synthetic long order snapshot appendix"
+        }]
+      },
+      contentTemplate: longBody
+    }), {
+      allowBuiltinFontForAsciiOnlyTests: true
+    });
+
+    const bySlot = new Map(result.slotCoordinates.map((coordinate) => [coordinate.slotId, coordinate]));
+    const bodyCustomer = bySlot.get("STAGE1_BODY_CUSTOMER")!;
+    const attachmentCustomer = bySlot.get("STAGE1_ATTACHMENT1_CUSTOMER")!;
+
+    expect(result.slotCoordinates).toHaveLength(4);
+    expect(bodyCustomer.pageNumber).toBeGreaterThan(0);
+    expect(attachmentCustomer.pageNumber).toBeGreaterThan(bodyCustomer.pageNumber);
   });
 
   it("fails when contentTemplate is empty", async () => {

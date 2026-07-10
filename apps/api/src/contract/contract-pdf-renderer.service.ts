@@ -8,6 +8,7 @@ import {
   ContractPdfRenderDiagnostics,
   ContractPdfRenderModel,
   ContractPdfSigningSlot,
+  ContractPdfSigningSlotCoordinate,
   ContractPdfSigningSlotId,
   ContractPdfValue
 } from "./contract-pdf-render-model";
@@ -28,6 +29,11 @@ const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE = "A4";
 const EMPTY_VALUE = "-";
 const CJK_PATTERN = /[\u3400-\u9fff\uf900-\ufaff]/;
+const FADADA_COORDINATE_WIDTH = 800;
+const FADADA_COORDINATE_HEIGHT = 1131;
+const SIGNING_BLANK_WIDTH = 180;
+const SIGNING_BLANK_HEIGHT = 18;
+const SIGNING_BLANK_GAP = 12;
 const STAGE1_REQUIRED_SLOT_IDS: ContractPdfSigningSlotId[] = [
   "STAGE1_BODY_CUSTOMER",
   "STAGE1_BODY_PLATFORM",
@@ -47,6 +53,7 @@ export interface ContractPdfRenderResult {
   contentType: "application/pdf";
   diagnostics: ContractPdfRenderDiagnostics;
   fileName: string;
+  slotCoordinates: ContractPdfSigningSlotCoordinate[];
 }
 
 @Injectable()
@@ -58,14 +65,15 @@ export class ContractPdfRendererService {
     const diagnostics = buildDiagnostics(model);
     validateModel(model, diagnostics);
     const fontPath = resolveFontPath(options, diagnostics);
-    const buffer = await renderPdf(model, diagnostics, fontPath, options);
+    const { buffer, slotCoordinates } = await renderPdf(model, diagnostics, fontPath, options);
     validatePdfBuffer(buffer, options.maxBytes ?? DEFAULT_MAX_BYTES);
 
     return {
       buffer,
       contentType: "application/pdf",
       diagnostics,
-      fileName: `${sanitizeFileName(model.contractNo)}.pdf`
+      fileName: `${sanitizeFileName(model.contractNo)}.pdf`,
+      slotCoordinates
     };
   }
 }
@@ -158,10 +166,15 @@ async function renderPdf(
     size: options.pageSize ?? DEFAULT_PAGE_SIZE
   });
   const chunks: Buffer[] = [];
+  const slotCoordinates: ContractPdfSigningSlotCoordinate[] = [];
+  let currentPageNumber = 0;
   const done = new Promise<Buffer>((resolve, reject) => {
     doc.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
+  });
+  doc.on("pageAdded", () => {
+    currentPageNumber += 1;
   });
 
   if (fontPath) {
@@ -178,15 +191,28 @@ async function renderPdf(
   writeMetadata(doc, model);
   writeSection(doc, "Contract Main Body");
   writeParagraph(doc, model.contentTemplate);
+  writeSection(doc, "Contract Main Body Signing Slots");
+  writeSigningSlots(
+    doc,
+    model.signingSlots.filter((slot) => slot.documentType === "CONTRACT_BODY"),
+    slotCoordinates,
+    () => currentPageNumber
+  );
   writeSection(doc, "Attachment 1: Subscription Plan / Transaction Terms Snapshot");
   writeAppendix(doc, model.appendix.sections);
-  writeSection(doc, "Stage 1 Signing Slots");
-  writeSigningSlots(doc, model.signingSlots);
+  writeSection(doc, "Attachment 1 Signing Slots");
+  writeSigningSlots(
+    doc,
+    model.signingSlots.filter((slot) => slot.documentType === "ATTACHMENT1_SUBSCRIPTION_PLAN"),
+    slotCoordinates,
+    () => currentPageNumber
+  );
   writeSection(doc, "Render Diagnostics");
   writeParagraph(doc, JSON.stringify(diagnostics));
 
   doc.end();
-  return done;
+  const buffer = await done;
+  return { buffer, slotCoordinates };
 }
 
 function writeTitle(doc: PDFKit.PDFDocument, text: string) {
@@ -242,20 +268,93 @@ function writeKeyValue(doc: PDFKit.PDFDocument, label: string, value: string) {
   });
 }
 
-function writeSigningSlots(doc: PDFKit.PDFDocument, slots: ContractPdfSigningSlot[]) {
+function writeSigningSlots(
+  doc: PDFKit.PDFDocument,
+  slots: ContractPdfSigningSlot[],
+  slotCoordinates: ContractPdfSigningSlotCoordinate[],
+  getPageNumber: () => number
+) {
   for (const slot of slots) {
-    writeSigningSlot(doc, slot);
+    writeSigningSlot(doc, slot, slotCoordinates, getPageNumber);
   }
 }
 
-function writeSigningSlot(doc: PDFKit.PDFDocument, slot: ContractPdfSigningSlot) {
-  ensureSpace(doc, 36);
-  doc.fontSize(10).text(`${slot.title} / ${slot.label}: ${slot.keyword}`, { continued: true });
-  doc.text("    ______________________________");
+function writeSigningSlot(
+  doc: PDFKit.PDFDocument,
+  slot: ContractPdfSigningSlot,
+  slotCoordinates: ContractPdfSigningSlotCoordinate[],
+  getPageNumber: () => number
+) {
+  ensureSpace(doc, 44);
+  const lineTop = doc.y;
+  const left = doc.page.margins.left;
+  const right = doc.page.width - doc.page.margins.right;
+  const blankWidth = Math.min(SIGNING_BLANK_WIDTH, Math.max(80, right - left - SIGNING_BLANK_GAP));
+  const blankX = right - blankWidth;
+  const blankY = lineTop + 2;
+  const textWidth = Math.max(80, blankX - left - SIGNING_BLANK_GAP);
+
+  doc.fontSize(10).text(`${slot.title} / ${slot.label}: ${slot.keyword}`, left, lineTop, {
+    lineGap: 2,
+    width: textWidth
+  });
+  const textBottom = doc.y;
+
+  doc.moveTo(blankX, blankY + SIGNING_BLANK_HEIGHT - 4)
+    .lineTo(right, blankY + SIGNING_BLANK_HEIGHT - 4)
+    .stroke();
+
+  slotCoordinates.push(buildSlotCoordinate({
+    blankHeight: SIGNING_BLANK_HEIGHT,
+    blankWidth,
+    blankX,
+    blankY,
+    page: doc.page,
+    pageNumber: getPageNumber(),
+    slot
+  }));
+
+  doc.x = left;
+  doc.y = Math.max(textBottom, blankY + SIGNING_BLANK_HEIGHT + 4);
   if (slot.offsetX !== undefined || slot.offsetY !== undefined) {
     doc.fontSize(8).text(`Offset intent: x=${slot.offsetX ?? 0}, y=${slot.offsetY ?? 0}`);
   }
   doc.moveDown(0.8);
+}
+
+function buildSlotCoordinate(input: {
+  blankHeight: number;
+  blankWidth: number;
+  blankX: number;
+  blankY: number;
+  page: PDFKit.PDFPage;
+  pageNumber: number;
+  slot: ContractPdfSigningSlot;
+}): ContractPdfSigningSlotCoordinate {
+  const pdfCenterX = input.blankX + input.blankWidth / 2;
+  const pdfCenterY = input.blankY + input.blankHeight / 2;
+
+  return {
+    coordinateSource: "PDFKIT_RENDERER",
+    coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+    height: toFadadaCoordinate(input.blankHeight, input.page.height, FADADA_COORDINATE_HEIGHT),
+    keyword: input.slot.keyword,
+    pageNumber: input.pageNumber,
+    pdfPageHeight: roundCoordinate(input.page.height),
+    pdfPageWidth: roundCoordinate(input.page.width),
+    slotId: input.slot.slotId,
+    width: toFadadaCoordinate(input.blankWidth, input.page.width, FADADA_COORDINATE_WIDTH),
+    x: toFadadaCoordinate(pdfCenterX, input.page.width, FADADA_COORDINATE_WIDTH),
+    y: toFadadaCoordinate(pdfCenterY, input.page.height, FADADA_COORDINATE_HEIGHT)
+  };
+}
+
+function toFadadaCoordinate(value: number, pdfDimension: number, fadadaDimension: number) {
+  return roundCoordinate((value / pdfDimension) * fadadaDimension);
+}
+
+function roundCoordinate(value: number) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function ensureSpace(doc: PDFKit.PDFDocument, requiredHeight: number) {

@@ -64,11 +64,15 @@ The local task model supports Stage 1 signing slots behind `ESIGN_STAGE1_MULTI_S
 
 The customer-side coordinate mapping now builds one `extsign.api` signing URL with two `signature_positions` sourced from generated PDF artifact slot diagnostics. It covers only the two Stage 1 customer slots and must not recalculate coordinates, parse the PDF, or fall back to keyword search.
 
+For coordinate-based customer signing, the `signature_positions` value must be serialized once as compact JSON and reused as the exact request parameter value. The `extsign.api` `msg_digest` must follow the local Fadada manual signing documentation's endpoint-specific formula using the provider `transaction_id`, timestamp, and customer id. Do not use the generic "all business parameters" digest for this page interface.
+
 Platform-side coordinate auto seal mapping now builds one `extsign_auto.api` request with `position_type=1`, explicit `signature_id`, and two `signature_positions` sourced from generated PDF artifact slot diagnostics. The Stage 1 task completes only after both customer slot rows and both platform slot rows are signed. Do not enable production Stage 1 multi-slot signing before the complete customer/platform flow is sandbox-proven.
 
 ## Failed Task Boundary
 
 Existing failed tasks should not be manually marked successful. After the PDF template and positioning are corrected, create a new e-sign task so the customer signs the corrected artifact.
+
+The controlled sandbox task `ESG20260711184435WMCD` failed at the Fadada manual signing page with a `msg_digest` validation error. Do not repair or reuse that task; after the manual signing digest/serialization fix is deployed, create a new controlled order, contract, and signing task.
 
 ## Issue 4A Boundary
 

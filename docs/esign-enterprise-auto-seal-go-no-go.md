@@ -27,6 +27,8 @@ This checklist must be completed before enabling enterprise auto seal in product
 - [ ] Fadada upload, signing, auto-signing, callback, download, and archive behavior has been checked against the local developer docs under `D:\Projects\document\fadada\doc`.
 - [ ] Fadada provider `transaction_id` format is verified as 1-32 ASCII letters or digits.
 - [ ] Fadada request digest formulas are checked against the relevant local docs before any provider call.
+- [ ] Customer `extsign.api` coordinate signing URLs use the manual-signing endpoint digest formula and not the generic sorted business-parameter digest.
+- [ ] Customer `extsign.api` `signature_positions` are serialized once as compact JSON and the value used for evidence matches the value sent to Fadada.
 - [ ] `extsign_auto.api` success handling treats only documented success code `1000` as auto-sign success.
 - [ ] `query_sign_result.api` calls include `customer_id`, `contract_id`, and `transaction_id`.
 - [ ] Unknown or mismatched Fadada callback `transaction_id` values are isolated and do not mutate tasks.
@@ -134,6 +136,8 @@ Any of the following means production enablement must stop:
 - Platform `extsign_auto.api` coordinate mapping is not sandbox-proven.
 - Local Stage 1 slot completion can complete a task before all required slot rows are signed.
 - Provider transaction IDs contain punctuation, Chinese characters, or exceed 32 characters.
+- Customer `extsign.api` manual signing URL fails provider `msg_digest` validation.
+- Customer `extsign.api` digest evidence is computed from a different `signature_positions` value than the request parameter sent to Fadada.
 - Auto-sign success evidence is missing provider code `1000`.
 - `query_sign_result.api` evidence was collected without `customer_id`.
 - Unknown or mismatched Fadada callbacks can mutate an e-sign task.
@@ -171,6 +175,8 @@ If auto seal causes issues:
 5. Keep any DB recovery separate and DB-owner approved.
 
 Do not manually mark failed e-sign tasks successful. Do not backfill old contracts automatically. After a fix, generate a new controlled order, contract, and signing task.
+
+The failed controlled task `ESG20260711184435WMCD` must not be reused after the manual signing digest fix. Use a new controlled sandbox order/contract/task for retry evidence.
 
 ## Evidence Rules
 

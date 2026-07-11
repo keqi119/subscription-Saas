@@ -170,6 +170,8 @@ Representative document categories to check:
 | Provider request checked against local Fadada docs | TBD |
 | Provider `transaction_id` values are 1-32 ASCII letters/digits | TBD |
 | Request digest formula evidence captured | TBD |
+| Customer `extsign.api` digest uses the manual-signing endpoint formula, not generic business-parameter sorting | TBD |
+| Customer `signature_positions` are serialized once as compact JSON and the sent parameter value is retained as evidence | TBD |
 | `extsign_auto.api` success code is `1000` | TBD |
 | `query_sign_result.api` includes `customer_id`, `contract_id`, and `transaction_id` | TBD |
 | Customer signer status | TBD |
@@ -199,6 +201,8 @@ Expected Stage 1 provider mapping:
 - platform: one `extsign_auto.api` transaction with `position_type=1`, two coordinate `signature_positions` from generated PDF artifact diagnostics, and explicit `signature_id`
 
 `ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Stage 1 platform auto-seal also requires `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true`. Provider-side customer/platform mapping being implemented does not prove production readiness; the complete customer signing, platform auto-seal, callback, final PDF, and archive flow must pass sandbox validation before production enablement.
+
+Known failed controlled task `ESG20260711184435WMCD` reached the customer signing page and failed provider digest validation. Do not repair or reuse that failed task. After deploying the digest/serialization fix, the sandbox retry must use a new controlled order, generated source PDF, and e-sign task.
 
 ## 9. Final Signed PDF Archive
 

@@ -34,6 +34,7 @@ const FADADA_COORDINATE_HEIGHT = 1131;
 const SIGNING_BLANK_WIDTH = 180;
 const SIGNING_BLANK_HEIGHT = 18;
 const SIGNING_BLANK_GAP = 12;
+const SIGNING_KEYWORD_LINE_HEIGHT = 14;
 const STAGE1_REQUIRED_SLOT_IDS: ContractPdfSigningSlotId[] = [
   "STAGE1_BODY_CUSTOMER",
   "STAGE1_BODY_PLATFORM",
@@ -285,20 +286,24 @@ function writeSigningSlot(
   slotCoordinates: ContractPdfSigningSlotCoordinate[],
   getPageNumber: () => number
 ) {
-  ensureSpace(doc, 44);
+  ensureSpace(doc, 68);
   const lineTop = doc.y;
   const left = doc.page.margins.left;
   const right = doc.page.width - doc.page.margins.right;
   const blankWidth = Math.min(SIGNING_BLANK_WIDTH, Math.max(80, right - left - SIGNING_BLANK_GAP));
   const blankX = right - blankWidth;
-  const blankY = lineTop + 2;
-  const textWidth = Math.max(80, blankX - left - SIGNING_BLANK_GAP);
+  const fullRowWidth = Math.max(80, right - left);
 
-  doc.fontSize(10).text(`${slot.title} / ${slot.label}: ${slot.keyword}`, left, lineTop, {
+  doc.fontSize(10).text(`${slot.title} / ${slot.label}:`, left, lineTop, {
     lineGap: 2,
-    width: textWidth
+    width: fullRowWidth
   });
-  const textBottom = doc.y;
+  const keywordTop = doc.y;
+  doc.fontSize(10).text(slot.keyword, left, keywordTop, {
+    lineBreak: false
+  });
+  const keywordBottom = keywordTop + SIGNING_KEYWORD_LINE_HEIGHT;
+  const blankY = keywordBottom + 2;
 
   doc.moveTo(blankX, blankY + SIGNING_BLANK_HEIGHT - 4)
     .lineTo(right, blankY + SIGNING_BLANK_HEIGHT - 4)
@@ -315,7 +320,7 @@ function writeSigningSlot(
   }));
 
   doc.x = left;
-  doc.y = Math.max(textBottom, blankY + SIGNING_BLANK_HEIGHT + 4);
+  doc.y = Math.max(keywordBottom, blankY + SIGNING_BLANK_HEIGHT + 4);
   if (slot.offsetX !== undefined || slot.offsetY !== undefined) {
     doc.fontSize(8).text(`Offset intent: x=${slot.offsetX ?? 0}, y=${slot.offsetY ?? 0}`);
   }

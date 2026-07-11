@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED,
@@ -79,6 +81,95 @@ const CJK_STAGE1_SIGNING_SLOTS: ContractPdfSigningSlot[] = [
 ];
 
 describe("ContractPdfRendererService", () => {
+  it("renders approved Stage 1 CJK slot keywords as exact no-wrap text operations", async () => {
+    const textCalls: Array<{ options: Record<string, unknown>; text: string }> = [];
+
+    class FakePDFDocument extends EventEmitter {
+      info: Record<string, unknown> = {};
+      page = {
+        height: 841.89,
+        margins: { bottom: 50, left: 50, right: 50, top: 50 },
+        width: 595.28
+      };
+      x = 50;
+      y = 50;
+
+      addPage() {
+        this.y = this.page.margins.top;
+        this.emit("pageAdded");
+        return this;
+      }
+
+      end() {
+        this.emit("data", Buffer.from("%PDF-fake-renderer-output"));
+        this.emit("end");
+      }
+
+      font() {
+        return this;
+      }
+
+      fontSize() {
+        return this;
+      }
+
+      lineTo() {
+        return this;
+      }
+
+      moveDown(lines = 1) {
+        this.y += 12 * Number(lines);
+        return this;
+      }
+
+      moveTo() {
+        return this;
+      }
+
+      stroke() {
+        return this;
+      }
+
+      text(text: string, xOrOptions?: number | Record<string, unknown>, y?: number, options?: Record<string, unknown>) {
+        const resolvedOptions = typeof xOrOptions === "object" ? xOrOptions : options ?? {};
+        textCalls.push({ options: resolvedOptions, text });
+        if (typeof xOrOptions === "number") {
+          this.x = xOrOptions;
+        }
+        if (typeof y === "number") {
+          this.y = y;
+        }
+        this.y += resolvedOptions.lineBreak === false ? 0 : 14;
+        return this;
+      }
+    }
+
+    vi.resetModules();
+    vi.doMock("pdfkit", () => ({ default: FakePDFDocument }));
+    try {
+      const { ContractPdfRendererService: MockedRenderer } = await import(
+        "../src/contract/contract-pdf-renderer.service"
+      );
+      const renderer = new MockedRenderer();
+
+      await renderer.render(createAsciiModel({
+        contentTemplate: "Synthetic CJK fixture body 中文",
+        signingSlots: CJK_STAGE1_SIGNING_SLOTS.map((slot) => ({ ...slot }))
+      }), {
+        cjkFontPath: process.execPath
+      });
+
+      for (const slot of CJK_STAGE1_SIGNING_SLOTS) {
+        const matchingCalls = textCalls.filter((call) => call.text === slot.keyword);
+        expect(matchingCalls, slot.slotId).toHaveLength(1);
+        expect(matchingCalls[0]!.options).toMatchObject({ lineBreak: false });
+      }
+    } finally {
+      vi.doUnmock("pdfkit");
+      vi.resetModules();
+    }
+  });
+
   it("renders an ASCII synthetic contract PDF with diagnostics", async () => {
     const renderer = new ContractPdfRendererService();
 

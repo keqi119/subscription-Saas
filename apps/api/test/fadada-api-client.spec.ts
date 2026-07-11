@@ -276,57 +276,72 @@ describe("Fadada API client", () => {
     });
     const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
 
-    const result = await apiClient.createExternalSignUrl({
-      contractId: "CON-1",
-      customerId: "fadada-customer-1",
-      docTitle: "Contract.pdf",
-      notifyUrl: "https://api.example.test/esign/callback/fadada",
-      returnUrl: "https://app.example.test/portal/contracts/contract-1",
-      signaturePositions: [
-        { pagenum: 0, x: 520.25, y: 730.5 },
-        { pagenum: 2, x: 521.75, y: 731.25 }
-      ],
-      transactionId: "TX1",
-      validityMinutes: 30
-    });
-
-    expect(result.transactionId).toBe("TX1");
-    expect(transport).not.toHaveBeenCalled();
-    const url = new URL(result.signUrl);
-    expect(`${url.origin}${url.pathname}`).toBe("https://testapi.fadada.com:8443/api/extsign.api");
-    expect(url.searchParams.get("transaction_id")).toBe("TX1");
-    expect(url.searchParams.get("contract_id")).toBe("CON-1");
-    expect(url.searchParams.get("customer_id")).toBe("fadada-customer-1");
-    expect(url.searchParams.get("position_type")).toBe("1");
-    expect(url.searchParams.get("sign_keyword")).toBeNull();
-    expect(url.searchParams.get("signature_positions")).toBe(JSON.stringify([
-      { pagenum: 0, x: 520.25, y: 730.5 },
-      { pagenum: 2, x: 521.75, y: 731.25 }
-    ]));
-    expect(url.searchParams.get("msg_digest")).toBe(buildFadadaMsgDigest({
-      appId: "app-123",
-      appSecret: "secret-xyz",
-      businessParams: {
-        contract_id: "CON-1",
-        customer_id: "fadada-customer-1",
-        doc_title: "Contract.pdf",
-        notify_url: "https://api.example.test/esign/callback/fadada",
-        position_type: "1",
-        return_url: "https://app.example.test/portal/contracts/contract-1",
-        signature_positions: JSON.stringify([
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 0, 2, 3, 4, 5));
+    try {
+      const result = await apiClient.createExternalSignUrl({
+        contractId: "CON-1",
+        customerId: "fadada-customer-1",
+        docTitle: "Contract.pdf",
+        notifyUrl: "https://api.example.test/esign/callback/fadada",
+        returnUrl: "https://app.example.test/portal/contracts/contract-1",
+        signaturePositions: [
           { pagenum: 0, x: 520.25, y: 730.5 },
           { pagenum: 2, x: 521.75, y: 731.25 }
-        ]),
-        transaction_id: "TX1"
-      },
-      timestamp: url.searchParams.get("timestamp") ?? ""
-    }));
-    expect(result.raw).toMatchObject({
-      endpoint: "extsign.api",
-      method: "GET",
-      pageInterface: true,
-      signaturePositions: 2
-    });
+        ],
+        transactionId: "TX1",
+        validityMinutes: 30
+      });
+
+      expect(result.transactionId).toBe("TX1");
+      expect(transport).not.toHaveBeenCalled();
+      const url = new URL(result.signUrl);
+      const serializedPositions = JSON.stringify([
+        { pagenum: 0, x: 520.25, y: 730.5 },
+        { pagenum: 2, x: 521.75, y: 731.25 }
+      ]);
+      expect(`${url.origin}${url.pathname}`).toBe("https://testapi.fadada.com:8443/api/extsign.api");
+      expect(url.searchParams.get("transaction_id")).toBe("TX1");
+      expect(url.searchParams.get("contract_id")).toBe("CON-1");
+      expect(url.searchParams.get("customer_id")).toBe("fadada-customer-1");
+      expect(url.searchParams.get("position_type")).toBe("1");
+      expect(url.searchParams.get("sign_keyword")).toBeNull();
+      expect(url.searchParams.get("signature_positions")).toBe(serializedPositions);
+      expect(url.searchParams.get("signature_positions")).not.toContain(" ");
+      expect(url.searchParams.get("timestamp")).toBe("20260102030405");
+      expect(url.searchParams.get("msg_digest")).toBe(
+        "RTkxMUVGNEEyQ0U2NTYyRTY4QTQ0QzNDRkU1QjMxMjA0NTE0NEE2Rg=="
+      );
+      expect(url.searchParams.get("msg_digest")).toBe(buildFadadaMsgDigestFromParts({
+        appId: "app-123",
+        appSecret: "secret-xyz",
+        md5Seed: "TX120260102030405",
+        secretSortString: "fadada-customer-1"
+      }));
+      expect(url.searchParams.get("msg_digest")).not.toBe(buildFadadaMsgDigest({
+        appId: "app-123",
+        appSecret: "secret-xyz",
+        businessParams: {
+          contract_id: "CON-1",
+          customer_id: "fadada-customer-1",
+          doc_title: "Contract.pdf",
+          notify_url: "https://api.example.test/esign/callback/fadada",
+          position_type: "1",
+          return_url: "https://app.example.test/portal/contracts/contract-1",
+          signature_positions: serializedPositions,
+          transaction_id: "TX1"
+        },
+        timestamp: "20260102030405"
+      }));
+      expect(result.raw).toMatchObject({
+        endpoint: "extsign.api",
+        method: "GET",
+        pageInterface: true,
+        signaturePositions: 2
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects provider transaction ids outside the documented Fadada format", async () => {

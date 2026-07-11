@@ -245,6 +245,7 @@ export class FadadaApiClient {
     const signaturePositions = normalizeManualSignPositions(input.signaturePositions);
     if (signaturePositions) {
       const timestamp = fadadaTimestampNow();
+      const serializedSignaturePositions = serializeManualSignPositions(signaturePositions);
       const request = buildFadadaRequest({
         businessParams: {
           contract_id: input.contractId,
@@ -253,13 +254,15 @@ export class FadadaApiClient {
           notify_url: input.notifyUrl,
           position_type: "1",
           return_url: input.returnUrl,
-          signature_positions: JSON.stringify(signaturePositions),
+          signature_positions: serializedSignaturePositions,
           transaction_id: input.transactionId,
           ...(input.signerName ? { signer_name: input.signerName } : {}),
           ...(input.signerMobile ? { signer_mobile: input.signerMobile } : {})
         },
         config: this.config,
         endpoint: FADADA_ENDPOINTS.extSign,
+        explicitMd5Seed: `${input.transactionId}${timestamp}`,
+        explicitSortString: input.customerId,
         method: "GET",
         timestamp
       });
@@ -547,6 +550,14 @@ function normalizeManualSignPositions(value: FadadaManualSignPosition[] | undefi
       y: position.y
     };
   });
+}
+
+function serializeManualSignPositions(value: FadadaManualSignPosition[]) {
+  return JSON.stringify(value.map((position) => ({
+    pagenum: position.pagenum,
+    x: position.x,
+    y: position.y
+  })));
 }
 
 function assertPdf(pdf: Buffer, fileName: string) {

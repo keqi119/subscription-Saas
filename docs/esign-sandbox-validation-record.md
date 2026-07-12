@@ -145,6 +145,13 @@ Renderer-produced coordinate metadata must be recorded before any future Fadada 
 | Stage 1 multi-slot preflight rejects missing coordinates before provider calls | TBD | TBD |
 | Contract body slot coordinates visually align with the body signing area | TBD | TBD |
 | Attachment 1 slot coordinates visually align with the Attachment 1 signing area | TBD | TBD |
+| Generated PDF has no visible `Render Diagnostics` section | TBD | TBD |
+| Party A information is preserved from the approved ContractVersion template | TBD | TBD |
+| Party B dynamic fields are populated from approved customer sources only | TBD | TBD |
+| Subscriber WeChat and email are blank when no reliable customer-facing source exists | TBD | TBD |
+| Attachment 1 money rows use `人民币元` | TBD | TBD |
+| Attachment 1 starts on a new page after main body signing slots | TBD | TBD |
+| Customer signature and platform seal slots are visually separated on both signing pages | TBD | TBD |
 
 ## 8. Fadada Task
 

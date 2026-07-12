@@ -188,7 +188,16 @@ const orderInclude = {
   changes: { orderBy: { createdAt: "desc" as const }, where: { deletedAt: null } },
   contract: true,
   contracts: { orderBy: { createdAt: "desc" as const }, where: { deletedAt: null } },
-  customer: { select: { grade: true, id: true, mobile: true, name: true } },
+  customer: {
+    select: {
+      grade: true,
+      id: true,
+      identity: { select: { idCardNo: true } },
+      mobile: true,
+      name: true,
+      profile: { select: { residenceAddress: true } }
+    }
+  },
   productVersion: { include: { product: true } },
   quote: { select: { id: true, packageSnapshot: true, quoteNo: true, status: true } },
   riskResult: true,
@@ -2855,12 +2864,12 @@ function buildContractPdfRenderModel(
         ]),
         buildAppendixSection("订阅方案摘要", [
           appendixRow("租期（月）", order.periodMonths),
-          appendixRow("月租金（分）", formatMinorAmount(order.monthlyFeeAmount)),
-          appendixRow("押金（分）", formatMinorAmount(order.depositAmount)),
+          appendixRow("月租金（人民币元）", formatMinorAmountAsYuan(order.monthlyFeeAmount)),
+          appendixRow("押金（人民币元）", formatMinorAmountAsYuan(order.depositAmount)),
           appendixRow("里程额度（公里）", order.mileageLimitKm),
           appendixRow("能源额度（kWh）", order.energyLimitKwh),
           appendixRow("能源次数", order.energyLimitCount),
-          appendixRow("超里程费（分）", formatMinorAmount(order.overMileageFeeAmount)),
+          appendixRow("超里程费（人民币元）", formatMinorAmountAsYuan(order.overMileageFeeAmount)),
           appendixRow("报价编号", order.quote?.quoteNo)
         ]),
         buildAppendixSection("车辆摘要", [
@@ -2878,6 +2887,15 @@ function buildContractPdfRenderModel(
     orderNo: order.orderNo,
     signingSlots: createStage1ContractPdfSigningSlots(),
     signingStage: "STAGE1_CONTRACT",
+    subscriberParty: {
+      subscriberContactAddress: order.customer.profile?.residenceAddress ?? null,
+      subscriberContactName: order.customer.name,
+      subscriberContactPhone: order.customer.mobile,
+      subscriberEmail: null,
+      subscriberIdNumber: order.customer.identity?.idCardNo ?? null,
+      subscriberName: order.customer.name,
+      subscriberWechat: null
+    },
     templateName: template.templateName,
     templateVersion: template.versionNo
   };
@@ -2920,8 +2938,17 @@ function formatValueForPdf(value: unknown): ContractPdfValue | null {
   return String(value);
 }
 
-function formatMinorAmount(value: bigint | number | null | undefined) {
-  return value === null || value === undefined ? null : value.toString();
+function formatMinorAmountAsYuan(value: bigint | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const minor = typeof value === "bigint" ? value : BigInt(value);
+  const sign = minor < 0n ? "-" : "";
+  const absolute = minor < 0n ? -minor : minor;
+  const yuan = absolute / 100n;
+  const cents = (absolute % 100n).toString().padStart(2, "0");
+
+  return `${sign}${yuan.toString()}.${cents}`;
 }
 
 function maskPhone(value: null | string | undefined) {

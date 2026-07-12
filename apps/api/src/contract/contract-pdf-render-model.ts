@@ -66,6 +66,16 @@ export interface ContractPdfSigningAnchors {
   platformSealOffsetY?: number;
 }
 
+export interface ContractPdfSubscriberPartyInfo {
+  subscriberContactAddress: ContractPdfValue;
+  subscriberContactName: ContractPdfValue;
+  subscriberContactPhone: ContractPdfValue;
+  subscriberEmail: ContractPdfValue;
+  subscriberIdNumber: ContractPdfValue;
+  subscriberName: ContractPdfValue;
+  subscriberWechat: ContractPdfValue;
+}
+
 export type ContractPdfStage1SigningSlotOccurrences = Record<ContractPdfSigningSlotId, number>;
 
 export interface ContractPdfRenderDiagnostics {
@@ -92,6 +102,7 @@ export interface ContractPdfRenderModel {
   signingAnchors?: ContractPdfSigningAnchors;
   signingSlots: ContractPdfSigningSlot[];
   signingStage: ContractPdfSigningStage;
+  subscriberParty?: ContractPdfSubscriberPartyInfo;
   templateName: string;
   templateVersion: string;
 }

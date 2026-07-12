@@ -160,6 +160,26 @@ describe("ContractPdfRendererService", () => {
     expect(visibleText).not.toContain("订阅方盖章/签字");
   });
 
+  it("preserves main-body handover references but excludes independent Attachment 2 sections", async () => {
+    const { textCalls } = await renderWithFakePdfKit(createAsciiModel({
+      contentTemplate: [
+        "1.7 车辆交付按《车辆交接确认单》记载为准。",
+        "13.3 《车辆交接确认单》及《汽车订阅订单》为本合同的附件。",
+        "附件2：车辆交接确认单",
+        "交接确认表单字段不应进入第一阶段签署源文件。",
+        "交接确认签署区"
+      ].join("\n"),
+      signingSlots: CJK_STAGE1_SIGNING_SLOTS.map((slot) => ({ ...slot }))
+    }));
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+
+    expect(visibleText).toContain("1.7 车辆交付按《车辆交接确认单》记载为准。");
+    expect(visibleText).toContain("13.3 《车辆交接确认单》及《汽车订阅订单》为本合同的附件。");
+    expect(visibleText).not.toContain("附件2：车辆交接确认单");
+    expect(visibleText).not.toContain("交接确认表单字段不应进入第一阶段签署源文件。");
+    expect(visibleText).not.toContain("交接确认签署区");
+  });
+
   it("starts Attachment 1 on a new page after separated main body signing slots", async () => {
     const { addPageEvents, textCalls } = await renderWithFakePdfKit(createAsciiModel());
     const bodySigningSection = textCalls.find((call) => call.text === "合同正文签署区");

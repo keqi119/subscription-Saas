@@ -93,7 +93,7 @@ Synthetic test text is allowed only for automated renderer/writer tests and must
 
 Before production use, the formal template must follow the approval process in `docs/contract-template-legal-approval.md`. The approval record must include the template name, version number, effective date, legal approver, business approver, approved legal body, approved appendix field structure, approved Stage 1 signing slot keywords, and rollback version.
 
-The Stage 1 PDF source contains the contract main body plus Attachment 1 subscription plan / transaction terms snapshot. Attachment 2 vehicle handover / delivery confirmation is excluded from Stage 1 and remains a future Stage 2 document/task.
+The Stage 1 PDF source contains the contract main body plus Attachment 1 subscription plan / transaction terms snapshot. Attachment 2 vehicle handover / delivery confirmation is excluded from Stage 1 and remains a future Stage 2 document/task. Ordinary main-body legal references to the future handover confirmation document may remain; sandbox validation must reject independent Attachment 2 / vehicle-handover sections or signing areas, not every mention of the handover document title.
 
 If the legal-approved body already contains older generic anchor strings such as `服务提供方盖章` or `订阅方盖章/签字`, those strings do not satisfy the Stage 1 slot model and must not drive provider placement. Template activation must verify the generated Stage 1 render model and artifact diagnostics contain each approved Stage 1 slot exactly once with valid coordinates.
 
@@ -141,7 +141,7 @@ The Stage 1 signing PDF must preserve these four approved slot definitions in st
 
 Generated signing PDFs must be text-based and searchable. Image-only PDFs are not acceptable because legal/business review requires readable contract text and operator validation of the generated source PDF.
 
-The renderer removes only the exact trailing legacy signature page block from the rendered main body at render time. It must not mutate `ContractVersion.contentTemplate`, edit the legal DOCX, or rewrite ordinary legal clauses. The new Stage 1 signing slots are the only rendered main-body signing placement surface.
+The renderer removes only the exact trailing legacy signature page block and independent Attachment 2 / vehicle-handover sections from the rendered main body at render time. It must not mutate `ContractVersion.contentTemplate`, edit the legal DOCX, or rewrite ordinary legal clauses. Main-body references to future handover evidence must remain visible legal text. The new Stage 1 signing slots are the only rendered main-body signing placement surface.
 
 The visible generated PDF title is `汽车订阅服务合同`. Metadata and section headings are rendered in Chinese, including `合同元信息`, `合同正文`, `合同正文签署区`, `附件1：订阅方案 / 交易条件快照`, and `附件1签署区`.
 
@@ -208,7 +208,7 @@ Attachment 1 monetary rows use `人民币元` and convert stored minor-unit amou
 
 ## Stage 2 Boundary
 
-Attachment 2 vehicle handover / delivery confirmation is not rendered in the Stage 1 contract PDF. It should become a separate future document/task for delivery evidence signing. Lease commencement and billing activation alignment must be based on the future delivery handover customer signed time, not on Stage 1 contract signing, and remain separate future work.
+Attachment 2 vehicle handover / delivery confirmation is not rendered as an independent section, form, or signing area in the Stage 1 contract PDF. Main-body clauses may still reference the future handover confirmation document. Attachment 2 should become a separate future document/task for delivery evidence signing. Lease commencement and billing activation alignment must be based on the future delivery handover customer signed time, not on Stage 1 contract signing, and remain separate future work.
 
 ## Size Limit
 

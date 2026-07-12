@@ -193,7 +193,7 @@ async function renderPdf(
   writeMetadata(doc, model);
   writeSubscriberPartyInfo(doc, model.subscriberParty);
   writeSection(doc, "合同正文");
-  writeParagraph(doc, removeTrailingLegacySignatureBlock(model.contentTemplate));
+  writeParagraph(doc, buildStage1MainBodyText(model.contentTemplate));
   writeSection(doc, "合同正文签署区");
   writeSigningSlots(
     doc,
@@ -445,6 +445,31 @@ function removeTrailingLegacySignatureBlock(contentTemplate: string) {
     /\s*（以下无正文，系为签署页）\s*[\s\S]*?甲方（服务提供方）[：:][\s\S]*?（服务提供方盖章）[\s\S]*?日期[：:][^\n\r]*(?:\r?\n)+\s*乙方（订阅方）[：:][\s\S]*?（订阅方盖章\/签字）[\s\S]*?日期[：:][^\n\r]*\s*$/u,
     ""
   ).trimEnd();
+}
+
+function buildStage1MainBodyText(contentTemplate: string) {
+  return removeIndependentAttachment2Section(removeTrailingLegacySignatureBlock(contentTemplate));
+}
+
+function removeIndependentAttachment2Section(contentTemplate: string) {
+  const lines = contentTemplate.split(/\r?\n/);
+  const attachmentStart = lines.findIndex((line) => isIndependentAttachment2Heading(line));
+  if (attachmentStart < 0) {
+    return contentTemplate;
+  }
+
+  return lines.slice(0, attachmentStart).join("\n").trimEnd();
+}
+
+function isIndependentAttachment2Heading(line: string) {
+  const normalized = line.trim().replace(/\s+/g, "");
+  if (!normalized) {
+    return false;
+  }
+
+  return /^附件(?:2|二)(?:[：:、.-].*)?$/u.test(normalized) ||
+    /^《?车辆交接确认单》?$/u.test(normalized) ||
+    /^车辆交接确认(?:单|文件|书|表)$/u.test(normalized);
 }
 
 function countStage1SlotOccurrences(model: ContractPdfRenderModel) {

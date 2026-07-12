@@ -46,7 +46,7 @@ For the approved image-install path, record Source Han Sans SC from the Adobe So
 | Confirmation that Codex did not write legal text | TBD |
 | Stage 1 slot strategy selected | TBD |
 | Stage 1 source PDF excludes Attachment 2 | TBD |
-| Final render model has each required Stage 1 slot keyword exactly once | TBD |
+| Final render model has each required Stage 1 slot definition and coordinate exactly once | TBD |
 
 ## 4. Appendix Approval
 
@@ -111,13 +111,16 @@ Required Stage 1 slot keywords:
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| `合同正文-订阅方签字` appears exactly once | TBD | TBD |
-| `合同正文-服务提供方盖章` appears exactly once | TBD | TBD |
+| `STAGE1_BODY_CUSTOMER` slot definition and coordinate appear exactly once | TBD | TBD |
+| `STAGE1_BODY_PLATFORM` slot definition and coordinate appear exactly once | TBD | TBD |
 | `附件1订阅方案-订阅方签字` appears exactly once | TBD | TBD |
 | `附件1订阅方案-服务提供方盖章` appears exactly once | TBD | TBD |
 | Stage 1 source PDF contains contract main body | TBD | TBD |
 | Stage 1 source PDF contains Attachment 1 subscription plan / transaction terms snapshot | TBD | TBD |
 | Stage 1 source PDF excludes Attachment 2 vehicle handover / delivery confirmation | TBD | TBD |
+| First-page title is `汽车订阅服务合同` | TBD | TBD |
+| Metadata and section headings are rendered in Chinese | TBD | TBD |
+| Main body signing labels are visible without duplicate standalone keyword lines | TBD | TBD |
 | Platform seal slots have right-side blank space | TBD | TBD |
 | Platform offset intent: `keyx=60`, `keyy=0` | TBD | TBD |
 | Older generic anchors do not drive Stage 1 provider placement | TBD | TBD |
@@ -149,7 +152,7 @@ Renderer-produced coordinate metadata must be recorded before any future Fadada 
 | Party A information is preserved from the approved ContractVersion template | TBD | TBD |
 | Party B dynamic fields are populated from approved customer sources only | TBD | TBD |
 | Subscriber WeChat and email are blank when no reliable customer-facing source exists | TBD | TBD |
-| Attachment 1 money rows use `人民币元` | TBD | TBD |
+| Attachment 1 labels use monthly quota units and `超里程费（人民币元/公里）` | TBD | TBD |
 | Attachment 1 starts on a new page after main body signing slots | TBD | TBD |
 | Customer signature and platform seal slots are visually separated on both signing pages | TBD | TBD |
 

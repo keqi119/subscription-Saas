@@ -2866,10 +2866,10 @@ function buildContractPdfRenderModel(
           appendixRow("租期（月）", order.periodMonths),
           appendixRow("月租金（人民币元）", formatMinorAmountAsYuan(order.monthlyFeeAmount)),
           appendixRow("押金（人民币元）", formatMinorAmountAsYuan(order.depositAmount)),
-          appendixRow("里程额度（公里）", order.mileageLimitKm),
-          appendixRow("能源额度（kWh）", order.energyLimitKwh),
-          appendixRow("能源次数", order.energyLimitCount),
-          appendixRow("超里程费（人民币元）", formatMinorAmountAsYuan(order.overMileageFeeAmount)),
+          appendixRow("里程额度（公里/月）", order.mileageLimitKm),
+          appendixRow("能源额度（kWh/月）", order.energyLimitKwh),
+          appendixRow("能源次数（次/月）", order.energyLimitCount),
+          appendixRow("超里程费（人民币元/公里）", formatMinorAmountAsYuan(order.overMileageFeeAmount)),
           appendixRow("报价编号", order.quote?.quoteNo)
         ]),
         buildAppendixSection("车辆摘要", [

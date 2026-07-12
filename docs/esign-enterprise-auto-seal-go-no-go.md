@@ -70,12 +70,15 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] Stage 1 generated source PDF excludes Attachment 2 vehicle handover / delivery confirmation.
 - [ ] Generated source PDF passes MIME, `%PDF-` header, size, and generated object-key preflight.
 - [ ] Generated source PDF is text-based, searchable, and not image-only.
-- [ ] Generated source PDF contains each required Stage 1 signing slot keyword exactly once.
+- [ ] Generated source PDF artifact diagnostics contain each required Stage 1 signing slot definition and coordinate exactly once.
 - [ ] Generated source PDF does not show a visible `Render Diagnostics` section.
+- [ ] Generated source PDF first-page title is `汽车订阅服务合同`.
+- [ ] Generated source PDF metadata and section headings are localized in Chinese.
+- [ ] Generated source PDF main-body signing labels do not duplicate standalone slot keyword lines.
 - [ ] Party A information is present from the approved ContractVersion template and was not dynamically invented.
 - [ ] Party B information is populated only from approved customer sources; missing WeChat/email fields remain blank.
 - [ ] Attachment 1 starts on a new page after main body signing slots.
-- [ ] Attachment 1 money rows use `人民币元`.
+- [ ] Attachment 1 rows use approved monthly quota labels and `超里程费（人民币元/公里）`.
 - [ ] Customer signature and platform/company seal slots are visually separated on both Stage 1 signing pages.
 - [ ] Fadada/eSign provider multi-position mapping for Stage 1 slots is separately approved and checked against local provider docs before provider calls.
 
@@ -103,7 +106,7 @@ keyy=0
 - [ ] Customer completion triggers exactly one platform auto-seal request only when `ESIGN_STAGE1_MULTI_SLOT_ENABLED=true` and `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true`.
 - [ ] Platform auto seal maps both platform slots through one `extsign_auto.api` transaction.
 - [ ] Platform auto seal uses `position_type=1`, explicit `signature_id`, and two generated-coordinate `signature_positions`.
-- [ ] Generated signing PDF contains the four approved Stage 1 slot keywords exactly once.
+- [ ] Generated signing PDF artifact diagnostics contain the four approved Stage 1 slot definitions and coordinates exactly once.
 - [ ] Generated signing PDF does not contain Attachment 2 delivery handover as part of Stage 1.
 - [ ] Generated signing PDF source object key matches `contracts/{contractId}/generated/...`.
 - [ ] Platform auto seal succeeds.
@@ -134,13 +137,15 @@ Any of the following means production enablement must stop:
 - API image font install, checksum verification, or target path validation evidence is missing.
 - Legal template Stage 1 slot strategy is unresolved.
 - Stage 1 generated source PDF includes Attachment 2 delivery handover content.
-- The final render model is missing or duplicates any approved Stage 1 slot keyword.
+- The final render model or artifact diagnostics are missing or duplicate any approved Stage 1 slot definition or coordinate.
+- Generated PDF visible title, metadata, or section headings use rejected English labels.
+- Generated PDF main-body signing area visibly duplicates standalone `合同正文-订阅方签字` or `合同正文-服务提供方盖章` keyword lines.
 - Generated PDF contains garbled Chinese.
 - Generated PDF renders visible `Render Diagnostics` text.
 - Generated PDF is image-only or not searchable.
 - Generated PDF invents or dynamically overwrites Party A / service provider fields instead of preserving the approved template.
 - Generated PDF uses WeChat OpenID/UnionID as a visible subscriber WeChat number.
-- Generated PDF uses ambiguous money units such as `元` alone or stale minor-unit labels such as `分` for amount rows.
+- Generated PDF uses ambiguous money units such as `元` alone, stale minor-unit labels such as `分` for amount rows, or stale non-monthly quota labels such as `里程额度（公里）`, `能源额度（kWh）`, or standalone `能源次数`.
 - Attachment 1 is tightly attached below main body signing slots instead of starting on a new page.
 - Customer signature and platform/company seal overlap in the final signed PDF.
 - Provider multi-position mapping for Stage 1 slots has not been checked against local Fadada docs.

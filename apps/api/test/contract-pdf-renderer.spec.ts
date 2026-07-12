@@ -81,6 +81,32 @@ const CJK_STAGE1_SIGNING_SLOTS: ContractPdfSigningSlot[] = [
 ];
 
 describe("ContractPdfRendererService", () => {
+  it("renders localized Stage 1 PDF title, metadata, and section headings", async () => {
+    const { textCalls } = await renderWithFakePdfKit(createAsciiModel());
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+
+    expect(visibleText).toContain("汽车订阅服务合同");
+    expect(visibleText).toContain("合同元信息");
+    expect(visibleText).toContain("合同编号: CON-TEST-001");
+    expect(visibleText).toContain("订单编号: ORD-TEST-001");
+    expect(visibleText).toContain("合同模板: Synthetic Renderer Test Template V0.TEST");
+    expect(visibleText).toContain("生成时间: 2026-07-09T00:00:00.000Z");
+    expect(visibleText).toContain("合同正文");
+    expect(visibleText).toContain("合同正文签署区");
+    expect(visibleText).toContain("附件1：订阅方案 / 交易条件快照");
+    expect(visibleText).toContain("附件1签署区");
+    expect(visibleText).not.toContain("Stage 1 Contract Signing Source");
+    expect(visibleText).not.toContain("Contract Metadata");
+    expect(visibleText).not.toContain("Contract No");
+    expect(visibleText).not.toContain("Order No");
+    expect(visibleText).not.toContain("Template:");
+    expect(visibleText).not.toContain("Generated At:");
+    expect(visibleText).not.toContain("Contract Main Body");
+    expect(visibleText).not.toContain("Contract Main Body Signing Slots");
+    expect(visibleText).not.toContain("Attachment 1: Subscription Plan / Transaction Terms Snapshot");
+    expect(visibleText).not.toContain("Attachment 1 Signing Slots");
+  });
+
   it("keeps diagnostics structured but out of visible PDF text", async () => {
     const { textCalls } = await renderWithFakePdfKit(createAsciiModel());
 
@@ -136,10 +162,8 @@ describe("ContractPdfRendererService", () => {
 
   it("starts Attachment 1 on a new page after separated main body signing slots", async () => {
     const { addPageEvents, textCalls } = await renderWithFakePdfKit(createAsciiModel());
-    const bodySigningSection = textCalls.find((call) => call.text === "Contract Main Body Signing Slots");
-    const attachmentSection = textCalls.find((call) =>
-      call.text === "Attachment 1: Subscription Plan / Transaction Terms Snapshot"
-    );
+    const bodySigningSection = textCalls.find((call) => call.text === "合同正文签署区");
+    const attachmentSection = textCalls.find((call) => call.text === "附件1：订阅方案 / 交易条件快照");
 
     expect(addPageEvents.length).toBeGreaterThan(0);
     expect(bodySigningSection).toBeDefined();
@@ -161,7 +185,7 @@ describe("ContractPdfRendererService", () => {
       .toBeGreaterThanOrEqual(180);
   });
 
-  it("renders approved Stage 1 CJK slot keywords as exact no-wrap text operations", async () => {
+  it("does not render duplicate main body slot keyword lines while preserving coordinate slots", async () => {
     const textCalls: Array<{ options: Record<string, unknown>; text: string }> = [];
 
     class FakePDFDocument extends EventEmitter {
@@ -239,11 +263,12 @@ describe("ContractPdfRendererService", () => {
         cjkFontPath: process.execPath
       });
 
-      for (const slot of CJK_STAGE1_SIGNING_SLOTS) {
-        const matchingCalls = textCalls.filter((call) => call.text === slot.keyword);
-        expect(matchingCalls, slot.slotId).toHaveLength(1);
-        expect(matchingCalls[0]!.options).toMatchObject({ lineBreak: false });
-      }
+      const visibleText = textCalls.map((call) => call.text).join("\n");
+
+      expect(visibleText).toContain("合同正文签署区 / 订阅方签字:");
+      expect(visibleText).toContain("合同正文签署区 / 服务提供方盖章:");
+      expect(textCalls.map((call) => call.text)).not.toContain("合同正文-订阅方签字");
+      expect(textCalls.map((call) => call.text)).not.toContain("合同正文-服务提供方盖章");
     } finally {
       vi.doUnmock("pdfkit");
       vi.resetModules();

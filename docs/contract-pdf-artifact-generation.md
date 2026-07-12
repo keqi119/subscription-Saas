@@ -95,7 +95,7 @@ Before production use, the formal template must follow the approval process in `
 
 The Stage 1 PDF source contains the contract main body plus Attachment 1 subscription plan / transaction terms snapshot. Attachment 2 vehicle handover / delivery confirmation is excluded from Stage 1 and remains a future Stage 2 document/task.
 
-If the legal-approved body already contains older generic anchor strings such as `服务提供方盖章` or `订阅方盖章/签字`, those strings do not satisfy the Stage 1 slot model and must not drive provider placement. Template activation must verify the generated Stage 1 PDF contains each approved Stage 1 slot keyword exactly once.
+If the legal-approved body already contains older generic anchor strings such as `服务提供方盖章` or `订阅方盖章/签字`, those strings do not satisfy the Stage 1 slot model and must not drive provider placement. Template activation must verify the generated Stage 1 render model and artifact diagnostics contain each approved Stage 1 slot exactly once with valid coordinates.
 
 Party A / service provider information is owned by the approved `ContractVersion.contentTemplate`. The renderer must preserve Party A text already present in the template and must not invent, hardcode, configure, or dynamically overwrite Party A fields. If an approved template version does not contain required Party A information, legal/operator reviewers must update that template version before production acceptance.
 
@@ -137,13 +137,17 @@ Approved Stage 1 slot keywords:
 - Attachment 1 customer signature: `附件1订阅方案-订阅方签字`
 - Attachment 1 platform/company seal: `附件1订阅方案-服务提供方盖章`
 
-The Stage 1 signing PDF must contain these four keywords and reserve blank space on the right side for signing or sealing where needed. Stage 1 must not rely on repeated generic anchors.
+The Stage 1 signing PDF must preserve these four approved slot definitions in structured render model metadata and reserve blank space on the right side for signing or sealing where needed. Stage 1 must not rely on repeated generic anchors or keyword-based provider placement.
 
-Generated signing PDFs must be text-based and searchable. Image-only PDFs are not acceptable because Fadada keyword positioning requires the keyword to exist as searchable document text.
+Generated signing PDFs must be text-based and searchable. Image-only PDFs are not acceptable because legal/business review requires readable contract text and operator validation of the generated source PDF.
 
 The renderer removes only the exact trailing legacy signature page block from the rendered main body at render time. It must not mutate `ContractVersion.contentTemplate`, edit the legal DOCX, or rewrite ordinary legal clauses. The new Stage 1 signing slots are the only rendered main-body signing placement surface.
 
+The visible generated PDF title is `汽车订阅服务合同`. Metadata and section headings are rendered in Chinese, including `合同元信息`, `合同正文`, `合同正文签署区`, `附件1：订阅方案 / 交易条件快照`, and `附件1签署区`.
+
 Attachment 1 must start on a new page after the main body signing slots. The main body customer signature slot and platform seal slot, and the Attachment 1 customer signature slot and platform seal slot, must be vertically separated enough for sandbox visual review of the provider-rendered signature/seal size.
+
+The main-body signing area must not visibly duplicate the slot keywords as standalone lines. It should render the visible labels `合同正文签署区 / 订阅方签字:` and `合同正文签署区 / 服务提供方盖章:` while keeping the approved slot keywords in structured metadata and coordinate diagnostics.
 
 Each Stage 1 slot keyword must appear exactly once in the generated render model:
 
@@ -152,7 +156,7 @@ Each Stage 1 slot keyword must appear exactly once in the generated render model
 - `附件1订阅方案-订阅方签字`
 - `附件1订阅方案-服务提供方盖章`
 
-If a Stage 1 slot keyword is missing or duplicated, artifact writing must fail before storage write and before `FileObject` creation.
+If a Stage 1 slot definition or coordinate is missing or duplicated in the render model/diagnostics, artifact writing must fail before storage write and before `FileObject` creation.
 
 The requested platform seal right offset is:
 
@@ -200,7 +204,7 @@ Generated Stage 1 source artifacts now propagate renderer-produced slot coordina
 
 When Stage 1 multi-slot signing is requested, missing or invalid persisted coordinates must fail preflight before provider calls. Customer-side `extsign.api` mapping serializes the two customer slot coordinates into one signing URL. Platform-side `extsign_auto.api` mapping serializes the two platform slot coordinates into one auto-seal request with `position_type=1` and explicit `signature_id`.
 
-Attachment 1 monetary rows use `人民币元` and convert stored minor-unit amounts to yuan strings. Non-money units such as months, kilometers, kWh, and counts are unchanged.
+Attachment 1 monetary rows use `人民币元` and convert stored minor-unit amounts to yuan strings. Subscription quota rows use monthly units: `里程额度（公里/月）`, `能源额度（kWh/月）`, `能源次数（次/月）`, and `超里程费（人民币元/公里）`.
 
 ## Stage 2 Boundary
 

@@ -214,11 +214,18 @@ describe("subscription order and contract rules", () => {
     expect(planSection?.rows).toEqual(expect.arrayContaining([
       { label: "月租金（人民币元）", value: "3000.00" },
       { label: "押金（人民币元）", value: "5000.00" },
-      { label: "超里程费（人民币元）", value: "1.00" }
+      { label: "里程额度（公里/月）", value: 1500 },
+      { label: "能源额度（kWh/月）", value: 200 },
+      { label: "能源次数（次/月）", value: 4 },
+      { label: "超里程费（人民币元/公里）", value: "1.00" }
     ]));
-    expect(planSection?.rows.map((row) => row.label)).not.toEqual(expect.arrayContaining([
+    const planRowLabels = planSection?.rows.map((row) => row.label) ?? [];
+    expect(planRowLabels).not.toEqual(expect.arrayContaining([
       "月租金（分）",
       "押金（分）",
+      "里程额度（公里）",
+      "能源额度（kWh）",
+      "能源次数",
       "超里程费（分）"
     ]));
     const searchableModel = JSON.stringify(input.renderModel);
@@ -668,8 +675,8 @@ function createOrderServiceHarness(options: {
       customerId: "customer-1",
       deletedAt: null,
       depositAmount: 500000n,
-      energyLimitCount: null,
-      energyLimitKwh: null,
+      energyLimitCount: 4,
+      energyLimitKwh: 200,
       expiredAt: null,
       id: quoteId,
       mileageLimitKm: 1500,
@@ -721,8 +728,8 @@ function createOrderServiceHarness(options: {
       deletedAt: null,
       depositAmount: 500000n,
       endDate: null,
-      energyLimitCount: null,
-      energyLimitKwh: null,
+      energyLimitCount: 4,
+      energyLimitKwh: 200,
       id: orderId,
       mileageLimitKm: 1500,
       monthlyFeeAmount: 300000n,

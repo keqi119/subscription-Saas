@@ -10,6 +10,7 @@ import {
   ContractPdfSigningSlot,
   ContractPdfSigningSlotCoordinate,
   ContractPdfSigningSlotId,
+  ContractPdfSubscriberPartyInfo,
   ContractPdfValue
 } from "./contract-pdf-render-model";
 
@@ -35,6 +36,7 @@ const SIGNING_BLANK_WIDTH = 180;
 const SIGNING_BLANK_HEIGHT = 18;
 const SIGNING_BLANK_GAP = 12;
 const SIGNING_KEYWORD_LINE_HEIGHT = 14;
+const SIGNING_SLOT_VERTICAL_SEPARATION = 80;
 const STAGE1_REQUIRED_SLOT_IDS: ContractPdfSigningSlotId[] = [
   "STAGE1_BODY_CUSTOMER",
   "STAGE1_BODY_PLATFORM",
@@ -66,7 +68,7 @@ export class ContractPdfRendererService {
     const diagnostics = buildDiagnostics(model);
     validateModel(model, diagnostics);
     const fontPath = resolveFontPath(options, diagnostics);
-    const { buffer, slotCoordinates } = await renderPdf(model, diagnostics, fontPath, options);
+    const { buffer, slotCoordinates } = await renderPdf(model, fontPath, options);
     validatePdfBuffer(buffer, options.maxBytes ?? DEFAULT_MAX_BYTES);
 
     return {
@@ -157,7 +159,6 @@ function assertUsableFont(fontPath: string) {
 
 async function renderPdf(
   model: ContractPdfRenderModel,
-  diagnostics: ContractPdfRenderDiagnostics,
   fontPath: string | undefined,
   options: ContractPdfRenderOptions
 ) {
@@ -190,8 +191,9 @@ async function renderPdf(
 
   writeTitle(doc, "Stage 1 Contract Signing Source");
   writeMetadata(doc, model);
+  writeSubscriberPartyInfo(doc, model.subscriberParty);
   writeSection(doc, "Contract Main Body");
-  writeParagraph(doc, model.contentTemplate);
+  writeParagraph(doc, removeTrailingLegacySignatureBlock(model.contentTemplate));
   writeSection(doc, "Contract Main Body Signing Slots");
   writeSigningSlots(
     doc,
@@ -199,6 +201,7 @@ async function renderPdf(
     slotCoordinates,
     () => currentPageNumber
   );
+  startNewPage(doc);
   writeSection(doc, "Attachment 1: Subscription Plan / Transaction Terms Snapshot");
   writeAppendix(doc, model.appendix.sections);
   writeSection(doc, "Attachment 1 Signing Slots");
@@ -208,8 +211,6 @@ async function renderPdf(
     slotCoordinates,
     () => currentPageNumber
   );
-  writeSection(doc, "Render Diagnostics");
-  writeParagraph(doc, JSON.stringify(diagnostics));
 
   doc.end();
   const buffer = await done;
@@ -227,6 +228,21 @@ function writeMetadata(doc: PDFKit.PDFDocument, model: ContractPdfRenderModel) {
   writeKeyValue(doc, "Order No", model.orderNo);
   writeKeyValue(doc, "Template", `${model.templateName} ${model.templateVersion}`);
   writeKeyValue(doc, "Generated At", formatValue(model.generatedAt));
+}
+
+function writeSubscriberPartyInfo(doc: PDFKit.PDFDocument, party: ContractPdfSubscriberPartyInfo | undefined) {
+  if (!party) {
+    return;
+  }
+
+  writeSection(doc, "乙方（订阅方）信息");
+  writePartyKeyValue(doc, "名称", party.subscriberName);
+  writePartyKeyValue(doc, "证件号码", party.subscriberIdNumber);
+  writePartyKeyValue(doc, "联系地址", party.subscriberContactAddress);
+  writePartyKeyValue(doc, "联系人", party.subscriberContactName);
+  writePartyKeyValue(doc, "联系电话", party.subscriberContactPhone);
+  writePartyKeyValue(doc, "微信号", party.subscriberWechat);
+  writePartyKeyValue(doc, "电子邮箱", party.subscriberEmail);
 }
 
 function writeSection(doc: PDFKit.PDFDocument, title: string) {
@@ -269,15 +285,34 @@ function writeKeyValue(doc: PDFKit.PDFDocument, label: string, value: string) {
   });
 }
 
+function writePartyKeyValue(doc: PDFKit.PDFDocument, label: string, value: ContractPdfValue) {
+  ensureSpace(doc, 24);
+  doc.fontSize(10).text(`${label}: ${formatPartyValue(value)}`, {
+    lineGap: 3
+  });
+}
+
 function writeSigningSlots(
   doc: PDFKit.PDFDocument,
   slots: ContractPdfSigningSlot[],
   slotCoordinates: ContractPdfSigningSlotCoordinate[],
   getPageNumber: () => number
 ) {
-  for (const slot of slots) {
+  ensureSpace(doc, estimateSigningSlotsHeight(slots.length));
+  for (const [index, slot] of slots.entries()) {
+    if (index > 0) {
+      ensureSpace(doc, SIGNING_SLOT_VERTICAL_SEPARATION + 68);
+      doc.y += SIGNING_SLOT_VERTICAL_SEPARATION;
+    }
     writeSigningSlot(doc, slot, slotCoordinates, getPageNumber);
   }
+}
+
+function estimateSigningSlotsHeight(slotCount: number) {
+  if (slotCount <= 0) {
+    return 0;
+  }
+  return slotCount * 68 + (slotCount - 1) * SIGNING_SLOT_VERTICAL_SEPARATION;
 }
 
 function writeSigningSlot(
@@ -362,6 +397,10 @@ function roundCoordinate(value: number) {
   return Math.round(value * 1000) / 1000;
 }
 
+function startNewPage(doc: PDFKit.PDFDocument) {
+  doc.addPage();
+}
+
 function ensureSpace(doc: PDFKit.PDFDocument, requiredHeight: number) {
   const bottom = doc.page.height - doc.page.margins.bottom;
   if (doc.y + requiredHeight > bottom) {
@@ -377,6 +416,23 @@ function formatValue(value: ContractPdfValue) {
     return value.toISOString();
   }
   return String(value);
+}
+
+function formatPartyValue(value: ContractPdfValue) {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return String(value);
+}
+
+function removeTrailingLegacySignatureBlock(contentTemplate: string) {
+  return contentTemplate.replace(
+    /\s*（以下无正文，系为签署页）\s*[\s\S]*?甲方（服务提供方）[：:][\s\S]*?（服务提供方盖章）[\s\S]*?日期[：:][^\n\r]*(?:\r?\n)+\s*乙方（订阅方）[：:][\s\S]*?（订阅方盖章\/签字）[\s\S]*?日期[：:][^\n\r]*\s*$/u,
+    ""
+  ).trimEnd();
 }
 
 function countStage1SlotOccurrences(model: ContractPdfRenderModel) {

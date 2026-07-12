@@ -130,7 +130,12 @@ describe("subscription order and contract rules", () => {
     expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
     type ArtifactWriterInput = {
       renderModel: {
-        appendix: { sections: unknown[] };
+        appendix: {
+          sections: Array<{
+            rows: Array<{ label: string; value: unknown }>;
+            title: string;
+          }>;
+        };
         contentTemplate: string;
         signingSlots: Array<{
           documentType: string;
@@ -140,6 +145,7 @@ describe("subscription order and contract rules", () => {
           stage: string;
         }>;
         signingStage: string;
+        subscriberParty?: Record<string, unknown>;
       };
     } & Record<string, unknown>;
     const calls = harness.artifactWriter.writeGeneratedContractPdfArtifact.mock.calls as unknown as Array<[ArtifactWriterInput]>;
@@ -195,6 +201,26 @@ describe("subscription order and contract rules", () => {
     expect(input.renderModel.signingSlots.map((slot) => slot.keyword)).not.toContain("服务提供方盖章");
     expect(input.renderModel.signingSlots.map((slot) => slot.keyword)).not.toContain("订阅方盖章/签字");
     expect(input.renderModel.appendix.sections.length).toBeGreaterThan(0);
+    expect(input.renderModel.subscriberParty).toEqual({
+      subscriberContactAddress: "上海市测试路 1 号",
+      subscriberContactName: "测试客户",
+      subscriberContactPhone: "13800000000",
+      subscriberEmail: null,
+      subscriberIdNumber: "TEST-ID-0001",
+      subscriberName: "测试客户",
+      subscriberWechat: null
+    });
+    const planSection = input.renderModel.appendix.sections.find((section) => section.title === "订阅方案摘要");
+    expect(planSection?.rows).toEqual(expect.arrayContaining([
+      { label: "月租金（人民币元）", value: "3000.00" },
+      { label: "押金（人民币元）", value: "5000.00" },
+      { label: "超里程费（人民币元）", value: "1.00" }
+    ]));
+    expect(planSection?.rows.map((row) => row.label)).not.toEqual(expect.arrayContaining([
+      "月租金（分）",
+      "押金（分）",
+      "超里程费（分）"
+    ]));
     const searchableModel = JSON.stringify(input.renderModel);
     expect(searchableModel).not.toContain("risk-result-1");
     expect(searchableModel).not.toContain("VIN202606020000001");
@@ -204,6 +230,29 @@ describe("subscription order and contract rules", () => {
     expect(harness.state.contracts[0]!.fileId).toBe("generated-file-1");
     expect(harness.state.contractId).toBe(contract.id);
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("does not invent missing subscriber party fields", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" }),
+      customer: {
+        identity: null,
+        profile: null
+      }
+    });
+
+    await harness.service.generateContract(harness.orderId, harness.user, harness.context);
+
+    const calls = harness.artifactWriter.writeGeneratedContractPdfArtifact.mock.calls as unknown as Array<[{
+      renderModel: { subscriberParty?: Record<string, unknown> };
+    }]>;
+    expect(calls[0]![0].renderModel.subscriberParty).toMatchObject({
+      subscriberContactAddress: null,
+      subscriberEmail: null,
+      subscriberIdNumber: null,
+      subscriberWechat: null
+    });
   });
 
   it("persists generated PDF slot coordinates in the contract snapshot", async () => {
@@ -522,6 +571,7 @@ function createOrderServiceHarness(options: {
   artifactWriter?: ReturnType<typeof createArtifactWriterMock>;
   contractFileUpdateError?: Error;
   contractSnapshotUpdateError?: Error;
+  customer?: Record<string, unknown>;
   order?: Record<string, unknown>;
   quote?: Record<string, unknown>;
   vehicle?: Record<string, unknown>;
@@ -590,6 +640,18 @@ function createOrderServiceHarness(options: {
     };
   }
 
+  function buildCustomer() {
+    return {
+      grade: "A",
+      id: "customer-1",
+      identity: { idCardNo: "TEST-ID-0001" },
+      mobile: "13800000000",
+      name: "测试客户",
+      profile: { residenceAddress: "上海市测试路 1 号" },
+      ...options.customer
+    };
+  }
+
   function buildQuote() {
     return {
       application: {
@@ -602,7 +664,7 @@ function createOrderServiceHarness(options: {
       cancelledAt: null,
       createdAt: now,
       createdBy: user.id,
-      customer: { grade: "A", id: "customer-1", mobile: "13800000000", name: "测试客户" },
+      customer: buildCustomer(),
       customerId: "customer-1",
       deletedAt: null,
       depositAmount: 500000n,
@@ -654,7 +716,7 @@ function createOrderServiceHarness(options: {
       contracts: state.contracts,
       createdAt: now,
       createdBy: user.id,
-      customer: { grade: "A", id: "customer-1", mobile: "13800000000", name: "测试客户" },
+      customer: buildCustomer(),
       customerId: "customer-1",
       deletedAt: null,
       depositAmount: 500000n,

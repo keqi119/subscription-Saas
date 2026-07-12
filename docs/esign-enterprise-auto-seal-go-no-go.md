@@ -71,6 +71,12 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] Generated source PDF passes MIME, `%PDF-` header, size, and generated object-key preflight.
 - [ ] Generated source PDF is text-based, searchable, and not image-only.
 - [ ] Generated source PDF contains each required Stage 1 signing slot keyword exactly once.
+- [ ] Generated source PDF does not show a visible `Render Diagnostics` section.
+- [ ] Party A information is present from the approved ContractVersion template and was not dynamically invented.
+- [ ] Party B information is populated only from approved customer sources; missing WeChat/email fields remain blank.
+- [ ] Attachment 1 starts on a new page after main body signing slots.
+- [ ] Attachment 1 money rows use `人民币元`.
+- [ ] Customer signature and platform/company seal slots are visually separated on both Stage 1 signing pages.
 - [ ] Fadada/eSign provider multi-position mapping for Stage 1 slots is separately approved and checked against local provider docs before provider calls.
 
 ## Required Stage 1 Signing Slots
@@ -130,7 +136,13 @@ Any of the following means production enablement must stop:
 - Stage 1 generated source PDF includes Attachment 2 delivery handover content.
 - The final render model is missing or duplicates any approved Stage 1 slot keyword.
 - Generated PDF contains garbled Chinese.
+- Generated PDF renders visible `Render Diagnostics` text.
 - Generated PDF is image-only or not searchable.
+- Generated PDF invents or dynamically overwrites Party A / service provider fields instead of preserving the approved template.
+- Generated PDF uses WeChat OpenID/UnionID as a visible subscriber WeChat number.
+- Generated PDF uses ambiguous money units such as `元` alone or stale minor-unit labels such as `分` for amount rows.
+- Attachment 1 is tightly attached below main body signing slots instead of starting on a new page.
+- Customer signature and platform/company seal overlap in the final signed PDF.
 - Provider multi-position mapping for Stage 1 slots has not been checked against local Fadada docs.
 - `ESIGN_STAGE1_MULTI_SLOT_ENABLED` is enabled in production before Fadada customer/platform `signature_positions` mapping is sandbox-proven and go/no-go approved.
 - Platform `extsign_auto.api` coordinate mapping is not sandbox-proven.

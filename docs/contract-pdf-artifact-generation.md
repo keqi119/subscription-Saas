@@ -24,9 +24,11 @@ The render model includes:
 - legal terms body from `contentTemplate`
 - Attachment 1 subscription plan / transaction terms snapshot sections and rows
 - Stage 1 signing slots
-- render diagnostics
+- structured render diagnostics
 
 The renderer validates non-empty legal body, required Stage 1 signing slots, CJK font readiness for Chinese content, PDF header, and size limit.
+
+Structured render diagnostics and slot coordinate diagnostics must remain in artifact metadata and test assertions, but generated PDFs for signing must not render a visible `Render Diagnostics` section.
 
 ## Artifact Writer Foundation
 
@@ -95,6 +97,17 @@ The Stage 1 PDF source contains the contract main body plus Attachment 1 subscri
 
 If the legal-approved body already contains older generic anchor strings such as `服务提供方盖章` or `订阅方盖章/签字`, those strings do not satisfy the Stage 1 slot model and must not drive provider placement. Template activation must verify the generated Stage 1 PDF contains each approved Stage 1 slot keyword exactly once.
 
+Party A / service provider information is owned by the approved `ContractVersion.contentTemplate`. The renderer must preserve Party A text already present in the template and must not invent, hardcode, configure, or dynamically overwrite Party A fields. If an approved template version does not contain required Party A information, legal/operator reviewers must update that template version before production acceptance.
+
+Party B / subscriber information is dynamic per order. The approved sources are:
+
+- subscriber name and contact name: `Customer.name`
+- subscriber certificate number: `CustomerIdentity.idCardNo`
+- subscriber contact address: `CustomerProfile.residenceAddress`
+- subscriber contact phone: `Customer.mobile`
+
+The renderer must leave subscriber WeChat and email blank unless reliable customer-facing source fields are introduced later and approved. It must not use WeChat OpenID/UnionID as a visible WeChat number.
+
 ## Font Boundary
 
 Chinese contract PDFs require a usable CJK font path.
@@ -127,6 +140,10 @@ Approved Stage 1 slot keywords:
 The Stage 1 signing PDF must contain these four keywords and reserve blank space on the right side for signing or sealing where needed. Stage 1 must not rely on repeated generic anchors.
 
 Generated signing PDFs must be text-based and searchable. Image-only PDFs are not acceptable because Fadada keyword positioning requires the keyword to exist as searchable document text.
+
+The renderer removes only the exact trailing legacy signature page block from the rendered main body at render time. It must not mutate `ContractVersion.contentTemplate`, edit the legal DOCX, or rewrite ordinary legal clauses. The new Stage 1 signing slots are the only rendered main-body signing placement surface.
+
+Attachment 1 must start on a new page after the main body signing slots. The main body customer signature slot and platform seal slot, and the Attachment 1 customer signature slot and platform seal slot, must be vertically separated enough for sandbox visual review of the provider-rendered signature/seal size.
 
 Each Stage 1 slot keyword must appear exactly once in the generated render model:
 
@@ -182,6 +199,8 @@ Generated Stage 1 source artifacts now propagate renderer-produced slot coordina
 `ContractPdfArtifactService` reads this persisted diagnostic metadata for generated `Contract.fileId` artifacts and exposes the coordinates to future e-sign provider mapping. It does not invent coordinates for `ContractVersion.fileId` legacy fallback artifacts, parse the PDF after generation, recalculate positions, or fall back to keyword search.
 
 When Stage 1 multi-slot signing is requested, missing or invalid persisted coordinates must fail preflight before provider calls. Customer-side `extsign.api` mapping serializes the two customer slot coordinates into one signing URL. Platform-side `extsign_auto.api` mapping serializes the two platform slot coordinates into one auto-seal request with `position_type=1` and explicit `signature_id`.
+
+Attachment 1 monetary rows use `人民币元` and convert stored minor-unit amounts to yuan strings. Non-money units such as months, kilometers, kWh, and counts are unchanged.
 
 ## Stage 2 Boundary
 

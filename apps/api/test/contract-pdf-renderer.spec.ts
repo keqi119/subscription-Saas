@@ -81,6 +81,86 @@ const CJK_STAGE1_SIGNING_SLOTS: ContractPdfSigningSlot[] = [
 ];
 
 describe("ContractPdfRendererService", () => {
+  it("keeps diagnostics structured but out of visible PDF text", async () => {
+    const { textCalls } = await renderWithFakePdfKit(createAsciiModel());
+
+    expect(textCalls.map((call) => call.text)).not.toContain("Render Diagnostics");
+    expect(textCalls.some((call) => call.text.includes("stage1SigningSlotOccurrences"))).toBe(false);
+  });
+
+  it("renders subscriber party information without inventing missing WeChat or email values", async () => {
+    const { textCalls } = await renderWithFakePdfKit(createAsciiModel({
+      subscriberParty: {
+        subscriberContactAddress: "Synthetic subscriber address",
+        subscriberContactName: "Synthetic Subscriber",
+        subscriberContactPhone: "13800000000",
+        subscriberEmail: null,
+        subscriberIdNumber: "TEST-ID-0001",
+        subscriberName: "Synthetic Subscriber",
+        subscriberWechat: null
+      }
+    }));
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+
+    expect(visibleText).toContain("乙方（订阅方）信息");
+    expect(visibleText).toContain("名称: Synthetic Subscriber");
+    expect(visibleText).toContain("证件号码: TEST-ID-0001");
+    expect(visibleText).toContain("联系地址: Synthetic subscriber address");
+    expect(visibleText).toContain("联系人: Synthetic Subscriber");
+    expect(visibleText).toContain("联系电话: 13800000000");
+    expect(visibleText).toContain("微信号: ");
+    expect(visibleText).toContain("电子邮箱: ");
+    expect(visibleText).not.toContain("OpenID");
+    expect(visibleText).not.toContain("UnionID");
+  });
+
+  it("removes only the exact trailing legacy signature block at render time", async () => {
+    const { textCalls } = await renderWithFakePdfKit(createAsciiModel({
+      contentTemplate: [
+        "Synthetic legal clause remains visible.",
+        "（以下无正文，系为签署页）",
+        "甲方（服务提供方）：Legal Provider",
+        "（服务提供方盖章）",
+        "日期：    年   月   日",
+        "乙方（订阅方）：",
+        "（订阅方盖章/签字）",
+        "日期：    年   月   日"
+      ].join("\n")
+    }));
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+
+    expect(visibleText).toContain("Synthetic legal clause remains visible.");
+    expect(visibleText).not.toContain("（以下无正文，系为签署页）");
+    expect(visibleText).not.toContain("订阅方盖章/签字");
+  });
+
+  it("starts Attachment 1 on a new page after separated main body signing slots", async () => {
+    const { addPageEvents, textCalls } = await renderWithFakePdfKit(createAsciiModel());
+    const bodySigningSection = textCalls.find((call) => call.text === "Contract Main Body Signing Slots");
+    const attachmentSection = textCalls.find((call) =>
+      call.text === "Attachment 1: Subscription Plan / Transaction Terms Snapshot"
+    );
+
+    expect(addPageEvents.length).toBeGreaterThan(0);
+    expect(bodySigningSection).toBeDefined();
+    expect(attachmentSection).toBeDefined();
+    expect(attachmentSection!.pageNumber).toBeGreaterThan(bodySigningSection!.pageNumber);
+  });
+
+  it("separates customer signature and platform seal slot coordinates on both Stage 1 signing pages", async () => {
+    const renderer = new ContractPdfRendererService();
+
+    const result = await renderer.render(createAsciiModel(), {
+      allowBuiltinFontForAsciiOnlyTests: true
+    });
+    const bySlot = new Map(result.slotCoordinates.map((coordinate) => [coordinate.slotId, coordinate]));
+
+    expect(bySlot.get("STAGE1_BODY_PLATFORM")!.y - bySlot.get("STAGE1_BODY_CUSTOMER")!.y)
+      .toBeGreaterThanOrEqual(180);
+    expect(bySlot.get("STAGE1_ATTACHMENT1_PLATFORM")!.y - bySlot.get("STAGE1_ATTACHMENT1_CUSTOMER")!.y)
+      .toBeGreaterThanOrEqual(180);
+  });
+
   it("renders approved Stage 1 CJK slot keywords as exact no-wrap text operations", async () => {
     const textCalls: Array<{ options: Record<string, unknown>; text: string }> = [];
 
@@ -325,6 +405,7 @@ function createAsciiModel(
   overrides: Omit<Partial<ContractPdfRenderModel>, "signingSlots"> & {
     signingSlots?: ContractPdfSigningSlot[];
     signingStage?: string;
+    subscriberParty?: unknown;
   } = {}
 ): ContractPdfRenderModel {
   return {
@@ -354,4 +435,91 @@ function createAsciiModel(
     templateVersion: "V0.TEST",
     ...overrides
   };
+}
+
+async function renderWithFakePdfKit(model: ContractPdfRenderModel) {
+  const addPageEvents: number[] = [];
+  const textCalls: Array<{ options: Record<string, unknown>; pageNumber: number; text: string }> = [];
+
+  class FakePDFDocument extends EventEmitter {
+    info: Record<string, unknown> = {};
+    page = {
+      height: 841.89,
+      margins: { bottom: 50, left: 50, right: 50, top: 50 },
+      width: 595.28
+    };
+    pageNumber = 0;
+    x = 50;
+    y = 50;
+
+    addPage() {
+      this.pageNumber += 1;
+      addPageEvents.push(this.pageNumber);
+      this.y = this.page.margins.top;
+      this.emit("pageAdded");
+      return this;
+    }
+
+    end() {
+      this.emit("data", Buffer.from("%PDF-fake-renderer-output"));
+      this.emit("end");
+    }
+
+    font() {
+      return this;
+    }
+
+    fontSize() {
+      return this;
+    }
+
+    lineTo() {
+      return this;
+    }
+
+    moveDown(lines = 1) {
+      this.y += 12 * Number(lines);
+      return this;
+    }
+
+    moveTo() {
+      return this;
+    }
+
+    stroke() {
+      return this;
+    }
+
+    text(text: string, xOrOptions?: number | Record<string, unknown>, y?: number, options?: Record<string, unknown>) {
+      const resolvedOptions = typeof xOrOptions === "object" ? xOrOptions : options ?? {};
+      textCalls.push({ options: resolvedOptions, pageNumber: this.pageNumber, text });
+      if (typeof xOrOptions === "number") {
+        this.x = xOrOptions;
+      }
+      if (typeof y === "number") {
+        this.y = y;
+      }
+      this.y += resolvedOptions.lineBreak === false ? 0 : 14;
+      return this;
+    }
+  }
+
+  vi.resetModules();
+  vi.doMock("pdfkit", () => ({ default: FakePDFDocument }));
+  try {
+    const { ContractPdfRendererService: MockedRenderer } = await import(
+      "../src/contract/contract-pdf-renderer.service"
+    );
+    const renderer = new MockedRenderer();
+
+    await renderer.render(model, {
+      allowBuiltinFontForAsciiOnlyTests: true,
+      cjkFontPath: process.execPath
+    });
+  } finally {
+    vi.doUnmock("pdfkit");
+    vi.resetModules();
+  }
+
+  return { addPageEvents, textCalls };
 }

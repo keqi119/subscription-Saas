@@ -36,7 +36,7 @@ const SIGNING_BLANK_WIDTH = 180;
 const SIGNING_BLANK_HEIGHT = 18;
 const SIGNING_BLANK_GAP = 12;
 const SIGNING_KEYWORD_LINE_HEIGHT = 14;
-const SIGNING_SLOT_VERTICAL_SEPARATION = 80;
+const SIGNING_SLOT_VERTICAL_SEPARATION = 90;
 const STAGE1_REQUIRED_SLOT_IDS: ContractPdfSigningSlotId[] = [
   "STAGE1_BODY_CUSTOMER",
   "STAGE1_BODY_PLATFORM",
@@ -189,12 +189,12 @@ async function renderPdf(
   doc.info.Subject = "Stage 1 subscription contract signing artifact";
   doc.info.Keywords = "contract,esign";
 
-  writeTitle(doc, "Stage 1 Contract Signing Source");
+  writeTitle(doc, "汽车订阅服务合同");
   writeMetadata(doc, model);
   writeSubscriberPartyInfo(doc, model.subscriberParty);
-  writeSection(doc, "Contract Main Body");
+  writeSection(doc, "合同正文");
   writeParagraph(doc, removeTrailingLegacySignatureBlock(model.contentTemplate));
-  writeSection(doc, "Contract Main Body Signing Slots");
+  writeSection(doc, "合同正文签署区");
   writeSigningSlots(
     doc,
     model.signingSlots.filter((slot) => slot.documentType === "CONTRACT_BODY"),
@@ -202,9 +202,9 @@ async function renderPdf(
     () => currentPageNumber
   );
   startNewPage(doc);
-  writeSection(doc, "Attachment 1: Subscription Plan / Transaction Terms Snapshot");
+  writeSection(doc, "附件1：订阅方案 / 交易条件快照");
   writeAppendix(doc, model.appendix.sections);
-  writeSection(doc, "Attachment 1 Signing Slots");
+  writeSection(doc, "附件1签署区");
   writeSigningSlots(
     doc,
     model.signingSlots.filter((slot) => slot.documentType === "ATTACHMENT1_SUBSCRIPTION_PLAN"),
@@ -223,11 +223,11 @@ function writeTitle(doc: PDFKit.PDFDocument, text: string) {
 }
 
 function writeMetadata(doc: PDFKit.PDFDocument, model: ContractPdfRenderModel) {
-  writeSection(doc, "Contract Metadata");
-  writeKeyValue(doc, "Contract No", model.contractNo);
-  writeKeyValue(doc, "Order No", model.orderNo);
-  writeKeyValue(doc, "Template", `${model.templateName} ${model.templateVersion}`);
-  writeKeyValue(doc, "Generated At", formatValue(model.generatedAt));
+  writeSection(doc, "合同元信息");
+  writeKeyValue(doc, "合同编号", model.contractNo);
+  writeKeyValue(doc, "订单编号", model.orderNo);
+  writeKeyValue(doc, "合同模板", `${model.templateName} ${model.templateVersion}`);
+  writeKeyValue(doc, "生成时间", formatValue(model.generatedAt));
 }
 
 function writeSubscriberPartyInfo(doc: PDFKit.PDFDocument, party: ContractPdfSubscriberPartyInfo | undefined) {
@@ -333,11 +333,7 @@ function writeSigningSlot(
     lineGap: 2,
     width: fullRowWidth
   });
-  const keywordTop = doc.y;
-  doc.fontSize(10).text(slot.keyword, left, keywordTop, {
-    lineBreak: false
-  });
-  const keywordBottom = keywordTop + SIGNING_KEYWORD_LINE_HEIGHT;
+  const keywordBottom = writeVisibleSlotKeywordIfNeeded(doc, slot, left);
   const blankY = keywordBottom + 2;
 
   doc.moveTo(blankX, blankY + SIGNING_BLANK_HEIGHT - 4)
@@ -360,6 +356,22 @@ function writeSigningSlot(
     doc.fontSize(8).text(`Offset intent: x=${slot.offsetX ?? 0}, y=${slot.offsetY ?? 0}`);
   }
   doc.moveDown(0.8);
+}
+
+function writeVisibleSlotKeywordIfNeeded(
+  doc: PDFKit.PDFDocument,
+  slot: ContractPdfSigningSlot,
+  left: number
+) {
+  if (slot.documentType === "CONTRACT_BODY") {
+    return doc.y;
+  }
+
+  const keywordTop = doc.y;
+  doc.fontSize(10).text(slot.keyword, left, keywordTop, {
+    lineBreak: false
+  });
+  return keywordTop + SIGNING_KEYWORD_LINE_HEIGHT;
 }
 
 function buildSlotCoordinate(input: {

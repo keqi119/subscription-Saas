@@ -67,7 +67,7 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] API image build evidence shows Source Han Sans SC `2.005R` asset SHA256 verification and extraction to `/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf`.
 - [ ] Legal template Stage 1 slot strategy is resolved before generated PDF artifact creation.
 - [ ] Stage 1 generated source PDF contains contract main body plus Attachment 1 subscription plan / transaction terms snapshot.
-- [ ] Stage 1 generated source PDF excludes Attachment 2 vehicle handover / delivery confirmation.
+- [ ] Stage 1 generated source PDF excludes independent Attachment 2 vehicle handover sections/forms/signing areas; ordinary main-body legal references to the future handover document are allowed.
 - [ ] Generated source PDF passes MIME, `%PDF-` header, size, and generated object-key preflight.
 - [ ] Generated source PDF is text-based, searchable, and not image-only.
 - [ ] Generated source PDF artifact diagnostics contain each required Stage 1 signing slot definition and coordinate exactly once.
@@ -107,7 +107,7 @@ keyy=0
 - [ ] Platform auto seal maps both platform slots through one `extsign_auto.api` transaction.
 - [ ] Platform auto seal uses `position_type=1`, explicit `signature_id`, and two generated-coordinate `signature_positions`.
 - [ ] Generated signing PDF artifact diagnostics contain the four approved Stage 1 slot definitions and coordinates exactly once.
-- [ ] Generated signing PDF does not contain Attachment 2 delivery handover as part of Stage 1.
+- [ ] Generated signing PDF does not contain an independent Attachment 2 delivery handover section/form/signing area as part of Stage 1.
 - [ ] Generated signing PDF source object key matches `contracts/{contractId}/generated/...`.
 - [ ] Platform auto seal succeeds.
 - [ ] Platform auto seal success evidence shows provider code `1000`.
@@ -136,7 +136,7 @@ Any of the following means production enablement must stop:
 - CJK font family/package/file or license approval is missing.
 - API image font install, checksum verification, or target path validation evidence is missing.
 - Legal template Stage 1 slot strategy is unresolved.
-- Stage 1 generated source PDF includes Attachment 2 delivery handover content.
+- Stage 1 generated source PDF includes an independent Attachment 2 delivery handover section, form, or signing area. Ordinary main-body references to the future handover document title are not by themselves a no-go condition.
 - The final render model or artifact diagnostics are missing or duplicate any approved Stage 1 slot definition or coordinate.
 - Generated PDF visible title, metadata, or section headings use rejected English labels.
 - Generated PDF main-body signing area visibly duplicates standalone `合同正文-订阅方签字` or `合同正文-服务提供方盖章` keyword lines.

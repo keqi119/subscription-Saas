@@ -117,7 +117,7 @@ Required Stage 1 slot keywords:
 | `附件1订阅方案-服务提供方盖章` appears exactly once | TBD | TBD |
 | Stage 1 source PDF contains contract main body | TBD | TBD |
 | Stage 1 source PDF contains Attachment 1 subscription plan / transaction terms snapshot | TBD | TBD |
-| Stage 1 source PDF excludes Attachment 2 vehicle handover / delivery confirmation | TBD | TBD |
+| Stage 1 source PDF excludes independent Attachment 2 vehicle handover sections/forms/signing areas; ordinary main-body legal references to the future handover document are allowed | TBD | TBD |
 | First-page title is `汽车订阅服务合同` | TBD | TBD |
 | Metadata and section headings are rendered in Chinese | TBD | TBD |
 | Main body signing labels are visible without duplicate standalone keyword lines | TBD | TBD |

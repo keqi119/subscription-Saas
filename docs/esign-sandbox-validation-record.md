@@ -242,6 +242,56 @@ Allowed results:
 | Reviewer signature/name | TBD |
 | Go/no-go recommendation | TBD |
 
+## 10A. Stage 1 V1.4 Final Sandbox Closeout
+
+Result: `PASS_WITH_NOTES`
+
+This closeout records the controlled Stage 1 V1.4 sandbox run completed on 2026-07-13. The initial automated visual review was corrected from `FAIL/HOLD` to `PASS_WITH_NOTES` after operator review and PDF structure inspection showed that the signed PDF uses PDF annotation appearances that were not rendered by the original `pdfplumber`/Pillow-based visual check.
+
+| Field | Value |
+| --- | --- |
+| API image | `ghcr.io/keqi119/subscription-api:Staging-20260713-9580613` |
+| Web image | `ghcr.io/keqi119/subscription-web:Staging-20260713-9580613` |
+| ContractVersion | `test_001 / V1.4` |
+| Order number | `ORD20260713063232YN5L` |
+| Contract number | `CON202607130633247T8L` |
+| E-sign task / provider contract id | `ESG2026071306414027KJ` |
+| Platform signature id | `1783852637391749` |
+| Signed PDF SHA256 | `01c34bd12db6c3ba03ae4d48c85ca0a32956ca0c94c90e493bf5d16855375808` |
+| Result | `PASS_WITH_NOTES` |
+| Production status | `GO CANDIDATE`; final production GO still requires explicit operator/legal approval |
+
+Controlled pass evidence:
+
+- Source PDF legal/visual checks passed.
+- Party A / service-provider fields were preserved from the approved `ContractVersion` template.
+- Party B / subscriber fields were populated from approved dynamic customer sources.
+- Chinese first-page title, metadata labels, and section headings passed review.
+- Attachment 1 unit labels and yuan-per-km over-mileage display passed review.
+- Refined Stage 1 Attachment 2 boundary passed: independent Attachment 2 handover sections/forms/signing areas were excluded.
+- Customer two-slot signing passed.
+- Platform two-slot auto-seal passed with `FADADA_PLATFORM_SIGNATURE_ID=1783852637391749`.
+- Callback handling passed and the task completed only after all required slot rows were signed.
+- Contract moved to signed state.
+- Signed PDF archive completed.
+- The backend-downloaded signed PDF SHA256 matched the system-archived signed PDF SHA256.
+
+Annotation appearance correction:
+
+- The signed PDF contains PDF `/Widget` annotations with `/AP` appearance streams for the signature/seal appearances.
+- Page 5 has two `/Widget` annotations with `/AP` appearance.
+- Page 6 has two `/Widget` annotations with `/AP` appearance.
+- The previous `pdfplumber`/Pillow-based visual inspection did not render annotation appearance and produced a false negative.
+- Future automated visual validation must not rely solely on `pdfplumber`/Pillow for customer signature or platform seal appearance.
+
+Preferred future validation sources:
+
+- Human review in the system backend PDF viewer.
+- Browser PDF viewer or another viewer known to render PDF annotation appearances.
+- Poppler or another rasterizer configured to render annotation appearances.
+- PDF structure checks for `/Widget` annotations with `/AP` appearance on the expected signing pages.
+- Fadada console/log evidence for provider-side signing/seal completion.
+
 ## 11. Attachments / Evidence
 
 Record evidence references without pasting secrets, identity documents, provider tokens, seal binaries, private download URLs, or raw credentials.

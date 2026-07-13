@@ -1,8 +1,29 @@
 # eSign Enterprise Auto Seal Go/No-Go Checklist
 
-Status: pending operator validation.
+Status: Stage 1 V1.4 sandbox evidence is `PASS_WITH_NOTES` and is a production `GO CANDIDATE`. Final production GO still requires explicit operator/legal approval.
 
 This checklist must be completed before enabling enterprise auto seal in production. It does not replace legal approval, operator approval, or provider-console approval.
+
+## Stage 1 V1.4 Closeout Update
+
+Controlled sandbox closeout result: `PASS_WITH_NOTES`
+
+Evidence recorded on 2026-07-13:
+
+- API image: `ghcr.io/keqi119/subscription-api:Staging-20260713-9580613`
+- Web image: `ghcr.io/keqi119/subscription-web:Staging-20260713-9580613`
+- ContractVersion: `test_001 / V1.4`
+- Order number: `ORD20260713063232YN5L`
+- Contract number: `CON202607130633247T8L`
+- E-sign task / provider contract id: `ESG2026071306414027KJ`
+- Platform signature id: `1783852637391749`
+- Signed PDF SHA256: `01c34bd12db6c3ba03ae4d48c85ca0a32956ca0c94c90e493bf5d16855375808`
+
+Stage 1 technical and legal/visual sandbox evidence is a `GO CANDIDATE` for Stage 1 production enablement. This is not a final production GO. Final production enablement still requires explicit operator/legal approval, controlled runtime flag changes outside the repository, and the normal rollback readiness check.
+
+Correction note: the first automated visual review did not show signatures/seals because the `pdfplumber`/Pillow raster path did not render PDF annotation appearance. Operator backend PDF review, Fadada console/log evidence, SHA match, and PDF structure inspection corrected the result to `PASS_WITH_NOTES`.
+
+Future visual acceptance must not rely solely on `pdfplumber`/Pillow for signature/seal appearance. Use a backend/browser PDF viewer or Poppler-equivalent renderer that renders annotation appearance, and record PDF structure evidence for `/Widget` annotations with `/AP` appearance when automated raster evidence is uncertain.
 
 ## Release Identity
 
@@ -171,6 +192,8 @@ Any of the following means production enablement must stop:
 ## Production Go/No-Go
 
 Decision: `PENDING`
+
+Current Stage 1 recommendation: `GO CANDIDATE` based on the V1.4 `PASS_WITH_NOTES` sandbox closeout. The production decision remains `PENDING` until operator/legal explicitly approve production enablement. Stage 2 delivery handover remains separate and is not included in this Stage 1 recommendation.
 
 Allowed decisions:
 

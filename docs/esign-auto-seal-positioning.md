@@ -68,6 +68,25 @@ For coordinate-based customer signing, the `signature_positions` value must be s
 
 Platform-side coordinate auto seal mapping now builds one `extsign_auto.api` request with `position_type=1`, explicit `signature_id`, and two `signature_positions` sourced from generated PDF artifact slot diagnostics. The Stage 1 task completes only after both customer slot rows and both platform slot rows are signed. Do not enable production Stage 1 multi-slot signing before the complete customer/platform flow is sandbox-proven.
 
+## Stage 1 V1.4 Sandbox Closeout
+
+The controlled V1.4 sandbox run completed with result `PASS_WITH_NOTES`.
+
+Evidence:
+
+- API image: `ghcr.io/keqi119/subscription-api:Staging-20260713-9580613`
+- Web image: `ghcr.io/keqi119/subscription-web:Staging-20260713-9580613`
+- ContractVersion: `test_001 / V1.4`
+- Order number: `ORD20260713063232YN5L`
+- Contract number: `CON202607130633247T8L`
+- Provider contract id: `ESG2026071306414027KJ`
+- Platform signature id: `1783852637391749`
+- Signed PDF SHA256: `01c34bd12db6c3ba03ae4d48c85ca0a32956ca0c94c90e493bf5d16855375808`
+
+The sandbox run proved the Stage 1 platform two-position auto-seal transaction using generated artifact coordinates and explicit platform signature id. Fadada console/log evidence recorded the platform seal operation for provider contract id `ESG2026071306414027KJ` at 2026-07-13 15:18:12.
+
+The first automated visual review was a false negative: the signed PDF uses `/Widget` annotations with `/AP` appearance streams, and the `pdfplumber`/Pillow visual path did not render those annotation appearances. Page 5 contains two `/Widget` annotations with `/AP` appearance and page 6 contains two `/Widget` annotations with `/AP` appearance. Future seal-position validation must use a viewer/rasterizer that renders annotation appearance or include PDF structure checks for `/Widget` annotations with `/AP`.
+
 ## Failed Task Boundary
 
 Existing failed tasks should not be manually marked successful. After the PDF template and positioning are corrected, create a new e-sign task so the customer signs the corrected artifact.

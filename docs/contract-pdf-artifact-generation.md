@@ -253,6 +253,25 @@ The sandbox validation record must capture both paths:
 
 These paths must not be mixed. A generated source PDF is not proof of signing completion, and a final signed PDF archive must not be reused as a new pre-signing source artifact.
 
+## Signed PDF Annotation Appearance Validation
+
+Stage 1 V1.4 sandbox closeout corrected the final result to `PASS_WITH_NOTES` after proving that the signed PDF used PDF annotation appearances that the first automated visual tool did not render.
+
+Controlled evidence:
+
+- API image: `ghcr.io/keqi119/subscription-api:Staging-20260713-9580613`
+- Web image: `ghcr.io/keqi119/subscription-web:Staging-20260713-9580613`
+- ContractVersion: `test_001 / V1.4`
+- Order number: `ORD20260713063232YN5L`
+- Contract number: `CON202607130633247T8L`
+- Provider contract id: `ESG2026071306414027KJ`
+- Platform signature id: `1783852637391749`
+- Signed PDF SHA256: `01c34bd12db6c3ba03ae4d48c85ca0a32956ca0c94c90e493bf5d16855375808`
+
+The backend-downloaded signed PDF SHA256 matched the archived signed PDF SHA256. PDF structure inspection found two `/Widget` annotations with `/AP` appearance on page 5 and two `/Widget` annotations with `/AP` appearance on page 6. Operator review in the system backend PDF viewer confirmed the customer signatures and platform seals are visible.
+
+Do not use `pdfplumber`/Pillow raster output alone as the final visual acceptance signal for signed PDF customer signature or platform seal appearance. Some render paths do not paint PDF annotation appearance streams. Future automated validation should prefer a browser PDF viewer, Poppler-equivalent renderer configured to render annotation appearance, or an explicit PDF structure check for `/Widget` annotations with `/AP` appearance, plus Fadada console/log evidence when available.
+
 ## Sandbox Validation And Go/No-Go
 
 Before production enablement, complete `docs/esign-sandbox-validation-record.md` and the checklist in `docs/esign-enterprise-auto-seal-go-no-go.md`.

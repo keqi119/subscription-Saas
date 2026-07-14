@@ -28,6 +28,12 @@ describe("contract detail e-sign display", () => {
     expect(eSignTaskSection).toContain("labelOf(ESIGN_PROVIDER_LABELS");
     expect(eSignTaskSection).toContain("task.signers.map");
   });
+
+  it("shows the generated signing PDF before an e-sign task exists", () => {
+    expect(source).toContain("openGeneratedContractPdf");
+    expect(source).toContain("/generated-pdf/preview");
+    expect(source).toContain("查看待签署PDF");
+  });
 });
 
 function read(file: string) {

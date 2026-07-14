@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 import {
   ApplicationStatus,
   BusinessType,
@@ -237,6 +239,41 @@ describe("subscription order and contract rules", () => {
     expect(harness.state.contracts[0]!.fileId).toBe("generated-file-1");
     expect(harness.state.contractId).toBe(contract.id);
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("previews the generated signing source PDF for an admin contract", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+
+    const contract = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as Record<string, unknown>;
+
+    const preview = await (harness.service as unknown as {
+      previewGeneratedContractPdf: (id: string, user: typeof harness.user) => Promise<{
+        filename: string;
+        mimeType?: string | null;
+        sizeBytes: number;
+        stream: Readable;
+      }>;
+    }).previewGeneratedContractPdf(contract.id as string, harness.user);
+
+    expect(harness.prisma.fileObject.findUnique).toHaveBeenCalledWith({
+      where: { id: "generated-file-1" }
+    });
+    expect(harness.storageService.getObject).toHaveBeenCalledWith(
+      "application-materials",
+      "contracts/contract-1/generated/CON-TEST.pdf"
+    );
+    expect(preview).toMatchObject({
+      filename: "CON-TEST.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 17
+    });
   });
 
   it("does not invent missing subscriber party fields", async () => {
@@ -854,6 +891,23 @@ function createOrderServiceHarness(options: {
         return buildContract(contract);
       })
     },
+    fileObject: {
+      findUnique: vi.fn(async ({ where }) => {
+        if (where.id !== "generated-file-1") {
+          return null;
+        }
+        return {
+          bucket: "application-materials",
+          createdAt: now,
+          id: "generated-file-1",
+          mimeType: "application/pdf",
+          objectKey: "contracts/contract-1/generated/CON-TEST.pdf",
+          originalName: "CON-TEST.pdf",
+          sizeBytes: 17n,
+          uploadedBy: user.id
+        };
+      })
+    },
     contractVersion: {
       findFirst: vi.fn(async () => template)
     },
@@ -882,14 +936,22 @@ function createOrderServiceHarness(options: {
       return undefined;
     })
   };
+  const storageService = {
+    getObject: vi.fn(async () => ({
+      contentLength: 17,
+      contentType: "application/pdf",
+      stream: Readable.from([Buffer.from("%PDF-1.4\n%%EOF\n")])
+    }))
+  };
   const service = new OrderService(
     auditService as never,
     prisma as never,
     artifactWriter as never,
-    configService as never
+    configService as never,
+    storageService as never
   );
 
-  return { artifactWriter, auditService, context, orderId, prisma, quoteId, service, state, template, tx, user, vehicleId };
+  return { artifactWriter, auditService, context, orderId, prisma, quoteId, service, state, storageService, template, tx, user, vehicleId };
 }
 
 function createArtifactWriterMock(options: {

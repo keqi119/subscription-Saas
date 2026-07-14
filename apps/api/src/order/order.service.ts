@@ -1,3 +1,5 @@
+import type { Readable } from "node:stream";
+
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PermissionCode } from "@subscription-saas/shared";
@@ -62,6 +64,7 @@ import {
   createStage1ContractPdfSigningSlots
 } from "../contract/contract-pdf-render-model";
 import { PrismaService } from "../prisma/prisma.service";
+import { StorageService } from "../storage/storage.service";
 import {
   ArchiveContractDto,
   CancelOrderDto,
@@ -284,13 +287,21 @@ type MonthlyRenewalPlan = {
   reason: string;
 };
 
+type ContractPdfPreview = {
+  filename: string;
+  mimeType?: string | null;
+  sizeBytes: number;
+  stream: Readable;
+};
+
 @Injectable()
 export class OrderService {
   constructor(
     private readonly auditService: AuditService,
     private readonly prisma: PrismaService,
     @Optional() private readonly contractPdfArtifactWriter?: ContractPdfArtifactWriterService,
-    @Optional() private readonly configService?: ConfigService
+    @Optional() private readonly configService?: ConfigService,
+    @Optional() private readonly storageService?: StorageService
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -2104,6 +2115,31 @@ export class OrderService {
     const contract = await this.findContractOrThrow(id);
     ensureCanAccessContract(contract, user);
     return toContractView(contract);
+  }
+
+  async previewGeneratedContractPdf(id: string, user: RequestUser): Promise<ContractPdfPreview> {
+    const contract = await this.findContractOrThrow(id);
+    ensureCanAccessContract(contract, user);
+
+    if (!this.storageService) {
+      throw new Error("CONTRACT_PDF_PREVIEW_STORAGE_MISSING: storage service is unavailable");
+    }
+    if (!contract.fileId || !hasGeneratedContractPdfArtifact(contract)) {
+      throw new NotFoundException("Generated contract PDF not found.");
+    }
+
+    const fileObject = await this.prisma.fileObject.findUnique({ where: { id: contract.fileId } });
+    if (!fileObject) {
+      throw new NotFoundException("Generated contract PDF file not found.");
+    }
+
+    const storedObject = await this.storageService.getObject(fileObject.bucket, fileObject.objectKey);
+    return {
+      filename: fileObject.originalName,
+      mimeType: fileObject.mimeType ?? storedObject.contentType,
+      sizeBytes: storedObject.contentLength ?? Number(fileObject.sizeBytes),
+      stream: storedObject.stream
+    };
   }
 
   async signContract(id: string, user: RequestUser, context: RequestContext) {
@@ -4538,7 +4574,10 @@ function toPackageSnapshot(
 }
 
 function toContractView(contract: ContractWithDetails): Record<string, unknown> {
-  return toPlain(contract) as Record<string, unknown>;
+  return {
+    ...(toPlain(contract) as Record<string, unknown>),
+    hasGeneratedPdfArtifact: hasGeneratedContractPdfArtifact(contract)
+  };
 }
 
 function toContractVersionView(version: Prisma.ContractVersionGetPayload<object>): Record<string, unknown> {
@@ -4568,6 +4607,15 @@ function buildContractSnapshotWithGeneratedPdfArtifact(
       source: artifact.diagnostics.source
     }
   });
+}
+
+function hasGeneratedContractPdfArtifact(contract: Pick<ContractWithDetails, "contractSnapshot" | "fileId">) {
+  const snapshot = toPlain(contract.contractSnapshot);
+  if (!isPlainRecord(snapshot)) {
+    return false;
+  }
+  const artifact = snapshot.generatedContractPdfArtifact;
+  return isPlainRecord(artifact) && Boolean(contract.fileId) && artifact.fileId === contract.fileId;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

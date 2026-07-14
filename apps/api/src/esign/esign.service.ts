@@ -10,10 +10,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   AuditAction,
   ContractStatus,
-  ESignProviderAccountStatus,
-  ESignProviderAccountType,
   ESignProviderType,
-  ESignRealNameStatus,
   ESignSignerStatus,
   ESignSignerType,
   ESignTaskStatus,
@@ -48,6 +45,7 @@ import {
   ESignSlotId
 } from "./esign.provider";
 import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
+import { FadadaCustomerReadinessService } from "./fadada-customer-readiness.service";
 
 const contractForESignInclude = {
   customer: { select: { id: true, mobile: true, name: true } },
@@ -186,7 +184,8 @@ export class ESignService {
     private readonly provider: ESignProvider,
     private readonly prisma: PrismaService,
     @Optional() private readonly notificationService?: NotificationService,
-    @Optional() private readonly contractPdfArtifactService?: ContractPdfArtifactService
+    @Optional() private readonly contractPdfArtifactService?: ContractPdfArtifactService,
+    @Optional() private readonly fadadaReadinessService?: FadadaCustomerReadinessService
   ) {}
 
   async createTaskForContract(
@@ -1737,21 +1736,14 @@ export class ESignService {
       return;
     }
 
-    const account = await this.prisma.customerESignProviderAccount.findFirst({
-      select: { id: true },
-      where: {
-        accountType: ESignProviderAccountType.PERSONAL,
-        customerId,
-        deletedAt: null,
-        provider: ESignProviderType.FADADA,
-        providerCustomerId: { not: null },
-        realNameStatus: ESignRealNameStatus.VERIFIED,
-        registrationStatus: ESignProviderAccountStatus.REGISTERED
-      }
-    });
-    if (!account) {
+    const readinessService = this.fadadaReadinessService ??
+      new FadadaCustomerReadinessService(this.prisma, this.configService);
+    const readiness = await readinessService.getReadiness(customerId);
+    if (!readiness.readyForSigning) {
+      const blockingCode = readiness.blockingCode ?? "FADADA_PROVIDER_STATUS_UNKNOWN";
+      const blockingMessage = readiness.blockingMessage ?? "请先完成法大大实名认证并绑定实名证书";
       throw new BadRequestException(
-        `${FADADA_CUSTOMER_SIGNING_NOT_READY}: verified provider customer binding is required before starting e-sign`
+        `${FADADA_CUSTOMER_SIGNING_NOT_READY}: ${blockingCode}: ${blockingMessage}`
       );
     }
   }

@@ -41,6 +41,8 @@ export type FadadaEndpoint =
   | "get_person_verify_url.api"
   | "find_personCertInfo.api"
   | "apply_cert.api"
+  | "query_cert.api"
+  | "find_serialNo.api"
   | "uploaddocs.api"
   | "extsign_validation.api"
   | "extsign.api"

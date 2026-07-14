@@ -10,6 +10,7 @@ import { StorageModule } from "../storage/storage.module";
 import { ContractPdfArtifactService } from "./contract-pdf-artifact.service";
 import { CustomerESignProviderAccountController } from "./customer-esign-provider-account.controller";
 import { CustomerESignProviderAccountService } from "./customer-esign-provider-account.service";
+import { FadadaCustomerReadinessService } from "./fadada-customer-readiness.service";
 import { CustomerESignOnboardingController } from "./customer-esign-onboarding.controller";
 import { CustomerESignOnboardingService } from "./customer-esign-onboarding.service";
 import { ESignAdminController, ESignCallbackController } from "./esign.controller";
@@ -51,13 +52,14 @@ export function createESignProviderClient(
     CustomerESignProviderAccountController,
     CustomerESignOnboardingController
   ],
-  exports: [ESignService, CustomerESignOnboardingService, FadadaSignedArtifactService],
+  exports: [ESignService, CustomerESignOnboardingService, FadadaCustomerReadinessService, FadadaSignedArtifactService],
   imports: [AuditModule, AuthModule, NotificationModule, PrismaModule, StorageModule],
   providers: [
     ContractPdfArtifactService,
     CustomerESignProviderAccountService,
     CustomerESignOnboardingService,
     ESignService,
+    FadadaCustomerReadinessService,
     FadadaSignedArtifactService,
     {
       inject: [ConfigService, ContractPdfArtifactService, PrismaService],

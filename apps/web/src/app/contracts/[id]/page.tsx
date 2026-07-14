@@ -34,6 +34,7 @@ interface ContractDetail {
   contractTitle: string;
   createdAt: string;
   customer: { name: string; mobile: string };
+  hasGeneratedPdfArtifact?: boolean;
   id: string;
   order: { orderNo: string; id: string };
   signedAt?: string | null;
@@ -429,6 +430,17 @@ export default function ContractDetailPage() {
     );
   }
 
+  function openGeneratedContractPdf() {
+    if (!contract) {
+      return;
+    }
+    window.open(
+      `${API_BASE_URL}/contracts/${encodeURIComponent(contract.id)}/generated-pdf/preview`,
+      "_blank",
+      "noopener,noreferrer"
+    );
+  }
+
   return (
     <ProtectedShell>
       <Space orientation="vertical" size={20} style={{ width: "100%" }}>
@@ -445,6 +457,11 @@ export default function ContractDetailPage() {
               {signedDocumentTask ? (
                 <Button icon={<EyeOutlined />} onClick={() => openSignedContract(signedDocumentTask.id)} type="primary">
                   查看已签署PDF
+                </Button>
+              ) : null}
+              {contract.hasGeneratedPdfArtifact ? (
+                <Button icon={<EyeOutlined />} onClick={openGeneratedContractPdf}>
+                  查看待签署PDF
                 </Button>
               ) : null}
               <ActionButton

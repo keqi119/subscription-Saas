@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, StreamableFile, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
+import type { Response } from "express";
 
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
@@ -246,6 +247,23 @@ export class OrderController {
   @RequirePermissions(PermissionCode.CONTRACT_VIEW)
   getContract(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.getContract(id, request.user);
+  }
+
+  @Get("contracts/:id/generated-pdf/preview")
+  @RequirePermissions(PermissionCode.CONTRACT_VIEW)
+  async previewGeneratedContractPdf(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const preview = await this.orderService.previewGeneratedContractPdf(id, request.user);
+    response.setHeader("Content-Type", preview.mimeType ?? "application/pdf");
+    response.setHeader("Content-Length", String(preview.sizeBytes));
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`
+    );
+    return new StreamableFile(preview.stream);
   }
 
   @Post("contracts/:id/sign")

@@ -1,4 +1,8 @@
 import {
+  ApplicationActionType,
+  ApplicationMaterialType,
+  ApplicationSource,
+  ApplicationStatus,
   CustomerAccountStatus,
   CustomerProfileMaterialStatus,
   CustomerProfileMaterialType
@@ -45,6 +49,68 @@ describe("PortalProfileMaterialService", () => {
     );
     expect(result).not.toHaveProperty("bucket");
     expect(result).not.toHaveProperty("objectKey");
+  });
+
+  it("projects uploaded profile materials into active self-service applications", async () => {
+    const { service, tx } = createFixture({
+      applications: [
+        {
+          applicationSource: ApplicationSource.SELF_SERVICE,
+          customerId: "customer-1",
+          id: "application-1",
+          salesUserId: "user-1",
+          status: ApplicationStatus.SUBMITTED
+        }
+      ]
+    });
+
+    await service.uploadMaterial(
+      { materialType: CustomerProfileMaterialType.ID_CARD_FRONT },
+      [uploadFile("id-front.png", "image/png")],
+      currentCustomer("customer-1")
+    );
+
+    expect(tx.application.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          applicationSource: ApplicationSource.SELF_SERVICE,
+          customerId: "customer-1",
+          status: { in: [ApplicationStatus.SUBMITTED, ApplicationStatus.NEED_MORE_INFO] }
+        })
+      })
+    );
+    expect(tx.applicationMaterialGroup.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          applicationId: "application-1",
+          materialType: ApplicationMaterialType.ID_CARD
+        })
+      })
+    );
+    expect(tx.fileObject.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          objectKey: "customer-profile-materials/customer-1/2026/id-front.png"
+        })
+      })
+    );
+    expect(tx.applicationMaterialFile.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          applicationId: "application-1",
+          materialType: ApplicationMaterialType.ID_CARD
+        })
+      })
+    );
+    expect(tx.applicationActionLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          actionType: ApplicationActionType.UPLOAD_MATERIAL_FILE,
+          applicationId: "application-1",
+          operatorName: "客户门户 138****0000"
+        })
+      })
+    );
   });
 
   it("rejects video uploads", async () => {
@@ -120,7 +186,19 @@ describe("PortalProfileMaterialService", () => {
   });
 });
 
-function createFixture(overrides: { materials?: ReturnType<typeof createProfileMaterial>[] } = {}) {
+function createFixture(
+  overrides: {
+    applications?: Array<{
+      applicationSource: ApplicationSource;
+      customerId: string;
+      id: string;
+      salesUserId: string;
+      status: ApplicationStatus;
+    }>;
+    materials?: ReturnType<typeof createProfileMaterial>[];
+  } = {}
+) {
+  const applications = overrides.applications ?? [];
   const materials = overrides.materials ?? [];
   const storageService = {
     getCustomerProfileMaterialStream: vi.fn(async () => ({
@@ -139,6 +217,24 @@ function createFixture(overrides: { materials?: ReturnType<typeof createProfileM
     }))
   };
   const tx = {
+    application: {
+      findMany: vi.fn(async () => applications)
+    },
+    applicationActionLog: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data)
+    },
+    applicationMaterialFile: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...data,
+        id: "application-material-file-1"
+      }))
+    },
+    applicationMaterialGroup: {
+      upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
+        ...create,
+        id: "application-material-group-1"
+      }))
+    },
     customerProfileMaterial: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
         createProfileMaterial({
@@ -147,6 +243,12 @@ function createFixture(overrides: { materials?: ReturnType<typeof createProfileM
         })
       ),
       updateMany: vi.fn(async () => ({ count: 1 }))
+    },
+    fileObject: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...data,
+        id: "file-object-1"
+      }))
     }
   };
   const prisma = {

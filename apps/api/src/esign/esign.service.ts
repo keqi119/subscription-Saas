@@ -10,7 +10,10 @@ import { ConfigService } from "@nestjs/config";
 import {
   AuditAction,
   ContractStatus,
+  ESignProviderAccountStatus,
+  ESignProviderAccountType,
   ESignProviderType,
+  ESignRealNameStatus,
   ESignSignerStatus,
   ESignSignerType,
   ESignTaskStatus,
@@ -133,6 +136,7 @@ const FADADA_UNKNOWN_EVENT = "FADADA_SIGN_UNKNOWN";
 const ENTERPRISE_AUTO_SEAL_ENABLED_ENV = "ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED";
 const STAGE1_MULTI_SLOT_ENABLED_ENV = "ESIGN_STAGE1_MULTI_SLOT_ENABLED";
 const PLATFORM_SEAL_KEYWORD_ENV = "ESIGN_PLATFORM_SEAL_KEYWORD";
+const FADADA_CUSTOMER_SIGNING_NOT_READY = "FADADA_CUSTOMER_SIGNING_NOT_READY";
 const STAGE1_SIGNING_STAGE: ESignSigningStage = "STAGE1_CONTRACT";
 const STAGE1_SIGNING_SLOTS: readonly ESignSigningSlot[] = [
   {
@@ -201,6 +205,7 @@ export class ESignService {
       const task = await this.findTaskOrThrow(existingTask.id);
       return toESignTaskView(task);
     }
+    await this.assertCustomerReadyForProviderSigning(contract.customerId);
     const signingPdfArtifact = await this.preflightSigningPdfArtifact(contract.id);
 
     const documentName = contract.contractTitle || `合同 ${contract.contractNo}`;
@@ -1725,6 +1730,30 @@ export class ESignService {
       );
     }
     return artifact;
+  }
+
+  private async assertCustomerReadyForProviderSigning(customerId: string) {
+    if (this.providerType !== ESignProviderType.FADADA) {
+      return;
+    }
+
+    const account = await this.prisma.customerESignProviderAccount.findFirst({
+      select: { id: true },
+      where: {
+        accountType: ESignProviderAccountType.PERSONAL,
+        customerId,
+        deletedAt: null,
+        provider: ESignProviderType.FADADA,
+        providerCustomerId: { not: null },
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        registrationStatus: ESignProviderAccountStatus.REGISTERED
+      }
+    });
+    if (!account) {
+      throw new BadRequestException(
+        `${FADADA_CUSTOMER_SIGNING_NOT_READY}: verified provider customer binding is required before starting e-sign`
+      );
+    }
   }
 
   private resolvePlatformSealPlacement(): AutoSealPlacement | undefined {

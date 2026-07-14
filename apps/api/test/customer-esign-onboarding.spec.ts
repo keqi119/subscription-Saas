@@ -2,6 +2,9 @@ import {
   ESignProviderAccountStatus,
   ESignProviderAccountSource,
   ESignProviderAccountType,
+  ESignProviderCertBindingSource,
+  ESignProviderCertBindingStatus,
+  ESignProviderRealNameStatusSource,
   ESignProviderType,
   ESignRealNameStatus
 } from "@prisma/client";
@@ -76,7 +79,13 @@ describe("CustomerESignOnboardingService", () => {
   it("rejects onboarding start for customers that are already signing enabled", async () => {
     const { accountService, service } = createFixture();
     accountService.getFadadaPersonalBinding.mockResolvedValueOnce(fakeView({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-06-29T00:05:00.000Z"),
       providerCustomerId: "fadada-provider-customer-1234567890",
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-06-29T00:00:00.000Z"),
       registrationStatus: ESignProviderAccountStatus.REGISTERED,
       realNameStatus: ESignRealNameStatus.VERIFIED
     }));
@@ -118,10 +127,42 @@ describe("CustomerESignOnboardingService", () => {
     expect(accountService.startFadadaPersonalRealNameVerification).not.toHaveBeenCalled();
   });
 
-  it("derives SIGNING_ENABLED from a registered and verified binding without provider calls", async () => {
+  it("keeps local VERIFIED without provider evidence out of signing-enabled state", async () => {
     const { accountService, service } = createFixture();
     accountService.getFadadaPersonalBinding.mockResolvedValueOnce(fakeView({
       providerCustomerId: "fadada-provider-customer-1234567890",
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verifiedAt: new Date("2026-06-29T00:00:00.000Z")
+    }));
+
+    const status = await service.getOnboardingStatus("customer-1");
+
+    expect(status).toMatchObject({
+      nextAction: "CONTACT_SUPPORT",
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      signingEligible: false,
+      state: CustomerESignOnboardingState.UNKNOWN
+    });
+    expect(status.providerCustomerId).toMatch(/^fadad.*7890$/);
+    expect(JSON.stringify(status)).not.toContain("fadada-provider-customer-1234567890");
+    expect(accountService.registerFadadaPersonalAccount).not.toHaveBeenCalled();
+    expect(accountService.startFadadaPersonalRealNameVerification).not.toHaveBeenCalled();
+    expect(accountService.applyFadadaPersonalCert).not.toHaveBeenCalled();
+  });
+
+  it("derives SIGNING_ENABLED from provider real-name and cert-bound evidence", async () => {
+    const { accountService, service } = createFixture();
+    accountService.getFadadaPersonalBinding.mockResolvedValueOnce(fakeView({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-06-29T00:05:00.000Z"),
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      providerStatusLastRefreshedAt: new Date("2026-06-29T00:05:00.000Z"),
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-06-29T00:00:00.000Z"),
       registrationStatus: ESignProviderAccountStatus.REGISTERED,
       realNameStatus: ESignRealNameStatus.VERIFIED,
       verifiedAt: new Date("2026-06-29T00:00:00.000Z")
@@ -392,6 +433,10 @@ function createFixture(input: { env?: Record<string, string> } = {}) {
 function fakeView(overrides: Partial<CustomerESignProviderAccountView> = {}): CustomerESignProviderAccountView {
   return {
     accountType: ESignProviderAccountType.PERSONAL,
+    certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+    certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+    certBoundAt: null,
+    certSerialNo: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     id: "binding-1",
     lastErrorCode: null,
@@ -399,7 +444,13 @@ function fakeView(overrides: Partial<CustomerESignProviderAccountView> = {}): Cu
     provider: ESignProviderType.FADADA,
     providerCustomerId: null,
     providerOpenId: "subau...base",
+    providerStatusLastRefreshedAt: null,
+    readinessBlockingCode: null,
+    readinessBlockingReason: null,
     registrationStatus: ESignProviderAccountStatus.PENDING,
+    realNameProviderStatus: null,
+    realNameProviderStatusSource: ESignProviderRealNameStatusSource.UNKNOWN,
+    realNameProviderVerifiedAt: null,
     realNameStatus: ESignRealNameStatus.UNVERIFIED,
     source: ESignProviderAccountSource.SYSTEM_REGISTER,
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),

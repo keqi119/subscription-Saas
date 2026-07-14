@@ -4,6 +4,8 @@ import {
   AuditAction,
   ESignProviderAccountStatus,
   ESignProviderAccountType,
+  ESignProviderCertBindingStatus,
+  ESignProviderRealNameStatusSource,
   ESignProviderType,
   ESignRealNameStatus
 } from "@prisma/client";
@@ -22,12 +24,15 @@ import {
 
 export enum CustomerESignOnboardingState {
   ACCOUNT_CREATED = "ACCOUNT_CREATED",
+  CERT_BINDING_PENDING = "CERT_BINDING_PENDING",
   DISABLED = "DISABLED",
   FAILED = "FAILED",
   NOT_STARTED = "NOT_STARTED",
   ONBOARDING = "ONBOARDING",
   REALNAME_PENDING = "REALNAME_PENDING",
+  REALNAME_PROVIDER_VERIFIED = "REALNAME_PROVIDER_VERIFIED",
   SIGNING_ENABLED = "SIGNING_ENABLED",
+  UNKNOWN = "UNKNOWN",
   VERIFIED = "VERIFIED"
 }
 
@@ -286,7 +291,13 @@ export class CustomerESignOnboardingService {
       return CustomerESignOnboardingState.REALNAME_PENDING;
     }
     if (account.realNameStatus === ESignRealNameStatus.VERIFIED) {
-      return CustomerESignOnboardingState.SIGNING_ENABLED;
+      if (!hasProviderBackedRealName(account)) {
+        return CustomerESignOnboardingState.UNKNOWN;
+      }
+      if (account.certBindingStatus === ESignProviderCertBindingStatus.BOUND) {
+        return CustomerESignOnboardingState.SIGNING_ENABLED;
+      }
+      return CustomerESignOnboardingState.CERT_BINDING_PENDING;
     }
     return CustomerESignOnboardingState.ACCOUNT_CREATED;
   }
@@ -370,6 +381,8 @@ function nextActionForState(state: CustomerESignOnboardingState): CustomerESignO
       return "START_REALNAME_VERIFICATION";
     case CustomerESignOnboardingState.REALNAME_PENDING:
       return "WAIT_REALNAME_CALLBACK";
+    case CustomerESignOnboardingState.REALNAME_PROVIDER_VERIFIED:
+    case CustomerESignOnboardingState.CERT_BINDING_PENDING:
     case CustomerESignOnboardingState.VERIFIED:
       return "APPLY_CERT";
     case CustomerESignOnboardingState.SIGNING_ENABLED:
@@ -377,10 +390,19 @@ function nextActionForState(state: CustomerESignOnboardingState): CustomerESignO
     case CustomerESignOnboardingState.FAILED:
       return "RETRY";
     case CustomerESignOnboardingState.DISABLED:
+    case CustomerESignOnboardingState.UNKNOWN:
       return "CONTACT_SUPPORT";
     default:
       return "CONTACT_SUPPORT";
   }
+}
+
+function hasProviderBackedRealName(account: CustomerESignProviderAccountView) {
+  return account.realNameProviderVerifiedAt !== null &&
+    (
+      account.realNameProviderStatusSource === ESignProviderRealNameStatusSource.CALLBACK ||
+      account.realNameProviderStatusSource === ESignProviderRealNameStatusSource.QUERY
+    );
 }
 
 function maskIdentifier(value: string | null | undefined) {

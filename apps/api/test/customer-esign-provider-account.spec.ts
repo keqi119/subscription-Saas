@@ -2,10 +2,13 @@ import { BadRequestException, ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   AuditAction,
+  ESignProviderCertBindingSource,
+  ESignProviderCertBindingStatus,
   ESignProviderAccountStatus,
   ESignProviderAccountSource,
   ESignProviderAccountType,
   ESignProviderType,
+  ESignProviderRealNameStatusSource,
   ESignRealNameStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -130,7 +133,7 @@ describe("CustomerESignProviderAccountService", () => {
     expect(view.providerCustomerId).toMatch(/^fadad.*ng-1$/);
   });
 
-  it("manual attach creates a registered manual binding without calling provider", async () => {
+  it("manual attach only binds the provider customer id and cannot mark signing-ready evidence", async () => {
     const { apiClient, auditService, service, state } = createServiceFixture();
 
     const view = await service.manuallyAttachFadadaPersonalAccount({
@@ -141,8 +144,11 @@ describe("CustomerESignProviderAccountService", () => {
 
     expect(apiClient.registerAccount).not.toHaveBeenCalled();
     expect(state.accounts[0]).toMatchObject({
+      certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+      certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
       providerCustomerId: "fadada-manual-1",
-      realNameStatus: ESignRealNameStatus.VERIFIED,
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.MANUAL_ATTACH_PROVIDER_ID_ONLY,
+      realNameStatus: ESignRealNameStatus.UNVERIFIED,
       registrationStatus: ESignProviderAccountStatus.REGISTERED,
       source: ESignProviderAccountSource.MANUAL
     });
@@ -357,7 +363,13 @@ describe("CustomerESignProviderAccountService", () => {
 
     expect(apiClient.findPersonCertInfo).toHaveBeenCalledWith({ verifiedSerialNo: "VERIFY-TX-1" });
     expect(view.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
-    expect(state.accounts[0]?.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
+    expect(state.accounts[0]).toMatchObject({
+      certBindingStatus: ESignProviderCertBindingStatus.PENDING,
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameStatus: ESignRealNameStatus.VERIFIED
+    });
+    expect(state.accounts[0]?.providerStatusLastRefreshedAt).toBeInstanceOf(Date);
   });
 
   it("rejects invalid real-name callback digest without updating account state", async () => {
@@ -386,8 +398,10 @@ describe("CustomerESignProviderAccountService", () => {
   it("applies the verified personal certificate without invoking signing APIs", async () => {
     const { apiClient, service, state } = createServiceFixture({
       accounts: [{
+        certBindingStatus: ESignProviderCertBindingStatus.PENDING,
         providerCustomerId: "fadada-registered-1",
         registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
         realNameStatus: ESignRealNameStatus.VERIFIED,
         verificationSerialNo: "VERIFY-TX-1",
         verificationTransactionNo: "VERIFY-TX-1"
@@ -410,7 +424,45 @@ describe("CustomerESignProviderAccountService", () => {
     });
     expect(apiClient.getPersonVerifyUrl).not.toHaveBeenCalled();
     expect(view.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
+    expect(state.accounts[0]).toMatchObject({
+      certBindingSource: ESignProviderCertBindingSource.APPLY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND
+    });
+    expect(state.accounts[0]?.certBoundAt).toBeInstanceOf(Date);
     expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("fadada-registered-1");
+  });
+
+  it("marks cert binding from query_cert provider evidence", async () => {
+    const { apiClient, service, state } = createServiceFixture({
+      accounts: [{
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+    vi.mocked(apiClient.queryCert).mockResolvedValueOnce({
+      certBound: true,
+      certSerialNo: "CERT-SEQUENCE-1",
+      customerId: "fadada-registered-1",
+      raw: { code: "1", data: { cert: { sequenceNo: "CERT-SEQUENCE-1" } }, msg: "ok" },
+      resultCode: "1",
+      resultDesc: "ok"
+    });
+
+    const view = await service.refreshFadadaCertBindingStatus("customer-1", "operator-1");
+
+    expect(apiClient.queryCert).toHaveBeenCalledWith({ customerId: "fadada-registered-1" });
+    expect(view.certBindingStatus).toBe(ESignProviderCertBindingStatus.BOUND);
+    expect(state.accounts[0]).toMatchObject({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certSerialNo: "CERT-SEQUENCE-1"
+    });
+    expect(state.accounts[0]?.providerStatusLastRefreshedAt).toBeInstanceOf(Date);
   });
 });
 
@@ -429,6 +481,7 @@ function createServiceFixture(input: {
     applyCert: vi.fn(),
     findPersonCertInfo: vi.fn(),
     getPersonVerifyUrl: vi.fn(),
+    queryCert: vi.fn(),
     registerAccount: vi.fn()
   };
   const auditService = {
@@ -454,6 +507,10 @@ function createServiceFixture(input: {
 
 interface FakeAccount {
   accountType: ESignProviderAccountType;
+  certBindingSource: ESignProviderCertBindingSource;
+  certBindingStatus: ESignProviderCertBindingStatus;
+  certBoundAt: Date | null;
+  certSerialNo: string | null;
   createdAt: Date;
   createdBy: string | null;
   customerId: string;
@@ -465,7 +522,13 @@ interface FakeAccount {
   providerCustomerId: string | null;
   providerOpenId: string;
   providerSnapshot: unknown;
+  providerStatusLastRefreshedAt: Date | null;
+  readinessBlockingCode: string | null;
+  readinessBlockingReason: string | null;
   registrationStatus: ESignProviderAccountStatus;
+  realNameProviderStatus: string | null;
+  realNameProviderStatusSource: ESignProviderRealNameStatusSource;
+  realNameProviderVerifiedAt: Date | null;
   realNameStatus: ESignRealNameStatus;
   source: ESignProviderAccountSource;
   updatedAt: Date;
@@ -478,6 +541,10 @@ interface FakeAccount {
 function fakeAccount(overrides: Partial<FakeAccount> = {}): FakeAccount {
   return {
     accountType: ESignProviderAccountType.PERSONAL,
+    certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+    certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+    certBoundAt: null,
+    certSerialNo: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     createdBy: null,
     customerId: "customer-1",
@@ -489,7 +556,13 @@ function fakeAccount(overrides: Partial<FakeAccount> = {}): FakeAccount {
     providerCustomerId: null,
     providerOpenId: "subauto_person_v1_existing",
     providerSnapshot: null,
+    providerStatusLastRefreshedAt: null,
+    readinessBlockingCode: null,
+    readinessBlockingReason: null,
     registrationStatus: ESignProviderAccountStatus.PENDING,
+    realNameProviderStatus: null,
+    realNameProviderStatusSource: ESignProviderRealNameStatusSource.UNKNOWN,
+    realNameProviderVerifiedAt: null,
     realNameStatus: ESignRealNameStatus.UNVERIFIED,
     source: ESignProviderAccountSource.SYSTEM_REGISTER,
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),

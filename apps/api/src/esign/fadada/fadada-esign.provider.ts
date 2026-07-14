@@ -1,6 +1,8 @@
 import {
   ESignProviderAccountStatus,
   ESignProviderAccountType,
+  ESignProviderCertBindingStatus,
+  ESignProviderRealNameStatusSource,
   ESignProviderType,
   ESignRealNameStatus
 } from "@prisma/client";
@@ -392,6 +394,8 @@ export class FadadaESignProvider implements ESignProvider {
         deletedAt: null,
         provider: ESignProviderType.FADADA,
         providerCustomerId: { not: null },
+        certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+        realNameProviderStatusSource: { not: ESignProviderRealNameStatusSource.UNKNOWN },
         realNameStatus: ESignRealNameStatus.VERIFIED,
         registrationStatus: ESignProviderAccountStatus.REGISTERED
       }

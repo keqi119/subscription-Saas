@@ -912,6 +912,34 @@ enum ESignProviderAccountSource {
   @@map("esign_provider_account_source")
 }
 
+enum ESignProviderRealNameStatusSource {
+  UNKNOWN
+  CALLBACK
+  QUERY
+  MANUAL_ATTACH_PROVIDER_ID_ONLY
+
+  @@map("esign_provider_real_name_status_source")
+}
+
+enum ESignProviderCertBindingStatus {
+  UNKNOWN
+  UNBOUND
+  PENDING
+  BOUND
+  FAILED
+
+  @@map("esign_provider_cert_binding_status")
+}
+
+enum ESignProviderCertBindingSource {
+  UNKNOWN
+  APPLY_CERT
+  QUERY_CERT
+  CALLBACK_CERT_STATUS
+
+  @@map("esign_provider_cert_binding_source")
+}
+
 enum ESignTaskStatus {
   CREATED
   WAITING_CUSTOMER
@@ -1802,6 +1830,16 @@ model CustomerESignProviderAccount {
   verificationSerialNo      String?                    @map("verification_serial_no") @db.VarChar(128)
   verificationTransactionNo String?                    @map("verification_transaction_no") @db.VarChar(128)
   verifiedAt                DateTime?                  @map("verified_at") @db.Timestamptz(6)
+  realNameProviderStatus    String?                    @map("real_name_provider_status") @db.VarChar(32)
+  realNameProviderStatusSource ESignProviderRealNameStatusSource @default(UNKNOWN) @map("real_name_provider_status_source")
+  realNameProviderVerifiedAt DateTime?                 @map("real_name_provider_verified_at") @db.Timestamptz(6)
+  certBindingStatus         ESignProviderCertBindingStatus @default(UNKNOWN) @map("cert_binding_status")
+  certBindingSource         ESignProviderCertBindingSource @default(UNKNOWN) @map("cert_binding_source")
+  certBoundAt               DateTime?                  @map("cert_bound_at") @db.Timestamptz(6)
+  certSerialNo              String?                    @map("cert_serial_no") @db.VarChar(128)
+  providerStatusLastRefreshedAt DateTime?              @map("provider_status_last_refreshed_at") @db.Timestamptz(6)
+  readinessBlockingCode     String?                    @map("readiness_blocking_code") @db.VarChar(128)
+  readinessBlockingReason   String?                    @map("readiness_blocking_reason") @db.Text
   lastErrorCode             String?                    @map("last_error_code") @db.VarChar(128)
   lastErrorMessage          String?                    @map("last_error_message") @db.Text
   providerSnapshot          Json?                      @map("provider_snapshot")
@@ -1818,6 +1856,8 @@ model CustomerESignProviderAccount {
   @@index([provider])
   @@index([registrationStatus])
   @@index([realNameStatus])
+  @@index([certBindingStatus])
+  @@index([providerStatusLastRefreshedAt])
   @@map("customer_esign_provider_account")
 }
 

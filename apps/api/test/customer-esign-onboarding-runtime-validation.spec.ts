@@ -3,6 +3,9 @@ import {
   ESignProviderAccountStatus,
   ESignProviderAccountSource,
   ESignProviderAccountType,
+  ESignProviderCertBindingSource,
+  ESignProviderCertBindingStatus,
+  ESignProviderRealNameStatusSource,
   ESignProviderType,
   ESignRealNameStatus
 } from "@prisma/client";
@@ -28,7 +31,14 @@ describe("Stage 10D-C3-F onboarding runtime validation", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(fakeView({
+        certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+        certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+        certBoundAt: new Date("2026-06-30T00:05:00.000Z"),
         providerCustomerId: "fadada-provider-customer-1234567890",
+        providerStatusLastRefreshedAt: new Date("2026-06-30T00:05:00.000Z"),
+        realNameProviderStatus: "2",
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+        realNameProviderVerifiedAt: new Date("2026-06-30T00:00:00.000Z"),
         registrationStatus: ESignProviderAccountStatus.REGISTERED,
         realNameStatus: ESignRealNameStatus.VERIFIED,
         verifiedAt: new Date("2026-06-30T00:00:00.000Z")
@@ -162,6 +172,18 @@ describe("Stage 10D-C3-F onboarding runtime validation", () => {
       providerCustomerId: "fadada-provider-customer-1234567890",
       registrationStatus: ESignProviderAccountStatus.REGISTERED,
       realNameStatus: ESignRealNameStatus.VERIFIED
+    }))).toBe(CustomerESignOnboardingState.UNKNOWN);
+    expect(harness.service.resolveState(fakeView({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-06-30T00:05:00.000Z"),
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      providerStatusLastRefreshedAt: new Date("2026-06-30T00:05:00.000Z"),
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-06-30T00:00:00.000Z"),
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED
     }))).toBe(CustomerESignOnboardingState.SIGNING_ENABLED);
     expect(harness.service.resolveState(fakeView({
       registrationStatus: ESignProviderAccountStatus.DISABLED
@@ -270,6 +292,10 @@ function expectNoForbiddenSideEffects(harness: ReturnType<typeof createRuntimeHa
 function fakeView(overrides: Partial<CustomerESignProviderAccountView> = {}): CustomerESignProviderAccountView {
   return {
     accountType: ESignProviderAccountType.PERSONAL,
+    certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+    certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+    certBoundAt: null,
+    certSerialNo: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     id: "binding-1",
     lastErrorCode: null,
@@ -277,7 +303,13 @@ function fakeView(overrides: Partial<CustomerESignProviderAccountView> = {}): Cu
     provider: ESignProviderType.FADADA,
     providerCustomerId: null,
     providerOpenId: "subauto_person_v1_runtime1234567890",
+    providerStatusLastRefreshedAt: null,
+    readinessBlockingCode: null,
+    readinessBlockingReason: null,
     registrationStatus: ESignProviderAccountStatus.PENDING,
+    realNameProviderStatus: null,
+    realNameProviderStatusSource: ESignProviderRealNameStatusSource.UNKNOWN,
+    realNameProviderVerifiedAt: null,
     realNameStatus: ESignRealNameStatus.UNVERIFIED,
     source: ESignProviderAccountSource.SYSTEM_REGISTER,
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),

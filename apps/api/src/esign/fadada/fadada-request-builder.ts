@@ -20,8 +20,10 @@ export const FADADA_ENDPOINTS = {
   extSignAuto: "extsign_auto.api",
   extSignValidation: "extsign_validation.api",
   findPersonCertInfo: "find_personCertInfo.api",
+  findSerialNo: "find_serialNo.api",
   getPersonVerifyUrl: "get_person_verify_url.api",
   getUrl: "geturl.api",
+  queryCert: "query_cert.api",
   querySignResult: "query_sign_result.api",
   uploadDocs: "uploaddocs.api",
   viewContract: "viewContract.api"
@@ -110,6 +112,33 @@ export function buildApplyCertRequest(input: {
     businessParams: input.businessParams,
     config: input.config,
     endpoint: FADADA_ENDPOINTS.applyCert,
+    timestamp: input.timestamp
+  });
+}
+
+export function buildQueryCertRequest(input: {
+  businessParams: Record<string, unknown>;
+  config: FadadaConfig;
+  timestamp?: string;
+}): FadadaRequest {
+  return buildFadadaRequest({
+    businessParams: input.businessParams,
+    config: input.config,
+    endpoint: FADADA_ENDPOINTS.queryCert,
+    method: "GET",
+    timestamp: input.timestamp
+  });
+}
+
+export function buildFindSerialNoRequest(input: {
+  businessParams: Record<string, unknown>;
+  config: FadadaConfig;
+  timestamp?: string;
+}): FadadaRequest {
+  return buildFadadaRequest({
+    businessParams: input.businessParams,
+    config: input.config,
+    endpoint: FADADA_ENDPOINTS.findSerialNo,
     timestamp: input.timestamp
   });
 }

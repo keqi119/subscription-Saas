@@ -6,6 +6,9 @@ import {
   ESignProviderAccountSource,
   ESignProviderAccountStatus,
   ESignProviderAccountType,
+  ESignProviderCertBindingSource,
+  ESignProviderCertBindingStatus,
+  ESignProviderRealNameStatusSource,
   ESignProviderType,
   ESignRealNameStatus,
   Prisma
@@ -70,6 +73,10 @@ export interface FadadaVerifyCallbackResult {
 
 export interface CustomerESignProviderAccountView {
   accountType: ESignProviderAccountType;
+  certBindingSource: ESignProviderCertBindingSource;
+  certBindingStatus: ESignProviderCertBindingStatus;
+  certBoundAt: Date | null;
+  certSerialNo: string | null;
   createdAt: Date;
   id: string;
   lastErrorCode: string | null;
@@ -77,7 +84,13 @@ export interface CustomerESignProviderAccountView {
   provider: ESignProviderType;
   providerCustomerId: string | null;
   providerOpenId: string;
+  providerStatusLastRefreshedAt: Date | null;
+  readinessBlockingCode: string | null;
+  readinessBlockingReason: string | null;
   registrationStatus: ESignProviderAccountStatus;
+  realNameProviderStatus: string | null;
+  realNameProviderStatusSource: ESignProviderRealNameStatusSource;
+  realNameProviderVerifiedAt: Date | null;
   realNameStatus: ESignRealNameStatus;
   source: ESignProviderAccountSource;
   updatedAt: Date;
@@ -95,7 +108,7 @@ export class CustomerESignProviderAccountService {
     @Inject(FADADA_ACCOUNT_API_CLIENT)
     private readonly fadadaApiClient?: Pick<
       FadadaApiClient,
-      "applyCert" | "findPersonCertInfo" | "getPersonVerifyUrl" | "registerAccount"
+      "applyCert" | "findPersonCertInfo" | "getPersonVerifyUrl" | "queryCert" | "registerAccount"
     >,
     @Optional() private readonly auditService?: AuditService
   ) {}
@@ -221,8 +234,6 @@ export class CustomerESignProviderAccountService {
     }
 
     const existing = await this.findFadadaPersonalBinding(input.customerId);
-    const realNameStatus = input.realNameStatus ?? ESignRealNameStatus.UNVERIFIED;
-    const verifiedAt = realNameStatus === ESignRealNameStatus.VERIFIED ? new Date() : undefined;
     if (existing) {
       if (existing.providerCustomerId && existing.providerCustomerId !== providerCustomerId) {
         throw new ConflictException(`${FADADA_PROVIDER_ACCOUNT_ALREADY_ATTACHED}: provider customer id already exists`);
@@ -233,11 +244,19 @@ export class CustomerESignProviderAccountService {
           lastErrorCode: null,
           lastErrorMessage: null,
           providerCustomerId,
-          realNameStatus,
+          certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+          certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+          certBoundAt: null,
+          certSerialNo: null,
+          providerStatusLastRefreshedAt: null,
+          realNameProviderStatus: null,
+          realNameProviderStatusSource: ESignProviderRealNameStatusSource.MANUAL_ATTACH_PROVIDER_ID_ONLY,
+          realNameProviderVerifiedAt: null,
+          realNameStatus: ESignRealNameStatus.UNVERIFIED,
           registrationStatus: ESignProviderAccountStatus.REGISTERED,
           source: ESignProviderAccountSource.MANUAL,
           updatedBy: actorId,
-          ...(verifiedAt ? { verifiedAt } : {})
+          verifiedAt: null
         },
         where: { id: existing.id }
       });
@@ -253,11 +272,13 @@ export class CustomerESignProviderAccountService {
         provider: ESignProviderType.FADADA,
         providerCustomerId,
         providerOpenId: createFadadaProviderOpenId(input.customerId),
-        realNameStatus,
+        certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+        certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.MANUAL_ATTACH_PROVIDER_ID_ONLY,
+        realNameStatus: ESignRealNameStatus.UNVERIFIED,
         registrationStatus: ESignProviderAccountStatus.REGISTERED,
         source: ESignProviderAccountSource.MANUAL,
-        updatedBy: actorId,
-        ...(verifiedAt ? { verifiedAt } : {})
+        updatedBy: actorId
       }
     });
     await this.auditProviderAccountOverride("manual_attach", created, actorId);
@@ -268,6 +289,14 @@ export class CustomerESignProviderAccountService {
     const binding = await this.getOrCreateFadadaPersonalBinding(input.customerId, actorId);
     const updated = await this.prisma.customerESignProviderAccount.update({
       data: {
+        certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+        certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+        certBoundAt: null,
+        certSerialNo: null,
+        providerStatusLastRefreshedAt: null,
+        realNameProviderStatus: null,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.UNKNOWN,
+        realNameProviderVerifiedAt: null,
         realNameStatus: input.realNameStatus,
         updatedBy: actorId,
         verificationSerialNo: input.verificationSerialNo,
@@ -319,6 +348,14 @@ export class CustomerESignProviderAccountService {
             verifyUrl: result.verifyUrl
           }
         }),
+        certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+        certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+        certBoundAt: null,
+        certSerialNo: null,
+        providerStatusLastRefreshedAt: null,
+        realNameProviderStatus: null,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.UNKNOWN,
+        realNameProviderVerifiedAt: null,
         realNameStatus: ESignRealNameStatus.PENDING,
         updatedBy: actorId,
         ...(verificationNo ? {
@@ -347,10 +384,12 @@ export class CustomerESignProviderAccountService {
     }
 
     const result = await this.createFadadaApiClient().findPersonCertInfo({ verifiedSerialNo });
+    const providerStatus = result.realNameStatus ?? result.resultCode ?? null;
     const nextStatus = transitionRealNameStatus(
       binding.realNameStatus,
-      mapFadadaRealNameStatus(result.realNameStatus ?? result.resultCode)
+      mapFadadaRealNameStatus(providerStatus ?? undefined)
     );
+    const now = new Date();
     const updated = await this.prisma.customerESignProviderAccount.update({
       data: {
         lastErrorCode: null,
@@ -362,9 +401,18 @@ export class CustomerESignProviderAccountService {
             resultDesc: result.resultDesc
           }
         }),
+        providerStatusLastRefreshedAt: now,
+        realNameProviderStatus: providerStatus,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+        ...(nextStatus === ESignRealNameStatus.VERIFIED ? {
+          certBindingStatus: binding.certBindingStatus === ESignProviderCertBindingStatus.BOUND
+            ? ESignProviderCertBindingStatus.BOUND
+            : ESignProviderCertBindingStatus.PENDING,
+          realNameProviderVerifiedAt: binding.realNameProviderVerifiedAt ?? now,
+          verifiedAt: binding.verifiedAt ?? now
+        } : {}),
         realNameStatus: nextStatus,
-        updatedBy: actorId,
-        ...(nextStatus === ESignRealNameStatus.VERIFIED ? { verifiedAt: new Date() } : {})
+        updatedBy: actorId
       },
       where: { id: binding.id }
     });
@@ -380,6 +428,9 @@ export class CustomerESignProviderAccountService {
     if (binding.realNameStatus !== ESignRealNameStatus.VERIFIED) {
       throw new BadRequestException(`FADADA_REALNAME_NOT_VERIFIED: current status ${binding.realNameStatus}`);
     }
+    if (!hasProviderBackedRealNameEvidence(binding)) {
+      throw new BadRequestException("FADADA_REALNAME_PROVIDER_EVIDENCE_MISSING: provider query or callback is required before binding cert");
+    }
     const verifiedSerialNo = binding.verificationSerialNo ?? binding.verificationTransactionNo;
     if (!verifiedSerialNo) {
       throw new BadRequestException(`${FADADA_REALNAME_VERIFY_SERIAL_MISSING}: verification serial no is required`);
@@ -389,10 +440,18 @@ export class CustomerESignProviderAccountService {
       customerId: binding.providerCustomerId!,
       verifiedSerialNo
     });
+    if (result.resultCode && !isFadadaSuccessCode(result.resultCode)) {
+      throw new BadRequestException(`FADADA_CERT_BINDING_FAILED: ${result.resultCode}`);
+    }
+    const now = new Date();
     const updated = await this.prisma.customerESignProviderAccount.update({
       data: {
+        certBindingSource: ESignProviderCertBindingSource.APPLY_CERT,
+        certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+        certBoundAt: now,
         lastErrorCode: null,
         lastErrorMessage: null,
+        providerStatusLastRefreshedAt: now,
         providerSnapshot: sanitizeProviderSnapshot({
           applyCert: {
             raw: result.raw,
@@ -402,7 +461,47 @@ export class CustomerESignProviderAccountService {
         }),
         realNameStatus: ESignRealNameStatus.VERIFIED,
         updatedBy: actorId,
-        verifiedAt: binding.verifiedAt ?? new Date()
+        verifiedAt: binding.verifiedAt ?? now
+      },
+      where: { id: binding.id }
+    });
+    return toView(updated);
+  }
+
+  async refreshFadadaCertBindingStatus(customerId: string, actorId?: string) {
+    if (!this.isRealNameVerifyEnabled()) {
+      throw new BadRequestException(`${FADADA_REALNAME_VERIFY_DISABLED}: real-name verification is disabled`);
+    }
+    const binding = await this.getRegisteredFadadaPersonalBinding(customerId);
+    if (!hasProviderBackedRealNameEvidence(binding)) {
+      throw new BadRequestException("FADADA_REALNAME_PROVIDER_EVIDENCE_MISSING: provider query or callback is required before querying cert");
+    }
+
+    const result = await this.createFadadaApiClient().queryCert({
+      customerId: binding.providerCustomerId!
+    });
+    const now = new Date();
+    const updated = await this.prisma.customerESignProviderAccount.update({
+      data: {
+        certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+        certBindingStatus: result.certBound
+          ? ESignProviderCertBindingStatus.BOUND
+          : ESignProviderCertBindingStatus.UNBOUND,
+        certBoundAt: result.certBound ? binding.certBoundAt ?? now : null,
+        certSerialNo: result.certBound ? result.certSerialNo ?? binding.certSerialNo : null,
+        lastErrorCode: result.certBound ? null : result.resultCode ?? "FADADA_CERT_NOT_BOUND",
+        lastErrorMessage: result.certBound ? null : sanitizeErrorMessage(result.resultDesc ?? "certificate binding not confirmed"),
+        providerStatusLastRefreshedAt: now,
+        providerSnapshot: sanitizeProviderSnapshot({
+          queryCert: {
+            raw: result.raw,
+            resultCode: result.resultCode,
+            resultDesc: result.resultDesc
+          }
+        }),
+        readinessBlockingCode: result.certBound ? null : "FADADA_CERT_NOT_BOUND",
+        readinessBlockingReason: result.certBound ? null : "certificate binding is not provider-confirmed",
+        updatedBy: actorId
       },
       where: { id: binding.id }
     });
@@ -414,9 +513,10 @@ export class CustomerESignProviderAccountService {
     const transactionNo = stringOrUndefined(record.transaction_no) ??
       stringOrUndefined(record.transactionNo) ??
       stringOrUndefined(record.verified_serialno) ??
-      stringOrUndefined(record.verifiedSerialNo);
+      stringOrUndefined(record.verifiedSerialNo) ??
+      stringOrUndefined(record.serialNo);
     const timestamp = stringOrUndefined(record.timestamp);
-    const receivedMsgDigest = stringOrUndefined(record.msg_digest);
+    const receivedMsgDigest = stringOrUndefined(record.msg_digest) ?? stringOrUndefined(record.sign);
     const verified = Boolean(transactionNo && timestamp && receivedMsgDigest) &&
       this.verifyCallbackDigest(record, transactionNo!, timestamp!, receivedMsgDigest!);
 
@@ -448,15 +548,38 @@ export class CustomerESignProviderAccountService {
       stringOrUndefined(record.result_code)
     );
     const nextStatus = transitionRealNameStatus(binding.realNameStatus, incomingStatus);
+    const providerStatus = stringOrUndefined(record.realname_status) ??
+      stringOrUndefined(record.realNameStatus) ??
+      stringOrUndefined(record.status) ??
+      stringOrUndefined(record.result_code) ??
+      null;
+    const certStatus = stringOrUndefined(record.certStatus) ?? stringOrUndefined(record.cert_status);
+    const certBoundFromCallback = nextStatus === ESignRealNameStatus.VERIFIED && certStatus === "1";
+    const now = new Date();
     const updated = await this.prisma.customerESignProviderAccount.update({
       data: {
         providerSnapshot: sanitizeProviderSnapshot({
           realNameCallback: record
         }),
+        providerStatusLastRefreshedAt: now,
+        realNameProviderStatus: providerStatus,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.CALLBACK,
+        ...(nextStatus === ESignRealNameStatus.VERIFIED ? {
+          certBindingSource: certBoundFromCallback
+            ? ESignProviderCertBindingSource.CALLBACK_CERT_STATUS
+            : binding.certBindingSource,
+          certBindingStatus: certBoundFromCallback
+            ? ESignProviderCertBindingStatus.BOUND
+            : binding.certBindingStatus === ESignProviderCertBindingStatus.BOUND
+              ? ESignProviderCertBindingStatus.BOUND
+              : ESignProviderCertBindingStatus.PENDING,
+          certBoundAt: certBoundFromCallback ? binding.certBoundAt ?? now : binding.certBoundAt,
+          realNameProviderVerifiedAt: binding.realNameProviderVerifiedAt ?? now
+        } : {}),
         realNameStatus: nextStatus,
         verificationSerialNo: binding.verificationSerialNo ?? transactionNo,
         verificationTransactionNo: binding.verificationTransactionNo ?? transactionNo,
-        ...(nextStatus === ESignRealNameStatus.VERIFIED ? { verifiedAt: binding.verifiedAt ?? new Date() } : {})
+        ...(nextStatus === ESignRealNameStatus.VERIFIED ? { verifiedAt: binding.verifiedAt ?? now } : {})
       },
       where: { id: binding.id }
     });
@@ -620,6 +743,10 @@ export class CustomerESignProviderAccountService {
 function toView(account: CustomerESignProviderAccount): CustomerESignProviderAccountView {
   return {
     accountType: account.accountType,
+    certBindingSource: account.certBindingSource,
+    certBindingStatus: account.certBindingStatus,
+    certBoundAt: account.certBoundAt,
+    certSerialNo: maskIdentifier(account.certSerialNo),
     createdAt: account.createdAt,
     id: account.id,
     lastErrorCode: account.lastErrorCode,
@@ -627,7 +754,13 @@ function toView(account: CustomerESignProviderAccount): CustomerESignProviderAcc
     provider: account.provider,
     providerCustomerId: maskIdentifier(account.providerCustomerId),
     providerOpenId: maskIdentifier(account.providerOpenId) ?? "",
+    providerStatusLastRefreshedAt: account.providerStatusLastRefreshedAt,
+    readinessBlockingCode: account.readinessBlockingCode,
+    readinessBlockingReason: account.readinessBlockingReason,
     registrationStatus: account.registrationStatus,
+    realNameProviderStatus: account.realNameProviderStatus,
+    realNameProviderStatusSource: account.realNameProviderStatusSource,
+    realNameProviderVerifiedAt: account.realNameProviderVerifiedAt,
     realNameStatus: account.realNameStatus,
     source: account.source,
     updatedAt: account.updatedAt,
@@ -711,6 +844,18 @@ function sanitizeErrorMessage(error: unknown) {
     .replace(/\b1\d{10}\b/g, "[redacted-mobile]")
     .replace(/[A-Za-z0-9_-]{24,}/g, "[redacted-id]")
     .slice(0, 500);
+}
+
+function isFadadaSuccessCode(code: string | undefined) {
+  return code === "1" || code === "1000" || code?.toLowerCase() === "success";
+}
+
+function hasProviderBackedRealNameEvidence(account: CustomerESignProviderAccount) {
+  if (account.realNameStatus !== ESignRealNameStatus.VERIFIED) {
+    return false;
+  }
+  return account.realNameProviderStatusSource === ESignProviderRealNameStatusSource.CALLBACK ||
+    account.realNameProviderStatusSource === ESignProviderRealNameStatusSource.QUERY;
 }
 
 function mapFadadaRealNameStatus(value: string | undefined): ESignRealNameStatus {

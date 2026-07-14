@@ -371,9 +371,11 @@ describe("Fadada provider B2-A flow", () => {
     expect(prisma.customerESignProviderAccount.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         accountType: "PERSONAL",
+        certBindingStatus: "BOUND",
         customerId: "customer-1",
         provider: "FADADA",
         providerCustomerId: { not: null },
+        realNameProviderStatusSource: { not: "UNKNOWN" },
         realNameStatus: "VERIFIED",
         registrationStatus: "REGISTERED"
       })

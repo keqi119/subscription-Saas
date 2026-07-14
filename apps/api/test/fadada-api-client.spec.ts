@@ -186,6 +186,84 @@ describe("Fadada API client", () => {
     expect(String(request?.body)).not.toContain("secret-xyz");
   });
 
+  it("queries certificate information with customerId through mocked transport", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: "1",
+        data: {
+          cert: {
+            certType: "0",
+            dn: "CN=Test",
+            endTime: "20270102030405",
+            sequenceNo: "CERT-SEQUENCE-1",
+            startTime: "20260102030405"
+          }
+        },
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.queryCert({ customerId: "CUSTOMER-1234567890" });
+
+    expect(result).toMatchObject({
+      certBound: true,
+      certSerialNo: "CERT-SEQUENCE-1",
+      customerId: "CUSTOMER-1234567890",
+      resultCode: "1",
+      resultDesc: "success"
+    });
+    const request = vi.mocked(transport).mock.calls[0]?.[0];
+    expect(request?.method).toBe("GET");
+    expect(`${new URL(request?.url ?? "").origin}${new URL(request?.url ?? "").pathname}`).toBe(
+      "https://testapi.fadada.com:8443/api/query_cert.api"
+    );
+    expect(new URL(request?.url ?? "").searchParams.get("customerId")).toBe("CUSTOMER-1234567890");
+    expect(request?.body).toBeUndefined();
+    expect(request?.url).not.toContain("secret-xyz");
+  });
+
+  it("recovers real-name serial numbers and links with find_serialNo through mocked transport", async () => {
+    const encodedUrl = Buffer.from("https://verify.example.test/realname?token=secret", "utf8").toString("base64");
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: "1",
+        data: {
+          bindSerialNo: "VERIFY-TX-BOUND",
+          transactionList: [{
+            identityName: "Test User",
+            status: "1",
+            transactionNo: "VERIFY-TX-1",
+            type: "2",
+            url: encodedUrl
+          }]
+        },
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.findRealNameSerialNumbers({ customerId: "CUSTOMER-1234567890" });
+
+    expect(result).toMatchObject({
+      bindSerialNo: "VERIFY-TX-BOUND",
+      customerId: "CUSTOMER-1234567890",
+      transactions: [{
+        status: "1",
+        transactionNo: "VERIFY-TX-1",
+        verifyUrl: "https://verify.example.test/realname?token=secret"
+      }]
+    });
+    const request = vi.mocked(transport).mock.calls[0]?.[0];
+    expect(request?.url).toBe("https://testapi.fadada.com:8443/api/find_serialNo.api");
+    expect(String(request?.body)).toContain("customer_id=CUSTOMER-1234567890");
+    expect(String(request?.body)).not.toContain("secret-xyz");
+  });
+
   it("builds uploadDocs multipart requests through mocked transport", async () => {
     const transport: FadadaTransport = vi.fn(async () => ({
       bodyText: "{\"result\":\"kept-raw\"}",

@@ -3,9 +3,12 @@ import { ConfigService } from "@nestjs/config";
 import {
   ContractStatus,
   CustomerAccountStatus,
+  ESignProviderCertBindingSource,
+  ESignProviderCertBindingStatus,
   ESignProviderAccountStatus,
   ESignProviderAccountType,
   ESignProviderType,
+  ESignProviderRealNameStatusSource,
   ESignRealNameStatus,
   ESignSignerStatus,
   ESignSignerType,
@@ -309,6 +312,35 @@ describe("ESignService", () => {
 
     await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
       /FADADA_CUSTOMER_SIGNING_NOT_READY/
+    );
+
+    expect(provider.createSignTask).not.toHaveBeenCalled();
+    expect(state.tasks).toHaveLength(0);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
+  });
+
+  it("blocks Fadada task creation when local VERIFIED has no provider cert-bound evidence", async () => {
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async () => {
+        throw new Error("provider should not be called");
+      }),
+      getSignerUrl: vi.fn(),
+      verifyCallback: vi.fn()
+    };
+    const localOnlyAccount = createProviderAccount("customer-1", {
+      certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+      certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+      certBoundAt: null,
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.UNKNOWN
+    });
+    const { service, state } = createESignFixture(
+      { ESIGN_PROVIDER: "fadada", FADADA_ENABLED: "true" },
+      provider,
+      { providerAccounts: [localOnlyAccount] }
+    );
+
+    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
+      /FADADA_CERT_NOT_BOUND/
     );
 
     expect(provider.createSignTask).not.toHaveBeenCalled();
@@ -1537,16 +1569,30 @@ function createContract(id: string, customerId: string, orderId: string, orderNo
   };
 }
 
-function createProviderAccount(customerId: string): FakeProviderAccount {
+function createProviderAccount(
+  customerId: string,
+  overrides: Partial<FakeProviderAccount> = {}
+): FakeProviderAccount {
   return {
     accountType: ESignProviderAccountType.PERSONAL,
+    certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+    certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+    certBoundAt: new Date("2026-07-14T00:05:00.000Z"),
+    certSerialNo: "CERT-SEQUENCE-1",
     customerId,
     deletedAt: null,
     id: `provider-account-${customerId}`,
     provider: ESignProviderType.FADADA,
     providerCustomerId: `fadada-${customerId}`,
+    providerStatusLastRefreshedAt: new Date("2026-07-14T00:05:00.000Z"),
+    readinessBlockingCode: null,
+    readinessBlockingReason: null,
+    realNameProviderStatus: "2",
+    realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+    realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
     realNameStatus: ESignRealNameStatus.VERIFIED,
-    registrationStatus: ESignProviderAccountStatus.REGISTERED
+    registrationStatus: ESignProviderAccountStatus.REGISTERED,
+    ...overrides
   };
 }
 
@@ -1584,8 +1630,11 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
     }
     if (
       key === "accountType" ||
+      key === "certBindingSource" ||
+      key === "certBindingStatus" ||
       key === "provider" ||
       key === "providerTaskId" ||
+      key === "realNameProviderStatusSource" ||
       key === "realNameStatus" ||
       key === "registrationStatus" ||
       key === "taskStatus" ||
@@ -1977,11 +2026,21 @@ interface FakeState {
 
 interface FakeProviderAccount extends Record<string, unknown> {
   accountType: ESignProviderAccountType;
+  certBindingSource: ESignProviderCertBindingSource;
+  certBindingStatus: ESignProviderCertBindingStatus;
+  certBoundAt: Date | null;
+  certSerialNo: string | null;
   customerId: string;
   deletedAt: Date | null;
   id: string;
   provider: ESignProviderType;
   providerCustomerId: string | null;
+  providerStatusLastRefreshedAt: Date | null;
+  readinessBlockingCode: string | null;
+  readinessBlockingReason: string | null;
+  realNameProviderStatus: string | null;
+  realNameProviderStatusSource: ESignProviderRealNameStatusSource;
+  realNameProviderVerifiedAt: Date | null;
   realNameStatus: ESignRealNameStatus;
   registrationStatus: ESignProviderAccountStatus;
 }

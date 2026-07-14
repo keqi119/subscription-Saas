@@ -2,11 +2,13 @@ import {
   buildAccountRegisterRequest,
   buildApplyCertRequest,
   buildFindPersonCertInfoRequest,
+  buildFindSerialNoRequest,
   buildPersonVerifyUrlRequest,
   buildContractFilingRequest,
   buildContractStatusRequest,
   buildDownloadContractRequest,
   buildFadadaRequest,
+  buildQueryCertRequest,
   FADADA_ENDPOINTS
 } from "./fadada-request-builder";
 import type { AutoSealPlacement } from "../esign.provider";
@@ -182,6 +184,79 @@ export class FadadaApiClient {
       resultCode: providerCode(raw),
       resultDesc: providerMsg(raw),
       verifiedSerialNo: input.verifiedSerialNo
+    };
+  }
+
+  async queryCert(input: {
+    customerId: string;
+  }): Promise<{
+    certBound: boolean;
+    certSerialNo?: string;
+    customerId: string;
+    raw: unknown;
+    resultCode?: string;
+    resultDesc?: string;
+  }> {
+    const request = buildQueryCertRequest({
+      businessParams: {
+        customerId: input.customerId
+      },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+    const resultCode = providerCode(raw);
+    const certSerialNo = stringField(raw, ["sequenceNo", "sequence_no", "serialNo", "certSerialNo"]);
+    const certEvidence = Boolean(certSerialNo || stringField(raw, ["dn", "certType", "startTime", "endTime"]));
+
+    return {
+      certBound: isProviderSuccess(resultCode) && certEvidence,
+      certSerialNo,
+      customerId: input.customerId,
+      raw,
+      resultCode,
+      resultDesc: providerMsg(raw)
+    };
+  }
+
+  async findRealNameSerialNumbers(input: {
+    customerId: string;
+  }): Promise<{
+    bindSerialNo?: string;
+    customerId: string;
+    raw: unknown;
+    resultCode?: string;
+    resultDesc?: string;
+    transactions: Array<{
+      status?: string;
+      transactionNo?: string;
+      type?: string;
+      verifyUrl?: string;
+    }>;
+  }> {
+    const request = buildFindSerialNoRequest({
+      businessParams: {
+        customer_id: input.customerId
+      },
+      config: this.config
+    });
+    const response = await this.httpClient.send(request);
+    assertHttpOk(response.status);
+    const raw = response.parsedBody ?? response.bodyText;
+
+    return {
+      bindSerialNo: stringField(raw, ["bindSerialNo", "bind_serial_no"]),
+      customerId: input.customerId,
+      raw,
+      resultCode: providerCode(raw),
+      resultDesc: providerMsg(raw),
+      transactions: objectArrayField(raw, ["transactionList", "transactions"]).map((item) => ({
+        status: stringField(item, ["status"]),
+        transactionNo: stringField(item, ["transactionNo", "transaction_no"]),
+        type: stringField(item, ["type"]),
+        verifyUrl: decodeFadadaBase64Url(stringField(item, ["url", "verifyUrl", "verify_url"]))
+      }))
     };
   }
 
@@ -643,6 +718,38 @@ function providerCode(raw: unknown) {
 
 function providerMsg(raw: unknown) {
   return stringField(raw, ["msg", "message", "result_desc", "resultDesc"]);
+}
+
+function isProviderSuccess(code: string | undefined) {
+  return code === "1" || code === "1000" || code === "success";
+}
+
+function objectArrayField(raw: unknown, keys: string[]): Array<Record<string, unknown>> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return [];
+  }
+  const record = raw as Record<string, unknown>;
+  for (const key of keys) {
+    const direct = record[key];
+    if (Array.isArray(direct)) {
+      return direct.filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === "object" && !Array.isArray(item))
+      );
+    }
+  }
+  const data = record.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    return objectArrayField(data, keys);
+  }
+  for (const value of Object.values(record)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nested = objectArrayField(value, keys);
+      if (nested.length) {
+        return nested;
+      }
+    }
+  }
+  return [];
 }
 
 function mapQuerySignResultStatus(raw: unknown, resultCode: string | undefined): "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN" {

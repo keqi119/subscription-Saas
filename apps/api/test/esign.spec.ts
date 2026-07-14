@@ -3,7 +3,10 @@ import { ConfigService } from "@nestjs/config";
 import {
   ContractStatus,
   CustomerAccountStatus,
+  ESignProviderAccountStatus,
+  ESignProviderAccountType,
   ESignProviderType,
+  ESignRealNameStatus,
   ESignSignerStatus,
   ESignSignerType,
   ESignTaskStatus,
@@ -288,6 +291,29 @@ describe("ESignService", () => {
     expect(state.tasks).toHaveLength(0);
     expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("blocks Fadada task creation when the customer provider binding is not verified", async () => {
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async () => {
+        throw new Error("provider should not be called");
+      }),
+      getSignerUrl: vi.fn(),
+      verifyCallback: vi.fn()
+    };
+    const { service, state } = createESignFixture(
+      { ESIGN_PROVIDER: "fadada", FADADA_ENABLED: "true" },
+      provider,
+      { providerAccounts: [] }
+    );
+
+    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
+      /FADADA_CUSTOMER_SIGNING_NOT_READY/
+    );
+
+    expect(provider.createSignTask).not.toHaveBeenCalled();
+    expect(state.tasks).toHaveLength(0);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
   });
 
   it("requires generated artifact preflight before enterprise auto seal provider calls", async () => {
@@ -1220,6 +1246,7 @@ function createESignFixture(
     contractPdfArtifactService?: {
       preflightContractPdfArtifact: ReturnType<typeof vi.fn>;
     };
+    providerAccounts?: FakeProviderAccount[];
   } = {}
 ) {
   const state = {
@@ -1228,6 +1255,7 @@ function createESignFixture(
       createContract("contract-1", "customer-1", "order-1", "ORD-1"),
       createContract("contract-2", "customer-2", "order-2", "ORD-2")
     ],
+    providerAccounts: options.providerAccounts ?? [createProviderAccount("customer-1")],
     signers: [] as FakeSigner[],
     tasks: [] as FakeTask[]
   };
@@ -1397,6 +1425,11 @@ function createESignFixture(
         return hydrateTask(state, task);
       })
     },
+    customerESignProviderAccount: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.providerAccounts.find((account) => matchesWhere(account, where)) ?? null
+      )
+    },
     subscriptionOrder: {
       updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
         const rows = state.contracts
@@ -1504,6 +1537,19 @@ function createContract(id: string, customerId: string, orderId: string, orderNo
   };
 }
 
+function createProviderAccount(customerId: string): FakeProviderAccount {
+  return {
+    accountType: ESignProviderAccountType.PERSONAL,
+    customerId,
+    deletedAt: null,
+    id: `provider-account-${customerId}`,
+    provider: ESignProviderType.FADADA,
+    providerCustomerId: `fadada-${customerId}`,
+    realNameStatus: ESignRealNameStatus.VERIFIED,
+    registrationStatus: ESignProviderAccountStatus.REGISTERED
+  };
+}
+
 function matchesWhere(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => {
     if (expected === undefined) {
@@ -1518,6 +1564,12 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
     if (key === "deletedAt" && expected === null) {
       return row.deletedAt === null;
     }
+    if (key === "providerCustomerId" && expected && typeof expected === "object") {
+      const notValue = (expected as Record<string, unknown>).not;
+      if (notValue === null) {
+        return row.providerCustomerId !== null && row.providerCustomerId !== undefined;
+      }
+    }
     if (
       key === "id" ||
       key === "contractId" ||
@@ -1530,7 +1582,15 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
     ) {
       return row[key] === expected;
     }
-    if (key === "provider" || key === "providerTaskId" || key === "taskStatus" || key === "signerType") {
+    if (
+      key === "accountType" ||
+      key === "provider" ||
+      key === "providerTaskId" ||
+      key === "realNameStatus" ||
+      key === "registrationStatus" ||
+      key === "taskStatus" ||
+      key === "signerType"
+    ) {
       return row[key] === expected;
     }
     if (key === "orderStatus") {
@@ -1910,8 +1970,20 @@ function requestContext() {
 interface FakeState {
   callbackLogs: FakeCallbackLog[];
   contracts: FakeContract[];
+  providerAccounts: FakeProviderAccount[];
   signers: FakeSigner[];
   tasks: FakeTask[];
+}
+
+interface FakeProviderAccount extends Record<string, unknown> {
+  accountType: ESignProviderAccountType;
+  customerId: string;
+  deletedAt: Date | null;
+  id: string;
+  provider: ESignProviderType;
+  providerCustomerId: string | null;
+  realNameStatus: ESignRealNameStatus;
+  registrationStatus: ESignProviderAccountStatus;
 }
 
 interface FakeContract extends Record<string, unknown> {

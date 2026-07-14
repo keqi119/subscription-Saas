@@ -102,6 +102,23 @@ describe("customer views", () => {
           reviewStatus: "PENDING",
           updatedAt: new Date("2026-05-30T00:00:00.000Z"),
           updatedBy: null
+        },
+        {
+          createdAt: new Date("2026-05-30T00:00:00.000Z"),
+          createdBy: null,
+          deletedAt: null,
+          files: [],
+          id: "00000000-0000-4000-8000-000000000402",
+          materialName: "Credit Authorization",
+          materialType: "CREDIT_AUTH",
+          required: true,
+          reviewComment: null,
+          reviewedAt: null,
+          reviewedBy: null,
+          reviewer: null,
+          reviewStatus: "PENDING",
+          updatedAt: new Date("2026-05-30T00:00:00.000Z"),
+          updatedBy: null
         }
       ],
       materials: [],
@@ -114,5 +131,6 @@ describe("customer views", () => {
     } as unknown as Parameters<typeof toApplicationView>[0]);
 
     expect(view.materials[0]?.files[0]?.sizeBytes).toBe(2048);
+    expect(view.materials.find((group) => group.materialType === "CREDIT_AUTH")?.required).toBe(false);
   });
 });

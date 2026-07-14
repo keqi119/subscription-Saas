@@ -153,11 +153,23 @@ describe("application workflow helpers", () => {
     ).toThrow();
   });
 
-  it("checks required material groups before submit and approve", () => {
+  it("allows approving credit authorization as an optional material group without active files", () => {
+    const group = {
+      files: [],
+      materialType: "CREDIT_AUTH",
+      required: true
+    };
+
+    expect(() =>
+      assertCanReviewMaterialGroupStatus(group as never, MaterialStatus.APPROVED)
+    ).not.toThrow();
+  });
+
+  it("checks only ID card and driver license before submit and approve", () => {
     const baseApplication = {
       materialGroups: [
         materialGroup("ID_CARD", MaterialStatus.APPROVED, [false]),
-        materialGroup("DRIVER_LICENSE", MaterialStatus.PENDING, [false])
+        materialGroup("DRIVER_LICENSE", MaterialStatus.PENDING, [true])
       ]
     };
 
@@ -168,8 +180,7 @@ describe("application workflow helpers", () => {
     const submittedApplication = {
       materialGroups: [
         materialGroup("ID_CARD", MaterialStatus.APPROVED, [false]),
-        materialGroup("DRIVER_LICENSE", MaterialStatus.PENDING, [false]),
-        materialGroup("CREDIT_AUTH", MaterialStatus.APPROVED, [false])
+        materialGroup("DRIVER_LICENSE", MaterialStatus.PENDING, [false])
       ]
     };
 
@@ -177,6 +188,17 @@ describe("application workflow helpers", () => {
     expect(() => assertCanApproveApplication(submittedApplication as never)).toThrow(
       /Required materials are not approved/
     );
+
+    const approvableApplication = {
+      materialGroups: [
+        materialGroup("ID_CARD", MaterialStatus.APPROVED, [false]),
+        materialGroup("DRIVER_LICENSE", MaterialStatus.APPROVED, [false]),
+        materialGroup("CREDIT_AUTH", MaterialStatus.PENDING, [false])
+      ]
+    };
+
+    expect(() => assertCanSubmitApplication(approvableApplication as never)).not.toThrow();
+    expect(() => assertCanApproveApplication(approvableApplication as never)).not.toThrow();
   });
 });
 

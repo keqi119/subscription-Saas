@@ -2670,8 +2670,7 @@ function profileData(dto: CustomerProfileDto) {
 
 const requiredMaterialTypes: ApplicationMaterialType[] = [
   ApplicationMaterialType.ID_CARD,
-  ApplicationMaterialType.DRIVER_LICENSE,
-  ApplicationMaterialType.CREDIT_AUTH
+  ApplicationMaterialType.DRIVER_LICENSE
 ];
 
 function isRequiredMaterialType(type: ApplicationMaterialType) {
@@ -2788,7 +2787,11 @@ export function assertCanReviewMaterialGroupStatus(
   >,
   status: MaterialStatus
 ) {
-  if (status === MaterialStatus.APPROVED && group.required && activeMaterialFiles(group).length === 0) {
+  if (
+    status === MaterialStatus.APPROVED &&
+    isRequiredMaterialType(group.materialType) &&
+    activeMaterialFiles(group).length === 0
+  ) {
     throw new BadRequestException(
       `Required material cannot be approved without files: ${getMaterialTypeName(group.materialType)}.`
     );
@@ -3340,7 +3343,7 @@ function toMaterialGroupView(
     materialGroupId: group.id,
     materialName: group.materialName ?? getMaterialTypeName(group.materialType),
     materialType: group.materialType,
-    required: group.required,
+    required: isRequiredMaterialType(group.materialType),
     reviewComment: group.reviewComment,
     reviewedAt: group.reviewedAt,
     reviewer: group.reviewer,

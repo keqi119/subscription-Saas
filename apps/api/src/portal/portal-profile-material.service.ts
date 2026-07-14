@@ -1,7 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import {
+  ApplicationActionType,
+  ApplicationMaterialType,
+  ApplicationSource,
+  ApplicationStatus,
   CustomerProfileMaterial,
-  CustomerProfileMaterialStatus
+  CustomerProfileMaterialStatus,
+  Prisma
 } from "@prisma/client";
 
 import { MaterialPreview, UploadedMaterialFile } from "../customer/customer.service";
@@ -17,7 +22,8 @@ import {
   CUSTOMER_PROFILE_MATERIAL_REQUIREMENTS,
   CUSTOMER_PROFILE_MATERIAL_STATUS_LABELS,
   getCustomerProfileMaterialLabel,
-  isAllowedCustomerProfileMaterialMimeType
+  isAllowedCustomerProfileMaterialMimeType,
+  toApplicationMaterialType
 } from "./portal-profile-materials";
 
 @Injectable()
@@ -97,7 +103,7 @@ export class PortalProfileMaterialService {
         }
       });
 
-      return tx.customerProfileMaterial.create({
+      const material = await tx.customerProfileMaterial.create({
         data: {
           bucket: storage.bucket,
           customerId: currentCustomer.customerId,
@@ -117,6 +123,9 @@ export class PortalProfileMaterialService {
           }
         }
       });
+
+      await this.projectProfileMaterialToActiveApplications(tx, material, currentCustomer);
+      return material;
     });
 
     return toPortalProfileMaterialView(material);
@@ -207,6 +216,104 @@ export class PortalProfileMaterialService {
 
     return material;
   }
+
+  private async projectProfileMaterialToActiveApplications(
+    tx: Prisma.TransactionClient,
+    material: CustomerProfileMaterial,
+    currentCustomer: CurrentCustomer
+  ) {
+    if (!material.bucket || !material.objectKey) {
+      return;
+    }
+
+    const applications = await tx.application.findMany({
+      select: {
+        id: true,
+        salesUserId: true,
+        status: true
+      },
+      where: {
+        applicationSource: ApplicationSource.SELF_SERVICE,
+        customerId: currentCustomer.customerId,
+        deletedAt: null,
+        status: { in: PORTAL_PROFILE_MATERIAL_SYNC_APPLICATION_STATUSES }
+      }
+    });
+
+    if (applications.length === 0) {
+      return;
+    }
+
+    const applicationMaterialType = toApplicationMaterialType(material.materialType);
+    const label = getCustomerProfileMaterialLabel(material.materialType);
+    const originalName = material.originalName ?? material.fileName;
+    const fileName = `客户资料中心 - ${label} - ${originalName}`;
+
+    for (const application of applications) {
+      const materialGroup = await tx.applicationMaterialGroup.upsert({
+        create: {
+          applicationId: application.id,
+          createdBy: application.salesUserId,
+          materialName: APPLICATION_MATERIAL_LABELS[applicationMaterialType],
+          materialType: applicationMaterialType,
+          required: REQUIRED_APPLICATION_MATERIAL_TYPES.includes(applicationMaterialType),
+          updatedBy: application.salesUserId
+        },
+        update: {
+          materialName: APPLICATION_MATERIAL_LABELS[applicationMaterialType],
+          required: REQUIRED_APPLICATION_MATERIAL_TYPES.includes(applicationMaterialType),
+          updatedBy: application.salesUserId
+        },
+        where: {
+          applicationId_materialType: {
+            applicationId: application.id,
+            materialType: applicationMaterialType
+          }
+        }
+      });
+
+      const fileObject = await tx.fileObject.create({
+        data: {
+          bucket: material.bucket,
+          mimeType: material.mimeType,
+          objectKey: material.objectKey,
+          originalName,
+          sizeBytes: BigInt(material.fileSize ?? 0),
+          uploadedBy: application.salesUserId
+        }
+      });
+
+      const materialFile = await tx.applicationMaterialFile.create({
+        data: {
+          applicationId: application.id,
+          createdBy: application.salesUserId,
+          fileId: fileObject.id,
+          fileName,
+          materialGroupId: materialGroup.id,
+          materialType: applicationMaterialType,
+          mimeType: material.mimeType,
+          sizeBytes: BigInt(material.fileSize ?? 0),
+          updatedBy: application.salesUserId,
+          uploadedBy: application.salesUserId
+        }
+      });
+
+      await tx.applicationActionLog.create({
+        data: {
+          actionType: ApplicationActionType.UPLOAD_MATERIAL_FILE,
+          applicationId: application.id,
+          comment: `来自客户资料中心：${label} - ${originalName}`,
+          createdBy: application.salesUserId,
+          materialFileId: materialFile.id,
+          materialGroupId: materialGroup.id,
+          operatorId: application.salesUserId,
+          operatorName: `客户门户 ${maskPhone(currentCustomer.phone)}`,
+          toStatus: application.status,
+          updatedBy: application.salesUserId
+        }
+      });
+    }
+  }
 }
 
 function toPortalProfileMaterialView(material: CustomerProfileMaterial) {
@@ -241,3 +348,27 @@ function normalizeOptionalText(value?: string | null) {
   const normalized = value?.trim();
   return normalized ? normalized : null;
 }
+
+function maskPhone(phone: string) {
+  return phone.replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2");
+}
+
+const APPLICATION_MATERIAL_LABELS: Record<ApplicationMaterialType, string> = {
+  BANK_FLOW: "银行流水",
+  CREDIT_AUTH: "征信授权",
+  DRIVER_LICENSE: "驾驶证",
+  ID_CARD: "身份证",
+  OTHER: "其他",
+  RESIDENCE_PROOF: "居住证明",
+  WORK_PROOF: "工作证明"
+};
+
+const PORTAL_PROFILE_MATERIAL_SYNC_APPLICATION_STATUSES: ApplicationStatus[] = [
+  ApplicationStatus.SUBMITTED,
+  ApplicationStatus.NEED_MORE_INFO
+];
+
+const REQUIRED_APPLICATION_MATERIAL_TYPES: ApplicationMaterialType[] = [
+  ApplicationMaterialType.ID_CARD,
+  ApplicationMaterialType.DRIVER_LICENSE
+];

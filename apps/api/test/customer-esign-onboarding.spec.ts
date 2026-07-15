@@ -226,7 +226,7 @@ describe("CustomerESignOnboardingService", () => {
   });
 
   it("starts real-name verification through the C2 service boundary and derives REALNAME_PENDING", async () => {
-    const { accountService, auditService, prismaService, service } = createFixture({
+    const { accountService, auditService, service } = createFixture({
       env: { FADADA_ONBOARDING_REALNAME_C2_ENABLED: "true" }
     });
     const input: StartCustomerESignOnboardingRealNameDto = {

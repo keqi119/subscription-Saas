@@ -11,7 +11,7 @@ import {
   normalizeCustomerApplicationIdentityInput
 } from "../customer/customer-identity-readiness";
 import { PrismaService } from "../prisma/prisma.service";
-import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
+import { CurrentCustomer } from "./portal-auth.types";
 import { UpdatePortalProfileDto } from "./portal-profile.dto";
 
 @Injectable()
@@ -25,8 +25,7 @@ export class PortalProfileService {
 
   async updateProfile(
     dto: UpdatePortalProfileDto,
-    currentCustomer: CurrentCustomer,
-    _context: PortalRequestContext
+    currentCustomer: CurrentCustomer
   ) {
     const before = await this.findCustomer(currentCustomer.customerId);
     const mobile = normalizeMobile(dto.mobile) ?? normalizeMobile(currentCustomer.phone);

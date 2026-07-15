@@ -1,5 +1,4 @@
-import { Body, Controller, Get, Patch, Req, UseGuards } from "@nestjs/common";
-import type { Request } from "express";
+import { Body, Controller, Get, Patch, UseGuards } from "@nestjs/common";
 
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
@@ -27,12 +26,8 @@ export class PortalController {
   @UseGuards(CustomerAuthGuard)
   updateProfile(
     @Body() dto: UpdatePortalProfileDto,
-    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
-    @Req() request: Request
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
   ) {
-    return this.portalProfileService.updateProfile(dto, currentCustomer, {
-      ipAddress: request.ip,
-      userAgent: request.headers["user-agent"]
-    });
+    return this.portalProfileService.updateProfile(dto, currentCustomer);
   }
 }

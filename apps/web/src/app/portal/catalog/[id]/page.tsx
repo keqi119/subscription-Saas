@@ -107,7 +107,10 @@ export default function PortalCatalogDetailPage() {
         }
       );
 
-      if (!precheckResult.materialComplete && precheckResult.missingMaterials.length > 0) {
+      if (
+        precheckResult.profileComplete === false ||
+        (!precheckResult.materialComplete && precheckResult.missingMaterials.length > 0)
+      ) {
         setPrecheck(precheckResult);
         setPrecheckModalOpen(true);
         return;
@@ -126,6 +129,12 @@ export default function PortalCatalogDetailPage() {
   }
 
   async function continueSubmitAfterPrecheck() {
+    if (precheck?.profileComplete === false) {
+      if (detail) {
+        router.push(`/portal/me?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`);
+      }
+      return;
+    }
     setPrecheckModalOpen(false);
     try {
       setSubmitting(true);
@@ -157,6 +166,8 @@ export default function PortalCatalogDetailPage() {
     void message.success(result.materialComplete === false ? "申请已提交，请尽快补充资料" : "申请已提交");
     router.push(`/portal/applications/${result.applicationId}`);
   }
+
+  const profileBlocked = precheck?.profileComplete === false;
 
   if (loading) {
     return (
@@ -354,14 +365,20 @@ export default function PortalCatalogDetailPage() {
       footer={(_, { CancelBtn }) => (
         <Flex gap={8} justify="flex-end" wrap="wrap">
           <CancelBtn />
+          {profileBlocked ? null : (
           <Button onClick={() => void continueSubmitAfterPrecheck()} loading={submitting}>
             继续提交，稍后补充
           </Button>
+          )}
           <Button
             type="primary"
             onClick={() => {
               if (detail) {
-                router.push(`/portal/materials?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`);
+                router.push(
+                  profileBlocked
+                    ? `/portal/me?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`
+                    : `/portal/materials?redirect=${encodeURIComponent(`/portal/catalog/${detail.id}`)}`
+                );
               }
             }}
           >
@@ -375,15 +392,22 @@ export default function PortalCatalogDetailPage() {
           为加快审核，建议先补充以下资料：
         </Typography.Text>
         <Space direction="vertical" size={4}>
+          {(profileBlocked ? precheck?.missingProfileFields ?? [] : []).map((item) => (
+            <Typography.Text key={item.key}>- {item.label}</Typography.Text>
+          ))}
           {(precheck?.missingMaterials ?? []).map((item) => (
             <Typography.Text key={item.type}>- {item.label}</Typography.Text>
           ))}
         </Space>
+        {profileBlocked ? (
+          <Alert message="请先完成实名资料，再继续提交进件。" showIcon type="warning" />
+        ) : (
         <Alert
           message="你也可以先提交审核，稍后在申请进度中补充资料。"
           showIcon
           type="warning"
         />
+        )}
       </Space>
     </Modal>
     </>

@@ -43,6 +43,9 @@ import { renderMaterialFileNames } from "../../lib/application-materials";
 interface CustomerOption {
   customerNo: string;
   id: string;
+  identity?: {
+    idCardNo?: string | null;
+  } | null;
   mobile: string;
   name: string;
 }
@@ -98,6 +101,11 @@ interface ApplicationRow {
 
 interface CreateApplicationValues {
   customerId: string;
+  customerIdentity?: {
+    idCardNo?: string;
+    mobile?: string;
+    name?: string;
+  };
   intendedModel?: string;
   intendedPeriodMonths?: number;
 }
@@ -335,6 +343,20 @@ export default function ApplicationsPage() {
     materialForm.resetFields();
   }
 
+  function fillCustomerIdentity(customerId: string) {
+    const customer = customers.find((item) => item.id === customerId);
+    if (!customer) {
+      return;
+    }
+    applicationForm.setFieldsValue({
+      customerIdentity: {
+        idCardNo: customer.identity?.idCardNo ?? undefined,
+        mobile: customer.mobile,
+        name: customer.name
+      }
+    });
+  }
+
   const columns: ColumnsType<ApplicationRow> = [
     {
       dataIndex: "applicationNo",
@@ -521,12 +543,40 @@ export default function ApplicationsPage() {
           <Form.Item label="客户" name="customerId" rules={[{ required: true }]}>
             <Select
               showSearch
+              onChange={fillCustomerIdentity}
               optionFilterProp="label"
               options={customers.map((customer) => ({
                 label: `${customer.name} ${customer.mobile} / ${customer.customerNo}`,
                 value: customer.id
               }))}
             />
+          </Form.Item>
+          <Form.Item
+            label="客户姓名"
+            name={["customerIdentity", "name"]}
+            rules={[{ required: true, message: "请输入客户姓名" }]}
+          >
+            <Input maxLength={64} placeholder="请输入身份证上的姓名" />
+          </Form.Item>
+          <Form.Item
+            label="实名手机号"
+            name={["customerIdentity", "mobile"]}
+            rules={[
+              { required: true, message: "请输入实名手机号" },
+              { pattern: /^1\d{10}$/, message: "手机号需为 11 位大陆手机号" }
+            ]}
+          >
+            <Input maxLength={11} placeholder="请输入 11 位手机号" />
+          </Form.Item>
+          <Form.Item
+            label="身份证号"
+            name={["customerIdentity", "idCardNo"]}
+            rules={[
+              { required: true, message: "请输入身份证号" },
+              { pattern: /^\d{17}[\dXx]$/, message: "身份证号需为 18 位，末位可为数字或 X" }
+            ]}
+          >
+            <Input.Password maxLength={18} placeholder="请输入 18 位身份证号" />
           </Form.Item>
           <Form.Item label="意向车型" name="intendedModel">
             <Input placeholder="ET5 / ET5T / ET7 / ES6 / EC6 / ES8 / ET9 / ES9" />

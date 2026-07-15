@@ -18,6 +18,11 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestUser } from "../auth/auth.types";
+import {
+  assertCustomerIdentityProfileReady,
+  buildCustomerIdentityProfileReadiness,
+  type CustomerIdentityProfileReadiness
+} from "../customer/customer-identity-readiness";
 import { CustomerService, MaterialPreview, UploadedMaterialFile } from "../customer/customer.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
@@ -92,8 +97,11 @@ export class PortalApplicationService {
       vehicleId: dto.vehicleId
     });
 
-    const materialCompleteness = await this.getProfileMaterialCompleteness(currentCustomer.customerId);
-    return toPortalApplicationPrecheck(materialCompleteness);
+    const [materialCompleteness, profileReadiness] = await Promise.all([
+      this.getProfileMaterialCompleteness(currentCustomer.customerId),
+      this.getProfileIdentityReadiness(currentCustomer.customerId)
+    ]);
+    return toPortalApplicationPrecheck(materialCompleteness, profileReadiness);
   }
 
   async createApplication(
@@ -102,7 +110,13 @@ export class PortalApplicationService {
     context: PortalRequestContext
   ) {
     const operator = await this.resolvePortalApplicationOperator(currentCustomer.customerId);
-    const materialCompleteness = await this.getProfileMaterialCompleteness(currentCustomer.customerId);
+    const [materialCompleteness, profileReadiness] = await Promise.all([
+      this.getProfileMaterialCompleteness(currentCustomer.customerId),
+      this.getProfileIdentityReadiness(currentCustomer.customerId)
+    ]);
+    if (!profileReadiness.complete) {
+      assertCustomerIdentityProfileReady(await this.getProfileIdentitySource(currentCustomer.customerId));
+    }
     const result = await this.customerService.createSelfServiceApplication(
       {
         customerId: currentCustomer.customerId,
@@ -606,6 +620,31 @@ export class PortalApplicationService {
     return buildCustomerProfileMaterialCompleteness(materials);
   }
 
+  private async getProfileIdentityReadiness(customerId: string) {
+    const customer = await this.getProfileIdentitySource(customerId);
+    return buildCustomerIdentityProfileReadiness(customer);
+  }
+
+  private async getProfileIdentitySource(customerId: string) {
+    const customer = await this.prisma.customer.findUnique({
+      select: {
+        identity: {
+          select: {
+            idCardNo: true
+          }
+        },
+        mobile: true,
+        name: true,
+        sourceChannel: true
+      },
+      where: { id: customerId }
+    });
+    if (!customer) {
+      throw new NotFoundException("Customer not found.");
+    }
+    return customer;
+  }
+
   private async copyProfileMaterialsToApplication(
     applicationId: string,
     currentCustomer: CurrentCustomer,
@@ -832,9 +871,21 @@ function toPortalApplicationDetail(
   };
 }
 
-function toPortalApplicationPrecheck(materialCompleteness: CustomerProfileMaterialCompleteness) {
+function toPortalApplicationPrecheck(
+  materialCompleteness: CustomerProfileMaterialCompleteness,
+  profileReadiness: CustomerIdentityProfileReadiness
+) {
   return {
     actions: [
+      ...(profileReadiness.complete
+        ? []
+        : [
+            {
+              key: "COMPLETE_PROFILE",
+              label: "Complete identity profile",
+              url: "/portal/me"
+            }
+          ]),
       {
         key: "UPLOAD_MATERIALS",
         label: "去补充资料",
@@ -845,9 +896,11 @@ function toPortalApplicationPrecheck(materialCompleteness: CustomerProfileMateri
         label: "继续提交，稍后补充"
       }
     ],
-    canSubmit: materialCompleteness.canSubmit,
+    canSubmit: materialCompleteness.canSubmit && profileReadiness.complete,
     materialComplete: materialCompleteness.complete,
+    missingProfileFields: profileReadiness.missingFields,
     missingMaterials: materialCompleteness.missingMaterials,
+    profileComplete: profileReadiness.complete,
     warnings: materialCompleteness.complete
       ? []
       : ["为加快审核，建议先补充身份证和驾驶证资料。"]

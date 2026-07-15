@@ -28,6 +28,7 @@ import { PortalPaymentController } from "./portal-payment.controller";
 import { PortalOrderDocumentController } from "./portal-order-document.controller";
 import { PortalProfileMaterialController } from "./portal-profile-material.controller";
 import { PortalProfileMaterialService } from "./portal-profile-material.service";
+import { PortalProfileService } from "./portal-profile.service";
 import { PortalServiceCaseController } from "./portal-service-case.controller";
 import { PortalWechatCallbackController, PortalWechatController } from "./portal-wechat.controller";
 
@@ -68,6 +69,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalAuthService,
     PortalBillingService,
     PortalCatalogService,
+    PortalProfileService,
     PortalProfileMaterialService
   ]
 })

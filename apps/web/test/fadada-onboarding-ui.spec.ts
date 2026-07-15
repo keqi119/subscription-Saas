@@ -82,6 +82,34 @@ describe("Fadada onboarding page wiring", () => {
   });
 });
 
+describe("Identity profile application gates", () => {
+  it("wires Portal profile completion through the profile endpoint without rendering full ID numbers", () => {
+    const source = read("apps/web/src/app/portal/me/page.tsx");
+
+    expect(source).toContain("/portal/profile");
+    expect(source).toContain("idCardNo");
+    expect(source).toContain("idCardNoMasked");
+    expect(source).toContain("profileComplete");
+  });
+
+  it("blocks Portal catalog submission through profile precheck before application creation", () => {
+    const source = read("apps/web/src/app/portal/catalog/[id]/page.tsx");
+
+    expect(source).toContain("profileComplete === false");
+    expect(source).toContain("missingProfileFields");
+    expect(source).toContain("/portal/me?redirect=");
+  });
+
+  it("collects customer identity fields in the assisted application modal", () => {
+    const source = read("apps/web/src/app/applications/page.tsx");
+
+    expect(source).toContain("customerIdentity");
+    expect(source).toContain("idCardNo");
+    expect(source).toContain("身份证号");
+    expect(source).toContain("^\\d{17}[\\dXx]$");
+  });
+});
+
 function read(file: string) {
   return readFileSync(join(repoRoot, file), "utf8");
 }

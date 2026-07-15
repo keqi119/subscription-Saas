@@ -47,3 +47,5 @@ Backend signing guards must fail closed in two places:
 
 - before creating a Fadada eSign task
 - before returning or refreshing a Portal signing URL for an existing task
+
+Stage 1 contract identity data remains a separate local contract-readiness requirement. The current A-line flow uses the customer self-entered `CustomerIdentity.idCardNo` for the Party B certificate number in the legal PDF; OCR is not required in this phase. Fadada real-name or certificate readiness does not authorize rendering a blank local Party B certificate number. Missing local ID number must block Stage 1 PDF generation/signing, while full ID numbers must stay out of logs and general status/report responses.

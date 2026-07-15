@@ -24,6 +24,8 @@ export const CONTRACT_PDF_RENDER_NOT_PDF = "CONTRACT_PDF_RENDER_NOT_PDF";
 export const CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING = "CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING";
 export const CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE =
   "CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE";
+export const CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING =
+  "CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING";
 export const CONTRACT_PDF_RENDER_TOO_LARGE = "CONTRACT_PDF_RENDER_TOO_LARGE";
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
@@ -127,7 +129,15 @@ function validateModel(model: ContractPdfRenderModel, diagnostics: ContractPdfRe
   if (!model.contractNo.trim()) {
     throw new Error("CONTRACT_PDF_RENDER_CONTRACT_NO_MISSING: contractNo is required");
   }
+  validateSubscriberParty(model);
   validateStage1SigningSlots(model, diagnostics);
+}
+
+function validateSubscriberParty(model: ContractPdfRenderModel) {
+  const idNumber = formatPartyValue(model.subscriberParty?.subscriberIdNumber).trim();
+  if (!idNumber) {
+    throw new Error(`${CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING}: subscriber ID number is required`);
+  }
 }
 
 function resolveFontPath(options: ContractPdfRenderOptions, diagnostics: ContractPdfRenderDiagnostics) {

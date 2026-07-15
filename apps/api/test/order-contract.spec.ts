@@ -234,6 +234,9 @@ describe("subscription order and contract rules", () => {
     expect(searchableModel).not.toContain("risk-result-1");
     expect(searchableModel).not.toContain("VIN202606020000001");
     expect(searchableModel).not.toContain("DELIVERY_HANDOVER");
+    expect(JSON.stringify(contract)).not.toContain("TEST-ID-0001");
+    expect(JSON.stringify(harness.state.contracts[0]!.contractSnapshot)).not.toContain("TEST-ID-0001");
+    expect(JSON.stringify(harness.auditService.write.mock.calls)).not.toContain("TEST-ID-0001");
     expect(searchableModel).not.toContain("附件2");
     expect(contract.fileId).toBe("generated-file-1");
     expect(harness.state.contracts[0]!.fileId).toBe("generated-file-1");
@@ -276,7 +279,7 @@ describe("subscription order and contract rules", () => {
     });
   });
 
-  it("does not invent missing subscriber party fields", async () => {
+  it("blocks Stage 1 PDF generation when the subscriber ID number is missing", async () => {
     const harness = createOrderServiceHarness({
       artifactGenerationEnabled: true,
       artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" }),
@@ -286,17 +289,13 @@ describe("subscription order and contract rules", () => {
       }
     });
 
-    await harness.service.generateContract(harness.orderId, harness.user, harness.context);
+    await expect(harness.service.generateContract(harness.orderId, harness.user, harness.context))
+      .rejects.toThrow("STAGE1_PARTY_B_ID_NUMBER_MISSING");
 
-    const calls = harness.artifactWriter.writeGeneratedContractPdfArtifact.mock.calls as unknown as Array<[{
-      renderModel: { subscriberParty?: Record<string, unknown> };
-    }]>;
-    expect(calls[0]![0].renderModel.subscriberParty).toMatchObject({
-      subscriberContactAddress: null,
-      subscriberEmail: null,
-      subscriberIdNumber: null,
-      subscriberWechat: null
-    });
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(harness.state.contractId).toBeNull();
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
+    expect(harness.state.contracts).toHaveLength(0);
   });
 
   it("persists generated PDF slot coordinates in the contract snapshot", async () => {

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED,
   CONTRACT_PDF_RENDER_EMPTY_TEMPLATE,
+  CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING,
   CONTRACT_PDF_RENDER_TOO_LARGE,
   ContractPdfRendererService
 } from "../src/contract/contract-pdf-renderer.service";
@@ -380,6 +381,24 @@ describe("ContractPdfRendererService", () => {
       .rejects.toThrow(CONTRACT_PDF_RENDER_EMPTY_TEMPLATE);
   });
 
+  it("fails when the Stage 1 subscriber ID number is missing", async () => {
+    const renderer = new ContractPdfRendererService();
+    const model = createAsciiModel({
+      subscriberParty: {
+        subscriberContactAddress: "Synthetic subscriber address",
+        subscriberContactName: "Synthetic Subscriber",
+        subscriberContactPhone: "13800000000",
+        subscriberEmail: null,
+        subscriberIdNumber: null,
+        subscriberName: "Synthetic Subscriber",
+        subscriberWechat: null
+      }
+    });
+
+    await expect(renderer.render(model, { allowBuiltinFontForAsciiOnlyTests: true }))
+      .rejects.toThrow(CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING);
+  });
+
   it("fails when the Stage 1 body platform slot is missing", async () => {
     const renderer = new ContractPdfRendererService();
     const model = createAsciiModel({
@@ -475,6 +494,15 @@ function createAsciiModel(
       platformSealKeyword: "Provider seal",
       platformSealOffsetX: 60,
       platformSealOffsetY: 0
+    },
+    subscriberParty: {
+      subscriberContactAddress: "Synthetic subscriber address",
+      subscriberContactName: "Synthetic Subscriber",
+      subscriberContactPhone: "13800000000",
+      subscriberEmail: null,
+      subscriberIdNumber: "TEST-ID-0001",
+      subscriberName: "Synthetic Subscriber",
+      subscriberWechat: null
     },
     templateName: "Synthetic Renderer Test Template",
     templateVersion: "V0.TEST",

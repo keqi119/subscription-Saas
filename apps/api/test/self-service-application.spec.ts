@@ -127,6 +127,28 @@ describe("self-service application intake API rules", () => {
     );
   });
 
+  it("rejects self-service intake when required customer identity fields are missing", async () => {
+    const harness = createSelfServiceApplicationHarness({
+      customer: { identity: null }
+    });
+
+    await expect(
+      harness.service.createSelfServiceApplication(
+        {
+          customerId: harness.customer.id,
+          periodMonths: 12,
+          subscriptionPlanId: harness.plan.id,
+          vehicleId: harness.vehicle.id
+        },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
+
+    expect(harness.tx.application.create).not.toHaveBeenCalled();
+    expect(harness.tx.vehicle.updateMany).not.toHaveBeenCalled();
+  });
+
   it("rejects unavailable vehicles before creating an application", async () => {
     const harness = createSelfServiceApplicationHarness({
       vehicle: { status: VehicleStatus.RESERVED }
@@ -238,6 +260,7 @@ function createSelfServiceApplicationHarness(overrides: {
     deletedAt: null,
     grade: null,
     id: "customer-1",
+    identity: { idCardNo: "11010519491231002X" },
     mobile: "13800000000",
     name: "测试客户",
     ownerUserId: null,

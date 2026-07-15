@@ -135,6 +135,63 @@ describe("PortalApplicationService", () => {
     expect(customerService.createSelfServiceApplication).not.toHaveBeenCalled();
   });
 
+  it("blocks self-service precheck when required profile identity fields are incomplete", async () => {
+    const { customerService, service } = createPortalApplicationFixture({
+      customer: {
+        identity: null,
+        mobile: "13800000000",
+        name: "手机用户138****0000"
+      }
+    });
+
+    const result = await service.precheckApplication(
+      {
+        subscriptionPeriodMonths: 12,
+        subscriptionPlanId: "plan-1",
+        vehicleId: "vehicle-1"
+      },
+      currentCustomer("customer-1")
+    );
+
+    expect(result).toMatchObject({
+      canSubmit: false,
+      profileComplete: false
+    });
+    expect(result.missingProfileFields.map((item) => item.key)).toEqual(["name", "idCardNo"]);
+    expect(result.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "COMPLETE_PROFILE",
+          url: "/portal/me"
+        })
+      ])
+    );
+    expect(customerService.createSelfServiceApplication).not.toHaveBeenCalled();
+  });
+
+  it("blocks self-service application creation when profile identity is incomplete", async () => {
+    const { customerService, service } = createPortalApplicationFixture({
+      customer: {
+        identity: null,
+        mobile: "13800000000",
+        name: "手机用户138****0000"
+      }
+    });
+
+    await expect(
+      service.createApplication(
+        {
+          subscriptionPeriodMonths: 12,
+          subscriptionPlanId: "plan-1",
+          vehicleId: "vehicle-1"
+        },
+        currentCustomer("customer-1"),
+        requestContext()
+      )
+    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
+    expect(customerService.createSelfServiceApplication).not.toHaveBeenCalled();
+  });
+
   it("reuses customer profile materials for application review visibility", async () => {
     const profileMaterial = createProfileMaterial();
     const { prisma, service, tx } = createPortalApplicationFixture({
@@ -446,10 +503,12 @@ function createCatalogPrisma() {
 function createPortalApplicationFixture(
   overrides: {
     application?: Record<string, unknown>;
+    customer?: Partial<PortalFixtureCustomer>;
     profileMaterials?: ReturnType<typeof createProfileMaterial>[];
   } = {}
 ) {
   const application = createApplication(overrides.application);
+  const customer = createPortalFixtureCustomer(overrides.customer);
   const profileMaterials = overrides.profileMaterials ?? [];
   const users = [createUser()];
   const tx = createPortalTransaction(application);
@@ -489,7 +548,10 @@ function createPortalApplicationFixture(
     },
     auditLog: vi.fn(),
     customer: {
-      findFirst: vi.fn(async () => ({ ownerUserId: "user-1" }))
+      findFirst: vi.fn(async () => ({ ownerUserId: "user-1" })),
+      findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        where.id === customer.id ? customer : null
+      )
     },
     customerProfileMaterial: {
       findMany: vi.fn(async ({ select }: { select?: Record<string, boolean> } = {}) =>
@@ -552,6 +614,29 @@ function createPortalApplicationFixture(
   );
 
   return { application, auditService, customerService, prisma, service, storageService, tx };
+}
+
+interface PortalFixtureCustomer {
+  id: string;
+  identity: {
+    idCardNo: string | null;
+  } | null;
+  mobile: string;
+  name: string;
+  sourceChannel: string | null;
+}
+
+function createPortalFixtureCustomer(overrides: Partial<PortalFixtureCustomer> = {}): PortalFixtureCustomer {
+  return {
+    id: "customer-1",
+    identity: {
+      idCardNo: "11010519491231002X"
+    },
+    mobile: "13800000000",
+    name: "测试客户",
+    sourceChannel: "portal",
+    ...overrides
+  };
 }
 
 function createPortalTransaction(application: ReturnType<typeof createApplication>) {

@@ -54,6 +54,10 @@ import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
 import { StorageService } from "../storage/storage.service";
 import {
+  assertCustomerIdentityProfileReady,
+  assertValidCustomerApplicationIdentityInput
+} from "./customer-identity-readiness";
+import {
   ApproveApplicationDto,
   NeedMoreInfoDto,
   RejectApplicationDto,
@@ -1033,8 +1037,38 @@ export class CustomerService {
   async createApplication(dto: CreateApplicationDto, user: RequestUser, context: RequestContext) {
     const customer = await this.findCustomerOrThrow(dto.customerId);
     ensureCanAccessCustomer(customer, user);
+    const identityInput = dto.customerIdentity
+      ? assertValidCustomerApplicationIdentityInput(dto.customerIdentity)
+      : null;
+    if (!identityInput) {
+      assertCustomerIdentityProfileReady(customer);
+    }
 
     const application = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      if (identityInput) {
+        await tx.customer.update({
+          data: {
+            mobile: identityInput.mobile,
+            name: identityInput.name,
+            updatedBy: user.id
+          },
+          where: { id: customer.id }
+        });
+        await tx.customerIdentity.upsert({
+          create: {
+            createdBy: user.id,
+            customerId: customer.id,
+            idCardNo: identityInput.idCardNo,
+            updatedBy: user.id
+          },
+          update: {
+            idCardNo: identityInput.idCardNo,
+            updatedBy: user.id
+          },
+          where: { customerId: customer.id }
+        });
+      }
+
       const created = await tx.application.create({
         data: {
           applicationNo: createBusinessNo("APP"),
@@ -1091,13 +1125,17 @@ export class CustomerService {
     context: RequestContext
   ) {
     const [customer, selection] = await Promise.all([
-      this.prisma.customer.findUnique({ where: { id: dto.customerId } }),
+      this.prisma.customer.findUnique({
+        include: { identity: true },
+        where: { id: dto.customerId }
+      }),
       this.validateSelfServiceApplicationSelection(dto)
     ]);
 
     if (!customer || customer.deletedAt) {
       throw new NotFoundException("Customer not found.");
     }
+    assertCustomerIdentityProfileReady(customer);
     const { plan, vehicle } = selection;
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
@@ -1388,6 +1426,7 @@ export class CustomerService {
     if (!canEditApplication(before.status)) {
       throw new BadRequestException("Only draft or need-more-info applications can be submitted.");
     }
+    assertCustomerIdentityProfileReady(before.customer);
     assertCanSubmitApplication(before);
 
     const application = await this.prisma.$transaction(async (tx) => {

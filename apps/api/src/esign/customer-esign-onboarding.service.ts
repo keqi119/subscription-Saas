@@ -245,7 +245,14 @@ export class CustomerESignOnboardingService {
     input: StartCustomerESignOnboardingRealNameDto,
     actorId?: string
   ) {
+    await this.upsertCustomerIdentityFromRealNameInput(customerId, input, actorId, false);
     const account = await this.accountService.getFadadaPersonalBinding(customerId);
+    if (hasProviderBackedRealName(account) && hasProviderBackedCert(account)) {
+      await this.upsertCustomerIdentityFromRealNameInput(customerId, input, actorId, true);
+      return this.refreshProviderBackedReadiness(customerId, actorId, {
+        source: CustomerESignOnboardingTriggerSource.PORTAL
+      });
+    }
     if (
       !account ||
       account.registrationStatus !== ESignProviderAccountStatus.REGISTERED ||
@@ -257,6 +264,37 @@ export class CustomerESignOnboardingService {
     return this.startRealNameVerification(customerId, input, actorId, {
       includeRealNameUrl: true,
       source: CustomerESignOnboardingTriggerSource.PORTAL
+    });
+  }
+
+  private async upsertCustomerIdentityFromRealNameInput(
+    customerId: string,
+    input: StartCustomerESignOnboardingRealNameDto,
+    actorId: string | undefined,
+    realnameVerified: boolean
+  ) {
+    await this.prismaService?.customer?.update?.({
+      data: {
+        mobile: input.mobile,
+        name: input.name,
+        updatedBy: actorId
+      },
+      where: { id: customerId }
+    });
+    await this.prismaService?.customerIdentity?.upsert?.({
+      create: {
+        createdBy: actorId,
+        customerId,
+        idCardNo: input.idCardNo,
+        realnameVerified,
+        updatedBy: actorId
+      },
+      update: {
+        idCardNo: input.idCardNo,
+        realnameVerified,
+        updatedBy: actorId
+      },
+      where: { customerId }
     });
   }
 

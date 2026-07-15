@@ -290,6 +290,21 @@ export interface PortalMissingMaterial {
   type: string;
 }
 
+export interface PortalMissingProfileField {
+  key: "idCardNo" | "mobile" | "name";
+  label: string;
+  reason: "INVALID" | "MISSING" | "PLACEHOLDER";
+}
+
+export interface PortalCustomerProfile {
+  idCardNoMasked: string | null;
+  idCardNoPresent: boolean;
+  missingProfileFields: PortalMissingProfileField[];
+  mobile: string | null;
+  name: string;
+  profileComplete: boolean;
+}
+
 export interface PortalMaterialCompleteness {
   canSubmit: boolean;
   complete: boolean;
@@ -329,7 +344,9 @@ export interface PortalApplicationPrecheck {
   }>;
   canSubmit: boolean;
   materialComplete: boolean;
+  missingProfileFields: PortalMissingProfileField[];
   missingMaterials: PortalMissingMaterial[];
+  profileComplete: boolean;
   warnings: string[];
 }
 
@@ -980,4 +997,3 @@ export interface PortalServiceCaseAction {
   remark: string | null;
   toStatus: string | null;
 }
-

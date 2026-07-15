@@ -63,6 +63,98 @@ describe("application self-service review APIs", () => {
     );
   });
 
+  it("blocks assisted application creation when customer identity profile is incomplete", async () => {
+    const harness = createApplicationReviewHarness({
+      customer: {
+        identity: null,
+        mobile: "138",
+        name: ""
+      }
+    });
+
+    await expect(
+      harness.service.createApplication(
+        {
+          customerId: "customer-1",
+          intendedModel: "ET5"
+        },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
+    expect(harness.tx.application.create).not.toHaveBeenCalled();
+  });
+
+  it("fills assisted application identity fields before creating the application", async () => {
+    const harness = createApplicationReviewHarness({
+      customer: {
+        identity: null,
+        mobile: "13800000000",
+        name: "手机用户138****0000"
+      }
+    });
+
+    await harness.service.createApplication(
+      {
+        customerId: "customer-1",
+        customerIdentity: {
+          idCardNo: "11010519491231002X",
+          mobile: "13800000000",
+          name: "测试客户"
+        },
+        intendedModel: "ET5"
+      } as never,
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.tx.customer.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          mobile: "13800000000",
+          name: "测试客户"
+        }),
+        where: { id: "customer-1" }
+      })
+    );
+    expect(harness.tx.customerIdentity.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          customerId: "customer-1",
+          idCardNo: "11010519491231002X"
+        }),
+        update: expect.objectContaining({
+          idCardNo: "11010519491231002X"
+        }),
+        where: { customerId: "customer-1" }
+      })
+    );
+    expect(harness.tx.application.create).toHaveBeenCalled();
+  });
+
+  it("blocks assisted application submission when customer identity profile is incomplete", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        customer: makeCustomerForApplication({
+          identity: null,
+          mobile: "138",
+          name: ""
+        }),
+        status: ApplicationStatus.DRAFT
+      }
+    });
+
+    await expect(
+      harness.service.submitApplication(
+        harness.application.id,
+        {},
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
+    expect(harness.tx.application.update).not.toHaveBeenCalled();
+  });
+
   it("approves material review status", async () => {
     const harness = createApplicationReviewHarness();
 
@@ -441,6 +533,7 @@ describe("application self-service review APIs", () => {
 
 function createApplicationReviewHarness(overrides: {
   application?: Record<string, unknown>;
+  customer?: Record<string, unknown>;
   plan?: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> };
   vehicle?: Record<string, unknown>;
 } = {}) {
@@ -460,7 +553,7 @@ function createApplicationReviewHarness(overrides: {
     vehicleStatus: VehicleStatus;
   } = {
     application: makeApplication(now, overrides.application),
-    customer: makeCustomer(now),
+    customer: makeCustomer(now, overrides.customer),
     vehicleStatus: VehicleStatus.REVIEW_RESERVED
   };
   const vehicle = makeVehicle(now, { status: state.vehicleStatus, ...overrides.vehicle });
@@ -469,6 +562,15 @@ function createApplicationReviewHarness(overrides: {
 
   const tx = {
     application: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        state.application = makeApplication(now, {
+          ...state.application,
+          ...data,
+          createdAt: now,
+          id: "application-created"
+        });
+        return state.application;
+      }),
       findUniqueOrThrow: vi.fn(async () => state.application),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         state.application = makeApplication(now, { ...state.application, ...data });
@@ -486,6 +588,27 @@ function createApplicationReviewHarness(overrides: {
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         state.customer = { ...state.customer, ...data };
         return state.customer;
+      })
+    },
+    customerIdentity: {
+      upsert: vi.fn(async ({ create, update }: { create: Record<string, unknown>; update: Record<string, unknown> }) => {
+        state.customer = {
+          ...state.customer,
+          identity: {
+            ...(state.customer.identity ?? {}),
+            ...create,
+            ...update
+          }
+        };
+        state.application = makeApplication(now, {
+          ...state.application,
+          customer: makeCustomerForApplication({
+            identity: state.customer.identity,
+            mobile: state.customer.mobile,
+            name: state.customer.name
+          })
+        });
+        return state.customer.identity;
       })
     },
     depositRule: {
@@ -554,6 +677,9 @@ function createApplicationReviewHarness(overrides: {
           : []
       ),
       findUnique: vi.fn(async () => state.application)
+    },
+    customer: {
+      findUnique: vi.fn(async () => state.customer)
     }
   };
   const auditService = { write: vi.fn(async () => undefined) };
@@ -771,8 +897,9 @@ function makeApplication(now: Date, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeCustomer(now: Date) {
+function makeCustomer(now: Date, overrides: Record<string, unknown> = {}) {
   return {
+    applications: [],
     createdAt: now,
     createdBy: "00000000-0000-4000-8000-000000000001",
     customerNo: "CUS202606050001",
@@ -780,28 +907,35 @@ function makeCustomer(now: Date) {
     deletedAt: null,
     grade: null as CustomerGrade | null,
     id: "customer-1",
+    identity: {
+      idCardNo: "11010519491231002X"
+    },
     mobile: "13800000000",
     name: "测试客户",
+    ownerUser: null,
     ownerUserId: null,
+    profile: null,
     riskScore: null,
     sourceChannel: null,
     status: CustomerStatus.PENDING_APPLICATION,
     updatedAt: now,
-    updatedBy: "00000000-0000-4000-8000-000000000001"
+    updatedBy: "00000000-0000-4000-8000-000000000001",
+    ...overrides
   };
 }
 
-function makeCustomerForApplication() {
+function makeCustomerForApplication(overrides: Record<string, unknown> = {}) {
   return {
     customerNo: "CUS202606050001",
     id: "customer-1",
-    identity: null,
+    identity: { idCardNo: "11010519491231002X" },
     mobile: "13800000000",
     name: "测试客户",
     ownerUserId: null,
     profile: null,
     sourceChannel: null,
-    status: CustomerStatus.PENDING_APPLICATION
+    status: CustomerStatus.PENDING_APPLICATION,
+    ...overrides
   };
 }
 

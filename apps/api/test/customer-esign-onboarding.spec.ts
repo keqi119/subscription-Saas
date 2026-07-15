@@ -226,7 +226,7 @@ describe("CustomerESignOnboardingService", () => {
   });
 
   it("starts real-name verification through the C2 service boundary and derives REALNAME_PENDING", async () => {
-    const { accountService, auditService, service } = createFixture({
+    const { accountService, auditService, prismaService, service } = createFixture({
       env: { FADADA_ONBOARDING_REALNAME_C2_ENABLED: "true" }
     });
     const input: StartCustomerESignOnboardingRealNameDto = {
@@ -281,7 +281,7 @@ describe("CustomerESignOnboardingService", () => {
   });
 
   it("portal start-or-resume registers the provider account first and returns the real-name URL only from the start action", async () => {
-    const { accountService, auditService, service } = createFixture({
+    const { accountService, auditService, prismaService, service } = createFixture({
       env: { FADADA_ONBOARDING_REALNAME_C2_ENABLED: "true" }
     });
     const input: StartCustomerESignOnboardingRealNameDto = {
@@ -329,6 +329,79 @@ describe("CustomerESignOnboardingService", () => {
     expect(JSON.stringify(status)).not.toContain("ID-CARD-EXAMPLE");
     expect(JSON.stringify(status)).not.toContain("13800000000");
     expect(JSON.stringify(auditService.write.mock.calls)).not.toContain("example-flow");
+    expect(prismaService.customerIdentity.upsert).toHaveBeenCalledWith({
+      create: expect.objectContaining({
+        customerId: "customer-1",
+        idCardNo: "ID-CARD-EXAMPLE"
+      }),
+      update: expect.objectContaining({
+        idCardNo: "ID-CARD-EXAMPLE"
+      }),
+      where: { customerId: "customer-1" }
+    });
+  });
+
+  it("portal real-name submission fills local identity and resumes readiness when Fadada is already verified", async () => {
+    const { accountService, prismaService, service } = createFixture({
+      env: { FADADA_ONBOARDING_REALNAME_C2_ENABLED: "true" },
+      readiness: {
+        blockingCode: null,
+        blockingMessage: null,
+        certBound: true,
+        certSerialNoPresent: true,
+        nextAction: "NONE",
+        provider: ESignProviderType.FADADA,
+        providerCustomerIdPresent: true,
+        readyForSigning: true,
+        realNameProviderVerified: true,
+        state: "SIGNING_ENABLED"
+      }
+    });
+    const verifiedAccount = fakeView({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-07-15T00:00:00.000Z"),
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-07-15T00:00:00.000Z"),
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verificationSerialNo: "VERIFY-TX-1",
+      verificationTransactionNo: "VERIFY-TX-1"
+    });
+    accountService.getFadadaPersonalBinding.mockResolvedValue(verifiedAccount);
+    accountService.refreshFadadaCertBindingStatus.mockResolvedValue(verifiedAccount);
+
+    const status = await service.startPortalRealNameVerification(
+      "customer-1",
+      {
+        idCardNo: "ID-CARD-EXAMPLE",
+        mobile: "13800000000",
+        name: "Controlled Tester"
+      },
+      "portal-account-1"
+    );
+
+    expect(accountService.startFadadaPersonalRealNameVerification).not.toHaveBeenCalled();
+    expect(prismaService.customerIdentity.upsert).toHaveBeenCalledWith({
+      create: expect.objectContaining({
+        customerId: "customer-1",
+        idCardNo: "ID-CARD-EXAMPLE",
+        realnameVerified: true
+      }),
+      update: expect.objectContaining({
+        idCardNo: "ID-CARD-EXAMPLE",
+        realnameVerified: true
+      }),
+      where: { customerId: "customer-1" }
+    });
+    expect(status).toMatchObject({
+      readyForSigning: true,
+      source: CustomerESignOnboardingTriggerSource.PORTAL,
+      state: CustomerESignOnboardingState.SIGNING_ENABLED
+    });
+    expect(JSON.stringify(status)).not.toContain("ID-CARD-EXAMPLE");
   });
 
   it("refreshes provider real-name and cert binding before returning updated readiness", async () => {
@@ -748,6 +821,9 @@ function createFixture(input: {
     })
   };
   const prismaService = {
+    customerIdentity: {
+      upsert: vi.fn()
+    },
     subscriptionOrder: {
       findUnique: vi.fn(),
       update: vi.fn()

@@ -428,7 +428,7 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
       createdAt: now,
       createdBy: saUser.id,
       creditReviewStatus: "APPROVED",
-      customer: { grade: "A", id: "customer-1", mobile: "13800000000", name: "Test Customer" },
+      customer: { grade: "A", id: "customer-1", identity: { idCardNo: "TEST-ID-CHANGE-0001" }, mobile: "13800000000", name: "Test Customer" },
       customerConfirmedAt: null,
       customerId: "customer-1",
       customerSelectedSnapshot: null,

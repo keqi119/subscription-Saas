@@ -108,6 +108,8 @@ Party B / subscriber information is dynamic per order. The approved sources are:
 
 The renderer must leave subscriber WeChat and email blank unless reliable customer-facing source fields are introduced later and approved. It must not use WeChat OpenID/UnionID as a visible WeChat number.
 
+For the current A-line flow, the subscriber certificate number comes from the customer's self-entered `CustomerIdentity.idCardNo`; OCR is not required in this phase. The full ID number may appear in the generated and signed legal PDF, but must not be logged or exposed through general status, report, or contract response surfaces. If `CustomerIdentity.idCardNo` is missing, Stage 1 contract PDF generation must fail closed before the order advances to signing. Existing generated PDFs that are missing the Party B certificate number are stale artifacts and must not be used for successful validation or signing.
+
 ## Font Boundary
 
 Chinese contract PDFs require a usable CJK font path.

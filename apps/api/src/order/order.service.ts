@@ -100,6 +100,7 @@ const CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE =
 
 const CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV = "CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED";
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
+const STAGE1_PARTY_B_ID_NUMBER_MISSING = "STAGE1_PARTY_B_ID_NUMBER_MISSING";
 
 const PRE_CONTRACT_CHANGE_STATUSES = new Set<OrderStatus>([
   OrderStatus.PENDING_REVIEW,
@@ -1994,9 +1995,10 @@ export class OrderService {
     if (!template) {
       throw new BadRequestException("未找到生效中的订阅合同模板。");
     }
+    assertStage1PartyBIdNumberPresent(before);
     const contractSnapshot = toJsonValue({
       contentTemplate: template.contentTemplate,
-      customer: before.customer,
+      customer: buildContractSnapshotCustomer(before.customer),
       order: toOrderView(before),
       quoteSnapshot: before.quoteSnapshot
     });
@@ -2879,11 +2881,39 @@ function parseBooleanFlag(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase() === "true";
 }
 
+function assertStage1PartyBIdNumberPresent(order: OrderWithDetails) {
+  if (!getStage1PartyBIdNumber(order)) {
+    throw new BadRequestException(`${STAGE1_PARTY_B_ID_NUMBER_MISSING}: 乙方证件号码缺失，请先完善客户身份信息`);
+  }
+}
+
+function getStage1PartyBIdNumber(order: OrderWithDetails) {
+  const value = order.customer.identity?.idCardNo;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function buildContractSnapshotCustomer(customer: OrderWithDetails["customer"]) {
+  return {
+    grade: customer.grade,
+    id: customer.id,
+    mobile: customer.mobile,
+    name: customer.name,
+    profile: customer.profile
+      ? { residenceAddress: customer.profile.residenceAddress }
+      : null
+  };
+}
+
 function buildContractPdfRenderModel(
   contract: ContractWithDetails,
   order: OrderWithDetails,
   template: ContractWithDetails["contractVersion"]
 ): ContractPdfRenderModel {
+  const subscriberIdNumber = getStage1PartyBIdNumber(order);
+  if (!subscriberIdNumber) {
+    throw new BadRequestException(`${STAGE1_PARTY_B_ID_NUMBER_MISSING}: 乙方证件号码缺失，请先完善客户身份信息`);
+  }
+
   return {
     appendix: {
       sections: [
@@ -2928,7 +2958,7 @@ function buildContractPdfRenderModel(
       subscriberContactName: order.customer.name,
       subscriberContactPhone: order.customer.mobile,
       subscriberEmail: null,
-      subscriberIdNumber: order.customer.identity?.idCardNo ?? null,
+      subscriberIdNumber,
       subscriberName: order.customer.name,
       subscriberWechat: null
     },
@@ -4480,7 +4510,7 @@ function toOrderView(order: OrderWithDetails): Record<string, unknown> {
     modelDefinition: order.vehicle?.modelDefinition ?? null,
     modelDefinitionId: order.vehicle?.modelDefinitionId ?? null
   });
-  return toPlain({
+  const view = toPlain({
     ...order,
     depositAmount: Number(order.depositAmount),
     finalDepositAmount: order.finalDepositAmount === null ? null : Number(order.finalDepositAmount),
@@ -4490,6 +4520,28 @@ function toOrderView(order: OrderWithDetails): Record<string, unknown> {
     overMileageFeeAmount: Number(order.overMileageFeeAmount),
     vehiclePurchasePriceAmount: Number(order.vehiclePurchasePriceAmount)
   }) as Record<string, unknown>;
+  redactIdentityIdCardNumbers(view);
+  return view;
+}
+
+function redactIdentityIdCardNumbers(value: unknown) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      redactIdentityIdCardNumbers(item);
+    }
+    return;
+  }
+  if (!isPlainRecord(value)) {
+    return;
+  }
+  if ("idCardNo" in value) {
+    const idCardNo = value.idCardNo;
+    value.idCardNoPresent = typeof idCardNo === "string" && idCardNo.trim().length > 0;
+    delete value.idCardNo;
+  }
+  for (const item of Object.values(value)) {
+    redactIdentityIdCardNumbers(item);
+  }
 }
 
 function toDeliveryView(delivery: DeliveryWithDetails): Record<string, unknown> {
@@ -4574,10 +4626,12 @@ function toPackageSnapshot(
 }
 
 function toContractView(contract: ContractWithDetails): Record<string, unknown> {
-  return {
+  const view = {
     ...(toPlain(contract) as Record<string, unknown>),
     hasGeneratedPdfArtifact: hasGeneratedContractPdfArtifact(contract)
   };
+  redactIdentityIdCardNumbers(view);
+  return view;
 }
 
 function toContractVersionView(version: Prisma.ContractVersionGetPayload<object>): Record<string, unknown> {

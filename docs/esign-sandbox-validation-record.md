@@ -151,6 +151,9 @@ Renderer-produced coordinate metadata must be recorded before any future Fadada 
 | Generated PDF has no visible `Render Diagnostics` section | TBD | TBD |
 | Party A information is preserved from the approved ContractVersion template | TBD | TBD |
 | Party B dynamic fields are populated from approved customer sources only | TBD | TBD |
+| Party B certificate number is populated from customer-entered `CustomerIdentity.idCardNo` in the legal PDF | TBD | TBD |
+| Contract/order status responses, logs, and reports do not expose the full Party B certificate number | TBD | TBD |
+| Missing Party B certificate number blocks Stage 1 PDF generation before signing | TBD | TBD |
 | Subscriber WeChat and email are blank when no reliable customer-facing source exists | TBD | TBD |
 | Attachment 1 labels use monthly quota units and `超里程费（人民币元/公里）` | TBD | TBD |
 | Attachment 1 starts on a new page after main body signing slots | TBD | TBD |

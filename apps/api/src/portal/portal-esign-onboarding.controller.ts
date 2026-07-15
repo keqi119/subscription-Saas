@@ -1,6 +1,9 @@
-import { Controller, Get, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
 
-import { CustomerESignOnboardingTriggerSource } from "../esign/customer-esign-onboarding.dto";
+import {
+  CustomerESignOnboardingTriggerSource,
+  StartCustomerESignOnboardingRealNameDto
+} from "../esign/customer-esign-onboarding.dto";
 import { CustomerESignOnboardingService } from "../esign/customer-esign-onboarding.service";
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
@@ -16,5 +19,28 @@ export class PortalESignOnboardingController {
     return this.onboardingService.getOnboardingStatus(currentCustomer.customerId, {
       source: CustomerESignOnboardingTriggerSource.PORTAL
     });
+  }
+
+  @Post("real-name")
+  @UseGuards(CustomerAuthGuard)
+  startRealNameVerification(
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Body() dto: StartCustomerESignOnboardingRealNameDto
+  ) {
+    return this.onboardingService.startPortalRealNameVerification(
+      currentCustomer.customerId,
+      dto,
+      currentCustomer.customerAccountId
+    );
+  }
+
+  @Post("refresh")
+  @UseGuards(CustomerAuthGuard)
+  refreshProviderBackedReadiness(@CurrentPortalCustomer() currentCustomer: CurrentCustomer) {
+    return this.onboardingService.refreshProviderBackedReadiness(
+      currentCustomer.customerId,
+      currentCustomer.customerAccountId,
+      { source: CustomerESignOnboardingTriggerSource.PORTAL }
+    );
   }
 }

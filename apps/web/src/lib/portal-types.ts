@@ -447,6 +447,36 @@ export interface PortalContractESignSigner {
   signerType: string;
 }
 
+export interface PortalFadadaOnboardingStatus {
+  accountType: string;
+  blockingCode: string | null;
+  blockingMessage: string | null;
+  certBound: boolean;
+  certSerialNoPresent: boolean;
+  customerId: string;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  lastProviderCheckAt: string | null;
+  nextAction: string;
+  provider: string;
+  providerCustomerId: string | null;
+  providerCustomerIdPresent: boolean;
+  providerOpenId: string | null;
+  readyForSigning: boolean;
+  realNameProviderVerified: boolean;
+  realNameStatus: string | null;
+  realNameUrl?: string | null;
+  registrationStatus: string | null;
+  signingEligible: boolean;
+  source?: string;
+  state: string;
+  verifiedAt: string | null;
+  verifyUrlMasked?: string | null;
+  verifyUrlPresent?: boolean;
+  verificationSerialNo: string | null;
+  verificationTransactionNo: string | null;
+}
+
 export interface PortalContractVehicleSummary {
   batteryCapacityKwh: number | null;
   batteryUsageType: string | null;

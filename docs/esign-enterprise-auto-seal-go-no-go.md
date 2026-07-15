@@ -104,6 +104,7 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] Fadada/eSign provider multi-position mapping for Stage 1 slots is separately approved and checked against local provider docs before provider calls.
 - [ ] Portal and Admin contract pages display Fadada customer readiness before signing actions.
 - [ ] Portal signing blocks when `readyForSigning=false` and offers real-name start/resume plus provider-status refresh.
+- [ ] After provider-backed real-name is verified, `APPLY_CERT` readiness refresh binds/queries the Fadada cert and Portal/Admin show bind-cert guidance instead of repeat-real-name guidance.
 - [ ] Full Fadada real-name verification URLs are returned only from the authenticated Portal customer start/resume action and are absent from status responses, Admin readiness views, audits, logs, and docs.
 - [ ] Fadada signing guards block both task creation and Portal signing-link return/refresh when provider-backed real-name or certificate binding evidence is missing.
 

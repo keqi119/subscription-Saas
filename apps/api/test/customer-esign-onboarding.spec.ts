@@ -401,6 +401,134 @@ describe("CustomerESignOnboardingService", () => {
     });
   });
 
+  it("applies the Fadada real-name cert when provider real-name is verified but cert is unbound", async () => {
+    const { accountService, service } = createFixture();
+    const verifiedCertPending = fakeView({
+      certBindingStatus: ESignProviderCertBindingStatus.UNBOUND,
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verificationSerialNo: "VERIFY-TX-1",
+      verificationTransactionNo: "VERIFY-TX-1"
+    });
+    const certBound = fakeView({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-07-14T00:05:00.000Z"),
+      certSerialNo: "CERT-SEQUENCE-1",
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      providerStatusLastRefreshedAt: new Date("2026-07-14T00:05:00.000Z"),
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      verificationSerialNo: "VERIFY-TX-1",
+      verificationTransactionNo: "VERIFY-TX-1"
+    });
+    accountService.getFadadaPersonalBinding
+      .mockResolvedValueOnce(verifiedCertPending)
+      .mockResolvedValueOnce(certBound);
+    accountService.applyFadadaPersonalCert.mockResolvedValueOnce(fakeView({
+      ...verifiedCertPending,
+      certBindingSource: ESignProviderCertBindingSource.APPLY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-07-14T00:04:00.000Z")
+    }));
+    accountService.refreshFadadaCertBindingStatus.mockResolvedValueOnce(certBound);
+
+    const status = await service.refreshProviderBackedReadiness("customer-1", "operator-1", {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
+
+    expect(accountService.refreshFadadaRealNameStatus).not.toHaveBeenCalled();
+    expect(accountService.applyFadadaPersonalCert).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(accountService.refreshFadadaCertBindingStatus).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(status).toMatchObject({
+      nextAction: "NONE",
+      readyForSigning: true,
+      signingEligible: true,
+      state: CustomerESignOnboardingState.SIGNING_ENABLED
+    });
+  });
+
+  it("keeps refresh blocked when apply-cert fails", async () => {
+    const { accountService, service } = createFixture();
+    const verifiedCertPending = fakeView({
+      certBindingStatus: ESignProviderCertBindingStatus.UNBOUND,
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verificationSerialNo: "VERIFY-TX-1",
+      verificationTransactionNo: "VERIFY-TX-1"
+    });
+    accountService.getFadadaPersonalBinding
+      .mockResolvedValueOnce(verifiedCertPending)
+      .mockResolvedValueOnce(fakeView({
+        ...verifiedCertPending,
+        lastErrorCode: "FADADA_CERT_BINDING_FAILED",
+        lastErrorMessage: "FADADA_CERT_BINDING_FAILED: 3205",
+        readinessBlockingCode: "FADADA_CERT_NOT_BOUND",
+        readinessBlockingReason: "certificate binding is not provider-confirmed"
+      }));
+    accountService.applyFadadaPersonalCert.mockRejectedValueOnce(new Error("FADADA_CERT_BINDING_FAILED: 3205"));
+
+    const status = await service.refreshProviderBackedReadiness("customer-1", "operator-1", {
+      source: CustomerESignOnboardingTriggerSource.PORTAL
+    });
+
+    expect(accountService.applyFadadaPersonalCert).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(accountService.refreshFadadaCertBindingStatus).not.toHaveBeenCalled();
+    expect(status).toMatchObject({
+      blockingCode: "FADADA_CERT_NOT_BOUND",
+      readyForSigning: false,
+      signingEligible: false,
+      state: CustomerESignOnboardingState.CERT_BINDING_PENDING
+    });
+  });
+
+  it("does not re-apply the Fadada cert when provider cert evidence is already bound", async () => {
+    const { accountService, service } = createFixture();
+    const certBound = fakeView({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-07-14T00:05:00.000Z"),
+      certSerialNo: "CERT-SEQUENCE-1",
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      providerStatusLastRefreshedAt: new Date("2026-07-14T00:05:00.000Z"),
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED,
+      verifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      verificationSerialNo: "VERIFY-TX-1",
+      verificationTransactionNo: "VERIFY-TX-1"
+    });
+    accountService.getFadadaPersonalBinding
+      .mockResolvedValueOnce(certBound)
+      .mockResolvedValueOnce(certBound);
+    accountService.refreshFadadaCertBindingStatus.mockResolvedValueOnce(certBound);
+
+    const status = await service.refreshProviderBackedReadiness("customer-1", "operator-1");
+
+    expect(accountService.refreshFadadaRealNameStatus).not.toHaveBeenCalled();
+    expect(accountService.applyFadadaPersonalCert).not.toHaveBeenCalled();
+    expect(accountService.refreshFadadaCertBindingStatus).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(status).toMatchObject({
+      readyForSigning: true,
+      signingEligible: true,
+      state: CustomerESignOnboardingState.SIGNING_ENABLED
+    });
+  });
+
   it("does not invoke the C2 real-name service unless the onboarding wiring gate is enabled", async () => {
     const { accountService, service } = createFixture();
     const input: StartCustomerESignOnboardingRealNameDto = {

@@ -19,7 +19,8 @@ import {
   getFadadaBlockingMessage,
   getFadadaNextActionLabel,
   getFadadaReadinessAvailability,
-  getFadadaReadinessTone
+  getFadadaReadinessTone,
+  isApplyCertReadiness
 } from "../../../../lib/fadada-onboarding-ui";
 import {
   PortalContractDetail,
@@ -133,6 +134,15 @@ export default function PortalContractDetailPage() {
       }
       void message.info("实名认证流程已发起，请稍后刷新认证状态");
     } catch (error) {
+      if (
+        error instanceof PortalApiError &&
+        error.message.includes("FADADA_REALNAME_ALREADY_VERIFIED")
+      ) {
+        setRealNameModalOpen(false);
+        void message.warning("实名已完成，请刷新并绑定法大大实名证书");
+        await refreshOnboardingStatus();
+        return;
+      }
       void message.error(error instanceof PortalApiError ? error.message : "无法发起法大大实名认证");
     } finally {
       setStartingRealName(false);
@@ -330,7 +340,12 @@ export default function PortalContractDetailPage() {
           />
           {!getFadadaReadinessAvailability(onboardingStatus).allowed ? (
             <Space size={8} style={{ marginTop: 12 }} wrap>
-              <Button icon={<SafetyCertificateOutlined />} onClick={openRealNameModal} type="primary">
+              <Button
+                icon={isApplyCertReadiness(onboardingStatus) ? <ReloadOutlined /> : <SafetyCertificateOutlined />}
+                loading={isApplyCertReadiness(onboardingStatus) ? refreshingOnboarding : false}
+                onClick={isApplyCertReadiness(onboardingStatus) ? refreshOnboardingStatus : openRealNameModal}
+                type="primary"
+              >
                 {getFadadaNextActionLabel(onboardingStatus)}
               </Button>
               <Button icon={<ReloadOutlined />} loading={refreshingOnboarding} onClick={refreshOnboardingStatus}>

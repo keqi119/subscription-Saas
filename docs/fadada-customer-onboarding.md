@@ -37,6 +37,8 @@ Failed or partially validated production orders must not be reused as success ev
 
 Portal contract signing must load the authenticated customer's onboarding readiness before showing or using a signing link. If readiness is not `readyForSigning=true`, the Portal must block the signing action and show the customer a remediation path to start or continue Fadada real-name verification, plus a refresh action for provider status.
 
+When provider-backed real-name evidence is already verified but certificate binding is not confirmed, the next action is `APPLY_CERT`. Portal and Admin must not ask the customer to repeat real-name verification. The refresh action must orchestrate `apply_cert.api` and then `query_cert.api`; signing remains blocked until the refreshed readiness includes provider-backed cert-bound evidence.
+
 The real-name verification URL is sensitive. It may be returned only by the authenticated customer's explicit Portal start/resume action. Broad status endpoints, Admin status views, audit records, logs, and provider-account list views must not expose the full URL, tokens, full ID number, or full provider identifiers.
 
 Admin contract pages must show the same readiness gate before `发起电子签`. Admin may refresh provider-backed readiness evidence, but manual provider-customer-id attachment remains blocked until Fadada real-name and certificate binding evidence is confirmed by callback/query/apply-cert evidence.

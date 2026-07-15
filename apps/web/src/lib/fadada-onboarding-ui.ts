@@ -22,6 +22,9 @@ export interface FadadaOnboardingReadiness {
 export const FADADA_SIGNING_READY_MESSAGE = "法大大实名认证与实名证书已就绪";
 export const FADADA_BLOCKING_FALLBACK_MESSAGE = "请先完成法大大实名认证并绑定实名证书";
 
+export const FADADA_CERT_BINDING_MESSAGE = "实名已完成，请刷新并绑定法大大实名证书";
+export const FADADA_CERT_BINDING_ACTION_LABEL = "刷新并绑定实名证书";
+
 export const FADADA_BLOCKING_CODE_MESSAGES: Record<string, string> = {
   FADADA_ACCOUNT_MISSING: "尚未创建法大大实名账户，请先发起实名认证",
   FADADA_ACCOUNT_NOT_REGISTERED: "法大大账户尚未开户注册，请先发起实名认证",
@@ -41,6 +44,9 @@ export function getFadadaBlockingMessage(readiness?: FadadaOnboardingReadiness |
   }
   if (readiness.readyForSigning || readiness.signingEligible) {
     return FADADA_SIGNING_READY_MESSAGE;
+  }
+  if (isApplyCertReadiness(readiness)) {
+    return FADADA_CERT_BINDING_MESSAGE;
   }
   const code = readiness.blockingCode ?? undefined;
   return (code ? FADADA_BLOCKING_CODE_MESSAGES[code] : null) ??
@@ -79,6 +85,8 @@ export function getFadadaNextActionLabel(readiness?: FadadaOnboardingReadiness |
     return "去签署";
   }
   switch (readiness?.nextAction) {
+    case "APPLY_CERT":
+      return FADADA_CERT_BINDING_ACTION_LABEL;
     case "QUERY_PROVIDER_STATUS":
       return "刷新认证状态";
     case "WAIT_REALNAME_CALLBACK":
@@ -90,4 +98,12 @@ export function getFadadaNextActionLabel(readiness?: FadadaOnboardingReadiness |
     default:
       return "去完成实名认证";
   }
+}
+
+export function isApplyCertReadiness(readiness?: FadadaOnboardingReadiness | null) {
+  return readiness?.nextAction === "APPLY_CERT" ||
+    (
+      readiness?.blockingCode === "FADADA_CERT_NOT_BOUND" &&
+      readiness.realNameProviderVerified === true
+    );
 }

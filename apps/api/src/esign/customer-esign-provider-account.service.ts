@@ -396,7 +396,7 @@ export class CustomerESignProviderAccountService {
       data: {
         lastErrorCode: null,
         lastErrorMessage: null,
-        providerSnapshot: sanitizeProviderSnapshot({
+        providerSnapshot: mergeProviderSnapshot(binding.providerSnapshot, {
           realNameStatusQuery: {
             raw: result.raw,
             resultCode: result.resultCode,
@@ -438,11 +438,24 @@ export class CustomerESignProviderAccountService {
       throw new BadRequestException(`${FADADA_REALNAME_VERIFY_SERIAL_MISSING}: verification serial no is required`);
     }
 
-    const result = await this.createFadadaApiClient().applyCert({
-      customerId: binding.providerCustomerId!,
-      verifiedSerialNo
-    });
+    let result: Awaited<ReturnType<FadadaApiClient["applyCert"]>>;
+    try {
+      result = await this.createFadadaApiClient().applyCert({
+        customerId: binding.providerCustomerId!,
+        verifiedSerialNo
+      });
+    } catch (error) {
+      await this.recordApplyCertFailure(binding, {
+        actorId,
+        error
+      });
+      throw error;
+    }
     if (result.resultCode && !isFadadaSuccessCode(result.resultCode)) {
+      await this.recordApplyCertFailure(binding, {
+        actorId,
+        result
+      });
       throw new BadRequestException(`FADADA_CERT_BINDING_FAILED: ${result.resultCode}`);
     }
     const now = new Date();
@@ -454,7 +467,7 @@ export class CustomerESignProviderAccountService {
         lastErrorCode: null,
         lastErrorMessage: null,
         providerStatusLastRefreshedAt: now,
-        providerSnapshot: sanitizeProviderSnapshot({
+        providerSnapshot: mergeProviderSnapshot(binding.providerSnapshot, {
           applyCert: {
             raw: result.raw,
             resultCode: result.resultCode,
@@ -494,7 +507,7 @@ export class CustomerESignProviderAccountService {
         lastErrorCode: result.certBound ? null : result.resultCode ?? "FADADA_CERT_NOT_BOUND",
         lastErrorMessage: result.certBound ? null : sanitizeErrorMessage(result.resultDesc ?? "certificate binding not confirmed"),
         providerStatusLastRefreshedAt: now,
-        providerSnapshot: sanitizeProviderSnapshot({
+        providerSnapshot: mergeProviderSnapshot(binding.providerSnapshot, {
           queryCert: {
             raw: result.raw,
             resultCode: result.resultCode,
@@ -508,6 +521,50 @@ export class CustomerESignProviderAccountService {
       where: { id: binding.id }
     });
     return toView(updated);
+  }
+
+  private async recordApplyCertFailure(
+    binding: CustomerESignProviderAccount,
+    input: {
+      actorId?: string;
+      error?: unknown;
+      result?: {
+        raw?: unknown;
+        resultCode?: string;
+        resultDesc?: string;
+      };
+    }
+  ) {
+    const now = new Date();
+    const code = input.result?.resultCode
+      ? "FADADA_CERT_BINDING_FAILED"
+      : errorCode(input.error);
+    const message = input.result?.resultCode
+      ? `FADADA_CERT_BINDING_FAILED: ${input.result.resultCode}${input.result.resultDesc ? ` ${input.result.resultDesc}` : ""}`
+      : input.error;
+    await this.prisma.customerESignProviderAccount.update({
+      data: {
+        certBindingSource: ESignProviderCertBindingSource.APPLY_CERT,
+        certBindingStatus: ESignProviderCertBindingStatus.UNBOUND,
+        certBoundAt: null,
+        certSerialNo: null,
+        lastErrorCode: code,
+        lastErrorMessage: sanitizeErrorMessage(message),
+        providerSnapshot: mergeProviderSnapshot(binding.providerSnapshot, {
+          applyCert: {
+            error: input.error ? sanitizeErrorMessage(input.error) : undefined,
+            raw: input.result?.raw,
+            resultCode: input.result?.resultCode,
+            resultDesc: input.result?.resultDesc
+          }
+        }),
+        providerStatusLastRefreshedAt: now,
+        readinessBlockingCode: "FADADA_CERT_NOT_BOUND",
+        readinessBlockingReason: "certificate binding is not provider-confirmed",
+        updatedBy: input.actorId
+      },
+      where: { id: binding.id }
+    });
   }
 
   async handleFadadaVerifyCallback(payload: unknown): Promise<FadadaVerifyCallbackResult> {
@@ -814,6 +871,16 @@ function sanitizeProviderSnapshot(value: unknown): Prisma.InputJsonValue {
     return value;
   }
   return String(value);
+}
+
+function mergeProviderSnapshot(existing: unknown, patch: Record<string, unknown>): Prisma.InputJsonValue {
+  const base = existing && typeof existing === "object" && !Array.isArray(existing)
+    ? existing as Record<string, unknown>
+    : {};
+  return sanitizeProviderSnapshot({
+    ...base,
+    ...patch
+  });
 }
 
 function isSensitiveProviderKey(key: string) {

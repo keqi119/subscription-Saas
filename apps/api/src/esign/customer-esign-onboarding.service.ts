@@ -4,6 +4,7 @@ import {
   AuditAction,
   ESignProviderAccountStatus,
   ESignProviderAccountType,
+  ESignProviderCertBindingSource,
   ESignProviderCertBindingStatus,
   ESignProviderRealNameStatusSource,
   ESignProviderType,
@@ -271,8 +272,18 @@ export class CustomerESignOnboardingService {
       account.providerCustomerId &&
       serialNo
     ) {
-      const refreshed = await this.accountService.refreshFadadaRealNameStatus(customerId, actorId);
+      let refreshed = account;
+      if (!hasProviderBackedRealName(refreshed)) {
+        refreshed = await this.accountService.refreshFadadaRealNameStatus(customerId, actorId);
+      }
       if (hasProviderBackedRealName(refreshed)) {
+        if (!hasProviderBackedCert(refreshed)) {
+          try {
+            refreshed = await this.accountService.applyFadadaPersonalCert(customerId, actorId);
+          } catch {
+            return this.getOnboardingStatus(customerId, options);
+          }
+        }
         await this.accountService.refreshFadadaCertBindingStatus(customerId, actorId);
       }
     }
@@ -550,11 +561,23 @@ function redactOnboardingStatus(status: CustomerESignOnboardingStatus): Customer
   return redacted;
 }
 
-function hasProviderBackedRealName(account: CustomerESignProviderAccountView) {
-  return account.realNameProviderVerifiedAt !== null &&
+function hasProviderBackedRealName(account: CustomerESignProviderAccountView | null | undefined) {
+  return account?.realNameProviderVerifiedAt !== null &&
+    account?.realNameProviderVerifiedAt !== undefined &&
     (
       account.realNameProviderStatusSource === ESignProviderRealNameStatusSource.CALLBACK ||
       account.realNameProviderStatusSource === ESignProviderRealNameStatusSource.QUERY
+    );
+}
+
+function hasProviderBackedCert(account: CustomerESignProviderAccountView | null | undefined) {
+  return account?.certBindingStatus === ESignProviderCertBindingStatus.BOUND &&
+    account.certBoundAt !== null &&
+    account.certBoundAt !== undefined &&
+    (
+      account.certBindingSource === ESignProviderCertBindingSource.APPLY_CERT ||
+      account.certBindingSource === ESignProviderCertBindingSource.CALLBACK_CERT_STATUS ||
+      account.certBindingSource === ESignProviderCertBindingSource.QUERY_CERT
     );
 }
 

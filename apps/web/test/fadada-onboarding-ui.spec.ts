@@ -21,6 +21,19 @@ describe("Fadada onboarding UI helpers", () => {
     })).toBe("请先完成法大大实名认证并绑定实名证书");
   });
 
+  it("uses bind-cert guidance for the APPLY_CERT next action instead of restarting real-name", () => {
+    const readiness: FadadaOnboardingReadiness = {
+      blockingCode: "FADADA_CERT_NOT_BOUND",
+      nextAction: "APPLY_CERT",
+      readyForSigning: false,
+      realNameProviderVerified: true
+    };
+
+    expect(getFadadaBlockingMessage(readiness)).toBe("实名已完成，请刷新并绑定法大大实名证书");
+    expect(getFadadaNextActionLabel(readiness)).toBe("刷新并绑定实名证书");
+    expect(getFadadaNextActionLabel(readiness)).not.toBe("去完成实名认证");
+  });
+
   it("keeps manual provider-id attachments blocked for signing", () => {
     const readiness: FadadaOnboardingReadiness = {
       blockingCode: "FADADA_MANUAL_ONLY_NOT_SIGNING_READY",

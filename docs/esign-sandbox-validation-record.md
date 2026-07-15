@@ -222,6 +222,8 @@ Expected Stage 1 provider mapping:
 | Portal start/resume redirects using the returned real-name URL only for the authenticated customer action | TBD | TBD |
 | Portal status view does not expose full real-name URL, tokens, full ID number, or raw provider customer id | TBD | TBD |
 | Portal refresh updates provider-backed real-name/certificate readiness before signing retry | TBD | TBD |
+| Portal shows bind-cert guidance, not repeat-real-name guidance, when readiness next action is `APPLY_CERT` | TBD | TBD |
+| Readiness refresh applies and then queries Fadada cert binding after provider-backed real-name is verified | TBD | TBD |
 | Admin contract page displays readiness reason before `发起电子签` | TBD | TBD |
 | Admin `发起电子签` is disabled when provider-backed real-name/certificate evidence is missing | TBD | TBD |
 | Manual provider-customer-id attachment remains blocked until provider-backed real-name and cert-bound evidence is refreshed | TBD | TBD |

@@ -433,6 +433,38 @@ describe("CustomerESignProviderAccountService", () => {
     expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("fadada-registered-1");
   });
 
+  it("preserves not-ready evidence when apply_cert returns a provider failure", async () => {
+    const { apiClient, service, state } = createServiceFixture({
+      accounts: [{
+        certBindingStatus: ESignProviderCertBindingStatus.PENDING,
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+    vi.mocked(apiClient.applyCert).mockResolvedValueOnce({
+      customerId: "fadada-registered-1",
+      raw: { code: "3205", customer_id: "fadada-registered-1", msg: "实名认证未通过" },
+      resultCode: "3205",
+      resultDesc: "实名认证未通过",
+      verifiedSerialNo: "VERIFY-TX-1"
+    });
+
+    await expect(service.applyFadadaPersonalCert("customer-1", "operator-1"))
+      .rejects.toThrow("FADADA_CERT_BINDING_FAILED");
+
+    expect(state.accounts[0]).toMatchObject({
+      certBindingStatus: ESignProviderCertBindingStatus.UNBOUND,
+      lastErrorCode: "FADADA_CERT_BINDING_FAILED",
+      readinessBlockingCode: "FADADA_CERT_NOT_BOUND"
+    });
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("fadada-registered-1");
+  });
+
   it("marks cert binding from query_cert provider evidence", async () => {
     const { apiClient, service, state } = createServiceFixture({
       accounts: [{

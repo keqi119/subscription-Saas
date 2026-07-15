@@ -212,6 +212,23 @@ Expected Stage 1 provider mapping:
 
 `ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Stage 1 platform auto-seal also requires `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true`. Provider-side customer/platform mapping being implemented does not prove production readiness; the complete customer signing, platform auto-seal, callback, final PDF, and archive flow must pass sandbox validation before production enablement.
 
+## 8A. Customer Fadada Readiness and Onboarding UI
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Portal contract page loads authenticated customer onboarding readiness | TBD | TBD |
+| Portal blocks signing when `readyForSigning=false` | TBD | TBD |
+| Portal offers real-name start/resume without displaying full ID number | TBD | TBD |
+| Portal start/resume redirects using the returned real-name URL only for the authenticated customer action | TBD | TBD |
+| Portal status view does not expose full real-name URL, tokens, full ID number, or raw provider customer id | TBD | TBD |
+| Portal refresh updates provider-backed real-name/certificate readiness before signing retry | TBD | TBD |
+| Admin contract page displays readiness reason before `发起电子签` | TBD | TBD |
+| Admin `发起电子签` is disabled when provider-backed real-name/certificate evidence is missing | TBD | TBD |
+| Manual provider-customer-id attachment remains blocked until provider-backed real-name and cert-bound evidence is refreshed | TBD | TBD |
+| Backend blocks Fadada task creation when readiness is not signing-enabled | TBD | TBD |
+| Backend blocks Portal signing-link return/refresh when readiness is not signing-enabled | TBD | TBD |
+| Audit/log evidence excludes full real-name URL, tokens, full ID number, and raw provider customer id | TBD | TBD |
+
 Known failed controlled task `ESG20260711184435WMCD` reached the customer signing page and failed provider digest validation. Do not repair or reuse that failed task. After deploying the digest/serialization fix, the sandbox retry must use a new controlled order, generated source PDF, and e-sign task.
 
 ## 9. Final Signed PDF Archive

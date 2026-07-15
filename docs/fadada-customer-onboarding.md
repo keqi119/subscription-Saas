@@ -32,3 +32,16 @@ Operator-facing remediation text should be:
 `请先完成法大大实名认证并绑定实名证书`
 
 Failed or partially validated production orders must not be reused as success evidence.
+
+## Portal/Admin Readiness Flow
+
+Portal contract signing must load the authenticated customer's onboarding readiness before showing or using a signing link. If readiness is not `readyForSigning=true`, the Portal must block the signing action and show the customer a remediation path to start or continue Fadada real-name verification, plus a refresh action for provider status.
+
+The real-name verification URL is sensitive. It may be returned only by the authenticated customer's explicit Portal start/resume action. Broad status endpoints, Admin status views, audit records, logs, and provider-account list views must not expose the full URL, tokens, full ID number, or full provider identifiers.
+
+Admin contract pages must show the same readiness gate before `发起电子签`. Admin may refresh provider-backed readiness evidence, but manual provider-customer-id attachment remains blocked until Fadada real-name and certificate binding evidence is confirmed by callback/query/apply-cert evidence.
+
+Backend signing guards must fail closed in two places:
+
+- before creating a Fadada eSign task
+- before returning or refreshing a Portal signing URL for an existing task

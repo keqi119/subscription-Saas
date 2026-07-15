@@ -21,6 +21,10 @@ import {
   CustomerESignOnboardingTriggerSource,
   StartCustomerESignOnboardingRealNameDto
 } from "./customer-esign-onboarding.dto";
+import {
+  FadadaCustomerReadiness,
+  FadadaCustomerReadinessService
+} from "./fadada-customer-readiness.service";
 
 export enum CustomerESignOnboardingState {
   ACCOUNT_CREATED = "ACCOUNT_CREATED",
@@ -40,6 +44,7 @@ export type CustomerESignOnboardingNextAction =
   | "APPLY_CERT"
   | "CONTACT_SUPPORT"
   | "NONE"
+  | "QUERY_PROVIDER_STATUS"
   | "REGISTER_PROVIDER_ACCOUNT"
   | "RETRY"
   | "START_ONBOARDING"
@@ -48,19 +53,28 @@ export type CustomerESignOnboardingNextAction =
 
 export interface CustomerESignOnboardingStatus {
   accountType: ESignProviderAccountType;
+  blockingCode: string | null;
+  blockingMessage: string | null;
+  certBound: boolean;
+  certSerialNoPresent: boolean;
   customerId: string;
+  lastProviderCheckAt: Date | null;
   lastErrorCode: string | null;
   lastErrorMessage: string | null;
   nextAction: CustomerESignOnboardingNextAction;
   provider: ESignProviderType;
   providerCustomerId: string | null;
+  providerCustomerIdPresent: boolean;
   providerOpenId: string | null;
+  readyForSigning: boolean;
+  realNameProviderVerified: boolean;
   realNameFlow?: {
     c2ServiceInvoked: boolean;
     mockOnly: boolean;
     providerCallExecuted: boolean;
   };
   realNameStatus: ESignRealNameStatus | null;
+  realNameUrl?: string | null;
   registrationStatus: ESignProviderAccountStatus | null;
   signingEligible: boolean;
   source?: CustomerESignOnboardingTriggerSource;
@@ -74,6 +88,7 @@ export interface CustomerESignOnboardingStatus {
 
 export interface CustomerESignOnboardingEntryOptions {
   allowAlreadySigningEnabled?: boolean;
+  includeRealNameUrl?: boolean;
   source?: CustomerESignOnboardingTriggerSource;
 }
 
@@ -83,12 +98,13 @@ export class CustomerESignOnboardingService {
     private readonly accountService: CustomerESignProviderAccountService,
     @Optional() private readonly auditService?: AuditService,
     @Optional() private readonly configService?: ConfigService,
-    @Optional() private readonly prismaService?: PrismaService
+    @Optional() private readonly prismaService?: PrismaService,
+    @Optional() private readonly readinessService?: FadadaCustomerReadinessService
   ) {}
 
   async getOnboardingStatus(customerId: string, options: CustomerESignOnboardingEntryOptions = {}) {
     const account = await this.accountService.getFadadaPersonalBinding(customerId);
-    const status = this.toStatus(customerId, account, options.source);
+    const status = await this.withReadiness(customerId, this.toStatus(customerId, account, options.source));
     if (options.source) {
       await this.writeAudit({
         action: AuditAction.UPDATE,
@@ -138,7 +154,7 @@ export class CustomerESignOnboardingService {
       throw new BadRequestException(`${gate.reason}: onboarding cannot start from ${source}`);
     }
     const account = await this.accountService.ensureFadadaPersonalPendingBinding(customerId, actorId);
-    const status = this.toStatus(customerId, account, source);
+    const status = await this.withReadiness(customerId, this.toStatus(customerId, account, source));
     await this.writeAudit({
       action: AuditAction.CREATE,
       actorId,
@@ -179,7 +195,7 @@ export class CustomerESignOnboardingService {
       case CustomerESignOnboardingRetryStep.REALNAME_VERIFY:
         return this.triggerRealNameFlow(customerId, actorId, options);
       case CustomerESignOnboardingRetryStep.STATUS_REFRESH:
-        return this.getOnboardingStatus(customerId, options);
+        return this.refreshProviderBackedReadiness(customerId, actorId, options);
       default:
         throw new BadRequestException(`ESIGN_ONBOARDING_STEP_NOT_ALLOWED: ${input.step}`);
     }
@@ -199,13 +215,15 @@ export class CustomerESignOnboardingService {
     const source = options.source ?? CustomerESignOnboardingTriggerSource.ADMIN;
     const previousStatus = await this.getOnboardingStatus(customerId);
     const result = await this.accountService.startFadadaPersonalRealNameVerification(customerId, input, actorId);
+    const baseStatus = await this.withReadiness(customerId, this.toStatus(customerId, result.account, source));
     const status: CustomerESignOnboardingStatus = {
-      ...this.toStatus(customerId, result.account, source),
+      ...baseStatus,
       realNameFlow: {
         c2ServiceInvoked: true,
         mockOnly: false,
         providerCallExecuted: false
       },
+      ...(options.includeRealNameUrl ? { realNameUrl: result.verifyUrl } : {}),
       verifyUrlMasked: result.verifyUrlMasked,
       verifyUrlPresent: result.verifyUrlPresent
     };
@@ -219,6 +237,47 @@ export class CustomerESignOnboardingService {
       source
     });
     return status;
+  }
+
+  async startPortalRealNameVerification(
+    customerId: string,
+    input: StartCustomerESignOnboardingRealNameDto,
+    actorId?: string
+  ) {
+    const account = await this.accountService.getFadadaPersonalBinding(customerId);
+    if (
+      !account ||
+      account.registrationStatus !== ESignProviderAccountStatus.REGISTERED ||
+      !account.providerCustomerId
+    ) {
+      await this.accountService.registerFadadaPersonalAccount(customerId, actorId);
+    }
+
+    return this.startRealNameVerification(customerId, input, actorId, {
+      includeRealNameUrl: true,
+      source: CustomerESignOnboardingTriggerSource.PORTAL
+    });
+  }
+
+  async refreshProviderBackedReadiness(
+    customerId: string,
+    actorId?: string,
+    options: CustomerESignOnboardingEntryOptions = {}
+  ) {
+    const account = await this.accountService.getFadadaPersonalBinding(customerId);
+    const serialNo = account?.verificationSerialNo ?? account?.verificationTransactionNo;
+    if (
+      account?.registrationStatus === ESignProviderAccountStatus.REGISTERED &&
+      account.providerCustomerId &&
+      serialNo
+    ) {
+      const refreshed = await this.accountService.refreshFadadaRealNameStatus(customerId, actorId);
+      if (hasProviderBackedRealName(refreshed)) {
+        await this.accountService.refreshFadadaCertBindingStatus(customerId, actorId);
+      }
+    }
+
+    return this.getOnboardingStatus(customerId, options);
   }
 
   async triggerRealNameFlow(
@@ -308,24 +367,46 @@ export class CustomerESignOnboardingService {
     source?: CustomerESignOnboardingTriggerSource
   ): CustomerESignOnboardingStatus {
     const state = this.resolveState(account);
+    const readyForSigning = state === CustomerESignOnboardingState.SIGNING_ENABLED;
+    const realNameProviderVerified = Boolean(account && hasProviderBackedRealName(account));
+    const certBound = account?.certBindingStatus === ESignProviderCertBindingStatus.BOUND;
     return {
       accountType: account?.accountType ?? ESignProviderAccountType.PERSONAL,
+      blockingCode: account?.readinessBlockingCode ?? null,
+      blockingMessage: sanitizeMessage(account?.readinessBlockingReason ?? null),
+      certBound,
+      certSerialNoPresent: Boolean(account?.certSerialNo),
       customerId: maskIdentifier(customerId) ?? "",
+      lastProviderCheckAt: account?.providerStatusLastRefreshedAt ?? null,
       lastErrorCode: account?.lastErrorCode ?? null,
       lastErrorMessage: sanitizeMessage(account?.lastErrorMessage ?? null),
       nextAction: nextActionForState(state),
       provider: account?.provider ?? ESignProviderType.FADADA,
       providerCustomerId: maskIdentifier(account?.providerCustomerId),
+      providerCustomerIdPresent: Boolean(account?.providerCustomerId),
       providerOpenId: maskIdentifier(account?.providerOpenId),
+      readyForSigning,
+      realNameProviderVerified,
       realNameStatus: account?.realNameStatus ?? null,
       registrationStatus: account?.registrationStatus ?? null,
-      signingEligible: state === CustomerESignOnboardingState.SIGNING_ENABLED,
+      signingEligible: readyForSigning,
       source,
       state,
       verifiedAt: account?.verifiedAt ?? null,
       verificationSerialNo: account?.verificationSerialNo ?? null,
       verificationTransactionNo: account?.verificationTransactionNo ?? null
     };
+  }
+
+  private async withReadiness(
+    customerId: string,
+    status: CustomerESignOnboardingStatus
+  ): Promise<CustomerESignOnboardingStatus> {
+    if (!this.readinessService) {
+      return status;
+    }
+    const readiness = await this.readinessService.getReadiness(customerId);
+    return mergeReadiness(status, readiness);
   }
 
   private async writeAudit(input: {
@@ -346,13 +427,13 @@ export class CustomerESignOnboardingService {
         customerId: maskIdentifier(input.customerId),
         event: input.event,
         source: input.source,
-        status: input.nextStatus
+        status: redactOnboardingStatus(input.nextStatus)
       },
       before: input.previousStatus ? {
         customerId: maskIdentifier(input.customerId),
         event: input.event,
         source: input.source,
-        status: input.previousStatus
+        status: redactOnboardingStatus(input.previousStatus)
       } : undefined,
       entityType: "customer_esign_onboarding",
       module: "esign",
@@ -395,6 +476,78 @@ function nextActionForState(state: CustomerESignOnboardingState): CustomerESignO
     default:
       return "CONTACT_SUPPORT";
   }
+}
+
+function mergeReadiness(
+  status: CustomerESignOnboardingStatus,
+  readiness: FadadaCustomerReadiness
+): CustomerESignOnboardingStatus {
+  return {
+    ...status,
+    blockingCode: readiness.blockingCode,
+    blockingMessage: sanitizeMessage(readiness.blockingMessage),
+    certBound: readiness.certBound,
+    certSerialNoPresent: readiness.certSerialNoPresent,
+    lastProviderCheckAt: readiness.lastProviderCheckAt,
+    nextAction: readiness.readyForSigning ? "NONE" : mapReadinessNextAction(readiness.nextAction, status.nextAction),
+    provider: readiness.provider,
+    providerCustomerIdPresent: readiness.providerCustomerIdPresent,
+    readyForSigning: readiness.readyForSigning,
+    realNameProviderVerified: readiness.realNameProviderVerified,
+    signingEligible: readiness.readyForSigning,
+    state: readiness.readyForSigning
+      ? CustomerESignOnboardingState.SIGNING_ENABLED
+      : mapReadinessState(readiness.state, status.state)
+  };
+}
+
+function mapReadinessNextAction(
+  nextAction: FadadaCustomerReadiness["nextAction"],
+  fallback: CustomerESignOnboardingNextAction
+): CustomerESignOnboardingNextAction {
+  switch (nextAction) {
+    case "APPLY_CERT":
+    case "CONTACT_SUPPORT":
+    case "NONE":
+    case "QUERY_PROVIDER_STATUS":
+    case "REGISTER_PROVIDER_ACCOUNT":
+    case "START_ONBOARDING":
+    case "START_REALNAME_VERIFICATION":
+    case "WAIT_REALNAME_CALLBACK":
+      return nextAction;
+    default:
+      return fallback;
+  }
+}
+
+function mapReadinessState(
+  readinessState: FadadaCustomerReadiness["state"],
+  fallback: CustomerESignOnboardingState
+): CustomerESignOnboardingState {
+  switch (readinessState) {
+    case "CERT_BINDING_PENDING":
+      return CustomerESignOnboardingState.CERT_BINDING_PENDING;
+    case "FAILED":
+      return CustomerESignOnboardingState.FAILED;
+    case "NOT_STARTED":
+      return CustomerESignOnboardingState.NOT_STARTED;
+    case "REALNAME_PENDING":
+      return CustomerESignOnboardingState.REALNAME_PENDING;
+    case "REGISTERED":
+      return CustomerESignOnboardingState.ACCOUNT_CREATED;
+    case "SIGNING_ENABLED":
+      return CustomerESignOnboardingState.SIGNING_ENABLED;
+    case "UNKNOWN":
+      return CustomerESignOnboardingState.UNKNOWN;
+    default:
+      return fallback;
+  }
+}
+
+function redactOnboardingStatus(status: CustomerESignOnboardingStatus): CustomerESignOnboardingStatus {
+  const redacted = { ...status };
+  delete redacted.realNameUrl;
+  return redacted;
 }
 
 function hasProviderBackedRealName(account: CustomerESignProviderAccountView) {

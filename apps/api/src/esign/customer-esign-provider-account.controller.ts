@@ -91,7 +91,12 @@ export class CustomerESignProviderAccountController {
     @Body() dto: StartFadadaRealNameVerificationDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.accountService.startFadadaPersonalRealNameVerification(id, dto, request.user.id);
+    return this.accountService.startFadadaPersonalRealNameVerification(id, dto, request.user.id)
+      .then((result) => ({
+        account: result.account,
+        verifyUrlMasked: result.verifyUrlMasked,
+        verifyUrlPresent: result.verifyUrlPresent
+      }));
   }
 
   @Post("customers/:id/esign-provider-accounts/fadada/real-name-status/refresh")

@@ -910,6 +910,40 @@ describe("ESignService", () => {
     );
   });
 
+  it("blocks portal signing links when Fadada readiness is no longer cert-bound", async () => {
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async () => ({
+        providerEnvelopeId: "ESG-1",
+        providerTaskId: "ESG-1-1",
+        signUrl: "https://sign.example.test/customer",
+        signUrlExpiresAt: new Date(Date.now() + 60_000)
+      })),
+      getSignerUrl: vi.fn(async () => ({
+        signUrl: "https://sign.example.test/refreshed"
+      })),
+      verifyCallback: vi.fn()
+    };
+    const { service, state } = createESignFixture(
+      { ESIGN_PROVIDER: "fadada", FADADA_ENABLED: "true" },
+      provider
+    );
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    state.providerAccounts[0] = createProviderAccount("customer-1", {
+      certBindingSource: ESignProviderCertBindingSource.UNKNOWN,
+      certBindingStatus: ESignProviderCertBindingStatus.UNKNOWN,
+      certBoundAt: null,
+      certSerialNo: null,
+      readinessBlockingCode: "FADADA_CERT_NOT_BOUND",
+      readinessBlockingReason: "certificate binding is not provider-confirmed"
+    });
+
+    await expect(service.startPortalSigning("contract-1", currentCustomer("customer-1"))).rejects.toThrow(
+      /FADADA_CERT_NOT_BOUND/
+    );
+
+    expect(provider.getSignerUrl).not.toHaveBeenCalled();
+  });
+
   it("mock-sign completes signer, task, contract, order and callback log", async () => {
     const { service, state } = createESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());

@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowLeftOutlined, CheckCircleOutlined, DownloadOutlined, FileTextOutlined, PayCircleOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
+import { ArrowLeftOutlined, CheckCircleOutlined, DownloadOutlined, FileTextOutlined, PayCircleOutlined, ReloadOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
+import { Alert, App, Button, Descriptions, Empty, Flex, Form, Input, Modal, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -16,20 +16,38 @@ import {
 } from "../../../../constants/labels";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import {
+  getFadadaBlockingMessage,
+  getFadadaNextActionLabel,
+  getFadadaReadinessAvailability,
+  getFadadaReadinessTone
+} from "../../../../lib/fadada-onboarding-ui";
+import {
   PortalContractDetail,
+  PortalFadadaOnboardingStatus,
   PortalPayableBill,
   PortalPaymentOrder,
   PortalSigningStartResponse
 } from "../../../../lib/portal-types";
 
+interface RealNameFormValues {
+  idCardNo: string;
+  mobile: string;
+  name: string;
+}
+
 export default function PortalContractDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { message } = App.useApp();
+  const [realNameForm] = Form.useForm<RealNameFormValues>();
   const [contract, setContract] = useState<PortalContractDetail>();
+  const [onboardingStatus, setOnboardingStatus] = useState<PortalFadadaOnboardingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
+  const [realNameModalOpen, setRealNameModalOpen] = useState(false);
+  const [refreshingOnboarding, setRefreshingOnboarding] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [startingRealName, setStartingRealName] = useState(false);
 
   const loadContract = useCallback(async () => {
     if (!params.id) {
@@ -38,7 +56,15 @@ export default function PortalContractDetailPage() {
 
     setLoading(true);
     try {
-      setContract(await portalApiFetch<PortalContractDetail>(`/portal/contracts/${params.id}`));
+      const nextContract = await portalApiFetch<PortalContractDetail>(`/portal/contracts/${params.id}`);
+      setContract(nextContract);
+      const nextOnboardingStatus = await portalApiFetch<PortalFadadaOnboardingStatus>(
+        "/portal/esign-onboarding/status"
+      ).catch((error) => {
+        void message.warning(error instanceof PortalApiError ? error.message : "无法加载法大大认证状态");
+        return null;
+      });
+      setOnboardingStatus(nextOnboardingStatus);
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
         router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/contracts/${params.id}`)}`);
@@ -58,6 +84,11 @@ export default function PortalContractDetailPage() {
     if (!contract) {
       return;
     }
+    const availability = getFadadaReadinessAvailability(onboardingStatus);
+    if (!availability.allowed) {
+      void message.warning(availability.reason ?? getFadadaBlockingMessage(onboardingStatus));
+      return;
+    }
 
     try {
       setStarting(true);
@@ -74,6 +105,52 @@ export default function PortalContractDetailPage() {
       void message.error(error instanceof PortalApiError ? error.message : "无法发起签署");
     } finally {
       setStarting(false);
+    }
+  }
+
+  function openRealNameModal() {
+    const mobile = contract?.customer.mobile;
+    realNameForm.setFieldsValue({
+      mobile: mobile && !mobile.includes("*") ? mobile : undefined,
+      name: contract?.customer.name
+    });
+    setRealNameModalOpen(true);
+  }
+
+  async function startRealNameVerification() {
+    const values = await realNameForm.validateFields();
+    try {
+      setStartingRealName(true);
+      const result = await portalApiFetch<PortalFadadaOnboardingStatus>("/portal/esign-onboarding/real-name", {
+        body: JSON.stringify(values),
+        method: "POST"
+      });
+      setOnboardingStatus(result);
+      setRealNameModalOpen(false);
+      if (result.realNameUrl) {
+        window.location.assign(result.realNameUrl);
+        return;
+      }
+      void message.info("实名认证流程已发起，请稍后刷新认证状态");
+    } catch (error) {
+      void message.error(error instanceof PortalApiError ? error.message : "无法发起法大大实名认证");
+    } finally {
+      setStartingRealName(false);
+    }
+  }
+
+  async function refreshOnboardingStatus() {
+    try {
+      setRefreshingOnboarding(true);
+      const result = await portalApiFetch<PortalFadadaOnboardingStatus>("/portal/esign-onboarding/refresh", {
+        method: "POST"
+      });
+      setOnboardingStatus(result);
+      void message.success("认证状态已刷新");
+    } catch (error) {
+      void message.error(error instanceof PortalApiError ? error.message : "无法刷新认证状态");
+    } finally {
+      setRefreshingOnboarding(false);
     }
   }
 
@@ -136,6 +213,26 @@ export default function PortalContractDetailPage() {
 
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
+      <Modal
+        confirmLoading={startingRealName}
+        okText="提交并前往认证"
+        onCancel={() => setRealNameModalOpen(false)}
+        onOk={startRealNameVerification}
+        open={realNameModalOpen}
+        title="法大大实名认证"
+      >
+        <Form form={realNameForm} layout="vertical">
+          <Form.Item label="姓名" name="name" rules={[{ message: "请输入姓名", required: true }]}>
+            <Input autoComplete="name" />
+          </Form.Item>
+          <Form.Item label="手机号" name="mobile" rules={[{ message: "请输入实名手机号", required: true }]}>
+            <Input autoComplete="tel" />
+          </Form.Item>
+          <Form.Item label="身份证号" name="idCardNo" rules={[{ message: "请输入身份证号", required: true }]}>
+            <Input.Password autoComplete="off" />
+          </Form.Item>
+        </Form>
+      </Modal>
       <section style={{ margin: "0 auto", maxWidth: 820 }}>
         <Flex justify="space-between" style={{ marginBottom: 16 }} wrap="wrap">
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/portal/contracts")}>
@@ -214,7 +311,7 @@ export default function PortalContractDetailPage() {
               </Typography.Text>
             </div>
             <Button
-              disabled={!contract.canSign}
+              disabled={!contract.canSign || !getFadadaReadinessAvailability(onboardingStatus).allowed}
               icon={contract.contractStatus === "SIGNED" ? <CheckCircleOutlined /> : <FileTextOutlined />}
               loading={starting}
               onClick={startSigning}
@@ -223,6 +320,28 @@ export default function PortalContractDetailPage() {
               去签署
             </Button>
           </Flex>
+
+          <Alert
+            message={getFadadaBlockingMessage(onboardingStatus)}
+            description={onboardingStatus?.blockingCode ? `状态码：${onboardingStatus.blockingCode}` : undefined}
+            showIcon
+            style={{ marginTop: 16 }}
+            type={getFadadaReadinessTone(onboardingStatus)}
+          />
+          {!getFadadaReadinessAvailability(onboardingStatus).allowed ? (
+            <Space size={8} style={{ marginTop: 12 }} wrap>
+              <Button icon={<SafetyCertificateOutlined />} onClick={openRealNameModal} type="primary">
+                {getFadadaNextActionLabel(onboardingStatus)}
+              </Button>
+              <Button icon={<ReloadOutlined />} loading={refreshingOnboarding} onClick={refreshOnboardingStatus}>
+                刷新认证状态
+              </Button>
+            </Space>
+          ) : (
+            <Button icon={<ReloadOutlined />} loading={refreshingOnboarding} onClick={refreshOnboardingStatus} style={{ marginTop: 12 }}>
+              刷新认证状态
+            </Button>
+          )}
 
           {contract.signTask ? (
             <Space direction="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>

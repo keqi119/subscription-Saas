@@ -63,7 +63,7 @@ describe("CustomerESignProviderAccountService", () => {
       providerCustomerId: "fadada-customer-1234567890",
       raw: {
         code: "1",
-        data: { customer_id: "fadada-customer-1234567890", mobile: "18616570212" },
+        data: { customer_id: "fadada-customer-1234567890", mobile: "13800000000" },
         msg: "ok"
       },
       resultCode: "1",
@@ -94,7 +94,7 @@ describe("CustomerESignProviderAccountService", () => {
       env: { FADADA_ACCOUNT_REGISTER_ENABLED: "true" }
     });
     vi.mocked(apiClient.registerAccount)
-      .mockRejectedValueOnce(new Error("FADADA_HTTP_ERROR: mobile 18616570212 token abcdefghijklmnopqrstuvwxyz"))
+      .mockRejectedValueOnce(new Error("FADADA_HTTP_ERROR: mobile 13800000000 token abcdefghijklmnopqrstuvwxyz"))
       .mockResolvedValueOnce({
         openId: "subauto_person_v1_abc",
         providerCustomerId: "fadada-customer-retry",
@@ -161,7 +161,7 @@ describe("CustomerESignProviderAccountService", () => {
       operatorId: "operator-1"
     }));
     expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("fadada-manual-1");
-    expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("18616570212");
+    expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("13800000000");
   });
 
   it("manual attach refuses to overwrite an existing provider customer id", async () => {
@@ -195,7 +195,7 @@ describe("CustomerESignProviderAccountService", () => {
       verificationSerialNo: "verify-serial-1"
     });
     expect(view.realNameStatus).toBe(ESignRealNameStatus.VERIFIED);
-    expect(JSON.stringify(view)).not.toContain("18616570212");
+    expect(JSON.stringify(view)).not.toContain("13800000000");
     expect(auditService.write).toHaveBeenCalledWith(expect.objectContaining({
       action: AuditAction.UPDATE,
       entityId: "binding-1",
@@ -203,7 +203,7 @@ describe("CustomerESignProviderAccountService", () => {
       module: "esign",
       operatorId: "operator-1"
     }));
-    expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("18616570212");
+    expect(JSON.stringify(auditService.write.mock.calls[0]?.[0])).not.toContain("13800000000");
   });
 
   it("does not start real-name verification when FADADA_REALNAME_VERIFY_ENABLED is false", async () => {
@@ -216,15 +216,15 @@ describe("CustomerESignProviderAccountService", () => {
     });
 
     await expect(service.startFadadaPersonalRealNameVerification("customer-1", {
-      idCardNo: "110101199001011234",
-      mobile: "18616570212",
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
       name: "Controlled Tester"
     }, "operator-1")).rejects.toThrow(FADADA_REALNAME_VERIFY_DISABLED);
 
     expect(apiClient.getPersonVerifyUrl).not.toHaveBeenCalled();
   });
 
-  it("starts real-name verification with a masked URL and stores only transaction metadata", async () => {
+  it("starts real-name verification with a redirect URL and stores only sanitized transaction metadata", async () => {
     const { apiClient, service, state } = createServiceFixture({
       accounts: [{
         providerCustomerId: "fadada-registered-1",
@@ -238,26 +238,26 @@ describe("CustomerESignProviderAccountService", () => {
         code: "1",
         data: {
           transactionNo: "VERIFY-TX-1",
-          url: "https://verify.example.test/realname?token=secret"
+          url: "https://verify.example.test/realname?flowId=example-flow"
         },
         msg: "ok"
       },
       resultCode: "1",
       resultDesc: "ok",
       transactionNo: "VERIFY-TX-1",
-      verifyUrl: "https://verify.example.test/realname?token=secret"
+      verifyUrl: "https://verify.example.test/realname?flowId=example-flow"
     });
 
     const result = await service.startFadadaPersonalRealNameVerification("customer-1", {
-      idCardNo: "110101199001011234",
-      mobile: "18616570212",
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
       name: "Controlled Tester"
     }, "operator-1");
 
     expect(apiClient.getPersonVerifyUrl).toHaveBeenCalledWith(expect.objectContaining({
       customerId: "fadada-registered-1",
-      idCardNo: "110101199001011234",
-      mobile: "18616570212",
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
       name: "Controlled Tester",
       notifyUrl: "https://api.example.test/api/esign/callback/fadada/verify",
       returnUrl: "https://app.example.test/portal/contracts"
@@ -268,6 +268,7 @@ describe("CustomerESignProviderAccountService", () => {
         verificationSerialNo: "VERIFY-TX-1",
         verificationTransactionNo: "VERIFY-TX-1"
       },
+      verifyUrl: "https://verify.example.test/realname?flowId=example-flow",
       verifyUrlMasked: "https://verify.example.test/..."
     });
     expect(state.accounts[0]).toMatchObject({
@@ -275,10 +276,10 @@ describe("CustomerESignProviderAccountService", () => {
       verificationSerialNo: "VERIFY-TX-1",
       verificationTransactionNo: "VERIFY-TX-1"
     });
-    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("18616570212");
-    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("110101199001011234");
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("13800000000");
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("ID-CARD-EXAMPLE");
     expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("Controlled Tester");
-    expect(JSON.stringify(result)).not.toContain("token=secret");
+    expect(JSON.stringify(state.accounts[0]?.providerSnapshot)).not.toContain("example-flow");
   });
 
   it("handles verified real-name callback idempotently without signing side effects", async () => {
@@ -616,7 +617,7 @@ function fakePrisma(state: { accounts: FakeAccount[] }) {
     customer: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (
         where.id === "customer-1"
-          ? { id: "customer-1", mobile: "18616570212", name: "Controlled Tester" }
+          ? { id: "customer-1", mobile: "13800000000", name: "Controlled Tester" }
           : null
       ))
     },

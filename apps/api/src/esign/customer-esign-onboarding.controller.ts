@@ -58,4 +58,15 @@ export class CustomerESignOnboardingController {
       source: CustomerESignOnboardingTriggerSource.ADMIN
     });
   }
+
+  @Post("customers/:id/esign-onboarding/refresh")
+  @RequirePermissions(PermissionCode.CUSTOMER_MANAGE)
+  refreshProviderBackedReadiness(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.onboardingService.refreshProviderBackedReadiness(id, request.user.id, {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
+  }
 }

@@ -152,6 +152,47 @@ describe("CustomerESignOnboardingService", () => {
     expect(accountService.applyFadadaPersonalCert).not.toHaveBeenCalled();
   });
 
+  it("merges provider readiness diagnostics into the onboarding status without exposing raw provider ids", async () => {
+    const { accountService, readinessService, service } = createFixture({
+      readiness: {
+        blockingCode: "FADADA_CERT_NOT_BOUND",
+        blockingMessage: "please complete provider real-name cert binding",
+        certBound: false,
+        certSerialNoPresent: false,
+        lastProviderCheckAt: new Date("2026-07-14T00:00:00.000Z"),
+        nextAction: "APPLY_CERT",
+        provider: ESignProviderType.FADADA,
+        providerCustomerIdPresent: true,
+        readyForSigning: false,
+        realNameProviderVerified: true,
+        state: "CERT_BINDING_PENDING"
+      }
+    });
+    accountService.getFadadaPersonalBinding.mockResolvedValueOnce(fakeView({
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED
+    }));
+
+    const status = await service.getOnboardingStatus("customer-1");
+
+    expect(readinessService.getReadiness).toHaveBeenCalledWith("customer-1");
+    expect(status).toMatchObject({
+      blockingCode: "FADADA_CERT_NOT_BOUND",
+      blockingMessage: "please complete provider real-name cert binding",
+      certBound: false,
+      providerCustomerIdPresent: true,
+      readyForSigning: false,
+      realNameProviderVerified: true,
+      signingEligible: false,
+      state: CustomerESignOnboardingState.CERT_BINDING_PENDING
+    });
+    expect(JSON.stringify(status)).not.toContain("fadada-provider-customer-1234567890");
+  });
+
   it("derives SIGNING_ENABLED from provider real-name and cert-bound evidence", async () => {
     const { accountService, service } = createFixture();
     accountService.getFadadaPersonalBinding.mockResolvedValueOnce(fakeView({
@@ -189,8 +230,8 @@ describe("CustomerESignOnboardingService", () => {
       env: { FADADA_ONBOARDING_REALNAME_C2_ENABLED: "true" }
     });
     const input: StartCustomerESignOnboardingRealNameDto = {
-      idCardNo: "110101199001011234",
-      mobile: "18616570212",
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
       name: "Controlled Tester"
     };
     accountService.startFadadaPersonalRealNameVerification.mockResolvedValueOnce({
@@ -201,6 +242,7 @@ describe("CustomerESignOnboardingService", () => {
         verificationSerialNo: "VERIFY-TX-1",
         verificationTransactionNo: "VERIFY-TX-1"
       }),
+      verifyUrl: "https://verify.example.test/flow?flowId=example-flow",
       verifyUrlMasked: "https://verify.example.test/...",
       verifyUrlPresent: true
     });
@@ -224,22 +266,146 @@ describe("CustomerESignOnboardingService", () => {
       verificationSerialNo: "VERIFY-TX-1",
       verificationTransactionNo: "VERIFY-TX-1"
     });
-    expect(JSON.stringify(status)).not.toContain("18616570212");
-    expect(JSON.stringify(status)).not.toContain("110101199001011234");
+    expect(status).not.toHaveProperty("realNameUrl");
+    expect(JSON.stringify(status)).not.toContain("13800000000");
+    expect(JSON.stringify(status)).not.toContain("ID-CARD-EXAMPLE");
+    expect(JSON.stringify(status)).not.toContain("example-flow");
     expect(auditService.write).toHaveBeenCalledWith(expect.objectContaining({
       action: "UPDATE",
       entityType: "customer_esign_onboarding",
       module: "esign",
       operatorId: "operator-1"
     }));
+    expect(JSON.stringify(auditService.write.mock.calls)).not.toContain("example-flow");
     expect(accountService.applyFadadaPersonalCert).not.toHaveBeenCalled();
+  });
+
+  it("portal start-or-resume registers the provider account first and returns the real-name URL only from the start action", async () => {
+    const { accountService, auditService, service } = createFixture({
+      env: { FADADA_ONBOARDING_REALNAME_C2_ENABLED: "true" }
+    });
+    const input: StartCustomerESignOnboardingRealNameDto = {
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
+      name: "Controlled Tester"
+    };
+    accountService.getFadadaPersonalBinding
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(fakeView({
+        providerCustomerId: "fadada-provider-customer-1234567890",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED
+      }));
+    accountService.registerFadadaPersonalAccount.mockResolvedValueOnce(fakeView({
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      registrationStatus: ESignProviderAccountStatus.REGISTERED
+    }));
+    accountService.startFadadaPersonalRealNameVerification.mockResolvedValueOnce({
+      account: fakeView({
+        providerCustomerId: "fadada-provider-customer-1234567890",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.PENDING,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }),
+      verifyUrl: "https://verify.example.test/flow?flowId=example-flow",
+      verifyUrlMasked: "https://verify.example.test/...",
+      verifyUrlPresent: true
+    });
+
+    const status = await service.startPortalRealNameVerification("customer-1", input, "portal-account-1");
+
+    expect(accountService.registerFadadaPersonalAccount).toHaveBeenCalledWith("customer-1", "portal-account-1");
+    expect(accountService.startFadadaPersonalRealNameVerification).toHaveBeenCalledWith(
+      "customer-1",
+      input,
+      "portal-account-1"
+    );
+    expect(status).toMatchObject({
+      realNameUrl: "https://verify.example.test/flow?flowId=example-flow",
+      source: CustomerESignOnboardingTriggerSource.PORTAL,
+      state: CustomerESignOnboardingState.REALNAME_PENDING,
+      verifyUrlPresent: true
+    });
+    expect(JSON.stringify(status)).not.toContain("ID-CARD-EXAMPLE");
+    expect(JSON.stringify(status)).not.toContain("13800000000");
+    expect(JSON.stringify(auditService.write.mock.calls)).not.toContain("example-flow");
+  });
+
+  it("refreshes provider real-name and cert binding before returning updated readiness", async () => {
+    const { accountService, readinessService, service } = createFixture({
+      readiness: {
+        blockingCode: null,
+        blockingMessage: null,
+        certBound: true,
+        certSerialNoPresent: true,
+        lastProviderCheckAt: new Date("2026-07-14T00:05:00.000Z"),
+        nextAction: "NONE",
+        provider: ESignProviderType.FADADA,
+        providerCustomerIdPresent: true,
+        readyForSigning: true,
+        realNameProviderVerified: true,
+        state: "SIGNING_ENABLED"
+      }
+    });
+    accountService.getFadadaPersonalBinding
+      .mockResolvedValueOnce(fakeView({
+        providerCustomerId: "fadada-provider-customer-1234567890",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.PENDING,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }))
+      .mockResolvedValueOnce(fakeView({
+        certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+        certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+        certBoundAt: new Date("2026-07-14T00:05:00.000Z"),
+        providerCustomerId: "fadada-provider-customer-1234567890",
+        providerStatusLastRefreshedAt: new Date("2026-07-14T00:05:00.000Z"),
+        realNameProviderStatus: "2",
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+        realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        verifiedAt: new Date("2026-07-14T00:00:00.000Z")
+      }));
+    accountService.refreshFadadaRealNameStatus.mockResolvedValueOnce(fakeView({
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      realNameProviderStatus: "2",
+      realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+      realNameProviderVerifiedAt: new Date("2026-07-14T00:00:00.000Z"),
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED
+    }));
+    accountService.refreshFadadaCertBindingStatus.mockResolvedValueOnce(fakeView({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      certBoundAt: new Date("2026-07-14T00:05:00.000Z"),
+      providerCustomerId: "fadada-provider-customer-1234567890",
+      registrationStatus: ESignProviderAccountStatus.REGISTERED,
+      realNameStatus: ESignRealNameStatus.VERIFIED
+    }));
+
+    const status = await service.refreshProviderBackedReadiness("customer-1", "operator-1", {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
+
+    expect(accountService.refreshFadadaRealNameStatus).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(accountService.refreshFadadaCertBindingStatus).toHaveBeenCalledWith("customer-1", "operator-1");
+    expect(readinessService.getReadiness).toHaveBeenCalledWith("customer-1");
+    expect(status).toMatchObject({
+      blockingCode: null,
+      certBound: true,
+      readyForSigning: true,
+      signingEligible: true,
+      state: CustomerESignOnboardingState.SIGNING_ENABLED
+    });
   });
 
   it("does not invoke the C2 real-name service unless the onboarding wiring gate is enabled", async () => {
     const { accountService, service } = createFixture();
     const input: StartCustomerESignOnboardingRealNameDto = {
-      idCardNo: "110101199001011234",
-      mobile: "18616570212",
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
       name: "Controlled Tester"
     };
 
@@ -319,6 +485,7 @@ describe("CustomerESignOnboardingController", () => {
   it("maps internal admin endpoints to onboarding service methods", async () => {
     const service = {
       getOnboardingStatus: vi.fn(async () => ({ state: CustomerESignOnboardingState.NOT_STARTED })),
+      refreshProviderBackedReadiness: vi.fn(async () => ({ state: CustomerESignOnboardingState.SIGNING_ENABLED })),
       retryOnboarding: vi.fn(async () => ({ state: CustomerESignOnboardingState.ACCOUNT_CREATED })),
       startRealNameVerification: vi.fn(async () => ({ state: CustomerESignOnboardingState.REALNAME_PENDING })),
       startOnboarding: vi.fn(async () => ({ state: CustomerESignOnboardingState.ONBOARDING }))
@@ -329,8 +496,8 @@ describe("CustomerESignOnboardingController", () => {
     await controller.getOnboardingStatus("customer-1");
     await controller.startOnboarding("customer-1", request as never);
     await controller.startRealNameVerification("customer-1", {
-      idCardNo: "110101199001011234",
-      mobile: "18616570212",
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
       name: "Controlled Tester"
     }, request as never);
     await controller.retryOnboarding(
@@ -338,6 +505,7 @@ describe("CustomerESignOnboardingController", () => {
       { step: CustomerESignOnboardingRetryStep.REALNAME_VERIFY },
       request as never
     );
+    await controller.refreshProviderBackedReadiness("customer-1", request as never);
 
     expect(service.getOnboardingStatus).toHaveBeenCalledWith("customer-1", {
       source: CustomerESignOnboardingTriggerSource.ADMIN
@@ -346,8 +514,8 @@ describe("CustomerESignOnboardingController", () => {
       source: CustomerESignOnboardingTriggerSource.ADMIN
     });
     expect(service.startRealNameVerification).toHaveBeenCalledWith("customer-1", {
-      idCardNo: "110101199001011234",
-      mobile: "18616570212",
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
       name: "Controlled Tester"
     }, "operator-1", {
       source: CustomerESignOnboardingTriggerSource.ADMIN
@@ -358,6 +526,9 @@ describe("CustomerESignOnboardingController", () => {
       "operator-1",
       { source: CustomerESignOnboardingTriggerSource.ADMIN }
     );
+    expect(service.refreshProviderBackedReadiness).toHaveBeenCalledWith("customer-1", "operator-1", {
+      source: CustomerESignOnboardingTriggerSource.ADMIN
+    });
   });
 });
 
@@ -380,30 +551,65 @@ describe("onboarding product entry controllers", () => {
   it("maps portal status entry to a source-aware read without starting onboarding", async () => {
     const onboardingService = {
       getOnboardingStatus: vi.fn(async () => ({ state: CustomerESignOnboardingState.NOT_STARTED })),
+      refreshProviderBackedReadiness: vi.fn(async () => ({ state: CustomerESignOnboardingState.SIGNING_ENABLED })),
+      startPortalRealNameVerification: vi.fn(async () => ({
+        realNameUrl: "https://verify.example.test/flow?flowId=example-flow",
+        state: CustomerESignOnboardingState.REALNAME_PENDING
+      })),
       startOnboarding: vi.fn()
     };
     const controller = new PortalESignOnboardingController(onboardingService as never);
-
-    const result = await controller.getOnboardingStatus({
+    const currentCustomer = {
       accountStatus: "ACTIVE",
       customerAccountId: "customer-account-1",
       customerId: "customer-1",
-      phone: "18616570212"
-    } as never);
+      phone: "13800000000"
+    } as never;
+
+    const result = await controller.getOnboardingStatus(currentCustomer);
+    const started = await controller.startRealNameVerification(currentCustomer, {
+      idCardNo: "ID-CARD-EXAMPLE",
+      mobile: "13800000000",
+      name: "Controlled Tester"
+    });
+    const refreshed = await controller.refreshProviderBackedReadiness(currentCustomer);
 
     expect(result).toEqual({ state: CustomerESignOnboardingState.NOT_STARTED });
+    expect(started).toMatchObject({
+      realNameUrl: "https://verify.example.test/flow?flowId=example-flow",
+      state: CustomerESignOnboardingState.REALNAME_PENDING
+    });
+    expect(refreshed).toEqual({ state: CustomerESignOnboardingState.SIGNING_ENABLED });
     expect(onboardingService.getOnboardingStatus).toHaveBeenCalledWith("customer-1", {
       source: CustomerESignOnboardingTriggerSource.PORTAL
     });
+    expect(onboardingService.startPortalRealNameVerification).toHaveBeenCalledWith(
+      "customer-1",
+      {
+        idCardNo: "ID-CARD-EXAMPLE",
+        mobile: "13800000000",
+        name: "Controlled Tester"
+      },
+      "customer-account-1"
+    );
+    expect(onboardingService.refreshProviderBackedReadiness).toHaveBeenCalledWith(
+      "customer-1",
+      "customer-account-1",
+      { source: CustomerESignOnboardingTriggerSource.PORTAL }
+    );
     expect(onboardingService.startOnboarding).not.toHaveBeenCalled();
   });
 });
 
-function createFixture(input: { env?: Record<string, string> } = {}) {
+function createFixture(input: {
+  env?: Record<string, string>;
+  readiness?: Record<string, unknown>;
+} = {}) {
   const accountService = {
     applyFadadaPersonalCert: vi.fn(),
     ensureFadadaPersonalPendingBinding: vi.fn(),
     getFadadaPersonalBinding: vi.fn(),
+    refreshFadadaCertBindingStatus: vi.fn(),
     refreshFadadaRealNameStatus: vi.fn(),
     registerFadadaPersonalAccount: vi.fn(),
     startFadadaPersonalRealNameVerification: vi.fn()
@@ -419,15 +625,29 @@ function createFixture(input: { env?: Record<string, string> } = {}) {
       update: vi.fn()
     }
   };
+  const readinessService = input.readiness
+    ? {
+        getReadiness: vi.fn(async () => input.readiness)
+      }
+    : {
+        getReadiness: vi.fn()
+      };
   const ServiceCtor = CustomerESignOnboardingService as unknown as new (
     accountService: unknown,
     auditService: unknown,
     configService: unknown,
-    prismaService: unknown
+    prismaService: unknown,
+    readinessService?: unknown
   ) => CustomerESignOnboardingService;
-  const service = new ServiceCtor(accountService, auditService, new ConfigService(input.env ?? {}), prismaService);
+  const service = new ServiceCtor(
+    accountService,
+    auditService,
+    new ConfigService(input.env ?? {}),
+    prismaService,
+    input.readiness ? readinessService : undefined
+  );
 
-  return { accountService, auditService, prismaService, service };
+  return { accountService, auditService, prismaService, readinessService, service };
 }
 
 function fakeView(overrides: Partial<CustomerESignProviderAccountView> = {}): CustomerESignProviderAccountView {

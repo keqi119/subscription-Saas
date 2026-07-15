@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowLeftOutlined, CloudDownloadOutlined, EyeOutlined, FileDoneOutlined } from "@ant-design/icons";
-import { App, Button, Card, Descriptions, Empty, List, Space, Spin, Tag, Typography } from "antd";
+import { ArrowLeftOutlined, CloudDownloadOutlined, EyeOutlined, FileDoneOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Alert, App, Button, Card, Descriptions, Empty, List, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -26,6 +26,12 @@ import {
 } from "../../../lib/action-guards";
 import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
+import {
+  getFadadaBlockingMessage,
+  getFadadaReadinessAvailability,
+  getFadadaReadinessTone,
+  type FadadaOnboardingReadiness
+} from "../../../lib/fadada-onboarding-ui";
 
 interface ContractDetail {
   archivedAt?: string | null;
@@ -33,7 +39,7 @@ interface ContractDetail {
   contractSnapshot?: unknown;
   contractTitle: string;
   createdAt: string;
-  customer: { name: string; mobile: string };
+  customer: { id: string; name: string; mobile: string };
   hasGeneratedPdfArtifact?: boolean;
   id: string;
   order: { orderNo: string; id: string };
@@ -349,8 +355,17 @@ export default function ContractDetailPage() {
   const [loading, setLoading] = useState(true);
   const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
   const [creatingESignTask, setCreatingESignTask] = useState(false);
+  const [onboardingStatus, setOnboardingStatus] = useState<FadadaOnboardingReadiness | null>(null);
+  const [refreshingOnboarding, setRefreshingOnboarding] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
+  const signContractAvailability = useMemo(() => canSignContract(contract, permissions), [contract, permissions]);
+  const createESignTaskAvailability = useMemo(() => {
+    if (!signContractAvailability.allowed) {
+      return signContractAvailability;
+    }
+    return getFadadaReadinessAvailability(onboardingStatus);
+  }, [onboardingStatus, signContractAvailability]);
   const signedDocumentTask = useMemo(
     () => esignTasks.find((task) => task.hasSignedDocument) ?? null,
     [esignTasks]
@@ -363,9 +378,13 @@ export default function ContractDetailPage() {
         apiFetch<ContractESignTask[]>(`/contracts/${params.id}/esign-tasks`).catch(() => []),
         apiFetch<AuthMeResponse>("/auth/me")
       ]);
+      const nextOnboardingStatus = await apiFetch<FadadaOnboardingReadiness>(
+        `/customers/${nextContract.customer.id}/esign-onboarding/status`
+      ).catch(() => null);
       setContract(nextContract);
       setESignTasks(nextESignTasks);
       setMe(nextMe);
+      setOnboardingStatus(nextOnboardingStatus);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -397,6 +416,10 @@ export default function ContractDetailPage() {
     if (!contract) {
       return;
     }
+    if (!createESignTaskAvailability.allowed) {
+      void message.warning(createESignTaskAvailability.reason ?? getFadadaBlockingMessage(onboardingStatus));
+      return;
+    }
     try {
       setCreatingESignTask(true);
       await apiFetch(`/contracts/${contract.id}/esign-tasks`, { method: "POST" });
@@ -406,6 +429,25 @@ export default function ContractDetailPage() {
       void message.error(getErrorMessage(error));
     } finally {
       setCreatingESignTask(false);
+    }
+  }
+
+  async function refreshOnboardingStatus() {
+    if (!contract) {
+      return;
+    }
+    try {
+      setRefreshingOnboarding(true);
+      const status = await apiFetch<FadadaOnboardingReadiness>(
+        `/customers/${contract.customer.id}/esign-onboarding/refresh`,
+        { method: "POST" }
+      );
+      setOnboardingStatus(status);
+      void message.success("法大大认证状态已刷新");
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setRefreshingOnboarding(false);
     }
   }
 
@@ -465,7 +507,7 @@ export default function ContractDetailPage() {
                 </Button>
               ) : null}
               <ActionButton
-                availability={canSignContract(contract, permissions)}
+                availability={signContractAvailability}
                 onClick={() => transition("sign")}
                 type="primary"
               >
@@ -520,7 +562,7 @@ export default function ContractDetailPage() {
           <Card
             extra={
               <ActionButton
-                availability={canSignContract(contract, permissions)}
+                availability={createESignTaskAvailability}
                 loading={creatingESignTask}
                 onClick={createESignTask}
                 type="primary"
@@ -530,6 +572,18 @@ export default function ContractDetailPage() {
             }
             title="电子签任务"
           >
+            <Alert
+              action={
+                <Button icon={<ReloadOutlined />} loading={refreshingOnboarding} onClick={refreshOnboardingStatus} size="small">
+                  刷新认证状态
+                </Button>
+              }
+              message={getFadadaBlockingMessage(onboardingStatus)}
+              description={onboardingStatus?.blockingCode ? `状态码：${onboardingStatus.blockingCode}` : undefined}
+              showIcon
+              style={{ marginBottom: 16 }}
+              type={getFadadaReadinessTone(onboardingStatus)}
+            />
             <List
               dataSource={esignTasks}
               locale={{ emptyText: <Empty description="暂无电子签任务" /> }}

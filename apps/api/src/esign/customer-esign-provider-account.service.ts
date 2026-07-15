@@ -58,6 +58,7 @@ export interface StartFadadaRealNameVerificationInput {
 
 export interface StartFadadaRealNameVerificationResult {
   account: CustomerESignProviderAccountView;
+  verifyUrl: string | null;
   verifyUrlMasked: string;
   verifyUrlPresent: boolean;
 }
@@ -368,6 +369,7 @@ export class CustomerESignProviderAccountService {
 
     return {
       account: toView(updated),
+      verifyUrl: result.verifyUrl ?? null,
       verifyUrlMasked: maskUrl(result.verifyUrl),
       verifyUrlPresent: Boolean(result.verifyUrl)
     };

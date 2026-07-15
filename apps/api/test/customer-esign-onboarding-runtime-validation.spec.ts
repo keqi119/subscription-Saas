@@ -193,13 +193,17 @@ describe("Stage 10D-C3-F onboarding runtime validation", () => {
 
   it("validates retry/status refresh paths preserve source audit and do not start signing", async () => {
     const harness = createRuntimeHarness();
-    harness.accountService.getFadadaPersonalBinding.mockResolvedValueOnce(fakeView({
+    const pendingProviderAccount = fakeView({
       providerCustomerId: "fadada-provider-customer-1234567890",
       registrationStatus: ESignProviderAccountStatus.REGISTERED,
       realNameStatus: ESignRealNameStatus.PENDING,
       verificationSerialNo: "VERIFY-SERIAL-1",
       verificationTransactionNo: "VERIFY-TX-1"
-    }));
+    });
+    harness.accountService.getFadadaPersonalBinding
+      .mockResolvedValueOnce(pendingProviderAccount)
+      .mockResolvedValueOnce(pendingProviderAccount);
+    harness.accountService.refreshFadadaRealNameStatus.mockResolvedValueOnce(pendingProviderAccount);
 
     const refreshed = await harness.adminController.retryOnboarding(
       "customer-runtime-activation-1234567890",

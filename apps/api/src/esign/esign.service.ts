@@ -584,6 +584,8 @@ export class ESignService {
       throw new BadRequestException("合同已签署完成。");
     }
 
+    await this.assertCustomerReadyForProviderSigning(contract.customerId);
+
     let signUrl = task.signUrl;
     let signUrlExpiresAt = task.signUrlExpiresAt;
     if (!signUrl || isExpired(signUrlExpiresAt)) {

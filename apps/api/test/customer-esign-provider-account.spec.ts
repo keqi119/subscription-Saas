@@ -497,6 +497,82 @@ describe("CustomerESignProviderAccountService", () => {
     });
     expect(state.accounts[0]?.providerStatusLastRefreshedAt).toBeInstanceOf(Date);
   });
+
+  it("clears stale cert-not-bound readiness errors when query_cert confirms certificate evidence", async () => {
+    const { apiClient, service, state } = createServiceFixture({
+      accounts: [{
+        certBindingStatus: ESignProviderCertBindingStatus.UNBOUND,
+        lastErrorCode: "FADADA_CERT_NOT_BOUND",
+        lastErrorMessage: "success",
+        providerCustomerId: "fadada-registered-1",
+        readinessBlockingCode: "FADADA_CERT_NOT_BOUND",
+        readinessBlockingReason: "certificate binding is not provider-confirmed",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+    vi.mocked(apiClient.queryCert).mockResolvedValueOnce({
+      certBound: true,
+      certSerialNo: "CERT-SEQUENCE-1",
+      customerId: "fadada-registered-1",
+      raw: {
+        code: 1,
+        data: "{\"sequenceNo\":\"CERT-SEQUENCE-1\",\"dn\":\"CN=Test\",\"certType\":\"0\",\"startTime\":\"20260102030405\",\"endTime\":\"20270102030405\"}",
+        msg: "success"
+      },
+      resultCode: "1",
+      resultDesc: "success"
+    });
+
+    const view = await service.refreshFadadaCertBindingStatus("customer-1", "operator-1");
+
+    expect(view.certBindingStatus).toBe(ESignProviderCertBindingStatus.BOUND);
+    expect(state.accounts[0]).toMatchObject({
+      certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
+      certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      readinessBlockingCode: null,
+      readinessBlockingReason: null
+    });
+  });
+
+  it("does not keep a misleading success message when query_cert lacks certificate evidence", async () => {
+    const { apiClient, service, state } = createServiceFixture({
+      accounts: [{
+        certBindingStatus: ESignProviderCertBindingStatus.PENDING,
+        providerCustomerId: "fadada-registered-1",
+        registrationStatus: ESignProviderAccountStatus.REGISTERED,
+        realNameProviderStatusSource: ESignProviderRealNameStatusSource.QUERY,
+        realNameStatus: ESignRealNameStatus.VERIFIED,
+        verificationSerialNo: "VERIFY-TX-1",
+        verificationTransactionNo: "VERIFY-TX-1"
+      }],
+      env: realNameEnv()
+    });
+    vi.mocked(apiClient.queryCert).mockResolvedValueOnce({
+      certBound: false,
+      customerId: "fadada-registered-1",
+      raw: { code: 1, data: {}, msg: "success" },
+      resultCode: "1",
+      resultDesc: "success"
+    });
+
+    const view = await service.refreshFadadaCertBindingStatus("customer-1", "operator-1");
+
+    expect(view.certBindingStatus).toBe(ESignProviderCertBindingStatus.UNBOUND);
+    expect(state.accounts[0]).toMatchObject({
+      certBindingStatus: ESignProviderCertBindingStatus.UNBOUND,
+      lastErrorCode: "FADADA_CERT_NOT_BOUND",
+      readinessBlockingCode: "FADADA_CERT_NOT_BOUND"
+    });
+    expect(state.accounts[0]?.lastErrorMessage).not.toBe("success");
+    expect(state.accounts[0]?.lastErrorMessage).toContain("certificate binding not confirmed");
+  });
 });
 
 function createServiceFixture(input: {

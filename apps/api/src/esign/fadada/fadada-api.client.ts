@@ -26,6 +26,7 @@ export const FADADA_SIGNATURE_POSITIONS_INVALID = "FADADA_SIGNATURE_POSITIONS_IN
 
 const MAX_FADADA_PDF_BYTES = 20 * 1024 * 1024;
 const FADADA_TRANSACTION_ID_PATTERN = /^[A-Za-z0-9]{1,32}$/;
+const MAX_PROVIDER_JSON_PARSE_DEPTH = 3;
 
 export interface FadadaManualSignPosition {
   pagenum: number;
@@ -207,12 +208,11 @@ export class FadadaApiClient {
     assertHttpOk(response.status);
     const raw = response.parsedBody ?? response.bodyText;
     const resultCode = providerCode(raw);
-    const certSerialNo = stringField(raw, ["sequenceNo", "sequence_no", "serialNo", "certSerialNo"]);
-    const certEvidence = Boolean(certSerialNo || stringField(raw, ["dn", "certType", "startTime", "endTime"]));
+    const certEvidence = queryCertEvidence(raw);
 
     return {
-      certBound: isProviderSuccess(resultCode) && certEvidence,
-      certSerialNo,
+      certBound: isProviderSuccess(resultCode) && certEvidence.complete,
+      certSerialNo: certEvidence.certSerialNo,
       customerId: input.customerId,
       raw,
       resultCode,
@@ -683,26 +683,42 @@ function assertDownloadedPdf(buffer: Buffer, contentType?: string) {
 }
 
 function stringField(raw: unknown, keys: string[]): string | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+  return scalarField(raw, keys);
+}
+
+function scalarField(
+  raw: unknown,
+  keys: string[],
+  options: { acceptNumbers?: boolean } = {},
+  seen = new WeakSet<object>(),
+  depth = 0
+): string | undefined {
+  const record = recordField(raw);
+  if (!record || seen.has(record)) {
     return undefined;
   }
-  const record = raw as Record<string, unknown>;
+  seen.add(record);
 
   for (const key of keys) {
-    const direct = record[key];
-    if (typeof direct === "string" && direct.trim()) {
+    const direct = scalarToString(record[key], options);
+    if (direct) {
       return direct;
     }
   }
 
-  const data = record.data;
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    return stringField(data, keys);
+  for (const data of nestedProviderRecords(record.data, depth)) {
+    const nested = scalarField(data, keys, options, seen, depth + 1);
+    if (nested) {
+      return nested;
+    }
   }
 
   for (const value of Object.values(record)) {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const nested = stringField(value, keys);
+    if (value === record.data) {
+      continue;
+    }
+    for (const nestedRecord of nestedProviderRecords(value, depth)) {
+      const nested = scalarField(nestedRecord, keys, options, seen, depth + 1);
       if (nested) {
         return nested;
       }
@@ -713,7 +729,7 @@ function stringField(raw: unknown, keys: string[]): string | undefined {
 }
 
 function providerCode(raw: unknown) {
-  return stringField(raw, ["code", "result_code", "result"]);
+  return scalarField(raw, ["code", "result_code", "result"], { acceptNumbers: true });
 }
 
 function providerMsg(raw: unknown) {
@@ -724,11 +740,30 @@ function isProviderSuccess(code: string | undefined) {
   return code === "1" || code === "1000" || code === "success";
 }
 
+function queryCertEvidence(raw: unknown) {
+  const certSerialNo = scalarField(raw, ["sequenceNo", "sequence_no", "serialNo", "certSerialNo"], {
+    acceptNumbers: true
+  });
+  const dn = scalarField(raw, ["dn", "certDn", "cert_dn"]);
+  const certType = scalarField(raw, ["certType", "cert_type"], { acceptNumbers: true });
+  const startTime = scalarField(raw, ["startTime", "start_time", "validStartTime", "valid_start_time"], {
+    acceptNumbers: true
+  });
+  const endTime = scalarField(raw, ["endTime", "end_time", "validEndTime", "valid_end_time"], {
+    acceptNumbers: true
+  });
+
+  return {
+    certSerialNo,
+    complete: Boolean(certSerialNo && dn && certType && startTime && endTime)
+  };
+}
+
 function objectArrayField(raw: unknown, keys: string[]): Array<Record<string, unknown>> {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+  const record = recordField(raw);
+  if (!record) {
     return [];
   }
-  const record = raw as Record<string, unknown>;
   for (const key of keys) {
     const direct = record[key];
     if (Array.isArray(direct)) {
@@ -737,19 +772,65 @@ function objectArrayField(raw: unknown, keys: string[]): Array<Record<string, un
       );
     }
   }
-  const data = record.data;
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    return objectArrayField(data, keys);
+  for (const data of nestedProviderRecords(record.data, 0)) {
+    const nested = objectArrayField(data, keys);
+    if (nested.length) {
+      return nested;
+    }
   }
   for (const value of Object.values(record)) {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const nested = objectArrayField(value, keys);
+    if (value === record.data) {
+      continue;
+    }
+    for (const nestedRecord of nestedProviderRecords(value, 0)) {
+      const nested = objectArrayField(nestedRecord, keys);
       if (nested.length) {
         return nested;
       }
     }
   }
   return [];
+}
+
+function scalarToString(value: unknown, options: { acceptNumbers?: boolean }) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (options.acceptNumbers && typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
+}
+
+function recordField(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function nestedProviderRecords(value: unknown, depth: number) {
+  const record = recordField(value);
+  if (record) {
+    return [record];
+  }
+  const parsed = parseJsonRecord(value, depth);
+  return parsed ? [parsed] : [];
+}
+
+function parseJsonRecord(value: unknown, depth: number): Record<string, unknown> | undefined {
+  if (depth >= MAX_PROVIDER_JSON_PARSE_DEPTH || typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed || !trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return undefined;
+  }
+  try {
+    return recordField(JSON.parse(trimmed));
+  } catch {
+    return undefined;
+  }
 }
 
 function mapQuerySignResultStatus(raw: unknown, resultCode: string | undefined): "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN" {

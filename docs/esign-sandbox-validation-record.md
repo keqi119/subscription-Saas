@@ -236,6 +236,13 @@ Expected Stage 1 provider mapping:
 
 Known failed controlled task `ESG20260711184435WMCD` reached the customer signing page and failed provider digest validation. Do not repair or reuse that failed task. After deploying the digest/serialization fix, the sandbox retry must use a new controlled order, generated source PDF, and e-sign task.
 
+2026-07-20 readiness parsing note:
+
+- Controlled order `ORD20260715144916RHBF` has a generated PDF and can continue validation after deployment of the `query_cert` parsing fix.
+- Do not manually edit staging data or mark readiness by hand.
+- After deploy, click refresh certification status again; if Fadada returns success code `1` and complete certificate evidence in `query_cert.data`, readiness should become cert-bound/signing-enabled and Admin eSign should become available.
+- Fadada sandbox responses may encode `query_cert.code` as numeric `1` and `query_cert.data` as a JSON string containing `dn`, `sequenceNo`, `certType`, `startTime`, and `endTime`; malformed or incomplete data must remain blocked.
+
 ## 9. Final Signed PDF Archive
 
 | Check | Result | Evidence |

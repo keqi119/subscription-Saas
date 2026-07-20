@@ -2,7 +2,7 @@
 
 import { Alert, App, Button, Descriptions, Form, Input, Skeleton, Space, Tag, Typography } from "antd";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 import { CUSTOMER_ACCOUNT_STATUS_LABELS } from "../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
@@ -22,6 +22,14 @@ interface PortalProfileFormValues {
 }
 
 export default function PortalMePage() {
+  return (
+    <Suspense fallback={<PortalMeLoadingShell />}>
+      <PortalMeContent />
+    </Suspense>
+  );
+}
+
+function PortalMeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { message } = App.useApp();
@@ -183,6 +191,21 @@ export default function PortalMePage() {
               </Form>
             </>
           )}
+        </Space>
+      </section>
+    </main>
+  );
+}
+
+function PortalMeLoadingShell() {
+  return (
+    <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "28px 18px" }}>
+      <section style={{ margin: "0 auto", maxWidth: 640 }}>
+        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Typography.Title level={2} style={{ margin: 0 }}>
+            我的资料
+          </Typography.Title>
+          <Skeleton active />
         </Space>
       </section>
     </main>

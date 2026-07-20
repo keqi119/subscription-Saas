@@ -92,6 +92,15 @@ describe("Identity profile application gates", () => {
     expect(source).toContain("profileComplete");
   });
 
+  it("keeps Portal profile search params behind Suspense for production prerender", () => {
+    const source = read("apps/web/src/app/portal/me/page.tsx");
+
+    expect(source).toContain("Suspense");
+    expect(source).toContain("function PortalMeContent");
+    expect(source).toContain("<PortalMeContent />");
+    expect(source.indexOf("<Suspense")).toBeLessThan(source.indexOf("<PortalMeContent />"));
+  });
+
   it("blocks Portal catalog submission through profile precheck before application creation", () => {
     const source = read("apps/web/src/app/portal/catalog/[id]/page.tsx");
 

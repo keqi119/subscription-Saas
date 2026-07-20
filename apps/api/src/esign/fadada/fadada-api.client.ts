@@ -320,6 +320,7 @@ export class FadadaApiClient {
     const signaturePositions = normalizeManualSignPositions(input.signaturePositions);
     if (signaturePositions) {
       const timestamp = fadadaTimestampNow();
+      const validity = input.validityMinutes ?? this.config.signUrlValidityMinutes;
       const serializedSignaturePositions = serializeManualSignPositions(signaturePositions);
       const request = buildFadadaRequest({
         businessParams: {
@@ -351,6 +352,7 @@ export class FadadaApiClient {
           signaturePositions: signaturePositions.length
         },
         signUrl,
+        signUrlExpiresAt: new Date(Date.now() + Math.max(validity, 1) * 60_000),
         transactionId: input.transactionId
       };
     }

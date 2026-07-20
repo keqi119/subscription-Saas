@@ -545,6 +545,7 @@ describe("Fadada API client", () => {
       });
 
       expect(result.transactionId).toBe("TX1");
+      expect(result.signUrlExpiresAt?.getTime()).toBe(Date.now() + 30 * 60_000);
       expect(transport).not.toHaveBeenCalled();
       const url = new URL(result.signUrl);
       const serializedPositions = JSON.stringify([

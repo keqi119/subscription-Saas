@@ -2255,7 +2255,7 @@ function toPortalVehicleSummary(vehicle: ContractForESign["order"]["vehicle"]) {
 }
 
 function isExpired(value?: Date | null) {
-  return !value || value.getTime() <= Date.now();
+  return value ? value.getTime() <= Date.now() : false;
 }
 
 function parseProvider(value: string) {

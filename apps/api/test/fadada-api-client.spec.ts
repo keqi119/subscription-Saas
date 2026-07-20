@@ -225,6 +225,179 @@ describe("Fadada API client", () => {
     expect(request?.url).not.toContain("secret-xyz");
   });
 
+  it("parses query_cert numeric code with JSON string certificate data", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: 1,
+        data: JSON.stringify({
+          certType: "0",
+          dn: "CN=Test",
+          endTime: "20270102030405",
+          sequenceNo: "CERT-SEQUENCE-1",
+          startTime: "20260102030405"
+        }),
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.queryCert({ customerId: "CUSTOMER-1234567890" });
+
+    expect(result).toMatchObject({
+      certBound: true,
+      certSerialNo: "CERT-SEQUENCE-1",
+      resultCode: "1",
+      resultDesc: "success"
+    });
+  });
+
+  it("parses query_cert string code with object certificate data", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: "1",
+        data: {
+          certType: "0",
+          dn: "CN=Test",
+          endTime: "20270102030405",
+          sequenceNo: "CERT-SEQUENCE-2",
+          startTime: "20260102030405"
+        },
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.queryCert({ customerId: "CUSTOMER-1234567890" });
+
+    expect(result).toMatchObject({
+      certBound: true,
+      certSerialNo: "CERT-SEQUENCE-2",
+      resultCode: "1"
+    });
+  });
+
+  it("does not mark query_cert bound when provider success lacks certificate evidence", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: 1,
+        data: {},
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.queryCert({ customerId: "CUSTOMER-1234567890" });
+
+    expect(result).toMatchObject({
+      certBound: false,
+      certSerialNo: undefined,
+      resultCode: "1",
+      resultDesc: "success"
+    });
+  });
+
+  it("does not mark query_cert bound when certificate evidence accompanies failure code", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: 3205,
+        data: JSON.stringify({
+          certType: "0",
+          dn: "CN=Test",
+          endTime: "20270102030405",
+          sequenceNo: "CERT-SEQUENCE-FAILED",
+          startTime: "20260102030405"
+        }),
+        msg: "not verified"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.queryCert({ customerId: "CUSTOMER-1234567890" });
+
+    expect(result).toMatchObject({
+      certBound: false,
+      certSerialNo: "CERT-SEQUENCE-FAILED",
+      resultCode: "3205",
+      resultDesc: "not verified"
+    });
+  });
+
+  it("fails closed for invalid JSON string query_cert data", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: "1",
+        data: "{\"sequenceNo\":",
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.queryCert({ customerId: "CUSTOMER-1234567890" });
+
+    expect(result).toMatchObject({
+      certBound: false,
+      certSerialNo: undefined,
+      resultCode: "1",
+      resultDesc: "success"
+    });
+  });
+
+  it("normalizes numeric provider codes on provider API responses", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: 1,
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.applyCert({
+      customerId: "CUSTOMER-1234567890",
+      verifiedSerialNo: "VERIFY-TX-1"
+    });
+
+    expect(result).toMatchObject({
+      resultCode: "1",
+      resultDesc: "success"
+    });
+  });
+
+  it("normalizes numeric 1000 provider codes for platform auto seal responses", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: 1000,
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(fadadaConfig(), new FadadaHttpClient(fadadaConfig(), transport));
+
+    const result = await apiClient.autoSealContract({
+      contractId: "CON-1",
+      customerId: "platform-customer-1",
+      signatureId: "platform-signature-1",
+      transactionId: "TX2"
+    });
+
+    expect(result).toMatchObject({
+      resultCode: "1000",
+      resultDesc: "success"
+    });
+  });
+
   it("recovers real-name serial numbers and links with find_serialNo through mocked transport", async () => {
     const encodedUrl = Buffer.from("https://verify.example.test/realname?token=secret", "utf8").toString("base64");
     const transport: FadadaTransport = vi.fn(async () => ({

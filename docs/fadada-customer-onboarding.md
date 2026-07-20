@@ -13,6 +13,13 @@ Checked local read-only Fadada PDFs under `D:\Projects\document\fadada\doc`:
 - `3.7.1 API文档_合同签署_手动签署.pdf`: signing page APIs require the signer customer account to be real-name/certificate ready.
 - `3.9.3` / `3.9.4` real-name callback PDFs: callbacks can update real-name status and may include certificate binding status; callback data must be verified and redacted before storage.
 
+Sandbox response compatibility notes:
+
+- `apply_cert.api` and `query_cert.api` may return provider `code` as a JSON number such as `1`, not only as a string.
+- `query_cert.api` may return `data` as a JSON string containing certificate evidence, not only as an object.
+- Certificate-bound readiness must parse `dn`, `sequenceNo`, `certType`, `startTime`, and `endTime` from object or JSON-string `data`, while failing closed on malformed `data`.
+- Do not treat provider success code alone as cert-bound evidence when certificate fields are missing.
+
 ## Readiness Policy
 
 Signing readiness requires all of the following:
@@ -38,6 +45,8 @@ Failed or partially validated production orders must not be reused as success ev
 Portal contract signing must load the authenticated customer's onboarding readiness before showing or using a signing link. If readiness is not `readyForSigning=true`, the Portal must block the signing action and show the customer a remediation path to start or continue Fadada real-name verification, plus a refresh action for provider status.
 
 When provider-backed real-name evidence is already verified but certificate binding is not confirmed, the next action is `APPLY_CERT`. Portal and Admin must not ask the customer to repeat real-name verification. The refresh action must orchestrate `apply_cert.api` and then `query_cert.api`; signing remains blocked until the refreshed readiness includes provider-backed cert-bound evidence.
+
+For the 2026-07-20 staging order `ORD20260715144916RHBF`, do not manually edit the database. After deploying the `query_cert` parsing fix, continue validation on the same order by refreshing certification status again; a provider-success response with complete certificate evidence should clear `FADADA_CERT_NOT_BOUND` and enable the signing action.
 
 The real-name verification URL is sensitive. It may be returned only by the authenticated customer's explicit Portal start/resume action. Broad status endpoints, Admin status views, audit records, logs, and provider-account list views must not expose the full URL, tokens, full ID number, or full provider identifiers.
 

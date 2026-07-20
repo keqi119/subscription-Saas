@@ -496,6 +496,7 @@ export class CustomerESignProviderAccountService {
       customerId: binding.providerCustomerId!
     });
     const now = new Date();
+    const bindingFailure = certBindingFailure(result);
     const updated = await this.prisma.customerESignProviderAccount.update({
       data: {
         certBindingSource: ESignProviderCertBindingSource.QUERY_CERT,
@@ -504,8 +505,8 @@ export class CustomerESignProviderAccountService {
           : ESignProviderCertBindingStatus.UNBOUND,
         certBoundAt: result.certBound ? binding.certBoundAt ?? now : null,
         certSerialNo: result.certBound ? result.certSerialNo ?? binding.certSerialNo : null,
-        lastErrorCode: result.certBound ? null : result.resultCode ?? "FADADA_CERT_NOT_BOUND",
-        lastErrorMessage: result.certBound ? null : sanitizeErrorMessage(result.resultDesc ?? "certificate binding not confirmed"),
+        lastErrorCode: result.certBound ? null : bindingFailure.code,
+        lastErrorMessage: result.certBound ? null : bindingFailure.message,
         providerStatusLastRefreshedAt: now,
         providerSnapshot: mergeProviderSnapshot(binding.providerSnapshot, {
           queryCert: {
@@ -917,6 +918,22 @@ function sanitizeErrorMessage(error: unknown) {
 
 function isFadadaSuccessCode(code: string | undefined) {
   return code === "1" || code === "1000" || code?.toLowerCase() === "success";
+}
+
+function certBindingFailure(result: {
+  resultCode?: string;
+  resultDesc?: string;
+}) {
+  if (!result.resultCode || isFadadaSuccessCode(result.resultCode)) {
+    return {
+      code: "FADADA_CERT_NOT_BOUND",
+      message: "certificate binding not confirmed"
+    };
+  }
+  return {
+    code: result.resultCode,
+    message: sanitizeErrorMessage(result.resultDesc ?? "certificate binding not confirmed")
+  };
 }
 
 function hasProviderBackedRealNameEvidence(account: CustomerESignProviderAccount) {

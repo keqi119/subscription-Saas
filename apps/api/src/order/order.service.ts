@@ -83,6 +83,7 @@ import {
   isDeliveryHandoverReadyForDelivery,
   isDeliveryHandoverSigned
 } from "../delivery-handover/delivery-handover.service";
+import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import {
   ArchiveContractDto,
   CancelOrderDto,
@@ -321,7 +322,8 @@ export class OrderService {
     @Optional() private readonly contractPdfArtifactWriter?: ContractPdfArtifactWriterService,
     @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly storageService?: StorageService,
-    @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService
+    @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService,
+    @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -1588,10 +1590,7 @@ export class OrderService {
       }),
       findActiveDeliveryHandover(this.prisma, id)
     ]);
-    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
-      id,
-      handover?.id ?? null
-    );
+    const evidenceReadiness = await this.getDeliveryConfirmationReadiness(id, handover?.id ?? null);
     return buildDeliveryCheck(
       order,
       delivery && !delivery.deletedAt ? delivery : null,
@@ -1753,11 +1752,9 @@ export class OrderService {
       where: { orderId: id }
     });
     const handover = await findActiveDeliveryHandover(this.prisma, id);
-    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
-      id,
-      handover?.id ?? null
-    );
+    const evidenceReadiness = await this.getDeliveryConfirmationReadiness(id, handover?.id ?? null);
     assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt, handover, evidenceReadiness);
+    await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(id, handover?.id ?? null);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
@@ -2674,6 +2671,27 @@ export class OrderService {
 
   private getDeliveryEvidenceService() {
     return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
+  }
+
+  private async getDeliveryConfirmationReadiness(orderId: string, handoverId?: string | null) {
+    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
+      orderId,
+      handoverId ?? null
+    );
+    if (!this.handoverWorkOrderService) {
+      return evidenceReadiness;
+    }
+    try {
+      await this.handoverWorkOrderService.assertReadyForStage2ESign(orderId, handoverId ?? null);
+      return evidenceReadiness;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "交付工单尚未就绪。";
+      return {
+        ...evidenceReadiness,
+        blockingReasons: [...evidenceReadiness.blockingReasons, message],
+        ready: false
+      };
+    }
   }
 
   private async assertCanAccessDeliveryEvidenceItem(itemId: string, user: RequestUser) {

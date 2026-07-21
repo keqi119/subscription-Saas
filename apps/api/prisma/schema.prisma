@@ -944,6 +944,50 @@ enum DeliveryEvidenceMediaType {
   @@map("delivery_evidence_media_type")
 }
 
+enum VehicleHandoverType {
+  DELIVERY_OUTBOUND
+  RETURN_INBOUND
+
+  @@map("vehicle_handover_type")
+}
+
+enum VehicleHandoverOperatorType {
+  INTERNAL
+  EXTERNAL
+
+  @@map("vehicle_handover_operator_type")
+}
+
+enum VehicleHandoverWorkOrderStatus {
+  DRAFT
+  ASSIGNED
+  FIELD_IN_PROGRESS
+  EVIDENCE_SUBMITTED
+  CUSTOMER_REVIEWING
+  CUSTOMER_OBJECTED
+  CUSTOMER_CONFIRMED
+  SIGNING
+  CUSTOMER_SIGNED
+  PLATFORM_SEALED
+  FIELD_COMPLETED
+  OPS_REVIEW_PENDING
+  OPS_REVIEWED
+  VOIDED
+  FAILED
+  CANCELLED
+
+  @@map("vehicle_handover_work_order_status")
+}
+
+enum VehicleHandoverOpsReviewStatus {
+  NOT_REQUIRED
+  PENDING
+  APPROVED
+  REJECTED
+
+  @@map("vehicle_handover_ops_review_status")
+}
+
 enum ESignProviderType {
   MOCK
   FADADA
@@ -1676,6 +1720,8 @@ model User {
   deletedMaterialFiles     ApplicationMaterialFile[]  @relation("MaterialFileDeleter")
   reviewedDeliveryEvidenceItems VehicleDeliveryEvidenceItem[] @relation("DeliveryEvidenceReviewer")
   uploadedDeliveryEvidenceFiles VehicleDeliveryEvidenceFile[] @relation("DeliveryEvidenceFileUploader")
+  assignedHandoverWorkOrders VehicleHandoverWorkOrder[] @relation("HandoverWorkOrderInternalOperator")
+  opsReviewedHandoverWorkOrders VehicleHandoverWorkOrder[] @relation("HandoverWorkOrderOpsReviewer")
   applicationActionLogs    ApplicationActionLog[]     @relation("ApplicationActionOperator")
   approvedProductVersions  ProductVersion[]           @relation("ProductVersionApprover")
   confirmedQuotes          SubscriptionQuote[]        @relation("QuoteConfirmer")
@@ -3963,6 +4009,7 @@ model SubscriptionOrder {
   deliveries                 VehicleDelivery[]
   deliveryHandovers          VehicleDeliveryHandover[]
   deliveryEvidenceItems      VehicleDeliveryEvidenceItem[]
+  handoverWorkOrders         VehicleHandoverWorkOrder[]
   lease                      Lease?
   vehicleInspection          VehicleInspection?
   returns                    VehicleReturn[]
@@ -4646,6 +4693,7 @@ model VehicleDelivery {
   remark                           String?           @db.Text
   handovers                        VehicleDeliveryHandover[]
   evidenceItems                    VehicleDeliveryEvidenceItem[]
+  handoverWorkOrders               VehicleHandoverWorkOrder[]
   createdAt                        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                        String?           @map("created_by") @db.Uuid
@@ -4688,6 +4736,7 @@ model VehicleDeliveryHandover {
   metadata             Json?
   snapshot             Json?
   evidenceItems        VehicleDeliveryEvidenceItem[]
+  workOrders           VehicleHandoverWorkOrder[]
   createdAt            DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy            String?                       @map("created_by") @db.Uuid
@@ -4702,6 +4751,65 @@ model VehicleDeliveryHandover {
   @@index([completedAt])
   @@index([archivedAt])
   @@map("vehicle_delivery_handover")
+}
+
+model VehicleHandoverWorkOrder {
+  id                           String                         @id @default(uuid()) @db.Uuid
+  orderId                      String                         @map("order_id") @db.Uuid
+  order                        SubscriptionOrder              @relation(fields: [orderId], references: [id])
+  vehicleDeliveryId            String?                        @map("vehicle_delivery_id") @db.Uuid
+  vehicleDelivery              VehicleDelivery?               @relation(fields: [vehicleDeliveryId], references: [id])
+  handoverId                   String?                        @map("handover_id") @db.Uuid
+  handover                     VehicleDeliveryHandover?       @relation(fields: [handoverId], references: [id])
+  handoverType                 VehicleHandoverType            @map("handover_type")
+  status                       VehicleHandoverWorkOrderStatus @default(DRAFT)
+  operatorType                 VehicleHandoverOperatorType    @default(INTERNAL) @map("operator_type")
+  assignedInternalUserId       String?                        @map("assigned_internal_user_id") @db.Uuid
+  assignedInternalUser         User?                          @relation("HandoverWorkOrderInternalOperator", fields: [assignedInternalUserId], references: [id])
+  externalOperatorName         String?                        @map("external_operator_name") @db.VarChar(64)
+  externalOperatorPhone        String?                        @map("external_operator_phone") @db.VarChar(32)
+  externalOperatorOrganization String?                        @map("external_operator_organization") @db.VarChar(128)
+  accessTokenHash              String?                        @unique @map("access_token_hash") @db.VarChar(128)
+  accessTokenExpiresAt         DateTime?                      @map("access_token_expires_at") @db.Timestamptz(6)
+  accessTokenRevokedAt         DateTime?                      @map("access_token_revoked_at") @db.Timestamptz(6)
+  firstAccessedAt              DateTime?                      @map("first_accessed_at") @db.Timestamptz(6)
+  lastAccessedAt               DateTime?                      @map("last_accessed_at") @db.Timestamptz(6)
+  fieldStartedAt               DateTime?                      @map("field_started_at") @db.Timestamptz(6)
+  fieldSubmittedAt             DateTime?                      @map("field_submitted_at") @db.Timestamptz(6)
+  customerReviewStartedAt      DateTime?                      @map("customer_review_started_at") @db.Timestamptz(6)
+  customerConfirmedAt          DateTime?                      @map("customer_confirmed_at") @db.Timestamptz(6)
+  customerObjectedAt           DateTime?                      @map("customer_objected_at") @db.Timestamptz(6)
+  customerObjectionReason      String?                        @map("customer_objection_reason") @db.Text
+  fieldCompletedAt             DateTime?                      @map("field_completed_at") @db.Timestamptz(6)
+  opsReviewStatus              VehicleHandoverOpsReviewStatus @default(NOT_REQUIRED) @map("ops_review_status")
+  opsReviewedBy                String?                        @map("ops_reviewed_by") @db.Uuid
+  opsReviewer                  User?                          @relation("HandoverWorkOrderOpsReviewer", fields: [opsReviewedBy], references: [id])
+  opsReviewedAt                DateTime?                      @map("ops_reviewed_at") @db.Timestamptz(6)
+  opsReviewNotes               String?                        @map("ops_review_notes") @db.Text
+  deliveryLocation             String?                        @map("delivery_location") @db.VarChar(255)
+  scheduledAt                  DateTime?                      @map("scheduled_at") @db.Timestamptz(6)
+  handoverMileageKm            Int?                           @map("handover_mileage_km")
+  energyLevelText              String?                        @map("energy_level_text") @db.VarChar(64)
+  fuelLevelText                String?                        @map("fuel_level_text") @db.VarChar(64)
+  accessoryChecklist           Json?                          @map("accessory_checklist")
+  damageDeclared               Boolean?                       @map("damage_declared")
+  noVisibleDamageDeclared      Boolean?                       @map("no_visible_damage_declared")
+  fieldNotes                   String?                        @map("field_notes") @db.Text
+  metadata                     Json?
+  createdAt                    DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                    DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([orderId])
+  @@index([vehicleDeliveryId])
+  @@index([handoverId])
+  @@index([handoverType])
+  @@index([status])
+  @@index([operatorType])
+  @@index([assignedInternalUserId])
+  @@index([accessTokenExpiresAt])
+  @@index([opsReviewStatus])
+  @@index([opsReviewedBy])
+  @@map("vehicle_handover_work_order")
 }
 
 model VehicleDeliveryEvidenceItem {

@@ -1,6 +1,6 @@
 export const SMS_PROVIDER_CLIENT = Symbol("SMS_PROVIDER_CLIENT");
 
-export type SmsCodePurpose = "LOGIN" | "BIND_PHONE";
+export type SmsCodePurpose = "LOGIN" | "BIND_PHONE" | "FIELD_HANDOVER_LOGIN";
 export type SmsProviderName = "aliyun" | "mock";
 
 export interface SendSmsCodeInput {

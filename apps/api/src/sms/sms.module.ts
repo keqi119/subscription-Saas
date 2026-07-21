@@ -16,7 +16,10 @@ import { SmsService, normalizeProviderName } from "./sms.service";
       inject: [ConfigService],
       provide: SMS_PROVIDER_CLIENT,
       useFactory: (configService: ConfigService) =>
-        normalizeProviderName(configService.get<string>("PORTAL_SMS_PROVIDER")) === "aliyun"
+        normalizeProviderName(
+          configService.get<string>("FIELD_OPERATOR_SMS_PROVIDER") ??
+            configService.get<string>("PORTAL_SMS_PROVIDER")
+        ) === "aliyun"
           ? new AliyunSmsProvider(configService)
           : new MockSmsProvider()
     }

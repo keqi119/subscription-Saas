@@ -84,6 +84,7 @@ enum CustomerAccountStatus {
 enum CustomerVerificationCodePurpose {
   LOGIN
   BIND_PHONE
+  FIELD_HANDOVER_LOGIN
 
   @@map("customer_verification_code_purpose")
 }
@@ -101,6 +102,25 @@ enum SmsSendStatus {
   SKIPPED
 
   @@map("sms_send_status")
+}
+
+enum FieldOperatorOtpPurpose {
+  FIELD_HANDOVER_LOGIN
+
+  @@map("field_operator_otp_purpose")
+}
+
+enum FieldOperatorAuditEventType {
+  OTP_REQUESTED
+  OTP_VERIFIED
+  LOGIN_SUCCEEDED
+  LOGIN_FAILED
+  SESSION_REVOKED
+  TASK_LIST_VIEWED
+  TASK_VIEWED
+  ACTION_FORBIDDEN
+
+  @@map("field_operator_audit_event_type")
 }
 
 enum FollowupType {
@@ -2026,6 +2046,73 @@ model SmsSendLog {
   @@index([sendStatus])
   @@index([createdAt])
   @@map("sms_send_log")
+}
+
+model FieldOperatorOtp {
+  id              String                  @id @default(uuid()) @db.Uuid
+  phone           String                  @db.VarChar(32)
+  purpose         FieldOperatorOtpPurpose
+  codeHash        String                  @map("code_hash") @db.VarChar(128)
+  expiresAt       DateTime                @map("expires_at") @db.Timestamptz(6)
+  consumedAt      DateTime?               @map("consumed_at") @db.Timestamptz(6)
+  failedAttempts  Int                     @default(0) @map("failed_attempts")
+  lastSentAt      DateTime?               @map("last_sent_at") @db.Timestamptz(6)
+  ipHash          String?                 @map("ip_hash") @db.VarChar(128)
+  userAgentHash   String?                 @map("user_agent_hash") @db.VarChar(128)
+  metadata        Json?
+  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([phone])
+  @@index([purpose])
+  @@index([expiresAt])
+  @@index([consumedAt])
+  @@index([lastSentAt])
+  @@map("field_operator_otp")
+}
+
+model FieldOperatorSession {
+  id                String                       @id @default(uuid()) @db.Uuid
+  phone             String                       @db.VarChar(32)
+  operatorType      VehicleHandoverOperatorType? @map("operator_type")
+  sessionTokenHash  String                       @unique @map("session_token_hash") @db.VarChar(128)
+  expiresAt         DateTime                     @map("expires_at") @db.Timestamptz(6)
+  revokedAt         DateTime?                    @map("revoked_at") @db.Timestamptz(6)
+  lastSeenAt        DateTime?                    @map("last_seen_at") @db.Timestamptz(6)
+  wechatOpenId      String?                      @map("wechat_open_id") @db.VarChar(128)
+  wechatUnionId     String?                      @map("wechat_union_id") @db.VarChar(128)
+  ipHash            String?                      @map("ip_hash") @db.VarChar(128)
+  userAgentHash     String?                      @map("user_agent_hash") @db.VarChar(128)
+  metadata          Json?
+  createdAt         DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([phone])
+  @@index([operatorType])
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@index([lastSeenAt])
+  @@index([wechatOpenId])
+  @@map("field_operator_session")
+}
+
+model FieldOperatorAuditLog {
+  id             String                      @id @default(uuid()) @db.Uuid
+  phone          String?                     @db.VarChar(32)
+  sessionId      String?                     @map("session_id") @db.Uuid
+  workOrderId    String?                     @map("work_order_id") @db.Uuid
+  eventType      FieldOperatorAuditEventType @map("event_type")
+  ipHash         String?                     @map("ip_hash") @db.VarChar(128)
+  userAgentHash  String?                     @map("user_agent_hash") @db.VarChar(128)
+  metadata       Json?
+  createdAt      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([phone])
+  @@index([sessionId])
+  @@index([workOrderId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@map("field_operator_audit_log")
 }
 
 model CustomerIdentity {

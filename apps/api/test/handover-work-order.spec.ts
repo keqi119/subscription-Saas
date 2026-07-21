@@ -123,6 +123,209 @@ describe("HandoverWorkOrderService", () => {
     await expect(expiredHarness.service.verifyExternalAccess(expired.accessToken)).rejects.toThrow(UnauthorizedException);
   });
 
+  it("lists only active external work orders assigned to the field operator phone with safe summaries", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push(
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        deliveryLocation: "上海市测试交付点",
+        externalOperatorName: "现场交付员",
+        externalOperatorPhone: "13800000000",
+        id: "work-order-visible-late",
+        operatorType: "EXTERNAL",
+        scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
+        status: "ASSIGNED"
+      },
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        deliveryLocation: "上海市测试交付点",
+        externalOperatorName: "现场交付员",
+        externalOperatorPhone: "13800000000",
+        id: "work-order-visible-early",
+        operatorType: "EXTERNAL",
+        scheduledAt: new Date("2026-07-22T02:00:00.000Z"),
+        status: "FIELD_IN_PROGRESS"
+      },
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        externalOperatorPhone: "13900000000",
+        id: "work-order-other-phone",
+        operatorType: "EXTERNAL",
+        status: "ASSIGNED"
+      },
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-20T08:00:00.000Z"),
+        externalOperatorPhone: "13800000000",
+        id: "work-order-expired",
+        operatorType: "EXTERNAL",
+        status: "ASSIGNED"
+      },
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        accessTokenRevokedAt: harness.now,
+        externalOperatorPhone: "13800000000",
+        id: "work-order-revoked",
+        operatorType: "EXTERNAL",
+        status: "ASSIGNED"
+      },
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        externalOperatorPhone: "13800000000",
+        id: "work-order-completed",
+        operatorType: "EXTERNAL",
+        status: "FIELD_COMPLETED"
+      }
+    );
+
+    const list = await harness.service.listFieldAccessibleWorkOrders("+86 138-0000-0000");
+
+    expect(list.map((item) => item.id)).toEqual(["work-order-visible-early", "work-order-visible-late"]);
+    expect(list[0]).toMatchObject({
+      customer: {
+        mobileMasked: "186****0212"
+      },
+      evidenceProgress: {
+        uploaded: 1
+      },
+      orderNo: "ORD202607210001",
+      vehicle: {
+        vinSuffix: "888888"
+      }
+    });
+
+    const serialized = JSON.stringify(list);
+    expect(serialized).not.toContain("TEST_ID_CARD_SHOULD_NOT_LEAK");
+    expect(serialized).not.toContain("18616570212");
+    expect(serialized).not.toContain("monthlyFeeAmount");
+    expect(serialized).not.toContain("contractId");
+    expect(serialized).not.toContain("signUrl");
+    expect(serialized).not.toContain("oss/internal/evidence.jpg");
+  });
+
+  it("returns an empty field work-order list when no active task is assigned to the phone", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push(
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        externalOperatorPhone: "13900000000",
+        id: "work-order-other-phone",
+        operatorType: "EXTERNAL",
+        status: "ASSIGNED"
+      },
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        externalOperatorPhone: "13800000000",
+        id: "work-order-cancelled",
+        operatorType: "EXTERNAL",
+        status: "CANCELLED"
+      },
+      {
+        ...baseWorkOrder(harness),
+        accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        externalOperatorPhone: "13800000000",
+        id: "work-order-ops-reviewed",
+        operatorType: "EXTERNAL",
+        status: "OPS_REVIEWED"
+      }
+    );
+
+    await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([]);
+  });
+
+  it("returns safe field task detail only for the assigned phone", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.evidenceService.setChecklist({
+      blockingReasons: [],
+      items: [
+        {
+          allowedMediaTypes: ["PHOTO"],
+          evidenceType: "VEHICLE_FRONT",
+          fileRequired: true,
+          files: [
+            {
+              file: {
+                id: "file-1",
+                mimeType: "image/jpeg",
+                objectKey: "oss/internal/evidence.jpg",
+                originalName: "front.jpg",
+                sizeBytes: 1024
+              },
+              fileId: "file-1",
+              id: "evidence-file-1",
+              mediaType: "PHOTO",
+              objectKey: "oss/internal/evidence.jpg",
+              uploadedAt: harness.now,
+              uploadedBy: { id: "user-admin" }
+            }
+          ],
+          id: "evidence-item-1",
+          isConditional: false,
+          isRequired: true,
+          orderId: harness.orderId,
+          requirementLevel: "REQUIRED",
+          reviewStatus: "PENDING",
+          status: "UPLOADED",
+          title: "车辆车头正面"
+        }
+      ],
+      ready: false
+    });
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      accessoryChecklist: { chargingCable: true, keys: 2 },
+      deliveryLocation: "上海市测试交付点",
+      energyLevelText: "80%",
+      externalOperatorPhone: "13800000000",
+      fieldNotes: "客户现场确认车辆外观",
+      fuelLevelText: null,
+      handoverMileageKm: 28500,
+      id: "work-order-visible",
+      noVisibleDamageDeclared: true,
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+
+    const detail = await harness.service.getFieldAccessibleWorkOrder("work-order-visible", "13800000000");
+
+    expect(detail).toMatchObject({
+      fieldFacts: {
+        energyLevelText: "80%",
+        handoverMileageKm: 28500,
+        noVisibleDamageDeclared: true
+      },
+      id: "work-order-visible",
+      orderNo: "ORD202607210001"
+    });
+    expect(detail.evidenceChecklist.items[0]).toMatchObject({
+      fileCount: 1,
+      files: [
+        {
+          file: {
+            id: "file-1",
+            mimeType: "image/jpeg",
+            originalName: "front.jpg",
+            sizeBytes: 1024
+          },
+          mediaType: "PHOTO"
+        }
+      ]
+    });
+    expect(JSON.stringify(detail)).not.toContain("oss/internal/evidence.jpg");
+
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder("work-order-visible", "13900000000")
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
   it("requires field facts, evidence completeness, and a resolved damage state before customer review", async () => {
     const harness = createHandoverWorkOrderHarness();
     const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
@@ -450,14 +653,41 @@ function createHandoverWorkOrderHarness() {
 
 function createEvidenceService() {
   let fieldComplete = true;
+  let checklist: Record<string, unknown> = {
+    blockingReasons: [],
+    items: [
+      {
+        evidenceType: "VEHICLE_FRONT",
+        files: [{ id: "evidence-file-default", objectKey: "oss/internal/evidence.jpg" }],
+        id: "evidence-item-default",
+        isRequired: true,
+        reviewStatus: "PENDING",
+        status: "UPLOADED",
+        title: "车辆车头正面"
+      },
+      {
+        evidenceType: "VEHICLE_REAR",
+        files: [],
+        id: "evidence-item-missing",
+        isRequired: true,
+        reviewStatus: "NOT_STARTED",
+        status: "NOT_STARTED",
+        title: "车辆车尾正面"
+      }
+    ],
+    ready: false
+  };
   return {
     assertFieldEvidenceComplete: vi.fn(async () => {
       if (!fieldComplete) {
         throw new BadRequestException("证据尚未完整");
       }
     }),
-    getChecklist: vi.fn(async () => ({ items: [], ready: true })),
+    getChecklist: vi.fn(async () => checklist),
     initializeChecklist: vi.fn(async () => ({ items: [] })),
+    setChecklist(value: Record<string, unknown>) {
+      checklist = value;
+    },
     setFieldComplete(value: boolean) {
       fieldComplete = value;
     }
@@ -466,11 +696,30 @@ function createEvidenceService() {
 
 function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => {
+    if (key === "OR") {
+      return (expected as Array<Record<string, unknown>>).some((branch) => matchesWorkOrderWhere(workOrder, branch));
+    }
     if (key === "id") {
       return workOrder.id === expected;
     }
     if (key === "orderId") {
       return workOrder.orderId === expected;
+    }
+    if (key === "operatorType") {
+      return workOrder.operatorType === expected;
+    }
+    if (key === "externalOperatorPhone") {
+      return workOrder.externalOperatorPhone === expected;
+    }
+    if (key === "accessTokenRevokedAt") {
+      return workOrder.accessTokenRevokedAt === expected;
+    }
+    if (key === "accessTokenExpiresAt" && expected === null) {
+      return workOrder.accessTokenExpiresAt === null;
+    }
+    if (key === "accessTokenExpiresAt" && expected && typeof expected === "object" && "gt" in expected) {
+      const expiresAt = workOrder.accessTokenExpiresAt as Date | null | undefined;
+      return Boolean(expiresAt && expiresAt.getTime() > (expected.gt as Date).getTime());
     }
     if (key === "accessTokenHash") {
       return workOrder.accessTokenHash === expected;

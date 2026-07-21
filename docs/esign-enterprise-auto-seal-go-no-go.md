@@ -107,6 +107,8 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] After provider-backed real-name is verified, `APPLY_CERT` readiness refresh binds/queries the Fadada cert and Portal/Admin show bind-cert guidance instead of repeat-real-name guidance.
 - [ ] Full Fadada real-name verification URLs are returned only from the authenticated Portal customer start/resume action and are absent from status responses, Admin readiness views, audits, logs, and docs.
 - [ ] Fadada signing guards block both task creation and Portal signing-link return/refresh when provider-backed real-name or certificate binding evidence is missing.
+- [ ] Admin e-sign task display groups Stage 1 internal slot rows into one customer signer group and one platform seal group, while preserving slot count/detail visibility.
+- [ ] Admin e-sign archive status distinguishes completed-but-not-archived from signing failure and shows the signed PDF action only after the signed artifact exists.
 
 ## Required Stage 1 Signing Slots
 
@@ -143,6 +145,8 @@ keyy=0
 - [ ] Stage 1 task completion waits for all required slot rows to be signed.
 - [ ] Final PDF shows customer signature and company seal.
 - [ ] Archive works only after both signers complete.
+- [ ] Admin displays completed Stage 1 multi-slot tasks as business-level customer/platform signer groups, not duplicate raw slot rows.
+- [ ] Admin displays completed tasks without a signed artifact as pending signed-file archive with a retry/archive action.
 - [ ] Duplicate callback is idempotent.
 - [ ] Provider failure leaves retryable state.
 - [ ] Missing or invalid positioning leaves contract/order non-final.

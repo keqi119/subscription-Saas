@@ -22,11 +22,13 @@ describe("contract detail e-sign display", () => {
     expect(eSignTaskSection).toContain('title="电子签任务"');
     expect(eSignTaskSection).toContain("查看已签署PDF");
     expect(eSignTaskSection).toContain("openSignedContract(task.id)");
-    expect(eSignTaskSection).toContain("归档已签合同");
+    expect(eSignTaskSection).toContain("getAdminESignArchiveStatus");
+    expect(eSignTaskSection).toContain("archiveStatus.actionLabel");
     expect(eSignTaskSection).toContain("archiveSignedArtifacts(task.id)");
+    expect(eSignTaskSection).toContain("buildAdminESignSignerGroups(task.signers)");
     expect(eSignTaskSection).toContain("labelOf(ESIGN_TASK_STATUS_LABELS");
     expect(eSignTaskSection).toContain("labelOf(ESIGN_PROVIDER_LABELS");
-    expect(eSignTaskSection).toContain("task.signers.map");
+    expect(eSignTaskSection).toContain("signerGroups.map");
   });
 
   it("shows the generated signing PDF before an e-sign task exists", () => {

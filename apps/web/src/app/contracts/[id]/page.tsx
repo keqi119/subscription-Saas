@@ -24,6 +24,10 @@ import {
   canCancelContract,
   canSignContract
 } from "../../../lib/action-guards";
+import {
+  buildAdminESignSignerGroups,
+  getAdminESignArchiveStatus
+} from "../../../lib/admin-esign-display";
 import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 import {
@@ -58,11 +62,14 @@ interface ContractESignTask {
   provider: string;
   signers: Array<{
     id: string;
+    providerActionType?: string | null;
+    providerSignerId?: string | null;
     signedAt?: string | null;
     signerName?: string | null;
     signerPhone?: string | null;
     signerStatus: string;
     signerType: string;
+    slotId?: string | null;
   }>;
   startedAt?: string | null;
   taskNo: string;
@@ -352,6 +359,7 @@ export default function ContractDetailPage() {
   const { message } = App.useApp();
   const [contract, setContract] = useState<ContractDetail | null>(null);
   const [esignTasks, setESignTasks] = useState<ContractESignTask[]>([]);
+  const [archiveErrorsByTaskId, setArchiveErrorsByTaskId] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
   const [creatingESignTask, setCreatingESignTask] = useState(false);
@@ -455,10 +463,20 @@ export default function ContractDetailPage() {
     try {
       setArchivingTaskId(taskId);
       await apiFetch(`/esign-tasks/${taskId}/archive-signed-artifacts`, { method: "POST" });
+      setArchiveErrorsByTaskId((current) => {
+        if (!current[taskId]) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[taskId];
+        return next;
+      });
       void message.success("已签合同已归档");
       await loadContract();
     } catch (error) {
-      void message.error(getErrorMessage(error));
+      const errorMessage = getErrorMessage(error);
+      setArchiveErrorsByTaskId((current) => ({ ...current, [taskId]: errorMessage }));
+      void message.error(errorMessage);
     } finally {
       setArchivingTaskId(null);
     }
@@ -587,49 +605,68 @@ export default function ContractDetailPage() {
             <List
               dataSource={esignTasks}
               locale={{ emptyText: <Empty description="暂无电子签任务" /> }}
-              renderItem={(task) => (
-                <List.Item>
-                  <List.Item.Meta
-                    description={
-                      <Space direction="vertical" size={8}>
-                        <Space size={[6, 6]} wrap>
-                          <Tag color="blue">{labelOf(ESIGN_TASK_STATUS_LABELS, task.taskStatus)}</Tag>
-                          <Tag>{labelOf(ESIGN_PROVIDER_LABELS, task.provider)}</Tag>
-                          {task.hasSignedDocument ? (
-                            <Tag color="green">已签文件已归档</Tag>
-                          ) : task.provider.toUpperCase() === "FADADA" && task.taskStatus === "COMPLETED" ? (
-                            <Tag color="orange">暂无已签文件</Tag>
+              renderItem={(task) => {
+                const archiveStatus = getAdminESignArchiveStatus({
+                  archiveError: archiveErrorsByTaskId[task.id],
+                  hasSignedDocument: task.hasSignedDocument,
+                  provider: task.provider,
+                  taskStatus: task.taskStatus
+                });
+                const signerGroups = buildAdminESignSignerGroups(task.signers);
+
+                return (
+                  <List.Item>
+                    <List.Item.Meta
+                      description={
+                        <Space direction="vertical" size={8}>
+                          <Space size={[6, 6]} wrap>
+                            <Tag color="blue">{labelOf(ESIGN_TASK_STATUS_LABELS, task.taskStatus)}</Tag>
+                            <Tag>{labelOf(ESIGN_PROVIDER_LABELS, task.provider)}</Tag>
+                            {archiveStatus.tagLabel ? (
+                              <Tag color={archiveStatus.tagColor ?? undefined}>{archiveStatus.tagLabel}</Tag>
+                            ) : null}
+                            <Tag>创建于 {formatTime(task.createdAt)}</Tag>
+                          </Space>
+                          {archiveStatus.errorSummary ? (
+                            <Typography.Text type="danger">{archiveStatus.errorSummary}</Typography.Text>
                           ) : null}
-                          <Tag>创建于 {formatTime(task.createdAt)}</Tag>
+                          <Space direction="vertical" size={4}>
+                            {signerGroups.map((group) => (
+                              <Space key={group.id} size={[6, 6]} wrap>
+                                <Tag>
+                                  {group.displayName}
+                                  {group.mobile ? ` / ${group.mobile}` : null} / {labelOf(ESIGN_SIGNER_STATUS_LABELS, group.status)} / {group.slotSummaryLabel}
+                                </Tag>
+                                {group.slotDetails.map((slot) => (
+                                  <Tag key={slot.id} color={group.hasMixedStatuses && slot.status === group.status ? "orange" : undefined}>
+                                    {slot.label} / {labelOf(ESIGN_SIGNER_STATUS_LABELS, slot.status)}
+                                  </Tag>
+                                ))}
+                              </Space>
+                            ))}
+                          </Space>
                         </Space>
-                        <Space size={[6, 6]} wrap>
-                          {task.signers.map((signer) => (
-                            <Tag key={signer.id}>
-                              {signer.signerName ?? "签署人"} / {labelOf(ESIGN_SIGNER_STATUS_LABELS, signer.signerStatus)}
-                            </Tag>
-                          ))}
-                        </Space>
-                      </Space>
-                    }
-                    title={`${task.taskNo} · ${task.documentName ?? "合同电子签"}`}
-                  />
-                  {task.provider.toUpperCase() === "FADADA" && task.taskStatus === "COMPLETED" && !task.hasSignedDocument ? (
-                    <Button
-                      disabled={!permissions.has("contract:archive")}
-                      icon={<FileDoneOutlined />}
-                      loading={archivingTaskId === task.id}
-                      onClick={() => archiveSignedArtifacts(task.id)}
-                    >
-                      归档已签合同
-                    </Button>
-                  ) : null}
-                  {task.hasSignedDocument ? (
-                    <Button icon={<CloudDownloadOutlined />} onClick={() => openSignedContract(task.id)}>
-                      查看已签署PDF
-                    </Button>
-                  ) : null}
-                </List.Item>
-              )}
+                      }
+                      title={`${task.taskNo} · ${task.documentName ?? "合同电子签"}`}
+                    />
+                    {archiveStatus.canArchive ? (
+                      <Button
+                        disabled={!permissions.has("contract:archive")}
+                        icon={<FileDoneOutlined />}
+                        loading={archivingTaskId === task.id}
+                        onClick={() => archiveSignedArtifacts(task.id)}
+                      >
+                        {archiveStatus.actionLabel}
+                      </Button>
+                    ) : null}
+                    {archiveStatus.canOpenSignedPdf ? (
+                      <Button icon={<CloudDownloadOutlined />} onClick={() => openSignedContract(task.id)}>
+                        查看已签署PDF
+                      </Button>
+                    ) : null}
+                  </List.Item>
+                );
+              }}
             />
           </Card>
         ) : null}

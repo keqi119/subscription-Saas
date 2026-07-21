@@ -2171,11 +2171,14 @@ function toESignTaskView(task: ESignTaskWithDetails) {
     signers: task.signers.map((signer) => ({
       customerId: signer.customerId,
       id: signer.id,
+      providerActionType: readSnapshotString(signer.snapshot, "providerActionType") ?? null,
+      providerSignerId: signer.providerSignerId,
       signedAt: signer.signedAt,
       signerName: signer.signerName,
       signerPhone: signer.signerPhone ? maskPhone(signer.signerPhone) : null,
       signerStatus: signer.signerStatus,
-      signerType: signer.signerType
+      signerType: signer.signerType,
+      slotId: readSnapshotString(signer.snapshot, "slotId") ?? null
     })),
     startedAt: task.startedAt,
     taskNo: task.taskNo,

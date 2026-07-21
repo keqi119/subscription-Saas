@@ -213,6 +213,8 @@ Expected Stage 1 provider mapping:
 - customer: one `extsign.api` transaction with two coordinate `signature_positions` from generated PDF artifact diagnostics
 - platform: one `extsign_auto.api` transaction with `position_type=1`, two coordinate `signature_positions` from generated PDF artifact diagnostics, and explicit `signature_id`
 
+Admin UX note: the four Stage 1 signer rows are internal slot records. Admin contract detail should group them by business signer/action for display, for example one customer signing group covering the contract-body and Attachment 1 customer slots, and one platform seal group covering the contract-body and Attachment 1 platform slots. A repeated customer/platform label in the raw rows is not by itself duplicate signing.
+
 `ESIGN_STAGE1_MULTI_SLOT_ENABLED` defaults to false. Stage 1 platform auto-seal also requires `ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED=true`. Provider-side customer/platform mapping being implemented does not prove production readiness; the complete customer signing, platform auto-seal, callback, final PDF, and archive flow must pass sandbox validation before production enablement.
 
 ## 8A. Customer Fadada Readiness and Onboarding UI
@@ -255,6 +257,10 @@ Known failed controlled task `ESG20260711184435WMCD` reached the customer signin
 | No public exposure | TBD | TBD |
 | Archive blocked before all required Stage 1 slot rows are signed | TBD | TBD |
 | Archive allowed only after all required Stage 1 slot rows are signed | TBD | TBD |
+| Admin display distinguishes completed-but-not-archived from signing failure | TBD | TBD |
+| Admin display shows the signed PDF action only after the signed artifact exists | TBD | TBD |
+
+A completed Fadada e-sign task with an empty signed PDF artifact key means signing has completed but the final signed PDF still needs the archive/download step. Record it as pending signed-file archive, not as a signing failure. After archive succeeds, the signed PDF preview/download action should be the primary final-file surface.
 
 ## 10. Result
 

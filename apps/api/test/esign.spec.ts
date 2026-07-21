@@ -897,6 +897,34 @@ describe("ESignService", () => {
     expect(portalView.signTask).not.toHaveProperty("signedDocumentObjectKey");
   });
 
+  it("exposes safe Stage 1 signer slot metadata for Admin display grouping", async () => {
+    const provider = stage1SlotProvider();
+    const { service } = createESignFixture({
+      ESIGN_PROVIDER: "fadada",
+      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+    }, provider);
+
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    const adminView = await service.getTask(task.id, adminUser());
+
+    expect(adminView.signers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerSignerId: "CUSTS1",
+        signerType: ESignSignerType.CUSTOMER,
+        slotId: "STAGE1_BODY_CUSTOMER"
+      }),
+      expect.objectContaining({
+        providerActionType: "PLATFORM_AUTO_SEAL",
+        providerSignerId: "PLATS1",
+        signerType: ESignSignerType.PLATFORM,
+        slotId: "STAGE1_ATTACHMENT1_PLATFORM"
+      })
+    ]));
+    expect(adminView.signers[0]).not.toHaveProperty("signUrl");
+    expect(adminView.signers[0]).not.toHaveProperty("signerIdNoMasked");
+  });
+
   it("returns a portal signing link for the current customer's active task", async () => {
     const { service } = createESignFixture();
     await service.createTaskForContract("contract-1", adminUser(), requestContext());

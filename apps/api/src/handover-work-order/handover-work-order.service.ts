@@ -13,9 +13,20 @@ import {
   DeliveryEvidenceService
 } from "../delivery-evidence/delivery-evidence.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
+import {
+  normalizeFieldOperatorPhone,
+  normalizeOptionalFieldOperatorPhone
+} from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
+const FIELD_HIDDEN_WORK_ORDER_STATUSES = [
+  "VOIDED",
+  "FAILED",
+  "CANCELLED",
+  "FIELD_COMPLETED",
+  "OPS_REVIEWED"
+] as const;
 const READY_FOR_STAGE2_STATUSES = [
   "CUSTOMER_CONFIRMED",
   "SIGNING",
@@ -48,6 +59,7 @@ interface WorkOrderRecord {
   accessTokenExpiresAt?: Date | null;
   accessTokenRevokedAt?: Date | null;
   accessoryChecklist?: unknown;
+  createdAt?: Date | null;
   customerConfirmedAt?: Date | null;
   customerObjectedAt?: Date | null;
   customerReviewStartedAt?: Date | null;
@@ -55,12 +67,15 @@ interface WorkOrderRecord {
   deliveryLocation?: string | null;
   energyLevelText?: string | null;
   externalOperatorName?: string | null;
+  externalOperatorPhone?: string | null;
   fieldCompletedAt?: Date | null;
+  fieldNotes?: string | null;
   fieldStartedAt?: Date | null;
   fieldSubmittedAt?: Date | null;
   fuelLevelText?: string | null;
   handoverId?: string | null;
   handoverMileageKm?: number | null;
+  handoverType?: string | null;
   id: string;
   metadata?: unknown;
   noVisibleDamageDeclared?: boolean | null;
@@ -170,7 +185,7 @@ export class HandoverWorkOrderService {
       assignedInternalUserId: null,
       externalOperatorName: name,
       externalOperatorOrganization: normalizeOptionalText(input.organization),
-      externalOperatorPhone: normalizeOptionalText(input.phone),
+      externalOperatorPhone: normalizeOptionalFieldOperatorPhone(input.phone),
       metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
       operatorType: "EXTERNAL",
       status: nextStatus(workOrder.status, "ASSIGNED")
@@ -193,6 +208,45 @@ export class HandoverWorkOrderService {
   async verifyExternalAccess(token: string) {
     const workOrder = await this.resolveExternalWorkOrder(token);
     return this.toLimitedTaskView(workOrder);
+  }
+
+  async countFieldAccessibleWorkOrders(phone: string) {
+    return (await this.listFieldAccessibleWorkOrders(phone)).length;
+  }
+
+  async listFieldAccessibleWorkOrders(phone: string) {
+    const normalizedPhone = normalizeFieldOperatorPhone(phone);
+    const now = new Date();
+    const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
+      orderBy: [
+        { scheduledAt: "asc" },
+        { createdAt: "desc" }
+      ],
+      where: {
+        OR: [
+          { accessTokenExpiresAt: null },
+          { accessTokenExpiresAt: { gt: now } }
+        ],
+        accessTokenRevokedAt: null,
+        externalOperatorPhone: normalizedPhone,
+        operatorType: "EXTERNAL",
+        status: { notIn: [...FIELD_HIDDEN_WORK_ORDER_STATUSES] }
+      }
+    });
+
+    const sorted = [...workOrders].sort(compareFieldWorkOrders);
+    return Promise.all(sorted.map((workOrder) => this.toFieldTaskListItem(workOrder)));
+  }
+
+  async getFieldAccessibleWorkOrder(id: string, phone: string) {
+    const normalizedPhone = normalizeFieldOperatorPhone(phone);
+    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({ where: { id } });
+
+    if (!workOrder || !isFieldAccessibleWorkOrder(workOrder, normalizedPhone)) {
+      throw new UnauthorizedException("No access to this field handover work order.");
+    }
+
+    return this.toFieldTaskDetail(workOrder);
   }
 
   async startFieldWork(id: string, actorId?: string) {
@@ -579,16 +633,17 @@ export class HandoverWorkOrderService {
 
   private async toLimitedTaskView(workOrder: WorkOrderRecord) {
     const order = await this.getOrderOrThrow(workOrder.orderId);
+    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+      handoverId: workOrder.handoverId ?? null,
+      orderId: workOrder.orderId
+    });
     return {
       customer: {
         displayName: order.customer?.name ?? null,
         mobileMasked: maskPhone(order.customer?.mobile)
       },
       deliveryLocation: workOrder.deliveryLocation,
-      evidenceChecklist: await this.deliveryEvidenceService.getChecklist({
-        handoverId: workOrder.handoverId ?? null,
-        orderId: workOrder.orderId
-      }),
+      evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist),
       handoverId: workOrder.handoverId,
       id: workOrder.id,
       orderNo: order.orderNo,
@@ -599,6 +654,61 @@ export class HandoverWorkOrderService {
         model: order.vehicle?.model ?? null,
         plateMasked: maskPlate(order.vehicle?.plateNo),
         vinSuffix: suffix(order.vehicle?.vin, 6)
+      }
+    };
+  }
+
+  private async toFieldTaskListItem(workOrder: WorkOrderRecord) {
+    const order = await this.getOrderOrThrow(workOrder.orderId);
+    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+      handoverId: workOrder.handoverId ?? null,
+      orderId: workOrder.orderId
+    });
+
+    return {
+      customer: {
+        displayName: order.customer?.name ?? null,
+        mobileMasked: maskPhone(order.customer?.mobile)
+      },
+      deliveryLocation: workOrder.deliveryLocation,
+      evidenceProgress: summarizeEvidenceChecklist(evidenceChecklist),
+      handoverId: workOrder.handoverId,
+      handoverType: workOrder.handoverType,
+      id: workOrder.id,
+      orderNo: order.orderNo,
+      scheduledAt: workOrder.scheduledAt,
+      status: workOrder.status,
+      vehicle: {
+        brand: order.vehicle?.brand ?? null,
+        model: order.vehicle?.model ?? null,
+        plateMasked: maskPlate(order.vehicle?.plateNo),
+        vinSuffix: suffix(order.vehicle?.vin, 6)
+      }
+    };
+  }
+
+  private async toFieldTaskDetail(workOrder: WorkOrderRecord) {
+    const listItem = await this.toFieldTaskListItem(workOrder);
+    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+      handoverId: workOrder.handoverId ?? null,
+      orderId: workOrder.orderId
+    });
+
+    return {
+      ...listItem,
+      evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist),
+      fieldFacts: {
+        accessoryChecklist: workOrder.accessoryChecklist,
+        damageDeclared: workOrder.damageDeclared,
+        deliveryLocation: workOrder.deliveryLocation,
+        energyLevelText: workOrder.energyLevelText,
+        fieldNotes: workOrder.fieldNotes,
+        fieldStartedAt: workOrder.fieldStartedAt,
+        fieldSubmittedAt: workOrder.fieldSubmittedAt,
+        fuelLevelText: workOrder.fuelLevelText,
+        handoverMileageKm: workOrder.handoverMileageKm,
+        noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
+        scheduledAt: workOrder.scheduledAt
       }
     };
   }
@@ -628,6 +738,150 @@ function assertFieldFactsComplete(workOrder: WorkOrderRecord) {
   if (workOrder.damageDeclared !== true && workOrder.noVisibleDamageDeclared !== true) {
     throw new BadRequestException("请处理车辆损伤状态。");
   }
+}
+
+function isFieldAccessibleWorkOrder(workOrder: null | WorkOrderRecord, phone: string) {
+  if (!workOrder || workOrder.operatorType !== "EXTERNAL") {
+    return false;
+  }
+  if (workOrder.externalOperatorPhone !== phone) {
+    return false;
+  }
+  if (workOrder.accessTokenRevokedAt) {
+    return false;
+  }
+  if (FIELD_HIDDEN_WORK_ORDER_STATUSES.includes(workOrder.status as typeof FIELD_HIDDEN_WORK_ORDER_STATUSES[number])) {
+    return false;
+  }
+  return !workOrder.accessTokenExpiresAt || workOrder.accessTokenExpiresAt.getTime() > Date.now();
+}
+
+function compareFieldWorkOrders(left: WorkOrderRecord, right: WorkOrderRecord) {
+  const leftScheduled = left.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  const rightScheduled = right.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  if (leftScheduled !== rightScheduled) {
+    return leftScheduled - rightScheduled;
+  }
+
+  const leftCreated = left.createdAt?.getTime() ?? 0;
+  const rightCreated = right.createdAt?.getTime() ?? 0;
+  return rightCreated - leftCreated;
+}
+
+function summarizeEvidenceChecklist(checklist: unknown) {
+  const items = getChecklistItems(checklist);
+  const uploaded = items.filter((item) => {
+    const status = readString(item, "status");
+    return getFileCount(item) > 0 || Boolean(status && status !== "NOT_STARTED");
+  }).length;
+  const approved = items.filter((item) =>
+    readString(item, "status") === "APPROVED" || readString(item, "reviewStatus") === "APPROVED"
+  ).length;
+  return {
+    approved,
+    required: items.filter((item) => readBoolean(item, "isRequired")).length,
+    total: items.length,
+    uploaded
+  };
+}
+
+function toSafeEvidenceChecklist(checklist: unknown) {
+  return {
+    blockingReasons: readStringArray(checklist, "blockingReasons"),
+    items: getChecklistItems(checklist).map(toSafeEvidenceItem),
+    ready: readBoolean(checklist, "ready") ?? false
+  };
+}
+
+function toSafeEvidenceItem(item: Record<string, unknown>) {
+  return {
+    allowedMediaTypes: readStringArray(item, "allowedMediaTypes"),
+    conditionKey: readNullableString(item, "conditionKey"),
+    conditionValue: readNullableString(item, "conditionValue"),
+    declaredNoDamage: readNullableBoolean(item, "declaredNoDamage"),
+    description: readNullableString(item, "description"),
+    evidenceType: readString(item, "evidenceType"),
+    fileCount: getFileCount(item),
+    fileRequired: readNullableBoolean(item, "fileRequired"),
+    files: getEvidenceFiles(item).map(toSafeEvidenceFile),
+    id: readString(item, "id"),
+    isConditional: readNullableBoolean(item, "isConditional"),
+    isRequired: readNullableBoolean(item, "isRequired"),
+    rejectionReason: readNullableString(item, "rejectionReason"),
+    requirementLevel: readString(item, "requirementLevel"),
+    reviewedAt: readUnknown(item, "reviewedAt"),
+    reviewStatus: readString(item, "reviewStatus"),
+    status: readString(item, "status"),
+    title: readString(item, "title")
+  };
+}
+
+function toSafeEvidenceFile(file: Record<string, unknown>) {
+  const linkedFile = readRecord(file, "file");
+  return {
+    file: linkedFile
+      ? {
+          id: readString(linkedFile, "id"),
+          mimeType: readNullableString(linkedFile, "mimeType"),
+          originalName: readNullableString(linkedFile, "originalName"),
+          sizeBytes: readUnknown(linkedFile, "sizeBytes")
+        }
+      : null,
+    id: readString(file, "id"),
+    mediaType: readString(file, "mediaType"),
+    uploadedAt: readUnknown(file, "uploadedAt")
+  };
+}
+
+function getChecklistItems(checklist: unknown) {
+  const record = asRecord(checklist);
+  return Array.isArray(record?.items) ? record.items.filter(isPlainObject) : [];
+}
+
+function getEvidenceFiles(item: Record<string, unknown>) {
+  return Array.isArray(item.files) ? item.files.filter(isPlainObject) : [];
+}
+
+function getFileCount(item: Record<string, unknown>) {
+  return getEvidenceFiles(item).length;
+}
+
+function readRecord(record: Record<string, unknown>, key: string) {
+  return isPlainObject(record[key]) ? record[key] : null;
+}
+
+function readString(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "string" ? value : null;
+}
+
+function readNullableString(record: Record<string, unknown>, key: string) {
+  return readString(record, key);
+}
+
+function readBoolean(value: unknown, key: string) {
+  const record = asRecord(value);
+  const entry = record?.[key];
+  return typeof entry === "boolean" ? entry : undefined;
+}
+
+function readNullableBoolean(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function readStringArray(value: unknown, key: string) {
+  const record = asRecord(value);
+  const entry = record?.[key];
+  return Array.isArray(entry) ? entry.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readUnknown(record: Record<string, unknown>, key: string) {
+  return record[key] ?? null;
+}
+
+function asRecord(value: unknown) {
+  return isPlainObject(value) ? value : null;
 }
 
 function isTerminalWorkOrderStatus(status: unknown): status is typeof TERMINAL_WORK_ORDER_STATUSES[number] {

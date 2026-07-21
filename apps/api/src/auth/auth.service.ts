@@ -123,7 +123,15 @@ export class AuthService {
 
   async validateToken(token: string): Promise<RequestUser> {
     const secret = this.getJwtSecret();
-    const payload = jwt.verify(token, secret);
+    let payload: string | JwtPayload;
+    try {
+      payload = jwt.verify(token, secret);
+    } catch (error) {
+      if (isJwtVerificationError(error)) {
+        throw new UnauthorizedException("Invalid access token.");
+      }
+      throw error;
+    }
 
     if (typeof payload === "string" || !isJwtPayload(payload)) {
       throw new UnauthorizedException("Invalid access token.");
@@ -171,6 +179,11 @@ export class AuthService {
 
 function isJwtPayload(payload: JwtPayload): payload is JwtPayload & { sub: string } {
   return typeof payload.sub === "string";
+}
+
+function isJwtVerificationError(error: unknown) {
+  return error instanceof Error &&
+    ["JsonWebTokenError", "NotBeforeError", "TokenExpiredError"].includes(error.name);
 }
 
 export function buildRequestUser(user: UserWithAccess): RequestUser {

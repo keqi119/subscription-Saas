@@ -166,12 +166,61 @@ describe("HandoverWorkOrderService", () => {
       status: "CUSTOMER_CONFIRMED"
     });
 
+    await expect(harness.service.markOpsReviewPending("work-order-1", harness.admin.id)).rejects.toThrow(
+      BadRequestException
+    );
+
+    await harness.service.markCustomerSigned("work-order-1", new Date("2026-07-21T04:10:00.000Z"), harness.admin.id);
     await harness.service.markOpsReviewPending("work-order-1", harness.admin.id);
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).resolves.toBeUndefined();
     await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).resolves.toBeUndefined();
 
     await harness.service.markOpsReviewRejected("work-order-1", harness.admin.id, "抽检后补材料");
     await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).resolves.toBeUndefined();
+  });
+
+  it("blocks ops review pending before post-signing work-order states", async () => {
+    const blockedStatuses = [
+      "DRAFT",
+      "ASSIGNED",
+      "FIELD_IN_PROGRESS",
+      "EVIDENCE_SUBMITTED",
+      "CUSTOMER_REVIEWING",
+      "CUSTOMER_CONFIRMED",
+      "CUSTOMER_OBJECTED",
+      "VOIDED",
+      "FAILED",
+      "CANCELLED"
+    ];
+
+    for (const status of blockedStatuses) {
+      const harness = createConfirmedWorkOrderHarness();
+      Object.assign(harness.state.workOrders[0]!, { status });
+
+      await expect(harness.service.markOpsReviewPending("work-order-1", harness.admin.id)).rejects.toThrow(
+        BadRequestException
+      );
+    }
+  });
+
+  it("allows ops review pending after customer signing, platform seal, or field completion", async () => {
+    const allowedStatuses = ["CUSTOMER_SIGNED", "PLATFORM_SEALED", "FIELD_COMPLETED", "OPS_REVIEW_PENDING", "OPS_REVIEWED"];
+
+    for (const status of allowedStatuses) {
+      const harness = createConfirmedWorkOrderHarness();
+      Object.assign(harness.state.workOrders[0]!, {
+        fieldCompletedAt: harness.now,
+        opsReviewStatus: status === "OPS_REVIEW_PENDING" ? "PENDING" : "NOT_REQUIRED",
+        status
+      });
+
+      const updated = await harness.service.markOpsReviewPending("work-order-1", harness.admin.id);
+
+      expect(updated).toMatchObject({
+        opsReviewStatus: "PENDING",
+        status: "OPS_REVIEW_PENDING"
+      });
+    }
   });
 
   it("blocks Stage 2 signing when the customer objects or the work order is cancelled", async () => {

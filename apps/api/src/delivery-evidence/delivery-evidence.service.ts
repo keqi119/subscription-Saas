@@ -36,6 +36,13 @@ export interface DeliveryEvidenceReadiness {
   ready: boolean;
 }
 
+export interface DeliveryEvidenceFieldState {
+  damageDeclared?: boolean | null;
+  noVisibleDamageDeclared?: boolean | null;
+}
+
+type EvidenceReadinessMode = "FIELD_COMPLETENESS" | "OPS_REVIEW";
+
 type ChecklistScopeInput = {
   handoverId?: string | null;
   orderId: string;
@@ -463,16 +470,43 @@ export class DeliveryEvidenceService {
     return this.attachEvidenceFile(item.id, input.fileId, input.mediaType, input.actorId);
   }
 
-  async validateEvidenceReadyForStage2Pdf(orderId: string, handoverId?: string | null) {
-    return this.validateEvidenceReady({ handoverId, orderId });
+  async validateFieldEvidenceComplete(
+    orderId: string,
+    handoverId?: string | null,
+    fieldState?: DeliveryEvidenceFieldState
+  ) {
+    return this.validateEvidenceReady({ handoverId, orderId }, {
+      fieldState,
+      mode: "FIELD_COMPLETENESS"
+    });
   }
 
-  async validateEvidenceReadyForStage2ESign(orderId: string, handoverId?: string | null) {
-    return this.validateEvidenceReady({ handoverId, orderId });
+  async validateEvidenceReadyForOpsReview(orderId: string, handoverId?: string | null) {
+    return this.validateEvidenceReady({ handoverId, orderId }, { mode: "OPS_REVIEW" });
   }
 
-  async validateEvidenceReadyForDeliveryConfirmation(orderId: string, handoverId?: string | null) {
-    return this.validateEvidenceReady({ handoverId, orderId });
+  async validateEvidenceReadyForStage2Pdf(
+    orderId: string,
+    handoverId?: string | null,
+    fieldState?: DeliveryEvidenceFieldState
+  ) {
+    return this.validateFieldEvidenceComplete(orderId, handoverId, fieldState);
+  }
+
+  async validateEvidenceReadyForStage2ESign(
+    orderId: string,
+    handoverId?: string | null,
+    fieldState?: DeliveryEvidenceFieldState
+  ) {
+    return this.validateFieldEvidenceComplete(orderId, handoverId, fieldState);
+  }
+
+  async validateEvidenceReadyForDeliveryConfirmation(
+    orderId: string,
+    handoverId?: string | null,
+    fieldState?: DeliveryEvidenceFieldState
+  ) {
+    return this.validateFieldEvidenceComplete(orderId, handoverId, fieldState);
   }
 
   async assertEvidenceReadyForStage2Pdf(orderId: string, handoverId?: string | null) {
@@ -487,10 +521,25 @@ export class DeliveryEvidenceService {
     assertDeliveryEvidenceReady(await this.validateEvidenceReadyForDeliveryConfirmation(orderId, handoverId));
   }
 
-  private async validateEvidenceReady(scopeInput: ChecklistScopeInput) {
+  async assertFieldEvidenceComplete(
+    orderId: string,
+    handoverId?: string | null,
+    fieldState?: DeliveryEvidenceFieldState
+  ) {
+    assertDeliveryEvidenceReady(await this.validateFieldEvidenceComplete(orderId, handoverId, fieldState));
+  }
+
+  async assertEvidenceReadyForOpsReview(orderId: string, handoverId?: string | null) {
+    assertDeliveryEvidenceReady(await this.validateEvidenceReadyForOpsReview(orderId, handoverId));
+  }
+
+  private async validateEvidenceReady(scopeInput: ChecklistScopeInput, options?: {
+    fieldState?: DeliveryEvidenceFieldState;
+    mode?: EvidenceReadinessMode;
+  }) {
     const scope = await this.resolveScope(scopeInput);
     const items = await this.findScopedItems(scope);
-    return this.buildReadiness(scope, items);
+    return this.buildReadiness(scope, items, options);
   }
 
   private async resolveScope(input: ChecklistScopeInput) {
@@ -592,18 +641,26 @@ export class DeliveryEvidenceService {
   private buildReadiness(scope: {
     handoverId: string | null;
     orderId: string;
-  }, items: EvidenceItemWithFiles[]): DeliveryEvidenceReadiness {
+  }, items: EvidenceItemWithFiles[], options?: {
+    fieldState?: DeliveryEvidenceFieldState;
+    mode?: EvidenceReadinessMode;
+  }): DeliveryEvidenceReadiness {
     const blockingDetails: DeliveryEvidenceBlockingReason[] = [];
+    const mode = options?.mode ?? "FIELD_COMPLETENESS";
 
     for (const definition of REQUIRED_FILE_EVIDENCE_DEFINITIONS) {
       const matching = items.filter((item) => item.evidenceType === definition.evidenceType);
-      const blocking = evaluateFileEvidenceReadiness(definition, matching);
+      const blocking = mode === "OPS_REVIEW"
+        ? evaluateFileEvidenceReadiness(definition, matching)
+        : evaluateFileEvidenceFieldCompleteness(definition, matching);
       if (blocking) {
         blockingDetails.push(blocking);
       }
     }
 
-    const damageBlocking = evaluateDamageReadiness(items);
+    const damageBlocking = mode === "OPS_REVIEW"
+      ? evaluateDamageReadiness(items)
+      : evaluateDamageFieldCompleteness(items, options?.fieldState);
     if (damageBlocking) {
       blockingDetails.push(damageBlocking);
     }
@@ -642,6 +699,23 @@ function evaluateFileEvidenceReadiness(
     return blocking("HANDOVER_EVIDENCE_REJECTED", definition, `${definition.title} 已驳回，请重新上传。`, rejected.id);
   }
   return blocking("HANDOVER_EVIDENCE_REVIEW_PENDING", definition, `${definition.title} 尚未审核通过。`, items[0]?.id);
+}
+
+function evaluateFileEvidenceFieldCompleteness(
+  definition: EvidenceDefinition,
+  items: EvidenceItemWithFiles[]
+): DeliveryEvidenceBlockingReason | null {
+  if (items.some((item) => !isRejectedEvidence(item) && hasAcceptableFile(item, definition))) {
+    return null;
+  }
+  if (items.length === 0 || items.every((item) => item.files.length === 0)) {
+    return blocking("HANDOVER_EVIDENCE_MISSING", definition, `${definition.title} 尚未上传。`);
+  }
+  const rejected = items.find(isRejectedEvidence);
+  if (rejected) {
+    return blocking("HANDOVER_EVIDENCE_REJECTED", definition, `${definition.title} 已驳回，请重新上传。`, rejected.id);
+  }
+  return null;
 }
 
 function evaluateDamageReadiness(items: EvidenceItemWithFiles[]): DeliveryEvidenceBlockingReason | null {
@@ -709,6 +783,55 @@ function evaluateDamageReadiness(items: EvidenceItemWithFiles[]): DeliveryEviden
   return blocking("DAMAGE_EVIDENCE_MISSING", noDamageDefinition, "请声明无可见损伤或上传损伤近拍证据。");
 }
 
+function evaluateDamageFieldCompleteness(
+  items: EvidenceItemWithFiles[],
+  fieldState?: DeliveryEvidenceFieldState
+): DeliveryEvidenceBlockingReason | null {
+  const damageItems = items.filter((item) => item.evidenceType === DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
+  const noDamageItems = items.filter(
+    (item) => item.evidenceType === DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION
+  );
+  const damageDefinition = getDefinition(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
+  const noDamageDefinition = getDefinition(DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION);
+  const damageDeclared = fieldState?.damageDeclared === true || damageItems.some(isDamageDeclared);
+  const noDamageDeclared = fieldState?.noVisibleDamageDeclared === true ||
+    noDamageItems.some((item) => item.declaredNoDamage === true && !isRejectedEvidence(item));
+
+  if (damageDeclared && noDamageDeclared) {
+    return blocking(
+      "DAMAGE_STATE_CONFLICT",
+      damageDefinition,
+      "损伤证据与无可见损伤声明冲突，请保留一种交付损伤状态。"
+    );
+  }
+
+  if (damageDeclared) {
+    if (damageItems.some((item) => !isRejectedEvidence(item) && hasAcceptableFile(item, damageDefinition))) {
+      return null;
+    }
+    const rejected = damageItems.find(isRejectedEvidence);
+    if (rejected) {
+      return blocking("DAMAGE_EVIDENCE_REJECTED", damageDefinition, "损伤近拍已驳回，请重新上传。", rejected.id);
+    }
+    return blocking("DAMAGE_EVIDENCE_MISSING", damageDefinition, "已声明存在损伤，请上传损伤/瑕疵静态近拍。");
+  }
+
+  if (noDamageDeclared) {
+    return null;
+  }
+
+  const rejectedDeclaration = noDamageItems.find(isRejectedEvidence);
+  if (rejectedDeclaration) {
+    return blocking(
+      "DAMAGE_EVIDENCE_REJECTED",
+      noDamageDefinition,
+      "无可见损伤声明已驳回，请重新处理损伤状态。",
+      rejectedDeclaration.id
+    );
+  }
+  return blocking("DAMAGE_EVIDENCE_MISSING", noDamageDefinition, "请声明无可见损伤或上传损伤近拍证据。");
+}
+
 function isApprovedWithAcceptableEvidenceFile(item: EvidenceItemWithFiles, definition: EvidenceDefinition) {
   return item.status === DeliveryEvidenceStatus.APPROVED &&
     item.reviewStatus === DeliveryEvidenceReviewStatus.APPROVED &&
@@ -719,6 +842,11 @@ function isApprovedNoDamageDeclaration(item: EvidenceItemWithFiles) {
   return item.declaredNoDamage === true &&
     item.status === DeliveryEvidenceStatus.APPROVED &&
     item.reviewStatus === DeliveryEvidenceReviewStatus.APPROVED;
+}
+
+function isRejectedEvidence(item: EvidenceItemWithFiles) {
+  return item.status === DeliveryEvidenceStatus.REJECTED ||
+    item.reviewStatus === DeliveryEvidenceReviewStatus.REJECTED;
 }
 
 function hasAcceptableFile(item: EvidenceItemWithFiles, definition: EvidenceDefinition) {

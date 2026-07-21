@@ -23,7 +23,9 @@ This foundation does not execute provider calls, upload documents, start real eS
 - Stage 2 handover signing must not overwrite `SubscriptionOrder.contractId`.
 - Stage 2 must not regenerate or mutate Stage 1 signed evidence.
 - Stage 2 eSign completion is stage-aware and must not run Stage 1 `PENDING_PAYMENT` side effects.
-- Required delivery evidence must be uploaded and approved before Stage 2 PDF generation, Stage 2 eSign start, and Admin delivery confirmation.
+- Required delivery evidence must be uploaded before customer review, Stage 2 PDF generation, Stage 2 eSign start, and Admin delivery confirmation.
+- Back-office evidence approval is an ops/QA review state. It is not a hard pre-eSign gate in the current policy.
+- Customer no-objection confirmation is a hard gate before Stage 2 PDF generation and eSign start. Customer objection moves the work order to `CUSTOMER_OBJECTED` and requires Admin intervention.
 - Delivery confirmation requires the Stage 2 handover to be signed.
 - Signed PDF archival is strongly required for evidence completeness, but a temporary archive failure is a visible warning/retry state rather than an absolute delivery confirmation blocker.
 - Lease activation reports missing Stage 2 handover readiness before it can become eligible.
@@ -61,9 +63,25 @@ Prisma cannot express a portable partial unique constraint for "only one active 
 
 Singleton evidence item duplication is guarded in service code. Damage close-up evidence is intentionally allowed to have multiple item rows/files.
 
+`VehicleHandoverWorkOrder` links:
+
+- `orderId`
+- optional `vehicleDeliveryId`
+- optional `handoverId`
+- `handoverType`: `DELIVERY_OUTBOUND` now, `RETURN_INBOUND` reserved for future return inbound flow
+- `status`
+- `operatorType`: internal staff or external temporary operator
+- internal assignment or external operator identity
+- hashed, expiring, revocable external access token metadata
+- field timestamps, customer review/confirmation/objection timestamps
+- field facts: delivery location, mileage, energy/fuel level, accessory checklist, damage/no-damage state, field notes
+- ops review status and reviewer fields
+
+External operator access stores only `accessTokenHash`. The plaintext token is returned only once during Admin assignment. The external task view is scoped to the assigned work order and must not expose full ID numbers, finance/payment data, full contract data, provider credentials, signing URLs, or other orders.
+
 ## Evidence Checklist
 
-Required evidence before Stage 2 PDF/eSign:
+Required field evidence before customer review and Stage 2 PDF/eSign:
 
 - 客户与车辆正面合影
 - 车辆车头正面
@@ -80,9 +98,11 @@ Required evidence before Stage 2 PDF/eSign:
 
 Conditional damage evidence:
 
-- If damage is declared, at least one approved `DAMAGE_STATIC_CLOSEUP` is required.
-- If no damage is declared, an audited and approved `NO_VISIBLE_DAMAGE_DECLARATION` is required.
+- If damage is declared, at least one non-rejected `DAMAGE_STATIC_CLOSEUP` file is required before customer review/PDF/eSign.
+- If no damage is declared, a no-visible-damage declaration is required before customer review/PDF/eSign.
 - An unresolved damage state does not pass readiness.
+- Rejected evidence blocks the field completeness gate until replaced or reprocessed.
+- Pending ops review does not block Stage 2 PDF/eSign in the current policy.
 
 The Stage 2 PDF should list checklist status and file references only. It must not embed the source photos or videos.
 
@@ -106,13 +126,40 @@ Archive status:
 - `ARCHIVED`
 - `FAILED`
 
+Handover work order status:
+
+- `DRAFT`
+- `ASSIGNED`
+- `FIELD_IN_PROGRESS`
+- `EVIDENCE_SUBMITTED`
+- `CUSTOMER_REVIEWING`
+- `CUSTOMER_OBJECTED`
+- `CUSTOMER_CONFIRMED`
+- `SIGNING`
+- `CUSTOMER_SIGNED`
+- `PLATFORM_SEALED`
+- `FIELD_COMPLETED`
+- `OPS_REVIEW_PENDING`
+- `OPS_REVIEWED`
+- `VOIDED`
+- `FAILED`
+- `CANCELLED`
+
+Current Stage 2 PDF/eSign gate:
+
+```text
+FIELD_COMPLETENESS + CUSTOMER_NO_OBJECTION + NOT_OBJECTED_OR_CANCELLED
+```
+
+Field completeness requires required files uploaded, field facts completed, damage/no-damage state resolved, and the field operator submitted the work order. Customer no-objection confirmation is required before Stage 2 PDF/eSign. Ops review may be pending or rejected without blocking PDF/eSign; it remains a back-office QA/settlement signal.
+
 Current delivery confirmation gate:
 
 ```text
-SIGNED_REQUIRED + EVIDENCE_APPROVED_REQUIRED
+STAGE2_HANDOVER_SIGNED + FIELD_COMPLETENESS + CUSTOMER_NO_OBJECTION + NOT_OBJECTED_OR_CANCELLED
 ```
 
-Delivery cannot be confirmed until the handover is signed and required evidence is approved. If the signed PDF archive is missing or failed after signing, the task must expose the archive risk and retry path, but the temporary archive issue is not an absolute delivery confirmation blocker.
+Delivery cannot be confirmed until the Stage 2 handover is signed and the work order/evidence/customer confirmation gates are satisfied. If the signed PDF archive is missing or failed after signing, the task must expose the archive risk and retry path, but the temporary archive issue is not an absolute delivery confirmation blocker.
 
 Lease start policy:
 

@@ -89,17 +89,23 @@ describe("DeliveryEvidenceService", () => {
     }));
   });
 
-  it("blocks readiness while uploaded evidence is unreviewed", async () => {
+  it("allows field completeness while uploaded evidence is unreviewed but keeps ops review pending", async () => {
     const harness = createDeliveryEvidenceHarness();
-    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
-    const item = harness.findItem(DeliveryEvidenceType.CUSTOMER_WITH_VEHICLE_FRONT);
-    const file = harness.addFile("customer-front.jpg", "image/jpeg");
+    await uploadRequiredFileEvidence(harness);
+    await harness.service.declareNoVisibleDamage(harness.orderId, harness.userId, harness.handoverId, "现场确认");
 
-    await harness.service.attachEvidenceFile(item.id, file.id, DeliveryEvidenceMediaType.PHOTO, harness.userId);
-    const readiness = await harness.service.validateEvidenceReadyForStage2Pdf(harness.orderId, harness.handoverId);
+    const fieldReadiness = await harness.service.validateEvidenceReadyForStage2Pdf(
+      harness.orderId,
+      harness.handoverId
+    );
+    const opsReadiness = await harness.service.validateEvidenceReadyForOpsReview(
+      harness.orderId,
+      harness.handoverId
+    );
 
-    expect(readiness.ready).toBe(false);
-    expect(readiness.blockingDetails).toContainEqual(expect.objectContaining({
+    expect(fieldReadiness.ready).toBe(true);
+    expect(opsReadiness.ready).toBe(false);
+    expect(opsReadiness.blockingDetails).toContainEqual(expect.objectContaining({
       code: "HANDOVER_EVIDENCE_REVIEW_PENDING",
       evidenceType: DeliveryEvidenceType.CUSTOMER_WITH_VEHICLE_FRONT
     }));
@@ -216,7 +222,15 @@ describe("DeliveryEvidenceService", () => {
 });
 
 async function approveRequiredFileEvidence(harness: ReturnType<typeof createDeliveryEvidenceHarness>) {
+  const items = await uploadRequiredFileEvidence(harness);
+  for (const item of items) {
+    await harness.service.approveEvidenceItem(item.id, harness.userId);
+  }
+}
+
+async function uploadRequiredFileEvidence(harness: ReturnType<typeof createDeliveryEvidenceHarness>) {
   await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+  const uploaded: TestEvidenceItem[] = [];
   for (const definition of DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS.filter((item) => item.isRequired)) {
     const item = harness.findItem(definition.evidenceType);
     const mediaType = definition.allowedMediaTypes[0];
@@ -227,8 +241,9 @@ async function approveRequiredFileEvidence(harness: ReturnType<typeof createDeli
     const mimeType = mediaType === DeliveryEvidenceMediaType.VIDEO ? "video/mp4" : "image/jpeg";
     const file = harness.addFile(`${definition.evidenceType}.${extension}`, mimeType);
     await harness.service.attachEvidenceFile(item.id, file.id, mediaType, harness.userId);
-    await harness.service.approveEvidenceItem(item.id, harness.userId);
+    uploaded.push(item);
   }
+  return uploaded;
 }
 
 function createDeliveryEvidenceHarness() {

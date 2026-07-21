@@ -10,6 +10,7 @@ import { ESignModule } from "./esign/esign.module";
 import { FleetOpsModule } from "./fleet-ops/fleet-ops.module";
 import { FinanceModule } from "./finance/finance.module";
 import { FinancingModule } from "./financing/financing.module";
+import { HandoverWorkOrderModule } from "./handover-work-order/handover-work-order.module";
 import { LeaseModule } from "./lease/lease.module";
 import { NotificationModule } from "./notification/notification.module";
 import { OrderModule } from "./order/order.module";
@@ -45,6 +46,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     FleetOpsModule,
     FinanceModule,
     FinancingModule,
+    HandoverWorkOrderModule,
     LeaseModule,
     NotificationModule,
     OrderModule,

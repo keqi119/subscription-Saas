@@ -228,6 +228,143 @@ describe("ESignService", () => {
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
   });
 
+  it("completes Stage 2 handover slots without running Stage 1 order side effects", async () => {
+    const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
+    const { prisma, service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, {
+      createSignTask: vi.fn(),
+      getSignerUrl: vi.fn(),
+      verifyCallback: verifier.verifyCallback.bind(verifier)
+    });
+    const handoverContract = createContract("handover-contract-1", "customer-1", "order-1", "ORD-1");
+    handoverContract.contractNo = "HDV-1";
+    handoverContract.contractTitle = "车辆交付交接确认书";
+    handoverContract.order.contractId = "contract-1";
+    handoverContract.order.orderStatus = OrderStatus.PENDING_DELIVERY;
+    state.contracts.push(handoverContract);
+    state.deliveryHandovers.push({
+      archiveStatus: "NOT_STARTED",
+      completedAt: null,
+      deletedAt: null,
+      handoverContractId: handoverContract.id,
+      handoverESignTaskId: "stage2-task-1",
+      id: "handover-1",
+      orderId: "order-1",
+      status: "PENDING_CUSTOMER_SIGNATURE"
+    });
+    state.tasks.push({
+      callbackSnapshot: null,
+      cancelledAt: null,
+      completedAt: null,
+      contractId: handoverContract.id,
+      createdAt: new Date(),
+      customerId: "customer-1",
+      deletedAt: null,
+      documentName: "车辆交付交接确认书",
+      errorSnapshot: null,
+      evidenceObjectKey: null,
+      failedAt: null,
+      id: "stage2-task-1",
+      orderId: "order-1",
+      provider: ESignProviderType.FADADA,
+      providerEnvelopeId: "HDV-PROVIDER-1",
+      providerTaskId: null,
+      requestSnapshot: { signingStage: "STAGE2_DELIVERY_HANDOVER" },
+      responseSnapshot: null,
+      signUrl: null,
+      signUrlExpiresAt: null,
+      signedDocumentObjectKey: null,
+      startedAt: new Date(),
+      taskNo: "ESG-STAGE2-1",
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER,
+      updatedAt: new Date()
+    });
+    state.signers.push(
+      {
+        customerId: "customer-1",
+        deletedAt: null,
+        id: "stage2-signer-customer",
+        providerSignerId: "CUSTH1",
+        rejectReason: null,
+        rejectedAt: null,
+        signedAt: null,
+        signerIdNoMasked: null,
+        signerName: "张三",
+        signerPhone: "13800000000",
+        signerStatus: ESignSignerStatus.SIGNING,
+        signerType: ESignSignerType.CUSTOMER,
+        signUrl: "https://sign.example.test/stage2-customer",
+        signUrlExpiresAt: null,
+        snapshot: {
+          documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+          providerActionType: "CUSTOMER_MANUAL_SIGN",
+          required: true,
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          slotId: "STAGE2_HANDOVER_CUSTOMER"
+        },
+        taskId: "stage2-task-1"
+      },
+      {
+        customerId: null,
+        deletedAt: null,
+        id: "stage2-signer-platform",
+        providerSignerId: "PLATH1",
+        rejectReason: null,
+        rejectedAt: null,
+        signedAt: null,
+        signerIdNoMasked: null,
+        signerName: "Platform",
+        signerPhone: null,
+        signerStatus: ESignSignerStatus.PENDING,
+        signerType: ESignSignerType.PLATFORM,
+        signUrl: null,
+        signUrlExpiresAt: null,
+        snapshot: {
+          documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+          providerActionType: "PLATFORM_AUTO_SEAL",
+          required: true,
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          slotId: "STAGE2_HANDOVER_PLATFORM"
+        },
+        taskId: "stage2-task-1"
+      }
+    );
+
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: "HDV-PROVIDER-1",
+      resultCode: "3000",
+      transactionId: "CUSTH1"
+    }));
+
+    expect(state.tasks.find((task) => task.id === "stage2-task-1")).toMatchObject({
+      completedAt: null,
+      taskStatus: ESignTaskStatus.SIGNING
+    });
+    expect(handoverContract.order.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
+
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: "HDV-PROVIDER-1",
+      resultCode: "3000",
+      transactionId: "PLATH1"
+    }));
+
+    expect(state.tasks.find((task) => task.id === "stage2-task-1")).toMatchObject({
+      completedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(handoverContract).toMatchObject({
+      signedAt: expect.any(Date),
+      status: ContractStatus.SIGNED
+    });
+    expect(state.deliveryHandovers[0]).toMatchObject({
+      completedAt: expect.any(Date),
+      customerSignedAt: expect.any(Date),
+      platformSignedAt: expect.any(Date),
+      status: "SIGNED"
+    });
+    expect(handoverContract.order.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
+    expect(prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+  });
+
   it("keeps Stage 1 slot rows unchanged for unknown or mismatched callbacks", async () => {
     const provider = stage1SlotProvider();
     const { service, state } = createESignFixture({
@@ -1377,6 +1514,7 @@ function createESignFixture(
       createContract("contract-1", "customer-1", "order-1", "ORD-1"),
       createContract("contract-2", "customer-2", "order-2", "ORD-2")
     ],
+    deliveryHandovers: [] as FakeDeliveryHandover[],
     providerAccounts: options.providerAccounts ?? [createProviderAccount("customer-1")],
     signers: [] as FakeSigner[],
     tasks: [] as FakeTask[]
@@ -1558,6 +1696,13 @@ function createESignFixture(
           .map((contract) => contract.order)
           .filter((order) => matchesWhere(order, where));
         rows.forEach((order) => Object.assign(order, data));
+        return { count: rows.length };
+      })
+    },
+    vehicleDeliveryHandover: {
+      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+        const rows = state.deliveryHandovers.filter((handover) => matchesWhere(handover, where));
+        rows.forEach((handover) => Object.assign(handover, data));
         return { count: rows.length };
       })
     }
@@ -2109,6 +2254,7 @@ function requestContext() {
 interface FakeState {
   callbackLogs: FakeCallbackLog[];
   contracts: FakeContract[];
+  deliveryHandovers: FakeDeliveryHandover[];
   providerAccounts: FakeProviderAccount[];
   signers: FakeSigner[];
   tasks: FakeTask[];
@@ -2187,6 +2333,19 @@ interface FakeTask extends Record<string, unknown> {
   taskNo: string;
   taskStatus: ESignTaskStatus;
   updatedAt: Date;
+}
+
+interface FakeDeliveryHandover extends Record<string, unknown> {
+  archiveStatus: string;
+  completedAt: Date | null;
+  customerSignedAt?: Date | null;
+  deletedAt: Date | null;
+  handoverContractId: string | null;
+  handoverESignTaskId: string | null;
+  id: string;
+  orderId: string;
+  platformSignedAt?: Date | null;
+  status: string;
 }
 
 interface FakeSigner extends Record<string, unknown> {

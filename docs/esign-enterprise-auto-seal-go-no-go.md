@@ -109,6 +109,8 @@ Representative local Fadada docs to check before modifying or enabling related b
 - [ ] Fadada signing guards block both task creation and Portal signing-link return/refresh when provider-backed real-name or certificate binding evidence is missing.
 - [ ] Admin e-sign task display groups Stage 1 internal slot rows into one customer signer group and one platform seal group, while preserving slot count/detail visibility.
 - [ ] Admin e-sign archive status distinguishes completed-but-not-archived from signing failure and shows the signed PDF action only after the signed artifact exists.
+- [ ] Stage 2 delivery handover signing is treated as a separate provider contract/task; it does not overwrite the Stage 1 `SubscriptionOrder.contractId` pointer or run Stage 1 order-payment side effects.
+- [ ] Delivery confirmation remains blocked until the Stage 2 handover is signed and the signed handover PDF is archived.
 
 ## Required Stage 1 Signing Slots
 

@@ -4,6 +4,7 @@ import {
   BillStatus,
   BillType,
   ContractStatus,
+  DeliveryHandoverStatus,
   DeliveryStatus,
   Lease,
   LeaseStatus,
@@ -12,6 +13,10 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import {
+  isDeliveryHandoverArchived,
+  isDeliveryHandoverSigned
+} from "../delivery-handover/delivery-handover.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   LEASE_ACTIVATION_CLOCK,
@@ -43,7 +48,7 @@ export class LeaseActivationEngine {
       throw new NotFoundException("Order not found.");
     }
 
-    const [bills, delivery, inspection] = await Promise.all([
+    const [bills, delivery, handover, inspection] = await Promise.all([
       this.prisma.receivableBill.findMany({
         orderBy: { createdAt: "asc" },
         where: {
@@ -54,6 +59,14 @@ export class LeaseActivationEngine {
         }
       }),
       this.prisma.vehicleDelivery.findUnique({ where: { orderId } }),
+      this.prisma.vehicleDeliveryHandover.findFirst({
+        orderBy: { createdAt: "desc" },
+        where: {
+          deletedAt: null,
+          orderId,
+          status: { notIn: [DeliveryHandoverStatus.CANCELLED, DeliveryHandoverStatus.FAILED] }
+        }
+      }),
       this.prisma.vehicleInspection.findUnique({ where: { orderId } })
     ]);
 
@@ -73,6 +86,14 @@ export class LeaseActivationEngine {
 
     if (!delivery || delivery.deletedAt || delivery.deliveryStatus !== DeliveryStatus.DELIVERED) {
       missingConditions.push("DELIVERY_CONFIRMED");
+    }
+
+    if (!isDeliveryHandoverSigned(handover)) {
+      missingConditions.push("HANDOVER_SIGNED_MISSING");
+    }
+
+    if (!isDeliveryHandoverArchived(handover)) {
+      missingConditions.push("HANDOVER_ARCHIVED_MISSING");
     }
 
     if (!inspection || inspection.deletedAt || inspection.status !== VehicleInspectionStatus.PASSED) {

@@ -45,6 +45,30 @@ describe("LeaseActivationEngine", () => {
     expect(result.missingConditions).toEqual(["INSPECTION_PASSED"]);
   });
 
+  it("rejects activation when Stage 2 handover is missing", async () => {
+    const harness = createLeaseActivationHarness({ handover: null });
+
+    const result = await harness.engine.evaluate(harness.orderId);
+
+    expect(result.canActivate).toBe(false);
+    expect(result.missingConditions).toEqual(["HANDOVER_SIGNED_MISSING", "HANDOVER_ARCHIVED_MISSING"]);
+  });
+
+  it("rejects activation when Stage 2 handover is signed but not archived", async () => {
+    const harness = createLeaseActivationHarness({
+      handover: {
+        archiveStatus: "NOT_STARTED",
+        deletedAt: null,
+        status: "SIGNED"
+      }
+    });
+
+    const result = await harness.engine.evaluate(harness.orderId);
+
+    expect(result.canActivate).toBe(false);
+    expect(result.missingConditions).toEqual(["HANDOVER_ARCHIVED_MISSING"]);
+  });
+
   it("allows activation when all activation conditions are satisfied", async () => {
     const harness = createLeaseActivationHarness();
 
@@ -93,6 +117,11 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
     deliveryStatus: DeliveryStatus.DELIVERED,
     firstRentBillStatus: BillStatus.PAID,
     firstRentRemainingAmount: 0n,
+    handover: {
+      archiveStatus: "ARCHIVED",
+      deletedAt: null,
+      status: "ARCHIVED"
+    },
     inspectionStatus: "PASSED",
     lease: null,
     ...overrides
@@ -162,6 +191,9 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
         orderId
       }))
     },
+    vehicleDeliveryHandover: {
+      findFirst: vi.fn(async () => state.handover)
+    },
     vehicleInspection: {
       findUnique: vi.fn(async () => ({
         deletedAt: null,
@@ -187,6 +219,7 @@ interface LeaseActivationState {
   deliveryStatus: DeliveryStatus;
   firstRentBillStatus: BillStatus;
   firstRentRemainingAmount: bigint;
+  handover: Record<string, unknown> | null;
   inspectionStatus: "PENDING" | "PASSED" | "FAILED";
   lease: Record<string, unknown> | null;
 }

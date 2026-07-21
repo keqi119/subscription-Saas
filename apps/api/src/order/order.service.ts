@@ -9,6 +9,7 @@ import {
   AuditAction,
   BusinessType,
   ContractStatus,
+  DeliveryHandoverStatus,
   ContractVersionStatus,
   CustomerStatus,
   DeliveryStatus,
@@ -65,6 +66,12 @@ import {
 } from "../contract/contract-pdf-render-model";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
+import {
+  DELIVERY_HANDOVER_NOT_READY_MESSAGE,
+  isDeliveryHandoverArchived,
+  isDeliveryHandoverReadyForDelivery,
+  isDeliveryHandoverSigned
+} from "../delivery-handover/delivery-handover.service";
 import {
   ArchiveContractDto,
   CancelOrderDto,
@@ -1562,11 +1569,14 @@ export class OrderService {
   async getDeliveryCheck(id: string, user: RequestUser) {
     const order = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(order, user);
-    const delivery = await this.prisma.vehicleDelivery.findUnique({
-      include: deliveryInclude,
-      where: { orderId: id }
-    });
-    return buildDeliveryCheck(order, delivery && !delivery.deletedAt ? delivery : null);
+    const [delivery, handover] = await Promise.all([
+      this.prisma.vehicleDelivery.findUnique({
+        include: deliveryInclude,
+        where: { orderId: id }
+      }),
+      findActiveDeliveryHandover(this.prisma, id)
+    ]);
+    return buildDeliveryCheck(order, delivery && !delivery.deletedAt ? delivery : null, undefined, handover);
   }
 
   async getDelivery(id: string, user: RequestUser) {
@@ -1657,7 +1667,8 @@ export class OrderService {
       include: deliveryInclude,
       where: { orderId: id }
     });
-    assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt);
+    const handover = await findActiveDeliveryHandover(this.prisma, id);
+    assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt, handover);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
@@ -3625,10 +3636,22 @@ function assertCanPrepareDelivery(order: OrderWithDetails, scheduledAt: Date | n
   }
 }
 
+function findActiveDeliveryHandover(prisma: PrismaService, orderId: string) {
+  return prisma.vehicleDeliveryHandover.findFirst({
+    orderBy: { createdAt: "desc" },
+    where: {
+      deletedAt: null,
+      orderId,
+      status: { notIn: [DeliveryHandoverStatus.CANCELLED, DeliveryHandoverStatus.FAILED] }
+    }
+  });
+}
+
 function assertCanConfirmDelivery(
   order: OrderWithDetails,
   delivery: DeliveryWithDetails | null,
-  deliveredAt: Date
+  deliveredAt: Date,
+  handover: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null
 ) {
   if (!delivery || delivery.deletedAt) {
     throw new BadRequestException("请先准备交付。");
@@ -3640,7 +3663,7 @@ function assertCanConfirmDelivery(
     throw new BadRequestException("请先准备交付。");
   }
 
-  const check = buildDeliveryCheck(order, delivery, deliveredAt);
+  const check = buildDeliveryCheck(order, delivery, deliveredAt, handover);
   if (!check.insuranceValid) {
     throw new BadRequestException(DELIVERY_INSURANCE_INVALID_MESSAGE);
   }
@@ -3684,7 +3707,12 @@ function firstReturnBlockingReason(check: ReturnType<typeof buildReturnCheck>, f
   return check.blockingReasons[0] ?? fallback;
 }
 
-function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetails | null, targetAt?: Date) {
+function buildDeliveryCheck(
+  order: OrderWithDetails,
+  delivery: DeliveryWithDetails | null,
+  targetAt?: Date,
+  handover?: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null
+) {
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
   const deliveryCheckAt = targetAt ?? delivery?.deliveredAt ?? delivery?.scheduledAt ?? order.startDate ?? order.createdAt;
@@ -3707,6 +3735,9 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   const vehiclePhotosConfirmed = Boolean(delivery?.vehiclePhotosConfirmed);
   const customerIdentityConfirmed = Boolean(delivery?.customerIdentityConfirmed);
   const handoverDocumentsConfirmed = Boolean(delivery?.handoverDocumentsConfirmed);
+  const handoverSigned = isDeliveryHandoverSigned(handover);
+  const handoverArchived = isDeliveryHandoverArchived(handover);
+  const handoverReady = isDeliveryHandoverReadyForDelivery(handover);
   const deliveryReady = delivery?.deliveryStatus === DeliveryStatus.READY;
 
   if (alreadyDelivered) {
@@ -3720,6 +3751,9 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
       deliveryStatus: delivery?.deliveryStatus ?? null,
       depositReceivedConfirmed,
       firstMonthlyFeeReceivedConfirmed,
+      handoverArchived,
+      handoverReady,
+      handoverSigned,
       insuranceValid,
       orderId: order.id,
       orderNo: order.orderNo,
@@ -3777,6 +3811,9 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
   if (!handoverDocumentsConfirmed) {
     confirmBlockingReasons.push("交付文件尚未准备");
   }
+  if (!handoverReady) {
+    confirmBlockingReasons.push(DELIVERY_HANDOVER_NOT_READY_MESSAGE);
+  }
 
   return {
     alreadyDelivered,
@@ -3788,6 +3825,9 @@ function buildDeliveryCheck(order: OrderWithDetails, delivery: DeliveryWithDetai
     deliveryStatus: delivery?.deliveryStatus ?? null,
     depositReceivedConfirmed,
     firstMonthlyFeeReceivedConfirmed,
+    handoverArchived,
+    handoverReady,
+    handoverSigned,
     insuranceValid,
     orderId: order.id,
     orderNo: order.orderNo,

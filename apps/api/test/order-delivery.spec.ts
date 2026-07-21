@@ -79,6 +79,48 @@ describe("vehicle delivery handover workflow", () => {
     ).rejects.toThrow("车辆尚未整备");
   });
 
+  it("rejects confirm when the Stage 2 handover record is missing", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.handover = null;
+
+    await expect(
+      harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
+    ).rejects.toThrow("交付交接确认书尚未完成签署和归档");
+
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(harness.state.actualDeliveryAt).toBeNull();
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+  });
+
+  it("rejects confirm when the Stage 2 handover is not signed", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.handover = buildHandoverRecord(harness, {
+      archiveStatus: "NOT_STARTED",
+      completedAt: null,
+      status: "PENDING_CUSTOMER_SIGNATURE"
+    });
+
+    await expect(
+      harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
+    ).rejects.toThrow("交付交接确认书尚未完成签署和归档");
+  });
+
+  it("rejects confirm when the Stage 2 signed handover PDF is not archived", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.handover = buildHandoverRecord(harness, {
+      archiveStatus: "NOT_STARTED",
+      archivedAt: null,
+      status: "SIGNED"
+    });
+
+    await expect(
+      harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
+    ).rejects.toThrow("交付交接确认书尚未完成签署和归档");
+  });
+
   it("prepare-delivery creates a READY delivery record", async () => {
     const harness = createDeliveryHarness();
 
@@ -291,16 +333,19 @@ function createDeliveryHarness() {
     insuranceStartDate: Date | null;
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
+    handover: Record<string, unknown> | null;
   } = {
     actualDeliveryAt: null,
     contractStatus: ContractStatus.SIGNED,
     delivery: null,
     depositStatus: DepositStatus.CONFIRMED,
+    handover: null,
     insuranceEndDate: new Date("2026-06-30T00:00:00.000Z"),
     insuranceStartDate: new Date("2026-06-01T00:00:00.000Z"),
     orderStatus: OrderStatus.PENDING_PAYMENT,
     vehicleStatus: VehicleStatus.RESERVED
   };
+  state.handover = buildHandoverRecord({ orderId, user });
 
   function buildVehicle() {
     return {
@@ -448,6 +493,9 @@ function createDeliveryHarness() {
     subscriptionOrder: {
       findUnique: vi.fn(async () => buildOrder())
     },
+    vehicleDeliveryHandover: {
+      findFirst: vi.fn(async () => state.handover)
+    },
     vehicleDelivery: {
       findUnique: vi.fn(async () => buildDelivery())
     }
@@ -460,6 +508,40 @@ function createDeliveryHarness() {
   const service = new OrderService(auditService as never, prisma as never);
 
   return { auditService, context, customerId, orderId, prisma, service, state, tx, user, vehicleId };
+}
+
+function buildHandoverRecord(
+  harness: Pick<ReturnType<typeof createDeliveryHarness>, "orderId" | "user">,
+  overrides: Record<string, unknown> = {}
+) {
+  const now = new Date("2026-06-06T08:00:00.000Z");
+  return {
+    archiveStatus: "ARCHIVED",
+    archivedAt: new Date("2026-06-09T04:20:00.000Z"),
+    cancelledAt: null,
+    completedAt: new Date("2026-06-09T04:10:00.000Z"),
+    createdAt: now,
+    createdBy: harness.user.id,
+    customerSignedAt: new Date("2026-06-09T04:00:00.000Z"),
+    deletedAt: null,
+    failedAt: null,
+    failureReason: null,
+    handoverContractId: "handover-contract-1",
+    handoverESignTaskId: "handover-task-1",
+    id: "handover-1",
+    metadata: {},
+    orderId: harness.orderId,
+    platformSignedAt: new Date("2026-06-09T04:10:00.000Z"),
+    signedObjectKey: "contracts/handover-1/signed.pdf",
+    snapshot: {},
+    sourceObjectKey: "contracts/handover-1/source.pdf",
+    stage1ContractId: "contract-1",
+    status: "ARCHIVED",
+    updatedAt: now,
+    updatedBy: harness.user.id,
+    vehicleDeliveryId: "delivery-1",
+    ...overrides
+  };
 }
 
 function buildReadyDelivery(

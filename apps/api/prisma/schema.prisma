@@ -865,8 +865,31 @@ enum ContractVersionStatus {
 
 enum ContractTemplateType {
   SUBSCRIPTION_STANDARD
+  DELIVERY_HANDOVER
 
   @@map("contract_template_type")
+}
+
+enum DeliveryHandoverStatus {
+  DRAFT
+  SOURCE_GENERATED
+  PENDING_CUSTOMER_SIGNATURE
+  PENDING_PLATFORM_SEAL
+  SIGNED
+  ARCHIVED
+  FAILED
+  CANCELLED
+
+  @@map("delivery_handover_status")
+}
+
+enum DeliveryHandoverArchiveStatus {
+  NOT_STARTED
+  PENDING
+  ARCHIVED
+  FAILED
+
+  @@map("delivery_handover_archive_status")
 }
 
 enum ESignProviderType {
@@ -3884,6 +3907,7 @@ model SubscriptionOrder {
   actualDeliveryAt           DateTime?             @map("actual_delivery_at") @db.Timestamptz(6)
   actualReturnAt             DateTime?             @map("actual_return_at") @db.Timestamptz(6)
   deliveries                 VehicleDelivery[]
+  deliveryHandovers          VehicleDeliveryHandover[]
   lease                      Lease?
   vehicleInspection          VehicleInspection?
   returns                    VehicleReturn[]
@@ -4565,6 +4589,7 @@ model VehicleDelivery {
   handoverDocumentsConfirmed       Boolean           @default(false) @map("handover_documents_confirmed")
   checklistSnapshot                Json?             @map("checklist_snapshot")
   remark                           String?           @db.Text
+  handovers                        VehicleDeliveryHandover[]
   createdAt                        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                        String?           @map("created_by") @db.Uuid
@@ -4577,6 +4602,49 @@ model VehicleDelivery {
   @@index([scheduledAt])
   @@index([deliveredAt])
   @@map("vehicle_delivery")
+}
+
+model VehicleDeliveryHandover {
+  id                   String                        @id @default(uuid()) @db.Uuid
+  orderId              String                        @map("order_id") @db.Uuid
+  order                SubscriptionOrder             @relation(fields: [orderId], references: [id])
+  vehicleDeliveryId    String?                       @map("vehicle_delivery_id") @db.Uuid
+  vehicleDelivery      VehicleDelivery?              @relation(fields: [vehicleDeliveryId], references: [id])
+  stage1ContractId     String                        @map("stage1_contract_id") @db.Uuid
+  stage1Contract       Contract                      @relation("DeliveryHandoverStage1Contract", fields: [stage1ContractId], references: [id])
+  handoverContractId   String?                       @unique @map("handover_contract_id") @db.Uuid
+  handoverContract     Contract?                     @relation("DeliveryHandoverContract", fields: [handoverContractId], references: [id])
+  handoverESignTaskId  String?                       @unique @map("handover_esign_task_id") @db.Uuid
+  handoverESignTask    ContractESignTask?            @relation("DeliveryHandoverESignTask", fields: [handoverESignTaskId], references: [id])
+  sourceDocumentFileId String?                       @map("source_document_file_id") @db.Uuid
+  sourceObjectKey      String?                       @map("source_object_key") @db.VarChar(512)
+  signedDocumentFileId String?                       @map("signed_document_file_id") @db.Uuid
+  signedObjectKey      String?                       @map("signed_object_key") @db.VarChar(512)
+  status               DeliveryHandoverStatus        @default(DRAFT)
+  archiveStatus        DeliveryHandoverArchiveStatus @default(NOT_STARTED) @map("archive_status")
+  customerSignedAt     DateTime?                     @map("customer_signed_at") @db.Timestamptz(6)
+  platformSignedAt     DateTime?                     @map("platform_signed_at") @db.Timestamptz(6)
+  completedAt          DateTime?                     @map("completed_at") @db.Timestamptz(6)
+  archivedAt           DateTime?                     @map("archived_at") @db.Timestamptz(6)
+  cancelledAt          DateTime?                     @map("cancelled_at") @db.Timestamptz(6)
+  failedAt             DateTime?                     @map("failed_at") @db.Timestamptz(6)
+  failureReason        String?                       @map("failure_reason") @db.Text
+  metadata             Json?
+  snapshot             Json?
+  createdAt            DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?                       @map("created_by") @db.Uuid
+  updatedBy            String?                       @map("updated_by") @db.Uuid
+  deletedAt            DateTime?                     @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([orderId])
+  @@index([vehicleDeliveryId])
+  @@index([stage1ContractId])
+  @@index([status])
+  @@index([archiveStatus])
+  @@index([completedAt])
+  @@index([archivedAt])
+  @@map("vehicle_delivery_handover")
 }
 
 model VehicleInspection {
@@ -4718,6 +4786,8 @@ model Contract {
   archivedAt        DateTime?          @map("archived_at") @db.Timestamptz(6)
   fileId            String?            @map("file_id") @db.Uuid
   esignTasks        ContractESignTask[]
+  stage1DeliveryHandovers  VehicleDeliveryHandover[] @relation("DeliveryHandoverStage1Contract")
+  handoverDeliveryHandover VehicleDeliveryHandover?  @relation("DeliveryHandoverContract")
   createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy         String?            @map("created_by") @db.Uuid
@@ -4764,6 +4834,7 @@ model ContractESignTask {
   failedAt                DateTime?                  @map("failed_at") @db.Timestamptz(6)
   signers                 ContractESignSigner[]
   callbacks               ContractESignCallbackLog[]
+  deliveryHandover        VehicleDeliveryHandover?   @relation("DeliveryHandoverESignTask")
 
   @@index([contractId])
   @@index([orderId])

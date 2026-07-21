@@ -2,13 +2,15 @@ import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.t
 
 export const ESIGN_PROVIDER_CLIENT = Symbol("ESIGN_PROVIDER_CLIENT");
 
-export type ESignSigningStage = "STAGE1_CONTRACT";
-export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN";
+export type ESignSigningStage = "STAGE1_CONTRACT" | "STAGE2_DELIVERY_HANDOVER";
+export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER_CONFIRMATION";
 export type ESignSlotId =
   | "STAGE1_BODY_CUSTOMER"
   | "STAGE1_BODY_PLATFORM"
   | "STAGE1_ATTACHMENT1_CUSTOMER"
-  | "STAGE1_ATTACHMENT1_PLATFORM";
+  | "STAGE1_ATTACHMENT1_PLATFORM"
+  | "STAGE2_HANDOVER_CUSTOMER"
+  | "STAGE2_HANDOVER_PLATFORM";
 export type ESignSignerRole = "CUSTOMER" | "PLATFORM";
 export type ESignProviderActionType = "CUSTOMER_MANUAL_SIGN" | "PLATFORM_AUTO_SEAL";
 

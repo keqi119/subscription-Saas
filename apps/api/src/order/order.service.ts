@@ -67,7 +67,18 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import {
+  AddDamageCloseupDto,
+  AttachDeliveryEvidenceFileDto,
+  DeclareNoVisibleDamageDto,
+  RejectDeliveryEvidenceDto
+} from "../delivery-evidence/delivery-evidence.dto";
+import {
+  DeliveryEvidenceReadiness,
+  DeliveryEvidenceService
+} from "../delivery-evidence/delivery-evidence.service";
+import {
   DELIVERY_HANDOVER_NOT_READY_MESSAGE,
+  getDeliveryHandoverArchiveWarning,
   isDeliveryHandoverArchived,
   isDeliveryHandoverReadyForDelivery,
   isDeliveryHandoverSigned
@@ -309,7 +320,8 @@ export class OrderService {
     private readonly prisma: PrismaService,
     @Optional() private readonly contractPdfArtifactWriter?: ContractPdfArtifactWriterService,
     @Optional() private readonly configService?: ConfigService,
-    @Optional() private readonly storageService?: StorageService
+    @Optional() private readonly storageService?: StorageService,
+    @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -1576,7 +1588,17 @@ export class OrderService {
       }),
       findActiveDeliveryHandover(this.prisma, id)
     ]);
-    return buildDeliveryCheck(order, delivery && !delivery.deletedAt ? delivery : null, undefined, handover);
+    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
+      id,
+      handover?.id ?? null
+    );
+    return buildDeliveryCheck(
+      order,
+      delivery && !delivery.deletedAt ? delivery : null,
+      undefined,
+      handover,
+      evidenceReadiness
+    );
   }
 
   async getDelivery(id: string, user: RequestUser) {
@@ -1587,6 +1609,69 @@ export class OrderService {
       where: { orderId: id }
     });
     return delivery && !delivery.deletedAt ? toDeliveryView(delivery) : null;
+  }
+
+  async getDeliveryEvidenceChecklist(id: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const handover = await findActiveDeliveryHandover(this.prisma, id);
+    return this.getDeliveryEvidenceService().getChecklist({
+      handoverId: handover?.id ?? null,
+      orderId: id
+    });
+  }
+
+  async initializeDeliveryEvidenceChecklist(id: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const handover = await findActiveDeliveryHandover(this.prisma, id);
+    return this.getDeliveryEvidenceService().initializeChecklist(id, handover?.id ?? null);
+  }
+
+  async attachDeliveryEvidenceFile(itemId: string, dto: AttachDeliveryEvidenceFileDto, user: RequestUser) {
+    await this.assertCanAccessDeliveryEvidenceItem(itemId, user);
+    return this.getDeliveryEvidenceService().attachEvidenceFile(itemId, dto.fileId, dto.mediaType, user.id);
+  }
+
+  async approveDeliveryEvidenceItem(itemId: string, user: RequestUser) {
+    await this.assertCanAccessDeliveryEvidenceItem(itemId, user);
+    return this.getDeliveryEvidenceService().approveEvidenceItem(itemId, user.id);
+  }
+
+  async rejectDeliveryEvidenceItem(itemId: string, dto: RejectDeliveryEvidenceDto, user: RequestUser) {
+    await this.assertCanAccessDeliveryEvidenceItem(itemId, user);
+    return this.getDeliveryEvidenceService().rejectEvidenceItem(itemId, user.id, dto.reason);
+  }
+
+  async declareNoVisibleDamage(id: string, dto: DeclareNoVisibleDamageDto, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const handover = await findActiveDeliveryHandover(this.prisma, id);
+    return this.getDeliveryEvidenceService().declareNoVisibleDamage(id, user.id, handover?.id ?? null, dto.remark);
+  }
+
+  async addDamageCloseup(id: string, dto: AddDamageCloseupDto, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const handover = await findActiveDeliveryHandover(this.prisma, id);
+    return this.getDeliveryEvidenceService().addDamageCloseup({
+      actorId: user.id,
+      description: dto.description,
+      fileId: dto.fileId,
+      handoverId: handover?.id ?? null,
+      mediaType: dto.mediaType,
+      orderId: id
+    });
+  }
+
+  async getDeliveryEvidenceReadiness(id: string, user: RequestUser) {
+    const order = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(order, user);
+    const handover = await findActiveDeliveryHandover(this.prisma, id);
+    return this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
+      id,
+      handover?.id ?? null
+    );
   }
 
   async prepareDelivery(id: string, dto: PrepareDeliveryDto, user: RequestUser, context: RequestContext) {
@@ -1662,13 +1747,17 @@ export class OrderService {
     assertNoActiveOrderChange(beforeOrder);
     assertOrderNotDelivered(beforeOrder);
 
-    const deliveredAt = dto.deliveredAt ? parseDateTime(dto.deliveredAt, "deliveredAt") : new Date();
+    const deliveredAt = new Date();
     const beforeDelivery = await this.prisma.vehicleDelivery.findUnique({
       include: deliveryInclude,
       where: { orderId: id }
     });
     const handover = await findActiveDeliveryHandover(this.prisma, id);
-    assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt, handover);
+    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
+      id,
+      handover?.id ?? null
+    );
+    assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt, handover, evidenceReadiness);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
@@ -2581,6 +2670,22 @@ export class OrderService {
       throw new NotFoundException("Order not found.");
     }
     return order;
+  }
+
+  private getDeliveryEvidenceService() {
+    return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
+  }
+
+  private async assertCanAccessDeliveryEvidenceItem(itemId: string, user: RequestUser) {
+    const item = await this.prisma.vehicleDeliveryEvidenceItem.findFirst({
+      select: { orderId: true },
+      where: { id: itemId }
+    });
+    if (!item) {
+      throw new NotFoundException("交付证据项不存在。");
+    }
+    const order = await this.findOrderOrThrow(item.orderId);
+    ensureCanAccessOrder(order, user);
   }
 
   private async buildMonthlyRenewalPlan(
@@ -3651,7 +3756,8 @@ function assertCanConfirmDelivery(
   order: OrderWithDetails,
   delivery: DeliveryWithDetails | null,
   deliveredAt: Date,
-  handover: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null
+  handover: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null,
+  evidenceReadiness: DeliveryEvidenceReadiness
 ) {
   if (!delivery || delivery.deletedAt) {
     throw new BadRequestException("请先准备交付。");
@@ -3663,7 +3769,7 @@ function assertCanConfirmDelivery(
     throw new BadRequestException("请先准备交付。");
   }
 
-  const check = buildDeliveryCheck(order, delivery, deliveredAt, handover);
+  const check = buildDeliveryCheck(order, delivery, deliveredAt, handover, evidenceReadiness);
   if (!check.insuranceValid) {
     throw new BadRequestException(DELIVERY_INSURANCE_INVALID_MESSAGE);
   }
@@ -3711,7 +3817,8 @@ function buildDeliveryCheck(
   order: OrderWithDetails,
   delivery: DeliveryWithDetails | null,
   targetAt?: Date,
-  handover?: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null
+  handover?: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null,
+  evidenceReadiness?: DeliveryEvidenceReadiness
 ) {
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
@@ -3738,6 +3845,8 @@ function buildDeliveryCheck(
   const handoverSigned = isDeliveryHandoverSigned(handover);
   const handoverArchived = isDeliveryHandoverArchived(handover);
   const handoverReady = isDeliveryHandoverReadyForDelivery(handover);
+  const handoverArchiveWarning = getDeliveryHandoverArchiveWarning(handover);
+  const handoverEvidenceReady = evidenceReadiness?.ready ?? false;
   const deliveryReady = delivery?.deliveryStatus === DeliveryStatus.READY;
 
   if (alreadyDelivered) {
@@ -3752,6 +3861,9 @@ function buildDeliveryCheck(
       depositReceivedConfirmed,
       firstMonthlyFeeReceivedConfirmed,
       handoverArchived,
+      handoverArchiveWarning,
+      handoverEvidenceBlockingReasons: evidenceReadiness?.blockingReasons ?? [],
+      handoverEvidenceReady,
       handoverReady,
       handoverSigned,
       insuranceValid,
@@ -3814,6 +3926,9 @@ function buildDeliveryCheck(
   if (!handoverReady) {
     confirmBlockingReasons.push(DELIVERY_HANDOVER_NOT_READY_MESSAGE);
   }
+  if (!handoverEvidenceReady) {
+    confirmBlockingReasons.push(...(evidenceReadiness?.blockingReasons ?? ["交付证据尚未全部上传并审核通过。"]));
+  }
 
   return {
     alreadyDelivered,
@@ -3826,6 +3941,9 @@ function buildDeliveryCheck(
     depositReceivedConfirmed,
     firstMonthlyFeeReceivedConfirmed,
     handoverArchived,
+    handoverArchiveWarning,
+    handoverEvidenceBlockingReasons: evidenceReadiness?.blockingReasons ?? [],
+    handoverEvidenceReady,
     handoverReady,
     handoverSigned,
     insuranceValid,

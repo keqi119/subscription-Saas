@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import {
   ContractStatus,
   DeliveryHandoverArchiveStatus,
@@ -7,12 +7,14 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { DeliveryEvidenceService } from "../delivery-evidence/delivery-evidence.service";
 
 export const STAGE2_DELIVERY_HANDOVER_SIGNING_STAGE = "STAGE2_DELIVERY_HANDOVER" as const;
 export const STAGE2_HANDOVER_CUSTOMER_SLOT_ID = "STAGE2_HANDOVER_CUSTOMER" as const;
 export const STAGE2_HANDOVER_PLATFORM_SLOT_ID = "STAGE2_HANDOVER_PLATFORM" as const;
-export const DELIVERY_HANDOVER_ARCHIVE_REQUIRED = true;
-export const DELIVERY_HANDOVER_NOT_READY_MESSAGE = "交付交接确认书尚未完成签署和归档。";
+export const DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION = false;
+export const DELIVERY_HANDOVER_NOT_READY_MESSAGE = "交付交接确认书尚未完成签署。";
+export const DELIVERY_HANDOVER_ARCHIVE_WARNING_MESSAGE = "交付交接确认书已签署，已签 PDF 尚未完成归档。";
 
 const TERMINAL_HANDOVER_STATUSES = [
   DeliveryHandoverStatus.CANCELLED,
@@ -23,7 +25,10 @@ type DeliveryHandoverRecord = Prisma.VehicleDeliveryHandoverGetPayload<object>;
 
 @Injectable()
 export class DeliveryHandoverService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService
+  ) {}
 
   async getOrCreateDraftHandover(orderId: string, actorId?: string) {
     const existing = await this.findActiveHandover(orderId);
@@ -78,7 +83,8 @@ export class DeliveryHandoverService {
         createdBy: actorId,
         orderId,
         snapshot: toJsonValue({
-          archiveRequired: DELIVERY_HANDOVER_ARCHIVE_REQUIRED,
+          archiveBlocksDeliveryConfirmation: DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION,
+          archiveRetryRequired: true,
           stage1ContractId: prerequisites.stage1ContractId
         }),
         stage1ContractId: prerequisites.stage1ContractId,
@@ -185,6 +191,18 @@ export class DeliveryHandoverService {
     });
   }
 
+  async markArchiveFailed(id: string, failureReason: string, actorId?: string) {
+    return this.prisma.vehicleDeliveryHandover.update({
+      data: {
+        archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+        failedAt: new Date(),
+        failureReason,
+        updatedBy: actorId
+      },
+      where: { id }
+    });
+  }
+
   async markCancelled(id: string, actorId?: string) {
     return this.prisma.vehicleDeliveryHandover.update({
       data: {
@@ -199,6 +217,23 @@ export class DeliveryHandoverService {
   async assertDeliveryCanBeConfirmed(orderId: string) {
     const handover = await this.findActiveHandover(orderId);
     assertDeliveryHandoverReadyForDelivery(handover);
+    if (this.deliveryEvidenceService) {
+      await this.deliveryEvidenceService.assertEvidenceReadyForDeliveryConfirmation(orderId, handover?.id ?? null);
+    }
+  }
+
+  async assertStage2PdfCanBeGenerated(orderId: string, handoverId?: string | null) {
+    if (!this.deliveryEvidenceService) {
+      return;
+    }
+    await this.deliveryEvidenceService.assertEvidenceReadyForStage2Pdf(orderId, handoverId);
+  }
+
+  async assertStage2ESignCanStart(orderId: string, handoverId?: string | null) {
+    if (!this.deliveryEvidenceService) {
+      return;
+    }
+    await this.deliveryEvidenceService.assertEvidenceReadyForStage2ESign(orderId, handoverId);
   }
 
   private findActiveHandover(orderId: string) {
@@ -231,8 +266,7 @@ export function isDeliveryHandoverReadyForDelivery(handover: Pick<
   if (!signed) {
     return false;
   }
-  return !DELIVERY_HANDOVER_ARCHIVE_REQUIRED ||
-    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED;
+  return true;
 }
 
 export function isDeliveryHandoverSigned(handover: Pick<DeliveryHandoverRecord, "deletedAt" | "status"> | null | undefined) {
@@ -241,6 +275,24 @@ export function isDeliveryHandoverSigned(handover: Pick<DeliveryHandoverRecord, 
       !handover.deletedAt &&
       (handover.status === DeliveryHandoverStatus.SIGNED || handover.status === DeliveryHandoverStatus.ARCHIVED)
   );
+}
+
+export function getDeliveryHandoverArchiveWarning(handover: Pick<
+  DeliveryHandoverRecord,
+  "archiveStatus" | "deletedAt" | "failureReason" | "status"
+> | null | undefined) {
+  if (!isDeliveryHandoverSigned(handover)) {
+    return null;
+  }
+  if (handover?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED) {
+    return null;
+  }
+  if (handover?.archiveStatus === DeliveryHandoverArchiveStatus.FAILED) {
+    return handover.failureReason
+      ? `交付交接确认书已签署，已签 PDF 归档失败：${handover.failureReason}`
+      : "交付交接确认书已签署，已签 PDF 归档失败，请重试归档。";
+  }
+  return DELIVERY_HANDOVER_ARCHIVE_WARNING_MESSAGE;
 }
 
 export function isDeliveryHandoverArchived(

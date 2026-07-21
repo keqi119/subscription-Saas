@@ -4,6 +4,7 @@ import {
   BillStatus,
   BillType,
   ContractStatus,
+  DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   DeliveryStatus,
   Lease,
@@ -14,6 +15,10 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import {
+  DeliveryEvidenceReadiness,
+  DeliveryEvidenceService
+} from "../delivery-evidence/delivery-evidence.service";
+import {
   isDeliveryHandoverArchived,
   isDeliveryHandoverSigned
 } from "../delivery-handover/delivery-handover.service";
@@ -23,6 +28,7 @@ import {
   LeaseActivationClock,
   LeaseActivationCondition,
   LeaseActivationResult,
+  LeaseActivationWarningCondition,
   LeaseStatusView
 } from "./lease-activation.types";
 
@@ -35,7 +41,9 @@ export class LeaseActivationEngine {
     private readonly prisma: PrismaService,
     @Optional()
     @Inject(LEASE_ACTIVATION_CLOCK)
-    private readonly clock: LeaseActivationClock = () => new Date()
+    private readonly clock: LeaseActivationClock = () => new Date(),
+    @Optional()
+    private readonly deliveryEvidenceService?: DeliveryEvidenceService
   ) {}
 
   async evaluate(orderId: string): Promise<LeaseActivationResult> {
@@ -70,7 +78,12 @@ export class LeaseActivationEngine {
       this.prisma.vehicleInspection.findUnique({ where: { orderId } })
     ]);
 
+    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
+      orderId,
+      handover?.id ?? null
+    );
     const missingConditions: LeaseActivationCondition[] = [];
+    const warningConditions: LeaseActivationWarningCondition[] = [];
 
     if (!order.contract || order.contract.deletedAt || order.contract.status !== ContractStatus.SIGNED) {
       missingConditions.push("CONTRACT_SIGNED");
@@ -84,7 +97,7 @@ export class LeaseActivationEngine {
       missingConditions.push("FIRST_RENT_PAID");
     }
 
-    if (!delivery || delivery.deletedAt || delivery.deliveryStatus !== DeliveryStatus.DELIVERED) {
+    if (!order.actualDeliveryAt || !delivery || delivery.deletedAt || delivery.deliveryStatus !== DeliveryStatus.DELIVERED) {
       missingConditions.push("DELIVERY_CONFIRMED");
     }
 
@@ -92,8 +105,14 @@ export class LeaseActivationEngine {
       missingConditions.push("HANDOVER_SIGNED_MISSING");
     }
 
-    if (!isDeliveryHandoverArchived(handover)) {
-      missingConditions.push("HANDOVER_ARCHIVED_MISSING");
+    appendEvidenceMissingConditions(missingConditions, evidenceReadiness);
+
+    if (isDeliveryHandoverSigned(handover) && !isDeliveryHandoverArchived(handover)) {
+      warningConditions.push(
+        handover?.archiveStatus === DeliveryHandoverArchiveStatus.FAILED
+          ? "HANDOVER_ARCHIVE_FAILED"
+          : "HANDOVER_ARCHIVED_MISSING"
+      );
     }
 
     if (!inspection || inspection.deletedAt || inspection.status !== VehicleInspectionStatus.PASSED) {
@@ -103,7 +122,8 @@ export class LeaseActivationEngine {
     return {
       canActivate: missingConditions.length === 0,
       missingConditions,
-      ...(missingConditions.length > 0 ? { reason: LEASE_ACTIVATION_REJECTED_REASON } : {})
+      ...(missingConditions.length > 0 ? { reason: LEASE_ACTIVATION_REJECTED_REASON } : {}),
+      ...(warningConditions.length > 0 ? { warningConditions } : {})
     };
   }
 
@@ -123,7 +143,14 @@ export class LeaseActivationEngine {
     }
 
     const existing = await this.prisma.lease.findUnique({ where: { orderId } });
-    const activatedAt = this.clock();
+    const order = await this.prisma.subscriptionOrder.findUnique({
+      select: { actualDeliveryAt: true, deletedAt: true, id: true },
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt || !order.actualDeliveryAt) {
+      throw new BadRequestException("DELIVERY_CONFIRMED");
+    }
+    const activatedAt = order.actualDeliveryAt;
     const lease =
       existing && !existing.deletedAt
         ? await this.prisma.lease.update({
@@ -172,7 +199,8 @@ export class LeaseActivationEngine {
         leaseId: lease.id,
         missingConditions: result.missingConditions,
         orderId,
-        status: lease.status
+        status: lease.status,
+        warningConditions: result.warningConditions
       };
     }
 
@@ -182,8 +210,13 @@ export class LeaseActivationEngine {
       leaseId: null,
       missingConditions: result.missingConditions,
       orderId,
-      status: result.canActivate ? LeaseStatus.READY : LeaseStatus.NOT_ACTIVE
+      status: result.canActivate ? LeaseStatus.READY : LeaseStatus.NOT_ACTIVE,
+      warningConditions: result.warningConditions
     };
+  }
+
+  private getDeliveryEvidenceService() {
+    return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
   }
 }
 
@@ -208,4 +241,35 @@ function toLeaseView(lease: Lease) {
 
 function toIsoDateTime(value: Date | null) {
   return value ? value.toISOString() : null;
+}
+
+function appendEvidenceMissingConditions(
+  missingConditions: LeaseActivationCondition[],
+  readiness: DeliveryEvidenceReadiness
+) {
+  if (readiness.ready) {
+    return;
+  }
+  for (const detail of readiness.blockingDetails) {
+    pushUnique(missingConditions, mapEvidenceBlockingCondition(detail));
+  }
+}
+
+function mapEvidenceBlockingCondition(detail: DeliveryEvidenceReadiness["blockingDetails"][number]): LeaseActivationCondition {
+  if (detail.code === "HANDOVER_EVIDENCE_REJECTED" || detail.code === "DAMAGE_EVIDENCE_REJECTED") {
+    return "HANDOVER_EVIDENCE_REJECTED";
+  }
+  if (detail.code === "HANDOVER_EVIDENCE_REVIEW_PENDING" || detail.code === "DAMAGE_EVIDENCE_REVIEW_PENDING") {
+    return "HANDOVER_EVIDENCE_REVIEW_PENDING";
+  }
+  if (detail.code === "DAMAGE_EVIDENCE_MISSING" || detail.code === "DAMAGE_STATE_CONFLICT") {
+    return "DAMAGE_EVIDENCE_MISSING";
+  }
+  return "HANDOVER_EVIDENCE_MISSING";
+}
+
+function pushUnique<T>(items: T[], item: T) {
+  if (!items.includes(item)) {
+    items.push(item);
+  }
 }

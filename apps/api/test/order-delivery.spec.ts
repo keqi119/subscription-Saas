@@ -86,7 +86,7 @@ describe("vehicle delivery handover workflow", () => {
 
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
-    ).rejects.toThrow("交付交接确认书尚未完成签署和归档");
+    ).rejects.toThrow("交付交接确认书尚未完成签署");
 
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
     expect(harness.state.actualDeliveryAt).toBeNull();
@@ -104,10 +104,10 @@ describe("vehicle delivery handover workflow", () => {
 
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
-    ).rejects.toThrow("交付交接确认书尚未完成签署和归档");
+    ).rejects.toThrow("交付交接确认书尚未完成签署");
   });
 
-  it("rejects confirm when the Stage 2 signed handover PDF is not archived", async () => {
+  it("allows confirm when signed handover archive is temporarily missing and surfaces a warning", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
     harness.state.handover = buildHandoverRecord(harness, {
@@ -116,9 +116,34 @@ describe("vehicle delivery handover workflow", () => {
       status: "SIGNED"
     });
 
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      canConfirmDelivery: boolean;
+      handoverArchiveWarning: string | null;
+      handoverArchived: boolean;
+      handoverReady: boolean;
+    };
+
+    expect(check.handoverReady).toBe(true);
+    expect(check.handoverArchived).toBe(false);
+    expect(check.handoverArchiveWarning).toContain("已签 PDF 尚未完成归档");
+    expect(check.canConfirmDelivery).toBe(true);
+
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
-    ).rejects.toThrow("交付交接确认书尚未完成签署和归档");
+    ).resolves.toMatchObject({ deliveryStatus: DeliveryStatus.DELIVERED });
+  });
+
+  it("rejects confirm when required delivery evidence is not approved", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.evidenceReadiness = buildEvidenceReadiness(harness, {
+      blockingReasons: ["客户与车辆正面合影 尚未上传。"],
+      ready: false
+    });
+
+    await expect(
+      harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
+    ).rejects.toThrow("客户与车辆正面合影 尚未上传");
   });
 
   it("prepare-delivery creates a READY delivery record", async () => {
@@ -183,22 +208,30 @@ describe("vehicle delivery handover workflow", () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
 
-    const delivery = (await harness.service.confirmDelivery(
-      harness.orderId,
-      validConfirmDto(),
-      harness.user,
-      harness.context
-    )) as {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T04:00:00.000Z"));
+
+    let delivery!: {
       deliveredAt: string;
       deliveryStatus: DeliveryStatus;
       handoverMileageKm: number;
     };
+    try {
+      delivery = (await harness.service.confirmDelivery(
+        harness.orderId,
+        validConfirmDto(),
+        harness.user,
+        harness.context
+      )) as typeof delivery;
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(delivery.deliveryStatus).toBe(DeliveryStatus.DELIVERED);
     expect(delivery.handoverMileageKm).toBe(28500);
-    expect(delivery.deliveredAt).toBe("2026-06-10T03:00:00.000Z");
+    expect(delivery.deliveredAt).toBe("2026-06-10T04:00:00.000Z");
     expect(harness.state.orderStatus).toBe(OrderStatus.ACTIVE);
-    expect(harness.state.actualDeliveryAt?.toISOString()).toBe("2026-06-10T03:00:00.000Z");
+    expect(harness.state.actualDeliveryAt?.toISOString()).toBe("2026-06-10T04:00:00.000Z");
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.LEASED);
 
     const auditEntityTypes = harness.auditService.write.mock.calls.map(([entry]) => entry.entityType);
@@ -329,6 +362,7 @@ function createDeliveryHarness() {
     contractStatus: ContractStatus;
     delivery: Record<string, unknown> | null;
     depositStatus: DepositStatus;
+    evidenceReadiness: ReturnType<typeof buildEvidenceReadiness>;
     insuranceEndDate: Date | null;
     insuranceStartDate: Date | null;
     orderStatus: OrderStatus;
@@ -339,8 +373,9 @@ function createDeliveryHarness() {
     contractStatus: ContractStatus.SIGNED,
     delivery: null,
     depositStatus: DepositStatus.CONFIRMED,
+    evidenceReadiness: buildEvidenceReadiness({ orderId }),
     handover: null,
-    insuranceEndDate: new Date("2026-06-30T00:00:00.000Z"),
+    insuranceEndDate: new Date("2030-12-31T00:00:00.000Z"),
     insuranceStartDate: new Date("2026-06-01T00:00:00.000Z"),
     orderStatus: OrderStatus.PENDING_PAYMENT,
     vehicleStatus: VehicleStatus.RESERVED
@@ -505,9 +540,40 @@ function createDeliveryHarness() {
       void entry;
     })
   };
-  const service = new OrderService(auditService as never, prisma as never);
+  const deliveryEvidenceService = {
+    validateEvidenceReadyForDeliveryConfirmation: vi.fn(async () => state.evidenceReadiness)
+  };
+  const service = new OrderService(
+    auditService as never,
+    prisma as never,
+    undefined,
+    undefined,
+    undefined,
+    deliveryEvidenceService as never
+  );
 
-  return { auditService, context, customerId, orderId, prisma, service, state, tx, user, vehicleId };
+  return { auditService, context, customerId, deliveryEvidenceService, orderId, prisma, service, state, tx, user, vehicleId };
+}
+
+function buildEvidenceReadiness(
+  harness: { orderId: string },
+  overrides: Partial<{
+    blockingReasons: string[];
+    ready: boolean;
+  }> = {}
+) {
+  const ready = overrides.ready ?? true;
+  const blockingReasons = overrides.blockingReasons ?? [];
+  return {
+    blockingDetails: blockingReasons.map((message) => ({
+      code: "HANDOVER_EVIDENCE_MISSING" as const,
+      message
+    })),
+    blockingReasons,
+    handoverId: "handover-1",
+    orderId: harness.orderId,
+    ready
+  };
 }
 
 function buildHandoverRecord(

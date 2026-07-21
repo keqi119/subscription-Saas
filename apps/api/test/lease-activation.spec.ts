@@ -51,22 +51,39 @@ describe("LeaseActivationEngine", () => {
     const result = await harness.engine.evaluate(harness.orderId);
 
     expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["HANDOVER_SIGNED_MISSING", "HANDOVER_ARCHIVED_MISSING"]);
+    expect(result.missingConditions).toEqual(["HANDOVER_SIGNED_MISSING"]);
   });
 
-  it("rejects activation when Stage 2 handover is signed but not archived", async () => {
+  it("keeps signed-but-not-archived handover as a warning instead of a hard blocker", async () => {
     const harness = createLeaseActivationHarness({
       handover: {
         archiveStatus: "NOT_STARTED",
         deletedAt: null,
+        id: "handover-1",
         status: "SIGNED"
       }
     });
 
     const result = await harness.engine.evaluate(harness.orderId);
 
+    expect(result.canActivate).toBe(true);
+    expect(result.missingConditions).toEqual([]);
+    expect(result.warningConditions).toEqual(["HANDOVER_ARCHIVED_MISSING"]);
+  });
+
+  it("reports delivery evidence readiness failures as lease activation blockers", async () => {
+    const harness = createLeaseActivationHarness({
+      evidenceReadiness: buildEvidenceReadiness("order-1", {
+        blockingReasons: ["损伤状态未处理。"],
+        code: "DAMAGE_EVIDENCE_MISSING",
+        ready: false
+      })
+    });
+
+    const result = await harness.engine.evaluate(harness.orderId);
+
     expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["HANDOVER_ARCHIVED_MISSING"]);
+    expect(result.missingConditions).toEqual(["DAMAGE_EVIDENCE_MISSING"]);
   });
 
   it("allows activation when all activation conditions are satisfied", async () => {
@@ -96,6 +113,24 @@ describe("LeaseActivationEngine", () => {
       module: "lease"
     }));
   });
+
+  it("uses actualDeliveryAt as leaseStartAt instead of Stage 2 customerSignedAt", async () => {
+    const leaseStartAt = new Date("2026-06-30T08:00:00.000Z");
+    const harness = createLeaseActivationHarness({
+      actualDeliveryAt: leaseStartAt,
+      handover: {
+        archiveStatus: "ARCHIVED",
+        customerSignedAt: new Date("2026-06-29T02:00:00.000Z"),
+        deletedAt: null,
+        id: "handover-1",
+        status: "ARCHIVED"
+      }
+    });
+
+    const lease = await harness.engine.activate(harness.orderId, harness.user, harness.context);
+
+    expect(lease.activatedAt).toBe("2026-06-30T08:00:00.000Z");
+  });
 });
 
 function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> = {}) {
@@ -111,6 +146,7 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
   };
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state: LeaseActivationState = {
+    actualDeliveryAt: now,
     contractStatus: ContractStatus.SIGNED,
     depositBillStatus: BillStatus.PAID,
     depositRemainingAmount: 0n,
@@ -120,8 +156,10 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
     handover: {
       archiveStatus: "ARCHIVED",
       deletedAt: null,
+      id: "handover-1",
       status: "ARCHIVED"
     },
+    evidenceReadiness: buildEvidenceReadiness(orderId),
     inspectionStatus: "PASSED",
     lease: null,
     ...overrides
@@ -136,6 +174,7 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
       },
       contractId: "contract-1",
       customerId: "customer-1",
+      actualDeliveryAt: state.actualDeliveryAt,
       deletedAt: null,
       id: orderId,
       orderNo: "ORD202606300001"
@@ -207,12 +246,43 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
   const auditService = {
     write: vi.fn(async () => undefined)
   };
-  const engine = new LeaseActivationEngine(auditService as never, prisma as never, () => now);
+  const deliveryEvidenceService = {
+    validateEvidenceReadyForDeliveryConfirmation: vi.fn(async () => state.evidenceReadiness)
+  };
+  const engine = new LeaseActivationEngine(
+    auditService as never,
+    prisma as never,
+    () => now,
+    deliveryEvidenceService as never
+  );
 
-  return { auditService, context, engine, orderId, prisma, state, user };
+  return { auditService, context, deliveryEvidenceService, engine, orderId, prisma, state, user };
+}
+
+function buildEvidenceReadiness(
+  orderId: string,
+  overrides: Partial<{
+    blockingReasons: string[];
+    code: "DAMAGE_EVIDENCE_MISSING" | "HANDOVER_EVIDENCE_MISSING" | "HANDOVER_EVIDENCE_REJECTED" | "HANDOVER_EVIDENCE_REVIEW_PENDING";
+    ready: boolean;
+  }> = {}
+) {
+  const ready = overrides.ready ?? true;
+  const blockingReasons = overrides.blockingReasons ?? [];
+  return {
+    blockingDetails: blockingReasons.map((message) => ({
+      code: overrides.code ?? "HANDOVER_EVIDENCE_MISSING",
+      message
+    })),
+    blockingReasons,
+    handoverId: "handover-1",
+    orderId,
+    ready
+  };
 }
 
 interface LeaseActivationState {
+  actualDeliveryAt: Date | null;
   contractStatus: ContractStatus;
   depositBillStatus: BillStatus;
   depositRemainingAmount: bigint;
@@ -220,6 +290,7 @@ interface LeaseActivationState {
   firstRentBillStatus: BillStatus;
   firstRentRemainingAmount: bigint;
   handover: Record<string, unknown> | null;
+  evidenceReadiness: ReturnType<typeof buildEvidenceReadiness>;
   inspectionStatus: "PENDING" | "PASSED" | "FAILED";
   lease: Record<string, unknown> | null;
 }

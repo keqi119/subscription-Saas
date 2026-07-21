@@ -519,6 +519,29 @@ describe("Fadada provider B2-A flow", () => {
     });
   });
 
+  it("allows stored signer URLs without a local expiry for legacy Fadada tasks", async () => {
+    const prisma = {
+      contractESignSigner: {
+        findFirst: vi.fn(async () => ({
+          providerSignerId: "ESG1S1",
+          signUrl: "https://sign.example.test/customer",
+          signUrlExpiresAt: null
+        }))
+      }
+    };
+    const provider = new FadadaESignProvider(
+      loadFadadaConfig(configService()),
+      undefined,
+      undefined,
+      prisma as never
+    );
+
+    await expect(provider.getSignerUrl({ providerTaskId: "ESG1S1", taskId: "task-1" })).resolves.toMatchObject({
+      rawResponse: { source: "LOCAL_SIGNER_URL" },
+      signUrl: "https://sign.example.test/customer"
+    });
+  });
+
   it("returns a clear error when no usable stored signer URL exists", async () => {
     const prisma = {
       contractESignSigner: {

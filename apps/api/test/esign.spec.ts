@@ -910,6 +910,34 @@ describe("ESignService", () => {
     );
   });
 
+  it("returns an existing Fadada portal signing URL when local expiry is absent", async () => {
+    const provider: ESignProvider = {
+      createSignTask: vi.fn(async () => ({
+        providerEnvelopeId: "ESG-1",
+        providerTaskId: "ESG-1-1",
+        signUrl: "https://sign.example.test/customer",
+        signUrlExpiresAt: undefined
+      })),
+      getSignerUrl: vi.fn(async () => {
+        throw new Error("stored signUrl should be reused");
+      }),
+      verifyCallback: vi.fn()
+    };
+    const { service } = createESignFixture(
+      { ESIGN_PROVIDER: "fadada", FADADA_ENABLED: "true" },
+      provider
+    );
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+
+    const result = await service.startPortalSigning("contract-1", currentCustomer("customer-1"));
+
+    expect(result).toMatchObject({
+      mock: false,
+      signUrl: "https://sign.example.test/customer"
+    });
+    expect(provider.getSignerUrl).not.toHaveBeenCalled();
+  });
+
   it("blocks portal signing links when Fadada readiness is no longer cert-bound", async () => {
     const provider: ESignProvider = {
       createSignTask: vi.fn(async () => ({

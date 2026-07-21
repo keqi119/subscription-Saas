@@ -892,6 +892,58 @@ enum DeliveryHandoverArchiveStatus {
   @@map("delivery_handover_archive_status")
 }
 
+enum DeliveryEvidenceType {
+  CUSTOMER_WITH_VEHICLE_FRONT
+  VEHICLE_FRONT
+  VEHICLE_REAR
+  VIN_OR_FRAME_NUMBER
+  ODOMETER_DASHBOARD
+  INTERIOR_REAR
+  INTERIOR_FRONT
+  WALKAROUND_VIDEO
+  WHEEL_CLOSEUP_FRONT_LEFT
+  WHEEL_CLOSEUP_FRONT_RIGHT
+  WHEEL_CLOSEUP_REAR_LEFT
+  WHEEL_CLOSEUP_REAR_RIGHT
+  DAMAGE_STATIC_CLOSEUP
+  NO_VISIBLE_DAMAGE_DECLARATION
+
+  @@map("delivery_evidence_type")
+}
+
+enum DeliveryEvidenceRequirementLevel {
+  REQUIRED
+  CONDITIONAL
+  OPTIONAL
+
+  @@map("delivery_evidence_requirement_level")
+}
+
+enum DeliveryEvidenceStatus {
+  NOT_STARTED
+  UPLOADED
+  APPROVED
+  REJECTED
+
+  @@map("delivery_evidence_status")
+}
+
+enum DeliveryEvidenceReviewStatus {
+  NOT_STARTED
+  PENDING
+  APPROVED
+  REJECTED
+
+  @@map("delivery_evidence_review_status")
+}
+
+enum DeliveryEvidenceMediaType {
+  PHOTO
+  VIDEO
+
+  @@map("delivery_evidence_media_type")
+}
+
 enum ESignProviderType {
   MOCK
   FADADA
@@ -1622,6 +1674,8 @@ model User {
   reviewedMaterialGroups   ApplicationMaterialGroup[] @relation("MaterialGroupReviewer")
   uploadedMaterialFiles    ApplicationMaterialFile[]  @relation("MaterialFileUploader")
   deletedMaterialFiles     ApplicationMaterialFile[]  @relation("MaterialFileDeleter")
+  reviewedDeliveryEvidenceItems VehicleDeliveryEvidenceItem[] @relation("DeliveryEvidenceReviewer")
+  uploadedDeliveryEvidenceFiles VehicleDeliveryEvidenceFile[] @relation("DeliveryEvidenceFileUploader")
   applicationActionLogs    ApplicationActionLog[]     @relation("ApplicationActionOperator")
   approvedProductVersions  ProductVersion[]           @relation("ProductVersionApprover")
   confirmedQuotes          SubscriptionQuote[]        @relation("QuoteConfirmer")
@@ -3908,6 +3962,7 @@ model SubscriptionOrder {
   actualReturnAt             DateTime?             @map("actual_return_at") @db.Timestamptz(6)
   deliveries                 VehicleDelivery[]
   deliveryHandovers          VehicleDeliveryHandover[]
+  deliveryEvidenceItems      VehicleDeliveryEvidenceItem[]
   lease                      Lease?
   vehicleInspection          VehicleInspection?
   returns                    VehicleReturn[]
@@ -4590,6 +4645,7 @@ model VehicleDelivery {
   checklistSnapshot                Json?             @map("checklist_snapshot")
   remark                           String?           @db.Text
   handovers                        VehicleDeliveryHandover[]
+  evidenceItems                    VehicleDeliveryEvidenceItem[]
   createdAt                        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                        String?           @map("created_by") @db.Uuid
@@ -4631,6 +4687,7 @@ model VehicleDeliveryHandover {
   failureReason        String?                       @map("failure_reason") @db.Text
   metadata             Json?
   snapshot             Json?
+  evidenceItems        VehicleDeliveryEvidenceItem[]
   createdAt            DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy            String?                       @map("created_by") @db.Uuid
@@ -4645,6 +4702,69 @@ model VehicleDeliveryHandover {
   @@index([completedAt])
   @@index([archivedAt])
   @@map("vehicle_delivery_handover")
+}
+
+model VehicleDeliveryEvidenceItem {
+  id                 String                           @id @default(uuid()) @db.Uuid
+  orderId            String                           @map("order_id") @db.Uuid
+  order              SubscriptionOrder                @relation(fields: [orderId], references: [id])
+  vehicleDeliveryId  String?                          @map("vehicle_delivery_id") @db.Uuid
+  vehicleDelivery    VehicleDelivery?                 @relation(fields: [vehicleDeliveryId], references: [id])
+  handoverId         String?                          @map("handover_id") @db.Uuid
+  handover           VehicleDeliveryHandover?         @relation(fields: [handoverId], references: [id])
+  evidenceType       DeliveryEvidenceType             @map("evidence_type")
+  requirementLevel   DeliveryEvidenceRequirementLevel @map("requirement_level")
+  status             DeliveryEvidenceStatus           @default(NOT_STARTED)
+  reviewStatus       DeliveryEvidenceReviewStatus     @default(NOT_STARTED) @map("review_status")
+  title              String                           @db.VarChar(128)
+  description        String?                          @db.Text
+  isRequired         Boolean                          @default(false) @map("is_required")
+  isConditional      Boolean                          @default(false) @map("is_conditional")
+  allowsMultiple     Boolean                          @default(false) @map("allows_multiple")
+  conditionKey       String?                          @map("condition_key") @db.VarChar(64)
+  conditionValue     String?                          @map("condition_value") @db.VarChar(64)
+  declaredNoDamage   Boolean?                         @map("declared_no_damage")
+  reviewedBy         String?                          @map("reviewed_by") @db.Uuid
+  reviewer           User?                            @relation("DeliveryEvidenceReviewer", fields: [reviewedBy], references: [id])
+  reviewedAt         DateTime?                        @map("reviewed_at") @db.Timestamptz(6)
+  rejectionReason    String?                          @map("rejection_reason") @db.Text
+  metadata           Json?
+  files              VehicleDeliveryEvidenceFile[]
+  createdAt          DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([orderId])
+  @@index([vehicleDeliveryId])
+  @@index([handoverId])
+  @@index([evidenceType])
+  @@index([requirementLevel])
+  @@index([status])
+  @@index([reviewStatus])
+  @@index([reviewedBy])
+  @@map("vehicle_delivery_evidence_item")
+}
+
+model VehicleDeliveryEvidenceFile {
+  id             String                    @id @default(uuid()) @db.Uuid
+  evidenceItemId String                    @map("evidence_item_id") @db.Uuid
+  evidenceItem   VehicleDeliveryEvidenceItem @relation(fields: [evidenceItemId], references: [id])
+  fileId         String                    @map("file_id") @db.Uuid
+  file           FileObject                @relation(fields: [fileId], references: [id])
+  objectKey      String?                   @map("object_key") @db.VarChar(512)
+  mediaType      DeliveryEvidenceMediaType @map("media_type")
+  uploadedBy     String?                   @map("uploaded_by") @db.Uuid
+  uploader       User?                     @relation("DeliveryEvidenceFileUploader", fields: [uploadedBy], references: [id])
+  uploadedAt     DateTime                  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  metadata       Json?
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([evidenceItemId, fileId])
+  @@index([evidenceItemId])
+  @@index([fileId])
+  @@index([mediaType])
+  @@index([uploadedBy])
+  @@map("vehicle_delivery_evidence_file")
 }
 
 model VehicleInspection {
@@ -4930,6 +5050,7 @@ model FileObject {
   uploader      User?                     @relation("FileUploader", fields: [uploadedBy], references: [id])
   materials     ApplicationMaterial[]
   materialFiles ApplicationMaterialFile[]
+  deliveryEvidenceFiles VehicleDeliveryEvidenceFile[]
   createdAt     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([bucket])

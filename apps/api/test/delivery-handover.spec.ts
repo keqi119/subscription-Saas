@@ -2,7 +2,10 @@ import { BadRequestException } from "@nestjs/common";
 import { ContractStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { DeliveryHandoverService } from "../src/delivery-handover/delivery-handover.service";
+import {
+  DeliveryHandoverService,
+  getDeliveryHandoverArchiveWarning
+} from "../src/delivery-handover/delivery-handover.service";
 
 describe("DeliveryHandoverService", () => {
   it("creates a draft Stage 2 handover linked to the Stage 1 contract without replacing the order pointer", async () => {
@@ -83,27 +86,54 @@ describe("DeliveryHandoverService", () => {
     });
   });
 
-  it("requires a signed and archived Stage 2 handover before delivery confirmation", async () => {
+  it("requires a signed Stage 2 handover before delivery confirmation while archive failure stays retryable", async () => {
     const harness = createDeliveryHandoverHarness();
 
     await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(BadRequestException);
 
     const draft = await harness.service.createHandoverRecord(harness.orderId, harness.user.id);
     await harness.service.markCompleted(draft.id, new Date("2026-07-21T04:12:00.000Z"), harness.user.id);
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(
-      "交付交接确认书尚未完成签署和归档"
-    );
+    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
+    expect(getDeliveryHandoverArchiveWarning(harness.state.handovers[0] as never)).toContain("已签 PDF 尚未完成归档");
 
-    await harness.service.markArchived(draft.id, {
-      archivedAt: new Date("2026-07-21T04:20:00.000Z"),
-      signedObjectKey: "contracts/stage2/signed.pdf",
-      updatedBy: harness.user.id
+    const failedArchive = await harness.service.markArchiveFailed(draft.id, "temporary provider download timeout", harness.user.id);
+    expect(failedArchive).toMatchObject({
+      archiveStatus: "FAILED",
+      failureReason: "temporary provider download timeout",
+      status: "SIGNED"
     });
     await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
   });
+
+  it("delegates Stage 2 PDF, eSign, and delivery confirmation evidence gates", async () => {
+    const evidenceService = {
+      assertEvidenceReadyForDeliveryConfirmation: vi.fn(async () => undefined),
+      assertEvidenceReadyForStage2ESign: vi.fn(async () => undefined),
+      assertEvidenceReadyForStage2Pdf: vi.fn(async () => undefined)
+    };
+    const harness = createDeliveryHandoverHarness(evidenceService);
+    const draft = await harness.service.createHandoverRecord(harness.orderId, harness.user.id);
+    await harness.service.markCompleted(draft.id, new Date("2026-07-21T04:12:00.000Z"), harness.user.id);
+
+    await harness.service.assertStage2PdfCanBeGenerated(harness.orderId, draft.id);
+    await harness.service.assertStage2ESignCanStart(harness.orderId, draft.id);
+    await harness.service.assertDeliveryCanBeConfirmed(harness.orderId);
+
+    expect(evidenceService.assertEvidenceReadyForStage2Pdf).toHaveBeenCalledWith(harness.orderId, draft.id);
+    expect(evidenceService.assertEvidenceReadyForStage2ESign).toHaveBeenCalledWith(harness.orderId, draft.id);
+    expect(evidenceService.assertEvidenceReadyForDeliveryConfirmation).toHaveBeenCalledWith(
+      harness.orderId,
+      draft.id
+    );
+    expect(harness.providerCallCount).toBe(0);
+  });
 });
 
-function createDeliveryHandoverHarness() {
+function createDeliveryHandoverHarness(evidenceService?: {
+  assertEvidenceReadyForDeliveryConfirmation: (orderId: string, handoverId?: string | null) => Promise<void>;
+  assertEvidenceReadyForStage2ESign: (orderId: string, handoverId?: string | null) => Promise<void>;
+  assertEvidenceReadyForStage2Pdf: (orderId: string, handoverId?: string | null) => Promise<void>;
+}) {
   const orderId = "order-1";
   const now = new Date("2026-07-21T04:00:00.000Z");
   const user = { id: "user-admin" };
@@ -174,7 +204,7 @@ function createDeliveryHandoverHarness() {
       })
     }
   };
-  const service = new DeliveryHandoverService(prisma as never);
+  const service = new DeliveryHandoverService(prisma as never, evidenceService as never);
 
   return {
     get providerCallCount() {

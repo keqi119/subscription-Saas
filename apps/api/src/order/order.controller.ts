@@ -5,6 +5,12 @@ import type { Response } from "express";
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
+import {
+  AddDamageCloseupDto,
+  AttachDeliveryEvidenceFileDto,
+  DeclareNoVisibleDamageDto,
+  RejectDeliveryEvidenceDto
+} from "../delivery-evidence/delivery-evidence.dto";
 import { CustomerESignOnboardingService } from "../esign/customer-esign-onboarding.service";
 import {
   ArchiveContractDto,
@@ -62,6 +68,70 @@ export class OrderController {
   @RequirePermissions(PermissionCode.DELIVERY_VIEW)
   getDelivery(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.orderService.getDelivery(id, request.user);
+  }
+
+  @Get("orders/:id/delivery-evidence/checklist")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  getDeliveryEvidenceChecklist(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.getDeliveryEvidenceChecklist(id, request.user);
+  }
+
+  @Post("orders/:id/delivery-evidence/checklist/initialize")
+  @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
+  initializeDeliveryEvidenceChecklist(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.initializeDeliveryEvidenceChecklist(id, request.user);
+  }
+
+  @Post("delivery-evidence/:itemId/files")
+  @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
+  attachDeliveryEvidenceFile(
+    @Param("itemId") itemId: string,
+    @Body() dto: AttachDeliveryEvidenceFileDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.attachDeliveryEvidenceFile(itemId, dto, request.user);
+  }
+
+  @Post("delivery-evidence/:itemId/approve")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  approveDeliveryEvidenceItem(@Param("itemId") itemId: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.approveDeliveryEvidenceItem(itemId, request.user);
+  }
+
+  @Post("delivery-evidence/:itemId/reject")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  rejectDeliveryEvidenceItem(
+    @Param("itemId") itemId: string,
+    @Body() dto: RejectDeliveryEvidenceDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.rejectDeliveryEvidenceItem(itemId, dto, request.user);
+  }
+
+  @Post("orders/:id/delivery-evidence/no-visible-damage")
+  @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
+  declareNoVisibleDamage(
+    @Param("id") id: string,
+    @Body() dto: DeclareNoVisibleDamageDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.declareNoVisibleDamage(id, dto, request.user);
+  }
+
+  @Post("orders/:id/delivery-evidence/damage-closeups")
+  @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
+  addDamageCloseup(
+    @Param("id") id: string,
+    @Body() dto: AddDamageCloseupDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.addDamageCloseup(id, dto, request.user);
+  }
+
+  @Get("orders/:id/delivery-evidence/readiness")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  getDeliveryEvidenceReadiness(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderService.getDeliveryEvidenceReadiness(id, request.user);
   }
 
   @Get("orders/:id/return-check")

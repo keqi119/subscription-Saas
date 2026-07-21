@@ -26,6 +26,8 @@ This foundation does not execute provider calls, upload documents, start real eS
 - Required delivery evidence must be uploaded before customer review, Stage 2 PDF generation, Stage 2 eSign start, and Admin delivery confirmation.
 - Back-office evidence approval is an ops/QA review state. It is not a hard pre-eSign gate in the current policy.
 - Customer no-objection confirmation is a hard gate before Stage 2 PDF generation and eSign start. Customer objection moves the work order to `CUSTOMER_OBJECTED` and requires Admin intervention.
+- External field tokens are task-scoped only. They are never Admin authentication, and misuse against Admin routes should be rejected with 401/403 instead of a server error.
+- Ops review is a post-signing / QA / settlement review signal. It should not be started before customer signing, platform sealing, or field completion.
 - Delivery confirmation requires the Stage 2 handover to be signed.
 - Signed PDF archival is strongly required for evidence completeness, but a temporary archive failure is a visible warning/retry state rather than an absolute delivery confirmation blocker.
 - Lease activation reports missing Stage 2 handover readiness before it can become eligible.
@@ -77,7 +79,7 @@ Singleton evidence item duplication is guarded in service code. Damage close-up 
 - field facts: delivery location, mileage, energy/fuel level, accessory checklist, damage/no-damage state, field notes
 - ops review status and reviewer fields
 
-External operator access stores only `accessTokenHash`. The plaintext token is returned only once during Admin assignment. The external task view is scoped to the assigned work order and must not expose full ID numbers, finance/payment data, full contract data, provider credentials, signing URLs, or other orders.
+External operator access stores only `accessTokenHash`. The plaintext token is returned only once during Admin assignment. The external task view is scoped to the assigned work order and must not expose full ID numbers, finance/payment data, full contract data, provider credentials, signing URLs, or other orders. If an external task token is accidentally sent as an Admin cookie or bearer token, Admin guards must treat it as unauthenticated/forbidden and must not expose token parser internals.
 
 ## Evidence Checklist
 
@@ -152,6 +154,8 @@ FIELD_COMPLETENESS + CUSTOMER_NO_OBJECTION + NOT_OBJECTED_OR_CANCELLED
 ```
 
 Field completeness requires required files uploaded, field facts completed, damage/no-damage state resolved, and the field operator submitted the work order. Customer no-objection confirmation is required before Stage 2 PDF/eSign. Ops review may be pending or rejected without blocking PDF/eSign; it remains a back-office QA/settlement signal.
+
+Ops review pending may be requested only from `CUSTOMER_SIGNED`, `PLATFORM_SEALED`, `FIELD_COMPLETED`, `OPS_REVIEW_PENDING`, or `OPS_REVIEWED`. It must be blocked from draft, assigned, field-in-progress, customer-reviewing, customer-confirmed, customer-objected, and terminal work-order states.
 
 Current delivery confirmation gate:
 

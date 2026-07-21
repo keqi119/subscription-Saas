@@ -26,6 +26,13 @@ const READY_FOR_STAGE2_STATUSES = [
   "OPS_REVIEWED"
 ] as const;
 const CUSTOMER_REVIEW_STATUSES = new Set(["CUSTOMER_REVIEWING", "EVIDENCE_SUBMITTED", "CUSTOMER_CONFIRMED"]);
+const OPS_REVIEW_PENDING_ALLOWED_STATUSES = new Set([
+  "CUSTOMER_SIGNED",
+  "PLATFORM_SEALED",
+  "FIELD_COMPLETED",
+  "OPS_REVIEW_PENDING",
+  "OPS_REVIEWED"
+]);
 
 type HandoverType = "DELIVERY_OUTBOUND" | "RETURN_INBOUND";
 type WorkOrderStatus = typeof TERMINAL_WORK_ORDER_STATUSES[number] |
@@ -348,6 +355,7 @@ export class HandoverWorkOrderService {
 
   async markOpsReviewPending(id: string, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
+    assertCanMarkOpsReviewPending(workOrder);
     return this.updateWorkOrder(id, {
       metadata: mergeMetadata(workOrder.metadata, { opsReviewRequestedBy: actorId ?? null }),
       opsReviewStatus: "PENDING",
@@ -628,6 +636,18 @@ function isTerminalWorkOrderStatus(status: unknown): status is typeof TERMINAL_W
 
 function isReadyForStage2Status(status: unknown): status is typeof READY_FOR_STAGE2_STATUSES[number] {
   return READY_FOR_STAGE2_STATUSES.includes(status as typeof READY_FOR_STAGE2_STATUSES[number]);
+}
+
+function assertCanMarkOpsReviewPending(workOrder: WorkOrderRecord) {
+  if (isTerminalWorkOrderStatus(workOrder.status)) {
+    throw new BadRequestException("交付工单已终止，不能发起运营复核。");
+  }
+  if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
+    throw new BadRequestException("客户存在异议，需后台介入后再发起运营复核。");
+  }
+  if (!OPS_REVIEW_PENDING_ALLOWED_STATUSES.has(String(workOrder.status))) {
+    throw new BadRequestException("运营复核只能在客户签署、平台盖章或现场完成后发起。");
+  }
 }
 
 function assertDamageState(damageDeclared: unknown, noVisibleDamageDeclared: unknown) {

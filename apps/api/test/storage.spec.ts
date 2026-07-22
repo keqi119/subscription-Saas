@@ -204,6 +204,56 @@ describe("Storage providers", () => {
     expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/vehicle-listings\/vehicle-1\/\d{4}\//);
   });
 
+  it("maps field delivery evidence uploads to private local or OSS database fields", async () => {
+    const local = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        driver: "local" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const oss = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        bucket: "private-bucket",
+        driver: "oss" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({ OSS_PREFIX: "subscription-saas/staging", UPLOAD_STORAGE_DRIVER: "oss" }) as never,
+      local as never,
+      oss as never
+    );
+
+    const localStored = await localService.putDeliveryEvidenceFile({
+      buffer: Buffer.from("hello"),
+      originalName: "front photo.jpg",
+      orderId: "order-1",
+      workOrderId: "work-order-1"
+    });
+    const ossStored = await ossService.putDeliveryEvidenceFile({
+      buffer: Buffer.from("hello"),
+      originalName: "front photo.jpg",
+      orderId: "order-1",
+      workOrderId: "work-order-1"
+    });
+
+    expect(localStored.bucket).toBe("application-materials");
+    expect(localStored.objectKey).toMatch(/^delivery-evidence\/work-order-1\/\d{4}\//);
+    expect(ossStored.bucket).toBe("oss:private-bucket");
+    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/delivery-evidence\/work-order-1\/\d{4}\//);
+  });
+
   async function createTempDir() {
     const dir = await mkdtemp(path.join(tmpdir(), "subscription-storage-"));
     tempDirs.push(dir);

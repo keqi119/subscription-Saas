@@ -56,7 +56,7 @@ export class UpdateHandoverFieldFactsDto {
 
   @IsOptional()
   @IsInt()
-  @Min(0)
+  @Min(1)
   handoverMileageKm?: number;
 
   @IsOptional()

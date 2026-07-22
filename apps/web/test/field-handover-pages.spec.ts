@@ -37,14 +37,25 @@ describe("field handover H5 pages", () => {
     expect(source).not.toMatch(/finance|payment|deposit|objectKey|providerPayload|signingUrl|token|cookie/i);
   });
 
-  it("adds a safe detail placeholder without evidence capture controls", () => {
+  it("adds a mobile evidence capture detail page without PDF or eSign controls", () => {
     const source = read(detailPagePath);
 
-    expect(source).toContain("现场资料采集将在下一阶段开放");
+    expect(source).toContain("现场资料采集");
+    expect(source).toContain("保存现场信息");
+    expect(source).toContain("提交现场资料");
+    expect(source).toContain("发现损伤/瑕疵");
+    expect(source).toContain("无可见损伤");
+    expect(source).toContain("当前交接任务已提交或不可继续编辑");
+    expect(source).toContain("startFieldHandoverWorkOrder");
+    expect(source).toContain("updateFieldHandoverFacts");
+    expect(source).toContain("uploadFieldHandoverEvidenceFile");
+    expect(source).toContain("attachFieldHandoverEvidenceFile");
+    expect(source).toContain("declareFieldHandoverNoVisibleDamage");
+    expect(source).toContain("submitFieldHandoverEvidence");
     expect(source).toContain("getFieldHandoverWorkOrder");
     expect(source).toContain('router.replace("/field/handover")');
-    expect(source).not.toMatch(/attachEvidence|updateFieldFacts|submitEvidence|startFieldWork|eSignTask|startSigning|signingUrl|objectKey/i);
-    expect(source).not.toMatch(/上传|提交|电子签|签署|PDF/);
+    expect(source).not.toMatch(/eSignTask|startSigning|signingUrl|objectKey/i);
+    expect(source).not.toMatch(/电子签|签署|PDF/);
   });
 });
 

@@ -372,7 +372,7 @@ export class DeliveryEvidenceService {
     return toEvidenceItemView(updated);
   }
 
-  async declareNoVisibleDamage(orderId: string, actorId: string, handoverId?: string | null, remark?: string) {
+  async declareNoVisibleDamage(orderId: string, actorId?: string, handoverId?: string | null, remark?: string) {
     const scope = await this.resolveScope({ handoverId, orderId });
     const items = await this.findScopedItems(scope);
     if (items.some(isDamageDeclared)) {
@@ -391,12 +391,12 @@ export class DeliveryEvidenceService {
         declaredNoDamage: true,
         metadata: toJsonValue({
           declaredAt: reviewedAt.toISOString(),
-          declaredBy: actorId,
+          declaredBy: actorId ?? null,
           remark: normalizeOptionalText(remark)
         }),
         rejectionReason: null,
         reviewedAt,
-        reviewedBy: actorId,
+        reviewedBy: actorId ?? null,
         reviewStatus: DeliveryEvidenceReviewStatus.APPROVED,
         status: DeliveryEvidenceStatus.APPROVED
       },

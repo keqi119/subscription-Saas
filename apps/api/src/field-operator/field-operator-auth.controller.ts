@@ -1,6 +1,24 @@
-import { Body, Controller, Get, Param, Post, Req, Res, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Req,
+  Res,
+  UploadedFiles,
+  UseGuards,
+  UseInterceptors
+} from "@nestjs/common";
+import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import type { Request, Response } from "express";
 
+import { DeclareNoVisibleDamageDto } from "../delivery-evidence/delivery-evidence.dto";
+import {
+  AttachFieldEvidenceFileDto,
+  UpdateHandoverFieldFactsDto
+} from "../handover-work-order/handover-work-order.dto";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { FieldOperatorAuthGuard } from "./field-operator-auth.guard";
 import { FieldOperatorAuthService } from "./field-operator-auth.service";
@@ -71,6 +89,66 @@ export class FieldOperatorAuthController {
     const task = await this.handoverWorkOrderService.getFieldAccessibleWorkOrder(id, current.phone);
     await this.fieldOperatorAuthService.recordTaskViewed(current, id, requestContext(request));
     return task;
+  }
+
+  @Post("work-orders/:id/start")
+  @UseGuards(FieldOperatorAuthGuard)
+  startWorkOrder(@Param("id") id: string, @CurrentFieldOperatorSession() current: CurrentFieldOperator) {
+    return this.handoverWorkOrderService.startFieldAccessibleWorkOrder(id, current.phone, current.sessionId);
+  }
+
+  @Patch("work-orders/:id/facts")
+  @UseGuards(FieldOperatorAuthGuard)
+  updateWorkOrderFacts(
+    @Param("id") id: string,
+    @Body() dto: UpdateHandoverFieldFactsDto,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator
+  ) {
+    return this.handoverWorkOrderService.updateFieldAccessibleFacts(id, current.phone, dto, current.sessionId);
+  }
+
+  @Post("work-orders/:id/evidence-files")
+  @UseGuards(FieldOperatorAuthGuard)
+  @UseInterceptors(AnyFilesInterceptor())
+  uploadEvidenceFile(
+    @Param("id") id: string,
+    @UploadedFiles() files: Array<{ buffer: Buffer; mimetype?: string; originalname: string; size: number }> | undefined,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator
+  ) {
+    return this.handoverWorkOrderService.uploadFieldAccessibleEvidenceFile(id, current.phone, files);
+  }
+
+  @Post("work-orders/:id/evidence/:itemId/files")
+  @UseGuards(FieldOperatorAuthGuard)
+  attachEvidenceFile(
+    @Param("id") id: string,
+    @Param("itemId") itemId: string,
+    @Body() dto: AttachFieldEvidenceFileDto,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator
+  ) {
+    return this.handoverWorkOrderService.attachFieldAccessibleEvidenceFile(id, current.phone, itemId, dto);
+  }
+
+  @Post("work-orders/:id/no-visible-damage")
+  @UseGuards(FieldOperatorAuthGuard)
+  declareNoVisibleDamage(
+    @Param("id") id: string,
+    @Body() dto: DeclareNoVisibleDamageDto,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator
+  ) {
+    return this.handoverWorkOrderService.declareFieldAccessibleNoVisibleDamage(id, current.phone, dto.remark);
+  }
+
+  @Get("work-orders/:id/readiness")
+  @UseGuards(FieldOperatorAuthGuard)
+  getWorkOrderReadiness(@Param("id") id: string, @CurrentFieldOperatorSession() current: CurrentFieldOperator) {
+    return this.handoverWorkOrderService.getFieldAccessibleReadiness(id, current.phone);
+  }
+
+  @Post("work-orders/:id/submit")
+  @UseGuards(FieldOperatorAuthGuard)
+  submitEvidence(@Param("id") id: string, @CurrentFieldOperatorSession() current: CurrentFieldOperator) {
+    return this.handoverWorkOrderService.submitFieldAccessibleEvidence(id, current.phone, current.sessionId);
   }
 }
 

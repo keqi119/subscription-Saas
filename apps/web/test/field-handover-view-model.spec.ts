@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildFieldEvidenceCaptureView,
   buildFieldHandoverDetailView,
   buildFieldHandoverTaskCard,
   formatFieldHandoverType,
-  formatFieldWorkOrderStatus
+  formatFieldWorkOrderStatus,
+  getFieldHandoverSubmitBlockers,
+  validateFieldHandoverFactsInput
 } from "../src/lib/field-handover-view-model";
 import type { FieldHandoverWorkOrderDetail, FieldHandoverWorkOrderListItem } from "../src/lib/field-handover-api";
 
@@ -52,29 +55,103 @@ describe("field handover view model", () => {
     expect(JSON.stringify(card)).not.toMatch(/provider|deposit|payment/i);
   });
 
-  it("builds a detail placeholder without upload, submit, PDF, or eSign actions", () => {
+  it("builds an evidence capture view with 14 safe checklist items and progress copy", () => {
     const detail = buildFieldHandoverDetailView({
       ...sampleTask(),
       evidenceChecklist: {
-        blockingReasons: ["资料待补充"],
-        items: [
-          { fileCount: 1, id: "item-1", isRequired: true, reviewStatus: "APPROVED", status: "APPROVED", title: "车身照片" },
-          { fileCount: 0, id: "item-2", isRequired: true, reviewStatus: "NOT_STARTED", status: "NOT_STARTED", title: "里程照片" }
-        ],
+        blockingReasons: [],
+        items: sampleEvidenceItems({ noVisibleDamageDeclared: true }),
         ready: false
       },
       fieldFacts: {
+        accessoryChecklist: { chargingCable: true, keys: 2 },
+        damageDeclared: false,
         deliveryLocation: "上海交付中心",
         fieldNotes: "safe note",
         handoverMileageKm: 1200,
+        noVisibleDamageDeclared: true,
         scheduledAt: "2026-07-22T10:00:00.000Z"
       }
     });
+    const capture = buildFieldEvidenceCaptureView({
+      ...sampleDetail(),
+      evidenceChecklist: {
+        blockingReasons: [],
+        items: sampleEvidenceItems({ noVisibleDamageDeclared: true }),
+        ready: false
+      }
+    });
 
-    expect(detail.nextStepText).toBe("现场资料采集将在下一阶段开放");
-    expect(detail.checklistSummary).toBe("已完成 1/2，必传 2");
-    expect(JSON.stringify(detail)).not.toMatch(/upload|submit|esign|pdf/i);
-    expect(JSON.stringify(detail)).not.toMatch(/上传|提交|电子签|PDF/);
+    expect(detail.nextStepText).toBe("下一步：提交后等待客户确认");
+    expect(capture.evidenceItems).toHaveLength(14);
+    expect(capture.progressText).toBe("资料完成度：13 / 13");
+    expect(capture.fieldFactsStatus).toBe("现场信息：已完整");
+    expect(capture.damageStateLabel).toBe("损伤状态：无可见损伤");
+    expect(capture.canEdit).toBe(true);
+    expect(capture.evidenceItems[0]).toMatchObject({
+      requiredText: "必传",
+      showUpload: true,
+      statusLabel: "已上传",
+      title: "客户与车辆正面合影",
+      uploadAccept: "image/*"
+    });
+    expect(capture.evidenceItems.find((item) => item.evidenceType === "WALKAROUND_VIDEO")).toMatchObject({
+      uploadAccept: "video/*"
+    });
+    expect(capture.evidenceItems.find((item) => item.evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION")).toMatchObject({
+      showDeclarationComplete: true,
+      showUpload: false,
+      statusLabel: "声明已完成"
+    });
+    expect(JSON.stringify(capture)).not.toMatch(/esign|pdf|signingUrl|objectKey|token|cookie|deposit|payment/i);
+    expect(JSON.stringify(capture)).not.toContain(FULL_PHONE_SHOULD_NOT_RENDER);
+    expect(JSON.stringify(capture)).not.toContain(ID_NUMBER_SHOULD_NOT_RENDER);
+  });
+
+  it("validates mileage, mutually exclusive damage states, and damage close-up blockers", () => {
+    expect(
+      validateFieldHandoverFactsInput({
+        accessoryChecklistText: "",
+        damageDeclared: true,
+        energyLevelText: "",
+        handoverMileageKm: 0,
+        noVisibleDamageDeclared: true
+      }, { requireComplete: true })
+    ).toEqual([
+      "请填写交接里程",
+      "请填写能源/油量状态",
+      "请填写随车物品清单",
+      "损伤状态冲突，请选择存在损伤或无可见损伤"
+    ]);
+
+    expect(
+      getFieldHandoverSubmitBlockers({
+        ...sampleDetail(),
+        evidenceChecklist: {
+          blockingReasons: [],
+          items: sampleEvidenceItems({ damageDeclared: true, missingDamageCloseup: true }),
+          ready: false
+        },
+        fieldFacts: {
+          ...sampleDetail().fieldFacts,
+          damageDeclared: true,
+          noVisibleDamageDeclared: false
+        }
+      })
+    ).toContain("请上传损伤/瑕疵近拍");
+  });
+
+  it("keeps submitted or terminal work orders read-only in the capture view", () => {
+    const view = buildFieldEvidenceCaptureView({
+      ...sampleDetail(),
+      status: "CUSTOMER_REVIEWING"
+    });
+
+    expect(view.canEdit).toBe(false);
+    expect(view.lockedMessage).toBe("当前交接任务已提交或不可继续编辑");
+    expect(view.showStartAction).toBe(false);
+    expect(view.showSaveAction).toBe(false);
+    expect(view.showSubmitAction).toBe(false);
   });
 });
 
@@ -104,4 +181,66 @@ function sampleTask(): FieldHandoverWorkOrderListItem {
       vinSuffix: "AB5847"
     }
   };
+}
+
+function sampleDetail(): FieldHandoverWorkOrderDetail {
+  return {
+    ...sampleTask(),
+    evidenceChecklist: {
+      blockingReasons: [],
+      items: sampleEvidenceItems({ noVisibleDamageDeclared: true }),
+      ready: false
+    },
+    fieldFacts: {
+      accessoryChecklist: { chargingCable: true, keys: 2 },
+      damageDeclared: false,
+      deliveryLocation: "上海交付中心",
+      energyLevelText: "80%",
+      fieldNotes: "safe note",
+      handoverMileageKm: 1200,
+      noVisibleDamageDeclared: true,
+      scheduledAt: "2026-07-22T10:00:00.000Z"
+    },
+    status: "FIELD_IN_PROGRESS"
+  } as FieldHandoverWorkOrderDetail;
+}
+
+function sampleEvidenceItems(options: { damageDeclared?: boolean; missingDamageCloseup?: boolean; noVisibleDamageDeclared?: boolean }) {
+  const titles = [
+    ["CUSTOMER_WITH_VEHICLE_FRONT", "客户与车辆正面合影", ["PHOTO"]],
+    ["VEHICLE_FRONT", "车辆车头正面", ["PHOTO"]],
+    ["VEHICLE_REAR", "车辆车尾正面", ["PHOTO"]],
+    ["VIN_OR_FRAME_NUMBER", "车架号 / VIN", ["PHOTO"]],
+    ["ODOMETER_DASHBOARD", "仪表台公里数", ["PHOTO"]],
+    ["INTERIOR_REAR", "后排内饰", ["PHOTO"]],
+    ["INTERIOR_FRONT", "前排内饰", ["PHOTO"]],
+    ["WALKAROUND_VIDEO", "车辆环绕视频", ["VIDEO"]],
+    ["WHEEL_CLOSEUP_FRONT_LEFT", "左前轮毂近拍", ["PHOTO", "VIDEO"]],
+    ["WHEEL_CLOSEUP_FRONT_RIGHT", "右前轮毂近拍", ["PHOTO", "VIDEO"]],
+    ["WHEEL_CLOSEUP_REAR_LEFT", "左后轮毂近拍", ["PHOTO", "VIDEO"]],
+    ["WHEEL_CLOSEUP_REAR_RIGHT", "右后轮毂近拍", ["PHOTO", "VIDEO"]],
+    ["DAMAGE_STATIC_CLOSEUP", "损伤/瑕疵静态近拍", ["PHOTO", "VIDEO"]],
+    ["NO_VISIBLE_DAMAGE_DECLARATION", "无可见损伤声明", []]
+  ] as const;
+
+  return titles.map(([evidenceType, title, allowedMediaTypes], index) => {
+    const isDamageCloseup = evidenceType === "DAMAGE_STATIC_CLOSEUP";
+    const isNoDamage = evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION";
+    const hasFile = !isNoDamage && (!isDamageCloseup || (options.damageDeclared && !options.missingDamageCloseup));
+    return {
+      allowedMediaTypes,
+      declaredNoDamage: isNoDamage ? options.noVisibleDamageDeclared === true : null,
+      evidenceType,
+      fileCount: hasFile ? 1 : 0,
+      fileRequired: !isNoDamage,
+      files: hasFile ? [{ file: { id: `file-${index}`, mimeType: "image/jpeg", originalName: `${index}.jpg`, sizeBytes: 1000 } }] : [],
+      id: `evidence-item-${index + 1}`,
+      isConditional: isDamageCloseup || isNoDamage,
+      isRequired: !isDamageCloseup && !isNoDamage,
+      requirementLevel: isDamageCloseup || isNoDamage ? "CONDITIONAL" : "REQUIRED",
+      reviewStatus: isNoDamage && options.noVisibleDamageDeclared ? "APPROVED" : hasFile ? "PENDING" : "NOT_STARTED",
+      status: isNoDamage && options.noVisibleDamageDeclared ? "APPROVED" : hasFile ? "UPLOADED" : "NOT_STARTED",
+      title
+    };
+  });
 }

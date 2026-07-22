@@ -326,6 +326,183 @@ describe("HandoverWorkOrderService", () => {
     ).rejects.toThrow(UnauthorizedException);
   });
 
+  it("allows a field session to start and update only its assigned work order", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "ASSIGNED"
+    });
+
+    const started = await harness.service.startFieldAccessibleWorkOrder(
+      "work-order-visible",
+      "13800000000",
+      "field-session-1"
+    );
+    const updated = await harness.service.updateFieldAccessibleFacts(
+      "work-order-visible",
+      "13800000000",
+      {
+        accessoryChecklist: { chargingCable: true, keys: 2 },
+        damageDeclared: false,
+        energyLevelText: "80%",
+        handoverMileageKm: 28600,
+        noVisibleDamageDeclared: true
+      },
+      "field-session-1"
+    );
+
+    expect(started).toMatchObject({ status: "FIELD_IN_PROGRESS" });
+    expect(updated).toMatchObject({
+      accessoryChecklist: { chargingCable: true, keys: 2 },
+      energyLevelText: "80%",
+      handoverMileageKm: 28600,
+      noVisibleDamageDeclared: true
+    });
+    await harness.service.updateFieldAccessibleFacts(
+      "work-order-visible",
+      "13800000000",
+      { handoverMileageKm: 28700 },
+      "field-session-1"
+    );
+    expect(harness.state.workOrders[0]!).toMatchObject({
+      energyLevelText: "80%",
+      handoverMileageKm: 28700
+    });
+    await expect(
+      harness.service.updateFieldAccessibleFacts("work-order-visible", "13900000000", { handoverMileageKm: 1 })
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("uploads and attaches evidence files through field-session ownership without exposing object storage fields", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+
+    const uploaded = await harness.service.uploadFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      [uploadFile("front.jpg", "image/jpeg")]
+    );
+    const attached = await harness.service.attachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      { fileId: uploaded.fileId, mediaType: "PHOTO" }
+    );
+
+    expect(uploaded).toEqual({
+      fileId: "file-1",
+      fileName: "front.jpg",
+      mimeType: "image/jpeg",
+      sizeBytes: 5
+    });
+    expect(JSON.stringify(uploaded)).not.toContain("delivery-evidence/work-order-visible");
+    expect(harness.storageService.putDeliveryEvidenceFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        originalName: "front.jpg",
+        workOrderId: "work-order-visible"
+      })
+    );
+    expect(harness.evidenceService.attachEvidenceFile).toHaveBeenCalledWith(
+      "evidence-item-owned",
+      "file-1",
+      "PHOTO",
+      undefined
+    );
+    expect(attached).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
+    await expect(
+      harness.service.attachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13900000000",
+        "evidence-item-owned",
+        { fileId: "file-1", mediaType: "PHOTO" }
+      )
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("declares no visible damage and submits field evidence without Stage 2 side effects", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      accessoryChecklist: { chargingCable: true, keys: 2 },
+      energyLevelText: "80%",
+      externalOperatorPhone: "13800000000",
+      handoverMileageKm: 28600,
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+
+    await harness.service.declareFieldAccessibleNoVisibleDamage(
+      "work-order-visible",
+      "13800000000",
+      "现场确认"
+    );
+    const submitted = await harness.service.submitFieldAccessibleEvidence(
+      "work-order-visible",
+      "13800000000",
+      "field-session-1"
+    );
+
+    expect(harness.evidenceService.declareNoVisibleDamage).toHaveBeenCalledWith(
+      harness.orderId,
+      undefined,
+      "handover-1",
+      "现场确认"
+    );
+    expect(submitted).toMatchObject({
+      fieldSubmittedAt: expect.any(Date),
+      status: "CUSTOMER_REVIEWING"
+    });
+    expect(harness.handoverService.assertDeliveryCanBeConfirmed).not.toHaveBeenCalled();
+    expect(harness.handoverService.isDeliveryReady).not.toHaveBeenCalled();
+  });
+
+  it("returns field-session readiness blockers for incomplete facts or damage close-up evidence", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.evidenceService.setFieldReadiness({
+      blockingDetails: [],
+      blockingReasons: ["请上传损伤/瑕疵近拍"],
+      handoverId: "handover-1",
+      orderId: harness.orderId,
+      ready: false
+    });
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      accessoryChecklist: { chargingCable: true, keys: 2 },
+      damageDeclared: true,
+      energyLevelText: "80%",
+      externalOperatorPhone: "13800000000",
+      handoverMileageKm: 28600,
+      id: "work-order-visible",
+      noVisibleDamageDeclared: false,
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+
+    const readiness = await harness.service.getFieldAccessibleReadiness("work-order-visible", "13800000000");
+
+    expect(readiness.ready).toBe(false);
+    expect(readiness.blockingReasons).toContain("请上传损伤/瑕疵近拍");
+  });
+
   it("requires field facts, evidence completeness, and a resolved damage state before customer review", async () => {
     const harness = createHandoverWorkOrderHarness();
     const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
@@ -582,6 +759,8 @@ function createHandoverWorkOrderHarness() {
       orderId,
       scheduledAt: new Date("2026-07-22T02:00:00.000Z")
     },
+    evidenceItems: [] as Array<Record<string, unknown>>,
+    fileObjects: [] as Array<Record<string, unknown>>,
     workOrders: [] as Array<Record<string, unknown>>
   };
   const evidenceService = createEvidenceService();
@@ -606,6 +785,21 @@ function createHandoverWorkOrderHarness() {
     },
     vehicleDelivery: {
       findUnique: vi.fn(async () => state.vehicleDelivery)
+    },
+    fileObject: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const fileObject = {
+          ...data,
+          id: `file-${state.fileObjects.length + 1}`
+        };
+        state.fileObjects.push(fileObject);
+        return fileObject;
+      })
+    },
+    vehicleDeliveryEvidenceItem: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.evidenceItems.find((item) => matchesEvidenceItemWhere(item, where)) ?? null
+      )
     },
     vehicleHandoverWorkOrder: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -636,7 +830,19 @@ function createHandoverWorkOrderHarness() {
       })
     }
   };
-  const service = new HandoverWorkOrderService(prisma as never, evidenceService as never, handoverService as never);
+  const storageService = {
+    putDeliveryEvidenceFile: vi.fn(async (input: Record<string, unknown>) => ({
+      bucket: "application-materials",
+      objectKey: `delivery-evidence/${input.workOrderId}/2026/front.jpg`,
+      stored: { driver: "local", key: "local-key", size: 5 }
+    }))
+  };
+  const service = new HandoverWorkOrderService(
+    prisma as never,
+    evidenceService as never,
+    handoverService as never,
+    storageService as never
+  );
 
   return {
     admin,
@@ -648,11 +854,20 @@ function createHandoverWorkOrderHarness() {
     prisma,
     service,
     state
+    ,
+    storageService
   };
 }
 
 function createEvidenceService() {
   let fieldComplete = true;
+  let fieldReadiness: Record<string, unknown> = {
+    blockingDetails: [],
+    blockingReasons: [],
+    handoverId: "handover-1",
+    orderId: "order-1",
+    ready: true
+  };
   let checklist: Record<string, unknown> = {
     blockingReasons: [],
     items: [
@@ -683,15 +898,38 @@ function createEvidenceService() {
         throw new BadRequestException("证据尚未完整");
       }
     }),
+    attachEvidenceFile: vi.fn(async (itemId: string) => ({
+      fileCount: 1,
+      id: itemId,
+      status: "UPLOADED"
+    })),
+    declareNoVisibleDamage: vi.fn(async () => ({
+      declaredNoDamage: true,
+      evidenceType: "NO_VISIBLE_DAMAGE_DECLARATION",
+      status: "APPROVED"
+    })),
     getChecklist: vi.fn(async () => checklist),
     initializeChecklist: vi.fn(async () => ({ items: [] })),
+    validateFieldEvidenceComplete: vi.fn(async () => fieldReadiness),
     setChecklist(value: Record<string, unknown>) {
       checklist = value;
     },
     setFieldComplete(value: boolean) {
       fieldComplete = value;
+    },
+    setFieldReadiness(value: Record<string, unknown>) {
+      fieldReadiness = value;
     }
   };
+}
+
+function matchesEvidenceItemWhere(item: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, expected]) => {
+    if (key === "OR") {
+      return (expected as Array<Record<string, unknown>>).some((branch) => matchesEvidenceItemWhere(item, branch));
+    }
+    return item[key] === expected;
+  });
 }
 
 function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record<string, unknown>): boolean {
@@ -732,4 +970,13 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
     }
     return true;
   });
+}
+
+function uploadFile(originalname: string, mimetype: string) {
+  return {
+    buffer: Buffer.from("image"),
+    mimetype,
+    originalname,
+    size: 5
+  };
 }

@@ -7,6 +7,7 @@ import { FieldOperatorAuthController } from "../field-operator/field-operator-au
 import { FieldOperatorAuthGuard } from "../field-operator/field-operator-auth.guard";
 import { FieldOperatorAuthService } from "../field-operator/field-operator-auth.service";
 import { SmsModule } from "../sms/sms.module";
+import { StorageModule } from "../storage/storage.module";
 import {
   HandoverWorkOrderAdminController,
   HandoverWorkOrderFieldController
@@ -20,7 +21,7 @@ import { HandoverWorkOrderService } from "./handover-work-order.service";
     HandoverWorkOrderFieldController
   ],
   exports: [HandoverWorkOrderService],
-  imports: [AuthModule, DeliveryEvidenceModule, SmsModule],
+  imports: [AuthModule, DeliveryEvidenceModule, SmsModule, StorageModule],
   providers: [DeliveryHandoverService, FieldOperatorAuthGuard, FieldOperatorAuthService, HandoverWorkOrderService]
 })
 export class HandoverWorkOrderModule {}

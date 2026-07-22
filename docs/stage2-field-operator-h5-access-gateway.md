@@ -8,7 +8,7 @@ Stage 2 field operator access uses a fixed H5 entry:
 /field/handover
 ```
 
-The backend foundation provides phone OTP login, a short-lived field session, and task list/detail APIs for handover work orders assigned to the authenticated phone number. The first H5 UI phase now includes login, task list, and a read-only task detail placeholder. It does not include WeChat OpenID binding, evidence capture UI, eSign, PDF generation, lease activation, or billing activation.
+The backend foundation provides phone OTP login, a short-lived field session, and task list/detail/action APIs for handover work orders assigned to the authenticated phone number. The current H5 UI phase includes login, task list, task detail, field facts editing, delivery evidence upload, damage/no-damage declaration, and field evidence submit. It does not include WeChat OpenID binding, customer Portal review, Stage 2 PDF generation, eSign, delivery confirmation, lease activation, or billing activation.
 
 ## H5 Phase 1 Routes
 
@@ -24,13 +24,39 @@ This route has no required query string and must not place tokens in the URL. It
 /field/handover/tasks
 ```
 
-The task list page loads the current field session and then lists work orders assigned to the authenticated phone number. A lightweight placeholder detail route may be used for safe read-only summary:
+The task list page loads the current field session and then lists work orders assigned to the authenticated phone number. The detail route is the field evidence capture page:
 
 ```text
 /field/handover/tasks/[id]
 ```
 
-The placeholder is intentionally not an evidence capture page. It must not expose upload controls, field facts editing, submit actions, PDF generation, eSign, lease activation, billing activation, or provider internals.
+The detail page may show upload controls, field facts editing, damage/no-damage declaration, and a field evidence submit action while the work order is editable. It must not expose customer review controls, PDF generation, eSign, lease activation, billing activation, or provider internals.
+
+## Evidence Capture APIs
+
+Field-session guarded action routes:
+
+```text
+POST /field/handover/work-orders/:id/start
+PATCH /field/handover/work-orders/:id/facts
+POST /field/handover/work-orders/:id/evidence-files
+POST /field/handover/work-orders/:id/evidence/:itemId/files
+POST /field/handover/work-orders/:id/no-visible-damage
+GET /field/handover/work-orders/:id/readiness
+POST /field/handover/work-orders/:id/submit
+```
+
+Every route verifies the independent field session and the assigned external operator phone before reading or mutating the work order. Evidence upload uses the existing private storage and `FileObject` abstraction, and the H5 response returns only safe file metadata such as `fileId`, original file name, MIME type, and size. It must not return or render object storage keys.
+
+The H5 upload flow is:
+
+1. Operator selects an image or video.
+2. H5 uploads the file to the field evidence upload endpoint.
+3. API stores a private object, creates a `FileObject`, and returns a safe `fileId`.
+4. H5 attaches the `fileId` to the selected evidence item through the field-session guarded attach endpoint.
+5. H5 refreshes work-order detail/readiness.
+
+No tests or local validation should call real SMS, WeChat, Fadada, staging DB, or production DB.
 
 ## SMS Policy
 
@@ -91,6 +117,7 @@ Field task list/detail responses may include:
 - VIN suffix only
 - evidence progress
 - safe evidence checklist metadata
+- evidence labels/status/counts and safe file metadata
 - field facts needed for handover work
 
 Responses must not include:
@@ -103,8 +130,13 @@ Responses must not include:
 - OSS object keys
 - finance, payment, deposit, or billing details
 - unrelated orders
+- plaintext OTPs, session tokens, cookies, Admin JWTs, or OSS object keys
 
 The H5 view model should render only explicit safe fields from the DTO. It must not stringify or display raw response objects.
+
+## Local And Staging Validation
+
+When staging Web is built with `NEXT_PUBLIC_API_BASE_URL` pointing to the public staging API, local browser checks on `3100/3101` do not fully represent the real login/session flow. Controlled staging H5 validation should use the public H5 domain. Do not use port `3001` for staging validation.
 
 ## Legacy Token Policy
 
@@ -127,17 +159,20 @@ Audit data stores phone/session/work-order identifiers and hashed request contex
 
 ## Phase 1 UI Status
 
-Implemented in the first H5 UI phase:
+Implemented in the current H5 UI phase:
 
 - `/field/handover` phone OTP login.
 - `/field/handover/tasks` authenticated task list.
-- `/field/handover/tasks/[id]` read-only summary placeholder for the next evidence capture phase.
+- `/field/handover/tasks/[id]` mobile-first evidence capture page.
 - Logout through the field auth boundary.
-- Mobile-first single-column layout with loading, empty, error, disabled, and unauthorized states.
+- Mobile-first single-column layout with loading, empty, error, disabled, upload, locked, and unauthorized states.
+- Field facts editing: mileage, energy/fuel level, delivery location, accessory checklist, damage/no-damage state, and notes.
+- The 14-item evidence checklist, including conditional damage close-up and no-visible-damage declaration.
+- Submit action that moves field evidence into customer review when backend readiness gates pass.
 
 Still deferred:
 
-- Add H5 evidence capture and upload flow on top of the field session guard.
 - Add Admin assignment/reminder UX that sends only OTP or generic reminders.
 - Optionally bind WeChat OpenID/UnionID after phone login.
 - Add Customer Portal handover review page for no-objection / objection confirmation.
+- Add Stage 2 PDF renderer, provider mapping/eSign, and delivery confirmation UI.

@@ -81,9 +81,9 @@ Singleton evidence item duplication is guarded in service code. Damage close-up 
 
 External operator access stores only `accessTokenHash`. The plaintext token is returned only once during Admin assignment. The external task view is scoped to the assigned work order and must not expose full ID numbers, finance/payment data, full contract data, provider credentials, signing URLs, or other orders. If an external task token is accidentally sent as an Admin cookie or bearer token, Admin guards must treat it as unauthenticated/forbidden and must not expose token parser internals.
 
-Field operator H5 access uses the fixed route `/field/handover` with phone OTP login and an independent `field_access_token` session. SMS content must be code-only or a generic reminder; task-specific links, bearer tokens, customer data, and order details must not be sent by SMS. After login, task discovery is based on the normalized assigned operator phone and returns only safe DTO fields. The legacy `/field/handover/:token` path may remain for emergency or QA use, but it is no longer the primary external distribution path.
+Field operator H5 access uses the fixed route `/field/handover` with phone OTP login and an independent `field_access_token` session. SMS content must be code-only or a generic reminder; task-specific links, bearer tokens, customer data, and order details must not be sent by SMS. After login, task discovery is based on the normalized assigned operator phone and returns only safe DTO fields. The H5 detail route now supports field facts editing, delivery evidence upload, damage/no-damage declaration, readiness refresh, and field evidence submit. The legacy `/field/handover/:token` path may remain for emergency or QA use, but it is no longer the primary external distribution path.
 
-The first H5 UI phase exposes `/field/handover` and `/field/handover/tasks`, plus a read-only `/field/handover/tasks/[id]` placeholder. This phase is login and task discovery only: no evidence upload, field facts editing, customer review, Stage 2 PDF, eSign, delivery confirmation, lease, or billing action is available from the H5 UI.
+The current H5 UI phase exposes `/field/handover`, `/field/handover/tasks`, and `/field/handover/tasks/[id]`. This phase includes field evidence capture only: customer Portal review, Stage 2 PDF, eSign, delivery confirmation, lease, and billing actions remain unavailable from the H5 UI.
 
 ## Evidence Checklist
 
@@ -111,6 +111,8 @@ Conditional damage evidence:
 - Pending ops review does not block Stage 2 PDF/eSign in the current policy.
 
 The Stage 2 PDF should list checklist status and file references only. It must not embed the source photos or videos.
+
+Field H5 upload stores files through private storage and `FileObject`, then attaches the returned safe `fileId` to a checklist item. H5 responses and view models must not render raw object storage keys.
 
 ## Status Policy
 

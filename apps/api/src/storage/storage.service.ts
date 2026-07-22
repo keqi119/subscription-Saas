@@ -109,6 +109,18 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
+  async putDeliveryEvidenceFile(input: Omit<UploadObjectInput, "key"> & {
+    orderId: string;
+    workOrderId: string;
+  }): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildDeliveryEvidenceFileKey(input.workOrderId, input.originalName ?? "file");
+    return this.putPrivateObject(key, input);
+  }
+
   getVehicleBaasContractAttachmentStream(bucket: string, objectKey: string): Promise<DownloadObjectResult> {
     return this.getObject(bucket, objectKey);
   }
@@ -249,6 +261,12 @@ export class StorageService {
     const now = new Date();
     const year = String(now.getUTCFullYear());
     return `vehicle-baas-contracts/${sanitizeKeyPart(contractId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildDeliveryEvidenceFileKey(workOrderId: string, originalName: string) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    return `delivery-evidence/${sanitizeKeyPart(workOrderId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
   private buildContractSignedArtifactKey(contractId: string, provider: string, originalName: string) {

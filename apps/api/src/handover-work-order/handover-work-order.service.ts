@@ -18,6 +18,7 @@ import {
   normalizeOptionalFieldOperatorPhone
 } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
+import { StorageService } from "../storage/storage.service";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
 const FIELD_HIDDEN_WORK_ORDER_STATUSES = [
@@ -43,6 +44,19 @@ const OPS_REVIEW_PENDING_ALLOWED_STATUSES = new Set([
   "FIELD_COMPLETED",
   "OPS_REVIEW_PENDING",
   "OPS_REVIEWED"
+]);
+const FIELD_SESSION_LOCKED_STATUSES = new Set([
+  "CUSTOMER_REVIEWING",
+  "EVIDENCE_SUBMITTED",
+  "CUSTOMER_CONFIRMED",
+  "CUSTOMER_SIGNED",
+  "PLATFORM_SEALED",
+  "FIELD_COMPLETED",
+  "OPS_REVIEW_PENDING",
+  "OPS_REVIEWED",
+  "VOIDED",
+  "FAILED",
+  "CANCELLED"
 ]);
 
 type HandoverType = "DELIVERY_OUTBOUND" | "RETURN_INBOUND";
@@ -109,12 +123,20 @@ export interface AttachFieldEvidenceFileInput {
   mediaType: DeliveryEvidenceMediaType;
 }
 
+export interface UploadedFieldEvidenceFile {
+  buffer: Buffer;
+  mimetype?: string;
+  originalname: string;
+  size: number;
+}
+
 @Injectable()
 export class HandoverWorkOrderService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveryEvidenceService: DeliveryEvidenceService,
-    @Optional() private readonly deliveryHandoverService?: DeliveryHandoverService
+    @Optional() private readonly deliveryHandoverService?: DeliveryHandoverService,
+    @Optional() private readonly storageService?: StorageService
   ) {}
 
   async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
@@ -239,14 +261,117 @@ export class HandoverWorkOrderService {
   }
 
   async getFieldAccessibleWorkOrder(id: string, phone: string) {
-    const normalizedPhone = normalizeFieldOperatorPhone(phone);
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({ where: { id } });
+    return this.toFieldTaskDetail(await this.getFieldAccessibleWorkOrderRecord(id, phone));
+  }
 
-    if (!workOrder || !isFieldAccessibleWorkOrder(workOrder, normalizedPhone)) {
-      throw new UnauthorizedException("No access to this field handover work order.");
+  async getFieldAccessibleReadiness(id: string, phone: string) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    const evidenceReadiness = await this.deliveryEvidenceService.validateFieldEvidenceComplete(
+      workOrder.orderId,
+      workOrder.handoverId ?? null,
+      toFieldEvidenceState(workOrder)
+    );
+    const fieldFactBlockingReasons = getFieldFactsBlockingReasons(workOrder);
+
+    return {
+      ...evidenceReadiness,
+      blockingReasons: [...fieldFactBlockingReasons, ...evidenceReadiness.blockingReasons],
+      ready: fieldFactBlockingReasons.length === 0 && evidenceReadiness.ready
+    };
+  }
+
+  async startFieldAccessibleWorkOrder(id: string, phone: string, actorId?: string) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    assertFieldSessionEditable(workOrder);
+    return this.updateWorkOrder(id, {
+      fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
+      metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
+      status: "FIELD_IN_PROGRESS"
+    });
+  }
+
+  async updateFieldAccessibleFacts(
+    id: string,
+    phone: string,
+    input: UpdateFieldFactsInput,
+    actorId?: string
+  ) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    assertFieldSessionEditable(workOrder);
+    return this.updateFieldFacts(id, input, actorId);
+  }
+
+  async uploadFieldAccessibleEvidenceFile(
+    id: string,
+    phone: string,
+    files: UploadedFieldEvidenceFile[] | undefined
+  ) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    assertFieldSessionEditable(workOrder);
+    const file = (files ?? []).find((item) => item.buffer?.length);
+    if (!file) {
+      throw new BadRequestException("请上传现场证据文件。");
     }
+    assertSupportedFieldEvidenceFile(file);
 
-    return this.toFieldTaskDetail(workOrder);
+    const stored = await this.getStorageService().putDeliveryEvidenceFile({
+      buffer: file.buffer,
+      contentType: file.mimetype,
+      metadata: { originalName: file.originalname },
+      orderId: workOrder.orderId,
+      originalName: file.originalname,
+      workOrderId: id
+    });
+    const fileObject = await this.prisma.fileObject.create({
+      data: {
+        bucket: stored.bucket,
+        mimeType: file.mimetype ?? null,
+        objectKey: stored.objectKey,
+        originalName: file.originalname,
+        sizeBytes: BigInt(file.size),
+        uploadedBy: null
+      }
+    });
+
+    return {
+      fileId: fileObject.id,
+      fileName: fileObject.originalName,
+      mimeType: fileObject.mimeType,
+      sizeBytes: Number(fileObject.sizeBytes)
+    };
+  }
+
+  async attachFieldAccessibleEvidenceFile(
+    id: string,
+    phone: string,
+    itemId: string,
+    input: AttachFieldEvidenceFileInput
+  ) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    assertFieldSessionEditable(workOrder);
+    return this.attachEvidenceFileForWorkOrder(workOrder, itemId, input);
+  }
+
+  async declareFieldAccessibleNoVisibleDamage(id: string, phone: string, remark?: string) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    assertFieldSessionEditable(workOrder);
+    await this.deliveryEvidenceService.declareNoVisibleDamage(
+      workOrder.orderId,
+      undefined,
+      workOrder.handoverId ?? null,
+      remark
+    );
+    return this.updateWorkOrder(id, {
+      damageDeclared: false,
+      metadata: mergeMetadata(workOrder.metadata, { noVisibleDamageDeclaredBy: null }),
+      noVisibleDamageDeclared: true
+    });
+  }
+
+  async submitFieldAccessibleEvidence(id: string, phone: string, actorId?: string) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    assertFieldSessionEditable(workOrder);
+    return this.submitEvidence(id, actorId);
   }
 
   async startFieldWork(id: string, actorId?: string) {
@@ -272,10 +397,10 @@ export class HandoverWorkOrderService {
     return this.updateWorkOrder(id, compactUndefined({
       accessoryChecklist: input.accessoryChecklist === undefined ? undefined : toJsonValue(input.accessoryChecklist),
       damageDeclared: input.damageDeclared,
-      deliveryLocation: normalizeOptionalText(input.deliveryLocation),
-      energyLevelText: normalizeOptionalText(input.energyLevelText),
-      fieldNotes: normalizeOptionalText(input.fieldNotes),
-      fuelLevelText: normalizeOptionalText(input.fuelLevelText),
+      deliveryLocation: input.deliveryLocation === undefined ? undefined : normalizeOptionalText(input.deliveryLocation),
+      energyLevelText: input.energyLevelText === undefined ? undefined : normalizeOptionalText(input.energyLevelText),
+      fieldNotes: input.fieldNotes === undefined ? undefined : normalizeOptionalText(input.fieldNotes),
+      fuelLevelText: input.fuelLevelText === undefined ? undefined : normalizeOptionalText(input.fuelLevelText),
       handoverMileageKm: input.handoverMileageKm,
       metadata: mergeMetadata(workOrder.metadata, { fieldFactsUpdatedBy: actorId ?? null }),
       noVisibleDamageDeclared: input.noVisibleDamageDeclared,
@@ -293,10 +418,21 @@ export class HandoverWorkOrderService {
 
   async attachEvidenceFileWithExternalToken(token: string, itemId: string, input: AttachFieldEvidenceFileInput) {
     const workOrder = await this.resolveExternalWorkOrder(token);
+    return this.attachEvidenceFileForWorkOrder(workOrder, itemId, input);
+  }
+
+  private async attachEvidenceFileForWorkOrder(
+    workOrder: WorkOrderRecord,
+    itemId: string,
+    input: AttachFieldEvidenceFileInput
+  ) {
     const item = await this.prisma.vehicleDeliveryEvidenceItem.findFirst({
       where: {
         id: itemId,
-        orderId: workOrder.orderId
+        orderId: workOrder.orderId,
+        ...(workOrder.handoverId
+          ? { OR: [{ handoverId: null }, { handoverId: workOrder.handoverId }] }
+          : {})
       }
     });
     if (!item) {
@@ -306,7 +442,7 @@ export class HandoverWorkOrderService {
       itemId,
       input.fileId,
       input.mediaType,
-      workOrder.externalOperatorName ?? "external"
+      undefined
     );
   }
 
@@ -594,6 +730,24 @@ export class HandoverWorkOrderService {
     }
   }
 
+  private async getFieldAccessibleWorkOrderRecord(id: string, phone: string) {
+    const normalizedPhone = normalizeFieldOperatorPhone(phone);
+    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({ where: { id } });
+
+    if (!workOrder || !isFieldAccessibleWorkOrder(workOrder, normalizedPhone)) {
+      throw new UnauthorizedException("No access to this field handover work order.");
+    }
+
+    return workOrder;
+  }
+
+  private getStorageService() {
+    if (!this.storageService) {
+      throw new BadRequestException("现场证据上传存储服务未配置。");
+    }
+    return this.storageService;
+  }
+
   private async getOrCreateDraftHandover(orderId: string, actorId?: string) {
     if (this.deliveryHandoverService) {
       return this.deliveryHandoverService.getOrCreateDraftHandover(orderId, actorId);
@@ -722,21 +876,36 @@ export class HandoverWorkOrderService {
 }
 
 function assertFieldFactsComplete(workOrder: WorkOrderRecord) {
-  if (workOrder.handoverMileageKm === null || workOrder.handoverMileageKm === undefined) {
-    throw new BadRequestException("请填写交付里程。");
+  const blockingReasons = getFieldFactsBlockingReasons(workOrder);
+  if (blockingReasons.length > 0) {
+    throw new BadRequestException(blockingReasons[0]);
   }
-  if (typeof workOrder.handoverMileageKm !== "number" || workOrder.handoverMileageKm < 0) {
-    throw new BadRequestException("交付里程不合法。");
+}
+
+function getFieldFactsBlockingReasons(workOrder: WorkOrderRecord) {
+  const reasons: string[] = [];
+  if (workOrder.handoverMileageKm === null || workOrder.handoverMileageKm === undefined) {
+    reasons.push("请填写交付里程。");
+  } else if (typeof workOrder.handoverMileageKm !== "number" || workOrder.handoverMileageKm <= 0) {
+    reasons.push("交付里程不合法。");
   }
   if (!normalizeOptionalText(workOrder.energyLevelText) && !normalizeOptionalText(workOrder.fuelLevelText)) {
-    throw new BadRequestException("请填写能源/油量状态。");
+    reasons.push("请填写能源/油量状态。");
   }
   if (!hasAccessoryChecklist(workOrder.accessoryChecklist)) {
-    throw new BadRequestException("请填写随车物品清单。");
+    reasons.push("请填写随车物品清单。");
   }
-  assertDamageState(workOrder.damageDeclared, workOrder.noVisibleDamageDeclared);
-  if (workOrder.damageDeclared !== true && workOrder.noVisibleDamageDeclared !== true) {
-    throw new BadRequestException("请处理车辆损伤状态。");
+  if (workOrder.damageDeclared === true && workOrder.noVisibleDamageDeclared === true) {
+    reasons.push("损伤状态冲突，请选择存在损伤或无可见损伤。");
+  } else if (workOrder.damageDeclared !== true && workOrder.noVisibleDamageDeclared !== true) {
+    reasons.push("请处理车辆损伤状态。");
+  }
+  return reasons;
+}
+
+function assertFieldSessionEditable(workOrder: WorkOrderRecord) {
+  if (FIELD_SESSION_LOCKED_STATUSES.has(String(workOrder.status))) {
+    throw new BadRequestException("当前交接任务已提交或不可继续编辑。");
   }
 }
 
@@ -907,6 +1076,15 @@ function assertCanMarkOpsReviewPending(workOrder: WorkOrderRecord) {
 function assertDamageState(damageDeclared: unknown, noVisibleDamageDeclared: unknown) {
   if (damageDeclared === true && noVisibleDamageDeclared === true) {
     throw new BadRequestException("损伤状态冲突，请选择存在损伤或无可见损伤。");
+  }
+}
+
+function assertSupportedFieldEvidenceFile(file: UploadedFieldEvidenceFile) {
+  if (!file.buffer?.length) {
+    throw new BadRequestException("请上传现场证据文件。");
+  }
+  if (!file.mimetype?.startsWith("image/") && !file.mimetype?.startsWith("video/")) {
+    throw new BadRequestException("现场证据仅支持图片或视频文件。");
   }
 }
 

@@ -3,9 +3,11 @@ import {
   Injectable,
   NotFoundException,
   Optional,
+  UnsupportedMediaTypeException,
   UnauthorizedException
 } from "@nestjs/common";
 import { createHash, randomBytes } from "node:crypto";
+import type { Readable } from "node:stream";
 import { DeliveryEvidenceMediaType, Prisma } from "@prisma/client";
 
 import {
@@ -46,6 +48,7 @@ const OPS_REVIEW_PENDING_ALLOWED_STATUSES = new Set([
   "OPS_REVIEWED"
 ]);
 const FIELD_SESSION_LOCKED_STATUSES = new Set([
+  "CUSTOMER_OBJECTED",
   "CUSTOMER_REVIEWING",
   "EVIDENCE_SUBMITTED",
   "CUSTOMER_CONFIRMED",
@@ -58,6 +61,13 @@ const FIELD_SESSION_LOCKED_STATUSES = new Set([
   "FAILED",
   "CANCELLED"
 ]);
+const HANDOVER_REVIEW_ADMIN_STATUS_KEY = "handoverReviewAdminStatus";
+const ADMIN_REVIEW_STATUS_ACKNOWLEDGED = "ACKNOWLEDGED";
+const ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED = "RESUBMISSION_REQUESTED";
+const ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN = "RESUBMITTED_PENDING_ADMIN";
+const ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW = "SENT_BACK_TO_CUSTOMER_REVIEW";
+const ADMIN_REVIEW_STATUS_RESOLVED = "RESOLVED";
+const PREVIEWABLE_EVIDENCE_MIME_PREFIXES = ["image/", "video/"];
 
 type HandoverType = "DELIVERY_OUTBOUND" | "RETURN_INBOUND";
 type WorkOrderStatus = typeof TERMINAL_WORK_ORDER_STATUSES[number] |
@@ -76,6 +86,7 @@ interface WorkOrderRecord {
   createdAt?: Date | null;
   customerConfirmedAt?: Date | null;
   customerObjectedAt?: Date | null;
+  customerObjectionReason?: string | null;
   customerReviewStartedAt?: Date | null;
   damageDeclared?: boolean | null;
   deliveryLocation?: string | null;
@@ -97,6 +108,13 @@ interface WorkOrderRecord {
   orderId: string;
   scheduledAt?: Date | null;
   status: string;
+}
+
+export interface EvidenceFileStreamResult {
+  filename: string;
+  mimeType: null | string;
+  sizeBytes: null | number;
+  stream: Readable;
 }
 
 export interface AssignExternalOperatorInput {
@@ -164,14 +182,15 @@ export class HandoverWorkOrderService {
   }
 
   async listByOrder(orderId: string) {
-    return this.prisma.vehicleHandoverWorkOrder.findMany({
+    const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
       orderBy: { createdAt: "desc" },
       where: { orderId }
     });
+    return Promise.all(workOrders.map((workOrder) => this.toAdminWorkOrderSummary(workOrder)));
   }
 
   async getById(id: string) {
-    return this.getWorkOrderOrThrow(id);
+    return this.toAdminWorkOrderDetail(await this.getWorkOrderOrThrow(id));
   }
 
   async assignInternalOperator(id: string, userId: string, actorId?: string) {
@@ -283,6 +302,9 @@ export class HandoverWorkOrderService {
   async startFieldAccessibleWorkOrder(id: string, phone: string, actorId?: string) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
+    if (workOrder.status === "CUSTOMER_OBJECTED") {
+      return workOrder;
+    }
     return this.updateWorkOrder(id, {
       fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
       metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
@@ -368,6 +390,14 @@ export class HandoverWorkOrderService {
     });
   }
 
+  async previewEvidenceFile(id: string, evidenceFileId: string): Promise<EvidenceFileStreamResult> {
+    return this.getEvidenceFileStream(id, evidenceFileId, { preview: true });
+  }
+
+  async downloadEvidenceFile(id: string, evidenceFileId: string): Promise<EvidenceFileStreamResult> {
+    return this.getEvidenceFileStream(id, evidenceFileId, { preview: false });
+  }
+
   async submitFieldAccessibleEvidence(id: string, phone: string, actorId?: string) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
@@ -386,6 +416,10 @@ export class HandoverWorkOrderService {
 
   async startFieldWorkByToken(token: string) {
     const workOrder = await this.resolveExternalWorkOrder(token);
+    assertFieldSessionEditable(workOrder);
+    if (workOrder.status === "CUSTOMER_OBJECTED") {
+      return workOrder;
+    }
     return this.startFieldWork(workOrder.id, workOrder.externalOperatorName ?? "external");
   }
 
@@ -421,12 +455,84 @@ export class HandoverWorkOrderService {
 
   async updateFieldFactsByToken(token: string, input: UpdateFieldFactsInput) {
     const workOrder = await this.resolveExternalWorkOrder(token);
+    assertFieldSessionEditable(workOrder);
     return this.updateFieldFacts(workOrder.id, input, workOrder.externalOperatorName ?? "external");
   }
 
   async attachEvidenceFileWithExternalToken(token: string, itemId: string, input: AttachFieldEvidenceFileInput) {
     const workOrder = await this.resolveExternalWorkOrder(token);
+    assertFieldSessionEditable(workOrder);
     return this.attachEvidenceFileForWorkOrder(workOrder, itemId, input);
+  }
+
+  async acknowledgeCustomerObjection(id: string, actorId: string, note?: string | null) {
+    const workOrder = await this.getObjectedWorkOrderOrThrow(id);
+    const now = new Date();
+    await this.upsertLatestReviewAttempt(workOrder, "CUSTOMER_OBJECTED", {
+      adminAcknowledgedAt: now,
+      adminAcknowledgedById: actorId,
+      adminNotes: normalizeOptionalText(note),
+      adminStatus: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
+    });
+    const updated = await this.updateWorkOrder(id, {
+      metadata: mergeMetadata(workOrder.metadata, {
+        handoverReviewAdminAcknowledgedAt: now.toISOString(),
+        handoverReviewAdminAcknowledgedBy: actorId,
+        handoverReviewAdminNote: normalizeOptionalText(note),
+        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
+      })
+    });
+    return this.toAdminWorkOrderDetail(updated);
+  }
+
+  async requestCustomerObjectionResubmission(id: string, actorId: string, note?: string | null) {
+    const workOrder = await this.getObjectedWorkOrderOrThrow(id);
+    const now = new Date();
+    await this.upsertLatestReviewAttempt(workOrder, "RESUBMISSION_REQUESTED", {
+      adminNotes: normalizeOptionalText(note),
+      adminStatus: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED,
+      resubmissionRequestedAt: now,
+      resubmissionRequestedById: actorId
+    });
+    const updated = await this.updateWorkOrder(id, {
+      metadata: mergeMetadata(workOrder.metadata, {
+        handoverReviewAdminNote: normalizeOptionalText(note),
+        handoverReviewResubmissionRequestedAt: now.toISOString(),
+        handoverReviewResubmissionRequestedBy: actorId,
+        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
+      })
+    });
+    return this.toAdminWorkOrderDetail(updated);
+  }
+
+  async sendCustomerObjectionBackToReview(id: string, actorId: string, note?: string | null) {
+    const workOrder = await this.getObjectedWorkOrderOrThrow(id);
+    if (getHandoverReviewAdminStatus(workOrder.metadata) !== ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN) {
+      throw new BadRequestException("现场资料重新提交后，后台才能送回客户复核。");
+    }
+    const now = new Date();
+    const updated = await this.updateWorkOrder(id, {
+      customerConfirmedAt: null,
+      customerObjectedAt: null,
+      customerObjectionReason: null,
+      customerReviewStartedAt: now,
+      metadata: mergeMetadata(workOrder.metadata, {
+        customerObjectionDetails: null,
+        handoverReviewAdminNote: normalizeOptionalText(note),
+        handoverReviewSentBackToCustomerReviewAt: now.toISOString(),
+        handoverReviewSentBackToCustomerReviewBy: actorId,
+        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW
+      }),
+      status: "CUSTOMER_REVIEWING"
+    });
+    await this.createReviewAttempt(updated, "CUSTOMER_REVIEWING", {
+      adminNotes: normalizeOptionalText(note),
+      adminStatus: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW,
+      customerReviewStartedAt: now,
+      sentBackToCustomerReviewAt: now,
+      sentBackToCustomerReviewById: actorId
+    });
+    return this.toAdminWorkOrderDetail(updated);
   }
 
   private async attachEvidenceFileForWorkOrder(
@@ -464,12 +570,40 @@ export class HandoverWorkOrderService {
       toFieldEvidenceState(workOrder)
     );
     const now = new Date();
-    return this.updateWorkOrder(id, {
+    if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
+      if (!isFieldResubmissionRequested(workOrder)) {
+        throw new BadRequestException("客户已提交异议，需后台要求现场重提后才能继续。");
+      }
+      const updated = await this.updateWorkOrder(id, {
+        fieldSubmittedAt: now,
+        metadata: mergeMetadata(workOrder.metadata, {
+          fieldSubmittedBy: actorId ?? null,
+          handoverReviewResubmittedAt: now.toISOString(),
+          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN
+        }),
+        status: "CUSTOMER_OBJECTED"
+      });
+      await this.upsertLatestReviewAttempt(updated, "RESUBMITTED_PENDING_ADMIN", {
+        adminStatus: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
+        fieldSubmittedAt: now
+      });
+      return updated;
+    }
+    const updated = await this.updateWorkOrder(id, {
       customerReviewStartedAt: workOrder.customerReviewStartedAt ?? now,
       fieldSubmittedAt: workOrder.fieldSubmittedAt ?? now,
-      metadata: mergeMetadata(workOrder.metadata, { fieldSubmittedBy: actorId ?? null }),
+      metadata: mergeMetadata(workOrder.metadata, {
+        fieldSubmittedBy: actorId ?? null,
+        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
+      }),
       status: "CUSTOMER_REVIEWING"
     });
+    await this.upsertLatestReviewAttempt(updated, "CUSTOMER_REVIEWING", {
+      adminStatus: null,
+      customerReviewStartedAt: updated.customerReviewStartedAt ?? now,
+      fieldSubmittedAt: updated.fieldSubmittedAt ?? now
+    });
+    return updated;
   }
 
   async submitEvidenceByToken(token: string) {
@@ -506,13 +640,24 @@ export class HandoverWorkOrderService {
       workOrder.handoverId ?? null,
       toFieldEvidenceState(workOrder)
     );
-    return this.updateWorkOrder(id, {
-      customerConfirmedAt: workOrder.customerConfirmedAt ?? new Date(),
+    const confirmedAt = workOrder.customerConfirmedAt ?? new Date();
+    const updated = await this.updateWorkOrder(id, {
+      customerConfirmedAt: confirmedAt,
       customerObjectedAt: null,
       customerObjectionReason: null,
-      metadata: mergeMetadata(workOrder.metadata, { customerConfirmedBy: customerId }),
+      metadata: mergeMetadata(workOrder.metadata, {
+        customerConfirmedBy: customerId,
+        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESOLVED
+      }),
       status: "CUSTOMER_CONFIRMED"
     });
+    await this.upsertLatestReviewAttempt(updated, "CUSTOMER_CONFIRMED", {
+      adminStatus: ADMIN_REVIEW_STATUS_RESOLVED,
+      customerConfirmedAt: confirmedAt,
+      resolvedAt: confirmedAt,
+      resolvedById: null
+    });
+    return updated;
   }
 
   async customerObject(id: string, customerId: string, reason: string, details?: string | null) {
@@ -528,15 +673,26 @@ export class HandoverWorkOrderService {
     if (!CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(String(workOrder.status))) {
       throw new BadRequestException("客户尚未进入交付复核。");
     }
-    return this.updateWorkOrder(id, {
-      customerObjectedAt: new Date(),
-      customerObjectionReason: normalizeRequiredText(reason, "请填写客户异议原因。"),
+    const now = new Date();
+    const objectionReason = normalizeRequiredText(reason, "请填写客户异议原因。");
+    const objectionDetails = normalizeOptionalText(details);
+    const updated = await this.updateWorkOrder(id, {
+      customerObjectedAt: now,
+      customerObjectionReason: objectionReason,
       metadata: mergeMetadata(workOrder.metadata, {
         customerObjectedBy: customerId,
-        customerObjectionDetails: normalizeOptionalText(details)
+        customerObjectionDetails: objectionDetails,
+        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
       }),
       status: "CUSTOMER_OBJECTED"
     });
+    await this.upsertLatestReviewAttempt(updated, "CUSTOMER_OBJECTED", {
+      adminStatus: null,
+      customerObjectedAt: now,
+      customerObjectionDetails: objectionDetails,
+      customerObjectionReason: objectionReason
+    });
+    return updated;
   }
 
   async markCustomerSigned(id: string, signedAt: Date, actorId?: string) {
@@ -659,6 +815,9 @@ export class HandoverWorkOrderService {
     if (isTerminalWorkOrderStatus(workOrder.status)) {
       throw new BadRequestException("交付工单已终止。");
     }
+    if (getHandoverReviewAdminStatus(workOrder.metadata) === ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN) {
+      throw new BadRequestException("现场资料已重新提交，等待后台送回客户复核。");
+    }
     if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
       throw new BadRequestException("客户存在异议，需后台介入。");
     }
@@ -738,6 +897,241 @@ export class HandoverWorkOrderService {
     if (order.customerId !== customerId) {
       throw new UnauthorizedException("无权访问该交付工单。");
     }
+  }
+
+  private async getObjectedWorkOrderOrThrow(id: string) {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    this.assertMutable(workOrder);
+    if (workOrder.status !== "CUSTOMER_OBJECTED" && !workOrder.customerObjectedAt) {
+      throw new BadRequestException("当前交接工单没有待处理客户异议。");
+    }
+    return workOrder;
+  }
+
+  private async getEvidenceFileStream(
+    id: string,
+    evidenceFileId: string,
+    options: { preview: boolean }
+  ): Promise<EvidenceFileStreamResult> {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    const evidenceFile = await this.prisma.vehicleDeliveryEvidenceFile.findFirst({
+      include: {
+        evidenceItem: true,
+        file: true
+      },
+      where: {
+        id: evidenceFileId,
+        evidenceItem: {
+          orderId: workOrder.orderId,
+          ...(workOrder.handoverId
+            ? { OR: [{ handoverId: null }, { handoverId: workOrder.handoverId }] }
+            : {})
+        }
+      }
+    });
+    const fileObject = evidenceFile?.file;
+    if (!evidenceFile || !fileObject?.bucket || !fileObject.objectKey) {
+      throw new NotFoundException("交接资料文件不存在。");
+    }
+    const mimeType = fileObject.mimeType ?? null;
+    if (options.preview && !isPreviewableEvidenceMime(mimeType)) {
+      throw new UnsupportedMediaTypeException("该资料类型暂不支持预览，请下载后查看。");
+    }
+    const downloaded = await this.getStorageService().getObject(fileObject.bucket, fileObject.objectKey);
+    return {
+      filename: fileObject.originalName ?? "evidence-file",
+      mimeType: downloaded.contentType ?? mimeType,
+      sizeBytes: toNumberOrNull(fileObject.sizeBytes ?? downloaded.contentLength ?? null),
+      stream: downloaded.stream
+    };
+  }
+
+  private async toAdminWorkOrderSummary(workOrder: WorkOrderRecord) {
+    const [order, evidenceChecklist, reviewAttempts] = await Promise.all([
+      this.getOrderOrThrow(workOrder.orderId),
+      this.deliveryEvidenceService.getChecklist({
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId
+      }),
+      this.listReviewAttempts(workOrder.id)
+    ]);
+
+    return {
+      adminReview: toAdminReviewView(workOrder, reviewAttempts),
+      customer: {
+        displayName: order.customer?.name ?? null,
+        mobileMasked: maskPhone(order.customer?.mobile)
+      },
+      customerConfirmedAt: workOrder.customerConfirmedAt,
+      customerObjectedAt: workOrder.customerObjectedAt,
+      customerReviewStartedAt: workOrder.customerReviewStartedAt,
+      deliveryLocation: workOrder.deliveryLocation,
+      evidenceProgress: summarizeEvidenceChecklist(evidenceChecklist),
+      fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
+      fieldSubmittedAt: workOrder.fieldSubmittedAt,
+      handoverId: workOrder.handoverId,
+      handoverType: workOrder.handoverType,
+      id: workOrder.id,
+      objection: toObjectionView(workOrder),
+      operator: {
+        name: workOrder.externalOperatorName ?? null,
+        phoneMasked: maskPhone(workOrder.externalOperatorPhone),
+        type: workOrder.operatorType ?? null
+      },
+      orderNo: order.orderNo,
+      reviewAttempts: reviewAttempts.map(toSafeReviewAttempt),
+      scheduledAt: workOrder.scheduledAt,
+      status: workOrder.status,
+      vehicle: {
+        brand: order.vehicle?.brand ?? null,
+        model: order.vehicle?.model ?? null,
+        plateMasked: maskPlate(order.vehicle?.plateNo),
+        vinSuffix: suffix(order.vehicle?.vin, 6)
+      }
+    };
+  }
+
+  private async toAdminWorkOrderDetail(workOrder: WorkOrderRecord) {
+    const [summary, evidenceChecklist, readiness] = await Promise.all([
+      this.toAdminWorkOrderSummary(workOrder),
+      this.deliveryEvidenceService.getChecklist({
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId
+      }),
+      this.getReadiness(workOrder.id)
+    ]);
+
+    return {
+      ...summary,
+      evidenceChecklist: toSafeEvidenceChecklist(
+        evidenceChecklist,
+        `/api/handover-work-orders/${encodeURIComponent(workOrder.id)}/evidence-files`
+      ),
+      fieldFacts: {
+        accessoryChecklist: workOrder.accessoryChecklist,
+        damageDeclared: workOrder.damageDeclared,
+        deliveryLocation: workOrder.deliveryLocation,
+        energyLevelText: workOrder.energyLevelText,
+        fieldNotes: workOrder.fieldNotes,
+        fieldStartedAt: workOrder.fieldStartedAt,
+        fieldSubmittedAt: workOrder.fieldSubmittedAt,
+        fuelLevelText: workOrder.fuelLevelText,
+        handoverMileageKm: workOrder.handoverMileageKm,
+        noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
+        scheduledAt: workOrder.scheduledAt
+      },
+      readiness
+    };
+  }
+
+  private getReviewAttemptModel() {
+    return (this.prisma as unknown as {
+      vehicleHandoverReviewAttempt?: {
+        create: (args: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>;
+        findFirst: (args: Record<string, unknown>) => Promise<null | Record<string, unknown>>;
+        findMany: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+        update: (args: { data: Record<string, unknown>; where: { id: string } }) => Promise<Record<string, unknown>>;
+      };
+    }).vehicleHandoverReviewAttempt;
+  }
+
+  private async listReviewAttempts(workOrderId: string) {
+    const model = this.getReviewAttemptModel();
+    if (!model) {
+      return [];
+    }
+    return model.findMany({
+      orderBy: { attemptNo: "asc" },
+      where: { workOrderId }
+    });
+  }
+
+  private async findLatestReviewAttempt(workOrderId: string) {
+    const model = this.getReviewAttemptModel();
+    if (!model) {
+      return null;
+    }
+    return model.findFirst({
+      orderBy: { attemptNo: "desc" },
+      where: { workOrderId }
+    });
+  }
+
+  private async createReviewAttempt(
+    workOrder: WorkOrderRecord,
+    status: string,
+    data: Record<string, unknown> = {}
+  ) {
+    const model = this.getReviewAttemptModel();
+    if (!model) {
+      return null;
+    }
+    const latest = await this.findLatestReviewAttempt(workOrder.id);
+    return model.create({
+      data: compactUndefined({
+        ...(await this.buildReviewAttemptSnapshot(workOrder)),
+        ...data,
+        attemptNo: nextAttemptNo(latest),
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId,
+        status,
+        workOrderId: workOrder.id
+      })
+    });
+  }
+
+  private async upsertLatestReviewAttempt(
+    workOrder: WorkOrderRecord,
+    status: string,
+    data: Record<string, unknown> = {}
+  ) {
+    const model = this.getReviewAttemptModel();
+    if (!model) {
+      return null;
+    }
+    const latest = await this.findLatestReviewAttempt(workOrder.id);
+    if (!latest) {
+      return this.createReviewAttempt(workOrder, status, data);
+    }
+    return model.update({
+      data: compactUndefined({
+        ...(await this.buildReviewAttemptSnapshot(workOrder)),
+        ...data,
+        status
+      }),
+      where: { id: String(latest.id) }
+    });
+  }
+
+  private async buildReviewAttemptSnapshot(workOrder: WorkOrderRecord) {
+    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+      handoverId: workOrder.handoverId ?? null,
+      orderId: workOrder.orderId
+    });
+    return {
+      customerConfirmedAt: workOrder.customerConfirmedAt ?? null,
+      customerObjectedAt: workOrder.customerObjectedAt ?? null,
+      customerObjectionDetails: readMetadataString(workOrder.metadata, "customerObjectionDetails"),
+      customerObjectionReason: workOrder.customerObjectionReason ?? null,
+      customerReviewStartedAt: workOrder.customerReviewStartedAt ?? null,
+      evidenceSnapshot: toJsonValue(toSafeEvidenceChecklist(evidenceChecklist)),
+      fieldFactsSnapshot: toJsonValue({
+        accessoryChecklist: workOrder.accessoryChecklist ?? null,
+        damageDeclared: workOrder.damageDeclared ?? null,
+        deliveryLocation: workOrder.deliveryLocation ?? null,
+        energyLevelText: workOrder.energyLevelText ?? null,
+        fieldNotes: workOrder.fieldNotes ?? null,
+        fuelLevelText: workOrder.fuelLevelText ?? null,
+        handoverMileageKm: workOrder.handoverMileageKm ?? null,
+        noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared ?? null,
+        scheduledAt: workOrder.scheduledAt?.toISOString?.() ?? null
+      }),
+      fieldSubmittedAt: workOrder.fieldSubmittedAt ?? null,
+      metadata: toJsonValue({
+        adminStatus: getHandoverReviewAdminStatus(workOrder.metadata),
+        sourceWorkOrderStatus: workOrder.status
+      })
+    };
   }
 
   private async assertUserExists(userId: string) {
@@ -852,8 +1246,10 @@ export class HandoverWorkOrderService {
         displayName: order.customer?.name ?? null,
         mobileMasked: maskPhone(order.customer?.mobile)
       },
+      adminReviewStatus: getHandoverReviewAdminStatus(workOrder.metadata),
       deliveryLocation: workOrder.deliveryLocation,
       evidenceProgress: summarizeEvidenceChecklist(evidenceChecklist),
+      fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
       handoverId: workOrder.handoverId,
       handoverType: workOrder.handoverType,
       id: workOrder.id,
@@ -878,6 +1274,7 @@ export class HandoverWorkOrderService {
 
     return {
       ...listItem,
+      fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
       evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
@@ -932,6 +1329,9 @@ function getFieldFactsBlockingReasons(workOrder: WorkOrderRecord) {
 }
 
 function assertFieldSessionEditable(workOrder: WorkOrderRecord) {
+  if (workOrder.status === "CUSTOMER_OBJECTED" && isFieldResubmissionRequested(workOrder)) {
+    return;
+  }
   if (FIELD_SESSION_LOCKED_STATUSES.has(String(workOrder.status))) {
     throw new BadRequestException("当前交接任务已提交或不可继续编辑。");
   }
@@ -982,15 +1382,15 @@ function summarizeEvidenceChecklist(checklist: unknown) {
   };
 }
 
-function toSafeEvidenceChecklist(checklist: unknown) {
+function toSafeEvidenceChecklist(checklist: unknown, routeBase?: string) {
   return {
     blockingReasons: readStringArray(checklist, "blockingReasons"),
-    items: getChecklistItems(checklist).map(toSafeEvidenceItem),
+    items: getChecklistItems(checklist).map((item) => toSafeEvidenceItem(item, routeBase)),
     ready: readBoolean(checklist, "ready") ?? false
   };
 }
 
-function toSafeEvidenceItem(item: Record<string, unknown>) {
+function toSafeEvidenceItem(item: Record<string, unknown>, routeBase?: string) {
   return {
     allowedMediaTypes: readStringArray(item, "allowedMediaTypes"),
     conditionKey: readNullableString(item, "conditionKey"),
@@ -1000,7 +1400,7 @@ function toSafeEvidenceItem(item: Record<string, unknown>) {
     evidenceType: readString(item, "evidenceType"),
     fileCount: getFileCount(item),
     fileRequired: readNullableBoolean(item, "fileRequired"),
-    files: getEvidenceFiles(item).map(toSafeEvidenceFile),
+    files: getEvidenceFiles(item).map((file) => toSafeEvidenceFile(file, routeBase)),
     id: readString(item, "id"),
     isConditional: readNullableBoolean(item, "isConditional"),
     isRequired: readNullableBoolean(item, "isRequired"),
@@ -1013,19 +1413,32 @@ function toSafeEvidenceItem(item: Record<string, unknown>) {
   };
 }
 
-function toSafeEvidenceFile(file: Record<string, unknown>) {
+function toSafeEvidenceFile(file: Record<string, unknown>, routeBase?: string) {
   const linkedFile = readRecord(file, "file");
+  const evidenceFileId = readString(file, "id");
+  const mimeType = linkedFile ? readNullableString(linkedFile, "mimeType") : null;
+  const displayName = linkedFile ? readNullableString(linkedFile, "originalName") : null;
+  const sizeBytes = linkedFile ? readNumberLike(linkedFile, "sizeBytes") : null;
+  const previewAvailable = isPreviewableEvidenceMime(mimeType);
   return {
+    displayName,
+    downloadUrl: routeBase && evidenceFileId ? `${routeBase}/${encodeURIComponent(evidenceFileId)}/download` : null,
+    evidenceFileId,
     file: linkedFile
       ? {
           id: readString(linkedFile, "id"),
-          mimeType: readNullableString(linkedFile, "mimeType"),
-          originalName: readNullableString(linkedFile, "originalName"),
-          sizeBytes: readUnknown(linkedFile, "sizeBytes")
+          mimeType,
+          originalName: displayName,
+          sizeBytes
         }
       : null,
+    fileId: readString(file, "fileId"),
     id: readString(file, "id"),
+    mimeType,
     mediaType: readString(file, "mediaType"),
+    previewAvailable,
+    previewUrl: routeBase && evidenceFileId && previewAvailable ? `${routeBase}/${encodeURIComponent(evidenceFileId)}/preview` : null,
+    sizeBytes,
     uploadedAt: readUnknown(file, "uploadedAt")
   };
 }
@@ -1077,8 +1490,87 @@ function readUnknown(record: Record<string, unknown>, key: string) {
   return record[key] ?? null;
 }
 
+function readNumberLike(record: Record<string, unknown>, key: string) {
+  return toNumberOrNull(record[key]);
+}
+
+function readMetadataString(metadata: unknown, key: string) {
+  const record = asRecord(metadata);
+  const value = record?.[key];
+  return typeof value === "string" ? value : null;
+}
+
 function asRecord(value: unknown) {
   return isPlainObject(value) ? value : null;
+}
+
+function toObjectionView(workOrder: WorkOrderRecord) {
+  return {
+    adminStatus: getHandoverReviewAdminStatus(workOrder.metadata),
+    details: readMetadataString(workOrder.metadata, "customerObjectionDetails"),
+    objectedAt: workOrder.customerObjectedAt ?? null,
+    reason: workOrder.customerObjectionReason ?? null
+  };
+}
+
+function toAdminReviewView(workOrder: WorkOrderRecord, reviewAttempts: Array<Record<string, unknown>>) {
+  return {
+    canRequestResubmission: workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt),
+    canSendBackToCustomerReview:
+      (workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt)) &&
+      getHandoverReviewAdminStatus(workOrder.metadata) === ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
+    currentAttemptNo: reviewAttempts.length > 0 ? toNumberOrNull(reviewAttempts[reviewAttempts.length - 1]?.attemptNo) : null,
+    status: getHandoverReviewAdminStatus(workOrder.metadata),
+    totalAttempts: reviewAttempts.length
+  };
+}
+
+function toSafeReviewAttempt(attempt: Record<string, unknown>) {
+  return {
+    adminAcknowledgedAt: readUnknown(attempt, "adminAcknowledgedAt"),
+    adminNotes: readNullableString(attempt, "adminNotes"),
+    adminStatus: readNullableString(attempt, "adminStatus"),
+    attemptNo: toNumberOrNull(attempt.attemptNo),
+    createdAt: readUnknown(attempt, "createdAt"),
+    customerConfirmedAt: readUnknown(attempt, "customerConfirmedAt"),
+    customerObjectedAt: readUnknown(attempt, "customerObjectedAt"),
+    customerObjectionDetails: readNullableString(attempt, "customerObjectionDetails"),
+    customerObjectionReason: readNullableString(attempt, "customerObjectionReason"),
+    customerReviewStartedAt: readUnknown(attempt, "customerReviewStartedAt"),
+    fieldSubmittedAt: readUnknown(attempt, "fieldSubmittedAt"),
+    id: readString(attempt, "id"),
+    resubmissionRequestedAt: readUnknown(attempt, "resubmissionRequestedAt"),
+    sentBackToCustomerReviewAt: readUnknown(attempt, "sentBackToCustomerReviewAt"),
+    status: readString(attempt, "status")
+  };
+}
+
+function nextAttemptNo(latest: null | Record<string, unknown>) {
+  const current = latest ? toNumberOrNull(latest.attemptNo) : null;
+  return (current ?? 0) + 1;
+}
+
+function getHandoverReviewAdminStatus(metadata: unknown) {
+  const status = readMetadataString(metadata, HANDOVER_REVIEW_ADMIN_STATUS_KEY);
+  return status ?? null;
+}
+
+function isFieldResubmissionRequested(workOrder: WorkOrderRecord) {
+  return getHandoverReviewAdminStatus(workOrder.metadata) === ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED;
+}
+
+function isPreviewableEvidenceMime(mimeType: null | string | undefined) {
+  return Boolean(mimeType && PREVIEWABLE_EVIDENCE_MIME_PREFIXES.some((prefix) => mimeType.startsWith(prefix)));
+}
+
+function toNumberOrNull(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+  return null;
 }
 
 function isTerminalWorkOrderStatus(status: unknown): status is typeof TERMINAL_WORK_ORDER_STATUSES[number] {

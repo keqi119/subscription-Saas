@@ -1008,6 +1008,30 @@ enum VehicleHandoverOpsReviewStatus {
   @@map("vehicle_handover_ops_review_status")
 }
 
+enum VehicleHandoverReviewAttemptStatus {
+  CUSTOMER_REVIEWING
+  CUSTOMER_CONFIRMED
+  CUSTOMER_OBJECTED
+  RESUBMISSION_REQUESTED
+  RESUBMITTED_PENDING_ADMIN
+  SENT_BACK_TO_CUSTOMER_REVIEW
+  VOIDED
+
+  @@map("vehicle_handover_review_attempt_status")
+}
+
+enum VehicleHandoverAdminReviewStatus {
+  NONE
+  ACKNOWLEDGED
+  RESUBMISSION_REQUESTED
+  RESUBMITTED_PENDING_ADMIN
+  SENT_BACK_TO_CUSTOMER_REVIEW
+  RESOLVED
+  VOIDED
+
+  @@map("vehicle_handover_admin_review_status")
+}
+
 enum ESignProviderType {
   MOCK
   FADADA
@@ -1742,6 +1766,10 @@ model User {
   uploadedDeliveryEvidenceFiles VehicleDeliveryEvidenceFile[] @relation("DeliveryEvidenceFileUploader")
   assignedHandoverWorkOrders VehicleHandoverWorkOrder[] @relation("HandoverWorkOrderInternalOperator")
   opsReviewedHandoverWorkOrders VehicleHandoverWorkOrder[] @relation("HandoverWorkOrderOpsReviewer")
+  acknowledgedHandoverReviewAttempts VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptAdminAcknowledgedBy")
+  resubmissionRequestedHandoverReviewAttempts VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptResubmissionRequestedBy")
+  sentBackHandoverReviewAttempts VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptSentBackBy")
+  resolvedHandoverReviewAttempts VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptResolvedBy")
   applicationActionLogs    ApplicationActionLog[]     @relation("ApplicationActionOperator")
   approvedProductVersions  ProductVersion[]           @relation("ProductVersionApprover")
   confirmedQuotes          SubscriptionQuote[]        @relation("QuoteConfirmer")
@@ -4097,6 +4125,7 @@ model SubscriptionOrder {
   deliveryHandovers          VehicleDeliveryHandover[]
   deliveryEvidenceItems      VehicleDeliveryEvidenceItem[]
   handoverWorkOrders         VehicleHandoverWorkOrder[]
+  handoverReviewAttempts     VehicleHandoverReviewAttempt[]
   lease                      Lease?
   vehicleInspection          VehicleInspection?
   returns                    VehicleReturn[]
@@ -4824,6 +4853,7 @@ model VehicleDeliveryHandover {
   snapshot             Json?
   evidenceItems        VehicleDeliveryEvidenceItem[]
   workOrders           VehicleHandoverWorkOrder[]
+  reviewAttempts       VehicleHandoverReviewAttempt[]
   createdAt            DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy            String?                       @map("created_by") @db.Uuid
@@ -4883,6 +4913,7 @@ model VehicleHandoverWorkOrder {
   noVisibleDamageDeclared      Boolean?                       @map("no_visible_damage_declared")
   fieldNotes                   String?                        @map("field_notes") @db.Text
   metadata                     Json?
+  reviewAttempts               VehicleHandoverReviewAttempt[]
   createdAt                    DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                    DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -4897,6 +4928,55 @@ model VehicleHandoverWorkOrder {
   @@index([opsReviewStatus])
   @@index([opsReviewedBy])
   @@map("vehicle_handover_work_order")
+}
+
+model VehicleHandoverReviewAttempt {
+  id                               String                              @id @default(uuid()) @db.Uuid
+  workOrderId                      String                              @map("work_order_id") @db.Uuid
+  workOrder                        VehicleHandoverWorkOrder            @relation(fields: [workOrderId], references: [id])
+  orderId                          String                              @map("order_id") @db.Uuid
+  order                            SubscriptionOrder                   @relation(fields: [orderId], references: [id])
+  handoverId                       String?                             @map("handover_id") @db.Uuid
+  handover                         VehicleDeliveryHandover?            @relation(fields: [handoverId], references: [id])
+  attemptNo                        Int                                 @map("attempt_no")
+  status                           VehicleHandoverReviewAttemptStatus  @default(CUSTOMER_REVIEWING)
+  fieldFactsSnapshot               Json?                               @map("field_facts_snapshot")
+  evidenceSnapshot                 Json?                               @map("evidence_snapshot")
+  fieldSubmittedAt                 DateTime?                           @map("field_submitted_at") @db.Timestamptz(6)
+  customerReviewStartedAt          DateTime?                           @map("customer_review_started_at") @db.Timestamptz(6)
+  customerConfirmedAt              DateTime?                           @map("customer_confirmed_at") @db.Timestamptz(6)
+  customerObjectedAt               DateTime?                           @map("customer_objected_at") @db.Timestamptz(6)
+  customerObjectionReason          String?                             @map("customer_objection_reason") @db.Text
+  customerObjectionDetails         String?                             @map("customer_objection_details") @db.Text
+  adminStatus                      VehicleHandoverAdminReviewStatus?   @map("admin_status")
+  adminAcknowledgedAt              DateTime?                           @map("admin_acknowledged_at") @db.Timestamptz(6)
+  adminAcknowledgedById            String?                             @map("admin_acknowledged_by_id") @db.Uuid
+  adminAcknowledgedBy              User?                               @relation("HandoverReviewAttemptAdminAcknowledgedBy", fields: [adminAcknowledgedById], references: [id])
+  resubmissionRequestedAt          DateTime?                           @map("resubmission_requested_at") @db.Timestamptz(6)
+  resubmissionRequestedById        String?                             @map("resubmission_requested_by_id") @db.Uuid
+  resubmissionRequestedBy          User?                               @relation("HandoverReviewAttemptResubmissionRequestedBy", fields: [resubmissionRequestedById], references: [id])
+  sentBackToCustomerReviewAt       DateTime?                           @map("sent_back_to_customer_review_at") @db.Timestamptz(6)
+  sentBackToCustomerReviewById     String?                             @map("sent_back_to_customer_review_by_id") @db.Uuid
+  sentBackToCustomerReviewBy       User?                               @relation("HandoverReviewAttemptSentBackBy", fields: [sentBackToCustomerReviewById], references: [id])
+  resolvedAt                       DateTime?                           @map("resolved_at") @db.Timestamptz(6)
+  resolvedById                     String?                             @map("resolved_by_id") @db.Uuid
+  resolvedBy                       User?                               @relation("HandoverReviewAttemptResolvedBy", fields: [resolvedById], references: [id])
+  adminNotes                       String?                             @map("admin_notes") @db.Text
+  metadata                         Json?
+  createdAt                        DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                        DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workOrderId, attemptNo])
+  @@index([orderId])
+  @@index([handoverId])
+  @@index([status])
+  @@index([customerObjectedAt])
+  @@index([adminStatus])
+  @@index([adminAcknowledgedById])
+  @@index([resubmissionRequestedById])
+  @@index([sentBackToCustomerReviewById])
+  @@index([resolvedById])
+  @@map("vehicle_handover_review_attempt")
 }
 
 model VehicleDeliveryEvidenceItem {

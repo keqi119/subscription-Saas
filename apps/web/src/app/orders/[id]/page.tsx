@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeftOutlined, ClockCircleOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import Link from "next/link";
@@ -42,7 +42,7 @@ import {
   canExecuteOrderChange,
   canGenerateContract as getGenerateContractAvailability
 } from "../../../lib/action-guards";
-import { apiFetch, ApiError } from "../../../lib/api";
+import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 
 interface OrderDetail {
@@ -201,6 +201,84 @@ interface VehicleDelivery {
   scheduledAt?: string | null;
   vehiclePhotosConfirmed?: boolean;
   vehiclePreparedConfirmed?: boolean;
+}
+
+interface HandoverEvidenceFile {
+  displayName?: string | null;
+  downloadUrl?: string | null;
+  evidenceFileId?: string | null;
+  id?: string | null;
+  mediaType?: string | null;
+  previewAvailable?: boolean | null;
+  previewUrl?: string | null;
+  sizeBytes?: number | string | null;
+}
+
+interface HandoverEvidenceItem {
+  evidenceType?: string | null;
+  fileCount?: number | null;
+  files?: HandoverEvidenceFile[];
+  id?: string | null;
+  isConditional?: boolean | null;
+  isRequired?: boolean | null;
+  rejectionReason?: string | null;
+  reviewStatus?: string | null;
+  status?: string | null;
+  title?: string | null;
+}
+
+interface HandoverEvidenceChecklist {
+  blockingReasons?: string[];
+  items?: HandoverEvidenceItem[];
+  ready?: boolean;
+}
+
+interface HandoverReviewAttempt {
+  adminNotes?: string | null;
+  adminStatus?: string | null;
+  attemptNo?: number | null;
+  customerConfirmedAt?: string | null;
+  customerObjectedAt?: string | null;
+  customerObjectionDetails?: string | null;
+  customerObjectionReason?: string | null;
+  customerReviewStartedAt?: string | null;
+  fieldSubmittedAt?: string | null;
+  id?: string | null;
+  status?: string | null;
+}
+
+interface HandoverWorkOrderSummary {
+  adminReview?: {
+    canRequestResubmission?: boolean | null;
+    canSendBackToCustomerReview?: boolean | null;
+    currentAttemptNo?: number | null;
+    status?: string | null;
+    totalAttempts?: number | null;
+  } | null;
+  customer?: { displayName?: string | null; mobileMasked?: string | null } | null;
+  customerConfirmedAt?: string | null;
+  customerObjectedAt?: string | null;
+  customerReviewStartedAt?: string | null;
+  deliveryLocation?: string | null;
+  evidenceProgress?: { approved?: number | null; required?: number | null; total?: number | null; uploaded?: number | null } | null;
+  fieldResubmissionRequested?: boolean | null;
+  fieldSubmittedAt?: string | null;
+  handoverId?: string | null;
+  handoverType?: string | null;
+  id: string;
+  objection?: { adminStatus?: string | null; details?: string | null; objectedAt?: string | null; reason?: string | null } | null;
+  operator?: { name?: string | null; phoneMasked?: string | null; type?: string | null } | null;
+  orderNo?: string | null;
+  reviewAttempts?: HandoverReviewAttempt[];
+  scheduledAt?: string | null;
+  status?: string | null;
+  vehicle?: { brand?: string | null; model?: string | null; plateMasked?: string | null; vinSuffix?: string | null } | null;
+}
+
+interface HandoverWorkOrderDetail extends HandoverWorkOrderSummary {
+  evidenceChecklist?: HandoverEvidenceChecklist | null;
+  fieldFacts?: Record<string, unknown> | null;
+  readiness?: { blockingReasons?: string[]; readyForStage2Pdf?: boolean; readyForStage2ESign?: boolean } | null;
 }
 
 interface PrepareDeliveryFormValues {
@@ -639,6 +717,107 @@ function yuanToCents(value?: unknown) {
 
 function formatTime(value?: unknown) {
   return typeof value === "string" && value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+function formatHandoverType(value?: string | null) {
+  if (value === "DELIVERY_OUTBOUND") {
+    return "交付出库";
+  }
+  if (value === "RETURN_INBOUND") {
+    return "退租入库";
+  }
+  return value || "-";
+}
+
+function formatHandoverWorkOrderStatus(value?: string | null) {
+  const labels: Record<string, string> = {
+    ASSIGNED: "已分配",
+    CUSTOMER_CONFIRMED: "客户已确认",
+    CUSTOMER_OBJECTED: "客户有异议",
+    CUSTOMER_REVIEWING: "客户复核中",
+    CUSTOMER_SIGNED: "客户已签署",
+    DRAFT: "草稿",
+    EVIDENCE_SUBMITTED: "资料已提交",
+    FIELD_COMPLETED: "现场已完成",
+    FIELD_IN_PROGRESS: "现场处理中",
+    OPS_REVIEW_PENDING: "运营复核中",
+    OPS_REVIEWED: "运营已复核",
+    PLATFORM_SEALED: "平台已盖章",
+    SIGNING: "签署中"
+  };
+  return value ? labels[value] ?? value : "-";
+}
+
+function formatAdminReviewStatus(value?: string | null) {
+  const labels: Record<string, string> = {
+    ACKNOWLEDGED: "已受理异议",
+    RESOLVED: "已处理",
+    RESUBMISSION_REQUESTED: "已要求现场重提",
+    RESUBMITTED_PENDING_ADMIN: "现场已重提，待后台送回",
+    SENT_BACK_TO_CUSTOMER_REVIEW: "已送回客户复核"
+  };
+  return value ? labels[value] ?? value : "无后台处理";
+}
+
+function formatHandoverAttemptStatus(value?: string | null) {
+  const labels: Record<string, string> = {
+    CUSTOMER_CONFIRMED: "客户已确认",
+    CUSTOMER_OBJECTED: "客户已提异议",
+    CUSTOMER_REVIEWING: "客户复核中",
+    RESUBMISSION_REQUESTED: "要求现场重提",
+    RESUBMITTED_PENDING_ADMIN: "重提待后台复核",
+    SENT_BACK_TO_CUSTOMER_REVIEW: "送回客户复核"
+  };
+  return value ? labels[value] ?? value : "-";
+}
+
+function formatHandoverEvidenceProgress(progress?: HandoverWorkOrderSummary["evidenceProgress"]) {
+  if (!progress) {
+    return "资料 -";
+  }
+  return `资料 ${numberOrZero(progress.uploaded)}/${numberOrZero(progress.total)}，必传 ${numberOrZero(progress.required)}`;
+}
+
+function formatHandoverEvidenceStatus(item: HandoverEvidenceItem) {
+  if (item.reviewStatus === "REJECTED" || item.status === "REJECTED") {
+    return "已驳回";
+  }
+  if (item.reviewStatus === "APPROVED" || item.status === "APPROVED") {
+    return "已通过";
+  }
+  if (numberOrZero(item.fileCount) > 0 || item.status === "UPLOADED") {
+    return "已上传";
+  }
+  return "待上传";
+}
+
+function buildAdminHandoverFileUrl(path?: null | string) {
+  if (!path) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+  const normalized = path.startsWith("/api/") ? path.slice(4) : path;
+  return `${API_BASE_URL}${normalized.startsWith("/") ? normalized : `/${normalized}`}`;
+}
+
+function formatEvidenceFileSize(value?: number | string | null) {
+  const size = typeof value === "string" ? Number(value) : value;
+  if (typeof size !== "number" || !Number.isFinite(size) || size <= 0) {
+    return "-";
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function numberOrZero(value?: number | null) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function formatDate(value?: unknown) {
@@ -2270,6 +2449,290 @@ function FinancePanel({
   );
 }
 
+function Stage2HandoverReviewPanel({
+  actionLoading,
+  canHandleObjection,
+  loading,
+  onAcknowledge,
+  onRequestResubmission,
+  onSendCustomerReview,
+  onViewDetail,
+  workOrders
+}: {
+  actionLoading: string | null;
+  canHandleObjection: boolean;
+  loading: boolean;
+  onAcknowledge: (id: string) => void;
+  onRequestResubmission: (id: string) => void;
+  onSendCustomerReview: (id: string) => void;
+  onViewDetail: (id: string) => void;
+  workOrders: HandoverWorkOrderSummary[];
+}) {
+  const columns: ColumnsType<HandoverWorkOrderSummary> = [
+    {
+      dataIndex: "orderNo",
+      render: (_value, row) => (
+        <Space orientation="vertical" size={2}>
+          <Typography.Text strong>{row.orderNo ?? "-"}</Typography.Text>
+          <Typography.Text type="secondary">{formatHandoverType(row.handoverType)}</Typography.Text>
+        </Space>
+      ),
+      title: "工单"
+    },
+    {
+      dataIndex: "status",
+      render: (_value, row) => (
+        <Space orientation="vertical" size={2}>
+          <Tag>{formatHandoverWorkOrderStatus(row.status)}</Tag>
+          <Typography.Text type="secondary">{formatAdminReviewStatus(row.adminReview?.status)}</Typography.Text>
+        </Space>
+      ),
+      title: "状态"
+    },
+    {
+      dataIndex: "customer",
+      render: (_value, row) => joinText(row.customer?.displayName, row.customer?.mobileMasked),
+      title: "客户"
+    },
+    {
+      dataIndex: "fieldSubmittedAt",
+      render: (_value, row) => (
+        <Space orientation="vertical" size={2}>
+          <Typography.Text>{formatTime(row.fieldSubmittedAt)}</Typography.Text>
+          <Typography.Text type="secondary">{formatHandoverEvidenceProgress(row.evidenceProgress)}</Typography.Text>
+        </Space>
+      ),
+      title: "现场资料"
+    },
+    {
+      dataIndex: "objection",
+      render: (_value, row) =>
+        row.objection?.reason ? (
+          <Space orientation="vertical" size={2}>
+            <Typography.Text type="danger">{row.objection.reason}</Typography.Text>
+            <Typography.Text type="secondary">{formatTime(row.objection.objectedAt)}</Typography.Text>
+          </Space>
+        ) : "-",
+      title: "客户异议"
+    },
+    {
+      key: "actions",
+      render: (_value, row) => (
+        <Stage2HandoverReviewActions
+          actionLoading={actionLoading}
+          canHandleObjection={canHandleObjection}
+          onAcknowledge={onAcknowledge}
+          onRequestResubmission={onRequestResubmission}
+          onSendCustomerReview={onSendCustomerReview}
+          onViewDetail={onViewDetail}
+          workOrder={row}
+        />
+      ),
+      title: "操作"
+    }
+  ];
+
+  return (
+    <Card title="Stage 2 现场交接 / 客户复核">
+      <Table
+        columns={columns}
+        dataSource={workOrders}
+        loading={loading}
+        locale={{ emptyText: "暂无 Stage 2 现场交接记录" }}
+        pagination={false}
+        rowKey="id"
+        size="small"
+      />
+    </Card>
+  );
+}
+
+function Stage2HandoverReviewActions({
+  actionLoading,
+  canHandleObjection,
+  onAcknowledge,
+  onRequestResubmission,
+  onSendCustomerReview,
+  onViewDetail,
+  workOrder
+}: {
+  actionLoading: string | null;
+  canHandleObjection: boolean;
+  onAcknowledge: (id: string) => void;
+  onRequestResubmission: (id: string) => void;
+  onSendCustomerReview: (id: string) => void;
+  onViewDetail: (id: string) => void;
+  workOrder: HandoverWorkOrderSummary;
+}) {
+  const hasObjection = workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt);
+  const canSendBack = workOrder.adminReview?.canSendBackToCustomerReview === true;
+  return (
+    <Space wrap>
+      <Button
+        loading={actionLoading === `detail:${workOrder.id}`}
+        onClick={() => onViewDetail(workOrder.id)}
+        size="small"
+      >
+        查看详情
+      </Button>
+      <Button
+        disabled={!canHandleObjection || !hasObjection}
+        loading={actionLoading === `acknowledge:${workOrder.id}`}
+        onClick={() => onAcknowledge(workOrder.id)}
+        size="small"
+      >
+        受理异议
+      </Button>
+      <Button
+        disabled={!canHandleObjection || !hasObjection}
+        loading={actionLoading === `request-resubmission:${workOrder.id}`}
+        onClick={() => onRequestResubmission(workOrder.id)}
+        size="small"
+      >
+        要求现场重提
+      </Button>
+      <Button
+        disabled={!canHandleObjection || !canSendBack}
+        loading={actionLoading === `send-customer-review:${workOrder.id}`}
+        onClick={() => onSendCustomerReview(workOrder.id)}
+        size="small"
+        type="primary"
+      >
+        送回客户复核
+      </Button>
+    </Space>
+  );
+}
+
+function Stage2HandoverReviewDetailModal({
+  actionLoading,
+  canHandleObjection,
+  detail,
+  onAcknowledge,
+  onClose,
+  onRequestResubmission,
+  onSendCustomerReview,
+  open
+}: {
+  actionLoading: string | null;
+  canHandleObjection: boolean;
+  detail: HandoverWorkOrderDetail | null;
+  onAcknowledge: (id: string) => void;
+  onClose: () => void;
+  onRequestResubmission: (id: string) => void;
+  onSendCustomerReview: (id: string) => void;
+  open: boolean;
+}) {
+  return (
+    <Modal footer={null} onCancel={onClose} open={open} title="Stage 2 现场交接详情" width={920}>
+      {detail ? (
+        <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+          <Descriptions
+            bordered
+            column={2}
+            items={[
+              { label: "工单状态", children: <Tag>{formatHandoverWorkOrderStatus(detail.status)}</Tag> },
+              { label: "后台处理", children: formatAdminReviewStatus(detail.adminReview?.status) },
+              { label: "现场提交时间", children: formatTime(detail.fieldSubmittedAt) },
+              { label: "客户复核开始", children: formatTime(detail.customerReviewStartedAt) },
+              { label: "客户确认时间", children: formatTime(detail.customerConfirmedAt) },
+              { label: "客户异议时间", children: formatTime(detail.customerObjectedAt) }
+            ]}
+          />
+
+          {detail.objection?.reason ? (
+            <Alert
+              description={detail.objection.details || undefined}
+              message={`客户异议：${detail.objection.reason}`}
+              showIcon
+              type="warning"
+            />
+          ) : null}
+
+          <Stage2HandoverReviewActions
+            actionLoading={actionLoading}
+            canHandleObjection={canHandleObjection}
+            onAcknowledge={onAcknowledge}
+            onRequestResubmission={onRequestResubmission}
+            onSendCustomerReview={onSendCustomerReview}
+            onViewDetail={() => undefined}
+            workOrder={detail}
+          />
+
+          <List
+            dataSource={detail.evidenceChecklist?.items ?? []}
+            locale={{ emptyText: "暂无资料文件" }}
+            renderItem={(item) => (
+              <List.Item>
+                <List.Item.Meta
+                  description={
+                    <Space direction="vertical" size={4}>
+                      <Space size={[6, 6]} wrap>
+                        <Tag>{item.isRequired ? "必传" : item.isConditional ? "条件必传" : "选填"}</Tag>
+                        <Tag>{formatHandoverEvidenceStatus(item)}</Tag>
+                        <Tag>{numberOrZero(item.fileCount)} 个文件</Tag>
+                      </Space>
+                      {(item.files ?? []).length > 0 ? (
+                        <Space size={[8, 6]} wrap>
+                          {(item.files ?? []).map((file) => (
+                            <Space key={file.evidenceFileId || file.id || file.displayName || "file"} size={4} wrap>
+                              <Typography.Text type="secondary">
+                                {file.displayName ?? "资料文件"} / {formatEvidenceFileSize(file.sizeBytes)}
+                              </Typography.Text>
+                              {file.previewAvailable && file.previewUrl ? (
+                                <Typography.Link
+                                  href={buildAdminHandoverFileUrl(file.previewUrl) ?? undefined}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  预览
+                                </Typography.Link>
+                              ) : null}
+                              {file.downloadUrl ? (
+                                <Typography.Link
+                                  href={buildAdminHandoverFileUrl(file.downloadUrl) ?? undefined}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  下载/打开
+                                </Typography.Link>
+                              ) : null}
+                            </Space>
+                          ))}
+                        </Space>
+                      ) : null}
+                      {item.rejectionReason ? <Typography.Text type="danger">{item.rejectionReason}</Typography.Text> : null}
+                    </Space>
+                  }
+                  title={<Typography.Text strong>{item.title || item.evidenceType || "现场资料"}</Typography.Text>}
+                />
+              </List.Item>
+            )}
+          />
+
+          <Table
+            columns={[
+              { dataIndex: "attemptNo", title: "轮次" },
+              { dataIndex: "status", render: formatHandoverAttemptStatus, title: "状态" },
+              { dataIndex: "adminStatus", render: formatAdminReviewStatus, title: "后台处理" },
+              { dataIndex: "fieldSubmittedAt", render: formatTime, title: "现场提交" },
+              { dataIndex: "customerObjectionReason", render: safeText, title: "异议原因" }
+            ]}
+            dataSource={detail.reviewAttempts ?? []}
+            locale={{ emptyText: "暂无复核历史" }}
+            pagination={false}
+            rowKey={(row) => row.id || String(row.attemptNo)}
+            size="small"
+            title={() => "复核历史"}
+          />
+        </Space>
+      ) : (
+        <Empty description="请选择 Stage 2 现场交接记录" />
+      )}
+    </Modal>
+  );
+}
+
 function DeliveryPanel({
   confirmAvailability,
   delivery,
@@ -2954,6 +3417,11 @@ function OrderDetailPageContent() {
   const [deductingDeposit, setDeductingDeposit] = useState(false);
   const [delivery, setDelivery] = useState<VehicleDelivery | null>(null);
   const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
+  const [handoverWorkOrders, setHandoverWorkOrders] = useState<HandoverWorkOrderSummary[]>([]);
+  const [handoverWorkOrdersLoading, setHandoverWorkOrdersLoading] = useState(false);
+  const [handoverWorkOrderDetail, setHandoverWorkOrderDetail] = useState<HandoverWorkOrderDetail | null>(null);
+  const [handoverWorkOrderDetailOpen, setHandoverWorkOrderDetailOpen] = useState(false);
+  const [handoverActionLoading, setHandoverActionLoading] = useState<string | null>(null);
   const [consumeEntitlementModalOpen, setConsumeEntitlementModalOpen] = useState(false);
   const [consumeEntitlementSubmitting, setConsumeEntitlementSubmitting] = useState(false);
   const [consumingGrant, setConsumingGrant] = useState<OrderEntitlementGrant | null>(null);
@@ -3298,6 +3766,7 @@ function OrderDetailPageContent() {
       setDepositSettlementLoading(canViewDepositSettlement);
       setEntitlementLoading(canViewEntitlement);
       setEntitlementUsageLoading(canViewEntitlement);
+      setHandoverWorkOrdersLoading(canViewDelivery);
       setDepositSettlementError(null);
       const [
         nextOrder,
@@ -3309,6 +3778,7 @@ function OrderDetailPageContent() {
         nextDelivery,
         nextReturnCheck,
         nextReturn,
+        nextHandoverWorkOrders,
         nextEntitlements,
         nextEntitlementUsages
       ] = await Promise.all([
@@ -3326,6 +3796,9 @@ function OrderDetailPageContent() {
         canViewDelivery ? apiFetch<VehicleDelivery | null>(`/orders/${params.id}/delivery`) : Promise.resolve(null),
         canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
         canViewReturn ? apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`) : Promise.resolve(null),
+        canViewDelivery
+          ? apiFetch<HandoverWorkOrderSummary[]>(`/orders/${params.id}/handover-work-orders`).catch(() => [])
+          : Promise.resolve([]),
         canViewEntitlement
           ? apiFetch<OrderEntitlementsResponse>(`/orders/${params.id}/entitlements`)
           : Promise.resolve({ account: null, grants: [] }),
@@ -3343,6 +3816,7 @@ function OrderDetailPageContent() {
       setDelivery(nextDelivery);
       setReturnCheck(nextReturnCheck);
       setVehicleReturn(nextReturn);
+      setHandoverWorkOrders(nextHandoverWorkOrders);
       setEntitlements(nextEntitlements);
       setEntitlementUsages(nextEntitlementUsages.items);
       setEntitlementUsageTotal(nextEntitlementUsages.total);
@@ -3356,12 +3830,62 @@ function OrderDetailPageContent() {
       setDepositSettlementLoading(false);
       setEntitlementLoading(false);
       setEntitlementUsageLoading(false);
+      setHandoverWorkOrdersLoading(false);
     }
   }, [message, params.id]);
 
   useEffect(() => {
     void loadOrder();
   }, [loadOrder]);
+
+  async function viewHandoverWorkOrderDetail(id: string) {
+    setHandoverActionLoading(`detail:${id}`);
+    try {
+      const detail = await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}`);
+      setHandoverWorkOrderDetail(detail);
+      setHandoverWorkOrderDetailOpen(true);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setHandoverActionLoading(null);
+    }
+  }
+
+  async function runHandoverObjectionAction(
+    id: string,
+    action: "acknowledge" | "request-resubmission" | "send-customer-review",
+    successMessage: string
+  ) {
+    setHandoverActionLoading(`${action}:${id}`);
+    try {
+      await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}/objection/${action}`, {
+        body: JSON.stringify({}),
+        method: "POST"
+      });
+      void message.success(successMessage);
+      await loadOrder();
+      if (handoverWorkOrderDetail?.id === id) {
+        const nextDetail = await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}`);
+        setHandoverWorkOrderDetail(nextDetail);
+      }
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setHandoverActionLoading(null);
+    }
+  }
+
+  function acknowledgeCustomerObjection(id: string) {
+    return runHandoverObjectionAction(id, "acknowledge", "已受理客户异议");
+  }
+
+  function requestCustomerObjectionResubmission(id: string) {
+    return runHandoverObjectionAction(id, "request-resubmission", "已要求现场重新提交资料");
+  }
+
+  function sendCustomerObjectionBackToReview(id: string) {
+    return runHandoverObjectionAction(id, "send-customer-review", "已送回客户复核");
+  }
 
   const openChangeModal = useCallback(async () => {
     if (!order || !canCreateChange) {
@@ -4505,6 +5029,30 @@ function OrderDetailPageContent() {
             prepareAvailability={prepareDeliveryAvailability}
           />
         ) : null}
+
+        {order && hasDeliveryViewPermission ? (
+          <Stage2HandoverReviewPanel
+            actionLoading={handoverActionLoading}
+            canHandleObjection={permissions.has("delivery:confirm")}
+            loading={handoverWorkOrdersLoading}
+            onAcknowledge={acknowledgeCustomerObjection}
+            onRequestResubmission={requestCustomerObjectionResubmission}
+            onSendCustomerReview={sendCustomerObjectionBackToReview}
+            onViewDetail={viewHandoverWorkOrderDetail}
+            workOrders={handoverWorkOrders}
+          />
+        ) : null}
+
+        <Stage2HandoverReviewDetailModal
+          actionLoading={handoverActionLoading}
+          canHandleObjection={permissions.has("delivery:confirm")}
+          detail={handoverWorkOrderDetail}
+          onAcknowledge={acknowledgeCustomerObjection}
+          onClose={() => setHandoverWorkOrderDetailOpen(false)}
+          onRequestResubmission={requestCustomerObjectionResubmission}
+          onSendCustomerReview={sendCustomerObjectionBackToReview}
+          open={handoverWorkOrderDetailOpen}
+        />
 
         {order && hasReturnViewPermission ? (
           <ReturnPanel

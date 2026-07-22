@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Req, Res, StreamableFile, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
+import type { Response } from "express";
 
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
@@ -9,6 +10,7 @@ import {
   AssignInternalOperatorDto,
   AttachFieldEvidenceFileDto,
   CreateHandoverWorkOrderDto,
+  HandoverObjectionActionDto,
   OpsReviewDto,
   UpdateHandoverFieldFactsDto,
   VoidHandoverWorkOrderDto
@@ -44,6 +46,30 @@ export class HandoverWorkOrderAdminController {
   @RequirePermissions(PermissionCode.DELIVERY_VIEW)
   getWorkOrder(@Param("id") id: string) {
     return this.handoverWorkOrderService.getById(id);
+  }
+
+  @Get("handover-work-orders/:id/evidence-files/:evidenceFileId/preview")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  async previewEvidenceFile(
+    @Param("id") id: string,
+    @Param("evidenceFileId") evidenceFileId: string,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const preview = await this.handoverWorkOrderService.previewEvidenceFile(id, evidenceFileId);
+    setEvidenceFileHeaders(response, preview, "inline");
+    return new StreamableFile(preview.stream);
+  }
+
+  @Get("handover-work-orders/:id/evidence-files/:evidenceFileId/download")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  async downloadEvidenceFile(
+    @Param("id") id: string,
+    @Param("evidenceFileId") evidenceFileId: string,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const file = await this.handoverWorkOrderService.downloadEvidenceFile(id, evidenceFileId);
+    setEvidenceFileHeaders(response, file, "attachment");
+    return new StreamableFile(file.stream);
   }
 
   @Post("handover-work-orders/:id/assign-internal")
@@ -110,6 +136,36 @@ export class HandoverWorkOrderAdminController {
   rejectOpsReview(@Param("id") id: string, @Body() dto: OpsReviewDto, @Req() request: AuthenticatedRequest) {
     return this.handoverWorkOrderService.markOpsReviewRejected(id, request.user.id, dto.notes);
   }
+
+  @Post("handover-work-orders/:id/objection/acknowledge")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  acknowledgeCustomerObjection(
+    @Param("id") id: string,
+    @Body() dto: HandoverObjectionActionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.handoverWorkOrderService.acknowledgeCustomerObjection(id, request.user.id, dto.note);
+  }
+
+  @Post("handover-work-orders/:id/objection/request-resubmission")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  requestCustomerObjectionResubmission(
+    @Param("id") id: string,
+    @Body() dto: HandoverObjectionActionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.handoverWorkOrderService.requestCustomerObjectionResubmission(id, request.user.id, dto.note);
+  }
+
+  @Post("handover-work-orders/:id/objection/send-customer-review")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  sendCustomerObjectionBackToReview(
+    @Param("id") id: string,
+    @Body() dto: HandoverObjectionActionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.handoverWorkOrderService.sendCustomerObjectionBackToReview(id, request.user.id, dto.note);
+  }
 }
 
 @Controller()
@@ -144,4 +200,18 @@ export class HandoverWorkOrderFieldController {
   submitExternalEvidence(@Param("token") token: string) {
     return this.handoverWorkOrderService.submitEvidenceByToken(token);
   }
+}
+
+function setEvidenceFileHeaders(
+  response: Response,
+  file: { filename: string; mimeType: null | string; sizeBytes: null | number },
+  disposition: "attachment" | "inline"
+) {
+  if (file.mimeType) {
+    response.setHeader("Content-Type", file.mimeType);
+  }
+  if (file.sizeBytes !== null) {
+    response.setHeader("Content-Length", String(file.sizeBytes));
+  }
+  response.setHeader("Content-Disposition", `${disposition}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
 }

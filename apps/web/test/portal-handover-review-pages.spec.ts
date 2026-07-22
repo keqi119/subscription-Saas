@@ -45,6 +45,9 @@ describe("portal handover review pages", () => {
     expect(source).toContain("confirmPortalHandoverReview");
     expect(source).toContain("objectPortalHandoverReview");
     expect(source).toContain("getPortalHandoverReview");
+    expect(source).toContain("item.files");
+    expect(source).toContain("预览");
+    expect(source).toContain("下载/打开");
     expect(source).toContain('router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`)');
     expect(source).not.toMatch(/objectKey|bucket|storage path|signingUrl|idCard|deposit|payment|lease|billing|raw DTO|JSON.stringify/i);
     expect(source).not.toMatch(/生成.*PDF|电子签|去签署|确认交付|去支付|付款|账单/);

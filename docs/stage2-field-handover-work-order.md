@@ -30,7 +30,9 @@ Supported field-session actions:
 - refresh work-order detail/readiness;
 - submit field evidence for customer review.
 
-Locked states are read-only in H5: `CUSTOMER_REVIEWING`, `CUSTOMER_CONFIRMED`, `CUSTOMER_SIGNED`, `PLATFORM_SEALED`, `FIELD_COMPLETED`, `OPS_REVIEW_PENDING`, `OPS_REVIEWED`, `VOIDED`, `FAILED`, and `CANCELLED`.
+Locked states are read-only in H5: `CUSTOMER_REVIEWING`, `CUSTOMER_OBJECTED`, `CUSTOMER_CONFIRMED`, `CUSTOMER_SIGNED`, `PLATFORM_SEALED`, `FIELD_COMPLETED`, `OPS_REVIEW_PENDING`, `OPS_REVIEWED`, `VOIDED`, `FAILED`, and `CANCELLED`.
+
+`CUSTOMER_OBJECTED` becomes editable again only when Admin explicitly requests field resubmission. In that state, the field operator can update facts/files and submit again through the same H5 task. Resubmission keeps the active customer objection and records admin review state `RESUBMITTED_PENDING_ADMIN`; it does not send the task back to the customer automatically.
 
 ## Evidence Checklist
 
@@ -51,4 +53,4 @@ Submit is blocked until:
 - all required evidence files are uploaded;
 - damage close-up evidence exists when damage is declared.
 
-On success, the work order moves to customer review. Customer Portal review is a separate downstream phase: confirming no objection only unlocks Stage 2 PDF/eSign readiness; submitting an objection blocks Stage 2 readiness and requires Admin follow-up. Stage 2 PDF generation, eSign, delivery confirmation, lease, and billing remain unavailable from the field H5 flow.
+On first success, the work order moves to customer review. On Admin-requested resubmission after a customer objection, the work order stays blocked for Admin review until Admin sends it back to customer review. Customer Portal review is a separate downstream phase: confirming no objection only unlocks Stage 2 PDF/eSign readiness; submitting an objection blocks Stage 2 readiness and requires Admin follow-up. Stage 2 PDF generation, eSign, delivery confirmation, lease, and billing remain unavailable from the field H5 flow.

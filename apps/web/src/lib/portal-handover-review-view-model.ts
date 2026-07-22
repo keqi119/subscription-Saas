@@ -1,5 +1,6 @@
 import type {
   PortalHandoverReviewDetail,
+  PortalHandoverReviewEvidenceFile,
   PortalHandoverReviewEvidenceItem,
   PortalHandoverReviewEvidenceProgress,
   PortalHandoverReviewFieldFacts,
@@ -35,10 +36,21 @@ export interface PortalHandoverReviewDetailView {
 
 export interface PortalHandoverReviewEvidenceItemView {
   fileCountText: string;
+  files: PortalHandoverReviewEvidenceFileView[];
   rejectionReason: string;
   requiredText: string;
   statusLabel: string;
   title: string;
+}
+
+export interface PortalHandoverReviewEvidenceFileView {
+  displayName: string;
+  downloadUrl: string | null;
+  id: string;
+  mediaType: string;
+  previewAvailable: boolean;
+  previewUrl: string | null;
+  sizeText: string;
 }
 
 export type PortalHandoverReviewDecisionView =
@@ -180,9 +192,15 @@ function buildDecisionView(detail: PortalHandoverReviewDetail): PortalHandoverRe
     };
   }
   if (detail.status === "CUSTOMER_OBJECTED") {
+    if (detail.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN") {
+      return {
+        message: "现场资料已重新提交，等待工作人员复核后将再次发送给您确认",
+        mode: "LOCKED"
+      };
+    }
     return {
       details: detail.objection?.details ?? "",
-      message: "您已提交异议，工作人员将联系您处理",
+      message: "您已提交异议，工作人员正在处理",
       mode: "OBJECTED",
       reason: detail.objection?.reason ?? "-"
     };
@@ -196,10 +214,23 @@ function buildDecisionView(detail: PortalHandoverReviewDetail): PortalHandoverRe
 function buildEvidenceItemView(item: PortalHandoverReviewEvidenceItem): PortalHandoverReviewEvidenceItemView {
   return {
     fileCountText: `${getEvidenceFileCount(item)} 个文件`,
+    files: (item.files ?? []).map(buildEvidenceFileView),
     rejectionReason: item.rejectionReason ?? "",
     requiredText: item.isRequired ? "必传" : item.isConditional ? "条件必传" : "选填",
     statusLabel: formatEvidenceStatus(item),
     title: item.title || "现场资料"
+  };
+}
+
+function buildEvidenceFileView(file: PortalHandoverReviewEvidenceFile): PortalHandoverReviewEvidenceFileView {
+  return {
+    displayName: file.displayName || file.file?.originalName || "资料文件",
+    downloadUrl: file.downloadUrl ?? null,
+    id: file.evidenceFileId || file.id || file.fileId || "",
+    mediaType: file.mediaType || "-",
+    previewAvailable: file.previewAvailable === true,
+    previewUrl: file.previewUrl ?? null,
+    sizeText: formatFileSize(file.sizeBytes ?? file.file?.sizeBytes)
   };
 }
 
@@ -257,6 +288,9 @@ function getEvidenceFileCount(item: PortalHandoverReviewEvidenceItem) {
 }
 
 function formatReadiness(detail: PortalHandoverReviewDetail) {
+  if (detail.status === "CUSTOMER_OBJECTED" && detail.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN") {
+    return "现场资料已重新提交，等待工作人员复核后再次发送确认。";
+  }
   if (detail.status === "CUSTOMER_OBJECTED") {
     return "客户已提出异议，后续流程暂停。";
   }
@@ -338,4 +372,18 @@ function joinNonEmpty(values: Array<null | string | undefined>) {
 
 function numberOrZero(value: null | number | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatFileSize(value: null | number | string | undefined) {
+  const size = typeof value === "string" ? Number(value) : value;
+  if (typeof size !== "number" || !Number.isFinite(size) || size <= 0) {
+    return "-";
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }

@@ -91,3 +91,9 @@ export class OpsReviewDto {
   @IsString()
   notes?: string;
 }
+
+export class HandoverObjectionActionDto {
+  @IsOptional()
+  @IsString()
+  note?: string;
+}

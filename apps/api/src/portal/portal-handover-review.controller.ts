@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Res, StreamableFile, UseGuards } from "@nestjs/common";
+import type { Response } from "express";
 
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
@@ -27,6 +28,30 @@ export class PortalHandoverReviewController {
     return this.portalHandoverReviewService.getReview(id, currentCustomer);
   }
 
+  @Get(":id/evidence-files/:evidenceFileId/preview")
+  async previewEvidenceFile(
+    @Param("id") id: string,
+    @Param("evidenceFileId") evidenceFileId: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const preview = await this.portalHandoverReviewService.previewEvidenceFile(id, evidenceFileId, currentCustomer);
+    setEvidenceFileHeaders(response, preview, "inline");
+    return new StreamableFile(preview.stream);
+  }
+
+  @Get(":id/evidence-files/:evidenceFileId/download")
+  async downloadEvidenceFile(
+    @Param("id") id: string,
+    @Param("evidenceFileId") evidenceFileId: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const file = await this.portalHandoverReviewService.downloadEvidenceFile(id, evidenceFileId, currentCustomer);
+    setEvidenceFileHeaders(response, file, "attachment");
+    return new StreamableFile(file.stream);
+  }
+
   @Post(":id/confirm")
   confirmNoObjection(
     @Param("id") id: string,
@@ -44,4 +69,18 @@ export class PortalHandoverReviewController {
   ) {
     return this.portalHandoverReviewService.objectReview(id, dto, currentCustomer);
   }
+}
+
+function setEvidenceFileHeaders(
+  response: Response,
+  file: { filename: string; mimeType: null | string; sizeBytes: null | number },
+  disposition: "attachment" | "inline"
+) {
+  if (file.mimeType) {
+    response.setHeader("Content-Type", file.mimeType);
+  }
+  if (file.sizeBytes !== null) {
+    response.setHeader("Content-Length", String(file.sizeBytes));
+  }
+  response.setHeader("Content-Disposition", `${disposition}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
 }

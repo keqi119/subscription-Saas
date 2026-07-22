@@ -40,6 +40,7 @@ import {
 } from "../../../../../lib/field-handover-view-model";
 
 const SUBMITTED_TEXT = "现场交接资料已提交，等待客户确认";
+const RESUBMITTED_PENDING_ADMIN_TEXT = "现场交接资料已重新提交，等待后台送回客户复核";
 const LOCKED_TEXT = "当前交接任务已提交或不可继续编辑";
 
 export default function FieldHandoverTaskDetailPage() {
@@ -182,10 +183,14 @@ export default function FieldHandoverTaskDetailPage() {
 
     await runAction("submit", async () => {
       await updateFieldHandoverFacts(params.id, buildFieldHandoverFactsPayload(facts));
-      await submitFieldHandoverEvidence(params.id);
+      const submitted = await submitFieldHandoverEvidence(params.id);
+      const successText =
+        submitted.status === "CUSTOMER_OBJECTED" && submitted.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN"
+          ? RESUBMITTED_PENDING_ADMIN_TEXT
+          : SUBMITTED_TEXT;
       setBlockers([]);
-      setSuccessMessage(SUBMITTED_TEXT);
-      void message.success(SUBMITTED_TEXT);
+      setSuccessMessage(successText);
+      void message.success(successText);
       await loadDetail();
     });
   }

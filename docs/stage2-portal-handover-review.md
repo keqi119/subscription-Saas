@@ -10,6 +10,8 @@ Customer-authenticated routes:
 
 - `GET /portal/handover-reviews`
 - `GET /portal/handover-reviews/:id`
+- `GET /portal/handover-reviews/:id/evidence-files/:evidenceFileId/preview`
+- `GET /portal/handover-reviews/:id/evidence-files/:evidenceFileId/download`
 - `POST /portal/handover-reviews/:id/confirm`
 - `POST /portal/handover-reviews/:id/object`
 
@@ -24,7 +26,7 @@ Customer routes:
 
 The list page shows customer-owned handover review items with order number, safe vehicle summary, masked VIN/plate information if returned, field submitted time, evidence progress, and the current customer review status.
 
-The detail page shows safe field facts, checklist labels/status/file counts, and the customer decision area. Evidence files are represented by count/status only until a Portal-safe preview or download URL policy is implemented. The page must not render object storage keys, buckets, storage paths, signing URLs, finance/payment/deposit fields, identity numbers, raw DTO JSON, provider internals, tokens, cookies, OTPs, or Admin credentials.
+The detail page shows safe field facts, checklist labels/status/file counts, evidence file links, and the customer decision area. Evidence links use Portal-scoped preview/download proxy routes. The page must not render object storage keys, buckets, storage paths, signing URLs, finance/payment/deposit fields, identity numbers, raw DTO JSON, provider internals, tokens, cookies, OTPs, or Admin credentials.
 
 If the work order is in `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`, the customer can either confirm no objection after checking the acknowledgement box, or submit an objection with a required reason. Confirm only enables readiness for later Stage 2 PDF/eSign work; it does not create a PDF, create a signing task, or call any provider. Objection blocks readiness and requires Admin follow-up.
 
@@ -49,6 +51,8 @@ Customer confirm is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWIN
 
 Customer objection is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`. It moves the work order to `CUSTOMER_OBJECTED`, records the reason/details, blocks Stage 2 PDF/eSign readiness, and requires Admin follow-up.
 
+When Admin requests field resubmission, field H5 may update and resubmit evidence, but the work order remains in `CUSTOMER_OBJECTED` with admin review state `RESUBMITTED_PENDING_ADMIN`. The customer cannot confirm no objection again until Admin explicitly sends the resubmitted evidence back to Portal review. Sending back clears the active objection for a new review attempt and returns the work order to `CUSTOMER_REVIEWING`.
+
 ## Safe DTO Policy
 
 Portal DTOs may include:
@@ -59,7 +63,7 @@ Portal DTOs may include:
 - vehicle brand/model, masked plate, and VIN suffix;
 - masked customer mobile;
 - field facts such as mileage, energy/fuel level, accessory checklist, damage/no-damage declaration, and field notes;
-- evidence labels, statuses, review state, file count, and safe `fileId` metadata.
+- evidence labels, statuses, review state, file count, safe `fileId` metadata, and Portal proxy `previewUrl`/`downloadUrl` values.
 
 Portal DTOs must not include:
 
@@ -69,7 +73,7 @@ Portal DTOs must not include:
 - full phone numbers or identity numbers;
 - finance, deposit, payment, lease, billing, or internal audit fields.
 
-Evidence preview/download remains a later policy decision. Until a safe Portal preview endpoint is explicitly implemented, review APIs should return metadata only.
+Evidence preview/download routes must verify the current Portal customer owns the work order before streaming file bytes. Image/video files may be previewed inline; other file types are download-only.
 
 ## Local Validation
 
@@ -78,18 +82,17 @@ Local tests use synthetic customers, orders, vehicles, handovers, 14 evidence ch
 - customer-owned filtering;
 - unrelated customer denial;
 - safe DTO serialization with no object storage keys;
-- detail field facts and evidence summary;
+- detail field facts, evidence summary, and safe Portal file links;
 - confirm no objection readiness transition;
-- objection readiness blocker;
+- objection readiness blocker and Admin-mediated resubmission loop;
 - no PDF/eSign/Fadada/delivery/lease/billing side effects.
-- Portal API helpers call only the four customer review endpoints;
+- Portal API helpers call only customer review and Portal-safe evidence proxy endpoints;
 - Portal view-models explicitly select safe display fields and drop storage/provider/finance internals;
 - Portal list/detail page source includes loading, empty, error, confirm, and objection states without unsafe controls or raw DTO rendering.
 
 ## Open Items
 
-- Safe evidence preview/download policy.
 - Stage 2 PDF renderer and legal wording.
 - Stage 2 provider mapping and eSign start.
-- Admin objection handling and reopen/void policy.
+- Admin void/escalation policy beyond resubmission/send-back.
 - Audit timezone cleanup for displayed timestamps.

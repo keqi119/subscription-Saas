@@ -407,6 +407,39 @@ export class DeliveryEvidenceService {
     return toEvidenceItemView(updated);
   }
 
+  async retractNoVisibleDamageDeclaration(orderId: string, actorId?: string, handoverId?: string | null) {
+    const scope = await this.resolveScope({ handoverId, orderId });
+    const items = await this.findScopedItems(scope);
+    const declarations = items.filter((item) =>
+      item.evidenceType === DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION &&
+      item.declaredNoDamage === true
+    );
+    const retractedAt = new Date();
+    const updated: Array<ReturnType<typeof toEvidenceItemView>> = [];
+
+    for (const declaration of declarations) {
+      const item = await this.prisma.vehicleDeliveryEvidenceItem.update({
+        data: {
+          declaredNoDamage: null,
+          metadata: toJsonValue({
+            retractedAt: retractedAt.toISOString(),
+            retractedBy: actorId ?? null
+          }),
+          rejectionReason: null,
+          reviewedAt: null,
+          reviewedBy: null,
+          reviewStatus: DeliveryEvidenceReviewStatus.NOT_STARTED,
+          status: DeliveryEvidenceStatus.NOT_STARTED
+        },
+        include: evidenceItemInclude,
+        where: { id: declaration.id }
+      });
+      updated.push(toEvidenceItemView(item));
+    }
+
+    return updated;
+  }
+
   async declareDamage(orderId: string, actorId?: string, handoverId?: string | null, description?: string) {
     const scope = await this.resolveScope({ handoverId, orderId });
     const items = await this.findScopedItems(scope);
@@ -793,9 +826,13 @@ function evaluateDamageFieldCompleteness(
   );
   const damageDefinition = getDefinition(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
   const noDamageDefinition = getDefinition(DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION);
-  const damageDeclared = fieldState?.damageDeclared === true || damageItems.some(isDamageDeclared);
+  const damageDeclared = fieldState?.damageDeclared === true ||
+    (fieldState?.damageDeclared !== false && damageItems.some(isDamageDeclared));
   const noDamageDeclared = fieldState?.noVisibleDamageDeclared === true ||
-    noDamageItems.some((item) => item.declaredNoDamage === true && !isRejectedEvidence(item));
+    (
+      fieldState?.noVisibleDamageDeclared !== false &&
+      noDamageItems.some((item) => item.declaredNoDamage === true && !isRejectedEvidence(item))
+    );
 
   if (damageDeclared && noDamageDeclared) {
     return blocking(

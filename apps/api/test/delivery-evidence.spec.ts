@@ -188,6 +188,49 @@ describe("DeliveryEvidenceService", () => {
     });
   });
 
+  it("retracts no-visible-damage declaration so damage evidence can resolve field readiness", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await uploadRequiredFileEvidence(harness);
+    await harness.service.declareNoVisibleDamage(harness.orderId, harness.userId, harness.handoverId, "field confirmed");
+
+    await harness.service.retractNoVisibleDamageDeclaration(harness.orderId, harness.userId, harness.handoverId);
+
+    const declaration = harness.findItem(DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION);
+    expect(declaration).toMatchObject({
+      declaredNoDamage: null,
+      reviewStatus: DeliveryEvidenceReviewStatus.NOT_STARTED,
+      status: DeliveryEvidenceStatus.NOT_STARTED
+    });
+
+    const file = harness.addFile("damage.jpg", "image/jpeg");
+    const damageItem = harness.findItem(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
+    await harness.service.attachEvidenceFile(damageItem.id, file.id, DeliveryEvidenceMediaType.PHOTO, harness.userId);
+    const readiness = await harness.service.validateFieldEvidenceComplete(
+      harness.orderId,
+      harness.handoverId,
+      { damageDeclared: true, noVisibleDamageDeclared: false }
+    );
+
+    expect(readiness.ready).toBe(true);
+  });
+
+  it("lets explicit field damage state override a stale no-visible-damage declaration during field completion", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await uploadRequiredFileEvidence(harness);
+    await harness.service.declareNoVisibleDamage(harness.orderId, harness.userId, harness.handoverId, "field confirmed");
+
+    const file = harness.addFile("damage.jpg", "image/jpeg");
+    const damageItem = harness.findItem(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
+    await harness.service.attachEvidenceFile(damageItem.id, file.id, DeliveryEvidenceMediaType.PHOTO, harness.userId);
+    const readiness = await harness.service.validateFieldEvidenceComplete(
+      harness.orderId,
+      harness.handoverId,
+      { damageDeclared: true, noVisibleDamageDeclared: false }
+    );
+
+    expect(readiness.ready).toBe(true);
+  });
+
   it("enforces media type requirements and links evidence files to FileObject safely", async () => {
     const harness = createDeliveryEvidenceHarness();
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);

@@ -393,17 +393,25 @@ export class HandoverWorkOrderService {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
     assertDamageState(input.damageDeclared, input.noVisibleDamageDeclared);
+    const switchesToDamage = input.damageDeclared === true && input.noVisibleDamageDeclared !== true;
+    if (switchesToDamage) {
+      await this.deliveryEvidenceService.retractNoVisibleDamageDeclaration(
+        workOrder.orderId,
+        actorId,
+        workOrder.handoverId ?? null
+      );
+    }
 
     return this.updateWorkOrder(id, compactUndefined({
       accessoryChecklist: input.accessoryChecklist === undefined ? undefined : toJsonValue(input.accessoryChecklist),
-      damageDeclared: input.damageDeclared,
+      damageDeclared: input.noVisibleDamageDeclared === true ? false : input.damageDeclared,
       deliveryLocation: input.deliveryLocation === undefined ? undefined : normalizeOptionalText(input.deliveryLocation),
       energyLevelText: input.energyLevelText === undefined ? undefined : normalizeOptionalText(input.energyLevelText),
       fieldNotes: input.fieldNotes === undefined ? undefined : normalizeOptionalText(input.fieldNotes),
       fuelLevelText: input.fuelLevelText === undefined ? undefined : normalizeOptionalText(input.fuelLevelText),
       handoverMileageKm: input.handoverMileageKm,
       metadata: mergeMetadata(workOrder.metadata, { fieldFactsUpdatedBy: actorId ?? null }),
-      noVisibleDamageDeclared: input.noVisibleDamageDeclared,
+      noVisibleDamageDeclared: input.damageDeclared === true ? false : input.noVisibleDamageDeclared,
       scheduledAt: input.scheduledAt === undefined ? undefined : (
         input.scheduledAt ? parseDate(input.scheduledAt, "scheduledAt") : null
       ),

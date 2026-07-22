@@ -2,7 +2,7 @@
 
 ## Scope
 
-Portal handover review starts after the field operator has submitted Stage 2 field facts and evidence. This phase provides the customer-scoped API foundation only. It does not build the full Portal review page, generate a Stage 2 PDF, create contracts, start eSign, call Fadada, confirm delivery, start lease, or start billing.
+Portal handover review starts after the field operator has submitted Stage 2 field facts and evidence. This phase provides the customer-scoped API foundation and the customer Portal review UI. It does not generate a Stage 2 PDF, create contracts, start eSign, call Fadada, confirm delivery, start lease, or start billing.
 
 ## API
 
@@ -14,6 +14,19 @@ Customer-authenticated routes:
 - `POST /portal/handover-reviews/:id/object`
 
 All routes are scoped by the current Portal customer. A customer can access only handover work orders linked to their own subscription orders.
+
+## Portal UI
+
+Customer routes:
+
+- `/portal/handover-reviews`
+- `/portal/handover-reviews/[id]`
+
+The list page shows customer-owned handover review items with order number, safe vehicle summary, masked VIN/plate information if returned, field submitted time, evidence progress, and the current customer review status.
+
+The detail page shows safe field facts, checklist labels/status/file counts, and the customer decision area. Evidence files are represented by count/status only until a Portal-safe preview or download URL policy is implemented. The page must not render object storage keys, buckets, storage paths, signing URLs, finance/payment/deposit fields, identity numbers, raw DTO JSON, provider internals, tokens, cookies, OTPs, or Admin credentials.
+
+If the work order is in `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`, the customer can either confirm no objection after checking the acknowledgement box, or submit an objection with a required reason. Confirm only enables readiness for later Stage 2 PDF/eSign work; it does not create a PDF, create a signing task, or call any provider. Objection blocks readiness and requires Admin follow-up.
 
 ## Review State
 
@@ -69,10 +82,12 @@ Local tests use synthetic customers, orders, vehicles, handovers, 14 evidence ch
 - confirm no objection readiness transition;
 - objection readiness blocker;
 - no PDF/eSign/Fadada/delivery/lease/billing side effects.
+- Portal API helpers call only the four customer review endpoints;
+- Portal view-models explicitly select safe display fields and drop storage/provider/finance internals;
+- Portal list/detail page source includes loading, empty, error, confirm, and objection states without unsafe controls or raw DTO rendering.
 
 ## Open Items
 
-- Portal Handover Review Page UI.
 - Safe evidence preview/download policy.
 - Stage 2 PDF renderer and legal wording.
 - Stage 2 provider mapping and eSign start.

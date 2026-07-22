@@ -503,6 +503,43 @@ describe("HandoverWorkOrderService", () => {
     expect(readiness.blockingReasons).toContain("请上传损伤/瑕疵近拍");
   });
 
+  it("retracts a stale no-visible-damage declaration when field work switches to damage", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      accessoryChecklist: { chargingCable: true, keys: 2 },
+      damageDeclared: false,
+      energyLevelText: "80%",
+      externalOperatorPhone: "13800000000",
+      handoverMileageKm: 28600,
+      id: "work-order-visible",
+      noVisibleDamageDeclared: true,
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+
+    const updated = await harness.service.updateFieldAccessibleFacts(
+      "work-order-visible",
+      "13800000000",
+      {
+        damageDeclared: true,
+        noVisibleDamageDeclared: false
+      },
+      "field-session-1"
+    );
+
+    expect(updated).toMatchObject({
+      damageDeclared: true,
+      noVisibleDamageDeclared: false
+    });
+    expect(harness.evidenceService.retractNoVisibleDamageDeclaration).toHaveBeenCalledWith(
+      harness.orderId,
+      "field-session-1",
+      "handover-1"
+    );
+  });
+
   it("requires field facts, evidence completeness, and a resolved damage state before customer review", async () => {
     const harness = createHandoverWorkOrderHarness();
     const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
@@ -910,6 +947,7 @@ function createEvidenceService() {
     })),
     getChecklist: vi.fn(async () => checklist),
     initializeChecklist: vi.fn(async () => ({ items: [] })),
+    retractNoVisibleDamageDeclaration: vi.fn(async () => null),
     validateFieldEvidenceComplete: vi.fn(async () => fieldReadiness),
     setChecklist(value: Record<string, unknown>) {
       checklist = value;

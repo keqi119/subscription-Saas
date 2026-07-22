@@ -2,7 +2,9 @@ import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
 import { CustomerModule } from "../customer/customer.module";
+import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
 import { ESignModule } from "../esign/esign.module";
+import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PortalNotificationController } from "../notification/notification.controller";
 import { PaymentModule } from "../payment/payment.module";
@@ -24,6 +26,8 @@ import { PortalCatalogService } from "./portal-catalog.service";
 import { PortalContractController } from "./portal-contract.controller";
 import { PortalController } from "./portal.controller";
 import { PortalESignOnboardingController } from "./portal-esign-onboarding.controller";
+import { PortalHandoverReviewController } from "./portal-handover-review.controller";
+import { PortalHandoverReviewService } from "./portal-handover-review.service";
 import { PortalPaymentController } from "./portal-payment.controller";
 import { PortalOrderDocumentController } from "./portal-order-document.controller";
 import { PortalProfileMaterialController } from "./portal-profile-material.controller";
@@ -42,6 +46,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalNotificationController,
     PortalOrderDocumentController,
     PortalPaymentController,
+    PortalHandoverReviewController,
     PortalProfileMaterialController,
     PortalServiceCaseController,
     PortalWechatCallbackController,
@@ -53,7 +58,9 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
   imports: [
     AuditModule,
     CustomerModule,
+    DeliveryEvidenceModule,
     ESignModule,
+    HandoverWorkOrderModule,
     NotificationModule,
     PaymentModule,
     PrismaModule,
@@ -69,6 +76,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalAuthService,
     PortalBillingService,
     PortalCatalogService,
+    PortalHandoverReviewService,
     PortalProfileService,
     PortalProfileMaterialService
   ]

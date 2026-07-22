@@ -37,7 +37,7 @@ const READY_FOR_STAGE2_STATUSES = [
   "OPS_REVIEW_PENDING",
   "OPS_REVIEWED"
 ] as const;
-const CUSTOMER_REVIEW_STATUSES = new Set(["CUSTOMER_REVIEWING", "EVIDENCE_SUBMITTED", "CUSTOMER_CONFIRMED"]);
+const CUSTOMER_REVIEW_ACTIONABLE_STATUSES = new Set(["CUSTOMER_REVIEWING", "EVIDENCE_SUBMITTED"]);
 const OPS_REVIEW_PENDING_ALLOWED_STATUSES = new Set([
   "CUSTOMER_SIGNED",
   "PLATFORM_SEALED",
@@ -483,7 +483,13 @@ export class HandoverWorkOrderService {
     const workOrder = await this.getWorkOrderOrThrow(id);
     await this.assertCustomerOwnsWorkOrder(workOrder, customerId);
     this.assertMutable(workOrder);
-    if (!CUSTOMER_REVIEW_STATUSES.has(String(workOrder.status))) {
+    if (workOrder.status === "CUSTOMER_CONFIRMED") {
+      throw new BadRequestException("客户已确认无异议。");
+    }
+    if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
+      throw new BadRequestException("客户已提交异议，需后台介入。");
+    }
+    if (!CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(String(workOrder.status))) {
       throw new BadRequestException("客户尚未进入交付复核。");
     }
     assertFieldFactsComplete(workOrder);
@@ -496,17 +502,31 @@ export class HandoverWorkOrderService {
       customerConfirmedAt: workOrder.customerConfirmedAt ?? new Date(),
       customerObjectedAt: null,
       customerObjectionReason: null,
+      metadata: mergeMetadata(workOrder.metadata, { customerConfirmedBy: customerId }),
       status: "CUSTOMER_CONFIRMED"
     });
   }
 
-  async customerObject(id: string, customerId: string, reason: string) {
+  async customerObject(id: string, customerId: string, reason: string, details?: string | null) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     await this.assertCustomerOwnsWorkOrder(workOrder, customerId);
     this.assertMutable(workOrder);
+    if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
+      throw new BadRequestException("客户已提交异议，需后台介入。");
+    }
+    if (workOrder.status === "CUSTOMER_CONFIRMED" || workOrder.customerConfirmedAt) {
+      throw new BadRequestException("客户已确认无异议，需后台介入后再提交异议。");
+    }
+    if (!CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(String(workOrder.status))) {
+      throw new BadRequestException("客户尚未进入交付复核。");
+    }
     return this.updateWorkOrder(id, {
       customerObjectedAt: new Date(),
       customerObjectionReason: normalizeRequiredText(reason, "请填写客户异议原因。"),
+      metadata: mergeMetadata(workOrder.metadata, {
+        customerObjectedBy: customerId,
+        customerObjectionDetails: normalizeOptionalText(details)
+      }),
       status: "CUSTOMER_OBJECTED"
     });
   }

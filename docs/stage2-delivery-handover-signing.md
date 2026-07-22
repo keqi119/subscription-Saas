@@ -114,6 +114,21 @@ The Stage 2 PDF should list checklist status and file references only. It must n
 
 Field H5 upload stores files through private storage and `FileObject`, then attaches the returned safe `fileId` to a checklist item. H5 responses and view models must not render raw object storage keys.
 
+## Portal Customer Review
+
+After the field operator submits evidence, Portal customer review becomes available through customer-scoped APIs:
+
+- `GET /portal/handover-reviews`
+- `GET /portal/handover-reviews/:id`
+- `POST /portal/handover-reviews/:id/confirm`
+- `POST /portal/handover-reviews/:id/object`
+
+The Portal APIs require customer auth and filter by `order.customerId`. They expose safe review DTOs only: order number, work-order status, handover type/status, scheduled/location fields, field submitted time, masked customer phone, masked plate, VIN suffix, field facts, evidence checklist labels/status/file counts, and safe `fileId` metadata. They must not expose object storage keys, bucket paths, provider payloads, signing URLs, finance/payment/deposit fields, tokens, cookies, full phone numbers, or full identity numbers.
+
+Customer confirmation is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`. It records `customerConfirmedAt`, clears objection fields, and makes Stage 2 PDF/eSign readiness true if evidence and field facts remain complete. It does not generate a PDF, create a contract, start eSign, call Fadada, confirm delivery, start lease, or start billing.
+
+Customer objection is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`. It records `customerObjectedAt`, keeps the reason on `customerObjectionReason`, stores optional details in work-order metadata, moves the work order to `CUSTOMER_OBJECTED`, and blocks Stage 2 PDF/eSign readiness until Admin intervention.
+
 ## Status Policy
 
 Handover status:
@@ -161,6 +176,8 @@ FIELD_COMPLETENESS + CUSTOMER_NO_OBJECTION + NOT_OBJECTED_OR_CANCELLED
 
 Field completeness requires required files uploaded, field facts completed, damage/no-damage state resolved, and the field operator submitted the work order. Customer no-objection confirmation is required before Stage 2 PDF/eSign. Ops review may be pending or rejected without blocking PDF/eSign; it remains a back-office QA/settlement signal.
 
+Portal review detail may show "not ready" before customer confirmation or after customer objection. That readiness state is a gate only; it should not be interpreted as PDF/eSign provider failure because this phase does not call providers or create signing tasks.
+
 Ops review pending may be requested only from `CUSTOMER_SIGNED`, `PLATFORM_SEALED`, `FIELD_COMPLETED`, `OPS_REVIEW_PENDING`, or `OPS_REVIEWED`. It must be blocked from draft, assigned, field-in-progress, customer-reviewing, customer-confirmed, customer-objected, and terminal work-order states.
 
 Current delivery confirmation gate:
@@ -191,6 +208,8 @@ Void/rebuild foundation:
 
 - Final legal handover wording/template approval.
 - Stage 2 provider upload/signing/auto-seal mapping.
+- Portal Handover Review Page UI.
+- Admin objection handling and reopen policy.
 - Admin/Portal UX for handover generation, signing, archive retry, and PDF review.
 - Admin/Portal evidence upload/review UI.
 - Portal signed handover PDF viewing/downloading after archive is available.

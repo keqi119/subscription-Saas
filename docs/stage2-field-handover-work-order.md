@@ -51,4 +51,4 @@ Submit is blocked until:
 - all required evidence files are uploaded;
 - damage close-up evidence exists when damage is declared.
 
-On success, the work order moves to customer review. Customer no-objection, Stage 2 PDF, eSign, delivery confirmation, lease, and billing remain separate downstream phases.
+On success, the work order moves to customer review. Customer Portal review is a separate downstream phase: confirming no objection only unlocks Stage 2 PDF/eSign readiness; submitting an objection blocks Stage 2 readiness and requires Admin follow-up. Stage 2 PDF generation, eSign, delivery confirmation, lease, and billing remain unavailable from the field H5 flow.

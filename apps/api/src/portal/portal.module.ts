@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
 import { CustomerModule } from "../customer/customer.module";
+import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
 import { ESignModule } from "../esign/esign.module";
 import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { NotificationModule } from "../notification/notification.module";
@@ -57,6 +58,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
   imports: [
     AuditModule,
     CustomerModule,
+    DeliveryEvidenceModule,
     ESignModule,
     HandoverWorkOrderModule,
     NotificationModule,

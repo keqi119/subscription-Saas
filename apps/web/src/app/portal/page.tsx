@@ -34,6 +34,7 @@ const portalEntries = [
   { href: "/portal/applications", icon: <AuditOutlined />, title: "我的申请" },
   { href: "/portal/contracts", icon: <FileTextOutlined />, title: "我的合同" },
   { href: "/portal/orders", icon: <ProfileOutlined />, title: "我的订单" },
+  { href: "/portal/handover-reviews", icon: <AuditOutlined />, title: "车辆交接确认" },
   { href: "/portal/bills", icon: <FileTextOutlined />, title: "我的账单" },
   { href: "/portal/payment-orders", icon: <PayCircleOutlined />, title: "支付记录" },
   { href: "/portal/notifications", icon: <MessageOutlined />, title: "消息通知" },

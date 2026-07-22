@@ -83,6 +83,8 @@ External operator access stores only `accessTokenHash`. The plaintext token is r
 
 Field operator H5 access uses the fixed route `/field/handover` with phone OTP login and an independent `field_access_token` session. SMS content must be code-only or a generic reminder; task-specific links, bearer tokens, customer data, and order details must not be sent by SMS. After login, task discovery is based on the normalized assigned operator phone and returns only safe DTO fields. The legacy `/field/handover/:token` path may remain for emergency or QA use, but it is no longer the primary external distribution path.
 
+The first H5 UI phase exposes `/field/handover` and `/field/handover/tasks`, plus a read-only `/field/handover/tasks/[id]` placeholder. This phase is login and task discovery only: no evidence upload, field facts editing, customer review, Stage 2 PDF, eSign, delivery confirmation, lease, or billing action is available from the H5 UI.
+
 ## Evidence Checklist
 
 Required field evidence before customer review and Stage 2 PDF/eSign:

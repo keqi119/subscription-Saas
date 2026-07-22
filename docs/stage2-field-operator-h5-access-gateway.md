@@ -8,7 +8,29 @@ Stage 2 field operator access uses a fixed H5 entry:
 /field/handover
 ```
 
-The backend foundation provides phone OTP login, a short-lived field session, and task list/detail APIs for handover work orders assigned to the authenticated phone number. This build does not include the H5 UI, WeChat OpenID binding, evidence capture UI, eSign, PDF generation, lease activation, or billing activation.
+The backend foundation provides phone OTP login, a short-lived field session, and task list/detail APIs for handover work orders assigned to the authenticated phone number. The first H5 UI phase now includes login, task list, and a read-only task detail placeholder. It does not include WeChat OpenID binding, evidence capture UI, eSign, PDF generation, lease activation, or billing activation.
+
+## H5 Phase 1 Routes
+
+The fixed WeChat service-account menu entry is:
+
+```text
+/field/handover
+```
+
+This route has no required query string and must not place tokens in the URL. It checks the independent field session and redirects authenticated field operators to:
+
+```text
+/field/handover/tasks
+```
+
+The task list page loads the current field session and then lists work orders assigned to the authenticated phone number. A lightweight placeholder detail route may be used for safe read-only summary:
+
+```text
+/field/handover/tasks/[id]
+```
+
+The placeholder is intentionally not an evidence capture page. It must not expose upload controls, field facts editing, submit actions, PDF generation, eSign, lease activation, billing activation, or provider internals.
 
 ## SMS Policy
 
@@ -23,6 +45,8 @@ SMS must not contain:
 - signing URLs
 
 Provider calls are isolated behind the existing SMS abstraction. Tests must mock SMS and must not call the real provider.
+
+The H5 login page must not display debug OTPs even if a non-production API response includes one. The UI success message should only tell the operator that the verification code was sent.
 
 ## Auth Boundary
 
@@ -80,6 +104,8 @@ Responses must not include:
 - finance, payment, deposit, or billing details
 - unrelated orders
 
+The H5 view model should render only explicit safe fields from the DTO. It must not stringify or display raw response objects.
+
 ## Legacy Token Policy
 
 Existing `/field/handover/:token` remains a legacy, emergency, or QA path. It is not the primary external distribution mechanism.
@@ -99,9 +125,18 @@ The backend records safe field operator audit events:
 
 Audit data stores phone/session/work-order identifiers and hashed request context only. It must not store plaintext OTPs, plaintext session tokens, signing URLs, secrets, or full identity numbers.
 
-## Phase 1 Open Items
+## Phase 1 UI Status
 
-- Build the H5 login and task-list UI at `/field/handover`.
+Implemented in the first H5 UI phase:
+
+- `/field/handover` phone OTP login.
+- `/field/handover/tasks` authenticated task list.
+- `/field/handover/tasks/[id]` read-only summary placeholder for the next evidence capture phase.
+- Logout through the field auth boundary.
+- Mobile-first single-column layout with loading, empty, error, disabled, and unauthorized states.
+
+Still deferred:
+
 - Add H5 evidence capture and upload flow on top of the field session guard.
 - Add Admin assignment/reminder UX that sends only OTP or generic reminders.
 - Optionally bind WeChat OpenID/UnionID after phone login.

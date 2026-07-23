@@ -120,18 +120,28 @@ After the field operator submits evidence, Portal customer review becomes availa
 
 - `GET /portal/handover-reviews`
 - `GET /portal/handover-reviews/:id`
+- `GET /portal/handover-reviews/:id/evidence-files/:evidenceFileId/preview`
+- `GET /portal/handover-reviews/:id/evidence-files/:evidenceFileId/download`
 - `POST /portal/handover-reviews/:id/confirm`
 - `POST /portal/handover-reviews/:id/object`
 
-The Portal APIs require customer auth and filter by `order.customerId`. They expose safe review DTOs only: order number, work-order status, handover type/status, scheduled/location fields, field submitted time, masked customer phone, masked plate, VIN suffix, field facts, evidence checklist labels/status/file counts, and safe `fileId` metadata. They must not expose object storage keys, bucket paths, provider payloads, signing URLs, finance/payment/deposit fields, tokens, cookies, full phone numbers, or full identity numbers.
+The Portal APIs require customer auth and filter by `order.customerId`. They expose safe review DTOs only: order number, work-order status, handover type/status, scheduled/location fields, field submitted time, masked customer phone, masked plate, VIN suffix, field facts, evidence checklist labels/status/file counts, safe `fileId` metadata, and Portal proxy preview/download URLs. They must not expose object storage keys, bucket paths, provider payloads, signing URLs, finance/payment/deposit fields, tokens, cookies, full phone numbers, or full identity numbers.
 
 Customer confirmation is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`. It records `customerConfirmedAt`, clears objection fields, and makes Stage 2 PDF/eSign readiness true if evidence and field facts remain complete. It does not generate a PDF, create a contract, start eSign, call Fadada, confirm delivery, start lease, or start billing.
 
 Customer objection is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`. It records `customerObjectedAt`, keeps the reason on `customerObjectionReason`, stores optional details in work-order metadata, moves the work order to `CUSTOMER_OBJECTED`, and blocks Stage 2 PDF/eSign readiness until Admin intervention.
 
-The customer Portal UI is available at `/portal/handover-reviews` and `/portal/handover-reviews/[id]`. It presents safe field facts, evidence checklist labels/status/file counts, and the confirm/object decision controls. It intentionally does not show file object keys, buckets, storage paths, provider fields, signing URLs, finance/payment/deposit fields, raw DTO JSON, or full identity data. Until a safe preview/download endpoint is implemented, evidence is displayed as summary metadata only.
+The customer Portal UI is available at `/portal/handover-reviews` and `/portal/handover-reviews/[id]`. It presents safe field facts, evidence checklist labels/status/file counts, safe evidence preview/download actions, and the confirm/object decision controls. It intentionally does not show file object keys, buckets, storage paths, provider fields, signing URLs, finance/payment/deposit fields, raw DTO JSON, or full identity data.
 
 Confirming no objection from Portal is a readiness transition only. It must not generate the Stage 2 PDF, create an eSign task, call a provider, confirm delivery, activate lease, or start billing. Submitting an objection keeps the flow in an Admin-follow-up state and must not create provider or delivery side effects.
+
+## Admin Review Loop
+
+Admin order detail exposes Stage 2 handover work orders, evidence file preview/download actions, customer objection details, and review attempt history. The Admin display uses the same safe file proxy policy: storage object keys and buckets remain server-side only.
+
+If a customer objects, Admin can acknowledge the objection and request field resubmission. Field H5 becomes editable only after that request. Resubmission keeps the work order in `CUSTOMER_OBJECTED`, records admin review state `RESUBMITTED_PENDING_ADMIN`, and continues to block Stage 2 PDF/eSign readiness.
+
+After reviewing the resubmitted field material, Admin must send the task back to customer review before the Portal customer can confirm no objection again. Sending back creates the next review attempt, clears the active objection, and returns the work order to `CUSTOMER_REVIEWING`.
 
 ## Status Policy
 
@@ -212,7 +222,6 @@ Void/rebuild foundation:
 
 - Final legal handover wording/template approval.
 - Stage 2 provider upload/signing/auto-seal mapping.
-- Admin objection handling and reopen policy.
+- Admin void/escalation policy beyond the basic objection resubmission loop.
 - Admin/Portal UX for handover generation, signing, archive retry, and PDF review.
-- Admin/Portal evidence upload/review UI.
 - Portal signed handover PDF viewing/downloading after archive is available.

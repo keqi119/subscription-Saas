@@ -94,6 +94,7 @@ const WORK_ORDER_STATUS_LABELS: Record<string, string> = {
 };
 
 const LOCKED_WORK_ORDER_STATUSES = new Set([
+  "CUSTOMER_OBJECTED",
   "CUSTOMER_REVIEWING",
   "CUSTOMER_CONFIRMED",
   "CUSTOMER_SIGNED",
@@ -154,7 +155,7 @@ export function buildFieldHandoverDetailView(detail: FieldHandoverWorkOrderDetai
 }
 
 export function buildFieldEvidenceCaptureView(detail: FieldHandoverWorkOrderDetail): FieldEvidenceCaptureView {
-  const canEdit = !LOCKED_WORK_ORDER_STATUSES.has(String(detail.status ?? ""));
+  const canEdit = canEditFieldEvidence(detail);
   const evidenceItems = (detail.evidenceChecklist?.items ?? []).map((item) => buildEvidenceItemView(item, detail, canEdit));
   const activeEvidenceItems = evidenceItems.filter((item) => item.isActive);
   const completed = activeEvidenceItems.filter(isEvidenceItemComplete).length;
@@ -165,14 +166,41 @@ export function buildFieldEvidenceCaptureView(detail: FieldHandoverWorkOrderDeta
     damageStateLabel: `损伤状态：${formatDamageState(detail.fieldFacts)}`,
     evidenceItems,
     fieldFactsStatus: submitBlockers.some((reason) => FIELD_FACT_BLOCKER_MESSAGES.has(reason)) ? "现场信息：待补充" : "现场信息：已完整",
-    lockedMessage: canEdit ? null : "当前交接任务已提交或不可继续编辑",
-    nextStepText: "下一步：提交后等待客户确认",
+    lockedMessage: canEdit ? null : formatFieldLockedMessage(detail),
+    nextStepText: formatFieldNextStepText(detail),
     progressText: `资料完成度：${completed} / ${activeEvidenceItems.length}`,
     showSaveAction: canEdit,
-    showStartAction: canEdit && detail.status !== "FIELD_IN_PROGRESS",
+    showStartAction: canEdit && detail.status !== "FIELD_IN_PROGRESS" && detail.status !== "CUSTOMER_OBJECTED",
     showSubmitAction: canEdit,
     submitBlockers
   };
+}
+
+function canEditFieldEvidence(detail: FieldHandoverWorkOrderDetail) {
+  if (detail.status === "CUSTOMER_OBJECTED") {
+    return detail.fieldResubmissionRequested === true;
+  }
+  return !LOCKED_WORK_ORDER_STATUSES.has(String(detail.status ?? ""));
+}
+
+function formatFieldLockedMessage(detail: FieldHandoverWorkOrderDetail) {
+  if (detail.status === "CUSTOMER_OBJECTED" && detail.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN") {
+    return "现场交接资料已重新提交，等待后台送回客户复核";
+  }
+  if (detail.status === "CUSTOMER_OBJECTED") {
+    return "客户已提交异议，等待后台介入处理";
+  }
+  return "当前交接任务已提交或不可继续编辑";
+}
+
+function formatFieldNextStepText(detail: FieldHandoverWorkOrderDetail) {
+  if (detail.status === "CUSTOMER_OBJECTED" && detail.fieldResubmissionRequested === true) {
+    return "下一步：按后台要求补充资料后重新提交";
+  }
+  if (detail.status === "CUSTOMER_OBJECTED" && detail.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN") {
+    return "现场资料已重新提交，等待后台送回客户复核";
+  }
+  return "下一步：提交后等待客户确认";
 }
 
 export function validateFieldHandoverFactsInput(

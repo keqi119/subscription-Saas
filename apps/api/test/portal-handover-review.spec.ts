@@ -116,6 +116,75 @@ describe("Portal handover review API", () => {
     expect(serialized).not.toContain("SYNTHETIC_ID_SHOULD_NOT_LEAK");
   });
 
+  it("returns Portal evidence file links as safe proxy URLs only", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+
+    const detail = await harness.service.getReview("work-order-1", currentCustomer("customer-1"));
+    const firstFile = detail.evidenceChecklist?.items?.[0]?.files?.[0];
+    const serialized = stringifyForSafety(detail);
+
+    expect(firstFile).toMatchObject({
+      displayName: "evidence-1.jpg",
+      downloadUrl: "/api/portal/handover-reviews/work-order-1/evidence-files/evidence-file-1/download",
+      evidenceFileId: "evidence-file-1",
+      fileId: "file-1",
+      mimeType: "image/jpeg",
+      previewAvailable: true,
+      previewUrl: "/api/portal/handover-reviews/work-order-1/evidence-files/evidence-file-1/preview",
+      sizeBytes: 1024
+    });
+    expect(serialized).not.toContain("oss/private");
+    expect(serialized).not.toContain("objectKey");
+    expect(serialized).not.toContain("bucket");
+  });
+
+  it("streams only customer-owned evidence files through the Portal proxy", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+
+    const preview = await (
+      harness.service as PortalHandoverReviewService & {
+        previewEvidenceFile: (
+          id: string,
+          evidenceFileId: string,
+          currentCustomer: CurrentCustomer
+        ) => Promise<{ filename: string; mimeType: string | null; sizeBytes: number | null; stream: unknown }>;
+      }
+    ).previewEvidenceFile("work-order-1", "evidence-file-1", currentCustomer("customer-1"));
+
+    expect(preview).toMatchObject({
+      filename: "evidence-1.jpg",
+      mimeType: "image/jpeg",
+      sizeBytes: 1024
+    });
+    expect(harness.storageService.getObject).toHaveBeenCalledWith("application-materials", expect.any(String));
+    const storageCalls = harness.storageService.getObject.mock.calls as unknown as Array<[string, string]>;
+    expect(storageCalls[0]?.[1]).not.toContain("other-order");
+    await expect(
+      (
+        harness.service as PortalHandoverReviewService & {
+          previewEvidenceFile: (
+            id: string,
+            evidenceFileId: string,
+            currentCustomer: CurrentCustomer
+          ) => Promise<unknown>;
+        }
+      ).previewEvidenceFile("work-order-1", "evidence-file-other", currentCustomer("customer-1"))
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      (
+        harness.service as PortalHandoverReviewService & {
+          previewEvidenceFile: (
+            id: string,
+            evidenceFileId: string,
+            currentCustomer: CurrentCustomer
+          ) => Promise<unknown>;
+        }
+      ).previewEvidenceFile("work-order-1", "evidence-file-1", currentCustomer("customer-other"))
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
   it("does not allow a customer to read another customer's review", async () => {
     const harness = createPortalReviewHarness();
     harness.state.workOrders.push(completeReviewWorkOrder(harness));
@@ -270,6 +339,50 @@ function createPortalReviewHarness() {
   const state = {
     evidenceChecklist: completeEvidenceChecklist(now),
     evidenceComplete: true,
+    evidenceFiles: [
+      {
+        evidenceItem: {
+          handoverId: "handover-1",
+          id: "evidence-item-1",
+          orderId
+        },
+        evidenceItemId: "evidence-item-1",
+        file: {
+          bucket: "application-materials",
+          id: "file-1",
+          mimeType: "image/jpeg",
+          objectKey: "delivery-evidence/work-order-1/front.jpg",
+          originalName: "evidence-1.jpg",
+          sizeBytes: 1024n
+        },
+        fileId: "file-1",
+        id: "evidence-file-1",
+        mediaType: "PHOTO",
+        objectKey: "oss/private/evidence-link/1.jpg",
+        uploadedAt: now
+      },
+      {
+        evidenceItem: {
+          handoverId: "handover-other",
+          id: "evidence-item-other",
+          orderId: "order-other"
+        },
+        evidenceItemId: "evidence-item-other",
+        file: {
+          bucket: "application-materials",
+          id: "file-other",
+          mimeType: "image/jpeg",
+          objectKey: "delivery-evidence/other-order/front.jpg",
+          originalName: "other.jpg",
+          sizeBytes: 1024n
+        },
+        fileId: "file-other",
+        id: "evidence-file-other",
+        mediaType: "PHOTO",
+        objectKey: "oss/private/evidence-link/other.jpg",
+        uploadedAt: now
+      }
+    ],
     orders: [
       {
         customer: {
@@ -333,6 +446,11 @@ function createPortalReviewHarness() {
     vehicleDelivery: {
       update: vi.fn()
     },
+    vehicleDeliveryEvidenceFile: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.evidenceFiles.find((file) => matchesEvidenceFileWhere(file, where)) ?? null
+      )
+    },
     vehicleHandoverWorkOrder: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         withRelations(
@@ -367,7 +485,19 @@ function createPortalReviewHarness() {
     }),
     getChecklist: vi.fn(async () => state.evidenceChecklist)
   } as unknown as DeliveryEvidenceService;
-  const handoverWorkOrderService = new HandoverWorkOrderService(prisma as never, evidenceService);
+  const storageService = {
+    getObject: vi.fn(async () => ({
+      contentLength: 1024,
+      contentType: "image/jpeg",
+      stream: Buffer.from("synthetic-image")
+    }))
+  };
+  const handoverWorkOrderService = new HandoverWorkOrderService(
+    prisma as never,
+    evidenceService,
+    undefined,
+    storageService as never
+  );
   const service = new PortalHandoverReviewService(prisma as never, evidenceService, handoverWorkOrderService);
 
   return {
@@ -376,7 +506,8 @@ function createPortalReviewHarness() {
     orderId,
     prisma,
     service,
-    state
+    state,
+    storageService
   };
 }
 
@@ -502,6 +633,31 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
       return true;
     }
     return true;
+  });
+}
+
+function matchesEvidenceFileWhere(file: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, expected]) => {
+    if (key === "id") {
+      return file.id === expected;
+    }
+    if (key === "evidenceItem" && expected && typeof expected === "object") {
+      const item = file.evidenceItem as Record<string, unknown> | undefined;
+      if (!item) {
+        return false;
+      }
+      return matchesEvidenceItemWhere(item, expected as Record<string, unknown>);
+    }
+    return true;
+  });
+}
+
+function matchesEvidenceItemWhere(item: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, expected]) => {
+    if (key === "OR" && Array.isArray(expected)) {
+      return expected.some((branch) => matchesEvidenceItemWhere(item, branch as Record<string, unknown>));
+    }
+    return item[key] === expected;
   });
 }
 

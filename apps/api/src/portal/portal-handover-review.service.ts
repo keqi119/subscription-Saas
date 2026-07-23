@@ -79,6 +79,16 @@ export class PortalHandoverReviewService {
     return this.toReviewDetail(workOrder);
   }
 
+  async previewEvidenceFile(id: string, evidenceFileId: string, currentCustomer: CurrentCustomer) {
+    await this.findVisibleReviewOrThrow(id, currentCustomer.customerId);
+    return this.handoverWorkOrderService.previewEvidenceFile(id, evidenceFileId);
+  }
+
+  async downloadEvidenceFile(id: string, evidenceFileId: string, currentCustomer: CurrentCustomer) {
+    await this.findVisibleReviewOrThrow(id, currentCustomer.customerId);
+    return this.handoverWorkOrderService.downloadEvidenceFile(id, evidenceFileId);
+  }
+
   async confirmNoObjection(
     id: string,
     _dto: ConfirmPortalHandoverReviewDto,
@@ -155,6 +165,7 @@ export class PortalHandoverReviewService {
         displayName: workOrder.order.customer?.name ?? null,
         mobileMasked: maskPhone(workOrder.order.customer?.mobile)
       },
+      adminReviewStatus: readMetadataString(workOrder.metadata, "handoverReviewAdminStatus"),
       customerConfirmedAt: workOrder.customerConfirmedAt,
       customerObjectedAt: workOrder.customerObjectedAt,
       customerReviewStartedAt: workOrder.customerReviewStartedAt,
@@ -185,7 +196,7 @@ export class PortalHandoverReviewService {
 
     return {
       ...listItem,
-      evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist),
+      evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist, workOrder.id),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
         damageDeclared: workOrder.damageDeclared,
@@ -285,15 +296,15 @@ function summarizeEvidenceChecklist(checklist: unknown) {
   };
 }
 
-function toSafeEvidenceChecklist(checklist: unknown) {
+function toSafeEvidenceChecklist(checklist: unknown, reviewId?: string) {
   return {
     blockingReasons: readStringArray(checklist, "blockingReasons"),
-    items: getChecklistItems(checklist).map(toSafeEvidenceItem),
+    items: getChecklistItems(checklist).map((item) => toSafeEvidenceItem(item, reviewId)),
     ready: readBoolean(checklist, "ready") ?? false
   };
 }
 
-function toSafeEvidenceItem(item: Record<string, unknown>) {
+function toSafeEvidenceItem(item: Record<string, unknown>, reviewId?: string) {
   return {
     allowedMediaTypes: readStringArray(item, "allowedMediaTypes"),
     conditionKey: readNullableString(item, "conditionKey"),
@@ -303,7 +314,7 @@ function toSafeEvidenceItem(item: Record<string, unknown>) {
     evidenceType: readString(item, "evidenceType"),
     fileCount: getFileCount(item),
     fileRequired: readNullableBoolean(item, "fileRequired"),
-    files: getEvidenceFiles(item).map(toSafeEvidenceFile),
+    files: getEvidenceFiles(item).map((file) => toSafeEvidenceFile(file, reviewId)),
     id: readString(item, "id"),
     isConditional: readNullableBoolean(item, "isConditional"),
     isRequired: readNullableBoolean(item, "isRequired"),
@@ -316,20 +327,37 @@ function toSafeEvidenceItem(item: Record<string, unknown>) {
   };
 }
 
-function toSafeEvidenceFile(file: Record<string, unknown>) {
+function toSafeEvidenceFile(file: Record<string, unknown>, reviewId?: string) {
   const linkedFile = readRecord(file, "file");
+  const evidenceFileId = readString(file, "id");
+  const mimeType = linkedFile ? readNullableString(linkedFile, "mimeType") : null;
+  const displayName = linkedFile ? readNullableString(linkedFile, "originalName") : null;
+  const sizeBytes = linkedFile ? readNumberLike(linkedFile, "sizeBytes") : null;
+  const previewAvailable = isPreviewableEvidenceMime(mimeType);
   return {
+    displayName,
+    downloadUrl: evidenceFileId && reviewId
+      ? `/api/portal/handover-reviews/${encodeURIComponent(reviewId)}/evidence-files/${encodeURIComponent(evidenceFileId)}/download`
+      : null,
+    evidenceFileId,
     file: linkedFile
       ? {
           id: readString(linkedFile, "id"),
-          mimeType: readNullableString(linkedFile, "mimeType"),
-          originalName: readNullableString(linkedFile, "originalName"),
-          sizeBytes: readNumberLike(linkedFile, "sizeBytes")
+          mimeType,
+          originalName: displayName,
+          sizeBytes
         }
       : null,
     fileId: readString(file, "fileId"),
     id: readString(file, "id"),
+    mimeType,
     mediaType: readString(file, "mediaType"),
+    previewAvailable,
+    previewUrl:
+      evidenceFileId && reviewId && previewAvailable
+        ? `/api/portal/handover-reviews/${encodeURIComponent(reviewId)}/evidence-files/${encodeURIComponent(evidenceFileId)}/preview`
+        : null,
+    sizeBytes,
     uploadedAt: readUnknown(file, "uploadedAt")
   };
 }
@@ -390,6 +418,10 @@ function readNumberLike(record: Record<string, unknown>, key: string) {
     return Number(value);
   }
   return null;
+}
+
+function isPreviewableEvidenceMime(mimeType: null | string | undefined) {
+  return Boolean(mimeType && (mimeType.startsWith("image/") || mimeType.startsWith("video/")));
 }
 
 function readMetadataString(metadata: unknown, key: string) {

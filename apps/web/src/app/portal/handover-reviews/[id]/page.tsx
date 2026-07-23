@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   confirmPortalHandoverReview,
+  buildPortalHandoverReviewFileUrl,
   getPortalHandoverReview,
   getPortalHandoverReviewErrorMessage,
   objectPortalHandoverReview,
@@ -201,6 +202,35 @@ export default function PortalHandoverReviewDetailPage() {
                       </Space>
                       {item.rejectionReason ? (
                         <Typography.Text type="danger">驳回原因：{item.rejectionReason}</Typography.Text>
+                      ) : null}
+                      {item.files.length > 0 ? (
+                        <Space size={[8, 6]} wrap>
+                          {item.files.map((file) => (
+                            <Space key={file.id || file.displayName} size={4} wrap>
+                              <Typography.Text type="secondary">
+                                {file.displayName} / {file.sizeText}
+                              </Typography.Text>
+                              {file.previewAvailable && file.previewUrl ? (
+                                <Typography.Link
+                                  href={buildPortalHandoverReviewFileUrl(file.previewUrl) ?? undefined}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  预览
+                                </Typography.Link>
+                              ) : null}
+                              {file.downloadUrl ? (
+                                <Typography.Link
+                                  href={buildPortalHandoverReviewFileUrl(file.downloadUrl) ?? undefined}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  下载/打开
+                                </Typography.Link>
+                              ) : null}
+                            </Space>
+                          ))}
+                        </Space>
                       ) : null}
                     </Space>
                   }

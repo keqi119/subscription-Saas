@@ -1,4 +1,4 @@
-import { PortalApiError, portalApiFetch } from "./portal-api";
+import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "./portal-api";
 
 export interface PortalHandoverReviewCustomer {
   displayName?: string | null;
@@ -35,6 +35,7 @@ export interface PortalHandoverSummary {
 }
 
 export interface PortalHandoverReviewListItem {
+  adminReviewStatus?: string | null;
   customer?: PortalHandoverReviewCustomer | null;
   customerConfirmedAt?: string | null;
   customerObjectedAt?: string | null;
@@ -95,6 +96,9 @@ export interface PortalHandoverReviewEvidenceItem {
 }
 
 export interface PortalHandoverReviewEvidenceFile {
+  displayName?: string | null;
+  downloadUrl?: string | null;
+  evidenceFileId?: string | null;
   file?: {
     id?: string | null;
     mimeType?: string | null;
@@ -103,7 +107,11 @@ export interface PortalHandoverReviewEvidenceFile {
   } | null;
   fileId?: string | null;
   id?: string | null;
+  mimeType?: string | null;
   mediaType?: string | null;
+  previewAvailable?: boolean | null;
+  previewUrl?: string | null;
+  sizeBytes?: number | string | null;
   uploadedAt?: string | null;
 }
 
@@ -155,6 +163,17 @@ export function objectPortalHandoverReview(id: string, input: PortalHandoverRevi
       method: "POST"
     }
   );
+}
+
+export function buildPortalHandoverReviewFileUrl(path: null | string | undefined) {
+  if (!path) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+  const normalized = path.startsWith("/api/") ? path.slice(4) : path;
+  return `${PORTAL_API_BASE_URL}${normalized.startsWith("/") ? normalized : `/${normalized}`}`;
 }
 
 export function getPortalHandoverReviewErrorMessage(error: unknown) {

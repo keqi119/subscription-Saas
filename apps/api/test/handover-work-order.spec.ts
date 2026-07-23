@@ -656,6 +656,78 @@ describe("HandoverWorkOrderService", () => {
     await expect(cancelledHarness.service.assertReadyForStage2Pdf(cancelledHarness.orderId)).rejects.toThrow("交付工单已终止");
   });
 
+  it("requires Admin intervention before an objected handover can be resubmitted to customer review", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      operatorType: "EXTERNAL"
+    });
+
+    await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议", "右前轮毂需复核");
+
+    await expect(
+      harness.service.submitFieldAccessibleEvidence("work-order-1", "13800000000", "field-session-1")
+    ).rejects.toThrow(BadRequestException);
+
+    await (
+      harness.service as HandoverWorkOrderService & {
+        acknowledgeCustomerObjection: (id: string, actorId: string, note?: string) => Promise<unknown>;
+      }
+    ).acknowledgeCustomerObjection("work-order-1", harness.admin.id, "已受理");
+    await (
+      harness.service as HandoverWorkOrderService & {
+        requestCustomerObjectionResubmission: (id: string, actorId: string, note?: string) => Promise<unknown>;
+      }
+    ).requestCustomerObjectionResubmission("work-order-1", harness.admin.id, "请现场重拍右前轮毂");
+
+    const resubmitted = await harness.service.submitFieldAccessibleEvidence(
+      "work-order-1",
+      "13800000000",
+      "field-session-1"
+    );
+    expect(resubmitted).toMatchObject({
+      customerObjectedAt: expect.any(Date),
+      customerObjectionReason: "车辆外观有异议",
+      status: "CUSTOMER_OBJECTED"
+    });
+    expect(resubmitted.metadata).toMatchObject({
+      handoverReviewAdminStatus: "RESUBMITTED_PENDING_ADMIN"
+    });
+    await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("现场资料已重新提交");
+    await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).rejects.toThrow(
+      "客户已提交异议"
+    );
+
+    await (
+      harness.service as HandoverWorkOrderService & {
+        sendCustomerObjectionBackToReview: (id: string, actorId: string, note?: string) => Promise<unknown>;
+      }
+    ).sendCustomerObjectionBackToReview("work-order-1", harness.admin.id, "已送回客户复核");
+
+    expect(harness.state.workOrders[0]!).toMatchObject({
+      customerObjectedAt: null,
+      customerObjectionReason: null,
+      status: "CUSTOMER_REVIEWING"
+    });
+    expect(harness.state.reviewAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          attemptNo: 1,
+          customerObjectionReason: "车辆外观有异议",
+          status: "RESUBMITTED_PENDING_ADMIN"
+        }),
+        expect.objectContaining({
+          attemptNo: 2,
+          status: "CUSTOMER_REVIEWING"
+        })
+      ])
+    );
+    await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).resolves.toMatchObject({
+      status: "CUSTOMER_CONFIRMED"
+    });
+  });
+
   it("keeps field completion tied to customer signing and delivery confirmation tied to completed Stage 2 signing", async () => {
     const harness = createConfirmedWorkOrderHarness();
 
@@ -798,6 +870,7 @@ function createHandoverWorkOrderHarness() {
     },
     evidenceItems: [] as Array<Record<string, unknown>>,
     fileObjects: [] as Array<Record<string, unknown>>,
+    reviewAttempts: [] as Array<Record<string, unknown>>,
     workOrders: [] as Array<Record<string, unknown>>
   };
   const evidenceService = createEvidenceService();
@@ -864,6 +937,33 @@ function createHandoverWorkOrderHarness() {
         }
         Object.assign(workOrder, data, { updatedAt: now });
         return workOrder;
+      })
+    },
+    vehicleHandoverReviewAttempt: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const attempt = {
+          ...data,
+          createdAt: now,
+          id: `review-attempt-${state.reviewAttempts.length + 1}`,
+          updatedAt: now
+        };
+        state.reviewAttempts.push(attempt);
+        return attempt;
+      }),
+      findFirst: vi.fn(async ({ orderBy, where }: { orderBy?: Record<string, string>; where: Record<string, unknown> }) => {
+        const rows = state.reviewAttempts.filter((attempt) => matchesReviewAttemptWhere(attempt, where));
+        return sortReviewAttempts(rows, orderBy)[0] ?? null;
+      }),
+      findMany: vi.fn(async ({ orderBy, where }: { orderBy?: Record<string, string>; where: Record<string, unknown> }) =>
+        sortReviewAttempts(state.reviewAttempts.filter((attempt) => matchesReviewAttemptWhere(attempt, where)), orderBy)
+      ),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
+        const attempt = state.reviewAttempts.find((row) => row.id === where.id);
+        if (!attempt) {
+          throw new Error("review attempt not found");
+        }
+        Object.assign(attempt, data, { updatedAt: now });
+        return attempt;
       })
     }
   };
@@ -1007,6 +1107,27 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
       return workOrder.handoverType === expected;
     }
     return true;
+  });
+}
+
+function matchesReviewAttemptWhere(attempt: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, expected]) => {
+    if (key === "workOrderId") {
+      return attempt.workOrderId === expected;
+    }
+    if (key === "id") {
+      return attempt.id === expected;
+    }
+    return true;
+  });
+}
+
+function sortReviewAttempts(rows: Array<Record<string, unknown>>, orderBy?: Record<string, string>) {
+  const direction = orderBy?.attemptNo === "desc" ? -1 : 1;
+  return [...rows].sort((left, right) => {
+    const leftNo = typeof left.attemptNo === "number" ? left.attemptNo : 0;
+    const rightNo = typeof right.attemptNo === "number" ? right.attemptNo : 0;
+    return (leftNo - rightNo) * direction;
   });
 }
 

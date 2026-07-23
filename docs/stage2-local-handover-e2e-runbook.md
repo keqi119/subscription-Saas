@@ -20,8 +20,10 @@ The API harness uses synthetic in-memory data and mocked Prisma/storage/evidence
 - no-visible-damage declaration is recorded;
 - field evidence is submitted to customer review;
 - Portal customer lists and opens the submitted review;
+- Portal customer sees safe evidence preview/download links;
 - Portal customer confirms no objection;
 - Portal customer submits an objection on a fresh fixture;
+- Admin acknowledges the objection, requests field resubmission, and sends the resubmitted evidence back to Portal review;
 - unauthorized customer and field-session boundary checks;
 - terminal and already-confirmed/objected state checks;
 - no PDF/eSign/provider/delivery/lease/billing side effects.
@@ -34,7 +36,9 @@ The Web harness uses mocked `fetch` calls only. It covers:
 
 - field submit API boundary and submitted/locked capture view;
 - Portal list/detail/confirm API boundary;
+- Portal evidence file viewing boundary;
 - Portal objection API boundary;
+- Admin Stage 2 handover review entry and objection action boundary;
 - acknowledgement/object reason view-model behavior;
 - source-level absence of PDF, eSign, delivery confirmation, payment, or billing controls;
 - view-model serialization that excludes object storage, signing URL, token/cookie, identity, provider, and finance internals.
@@ -64,6 +68,13 @@ After customer objection:
 - Stage 2 PDF/eSign readiness remains false;
 - the blocker requires Admin follow-up;
 - no PDF, eSign task, provider call, delivery confirmation, lease, or billing side effect is created.
+
+After Admin-requested field resubmission:
+
+- the field operator can edit the objected task again;
+- resubmission keeps the work order customer-objected and marks admin review `RESUBMITTED_PENDING_ADMIN`;
+- Portal confirmation remains blocked until Admin sends the resubmitted evidence back to customer review;
+- sending back creates the next review attempt and returns the work order to customer-reviewing.
 
 ## Local Commands
 
@@ -102,8 +113,7 @@ The staging smoke should cover one controlled field evidence capture path and on
 
 ## Open Items
 
-- safe evidence preview/download URL policy;
 - Stage 2 PDF renderer;
 - Stage 2 provider mapping and eSign;
-- Admin objection handling;
+- Admin void/escalation handling beyond resubmission/send-back;
 - audit timezone cleanup.

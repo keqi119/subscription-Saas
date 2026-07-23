@@ -32,9 +32,11 @@ export interface FieldHandoverVehicleSummary {
 }
 
 export interface FieldHandoverWorkOrderListItem {
+  adminReviewStatus?: string | null;
   customer?: FieldHandoverCustomerSummary | null;
   deliveryLocation?: string | null;
   evidenceProgress?: FieldHandoverEvidenceProgress | null;
+  fieldResubmissionRequested?: boolean | null;
   handoverId?: string | null;
   handoverType?: string | null;
   id: string;

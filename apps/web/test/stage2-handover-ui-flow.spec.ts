@@ -56,7 +56,7 @@ describe("Stage 2 handover mocked UI flow", () => {
 
     expect(result.validationMessage).toBe("请填写异议原因");
     expect(result.portalObjected.decision.mode).toBe("OBJECTED");
-    expect(result.portalObjected.decision.message).toBe("您已提交异议，工作人员将联系您处理");
+    expect(result.portalObjected.decision.message).toBe("您已提交异议，工作人员正在处理");
     expect(result.calls).toEqual(expect.arrayContaining([
       expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/object")
     ]));

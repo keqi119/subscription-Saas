@@ -76,6 +76,13 @@ describe("portal handover review view model", () => {
       ])
     );
     expect(detail.evidenceItems).toHaveLength(14);
+    expect(detail.evidenceItems[0]).toHaveProperty("files");
+    expect((detail.evidenceItems[0] as { files?: unknown[] }).files?.[0]).toMatchObject({
+      displayName: "evidence-1.jpg",
+      downloadUrl: "/api/portal/handover-reviews/review-1/evidence-files/evidence-file-1/download",
+      previewAvailable: true,
+      previewUrl: "/api/portal/handover-reviews/review-1/evidence-files/evidence-file-1/preview"
+    });
     expect(detail.evidenceItems[0]).toMatchObject({
       fileCountText: "1 个文件",
       requiredText: "必传",
@@ -107,7 +114,7 @@ describe("portal handover review view model", () => {
       status: "CUSTOMER_OBJECTED"
     }).decision).toMatchObject({
       details: "右前轮毂需复核",
-      message: "您已提交异议，工作人员将联系您处理",
+      message: "您已提交异议，工作人员正在处理",
       mode: "OBJECTED",
       reason: "车辆外观有异议"
     });
@@ -164,6 +171,9 @@ function sampleDetail(): PortalHandoverReviewDetail {
         fileCount: 1,
         files: [
           {
+            displayName: `evidence-${index + 1}.jpg`,
+            downloadUrl: `/api/portal/handover-reviews/review-1/evidence-files/evidence-file-${index + 1}/download`,
+            evidenceFileId: `evidence-file-${index + 1}`,
             file: {
               id: `file-${index + 1}`,
               mimeType: "image/jpeg",
@@ -171,9 +181,12 @@ function sampleDetail(): PortalHandoverReviewDetail {
               originalName: `evidence-${index + 1}.jpg`,
               sizeBytes: 1024
             },
+            fileId: `file-${index + 1}`,
             id: `evidence-file-${index + 1}`,
             mediaType: "PHOTO",
             objectKey: OBJECT_KEY_SHOULD_NOT_RENDER,
+            previewAvailable: true,
+            previewUrl: `/api/portal/handover-reviews/review-1/evidence-files/evidence-file-${index + 1}/preview`,
             uploadedAt: "2026-07-22T08:00:00.000Z"
           }
         ],

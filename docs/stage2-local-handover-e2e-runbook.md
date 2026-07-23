@@ -45,6 +45,15 @@ The Web harness uses mocked `fetch` calls only. It covers:
 
 ## Readiness Expectations
 
+Before a new order can enter the local or staging handover work-order path:
+
+- Stage 1 signing must be complete.
+- Delivery readiness must pass the base order/vehicle checks.
+- A non-deleted active vehicle insurance policy covering the delivery check date is enough to satisfy insurance readiness; vehicle master insurance dates are fallback/read-model data.
+- A zero required deposit must be treated as satisfied automatically. Non-zero deposits still require confirmation.
+- First monthly fee readiness depends on receivable bill write-off. A confirmed payment record without write-off should be shown as registered but pending write-off, not as settled.
+- Admin order detail must expose the Stage 2 create-work-order action once delivery preparation is ready and no active work order exists.
+
 Before field submit:
 
 - field readiness is blocked by incomplete field facts/evidence;
@@ -110,6 +119,8 @@ pnpm --filter @subscription-saas/web build
 Staging smoke should run only after a combined API/Web deployment. The deployed Web API base must point to the public H5/API domain used by that environment; staging validation must not rely on a local loopback API or port 3001.
 
 The staging smoke should cover one controlled field evidence capture path and one Portal customer review path. It should still avoid Fadada, Stage 2 PDF/eSign, real SMS, WeChat, delivery confirmation, lease, and billing until those later phases are explicitly enabled.
+
+Large video upload validation is a separate infrastructure task. If videos above the current server `client_max_body_size` fail, update the Nginx/API multipart limits outside this handover application build before treating it as a field-flow regression.
 
 ## Open Items
 

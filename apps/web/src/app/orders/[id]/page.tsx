@@ -92,7 +92,9 @@ interface OrderDetail {
 }
 
 interface FinanceSummary {
+  allocatedPaidAmount?: number | null;
   deliveryPaymentSatisfied?: boolean;
+  deliveryPaymentStatus?: string | null;
   depositPaidAmount?: number | null;
   depositReceivableAmount?: number | null;
   depositStatus?: string | null;
@@ -100,8 +102,10 @@ interface FinanceSummary {
   firstMonthlyFeeReceivableAmount?: number | null;
   firstMonthlyFeeStatus?: string | null;
   isDeliveryPaymentSatisfied?: boolean;
+  registeredReceiptAmount?: number | null;
   totalPaidAmount?: number | null;
   totalReceivableAmount?: number | null;
+  unallocatedReceiptAmount?: number | null;
 }
 
 interface ReceivableBillRow {
@@ -174,6 +178,8 @@ interface DeliveryCheck {
   contractSigned: boolean;
   currentSalePriceInitialized: boolean;
   deliveryStatus?: string | null;
+  depositRequired?: boolean;
+  depositRequiredAmount?: number | null;
   depositReceivedConfirmed: boolean;
   firstMonthlyFeeReceivedConfirmed: boolean;
   insuranceValid: boolean;
@@ -596,6 +602,7 @@ const DELIVERY_PREPARE_ORDER_STATUSES = new Set([
 const FINANCE_FINAL_ORDER_STATUSES = new Set(["CANCELLED", "TERMINATED", "COMPLETED", "REJECTED"]);
 
 const INITIAL_BILL_TYPES = new Set(["DEPOSIT", "FIRST_MONTHLY_FEE"]);
+const TERMINAL_HANDOVER_WORK_ORDER_STATUSES = new Set(["VOIDED", "FAILED", "CANCELLED"]);
 
 const paymentMethodOptions = [
   { label: PAYMENT_METHOD_LABELS.BANK_TRANSFER, value: "BANK_TRANSFER" },
@@ -778,6 +785,10 @@ function formatHandoverEvidenceProgress(progress?: HandoverWorkOrderSummary["evi
   return `资料 ${numberOrZero(progress.uploaded)}/${numberOrZero(progress.total)}，必传 ${numberOrZero(progress.required)}`;
 }
 
+function isActiveHandoverWorkOrder(workOrder: HandoverWorkOrderSummary) {
+  return !TERMINAL_HANDOVER_WORK_ORDER_STATUSES.has(String(workOrder.status ?? ""));
+}
+
 function formatHandoverEvidenceStatus(item: HandoverEvidenceItem) {
   if (item.reviewStatus === "REJECTED" || item.status === "REJECTED") {
     return "已驳回";
@@ -829,8 +840,17 @@ function hasPositiveAmount(value?: unknown) {
   return amount !== null && amount > 0;
 }
 
+function hasNonNegativeAmount(value?: unknown) {
+  const amount = toNumber(value);
+  return amount !== null && amount >= 0;
+}
+
 function pickPositiveValue(...values: unknown[]) {
   return values.find(hasPositiveAmount);
+}
+
+function pickNonNegativeValue(...values: unknown[]) {
+  return values.find(hasNonNegativeAmount);
 }
 
 function isDeliveryPaymentSatisfied(summary?: FinanceSummary | null) {
@@ -2332,6 +2352,13 @@ function FinancePanel({
   summary: FinanceSummary | null;
 }) {
   const deliverySatisfied = isDeliveryPaymentSatisfied(summary);
+  const registeredButUnallocated =
+    !deliverySatisfied && numberOrZero(summary?.unallocatedReceiptAmount) > 0;
+  const financeAlertMessage = deliverySatisfied
+    ? "押金和首期月费已完成账单核销，满足交付付款条件"
+    : registeredButUnallocated
+      ? "已登记收款，待核销"
+      : "押金或首期月费尚未完成收款核销";
   const monthlyRentBills = bills.filter(validMonthlyRentBill);
   const latestMonthlyRentBill = [...monthlyRentBills]
     .filter((bill) => bill.billPeriodStart)
@@ -2390,11 +2417,12 @@ function FinancePanel({
     >
       <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Alert
-          message={
-            deliverySatisfied
-              ? "押金和首期月费已满足交付付款条件"
-              : "押金或首期月费尚未完成收款核销"
+          description={
+            registeredButUnallocated
+              ? "已有收款记录，但应收账单仍未核销；请在登记收款时勾选“同时核销账单”，或对既有收款执行账单核销。"
+              : undefined
           }
+          message={financeAlertMessage}
           showIcon
           type={deliverySatisfied ? "success" : "warning"}
         />
@@ -2410,6 +2438,9 @@ function FinancePanel({
             { label: "首期月费应收", children: formatYuan(summary?.firstMonthlyFeeReceivableAmount) },
             { label: "首期月费已收", children: formatYuan(summary?.firstMonthlyFeePaidAmount) },
             { label: "首期月费状态", children: <BillStatusTag value={summary?.firstMonthlyFeeStatus} /> },
+            { label: "已登记收款", children: formatYuan(summary?.registeredReceiptAmount) },
+            { label: "已核销金额", children: formatYuan(summary?.allocatedPaidAmount) },
+            { label: "待核销收款", children: formatYuan(summary?.unallocatedReceiptAmount) },
             { label: "总应收", children: formatYuan(summary?.totalReceivableAmount) },
             { label: "总已收", children: formatYuan(summary?.totalPaidAmount) },
             { label: "交付付款条件", children: deliverySatisfied ? <Tag color="green">已满足</Tag> : <Tag color="orange">未满足</Tag> }
@@ -2452,8 +2483,10 @@ function FinancePanel({
 function Stage2HandoverReviewPanel({
   actionLoading,
   canHandleObjection,
+  createAvailability,
   loading,
   onAcknowledge,
+  onCreateWorkOrder,
   onRequestResubmission,
   onSendCustomerReview,
   onViewDetail,
@@ -2461,13 +2494,16 @@ function Stage2HandoverReviewPanel({
 }: {
   actionLoading: string | null;
   canHandleObjection: boolean;
+  createAvailability: ReturnType<typeof actionAvailability>;
   loading: boolean;
   onAcknowledge: (id: string) => void;
+  onCreateWorkOrder: () => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onViewDetail: (id: string) => void;
   workOrders: HandoverWorkOrderSummary[];
 }) {
+  const hasActiveWorkOrder = workOrders.some(isActiveHandoverWorkOrder);
   const columns: ColumnsType<HandoverWorkOrderSummary> = [
     {
       dataIndex: "orderNo",
@@ -2533,7 +2569,31 @@ function Stage2HandoverReviewPanel({
   ];
 
   return (
-    <Card title="Stage 2 现场交接 / 客户复核">
+    <Card
+      extra={
+        hasActiveWorkOrder ? null : (
+          <ActionButton
+            availability={createAvailability}
+            icon={<PlusOutlined />}
+            loading={actionLoading === "create"}
+            onClick={onCreateWorkOrder}
+            type="primary"
+          >
+            创建交付工单
+          </ActionButton>
+        )
+      }
+      title="Stage 2 现场交接 / 客户复核"
+    >
+      {workOrders.length === 0 ? (
+        <Alert
+          message="暂无 Stage 2 现场交接工单"
+          description="完成准备交付后，可在此创建交付工单并指派现场交付人员。"
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="info"
+        />
+      ) : null}
       <Table
         columns={columns}
         dataSource={workOrders}
@@ -2733,6 +2793,22 @@ function Stage2HandoverReviewDetailModal({
   );
 }
 
+function DeliveryBlockerGuidance({ reason }: { reason: string }) {
+  if (reason.includes("保险")) {
+    return <Link href="/vehicle-insurance-policies">去保单管理</Link>;
+  }
+  if (reason.includes("押金") || reason.includes("首期月费")) {
+    return <Typography.Text type="secondary">请在财务 / 收款核销中完成账单核销</Typography.Text>;
+  }
+  if (reason.includes("整备") || reason.includes("有效性") || reason.includes("文件") || reason.includes("身份")) {
+    return <Typography.Text type="secondary">请在准备交付弹窗中确认</Typography.Text>;
+  }
+  if (reason.includes("交付工单")) {
+    return <Typography.Text type="secondary">请在 Stage 2 模块创建交付工单</Typography.Text>;
+  }
+  return null;
+}
+
 function DeliveryPanel({
   confirmAvailability,
   delivery,
@@ -2754,9 +2830,14 @@ function DeliveryPanel({
     deliveryCheck?.alreadyDelivered || deliveryStatus === "DELIVERED" || delivery?.deliveredAt
   );
   const readyForDelivery = !alreadyDelivered && deliveryStatus === "READY";
-  const checklistItems = [
+  const zeroDepositSatisfied = deliveryCheck?.depositRequired === false;
+  const checklistItems: Array<{ help?: string; label: string; value?: boolean }> = [
     { label: "合同签署确认", value: delivery?.contractSignedConfirmed ?? deliveryCheck?.contractSigned },
-    { label: "押金收取确认", value: delivery?.depositReceivedConfirmed },
+    {
+      help: zeroDepositSatisfied ? "0 元押金，自动满足" : undefined,
+      label: "押金收取确认",
+      value: zeroDepositSatisfied || delivery?.depositReceivedConfirmed
+    },
     { label: "首期月费收取确认", value: delivery?.firstMonthlyFeeReceivedConfirmed },
     { label: "保险有效确认", value: delivery?.insuranceValidConfirmed },
     { label: "车辆整备完成确认", value: delivery?.vehiclePreparedConfirmed },
@@ -2799,7 +2880,12 @@ function DeliveryPanel({
             ) : blockingReasons.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 20 }}>
                 {blockingReasons.map((reason) => (
-                  <li key={reason}>{reason}</li>
+                  <li key={reason}>
+                    <Space size={8} wrap>
+                      <span>{reason}</span>
+                      <DeliveryBlockerGuidance reason={reason} />
+                    </Space>
+                  </li>
                 ))}
               </ul>
             ) : undefined
@@ -2830,7 +2916,14 @@ function DeliveryPanel({
             title="交付条件检查"
             items={[
               { label: "合同签署状态", children: <BooleanTag checked={deliveryCheck?.contractSigned} /> },
-              { label: "押金确认状态", children: <BooleanTag checked={deliveryCheck?.depositReceivedConfirmed} /> },
+              {
+                label: "押金确认状态",
+                children: zeroDepositSatisfied ? (
+                  <Tag color="green">0 元押金，自动满足</Tag>
+                ) : (
+                  <BooleanTag checked={deliveryCheck?.depositReceivedConfirmed} />
+                )
+              },
               { label: "首期月费确认状态", children: <BooleanTag checked={deliveryCheck?.firstMonthlyFeeReceivedConfirmed} /> },
               { label: "保险有效状态", children: <BooleanTag checked={deliveryCheck?.insuranceValid} /> },
               { label: "车辆整备状态", children: <BooleanTag checked={deliveryCheck?.vehiclePrepared} /> },
@@ -2869,7 +2962,12 @@ function DeliveryPanel({
           title="交付检查项"
           items={checklistItems.map((item) => ({
             label: item.label,
-            children: <BooleanTag checked={item.value} />
+            children: (
+              <Space size={6}>
+                <BooleanTag checked={item.value} />
+                {item.help ? <Typography.Text type="secondary">{item.help}</Typography.Text> : null}
+              </Space>
+            )
           }))}
         />
       </Space>
@@ -3488,7 +3586,6 @@ function OrderDetailPageContent() {
   const validInitialBills = useMemo(() => receivableBills.filter(validInitialBill), [receivableBills]);
   const hasDepositBill = validInitialBills.some((bill) => bill.billType === "DEPOSIT");
   const hasFirstMonthlyFeeBill = validInitialBills.some((bill) => bill.billType === "FIRST_MONTHLY_FEE");
-  const hasAllInitialBills = hasDepositBill && hasFirstMonthlyFeeBill;
   const unsettledBills = useMemo(
     () => receivableBills.filter((bill) => bill.billStatus !== "CANCELLED" && hasPositiveAmount(bill.remainingAmount)),
     [receivableBills]
@@ -3515,7 +3612,7 @@ function OrderDetailPageContent() {
   const suggestedRefundableAmount = getSuggestedRefundableAmount(depositSettlement);
   const hasCustomerDamageFee = hasBillableCustomerDamage(depositSettlement);
   const initialDepositAmount = order
-    ? pickPositiveValue(
+    ? pickNonNegativeValue(
         order.finalDepositAmount,
         order.depositAmount,
         getSnapshotValue(order.quoteSnapshot, "finalDepositAmount"),
@@ -3523,6 +3620,9 @@ function OrderDetailPageContent() {
         getSnapshotValue(order.quoteSnapshot, "pricing.depositAmount")
       )
     : undefined;
+  const initialDepositRequired = hasPositiveAmount(initialDepositAmount);
+  const depositInitialBillSatisfied = !initialDepositRequired || hasDepositBill;
+  const hasAllInitialBills = depositInitialBillSatisfied && hasFirstMonthlyFeeBill;
   const initialMonthlyFeeAmount = order
     ? pickPositiveValue(
         order.monthlyFeeAmount,
@@ -3538,7 +3638,7 @@ function OrderDetailPageContent() {
       )
     : undefined;
   const orderHasInitialBillAmounts = Boolean(
-    order && hasPositiveAmount(initialDepositAmount) && hasPositiveAmount(initialMonthlyFeeAmount)
+    order && hasNonNegativeAmount(initialDepositAmount) && hasPositiveAmount(initialMonthlyFeeAmount)
   );
   const generateInitialBillsDisabledReason = !order
     ? "数据加载完成后才可操作"
@@ -3651,6 +3751,27 @@ function OrderDetailPageContent() {
     disabledReason: confirmDeliveryDisabledReason ?? "当前订单状态不允许交付",
     noPermissionReason: "无确认交付权限",
     permission: "delivery:confirm",
+    permissions
+  });
+  const activeHandoverWorkOrder = handoverWorkOrders.find(isActiveHandoverWorkOrder);
+  const createHandoverWorkOrderDisabledReason = !order
+    ? "数据加载完成后才可操作"
+    : orderChangeLocked
+      ? "当前订单存在进行中的变更申请"
+      : activeHandoverWorkOrder
+        ? "已存在进行中的交付工单"
+        : !deliveryCheck
+          ? "交付条件检查加载完成后才可操作"
+          : !deliveryCheck.canPrepareDelivery
+            ? deliveryCheck.blockingReasons[0] ?? "请先完成交付准备项"
+            : delivery?.deliveryStatus !== "READY"
+              ? "请先在车辆交付模块完成准备交付"
+              : null;
+  const createHandoverWorkOrderAvailability = actionAvailability({
+    allowed: createHandoverWorkOrderDisabledReason === null,
+    disabledReason: createHandoverWorkOrderDisabledReason ?? "请先完成交付准备项",
+    noPermissionReason: "无准备交付权限",
+    permission: "delivery:prepare",
     permissions
   });
   const prepareReturnDisabledReason = getPrepareReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
@@ -3851,6 +3972,25 @@ function OrderDetailPageContent() {
     }
   }
 
+  async function createHandoverWorkOrder() {
+    if (!order) {
+      return;
+    }
+    setHandoverActionLoading("create");
+    try {
+      await apiFetch(`/orders/${params.id}/handover-work-orders`, {
+        body: JSON.stringify({ handoverType: "DELIVERY_OUTBOUND" }),
+        method: "POST"
+      });
+      void message.success("交付工单已创建");
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setHandoverActionLoading(null);
+    }
+  }
+
   async function runHandoverObjectionAction(
     id: string,
     action: "acknowledge" | "request-resubmission" | "send-customer-review",
@@ -3921,7 +4061,7 @@ function OrderDetailPageContent() {
     prepareDeliveryForm.setFieldsValue({
       customerIdentityConfirmed: delivery?.customerIdentityConfirmed ?? false,
       deliveryLocation: delivery?.deliveryLocation ?? undefined,
-      depositReceivedConfirmed: delivery?.depositReceivedConfirmed ?? false,
+      depositReceivedConfirmed: deliveryCheck?.depositRequired === false ? true : delivery?.depositReceivedConfirmed ?? false,
       firstMonthlyFeeReceivedConfirmed: delivery?.firstMonthlyFeeReceivedConfirmed ?? false,
       handoverDocumentsConfirmed: delivery?.handoverDocumentsConfirmed ?? false,
       insuranceValidConfirmed: delivery?.insuranceValidConfirmed ?? false,
@@ -4561,7 +4701,7 @@ function OrderDetailPageContent() {
         body: JSON.stringify({
           customerIdentityConfirmed: Boolean(values.customerIdentityConfirmed),
           deliveryLocation: values.deliveryLocation,
-          depositReceivedConfirmed: Boolean(values.depositReceivedConfirmed),
+          depositReceivedConfirmed: deliveryCheck?.depositRequired === false ? true : Boolean(values.depositReceivedConfirmed),
           firstMonthlyFeeReceivedConfirmed: Boolean(values.firstMonthlyFeeReceivedConfirmed),
           handoverDocumentsConfirmed: Boolean(values.handoverDocumentsConfirmed),
           insuranceValidConfirmed: Boolean(values.insuranceValidConfirmed),
@@ -5034,8 +5174,10 @@ function OrderDetailPageContent() {
           <Stage2HandoverReviewPanel
             actionLoading={handoverActionLoading}
             canHandleObjection={permissions.has("delivery:confirm")}
+            createAvailability={createHandoverWorkOrderAvailability}
             loading={handoverWorkOrdersLoading}
             onAcknowledge={acknowledgeCustomerObjection}
+            onCreateWorkOrder={createHandoverWorkOrder}
             onRequestResubmission={requestCustomerObjectionResubmission}
             onSendCustomerReview={sendCustomerObjectionBackToReview}
             onViewDetail={viewHandoverWorkOrderDetail}
@@ -5588,8 +5730,11 @@ function OrderDetailPageContent() {
             <Form.Item label="交付地点" name="deliveryLocation">
               <Input placeholder="静安旺旺大厦" />
             </Form.Item>
+            {deliveryCheck?.depositRequired === false ? (
+              <Alert message="0 元押金，自动满足押金收取确认。" showIcon type="success" />
+            ) : null}
             <Form.Item name="depositReceivedConfirmed" valuePropName="checked">
-              <Checkbox>押金收取确认</Checkbox>
+              <Checkbox disabled={deliveryCheck?.depositRequired === false}>押金收取确认</Checkbox>
             </Form.Item>
             <Form.Item name="firstMonthlyFeeReceivedConfirmed" valuePropName="checked">
               <Checkbox>首期月费收取确认</Checkbox>

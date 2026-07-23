@@ -1403,6 +1403,29 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain('"vehicle:review_sale_price"');
   });
 
+  it("calibrates vehicle insurance permissions and menu by role", () => {
+    for (const permission of ["vehicle_insurance:view", "vehicle_insurance:manage"]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expect(seedSource).toContain('const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"]');
+    expect(seedSource).toContain(
+      'const vehicleInsuranceManagementPermissions = ["vehicle_insurance:view", "vehicle_insurance:manage"]'
+    );
+    expect(seedSource).toContain('["vehicles.insurance_policies"');
+    expect(seedSource).toContain('"/vehicle-insurance-policies"');
+    expect(seedSource).toContain('"vehicle_insurance:view"');
+    expect(seedSource).toContain('const vehicleInsuranceMenuCodes = ["vehicles.insurance_policies"]');
+    expectRolePermissions("OP", ["vehicle_insurance:view", "vehicle_insurance:manage"]);
+    expectRolePermissions("SA", ["vehicle_insurance:view"]);
+    expectRolePermissions("GM", ["vehicle_insurance:view"]);
+    expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_insurance:manage")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("GM"), "vehicle_insurance:manage")).toBe(false);
+    expect(roleHasMenu(roleMenuArray("OP"), "vehicles.insurance_policies")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("SA"), "vehicles.insurance_policies")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("GM"), "vehicles.insurance_policies")).toBe(true);
+  });
+
   it("calibrates vehicle depreciation permissions by role", () => {
     for (const permission of ["vehicle_depreciation:view", "vehicle_depreciation:manage"]) {
       expect(seedSource).toContain(`"${permission}"`);

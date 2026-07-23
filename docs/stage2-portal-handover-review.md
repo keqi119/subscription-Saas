@@ -30,6 +30,8 @@ The detail page shows safe field facts, checklist labels/status/file counts, evi
 
 If the work order is in `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`, the customer can either confirm no objection after checking the acknowledgement box, or submit an objection with a required reason. Confirm only enables readiness for later Stage 2 PDF/eSign work; it does not create a PDF, create a signing task, or call any provider. Objection blocks readiness and requires Admin follow-up.
 
+Portal review starts only after Admin has created a handover work order and field evidence has been submitted. Portal does not create handover work orders, verify insurance, allocate payments, confirm delivery, start lease, or start billing.
+
 ## Review State
 
 Portal list/detail are visible for reviewable or reviewed work orders:

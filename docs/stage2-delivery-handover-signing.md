@@ -139,9 +139,27 @@ Confirming no objection from Portal is a readiness transition only. It must not 
 
 Admin order detail exposes Stage 2 handover work orders, evidence file preview/download actions, customer objection details, and review attempt history. The Admin display uses the same safe file proxy policy: storage object keys and buckets remain server-side only.
 
+Admin order detail is also the business entry point for creating the Stage 2 field handover work order. After Stage 1 is signed and the vehicle delivery module has been prepared, Admin can create a `DELIVERY_OUTBOUND` work order from the Stage 2 handover module. The UI must not show a duplicate create action while an active work order exists; the API still keeps the duplicate active-work-order guard.
+
 If a customer objects, Admin can acknowledge the objection and request field resubmission. Field H5 becomes editable only after that request. Resubmission keeps the work order in `CUSTOMER_OBJECTED`, records admin review state `RESUBMITTED_PENDING_ADMIN`, and continues to block Stage 2 PDF/eSign readiness.
 
 After reviewing the resubmitted field material, Admin must send the task back to customer review before the Portal customer can confirm no objection again. Sending back creates the next review attempt, clears the active objection, and returns the work order to `CUSTOMER_REVIEWING`.
+
+## Delivery Readiness Prerequisites
+
+Delivery readiness uses these checks before field handover and final Admin delivery confirmation:
+
+- Stage 1 subscription contract is signed.
+- The vehicle is bound to the order and remains `RESERVED`.
+- The vehicle has an initialized effective sale price.
+- Insurance is valid on the delivery check date. A non-deleted active vehicle insurance policy covering that date is sufficient; vehicle master `insuranceStartDate` / `insuranceEndDate` remain a fallback display/readiness source.
+- Required deposit of `0` is automatically satisfied and should be displayed as "0 元押金，自动满足". Non-zero deposits still require order deposit confirmation and prepare-delivery confirmation.
+- First monthly fee and other payment readiness still come from receivable bill write-off status. Registering a receipt alone is not the same as bill write-off; Admin UI should distinguish "已登记收款，待核销" from written-off/settled bills.
+- Insurance validity, vehicle preparation, customer identity, vehicle photos, and handover documents are confirmed in the Admin order detail "准备交付" modal after base readiness blockers are cleared.
+- Field handover work order creation is an Admin Stage 2 action after delivery preparation. It must not generate Stage 2 PDF, create contracts, start eSign, call Fadada, confirm delivery, start lease, or start billing.
+- `保单管理` is expected under `车辆资产 -> 保单管理`, path `/vehicle-insurance-policies`, permission `vehicle_insurance:view`; staging environments must run the RBAC/menu seed or sync so Admin roles can see the menu.
+
+Large upload limits are outside this application PR. Video acceptance such as 121M files requires infrastructure/server `client_max_body_size` and related multipart limits to be raised separately, in addition to any product-level frontend/API size validation.
 
 ## Status Policy
 

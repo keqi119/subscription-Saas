@@ -8,6 +8,7 @@ import {
   ProductStatus,
   QuoteStatus,
   SalePriceStatus,
+  VehicleInsurancePolicyStatus,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -180,6 +181,72 @@ describe("vehicle delivery handover workflow", () => {
     await expect(
       harness.service.prepareDelivery(harness.orderId, validPrepareDto(), harness.user, harness.context)
     ).rejects.toThrow("车辆保险已过期");
+  });
+
+  it("accepts an active insurance policy covering the delivery date when vehicle master insurance dates are stale", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.insuranceEndDate = null;
+    harness.state.insuranceStartDate = null;
+    harness.state.insurancePolicies = [
+      buildInsurancePolicy(harness, {
+        effectiveFrom: new Date("2026-06-01T00:00:00.000Z"),
+        effectiveTo: new Date("2026-06-30T00:00:00.000Z"),
+        policyStatus: VehicleInsurancePolicyStatus.ACTIVE
+      })
+    ];
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      canPrepareDelivery: boolean;
+      insuranceValid: boolean;
+    };
+
+    expect(check.insuranceValid).toBe(true);
+    expect(check.canPrepareDelivery).toBe(true);
+  });
+
+  it("keeps delivery blocked when only expired insurance policy records exist", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.insuranceEndDate = null;
+    harness.state.insuranceStartDate = null;
+    harness.state.insurancePolicies = [
+      buildInsurancePolicy(harness, {
+        effectiveFrom: new Date("2026-05-01T00:00:00.000Z"),
+        effectiveTo: new Date("2026-05-31T00:00:00.000Z"),
+        policyStatus: VehicleInsurancePolicyStatus.ACTIVE
+      })
+    ];
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      canPrepareDelivery: boolean;
+      insuranceValid: boolean;
+    };
+
+    expect(check.insuranceValid).toBe(false);
+    expect(check.canPrepareDelivery).toBe(false);
+  });
+
+  it("treats zero required deposit as automatically satisfied for delivery readiness", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.depositAmount = 0n;
+    harness.state.depositStatus = DepositStatus.PENDING_CONFIRM;
+    harness.state.finalDepositAmount = 0n;
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      blockingReasons: string[];
+      depositReceivedConfirmed: boolean;
+    };
+
+    expect(check.depositReceivedConfirmed).toBe(true);
+    expect(check.blockingReasons.some((reason) => reason.includes("押金"))).toBe(false);
+
+    const delivery = (await harness.service.prepareDelivery(
+      harness.orderId,
+      validPrepareDto({ depositReceivedConfirmed: false }),
+      harness.user,
+      harness.context
+    )) as { depositReceivedConfirmed: boolean };
+
+    expect(delivery.depositReceivedConfirmed).toBe(true);
   });
 
   it("prepare-delivery updates the existing delivery record instead of creating another one", async () => {
@@ -361,9 +428,12 @@ function createDeliveryHarness() {
     actualDeliveryAt: Date | null;
     contractStatus: ContractStatus;
     delivery: Record<string, unknown> | null;
+    depositAmount: bigint;
     depositStatus: DepositStatus;
     evidenceReadiness: ReturnType<typeof buildEvidenceReadiness>;
+    finalDepositAmount: bigint | null;
     insuranceEndDate: Date | null;
+    insurancePolicies: Array<Record<string, unknown>>;
     insuranceStartDate: Date | null;
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
@@ -372,10 +442,13 @@ function createDeliveryHarness() {
     actualDeliveryAt: null,
     contractStatus: ContractStatus.SIGNED,
     delivery: null,
+    depositAmount: 500000n,
     depositStatus: DepositStatus.CONFIRMED,
     evidenceReadiness: buildEvidenceReadiness({ orderId }),
+    finalDepositAmount: 500000n,
     handover: null,
     insuranceEndDate: new Date("2030-12-31T00:00:00.000Z"),
+    insurancePolicies: [],
     insuranceStartDate: new Date("2026-06-01T00:00:00.000Z"),
     orderStatus: OrderStatus.PENDING_PAYMENT,
     vehicleStatus: VehicleStatus.RESERVED
@@ -390,6 +463,7 @@ function createDeliveryHarness() {
       deletedAt: null,
       id: vehicleId,
       insuranceEndDate: state.insuranceEndDate,
+      insurancePolicies: state.insurancePolicies,
       insuranceStartDate: state.insuranceStartDate,
       model: "ET5",
       purchasePriceAmount: 12000000n,
@@ -442,12 +516,12 @@ function createDeliveryHarness() {
       customer: { grade: "A", id: customerId, mobile: "13800000000", name: "测试客户" },
       customerId,
       deletedAt: null,
-      depositAmount: 500000n,
+      depositAmount: state.depositAmount,
       depositStatus: state.depositStatus,
       endDate: null,
       energyLimitCount: null,
       energyLimitKwh: null,
-      finalDepositAmount: 500000n,
+      finalDepositAmount: state.finalDepositAmount,
       id: orderId,
       mileageLimitKm: 1500,
       monthlyFeeAmount: 300000n,
@@ -641,6 +715,37 @@ function buildReadyDelivery(
     vehiclePhotosConfirmed: true,
     vehiclePreparedConfirmed: true,
     customerIdentityConfirmed: true,
+    ...overrides
+  };
+}
+
+function buildInsurancePolicy(
+  harness: ReturnType<typeof createDeliveryHarness>,
+  overrides: Record<string, unknown> = {}
+) {
+  const now = new Date("2026-06-06T08:00:00.000Z");
+  return {
+    createdAt: now,
+    createdBy: harness.user.id,
+    currency: "CNY",
+    deletedAt: null,
+    effectiveFrom: new Date("2026-06-01T00:00:00.000Z"),
+    effectiveTo: new Date("2030-12-31T00:00:00.000Z"),
+    id: `policy-${harness.state.insurancePolicies.length + 1}`,
+    insuredAmount: null,
+    insuredName: null,
+    insurerName: "Test Insurance",
+    policyHolderName: null,
+    policyNo: `POLICY-${harness.state.insurancePolicies.length + 1}`,
+    policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+    policyType: "COMPULSORY_TRAFFIC",
+    premiumAmount: null,
+    remark: null,
+    renewalReminderAt: null,
+    snapshot: null,
+    updatedAt: now,
+    updatedBy: harness.user.id,
+    vehicleId: harness.vehicleId,
     ...overrides
   };
 }

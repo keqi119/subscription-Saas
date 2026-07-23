@@ -37,6 +37,7 @@ import {
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
   VehicleDamageLevel,
+  VehicleInsurancePolicyStatus,
   VehicleReturnStatus,
   VehicleReturnType,
   VehicleStatus
@@ -224,7 +225,12 @@ const orderInclude = {
   productVersion: { include: { product: true } },
   quote: { select: { id: true, packageSnapshot: true, quoteNo: true, status: true } },
   riskResult: true,
-  vehicle: { include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } } }
+  vehicle: {
+    include: {
+      insurancePolicies: { where: { deletedAt: null } },
+      modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+    }
+  }
 } satisfies Prisma.SubscriptionOrderInclude;
 
 const quoteInclude = {
@@ -3854,7 +3860,10 @@ function buildDeliveryCheck(
       vehicle.currentSalePriceAmount > 0n
   );
   const insuranceValid = Boolean(vehicle && isVehicleInsuranceValid(vehicle, deliveryCheckAt));
-  const depositReceivedConfirmed = order.depositStatus === DepositStatus.CONFIRMED && Boolean(delivery?.depositReceivedConfirmed);
+  const depositRequiredAmount = getRequiredDepositAmount(order);
+  const depositRequired = depositRequiredAmount > 0n;
+  const depositReceivedConfirmed =
+    !depositRequired || (order.depositStatus === DepositStatus.CONFIRMED && Boolean(delivery?.depositReceivedConfirmed));
   const firstMonthlyFeeReceivedConfirmed = Boolean(delivery?.firstMonthlyFeeReceivedConfirmed);
   const vehiclePrepared = Boolean(delivery?.vehiclePreparedConfirmed);
   const vehiclePhotosConfirmed = Boolean(delivery?.vehiclePhotosConfirmed);
@@ -3876,6 +3885,8 @@ function buildDeliveryCheck(
       contractSigned,
       currentSalePriceInitialized,
       deliveryStatus: delivery?.deliveryStatus ?? null,
+      depositRequired,
+      depositRequiredAmount: Number(depositRequiredAmount),
       depositReceivedConfirmed,
       firstMonthlyFeeReceivedConfirmed,
       handoverArchived,
@@ -3956,6 +3967,8 @@ function buildDeliveryCheck(
     contractSigned,
     currentSalePriceInitialized,
     deliveryStatus: delivery?.deliveryStatus ?? null,
+    depositRequired,
+    depositRequiredAmount: Number(depositRequiredAmount),
     depositReceivedConfirmed,
     firstMonthlyFeeReceivedConfirmed,
     handoverArchived,
@@ -4037,7 +4050,9 @@ function buildPrepareDeliveryData(
   beforeDelivery: DeliveryWithDetails | null
 ) {
   const contractSignedConfirmed = isCurrentContractSigned(order);
-  const depositReceivedConfirmed = dto.depositReceivedConfirmed ?? beforeDelivery?.depositReceivedConfirmed ?? false;
+  const depositReceivedConfirmed = getRequiredDepositAmount(order) === 0n
+    ? true
+    : dto.depositReceivedConfirmed ?? beforeDelivery?.depositReceivedConfirmed ?? false;
   const firstMonthlyFeeReceivedConfirmed =
     dto.firstMonthlyFeeReceivedConfirmed ?? beforeDelivery?.firstMonthlyFeeReceivedConfirmed ?? false;
   const insuranceValidConfirmed = dto.insuranceValidConfirmed ?? beforeDelivery?.insuranceValidConfirmed ?? false;
@@ -4128,18 +4143,41 @@ function isCurrentContractSigned(order: OrderWithDetails) {
 }
 
 function isVehicleInsuranceValid(
-  vehicle: Pick<NonNullable<OrderWithDetails["vehicle"]>, "insuranceEndDate" | "insuranceStartDate">,
+  vehicle: Pick<NonNullable<OrderWithDetails["vehicle"]>, "insuranceEndDate" | "insuranceStartDate"> & {
+    insurancePolicies?: Array<{
+      deletedAt?: Date | null;
+      effectiveFrom: Date;
+      effectiveTo: Date;
+      policyStatus: VehicleInsurancePolicyStatus;
+    }>;
+  },
   targetAt: Date
 ) {
+  const targetDate = dateKey(targetAt);
+  const hasEffectivePolicy = (vehicle.insurancePolicies ?? []).some(
+    (policy) =>
+      !policy.deletedAt &&
+      policy.policyStatus === VehicleInsurancePolicyStatus.ACTIVE &&
+      dateKey(policy.effectiveFrom) <= targetDate &&
+      targetDate <= dateKey(policy.effectiveTo)
+  );
+  if (hasEffectivePolicy) {
+    return true;
+  }
+
   if (!vehicle.insuranceStartDate || !vehicle.insuranceEndDate) {
     return false;
   }
-  const targetDate = dateKey(targetAt);
+
   return dateKey(vehicle.insuranceStartDate) <= targetDate && targetDate <= dateKey(vehicle.insuranceEndDate);
 }
 
 function dateKey(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+function getRequiredDepositAmount(order: Pick<OrderWithDetails, "depositAmount" | "finalDepositAmount">) {
+  return order.finalDepositAmount ?? order.depositAmount ?? 0n;
 }
 
 function parseDateTime(value: string, field: string) {

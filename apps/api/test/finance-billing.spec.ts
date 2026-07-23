@@ -63,7 +63,7 @@ describe("billing finance minimum backend loop", () => {
 
   it("throws a Chinese error when deposit amount is missing", async () => {
     const harness = createFinanceHarness({
-      depositAmount: 0n,
+      depositAmount: null,
       finalDepositAmount: null,
       quoteSnapshot: {}
     });
@@ -283,6 +283,58 @@ describe("billing finance minimum backend loop", () => {
       firstMonthlyFeeStatus: BillStatus.PAID,
       totalPaidAmount: 800000,
       totalReceivableAmount: 800000
+    });
+  });
+
+  it("generates only the first monthly fee initial bill when required deposit is zero", async () => {
+    const harness = createFinanceHarness({
+      depositAmount: 0n,
+      finalDepositAmount: 0n,
+      quoteSnapshot: {
+        depositAmount: 0,
+        finalDepositAmount: 0,
+        monthlyFeeAmount: 300000,
+        pricing: { depositAmount: 0, monthlyFeeAmount: 300000 }
+      }
+    });
+
+    const result = (await harness.service.generateInitialBills(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { createdCount: number };
+    const summary = (await harness.service.getOrderFinanceSummary(harness.orderId, harness.user)) as {
+      depositReceivableAmount: number;
+      depositStatus: BillStatus;
+      firstMonthlyFeeReceivableAmount: number;
+    };
+
+    expect(result.createdCount).toBe(1);
+    expect(harness.state.bills.map((bill) => bill.billType)).toEqual([BillType.FIRST_MONTHLY_FEE]);
+    expect(summary.depositReceivableAmount).toBe(0);
+    expect(summary.depositStatus).toBe(BillStatus.PAID);
+    expect(summary.firstMonthlyFeeReceivableAmount).toBe(300000);
+  });
+
+  it("distinguishes registered receipts from bill write-off in the finance summary", async () => {
+    const harness = createFinanceHarness();
+    await harness.service.generateInitialBills(harness.orderId, harness.user, harness.context);
+    await harness.createPayment(300000);
+
+    const summary = (await harness.service.getOrderFinanceSummary(harness.orderId, harness.user)) as {
+      allocatedPaidAmount: number;
+      deliveryPaymentSatisfied: boolean;
+      deliveryPaymentStatus: string;
+      registeredReceiptAmount: number;
+      unallocatedReceiptAmount: number;
+    };
+
+    expect(summary).toMatchObject({
+      allocatedPaidAmount: 0,
+      deliveryPaymentSatisfied: false,
+      deliveryPaymentStatus: "REGISTERED_UNALLOCATED",
+      registeredReceiptAmount: 300000,
+      unallocatedReceiptAmount: 300000
     });
   });
 
@@ -1436,7 +1488,23 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
           throw new Error("Payment not found");
         }
         return decoratePayment(payment, include);
-      })
+      }),
+      findMany: vi.fn(async ({ include, where }) =>
+        state.payments
+          .filter((payment) => {
+            if (where.orderId && payment.orderId !== where.orderId) {
+              return false;
+            }
+            if ("deletedAt" in where && payment.deletedAt !== where.deletedAt) {
+              return false;
+            }
+            if (where.paymentStatus && payment.paymentStatus !== where.paymentStatus) {
+              return false;
+            }
+            return true;
+          })
+          .map((payment) => decoratePayment(payment, include))
+      )
     },
     paymentWriteOff: {
       create: vi.fn(async ({ data }) => {

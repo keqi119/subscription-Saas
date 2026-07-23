@@ -6,6 +6,8 @@ Field handover work orders coordinate the pre-customer-review evidence collectio
 
 This phase does not generate Stage 2 PDFs, start eSign, confirm delivery, start lease, start billing, or perform customer Portal review.
 
+Work orders are created from Admin order detail after delivery preparation is ready. Field H5 can only operate on an assigned existing work order; it must not create orders, mutate delivery readiness, allocate payments, or start downstream delivery/lease/billing side effects.
+
 ## Field Session Boundary
 
 All H5 action endpoints are guarded by the independent field operator session. Each action verifies:
@@ -54,3 +56,10 @@ Submit is blocked until:
 - damage close-up evidence exists when damage is declared.
 
 On first success, the work order moves to customer review. On Admin-requested resubmission after a customer objection, the work order stays blocked for Admin review until Admin sends it back to customer review. Customer Portal review is a separate downstream phase: confirming no objection only unlocks Stage 2 PDF/eSign readiness; submitting an objection blocks Stage 2 readiness and requires Admin follow-up. Stage 2 PDF generation, eSign, delivery confirmation, lease, and billing remain unavailable from the field H5 flow.
+
+The upstream Admin readiness path must distinguish:
+
+- active insurance policy coverage or synced vehicle insurance dates;
+- zero required deposit, which is auto-satisfied;
+- registered receipts that still need bill write-off;
+- the visible Admin action to create a Stage 2 handover work order when no active work order exists.

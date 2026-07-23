@@ -205,7 +205,7 @@ export class FinanceService {
     ensureCanAccessOrderFinance(order, user);
     ensureOrderCanGenerateInitialBills(order);
 
-    const depositAmount = resolveDepositAmount(order);
+    const depositAmount = resolveRequiredDepositAmount(order);
     if (depositAmount === null) {
       throw new BadRequestException(MISSING_DEPOSIT_AMOUNT_MESSAGE);
     }
@@ -230,7 +230,7 @@ export class FinanceService {
         const createdBills: ReceivableBillRecord[] = [];
         const now = new Date();
 
-        if (!existingTypes.has(BillType.DEPOSIT)) {
+        if (depositAmount > 0n && !existingTypes.has(BillType.DEPOSIT)) {
           createdBills.push(
             await createInitialBill(tx, order, {
               amount: depositAmount,
@@ -1108,22 +1108,42 @@ export class FinanceService {
       orderBy: { createdAt: "asc" },
       where: { billStatus: { not: BillStatus.CANCELLED }, deletedAt: null, orderId }
     });
-    const deposit = summarizeBills(bills, BillType.DEPOSIT);
+    const requiredDepositAmount = resolveRequiredDepositAmount(order) ?? 0n;
+    const deposit = summarizeDepositBills(bills, requiredDepositAmount);
     const firstMonthlyFee = summarizeBills(bills, BillType.FIRST_MONTHLY_FEE);
     const totalReceivableAmount = bills.reduce((sum, bill) => sum + bill.amount, 0n);
     const totalPaidAmount = bills.reduce((sum, bill) => sum + bill.paidAmount, 0n);
+    const payments = await this.prisma.paymentRecord.findMany({
+      include: paymentWriteOffInclude,
+      orderBy: { createdAt: "asc" },
+      where: { deletedAt: null, orderId, paymentStatus: PaymentStatus.CONFIRMED }
+    });
+    const registeredReceiptAmount = payments.reduce((sum, payment) => sum + payment.paymentAmount, 0n);
+    const allocatedPaidAmount = payments.reduce((sum, payment) => sum + sumWriteOffAmount(payment.writeOffs), 0n);
+    const unallocatedReceiptAmount =
+      registeredReceiptAmount > allocatedPaidAmount ? registeredReceiptAmount - allocatedPaidAmount : 0n;
+    const deliveryPaymentSatisfied = deposit.status === BillStatus.PAID && firstMonthlyFee.status === BillStatus.PAID;
 
     return {
+      allocatedPaidAmount: Number(allocatedPaidAmount),
       depositPaidAmount: Number(deposit.paidAmount),
       depositReceivableAmount: Number(deposit.receivableAmount),
       depositStatus: deposit.status,
+      deliveryPaymentStatus: deliveryPaymentSatisfied
+        ? "WRITTEN_OFF"
+        : unallocatedReceiptAmount > 0n
+          ? "REGISTERED_UNALLOCATED"
+          : registeredReceiptAmount > 0n
+            ? "REGISTERED_ALLOCATED"
+            : "UNPAID",
       firstMonthlyFeePaidAmount: Number(firstMonthlyFee.paidAmount),
       firstMonthlyFeeReceivableAmount: Number(firstMonthlyFee.receivableAmount),
       firstMonthlyFeeStatus: firstMonthlyFee.status,
+      registeredReceiptAmount: Number(registeredReceiptAmount),
       totalPaidAmount: Number(totalPaidAmount),
       totalReceivableAmount: Number(totalReceivableAmount),
-      deliveryPaymentSatisfied:
-        deposit.status === BillStatus.PAID && firstMonthlyFee.status === BillStatus.PAID
+      unallocatedReceiptAmount: Number(unallocatedReceiptAmount),
+      deliveryPaymentSatisfied
     };
   }
 
@@ -2029,8 +2049,8 @@ function canViewAllFinanceOrders(user: RequestUser) {
   return user.roles.some((role) => ["ADMIN", "FI", "GM", "OP"].includes(role));
 }
 
-function resolveDepositAmount(order: FinanceOrder) {
-  return pickPositiveAmount(
+function resolveRequiredDepositAmount(order: FinanceOrder) {
+  return pickNonNegativeAmount(
     order.finalDepositAmount,
     order.depositAmount,
     readSnapshotAmount(order.quoteSnapshot, ["finalDepositAmount"]),
@@ -2066,6 +2086,16 @@ function pickPositiveAmount(...values: unknown[]) {
   return null;
 }
 
+function pickNonNegativeAmount(...values: unknown[]) {
+  for (const value of values) {
+    const amount = toNonNegativeBigInt(value);
+    if (amount !== null) {
+      return amount;
+    }
+  }
+  return null;
+}
+
 function readSnapshotAmount(snapshot: unknown, path: string[]) {
   let current: unknown = snapshot;
 
@@ -2091,6 +2121,22 @@ function toPositiveBigInt(value: unknown) {
   if (typeof value === "string" && /^\d+$/.test(value)) {
     const parsed = BigInt(value);
     return parsed > 0n ? parsed : null;
+  }
+
+  return null;
+}
+
+function toNonNegativeBigInt(value: unknown) {
+  if (typeof value === "bigint") {
+    return value >= 0n ? value : null;
+  }
+
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value);
+  }
+
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    return BigInt(value);
   }
 
   return null;
@@ -2251,6 +2297,19 @@ function summarizeBills(bills: ReceivableBillRecord[], billType: BillType) {
     remainingAmount,
     status: resolveAggregateBillStatus(typedBills, paidAmount, remainingAmount)
   };
+}
+
+function summarizeDepositBills(bills: ReceivableBillRecord[], requiredDepositAmount: bigint) {
+  const deposit = summarizeBills(bills, BillType.DEPOSIT);
+  if (deposit.status === null && requiredDepositAmount === 0n) {
+    return {
+      paidAmount: 0n,
+      receivableAmount: 0n,
+      remainingAmount: 0n,
+      status: BillStatus.PAID
+    };
+  }
+  return deposit;
 }
 
 function resolveAggregateBillStatus(

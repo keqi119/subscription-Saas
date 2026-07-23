@@ -16,6 +16,10 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("acknowledgeCustomerObjection");
     expect(source).toContain("requestCustomerObjectionResubmission");
     expect(source).toContain("sendCustomerObjectionBackToReview");
+    expect(source).toContain("createHandoverWorkOrder");
+    expect(source).toContain("创建交付工单");
+    expect(source).toContain("暂无 Stage 2 现场交接工单");
+    expect(source).toContain("/orders/${params.id}/handover-work-orders");
     expect(source).toContain("/objection/${action}");
     expect(source).toContain("\"acknowledge\"");
     expect(source).toContain("\"request-resubmission\"");
@@ -25,6 +29,9 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("downloadUrl");
     expect(source).toContain("预览");
     expect(source).toContain("下载/打开");
+    expect(source).toContain("已登记收款，待核销");
+    expect(source).toContain("0 元押金，自动满足");
+    expect(source).toContain("/vehicle-insurance-policies");
     expect(source).not.toMatch(/accessTokenHash|objectKey|bucket|signingUrl|idCard|fullPhone|raw DTO/i);
   });
 });

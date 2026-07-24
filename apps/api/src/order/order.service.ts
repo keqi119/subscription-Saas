@@ -37,7 +37,6 @@ import {
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
   VehicleDamageLevel,
-  VehicleInsurancePolicyStatus,
   VehicleReturnStatus,
   VehicleReturnType,
   VehicleStatus
@@ -46,6 +45,7 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-coverage";
 import {
   resolveVehicleModelDefinitionId,
   vehicleModelReadPathMatches
@@ -3859,7 +3859,16 @@ function buildDeliveryCheck(
       vehicle.currentSalePriceAmount &&
       vehicle.currentSalePriceAmount > 0n
   );
-  const insuranceValid = Boolean(vehicle && isVehicleInsuranceValid(vehicle, deliveryCheckAt));
+  const resolvedInsuranceCoverage = resolveVehicleInsuranceCoverage(
+    vehicle?.insurancePolicies ?? [],
+    deliveryCheckAt
+  );
+  const insuranceCoverage = {
+    commercialCovered: resolvedInsuranceCoverage.commercial.covered,
+    compulsoryTrafficCovered: resolvedInsuranceCoverage.compulsoryTraffic.covered,
+    evaluatedAt: resolvedInsuranceCoverage.evaluationDate
+  };
+  const insuranceValid = Boolean(vehicle && resolvedInsuranceCoverage.covered);
   const depositRequiredAmount = getRequiredDepositAmount(order);
   const depositRequired = depositRequiredAmount > 0n;
   const depositReceivedConfirmed =
@@ -3895,6 +3904,7 @@ function buildDeliveryCheck(
       handoverEvidenceReady,
       handoverReady,
       handoverSigned,
+      insuranceCoverage,
       insuranceValid,
       orderId: order.id,
       orderNo: order.orderNo,
@@ -3923,8 +3933,11 @@ function buildDeliveryCheck(
   if (!currentSalePriceInitialized) {
     prepareBlockingReasons.push("车辆当前销售价尚未初始化");
   }
-  if (!insuranceValid) {
-    prepareBlockingReasons.push("车辆保险已过期");
+  if (!resolvedInsuranceCoverage.compulsoryTraffic.covered) {
+    prepareBlockingReasons.push("交强险未覆盖计划交付日");
+  }
+  if (!resolvedInsuranceCoverage.commercial.covered) {
+    prepareBlockingReasons.push("商业险未覆盖计划交付日");
   }
 
   confirmBlockingReasons.push(...prepareBlockingReasons);
@@ -3977,6 +3990,7 @@ function buildDeliveryCheck(
     handoverEvidenceReady,
     handoverReady,
     handoverSigned,
+    insuranceCoverage,
     insuranceValid,
     orderId: order.id,
     orderNo: order.orderNo,
@@ -4140,36 +4154,6 @@ function assertValidReturnMileage(returnMileageKm: number | undefined) {
 function isCurrentContractSigned(order: OrderWithDetails) {
   const contract = findCurrentContract(order);
   return contract?.status === ContractStatus.SIGNED || contract?.status === ContractStatus.ARCHIVED;
-}
-
-function isVehicleInsuranceValid(
-  vehicle: Pick<NonNullable<OrderWithDetails["vehicle"]>, "insuranceEndDate" | "insuranceStartDate"> & {
-    insurancePolicies?: Array<{
-      deletedAt?: Date | null;
-      effectiveFrom: Date;
-      effectiveTo: Date;
-      policyStatus: VehicleInsurancePolicyStatus;
-    }>;
-  },
-  targetAt: Date
-) {
-  const targetDate = dateKey(targetAt);
-  const hasEffectivePolicy = (vehicle.insurancePolicies ?? []).some(
-    (policy) =>
-      !policy.deletedAt &&
-      policy.policyStatus === VehicleInsurancePolicyStatus.ACTIVE &&
-      dateKey(policy.effectiveFrom) <= targetDate &&
-      targetDate <= dateKey(policy.effectiveTo)
-  );
-  if (hasEffectivePolicy) {
-    return true;
-  }
-
-  if (!vehicle.insuranceStartDate || !vehicle.insuranceEndDate) {
-    return false;
-  }
-
-  return dateKey(vehicle.insuranceStartDate) <= targetDate && targetDate <= dateKey(vehicle.insuranceEndDate);
 }
 
 function dateKey(date: Date) {

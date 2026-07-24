@@ -6,9 +6,9 @@ const runReleaseSmoke = process.env.RUN_RELEASE_SMOKE === "1";
 const requiredSteps = [
   ["Prisma validate", "pnpm", ["prisma:validate"]],
   ["Prisma generate", "pnpm", ["prisma:generate"]],
-  ["VehicleModel enum freeze syntax", "node", ["--check", "scripts/check-vehicle-model-enum-freeze.mjs"]],
-  ["VehicleModel enum freeze", "pnpm", ["vehicle-model:enum-freeze"]],
-  ["VehicleModel enum freeze tests", "pnpm", ["vehicle-model:enum-freeze:test"]],
+  ["VehicleModel no-enum guard syntax", "node", ["--check", "scripts/check-vehicle-model-no-enum.mjs"]],
+  ["VehicleModel no-enum guard", "node", ["scripts/check-vehicle-model-no-enum.mjs"]],
+  ["VehicleModel no-enum guard tests", "node", ["--test", "scripts/check-vehicle-model-no-enum.test.mjs"]],
   ["VehicleModel removal readiness syntax", "node", ["--check", "scripts/vehicle-model-removal-readiness.mjs"]],
   ["VehicleModel removal readiness core syntax", "node", ["--check", "scripts/vehicle-model-removal-readiness-core.mjs"]],
   ["VehicleModel removal readiness tests", "pnpm", ["vehicle-model:removal-readiness:test"]],

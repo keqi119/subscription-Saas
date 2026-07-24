@@ -163,6 +163,22 @@ describe("field handover view model", () => {
     expect(view.showSaveAction).toBe(false);
     expect(view.showSubmitAction).toBe(false);
   });
+
+  it("reopens legacy customer-reviewing objections when Admin requested field resubmission", () => {
+    const view = buildFieldEvidenceCaptureView({
+      ...sampleDetail(),
+      adminReviewStatus: "RESUBMISSION_REQUESTED",
+      fieldResubmissionRequested: true,
+      status: "CUSTOMER_REVIEWING"
+    });
+
+    expect(view.canEdit).toBe(true);
+    expect(view.lockedMessage).toBeNull();
+    expect(view.showStartAction).toBe(false);
+    expect(view.showSaveAction).toBe(true);
+    expect(view.showSubmitAction).toBe(true);
+    expect(view.evidenceItems.some((item) => item.showUpload)).toBe(true);
+  });
 });
 
 function sampleTask(): FieldHandoverWorkOrderListItem {

@@ -111,12 +111,14 @@ jobs:
           push: true
           build-args: |
             NEXT_PUBLIC_API_BASE_URL=${{ inputs.apiBaseUrl }}
+            NEXT_DEPLOYMENT_ID=${{ inputs.imageTag }}
           tags: ${{ env.WEB_IMAGE }}
 
       - name: Check Web image API base
         shell: bash
         env:
           API_BASE_URL: ${{ inputs.apiBaseUrl }}
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
           WEB_IMAGE: ${{ env.WEB_IMAGE }}
         run: |
           set -euo pipefail
@@ -127,7 +129,12 @@ jobs:
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
           docker cp "$container:/app/apps/web/.next" ./tmp-web-next
 
-          node scripts/check-web-bundle-api-base.mjs \
-            --dir ./tmp-web-next \
-            --must-contain "$API_BASE_URL" \
-            --must-not-contain "staging-api.subauto.keybox.cloud"
+          CHECK_ARGS=(
+            --dir ./tmp-web-next
+            --must-contain "$API_BASE_URL"
+          )
+          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then
+            CHECK_ARGS+=(--must-not-contain "staging-api.subauto.keybox.cloud")
+          fi
+
+          node scripts/check-web-bundle-api-base.mjs "${CHECK_ARGS[@]}"

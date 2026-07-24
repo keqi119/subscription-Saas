@@ -68,6 +68,16 @@ describe("field handover H5 pages", () => {
     expect(source).not.toMatch(/eSignTask|startSigning|signingUrl|objectKey/i);
     expect(source).not.toMatch(/电子签|签署|PDF/);
   });
+
+  it("shows customer objection recheck guidance before the evidence capture overview", () => {
+    const source = read(detailPagePath);
+    const reviewGuidanceIndex = source.indexOf("message={`客户异议：");
+    const captureOverviewIndex = source.indexOf("现场资料采集");
+
+    expect(reviewGuidanceIndex).toBeGreaterThan(-1);
+    expect(captureOverviewIndex).toBeGreaterThan(-1);
+    expect(reviewGuidanceIndex).toBeLessThan(captureOverviewIndex);
+  });
 });
 
 function read(file: string) {

@@ -182,15 +182,25 @@ export function buildFieldEvidenceCaptureView(detail: FieldHandoverWorkOrderDeta
     nextStepText: formatFieldNextStepText(detail),
     progressText: `资料完成度：${completed} / ${activeEvidenceItems.length}`,
     showSaveAction: canEdit,
-    showStartAction: canEdit && detail.status !== "FIELD_IN_PROGRESS" && detail.status !== "CUSTOMER_OBJECTED",
+    showStartAction:
+      canEdit &&
+      detail.fieldResubmissionRequested !== true &&
+      detail.status !== "FIELD_IN_PROGRESS" &&
+      detail.status !== "CUSTOMER_OBJECTED",
     showSubmitAction: canEdit,
     submitBlockers
   };
 }
 
 function canEditFieldEvidence(detail: FieldHandoverWorkOrderDetail) {
+  if (
+    detail.fieldResubmissionRequested === true &&
+    (detail.status === "CUSTOMER_OBJECTED" || detail.status === "CUSTOMER_REVIEWING")
+  ) {
+    return true;
+  }
   if (detail.status === "CUSTOMER_OBJECTED") {
-    return detail.fieldResubmissionRequested === true;
+    return false;
   }
   return !LOCKED_WORK_ORDER_STATUSES.has(String(detail.status ?? ""));
 }
@@ -206,7 +216,7 @@ function formatFieldLockedMessage(detail: FieldHandoverWorkOrderDetail) {
 }
 
 function formatFieldNextStepText(detail: FieldHandoverWorkOrderDetail) {
-  if (detail.status === "CUSTOMER_OBJECTED" && detail.fieldResubmissionRequested === true) {
+  if (detail.fieldResubmissionRequested === true) {
     return "下一步：按后台要求补充资料后重新提交";
   }
   if (detail.status === "CUSTOMER_OBJECTED" && detail.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN") {

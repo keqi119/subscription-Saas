@@ -2,6 +2,8 @@
 # The 2C/2G staging server should pull prebuilt images instead of building them.
 # BT/Nginx owns 80/443 and proxies to API/Web on 127.0.0.1.
 
+name: subauto-staging
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -58,7 +60,7 @@ services:
       OSS_INTERNAL_ENDPOINT: ${OSS_INTERNAL_ENDPOINT:-}
       OSS_SIGNED_URL_EXPIRES_SECONDS: ${OSS_SIGNED_URL_EXPIRES_SECONDS:-300}
     ports:
-      - "127.0.0.1:${API_HOST_PORT:-3001}:3001"
+      - "127.0.0.1:${API_HOST_PORT:-3101}:3001"
     volumes:
       - staging_api_uploads:${UPLOAD_LOCAL_DIR:-/app/uploads}
     depends_on:
@@ -92,7 +94,7 @@ services:
       PORT: 3000
       HOSTNAME: 0.0.0.0
     ports:
-      - "127.0.0.1:${WEB_HOST_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_HOST_PORT:-3100}:3000"
     depends_on:
       api:
         condition: service_started

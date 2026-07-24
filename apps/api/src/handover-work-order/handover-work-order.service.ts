@@ -394,7 +394,7 @@ export class HandoverWorkOrderService {
   async startFieldAccessibleWorkOrder(id: string, phone: string, actorId?: string) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
-    if (workOrder.status === "CUSTOMER_OBJECTED") {
+    if (hasActiveCustomerObjection(workOrder) && isFieldResubmissionRequested(workOrder)) {
       return workOrder;
     }
     return this.updateWorkOrderWithEvent(workOrder, {
@@ -812,7 +812,8 @@ export class HandoverWorkOrderService {
           handoverReviewTargetEvidenceItemIds: targetEvidenceItemIds,
           handoverReviewTargetFieldKeys: targetFieldKeys,
           [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
-        })
+        }),
+        status: "CUSTOMER_OBJECTED"
       }, tx);
       await this.upsertLatestReviewAttempt(current, "RESUBMISSION_REQUESTED", {
         adminNotes: note,
@@ -2080,12 +2081,16 @@ function getFieldFactsBlockingReasons(workOrder: WorkOrderRecord) {
 }
 
 function assertFieldSessionEditable(workOrder: WorkOrderRecord) {
-  if (workOrder.status === "CUSTOMER_OBJECTED" && isFieldResubmissionRequested(workOrder)) {
+  if (hasActiveCustomerObjection(workOrder) && isFieldResubmissionRequested(workOrder)) {
     return;
   }
   if (FIELD_SESSION_LOCKED_STATUSES.has(String(workOrder.status))) {
     throw new BadRequestException("当前交接任务已提交或不可继续编辑。");
   }
+}
+
+function hasActiveCustomerObjection(workOrder: WorkOrderRecord) {
+  return workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt);
 }
 
 function isFieldAccessibleWorkOrder(workOrder: null | WorkOrderRecord, phone: string) {
@@ -2340,7 +2345,7 @@ function toFieldReviewContext(
   latestAttempt: null | Record<string, unknown>,
   checklist: unknown
 ) {
-  if (!latestAttempt || workOrder.status !== "CUSTOMER_OBJECTED") {
+  if (!latestAttempt || !hasActiveCustomerObjection(workOrder)) {
     return null;
   }
   const metadata = asRecord(latestAttempt.metadata);

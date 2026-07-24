@@ -3,6 +3,8 @@
 # BT/Nginx owns 80/443 and proxies to API/Web on 127.0.0.1.
 # Copy .env.production.images.example to .env.production.images on the server.
 
+name: subauto-production
+
 services:
   postgres:
     image: postgres:17-alpine

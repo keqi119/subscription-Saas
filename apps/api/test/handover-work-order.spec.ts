@@ -1163,6 +1163,110 @@ describe("HandoverWorkOrderService", () => {
     ).rejects.toThrow("现场资料重新提交后，后台才能送回客户复核");
   });
 
+  it("normalizes legacy customer-reviewing objections when Admin requests field resubmission", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      adminReviewStatus: "ACKNOWLEDGED",
+      customerObjectedAt: harness.now,
+      customerObjectionReason: "legacy objection",
+      status: "CUSTOMER_REVIEWING"
+    });
+
+    const requested = await harness.service.requestCustomerObjectionResubmission(
+      "work-order-1",
+      harness.admin.id,
+      {
+        note: "recheck legacy objection",
+        targetEvidenceItemIds: [],
+        targetFieldKeys: ["fieldNotes"]
+      }
+    );
+
+    expect(requested).toMatchObject({
+      fieldResubmissionRequested: true,
+      status: "CUSTOMER_OBJECTED"
+    });
+  });
+
+  it("allows field edits for legacy active objections with resubmission already requested", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      adminReviewStatus: "RESUBMISSION_REQUESTED",
+      customerObjectedAt: harness.now,
+      customerObjectionReason: "legacy objection",
+      externalOperatorPhone: "13800000000",
+      operatorType: "EXTERNAL",
+      status: "CUSTOMER_REVIEWING"
+    });
+
+    await expect(
+      harness.service.updateFieldAccessibleFacts(
+        "work-order-1",
+        "13800000000",
+        { fieldNotes: "legacy recheck updated" },
+        "field-session-1"
+      )
+    ).resolves.toMatchObject({
+      fieldNotes: "legacy recheck updated",
+      status: "CUSTOMER_REVIEWING"
+    });
+  });
+
+  it("returns recheck guidance before a legacy objection recheck is resubmitted", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      operatorType: "EXTERNAL"
+    });
+    harness.evidenceService.setChecklist({
+      blockingReasons: [],
+      items: [
+        {
+          evidenceType: "FRONT_INTERIOR",
+          files: [],
+          id: "evidence-item-front-interior",
+          isRequired: true,
+          reviewStatus: "PENDING",
+          status: "UPLOADED",
+          title: "前排内饰"
+        }
+      ],
+      ready: false
+    });
+
+    await harness.service.customerObject(
+      "work-order-1",
+      "customer-1",
+      "损伤不认可",
+      "驾驶位座椅内饰有烫伤未标记"
+    );
+    await harness.service.acknowledgeCustomerObjection("work-order-1", harness.admin.id, "已受理");
+    await harness.service.requestCustomerObjectionResubmission("work-order-1", harness.admin.id, {
+      note: "客户异议，请重新车检",
+      targetEvidenceItemIds: ["evidence-item-front-interior"],
+      targetFieldKeys: ["damageDeclared", "noVisibleDamageDeclared"]
+    });
+
+    Object.assign(harness.state.workOrders[0]!, { status: "CUSTOMER_REVIEWING" });
+
+    const detail = await harness.service.getFieldAccessibleWorkOrder("work-order-1", "13800000000");
+
+    expect(detail.reviewContext).toMatchObject({
+      adminNote: "客户异议，请重新车检",
+      customerObjectionDetails: "驾驶位座椅内饰有烫伤未标记",
+      customerObjectionReason: "损伤不认可",
+      requestedEvidenceItems: [
+        {
+          id: "evidence-item-front-interior",
+          title: "前排内饰"
+        }
+      ],
+      requestedFieldKeys: ["damageDeclared", "noVisibleDamageDeclared"]
+    });
+  });
+
   it("rejects stale objection transitions without writing an audit event", async () => {
     const harness = createReadyForCustomerReviewHarness();
     await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议");

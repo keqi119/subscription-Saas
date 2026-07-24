@@ -2,6 +2,8 @@
 # Target server: 139.196.227.195, domains from .env.staging.
 # API/Web/PostgreSQL are internal only; Caddy exposes 80/443.
 
+name: subauto-staging
+
 services:
   postgres:
     image: postgres:17-alpine

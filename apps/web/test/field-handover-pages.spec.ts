@@ -17,6 +17,8 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("sendFieldHandoverCode");
     expect(source).toContain("loginFieldHandover");
     expect(source).toContain('router.replace("/field/handover/tasks")');
+    expect(source).not.toContain("disabled={checkingSession");
+    expect(source).not.toContain("loading={submitting || checkingSession}");
     expect(source).not.toContain("/portal/login");
     expect(source).not.toContain("/auth/login");
     expect(source).not.toMatch(/localStorage|sessionStorage|debugCode|access_token|field_access_token/);
@@ -29,6 +31,8 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("正在加载交接任务...");
     expect(source).toContain("暂无待处理交接任务");
     expect(source).toContain("任务加载失败，请稍后重试");
+    expect(source).toContain("重新加载");
+    expect(source).toContain("loadTasks");
     expect(source).toContain("logoutFieldHandover");
     expect(source).toContain('router.replace("/field/handover")');
     expect(source).toContain("/field/handover/tasks/${task.id}");
@@ -48,8 +52,15 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("当前交接任务已提交或不可继续编辑");
     expect(source).toContain("startFieldHandoverWorkOrder");
     expect(source).toContain("updateFieldHandoverFacts");
-    expect(source).toContain("uploadFieldHandoverEvidenceFile");
-    expect(source).toContain("attachFieldHandoverEvidenceFile");
+    expect(source).toContain("uploadAndAttachFieldHandoverEvidenceFile");
+    expect(source).toContain("removeFieldHandoverEvidenceFile");
+    expect(source).toContain("multiple={item.allowsMultiple}");
+    expect(source).toContain("reviewContext.customerObjectionReason");
+    expect(source).toContain("reviewContext.customerObjectionDetails");
+    expect(source).toContain("reviewContext.requestedEvidenceItems");
+    expect(source).not.toContain("reviewContext.objectionReason");
+    expect(source).toContain("查看资料");
+    expect(source).toContain("重新加载");
     expect(source).toContain("declareFieldHandoverNoVisibleDamage");
     expect(source).toContain("submitFieldHandoverEvidence");
     expect(source).toContain("getFieldHandoverWorkOrder");

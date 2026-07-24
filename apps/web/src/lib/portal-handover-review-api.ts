@@ -123,10 +123,25 @@ export interface PortalHandoverReviewReadiness {
   workOrderId?: string | null;
 }
 
+export interface PortalHandoverReviewHistoryItem {
+  adminStatus?: string | null;
+  attemptNo?: number | null;
+  customerConfirmedAt?: string | null;
+  customerObjectedAt?: string | null;
+  customerObjectionDetails?: string | null;
+  customerObjectionReason?: string | null;
+  customerReviewStartedAt?: string | null;
+  fieldSubmittedAt?: string | null;
+  id?: string | null;
+  sentBackToCustomerReviewAt?: string | null;
+  status?: string | null;
+}
+
 export interface PortalHandoverReviewDetail extends PortalHandoverReviewListItem {
   evidenceChecklist?: PortalHandoverReviewEvidenceChecklist | null;
   fieldFacts?: PortalHandoverReviewFieldFacts | null;
   readiness?: PortalHandoverReviewReadiness | null;
+  reviewHistory?: PortalHandoverReviewHistoryItem[];
 }
 
 export interface PortalHandoverReviewObjectionInput {

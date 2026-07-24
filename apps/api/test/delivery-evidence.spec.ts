@@ -1,3 +1,4 @@
+import { ConflictException } from "@nestjs/common";
 import {
   DeliveryEvidenceMediaType,
   DeliveryEvidenceReviewStatus,
@@ -262,6 +263,118 @@ describe("DeliveryEvidenceService", () => {
     expect(JSON.stringify(linked)).not.toContain("signUrl");
     expect(JSON.stringify(linked)).not.toContain("idCardNo");
   });
+
+  it("replaces singleton evidence while retaining the superseded file revision", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const item = harness.findItem(DeliveryEvidenceType.VEHICLE_FRONT);
+    const originalFile = harness.addFile("vehicle-front-original.jpg", "image/jpeg");
+    const replacementFile = harness.addFile("vehicle-front-replacement.jpg", "image/jpeg");
+
+    const original = await harness.service.attachEvidenceFile(
+      item.id,
+      originalFile.id,
+      DeliveryEvidenceMediaType.PHOTO,
+      harness.userId
+    );
+    const replaced = await harness.service.replaceEvidenceFile(
+      item.id,
+      String(original.files[0]?.id),
+      replacementFile.id,
+      DeliveryEvidenceMediaType.PHOTO,
+      harness.userId
+    );
+
+    expect(replaced.files).toEqual([
+      expect.objectContaining({
+        fileId: replacementFile.id,
+        lifecycleStatus: "ACTIVE"
+      })
+    ]);
+    expect(harness.state.evidenceFiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fileId: originalFile.id,
+        lifecycleStatus: "SUPERSEDED",
+        replacedById: expect.any(String)
+      }),
+      expect.objectContaining({
+        fileId: replacementFile.id,
+        lifecycleStatus: "ACTIVE"
+      })
+    ]));
+  });
+
+  it("soft-removes active evidence and resets an empty item without deleting history", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const item = harness.findItem(DeliveryEvidenceType.VEHICLE_REAR);
+    const file = harness.addFile("vehicle-rear.jpg", "image/jpeg");
+    const attached = await harness.service.attachEvidenceFile(
+      item.id,
+      file.id,
+      DeliveryEvidenceMediaType.PHOTO,
+      harness.userId
+    );
+
+    const removed = await harness.service.removeEvidenceFile(
+      item.id,
+      String(attached.files[0]?.id),
+      harness.userId
+    );
+
+    expect(removed.files).toEqual([]);
+    expect(removed).toMatchObject({
+      reviewStatus: DeliveryEvidenceReviewStatus.NOT_STARTED,
+      status: DeliveryEvidenceStatus.NOT_STARTED
+    });
+    expect(harness.state.evidenceFiles[0]).toMatchObject({
+      lifecycleActorId: harness.userId,
+      lifecycleStatus: "REMOVED"
+    });
+  });
+
+  it("limits active multi-file damage evidence to twenty files", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const item = harness.findItem(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
+
+    for (let index = 1; index <= 20; index += 1) {
+      const file = harness.addFile(`damage-${index}.jpg`, "image/jpeg");
+      await harness.service.attachEvidenceFile(
+        item.id,
+        file.id,
+        DeliveryEvidenceMediaType.PHOTO,
+        harness.userId
+      );
+    }
+    const overflow = harness.addFile("damage-21.jpg", "image/jpeg");
+
+    await expect(
+      harness.service.attachEvidenceFile(
+        item.id,
+        overflow.id,
+        DeliveryEvidenceMediaType.PHOTO,
+        harness.userId
+      )
+    ).rejects.toThrow("损伤近拍最多上传 20 个文件");
+  });
+
+  it("maps PostgreSQL serialization conflicts to a retryable domain conflict", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const item = harness.findItem(DeliveryEvidenceType.VEHICLE_FRONT);
+    const file = harness.addFile("vehicle-front.jpg", "image/jpeg");
+    harness.prisma.$transaction.mockRejectedValueOnce({ code: "P2034" });
+
+    await expect(
+      harness.service.attachEvidenceFile(
+        item.id,
+        file.id,
+        DeliveryEvidenceMediaType.PHOTO,
+        harness.userId
+      )
+    ).rejects.toThrow(ConflictException);
+  });
 });
 
 async function approveRequiredFileEvidence(harness: ReturnType<typeof createDeliveryEvidenceHarness>) {
@@ -332,12 +445,28 @@ function createDeliveryEvidenceHarness() {
         const evidenceFile = {
           createdAt: now,
           id: `evidence-file-${state.evidenceFiles.length + 1}`,
+          lifecycleAt: null,
+          lifecycleActorId: null,
+          lifecycleStatus: "ACTIVE",
           metadata: null,
+          replacedById: null,
           uploadedAt: now,
           updatedAt: now,
           ...data
         };
         state.evidenceFiles.push(evidenceFile);
+        return withFileRelations(evidenceFile, state);
+      }),
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const evidenceFile = state.evidenceFiles.find((file) => matchesWhere(file, where));
+        return evidenceFile ? withFileRelations(evidenceFile, state) : null;
+      }),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+        const evidenceFile = state.evidenceFiles.find((row) => row.id === where.id);
+        if (!evidenceFile) {
+          throw new Error("Evidence file not found");
+        }
+        Object.assign(evidenceFile, data, { updatedAt: now });
         return withFileRelations(evidenceFile, state);
       })
     },
@@ -391,7 +520,8 @@ function createDeliveryEvidenceHarness() {
     },
     vehicleDeliveryHandover: {
       findFirst: vi.fn(async () => state.handover)
-    }
+    },
+    $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(prisma))
   };
   const service = new DeliveryEvidenceService(prisma as never);
 
@@ -448,7 +578,7 @@ function withItemRelations(item: Record<string, unknown> | null | undefined, sta
   return {
     ...item,
     files: state.evidenceFiles
-      .filter((file) => file.evidenceItemId === item.id)
+      .filter((file) => file.evidenceItemId === item.id && file.lifecycleStatus === "ACTIVE")
       .map((file) => withFileRelations(file, state)),
     reviewer: item.reviewedBy ? { id: item.reviewedBy, name: "Admin", username: "admin" } : null
   };

@@ -1,4 +1,4 @@
-import { BadRequestException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
 import { ContractStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,7 +17,11 @@ describe("HandoverWorkOrderService", () => {
       status: "DRAFT",
       vehicleDeliveryId: "delivery-1"
     });
-    expect(harness.evidenceService.initializeChecklist).toHaveBeenCalledWith(harness.orderId, "handover-1");
+    expect(harness.evidenceService.initializeChecklist).toHaveBeenCalledWith(
+      harness.orderId,
+      "handover-1",
+      expect.any(Object)
+    );
 
     await expect(
       harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id)
@@ -26,6 +30,17 @@ describe("HandoverWorkOrderService", () => {
     await harness.service.voidOrCancel(workOrder.id, "CANCELLED", harness.admin.id, "重新派单");
     const replacement = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     expect(replacement.id).toBe("work-order-2");
+  });
+
+  it("maps serializable create conflicts to a retryable domain conflict", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.prisma.$transaction.mockRejectedValueOnce({ code: "P2034" });
+
+    await expect(
+      harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id)
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(harness.handoverService.getOrCreateDraftHandover).not.toHaveBeenCalled();
+    expect(harness.evidenceService.initializeChecklist).not.toHaveBeenCalled();
   });
 
   it("assigns internal and external operators without storing plaintext external tokens", async () => {
@@ -121,6 +136,42 @@ describe("HandoverWorkOrderService", () => {
       expiredHarness.admin.id
     );
     await expect(expiredHarness.service.verifyExternalAccess(expired.accessToken)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("rejects an external token when it is revoked or reassigned during access refresh", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
+    const assigned = await harness.service.assignExternalOperator(
+      draft.id,
+      { name: "External field operator", phone: "13900001111" },
+      harness.admin.id
+    );
+    harness.prisma.vehicleHandoverWorkOrder.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(harness.service.verifyExternalAccess(assigned.accessToken)).rejects.toBeInstanceOf(
+      UnauthorizedException
+    );
+  });
+
+  it("rejects an external token revoked after the conditional access refresh", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
+    const assigned = await harness.service.assignExternalOperator(
+      draft.id,
+      { name: "External field operator", phone: "13900001111" },
+      harness.admin.id
+    );
+    harness.prisma.vehicleHandoverWorkOrder.findUnique.mockImplementationOnce(async () => {
+      Object.assign(harness.state.workOrders[0]!, {
+        accessTokenRevokedAt: harness.now,
+        reviewVersion: 2
+      });
+      return harness.state.workOrders[0]!;
+    });
+
+    await expect(harness.service.verifyExternalAccess(assigned.accessToken)).rejects.toBeInstanceOf(
+      UnauthorizedException
+    );
   });
 
   it("lists only active external work orders assigned to the field operator phone with safe summaries", async () => {
@@ -377,7 +428,7 @@ describe("HandoverWorkOrderService", () => {
     ).rejects.toThrow(UnauthorizedException);
   });
 
-  it("uploads and attaches evidence files through field-session ownership without exposing object storage fields", async () => {
+  it("atomically uploads and attaches evidence through field-session ownership without exposing storage fields", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push({
       ...baseWorkOrder(harness),
@@ -393,25 +444,16 @@ describe("HandoverWorkOrderService", () => {
       orderId: harness.orderId
     });
 
-    const uploaded = await harness.service.uploadFieldAccessibleEvidenceFile(
-      "work-order-visible",
-      "13800000000",
-      [uploadFile("front.jpg", "image/jpeg")]
-    );
-    const attached = await harness.service.attachFieldAccessibleEvidenceFile(
+    const attached = await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
       "work-order-visible",
       "13800000000",
       "evidence-item-owned",
-      { fileId: uploaded.fileId, mediaType: "PHOTO" }
+      [uploadFile("front.jpg", "image/jpeg")],
+      {},
+      "field-session-1"
     );
 
-    expect(uploaded).toEqual({
-      fileId: "file-1",
-      fileName: "front.jpg",
-      mimeType: "image/jpeg",
-      sizeBytes: 5
-    });
-    expect(JSON.stringify(uploaded)).not.toContain("delivery-evidence/work-order-visible");
+    expect(JSON.stringify(attached)).not.toContain("delivery-evidence/work-order-visible");
     expect(harness.storageService.putDeliveryEvidenceFile).toHaveBeenCalledWith(
       expect.objectContaining({
         originalName: "front.jpg",
@@ -422,17 +464,351 @@ describe("HandoverWorkOrderService", () => {
       "evidence-item-owned",
       "file-1",
       "PHOTO",
-      undefined
+      undefined,
+      expect.any(Object),
+      "field-session-1"
     );
     expect(attached).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
     await expect(
-      harness.service.attachFieldAccessibleEvidenceFile(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
         "work-order-visible",
         "13900000000",
         "evidence-item-owned",
-        { fileId: "file-1", mediaType: "PHOTO" }
+        [uploadFile("unauthorized.jpg", "image/jpeg")],
+        {},
+        "other-field-session"
       )
     ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("uploads and replaces singleton evidence through one field operation", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+
+    const result = await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [uploadFile("front-replacement.jpg", "image/jpeg")],
+      { replaceEvidenceFileId: "evidence-file-original" },
+      "field-session-1"
+    );
+
+    expect(harness.evidenceService.replaceEvidenceFile).toHaveBeenCalledWith(
+      "evidence-item-owned",
+      "evidence-file-original",
+      "file-1",
+      "PHOTO",
+      undefined,
+      expect.any(Object),
+      "field-session-1"
+    );
+    expect(result).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
+    expect(harness.state.events).toContainEqual(expect.objectContaining({
+      eventType: "EVIDENCE_FILE_REPLACED"
+    }));
+  });
+
+  it("uses the disk-backed storage path for field evidence uploads", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+
+    await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [{
+        mimetype: "video/mp4",
+        originalname: "walkaround.mp4",
+        path: "C:/tmp/nonexistent-multer-upload.tmp",
+        size: 1024
+      }],
+      {},
+      "field-session-1"
+    );
+
+    expect(harness.storageService.putDeliveryEvidenceFileFromPath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: "C:/tmp/nonexistent-multer-upload.tmp",
+        sizeBytes: 1024
+      })
+    );
+    expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
+  });
+
+  it("enforces 5 MiB photo and 200 MiB video upload limits before storage", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+
+    await expect(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13800000000",
+        "evidence-item-owned",
+        [uploadFile("too-large.jpg", "image/jpeg", 5 * 1024 * 1024 + 1)],
+        {},
+        "field-session-1"
+      )
+    ).rejects.toThrow("图片不能超过 5MB");
+    await expect(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13800000000",
+        "evidence-item-owned",
+        [uploadFile("too-large.mp4", "video/mp4", 200 * 1024 * 1024 + 1)],
+        {},
+        "field-session-1"
+      )
+    ).rejects.toThrow("视频不能超过 200MB");
+    expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
+  });
+
+  it("accepts iPhone HEIC and MOV files when the browser omits MIME types", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+
+    await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [uploadFile("vehicle-front.heic", "")],
+      {},
+      "field-session-1"
+    );
+    await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [uploadFile("vehicle-walkaround.mov", "")],
+      {},
+      "field-session-1"
+    );
+
+    expect(harness.storageService.putDeliveryEvidenceFile).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ contentType: "image/heic", originalName: "vehicle-front.heic" })
+    );
+    expect(harness.storageService.putDeliveryEvidenceFile).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ contentType: "video/quicktime", originalName: "vehicle-walkaround.mov" })
+    );
+    expect(harness.evidenceService.attachEvidenceFile).toHaveBeenNthCalledWith(
+      1,
+      "evidence-item-owned",
+      "file-1",
+      "PHOTO",
+      undefined,
+      expect.any(Object),
+      "field-session-1"
+    );
+    expect(harness.evidenceService.attachEvidenceFile).toHaveBeenNthCalledWith(
+      2,
+      "evidence-item-owned",
+      "file-2",
+      "VIDEO",
+      undefined,
+      expect.any(Object),
+      "field-session-1"
+    );
+  });
+
+  it("rolls back the upload relation and removes only the new object when audit persistence fails", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+    harness.prisma.vehicleHandoverEvent.create.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    await expect(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13800000000",
+        "evidence-item-owned",
+        [uploadFile("front.jpg", "image/jpeg")],
+        {},
+        "field-session-1"
+      )
+    ).rejects.toThrow("audit unavailable");
+
+    expect(harness.state.fileObjects).toEqual([]);
+    expect(harness.state.workOrders[0]?.reviewVersion).toBe(0);
+    expect(harness.storageService.deleteObject).toHaveBeenCalledWith(
+      "application-materials",
+      expect.stringContaining("delivery-evidence/work-order-visible")
+    );
+  });
+
+  it("rejects a stale concurrent upload before linking the stored object", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+    harness.prisma.vehicleHandoverWorkOrder.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13800000000",
+        "evidence-item-owned",
+        [uploadFile("front.jpg", "image/jpeg")],
+        {},
+        "field-session-1"
+      )
+    ).rejects.toThrow(ConflictException);
+
+    expect(harness.evidenceService.attachEvidenceFile).not.toHaveBeenCalled();
+    expect(harness.state.fileObjects).toEqual([]);
+    expect(harness.storageService.deleteObject).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires evidence files to remain ACTIVE before previewing or downloading them", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      id: "work-order-visible",
+      status: "FIELD_IN_PROGRESS"
+    });
+
+    await expect(
+      harness.service.previewEvidenceFile("work-order-visible", "evidence-file-removed")
+    ).rejects.toThrow();
+
+    expect(harness.prisma.vehicleDeliveryEvidenceFile.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "evidence-file-removed",
+          lifecycleStatus: "ACTIVE"
+        })
+      })
+    );
+  });
+
+  it("records legacy token operators as display names instead of UUID actor ids", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
+    const assigned = await harness.service.assignExternalOperator(
+      draft.id,
+      {
+        name: "External field operator",
+        phone: "13900001111"
+      },
+      harness.admin.id
+    );
+
+    await harness.service.startFieldWorkByToken(assigned.accessToken);
+
+    expect(harness.state.events).toContainEqual(expect.objectContaining({
+      actorDisplay: "External field operator",
+      actorId: null,
+      eventType: "FIELD_STARTED"
+    }));
+  });
+
+  it("rejects SVG and mismatched active-content MIME types before storage", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "evidence-item-owned",
+      orderId: harness.orderId
+    });
+
+    await expect(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13800000000",
+        "evidence-item-owned",
+        [uploadFile("active.svg", "image/svg+xml")],
+        {},
+        "field-session-1"
+      )
+    ).rejects.toThrow("现场证据仅支持安全的图片或视频文件");
+    await expect(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13800000000",
+        "evidence-item-owned",
+        [uploadFile("disguised.jpg", "text/html")],
+        {},
+        "field-session-1"
+      )
+    ).rejects.toThrow("现场证据仅支持安全的图片或视频文件");
+    expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
   });
 
   it("declares no visible damage and submits field evidence without Stage 2 side effects", async () => {
@@ -464,7 +840,8 @@ describe("HandoverWorkOrderService", () => {
       harness.orderId,
       undefined,
       "handover-1",
-      "现场确认"
+      "现场确认",
+      expect.any(Object)
     );
     expect(submitted).toMatchObject({
       fieldSubmittedAt: expect.any(Date),
@@ -536,7 +913,8 @@ describe("HandoverWorkOrderService", () => {
     expect(harness.evidenceService.retractNoVisibleDamageDeclaration).toHaveBeenCalledWith(
       harness.orderId,
       "field-session-1",
-      "handover-1"
+      "handover-1",
+      expect.any(Object)
     );
   });
 
@@ -620,6 +998,18 @@ describe("HandoverWorkOrderService", () => {
     }
   });
 
+  it("rejects ops review decisions unless the work order is pending ops review", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push(baseWorkOrder(harness));
+
+    await expect(
+      harness.service.markOpsReviewApproved("work-order-1", harness.admin.id)
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      harness.service.markOpsReviewRejected("work-order-1", harness.admin.id)
+    ).rejects.toThrow(BadRequestException);
+  });
+
   it("allows ops review pending after customer signing, platform seal, or field completion", async () => {
     const allowedStatuses = ["CUSTOMER_SIGNED", "PLATFORM_SEALED", "FIELD_COMPLETED", "OPS_REVIEW_PENDING", "OPS_REVIEWED"];
 
@@ -670,16 +1060,23 @@ describe("HandoverWorkOrderService", () => {
       harness.service.submitFieldAccessibleEvidence("work-order-1", "13800000000", "field-session-1")
     ).rejects.toThrow(BadRequestException);
 
-    await (
-      harness.service as HandoverWorkOrderService & {
-        acknowledgeCustomerObjection: (id: string, actorId: string, note?: string) => Promise<unknown>;
-      }
-    ).acknowledgeCustomerObjection("work-order-1", harness.admin.id, "已受理");
-    await (
-      harness.service as HandoverWorkOrderService & {
-        requestCustomerObjectionResubmission: (id: string, actorId: string, note?: string) => Promise<unknown>;
-      }
-    ).requestCustomerObjectionResubmission("work-order-1", harness.admin.id, "请现场重拍右前轮毂");
+    await harness.service.acknowledgeCustomerObjection("work-order-1", harness.admin.id, "已受理");
+    await harness.service.requestCustomerObjectionResubmission("work-order-1", harness.admin.id, {
+      note: "请现场重拍右前轮毂",
+      targetEvidenceItemIds: [],
+      targetFieldKeys: ["fieldNotes"]
+    });
+
+    await expect(
+      harness.service.submitFieldAccessibleEvidence("work-order-1", "13800000000", "field-session-1")
+    ).rejects.toThrow("请至少更新一项后台要求复检的现场资料");
+
+    await harness.service.updateFieldAccessibleFacts(
+      "work-order-1",
+      "13800000000",
+      { fieldNotes: "右前轮毂已完成复检" },
+      "field-session-1"
+    );
 
     const resubmitted = await harness.service.submitFieldAccessibleEvidence(
       "work-order-1",
@@ -694,16 +1091,19 @@ describe("HandoverWorkOrderService", () => {
     expect(resubmitted.metadata).toMatchObject({
       handoverReviewAdminStatus: "RESUBMITTED_PENDING_ADMIN"
     });
+    expect(resubmitted).toMatchObject({
+      adminReviewStatus: "RESUBMITTED_PENDING_ADMIN"
+    });
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("现场资料已重新提交");
     await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).rejects.toThrow(
       "客户已提交异议"
     );
 
-    await (
-      harness.service as HandoverWorkOrderService & {
-        sendCustomerObjectionBackToReview: (id: string, actorId: string, note?: string) => Promise<unknown>;
-      }
-    ).sendCustomerObjectionBackToReview("work-order-1", harness.admin.id, "已送回客户复核");
+    await harness.service.sendCustomerObjectionBackToReview(
+      "work-order-1",
+      harness.admin.id,
+      "已送回客户复核"
+    );
 
     expect(harness.state.workOrders[0]!).toMatchObject({
       customerObjectedAt: null,
@@ -726,6 +1126,84 @@ describe("HandoverWorkOrderService", () => {
     await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).resolves.toMatchObject({
       status: "CUSTOMER_CONFIRMED"
     });
+    expect(harness.state.events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "CUSTOMER_OBJECTED",
+      "OBJECTION_ACKNOWLEDGED",
+      "RESUBMISSION_REQUESTED",
+      "FIELD_FACTS_UPDATED",
+      "FIELD_RESUBMITTED",
+      "SENT_BACK_TO_CUSTOMER_REVIEW",
+      "CUSTOMER_CONFIRMED"
+    ]));
+  });
+
+  it("rejects skipped, repeated, and regressive objection transitions", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      operatorType: "EXTERNAL"
+    });
+    await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议");
+
+    await expect(
+      harness.service.requestCustomerObjectionResubmission("work-order-1", harness.admin.id, {
+        note: "请重检",
+        targetEvidenceItemIds: [],
+        targetFieldKeys: []
+      })
+    ).rejects.toThrow("请先受理客户异议");
+
+    await harness.service.acknowledgeCustomerObjection("work-order-1", harness.admin.id, "已受理");
+    await expect(
+      harness.service.acknowledgeCustomerObjection("work-order-1", harness.admin.id, "重复受理")
+    ).rejects.toThrow("当前异议状态不能重复受理");
+    await expect(
+      harness.service.sendCustomerObjectionBackToReview("work-order-1", harness.admin.id, "跳步送回")
+    ).rejects.toThrow("现场资料重新提交后，后台才能送回客户复核");
+  });
+
+  it("rejects stale objection transitions without writing an audit event", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议");
+    const eventCount = harness.state.events.length;
+    harness.prisma.vehicleHandoverWorkOrder.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      harness.service.acknowledgeCustomerObjection("work-order-1", harness.admin.id)
+    ).rejects.toThrow("交接复核状态已更新，请刷新后重试");
+
+    expect(harness.state.events).toHaveLength(eventCount);
+    expect(harness.state.workOrders[0]?.adminReviewStatus).toBe("NONE");
+  });
+
+  it("lists only actionable customer objections in the Admin review queue", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push(
+      {
+        ...baseWorkOrder(harness),
+        adminReviewStatus: "ACKNOWLEDGED",
+        customerObjectedAt: harness.now,
+        customerObjectionReason: "车辆外观",
+        id: "work-order-objected",
+        status: "CUSTOMER_OBJECTED"
+      },
+      {
+        ...baseWorkOrder(harness),
+        adminReviewStatus: "RESOLVED",
+        customerConfirmedAt: harness.now,
+        id: "work-order-confirmed",
+        status: "CUSTOMER_CONFIRMED"
+      }
+    );
+
+    const queue = await harness.service.listAdminReviewQueue();
+
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({
+      id: "work-order-objected",
+      objection: { reason: "车辆外观" }
+    });
   });
 
   it("keeps field completion tied to customer signing and delivery confirmation tied to completed Stage 2 signing", async () => {
@@ -744,6 +1222,40 @@ describe("HandoverWorkOrderService", () => {
     harness.state.handover.archiveStatus = "FAILED";
     await harness.service.markPlatformSealed("work-order-1", new Date("2026-07-21T04:12:00.000Z"), harness.admin.id);
     await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
+    await harness.service.markFieldCompleted("work-order-1", new Date("2026-07-21T04:15:00.000Z"), harness.admin.id);
+    expect(harness.state.events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "CUSTOMER_SIGNED",
+      "PLATFORM_SEALED",
+      "FIELD_COMPLETED"
+    ]));
+  });
+
+  it("rejects signing and completion state jumps from a draft work order", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push(baseWorkOrder(harness));
+
+    await expect(
+      harness.service.markCustomerSigned("work-order-1", harness.now, harness.admin.id)
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      harness.service.markPlatformSealed("work-order-1", harness.now, harness.admin.id)
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      harness.service.markFieldCompleted("work-order-1", harness.now, harness.admin.id)
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("requires an explicit customer-signed state before platform sealing", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      status: "SIGNING"
+    });
+
+    await expect(
+      harness.service.markPlatformSealed("work-order-1", harness.now, harness.admin.id)
+    ).rejects.toThrow(BadRequestException);
+    expect(harness.state.events).toEqual([]);
   });
 });
 
@@ -775,6 +1287,7 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
     accessTokenExpiresAt: null,
     accessTokenHash: null,
     accessTokenRevokedAt: null,
+    adminReviewStatus: "NONE",
     accessoryChecklist: null,
     assignedInternalUserId: null,
     createdAt: harness.now,
@@ -807,6 +1320,7 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
     opsReviewedAt: null,
     opsReviewedBy: null,
     orderId: harness.orderId,
+    reviewVersion: 0,
     scheduledAt: null,
     status: "DRAFT",
     updatedAt: harness.now,
@@ -869,6 +1383,8 @@ function createHandoverWorkOrderHarness() {
       scheduledAt: new Date("2026-07-22T02:00:00.000Z")
     },
     evidenceItems: [] as Array<Record<string, unknown>>,
+    evidenceFiles: [] as Array<Record<string, unknown>>,
+    events: [] as Array<Record<string, unknown>>,
     fileObjects: [] as Array<Record<string, unknown>>,
     reviewAttempts: [] as Array<Record<string, unknown>>,
     workOrders: [] as Array<Record<string, unknown>>
@@ -911,6 +1427,9 @@ function createHandoverWorkOrderHarness() {
         state.evidenceItems.find((item) => matchesEvidenceItemWhere(item, where)) ?? null
       )
     },
+    vehicleDeliveryEvidenceFile: {
+      findFirst: vi.fn(async () => null)
+    },
     vehicleHandoverWorkOrder: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const workOrder = {
@@ -935,9 +1454,30 @@ function createHandoverWorkOrderHarness() {
         if (!workOrder) {
           throw new Error("work order not found");
         }
-        Object.assign(workOrder, data, { updatedAt: now });
+        Object.assign(workOrder, applyAtomicUpdates(workOrder, data), { updatedAt: now });
         return workOrder;
+      }),
+      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+        const rows = state.workOrders.filter((workOrder) => matchesWorkOrderWhere(workOrder, where));
+        for (const workOrder of rows) {
+          Object.assign(workOrder, applyAtomicUpdates(workOrder, data), { updatedAt: now });
+        }
+        return { count: rows.length };
       })
+    },
+    vehicleHandoverEvent: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const event = {
+          ...data,
+          createdAt: now,
+          id: `handover-event-${state.events.length + 1}`
+        };
+        state.events.push(event);
+        return event;
+      }),
+      findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.events.filter((event) => matchesHandoverEventWhere(event, where))
+      )
     },
     vehicleHandoverReviewAttempt: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -965,9 +1505,32 @@ function createHandoverWorkOrderHarness() {
         Object.assign(attempt, data, { updatedAt: now });
         return attempt;
       })
-    }
+    },
+    $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => {
+      const snapshots = {
+        events: structuredClone(state.events),
+        fileObjects: structuredClone(state.fileObjects),
+        reviewAttempts: structuredClone(state.reviewAttempts),
+        workOrders: structuredClone(state.workOrders)
+      };
+      try {
+        return await callback(prisma);
+      } catch (error) {
+        state.events.splice(0, state.events.length, ...snapshots.events);
+        state.fileObjects.splice(0, state.fileObjects.length, ...snapshots.fileObjects);
+        state.reviewAttempts.splice(0, state.reviewAttempts.length, ...snapshots.reviewAttempts);
+        state.workOrders.splice(0, state.workOrders.length, ...snapshots.workOrders);
+        throw error;
+      }
+    })
   };
   const storageService = {
+    deleteObject: vi.fn(async () => undefined),
+    putDeliveryEvidenceFileFromPath: vi.fn(async (input: Record<string, unknown>) => ({
+      bucket: "application-materials",
+      objectKey: `delivery-evidence/${input.workOrderId}/2026/video.mp4`,
+      stored: { driver: "local", key: "local-stream-key", size: input.sizeBytes }
+    })),
     putDeliveryEvidenceFile: vi.fn(async (input: Record<string, unknown>) => ({
       bucket: "application-materials",
       objectKey: `delivery-evidence/${input.workOrderId}/2026/front.jpg`,
@@ -1047,7 +1610,23 @@ function createEvidenceService() {
     })),
     getChecklist: vi.fn(async () => checklist),
     initializeChecklist: vi.fn(async () => ({ items: [] })),
+    removeEvidenceFile: vi.fn(async (itemId: string) => ({
+      fileCount: 0,
+      id: itemId,
+      status: "NOT_STARTED"
+    })),
+    replaceEvidenceFile: vi.fn(async (itemId: string) => ({
+      fileCount: 1,
+      id: itemId,
+      status: "UPLOADED"
+    })),
     retractNoVisibleDamageDeclaration: vi.fn(async () => null),
+    validateEvidenceFileMutation: vi.fn(async (itemId: string) => ({
+      allowsMultiple: false,
+      currentFileCount: 1,
+      evidenceType: "VEHICLE_FRONT",
+      itemId
+    })),
     validateFieldEvidenceComplete: vi.fn(async () => fieldReadiness),
     setChecklist(value: Record<string, unknown>) {
       checklist = value;
@@ -1103,11 +1682,39 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
     if (key === "status" && expected && typeof expected === "object" && "notIn" in expected) {
       return !(expected.notIn as unknown[]).includes(workOrder.status);
     }
+    if (key === "status") {
+      return workOrder.status === expected;
+    }
+    if (key === "customerObjectedAt" && expected && typeof expected === "object" && "not" in expected) {
+      return expected.not === null ? workOrder.customerObjectedAt !== null : true;
+    }
     if (key === "handoverType") {
       return workOrder.handoverType === expected;
     }
+    if (key === "adminReviewStatus") {
+      return workOrder.adminReviewStatus === expected;
+    }
+    if (key === "reviewVersion") {
+      return workOrder.reviewVersion === expected;
+    }
     return true;
   });
+}
+
+function matchesHandoverEventWhere(event: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, expected]) => event[key] === expected);
+}
+
+function applyAtomicUpdates(
+  current: Record<string, unknown>,
+  data: Record<string, unknown>
+): Record<string, unknown> {
+  const next = { ...data };
+  const reviewVersion = data.reviewVersion;
+  if (reviewVersion && typeof reviewVersion === "object" && "increment" in reviewVersion) {
+    next.reviewVersion = Number(current.reviewVersion ?? 0) + Number(reviewVersion.increment);
+  }
+  return next;
 }
 
 function matchesReviewAttemptWhere(attempt: Record<string, unknown>, where: Record<string, unknown>): boolean {
@@ -1131,11 +1738,11 @@ function sortReviewAttempts(rows: Array<Record<string, unknown>>, orderBy?: Reco
   });
 }
 
-function uploadFile(originalname: string, mimetype: string) {
+function uploadFile(originalname: string, mimetype: string, size = 5) {
   return {
     buffer: Buffer.from("image"),
     mimetype,
     originalname,
-    size: 5
+    size
   };
 }

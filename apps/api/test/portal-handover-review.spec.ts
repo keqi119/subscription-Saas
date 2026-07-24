@@ -473,8 +473,25 @@ function createPortalReviewHarness() {
         }
         Object.assign(workOrder, data, { updatedAt: now });
         return workOrder;
+      }),
+      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+        const workOrder = state.workOrders.find((item) =>
+          item.id === where.id && item.reviewVersion === where.reviewVersion
+        );
+        if (!workOrder) {
+          return { count: 0 };
+        }
+        const reviewVersion = data.reviewVersion;
+        Object.assign(workOrder, data, {
+          reviewVersion: reviewVersion && typeof reviewVersion === "object" && "increment" in reviewVersion
+            ? Number(workOrder.reviewVersion ?? 0) + Number(reviewVersion.increment)
+            : workOrder.reviewVersion,
+          updatedAt: now
+        });
+        return { count: 1 };
       })
-    }
+    },
+    $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(prisma))
   };
 
   const evidenceService = {
@@ -516,6 +533,7 @@ function completeReviewWorkOrder(
   overrides: Record<string, unknown> = {}
 ) {
   return {
+    adminReviewStatus: "NONE",
     accessoryChecklist: { chargingCable: true, keys: 2 },
     createdAt: harness.now,
     customerConfirmedAt: null,
@@ -544,6 +562,7 @@ function completeReviewWorkOrder(
     noVisibleDamageDeclared: true,
     operatorType: "EXTERNAL",
     orderId: harness.orderId,
+    reviewVersion: 0,
     scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
     status: "CUSTOMER_REVIEWING",
     updatedAt: harness.now,

@@ -1,4 +1,6 @@
-import { ApiError, apiFetch } from "./api";
+import { API_BASE_URL, ApiError, apiFetch } from "./api";
+
+const FIELD_EVIDENCE_UPLOAD_TIMEOUT_MS = 20 * 60 * 1000;
 
 export interface FieldHandoverCodeResponse {
   expiresIn: number;
@@ -55,6 +57,9 @@ export interface FieldHandoverEvidenceChecklist {
 export type FieldHandoverEvidenceMediaType = "PHOTO" | "VIDEO" | string;
 
 export interface FieldHandoverEvidenceFile {
+  displayName?: string | null;
+  downloadUrl?: string | null;
+  evidenceFileId?: string | null;
   file?: {
     id?: string | null;
     mimeType?: string | null;
@@ -62,11 +67,17 @@ export interface FieldHandoverEvidenceFile {
     sizeBytes?: number | string | null;
   } | null;
   id?: string | null;
+  lifecycleStatus?: string | null;
   mediaType?: FieldHandoverEvidenceMediaType | null;
+  mimeType?: string | null;
+  previewAvailable?: boolean | null;
+  previewUrl?: string | null;
+  sizeBytes?: number | string | null;
   uploadedAt?: string | null;
 }
 
 export interface FieldHandoverEvidenceItem {
+  allowsMultiple?: boolean | null;
   allowedMediaTypes?: FieldHandoverEvidenceMediaType[];
   conditionKey?: string | null;
   conditionValue?: string | null;
@@ -104,6 +115,17 @@ export interface FieldHandoverFieldFacts {
 export interface FieldHandoverWorkOrderDetail extends FieldHandoverWorkOrderListItem {
   evidenceChecklist?: FieldHandoverEvidenceChecklist | null;
   fieldFacts?: FieldHandoverFieldFacts | null;
+  reviewContext?: FieldHandoverReviewContext | null;
+}
+
+export interface FieldHandoverReviewContext {
+  adminStatus?: string | null;
+  adminNote?: string | null;
+  attemptNo?: number | null;
+  customerObjectionDetails?: string | null;
+  customerObjectionReason?: string | null;
+  requestedEvidenceItems?: Array<{ id: string; title: string }>;
+  requestedFieldKeys?: string[];
 }
 
 export interface UpdateFieldHandoverFactsInput {
@@ -116,18 +138,6 @@ export interface UpdateFieldHandoverFactsInput {
   handoverMileageKm?: number | null;
   noVisibleDamageDeclared?: boolean | null;
   scheduledAt?: string | null;
-}
-
-export interface AttachFieldHandoverEvidenceFileInput {
-  fileId: string;
-  mediaType: FieldHandoverEvidenceMediaType;
-}
-
-export interface FieldHandoverUploadedFile {
-  fileId: string;
-  fileName?: string | null;
-  mimeType?: string | null;
-  sizeBytes?: number | null;
 }
 
 export interface FieldHandoverReadiness {
@@ -187,37 +197,43 @@ export function updateFieldHandoverFacts(id: string, input: UpdateFieldHandoverF
   });
 }
 
-export async function uploadFieldHandoverEvidenceFile(id: string, file: File): Promise<FieldHandoverUploadedFile> {
-  const formData = new FormData();
-  formData.append("files", file, file.name);
-  const response = await apiFetch<FieldHandoverUploadedFile & { objectKey?: string }>(
-    `/field/handover/work-orders/${encodeURIComponent(id)}/evidence-files`,
-    {
-      body: formData,
-      method: "POST"
-    }
-  );
-
-  return {
-    fileId: response.fileId,
-    fileName: response.fileName,
-    mimeType: response.mimeType,
-    sizeBytes: response.sizeBytes ?? null
-  };
-}
-
-export function attachFieldHandoverEvidenceFile(
+export async function uploadAndAttachFieldHandoverEvidenceFile(
   id: string,
   itemId: string,
-  input: AttachFieldHandoverEvidenceFileInput
+  file: File,
+  replaceEvidenceFileId?: string
 ) {
+  const formData = new FormData();
+  formData.append("files", file, file.name);
+  if (replaceEvidenceFileId) {
+    formData.append("replaceEvidenceFileId", replaceEvidenceFileId);
+  }
   return apiFetch<FieldHandoverEvidenceItem>(
-    `/field/handover/work-orders/${encodeURIComponent(id)}/evidence/${encodeURIComponent(itemId)}/files`,
+    `/field/handover/work-orders/${encodeURIComponent(id)}/evidence/${encodeURIComponent(itemId)}/upload`,
     {
-      body: JSON.stringify(input),
-      method: "POST"
+      body: formData,
+      method: "POST",
+      timeoutMs: FIELD_EVIDENCE_UPLOAD_TIMEOUT_MS
     }
   );
+}
+
+export function removeFieldHandoverEvidenceFile(id: string, itemId: string, evidenceFileId: string) {
+  return apiFetch<FieldHandoverEvidenceItem>(
+    `/field/handover/work-orders/${encodeURIComponent(id)}/evidence/${encodeURIComponent(itemId)}/files/${encodeURIComponent(evidenceFileId)}`,
+    { method: "DELETE" }
+  );
+}
+
+export function buildFieldHandoverFileUrl(path: null | string | undefined) {
+  if (!path) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+  const normalized = path.startsWith("/api/") ? path.slice(4) : path;
+  return `${API_BASE_URL}${normalized.startsWith("/") ? normalized : `/${normalized}`}`;
 }
 
 export function declareFieldHandoverNoVisibleDamage(id: string, remark?: string) {

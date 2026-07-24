@@ -3,28 +3,32 @@
 import {
   ArrowLeftOutlined,
   CheckCircleOutlined,
+  DeleteOutlined,
+  DownloadOutlined,
+  EyeOutlined,
   ExclamationCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
   UploadOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Flex, Input, InputNumber, Radio, Spin, Tag, Typography } from "antd";
+import { Alert, App, Button, Flex, Input, InputNumber, Popconfirm, Radio, Spin, Tag, Tooltip, Typography } from "antd";
 import { useParams, useRouter } from "next/navigation";
 import { type CSSProperties, type ChangeEvent, type ReactNode, useCallback, useEffect, useState } from "react";
 
 import {
-  attachFieldHandoverEvidenceFile,
+  buildFieldHandoverFileUrl,
   declareFieldHandoverNoVisibleDamage,
   getFieldHandoverActionErrorMessage,
   getFieldHandoverReadiness,
   getFieldHandoverSession,
   getFieldHandoverWorkOrder,
   isFieldHandoverSessionExpired,
+  removeFieldHandoverEvidenceFile,
   startFieldHandoverWorkOrder,
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts,
-  uploadFieldHandoverEvidenceFile,
+  uploadAndAttachFieldHandoverEvidenceFile,
   type FieldHandoverEvidenceItem,
   type FieldHandoverEvidenceMediaType,
   type FieldHandoverWorkOrderDetail
@@ -42,6 +46,9 @@ import {
 const SUBMITTED_TEXT = "现场交接资料已提交，等待客户确认";
 const RESUBMITTED_PENDING_ADMIN_TEXT = "现场交接资料已重新提交，等待后台送回客户复核";
 const LOCKED_TEXT = "当前交接任务已提交或不可继续编辑";
+const MAX_DAMAGE_CLOSEUP_FILES = 20;
+const MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
+const MAX_VIDEO_SIZE_BYTES = 200 * 1024 * 1024;
 
 export default function FieldHandoverTaskDetailPage() {
   const params = useParams<{ id: string }>();
@@ -53,6 +60,7 @@ export default function FieldHandoverTaskDetailPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [facts, setFacts] = useState<FieldHandoverFactsDraft>({});
   const [loading, setLoading] = useState(true);
+  const [removingFileId, setRemovingFileId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
 
@@ -92,6 +100,7 @@ export default function FieldHandoverTaskDetailPage() {
 
   const detailView = detail ? buildFieldHandoverDetailView(detail) : null;
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
+  const reviewContext = detail?.reviewContext;
 
   async function startWork() {
     await runAction("start", async () => {
@@ -139,8 +148,8 @@ export default function FieldHandoverTaskDetailPage() {
     });
   }
 
-  async function uploadEvidence(itemViewId: string, file: File | undefined) {
-    if (!detail || !file) {
+  async function uploadEvidence(itemViewId: string, files: File[]) {
+    if (!detail || files.length === 0) {
       return;
     }
     const item = findEvidenceItem(detail, itemViewId);
@@ -148,26 +157,55 @@ export default function FieldHandoverTaskDetailPage() {
       setBlockers(["资料项不存在，请刷新后重试"]);
       return;
     }
-    const mediaType = resolveMediaType(file);
-    if (!mediaType || !isAllowedMediaType(item, mediaType)) {
-      setBlockers(["请选择符合要求的图片/视频"]);
+    const selectedFiles = item.allowsMultiple ? files : files.slice(0, 1);
+    if (item.allowsMultiple && (item.files?.length ?? 0) + selectedFiles.length > MAX_DAMAGE_CLOSEUP_FILES) {
+      setBlockers([`损伤近拍最多上传 ${MAX_DAMAGE_CLOSEUP_FILES} 个文件`]);
       return;
+    }
+    for (const file of selectedFiles) {
+      const validationError = validateEvidenceFile(item, file);
+      if (validationError) {
+        setBlockers([validationError]);
+        return;
+      }
     }
 
     try {
       setUploadingItemId(item.id);
       setBlockers([]);
-      const uploaded = await uploadFieldHandoverEvidenceFile(params.id, file);
-      await attachFieldHandoverEvidenceFile(params.id, item.id, {
-        fileId: uploaded.fileId,
-        mediaType
-      });
-      void message.success("资料已上传");
+      const replaceEvidenceFileId = item.allowsMultiple
+        ? undefined
+        : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
+      for (const [index, file] of selectedFiles.entries()) {
+        await uploadAndAttachFieldHandoverEvidenceFile(
+          params.id,
+          item.id,
+          file,
+          index === 0 ? replaceEvidenceFileId : undefined
+        );
+      }
+      void message.success(item.allowsMultiple && selectedFiles.length > 1
+        ? `已上传 ${selectedFiles.length} 个文件`
+        : replaceEvidenceFileId ? "资料已替换" : "资料已上传");
       await loadDetail();
     } catch (error) {
       handleActionError(error, "上传失败，请重试");
     } finally {
       setUploadingItemId(null);
+    }
+  }
+
+  async function removeEvidence(itemId: string, evidenceFileId: string) {
+    try {
+      setRemovingFileId(evidenceFileId);
+      setBlockers([]);
+      await removeFieldHandoverEvidenceFile(params.id, itemId, evidenceFileId);
+      void message.success("资料已删除");
+      await loadDetail();
+    } catch (error) {
+      handleActionError(error, "删除失败，请重试");
+    } finally {
+      setRemovingFileId(null);
     }
   }
 
@@ -236,7 +274,14 @@ export default function FieldHandoverTaskDetailPage() {
           </Flex>
         ) : null}
 
-        {!loading && errorMessage ? <Alert message={errorMessage} showIcon type="error" /> : null}
+        {!loading && errorMessage ? (
+          <Alert
+            action={<Button onClick={() => void loadDetail()} size="small">重新加载</Button>}
+            message={errorMessage}
+            showIcon
+            type="error"
+          />
+        ) : null}
 
         {!loading && detailView && captureView ? (
           <Flex gap={12} vertical>
@@ -263,6 +308,25 @@ export default function FieldHandoverTaskDetailPage() {
             </article>
 
             {captureView.lockedMessage ? <Alert message={captureView.lockedMessage || LOCKED_TEXT} showIcon type="info" /> : null}
+            {reviewContext?.customerObjectionReason ? (
+              <Alert
+                description={[
+                  reviewContext.customerObjectionDetails,
+                  reviewContext.adminNote
+                    ? `后台复检要求：${reviewContext.adminNote}`
+                    : null,
+                  reviewContext.requestedEvidenceItems?.length
+                    ? `复检资料：${reviewContext.requestedEvidenceItems.map((item) => item.title).join("、")}`
+                    : null,
+                  reviewContext.requestedFieldKeys?.length
+                    ? `复检现场信息：${reviewContext.requestedFieldKeys.map(formatReviewFieldKey).join("、")}`
+                    : null
+                ].filter(Boolean).join("；")}
+                message={`客户异议：${reviewContext.customerObjectionReason}`}
+                showIcon
+                type="warning"
+              />
+            ) : null}
             {successMessage ? <Alert icon={<CheckCircleOutlined />} message={successMessage} showIcon type="success" /> : null}
             {blockers.length ? <BlockerAlert blockers={blockers} /> : null}
 
@@ -379,15 +443,83 @@ export default function FieldHandoverTaskDetailPage() {
                       </Typography.Text>
                     ) : null}
 
+                    {item.files.length > 0 ? (
+                      <Flex gap={8} style={{ marginTop: 10 }} vertical>
+                        {item.files.map((file) => (
+                          <Flex
+                            align="center"
+                            gap={8}
+                            justify="space-between"
+                            key={file.evidenceFileId}
+                            style={{ borderTop: "1px solid #e2e8f0", paddingTop: 8 }}
+                          >
+                            <div style={{ minWidth: 0 }}>
+                              <Typography.Text ellipsis style={{ display: "block", maxWidth: 260 }}>
+                                {file.displayName}
+                              </Typography.Text>
+                              <Typography.Text style={{ color: "#718096", fontSize: 12 }}>
+                                {file.sizeText}
+                              </Typography.Text>
+                            </div>
+                            <Flex gap={4}>
+                              {file.previewUrl ? (
+                                <Tooltip title="查看资料">
+                                  <Button
+                                    aria-label="查看资料"
+                                    href={buildFieldHandoverFileUrl(file.previewUrl) ?? undefined}
+                                    icon={<EyeOutlined />}
+                                    target="_blank"
+                                    type="text"
+                                  />
+                                </Tooltip>
+                              ) : null}
+                              {file.downloadUrl ? (
+                                <Tooltip title="下载资料">
+                                  <Button
+                                    aria-label="下载资料"
+                                    href={buildFieldHandoverFileUrl(file.downloadUrl) ?? undefined}
+                                    icon={<DownloadOutlined />}
+                                    target="_blank"
+                                    type="text"
+                                  />
+                                </Tooltip>
+                              ) : null}
+                              {captureView.canEdit ? (
+                                <Popconfirm
+                                  description="删除后需重新上传才能提交。"
+                                  okText="删除"
+                                  cancelText="取消"
+                                  onConfirm={() => void removeEvidence(item.id, file.evidenceFileId)}
+                                  title="删除这份资料？"
+                                >
+                                  <Tooltip title="删除资料">
+                                    <Button
+                                      aria-label="删除资料"
+                                      danger
+                                      icon={<DeleteOutlined />}
+                                      loading={removingFileId === file.evidenceFileId}
+                                      type="text"
+                                    />
+                                  </Tooltip>
+                                </Popconfirm>
+                              ) : null}
+                            </Flex>
+                          </Flex>
+                        ))}
+                      </Flex>
+                    ) : null}
+
                     {item.showUpload ? (
                       <EvidenceUploadControl
                         accept={item.uploadAccept}
                         disabled={uploadingItemId === item.id}
                         id={item.id}
+                        label={item.uploadLabel}
+                        multiple={item.allowsMultiple}
                         onChange={(event) => {
-                          const file = event.currentTarget.files?.[0];
+                          const files = Array.from(event.currentTarget.files ?? []);
                           event.currentTarget.value = "";
-                          void uploadEvidence(item.id, file);
+                          void uploadEvidence(item.id, files);
                         }}
                       />
                     ) : null}
@@ -478,11 +610,15 @@ function EvidenceUploadControl({
   accept,
   disabled,
   id,
+  label,
+  multiple,
   onChange
 }: {
   accept: string;
   disabled: boolean;
   id: string;
+  label: string;
+  multiple: boolean;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
   const inputId = `field-evidence-file-${id}`;
@@ -492,6 +628,7 @@ function EvidenceUploadControl({
         accept={accept}
         disabled={disabled}
         id={inputId}
+        multiple={multiple}
         onChange={onChange}
         style={{ display: "none" }}
         type="file"
@@ -514,7 +651,7 @@ function EvidenceUploadControl({
         }}
       >
         <UploadOutlined />
-        {disabled ? "上传中..." : "上传资料"}
+        {disabled ? "上传中..." : label}
       </label>
     </div>
   );
@@ -534,17 +671,43 @@ function findEvidenceItem(detail: FieldHandoverWorkOrderDetail, itemId: string) 
 }
 
 function resolveMediaType(file: File): FieldHandoverEvidenceMediaType | null {
-  if (file.type.startsWith("image/")) {
+  const mimeType = file.type.trim().toLowerCase();
+  if (mimeType && mimeType !== "application/octet-stream") {
+    return SAFE_PHOTO_MIME_TYPES.has(mimeType)
+      ? "PHOTO"
+      : SAFE_VIDEO_MIME_TYPES.has(mimeType)
+        ? "VIDEO"
+        : null;
+  }
+  if (/\.(heic|heif|jpe?g|png|webp)$/i.test(file.name)) {
     return "PHOTO";
   }
-  if (file.type.startsWith("video/")) {
+  if (/\.(m4v|mov|mp4|webm)$/i.test(file.name)) {
     return "VIDEO";
   }
   return null;
 }
 
+function formatReviewFieldKey(value: string) {
+  return REVIEW_FIELD_LABELS[value] ?? value;
+}
+
 function isAllowedMediaType(item: FieldHandoverEvidenceItem, mediaType: FieldHandoverEvidenceMediaType) {
   return (item.allowedMediaTypes ?? []).includes(mediaType);
+}
+
+function validateEvidenceFile(item: FieldHandoverEvidenceItem, file: File) {
+  const mediaType = resolveMediaType(file);
+  if (!mediaType || !isAllowedMediaType(item, mediaType)) {
+    return "请选择符合要求的图片或视频";
+  }
+  if (mediaType === "PHOTO" && file.size > MAX_PHOTO_SIZE_BYTES) {
+    return `图片 ${file.name} 超过 5MB`;
+  }
+  if (mediaType === "VIDEO" && file.size > MAX_VIDEO_SIZE_BYTES) {
+    return `视频 ${file.name} 超过 200MB`;
+  }
+  return null;
 }
 
 function splitBlockingMessages(message: string) {
@@ -574,4 +737,32 @@ const submitBarStyle: CSSProperties = {
   bottom: 0,
   padding: "8px 0 max(8px, env(safe-area-inset-bottom))",
   position: "sticky"
+};
+
+const SAFE_PHOTO_MIME_TYPES = new Set([
+  "image/heic",
+  "image/heif",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp"
+]);
+
+const SAFE_VIDEO_MIME_TYPES = new Set([
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+  "video/x-m4v"
+]);
+
+const REVIEW_FIELD_LABELS: Record<string, string> = {
+  accessoryChecklist: "随车物品",
+  damageDeclared: "损伤状态",
+  deliveryLocation: "交接地点",
+  energyLevelText: "能源状态",
+  fieldNotes: "现场备注",
+  fuelLevelText: "油量状态",
+  handoverMileageKm: "交接里程",
+  noVisibleDamageDeclared: "无可见损伤声明",
+  scheduledAt: "预约时间"
 };

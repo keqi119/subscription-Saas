@@ -243,6 +243,41 @@ export default function PortalHandoverReviewDetailPage() {
 
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
+            复核历史
+          </Typography.Title>
+          <List
+            dataSource={review.reviewHistory ?? []}
+            locale={{ emptyText: "暂无复核历史" }}
+            renderItem={(attempt) => (
+              <List.Item>
+                <List.Item.Meta
+                  description={
+                    <Space direction="vertical" size={2}>
+                      <Typography.Text type="secondary">
+                        现场提交：{formatReviewTime(attempt.fieldSubmittedAt)}
+                      </Typography.Text>
+                      {attempt.customerObjectionReason ? (
+                        <Typography.Text type="danger">
+                          异议：{attempt.customerObjectionReason}
+                          {attempt.customerObjectionDetails ? ` / ${attempt.customerObjectionDetails}` : ""}
+                        </Typography.Text>
+                      ) : null}
+                      {attempt.customerConfirmedAt ? (
+                        <Typography.Text type="success">
+                          客户确认：{formatReviewTime(attempt.customerConfirmedAt)}
+                        </Typography.Text>
+                      ) : null}
+                    </Space>
+                  }
+                  title={`第 ${attempt.attemptNo ?? "-"} 轮 / ${formatReviewAttemptStatus(attempt.status)}`}
+                />
+              </List.Item>
+            )}
+          />
+        </section>
+
+        <section style={sectionStyle}>
+          <Typography.Title level={4} style={{ marginTop: 0 }}>
             客户确认
           </Typography.Title>
           <DecisionArea
@@ -262,6 +297,26 @@ export default function PortalHandoverReviewDetailPage() {
       </section>
     </main>
   );
+}
+
+function formatReviewAttemptStatus(value?: string | null) {
+  const labels: Record<string, string> = {
+    CUSTOMER_CONFIRMED: "已确认无异议",
+    CUSTOMER_OBJECTED: "已提交异议",
+    CUSTOMER_REVIEWING: "待客户复核",
+    RESUBMISSION_REQUESTED: "现场复检中",
+    RESUBMITTED_PENDING_ADMIN: "现场已重提",
+    SENT_BACK_TO_CUSTOMER_REVIEW: "已送回客户复核"
+  };
+  return value ? labels[value] ?? value : "-";
+}
+
+function formatReviewTime(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
 function DecisionArea({

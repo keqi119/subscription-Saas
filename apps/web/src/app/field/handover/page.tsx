@@ -24,7 +24,6 @@ export default function FieldHandoverLoginPage() {
   const router = useRouter();
   const { message } = App.useApp();
   const [form] = Form.useForm<FieldHandoverLoginValues>();
-  const [checkingSession, setCheckingSession] = useState(true);
   const [countdown, setCountdown] = useState(0);
   const [requestingCode, setRequestingCode] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -43,12 +42,6 @@ export default function FieldHandoverLoginPage() {
           void message.warning("交接登录状态暂不可用，请稍后重试");
         }
       })
-      .finally(() => {
-        if (active) {
-          setCheckingSession(false);
-        }
-      });
-
     return () => {
       active = false;
     };
@@ -157,7 +150,6 @@ export default function FieldHandoverLoginPage() {
             >
               <Input
                 autoComplete="tel"
-                disabled={checkingSession}
                 inputMode="tel"
                 maxLength={11}
                 prefix={<MobileOutlined />}
@@ -182,7 +174,7 @@ export default function FieldHandoverLoginPage() {
                   size="large"
                 />
                 <Button
-                  disabled={countdown > 0 || checkingSession}
+                  disabled={countdown > 0}
                   loading={requestingCode}
                   onClick={requestCode}
                   size="large"
@@ -197,7 +189,7 @@ export default function FieldHandoverLoginPage() {
               block
               htmlType="submit"
               icon={<LoginOutlined />}
-              loading={submitting || checkingSession}
+              loading={submitting}
               size="large"
               type="primary"
             >

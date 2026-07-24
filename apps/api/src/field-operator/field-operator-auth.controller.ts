@@ -1,30 +1,37 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
   Post,
   Req,
   Res,
+  StreamableFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors
 } from "@nestjs/common";
 import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import type { Request, Response } from "express";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { DeclareNoVisibleDamageDto } from "../delivery-evidence/delivery-evidence.dto";
-import {
-  AttachFieldEvidenceFileDto,
-  UpdateHandoverFieldFactsDto
-} from "../handover-work-order/handover-work-order.dto";
+import { UpdateHandoverFieldFactsDto, UploadFieldEvidenceDto } from "../handover-work-order/handover-work-order.dto";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { FieldEvidenceTempFileCleanupInterceptor } from "./field-evidence-temp-file-cleanup.interceptor";
 import { FieldOperatorAuthGuard } from "./field-operator-auth.guard";
 import { FieldOperatorAuthService } from "./field-operator-auth.service";
 import { FieldOperatorLoginDto, RequestFieldOperatorCodeDto } from "./field-operator-auth.dto";
 import { CurrentFieldOperator } from "./field-operator-auth.types";
 import { CurrentFieldOperatorSession } from "./field-operator-current.decorator";
+
+const FIELD_EVIDENCE_UPLOAD_OPTIONS = {
+  dest: path.join(tmpdir(), "subscription-saas-field-evidence"),
+  limits: { fileSize: 200 * 1024 * 1024, files: 1 }
+};
 
 @Controller("field/handover")
 export class FieldOperatorAuthController {
@@ -107,26 +114,84 @@ export class FieldOperatorAuthController {
     return this.handoverWorkOrderService.updateFieldAccessibleFacts(id, current.phone, dto, current.sessionId);
   }
 
-  @Post("work-orders/:id/evidence-files")
+  @Get("work-orders/:id/evidence-files/:evidenceFileId/preview")
   @UseGuards(FieldOperatorAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor())
-  uploadEvidenceFile(
+  async previewEvidenceFile(
     @Param("id") id: string,
-    @UploadedFiles() files: Array<{ buffer: Buffer; mimetype?: string; originalname: string; size: number }> | undefined,
-    @CurrentFieldOperatorSession() current: CurrentFieldOperator
+    @Param("evidenceFileId") evidenceFileId: string,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator,
+    @Res({ passthrough: true }) response: Response
   ) {
-    return this.handoverWorkOrderService.uploadFieldAccessibleEvidenceFile(id, current.phone, files);
+    const preview = await this.handoverWorkOrderService.previewFieldAccessibleEvidenceFile(
+      id,
+      current.phone,
+      evidenceFileId
+    );
+    setEvidenceFileHeaders(response, preview, "inline");
+    return new StreamableFile(preview.stream);
   }
 
-  @Post("work-orders/:id/evidence/:itemId/files")
+  @Get("work-orders/:id/evidence-files/:evidenceFileId/download")
   @UseGuards(FieldOperatorAuthGuard)
-  attachEvidenceFile(
+  async downloadEvidenceFile(
+    @Param("id") id: string,
+    @Param("evidenceFileId") evidenceFileId: string,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const file = await this.handoverWorkOrderService.downloadFieldAccessibleEvidenceFile(
+      id,
+      current.phone,
+      evidenceFileId
+    );
+    setEvidenceFileHeaders(response, file, "attachment");
+    return new StreamableFile(file.stream);
+  }
+
+  @Post("work-orders/:id/evidence/:itemId/upload")
+  @UseGuards(FieldOperatorAuthGuard)
+  @UseInterceptors(
+    AnyFilesInterceptor(FIELD_EVIDENCE_UPLOAD_OPTIONS),
+    new FieldEvidenceTempFileCleanupInterceptor()
+  )
+  uploadAndAttachEvidenceFile(
     @Param("id") id: string,
     @Param("itemId") itemId: string,
-    @Body() dto: AttachFieldEvidenceFileDto,
+    @Body() dto: UploadFieldEvidenceDto,
+    @UploadedFiles() files: Array<{
+      buffer?: Buffer;
+      mimetype?: string;
+      originalname: string;
+      path?: string;
+      size: number;
+    }> | undefined,
     @CurrentFieldOperatorSession() current: CurrentFieldOperator
   ) {
-    return this.handoverWorkOrderService.attachFieldAccessibleEvidenceFile(id, current.phone, itemId, dto);
+    return this.handoverWorkOrderService.uploadAndAttachFieldAccessibleEvidenceFile(
+      id,
+      current.phone,
+      itemId,
+      files,
+      dto,
+      current.sessionId
+    );
+  }
+
+  @Delete("work-orders/:id/evidence/:itemId/files/:evidenceFileId")
+  @UseGuards(FieldOperatorAuthGuard)
+  removeEvidenceFile(
+    @Param("id") id: string,
+    @Param("itemId") itemId: string,
+    @Param("evidenceFileId") evidenceFileId: string,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator
+  ) {
+    return this.handoverWorkOrderService.removeFieldAccessibleEvidenceFile(
+      id,
+      current.phone,
+      itemId,
+      evidenceFileId,
+      current.sessionId
+    );
   }
 
   @Post("work-orders/:id/no-visible-damage")
@@ -136,7 +201,12 @@ export class FieldOperatorAuthController {
     @Body() dto: DeclareNoVisibleDamageDto,
     @CurrentFieldOperatorSession() current: CurrentFieldOperator
   ) {
-    return this.handoverWorkOrderService.declareFieldAccessibleNoVisibleDamage(id, current.phone, dto.remark);
+    return this.handoverWorkOrderService.declareFieldAccessibleNoVisibleDamage(
+      id,
+      current.phone,
+      dto.remark,
+      current.sessionId
+    );
   }
 
   @Get("work-orders/:id/readiness")
@@ -157,4 +227,18 @@ function requestContext(request: Request) {
     ipAddress: request.ip,
     userAgent: request.headers["user-agent"]
   };
+}
+
+function setEvidenceFileHeaders(
+  response: Response,
+  file: { filename: string; mimeType: null | string; sizeBytes: null | number },
+  disposition: "attachment" | "inline"
+) {
+  if (file.mimeType) {
+    response.setHeader("Content-Type", file.mimeType);
+  }
+  if (file.sizeBytes !== null) {
+    response.setHeader("Content-Length", String(file.sizeBytes));
+  }
+  response.setHeader("Content-Disposition", `${disposition}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
 }

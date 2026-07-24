@@ -337,6 +337,7 @@ function createStage2HandoverE2EHarness() {
         accessTokenRevokedAt: null,
         accessoryChecklist: null,
         assignedInternalUserId: null,
+        adminReviewStatus: "NONE",
         createdAt: now,
         customerConfirmedAt: null,
         customerObjectedAt: null,
@@ -363,6 +364,7 @@ function createStage2HandoverE2EHarness() {
         operatorType: "EXTERNAL",
         opsReviewStatus: "NOT_REQUIRED",
         orderId,
+        reviewVersion: 0,
         scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
         status: "ASSIGNED",
         updatedAt: now,
@@ -433,19 +435,13 @@ function createStage2HandoverE2EHarness() {
       );
       for (const item of state.evidenceItems.filter((entry) => entry.isRequired === true)) {
         const mediaType = firstAllowedMediaType(item);
-        const uploaded = await workOrderService.uploadFieldAccessibleEvidenceFile(
-          workOrderId,
-          FIELD_OPERATOR_PHONE,
-          [uploadFile(`${String(item.evidenceType).toLowerCase()}.${mediaType === "VIDEO" ? "mp4" : "jpg"}`, mediaType)]
-        );
-        await workOrderService.attachFieldAccessibleEvidenceFile(
+        await workOrderService.uploadAndAttachFieldAccessibleEvidenceFile(
           workOrderId,
           FIELD_OPERATOR_PHONE,
           String(item.id),
-          {
-            fileId: uploaded.fileId,
-            mediaType: mediaType === "VIDEO" ? DeliveryEvidenceMediaType.VIDEO : DeliveryEvidenceMediaType.PHOTO
-          }
+          [uploadFile(`${String(item.evidenceType).toLowerCase()}.${mediaType === "VIDEO" ? "mp4" : "jpg"}`, mediaType)],
+          {},
+          "field-session-local"
         );
       }
       await workOrderService.declareFieldAccessibleNoVisibleDamage(
@@ -467,7 +463,7 @@ function createStage2HandoverE2EHarness() {
 }
 
 function createPrismaMock(state: Stage2HarnessState, now: Date) {
-  return {
+  const prisma = {
     contract: {
       create: vi.fn(async ({ data }: { data: TestRecord }) => {
         const contract = { ...data, id: `contract-generated-${state.contracts.length + 1}` };
@@ -565,9 +561,28 @@ function createPrismaMock(state: Stage2HarnessState, now: Date) {
         }
         Object.assign(workOrder, data, { updatedAt: now });
         return workOrder;
+      }),
+      updateMany: vi.fn(async ({ data, where }: { data: TestRecord; where: TestRecord }) => {
+        const workOrder = state.workOrders.find((item) =>
+          item.id === where.id && Number(item.reviewVersion ?? 0) === Number(where.reviewVersion ?? 0)
+        );
+        if (!workOrder) {
+          return { count: 0 };
+        }
+        const reviewVersion = data.reviewVersion;
+        Object.assign(workOrder, data, {
+          reviewVersion: isRecord(reviewVersion) && typeof reviewVersion.increment === "number"
+            ? Number(workOrder.reviewVersion ?? 0) + reviewVersion.increment
+            : workOrder.reviewVersion,
+          updatedAt: now
+        });
+        return { count: 1 };
       })
     }
   };
+  return Object.assign(prisma, {
+    $transaction: vi.fn(async (callback: (client: typeof prisma) => Promise<unknown>) => callback(prisma))
+  });
 }
 
 function createEvidenceServiceMock(state: Stage2HarnessState, now: Date) {
@@ -578,6 +593,7 @@ function createEvidenceServiceMock(state: Stage2HarnessState, now: Date) {
         throw new BadRequestException(readiness.blockingReasons[0] ?? "交付证据尚未全部上传。");
       }
     }),
+    validateEvidenceFileMutation: vi.fn(async () => undefined),
     attachEvidenceFile: vi.fn(async (itemId: string, fileId: string, mediaType: DeliveryEvidenceMediaType) => {
       const item = state.evidenceItems.find((entry) => entry.id === itemId);
       if (!item) {

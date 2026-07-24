@@ -22,6 +22,7 @@ const TERMINAL_HANDOVER_STATUSES = [
 ] as const;
 
 type DeliveryHandoverRecord = Prisma.VehicleDeliveryHandoverGetPayload<object>;
+type DeliveryHandoverDb = Prisma.TransactionClient | PrismaService;
 
 @Injectable()
 export class DeliveryHandoverService {
@@ -30,17 +31,21 @@ export class DeliveryHandoverService {
     @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService
   ) {}
 
-  async getOrCreateDraftHandover(orderId: string, actorId?: string) {
-    const existing = await this.findActiveHandover(orderId);
+  async getOrCreateDraftHandover(
+    orderId: string,
+    actorId?: string,
+    db: DeliveryHandoverDb = this.prisma
+  ) {
+    const existing = await this.findActiveHandover(orderId, db);
     if (existing) {
       return existing;
     }
 
-    return this.createHandoverRecord(orderId, actorId);
+    return this.createHandoverRecord(orderId, actorId, db);
   }
 
-  async validateStage2Prerequisites(orderId: string) {
-    const order = await this.prisma.subscriptionOrder.findUnique({
+  async validateStage2Prerequisites(orderId: string, db: DeliveryHandoverDb = this.prisma) {
+    const order = await db.subscriptionOrder.findUnique({
       include: {
         contract: true,
         deliveries: {
@@ -70,14 +75,18 @@ export class DeliveryHandoverService {
     return (await this.validateStage2Prerequisites(orderId)).stage1ContractId;
   }
 
-  async createHandoverRecord(orderId: string, actorId?: string) {
-    const existing = await this.findActiveHandover(orderId);
+  async createHandoverRecord(
+    orderId: string,
+    actorId?: string,
+    db: DeliveryHandoverDb = this.prisma
+  ) {
+    const existing = await this.findActiveHandover(orderId, db);
     if (existing) {
       throw new BadRequestException("该订单已存在进行中的交付交接签署记录。");
     }
 
-    const prerequisites = await this.validateStage2Prerequisites(orderId);
-    return this.prisma.vehicleDeliveryHandover.create({
+    const prerequisites = await this.validateStage2Prerequisites(orderId, db);
+    return db.vehicleDeliveryHandover.create({
       data: {
         archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
         createdBy: actorId,
@@ -236,8 +245,8 @@ export class DeliveryHandoverService {
     await this.deliveryEvidenceService.assertEvidenceReadyForStage2ESign(orderId, handoverId);
   }
 
-  private findActiveHandover(orderId: string) {
-    return this.prisma.vehicleDeliveryHandover.findFirst({
+  private findActiveHandover(orderId: string, db: DeliveryHandoverDb = this.prisma) {
+    return db.vehicleDeliveryHandover.findFirst({
       orderBy: { createdAt: "desc" },
       where: {
         deletedAt: null,

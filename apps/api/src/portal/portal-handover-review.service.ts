@@ -40,6 +40,22 @@ const portalHandoverReviewInclude = {
       customer: true,
       vehicle: true
     }
+  },
+  reviewAttempts: {
+    orderBy: { attemptNo: "asc" as const },
+    select: {
+      adminStatus: true,
+      attemptNo: true,
+      customerConfirmedAt: true,
+      customerObjectedAt: true,
+      customerObjectionDetails: true,
+      customerObjectionReason: true,
+      customerReviewStartedAt: true,
+      fieldSubmittedAt: true,
+      id: true,
+      sentBackToCustomerReviewAt: true,
+      status: true
+    }
   }
 } satisfies Prisma.VehicleHandoverWorkOrderInclude;
 
@@ -165,7 +181,9 @@ export class PortalHandoverReviewService {
         displayName: workOrder.order.customer?.name ?? null,
         mobileMasked: maskPhone(workOrder.order.customer?.mobile)
       },
-      adminReviewStatus: readMetadataString(workOrder.metadata, "handoverReviewAdminStatus"),
+      adminReviewStatus: workOrder.adminReviewStatus === "NONE"
+        ? readMetadataString(workOrder.metadata, "handoverReviewAdminStatus")
+        : workOrder.adminReviewStatus,
       customerConfirmedAt: workOrder.customerConfirmedAt,
       customerObjectedAt: workOrder.customerObjectedAt,
       customerReviewStartedAt: workOrder.customerReviewStartedAt,
@@ -210,6 +228,19 @@ export class PortalHandoverReviewService {
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
         scheduledAt: workOrder.scheduledAt
       },
+      reviewHistory: (workOrder.reviewAttempts ?? []).map((attempt) => ({
+        adminStatus: attempt.adminStatus,
+        attemptNo: attempt.attemptNo,
+        customerConfirmedAt: attempt.customerConfirmedAt,
+        customerObjectedAt: attempt.customerObjectedAt,
+        customerObjectionDetails: attempt.customerObjectionDetails,
+        customerObjectionReason: attempt.customerObjectionReason,
+        customerReviewStartedAt: attempt.customerReviewStartedAt,
+        fieldSubmittedAt: attempt.fieldSubmittedAt,
+        id: attempt.id,
+        sentBackToCustomerReviewAt: attempt.sentBackToCustomerReviewAt,
+        status: attempt.status
+      })),
       readiness
     };
   }

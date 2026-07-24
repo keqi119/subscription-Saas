@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import {
+  DeliveryEvidenceFileLifecycleStatus,
   DeliveryEvidenceMediaType,
   DeliveryEvidenceRequirementLevel,
   DeliveryEvidenceReviewStatus,
@@ -219,6 +220,7 @@ const DEFINITION_BY_TYPE = new Map(
 const REQUIRED_FILE_EVIDENCE_DEFINITIONS = DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS.filter(
   (definition) => definition.isRequired
 );
+const MAX_DAMAGE_CLOSEUP_FILES = 20;
 
 const evidenceFileInclude = {
   file: true,
@@ -228,27 +230,33 @@ const evidenceFileInclude = {
 const evidenceItemInclude = {
   files: {
     include: evidenceFileInclude,
-    orderBy: { uploadedAt: "asc" as const }
+    orderBy: { uploadedAt: "asc" as const },
+    where: { lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE }
   },
   reviewer: { select: { id: true, name: true, username: true } }
 } satisfies Prisma.VehicleDeliveryEvidenceItemInclude;
 
 type EvidenceItemWithFiles = Prisma.VehicleDeliveryEvidenceItemGetPayload<{ include: typeof evidenceItemInclude }>;
+type DeliveryEvidenceDb = Prisma.TransactionClient | PrismaService;
 
 @Injectable()
 export class DeliveryEvidenceService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async initializeChecklist(orderId: string, handoverId?: string | null) {
-    const scope = await this.resolveScope({ handoverId, orderId });
-    const existing = await this.findScopedItems(scope);
+  async initializeChecklist(
+    orderId: string,
+    handoverId?: string | null,
+    db: DeliveryEvidenceDb = this.prisma
+  ) {
+    const scope = await this.resolveScope({ handoverId, orderId }, db);
+    const existing = await this.findScopedItems(scope, db);
     const existingTypes = new Set(existing.map((item) => item.evidenceType));
 
     for (const definition of DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS) {
       if (existingTypes.has(definition.evidenceType)) {
         continue;
       }
-      await this.prisma.vehicleDeliveryEvidenceItem.create({
+      await db.vehicleDeliveryEvidenceItem.create({
         data: {
           allowsMultiple: definition.allowsMultiple,
           conditionKey: definition.conditionKey,
@@ -273,12 +281,12 @@ export class DeliveryEvidenceService {
       });
     }
 
-    return this.getChecklist(scope);
+    return this.getChecklist(scope, db);
   }
 
-  async getChecklist(input: ChecklistScopeInput | string) {
-    const scope = await this.resolveScope(typeof input === "string" ? { orderId: input } : input);
-    const items = await this.findScopedItems(scope);
+  async getChecklist(input: ChecklistScopeInput | string, db: DeliveryEvidenceDb = this.prisma) {
+    const scope = await this.resolveScope(typeof input === "string" ? { orderId: input } : input, db);
+    const items = await this.findScopedItems(scope, db);
     const readiness = this.buildReadiness(scope, items);
 
     return {
@@ -287,40 +295,179 @@ export class DeliveryEvidenceService {
     };
   }
 
-  async attachEvidenceFile(itemId: string, fileId: string, mediaType: DeliveryEvidenceMediaType, actorId?: string) {
+  async attachEvidenceFile(
+    itemId: string,
+    fileId: string,
+    mediaType: DeliveryEvidenceMediaType,
+    actorId?: string,
+    db: DeliveryEvidenceDb = this.prisma,
+    lifecycleActorId: string | undefined = actorId
+  ) {
+    return this.runMutation(db, async (transaction) => {
+      const item = await this.findItemOrThrow(itemId, transaction);
+      const definition = getDefinition(item.evidenceType);
+      assertFileAllowed(definition, mediaType);
+      assertEvidenceFileCapacity(definition, item.files.length);
+
+      const file = await transaction.fileObject.findUnique({ where: { id: fileId } });
+      if (!file) {
+        throw new NotFoundException("文件不存在。");
+      }
+
+      await transaction.vehicleDeliveryEvidenceFile.create({
+        data: {
+          evidenceItemId: item.id,
+          fileId: file.id,
+          lifecycleActorId,
+          lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE,
+          mediaType,
+          objectKey: file.objectKey,
+          uploadedBy: actorId
+        }
+      });
+
+      await transaction.vehicleDeliveryEvidenceItem.update({
+        data: {
+          rejectionReason: null,
+          reviewStatus: DeliveryEvidenceReviewStatus.PENDING,
+          status: DeliveryEvidenceStatus.UPLOADED
+        },
+        where: { id: item.id }
+      });
+
+      return toEvidenceItemView(await this.findItemOrThrow(item.id, transaction));
+    });
+  }
+
+  async validateEvidenceFileMutation(
+    itemId: string,
+    mediaType: DeliveryEvidenceMediaType,
+    replaceEvidenceFileId?: string | null
+  ) {
     const item = await this.findItemOrThrow(itemId);
     const definition = getDefinition(item.evidenceType);
     assertFileAllowed(definition, mediaType);
-
-    if (!definition.allowsMultiple && item.files.length > 0) {
-      throw new BadRequestException("该交付证据项只允许关联一个文件。");
-    }
-
-    const file = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
-    if (!file) {
-      throw new NotFoundException("文件不存在。");
-    }
-
-    await this.prisma.vehicleDeliveryEvidenceFile.create({
-      data: {
-        evidenceItemId: item.id,
-        fileId: file.id,
-        mediaType,
-        objectKey: file.objectKey,
-        uploadedBy: actorId
+    if (replaceEvidenceFileId) {
+      if (definition.allowsMultiple) {
+        throw new BadRequestException("多文件资料请直接新增或删除，不支持单文件替换。");
       }
-    });
+      if (!item.files.some((file) => file.id === replaceEvidenceFileId)) {
+        throw new NotFoundException("待替换的交付资料文件不存在或已失效。");
+      }
+    } else {
+      assertEvidenceFileCapacity(definition, item.files.length);
+    }
+    return {
+      allowsMultiple: definition.allowsMultiple,
+      currentFileCount: item.files.length,
+      evidenceType: item.evidenceType,
+      itemId: item.id
+    };
+  }
 
-    await this.prisma.vehicleDeliveryEvidenceItem.update({
-      data: {
-        rejectionReason: null,
-        reviewStatus: DeliveryEvidenceReviewStatus.PENDING,
-        status: DeliveryEvidenceStatus.UPLOADED
-      },
-      where: { id: item.id }
-    });
+  async replaceEvidenceFile(
+    itemId: string,
+    evidenceFileId: string,
+    fileId: string,
+    mediaType: DeliveryEvidenceMediaType,
+    actorId?: string,
+    db: DeliveryEvidenceDb = this.prisma,
+    lifecycleActorId: string | undefined = actorId
+  ) {
+    return this.runMutation(db, async (transaction) => {
+      const item = await this.findItemOrThrow(itemId, transaction);
+      const definition = getDefinition(item.evidenceType);
+      assertFileAllowed(definition, mediaType);
+      if (definition.allowsMultiple) {
+        throw new BadRequestException("多文件资料请直接新增或删除，不支持单文件替换。");
+      }
 
-    return toEvidenceItemView(await this.findItemOrThrow(item.id));
+      const current = item.files.find((file) => file.id === evidenceFileId);
+      if (!current) {
+        throw new NotFoundException("待替换的交付资料文件不存在或已失效。");
+      }
+      const file = await transaction.fileObject.findUnique({ where: { id: fileId } });
+      if (!file) {
+        throw new NotFoundException("文件不存在。");
+      }
+
+      const replacement = await transaction.vehicleDeliveryEvidenceFile.create({
+        data: {
+          evidenceItemId: item.id,
+          fileId: file.id,
+          lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE,
+          mediaType,
+          objectKey: file.objectKey,
+          uploadedBy: actorId
+        }
+      });
+      await transaction.vehicleDeliveryEvidenceFile.update({
+        data: {
+          lifecycleActorId,
+          lifecycleAt: new Date(),
+          lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.SUPERSEDED,
+          replacedById: replacement.id
+        },
+        where: { id: current.id }
+      });
+      await transaction.vehicleDeliveryEvidenceItem.update({
+        data: {
+          rejectionReason: null,
+          reviewedAt: null,
+          reviewedBy: null,
+          reviewStatus: DeliveryEvidenceReviewStatus.PENDING,
+          status: DeliveryEvidenceStatus.UPLOADED
+        },
+          where: { id: item.id }
+        });
+
+      return toEvidenceItemView(await this.findItemOrThrow(item.id, transaction));
+    });
+  }
+
+  async removeEvidenceFile(
+    itemId: string,
+    evidenceFileId: string,
+    lifecycleActorId?: string,
+    db: DeliveryEvidenceDb = this.prisma
+  ) {
+    return this.runMutation(db, async (transaction) => {
+      const item = await this.findItemOrThrow(itemId, transaction);
+      const current = item.files.find((file) => file.id === evidenceFileId);
+      if (!current) {
+        throw new NotFoundException("待删除的交付资料文件不存在或已失效。");
+      }
+      const remainingFileCount = item.files.length - 1;
+
+      await transaction.vehicleDeliveryEvidenceFile.update({
+        data: {
+          lifecycleActorId,
+          lifecycleAt: new Date(),
+          lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.REMOVED
+        },
+        where: { id: current.id }
+      });
+      await transaction.vehicleDeliveryEvidenceItem.update({
+        data: remainingFileCount > 0
+          ? {
+              rejectionReason: null,
+              reviewedAt: null,
+              reviewedBy: null,
+              reviewStatus: DeliveryEvidenceReviewStatus.PENDING,
+              status: DeliveryEvidenceStatus.UPLOADED
+            }
+          : {
+              rejectionReason: null,
+              reviewedAt: null,
+              reviewedBy: null,
+              reviewStatus: DeliveryEvidenceReviewStatus.NOT_STARTED,
+              status: DeliveryEvidenceStatus.NOT_STARTED
+            },
+          where: { id: item.id }
+        });
+
+      return toEvidenceItemView(await this.findItemOrThrow(item.id, transaction));
+    });
   }
 
   async approveEvidenceItem(itemId: string, reviewerId: string) {
@@ -372,21 +519,27 @@ export class DeliveryEvidenceService {
     return toEvidenceItemView(updated);
   }
 
-  async declareNoVisibleDamage(orderId: string, actorId?: string, handoverId?: string | null, remark?: string) {
-    const scope = await this.resolveScope({ handoverId, orderId });
-    const items = await this.findScopedItems(scope);
+  async declareNoVisibleDamage(
+    orderId: string,
+    actorId?: string,
+    handoverId?: string | null,
+    remark?: string,
+    db: DeliveryEvidenceDb = this.prisma
+  ) {
+    const scope = await this.resolveScope({ handoverId, orderId }, db);
+    const items = await this.findScopedItems(scope, db);
     if (items.some(isDamageDeclared)) {
       throw new BadRequestException("已声明存在损伤，不能再声明无可见损伤。");
     }
 
     const declaration = items.find(
       (item) => item.evidenceType === DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION
-    ) ?? await this.prisma.vehicleDeliveryEvidenceItem.create({
+    ) ?? await db.vehicleDeliveryEvidenceItem.create({
       data: this.buildEvidenceItemCreateInput(scope, getDefinition(DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION))
     });
 
     const reviewedAt = new Date();
-    const updated = await this.prisma.vehicleDeliveryEvidenceItem.update({
+    const updated = await db.vehicleDeliveryEvidenceItem.update({
       data: {
         declaredNoDamage: true,
         metadata: toJsonValue({
@@ -407,9 +560,14 @@ export class DeliveryEvidenceService {
     return toEvidenceItemView(updated);
   }
 
-  async retractNoVisibleDamageDeclaration(orderId: string, actorId?: string, handoverId?: string | null) {
-    const scope = await this.resolveScope({ handoverId, orderId });
-    const items = await this.findScopedItems(scope);
+  async retractNoVisibleDamageDeclaration(
+    orderId: string,
+    actorId?: string,
+    handoverId?: string | null,
+    db: DeliveryEvidenceDb = this.prisma
+  ) {
+    const scope = await this.resolveScope({ handoverId, orderId }, db);
+    const items = await this.findScopedItems(scope, db);
     const declarations = items.filter((item) =>
       item.evidenceType === DeliveryEvidenceType.NO_VISIBLE_DAMAGE_DECLARATION &&
       item.declaredNoDamage === true
@@ -418,7 +576,7 @@ export class DeliveryEvidenceService {
     const updated: Array<ReturnType<typeof toEvidenceItemView>> = [];
 
     for (const declaration of declarations) {
-      const item = await this.prisma.vehicleDeliveryEvidenceItem.update({
+      const item = await db.vehicleDeliveryEvidenceItem.update({
         data: {
           declaredNoDamage: null,
           metadata: toJsonValue({
@@ -575,13 +733,13 @@ export class DeliveryEvidenceService {
     return this.buildReadiness(scope, items, options);
   }
 
-  private async resolveScope(input: ChecklistScopeInput) {
+  private async resolveScope(input: ChecklistScopeInput, db: DeliveryEvidenceDb = this.prisma) {
     let orderId = input.orderId;
     let handoverId = input.handoverId ?? null;
     let handoverVehicleDeliveryId: string | null = null;
 
     if (handoverId) {
-      const handover = await this.prisma.vehicleDeliveryHandover.findFirst({
+      const handover = await db.vehicleDeliveryHandover.findFirst({
         select: { id: true, orderId: true, vehicleDeliveryId: true },
         where: { deletedAt: null, id: handoverId }
       });
@@ -596,7 +754,7 @@ export class DeliveryEvidenceService {
       handoverVehicleDeliveryId = handover.vehicleDeliveryId;
     }
 
-    const order = await this.prisma.subscriptionOrder.findFirst({
+    const order = await db.subscriptionOrder.findFirst({
       select: { deletedAt: true, id: true },
       where: { id: orderId }
     });
@@ -604,7 +762,7 @@ export class DeliveryEvidenceService {
       throw new NotFoundException("订单不存在。");
     }
 
-    const delivery = await this.prisma.vehicleDelivery.findUnique({
+    const delivery = await db.vehicleDelivery.findUnique({
       select: { deletedAt: true, id: true },
       where: { orderId }
     });
@@ -619,8 +777,8 @@ export class DeliveryEvidenceService {
   private findScopedItems(scope: {
     handoverId: string | null;
     orderId: string;
-  }) {
-    return this.prisma.vehicleDeliveryEvidenceItem.findMany({
+  }, db: DeliveryEvidenceDb = this.prisma) {
+    return db.vehicleDeliveryEvidenceItem.findMany({
       include: evidenceItemInclude,
       orderBy: [{ evidenceType: "asc" }, { createdAt: "asc" }],
       where: {
@@ -632,8 +790,8 @@ export class DeliveryEvidenceService {
     });
   }
 
-  private async findItemOrThrow(itemId: string) {
-    const item = await this.prisma.vehicleDeliveryEvidenceItem.findFirst({
+  private async findItemOrThrow(itemId: string, db: DeliveryEvidenceDb = this.prisma) {
+    const item = await db.vehicleDeliveryEvidenceItem.findFirst({
       include: evidenceItemInclude,
       where: { id: itemId }
     });
@@ -641,6 +799,30 @@ export class DeliveryEvidenceService {
       throw new NotFoundException("交付证据项不存在。");
     }
     return item;
+  }
+
+  private async runMutation<T>(
+    db: DeliveryEvidenceDb,
+    callback: (transaction: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    if (db !== this.prisma) {
+      return callback(db as Prisma.TransactionClient);
+    }
+    try {
+      return await this.prisma.$transaction(callback, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+      });
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code?: unknown }).code === "P2034"
+      ) {
+        throw new ConflictException("交付资料已被其他操作更新，请刷新后重试。");
+      }
+      throw error;
+    }
   }
 
   private buildEvidenceItemCreateInput(scope: {
@@ -926,6 +1108,18 @@ function assertFileAllowed(definition: EvidenceDefinition, mediaType: DeliveryEv
   }
 }
 
+function assertEvidenceFileCapacity(definition: EvidenceDefinition, activeFileCount: number) {
+  if (!definition.allowsMultiple && activeFileCount > 0) {
+    throw new BadRequestException("该交付证据项只允许关联一个文件。");
+  }
+  if (
+    definition.evidenceType === DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP &&
+    activeFileCount >= MAX_DAMAGE_CLOSEUP_FILES
+  ) {
+    throw new BadRequestException(`损伤近拍最多上传 ${MAX_DAMAGE_CLOSEUP_FILES} 个文件。`);
+  }
+}
+
 function getDefinition(evidenceType: DeliveryEvidenceType) {
   const definition = DEFINITION_BY_TYPE.get(evidenceType);
   if (!definition) {
@@ -957,6 +1151,7 @@ function toEvidenceItemView(item: EvidenceItemWithFiles) {
         : null,
       fileId: file.fileId,
       id: file.id,
+      lifecycleStatus: file.lifecycleStatus,
       mediaType: file.mediaType,
       objectKey: file.objectKey,
       uploadedAt: file.uploadedAt,

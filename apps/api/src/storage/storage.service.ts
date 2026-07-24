@@ -5,7 +5,14 @@ import { randomUUID } from "node:crypto";
 
 import { LocalStorageProvider } from "./local-storage.provider";
 import { OssStorageProvider } from "./oss-storage.provider";
-import { DownloadObjectResult, StorageDriver, StoredObject, UploadObjectInput, StorageProvider } from "./storage.types";
+import {
+  DownloadObjectResult,
+  StorageDriver,
+  StoredObject,
+  UploadFileObjectInput,
+  UploadObjectInput,
+  StorageProvider
+} from "./storage.types";
 
 const LOCAL_BUCKET = "application-materials";
 const OSS_BUCKET_PREFIX = "oss:";
@@ -121,6 +128,18 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
+  async putDeliveryEvidenceFileFromPath(input: Omit<UploadFileObjectInput, "key"> & {
+    orderId: string;
+    workOrderId: string;
+  }): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildDeliveryEvidenceFileKey(input.workOrderId, input.originalName ?? "file");
+    return this.putPrivateFile(key, input);
+  }
+
   getVehicleBaasContractAttachmentStream(bucket: string, objectKey: string): Promise<DownloadObjectResult> {
     return this.getObject(bucket, objectKey);
   }
@@ -191,6 +210,37 @@ export class StorageService {
     }
 
     const stored = await this.localStorage.putObject({
+      ...input,
+      key: `${LOCAL_BUCKET}/${key}`
+    });
+    return {
+      bucket: LOCAL_BUCKET,
+      objectKey: key,
+      stored
+    };
+  }
+
+  private async putPrivateFile(key: string, input: Omit<UploadFileObjectInput, "key">): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const driver = this.getDriver();
+
+    if (driver === "oss") {
+      const stored = await this.ossStorage.putFile({
+        ...input,
+        key: this.withOssPrefix(key)
+      });
+      const bucket = stored.bucket ?? this.configService.get<string>("OSS_BUCKET") ?? "";
+      return {
+        bucket: `${OSS_BUCKET_PREFIX}${bucket}`,
+        objectKey: `${OSS_KEY_PREFIX}${stored.key}`,
+        stored
+      };
+    }
+
+    const stored = await this.localStorage.putFile({
       ...input,
       key: `${LOCAL_BUCKET}/${key}`
     });

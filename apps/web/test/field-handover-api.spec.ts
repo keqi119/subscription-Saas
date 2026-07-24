@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../src/lib/api";
 import {
-  attachFieldHandoverEvidenceFile,
   declareFieldHandoverNoVisibleDamage,
   getFieldHandoverLoginErrorMessage,
   getFieldHandoverSendCodeErrorMessage,
@@ -15,11 +14,12 @@ import {
   listFieldHandoverWorkOrders,
   loginFieldHandover,
   logoutFieldHandover,
+  removeFieldHandoverEvidenceFile,
   sendFieldHandoverCode,
   startFieldHandoverWorkOrder,
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts,
-  uploadFieldHandoverEvidenceFile
+  uploadAndAttachFieldHandoverEvidenceFile
 } from "../src/lib/field-handover-api";
 
 const VALID_FIELD_PHONE = ["139", "0000", "1111"].join("");
@@ -28,6 +28,7 @@ const DEBUG_CODE_SHOULD_NOT_RENDER = ["123", "456"].join("");
 
 describe("field handover API client", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -92,7 +93,6 @@ describe("field handover API client", () => {
     const fetchMock = mockJsonSequence([
       { id: "work-order-1", status: "FIELD_IN_PROGRESS" },
       { id: "work-order-1", handoverMileageKm: 28600 },
-      { fileId: "file-1", fileName: "front.jpg", mimeType: "image/jpeg", objectKey: "oss/internal/front.jpg" },
       { fileCount: 1, id: "evidence-item-1", status: "UPLOADED" },
       { id: "work-order-1", noVisibleDamageDeclared: true },
       { blockingReasons: [], ready: true },
@@ -108,11 +108,7 @@ describe("field handover API client", () => {
       handoverMileageKm: 28600,
       noVisibleDamageDeclared: true
     });
-    const uploaded = await uploadFieldHandoverEvidenceFile("work-order-1", file);
-    await attachFieldHandoverEvidenceFile("work-order-1", "evidence-item-1", {
-      fileId: uploaded.fileId,
-      mediaType: "PHOTO"
-    });
+    await uploadAndAttachFieldHandoverEvidenceFile("work-order-1", "evidence-item-1", file);
     await declareFieldHandoverNoVisibleDamage("work-order-1");
     await getFieldHandoverReadiness("work-order-1");
     await submitFieldHandoverEvidence("work-order-1");
@@ -120,8 +116,7 @@ describe("field handover API client", () => {
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "http://localhost:3001/api/field/handover/work-orders/work-order-1/start",
       "http://localhost:3001/api/field/handover/work-orders/work-order-1/facts",
-      "http://localhost:3001/api/field/handover/work-orders/work-order-1/evidence-files",
-      "http://localhost:3001/api/field/handover/work-orders/work-order-1/evidence/evidence-item-1/files",
+      "http://localhost:3001/api/field/handover/work-orders/work-order-1/evidence/evidence-item-1/upload",
       "http://localhost:3001/api/field/handover/work-orders/work-order-1/no-visible-damage",
       "http://localhost:3001/api/field/handover/work-orders/work-order-1/readiness",
       "http://localhost:3001/api/field/handover/work-orders/work-order-1/submit"
@@ -129,7 +124,58 @@ describe("field handover API client", () => {
     expect(fetchMock.mock.calls[2]?.[1]).toEqual(
       expect.objectContaining({ body: expect.any(FormData), credentials: "include", method: "POST" })
     );
-    expect(JSON.stringify(uploaded)).not.toContain("oss/internal");
+    expect(JSON.stringify(fetchMock.mock.calls[2])).not.toContain("oss/internal");
+  });
+
+  it("uses the atomic upload/replace and remove endpoints for editable evidence", async () => {
+    const fetchMock = mockJsonSequence([
+      { fileCount: 1, id: "evidence-item-1", status: "UPLOADED" },
+      { fileCount: 0, id: "evidence-item-1", status: "NOT_STARTED" }
+    ]);
+    const file = new File(["replacement"], "replacement.jpg", { type: "image/jpeg" });
+
+    await uploadAndAttachFieldHandoverEvidenceFile(
+      "work-order-1",
+      "evidence-item-1",
+      file,
+      "evidence-file-old"
+    );
+    await removeFieldHandoverEvidenceFile("work-order-1", "evidence-item-1", "evidence-file-new");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://localhost:3001/api/field/handover/work-orders/work-order-1/evidence/evidence-item-1/upload",
+      "http://localhost:3001/api/field/handover/work-orders/work-order-1/evidence/evidence-item-1/files/evidence-file-new"
+    ]);
+    const uploadBody = fetchMock.mock.calls[0]?.[1]?.body as FormData;
+    expect((uploadBody.get("files") as File).name).toBe(file.name);
+    expect(uploadBody.get("replaceEvidenceFileId")).toBe("evidence-file-old");
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "DELETE" }));
+  });
+
+  it("keeps large evidence uploads alive beyond the default timeout and aborts at twenty minutes", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      return new Promise((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+      });
+    }));
+    const file = new File(["video"], "walkaround.mp4", { type: "video/mp4" });
+
+    const request = uploadAndAttachFieldHandoverEvidenceFile(
+      "work-order-1",
+      "evidence-item-1",
+      file
+    );
+    const rejection = expect(request).rejects.toBeInstanceOf(ApiError);
+
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(requestSignal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(20 * 60 * 1000 - 15_001);
+    expect(requestSignal?.aborted).toBe(true);
+    await rejection;
   });
 
   it("normalizes validation, rate-limit, login, and unauthorized errors", () => {

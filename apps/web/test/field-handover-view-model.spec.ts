@@ -89,11 +89,17 @@ describe("field handover view model", () => {
     expect(capture.damageStateLabel).toBe("损伤状态：无可见损伤");
     expect(capture.canEdit).toBe(true);
     expect(capture.evidenceItems[0]).toMatchObject({
+      allowsMultiple: false,
       requiredText: "必传",
       showUpload: true,
       statusLabel: "已上传",
       title: "客户与车辆正面合影",
+      uploadLabel: "替换资料",
       uploadAccept: "image/*"
+    });
+    expect(capture.evidenceItems[0]?.files[0]).toMatchObject({
+      displayName: "0.jpg",
+      evidenceFileId: "evidence-file-0"
     });
     expect(capture.evidenceItems.find((item) => item.evidenceType === "WALKAROUND_VIDEO")).toMatchObject({
       uploadAccept: "video/*"
@@ -102,6 +108,10 @@ describe("field handover view model", () => {
       showDeclarationComplete: true,
       showUpload: false,
       statusLabel: "声明已完成"
+    });
+    expect(capture.evidenceItems.find((item) => item.evidenceType === "DAMAGE_STATIC_CLOSEUP")).toMatchObject({
+      allowsMultiple: true,
+      uploadLabel: "继续添加"
     });
     expect(JSON.stringify(capture)).not.toMatch(/esign|pdf|signingUrl|objectKey|token|cookie|deposit|payment/i);
     expect(JSON.stringify(capture)).not.toContain(FULL_PHONE_SHOULD_NOT_RENDER);
@@ -228,12 +238,18 @@ function sampleEvidenceItems(options: { damageDeclared?: boolean; missingDamageC
     const isNoDamage = evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION";
     const hasFile = !isNoDamage && (!isDamageCloseup || (options.damageDeclared && !options.missingDamageCloseup));
     return {
+      allowsMultiple: isDamageCloseup,
       allowedMediaTypes,
       declaredNoDamage: isNoDamage ? options.noVisibleDamageDeclared === true : null,
       evidenceType,
       fileCount: hasFile ? 1 : 0,
       fileRequired: !isNoDamage,
-      files: hasFile ? [{ file: { id: `file-${index}`, mimeType: "image/jpeg", originalName: `${index}.jpg`, sizeBytes: 1000 } }] : [],
+      files: hasFile ? [{
+        displayName: `${index}.jpg`,
+        evidenceFileId: `evidence-file-${index}`,
+        file: { id: `file-${index}`, mimeType: "image/jpeg", originalName: `${index}.jpg`, sizeBytes: 1000 },
+        previewUrl: `/api/field/handover/work-orders/work-order-1/evidence-files/evidence-file-${index}/preview`
+      }] : [],
       id: `evidence-item-${index + 1}`,
       isConditional: isDamageCloseup || isNoDamage,
       isRequired: !isDamageCloseup && !isNoDamage,

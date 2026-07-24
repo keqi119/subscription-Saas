@@ -1,4 +1,4 @@
-import type { Readable } from "node:stream";
+import { type Readable } from "node:stream";
 
 export type StorageDriver = "local" | "oss";
 
@@ -8,6 +8,15 @@ export interface UploadObjectInput {
   contentType?: string;
   metadata?: Record<string, string>;
   originalName?: string;
+}
+
+export interface UploadFileObjectInput {
+  contentType?: string;
+  filePath: string;
+  key: string;
+  metadata?: Record<string, string>;
+  originalName?: string;
+  sizeBytes: number;
 }
 
 export interface StoredObject {

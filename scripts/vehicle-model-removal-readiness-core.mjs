@@ -147,6 +147,9 @@ function classifyExternalUsage(path, content) {
   if (normalizedPath.includes("/portal/portal-catalog")) {
     return "PORTAL_CATALOG";
   }
+  if (normalizedPath === "apps/web/src/lib/portal-types.ts") {
+    return "PORTAL_CATALOG";
+  }
   if (normalizedPath.includes("/dto/") || normalizedPath.includes("controller")) {
     return "API_CONTRACT";
   }

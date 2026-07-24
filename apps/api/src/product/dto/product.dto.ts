@@ -15,10 +15,13 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min
 } from "class-validator";
+
+const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
 
 export class CreateProductDto {
   @IsString()
@@ -90,6 +93,7 @@ export class CreatePriceRuleDto {
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
   vehicleModel?: string;
 
   @IsOptional()
@@ -138,6 +142,7 @@ export class UpdatePriceRuleDto {
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
   vehicleModel?: string;
 
   @IsOptional()
@@ -248,6 +253,7 @@ export class CreateQuoteDto {
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
   vehicleModel?: string;
 
   @IsOptional()
@@ -432,6 +438,7 @@ export class CreateVehiclePackageDto {
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
   vehicleModel?: string;
 
   @IsOptional()
@@ -492,6 +499,7 @@ export class UpdateVehiclePackageDto {
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
   vehicleModel?: string;
 
   @IsOptional()

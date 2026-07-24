@@ -107,6 +107,11 @@ export class VehicleModelDefinitionService {
         const existing = await this.findDefinitionOrThrow(id, tx);
         const nextModelCode =
           dto.modelCode === undefined ? existing.modelCode : normalizeModelCode(dto.modelCode);
+        if (nextModelCode !== existing.modelCode) {
+          throw new BadRequestException(
+            "Vehicle model code is immutable after creation."
+          );
+        }
         await this.assertCodeNamespaceAvailable(
           [nextModelCode],
           id,
@@ -255,7 +260,6 @@ function normalizeUpdateInput(dto: UpdateVehicleModelDefinitionDto): Prisma.Vehi
   assignIfDefined(data, "driveType", normalizeOptionalText(dto.driveType), dto.driveType !== undefined);
   assignIfDefined(data, "enabled", dto.enabled);
   assignIfDefined(data, "energyType", normalizeOptionalText(dto.energyType), dto.energyType !== undefined);
-  assignIfDefined(data, "modelCode", dto.modelCode === undefined ? undefined : normalizeModelCode(dto.modelCode));
   assignIfDefined(data, "modelName", dto.modelName === undefined ? undefined : normalizeRequiredText(dto.modelName));
   assignIfDefined(data, "modelYear", dto.modelYear ?? null, dto.modelYear !== undefined);
   assignIfDefined(data, "officialRangeKm", dto.officialRangeKm ?? null, dto.officialRangeKm !== undefined);

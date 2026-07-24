@@ -1,3 +1,5 @@
+BEGIN;
+
 ALTER TABLE "vehicle_package"
   ALTER COLUMN "vehicle_model" TYPE VARCHAR(64)
   USING "vehicle_model"::text;
@@ -31,3 +33,5 @@ ALTER TABLE "subscription_order"
   USING "legacy_vehicle_model_snapshot"::text;
 
 DROP TYPE "vehicle_model";
+
+COMMIT;

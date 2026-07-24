@@ -321,6 +321,18 @@ test("release check runs the no-enum guard directly without a package script", (
   assert.doesNotMatch(releaseCheck, /vehicle-model:enum-freeze/);
 });
 
+test("no-enum guard scans executable model backfill scripts", () => {
+  const source = readFileSync(
+    resolve(currentDirectory, "check-vehicle-model-no-enum.mjs"),
+    "utf8"
+  );
+
+  assert.doesNotMatch(
+    source,
+    /pathFromRoot\.startsWith\("scripts\/(?:model-definition|quote-order-model(?:-code)?-snapshot)-backfill"\)/
+  );
+});
+
 function assertDependency(schemaText, runtimeFiles, expectedDependency) {
   assert.throws(
     () => assertVehicleModelEnumRemoved(schemaText, runtimeFiles),

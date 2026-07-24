@@ -71,6 +71,19 @@ describe("VehicleModel enum string schema contract", () => {
       expect(castIndex).toBeLessThan(dropTypeIndex);
     }
   });
+
+  it("wraps every enum conversion and enum drop in one explicit transaction", () => {
+    const migration = readEnumToStringMigration().trim();
+
+    expect(migration).toMatch(/^BEGIN;\s/);
+    expect(migration).toMatch(/\sCOMMIT;$/);
+    expect(migration.indexOf("BEGIN;")).toBeLessThan(
+      migration.indexOf('ALTER TABLE "vehicle_package"')
+    );
+    expect(migration.indexOf('DROP TYPE "vehicle_model"')).toBeLessThan(
+      migration.lastIndexOf("COMMIT;")
+    );
+  });
 });
 
 function readSchema() {

@@ -5,6 +5,13 @@ import { validate } from "class-validator";
 import { describe, expect, it } from "vitest";
 
 import { PortalVehicleCatalogQueryDto } from "../src/portal/portal-catalog.dto";
+import {
+  CreatePriceRuleDto,
+  CreateQuoteDto,
+  CreateVehiclePackageDto,
+  UpdatePriceRuleDto,
+  UpdateVehiclePackageDto
+} from "../src/product/dto/product.dto";
 import { OrderReportQueryDto, VehicleDetailQueryDto } from "../src/report/dto/report.dto";
 import { CreateVehicleDto, UpdateVehicleDto } from "../src/vehicle/dto/vehicle.dto";
 import { VehicleModelDefinitionsQueryDto } from "../src/vehicle-model-definition/dto/vehicle-model-definition.dto";
@@ -47,6 +54,28 @@ describe("vehicle model string compatibility", () => {
       for (const vehicleModel of invalidCodes) {
         const errors = await validate(plainToInstance(QueryDto, { [property]: vehicleModel }));
         expect(errors.find((error) => error.property === property)).toBeDefined();
+      }
+    }
+  });
+
+  it("rejects malformed model codes in compatibility write DTOs", async () => {
+    const writeTypes: Array<new () => object> = [
+      CreatePriceRuleDto,
+      UpdatePriceRuleDto,
+      CreateQuoteDto,
+      CreateVehiclePackageDto,
+      UpdateVehiclePackageDto,
+      CreateVehicleDto,
+      UpdateVehicleDto
+    ];
+
+    for (const WriteDto of writeTypes) {
+      for (const vehicleModel of ["", "nio_et5", "ET5 T", "X".repeat(65)]) {
+        const errors = await validate(plainToInstance(WriteDto, { vehicleModel }));
+        expect(
+          errors.find((error) => error.property === "vehicleModel"),
+          `${WriteDto.name} must reject ${JSON.stringify(vehicleModel)}`
+        ).toBeDefined();
       }
     }
   });

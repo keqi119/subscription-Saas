@@ -46,6 +46,31 @@ test("creates a canonical NIO_ET5 definition when no matching definition exists"
   expect(mock.state.definitions[0].legacyVehicleModel).toBe("ET5");
 });
 
+test("rejects cross-namespace modelCode and legacy alias conflicts before convergence", async () => {
+  const mock = createStatefulPrismaMock({
+    definitions: [
+      {
+        id: "definition-old-code",
+        legacyVehicleModel: null,
+        modelCode: "ET5"
+      },
+      {
+        id: "definition-canonical",
+        legacyVehicleModel: "ET5",
+        modelCode: "NIO_ET5"
+      }
+    ]
+  });
+
+  await expect(
+    convergeVehicleModelDefinition(mock.prisma, definitionSeedInput())
+  ).rejects.toThrow(
+    "VehicleModelDefinition seed conflict for NIO_ET5: multiple canonical or legacy matches."
+  );
+
+  expect(mock.calls.vehicleModelDefinition.update).toBe(0);
+});
+
 test("updates an existing ProductPriceRule compatibility code to NIO_ET5", async () => {
   const mock = createStatefulPrismaMock({
     priceRules: [

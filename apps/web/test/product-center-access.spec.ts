@@ -102,6 +102,14 @@ describe("product center access isolation", () => {
     expect(functionDeclarationSource(vehiclesSource, "saveEditVehicle")).not.toContain("vehicleModel");
     expect(functionDeclarationSource(source, "buildPackagePayload")).not.toMatch(/\bvehicleModel\s*:/);
   });
+
+  it("keeps an existing canonical model code immutable in the Admin edit form", () => {
+    const definitionsSource = read(vehicleModelDefinitionsPagePath);
+
+    expect(definitionsSource).toContain(
+      '<Input disabled={Boolean(editing)} placeholder="ET5T" />'
+    );
+  });
 });
 
 function read(file: string) {

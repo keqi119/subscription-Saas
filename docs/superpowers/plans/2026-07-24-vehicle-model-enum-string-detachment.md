@@ -113,9 +113,15 @@ attributes, indexes, and constraints.
 For each known column:
 
 ```sql
+BEGIN;
+
 ALTER TABLE "<table>"
   ALTER COLUMN "<column>" TYPE VARCHAR(64)
   USING "<column>"::text;
+
+DROP TYPE "vehicle_model";
+
+COMMIT;
 ```
 
 After all eight conversions:
@@ -229,6 +235,7 @@ git commit -m "refactor(vehicle): detach runtime model codes from prisma enum"
 **Interfaces:**
 - Produces: modelDefinitionId-first forms and validated string compatibility filters.
 - Consumes: VehicleModelDefinition options using `id`, `modelCode`, and display names.
+- Enforces: `modelCode` is immutable after creation and read-only in Admin edit flows.
 
 - [ ] **Step 1: Write failing tests**
 

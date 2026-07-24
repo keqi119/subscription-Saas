@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   buildVehicleModelRemovalReadinessReport,
@@ -24,14 +25,33 @@ test("scanExternalEnumUsage classifies API, portal catalog, report, CSV, and int
     {
       content: "export class PortalCatalogService { list(vehicleModel) { return vehicleModel; } }",
       path: "apps/api/src/portal/portal-catalog.service.ts"
+    },
+    {
+      content: "export interface PortalCatalogVehicle { vehicleModel?: string | null }",
+      path: "apps/web/src/lib/portal-types.ts"
     }
   ]);
 
-  assert.equal(result.totalReferences, 4);
+  assert.equal(result.totalReferences, 5);
   assert.deepEqual(
     result.items.map((item) => item.category).sort(),
-    ["API_CONTRACT", "CSV_EXPORT", "EXTERNAL_INTEGRATION", "PORTAL_CATALOG"]
+    ["API_CONTRACT", "CSV_EXPORT", "EXTERNAL_INTEGRATION", "PORTAL_CATALOG", "PORTAL_CATALOG"]
   );
+});
+
+test("external consumer registry includes the Web portal catalog type contract", () => {
+  const registry = JSON.parse(
+    readFileSync(
+      new URL("../docs/vehicle-model-external-contract-consumer-register.json", import.meta.url),
+      "utf8"
+    )
+  );
+  const evidencePaths = registry.consumers.flatMap((consumer) => [
+    consumer.evidencePath,
+    ...(consumer.evidencePaths ?? [])
+  ]);
+
+  assert.ok(evidencePaths.includes("apps/web/src/lib/portal-types.ts"));
 });
 
 test("scanExternalEnumUsage ignores internal telemetry implementation references", () => {

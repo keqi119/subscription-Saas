@@ -258,8 +258,9 @@ export default function VehicleModelDefinitionsPage() {
 
     setSubmitting(true);
     try {
+      const { modelCode, ...editableValues } = values;
       const payload = {
-        ...values,
+        ...(editing ? editableValues : { ...editableValues, modelCode }),
         portalVisible: values.portalVisible ?? false,
         enabled: values.enabled ?? true,
         sortOrder: values.sortOrder ?? 0
@@ -417,7 +418,7 @@ export default function VehicleModelDefinitionsPage() {
               { pattern: /^[A-Z0-9_-]+$/, message: "仅支持大写字母、数字、下划线或短横线" }
             ]}
           >
-            <Input placeholder="ET5T" />
+            <Input disabled={Boolean(editing)} placeholder="ET5T" />
           </Form.Item>
           <Form.Item label="品牌" name="brand" rules={[{ required: true, message: "请输入品牌" }]}>
             <Input placeholder="NIO" />

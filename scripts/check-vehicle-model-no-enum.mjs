@@ -371,10 +371,7 @@ function collectRuntimeFiles(currentPath, files) {
 function isExcludedRuntimeFile(pathFromRoot) {
   return (
     /\.(spec|test)\.[cm]?[jt]sx?$/.test(pathFromRoot) ||
-    pathFromRoot === "scripts/check-vehicle-model-no-enum.mjs" ||
-    pathFromRoot.startsWith("scripts/model-definition-backfill") ||
-    pathFromRoot.startsWith("scripts/quote-order-model-snapshot-backfill") ||
-    pathFromRoot.startsWith("scripts/quote-order-model-code-snapshot-backfill")
+    pathFromRoot === "scripts/check-vehicle-model-no-enum.mjs"
   );
 }
 

@@ -2,10 +2,11 @@ export async function convergeVehicleModelDefinition(
   prisma,
   { createData, legacyVehicleModel, modelCode, updateData }
 ) {
-  const aliases = [{ modelCode }];
-  if (legacyVehicleModel) {
-    aliases.push({ legacyVehicleModel });
-  }
+  const codes = [...new Set([modelCode, legacyVehicleModel].filter(Boolean))];
+  const aliases = codes.flatMap((code) => [
+    { modelCode: code },
+    { legacyVehicleModel: code }
+  ]);
 
   const matches = await prisma.vehicleModelDefinition.findMany({
     select: {

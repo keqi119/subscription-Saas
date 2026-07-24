@@ -198,7 +198,7 @@ describe("VehicleModelDefinitionService", () => {
 
     await service.updateDefinition(
       "definition-et5",
-      { modelCode: "NIO_ET5" },
+      { displayName: "ET5 refreshed", modelCode: "ET5" },
       user
     );
 
@@ -207,6 +207,22 @@ describe("VehicleModelDefinitionService", () => {
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     );
     expect(prisma.vehicleModelDefinition.update).toHaveBeenCalled();
+  });
+
+  it("rejects modelCode renaming after a definition has been created", async () => {
+    const { prisma, service, user } = createHarness({
+      definitions: [createDefinition({ id: "definition-et5", modelCode: "ET5" })]
+    });
+
+    await expect(
+      service.updateDefinition(
+        "definition-et5",
+        { modelCode: "NIO_ET5" },
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.vehicleModelDefinition.update).not.toHaveBeenCalled();
   });
 
   it("maps Serializable write conflicts to a safe domain conflict", async () => {
@@ -298,7 +314,7 @@ describe("VehicleModelDefinitionService", () => {
     } as unknown as CreateVehicleModelDefinitionDto;
     const legacyUpdate = {
       legacyVehicleModel: VehicleModel.ET5T,
-      modelCode: "NIO_ET5_TOURING"
+      modelCode: "ET5"
     } as unknown as UpdateVehicleModelDefinitionDto;
 
     await service.createDefinition(legacyCreate, user);

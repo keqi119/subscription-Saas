@@ -49,6 +49,8 @@ Then remove `enum VehicleModel` from Prisma and drop PostgreSQL type
 
 The migration must:
 
+- wrap all column conversions and the enum drop in one explicit PostgreSQL
+  transaction;
 - use explicit `ALTER COLUMN ... TYPE VARCHAR(64) USING ...::text`;
 - preserve nullability, indexes, unique constraints, and existing values;
 - convert all dependent columns before dropping the enum type;
@@ -61,6 +63,8 @@ The migration must:
 `VehicleModelDefinition.modelCode` becomes the only source for new model-code
 compatibility values.
 
+- `modelCode` is immutable after definition creation; display and descriptive
+  metadata remain editable.
 - New Vehicle, VehiclePackage, and ProductPriceRule writes continue to require
   `modelDefinitionId`.
 - Their compatibility `vehicleModel` column is derived from
@@ -92,6 +96,8 @@ maximum length 64
 Admin must stop presenting a fixed legacy enum selector:
 
 - VehicleModelDefinition create/edit has no "legacy model" input.
+- VehicleModelDefinition edit displays `modelCode` as read-only and omits it
+  from update payloads.
 - Vehicle and Product forms do not show or submit a separate legacy selector.
 - Canonical model-definition selection remains required.
 - Existing compatibility values may remain in API responses during this phase,

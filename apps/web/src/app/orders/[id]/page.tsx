@@ -182,6 +182,11 @@ interface DeliveryCheck {
   depositRequiredAmount?: number | null;
   depositReceivedConfirmed: boolean;
   firstMonthlyFeeReceivedConfirmed: boolean;
+  insuranceCoverage: {
+    commercialCovered: boolean;
+    compulsoryTrafficCovered: boolean;
+    evaluatedAt: string;
+  };
   insuranceValid: boolean;
   orderId: string;
   orderNo: string;
@@ -2926,13 +2931,16 @@ function Stage2HandoverReviewDetailModal({
 }
 
 function DeliveryBlockerGuidance({ reason }: { reason: string }) {
-  if (reason.includes("保险")) {
+  if (reason.includes("保险人工核验") || reason.includes("保险有效性尚未确认")) {
+    return <Typography.Text type="secondary">请在准备交付弹窗中确认</Typography.Text>;
+  }
+  if (reason.includes("交强险") || reason.includes("商业险")) {
     return <Link href="/vehicle-insurance-policies">去保单管理</Link>;
   }
   if (reason.includes("押金") || reason.includes("首期月费")) {
     return <Typography.Text type="secondary">请在财务 / 收款核销中完成账单核销</Typography.Text>;
   }
-  if (reason.includes("整备") || reason.includes("有效性") || reason.includes("文件") || reason.includes("身份")) {
+  if (reason.includes("整备") || reason.includes("文件") || reason.includes("身份")) {
     return <Typography.Text type="secondary">请在准备交付弹窗中确认</Typography.Text>;
   }
   if (reason.includes("交付工单")) {
@@ -2971,7 +2979,7 @@ function DeliveryPanel({
       value: zeroDepositSatisfied || delivery?.depositReceivedConfirmed
     },
     { label: "首期月费收取确认", value: delivery?.firstMonthlyFeeReceivedConfirmed },
-    { label: "保险有效确认", value: delivery?.insuranceValidConfirmed },
+    { label: "保险人工核验", value: delivery?.insuranceValidConfirmed },
     { label: "车辆整备完成确认", value: delivery?.vehiclePreparedConfirmed },
     { label: "车辆照片确认", value: delivery?.vehiclePhotosConfirmed },
     { label: "客户身份核验确认", value: delivery?.customerIdentityConfirmed },
@@ -3057,7 +3065,24 @@ function DeliveryPanel({
                 )
               },
               { label: "首期月费确认状态", children: <BooleanTag checked={deliveryCheck?.firstMonthlyFeeReceivedConfirmed} /> },
-              { label: "保险有效状态", children: <BooleanTag checked={deliveryCheck?.insuranceValid} /> },
+              {
+                label: "交强险期限覆盖",
+                children: (
+                  <BooleanTag
+                    checked={deliveryCheck?.insuranceCoverage.compulsoryTrafficCovered}
+                  />
+                )
+              },
+              {
+                label: "商业险期限覆盖",
+                children: (
+                  <BooleanTag checked={deliveryCheck?.insuranceCoverage.commercialCovered} />
+                )
+              },
+              {
+                label: "保险人工核验",
+                children: <BooleanTag checked={delivery?.insuranceValidConfirmed} />
+              },
               { label: "车辆整备状态", children: <BooleanTag checked={deliveryCheck?.vehiclePrepared} /> },
               {
                 label: "车辆状态",
@@ -6036,7 +6061,7 @@ function OrderDetailPageContent() {
               <Checkbox>首期月费收取确认</Checkbox>
             </Form.Item>
             <Form.Item name="insuranceValidConfirmed" valuePropName="checked">
-              <Checkbox>保险有效确认</Checkbox>
+              <Checkbox>保险人工核验</Checkbox>
             </Form.Item>
             <Form.Item name="vehiclePreparedConfirmed" valuePropName="checked">
               <Checkbox>车辆整备完成确认</Checkbox>

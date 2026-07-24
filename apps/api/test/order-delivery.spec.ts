@@ -62,7 +62,7 @@ describe("vehicle delivery handover workflow", () => {
 
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
-    ).rejects.toThrow("保险有效性尚未确认");
+    ).rejects.toThrow("保险人工核验尚未确认");
 
     harness.state.delivery = buildReadyDelivery(harness);
     harness.state.insurancePolicies = harness.state.insurancePolicies.map((policy) => ({

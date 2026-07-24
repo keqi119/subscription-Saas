@@ -3951,7 +3951,7 @@ function buildDeliveryCheck(
     confirmBlockingReasons.push("首期月费尚未确认收取");
   }
   if (!delivery?.insuranceValidConfirmed) {
-    confirmBlockingReasons.push("保险有效性尚未确认");
+    confirmBlockingReasons.push("保险人工核验尚未确认");
   }
   if (!vehiclePrepared) {
     confirmBlockingReasons.push("车辆尚未整备");

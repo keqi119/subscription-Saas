@@ -6,6 +6,12 @@ Status: Approved
 
 Branch: `fix/insurance-coverage-source-of-truth`
 
+Review amendments approved on 2026-07-24:
+
+- policy list displays VIN and plate number;
+- vehicle selector supports fuzzy VIN matching;
+- policy status adds `NOT_EFFECTIVE` / `未生效`.
+
 ## 1. Context
 
 The vehicle asset ledger and delivery readiness currently read insurance data from different sources:
@@ -106,6 +112,21 @@ pricing, quote, order, snapshot, fixture, and schema dependencies.
 The visible Admin "兼容车型（legacy）" control may be removed in that separate
 workstream, but this branch will not drop or rewrite model compatibility data.
 
+### 2.5 Policy status
+
+Add the explicit Prisma enum value:
+
+```text
+NOT_EFFECTIVE
+```
+
+Admin displays it as `未生效`. A `NOT_EFFECTIVE` policy never satisfies delivery
+coverage, even when its date range includes the evaluation date.
+
+This branch does not add a scheduler that automatically changes policy status.
+Operators continue to maintain the explicit status through the existing policy
+create/edit flow. Existing statuses and archive behavior remain unchanged.
+
 ## 3. Coverage Resolver
 
 Introduce one pure coverage resolver shared by delivery readiness and vehicle
@@ -188,7 +209,28 @@ management endpoints remain the source for full policy records.
 The legacy response fields `insuranceStartDate` and `insuranceEndDate` are
 removed together with the schema fields.
 
-### 4.2 Delivery check
+### 4.2 Policy list
+
+Policy list/detail vehicle summaries include:
+
+```ts
+{
+  id: string;
+  vehicleNo: string;
+  vin: string | null;
+  plateNo: string | null;
+  displayName: string;
+}
+```
+
+The policy list table displays VIN and plate number as dedicated columns.
+
+The vehicle filter still submits the selected `vehicleId`. Its searchable option
+text contains vehicle number, VIN, plate number, brand, series, and model, so
+Admin users can find a vehicle by a partial VIN without changing list API filter
+semantics.
+
+### 4.3 Delivery check
 
 Delivery readiness returns both the aggregate boolean and per-type coverage:
 
@@ -229,7 +271,26 @@ displaying a shared dash.
 Vehicle detail continues to provide the full policy table and link to policy
 management.
 
-### 5.2 Delivery readiness
+### 5.2 Policy management
+
+The policy list displays:
+
+```text
+vehicle number
+VIN
+plate number
+```
+
+Both the list filter and policy create vehicle selector support client-side fuzzy
+search across the full option label, including VIN.
+
+Policy create/edit/filter options and status colors include:
+
+```text
+NOT_EFFECTIVE / 未生效
+```
+
+### 5.3 Delivery readiness
 
 Show:
 
@@ -311,6 +372,10 @@ Cover:
 
 - vehicle list/detail summary is derived from policy rows;
 - compulsory and commercial periods render separately;
+- policy list displays VIN and plate number;
+- vehicle filter matches a partial VIN;
+- `NOT_EFFECTIVE` is accepted by DTO validation and rendered as `未生效`;
+- `NOT_EFFECTIVE` does not satisfy automatic delivery coverage;
 - no legacy insurance date response or UI reference remains;
 - policy management still loads full policy records;
 - no object key, storage path, signing URL, full identity number, or secret is exposed.

@@ -148,6 +148,32 @@ export function vehicleModelDefinitionCodeSet(
   return uniqueVehicleModelCodes([definition.modelCode, definition.legacyVehicleModel]);
 }
 
+export function buildVehicleModelCanonicalCodeMap(
+  definitions: ReadonlyArray<
+    Pick<VehicleModelCodeDefinition, "legacyVehicleModel" | "modelCode">
+  >
+): Map<VehicleModelCode, VehicleModelCode> {
+  const result = new Map<VehicleModelCode, VehicleModelCode>();
+
+  for (const definition of definitions) {
+    result.set(definition.modelCode, definition.modelCode);
+  }
+  for (const definition of definitions) {
+    if (definition.legacyVehicleModel && !result.has(definition.legacyVehicleModel)) {
+      result.set(definition.legacyVehicleModel, definition.modelCode);
+    }
+  }
+
+  return result;
+}
+
+export function canonicalVehicleModelCode(
+  code: VehicleModelCode | null,
+  canonicalCodeByAlias: ReadonlyMap<VehicleModelCode, VehicleModelCode>
+): VehicleModelCode | null {
+  return code === null ? null : canonicalCodeByAlias.get(code) ?? code;
+}
+
 export function vehicleModelCodeSet(source: VehicleModelComparable): VehicleModelCode[] {
   return uniqueVehicleModelCodes([
     source.vehicleModel,

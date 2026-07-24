@@ -286,6 +286,24 @@ describe("pre-contract order change return-to-plan flow", () => {
     ).rejects.toThrow("Permission denied.");
   });
 
+  it("discovers canonical plan changes for a historical legacy-code vehicle", async () => {
+    const harness = createOrderChangeHarness({ planVehicleModel: "NIO_ET5" });
+
+    await expect(
+      harness.service.listPlanChangeSubscriptionPlans(harness.orderId, harness.saUser)
+    ).resolves.toMatchObject([
+      {
+        subscriptionPlanId: "plan-new",
+        vehicleModel: "NIO_ET5"
+      }
+    ]);
+    expect(harness.prisma.subscriptionPlan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.not.objectContaining({ vehiclePackage: expect.anything() })
+      })
+    );
+  });
+
   it("does not expose raw JSON in the order detail quote snapshot UI", () => {
     const pagePath = join(process.cwd(), "..", "web", "src", "app", "orders", "[id]", "page.tsx");
     const source = readFileSync(pagePath, "utf8");
@@ -304,7 +322,7 @@ interface HarnessOptions {
   executedAt?: Date | null;
   orderSource?: "CUSTOMER_SELF_SERVICE" | "SALES_ASSISTED";
   orderStatus?: OrderStatus;
-  planVehicleModel?: VehicleModel;
+  planVehicleModel?: string;
   vehicleStatus?: VehicleStatus;
 }
 
@@ -373,6 +391,8 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
       deletedAt: null,
       id: vehicleId,
       model: "ET5",
+      modelDefinition: null,
+      modelDefinitionId: null,
       plateNo: "沪A00001",
       purchasePriceAmount: 18000000n,
       salePriceStatus: SalePriceStatus.EFFECTIVE,
@@ -596,7 +616,7 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
   return { auditService, changeId, context, contractId, opUser, orderId, prisma, saUser, service, state, tx, vehicleId };
 }
 
-function makePlan(now: Date, vehicleModel: VehicleModel) {
+function makePlan(now: Date, vehicleModel: string) {
   const product = {
     deletedAt: null,
     id: "product-new",
@@ -690,6 +710,13 @@ function makePlan(now: Date, vehicleModel: VehicleModel) {
       id: "vehicle-package-new",
       maxPeriodMonths: 36,
       maxPurchasePriceAmount: null,
+      modelDefinition: {
+        displayName: "NIO ET5",
+        id: "model-et5",
+        legacyVehicleModel: VehicleModel.ET5,
+        modelCode: "NIO_ET5"
+      },
+      modelDefinitionId: "model-et5",
       minPeriodMonths: 6,
       minPurchasePriceAmount: null,
       monthlyFeeRate: 0.03,

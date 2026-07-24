@@ -197,6 +197,53 @@ describe("customer self-service order API rules", () => {
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
+  it("accepts a canonical plan for a historical legacy-code vehicle", async () => {
+    const modelDefinition = {
+      displayName: "NIO ET5",
+      id: "model-et5",
+      legacyVehicleModel: VehicleModel.ET5,
+      modelCode: "NIO_ET5"
+    };
+    const harness = createCustomerOrderHarness({
+      plan: {
+        vehiclePackage: {
+          modelDefinition,
+          modelDefinitionId: modelDefinition.id,
+          vehicleModel: modelDefinition.modelCode
+        }
+      },
+      vehicle: {
+        modelDefinition: null,
+        modelDefinitionId: null,
+        vehicleModel: VehicleModel.ET5
+      }
+    });
+
+    await expect(
+      harness.service.createCustomerOrder(
+        {
+          customerId: harness.customer.id,
+          periodMonths: 12,
+          subscriptionPlanId: harness.plan.id,
+          vehicleId: harness.vehicle.id
+        },
+        harness.user,
+        harness.context
+      )
+    ).resolves.toMatchObject({ orderStatus: OrderStatus.PENDING_REVIEW });
+    expect(harness.prisma.subscriptionPlan.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          vehiclePackage: {
+            include: expect.objectContaining({
+              modelDefinition: { select: expect.any(Object) }
+            })
+          }
+        })
+      })
+    );
+  });
+
   it("rejects unavailable vehicles", async () => {
     const harness = createCustomerOrderHarness({
       vehicle: { status: VehicleStatus.RESERVED }
@@ -378,7 +425,7 @@ function createCustomerOrderHarness(overrides: {
   const auditService = { write: vi.fn(async () => undefined) };
   const service = new OrderService(auditService as never, prisma as never);
 
-  return { auditService, context, customer, plan, service, state, tx, user, vehicle };
+  return { auditService, context, customer, plan, prisma, service, state, tx, user, vehicle };
 }
 
 function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> } = {}) {

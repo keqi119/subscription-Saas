@@ -1024,8 +1024,7 @@ export class ProductService {
     }
 
     const vehicle = vehicleId ? await this.findAvailableVehicleForQuote(vehicleId) : null;
-    const vehicleModelDefinitionId = vehicle ? resolveVehicleModelDefinitionId(vehicle) : null;
-    if (vehicle && !vehicleModelDefinitionId && !vehicle.vehicleModel) {
+    if (vehicle && !resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
       return [];
     }
     const today = new Date();
@@ -1038,17 +1037,21 @@ export class ProductService {
         OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }],
         product: { deletedAt: null, status: ProductStatus.ACTIVE },
         productVersion: { deletedAt: null, status: ProductVersionStatus.ACTIVE },
-        status: SubscriptionPlanStatus.ACTIVE,
-        ...(vehicleModelDefinitionId
-          ? { vehiclePackage: { modelDefinitionId: vehicleModelDefinitionId } }
-          : vehicle?.vehicleModel
-            ? { vehiclePackage: { vehicleModel: vehicle.vehicleModel } }
-            : {})
+        status: SubscriptionPlanStatus.ACTIVE
       }
     });
 
     return plans
       .filter(isSubscriptionPlanCurrentlyAvailable)
+      .filter((plan) =>
+        vehicle
+          ? vehicleModelReadPathMatches(vehicle, plan.vehiclePackage, {
+              businessDecision: true,
+              module: "quote",
+              operation: "quote.availableSubscriptionPlans.package.match"
+            })
+          : true
+      )
       .map(toAvailableSubscriptionPlanView);
   }
 
@@ -1582,7 +1585,10 @@ export class ProductService {
   }
 
   private async findAvailableVehicleForQuote(id: string) {
-    const vehicle = await this.prisma.vehicle.findUnique({ where: { id } });
+    const vehicle = await this.prisma.vehicle.findUnique({
+      include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } },
+      where: { id }
+    });
     if (!vehicle || vehicle.deletedAt) {
       throw new NotFoundException("车辆不存在");
     }

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, ConflictException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { VehicleModelDefinitionService } from "../src/vehicle-model-definition/vehicle-model-definition.service";
@@ -37,6 +38,79 @@ describe("VehicleModelDefinitionService", () => {
         })
       })
     );
+  });
+
+  it("checks the namespace and creates inside a Serializable transaction", async () => {
+    const { prisma, service, user } = createHarness({ definitions: [] });
+
+    await service.createDefinition(
+      {
+        brand: "NIO",
+        displayName: "Model X",
+        modelCode: "MODEL_X_2027",
+        modelName: "Model X"
+      },
+      user
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+    expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalled();
+    expect(prisma.vehicleModelDefinition.create).toHaveBeenCalled();
+  });
+
+  it("checks the namespace and updates inside a Serializable transaction", async () => {
+    const { prisma, service, user } = createHarness({
+      definitions: [createDefinition({ id: "definition-et5" })]
+    });
+
+    await service.updateDefinition(
+      "definition-et5",
+      { modelCode: "NIO_ET5" },
+      user
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+    expect(prisma.vehicleModelDefinition.update).toHaveBeenCalled();
+  });
+
+  it("maps Serializable write conflicts to a safe domain conflict", async () => {
+    const { prisma, service, user } = createHarness({ definitions: [] });
+    prisma.$transaction.mockRejectedValueOnce({ code: "P2034" });
+
+    await expect(
+      service.createDefinition(
+        {
+          brand: "NIO",
+          displayName: "Model X",
+          modelCode: "MODEL_X_2027",
+          modelName: "Model X"
+        },
+        user
+      )
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it("maps transaction unique conflicts to a safe validation error", async () => {
+    const { prisma, service, user } = createHarness({ definitions: [] });
+    prisma.$transaction.mockRejectedValueOnce({ code: "P2002" });
+
+    await expect(
+      service.createDefinition(
+        {
+          brand: "NIO",
+          displayName: "Model X",
+          modelCode: "MODEL_X_2027",
+          modelName: "Model X"
+        },
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it("rejects duplicate modelCode including soft-deleted records", async () => {
@@ -260,6 +334,7 @@ describe("VehicleModelDefinitionService", () => {
 function createHarness(options: { definitions?: Array<ReturnType<typeof createDefinition>> } = {}) {
   const definitions = [...(options.definitions ?? [createDefinition()])];
   const prisma = {
+    $transaction: vi.fn(),
     vehicleModelDefinition: {
       count: vi.fn(async ({ where }: { where?: Record<string, unknown> } = {}) =>
         filterDefinitions(definitions, where).length
@@ -296,6 +371,9 @@ function createHarness(options: { definitions?: Array<ReturnType<typeof createDe
       })
     }
   };
+  prisma.$transaction.mockImplementation(
+    (callback: (tx: typeof prisma) => unknown) => callback(prisma)
+  );
 
   const service = new VehicleModelDefinitionService(prisma as never);
   const user = {

@@ -80,6 +80,27 @@ test("reports unresolved records and duplicate mapping conflicts", () => {
   assert.equal(hasBlockingIssues({ vehicle: plan }), true);
 });
 
+test("matches a canonical string model code without a legacy alias", () => {
+  const plan = buildLowRiskTablePlan({
+    definitions: [
+      {
+        enabled: true,
+        id: "definition-model-x-2027",
+        legacyVehicleModel: null,
+        modelCode: "MODEL_X_2027"
+      }
+    ],
+    records: [{ id: "vehicle-model-x", modelDefinitionId: null, vehicleModel: "MODEL_X_2027" }],
+    tableName: "Vehicle"
+  });
+
+  assert.deepEqual(plan.updates, [
+    { id: "vehicle-model-x", modelDefinitionId: "definition-model-x-2027", vehicleModel: "MODEL_X_2027" }
+  ]);
+  assert.deepEqual(plan.conflicts, []);
+  assert.deepEqual(plan.unresolved, []);
+});
+
 test("summarizes blocking issues across backfill tables", () => {
   const cleanPlan = buildLowRiskTablePlan({
     definitions,

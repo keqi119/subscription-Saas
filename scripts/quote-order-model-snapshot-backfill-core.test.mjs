@@ -63,7 +63,7 @@ test("quote legacy vehicleModel maps to a model definition, including disabled h
       legacyVehicleModelSnapshot: "ET5",
       modelDefinitionIdSnapshot: "definition-et5",
       modelDisplayNameSnapshot: "NIO ET5",
-      source: "legacyVehicleModel",
+      source: "vehicleModel",
       vehicleModel: "ET5"
     },
     {
@@ -71,7 +71,7 @@ test("quote legacy vehicleModel maps to a model definition, including disabled h
       legacyVehicleModelSnapshot: "ES6",
       modelDefinitionIdSnapshot: "definition-es6",
       modelDisplayNameSnapshot: "NIO ES6 Disabled",
-      source: "legacyVehicleModel",
+      source: "vehicleModel",
       vehicleModel: "ES6"
     }
   ]);
@@ -113,6 +113,35 @@ test("quote reports conflicts when legacy mapping is duplicated", () => {
       vehicleModel: "ET5"
     }
   ]);
+});
+
+test("quote snapshot backfill resolves a canonical string code without a legacy alias", () => {
+  const plan = buildQuoteSnapshotPlan({
+    definitions: [
+      {
+        deletedAt: null,
+        displayName: "Model X 2027",
+        enabled: true,
+        id: "definition-model-x-2027",
+        legacyVehicleModel: null,
+        modelCode: "MODEL_X_2027"
+      }
+    ],
+    quotes: [emptyQuote({ id: "quote-model-x", vehicleModel: "MODEL_X_2027" })]
+  });
+
+  assert.deepEqual(plan.updates, [
+    {
+      id: "quote-model-x",
+      legacyVehicleModelSnapshot: "MODEL_X_2027",
+      modelDefinitionIdSnapshot: "definition-model-x-2027",
+      modelDisplayNameSnapshot: "Model X 2027",
+      source: "vehicleModel",
+      vehicleModel: "MODEL_X_2027"
+    }
+  ]);
+  assert.deepEqual(plan.conflicts, []);
+  assert.deepEqual(plan.unresolved, []);
 });
 
 test("quote is skipped when any snapshot field already exists", () => {
@@ -191,7 +220,7 @@ test("order falls back to legacy vehicleModel when no quote snapshot is availabl
       modelDefinitionIdSnapshot: "definition-et5",
       modelDisplayNameSnapshot: "NIO ET5",
       quoteId: null,
-      source: "legacyVehicleModel",
+      source: "vehicleModel",
       vehicleModel: "ET5"
     }
   ]);

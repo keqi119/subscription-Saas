@@ -62,6 +62,20 @@
       "targetDate": "2026-08-15"
     },
     {
+      "consumerId": "portal-catalog-vehicle-model-compatibility",
+      "evidencePath": "apps/api/src/portal/portal-catalog.service.ts",
+      "evidencePaths": [
+        "apps/api/src/portal/portal-catalog.dto.ts",
+        "apps/api/src/portal/portal-catalog.service.ts"
+      ],
+      "migrationStatus": "Owner assigned",
+      "owner": "Product owner",
+      "replacement": "modelDefinitionId / modelCode / modelDisplayName",
+      "risk": "Medium",
+      "surface": "PORTAL_CATALOG",
+      "targetDate": "2026-08-15"
+    },
+    {
       "consumerId": "asset-profitability-report-ui",
       "evidencePath": "apps/web/src/app/reports/asset-profitability/page.tsx",
       "migrationStatus": "Owner assigned",

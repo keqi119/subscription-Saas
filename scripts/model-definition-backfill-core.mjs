@@ -111,18 +111,22 @@ function buildDefinitionMap(definitions) {
   const map = new Map();
 
   for (const definition of definitions) {
-    if (definition.deletedAt || definition.enabled !== true || !definition.legacyVehicleModel) {
+    if (definition.deletedAt || definition.enabled !== true) {
       continue;
     }
 
-    const key = clean(definition.legacyVehicleModel);
-    if (!key) {
-      continue;
-    }
+    for (const code of [definition.modelCode, definition.legacyVehicleModel]) {
+      const key = clean(code);
+      if (!key) {
+        continue;
+      }
 
-    const bucket = map.get(key) ?? [];
-    bucket.push(definition);
-    map.set(key, bucket);
+      const bucket = map.get(key) ?? [];
+      if (!bucket.some((candidate) => candidate.id === definition.id)) {
+        bucket.push(definition);
+      }
+      map.set(key, bucket);
+    }
   }
 
   return map;

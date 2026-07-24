@@ -316,7 +316,7 @@ const demoVehicles = [
     plateNo: "沪AET5001",
     purchasePriceAmount: 15000000,
     series: "ET5",
-    vehicleModel: "ET5",
+    vehicleModel: "NIO_ET5",
     vehicleNo: "VEH-DEMO-ET5-001",
     vin: "TESTVINET50000001"
   },
@@ -331,7 +331,7 @@ const demoVehicles = [
     plateNo: "沪AET7001",
     purchasePriceAmount: 21000000,
     series: "ET7",
-    vehicleModel: "ET7",
+    vehicleModel: "NIO_ET7",
     vehicleNo: "VEH-DEMO-ET7-001",
     vin: "TESTVINET70000001"
   },
@@ -346,21 +346,21 @@ const demoVehicles = [
     plateNo: "沪AES6001",
     purchasePriceAmount: 18000000,
     series: "ES6",
-    vehicleModel: "ES6",
+    vehicleModel: "NIO_ES6",
     vehicleNo: "VEH-DEMO-ES6-001",
     vin: "TESTVINES60000001"
   }
 ];
 
 const vehicleModelDefinitionSeedRows = [
-  ["ET5", "ET5", "NIO", "ET", "ET5", "ET5", "ET5", 10],
-  ["ET5T", "ET5T", "NIO", "ET", "ET5T", "ET5T", "ET5T", 20],
-  ["ET7", "ET7", "NIO", "ET", "ET7", "ET7", "ET7", 30],
-  ["EC6", "EC6", "NIO", "EC", "EC6", "EC6", "EC6", 40],
-  ["ES6", "ES6", "NIO", "ES", "ES6", "ES6", "ES6", 50],
-  ["ES8", "ES8", "NIO", "ES", "ES8", "ES8", "ES8", 60],
-  ["ET9", "ET9", "NIO", "ET", "ET9", "ET9", "ET9", 70],
-  ["ES9", "ES9", "NIO", "ES", "ES9", "ES9", "ES9", 80]
+  ["NIO_ET5", "ET5", "NIO", "ET", "ET5", "ET5", "ET5", 10],
+  ["NIO_ET5T", "ET5T", "NIO", "ET", "ET5T", "ET5T", "ET5T", 20],
+  ["NIO_ET7", "ET7", "NIO", "ET", "ET7", "ET7", "ET7", 30],
+  ["NIO_EC6", "EC6", "NIO", "EC", "EC6", "EC6", "EC6", 40],
+  ["NIO_ES6", "ES6", "NIO", "ES", "ES6", "ES6", "ES6", 50],
+  ["NIO_ES8", "ES8", "NIO", "ES", "ES8", "ES8", "ES8", 60],
+  ["NIO_ET9", "ET9", "NIO", "ET", "ET9", "ET9", "ET9", 70],
+  ["NIO_ES9", "ES9", "NIO", "ES", "ES9", "ES9", "ES9", 80]
 ];
 
 const baselineSubscriptionSeed = {
@@ -1498,26 +1498,26 @@ async function seedDemoVehicles(operatorId) {
   const insuranceEffectiveTo = new Date("2027-12-31T00:00:00.000Z");
   const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
   const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
-  const legacyVehicleModels = [...new Set(demoVehicles.map((vehicle) => vehicle.vehicleModel))];
+  const modelCodes = [...new Set(demoVehicles.map((vehicle) => vehicle.vehicleModel))];
   const modelDefinitions = await prisma.vehicleModelDefinition.findMany({
     select: {
       id: true,
-      legacyVehicleModel: true
+      modelCode: true
     },
     where: {
       deletedAt: null,
       enabled: true,
-      legacyVehicleModel: { in: legacyVehicleModels }
+      modelCode: { in: modelCodes }
     }
   });
-  const modelDefinitionByLegacy = new Map(
-    modelDefinitions.map((definition) => [definition.legacyVehicleModel, definition])
+  const modelDefinitionByCode = new Map(
+    modelDefinitions.map((definition) => [definition.modelCode, definition])
   );
 
   for (const vehicleSeed of demoVehicles) {
-    const modelDefinition = modelDefinitionByLegacy.get(vehicleSeed.vehicleModel);
+    const modelDefinition = modelDefinitionByCode.get(vehicleSeed.vehicleModel);
     if (!modelDefinition) {
-      throw new Error(`VehicleModelDefinition is required for demo vehicle model ${vehicleSeed.vehicleModel}.`);
+      throw new Error(`VehicleModelDefinition is required for demo vehicle model code ${vehicleSeed.vehicleModel}.`);
     }
 
     const vehicle = await prisma.vehicle.upsert({
@@ -1700,7 +1700,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
     where: {
       deletedAt: null,
       enabled: true,
-      legacyVehicleModel: "ET5"
+      modelCode: "NIO_ET5"
     }
   });
   if (!et5ModelDefinition) {
@@ -1770,7 +1770,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       productVersionId: productVersion.id,
       status: "ACTIVE",
       updatedBy: operatorId,
-      vehicleModel: "ET5"
+      vehicleModel: "NIO_ET5"
     },
     update: {
       baseMileageKm: mileageLimitKm,
@@ -1786,9 +1786,9 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       updatedBy: operatorId
     },
     where: {
-      productVersionId_vehicleModel: {
+      productVersionId_modelDefinitionId: {
+        modelDefinitionId: et5ModelDefinition.id,
         productVersionId: productVersion.id,
-        vehicleModel: "ET5"
       }
     }
   });
@@ -1812,7 +1812,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       series: "ET5",
       status: "ACTIVE",
       updatedBy: operatorId,
-      vehicleModel: "ET5",
+      vehicleModel: "NIO_ET5",
       vehicleModelName: "ET5"
     },
     update: {
@@ -1832,7 +1832,7 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
       series: "ET5",
       status: "ACTIVE",
       updatedBy: operatorId,
-      vehicleModel: "ET5",
+      vehicleModel: "NIO_ET5",
       vehicleModelName: "ET5"
     },
     where: { packageNo: baselineSubscriptionSeed.vehiclePackageNo }

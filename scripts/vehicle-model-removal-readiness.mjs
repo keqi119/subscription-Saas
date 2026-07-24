@@ -6,9 +6,11 @@ import {
   buildVehicleModelRemovalReadinessReport,
   scanExternalEnumUsage
 } from "./vehicle-model-removal-readiness-core.mjs";
+import { assertVehicleModelEnumRemoved } from "./check-vehicle-model-no-enum.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultOutputPath = path.join(repoRoot, ".tmp", "vehicle-model-removal-readiness-report.json");
+const schemaPath = path.join(repoRoot, "apps", "api", "prisma", "schema.prisma");
 const scanRoots = ["apps/api/src", "apps/web/src", "packages/shared/src", "scripts"];
 const scanExtensions = new Set([".js", ".mjs", ".ts", ".tsx"]);
 
@@ -22,7 +24,8 @@ async function main() {
       path: path.relative(repoRoot, file.path)
     }))
   );
-  const report = buildVehicleModelRemovalReadinessReport({ externalUsage, runtimeEvents });
+  const enumTypeRemoval = await inspectEnumTypeRemoval(files);
+  const report = buildVehicleModelRemovalReadinessReport({ enumTypeRemoval, externalUsage, runtimeEvents });
   const outputPath = path.resolve(repoRoot, args.outputPath ?? defaultOutputPath);
 
   await mkdir(path.dirname(outputPath), { recursive: true });
@@ -33,8 +36,10 @@ async function main() {
     JSON.stringify(
       {
         businessDecisionUsageCount: report.businessDecisionUsageCount,
+        compatibilityFieldRetirementDecision: report.compatibilityFieldRetirement.decision,
         decision: report.decision,
-        enumUsageCount: report.enumUsageCount,
+        enumTypeRemovalDecision: report.enumTypeRemoval.decision,
+        compatibilityFieldUsageCount: report.compatibilityFieldUsageCount,
         externalUsageCount: report.externalUsageCount,
         fallbackUsageCount: report.fallbackUsageCount,
         readinessScore: report.readinessScore
@@ -43,6 +48,32 @@ async function main() {
       2
     )
   );
+
+  if (report.enumTypeRemoval.decision !== "READY") {
+    process.exitCode = 1;
+  }
+}
+
+async function inspectEnumTypeRemoval(files) {
+  try {
+    assertVehicleModelEnumRemoved(
+      await readFile(schemaPath, "utf8"),
+      files.map((file) => ({
+        content: file.content,
+        path: path.relative(repoRoot, file.path)
+      }))
+    );
+    return {
+      decision: "READY",
+      enforcement: "node scripts/check-vehicle-model-no-enum.mjs"
+    };
+  } catch (error) {
+    return {
+      decision: "NOT_READY",
+      dependencies: error && typeof error === "object" && Array.isArray(error.dependencies) ? error.dependencies : [],
+      enforcement: "node scripts/check-vehicle-model-no-enum.mjs"
+    };
+  }
 }
 
 function parseArgs(args) {

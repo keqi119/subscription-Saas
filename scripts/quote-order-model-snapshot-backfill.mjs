@@ -76,11 +76,11 @@ async function buildDryRunPlan() {
       displayName: true,
       enabled: true,
       id: true,
-      legacyVehicleModel: true
+      legacyVehicleModel: true,
+      modelCode: true
     },
     where: {
-      deletedAt: null,
-      legacyVehicleModel: { not: null }
+      deletedAt: null
     }
   });
   const quotes = await prisma.subscriptionQuote.findMany({
@@ -185,7 +185,7 @@ function buildReport({ applyBlocked, applyError, environment, mode, plans }) {
     applyBlocked,
     applyError,
     auditNote:
-      "Backfilled snapshots are reconstructed from legacy vehicleModel and current VehicleModelDefinition mapping. They are additive explanation fields and do not modify original quote/order facts.",
+      "Backfilled snapshots preserve the original string vehicleModel value and resolve current VehicleModelDefinition codes. They are additive explanation fields and do not modify original quote/order facts.",
     environment,
     generatedAt: new Date().toISOString(),
     mode,
@@ -279,7 +279,7 @@ function renderMarkdownReport(report) {
     "",
     "## Audit Note",
     "",
-    "Backfilled snapshots are reconstructed from legacy vehicleModel and current VehicleModelDefinition mapping.",
+    "Backfilled snapshots preserve the original string vehicleModel value and resolve current VehicleModelDefinition codes.",
     "They are additive explanation fields and do not modify original quote/order facts.",
     "",
     "## Out of Scope",

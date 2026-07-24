@@ -103,7 +103,6 @@ describe("default seed baseline customer and catalog data", () => {
     for (const upsert of [
       "prisma.product.upsert",
       "prisma.productVersion.upsert",
-      "prisma.productPriceRule.upsert",
       "prisma.vehiclePackage.upsert",
       "prisma.mileagePackage.upsert",
       "prisma.energyPackage.upsert",
@@ -112,6 +111,8 @@ describe("default seed baseline customer and catalog data", () => {
     ]) {
       expect(catalogSource).toContain(upsert);
     }
+    expect(catalogSource).toContain("upsertCanonicalProductPriceRule(prisma");
+    expect(catalogSource).toContain('vehicleModel: "NIO_ET5"');
   });
 
   it("keeps seed idempotent for baseline objects", () => {

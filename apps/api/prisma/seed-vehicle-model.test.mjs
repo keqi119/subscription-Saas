@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { expect, test } from "vitest";
 
 import {
   convergeVehicleModelDefinition,
@@ -19,9 +18,9 @@ test("converges a prior ET5 definition to NIO_ET5 without attempting a duplicate
 
   await convergeVehicleModelDefinition(mock.prisma, definitionSeedInput());
 
-  assert.equal(mock.calls.vehicleModelDefinition.create, 0);
-  assert.equal(mock.calls.vehicleModelDefinition.update, 1);
-  assert.deepEqual(mock.state.definitions, [
+  expect(mock.calls.vehicleModelDefinition.create).toBe(0);
+  expect(mock.calls.vehicleModelDefinition.update).toBe(1);
+  expect(mock.state.definitions).toEqual([
     {
       brand: "NIO",
       deletedAt: null,
@@ -40,11 +39,11 @@ test("creates a canonical NIO_ET5 definition when no matching definition exists"
   await convergeVehicleModelDefinition(mock.prisma, definitionSeedInput());
   await convergeVehicleModelDefinition(mock.prisma, definitionSeedInput());
 
-  assert.equal(mock.calls.vehicleModelDefinition.create, 1);
-  assert.equal(mock.calls.vehicleModelDefinition.update, 1);
-  assert.equal(mock.state.definitions.length, 1);
-  assert.equal(mock.state.definitions[0].modelCode, "NIO_ET5");
-  assert.equal(mock.state.definitions[0].legacyVehicleModel, "ET5");
+  expect(mock.calls.vehicleModelDefinition.create).toBe(1);
+  expect(mock.calls.vehicleModelDefinition.update).toBe(1);
+  expect(mock.state.definitions).toHaveLength(1);
+  expect(mock.state.definitions[0].modelCode).toBe("NIO_ET5");
+  expect(mock.state.definitions[0].legacyVehicleModel).toBe("ET5");
 });
 
 test("updates an existing ProductPriceRule compatibility code to NIO_ET5", async () => {
@@ -72,10 +71,10 @@ test("updates an existing ProductPriceRule compatibility code to NIO_ET5", async
     vehicleModel: "NIO_ET5"
   });
 
-  assert.equal(mock.calls.productPriceRule.create, 0);
-  assert.equal(mock.calls.productPriceRule.update, 1);
-  assert.equal(mock.state.priceRules[0].vehicleModel, "NIO_ET5");
-  assert.equal(mock.state.priceRules[0].monthlyFeeRate, "0.040000");
+  expect(mock.calls.productPriceRule.create).toBe(0);
+  expect(mock.calls.productPriceRule.update).toBe(1);
+  expect(mock.state.priceRules[0].vehicleModel).toBe("NIO_ET5");
+  expect(mock.state.priceRules[0].monthlyFeeRate).toBe("0.040000");
 });
 
 function definitionSeedInput() {
@@ -158,7 +157,9 @@ function createStatefulPrismaMock({ definitions = [], priceRules = [] } = {}) {
       async update({ data, where }) {
         calls.vehicleModelDefinition.update += 1;
         const existing = state.definitions.find((row) => row.id === where.id);
-        assert.ok(existing, `missing definition ${where.id}`);
+        if (!existing) {
+          throw new Error(`missing definition ${where.id}`);
+        }
         Object.assign(existing, data);
         return structuredClone(existing);
       }

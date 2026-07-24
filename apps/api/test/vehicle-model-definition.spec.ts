@@ -368,15 +368,24 @@ describe("VehicleModelDefinitionService", () => {
     expect(portalVisibleResult.items.map((item) => item.modelCode)).toEqual(["ET5"]);
   });
 
-  it("keeps seed initialization aligned to the eight legacy enum mappings", () => {
+  it("keeps seed initialization aligned to the eight canonical codes and legacy aliases", () => {
     const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
     expect(seedSource).toContain("const vehicleModelDefinitionSeedRows = [");
-    for (const modelCode of ["ET5", "ET5T", "ET7", "EC6", "ES6", "ES8", "ET9", "ES9"]) {
-      expect(seedSource).toContain(`"${modelCode}"`);
+    for (const [modelCode, legacyAlias] of [
+      ["NIO_ET5", "ET5"],
+      ["NIO_ET5T", "ET5T"],
+      ["NIO_ET7", "ET7"],
+      ["NIO_EC6", "EC6"],
+      ["NIO_ES6", "ES6"],
+      ["NIO_ES8", "ES8"],
+      ["NIO_ET9", "ET9"],
+      ["NIO_ES9", "ES9"]
+    ]) {
+      expect(seedSource).toContain(`["${modelCode}", "${legacyAlias}"`);
     }
     expect(seedSource).toContain("await seedVehicleModelDefinitions(adminUser.id)");
-    expect(seedSource).toContain("prisma.vehicleModelDefinition.upsert");
+    expect(seedSource).toContain("await convergeVehicleModelDefinition(prisma");
   });
 
   it("keeps Vehicle model compatibility columns as strings with optional master-data linkage", () => {

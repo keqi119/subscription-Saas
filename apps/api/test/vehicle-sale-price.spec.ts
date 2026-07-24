@@ -1033,8 +1033,6 @@ function makeVehicleBase(): VehicleFixture {
     currentSalePriceReviewedAt: null,
     deletedAt: null,
     id: "vehicle-1",
-    insuranceEndDate: null,
-    insuranceStartDate: null,
     model: null,
     modelYear: null,
     nextSalePriceReviewAt: null,

@@ -20,4 +20,19 @@ describe("vehicle insurance policy schema", () => {
     );
     expect(labels).toContain('NOT_EFFECTIVE: "未生效"');
   });
+
+  it("removes legacy vehicle insurance dates with a guarded migration", () => {
+    const schema = fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
+    const migrationPath = path.resolve(
+      __dirname,
+      "../prisma/migrations/20260724150000_vehicle_insurance_policy_source_of_truth/migration.sql"
+    );
+    const migration = fs.existsSync(migrationPath) ? fs.readFileSync(migrationPath, "utf8") : "";
+
+    expect(schema).not.toContain(["insurance", "StartDate"].join(""));
+    expect(schema).not.toContain(["insurance", "EndDate"].join(""));
+    expect(migration).toContain('DROP COLUMN "insurance_start_date"');
+    expect(migration).toContain('DROP COLUMN "insurance_end_date"');
+    expect(migration).toContain("RAISE EXCEPTION");
+  });
 });

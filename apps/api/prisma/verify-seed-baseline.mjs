@@ -87,8 +87,6 @@ async function verifyBaseline() {
       batteryUsageType: true,
       currentSalePriceAmount: true,
       id: true,
-      insuranceEndDate: true,
-      insuranceStartDate: true,
       salePriceStatus: true,
       status: true,
       vin: true
@@ -99,6 +97,23 @@ async function verifyBaseline() {
     }
   });
   const seedVehicleIds = seedVehicles.map((vehicle) => vehicle.id);
+  const seedInsurancePolicies = await prisma.vehicleInsurancePolicy.findMany({
+    select: {
+      policyType: true,
+      vehicleId: true
+    },
+    where: {
+      deletedAt: null,
+      policyStatus: "ACTIVE",
+      vehicleId: { in: seedVehicleIds }
+    }
+  });
+  const policyTypesByVehicle = new Map();
+  for (const policy of seedInsurancePolicies) {
+    const policyTypes = policyTypesByVehicle.get(policy.vehicleId) ?? new Set();
+    policyTypes.add(policy.policyType);
+    policyTypesByVehicle.set(policy.vehicleId, policyTypes);
+  }
   const foundVehicleVins = new Set(seedVehicles.map((vehicle) => vehicle.vin));
 
   addCheck(
@@ -140,11 +155,17 @@ async function verifyBaseline() {
   );
 
   addCheck(
-    "seed vehicles have insurance dates",
-    seedVehicles.every((vehicle) => vehicle.insuranceStartDate && vehicle.insuranceEndDate),
+    "seed vehicles have active compulsory and commercial policies",
+    seedVehicles.every((vehicle) => {
+      const policyTypes = policyTypesByVehicle.get(vehicle.id);
+      return policyTypes?.has("COMPULSORY_TRAFFIC") && policyTypes.has("COMMERCIAL");
+    }),
     listDetail(
       seedVehicles
-        .filter((vehicle) => !vehicle.insuranceStartDate || !vehicle.insuranceEndDate)
+        .filter((vehicle) => {
+          const policyTypes = policyTypesByVehicle.get(vehicle.id);
+          return !policyTypes?.has("COMPULSORY_TRAFFIC") || !policyTypes.has("COMMERCIAL");
+        })
         .map((vehicle) => vehicle.vin)
     )
   );

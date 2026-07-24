@@ -412,8 +412,6 @@ async function createScenarioVehicle({
       currentSalePriceAmount: BigInt(currentSalePriceAmount),
       currentSalePriceInitializedAt: scenarioDate,
       currentSalePriceReviewedAt: scenarioDate,
-      insuranceEndDate: new Date("2027-12-31T00:00:00.000Z"),
-      insuranceStartDate: new Date("2026-01-01T00:00:00.000Z"),
       latestRegistrationDate: new Date("2026-05-20T00:00:00.000Z"),
       model: "ET5",
       modelDefinition: { connect: { id: modelDefinition.id } },
@@ -432,6 +430,33 @@ async function createScenarioVehicle({
       vehicleNo,
       vin
     }
+  });
+
+  await prisma.vehicleInsurancePolicy.createMany({
+    data: [
+      {
+        createdBy: operatorId,
+        effectiveFrom,
+        effectiveTo,
+        insurerName: "SCN9 Insurance",
+        policyNo: `${vehicleNo}-COMPULSORY`,
+        policyStatus: "ACTIVE",
+        policyType: "COMPULSORY_TRAFFIC",
+        updatedBy: operatorId,
+        vehicleId: vehicle.id
+      },
+      {
+        createdBy: operatorId,
+        effectiveFrom,
+        effectiveTo,
+        insurerName: "SCN9 Insurance",
+        policyNo: `${vehicleNo}-COMMERCIAL`,
+        policyStatus: "ACTIVE",
+        policyType: "COMMERCIAL",
+        updatedBy: operatorId,
+        vehicleId: vehicle.id
+      }
+    ]
   });
 
   await prisma.vehicleSalePriceHistory.create({
@@ -746,6 +771,13 @@ async function cleanupScenario(scopeName) {
     })
   );
 
+  await record(
+    counts,
+    "vehicleInsurancePolicy",
+    prisma.vehicleInsurancePolicy.deleteMany({
+      where: orWhere([...whereIn("vehicleId", vehicleIds)])
+    })
+  );
   await record(
     counts,
     "vehicleSalePriceHistory",

@@ -895,8 +895,6 @@ function createVehicleData(
     acquisitionMode: dto.acquisitionMode ?? VehicleAcquisitionMode.OWNED_CASH,
     brand: dto.brand,
     currentMileageKm: dto.currentMileageKm ?? 0,
-    insuranceEndDate: parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"),
-    insuranceStartDate: parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"),
     latestRegistrationDate: parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"),
     model: dto.model,
     modelYear: dto.modelYear,
@@ -940,8 +938,6 @@ function updateVehicleData(
   assignIfDefined(data, "acquisitionMode", dto.acquisitionMode);
   assignIfDefined(data, "brand", dto.brand);
   assignIfDefined(data, "currentMileageKm", dto.currentMileageKm);
-  assignIfDefined(data, "insuranceEndDate", parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"));
-  assignIfDefined(data, "insuranceStartDate", parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"));
   assignIfDefined(data, "latestRegistrationDate", parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"));
   assignIfDefined(data, "model", dto.model);
   assignIfDefined(data, "modelYear", dto.modelYear);
@@ -1210,8 +1206,6 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
       covered: resolvedInsuranceCoverage.covered,
       evaluatedAt: formatDateOnly(resolvedInsuranceCoverage.evaluationDate)
     },
-    insuranceEndDate: vehicle.insuranceEndDate,
-    insuranceStartDate: vehicle.insuranceStartDate,
     latestRegistrationDate: vehicle.latestRegistrationDate,
     model: vehicle.model,
     modelDefinition: vehicle.modelDefinition ? toVehicleModelDefinitionView(vehicle.modelDefinition) : null,

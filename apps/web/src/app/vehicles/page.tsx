@@ -138,8 +138,6 @@ interface Vehicle {
   currentSalePriceReviewedAt?: string | null;
   id: string;
   insuranceCoverage: VehicleInsuranceCoverageSummary;
-  insuranceEndDate?: string | null;
-  insuranceStartDate?: string | null;
   latestRegistrationDate?: string | null;
   model?: string | null;
   modelDefinition?: VehicleModelDefinitionSummary | null;

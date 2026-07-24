@@ -152,10 +152,10 @@ Delivery readiness uses these checks before field handover and final Admin deliv
 - Stage 1 subscription contract is signed.
 - The vehicle is bound to the order and remains `RESERVED`.
 - The vehicle has an initialized effective sale price.
-- Insurance is valid on the delivery check date. A non-deleted active vehicle insurance policy covering that date is sufficient; vehicle master `insuranceStartDate` / `insuranceEndDate` remain a fallback display/readiness source.
+- Insurance readiness requires both a non-deleted active compulsory traffic policy and a non-deleted active commercial policy covering the delivery check date. `VehicleInsurancePolicy` is the sole source of truth; there is no vehicle-master date fallback.
 - Required deposit of `0` is automatically satisfied and should be displayed as "0 元押金，自动满足". Non-zero deposits still require order deposit confirmation and prepare-delivery confirmation.
 - First monthly fee and other payment readiness still come from receivable bill write-off status. Registering a receipt alone is not the same as bill write-off; Admin UI should distinguish "已登记收款，待核销" from written-off/settled bills.
-- Insurance validity, vehicle preparation, customer identity, vehicle photos, and handover documents are confirmed in the Admin order detail "准备交付" modal after base readiness blockers are cleared.
+- Insurance policy-period coverage is calculated automatically. Insurance manual verification, vehicle preparation, customer identity, vehicle photos, and handover documents are confirmed separately in the Admin order detail "准备交付" modal after base readiness blockers are cleared.
 - Field handover work order creation is an Admin Stage 2 action after delivery preparation. It must not generate Stage 2 PDF, create contracts, start eSign, call Fadada, confirm delivery, start lease, or start billing.
 - `保单管理` is expected under `车辆资产 -> 保单管理`, path `/vehicle-insurance-policies`, permission `vehicle_insurance:view`; staging environments must run the RBAC/menu seed or sync so Admin roles can see the menu.
 

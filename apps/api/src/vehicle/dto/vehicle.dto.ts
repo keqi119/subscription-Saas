@@ -75,14 +75,6 @@ export class CreateVehicleDto {
   latestRegistrationDate?: string | null;
 
   @IsOptional()
-  @IsString()
-  insuranceStartDate?: string | null;
-
-  @IsOptional()
-  @IsString()
-  insuranceEndDate?: string | null;
-
-  @IsOptional()
   @IsEnum(VehicleStatus)
   status?: VehicleStatus;
 
@@ -166,14 +158,6 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsString()
   latestRegistrationDate?: string | null;
-
-  @IsOptional()
-  @IsString()
-  insuranceStartDate?: string | null;
-
-  @IsOptional()
-  @IsString()
-  insuranceEndDate?: string | null;
 
   @IsOptional()
   @IsEnum(VehicleStatus)

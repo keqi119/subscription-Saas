@@ -1020,8 +1020,6 @@ function makeVehicle(overrides: Record<string, unknown> = {}) {
     currentSalePriceReviewedAt: now,
     deletedAt: null,
     id: "vehicle-asset-1",
-    insuranceEndDate: null,
-    insuranceStartDate: null,
     model: null,
     modelDefinition,
     modelDefinitionId: modelDefinition.id,

@@ -1494,8 +1494,8 @@ async function seedDefaultDepositRules(operatorId) {
 
 async function seedDemoVehicles(operatorId) {
   const effectiveFrom = new Date("2026-06-01T00:00:00.000Z");
-  const insuranceStartDate = new Date("2026-01-01T00:00:00.000Z");
-  const insuranceEndDate = new Date("2027-12-31T00:00:00.000Z");
+  const insuranceEffectiveFrom = new Date("2026-01-01T00:00:00.000Z");
+  const insuranceEffectiveTo = new Date("2027-12-31T00:00:00.000Z");
   const reviewedAt = new Date("2026-06-02T00:00:00.000Z");
   const nextSalePriceReviewAt = new Date("2026-09-01T00:00:00.000Z");
   const legacyVehicleModels = [...new Set(demoVehicles.map((vehicle) => vehicle.vehicleModel))];
@@ -1531,8 +1531,6 @@ async function seedDemoVehicles(operatorId) {
         currentSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount),
         currentSalePriceInitializedAt: reviewedAt,
         currentSalePriceReviewedAt: reviewedAt,
-        insuranceEndDate,
-        insuranceStartDate,
         model: vehicleSeed.model,
         modelDefinition: { connect: { id: modelDefinition.id } },
         modelYear: vehicleSeed.modelYear,
@@ -1559,8 +1557,6 @@ async function seedDemoVehicles(operatorId) {
         currentSalePriceInitializedAt: reviewedAt,
         currentSalePriceReviewedAt: reviewedAt,
         deletedAt: null,
-        insuranceEndDate,
-        insuranceStartDate,
         model: vehicleSeed.model,
         modelDefinition: { connect: { id: modelDefinition.id } },
         modelYear: vehicleSeed.modelYear,
@@ -1579,6 +1575,46 @@ async function seedDemoVehicles(operatorId) {
       },
       where: { vin: vehicleSeed.vin }
     });
+
+    for (const policySeed of [
+      {
+        policyNo: `SEED-${vehicleSeed.vehicleNo}-COMPULSORY`,
+        policyType: "COMPULSORY_TRAFFIC"
+      },
+      {
+        policyNo: `SEED-${vehicleSeed.vehicleNo}-COMMERCIAL`,
+        policyType: "COMMERCIAL"
+      }
+    ]) {
+      await prisma.vehicleInsurancePolicy.upsert({
+        create: {
+          createdBy: operatorId,
+          effectiveFrom: insuranceEffectiveFrom,
+          effectiveTo: insuranceEffectiveTo,
+          insurerName: "Seed Insurance",
+          policyNo: policySeed.policyNo,
+          policyStatus: "ACTIVE",
+          policyType: policySeed.policyType,
+          updatedBy: operatorId,
+          vehicleId: vehicle.id
+        },
+        update: {
+          deletedAt: null,
+          effectiveFrom: insuranceEffectiveFrom,
+          effectiveTo: insuranceEffectiveTo,
+          insurerName: "Seed Insurance",
+          policyStatus: "ACTIVE",
+          policyType: policySeed.policyType,
+          updatedBy: operatorId
+        },
+        where: {
+          vehicleId_policyNo: {
+            policyNo: policySeed.policyNo,
+            vehicleId: vehicle.id
+          }
+        }
+      });
+    }
 
     const existingHistory = await prisma.vehicleSalePriceHistory.findFirst({
       where: {

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const currentFile = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(currentFile), "..");
@@ -31,13 +32,13 @@ export function findVehicleModelEnumDependencies(schemaText, runtimeFiles) {
   }
 
   for (const file of runtimeFiles) {
-    const sanitizedSource = sanitizeRuntimeSource(file.content);
+    const runtimeDependencies = findPrismaVehicleModelRuntimeDependencies(file);
 
-    if (hasPrismaVehicleModelImport(sanitizedSource)) {
+    if (runtimeDependencies.hasNamedImport) {
       dependencies.push({ category: "PRISMA_VEHICLE_MODEL_IMPORT", path: file.path });
     }
 
-    if (hasPrismaVehicleModelNamespaceUsage(sanitizedSource)) {
+    if (runtimeDependencies.hasNamespaceUsage) {
       dependencies.push({ category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: file.path });
     }
   }
@@ -51,112 +52,81 @@ function stripPrismaComments(schemaText) {
   return schemaText.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
-function hasPrismaVehicleModelImport(source) {
-  const imports = source.code.matchAll(
-    /\bimport\s+(?:type\s+)?\{([\s\S]*?)\}\s+from\s+(__VM_LITERAL_\d+__)/g
+function findPrismaVehicleModelRuntimeDependencies(file) {
+  const sourceFile = ts.createSourceFile(
+    file.path,
+    file.content,
+    ts.ScriptTarget.Latest,
+    true,
+    getScriptKind(file.path)
   );
+  const prismaNamespaces = new Set();
+  let hasNamedImport = false;
+  let hasNamespaceUsage = false;
 
-  for (const entry of imports) {
-    if (source.literals.get(entry[2]) === "@prisma/client" && /\b(?:type\s+)?VehicleModel\b/.test(entry[1])) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function hasPrismaVehicleModelNamespaceUsage(source) {
-  const namespaceImports = source.code.matchAll(
-    /\bimport\s+\*\s+as\s+(\w+)\s+from\s+(__VM_LITERAL_\d+__)/g
-  );
-
-  for (const entry of namespaceImports) {
+  for (const statement of sourceFile.statements) {
     if (
-      source.literals.get(entry[2]) === "@prisma/client" &&
-      new RegExp(`\\b${entry[1]}\\.VehicleModel\\b`).test(source.code)
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== "@prisma/client"
     ) {
-      return true;
+      continue;
+    }
+
+    const namedBindings = statement.importClause?.namedBindings;
+
+    if (namedBindings && ts.isNamedImports(namedBindings)) {
+      hasNamedImport ||= namedBindings.elements.some(
+        (element) => (element.propertyName ?? element.name).text === "VehicleModel"
+      );
+    }
+
+    if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+      prismaNamespaces.add(namedBindings.name.text);
     }
   }
 
-  return false;
+  function visit(node) {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      prismaNamespaces.has(node.expression.text) &&
+      node.name.text === "VehicleModel"
+    ) {
+      hasNamespaceUsage = true;
+    }
+
+    if (
+      ts.isQualifiedName(node) &&
+      ts.isIdentifier(node.left) &&
+      prismaNamespaces.has(node.left.text) &&
+      node.right.text === "VehicleModel"
+    ) {
+      hasNamespaceUsage = true;
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  if (prismaNamespaces.size > 0) {
+    visit(sourceFile);
+  }
+
+  return { hasNamedImport, hasNamespaceUsage };
 }
 
-function sanitizeRuntimeSource(source) {
-  const literals = new Map();
-  let code = "";
-  let index = 0;
-
-  while (index < source.length) {
-    const current = source[index];
-    const next = source[index + 1];
-
-    if (current === "/" && next === "/") {
-      code += "  ";
-      index += 2;
-      while (index < source.length && source[index] !== "\n") {
-        code += " ";
-        index += 1;
-      }
-      continue;
-    }
-
-    if (current === "/" && next === "*") {
-      code += "  ";
-      index += 2;
-      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
-        code += source[index] === "\n" ? "\n" : " ";
-        index += 1;
-      }
-      if (index < source.length) {
-        code += "  ";
-        index += 2;
-      }
-      continue;
-    }
-
-    if (current === "'" || current === '"' || current === "`") {
-      const delimiter = current;
-      let literalValue = "";
-      let escaped = false;
-      index += 1;
-
-      while (index < source.length) {
-        const literalCharacter = source[index];
-
-        if (escaped) {
-          literalValue += literalCharacter;
-          escaped = false;
-          index += 1;
-          continue;
-        }
-
-        if (literalCharacter === "\\") {
-          escaped = true;
-          index += 1;
-          continue;
-        }
-
-        if (literalCharacter === delimiter) {
-          index += 1;
-          break;
-        }
-
-        literalValue += literalCharacter;
-        index += 1;
-      }
-
-      const token = `__VM_LITERAL_${literals.size}__`;
-      literals.set(token, literalValue);
-      code += token;
-      continue;
-    }
-
-    code += current;
-    index += 1;
+function getScriptKind(filePath) {
+  switch (extname(filePath).toLowerCase()) {
+    case ".ts":
+      return ts.ScriptKind.TS;
+    case ".tsx":
+      return ts.ScriptKind.TSX;
+    case ".js":
+    case ".mjs":
+      return ts.ScriptKind.JS;
+    default:
+      return ts.ScriptKind.Unknown;
   }
-
-  return { code, literals };
 }
 
 function readRuntimeFiles() {

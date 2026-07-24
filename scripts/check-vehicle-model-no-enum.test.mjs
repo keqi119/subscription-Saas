@@ -75,6 +75,23 @@ test("rejects a runtime Prisma VehicleModel import", () => {
   );
 });
 
+test("rejects real Prisma VehicleModel imports in JS, MJS, TS, and TSX sources", () => {
+  for (const extension of ["js", "mjs", "ts", "tsx"]) {
+    const path = `apps/api/src/vehicle/vehicle.service.${extension}`;
+
+    assertDependency(
+      "model Vehicle { vehicleModel String? }",
+      [
+        {
+          content: 'import { VehicleModel } from "@prisma/client";',
+          path
+        }
+      ],
+      { category: "PRISMA_VEHICLE_MODEL_IMPORT", path }
+    );
+  }
+});
+
 test("rejects a real Prisma namespace VehicleModel dependency", () => {
   assertDependency(
     "model Vehicle { vehicleModel String? }",
@@ -86,6 +103,22 @@ test("rejects a real Prisma namespace VehicleModel dependency", () => {
       }
     ],
     { category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: "apps/api/src/vehicle/vehicle.service.ts" }
+  );
+});
+
+test("rejects a real Prisma import after a regex character class with comment markers", () => {
+  assertDependency(
+    "model Vehicle { vehicleModel String? }",
+    [
+      {
+        content: [
+          "const slashOrStar = /[/*]/;",
+          'import { VehicleModel } from "@prisma/client";'
+        ].join("\n"),
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
+    ],
+    { category: "PRISMA_VEHICLE_MODEL_IMPORT", path: "apps/api/src/vehicle/vehicle.service.ts" }
   );
 });
 
@@ -114,6 +147,17 @@ test("ignores Prisma VehicleModel imports inside string and template literals", 
           'const namespaceFixture = `import * as PrismaClient from "@prisma/client";',
           "type LegacyModel = PrismaClient.VehicleModel;`;"
         ].join("\n"),
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
+    ])
+  );
+});
+
+test("ignores Prisma VehicleModel import text inside regex literals", () => {
+  assert.doesNotThrow(() =>
+    assertVehicleModelEnumRemoved("model Vehicle { vehicleModel String? }", [
+      {
+        content: 'const importPattern = /import { VehicleModel } from "@prisma\\/client"/;',
         path: "apps/api/src/vehicle/vehicle.service.ts"
       }
     ])

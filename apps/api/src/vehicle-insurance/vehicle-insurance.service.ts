@@ -67,7 +67,8 @@ const policyInclude = {
       model: true,
       plateNo: true,
       series: true,
-      vehicleNo: true
+      vehicleNo: true,
+      vin: true
     }
   }
 } satisfies Prisma.VehicleInsurancePolicyInclude;
@@ -945,12 +946,14 @@ function toVehicleBrief(vehicle: {
   plateNo?: string | null;
   series: string | null;
   vehicleNo: string;
+  vin?: string | null;
 }) {
   return {
     displayName: [vehicle.brand, vehicle.series, vehicle.model].filter(Boolean).join(" "),
     id: vehicle.id,
     plateNo: vehicle.plateNo ?? null,
-    vehicleNo: vehicle.vehicleNo
+    vehicleNo: vehicle.vehicleNo,
+    vin: vehicle.vin ?? null
   };
 }
 

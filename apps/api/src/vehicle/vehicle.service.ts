@@ -21,6 +21,10 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import {
+  type PolicyTypeCoverage,
+  resolveVehicleInsuranceCoverage
+} from "../common/vehicle-insurance-coverage";
 import { PrismaService } from "../prisma/prisma.service";
 import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
@@ -49,6 +53,17 @@ const vehicleModelDefinitionSelect = {
 } satisfies Prisma.VehicleModelDefinitionSelect;
 
 const vehicleInclude = {
+  insurancePolicies: {
+    select: {
+      deletedAt: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      id: true,
+      policyStatus: true,
+      policyType: true
+    },
+    where: { deletedAt: null }
+  },
   modelDefinition: {
     select: vehicleModelDefinitionSelect
   },
@@ -1169,6 +1184,11 @@ function toReviewQuarter(date: Date) {
 }
 
 function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
+  const resolvedInsuranceCoverage = resolveVehicleInsuranceCoverage(
+    vehicle.insurancePolicies ?? [],
+    today
+  );
+
   return {
     acquisitionMode: vehicle.acquisitionMode,
     assetLocation: vehicle.assetLocation,
@@ -1184,6 +1204,12 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     currentSalePriceReviewedAt: vehicle.currentSalePriceReviewedAt,
     deletedAt: vehicle.deletedAt,
     id: vehicle.id,
+    insuranceCoverage: {
+      commercial: toPolicyTypeCoverageView(resolvedInsuranceCoverage.commercial),
+      compulsoryTraffic: toPolicyTypeCoverageView(resolvedInsuranceCoverage.compulsoryTraffic),
+      covered: resolvedInsuranceCoverage.covered,
+      evaluatedAt: formatDateOnly(resolvedInsuranceCoverage.evaluationDate)
+    },
     insuranceEndDate: vehicle.insuranceEndDate,
     insuranceStartDate: vehicle.insuranceStartDate,
     latestRegistrationDate: vehicle.latestRegistrationDate,
@@ -1208,6 +1234,14 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     vehicleModel: vehicle.vehicleModel,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
+  };
+}
+
+function toPolicyTypeCoverageView(coverage: PolicyTypeCoverage) {
+  return {
+    covered: coverage.covered,
+    effectiveFrom: coverage.effectiveFrom ? formatDateOnly(coverage.effectiveFrom) : null,
+    effectiveTo: coverage.effectiveTo ? formatDateOnly(coverage.effectiveTo) : null
   };
 }
 

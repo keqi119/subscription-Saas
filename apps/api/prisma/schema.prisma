@@ -683,6 +683,7 @@ enum VehicleInsurancePolicyType {
 }
 
 enum VehicleInsurancePolicyStatus {
+  NOT_EFFECTIVE
   ACTIVE
   EXPIRED
   CANCELLED

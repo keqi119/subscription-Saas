@@ -37,6 +37,17 @@ describe("Web deployment versioning", () => {
       expect(source).toContain("return children;");
     }
   });
+
+  it("only forbids the staging API host in production image checks", () => {
+    const workflow = read(".github/workflows/docker-images.yml");
+    const checkStep = workflow.slice(workflow.indexOf("- name: Check Web image API base"));
+
+    expect(checkStep).toContain("DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}");
+    expect(checkStep).toContain("CHECK_ARGS=(");
+    expect(checkStep).toContain('if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then');
+    expect(checkStep).toContain('CHECK_ARGS+=(--must-not-contain "staging-api.subauto.keybox.cloud")');
+    expect(checkStep).toContain('"${CHECK_ARGS[@]}"');
+  });
 });
 
 function read(file: string) {

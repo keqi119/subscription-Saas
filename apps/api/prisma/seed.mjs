@@ -3,6 +3,11 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { config } from "dotenv";
 
+import {
+  convergeVehicleModelDefinition,
+  upsertCanonicalProductPriceRule
+} from "./seed-vehicle-model.mjs";
+
 config({ path: "../../.env" });
 config({ path: ".env" });
 
@@ -1414,15 +1419,13 @@ async function seedVehicleModelDefinitions(operatorId) {
     customerDisplayName,
     sortOrder
   ] of vehicleModelDefinitionSeedRows) {
-    await prisma.vehicleModelDefinition.upsert({
-      create: {
+    await convergeVehicleModelDefinition(prisma, {
+      createData: {
         brand,
         createdBy: operatorId,
         customerDisplayName,
         displayName,
         enabled: true,
-        legacyVehicleModel,
-        modelCode,
         modelName,
         portalVisible: false,
         series,
@@ -1433,11 +1436,12 @@ async function seedVehicleModelDefinitions(operatorId) {
         sortOrder,
         updatedBy: operatorId
       },
-      update: {
+      legacyVehicleModel,
+      modelCode,
+      updateData: {
         brand,
         customerDisplayName,
         displayName,
-        legacyVehicleModel,
         modelName,
         series,
         snapshot: {
@@ -1446,8 +1450,7 @@ async function seedVehicleModelDefinitions(operatorId) {
         },
         sortOrder,
         updatedBy: operatorId
-      },
-      where: { modelCode }
+      }
     });
   }
 }
@@ -1756,41 +1759,34 @@ async function seedBaselineSubscriptionCatalog(operatorId) {
     }
   });
 
-  await prisma.productPriceRule.upsert({
-    create: {
+  await upsertCanonicalProductPriceRule(prisma, {
+    createData: {
       baseMileageKm: mileageLimitKm,
       createdBy: operatorId,
       energyLimitCount,
       energyLimitKwh,
       maxPeriodMonths: 36,
       minPeriodMonths: 12,
-      modelDefinitionId: et5ModelDefinition.id,
       monthlyFeeRate,
       overMileageFeeAmount: BigInt(overMileageFeeAmount),
-      productVersionId: productVersion.id,
       status: "ACTIVE",
-      updatedBy: operatorId,
-      vehicleModel: "NIO_ET5"
+      updatedBy: operatorId
     },
-    update: {
+    modelDefinitionId: et5ModelDefinition.id,
+    productVersionId: productVersion.id,
+    updateData: {
       baseMileageKm: mileageLimitKm,
       deletedAt: null,
       energyLimitCount,
       energyLimitKwh,
       maxPeriodMonths: 36,
       minPeriodMonths: 12,
-      modelDefinitionId: et5ModelDefinition.id,
       monthlyFeeRate,
       overMileageFeeAmount: BigInt(overMileageFeeAmount),
       status: "ACTIVE",
       updatedBy: operatorId
     },
-    where: {
-      productVersionId_modelDefinitionId: {
-        modelDefinitionId: et5ModelDefinition.id,
-        productVersionId: productVersion.id,
-      }
-    }
+    vehicleModel: "NIO_ET5"
   });
 
   const vehiclePackage = await prisma.vehiclePackage.upsert({

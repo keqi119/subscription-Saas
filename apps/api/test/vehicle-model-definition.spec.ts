@@ -1,11 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { BadRequestException, ConflictException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ValidationPipe } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import "reflect-metadata";
-import { plainToInstance } from "class-transformer";
-import { validate } from "class-validator";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -14,6 +12,98 @@ import {
 } from "../src/vehicle-model-definition/dto/vehicle-model-definition.dto";
 import { VehicleModelDefinitionService } from "../src/vehicle-model-definition/vehicle-model-definition.service";
 import { VehicleModel, type VehicleModel as VehicleModelCode } from "./helpers/vehicle-model-codes";
+
+const LEGACY_WRITE_ERROR =
+  "legacyVehicleModel is deprecated and read-only; use modelCode instead.";
+
+function validateProductionBody<T>(value: unknown, metatype: new () => T) {
+  return new ValidationPipe({
+    transform: true,
+    whitelist: true
+  }).transform(value, {
+    metatype,
+    type: "body"
+  });
+}
+
+async function expectLegacyWriteRejected(validation: Promise<unknown>) {
+  try {
+    await validation;
+    throw new Error("Expected legacyVehicleModel validation to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).getResponse()).toEqual(
+      expect.objectContaining({
+        message: expect.arrayContaining([LEGACY_WRITE_ERROR])
+      })
+    );
+  }
+}
+
+describe("VehicleModelDefinition write DTO production validation", () => {
+  it("accepts a canonical create payload", async () => {
+    const dto = await validateProductionBody(
+      {
+        brand: "NIO",
+        displayName: "ET5",
+        modelCode: "NIO_ET5",
+        modelName: "ET5"
+      },
+      CreateVehicleModelDefinitionDto
+    );
+
+    expect(dto).toBeInstanceOf(CreateVehicleModelDefinitionDto);
+    expect(dto).toMatchObject({
+      brand: "NIO",
+      displayName: "ET5",
+      modelCode: "NIO_ET5",
+      modelName: "ET5"
+    });
+  });
+
+  it("rejects legacyVehicleModel in a create payload", async () => {
+    await expectLegacyWriteRejected(
+      validateProductionBody(
+        {
+          brand: "NIO",
+          displayName: "ET5",
+          legacyVehicleModel: VehicleModel.ET5,
+          modelCode: "NIO_ET5",
+          modelName: "ET5"
+        },
+        CreateVehicleModelDefinitionDto
+      )
+    );
+  });
+
+  it("accepts a canonical update payload", async () => {
+    const dto = await validateProductionBody(
+      {
+        displayName: "ET5 2027",
+        modelCode: "NIO_ET5_2027"
+      },
+      UpdateVehicleModelDefinitionDto
+    );
+
+    expect(dto).toBeInstanceOf(UpdateVehicleModelDefinitionDto);
+    expect(dto).toMatchObject({
+      displayName: "ET5 2027",
+      modelCode: "NIO_ET5_2027"
+    });
+  });
+
+  it("rejects legacyVehicleModel in an update payload", async () => {
+    await expectLegacyWriteRejected(
+      validateProductionBody(
+        {
+          legacyVehicleModel: VehicleModel.ET5T,
+          modelCode: "NIO_ET5_TOURING"
+        },
+        UpdateVehicleModelDefinitionDto
+      )
+    );
+  });
+});
 
 describe("VehicleModelDefinitionService", () => {
   it("creates an enabled model definition without exposing it to portal by default", async () => {
@@ -162,25 +252,7 @@ describe("VehicleModelDefinitionService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("rejects and never persists legacy aliases on definition create or update", async () => {
-    const createDto = plainToInstance(CreateVehicleModelDefinitionDto, {
-      brand: "NIO",
-      displayName: "ET5",
-      legacyVehicleModel: VehicleModel.ET5,
-      modelCode: "NIO_ET5",
-      modelName: "ET5"
-    });
-    const updateDto = plainToInstance(UpdateVehicleModelDefinitionDto, {
-      legacyVehicleModel: VehicleModel.ET5T
-    });
-
-    await expect(validate(createDto, { forbidNonWhitelisted: true, whitelist: true })).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ property: "legacyVehicleModel" })])
-    );
-    await expect(validate(updateDto, { forbidNonWhitelisted: true, whitelist: true })).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ property: "legacyVehicleModel" })])
-    );
-
+  it("never persists legacy aliases when the service is called directly", async () => {
     const { prisma, service, user } = createHarness({
       definitions: [createDefinition({ id: "definition-et5", legacyVehicleModel: VehicleModel.ET5 })]
     });

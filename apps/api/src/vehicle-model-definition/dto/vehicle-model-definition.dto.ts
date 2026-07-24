@@ -1,6 +1,7 @@
 import { Transform, Type } from "class-transformer";
 import {
   IsBoolean,
+  IsEmpty,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -14,6 +15,8 @@ import {
 } from "class-validator";
 
 const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
+const LEGACY_WRITE_ERROR =
+  "legacyVehicleModel is deprecated and read-only; use modelCode instead.";
 
 function parseOptionalBoolean({ value }: { value: unknown }) {
   if (value === undefined || value === null || value === "") {
@@ -77,6 +80,9 @@ export class CreateVehicleModelDefinitionDto {
   @MaxLength(64)
   @Matches(MODEL_CODE_PATTERN)
   modelCode!: string;
+
+  @IsEmpty({ message: LEGACY_WRITE_ERROR })
+  legacyVehicleModel?: never;
 
   @IsString()
   @IsNotEmpty()
@@ -173,6 +179,9 @@ export class UpdateVehicleModelDefinitionDto {
   @MaxLength(64)
   @Matches(MODEL_CODE_PATTERN)
   modelCode?: string;
+
+  @IsEmpty({ message: LEGACY_WRITE_ERROR })
+  legacyVehicleModel?: never;
 
   @IsOptional()
   @IsString()

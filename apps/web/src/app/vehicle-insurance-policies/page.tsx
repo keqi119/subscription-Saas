@@ -57,6 +57,7 @@ interface VehicleBrief {
   plateNo?: string | null;
   series?: string | null;
   vehicleNo: string;
+  vin?: string | null;
 }
 
 interface VehicleInsurancePolicyRow {
@@ -86,6 +87,7 @@ interface VehicleInsurancePolicyRow {
     id: string;
     plateNo?: string | null;
     vehicleNo: string;
+    vin?: string | null;
   };
   vehicleId: string;
 }
@@ -170,6 +172,7 @@ const statusColors: Record<string, string> = {
   ARCHIVED: "default",
   CANCELLED: "default",
   EXPIRED: "red",
+  NOT_EFFECTIVE: "blue",
   PENDING_RENEWAL: "orange"
 };
 
@@ -197,7 +200,16 @@ export default function VehicleInsurancePoliciesPage() {
   const vehicleOptions = useMemo(
     () =>
       vehicles.map((vehicle) => ({
-        label: [vehicle.vehicleNo, vehicle.plateNo, vehicle.brand, vehicle.series, vehicle.model].filter(Boolean).join(" / "),
+        label: [
+          vehicle.vehicleNo,
+          vehicle.vin,
+          vehicle.plateNo,
+          vehicle.brand,
+          vehicle.series,
+          vehicle.model
+        ]
+          .filter(Boolean)
+          .join(" / "),
         value: vehicle.id
       })),
     [vehicles]
@@ -372,6 +384,18 @@ export default function VehicleInsurancePoliciesPage() {
       title: "车辆"
     },
     {
+      dataIndex: ["vehicle", "vin"],
+      render: safeValue,
+      title: "VIN",
+      width: 190
+    },
+    {
+      dataIndex: ["vehicle", "plateNo"],
+      render: safeValue,
+      title: "车牌号",
+      width: 120
+    },
+    {
       dataIndex: "insurerName",
       render: (value?: string | null) => value ?? "-",
       title: "保险公司"
@@ -410,7 +434,13 @@ export default function VehicleInsurancePoliciesPage() {
 
         <Form form={filterForm} layout="inline" onFinish={() => void loadPolicies()}>
           <Form.Item label="车辆" name="vehicleId">
-            <Select allowClear options={vehicleOptions} showSearch style={{ width: 260 }} />
+            <Select
+              allowClear
+              optionFilterProp="label"
+              options={vehicleOptions}
+              showSearch
+              style={{ width: 320 }}
+            />
           </Form.Item>
           <Form.Item label="类型" name="policyType">
             <Select allowClear options={policyTypeOptions} style={{ width: 140 }} />
@@ -429,7 +459,7 @@ export default function VehicleInsurancePoliciesPage() {
           </Button>
         </Form>
 
-        <Table columns={columns} dataSource={rows} loading={loading} rowKey="id" scroll={{ x: 1100 }} />
+        <Table columns={columns} dataSource={rows} loading={loading} rowKey="id" scroll={{ x: 1400 }} />
       </Space>
 
       <Drawer destroyOnClose onClose={() => setDrawerOpen(false)} open={drawerOpen} title={detail?.policyNo ?? "保单详情"} width={760}>
@@ -515,7 +545,7 @@ export default function VehicleInsurancePoliciesPage() {
       <Drawer destroyOnClose onClose={() => setFormOpen(false)} open={formOpen} title={editing ? "编辑保单" : "新建保单"} width={720}>
         <Form form={policyForm} layout="vertical" onFinish={(values) => void submitPolicy(values)}>
           <Form.Item hidden={Boolean(editing)} label="车辆" name="vehicleId" rules={[{ required: !editing, message: "请选择车辆" }]}>
-            <Select options={vehicleOptions} showSearch />
+            <Select optionFilterProp="label" options={vehicleOptions} showSearch />
           </Form.Item>
           <Form.Item label="保单号" name="policyNo" rules={[{ required: true, message: "请输入保单号" }]}>
             <Input maxLength={128} />
@@ -696,4 +726,8 @@ function appendIfPresent(formData: FormData, key: string, value?: string | null)
 function buildAdminPreviewUrl(previewUrl: string) {
   const origin = API_BASE_URL.replace(/\/api$/, "");
   return `${origin}${previewUrl}`;
+}
+
+function safeValue(value?: string | null) {
+  return value || "-";
 }

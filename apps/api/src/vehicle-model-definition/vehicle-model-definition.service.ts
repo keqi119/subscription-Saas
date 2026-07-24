@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, VehicleModel, VehicleModelDefinition } from "@prisma/client";
+import { Prisma, VehicleModelDefinition } from "@prisma/client";
 
 import { RequestUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
@@ -99,7 +99,7 @@ export class VehicleModelDefinitionService {
       await this.assertModelCodeAvailable(data.modelCode as string, id);
     }
     if (data.legacyVehicleModel !== undefined && data.legacyVehicleModel !== null) {
-      await this.assertLegacyVehicleModelAvailable(data.legacyVehicleModel as VehicleModel, id);
+      await this.assertLegacyVehicleModelAvailable(data.legacyVehicleModel, id);
     }
 
     try {
@@ -182,7 +182,7 @@ export class VehicleModelDefinitionService {
     }
   }
 
-  private async assertLegacyVehicleModelAvailable(legacyVehicleModel?: VehicleModel | null, excludeId?: string) {
+  private async assertLegacyVehicleModelAvailable(legacyVehicleModel?: string | null, excludeId?: string) {
     if (!legacyVehicleModel) {
       return;
     }

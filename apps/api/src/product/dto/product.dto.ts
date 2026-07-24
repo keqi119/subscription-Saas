@@ -6,8 +6,7 @@ import {
   ProductVersionStatus,
   QuoteStatus,
   RecordStatus,
-  SubscriptionPlanStatus,
-  VehicleModel
+  SubscriptionPlanStatus
 } from "@prisma/client";
 import {
   IsEnum,
@@ -17,6 +16,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min
 } from "class-validator";
 
@@ -88,8 +88,9 @@ export class UpdateProductVersionDto {
 export class CreatePriceRuleDto {
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -135,8 +136,9 @@ export class CreatePriceRuleDto {
 export class UpdatePriceRuleDto {
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -244,8 +246,9 @@ export class CreateQuoteDto {
 
   /** @deprecated Legacy compatibility only. Quote model display now uses snapshots where available. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsInt()
@@ -427,8 +430,9 @@ export class CreateVehiclePackageDto {
 
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -486,8 +490,9 @@ export class CreateVehiclePackageDto {
 export class UpdateVehiclePackageDto {
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()

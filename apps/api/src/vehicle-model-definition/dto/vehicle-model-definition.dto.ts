@@ -1,5 +1,4 @@
 import { Transform, Type } from "class-transformer";
-import { VehicleModel } from "@prisma/client";
 import {
   IsBoolean,
   IsEnum,
@@ -53,8 +52,9 @@ export class VehicleModelDefinitionsQueryDto {
   portalVisible?: boolean;
 
   @IsOptional()
-  @IsEnum(VehicleModel)
-  legacyVehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  legacyVehicleModel?: string;
 
   @IsOptional()
   @Type(() => Number)
@@ -78,8 +78,9 @@ export class CreateVehicleModelDefinitionDto {
   modelCode!: string;
 
   @IsOptional()
-  @IsEnum(VehicleModel)
-  legacyVehicleModel?: VehicleModel | null;
+  @IsString()
+  @MaxLength(64)
+  legacyVehicleModel?: string | null;
 
   @IsString()
   @IsNotEmpty()
@@ -178,8 +179,9 @@ export class UpdateVehicleModelDefinitionDto {
   modelCode?: string;
 
   @IsOptional()
-  @IsEnum(VehicleModel)
-  legacyVehicleModel?: VehicleModel | null;
+  @IsString()
+  @MaxLength(64)
+  legacyVehicleModel?: string | null;
 
   @IsOptional()
   @IsString()

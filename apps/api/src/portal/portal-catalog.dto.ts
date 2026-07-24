@@ -1,5 +1,4 @@
-import { VehicleModel } from "@prisma/client";
-import { IsEnum, IsOptional, IsString, IsUUID } from "class-validator";
+import { IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 
 export class PortalVehicleCatalogQueryDto {
   @IsOptional()
@@ -19,8 +18,9 @@ export class PortalVehicleCatalogQueryDto {
   modelDefinitionId?: string;
 
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsString()

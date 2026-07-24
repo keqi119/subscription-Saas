@@ -33,7 +33,6 @@ import {
   VehicleDepreciationPolicyStatus,
   VehicleDepreciationRecordStatus,
   VehicleDepreciationScheduleStatus,
-  VehicleModel,
   VehicleResidualForecastPointStatus,
   VehicleResidualForecastStatus,
   VehicleStatus
@@ -145,7 +144,7 @@ type ReportModelDefinition = Prisma.VehicleModelDefinitionGetPayload<{
 export class ReportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async resolveReportModelDefinition(modelDefinitionId: string | undefined, vehicleModel: VehicleModel | undefined) {
+  private async resolveReportModelDefinition(modelDefinitionId: string | undefined, vehicleModel: string | undefined) {
     if (!modelDefinitionId) {
       return null;
     }
@@ -161,7 +160,7 @@ export class ReportService {
     if (!definition) {
       throw new BadRequestException("车型主数据不存在");
     }
-    if (vehicleModel && vehicleModel !== definition.legacyVehicleModel) {
+    if (vehicleModel && vehicleModel !== definition.modelCode) {
       throw new BadRequestException("modelDefinitionId 与 vehicleModel 不一致");
     }
 
@@ -170,7 +169,7 @@ export class ReportService {
 
   private async resolveReportModelDefinitionIdentity(
     modelDefinitionId: string | undefined,
-    vehicleModel: VehicleModel | undefined
+    vehicleModel: string | undefined
   ) {
     if (!modelDefinitionId && !vehicleModel) {
       return null;
@@ -363,12 +362,9 @@ export class ReportService {
       totalOrders,
       byStatus: enumCountRows(OrderStatus, statusGroups, "orderStatus", "orderStatus"),
       bySource: enumCountRows(OrderSource, sourceGroups, "orderSource", "orderSource"),
-      byVehicleModel: enumCountRows(
-        VehicleModel,
-        vehicleModelGroups,
-        "vehicleModel",
-        "vehicleModel"
-      ).filter((row) => row.count > 0),
+      byVehicleModel: vehicleModelGroups
+        .filter((row) => row._count._all > 0)
+        .map((row) => ({ count: row._count._all, vehicleModel: row.vehicleModel })),
       bySubscriptionPlan: subscriptionPlanRows(ordersWithPlans)
     };
   }
@@ -5361,7 +5357,7 @@ function reportModelDefinitionSummary(definition: ReportModelDefinition | null |
 
 function reportVehicleModelDisplayName(
   definition: ReportModelDefinition | null | undefined,
-  vehicleModel: VehicleModel | string | null | undefined
+  vehicleModel: string | null | undefined
 ) {
   const summary = reportModelDefinitionSummary(definition);
   return summary?.displayName ?? vehicleModel ?? null;
@@ -7083,7 +7079,7 @@ function leasedVehicleCount(statusCount: Map<string, number>) {
   );
 }
 
-function incomeMap(bills: Array<{ order: { vehicleModel: VehicleModel }; paidAmount: bigint }>) {
+function incomeMap(bills: Array<{ order: { vehicleModel: string }; paidAmount: bigint }>) {
   const result = new Map<string, number>();
 
   for (const bill of bills) {
@@ -7100,7 +7096,7 @@ function vehicleModelAssetRows(
   groups: Array<{
     _count: { _all: number };
     status: VehicleStatus;
-    vehicleModel: VehicleModel | null;
+    vehicleModel: string | null;
   }>,
   incomeByVehicleModel: Map<string, number>
 ) {
@@ -7111,7 +7107,7 @@ function vehicleModelAssetRows(
       incomeAmount: number;
       leasedVehicles: number;
       totalVehicles: number;
-      vehicleModel: VehicleModel | null;
+      vehicleModel: string | null;
     }
   >();
 
@@ -7142,7 +7138,7 @@ function vehicleModelAssetRows(
         incomeAmount,
         leasedVehicles: 0,
         totalVehicles: 0,
-        vehicleModel: vehicleModel as VehicleModel
+        vehicleModel
       });
     }
   }

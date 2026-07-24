@@ -20,7 +20,6 @@ import {
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 
@@ -1153,10 +1152,10 @@ export class ProductService {
       vehicleBaseFeeAmount?: bigint;
       vehicleBaseFeeCapAmount?: bigint;
       vehicleId?: string | null;
-      vehicleModel: VehicleModel;
+      vehicleModel: string;
       modelDefinitionIdSnapshot?: string | null;
       modelDisplayNameSnapshot?: string | null;
-      legacyVehicleModelSnapshot?: VehicleModel | null;
+      legacyVehicleModelSnapshot?: string | null;
       legacyVehicleModelCodeSnapshot?: string | null;
       vehiclePackageId?: string;
       vehiclePurchasePriceAmount: bigint;
@@ -1693,18 +1692,14 @@ export class ProductService {
     if (!definition.enabled) {
       throw new BadRequestException("车型主数据已停用");
     }
-    if (!definition.legacyVehicleModel) {
-      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于产品配置");
-    }
-
     return definition;
   }
 
   private async resolveModelContextForProductConfigCreate(
     modelDefinitionId: string | null | undefined,
-    vehicleModel: VehicleModel | null | undefined,
+    vehicleModel: string | null | undefined,
     requiredModelDefinitionMessage: string
-  ): Promise<{ modelDefinition: ProductModelDefinition; vehicleModel: VehicleModel }> {
+  ): Promise<{ modelDefinition: ProductModelDefinition; vehicleModel: string }> {
     if (modelDefinitionId) {
       const modelDefinition = await this.resolveModelDefinitionForProductConfig(modelDefinitionId);
       if (!modelDefinition) {
@@ -1722,10 +1717,10 @@ export class ProductService {
 
   private async resolveModelContextForProductConfigUpdate(
     modelDefinitionId: string | null | undefined,
-    vehicleModel: VehicleModel | null | undefined,
+    vehicleModel: string | null | undefined,
     legacyOnlyMessage: string,
     vehicleModelProvided: boolean
-  ): Promise<{ modelDefinition?: ProductModelDefinition; vehicleModel?: VehicleModel }> {
+  ): Promise<{ modelDefinition?: ProductModelDefinition; vehicleModel?: string }> {
     if (modelDefinitionId === null) {
       throw new BadRequestException("车型代码主数据已启用，不能清除车型代码。");
     }
@@ -1751,7 +1746,7 @@ export class ProductService {
 
   private async resolveQuotePriceRuleModelContext(
     modelDefinitionId: string | null | undefined,
-    vehicleModel: VehicleModel | null | undefined
+    vehicleModel: string | null | undefined
   ) {
     return VehicleModelLegacyAdapter.resolveModelDefinitionInput(
       this.prisma,
@@ -1765,7 +1760,6 @@ export class ProductService {
         },
         missingMessage: "车型主数据缺失，无法按车型主数据查询价格规则。",
         mismatchMessage: "车型主数据与 legacy 车型不一致。",
-        requireLegacyVehicleModel: true
       }
     );
   }
@@ -1862,14 +1856,14 @@ function optionalBigInt(value?: number | null) {
 }
 
 function resolveVehicleModelForProductConfig(
-  vehicleModel: VehicleModel | null | undefined,
+  vehicleModel: string | null | undefined,
   modelDefinition: ProductModelDefinition | null
 ) {
   if (modelDefinition) {
-    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
+    if (vehicleModel && vehicleModel !== modelDefinition.modelCode) {
       throw new BadRequestException("车型主数据与 legacy 车型不一致");
     }
-    return modelDefinition.legacyVehicleModel as VehicleModel;
+    return modelDefinition.modelCode;
   }
 
   if (!vehicleModel) {

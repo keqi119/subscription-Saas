@@ -1,5 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
-import { Prisma, VehicleModel } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
 import {
   trackVehicleModelExternalContractWarning,
@@ -22,21 +22,23 @@ export type VehicleModelResolverDefinition = Prisma.VehicleModelDefinitionGetPay
   select: typeof vehicleModelResolverDefinitionSelect;
 }>;
 
+export type VehicleModelCode = string;
+
 export type ResolvedVehicleModel = {
-  legacyVehicleModel: VehicleModel | null;
-  legacyVehicleModelCode: string | null;
+  legacyVehicleModel: VehicleModelCode | null;
+  legacyVehicleModelCode: VehicleModelCode | null;
   modelDefinitionId: string | null;
   modelDisplayName: string | null;
   source: "MODEL_DEFINITION" | "LEGACY_ENUM" | "UNKNOWN";
 };
 
 type VehicleModelResolverSource = {
-  legacyVehicleModel?: VehicleModel | null;
-  modelDefinition?: (Pick<VehicleModelResolverDefinition, "displayName" | "id"> & {
-    legacyVehicleModel?: VehicleModel | null;
+  legacyVehicleModel?: VehicleModelCode | null;
+  modelDefinition?: (Pick<VehicleModelResolverDefinition, "displayName" | "id" | "modelCode"> & {
+    legacyVehicleModel?: VehicleModelCode | null;
   }) | null;
   modelDefinitionId?: string | null;
-  vehicleModel?: VehicleModel | null;
+  vehicleModel?: VehicleModelCode | null;
 };
 
 export type VehicleModelComparable = Pick<
@@ -48,16 +50,14 @@ type VehicleModelDefinitionReader = {
   vehicleModelDefinition: {
     findFirst(args: {
       select: typeof vehicleModelResolverDefinitionSelect;
-      where:
-        | { deletedAt: null; id: string }
-        | { deletedAt: null; legacyVehicleModel: VehicleModel };
+      where: Prisma.VehicleModelDefinitionWhereInput;
     }): Promise<VehicleModelResolverDefinition | null>;
   };
 };
 
 type ResolveModelDefinitionInput = {
   modelDefinitionId?: string | null;
-  vehicleModel?: VehicleModel | null;
+  vehicleModel?: VehicleModelCode | null;
 };
 
 type ResolveModelDefinitionOptions = {
@@ -65,7 +65,6 @@ type ResolveModelDefinitionOptions = {
   evidenceContext?: VehicleModelEvidenceContext;
   missingMessage?: string;
   mismatchMessage?: string;
-  requireLegacyVehicleModel?: boolean;
 };
 
 type VehicleModelEvidenceContext = {
@@ -77,8 +76,8 @@ type VehicleModelEvidenceContext = {
 };
 
 export type ResolvedVehicleModelDefinitionInput = {
-  legacyVehicleModel: VehicleModel | null;
-  legacyVehicleModelCode: string | null;
+  legacyVehicleModel: VehicleModelCode;
+  legacyVehicleModelCode: VehicleModelCode;
   modelDefinition: VehicleModelResolverDefinition;
   modelDefinitionId: string;
   modelDisplayName: string;
@@ -86,8 +85,13 @@ export type ResolvedVehicleModelDefinitionInput = {
 
 export function resolveVehicleModel(source: VehicleModelResolverSource): ResolvedVehicleModel {
   const modelDefinitionId = source.modelDefinitionId ?? source.modelDefinition?.id ?? null;
-  const legacyVehicleModel = source.legacyVehicleModel ?? source.vehicleModel ?? source.modelDefinition?.legacyVehicleModel ?? null;
-  const legacyVehicleModelCode = legacyVehicleModel ? String(legacyVehicleModel) : null;
+  const legacyVehicleModel =
+    source.legacyVehicleModel ??
+    source.vehicleModel ??
+    source.modelDefinition?.modelCode ??
+    source.modelDefinition?.legacyVehicleModel ??
+    null;
+  const legacyVehicleModelCode = legacyVehicleModel;
 
   if (modelDefinitionId) {
     return {
@@ -123,8 +127,13 @@ export function resolveVehicleModelDefinitionId(source: VehicleModelComparable):
 }
 
 export function resolveVehicleModelLegacyCode(source: VehicleModelComparable): string | null {
-  const legacyVehicleModel = source.legacyVehicleModel ?? source.vehicleModel ?? source.modelDefinition?.legacyVehicleModel ?? null;
-  return legacyVehicleModel ? String(legacyVehicleModel) : null;
+  return (
+    source.legacyVehicleModel ??
+    source.vehicleModel ??
+    source.modelDefinition?.modelCode ??
+    source.modelDefinition?.legacyVehicleModel ??
+    null
+  );
 }
 
 export function vehicleModelReadPathMatches(
@@ -170,7 +179,13 @@ export class VehicleModelLegacyAdapter {
       : input.vehicleModel
         ? await prisma.vehicleModelDefinition.findFirst({
             select: vehicleModelResolverDefinitionSelect,
-            where: { deletedAt: null, legacyVehicleModel: input.vehicleModel }
+            where: {
+              deletedAt: null,
+              OR: [
+                { modelCode: input.vehicleModel },
+                { legacyVehicleModel: input.vehicleModel }
+              ]
+            }
           })
         : null;
 
@@ -180,16 +195,17 @@ export class VehicleModelLegacyAdapter {
     if (!options.allowDisabled && !modelDefinition.enabled) {
       throw new BadRequestException("车型主数据已停用。");
     }
-    if (options.requireLegacyVehicleModel && !modelDefinition.legacyVehicleModel) {
-      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于该流程。");
-    }
-    if (input.vehicleModel && modelDefinition.legacyVehicleModel && input.vehicleModel !== modelDefinition.legacyVehicleModel) {
+    if (
+      input.vehicleModel &&
+      input.vehicleModel !== modelDefinition.modelCode &&
+      input.vehicleModel !== modelDefinition.legacyVehicleModel
+    ) {
       throw new BadRequestException(options.mismatchMessage ?? "modelDefinitionId 与 vehicleModel 不一致。");
     }
 
     return {
-      legacyVehicleModel: modelDefinition.legacyVehicleModel,
-      legacyVehicleModelCode: modelDefinition.legacyVehicleModel ? String(modelDefinition.legacyVehicleModel) : null,
+      legacyVehicleModel: modelDefinition.modelCode,
+      legacyVehicleModelCode: modelDefinition.modelCode,
       modelDefinition,
       modelDefinitionId: modelDefinition.id,
       modelDisplayName: modelDefinition.displayName

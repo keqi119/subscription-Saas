@@ -16,7 +16,6 @@ import {
   VehicleListingConditionGrade,
   VehicleListingMediaCategory,
   VehicleListingStatus,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { NotFoundException } from "@nestjs/common";
@@ -24,6 +23,11 @@ import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import { PortalCatalogService } from "../src/portal/portal-catalog.service";
+
+const VehicleModel = {
+  ES6: "ES6",
+  ET5: "ET5"
+} as const;
 
 describe("PortalCatalogService enhanced vehicle listing", () => {
   it("returns enhanced list fields without internal asset fields", async () => {
@@ -347,7 +351,7 @@ function filterCatalogVehicles(
     if (where.vehicleModel && vehicle.vehicleModel !== where.vehicleModel) {
       return false;
     }
-    const modelOr = where.OR as Array<{ modelDefinitionId?: string | null; vehicleModel?: VehicleModel }> | undefined;
+    const modelOr = where.OR as Array<{ modelDefinitionId?: string | null; vehicleModel?: string }> | undefined;
     if (modelOr?.length) {
       return modelOr.some((condition) => {
         if (condition.modelDefinitionId !== undefined && vehicle.modelDefinitionId !== condition.modelDefinitionId) {

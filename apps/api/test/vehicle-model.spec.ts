@@ -1,27 +1,16 @@
 import "reflect-metadata";
 
-import { VehicleModel } from "@prisma/client";
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
 import { describe, expect, it } from "vitest";
 
 import { CreateVehicleDto, UpdateVehicleDto } from "../src/vehicle/dto/vehicle.dto";
 
-const addedVehicleModels = [
-  VehicleModel.ET5T,
-  VehicleModel.EC6,
-  VehicleModel.ES8,
-  VehicleModel.ET9,
-  VehicleModel.ES9
-] as const;
+const compatibilityModelCodes = ["ET5T", "EC6", "ES8", "ET9", "ES9", "MODEL_X_2027"] as const;
 
-describe("VehicleModel enum drift closure", () => {
-  it("exposes the manually added vehicle model codes from Prisma Client", () => {
-    expect(Object.values(VehicleModel)).toEqual(expect.arrayContaining([...addedVehicleModels]));
-  });
-
-  it("accepts the added vehicle model codes in create and update DTOs", async () => {
-    for (const vehicleModel of addedVehicleModels) {
+describe("vehicle model string compatibility", () => {
+  it("accepts compatible and future model codes in create and update DTOs", async () => {
+    for (const vehicleModel of compatibilityModelCodes) {
       const createDto = plainToInstance(CreateVehicleDto, {
         brand: "NIO",
         purchasePriceAmount: 25000000,

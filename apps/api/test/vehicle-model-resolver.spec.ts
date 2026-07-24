@@ -1,4 +1,3 @@
-import { VehicleModel } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,7 +7,31 @@ import {
 } from "../src/common/vehicle-model-resolver";
 import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 
+const VehicleModel = {
+  ES6: "ES6",
+  ET5: "ET5"
+} as const;
+
 describe("VehicleModelResolver", () => {
+  it("derives a new compatibility code from the selected model definition", () => {
+    expect(
+      resolveVehicleModel({
+        modelDefinition: {
+          displayName: "Model X 2027",
+          id: "model-x-2027",
+          modelCode: "MODEL_X_2027"
+        },
+        modelDefinitionId: "model-x-2027"
+      })
+    ).toEqual({
+      legacyVehicleModel: "MODEL_X_2027",
+      legacyVehicleModelCode: "MODEL_X_2027",
+      modelDefinitionId: "model-x-2027",
+      modelDisplayName: "Model X 2027",
+      source: "MODEL_DEFINITION"
+    });
+  });
+
   it("uses modelDefinitionId as the primary model identity", () => {
     expect(
       resolveVehicleModel({
@@ -74,11 +97,66 @@ describe("VehicleModelResolver", () => {
 });
 
 describe("VehicleModelLegacyAdapter", () => {
+  it("uses modelCode for new writes resolved by modelDefinitionId", async () => {
+    const prisma = {
+      vehicleModelDefinition: {
+        findFirst: async ({ where }: { where: { id?: string } }) =>
+          where.id === "model-x-2027"
+            ? {
+                deletedAt: null,
+                displayName: "Model X 2027",
+                enabled: true,
+                id: "model-x-2027",
+                legacyVehicleModel: null,
+                modelCode: "MODEL_X_2027"
+              }
+            : null
+      }
+    };
+
+    await expect(
+      VehicleModelLegacyAdapter.resolveModelDefinitionInput(prisma as never, {
+        modelDefinitionId: "model-x-2027"
+      })
+    ).resolves.toMatchObject({
+      legacyVehicleModel: "MODEL_X_2027",
+      legacyVehicleModelCode: "MODEL_X_2027",
+      modelDefinitionId: "model-x-2027"
+    });
+  });
+
+  it("resolves a new compatibility code through modelCode", async () => {
+    const prisma = {
+      vehicleModelDefinition: {
+        findFirst: async ({ where }: { where: { OR?: Array<{ modelCode?: string }> } }) =>
+          where.OR?.some((candidate) => candidate.modelCode === "MODEL_X_2027")
+            ? {
+                deletedAt: null,
+                displayName: "Model X 2027",
+                enabled: true,
+                id: "model-x-2027",
+                legacyVehicleModel: null,
+                modelCode: "MODEL_X_2027"
+              }
+            : null
+      }
+    };
+
+    await expect(
+      VehicleModelLegacyAdapter.resolveModelDefinitionInput(prisma as never, {
+        vehicleModel: "MODEL_X_2027"
+      })
+    ).resolves.toMatchObject({
+      legacyVehicleModel: "MODEL_X_2027",
+      modelDefinitionId: "model-x-2027"
+    });
+  });
+
   it("resolves deprecated legacy input to modelDefinitionId", async () => {
     const prisma = {
       vehicleModelDefinition: {
-        findFirst: async ({ where }: { where: { legacyVehicleModel?: VehicleModel } }) =>
-          where.legacyVehicleModel === VehicleModel.ET5
+        findFirst: async ({ where }: { where: { OR?: Array<{ legacyVehicleModel?: string }> } }) =>
+          where.OR?.some((candidate) => candidate.legacyVehicleModel === VehicleModel.ET5)
             ? {
                 deletedAt: null,
                 displayName: "NIO ET5",
@@ -105,7 +183,8 @@ describe("VehicleModelLegacyAdapter", () => {
         }
       })
     ).resolves.toMatchObject({
-      legacyVehicleModel: VehicleModel.ET5,
+      legacyVehicleModel: "NIO_ET5",
+      legacyVehicleModelCode: "NIO_ET5",
       modelDefinitionId: "model-et5"
     });
     expect(vehicleModelUsageTracker.report()).toMatchObject({

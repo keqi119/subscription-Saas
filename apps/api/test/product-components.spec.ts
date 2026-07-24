@@ -5,12 +5,21 @@ import {
   ProductType,
   ProductVersionStatus,
   QuoteStatus,
-  RecordStatus,
-  VehicleModel
+  RecordStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { ProductService } from "../src/product/product.service";
+
+const VehicleModel = {
+  EC6: "EC6",
+  ES6: "ES6",
+  ES8: "ES8",
+  ES9: "ES9",
+  ET5: "ET5",
+  ET5T: "ET5T",
+  ET7: "ET7"
+} as const;
 
 const now = new Date("2026-06-01T00:00:00.000Z");
 const user = {
@@ -213,7 +222,7 @@ describe("product component packages", () => {
 });
 
 describe("product component model definitions", () => {
-  it("creates vehicle packages from modelDefinitionId and writes the mapped legacy VehicleModel", async () => {
+  it("creates vehicle packages from modelDefinitionId and writes its modelCode", async () => {
     const definition = makeModelDefinition({
       displayName: "ET5 Touring",
       id: "model-et5t",
@@ -243,14 +252,47 @@ describe("product component model definitions", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           modelDefinitionId: definition.id,
-          vehicleModel: VehicleModel.ET5T
+          vehicleModel: definition.modelCode
         })
       })
     );
     expect(result).toMatchObject({
       modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ET5T
+      vehicleModel: definition.modelCode
     });
+  });
+
+  it("writes MODEL_X_2027 from a model definition without a legacy mapping", async () => {
+    const definition = makeModelDefinition({
+      displayName: "Model X 2027",
+      id: "model-x-2027",
+      legacyVehicleModel: null,
+      modelCode: "MODEL_X_2027"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [definition] });
+
+    await service.createVehiclePackage(
+      {
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: definition.id,
+        monthlyFeeRate: 0.035,
+        packageName: "Model X 2027 standard",
+        productId: "product-1",
+        productVersionId: "version-1"
+      },
+      user,
+      context
+    );
+
+    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: definition.id,
+          vehicleModel: "MODEL_X_2027"
+        })
+      })
+    );
   });
 
   it("rejects legacy-only vehicle package creation even when a model definition mapping exists", async () => {
@@ -301,7 +343,7 @@ describe("product component model definitions", () => {
     expect(prisma.vehiclePackage.create).not.toHaveBeenCalled();
   });
 
-  it("creates price rules from modelDefinitionId and rejects mismatched legacy VehicleModel", async () => {
+  it("creates price rules from modelDefinitionId and rejects mismatched compatibility codes", async () => {
     const definition = makeModelDefinition({
       displayName: "ES8",
       id: "model-es8",
@@ -326,13 +368,13 @@ describe("product component model definitions", () => {
       )
     ).resolves.toMatchObject({
       modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ES8
+      vehicleModel: definition.modelCode
     });
     expect(prisma.productPriceRule.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           modelDefinitionId: definition.id,
-          vehicleModel: VehicleModel.ES8
+          vehicleModel: definition.modelCode
         })
       })
     );

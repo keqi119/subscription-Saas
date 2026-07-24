@@ -12,7 +12,6 @@ import {
   VehicleCapitalEventStatus,
   VehicleCapitalEventType,
   VehicleDepreciationMethod,
-  VehicleModel,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
@@ -802,16 +801,12 @@ export class VehicleService {
     if (!definition.enabled) {
       throw new BadRequestException("车型主数据已停用");
     }
-    if (!definition.legacyVehicleModel) {
-      throw new BadRequestException("车型主数据未映射 legacy 车型，当前阶段不能用于车辆创建");
-    }
-
     return definition;
   }
 
   private async resolveModelContextForCreate(
     modelDefinitionId: string | null | undefined,
-    vehicleModel: VehicleModel | null | undefined
+    vehicleModel: string | null | undefined
   ) {
     if (modelDefinitionId) {
       const modelDefinition = await this.resolveModelDefinitionForVehicle(modelDefinitionId);
@@ -827,7 +822,7 @@ export class VehicleService {
 
   private async resolveModelContextForUpdate(
     modelDefinitionId: string | null | undefined,
-    vehicleModel: VehicleModel | null | undefined,
+    vehicleModel: string | null | undefined,
     vehicleModelProvided: boolean
   ) {
     if (modelDefinitionId === null) {
@@ -860,7 +855,7 @@ async function createVehicleWithRetry(
   operatorId: string,
   modelContext: {
     modelDefinition: VehicleModelDefinitionForVehicle | null;
-    vehicleModel: VehicleModel;
+    vehicleModel: string;
   }
 ) {
   try {
@@ -882,7 +877,7 @@ function createVehicleData(
   dto: CreateVehicleDto,
   modelContext: {
     modelDefinition: VehicleModelDefinitionForVehicle | null;
-    vehicleModel: VehicleModel;
+    vehicleModel: string;
   }
 ): Omit<Prisma.VehicleCreateInput, "vehicleNo"> {
   return {
@@ -919,7 +914,7 @@ function updateVehicleData(
   modelContext: {
     modelDefinition: VehicleModelDefinitionForVehicle | null;
     modelDefinitionProvided: boolean;
-    vehicleModel?: VehicleModel | null;
+    vehicleModel?: string | null;
   }
 ): Prisma.VehicleUpdateInput {
   const data: Prisma.VehicleUpdateInput = {
@@ -970,14 +965,14 @@ function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K,
 }
 
 function resolveVehicleModelForWrite(
-  vehicleModel: VehicleModel | null | undefined,
+  vehicleModel: string | null | undefined,
   modelDefinition: VehicleModelDefinitionForVehicle | null
 ) {
   if (modelDefinition) {
-    if (vehicleModel && vehicleModel !== modelDefinition.legacyVehicleModel) {
+    if (vehicleModel && vehicleModel !== modelDefinition.modelCode) {
       throw new BadRequestException("车型主数据与 legacy 车型不一致");
     }
-    return modelDefinition.legacyVehicleModel as VehicleModel;
+    return modelDefinition.modelCode;
   }
 
   if (!vehicleModel) {

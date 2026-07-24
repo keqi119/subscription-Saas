@@ -35,7 +35,6 @@ import {
   VehicleDepreciationRecordSource,
   VehicleDepreciationRecordStatus,
   VehicleDepreciationScheduleStatus,
-  VehicleModel,
   VehicleResidualCurveMethod,
   VehicleResidualCurveStatus,
   VehicleResidualForecastMethod,
@@ -49,6 +48,11 @@ import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-trac
 import { ReportController } from "../src/report/report.controller";
 import { escapeCsvCell, toCsv } from "../src/report/report-csv";
 import { ReportService } from "../src/report/report.service";
+
+const VehicleModel = {
+  ES6: "ES6",
+  ET5: "ET5"
+} as const;
 
 describe("reporting dashboard APIs", () => {
   afterEach(() => {
@@ -211,7 +215,10 @@ describe("reporting dashboard APIs", () => {
 
     expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
+        where: {
+          deletedAt: null,
+          OR: [{ modelCode: VehicleModel.ET5 }, { legacyVehicleModel: VehicleModel.ET5 }]
+        }
       })
     );
     expect(prisma.subscriptionOrder.count).toHaveBeenCalledWith(
@@ -3762,7 +3769,7 @@ function createReportHarness() {
       groupBy: vi.fn()
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: VehicleModel } }) =>
+      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: string } }) =>
         where.id === "missing-model-definition"
           ? null
           : reportModelDefinition({

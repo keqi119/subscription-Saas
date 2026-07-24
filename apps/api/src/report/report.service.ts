@@ -7128,7 +7128,10 @@ function vehicleModelCountRows(
   }>,
   canonicalCodeByAlias: ReadonlyMap<string, string>
 ) {
-  const counts = new Map<string, { count: number; vehicleModel: string | null }>();
+  const counts = new Map<
+    string | null,
+    { count: number; vehicleModel: string | null }
+  >();
 
   for (const group of groups) {
     if (group._count._all <= 0) {
@@ -7138,10 +7141,9 @@ function vehicleModelCountRows(
       group.vehicleModel,
       canonicalCodeByAlias
     );
-    const key = vehicleModel ?? "UNSPECIFIED";
-    const row = counts.get(key) ?? { count: 0, vehicleModel };
+    const row = counts.get(vehicleModel) ?? { count: 0, vehicleModel };
     row.count += group._count._all;
-    counts.set(key, row);
+    counts.set(vehicleModel, row);
   }
 
   return [...counts.values()];
@@ -7176,7 +7178,7 @@ function vehicleModelAssetRows(
   canonicalCodeByAlias: ReadonlyMap<string, string>
 ) {
   const rows = new Map<
-    string,
+    string | null,
     {
       availableVehicles: number;
       incomeAmount: number;
@@ -7191,10 +7193,10 @@ function vehicleModelAssetRows(
       group.vehicleModel,
       canonicalCodeByAlias
     );
-    const key = vehicleModel ?? "UNSPECIFIED";
-    const row = rows.get(key) ?? {
+    const row = rows.get(vehicleModel) ?? {
       availableVehicles: 0,
-      incomeAmount: incomeByVehicleModel.get(key) ?? 0,
+      incomeAmount:
+        vehicleModel === null ? 0 : incomeByVehicleModel.get(vehicleModel) ?? 0,
       leasedVehicles: 0,
       totalVehicles: 0,
       vehicleModel
@@ -7207,7 +7209,7 @@ function vehicleModelAssetRows(
     if (group.status === VehicleStatus.LEASED || group.status === VehicleStatus.RENTED) {
       row.leasedVehicles += group._count._all;
     }
-    rows.set(key, row);
+    rows.set(vehicleModel, row);
   }
 
   for (const [vehicleModel, incomeAmount] of incomeByVehicleModel.entries()) {

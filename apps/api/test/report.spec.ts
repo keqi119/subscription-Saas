@@ -192,6 +192,24 @@ describe("reporting dashboard APIs", () => {
     ]);
   });
 
+  it("keeps null and legitimate UNSPECIFIED order model buckets distinct", async () => {
+    const { prisma, service } = createReportHarness();
+    mockOrderReport(prisma, "Standard", [
+      countGroup("vehicleModel", null, 2),
+      countGroup("vehicleModel", "UNSPECIFIED", 1)
+    ]);
+
+    const result = await service.getOrderReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.byVehicleModel).toEqual([
+      { count: 2, vehicleModel: null },
+      { count: 1, vehicleModel: "UNSPECIFIED" }
+    ]);
+  });
+
   it("orders report filters by modelDefinitionId with legacy fallback and rejects mismatched legacy filter", async () => {
     const { prisma, service } = createReportHarness();
     mockOrderReport(prisma);
@@ -518,6 +536,48 @@ describe("reporting dashboard APIs", () => {
         leasedVehicles: 2,
         totalVehicles: 3,
         vehicleModel: "NIO_ET5"
+      }
+    ]);
+  });
+
+  it("keeps null and legitimate UNSPECIFIED vehicle asset buckets distinct", async () => {
+    const { prisma, service } = createReportHarness();
+    mockVehicleAssetReport(
+      prisma,
+      [
+        {
+          ...countGroup("vehicleModel", null, 1),
+          status: VehicleStatus.AVAILABLE
+        },
+        {
+          ...countGroup("vehicleModel", "UNSPECIFIED", 2),
+          status: VehicleStatus.LEASED
+        }
+      ],
+      [
+        { order: { vehicleModel: "UNSPECIFIED" }, paidAmount: 500n }
+      ]
+    );
+
+    const result = await service.getVehicleAssetReport({
+      endDate: "2026-06-30",
+      startDate: "2026-06-01"
+    });
+
+    expect(result.byVehicleModel).toEqual([
+      {
+        availableVehicles: 1,
+        incomeAmount: 0,
+        leasedVehicles: 0,
+        totalVehicles: 1,
+        vehicleModel: null
+      },
+      {
+        availableVehicles: 0,
+        incomeAmount: 500,
+        leasedVehicles: 2,
+        totalVehicles: 2,
+        vehicleModel: "UNSPECIFIED"
       }
     ]);
   });

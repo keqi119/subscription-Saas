@@ -76,6 +76,24 @@ describe("VehicleModelDefinition write DTO production validation", () => {
     );
   });
 
+  it.each([null, ""])(
+    "rejects JSON-present legacyVehicleModel=%j in a create payload",
+    async (legacyVehicleModel) => {
+      await expectLegacyWriteRejected(
+        validateProductionBody(
+          {
+            brand: "NIO",
+            displayName: "ET5",
+            legacyVehicleModel,
+            modelCode: "NIO_ET5",
+            modelName: "ET5"
+          },
+          CreateVehicleModelDefinitionDto
+        )
+      );
+    }
+  );
+
   it("accepts a canonical update payload", async () => {
     const dto = await validateProductionBody(
       {
@@ -103,6 +121,21 @@ describe("VehicleModelDefinition write DTO production validation", () => {
       )
     );
   });
+
+  it.each([null, ""])(
+    "rejects JSON-present legacyVehicleModel=%j in an update payload",
+    async (legacyVehicleModel) => {
+      await expectLegacyWriteRejected(
+        validateProductionBody(
+          {
+            legacyVehicleModel,
+            modelCode: "NIO_ET5_TOURING"
+          },
+          UpdateVehicleModelDefinitionDto
+        )
+      );
+    }
+  );
 });
 
 describe("VehicleModelDefinitionService", () => {

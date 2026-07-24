@@ -1,7 +1,7 @@
 import { Transform, Type } from "class-transformer";
 import {
+  Equals,
   IsBoolean,
-  IsEmpty,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -81,7 +81,7 @@ export class CreateVehicleModelDefinitionDto {
   @Matches(MODEL_CODE_PATTERN)
   modelCode!: string;
 
-  @IsEmpty({ message: LEGACY_WRITE_ERROR })
+  @Equals(undefined, { message: LEGACY_WRITE_ERROR })
   legacyVehicleModel?: never;
 
   @IsString()
@@ -180,7 +180,7 @@ export class UpdateVehicleModelDefinitionDto {
   @Matches(MODEL_CODE_PATTERN)
   modelCode?: string;
 
-  @IsEmpty({ message: LEGACY_WRITE_ERROR })
+  @Equals(undefined, { message: LEGACY_WRITE_ERROR })
   legacyVehicleModel?: never;
 
   @IsOptional()

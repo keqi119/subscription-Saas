@@ -26,16 +26,18 @@ export function findVehicleModelEnumDependencies(schemaText, runtimeFiles) {
     dependencies.push({ category: "SCHEMA_ENUM_BLOCK", path: "apps/api/prisma/schema.prisma" });
   }
 
-  if (/^(?!\s*enum\s)\s*\w+\s+VehicleModel\??(?:\s|$)/m.test(uncommentedSchema)) {
+  if (/^(?!\s*enum\s)\s*\w+\s+VehicleModel(?:\?|\[\])?(?:\s|$)/m.test(uncommentedSchema)) {
     dependencies.push({ category: "SCHEMA_ENUM_FIELD", path: "apps/api/prisma/schema.prisma" });
   }
 
   for (const file of runtimeFiles) {
-    if (hasPrismaVehicleModelImport(file.content)) {
+    const sanitizedSource = sanitizeRuntimeSource(file.content);
+
+    if (hasPrismaVehicleModelImport(sanitizedSource)) {
       dependencies.push({ category: "PRISMA_VEHICLE_MODEL_IMPORT", path: file.path });
     }
 
-    if (hasPrismaVehicleModelNamespaceUsage(file.content)) {
+    if (hasPrismaVehicleModelNamespaceUsage(sanitizedSource)) {
       dependencies.push({ category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: file.path });
     }
   }
@@ -50,10 +52,12 @@ function stripPrismaComments(schemaText) {
 }
 
 function hasPrismaVehicleModelImport(source) {
-  const imports = source.matchAll(/\bimport\s+(?:type\s+)?\{([\s\S]*?)\}\s+from\s*["']@prisma\/client["']/g);
+  const imports = source.code.matchAll(
+    /\bimport\s+(?:type\s+)?\{([\s\S]*?)\}\s+from\s+(__VM_LITERAL_\d+__)/g
+  );
 
   for (const entry of imports) {
-    if (/\b(?:type\s+)?VehicleModel\b/.test(entry[1])) {
+    if (source.literals.get(entry[2]) === "@prisma/client" && /\b(?:type\s+)?VehicleModel\b/.test(entry[1])) {
       return true;
     }
   }
@@ -62,17 +66,97 @@ function hasPrismaVehicleModelImport(source) {
 }
 
 function hasPrismaVehicleModelNamespaceUsage(source) {
-  const namespaceImports = source.matchAll(
-    /\bimport\s+\*\s+as\s+(\w+)\s+from\s*["']@prisma\/client["']/g
+  const namespaceImports = source.code.matchAll(
+    /\bimport\s+\*\s+as\s+(\w+)\s+from\s+(__VM_LITERAL_\d+__)/g
   );
 
   for (const entry of namespaceImports) {
-    if (new RegExp(`\\b${entry[1]}\\.VehicleModel\\b`).test(source)) {
+    if (
+      source.literals.get(entry[2]) === "@prisma/client" &&
+      new RegExp(`\\b${entry[1]}\\.VehicleModel\\b`).test(source.code)
+    ) {
       return true;
     }
   }
 
   return false;
+}
+
+function sanitizeRuntimeSource(source) {
+  const literals = new Map();
+  let code = "";
+  let index = 0;
+
+  while (index < source.length) {
+    const current = source[index];
+    const next = source[index + 1];
+
+    if (current === "/" && next === "/") {
+      code += "  ";
+      index += 2;
+      while (index < source.length && source[index] !== "\n") {
+        code += " ";
+        index += 1;
+      }
+      continue;
+    }
+
+    if (current === "/" && next === "*") {
+      code += "  ";
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
+        code += source[index] === "\n" ? "\n" : " ";
+        index += 1;
+      }
+      if (index < source.length) {
+        code += "  ";
+        index += 2;
+      }
+      continue;
+    }
+
+    if (current === "'" || current === '"' || current === "`") {
+      const delimiter = current;
+      let literalValue = "";
+      let escaped = false;
+      index += 1;
+
+      while (index < source.length) {
+        const literalCharacter = source[index];
+
+        if (escaped) {
+          literalValue += literalCharacter;
+          escaped = false;
+          index += 1;
+          continue;
+        }
+
+        if (literalCharacter === "\\") {
+          escaped = true;
+          index += 1;
+          continue;
+        }
+
+        if (literalCharacter === delimiter) {
+          index += 1;
+          break;
+        }
+
+        literalValue += literalCharacter;
+        index += 1;
+      }
+
+      const token = `__VM_LITERAL_${literals.size}__`;
+      literals.set(token, literalValue);
+      code += token;
+      continue;
+    }
+
+    code += current;
+    index += 1;
+  }
+
+  return { code, literals };
 }
 
 function readRuntimeFiles() {

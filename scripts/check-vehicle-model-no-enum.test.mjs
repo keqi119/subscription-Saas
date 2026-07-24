@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { assertVehicleModelEnumRemoved } from "./check-vehicle-model-no-enum.mjs";
+
+const currentDirectory = dirname(fileURLToPath(import.meta.url));
 
 test("accepts string compatibility fields without Prisma enum dependencies", () => {
   assert.doesNotThrow(() =>
@@ -47,6 +50,18 @@ test("rejects a Prisma field typed as VehicleModel", () => {
   );
 });
 
+test("rejects a Prisma list field typed as VehicleModel", () => {
+  assertDependency(
+    `
+      model VehicleModelCollection {
+        models VehicleModel[]
+      }
+    `,
+    [],
+    { category: "SCHEMA_ENUM_FIELD", path: "apps/api/prisma/schema.prisma" }
+  );
+});
+
 test("rejects a runtime Prisma VehicleModel import", () => {
   assertDependency(
     "model Vehicle { vehicleModel String? }",
@@ -60,8 +75,53 @@ test("rejects a runtime Prisma VehicleModel import", () => {
   );
 });
 
+test("rejects a real Prisma namespace VehicleModel dependency", () => {
+  assertDependency(
+    "model Vehicle { vehicleModel String? }",
+    [
+      {
+        content:
+          'import * as PrismaClient from "@prisma/client";\nexport type LegacyModel = PrismaClient.VehicleModel;',
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
+    ],
+    { category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: "apps/api/src/vehicle/vehicle.service.ts" }
+  );
+});
+
+test("ignores Prisma VehicleModel imports inside JavaScript and TypeScript comments", () => {
+  assert.doesNotThrow(() =>
+    assertVehicleModelEnumRemoved("model Vehicle { vehicleModel String? }", [
+      {
+        content: [
+          '// import { VehicleModel } from "@prisma/client";',
+          '/* import * as PrismaClient from "@prisma/client";',
+          "type LegacyModel = PrismaClient.VehicleModel; */",
+          "export const vehicleModel = null;"
+        ].join("\n"),
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
+    ])
+  );
+});
+
+test("ignores Prisma VehicleModel imports inside string and template literals", () => {
+  assert.doesNotThrow(() =>
+    assertVehicleModelEnumRemoved("model Vehicle { vehicleModel String? }", [
+      {
+        content: [
+          'const namedImportFixture = \'import { VehicleModel } from "@prisma/client";\';',
+          'const namespaceFixture = `import * as PrismaClient from "@prisma/client";',
+          "type LegacyModel = PrismaClient.VehicleModel;`;"
+        ].join("\n"),
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
+    ])
+  );
+});
+
 test("release check runs the no-enum guard directly without a package script", () => {
-  const releaseCheck = readFileSync(resolve("scripts/release-check.mjs"), "utf8");
+  const releaseCheck = readFileSync(resolve(currentDirectory, "release-check.mjs"), "utf8");
 
   assert.match(
     releaseCheck,

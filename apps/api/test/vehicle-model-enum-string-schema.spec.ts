@@ -26,8 +26,23 @@ const enumColumnConversions = [
 ];
 
 describe("VehicleModel enum string schema contract", () => {
+  it("ignores VehicleModel enum examples inside Prisma comments", () => {
+    const commentedExamples = `
+      // enum VehicleModel {
+      //   ET5
+      // }
+      /*
+       * enum VehicleModel {
+       *   ES6
+       * }
+       */
+    `;
+
+    expect(stripPrismaComments(commentedExamples)).not.toMatch(/\benum\s+VehicleModel\s*\{/);
+  });
+
   it("removes the Prisma VehicleModel enum", () => {
-    const schema = readSchema();
+    const schema = stripPrismaComments(readSchema());
 
     expect(schema).not.toMatch(/\benum\s+VehicleModel\s*\{/);
   });
@@ -60,6 +75,10 @@ describe("VehicleModel enum string schema contract", () => {
 
 function readSchema() {
   return fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
+}
+
+function stripPrismaComments(schema: string) {
+  return schema.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
 function readEnumToStringMigration() {

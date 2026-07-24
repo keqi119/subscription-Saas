@@ -27,7 +27,6 @@
 - Create: `scripts/check-vehicle-model-no-enum.mjs`
 - Create: `scripts/check-vehicle-model-no-enum.test.mjs`
 - Modify: `scripts/release-check.mjs`
-- Modify: `package.json`
 
 **Interfaces:**
 - Produces: `assertVehicleModelEnumRemoved(schemaText, runtimeFiles)` used by the CLI guard.
@@ -74,12 +73,13 @@ paths and dependency categories.
 - [ ] **Step 4: Replace release freeze entry**
 
 Replace `vehicle-model:enum-freeze` release checks with
-`vehicle-model:no-enum` and its Node tests.
+direct execution of `scripts/check-vehicle-model-no-enum.mjs` and its Node
+tests. Do not modify package scripts.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add apps/api/test/vehicle-model-enum-string-schema.spec.ts scripts/check-vehicle-model-no-enum.mjs scripts/check-vehicle-model-no-enum.test.mjs scripts/release-check.mjs package.json
+git add apps/api/test/vehicle-model-enum-string-schema.spec.ts scripts/check-vehicle-model-no-enum.mjs scripts/check-vehicle-model-no-enum.test.mjs scripts/release-check.mjs
 git commit -m "test(vehicle): define vehicle model enum removal contract"
 ```
 
@@ -298,7 +298,7 @@ git commit -m "refactor(admin): remove legacy vehicle model controls"
 - [ ] **Step 1: Run the no-enum guard and verify remaining failures**
 
 ```powershell
-pnpm vehicle-model:no-enum
+node scripts/check-vehicle-model-no-enum.mjs
 ```
 
 - [ ] **Step 2: Convert fixtures and scripts to strings**
@@ -363,7 +363,7 @@ pnpm --filter @subscription-saas/web build
 - [ ] **Step 4: Run governance and release checks**
 
 ```powershell
-pnpm vehicle-model:no-enum
+node scripts/check-vehicle-model-no-enum.mjs
 pnpm release:check
 ```
 

@@ -2,7 +2,6 @@ import { Transform, Type } from "class-transformer";
 import {
   Equals,
   IsBoolean,
-  IsEnum,
   IsInt,
   IsNotEmpty,
   IsNumber,

@@ -216,6 +216,29 @@ test("rejects CommonJS namespace require VehicleModel dependencies", () => {
   }
 });
 
+test("rejects direct CommonJS require VehicleModel property access", () => {
+  for (const expression of [
+    'require("@prisma/client").VehicleModel',
+    'require("@prisma/client").$Enums.VehicleModel',
+    'require("@prisma/client").Prisma.VehicleModel',
+    'require("@prisma/client").Prisma.$Enums.VehicleModel'
+  ]) {
+    assertDependency(
+      "model Vehicle { vehicleModel String? }",
+      [
+        {
+          content: `const legacyModel = ${expression};`,
+          path: "scripts/runtime-backfill.mjs"
+        }
+      ],
+      {
+        category: "PRISMA_VEHICLE_MODEL_IMPORT",
+        path: "scripts/runtime-backfill.mjs"
+      }
+    );
+  }
+});
+
 test("ignores an imported namespace identifier shadowed by a function parameter", () => {
   assert.doesNotThrow(() =>
     assertVehicleModelEnumRemoved("model Vehicle { vehicleModel String? }", [

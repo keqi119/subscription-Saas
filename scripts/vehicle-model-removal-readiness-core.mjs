@@ -148,7 +148,7 @@ function classifyExternalUsage(path, content) {
     return "PORTAL_CATALOG";
   }
   if (normalizedPath === "apps/web/src/lib/portal-types.ts") {
-    return "PORTAL_CATALOG";
+    return "PORTAL_SHARED_TYPES";
   }
   if (normalizedPath.includes("/dto/") || normalizedPath.includes("controller")) {
     return "API_CONTRACT";
@@ -171,7 +171,12 @@ function riskLevelForCategory(category) {
   if (category === "EXTERNAL_INTEGRATION") {
     return "HIGH";
   }
-  if (category === "API_CONTRACT" || category === "PORTAL_CATALOG" || category === "REPORTS_API") {
+  if (
+    category === "API_CONTRACT" ||
+    category === "PORTAL_CATALOG" ||
+    category === "PORTAL_SHARED_TYPES" ||
+    category === "REPORTS_API"
+  ) {
     return "MEDIUM";
   }
   return "LOW";

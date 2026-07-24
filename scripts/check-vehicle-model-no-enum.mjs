@@ -197,6 +197,13 @@ function findPrismaVehicleModelRuntimeDependencies(sourceFile, checker) {
       hasNamedImport = true;
     }
 
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      isDirectPrismaVehicleModelRequireAccess(node)
+    ) {
+      hasNamedImport = true;
+    }
+
     if (ts.isPropertyAccessExpression(node) || ts.isQualifiedName(node)) {
       const accessPath = getAccessPath(node);
 
@@ -246,6 +253,18 @@ function isPrismaRequireCall(node) {
     node.arguments.length === 1 &&
     isPrismaModuleSpecifier(node.arguments[0])
   );
+}
+
+function isDirectPrismaVehicleModelRequireAccess(node) {
+  const members = [];
+  let current = node;
+
+  while (ts.isPropertyAccessExpression(current)) {
+    members.unshift(current.name.text);
+    current = current.expression;
+  }
+
+  return isPrismaRequireCall(current) && isVehicleModelAccess("MODULE", members);
 }
 
 function getBindingElementImportedName(element) {

@@ -35,23 +35,29 @@ test("scanExternalEnumUsage classifies API, portal catalog, report, CSV, and int
   assert.equal(result.totalReferences, 5);
   assert.deepEqual(
     result.items.map((item) => item.category).sort(),
-    ["API_CONTRACT", "CSV_EXPORT", "EXTERNAL_INTEGRATION", "PORTAL_CATALOG", "PORTAL_CATALOG"]
+    ["API_CONTRACT", "CSV_EXPORT", "EXTERNAL_INTEGRATION", "PORTAL_CATALOG", "PORTAL_SHARED_TYPES"]
   );
 });
 
-test("external consumer registry includes the Web portal catalog type contract", () => {
+test("external consumer registry tracks Web portal shared types separately from catalog", () => {
   const registry = JSON.parse(
     readFileSync(
       new URL("../docs/vehicle-model-external-contract-consumer-register.json", import.meta.url),
       "utf8"
     )
   );
-  const evidencePaths = registry.consumers.flatMap((consumer) => [
-    consumer.evidencePath,
-    ...(consumer.evidencePaths ?? [])
-  ]);
+  const catalogConsumer = registry.consumers.find(
+    (consumer) => consumer.consumerId === "portal-catalog-vehicle-model-compatibility"
+  );
+  const sharedTypesConsumer = registry.consumers.find(
+    (consumer) => consumer.consumerId === "portal-shared-types-vehicle-model-contract"
+  );
 
-  assert.ok(evidencePaths.includes("apps/web/src/lib/portal-types.ts"));
+  assert.ok(sharedTypesConsumer);
+  assert.equal(sharedTypesConsumer.evidencePath, "apps/web/src/lib/portal-types.ts");
+  assert.ok(
+    !(catalogConsumer.evidencePaths ?? []).includes("apps/web/src/lib/portal-types.ts")
+  );
 });
 
 test("scanExternalEnumUsage ignores internal telemetry implementation references", () => {

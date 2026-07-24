@@ -64,7 +64,7 @@ apps/api/prisma/schema.prisma
 apps/api/src
 apps/web/src
 packages/shared/src
-scripts excluding its own implementation/tests and historical migration helpers
+scripts excluding only the guard's own implementation/tests
 ```
 
 It exits non-zero for schema/runtime enum dependencies and prints only file
@@ -119,15 +119,11 @@ ALTER TABLE "<table>"
   ALTER COLUMN "<column>" TYPE VARCHAR(64)
   USING "<column>"::text;
 
+-- Repeat the ALTER TABLE conversion for all eight known columns.
+
 DROP TYPE "vehicle_model";
 
 COMMIT;
-```
-
-After all eight conversions:
-
-```sql
-DROP TYPE "vehicle_model";
 ```
 
 - [ ] **Step 4: Validate schema**

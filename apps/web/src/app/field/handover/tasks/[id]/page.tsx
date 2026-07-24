@@ -287,6 +287,26 @@ export default function FieldHandoverTaskDetailPage() {
           <Flex gap={12} vertical>
             <SummaryCard view={detailView} />
 
+            {reviewContext?.customerObjectionReason ? (
+              <Alert
+                description={[
+                  reviewContext.customerObjectionDetails,
+                  reviewContext.adminNote
+                    ? `后台复检要求：${reviewContext.adminNote}`
+                    : null,
+                  reviewContext.requestedEvidenceItems?.length
+                    ? `复检资料：${reviewContext.requestedEvidenceItems.map((item) => item.title).join("、")}`
+                    : null,
+                  reviewContext.requestedFieldKeys?.length
+                    ? `复检现场信息：${reviewContext.requestedFieldKeys.map(formatReviewFieldKey).join("、")}`
+                    : null
+                ].filter(Boolean).join("；")}
+                message={`客户异议：${reviewContext.customerObjectionReason}`}
+                showIcon
+                type="warning"
+              />
+            ) : null}
+
             <article style={cardStyle}>
               <Flex align="flex-start" justify="space-between" style={{ gap: 12, marginBottom: 12 }}>
                 <div>
@@ -308,25 +328,6 @@ export default function FieldHandoverTaskDetailPage() {
             </article>
 
             {captureView.lockedMessage ? <Alert message={captureView.lockedMessage || LOCKED_TEXT} showIcon type="info" /> : null}
-            {reviewContext?.customerObjectionReason ? (
-              <Alert
-                description={[
-                  reviewContext.customerObjectionDetails,
-                  reviewContext.adminNote
-                    ? `后台复检要求：${reviewContext.adminNote}`
-                    : null,
-                  reviewContext.requestedEvidenceItems?.length
-                    ? `复检资料：${reviewContext.requestedEvidenceItems.map((item) => item.title).join("、")}`
-                    : null,
-                  reviewContext.requestedFieldKeys?.length
-                    ? `复检现场信息：${reviewContext.requestedFieldKeys.map(formatReviewFieldKey).join("、")}`
-                    : null
-                ].filter(Boolean).join("；")}
-                message={`客户异议：${reviewContext.customerObjectionReason}`}
-                showIcon
-                type="warning"
-              />
-            ) : null}
             {successMessage ? <Alert icon={<CheckCircleOutlined />} message={successMessage} showIcon type="success" /> : null}
             {blockers.length ? <BlockerAlert blockers={blockers} /> : null}
 

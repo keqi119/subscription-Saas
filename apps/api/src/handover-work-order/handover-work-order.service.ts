@@ -2345,7 +2345,7 @@ function toFieldReviewContext(
   latestAttempt: null | Record<string, unknown>,
   checklist: unknown
 ) {
-  if (!latestAttempt || workOrder.status !== "CUSTOMER_OBJECTED") {
+  if (!latestAttempt || !hasActiveCustomerObjection(workOrder)) {
     return null;
   }
   const metadata = asRecord(latestAttempt.metadata);

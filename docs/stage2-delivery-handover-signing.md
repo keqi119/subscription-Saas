@@ -159,7 +159,7 @@ Delivery readiness uses these checks before field handover and final Admin deliv
 - Field handover work order creation is an Admin Stage 2 action after delivery preparation. It must not generate Stage 2 PDF, create contracts, start eSign, call Fadada, confirm delivery, start lease, or start billing.
 - `保单管理` is expected under `车辆资产 -> 保单管理`, path `/vehicle-insurance-policies`, permission `vehicle_insurance:view`; staging environments must run the RBAC/menu seed or sync so Admin roles can see the menu.
 
-Large upload limits are outside this application PR. Video acceptance such as 121M files requires infrastructure/server `client_max_body_size` and related multipart limits to be raised separately, in addition to any product-level frontend/API size validation.
+Field evidence photos are limited to 5MB and videos to 200MB. The API Nginx virtual host uses `client_max_body_size 210m`, while API multipart and frontend validation enforce the 200MB product limit. Multipart evidence is spooled to an OS temporary file and then copied or streamed to the configured storage provider, so a 200MB upload is not retained as one Node.js heap buffer; the temporary file is removed after success or failure.
 
 ## Status Policy
 

@@ -29,11 +29,13 @@ describe("fleet ops api client", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost:3001/api/fleet-ops/health?requestId=req-health",
       expect.objectContaining({
-        credentials: "include",
-        headers: expect.objectContaining({ "Content-Type": "application/json" })
+        credentials: "include"
       })
     );
-    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty("method");
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(requestInit.headers).has("Content-Type")).toBe(false);
+    expect(requestInit.signal).toBeInstanceOf(AbortSignal);
+    expect(requestInit).not.toHaveProperty("method");
     expect(result.data.enabled).toBe(false);
     expect(isFleetOpsApiDisabled(result)).toBe(true);
   });

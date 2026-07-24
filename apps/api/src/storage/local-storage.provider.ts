@@ -1,10 +1,16 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createReadStream } from "node:fs";
-import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { DownloadObjectResult, StorageProvider, StoredObject, UploadObjectInput } from "./storage.types";
+import type {
+  DownloadObjectResult,
+  StorageProvider,
+  StoredObject,
+  UploadFileObjectInput,
+  UploadObjectInput
+} from "./storage.types";
 
 @Injectable()
 export class LocalStorageProvider implements StorageProvider {
@@ -22,6 +28,21 @@ export class LocalStorageProvider implements StorageProvider {
       key: input.key,
       originalName: input.originalName,
       size: input.buffer.length
+    };
+  }
+
+  async putFile(input: UploadFileObjectInput): Promise<StoredObject> {
+    const absolutePath = this.resolvePath(input.key);
+
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await copyFile(input.filePath, absolutePath);
+
+    return {
+      contentType: input.contentType,
+      driver: "local",
+      key: input.key,
+      originalName: input.originalName,
+      size: input.sizeBytes
     };
   }
 

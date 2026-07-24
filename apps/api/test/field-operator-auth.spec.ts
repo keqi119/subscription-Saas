@@ -216,21 +216,25 @@ describe("FieldOperatorAuthController", () => {
   it("delegates field work-order actions with the current field session phone", async () => {
     const { service } = createFieldAuthFixture();
     const handoverService = {
-      attachFieldAccessibleEvidenceFile: vi.fn(async () => ({ id: "evidence-item-1" })),
       declareFieldAccessibleNoVisibleDamage: vi.fn(async () => ({ id: "work-order-1" })),
       getFieldAccessibleReadiness: vi.fn(async () => ({ blockingReasons: [], ready: true })),
       startFieldAccessibleWorkOrder: vi.fn(async () => ({ id: "work-order-1" })),
       submitFieldAccessibleEvidence: vi.fn(async () => ({ id: "work-order-1" })),
       updateFieldAccessibleFacts: vi.fn(async () => ({ id: "work-order-1" })),
-      uploadFieldAccessibleEvidenceFile: vi.fn(async () => ({ fileId: "file-1" }))
+      uploadAndAttachFieldAccessibleEvidenceFile: vi.fn(async () => ({ id: "evidence-item-1" }))
     };
     const controller = new FieldOperatorAuthController(service, handoverService as never);
     const current = { sessionId: "field-session-1", phone: "13800000000" };
 
     await controller.startWorkOrder("work-order-1", current as never);
     await controller.updateWorkOrderFacts("work-order-1", { handoverMileageKm: 28600 }, current as never);
-    await controller.uploadEvidenceFile("work-order-1", [uploadFile("front.jpg", "image/jpeg")], current as never);
-    await controller.attachEvidenceFile("work-order-1", "evidence-item-1", { fileId: "file-1", mediaType: "PHOTO" }, current as never);
+    await controller.uploadAndAttachEvidenceFile(
+      "work-order-1",
+      "evidence-item-1",
+      {},
+      [uploadFile("front.jpg", "image/jpeg")],
+      current as never
+    );
     await controller.declareNoVisibleDamage("work-order-1", { remark: "现场确认" }, current as never);
     await controller.getWorkOrderReadiness("work-order-1", current as never);
     await controller.submitEvidence("work-order-1", current as never);
@@ -246,21 +250,19 @@ describe("FieldOperatorAuthController", () => {
       { handoverMileageKm: 28600 },
       "field-session-1"
     );
-    expect(handoverService.uploadFieldAccessibleEvidenceFile).toHaveBeenCalledWith(
-      "work-order-1",
-      "13800000000",
-      expect.any(Array)
-    );
-    expect(handoverService.attachFieldAccessibleEvidenceFile).toHaveBeenCalledWith(
+    expect(handoverService.uploadAndAttachFieldAccessibleEvidenceFile).toHaveBeenCalledWith(
       "work-order-1",
       "13800000000",
       "evidence-item-1",
-      { fileId: "file-1", mediaType: "PHOTO" }
+      expect.any(Array),
+      {},
+      "field-session-1"
     );
     expect(handoverService.declareFieldAccessibleNoVisibleDamage).toHaveBeenCalledWith(
       "work-order-1",
       "13800000000",
-      "现场确认"
+      "现场确认",
+      "field-session-1"
     );
     expect(handoverService.getFieldAccessibleReadiness).toHaveBeenCalledWith("work-order-1", "13800000000");
     expect(handoverService.submitFieldAccessibleEvidence).toHaveBeenCalledWith(

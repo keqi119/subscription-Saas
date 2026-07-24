@@ -29,9 +29,11 @@ export interface FieldHandoverDetailView {
 }
 
 export interface FieldHandoverEvidenceItemView {
+  allowsMultiple: boolean;
   description: string;
   evidenceType: string;
   fileCountText: string;
+  files: FieldHandoverEvidenceFileView[];
   id: string;
   isActive: boolean;
   rejectionReason: string;
@@ -41,6 +43,16 @@ export interface FieldHandoverEvidenceItemView {
   statusLabel: string;
   title: string;
   uploadAccept: string;
+  uploadLabel: string;
+}
+
+export interface FieldHandoverEvidenceFileView {
+  displayName: string;
+  downloadUrl: string | null;
+  evidenceFileId: string;
+  mediaType: string;
+  previewUrl: string | null;
+  sizeText: string;
 }
 
 export interface FieldEvidenceCaptureView {
@@ -315,11 +327,22 @@ function buildEvidenceItemView(
   const fileRequired = item.fileRequired !== false && evidenceType !== "NO_VISIBLE_DAMAGE_DECLARATION";
   const showDeclarationComplete = evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION" &&
     (item.declaredNoDamage === true || detail.fieldFacts?.noVisibleDamageDeclared === true);
+  const files = (item.files ?? []).map((file) => ({
+    displayName: file.displayName || file.file?.originalName || "现场资料",
+    downloadUrl: file.downloadUrl ?? null,
+    evidenceFileId: file.evidenceFileId || file.id || "",
+    mediaType: file.mediaType || "",
+    previewUrl: file.previewUrl ?? null,
+    sizeText: formatFileSize(file.sizeBytes ?? file.file?.sizeBytes)
+  })).filter((file) => Boolean(file.evidenceFileId));
+  const allowsMultiple = item.allowsMultiple === true;
 
   return {
+    allowsMultiple,
     description: item.description ?? "",
     evidenceType,
     fileCountText: `${getEvidenceFileCount(item)} 个文件`,
+    files,
     id: item.id ?? "",
     isActive: active,
     rejectionReason: item.rejectionReason ?? "",
@@ -328,7 +351,8 @@ function buildEvidenceItemView(
     showUpload: canEdit && active && fileRequired && Boolean(item.id),
     statusLabel: formatEvidenceStatus(item, showDeclarationComplete),
     title: item.title ?? "现场资料",
-    uploadAccept: formatUploadAccept(item.allowedMediaTypes ?? [])
+    uploadAccept: formatUploadAccept(item.allowedMediaTypes ?? []),
+    uploadLabel: allowsMultiple ? "继续添加" : files.length > 0 ? "替换资料" : "上传资料"
   };
 }
 
@@ -456,6 +480,17 @@ function joinVehicleText(brand: null | string | undefined, model: null | string 
 
 function numberOrZero(value: null | number | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatFileSize(value: null | number | string | undefined) {
+  const bytes = typeof value === "string" ? Number(value) : value;
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
+    return "-";
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function normalizeText(value: null | string | undefined) {

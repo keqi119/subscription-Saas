@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftOutlined, ClockCircleOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, ClockCircleOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, UserAddOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
@@ -253,8 +253,17 @@ interface HandoverReviewAttempt {
   status?: string | null;
 }
 
+interface HandoverEvent {
+  actorDisplay?: string | null;
+  actorType?: string | null;
+  createdAt?: string | null;
+  eventType?: string | null;
+  id?: string | null;
+}
+
 interface HandoverWorkOrderSummary {
   adminReview?: {
+    canAcknowledge?: boolean | null;
     canRequestResubmission?: boolean | null;
     canSendBackToCustomerReview?: boolean | null;
     currentAttemptNo?: number | null;
@@ -267,6 +276,7 @@ interface HandoverWorkOrderSummary {
   customerReviewStartedAt?: string | null;
   deliveryLocation?: string | null;
   evidenceProgress?: { approved?: number | null; required?: number | null; total?: number | null; uploaded?: number | null } | null;
+  events?: HandoverEvent[];
   fieldResubmissionRequested?: boolean | null;
   fieldSubmittedAt?: string | null;
   handoverId?: string | null;
@@ -274,11 +284,25 @@ interface HandoverWorkOrderSummary {
   id: string;
   objection?: { adminStatus?: string | null; details?: string | null; objectedAt?: string | null; reason?: string | null } | null;
   operator?: { name?: string | null; phoneMasked?: string | null; type?: string | null } | null;
+  orderId?: string | null;
   orderNo?: string | null;
   reviewAttempts?: HandoverReviewAttempt[];
   scheduledAt?: string | null;
   status?: string | null;
   vehicle?: { brand?: string | null; model?: string | null; plateMasked?: string | null; vinSuffix?: string | null } | null;
+}
+
+interface AssignExternalHandoverFormValues {
+  expiresAt?: Dayjs;
+  name: string;
+  organization?: string;
+  phone: string;
+}
+
+interface HandoverResubmissionFormValues {
+  note: string;
+  targetEvidenceItemIds?: string[];
+  targetFieldKeys?: string[];
 }
 
 interface HandoverWorkOrderDetail extends HandoverWorkOrderSummary {
@@ -777,6 +801,60 @@ function formatHandoverAttemptStatus(value?: string | null) {
   };
   return value ? labels[value] ?? value : "-";
 }
+
+function formatHandoverEventType(value?: string | null) {
+  const labels: Record<string, string> = {
+    CUSTOMER_CONFIRMED: "客户确认无异议",
+    CUSTOMER_OBJECTED: "客户提交异议",
+    CUSTOMER_REVIEW_STARTED: "进入客户复核",
+    CUSTOMER_SIGNED: "客户完成签署",
+    EVIDENCE_FILE_ADDED: "现场新增资料",
+    EVIDENCE_FILE_REMOVED: "现场删除资料",
+    EVIDENCE_FILE_REPLACED: "现场替换资料",
+    EXTERNAL_ACCESS_REVOKED: "撤销 Field 访问",
+    EXTERNAL_OPERATOR_ASSIGNED: "指派外部 Field",
+    FIELD_FACTS_UPDATED: "更新现场信息",
+    FIELD_COMPLETED: "完成现场交接",
+    FIELD_RESUBMITTED: "现场复检资料重提",
+    FIELD_STARTED: "开始现场采集",
+    FIELD_SUBMITTED: "提交现场资料",
+    INTERNAL_OPERATOR_ASSIGNED: "指派内部交付员",
+    NO_VISIBLE_DAMAGE_DECLARED: "声明无可见损伤",
+    OBJECTION_ACKNOWLEDGED: "后台受理异议",
+    OPS_REVIEW_UPDATED: "更新运营复核",
+    PLATFORM_SEALED: "平台完成盖章",
+    RESUBMISSION_REQUESTED: "后台要求现场复检",
+    SENT_BACK_TO_CUSTOMER_REVIEW: "后台送回客户复核",
+    WORK_ORDER_CREATED: "创建交付工单",
+    WORK_ORDER_TERMINATED: "终止交付工单"
+  };
+  return value ? labels[value] ?? value : "-";
+}
+
+function formatHandoverEventActor(event: HandoverEvent) {
+  if (event.actorDisplay) {
+    return event.actorDisplay;
+  }
+  const labels: Record<string, string> = {
+    ADMIN: "后台人员",
+    CUSTOMER: "客户",
+    FIELD_OPERATOR: "Field 交付人员",
+    SYSTEM: "系统"
+  };
+  return event.actorType ? labels[event.actorType] ?? event.actorType : "-";
+}
+
+const handoverFieldFactOptions = [
+  { label: "交接里程", value: "handoverMileageKm" },
+  { label: "能源状态", value: "energyLevelText" },
+  { label: "油量状态", value: "fuelLevelText" },
+  { label: "交接地点", value: "deliveryLocation" },
+  { label: "随车物品", value: "accessoryChecklist" },
+  { label: "损伤状态", value: "damageDeclared" },
+  { label: "无可见损伤声明", value: "noVisibleDamageDeclared" },
+  { label: "现场备注", value: "fieldNotes" },
+  { label: "预约时间", value: "scheduledAt" }
+];
 
 function formatHandoverEvidenceProgress(progress?: HandoverWorkOrderSummary["evidenceProgress"]) {
   if (!progress) {
@@ -2482,10 +2560,12 @@ function FinancePanel({
 
 function Stage2HandoverReviewPanel({
   actionLoading,
+  canAssignExternal,
   canHandleObjection,
   createAvailability,
   loading,
   onAcknowledge,
+  onAssignExternal,
   onCreateWorkOrder,
   onRequestResubmission,
   onSendCustomerReview,
@@ -2493,10 +2573,12 @@ function Stage2HandoverReviewPanel({
   workOrders
 }: {
   actionLoading: string | null;
+  canAssignExternal: boolean;
   canHandleObjection: boolean;
   createAvailability: ReturnType<typeof actionAvailability>;
   loading: boolean;
   onAcknowledge: (id: string) => void;
+  onAssignExternal: (id: string) => void;
   onCreateWorkOrder: () => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
@@ -2531,6 +2613,16 @@ function Stage2HandoverReviewPanel({
       title: "客户"
     },
     {
+      dataIndex: "operator",
+      render: (_value, row) => (
+        <Space orientation="vertical" size={2}>
+          <Typography.Text>{row.operator?.name || "尚未指派"}</Typography.Text>
+          <Typography.Text type="secondary">{row.operator?.phoneMasked || "-"}</Typography.Text>
+        </Space>
+      ),
+      title: "Field 人员"
+    },
+    {
       dataIndex: "fieldSubmittedAt",
       render: (_value, row) => (
         <Space orientation="vertical" size={2}>
@@ -2556,8 +2648,10 @@ function Stage2HandoverReviewPanel({
       render: (_value, row) => (
         <Stage2HandoverReviewActions
           actionLoading={actionLoading}
+          canAssignExternal={canAssignExternal}
           canHandleObjection={canHandleObjection}
           onAcknowledge={onAcknowledge}
+          onAssignExternal={onAssignExternal}
           onRequestResubmission={onRequestResubmission}
           onSendCustomerReview={onSendCustomerReview}
           onViewDetail={onViewDetail}
@@ -2571,17 +2665,20 @@ function Stage2HandoverReviewPanel({
   return (
     <Card
       extra={
-        hasActiveWorkOrder ? null : (
-          <ActionButton
-            availability={createAvailability}
-            icon={<PlusOutlined />}
-            loading={actionLoading === "create"}
-            onClick={onCreateWorkOrder}
-            type="primary"
-          >
-            创建交付工单
-          </ActionButton>
-        )
+        <Space>
+          <Link href="/handover-review-queue">异议处理队列</Link>
+          {!hasActiveWorkOrder ? (
+            <ActionButton
+              availability={createAvailability}
+              icon={<PlusOutlined />}
+              loading={actionLoading === "create"}
+              onClick={onCreateWorkOrder}
+              type="primary"
+            >
+              创建交付工单
+            </ActionButton>
+          ) : null}
+        </Space>
       }
       title="Stage 2 现场交接 / 客户复核"
     >
@@ -2609,23 +2706,30 @@ function Stage2HandoverReviewPanel({
 
 function Stage2HandoverReviewActions({
   actionLoading,
+  canAssignExternal,
   canHandleObjection,
   onAcknowledge,
+  onAssignExternal,
   onRequestResubmission,
   onSendCustomerReview,
   onViewDetail,
   workOrder
 }: {
   actionLoading: string | null;
+  canAssignExternal: boolean;
   canHandleObjection: boolean;
   onAcknowledge: (id: string) => void;
+  onAssignExternal: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onViewDetail: (id: string) => void;
   workOrder: HandoverWorkOrderSummary;
 }) {
   const hasObjection = workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt);
+  const canAcknowledge = workOrder.adminReview?.canAcknowledge === true;
+  const canRequestResubmission = workOrder.adminReview?.canRequestResubmission === true;
   const canSendBack = workOrder.adminReview?.canSendBackToCustomerReview === true;
+  const canAssign = canAssignExternal && ["DRAFT", "ASSIGNED"].includes(String(workOrder.status));
   return (
     <Space wrap>
       <Button
@@ -2636,7 +2740,15 @@ function Stage2HandoverReviewActions({
         查看详情
       </Button>
       <Button
-        disabled={!canHandleObjection || !hasObjection}
+        disabled={!canAssign}
+        icon={<UserAddOutlined />}
+        onClick={() => onAssignExternal(workOrder.id)}
+        size="small"
+      >
+        指派 Field
+      </Button>
+      <Button
+        disabled={!canHandleObjection || !hasObjection || !canAcknowledge}
         loading={actionLoading === `acknowledge:${workOrder.id}`}
         onClick={() => onAcknowledge(workOrder.id)}
         size="small"
@@ -2644,7 +2756,7 @@ function Stage2HandoverReviewActions({
         受理异议
       </Button>
       <Button
-        disabled={!canHandleObjection || !hasObjection}
+        disabled={!canHandleObjection || !hasObjection || !canRequestResubmission}
         loading={actionLoading === `request-resubmission:${workOrder.id}`}
         onClick={() => onRequestResubmission(workOrder.id)}
         size="small"
@@ -2666,18 +2778,22 @@ function Stage2HandoverReviewActions({
 
 function Stage2HandoverReviewDetailModal({
   actionLoading,
+  canAssignExternal,
   canHandleObjection,
   detail,
   onAcknowledge,
+  onAssignExternal,
   onClose,
   onRequestResubmission,
   onSendCustomerReview,
   open
 }: {
   actionLoading: string | null;
+  canAssignExternal: boolean;
   canHandleObjection: boolean;
   detail: HandoverWorkOrderDetail | null;
   onAcknowledge: (id: string) => void;
+  onAssignExternal: (id: string) => void;
   onClose: () => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
@@ -2711,8 +2827,10 @@ function Stage2HandoverReviewDetailModal({
 
           <Stage2HandoverReviewActions
             actionLoading={actionLoading}
+            canAssignExternal={canAssignExternal}
             canHandleObjection={canHandleObjection}
             onAcknowledge={onAcknowledge}
+            onAssignExternal={onAssignExternal}
             onRequestResubmission={onRequestResubmission}
             onSendCustomerReview={onSendCustomerReview}
             onViewDetail={() => undefined}
@@ -2784,6 +2902,20 @@ function Stage2HandoverReviewDetailModal({
             rowKey={(row) => row.id || String(row.attemptNo)}
             size="small"
             title={() => "复核历史"}
+          />
+
+          <Table
+            columns={[
+              { dataIndex: "eventType", render: formatHandoverEventType, title: "事件" },
+              { key: "actor", render: (_value, row: HandoverEvent) => formatHandoverEventActor(row), title: "操作人" },
+              { dataIndex: "createdAt", render: formatTime, title: "时间" }
+            ]}
+            dataSource={detail.events ?? []}
+            locale={{ emptyText: "暂无操作事件" }}
+            pagination={false}
+            rowKey={(row) => row.id || `${row.eventType}-${row.createdAt}`}
+            size="small"
+            title={() => "操作事件"}
           />
         </Space>
       ) : (
@@ -3496,6 +3628,7 @@ function OrderDetailPageContent() {
   const searchParams = useSearchParams();
   const { message, modal } = App.useApp();
   const [changeForm] = Form.useForm<ChangeFormValues>();
+  const [assignExternalHandoverForm] = Form.useForm<AssignExternalHandoverFormValues>();
   const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
   const [confirmReturnForm] = Form.useForm<ConfirmReturnFormValues>();
   const [creditForm] = Form.useForm<{ customerGrade: string }>();
@@ -3507,6 +3640,9 @@ function OrderDetailPageContent() {
   const [prepareReturnForm] = Form.useForm<PrepareReturnFormValues>();
   const [renewEntitlementForm] = Form.useForm<EntitlementOperationFormValues>();
   const [refundDepositForm] = Form.useForm<RefundDepositFormValues>();
+  const [handoverResubmissionForm] = Form.useForm<HandoverResubmissionFormValues>();
+  const [assignExternalHandoverId, setAssignExternalHandoverId] = useState<string | null>(null);
+  const [assignExternalHandoverOpen, setAssignExternalHandoverOpen] = useState(false);
   const [changeModalOpen, setChangeModalOpen] = useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
   const [confirmDeliveryModalOpen, setConfirmDeliveryModalOpen] = useState(false);
@@ -3520,6 +3656,8 @@ function OrderDetailPageContent() {
   const [handoverWorkOrderDetail, setHandoverWorkOrderDetail] = useState<HandoverWorkOrderDetail | null>(null);
   const [handoverWorkOrderDetailOpen, setHandoverWorkOrderDetailOpen] = useState(false);
   const [handoverActionLoading, setHandoverActionLoading] = useState<string | null>(null);
+  const [handoverResubmissionDetail, setHandoverResubmissionDetail] = useState<HandoverWorkOrderDetail | null>(null);
+  const [handoverResubmissionOpen, setHandoverResubmissionOpen] = useState(false);
   const [consumeEntitlementModalOpen, setConsumeEntitlementModalOpen] = useState(false);
   const [consumeEntitlementSubmitting, setConsumeEntitlementSubmitting] = useState(false);
   const [consumingGrant, setConsumingGrant] = useState<OrderEntitlementGrant | null>(null);
@@ -3978,12 +4116,13 @@ function OrderDetailPageContent() {
     }
     setHandoverActionLoading("create");
     try {
-      await apiFetch(`/orders/${params.id}/handover-work-orders`, {
+      const created = await apiFetch<{ id: string }>(`/orders/${params.id}/handover-work-orders`, {
         body: JSON.stringify({ handoverType: "DELIVERY_OUTBOUND" }),
         method: "POST"
       });
       void message.success("交付工单已创建");
       await loadOrder();
+      openAssignExternalHandover(created.id);
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -3994,12 +4133,13 @@ function OrderDetailPageContent() {
   async function runHandoverObjectionAction(
     id: string,
     action: "acknowledge" | "request-resubmission" | "send-customer-review",
-    successMessage: string
+    successMessage: string,
+    body: Record<string, unknown> = {}
   ) {
     setHandoverActionLoading(`${action}:${id}`);
     try {
       await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}/objection/${action}`, {
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
         method: "POST"
       });
       void message.success(successMessage);
@@ -4020,11 +4160,71 @@ function OrderDetailPageContent() {
   }
 
   function requestCustomerObjectionResubmission(id: string) {
-    return runHandoverObjectionAction(id, "request-resubmission", "已要求现场重新提交资料");
+    setHandoverActionLoading(`request-resubmission:${id}`);
+    void apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}`)
+      .then((detail) => {
+        setHandoverResubmissionDetail(detail);
+        handoverResubmissionForm.resetFields();
+        setHandoverResubmissionOpen(true);
+      })
+      .catch((error) => void message.error(getErrorMessage(error)))
+      .finally(() => setHandoverActionLoading(null));
   }
 
   function sendCustomerObjectionBackToReview(id: string) {
     return runHandoverObjectionAction(id, "send-customer-review", "已送回客户复核");
+  }
+
+  function openAssignExternalHandover(id: string) {
+    setAssignExternalHandoverId(id);
+    assignExternalHandoverForm.resetFields();
+    assignExternalHandoverForm.setFieldValue("expiresAt", dayjs().add(7, "day"));
+    setAssignExternalHandoverOpen(true);
+  }
+
+  async function assignExternalHandover(values: AssignExternalHandoverFormValues) {
+    if (!assignExternalHandoverId) {
+      return;
+    }
+    setHandoverActionLoading(`assign:${assignExternalHandoverId}`);
+    try {
+      await apiFetch(`/handover-work-orders/${encodeURIComponent(assignExternalHandoverId)}/assign-external`, {
+        body: JSON.stringify({
+          expiresAt: values.expiresAt?.toISOString(),
+          name: values.name.trim(),
+          organization: values.organization?.trim() || undefined,
+          phone: values.phone.trim()
+        }),
+        method: "POST"
+      });
+      void message.success("Field 交付人员已指派");
+      setAssignExternalHandoverOpen(false);
+      setAssignExternalHandoverId(null);
+      await loadOrder();
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setHandoverActionLoading(null);
+    }
+  }
+
+  async function submitHandoverResubmission(values: HandoverResubmissionFormValues) {
+    const id = handoverResubmissionDetail?.id;
+    if (!id) {
+      return;
+    }
+    await runHandoverObjectionAction(
+      id,
+      "request-resubmission",
+      "已要求现场重新提交资料",
+      {
+        note: values.note.trim(),
+        targetEvidenceItemIds: values.targetEvidenceItemIds ?? [],
+        targetFieldKeys: values.targetFieldKeys ?? []
+      }
+    );
+    setHandoverResubmissionOpen(false);
+    setHandoverResubmissionDetail(null);
   }
 
   const openChangeModal = useCallback(async () => {
@@ -5173,10 +5373,12 @@ function OrderDetailPageContent() {
         {order && hasDeliveryViewPermission ? (
           <Stage2HandoverReviewPanel
             actionLoading={handoverActionLoading}
+            canAssignExternal={permissions.has("delivery:prepare")}
             canHandleObjection={permissions.has("delivery:confirm")}
             createAvailability={createHandoverWorkOrderAvailability}
             loading={handoverWorkOrdersLoading}
             onAcknowledge={acknowledgeCustomerObjection}
+            onAssignExternal={openAssignExternalHandover}
             onCreateWorkOrder={createHandoverWorkOrder}
             onRequestResubmission={requestCustomerObjectionResubmission}
             onSendCustomerReview={sendCustomerObjectionBackToReview}
@@ -5187,14 +5389,108 @@ function OrderDetailPageContent() {
 
         <Stage2HandoverReviewDetailModal
           actionLoading={handoverActionLoading}
+          canAssignExternal={permissions.has("delivery:prepare")}
           canHandleObjection={permissions.has("delivery:confirm")}
           detail={handoverWorkOrderDetail}
           onAcknowledge={acknowledgeCustomerObjection}
+          onAssignExternal={openAssignExternalHandover}
           onClose={() => setHandoverWorkOrderDetailOpen(false)}
           onRequestResubmission={requestCustomerObjectionResubmission}
           onSendCustomerReview={sendCustomerObjectionBackToReview}
           open={handoverWorkOrderDetailOpen}
         />
+
+        <Modal
+          destroyOnHidden
+          footer={null}
+          onCancel={() => setAssignExternalHandoverOpen(false)}
+          open={assignExternalHandoverOpen}
+          title="指派 Field 交付人员"
+        >
+          <Form<AssignExternalHandoverFormValues>
+            form={assignExternalHandoverForm}
+            layout="vertical"
+            onFinish={assignExternalHandover}
+          >
+            <Form.Item label="姓名" name="name" rules={[{ required: true, message: "请填写 Field 交付人员姓名" }]}>
+              <Input maxLength={64} />
+            </Form.Item>
+            <Form.Item
+              label="手机号"
+              name="phone"
+              rules={[
+                { required: true, message: "请填写用于 Field 登录的手机号" },
+                { pattern: /^1[3-9]\d{9}$/, message: "请输入正确的手机号" }
+              ]}
+            >
+              <Input inputMode="tel" maxLength={11} />
+            </Form.Item>
+            <Form.Item label="所属机构" name="organization">
+              <Input maxLength={128} />
+            </Form.Item>
+            <Form.Item label="访问有效期" name="expiresAt" rules={[{ required: true, message: "请选择访问有效期" }]}>
+              <DatePicker showTime style={{ width: "100%" }} />
+            </Form.Item>
+            <Button
+              block
+              htmlType="submit"
+              icon={<UserAddOutlined />}
+              loading={Boolean(assignExternalHandoverId && handoverActionLoading === `assign:${assignExternalHandoverId}`)}
+              type="primary"
+            >
+              确认指派
+            </Button>
+          </Form>
+        </Modal>
+
+        <Modal
+          destroyOnHidden
+          footer={null}
+          onCancel={() => setHandoverResubmissionOpen(false)}
+          open={handoverResubmissionOpen}
+          title="要求现场复检"
+          width={620}
+        >
+          <Form<HandoverResubmissionFormValues>
+            form={handoverResubmissionForm}
+            layout="vertical"
+            onFinish={submitHandoverResubmission}
+          >
+            <Form.Item
+              label="复检说明"
+              name="note"
+              rules={[{ required: true, message: "请填写现场复检要求" }]}
+            >
+              <Input.TextArea autoSize={{ maxRows: 6, minRows: 3 }} maxLength={1000} />
+            </Form.Item>
+            <Form.Item label="需要复检的资料" name="targetEvidenceItemIds">
+              <Select
+                mode="multiple"
+                options={(handoverResubmissionDetail?.evidenceChecklist?.items ?? [])
+                  .filter((item) => Boolean(item.id))
+                  .map((item) => ({
+                    label: item.title || item.evidenceType || "现场资料",
+                    value: item.id as string
+                  }))}
+                placeholder="不选择则允许复检全部资料"
+              />
+            </Form.Item>
+            <Form.Item label="需要复检的现场信息" name="targetFieldKeys">
+              <Select mode="multiple" options={handoverFieldFactOptions} placeholder="不选择则允许复检全部现场信息" />
+            </Form.Item>
+            <Button
+              block
+              htmlType="submit"
+              loading={Boolean(
+                handoverResubmissionDetail?.id &&
+                handoverActionLoading === `request-resubmission:${handoverResubmissionDetail.id}`
+              )}
+              type="primary"
+            >
+              发送复检要求
+            </Button>
+          </Form>
+        </Modal>
 
         {order && hasReturnViewPermission ? (
           <ReturnPanel

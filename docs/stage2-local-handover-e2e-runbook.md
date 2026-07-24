@@ -6,6 +6,37 @@ This runbook validates the local Stage 2 handover path after field evidence capt
 
 It does not generate Stage 2 PDF files, create contracts, start eSign, call Fadada, call SMS or WeChat providers, confirm delivery, start lease, or start billing.
 
+## Closed-loop workflow
+
+```mermaid
+flowchart TD
+  A["Admin creates and assigns handover work order"] --> B["Field OTP login"]
+  B --> C["Field captures facts and evidence"]
+  C --> D["Field submits evidence"]
+  D --> E["Portal customer review"]
+  E -->|No objection| F["CUSTOMER_CONFIRMED"]
+  E -->|Object| G["CUSTOMER_OBJECTED / NONE"]
+  G --> H["Admin acknowledges objection"]
+  H --> I["Admin requests targeted reinspection"]
+  I --> J["Field edits, replaces, removes, or adds evidence"]
+  J --> K["Field resubmits changed material"]
+  K --> L["RESUBMITTED_PENDING_ADMIN"]
+  L --> M["Admin reviews and sends back to customer"]
+  M --> E
+  F --> N["Stage 2 PDF/eSign readiness unlocked"]
+```
+
+The Admin entry points are the order detail Stage 2 module and
+`/handover-review-queue`. Field uses `/field/handover`,
+`/field/handover/tasks`, and `/field/handover/tasks/:id`. The customer uses
+`/portal/handover-reviews/:id`.
+
+Every workflow mutation appends a typed handover event. Evidence replacement
+and removal retain the original database row as `SUPERSEDED` or `REMOVED`;
+only `ACTIVE` files appear in the current checklist. Normal evidence items
+have one active file and support replace/remove. Damage close-ups support up
+to 20 active files so multiple damage locations can be documented.
+
 ## Local Harness
 
 API test:
@@ -120,7 +151,21 @@ Staging smoke should run only after a combined API/Web deployment. The deployed 
 
 The staging smoke should cover one controlled field evidence capture path and one Portal customer review path. It should still avoid Fadada, Stage 2 PDF/eSign, real SMS, WeChat, delivery confirmation, lease, and billing until those later phases are explicitly enabled.
 
-Large video upload validation is a separate infrastructure task. If videos above the current server `client_max_body_size` fail, update the Nginx/API multipart limits outside this handover application build before treating it as a field-flow regression.
+Field evidence accepts photos up to 5MB and videos up to 200MB. The API Nginx virtual host must set `client_max_body_size 210m` (or higher); the API multipart limit remains 200MB. Uploads are spooled to an OS temporary file before local/OSS persistence and the temporary file is cleaned up on success or failure. Validate proxy size, API multipart size, available temporary disk space, and storage connectivity when a large upload fails.
+
+Browser smoke must cover:
+
+- mobile WebKit as the local approximation for iPhone Safari;
+- an iPhone WeChat user agent in Chromium/Edge;
+- desktop Edge;
+- Chrome in the normal Admin/Field manual pass;
+- login inputs remaining editable while session detection is pending;
+- a failed task-list request showing `重新加载` and recovering after retry.
+
+Bodyless GET requests do not send a JSON `Content-Type`, which avoids an
+unnecessary CORS preflight in stricter WebViews. API requests time out after
+15 seconds and the Field task list/detail pages expose retry actions instead
+of leaving the operator on an indefinite spinner.
 
 ## Open Items
 

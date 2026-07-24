@@ -1,5 +1,31 @@
 import { DeliveryEvidenceMediaType } from "@prisma/client";
-import { IsBoolean, IsEnum, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Min } from "class-validator";
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Min
+} from "class-validator";
+
+import type { HandoverFieldFactKey } from "./handover-work-order.service";
+
+const HANDOVER_FIELD_FACT_KEYS: HandoverFieldFactKey[] = [
+  "accessoryChecklist",
+  "damageDeclared",
+  "deliveryLocation",
+  "energyLevelText",
+  "fieldNotes",
+  "fuelLevelText",
+  "handoverMileageKm",
+  "noVisibleDamageDeclared",
+  "scheduledAt"
+];
 
 export class CreateHandoverWorkOrderDto {
   @IsOptional()
@@ -76,6 +102,12 @@ export class AttachFieldEvidenceFileDto {
   mediaType!: DeliveryEvidenceMediaType;
 }
 
+export class UploadFieldEvidenceDto {
+  @IsOptional()
+  @IsUUID()
+  replaceEvidenceFileId?: string;
+}
+
 export class VoidHandoverWorkOrderDto {
   @IsOptional()
   @IsString()
@@ -96,4 +128,21 @@ export class HandoverObjectionActionDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+export class HandoverObjectionResubmissionDto {
+  @IsString()
+  note!: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsUUID("4", { each: true })
+  targetEvidenceItemIds?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(HANDOVER_FIELD_FACT_KEYS.length)
+  @IsIn(HANDOVER_FIELD_FACT_KEYS, { each: true })
+  targetFieldKeys?: HandoverFieldFactKey[];
 }

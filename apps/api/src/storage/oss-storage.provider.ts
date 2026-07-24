@@ -3,7 +3,13 @@ import { ConfigService } from "@nestjs/config";
 import { createRequire } from "node:module";
 import type { Readable } from "node:stream";
 
-import { DownloadObjectResult, StorageProvider, StoredObject, UploadObjectInput } from "./storage.types";
+import type {
+  DownloadObjectResult,
+  StorageProvider,
+  StoredObject,
+  UploadFileObjectInput,
+  UploadObjectInput
+} from "./storage.types";
 
 export const OSS_CLIENT_FACTORY = Symbol("OSS_CLIENT_FACTORY");
 
@@ -12,7 +18,7 @@ export interface OssClientLike {
   getStream(name: string): Promise<{ res?: { headers?: Record<string, string | string[] | undefined> }; stream: Readable }>;
   put(
     name: string,
-    file: Buffer,
+    file: Buffer | Readable | string,
     options?: { headers?: Record<string, string>; meta?: Record<string, string> }
   ): Promise<{ name?: string; res?: { headers?: Record<string, string | string[] | undefined> }; url?: string }>;
 }
@@ -50,6 +56,25 @@ export class OssStorageProvider implements StorageProvider {
       key,
       originalName: input.originalName,
       size: input.buffer.length,
+      url: result.url
+    };
+  }
+
+  async putFile(input: UploadFileObjectInput): Promise<StoredObject> {
+    const key = sanitizeObjectKey(input.key);
+    const result = await this.getClient().put(key, input.filePath, {
+      headers: input.contentType ? { "Content-Type": input.contentType } : undefined,
+      meta: input.metadata
+    });
+
+    return {
+      bucket: this.getRequiredConfig("OSS_BUCKET"),
+      contentType: input.contentType,
+      driver: "oss",
+      etag: getHeader(result.res?.headers, "etag"),
+      key,
+      originalName: input.originalName,
+      size: input.sizeBytes,
       url: result.url
     };
   }

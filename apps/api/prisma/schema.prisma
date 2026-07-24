@@ -964,6 +964,14 @@ enum DeliveryEvidenceMediaType {
   @@map("delivery_evidence_media_type")
 }
 
+enum DeliveryEvidenceFileLifecycleStatus {
+  ACTIVE
+  SUPERSEDED
+  REMOVED
+
+  @@map("delivery_evidence_file_lifecycle_status")
+}
+
 enum VehicleHandoverType {
   DELIVERY_OUTBOUND
   RETURN_INBOUND
@@ -1030,6 +1038,43 @@ enum VehicleHandoverAdminReviewStatus {
   VOIDED
 
   @@map("vehicle_handover_admin_review_status")
+}
+
+enum VehicleHandoverEventType {
+  WORK_ORDER_CREATED
+  INTERNAL_OPERATOR_ASSIGNED
+  EXTERNAL_OPERATOR_ASSIGNED
+  EXTERNAL_ACCESS_REVOKED
+  FIELD_STARTED
+  FIELD_FACTS_UPDATED
+  EVIDENCE_FILE_ADDED
+  EVIDENCE_FILE_REPLACED
+  EVIDENCE_FILE_REMOVED
+  NO_VISIBLE_DAMAGE_DECLARED
+  FIELD_SUBMITTED
+  CUSTOMER_REVIEW_STARTED
+  CUSTOMER_CONFIRMED
+  CUSTOMER_OBJECTED
+  OBJECTION_ACKNOWLEDGED
+  RESUBMISSION_REQUESTED
+  FIELD_RESUBMITTED
+  SENT_BACK_TO_CUSTOMER_REVIEW
+  CUSTOMER_SIGNED
+  PLATFORM_SEALED
+  FIELD_COMPLETED
+  OPS_REVIEW_UPDATED
+  WORK_ORDER_TERMINATED
+
+  @@map("vehicle_handover_event_type")
+}
+
+enum VehicleHandoverEventActorType {
+  ADMIN
+  FIELD_OPERATOR
+  CUSTOMER
+  SYSTEM
+
+  @@map("vehicle_handover_event_actor_type")
 }
 
 enum ESignProviderType {
@@ -4126,6 +4171,7 @@ model SubscriptionOrder {
   deliveryEvidenceItems      VehicleDeliveryEvidenceItem[]
   handoverWorkOrders         VehicleHandoverWorkOrder[]
   handoverReviewAttempts     VehicleHandoverReviewAttempt[]
+  handoverEvents             VehicleHandoverEvent[]
   lease                      Lease?
   vehicleInspection          VehicleInspection?
   returns                    VehicleReturn[]
@@ -4912,8 +4958,11 @@ model VehicleHandoverWorkOrder {
   damageDeclared               Boolean?                       @map("damage_declared")
   noVisibleDamageDeclared      Boolean?                       @map("no_visible_damage_declared")
   fieldNotes                   String?                        @map("field_notes") @db.Text
+  adminReviewStatus            VehicleHandoverAdminReviewStatus @default(NONE) @map("admin_review_status")
+  reviewVersion                Int                            @default(0) @map("review_version")
   metadata                     Json?
   reviewAttempts               VehicleHandoverReviewAttempt[]
+  events                       VehicleHandoverEvent[]
   createdAt                    DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                    DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -4963,6 +5012,7 @@ model VehicleHandoverReviewAttempt {
   resolvedBy                       User?                               @relation("HandoverReviewAttemptResolvedBy", fields: [resolvedById], references: [id])
   adminNotes                       String?                             @map("admin_notes") @db.Text
   metadata                         Json?
+  events                           VehicleHandoverEvent[]
   createdAt                        DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                        DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -4977,6 +5027,29 @@ model VehicleHandoverReviewAttempt {
   @@index([sentBackToCustomerReviewById])
   @@index([resolvedById])
   @@map("vehicle_handover_review_attempt")
+}
+
+model VehicleHandoverEvent {
+  id              String                        @id @default(uuid()) @db.Uuid
+  workOrderId     String                        @map("work_order_id") @db.Uuid
+  workOrder       VehicleHandoverWorkOrder      @relation(fields: [workOrderId], references: [id])
+  orderId         String                        @map("order_id") @db.Uuid
+  order           SubscriptionOrder             @relation(fields: [orderId], references: [id])
+  reviewAttemptId String?                       @map("review_attempt_id") @db.Uuid
+  reviewAttempt   VehicleHandoverReviewAttempt? @relation(fields: [reviewAttemptId], references: [id])
+  eventType       VehicleHandoverEventType      @map("event_type")
+  actorType       VehicleHandoverEventActorType @map("actor_type")
+  actorId         String?                       @map("actor_id") @db.Uuid
+  actorDisplay    String?                       @map("actor_display") @db.VarChar(128)
+  detail          Json?
+  createdAt       DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([workOrderId, createdAt])
+  @@index([orderId, createdAt])
+  @@index([reviewAttemptId])
+  @@index([eventType])
+  @@index([actorId])
+  @@map("vehicle_handover_event")
 }
 
 model VehicleDeliveryEvidenceItem {
@@ -5020,24 +5093,32 @@ model VehicleDeliveryEvidenceItem {
 }
 
 model VehicleDeliveryEvidenceFile {
-  id             String                    @id @default(uuid()) @db.Uuid
-  evidenceItemId String                    @map("evidence_item_id") @db.Uuid
-  evidenceItem   VehicleDeliveryEvidenceItem @relation(fields: [evidenceItemId], references: [id])
-  fileId         String                    @map("file_id") @db.Uuid
-  file           FileObject                @relation(fields: [fileId], references: [id])
-  objectKey      String?                   @map("object_key") @db.VarChar(512)
-  mediaType      DeliveryEvidenceMediaType @map("media_type")
-  uploadedBy     String?                   @map("uploaded_by") @db.Uuid
-  uploader       User?                     @relation("DeliveryEvidenceFileUploader", fields: [uploadedBy], references: [id])
-  uploadedAt     DateTime                  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
-  metadata       Json?
-  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id               String                              @id @default(uuid()) @db.Uuid
+  evidenceItemId   String                              @map("evidence_item_id") @db.Uuid
+  evidenceItem     VehicleDeliveryEvidenceItem         @relation(fields: [evidenceItemId], references: [id])
+  fileId           String                              @map("file_id") @db.Uuid
+  file             FileObject                          @relation(fields: [fileId], references: [id])
+  objectKey        String?                             @map("object_key") @db.VarChar(512)
+  mediaType        DeliveryEvidenceMediaType           @map("media_type")
+  lifecycleStatus  DeliveryEvidenceFileLifecycleStatus @default(ACTIVE) @map("lifecycle_status")
+  lifecycleAt      DateTime?                           @map("lifecycle_at") @db.Timestamptz(6)
+  lifecycleActorId String?                             @map("lifecycle_actor_id") @db.Uuid
+  replacedById     String?                             @unique @map("replaced_by_id") @db.Uuid
+  replacedBy       VehicleDeliveryEvidenceFile?        @relation("DeliveryEvidenceFileReplacement", fields: [replacedById], references: [id])
+  replaces         VehicleDeliveryEvidenceFile?        @relation("DeliveryEvidenceFileReplacement")
+  uploadedBy       String?                             @map("uploaded_by") @db.Uuid
+  uploader         User?                               @relation("DeliveryEvidenceFileUploader", fields: [uploadedBy], references: [id])
+  uploadedAt       DateTime                            @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  metadata         Json?
+  createdAt        DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([evidenceItemId, fileId])
   @@index([evidenceItemId])
   @@index([fileId])
   @@index([mediaType])
+  @@index([lifecycleStatus])
+  @@index([lifecycleActorId])
   @@index([uploadedBy])
   @@map("vehicle_delivery_evidence_file")
 }

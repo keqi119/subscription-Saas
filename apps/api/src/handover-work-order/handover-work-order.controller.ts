@@ -11,6 +11,7 @@ import {
   AttachFieldEvidenceFileDto,
   CreateHandoverWorkOrderDto,
   HandoverObjectionActionDto,
+  HandoverObjectionResubmissionDto,
   OpsReviewDto,
   UpdateHandoverFieldFactsDto,
   VoidHandoverWorkOrderDto
@@ -40,6 +41,12 @@ export class HandoverWorkOrderAdminController {
   @RequirePermissions(PermissionCode.DELIVERY_VIEW)
   listWorkOrders(@Param("orderId") orderId: string) {
     return this.handoverWorkOrderService.listByOrder(orderId);
+  }
+
+  @Get("handover-work-orders/review-queue")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  listAdminReviewQueue() {
+    return this.handoverWorkOrderService.listAdminReviewQueue();
   }
 
   @Get("handover-work-orders/:id")
@@ -151,10 +158,10 @@ export class HandoverWorkOrderAdminController {
   @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
   requestCustomerObjectionResubmission(
     @Param("id") id: string,
-    @Body() dto: HandoverObjectionActionDto,
+    @Body() dto: HandoverObjectionResubmissionDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.handoverWorkOrderService.requestCustomerObjectionResubmission(id, request.user.id, dto.note);
+    return this.handoverWorkOrderService.requestCustomerObjectionResubmission(id, request.user.id, dto);
   }
 
   @Post("handover-work-orders/:id/objection/send-customer-review")

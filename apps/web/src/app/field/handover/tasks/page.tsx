@@ -87,7 +87,13 @@ export default function FieldHandoverTasksPage() {
         ) : null}
 
         {!loading && errorMessage ? (
-          <Alert message={errorMessage} showIcon style={{ marginBottom: 14 }} type="error" />
+          <Alert
+            action={<Button onClick={() => void loadTasks()} size="small">重新加载</Button>}
+            message={errorMessage}
+            showIcon
+            style={{ marginBottom: 14 }}
+            type="error"
+          />
         ) : null}
 
         {!loading && !errorMessage ? (

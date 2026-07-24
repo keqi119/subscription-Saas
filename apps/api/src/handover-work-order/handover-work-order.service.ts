@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   Optional,
@@ -7,8 +8,16 @@ import {
   UnauthorizedException
 } from "@nestjs/common";
 import { createHash, randomBytes } from "node:crypto";
+import { unlink } from "node:fs/promises";
 import type { Readable } from "node:stream";
-import { DeliveryEvidenceMediaType, Prisma } from "@prisma/client";
+import {
+  DeliveryEvidenceFileLifecycleStatus,
+  DeliveryEvidenceMediaType,
+  Prisma,
+  VehicleHandoverAdminReviewStatus,
+  VehicleHandoverEventActorType,
+  VehicleHandoverEventType
+} from "@prisma/client";
 
 import {
   DeliveryEvidenceFieldState,
@@ -67,7 +76,42 @@ const ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED = "RESUBMISSION_REQUESTED";
 const ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN = "RESUBMITTED_PENDING_ADMIN";
 const ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW = "SENT_BACK_TO_CUSTOMER_REVIEW";
 const ADMIN_REVIEW_STATUS_RESOLVED = "RESOLVED";
-const PREVIEWABLE_EVIDENCE_MIME_PREFIXES = ["image/", "video/"];
+const SAFE_FIELD_PHOTO_MIME_TYPES = new Set([
+  "image/heic",
+  "image/heif",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp"
+]);
+const SAFE_FIELD_VIDEO_MIME_TYPES = new Set([
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+  "video/x-m4v"
+]);
+const PREVIEWABLE_EVIDENCE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  ...SAFE_FIELD_VIDEO_MIME_TYPES
+]);
+const MAX_FIELD_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
+const MAX_FIELD_VIDEO_SIZE_BYTES = 200 * 1024 * 1024;
+const HANDOVER_FIELD_FACT_KEYS = [
+  "accessoryChecklist",
+  "damageDeclared",
+  "deliveryLocation",
+  "energyLevelText",
+  "fieldNotes",
+  "fuelLevelText",
+  "handoverMileageKm",
+  "noVisibleDamageDeclared",
+  "scheduledAt"
+] as const;
+
+export type HandoverFieldFactKey = typeof HANDOVER_FIELD_FACT_KEYS[number];
 
 type HandoverType = "DELIVERY_OUTBOUND" | "RETURN_INBOUND";
 type WorkOrderStatus = typeof TERMINAL_WORK_ORDER_STATUSES[number] |
@@ -79,9 +123,10 @@ type WorkOrderStatus = typeof TERMINAL_WORK_ORDER_STATUSES[number] |
   "CUSTOMER_REVIEWING" |
   "CUSTOMER_OBJECTED";
 
-interface WorkOrderRecord {
+export interface WorkOrderRecord {
   accessTokenExpiresAt?: Date | null;
   accessTokenRevokedAt?: Date | null;
+  adminReviewStatus?: string | null;
   accessoryChecklist?: unknown;
   createdAt?: Date | null;
   customerConfirmedAt?: Date | null;
@@ -106,6 +151,8 @@ interface WorkOrderRecord {
   noVisibleDamageDeclared?: boolean | null;
   operatorType?: string | null;
   orderId: string;
+  opsReviewStatus?: string | null;
+  reviewVersion?: number | null;
   scheduledAt?: Date | null;
   status: string;
 }
@@ -142,10 +189,21 @@ export interface AttachFieldEvidenceFileInput {
 }
 
 export interface UploadedFieldEvidenceFile {
-  buffer: Buffer;
+  buffer?: Buffer;
   mimetype?: string;
   originalname: string;
+  path?: string;
   size: number;
+}
+
+export interface UploadAndAttachFieldEvidenceOptions {
+  replaceEvidenceFileId?: string | null;
+}
+
+export interface RequestCustomerObjectionResubmissionInput {
+  note: string;
+  targetEvidenceItemIds?: string[];
+  targetFieldKeys?: HandoverFieldFactKey[];
 }
 
 @Injectable()
@@ -162,29 +220,47 @@ export class HandoverWorkOrderService {
       throw new BadRequestException("RETURN_INBOUND 工单流程尚未启用。");
     }
 
-    await this.assertNoActiveWorkOrder(orderId, handoverType);
-    const handover = await this.getOrCreateDraftHandover(orderId, actorId);
-    const delivery = await this.prisma.vehicleDelivery.findUnique({ where: { orderId } });
-    await this.deliveryEvidenceService.initializeChecklist(orderId, handover.id);
-
-    return this.prisma.vehicleHandoverWorkOrder.create({
-      data: {
-        deliveryLocation: delivery && !delivery.deletedAt ? delivery.deliveryLocation : null,
-        handoverId: handover.id,
-        handoverType,
-        operatorType: "INTERNAL",
-        orderId,
-        scheduledAt: delivery && !delivery.deletedAt ? delivery.scheduledAt : null,
-        status: "DRAFT",
-        vehicleDeliveryId: handover.vehicleDeliveryId ?? (delivery && !delivery.deletedAt ? delivery.id : null)
-      }
+    const created = await this.runSerializableTransaction(async (tx) => {
+      await this.assertNoActiveWorkOrder(orderId, handoverType, tx);
+      const handover = await this.getOrCreateDraftHandover(orderId, actorId, tx);
+      const delivery = await tx.vehicleDelivery.findUnique({ where: { orderId } });
+      await this.deliveryEvidenceService.initializeChecklist(orderId, handover.id, tx);
+      const workOrder = await tx.vehicleHandoverWorkOrder.create({
+        data: {
+          deliveryLocation: delivery && !delivery.deletedAt ? delivery.deliveryLocation : null,
+          handoverId: handover.id,
+          handoverType,
+          operatorType: "INTERNAL",
+          orderId,
+          scheduledAt: delivery && !delivery.deletedAt ? delivery.scheduledAt : null,
+          status: "DRAFT",
+          vehicleDeliveryId: handover.vehicleDeliveryId ?? (delivery && !delivery.deletedAt ? delivery.id : null)
+        }
+      });
+      await this.recordEvent(workOrder, VehicleHandoverEventType.WORK_ORDER_CREATED, {
+        actorId,
+        actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM
+      }, tx);
+      return workOrder;
     });
+    return created;
   }
 
   async listByOrder(orderId: string) {
     const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
       orderBy: { createdAt: "desc" },
       where: { orderId }
+    });
+    return Promise.all(workOrders.map((workOrder) => this.toAdminWorkOrderSummary(workOrder)));
+  }
+
+  async listAdminReviewQueue() {
+    const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
+      orderBy: [{ customerObjectedAt: "asc" }, { createdAt: "asc" }],
+      where: {
+        customerObjectedAt: { not: null },
+        status: "CUSTOMER_OBJECTED"
+      }
     });
     return Promise.all(workOrders.map((workOrder) => this.toAdminWorkOrderSummary(workOrder)));
   }
@@ -197,7 +273,7 @@ export class HandoverWorkOrderService {
     await this.assertUserExists(userId);
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    return this.updateWorkOrder(id, {
+    return this.updateWorkOrderWithEvent(workOrder, {
       accessTokenExpiresAt: null,
       accessTokenHash: null,
       accessTokenRevokedAt: null,
@@ -208,6 +284,10 @@ export class HandoverWorkOrderService {
       metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
       operatorType: "INTERNAL",
       status: nextStatus(workOrder.status, "ASSIGNED")
+    }, VehicleHandoverEventType.INTERNAL_OPERATOR_ASSIGNED, {
+      actorId,
+      actorType: VehicleHandoverEventActorType.ADMIN,
+      detail: { assignedInternalUserId: userId }
     });
   }
 
@@ -218,18 +298,27 @@ export class HandoverWorkOrderService {
     const accessToken = randomBytes(32).toString("base64url");
     const accessTokenHash = hashAccessToken(accessToken);
     const expiresAt = input.expiresAt ? parseDate(input.expiresAt, "accessTokenExpiresAt") : defaultTokenExpiry();
+    const phone = normalizeOptionalFieldOperatorPhone(input.phone);
 
-    const updated = await this.updateWorkOrder(id, {
+    const updated = await this.updateWorkOrderWithEvent(workOrder, {
       accessTokenExpiresAt: expiresAt,
       accessTokenHash,
       accessTokenRevokedAt: null,
       assignedInternalUserId: null,
       externalOperatorName: name,
       externalOperatorOrganization: normalizeOptionalText(input.organization),
-      externalOperatorPhone: normalizeOptionalFieldOperatorPhone(input.phone),
+      externalOperatorPhone: phone,
       metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
       operatorType: "EXTERNAL",
       status: nextStatus(workOrder.status, "ASSIGNED")
+    }, VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED, {
+      actorId,
+      actorType: VehicleHandoverEventActorType.ADMIN,
+      detail: {
+        expiresAt: expiresAt.toISOString(),
+        operatorName: name,
+        phoneMasked: maskPhone(phone)
+      }
     });
 
     return {
@@ -240,9 +329,12 @@ export class HandoverWorkOrderService {
 
   async revokeExternalAccess(id: string, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
-    return this.updateWorkOrder(id, {
+    return this.updateWorkOrderWithEvent(workOrder, {
       accessTokenRevokedAt: new Date(),
       metadata: mergeMetadata(workOrder.metadata, { revokedBy: actorId ?? null })
+    }, VehicleHandoverEventType.EXTERNAL_ACCESS_REVOKED, {
+      actorId,
+      actorType: VehicleHandoverEventActorType.ADMIN
     });
   }
 
@@ -305,10 +397,13 @@ export class HandoverWorkOrderService {
     if (workOrder.status === "CUSTOMER_OBJECTED") {
       return workOrder;
     }
-    return this.updateWorkOrder(id, {
+    return this.updateWorkOrderWithEvent(workOrder, {
       fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
       metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
       status: "FIELD_IN_PROGRESS"
+    }, VehicleHandoverEventType.FIELD_STARTED, {
+      actorId,
+      actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
     });
   }
 
@@ -320,73 +415,178 @@ export class HandoverWorkOrderService {
   ) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
-    return this.updateFieldFacts(id, input, actorId);
+    return this.updateFieldFacts(
+      id,
+      input,
+      actorId,
+      undefined,
+      workOrder,
+      normalizeFieldOperatorPhone(phone)
+    );
   }
 
-  async uploadFieldAccessibleEvidenceFile(
-    id: string,
-    phone: string,
-    files: UploadedFieldEvidenceFile[] | undefined
-  ) {
-    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
-    assertFieldSessionEditable(workOrder);
-    const file = (files ?? []).find((item) => item.buffer?.length);
-    if (!file) {
-      throw new BadRequestException("请上传现场证据文件。");
-    }
-    assertSupportedFieldEvidenceFile(file);
-
-    const stored = await this.getStorageService().putDeliveryEvidenceFile({
-      buffer: file.buffer,
-      contentType: file.mimetype,
-      metadata: { originalName: file.originalname },
-      orderId: workOrder.orderId,
-      originalName: file.originalname,
-      workOrderId: id
-    });
-    const fileObject = await this.prisma.fileObject.create({
-      data: {
-        bucket: stored.bucket,
-        mimeType: file.mimetype ?? null,
-        objectKey: stored.objectKey,
-        originalName: file.originalname,
-        sizeBytes: BigInt(file.size),
-        uploadedBy: null
-      }
-    });
-
-    return {
-      fileId: fileObject.id,
-      fileName: fileObject.originalName,
-      mimeType: fileObject.mimeType,
-      sizeBytes: Number(fileObject.sizeBytes)
-    };
-  }
-
-  async attachFieldAccessibleEvidenceFile(
+  async uploadAndAttachFieldAccessibleEvidenceFile(
     id: string,
     phone: string,
     itemId: string,
-    input: AttachFieldEvidenceFileInput
+    files: UploadedFieldEvidenceFile[] | undefined,
+    options: UploadAndAttachFieldEvidenceOptions = {},
+    actorId?: string
+  ) {
+    const uploadedFiles = files ?? [];
+    const file = uploadedFiles.find(hasUploadedFieldEvidenceContent);
+    try {
+      if (!file) {
+        throw new BadRequestException("请上传现场证据文件。");
+      }
+      const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+      assertFieldSessionEditable(workOrder);
+      const normalizedPhone = normalizeFieldOperatorPhone(phone);
+      const mediaType = assertSupportedFieldEvidenceFile(file);
+      const mimeType = normalizedFieldEvidenceMimeType(file);
+      const item = await this.assertEvidenceItemBelongsToWorkOrder(workOrder, itemId);
+      await this.deliveryEvidenceService.validateEvidenceFileMutation(
+        item.id,
+        mediaType,
+        options.replaceEvidenceFileId
+      );
+      const stored = await this.storeFieldEvidenceFile(workOrder, file, mimeType);
+      try {
+        return await this.runSerializableTransaction(async (tx) => {
+          const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
+          if (!isFieldAccessibleWorkOrder(current, normalizedPhone)) {
+            throw new UnauthorizedException("No access to this field handover work order.");
+          }
+          assertFieldSessionEditable(current);
+          const currentItem = await this.assertEvidenceItemBelongsToWorkOrder(current, item.id, tx);
+          const fileObject = await tx.fileObject.create({
+            data: {
+              bucket: stored.bucket,
+              mimeType,
+              objectKey: stored.objectKey,
+              originalName: file.originalname,
+              sizeBytes: BigInt(file.size),
+              uploadedBy: null
+            }
+          });
+          const result = options.replaceEvidenceFileId
+            ? await this.deliveryEvidenceService.replaceEvidenceFile(
+                currentItem.id,
+                options.replaceEvidenceFileId,
+                fileObject.id,
+                mediaType,
+                undefined,
+                tx,
+                actorId
+              )
+            : await this.deliveryEvidenceService.attachEvidenceFile(
+                currentItem.id,
+                fileObject.id,
+                mediaType,
+                undefined,
+                tx,
+                actorId
+              );
+          await this.recordEvent(
+            current,
+            options.replaceEvidenceFileId
+              ? VehicleHandoverEventType.EVIDENCE_FILE_REPLACED
+              : VehicleHandoverEventType.EVIDENCE_FILE_ADDED,
+            {
+              actorId,
+              actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+              detail: {
+                evidenceItemId: currentItem.id,
+                fileName: file.originalname,
+                mediaType,
+                replacedEvidenceFileId: options.replaceEvidenceFileId ?? null,
+                sizeBytes: file.size
+              }
+            },
+            tx
+          );
+          return result;
+        });
+      } catch (error) {
+        await Promise.allSettled([this.getStorageService().deleteObject(stored.bucket, stored.objectKey)]);
+        throw error;
+      }
+    } finally {
+      await Promise.all(uploadedFiles.map(cleanupUploadedFieldEvidenceTempFile));
+    }
+  }
+
+  async removeFieldAccessibleEvidenceFile(
+    id: string,
+    phone: string,
+    itemId: string,
+    evidenceFileId: string,
+    actorId?: string
   ) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
-    return this.attachEvidenceFileForWorkOrder(workOrder, itemId, input);
+    const normalizedPhone = normalizeFieldOperatorPhone(phone);
+    return this.runSerializableTransaction(async (tx) => {
+      const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
+      if (!isFieldAccessibleWorkOrder(current, normalizedPhone)) {
+        throw new UnauthorizedException("No access to this field handover work order.");
+      }
+      assertFieldSessionEditable(current);
+      const item = await this.assertEvidenceItemBelongsToWorkOrder(current, itemId, tx);
+      const result = await this.deliveryEvidenceService.removeEvidenceFile(
+        item.id,
+        evidenceFileId,
+        actorId,
+        tx
+      );
+      await this.recordEvent(current, VehicleHandoverEventType.EVIDENCE_FILE_REMOVED, {
+        actorId,
+        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+        detail: {
+          evidenceFileId,
+          evidenceItemId: item.id
+        }
+      }, tx);
+      return result;
+    });
   }
 
-  async declareFieldAccessibleNoVisibleDamage(id: string, phone: string, remark?: string) {
+  async declareFieldAccessibleNoVisibleDamage(
+    id: string,
+    phone: string,
+    remark?: string,
+    actorId?: string
+  ) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
-    await this.deliveryEvidenceService.declareNoVisibleDamage(
-      workOrder.orderId,
-      undefined,
-      workOrder.handoverId ?? null,
-      remark
-    );
-    return this.updateWorkOrder(id, {
-      damageDeclared: false,
-      metadata: mergeMetadata(workOrder.metadata, { noVisibleDamageDeclaredBy: null }),
-      noVisibleDamageDeclared: true
+    const normalizedPhone = normalizeFieldOperatorPhone(phone);
+    return this.runSerializableTransaction(async (tx) => {
+      const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
+      if (!isFieldAccessibleWorkOrder(current, normalizedPhone)) {
+        throw new UnauthorizedException("No access to this field handover work order.");
+      }
+      assertFieldSessionEditable(current);
+      await this.deliveryEvidenceService.declareNoVisibleDamage(
+        current.orderId,
+        undefined,
+        current.handoverId ?? null,
+        remark,
+        tx
+      );
+      const updated = await tx.vehicleHandoverWorkOrder.update({
+        data: {
+          damageDeclared: false,
+          metadata: mergeMetadata(current.metadata, { noVisibleDamageDeclaredBy: null }),
+          noVisibleDamageDeclared: true
+        },
+        where: { id: current.id }
+      });
+      await this.recordEvent(updated, VehicleHandoverEventType.NO_VISIBLE_DAMAGE_DECLARED, {
+        actorId,
+        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+        detail: { remark: normalizeOptionalText(remark) }
+      }, tx);
+      return updated;
     });
   }
 
@@ -398,19 +598,52 @@ export class HandoverWorkOrderService {
     return this.getEvidenceFileStream(id, evidenceFileId, { preview: false });
   }
 
+  async previewFieldAccessibleEvidenceFile(
+    id: string,
+    phone: string,
+    evidenceFileId: string
+  ): Promise<EvidenceFileStreamResult> {
+    await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    return this.getEvidenceFileStream(id, evidenceFileId, { preview: true });
+  }
+
+  async downloadFieldAccessibleEvidenceFile(
+    id: string,
+    phone: string,
+    evidenceFileId: string
+  ): Promise<EvidenceFileStreamResult> {
+    await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    return this.getEvidenceFileStream(id, evidenceFileId, { preview: false });
+  }
+
   async submitFieldAccessibleEvidence(id: string, phone: string, actorId?: string) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
-    return this.submitEvidence(id, actorId);
+    return this.submitEvidence(
+      id,
+      actorId,
+      undefined,
+      workOrder,
+      normalizeFieldOperatorPhone(phone)
+    );
   }
 
-  async startFieldWork(id: string, actorId?: string) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
+  async startFieldWork(
+    id: string,
+    actorId?: string,
+    actorDisplay?: string | null,
+    expectedWorkOrder?: WorkOrderRecord
+  ) {
+    const workOrder = expectedWorkOrder ?? await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    return this.updateWorkOrder(id, {
+    return this.updateWorkOrderWithEvent(workOrder, {
       fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
       metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
       status: "FIELD_IN_PROGRESS"
+    }, VehicleHandoverEventType.FIELD_STARTED, {
+      actorDisplay,
+      actorId,
+      actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
     });
   }
 
@@ -420,117 +653,228 @@ export class HandoverWorkOrderService {
     if (workOrder.status === "CUSTOMER_OBJECTED") {
       return workOrder;
     }
-    return this.startFieldWork(workOrder.id, workOrder.externalOperatorName ?? "external");
+    return this.startFieldWork(
+      workOrder.id,
+      undefined,
+      workOrder.externalOperatorName ?? "external",
+      workOrder
+    );
   }
 
-  async updateFieldFacts(id: string, input: UpdateFieldFactsInput, actorId?: string) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
+  async updateFieldFacts(
+    id: string,
+    input: UpdateFieldFactsInput,
+    actorId?: string,
+    actorDisplay?: string | null,
+    expectedWorkOrder?: WorkOrderRecord,
+    expectedFieldPhone?: string
+  ) {
+    const workOrder = expectedWorkOrder ?? await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
+    if (expectedFieldPhone) {
+      assertFieldSessionEditable(workOrder);
+    }
     assertDamageState(input.damageDeclared, input.noVisibleDamageDeclared);
     const switchesToDamage = input.damageDeclared === true && input.noVisibleDamageDeclared !== true;
-    if (switchesToDamage) {
-      await this.deliveryEvidenceService.retractNoVisibleDamageDeclaration(
-        workOrder.orderId,
+    return this.runSerializableTransaction(async (tx) => {
+      const updated = await this.updateWorkOrderVersioned(workOrder, compactUndefined({
+        accessoryChecklist: input.accessoryChecklist === undefined ? undefined : toJsonValue(input.accessoryChecklist),
+        damageDeclared: input.noVisibleDamageDeclared === true ? false : input.damageDeclared,
+        deliveryLocation: input.deliveryLocation === undefined ? undefined : normalizeOptionalText(input.deliveryLocation),
+        energyLevelText: input.energyLevelText === undefined ? undefined : normalizeOptionalText(input.energyLevelText),
+        fieldNotes: input.fieldNotes === undefined ? undefined : normalizeOptionalText(input.fieldNotes),
+        fuelLevelText: input.fuelLevelText === undefined ? undefined : normalizeOptionalText(input.fuelLevelText),
+        handoverMileageKm: input.handoverMileageKm,
+        metadata: mergeMetadata(workOrder.metadata, { fieldFactsUpdatedBy: actorId ?? null }),
+        noVisibleDamageDeclared: input.damageDeclared === true ? false : input.noVisibleDamageDeclared,
+        scheduledAt: input.scheduledAt === undefined ? undefined : (
+          input.scheduledAt ? parseDate(input.scheduledAt, "scheduledAt") : null
+        ),
+        status: workOrder.status === "DRAFT" ? "FIELD_IN_PROGRESS" : workOrder.status
+      }), tx);
+      if (expectedFieldPhone) {
+        if (!isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
+          throw new UnauthorizedException("No access to this field handover work order.");
+        }
+        assertFieldSessionEditable(updated);
+      }
+      if (switchesToDamage) {
+        await this.deliveryEvidenceService.retractNoVisibleDamageDeclaration(
+          updated.orderId,
+          actorId,
+          updated.handoverId ?? null,
+          tx
+        );
+      }
+      await this.recordEvent(updated, VehicleHandoverEventType.FIELD_FACTS_UPDATED, {
+        actorDisplay,
         actorId,
-        workOrder.handoverId ?? null
-      );
-    }
-
-    return this.updateWorkOrder(id, compactUndefined({
-      accessoryChecklist: input.accessoryChecklist === undefined ? undefined : toJsonValue(input.accessoryChecklist),
-      damageDeclared: input.noVisibleDamageDeclared === true ? false : input.damageDeclared,
-      deliveryLocation: input.deliveryLocation === undefined ? undefined : normalizeOptionalText(input.deliveryLocation),
-      energyLevelText: input.energyLevelText === undefined ? undefined : normalizeOptionalText(input.energyLevelText),
-      fieldNotes: input.fieldNotes === undefined ? undefined : normalizeOptionalText(input.fieldNotes),
-      fuelLevelText: input.fuelLevelText === undefined ? undefined : normalizeOptionalText(input.fuelLevelText),
-      handoverMileageKm: input.handoverMileageKm,
-      metadata: mergeMetadata(workOrder.metadata, { fieldFactsUpdatedBy: actorId ?? null }),
-      noVisibleDamageDeclared: input.damageDeclared === true ? false : input.noVisibleDamageDeclared,
-      scheduledAt: input.scheduledAt === undefined ? undefined : (
-        input.scheduledAt ? parseDate(input.scheduledAt, "scheduledAt") : null
-      ),
-      status: workOrder.status === "DRAFT" ? "FIELD_IN_PROGRESS" : workOrder.status
-    }));
+        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+        detail: {
+          changedFieldKeys: HANDOVER_FIELD_FACT_KEYS.filter((key) => input[key] !== undefined)
+        }
+      }, tx);
+      return updated;
+    });
   }
 
   async updateFieldFactsByToken(token: string, input: UpdateFieldFactsInput) {
     const workOrder = await this.resolveExternalWorkOrder(token);
     assertFieldSessionEditable(workOrder);
-    return this.updateFieldFacts(workOrder.id, input, workOrder.externalOperatorName ?? "external");
+    return this.updateFieldFacts(
+      workOrder.id,
+      input,
+      undefined,
+      workOrder.externalOperatorName ?? "external",
+      workOrder
+    );
   }
 
   async attachEvidenceFileWithExternalToken(token: string, itemId: string, input: AttachFieldEvidenceFileInput) {
     const workOrder = await this.resolveExternalWorkOrder(token);
     assertFieldSessionEditable(workOrder);
-    return this.attachEvidenceFileForWorkOrder(workOrder, itemId, input);
+    return this.runSerializableTransaction(async (tx) => {
+      const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
+      assertFieldSessionEditable(current);
+      const attached = await this.attachEvidenceFileForWorkOrder(current, itemId, input, tx);
+      await this.recordEvent(current, VehicleHandoverEventType.EVIDENCE_FILE_ADDED, {
+        actorDisplay: workOrder.externalOperatorName,
+        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+        detail: {
+          evidenceFileId: readString(attached, "id"),
+          evidenceItemId: itemId
+        }
+      }, tx);
+      return attached;
+    });
   }
 
   async acknowledgeCustomerObjection(id: string, actorId: string, note?: string | null) {
     const workOrder = await this.getObjectedWorkOrderOrThrow(id);
+    if (getHandoverReviewAdminStatus(workOrder) !== VehicleHandoverAdminReviewStatus.NONE) {
+      throw new BadRequestException("当前异议状态不能重复受理。");
+    }
     const now = new Date();
-    await this.upsertLatestReviewAttempt(workOrder, "CUSTOMER_OBJECTED", {
-      adminAcknowledgedAt: now,
-      adminAcknowledgedById: actorId,
-      adminNotes: normalizeOptionalText(note),
-      adminStatus: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
-    });
-    const updated = await this.updateWorkOrder(id, {
-      metadata: mergeMetadata(workOrder.metadata, {
-        handoverReviewAdminAcknowledgedAt: now.toISOString(),
-        handoverReviewAdminAcknowledgedBy: actorId,
-        handoverReviewAdminNote: normalizeOptionalText(note),
-        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
-      })
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.updateWorkOrderVersioned(workOrder, {
+        adminReviewStatus: VehicleHandoverAdminReviewStatus.ACKNOWLEDGED,
+        metadata: mergeMetadata(workOrder.metadata, {
+          handoverReviewAdminAcknowledgedAt: now.toISOString(),
+          handoverReviewAdminAcknowledgedBy: actorId,
+          handoverReviewAdminNote: normalizeOptionalText(note),
+          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
+        })
+      }, tx);
+      await this.upsertLatestReviewAttempt(current, "CUSTOMER_OBJECTED", {
+        adminAcknowledgedAt: now,
+        adminAcknowledgedById: actorId,
+        adminNotes: normalizeOptionalText(note),
+        adminStatus: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
+      }, {}, tx);
+      await this.recordEvent(current, VehicleHandoverEventType.OBJECTION_ACKNOWLEDGED, {
+        actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: { note: normalizeOptionalText(note) }
+      }, tx);
+      return current;
     });
     return this.toAdminWorkOrderDetail(updated);
   }
 
-  async requestCustomerObjectionResubmission(id: string, actorId: string, note?: string | null) {
+  async requestCustomerObjectionResubmission(
+    id: string,
+    actorId: string,
+    input: RequestCustomerObjectionResubmissionInput
+  ) {
     const workOrder = await this.getObjectedWorkOrderOrThrow(id);
+    if (getHandoverReviewAdminStatus(workOrder) !== VehicleHandoverAdminReviewStatus.ACKNOWLEDGED) {
+      throw new BadRequestException("请先受理客户异议，再要求现场复检。");
+    }
+    const note = normalizeRequiredText(input.note, "请填写现场复检要求。");
+    const targetEvidenceItemIds = uniqueStrings(input.targetEvidenceItemIds);
+    const targetFieldKeys = uniqueFieldFactKeys(input.targetFieldKeys);
+    await this.assertEvidenceItemTargetsBelongToWorkOrder(workOrder, targetEvidenceItemIds);
+    const latestAttempt = await this.findLatestReviewAttempt(workOrder.id);
+    const baseline = latestAttempt
+      ? {
+          evidenceSnapshot: readUnknownRecordValue(latestAttempt, "evidenceSnapshot"),
+          fieldFactsSnapshot: readUnknownRecordValue(latestAttempt, "fieldFactsSnapshot")
+        }
+      : await this.buildReviewAttemptSnapshot(workOrder);
     const now = new Date();
-    await this.upsertLatestReviewAttempt(workOrder, "RESUBMISSION_REQUESTED", {
-      adminNotes: normalizeOptionalText(note),
-      adminStatus: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED,
-      resubmissionRequestedAt: now,
-      resubmissionRequestedById: actorId
-    });
-    const updated = await this.updateWorkOrder(id, {
-      metadata: mergeMetadata(workOrder.metadata, {
-        handoverReviewAdminNote: normalizeOptionalText(note),
-        handoverReviewResubmissionRequestedAt: now.toISOString(),
-        handoverReviewResubmissionRequestedBy: actorId,
-        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
-      })
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.updateWorkOrderVersioned(workOrder, {
+        adminReviewStatus: VehicleHandoverAdminReviewStatus.RESUBMISSION_REQUESTED,
+        metadata: mergeMetadata(workOrder.metadata, {
+          handoverReviewAdminNote: note,
+          handoverReviewResubmissionRequestedAt: now.toISOString(),
+          handoverReviewResubmissionRequestedBy: actorId,
+          handoverReviewTargetEvidenceItemIds: targetEvidenceItemIds,
+          handoverReviewTargetFieldKeys: targetFieldKeys,
+          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
+        })
+      }, tx);
+      await this.upsertLatestReviewAttempt(current, "RESUBMISSION_REQUESTED", {
+        adminNotes: note,
+        adminStatus: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED,
+        metadata: toJsonValue(mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
+          resubmissionBaseline: baseline,
+          resubmissionRequestedEvidenceItemIds: targetEvidenceItemIds,
+          resubmissionRequestedFieldKeys: targetFieldKeys
+        })),
+        resubmissionRequestedAt: now,
+        resubmissionRequestedById: actorId
+      }, {}, tx);
+      await this.recordEvent(current, VehicleHandoverEventType.RESUBMISSION_REQUESTED, {
+        actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: {
+          note,
+          targetEvidenceItemIds,
+          targetFieldKeys
+        }
+      }, tx);
+      return current;
     });
     return this.toAdminWorkOrderDetail(updated);
   }
 
   async sendCustomerObjectionBackToReview(id: string, actorId: string, note?: string | null) {
     const workOrder = await this.getObjectedWorkOrderOrThrow(id);
-    if (getHandoverReviewAdminStatus(workOrder.metadata) !== ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN) {
+    if (getHandoverReviewAdminStatus(workOrder) !== ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN) {
       throw new BadRequestException("现场资料重新提交后，后台才能送回客户复核。");
     }
     const now = new Date();
-    const updated = await this.updateWorkOrder(id, {
-      customerConfirmedAt: null,
-      customerObjectedAt: null,
-      customerObjectionReason: null,
-      customerReviewStartedAt: now,
-      metadata: mergeMetadata(workOrder.metadata, {
-        customerObjectionDetails: null,
-        handoverReviewAdminNote: normalizeOptionalText(note),
-        handoverReviewSentBackToCustomerReviewAt: now.toISOString(),
-        handoverReviewSentBackToCustomerReviewBy: actorId,
-        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW
-      }),
-      status: "CUSTOMER_REVIEWING"
-    });
-    await this.createReviewAttempt(updated, "CUSTOMER_REVIEWING", {
-      adminNotes: normalizeOptionalText(note),
-      adminStatus: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW,
-      customerReviewStartedAt: now,
-      sentBackToCustomerReviewAt: now,
-      sentBackToCustomerReviewById: actorId
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await this.updateWorkOrderVersioned(workOrder, {
+        adminReviewStatus: VehicleHandoverAdminReviewStatus.SENT_BACK_TO_CUSTOMER_REVIEW,
+        customerConfirmedAt: null,
+        customerObjectedAt: null,
+        customerObjectionReason: null,
+        customerReviewStartedAt: now,
+        metadata: mergeMetadata(workOrder.metadata, {
+          customerObjectionDetails: null,
+          handoverReviewAdminNote: normalizeOptionalText(note),
+          handoverReviewSentBackToCustomerReviewAt: now.toISOString(),
+          handoverReviewSentBackToCustomerReviewBy: actorId,
+          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW
+        }),
+        status: "CUSTOMER_REVIEWING"
+      }, tx);
+      const attempt = await this.createReviewAttempt(current, "CUSTOMER_REVIEWING", {
+        adminNotes: normalizeOptionalText(note),
+        adminStatus: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW,
+        customerReviewStartedAt: now,
+        sentBackToCustomerReviewAt: now,
+        sentBackToCustomerReviewById: actorId
+      }, tx);
+      await this.recordEvent(current, VehicleHandoverEventType.SENT_BACK_TO_CUSTOMER_REVIEW, {
+        actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: { note: normalizeOptionalText(note) },
+        reviewAttemptId: attempt ? String(attempt.id) : null
+      }, tx);
+      return current;
     });
     return this.toAdminWorkOrderDetail(updated);
   }
@@ -538,9 +882,28 @@ export class HandoverWorkOrderService {
   private async attachEvidenceFileForWorkOrder(
     workOrder: WorkOrderRecord,
     itemId: string,
-    input: AttachFieldEvidenceFileInput
+    input: AttachFieldEvidenceFileInput,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+    uploadedBy?: string,
+    lifecycleActorId?: string
   ) {
-    const item = await this.prisma.vehicleDeliveryEvidenceItem.findFirst({
+    await this.assertEvidenceItemBelongsToWorkOrder(workOrder, itemId, db);
+    return this.deliveryEvidenceService.attachEvidenceFile(
+      itemId,
+      input.fileId,
+      input.mediaType,
+      uploadedBy,
+      db,
+      lifecycleActorId
+    );
+  }
+
+  private async assertEvidenceItemBelongsToWorkOrder(
+    workOrder: WorkOrderRecord,
+    itemId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const item = await db.vehicleDeliveryEvidenceItem.findFirst({
       where: {
         id: itemId,
         orderId: workOrder.orderId,
@@ -552,17 +915,21 @@ export class HandoverWorkOrderService {
     if (!item) {
       throw new NotFoundException("交付证据项不存在。");
     }
-    return this.deliveryEvidenceService.attachEvidenceFile(
-      itemId,
-      input.fileId,
-      input.mediaType,
-      undefined
-    );
+    return item;
   }
 
-  async submitEvidence(id: string, actorId?: string) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
+  async submitEvidence(
+    id: string,
+    actorId?: string,
+    actorDisplay?: string | null,
+    expectedWorkOrder?: WorkOrderRecord,
+    expectedFieldPhone?: string
+  ) {
+    const workOrder = expectedWorkOrder ?? await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
+    if (expectedFieldPhone) {
+      assertFieldSessionEditable(workOrder);
+    }
     assertFieldFactsComplete(workOrder);
     await this.deliveryEvidenceService.assertFieldEvidenceComplete(
       workOrder.orderId,
@@ -574,50 +941,98 @@ export class HandoverWorkOrderService {
       if (!isFieldResubmissionRequested(workOrder)) {
         throw new BadRequestException("客户已提交异议，需后台要求现场重提后才能继续。");
       }
-      const updated = await this.updateWorkOrder(id, {
-        fieldSubmittedAt: now,
+      const latestAttempt = await this.findLatestReviewAttempt(workOrder.id);
+      const changeSummary = await this.buildResubmissionChangeSummary(workOrder, latestAttempt);
+      if (!changeSummary.changed) {
+        throw new BadRequestException("请至少更新一项后台要求复检的现场资料。");
+      }
+      return this.prisma.$transaction(async (tx) => {
+        const updated = await this.updateWorkOrderVersioned(workOrder, {
+          adminReviewStatus: VehicleHandoverAdminReviewStatus.RESUBMITTED_PENDING_ADMIN,
+          fieldSubmittedAt: now,
+          metadata: mergeMetadata(workOrder.metadata, {
+            fieldSubmittedBy: actorId ?? null,
+            handoverReviewResubmittedAt: now.toISOString(),
+            handoverReviewResubmissionChangeSummary: changeSummary,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN
+          }),
+          status: "CUSTOMER_OBJECTED"
+        }, tx);
+        if (expectedFieldPhone && !isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
+          throw new UnauthorizedException("No access to this field handover work order.");
+        }
+        const attempt = await this.upsertLatestReviewAttempt(updated, "RESUBMITTED_PENDING_ADMIN", {
+          adminStatus: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
+          fieldSubmittedAt: now,
+          metadata: toJsonValue(mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
+            resubmissionChangeSummary: changeSummary,
+            resubmittedEvidenceSnapshot: changeSummary.currentEvidenceSnapshot,
+            resubmittedFieldFactsSnapshot: changeSummary.currentFieldFactsSnapshot
+          }))
+        }, {}, tx);
+        await this.recordEvent(updated, VehicleHandoverEventType.FIELD_RESUBMITTED, {
+          actorDisplay,
+          actorId,
+          actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+          detail: {
+            changedEvidenceItemIds: changeSummary.changedEvidenceItemIds,
+            changedFieldKeys: changeSummary.changedFieldKeys
+          },
+          reviewAttemptId: attempt ? String(attempt.id) : null
+        }, tx);
+        return updated;
+      });
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await this.updateWorkOrderVersioned(workOrder, {
+        adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
+        customerReviewStartedAt: workOrder.customerReviewStartedAt ?? now,
+        fieldSubmittedAt: workOrder.fieldSubmittedAt ?? now,
         metadata: mergeMetadata(workOrder.metadata, {
           fieldSubmittedBy: actorId ?? null,
-          handoverReviewResubmittedAt: now.toISOString(),
-          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN
+          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
         }),
-        status: "CUSTOMER_OBJECTED"
-      });
-      await this.upsertLatestReviewAttempt(updated, "RESUBMITTED_PENDING_ADMIN", {
-        adminStatus: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
-        fieldSubmittedAt: now
-      });
+        status: "CUSTOMER_REVIEWING"
+      }, tx);
+      if (expectedFieldPhone && !isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
+        throw new UnauthorizedException("No access to this field handover work order.");
+      }
+      const attempt = await this.upsertLatestReviewAttempt(updated, "CUSTOMER_REVIEWING", {
+        adminStatus: null,
+        customerReviewStartedAt: updated.customerReviewStartedAt ?? now,
+        fieldSubmittedAt: updated.fieldSubmittedAt ?? now
+      }, { refreshSnapshot: true }, tx);
+      await this.recordEvent(updated, VehicleHandoverEventType.FIELD_SUBMITTED, {
+        actorDisplay,
+        actorId,
+        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+        reviewAttemptId: attempt ? String(attempt.id) : null
+      }, tx);
       return updated;
-    }
-    const updated = await this.updateWorkOrder(id, {
-      customerReviewStartedAt: workOrder.customerReviewStartedAt ?? now,
-      fieldSubmittedAt: workOrder.fieldSubmittedAt ?? now,
-      metadata: mergeMetadata(workOrder.metadata, {
-        fieldSubmittedBy: actorId ?? null,
-        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
-      }),
-      status: "CUSTOMER_REVIEWING"
     });
-    await this.upsertLatestReviewAttempt(updated, "CUSTOMER_REVIEWING", {
-      adminStatus: null,
-      customerReviewStartedAt: updated.customerReviewStartedAt ?? now,
-      fieldSubmittedAt: updated.fieldSubmittedAt ?? now
-    });
-    return updated;
   }
 
   async submitEvidenceByToken(token: string) {
     const workOrder = await this.resolveExternalWorkOrder(token);
-    return this.submitEvidence(workOrder.id, workOrder.externalOperatorName ?? "external");
+    return this.submitEvidence(
+      workOrder.id,
+      undefined,
+      workOrder.externalOperatorName ?? "external",
+      workOrder
+    );
   }
 
   async startCustomerReview(id: string, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    return this.updateWorkOrder(id, {
+    assertStatusIn(workOrder, ["EVIDENCE_SUBMITTED", "CUSTOMER_REVIEWING"], "当前工单尚不能进入客户复核。");
+    return this.updateWorkOrderWithEvent(workOrder, {
       customerReviewStartedAt: workOrder.customerReviewStartedAt ?? new Date(),
       metadata: mergeMetadata(workOrder.metadata, { customerReviewStartedBy: actorId ?? null }),
       status: "CUSTOMER_REVIEWING"
+    }, VehicleHandoverEventType.CUSTOMER_REVIEW_STARTED, {
+      actorId,
+      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM
     });
   }
 
@@ -641,23 +1056,31 @@ export class HandoverWorkOrderService {
       toFieldEvidenceState(workOrder)
     );
     const confirmedAt = workOrder.customerConfirmedAt ?? new Date();
-    const updated = await this.updateWorkOrder(id, {
-      customerConfirmedAt: confirmedAt,
-      customerObjectedAt: null,
-      customerObjectionReason: null,
-      metadata: mergeMetadata(workOrder.metadata, {
-        customerConfirmedBy: customerId,
-        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESOLVED
-      }),
-      status: "CUSTOMER_CONFIRMED"
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await this.updateWorkOrderVersioned(workOrder, {
+        adminReviewStatus: VehicleHandoverAdminReviewStatus.RESOLVED,
+        customerConfirmedAt: confirmedAt,
+        customerObjectedAt: null,
+        customerObjectionReason: null,
+        metadata: mergeMetadata(workOrder.metadata, {
+          customerConfirmedBy: customerId,
+          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESOLVED
+        }),
+        status: "CUSTOMER_CONFIRMED"
+      }, tx);
+      const attempt = await this.upsertLatestReviewAttempt(updated, "CUSTOMER_CONFIRMED", {
+        adminStatus: ADMIN_REVIEW_STATUS_RESOLVED,
+        customerConfirmedAt: confirmedAt,
+        resolvedAt: confirmedAt,
+        resolvedById: null
+      }, {}, tx);
+      await this.recordEvent(updated, VehicleHandoverEventType.CUSTOMER_CONFIRMED, {
+        actorId: customerId,
+        actorType: VehicleHandoverEventActorType.CUSTOMER,
+        reviewAttemptId: attempt ? String(attempt.id) : null
+      }, tx);
+      return updated;
     });
-    await this.upsertLatestReviewAttempt(updated, "CUSTOMER_CONFIRMED", {
-      adminStatus: ADMIN_REVIEW_STATUS_RESOLVED,
-      customerConfirmedAt: confirmedAt,
-      resolvedAt: confirmedAt,
-      resolvedById: null
-    });
-    return updated;
   }
 
   async customerObject(id: string, customerId: string, reason: string, details?: string | null) {
@@ -676,94 +1099,151 @@ export class HandoverWorkOrderService {
     const now = new Date();
     const objectionReason = normalizeRequiredText(reason, "请填写客户异议原因。");
     const objectionDetails = normalizeOptionalText(details);
-    const updated = await this.updateWorkOrder(id, {
-      customerObjectedAt: now,
-      customerObjectionReason: objectionReason,
-      metadata: mergeMetadata(workOrder.metadata, {
-        customerObjectedBy: customerId,
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await this.updateWorkOrderVersioned(workOrder, {
+        adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
+        customerObjectedAt: now,
+        customerObjectionReason: objectionReason,
+        metadata: mergeMetadata(workOrder.metadata, {
+          customerObjectedBy: customerId,
+          customerObjectionDetails: objectionDetails,
+          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
+        }),
+        status: "CUSTOMER_OBJECTED"
+      }, tx);
+      const attempt = await this.upsertLatestReviewAttempt(updated, "CUSTOMER_OBJECTED", {
+        adminStatus: null,
+        customerObjectedAt: now,
         customerObjectionDetails: objectionDetails,
-        [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
-      }),
-      status: "CUSTOMER_OBJECTED"
+        customerObjectionReason: objectionReason
+      }, {}, tx);
+      await this.recordEvent(updated, VehicleHandoverEventType.CUSTOMER_OBJECTED, {
+        actorId: customerId,
+        actorType: VehicleHandoverEventActorType.CUSTOMER,
+        detail: {
+          details: objectionDetails,
+          reason: objectionReason
+        },
+        reviewAttemptId: attempt ? String(attempt.id) : null
+      }, tx);
+      return updated;
     });
-    await this.upsertLatestReviewAttempt(updated, "CUSTOMER_OBJECTED", {
-      adminStatus: null,
-      customerObjectedAt: now,
-      customerObjectionDetails: objectionDetails,
-      customerObjectionReason: objectionReason
-    });
-    return updated;
   }
 
   async markCustomerSigned(id: string, signedAt: Date, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    return this.updateWorkOrder(id, {
+    assertStatusIn(workOrder, ["CUSTOMER_CONFIRMED", "SIGNING", "CUSTOMER_SIGNED"], "客户尚不能进入已签署状态。");
+    return this.updateWorkOrderWithEvent(workOrder, {
       fieldCompletedAt: workOrder.fieldCompletedAt ?? signedAt,
       metadata: mergeMetadata(workOrder.metadata, { customerSignedMarkedBy: actorId ?? null }),
       status: "CUSTOMER_SIGNED"
+    }, VehicleHandoverEventType.CUSTOMER_SIGNED, {
+      actorId,
+      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM,
+      detail: { signedAt: signedAt.toISOString() }
     });
   }
 
   async markPlatformSealed(id: string, sealedAt: Date, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    return this.updateWorkOrder(id, {
+    assertStatusIn(workOrder, ["CUSTOMER_SIGNED", "PLATFORM_SEALED"], "客户签署完成后才能执行平台盖章。");
+    return this.updateWorkOrderWithEvent(workOrder, {
       metadata: mergeMetadata(workOrder.metadata, {
         platformSealedAt: sealedAt.toISOString(),
         platformSealedMarkedBy: actorId ?? null
       }),
       status: "PLATFORM_SEALED"
+    }, VehicleHandoverEventType.PLATFORM_SEALED, {
+      actorId,
+      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM,
+      detail: { sealedAt: sealedAt.toISOString() }
     });
   }
 
   async markFieldCompleted(id: string, completedAt: Date, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    return this.updateWorkOrder(id, {
+    assertStatusIn(workOrder, ["PLATFORM_SEALED", "FIELD_COMPLETED"], "平台盖章完成后才能完成现场交接。");
+    return this.updateWorkOrderWithEvent(workOrder, {
       fieldCompletedAt: workOrder.fieldCompletedAt ?? completedAt,
       metadata: mergeMetadata(workOrder.metadata, { fieldCompletedBy: actorId ?? null }),
       status: "FIELD_COMPLETED"
+    }, VehicleHandoverEventType.FIELD_COMPLETED, {
+      actorId,
+      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM,
+      detail: { completedAt: completedAt.toISOString() }
     });
   }
 
   async markOpsReviewPending(id: string, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     assertCanMarkOpsReviewPending(workOrder);
-    return this.updateWorkOrder(id, {
+    return this.updateWorkOrderWithEvent(workOrder, {
       metadata: mergeMetadata(workOrder.metadata, { opsReviewRequestedBy: actorId ?? null }),
       opsReviewStatus: "PENDING",
       status: "OPS_REVIEW_PENDING"
+    }, VehicleHandoverEventType.OPS_REVIEW_UPDATED, {
+      actorId,
+      actorType: VehicleHandoverEventActorType.ADMIN,
+      detail: { status: "PENDING" }
     });
   }
 
   async markOpsReviewApproved(id: string, reviewerId: string, notes?: string | null) {
-    return this.updateWorkOrder(id, {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    assertOpsReviewPending(workOrder);
+    return this.updateWorkOrderWithEvent(workOrder, {
       opsReviewNotes: normalizeOptionalText(notes),
       opsReviewStatus: "APPROVED",
       opsReviewedAt: new Date(),
       opsReviewedBy: reviewerId,
       status: "OPS_REVIEWED"
+    }, VehicleHandoverEventType.OPS_REVIEW_UPDATED, {
+      actorId: reviewerId,
+      actorType: VehicleHandoverEventActorType.ADMIN,
+      detail: {
+        notes: normalizeOptionalText(notes),
+        status: "APPROVED"
+      }
     });
   }
 
   async markOpsReviewRejected(id: string, reviewerId: string, notes?: string | null) {
-    return this.updateWorkOrder(id, {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    assertOpsReviewPending(workOrder);
+    return this.updateWorkOrderWithEvent(workOrder, {
       opsReviewNotes: normalizeOptionalText(notes),
       opsReviewStatus: "REJECTED",
       opsReviewedAt: new Date(),
       opsReviewedBy: reviewerId,
       status: "OPS_REVIEWED"
+    }, VehicleHandoverEventType.OPS_REVIEW_UPDATED, {
+      actorId: reviewerId,
+      actorType: VehicleHandoverEventActorType.ADMIN,
+      detail: {
+        notes: normalizeOptionalText(notes),
+        status: "REJECTED"
+      }
     });
   }
 
   async voidOrCancel(id: string, status: Extract<WorkOrderStatus, "VOIDED" | "FAILED" | "CANCELLED">, actorId?: string, reason?: string | null) {
-    return this.updateWorkOrder(id, {
-      metadata: mergeMetadata((await this.getWorkOrderOrThrow(id)).metadata, {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    return this.updateWorkOrderWithEvent(workOrder, {
+      metadata: mergeMetadata(workOrder.metadata, {
         terminalReason: normalizeOptionalText(reason),
         terminalUpdatedBy: actorId ?? null
       }),
       status
+    }, VehicleHandoverEventType.WORK_ORDER_TERMINATED, {
+      actorId,
+      actorType: VehicleHandoverEventActorType.ADMIN,
+      detail: {
+        reason: normalizeOptionalText(reason),
+        status
+      }
     });
   }
 
@@ -815,7 +1295,7 @@ export class HandoverWorkOrderService {
     if (isTerminalWorkOrderStatus(workOrder.status)) {
       throw new BadRequestException("交付工单已终止。");
     }
-    if (getHandoverReviewAdminStatus(workOrder.metadata) === ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN) {
+    if (getHandoverReviewAdminStatus(workOrder) === ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN) {
       throw new BadRequestException("现场资料已重新提交，等待后台送回客户复核。");
     }
     if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
@@ -857,8 +1337,12 @@ export class HandoverWorkOrderService {
     return workOrder;
   }
 
-  private async assertNoActiveWorkOrder(orderId: string, handoverType: HandoverType) {
-    const existing = await this.prisma.vehicleHandoverWorkOrder.findFirst({
+  private async assertNoActiveWorkOrder(
+    orderId: string,
+    handoverType: HandoverType,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const existing = await db.vehicleHandoverWorkOrder.findFirst({
       where: {
         handoverType,
         orderId,
@@ -921,6 +1405,7 @@ export class HandoverWorkOrderService {
       },
       where: {
         id: evidenceFileId,
+        lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE,
         evidenceItem: {
           orderId: workOrder.orderId,
           ...(workOrder.handoverId
@@ -947,13 +1432,14 @@ export class HandoverWorkOrderService {
   }
 
   private async toAdminWorkOrderSummary(workOrder: WorkOrderRecord) {
-    const [order, evidenceChecklist, reviewAttempts] = await Promise.all([
+    const [order, evidenceChecklist, reviewAttempts, events] = await Promise.all([
       this.getOrderOrThrow(workOrder.orderId),
       this.deliveryEvidenceService.getChecklist({
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }),
-      this.listReviewAttempts(workOrder.id)
+      this.listReviewAttempts(workOrder.id),
+      this.listEvents(workOrder.id)
     ]);
 
     return {
@@ -967,6 +1453,7 @@ export class HandoverWorkOrderService {
       customerReviewStartedAt: workOrder.customerReviewStartedAt,
       deliveryLocation: workOrder.deliveryLocation,
       evidenceProgress: summarizeEvidenceChecklist(evidenceChecklist),
+      events: events.map(toSafeHandoverEvent),
       fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
       fieldSubmittedAt: workOrder.fieldSubmittedAt,
       handoverId: workOrder.handoverId,
@@ -978,8 +1465,10 @@ export class HandoverWorkOrderService {
         phoneMasked: maskPhone(workOrder.externalOperatorPhone),
         type: workOrder.operatorType ?? null
       },
+      orderId: workOrder.orderId,
       orderNo: order.orderNo,
       reviewAttempts: reviewAttempts.map(toSafeReviewAttempt),
+      reviewVersion: workOrder.reviewVersion ?? 0,
       scheduledAt: workOrder.scheduledAt,
       status: workOrder.status,
       vehicle: {
@@ -1024,8 +1513,8 @@ export class HandoverWorkOrderService {
     };
   }
 
-  private getReviewAttemptModel() {
-    return (this.prisma as unknown as {
+  private getReviewAttemptModel(db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    return (db as unknown as {
       vehicleHandoverReviewAttempt?: {
         create: (args: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>;
         findFirst: (args: Record<string, unknown>) => Promise<null | Record<string, unknown>>;
@@ -1046,8 +1535,11 @@ export class HandoverWorkOrderService {
     });
   }
 
-  private async findLatestReviewAttempt(workOrderId: string) {
-    const model = this.getReviewAttemptModel();
+  private async findLatestReviewAttempt(
+    workOrderId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const model = this.getReviewAttemptModel(db);
     if (!model) {
       return null;
     }
@@ -1060,13 +1552,14 @@ export class HandoverWorkOrderService {
   private async createReviewAttempt(
     workOrder: WorkOrderRecord,
     status: string,
-    data: Record<string, unknown> = {}
+    data: Record<string, unknown> = {},
+    db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
-    const model = this.getReviewAttemptModel();
+    const model = this.getReviewAttemptModel(db);
     if (!model) {
       return null;
     }
-    const latest = await this.findLatestReviewAttempt(workOrder.id);
+    const latest = await this.findLatestReviewAttempt(workOrder.id, db);
     return model.create({
       data: compactUndefined({
         ...(await this.buildReviewAttemptSnapshot(workOrder)),
@@ -1083,19 +1576,21 @@ export class HandoverWorkOrderService {
   private async upsertLatestReviewAttempt(
     workOrder: WorkOrderRecord,
     status: string,
-    data: Record<string, unknown> = {}
+    data: Record<string, unknown> = {},
+    options: { refreshSnapshot?: boolean } = {},
+    db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
-    const model = this.getReviewAttemptModel();
+    const model = this.getReviewAttemptModel(db);
     if (!model) {
       return null;
     }
-    const latest = await this.findLatestReviewAttempt(workOrder.id);
+    const latest = await this.findLatestReviewAttempt(workOrder.id, db);
     if (!latest) {
-      return this.createReviewAttempt(workOrder, status, data);
+      return this.createReviewAttempt(workOrder, status, data, db);
     }
     return model.update({
       data: compactUndefined({
-        ...(await this.buildReviewAttemptSnapshot(workOrder)),
+        ...(options.refreshSnapshot ? await this.buildReviewAttemptSnapshot(workOrder) : {}),
         ...data,
         status
       }),
@@ -1128,10 +1623,116 @@ export class HandoverWorkOrderService {
       }),
       fieldSubmittedAt: workOrder.fieldSubmittedAt ?? null,
       metadata: toJsonValue({
-        adminStatus: getHandoverReviewAdminStatus(workOrder.metadata),
+        adminStatus: getHandoverReviewAdminStatus(workOrder),
         sourceWorkOrderStatus: workOrder.status
       })
     };
+  }
+
+  private async buildResubmissionChangeSummary(
+    workOrder: WorkOrderRecord,
+    latestAttempt: null | Record<string, unknown>
+  ) {
+    if (!latestAttempt) {
+      throw new BadRequestException("未找到本次客户复核记录，请后台重新发起复检。");
+    }
+    const attemptMetadata = asRecord(readUnknownRecordValue(latestAttempt, "metadata"));
+    const baseline = asRecord(attemptMetadata?.resubmissionBaseline);
+    const baselineEvidenceSnapshot = baseline?.evidenceSnapshot ?? latestAttempt.evidenceSnapshot ?? null;
+    const baselineFieldFactsSnapshot = baseline?.fieldFactsSnapshot ?? latestAttempt.fieldFactsSnapshot ?? null;
+    const requestedEvidenceItemIds = readStringArray(attemptMetadata, "resubmissionRequestedEvidenceItemIds");
+    const requestedFieldKeys = readStringArray(attemptMetadata, "resubmissionRequestedFieldKeys")
+      .filter(isHandoverFieldFactKey);
+    const current = await this.buildReviewAttemptSnapshot(workOrder);
+    const baselineEvidence = evidenceItemFingerprintMap(baselineEvidenceSnapshot);
+    const currentEvidence = evidenceItemFingerprintMap(current.evidenceSnapshot);
+    const evidenceScope = requestedEvidenceItemIds.length > 0
+      ? requestedEvidenceItemIds
+      : Array.from(new Set([...baselineEvidence.keys(), ...currentEvidence.keys()]));
+    const changedEvidenceItemIds = evidenceScope.filter(
+      (itemId) => baselineEvidence.get(itemId) !== currentEvidence.get(itemId)
+    );
+    const baselineFacts = asRecord(baselineFieldFactsSnapshot) ?? {};
+    const currentFacts = asRecord(current.fieldFactsSnapshot) ?? {};
+    const fieldScope = requestedFieldKeys.length > 0 ? requestedFieldKeys : [...HANDOVER_FIELD_FACT_KEYS];
+    const changedFieldKeys = fieldScope.filter(
+      (key) => stableSerialize(baselineFacts[key]) !== stableSerialize(currentFacts[key])
+    );
+
+    return {
+      changed: changedEvidenceItemIds.length > 0 || changedFieldKeys.length > 0,
+      changedEvidenceItemIds,
+      changedFieldKeys,
+      currentEvidenceSnapshot: current.evidenceSnapshot,
+      currentFieldFactsSnapshot: current.fieldFactsSnapshot
+    };
+  }
+
+  private async assertEvidenceItemTargetsBelongToWorkOrder(
+    workOrder: WorkOrderRecord,
+    targetEvidenceItemIds: string[]
+  ) {
+    if (targetEvidenceItemIds.length === 0) {
+      return;
+    }
+    const checklist = await this.deliveryEvidenceService.getChecklist({
+      handoverId: workOrder.handoverId ?? null,
+      orderId: workOrder.orderId
+    });
+    const validIds = new Set(getChecklistItems(checklist).map((item) => readString(item, "id")).filter(Boolean));
+    if (targetEvidenceItemIds.some((itemId) => !validIds.has(itemId))) {
+      throw new BadRequestException("复检资料项不属于当前交接工单。");
+    }
+  }
+
+  private getEventModel(db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    return (db as unknown as {
+      vehicleHandoverEvent?: {
+        create: (args: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>;
+        findMany: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+      };
+    }).vehicleHandoverEvent;
+  }
+
+  private async recordEvent(
+    workOrder: WorkOrderRecord,
+    eventType: VehicleHandoverEventType,
+    input: {
+      actorId?: string | null;
+      actorDisplay?: string | null;
+      actorType: VehicleHandoverEventActorType;
+      detail?: Record<string, unknown>;
+      reviewAttemptId?: string | null;
+    },
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const model = this.getEventModel(db);
+    if (!model) {
+      return null;
+    }
+    return model.create({
+      data: compactUndefined({
+        actorDisplay: normalizeOptionalText(input.actorDisplay),
+        actorId: input.actorId ?? null,
+        actorType: input.actorType,
+        detail: input.detail ? toJsonValue(input.detail) : undefined,
+        eventType,
+        orderId: workOrder.orderId,
+        reviewAttemptId: input.reviewAttemptId ?? null,
+        workOrderId: workOrder.id
+      })
+    });
+  }
+
+  private async listEvents(workOrderId: string) {
+    const model = this.getEventModel();
+    if (!model) {
+      return [];
+    }
+    return model.findMany({
+      orderBy: { createdAt: "asc" },
+      where: { workOrderId }
+    });
   }
 
   private async assertUserExists(userId: string) {
@@ -1170,11 +1771,44 @@ export class HandoverWorkOrderService {
     return this.storageService;
   }
 
-  private async getOrCreateDraftHandover(orderId: string, actorId?: string) {
-    if (this.deliveryHandoverService) {
-      return this.deliveryHandoverService.getOrCreateDraftHandover(orderId, actorId);
+  private storeFieldEvidenceFile(
+    workOrder: WorkOrderRecord,
+    file: UploadedFieldEvidenceFile,
+    mimeType: string
+  ) {
+    const storage = this.getStorageService();
+    const common = {
+      contentType: mimeType,
+      metadata: { originalName: file.originalname },
+      orderId: workOrder.orderId,
+      originalName: file.originalname,
+      workOrderId: workOrder.id
+    };
+    if (file.path) {
+      return storage.putDeliveryEvidenceFileFromPath({
+        ...common,
+        filePath: file.path,
+        sizeBytes: file.size
+      });
     }
-    const handover = await this.prisma.vehicleDeliveryHandover.findFirst({
+    if (file.buffer?.length) {
+      return storage.putDeliveryEvidenceFile({
+        ...common,
+        buffer: file.buffer
+      });
+    }
+    throw new BadRequestException("请上传现场证据文件。");
+  }
+
+  private async getOrCreateDraftHandover(
+    orderId: string,
+    actorId?: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    if (this.deliveryHandoverService) {
+      return this.deliveryHandoverService.getOrCreateDraftHandover(orderId, actorId, db);
+    }
+    const handover = await db.vehicleDeliveryHandover.findFirst({
       orderBy: { createdAt: "desc" },
       where: {
         deletedAt: null,
@@ -1190,8 +1824,9 @@ export class HandoverWorkOrderService {
 
   private async resolveExternalWorkOrder(token: string) {
     const normalized = normalizeRequiredText(token, "缺少外部访问 token。");
+    const accessTokenHash = hashAccessToken(normalized);
     const workOrder = await this.prisma.vehicleHandoverWorkOrder.findFirst({
-      where: { accessTokenHash: hashAccessToken(normalized) }
+      where: { accessTokenHash }
     });
     if (!workOrder || workOrder.operatorType !== "EXTERNAL" || !workOrder.accessTokenExpiresAt) {
       throw new UnauthorizedException("外部交付访问已失效。");
@@ -1201,10 +1836,37 @@ export class HandoverWorkOrderService {
     }
     this.assertMutable(workOrder);
     const now = new Date();
-    return this.updateWorkOrder(workOrder.id, {
-      firstAccessedAt: workOrder.firstAccessedAt ?? now,
-      lastAccessedAt: now
+    const result = await this.prisma.vehicleHandoverWorkOrder.updateMany({
+      data: {
+        firstAccessedAt: workOrder.firstAccessedAt ?? now,
+        lastAccessedAt: now
+      },
+      where: {
+        accessTokenExpiresAt: { gt: now },
+        accessTokenHash,
+        accessTokenRevokedAt: null,
+        id: workOrder.id,
+        operatorType: "EXTERNAL"
+      }
     });
+    if (result.count !== 1) {
+      throw new UnauthorizedException("外部交付访问已失效。");
+    }
+    const current = await this.prisma.vehicleHandoverWorkOrder.findUnique({
+      where: { id: workOrder.id }
+    });
+    if (
+      !current ||
+      current.accessTokenHash !== accessTokenHash ||
+      current.operatorType !== "EXTERNAL" ||
+      current.accessTokenRevokedAt ||
+      !current.accessTokenExpiresAt ||
+      current.accessTokenExpiresAt.getTime() <= Date.now()
+    ) {
+      throw new UnauthorizedException("外部交付访问已失效。");
+    }
+    this.assertMutable(current);
+    return current;
   }
 
   private async toLimitedTaskView(workOrder: WorkOrderRecord) {
@@ -1246,7 +1908,7 @@ export class HandoverWorkOrderService {
         displayName: order.customer?.name ?? null,
         mobileMasked: maskPhone(order.customer?.mobile)
       },
-      adminReviewStatus: getHandoverReviewAdminStatus(workOrder.metadata),
+      adminReviewStatus: getHandoverReviewAdminStatus(workOrder),
       deliveryLocation: workOrder.deliveryLocation,
       evidenceProgress: summarizeEvidenceChecklist(evidenceChecklist),
       fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
@@ -1266,16 +1928,21 @@ export class HandoverWorkOrderService {
   }
 
   private async toFieldTaskDetail(workOrder: WorkOrderRecord) {
-    const listItem = await this.toFieldTaskListItem(workOrder);
-    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
-      handoverId: workOrder.handoverId ?? null,
-      orderId: workOrder.orderId
-    });
+    const evidenceRouteBase =
+      `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/evidence-files`;
+    const [listItem, evidenceChecklist, latestAttempt] = await Promise.all([
+      this.toFieldTaskListItem(workOrder),
+      this.deliveryEvidenceService.getChecklist({
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId
+      }),
+      this.findLatestReviewAttempt(workOrder.id)
+    ]);
 
     return {
       ...listItem,
       fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
-      evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist),
+      evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist, evidenceRouteBase),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
         damageDeclared: workOrder.damageDeclared,
@@ -1288,7 +1955,8 @@ export class HandoverWorkOrderService {
         handoverMileageKm: workOrder.handoverMileageKm,
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
         scheduledAt: workOrder.scheduledAt
-      }
+      },
+      reviewContext: toFieldReviewContext(workOrder, latestAttempt, evidenceChecklist)
     };
   }
 
@@ -1298,12 +1966,95 @@ export class HandoverWorkOrderService {
       where: { id }
     });
   }
+
+  private updateWorkOrderWithEvent(
+    workOrder: WorkOrderRecord,
+    data: Record<string, unknown>,
+    eventType: VehicleHandoverEventType,
+    event: {
+      actorId?: string | null;
+      actorDisplay?: string | null;
+      actorType: VehicleHandoverEventActorType;
+      detail?: Record<string, unknown>;
+      reviewAttemptId?: string | null;
+    }
+  ) {
+    return this.runSerializableTransaction(async (tx) => {
+      const updated = await this.updateWorkOrderVersioned(workOrder, data, tx);
+      await this.recordEvent(updated, eventType, event, tx);
+      return updated;
+    });
+  }
+
+  private async runSerializableTransaction<T>(
+    callback: (transaction: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    try {
+      return await this.prisma.$transaction(callback, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+      });
+    } catch (error) {
+      if (isPrismaSerializationConflict(error)) {
+        throw new ConflictException("交接状态已被其他操作更新，请刷新后重试。");
+      }
+      throw error;
+    }
+  }
+
+  private async updateWorkOrderVersioned(
+    workOrder: WorkOrderRecord,
+    data: Record<string, unknown>,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ): Promise<WorkOrderRecord> {
+    const expectedVersion = workOrder.reviewVersion ?? 0;
+    const result = await db.vehicleHandoverWorkOrder.updateMany({
+      data: compactUndefined({
+        ...data,
+        reviewVersion: { increment: 1 }
+      }),
+      where: {
+        id: workOrder.id,
+        reviewVersion: expectedVersion
+      }
+    });
+    if (result.count !== 1) {
+      throw new ConflictException("交接复核状态已更新，请刷新后重试。");
+    }
+    const updated = await db.vehicleHandoverWorkOrder.findUnique({
+      where: { id: workOrder.id }
+    });
+    if (!updated) {
+      throw new NotFoundException("交接工单不存在。");
+    }
+    return updated as WorkOrderRecord;
+  }
 }
 
 function assertFieldFactsComplete(workOrder: WorkOrderRecord) {
   const blockingReasons = getFieldFactsBlockingReasons(workOrder);
   if (blockingReasons.length > 0) {
     throw new BadRequestException(blockingReasons[0]);
+  }
+}
+
+function assertStatusIn(workOrder: WorkOrderRecord, allowed: string[], message: string) {
+  if (!allowed.includes(workOrder.status)) {
+    throw new BadRequestException(message);
+  }
+}
+
+function isPrismaSerializationConflict(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2034"
+  );
+}
+
+function assertOpsReviewPending(workOrder: WorkOrderRecord) {
+  if (workOrder.status !== "OPS_REVIEW_PENDING" || workOrder.opsReviewStatus !== "PENDING") {
+    throw new BadRequestException("工单尚未进入运营复核待处理状态。");
   }
 }
 
@@ -1392,6 +2143,7 @@ function toSafeEvidenceChecklist(checklist: unknown, routeBase?: string) {
 
 function toSafeEvidenceItem(item: Record<string, unknown>, routeBase?: string) {
   return {
+    allowsMultiple: readNullableBoolean(item, "allowsMultiple"),
     allowedMediaTypes: readStringArray(item, "allowedMediaTypes"),
     conditionKey: readNullableString(item, "conditionKey"),
     conditionValue: readNullableString(item, "conditionValue"),
@@ -1434,6 +2186,7 @@ function toSafeEvidenceFile(file: Record<string, unknown>, routeBase?: string) {
       : null,
     fileId: readString(file, "fileId"),
     id: readString(file, "id"),
+    lifecycleStatus: readString(file, "lifecycleStatus"),
     mimeType,
     mediaType: readString(file, "mediaType"),
     previewAvailable,
@@ -1490,6 +2243,10 @@ function readUnknown(record: Record<string, unknown>, key: string) {
   return record[key] ?? null;
 }
 
+function readUnknownRecordValue(record: null | Record<string, unknown>, key: string) {
+  return record?.[key] ?? null;
+}
+
 function readNumberLike(record: Record<string, unknown>, key: string) {
   return toNumberOrNull(record[key]);
 }
@@ -1500,13 +2257,60 @@ function readMetadataString(metadata: unknown, key: string) {
   return typeof value === "string" ? value : null;
 }
 
+function uniqueStrings(values: unknown) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return Array.from(new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0)));
+}
+
+function uniqueFieldFactKeys(values: unknown): HandoverFieldFactKey[] {
+  return uniqueStrings(values).filter(isHandoverFieldFactKey);
+}
+
+function isHandoverFieldFactKey(value: string): value is HandoverFieldFactKey {
+  return HANDOVER_FIELD_FACT_KEYS.includes(value as HandoverFieldFactKey);
+}
+
+function evidenceItemFingerprintMap(snapshot: unknown) {
+  const map = new Map<string, string>();
+  for (const item of getChecklistItems(snapshot)) {
+    const itemId = readString(item, "id");
+    if (!itemId) {
+      continue;
+    }
+    const files = getEvidenceFiles(item)
+      .map((file) => ({
+        evidenceFileId: readString(file, "evidenceFileId") ?? readString(file, "id"),
+        fileId: readString(file, "fileId"),
+        mediaType: readString(file, "mediaType")
+      }))
+      .sort((left, right) => stableSerialize(left).localeCompare(stableSerialize(right)));
+    map.set(itemId, stableSerialize({
+      declaredNoDamage: readNullableBoolean(item, "declaredNoDamage"),
+      files
+    }));
+  }
+  return map;
+}
+
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSerialize).join(",")}]`;
+  }
+  if (isPlainObject(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
 function asRecord(value: unknown) {
   return isPlainObject(value) ? value : null;
 }
 
 function toObjectionView(workOrder: WorkOrderRecord) {
   return {
-    adminStatus: getHandoverReviewAdminStatus(workOrder.metadata),
+    adminStatus: getHandoverReviewAdminStatus(workOrder),
     details: readMetadataString(workOrder.metadata, "customerObjectionDetails"),
     objectedAt: workOrder.customerObjectedAt ?? null,
     reason: workOrder.customerObjectionReason ?? null
@@ -1514,18 +2318,56 @@ function toObjectionView(workOrder: WorkOrderRecord) {
 }
 
 function toAdminReviewView(workOrder: WorkOrderRecord, reviewAttempts: Array<Record<string, unknown>>) {
+  const status = getHandoverReviewAdminStatus(workOrder);
   return {
-    canRequestResubmission: workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt),
+    canAcknowledge:
+      (workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt)) &&
+      status === VehicleHandoverAdminReviewStatus.NONE,
+    canRequestResubmission:
+      (workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt)) &&
+      status === VehicleHandoverAdminReviewStatus.ACKNOWLEDGED,
     canSendBackToCustomerReview:
       (workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt)) &&
-      getHandoverReviewAdminStatus(workOrder.metadata) === ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
+      status === ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
     currentAttemptNo: reviewAttempts.length > 0 ? toNumberOrNull(reviewAttempts[reviewAttempts.length - 1]?.attemptNo) : null,
-    status: getHandoverReviewAdminStatus(workOrder.metadata),
+    status,
     totalAttempts: reviewAttempts.length
   };
 }
 
+function toFieldReviewContext(
+  workOrder: WorkOrderRecord,
+  latestAttempt: null | Record<string, unknown>,
+  checklist: unknown
+) {
+  if (!latestAttempt || workOrder.status !== "CUSTOMER_OBJECTED") {
+    return null;
+  }
+  const metadata = asRecord(latestAttempt.metadata);
+  const requestedEvidenceItemIds = readStringArray(metadata, "resubmissionRequestedEvidenceItemIds");
+  const requestedFieldKeys = readStringArray(metadata, "resubmissionRequestedFieldKeys");
+  const titleById = new Map(
+    getChecklistItems(checklist)
+      .map((item) => [readString(item, "id"), readString(item, "title")] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[0] && entry[1]))
+  );
+  return {
+    adminNote: readNullableString(latestAttempt, "adminNotes"),
+    adminStatus: getHandoverReviewAdminStatus(workOrder),
+    attemptNo: toNumberOrNull(latestAttempt.attemptNo),
+    customerObjectionDetails: readNullableString(latestAttempt, "customerObjectionDetails"),
+    customerObjectionReason:
+      readNullableString(latestAttempt, "customerObjectionReason") ?? workOrder.customerObjectionReason ?? null,
+    requestedEvidenceItems: requestedEvidenceItemIds.map((itemId) => ({
+      id: itemId,
+      title: titleById.get(itemId) ?? "现场资料"
+    })),
+    requestedFieldKeys
+  };
+}
+
 function toSafeReviewAttempt(attempt: Record<string, unknown>) {
+  const metadata = asRecord(attempt.metadata);
   return {
     adminAcknowledgedAt: readUnknown(attempt, "adminAcknowledgedAt"),
     adminNotes: readNullableString(attempt, "adminNotes"),
@@ -1537,11 +2379,27 @@ function toSafeReviewAttempt(attempt: Record<string, unknown>) {
     customerObjectionDetails: readNullableString(attempt, "customerObjectionDetails"),
     customerObjectionReason: readNullableString(attempt, "customerObjectionReason"),
     customerReviewStartedAt: readUnknown(attempt, "customerReviewStartedAt"),
+    evidenceSnapshot: readUnknown(attempt, "evidenceSnapshot"),
     fieldSubmittedAt: readUnknown(attempt, "fieldSubmittedAt"),
+    fieldFactsSnapshot: readUnknown(attempt, "fieldFactsSnapshot"),
     id: readString(attempt, "id"),
+    resubmissionChangeSummary: metadata?.resubmissionChangeSummary ?? null,
+    resubmissionRequestedEvidenceItemIds: readStringArray(metadata, "resubmissionRequestedEvidenceItemIds"),
+    resubmissionRequestedFieldKeys: readStringArray(metadata, "resubmissionRequestedFieldKeys"),
     resubmissionRequestedAt: readUnknown(attempt, "resubmissionRequestedAt"),
     sentBackToCustomerReviewAt: readUnknown(attempt, "sentBackToCustomerReviewAt"),
     status: readString(attempt, "status")
+  };
+}
+
+function toSafeHandoverEvent(event: Record<string, unknown>) {
+  return {
+    actorDisplay: readNullableString(event, "actorDisplay"),
+    actorType: readString(event, "actorType"),
+    createdAt: readUnknown(event, "createdAt"),
+    detail: readUnknown(event, "detail"),
+    eventType: readString(event, "eventType"),
+    id: readString(event, "id")
   };
 }
 
@@ -1550,17 +2408,21 @@ function nextAttemptNo(latest: null | Record<string, unknown>) {
   return (current ?? 0) + 1;
 }
 
-function getHandoverReviewAdminStatus(metadata: unknown) {
-  const status = readMetadataString(metadata, HANDOVER_REVIEW_ADMIN_STATUS_KEY);
-  return status ?? null;
+function getHandoverReviewAdminStatus(workOrder: WorkOrderRecord) {
+  const persisted = normalizeOptionalText(workOrder.adminReviewStatus);
+  if (persisted && persisted !== VehicleHandoverAdminReviewStatus.NONE) {
+    return persisted;
+  }
+  const legacy = readMetadataString(workOrder.metadata, HANDOVER_REVIEW_ADMIN_STATUS_KEY);
+  return legacy ?? persisted ?? VehicleHandoverAdminReviewStatus.NONE;
 }
 
 function isFieldResubmissionRequested(workOrder: WorkOrderRecord) {
-  return getHandoverReviewAdminStatus(workOrder.metadata) === ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED;
+  return getHandoverReviewAdminStatus(workOrder) === ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED;
 }
 
 function isPreviewableEvidenceMime(mimeType: null | string | undefined) {
-  return Boolean(mimeType && PREVIEWABLE_EVIDENCE_MIME_PREFIXES.some((prefix) => mimeType.startsWith(prefix)));
+  return Boolean(mimeType && PREVIEWABLE_EVIDENCE_MIME_TYPES.has(normalizeMimeType(mimeType)));
 }
 
 function toNumberOrNull(value: unknown) {
@@ -1600,12 +2462,80 @@ function assertDamageState(damageDeclared: unknown, noVisibleDamageDeclared: unk
 }
 
 function assertSupportedFieldEvidenceFile(file: UploadedFieldEvidenceFile) {
-  if (!file.buffer?.length) {
+  if (!hasUploadedFieldEvidenceContent(file)) {
     throw new BadRequestException("请上传现场证据文件。");
   }
-  if (!file.mimetype?.startsWith("image/") && !file.mimetype?.startsWith("video/")) {
-    throw new BadRequestException("现场证据仅支持图片或视频文件。");
+  const mediaType = fieldEvidenceMediaType(file);
+  if (!mediaType) {
+    throw new BadRequestException("现场证据仅支持安全的图片或视频文件。");
   }
+  const sizeBytes = Math.max(file.size, file.buffer?.length ?? 0);
+  if (mediaType === DeliveryEvidenceMediaType.PHOTO && sizeBytes > MAX_FIELD_PHOTO_SIZE_BYTES) {
+    throw new BadRequestException("图片不能超过 5MB。");
+  }
+  if (mediaType === DeliveryEvidenceMediaType.VIDEO && sizeBytes > MAX_FIELD_VIDEO_SIZE_BYTES) {
+    throw new BadRequestException("视频不能超过 200MB。");
+  }
+  return mediaType;
+}
+
+function hasUploadedFieldEvidenceContent(file: UploadedFieldEvidenceFile) {
+  return file.size > 0 && Boolean(file.path || file.buffer?.length);
+}
+
+async function cleanupUploadedFieldEvidenceTempFile(file: UploadedFieldEvidenceFile) {
+  if (!file.path) {
+    return;
+  }
+  try {
+    await unlink(file.path);
+  } catch {
+    return;
+  }
+}
+
+function fieldEvidenceMediaType(file: UploadedFieldEvidenceFile) {
+  const mimeType = normalizeMimeType(file.mimetype);
+  if (mimeType && mimeType !== "application/octet-stream") {
+    if (SAFE_FIELD_PHOTO_MIME_TYPES.has(mimeType)) {
+      return DeliveryEvidenceMediaType.PHOTO;
+    }
+    if (SAFE_FIELD_VIDEO_MIME_TYPES.has(mimeType)) {
+      return DeliveryEvidenceMediaType.VIDEO;
+    }
+    return null;
+  }
+  if (/\.(heic|heif|jpe?g|png|webp)$/i.test(file.originalname)) {
+    return DeliveryEvidenceMediaType.PHOTO;
+  }
+  if (/\.(m4v|mov|mp4|webm)$/i.test(file.originalname)) {
+    return DeliveryEvidenceMediaType.VIDEO;
+  }
+  return null;
+}
+
+function normalizedFieldEvidenceMimeType(file: UploadedFieldEvidenceFile) {
+  const mimeType = normalizeMimeType(file.mimetype);
+  if (SAFE_FIELD_PHOTO_MIME_TYPES.has(mimeType) || SAFE_FIELD_VIDEO_MIME_TYPES.has(mimeType)) {
+    return mimeType;
+  }
+  const extension = file.originalname.toLowerCase().split(".").pop();
+  return {
+    heic: "image/heic",
+    heif: "image/heif",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    m4v: "video/x-m4v",
+    mov: "video/quicktime",
+    mp4: "video/mp4",
+    png: "image/png",
+    webm: "video/webm",
+    webp: "image/webp"
+  }[extension ?? ""] ?? "application/octet-stream";
+}
+
+function normalizeMimeType(value: null | string | undefined) {
+  return (value ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "";
 }
 
 function toFieldEvidenceState(workOrder: WorkOrderRecord): DeliveryEvidenceFieldState {

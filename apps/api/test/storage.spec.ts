@@ -1,5 +1,5 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -34,6 +34,25 @@ describe("Storage providers", () => {
     expect(stored.size).toBe(5);
     expect(downloaded.contentLength).toBe(5);
     await expect(readStream(downloaded.stream)).resolves.toBe("hello");
+  });
+
+  it("copies disk-backed uploads without materializing the file as a Buffer", async () => {
+    const dir = await createTempDir();
+    const sourcePath = path.join(dir, "multer-upload.tmp");
+    await writeFile(sourcePath, "streamed video");
+    const provider = new LocalStorageProvider(config({ UPLOAD_LOCAL_DIR: dir }) as never);
+
+    const stored = await provider.putFile({
+      contentType: "video/mp4",
+      filePath: sourcePath,
+      key: "delivery-evidence/work-order-1/video.mp4",
+      originalName: "video.mp4",
+      sizeBytes: 14
+    });
+    const downloaded = await provider.getObject(stored.key);
+
+    expect(stored).toMatchObject({ driver: "local", size: 14 });
+    await expect(readStream(downloaded.stream)).resolves.toBe("streamed video");
   });
 
   it("rejects local path traversal", async () => {
@@ -252,6 +271,61 @@ describe("Storage providers", () => {
     expect(localStored.objectKey).toMatch(/^delivery-evidence\/work-order-1\/\d{4}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
     expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/delivery-evidence\/work-order-1\/\d{4}\//);
+  });
+
+  it("maps disk-backed field evidence to local or OSS providers", async () => {
+    const local = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putFile: vi.fn(async (input: { key: string; sizeBytes: number }) => ({
+        driver: "local" as const,
+        key: input.key,
+        size: input.sizeBytes
+      })),
+      putObject: vi.fn()
+    };
+    const oss = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putFile: vi.fn(async (input: { key: string; sizeBytes: number }) => ({
+        bucket: "private-bucket",
+        driver: "oss" as const,
+        key: input.key,
+        size: input.sizeBytes
+      })),
+      putObject: vi.fn()
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({ OSS_PREFIX: "subscription-saas/staging", UPLOAD_STORAGE_DRIVER: "oss" }) as never,
+      local as never,
+      oss as never
+    );
+
+    const input = {
+      filePath: "C:/tmp/multer-upload.tmp",
+      originalName: "walkaround.mp4",
+      orderId: "order-1",
+      sizeBytes: 200 * 1024 * 1024,
+      workOrderId: "work-order-1"
+    };
+    const localStored = await localService.putDeliveryEvidenceFileFromPath(input);
+    const ossStored = await ossService.putDeliveryEvidenceFileFromPath(input);
+
+    expect(local.putFile).toHaveBeenCalledWith(expect.objectContaining({
+      filePath: input.filePath,
+      sizeBytes: input.sizeBytes
+    }));
+    expect(oss.putFile).toHaveBeenCalledWith(expect.objectContaining({
+      filePath: input.filePath,
+      sizeBytes: input.sizeBytes
+    }));
+    expect(localStored.bucket).toBe("application-materials");
+    expect(ossStored.bucket).toBe("oss:private-bucket");
   });
 
   async function createTempDir() {

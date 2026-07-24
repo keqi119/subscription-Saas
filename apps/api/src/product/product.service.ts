@@ -27,6 +27,7 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
+  normalizeVehicleModelWriteCode,
   resolveVehicleModelDefinitionId,
   vehicleModelReadPathMatches,
   VehicleModelLegacyAdapter
@@ -1860,10 +1861,11 @@ function resolveVehicleModelForProductConfig(
   modelDefinition: ProductModelDefinition | null
 ) {
   if (modelDefinition) {
-    if (vehicleModel && vehicleModel !== modelDefinition.modelCode) {
-      throw new BadRequestException("车型主数据与 legacy 车型不一致");
-    }
-    return modelDefinition.modelCode;
+    return normalizeVehicleModelWriteCode(
+      modelDefinition,
+      vehicleModel,
+      "车型主数据与 legacy 车型不一致"
+    );
   }
 
   if (!vehicleModel) {

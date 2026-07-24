@@ -24,6 +24,7 @@ import {
   type PolicyTypeCoverage,
   resolveVehicleInsuranceCoverage
 } from "../common/vehicle-insurance-coverage";
+import { normalizeVehicleModelWriteCode } from "../common/vehicle-model-resolver";
 import { PrismaService } from "../prisma/prisma.service";
 import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
@@ -171,8 +172,7 @@ export class VehicleService {
       select: vehicleModelDefinitionSelect,
       where: {
         deletedAt: null,
-        enabled: true,
-        legacyVehicleModel: { not: null }
+        enabled: true
       }
     });
 
@@ -969,10 +969,11 @@ function resolveVehicleModelForWrite(
   modelDefinition: VehicleModelDefinitionForVehicle | null
 ) {
   if (modelDefinition) {
-    if (vehicleModel && vehicleModel !== modelDefinition.modelCode) {
-      throw new BadRequestException("车型主数据与 legacy 车型不一致");
-    }
-    return modelDefinition.modelCode;
+    return normalizeVehicleModelWriteCode(
+      modelDefinition,
+      vehicleModel,
+      "车型主数据与 legacy 车型不一致"
+    );
   }
 
   if (!vehicleModel) {

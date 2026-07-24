@@ -262,6 +262,39 @@ describe("product component model definitions", () => {
     });
   });
 
+  it("accepts a vehicle package legacy alias and normalizes it to modelCode", async () => {
+    const definition = makeModelDefinition({
+      id: "model-et5",
+      legacyVehicleModel: VehicleModel.ET5,
+      modelCode: "NIO_ET5"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [definition] });
+
+    await service.createVehiclePackage(
+      {
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: definition.id,
+        monthlyFeeRate: 0.035,
+        packageName: "ET5 standard",
+        productId: "product-1",
+        productVersionId: "version-1",
+        vehicleModel: VehicleModel.ET5
+      },
+      user,
+      context
+    );
+
+    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: definition.id,
+          vehicleModel: "NIO_ET5"
+        })
+      })
+    );
+  });
+
   it("writes MODEL_X_2027 from a model definition without a legacy mapping", async () => {
     const definition = makeModelDefinition({
       displayName: "Model X 2027",
@@ -394,6 +427,38 @@ describe("product component model definitions", () => {
         context
       )
     ).rejects.toThrow();
+  });
+
+  it("accepts a price rule legacy alias and normalizes it to modelCode", async () => {
+    const definition = makeModelDefinition({
+      id: "model-et5",
+      legacyVehicleModel: VehicleModel.ET5,
+      modelCode: "NIO_ET5"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [definition] });
+
+    await service.createPriceRule(
+      "version-1",
+      {
+        baseMileageKm: 1500,
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: definition.id,
+        overMileageFeeAmount: 100,
+        vehicleModel: VehicleModel.ET5
+      },
+      user,
+      context
+    );
+
+    expect(prisma.productPriceRule.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinitionId: definition.id,
+          vehicleModel: "NIO_ET5"
+        })
+      })
+    );
   });
 
   it("rejects clearing vehicle package modelDefinitionId", async () => {

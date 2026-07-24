@@ -39,7 +39,11 @@ describe("quote/order model snapshot display helper", () => {
     expect(
       buildQuoteOrderModelDisplay({
         legacyVehicleModelSnapshot: VehicleModel.ET5,
-        modelDefinition: { displayName: "Runtime ET5", id: "runtime-model" },
+        modelDefinition: {
+          displayName: "Runtime ET5",
+          id: "runtime-model",
+          modelCode: "NIO_ET5"
+        },
         modelDefinitionId: "runtime-model",
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: "Frozen ET5",
@@ -58,7 +62,11 @@ describe("quote/order model snapshot display helper", () => {
     expect(
       buildQuoteOrderModelDisplay({
         legacyVehicleModelSnapshot: VehicleModel.ET5,
-        modelDefinition: { displayName: "Current ET5 Name", id: "snapshot-model" },
+        modelDefinition: {
+          displayName: "Current ET5 Name",
+          id: "snapshot-model",
+          modelCode: "NIO_ET5"
+        },
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: null,
         vehicleModel: VehicleModel.ES6

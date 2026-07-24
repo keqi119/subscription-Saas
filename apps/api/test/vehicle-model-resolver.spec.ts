@@ -35,7 +35,11 @@ describe("VehicleModelResolver", () => {
   it("uses modelDefinitionId as the primary model identity", () => {
     expect(
       resolveVehicleModel({
-        modelDefinition: { displayName: "NIO ET5 Touring", id: "model-et5t" },
+        modelDefinition: {
+          displayName: "NIO ET5 Touring",
+          id: "model-et5t",
+          modelCode: "NIO_ET5T"
+        },
         modelDefinitionId: "model-et5t",
         vehicleModel: VehicleModel.ET5
       })
@@ -77,6 +81,23 @@ describe("VehicleModelResolver", () => {
         { modelDefinitionId: "model-es6", vehicleModel: VehicleModel.ET5 }
       )
     ).toBe(false);
+  });
+
+  it("matches canonical and legacy codes from the same model definition", () => {
+    expect(
+      vehicleModelReadPathMatches(
+        {
+          modelDefinition: {
+            displayName: "NIO ET5",
+            id: "model-et5",
+            legacyVehicleModel: "ET5",
+            modelCode: "NIO_ET5"
+          },
+          vehicleModel: "ET5"
+        },
+        { vehicleModel: "NIO_ET5" }
+      )
+    ).toBe(true);
   });
 
   it("uses legacy enum matching only when both sides are legacy-only", () => {
@@ -125,11 +146,13 @@ describe("VehicleModelLegacyAdapter", () => {
     });
   });
 
-  it("resolves a new compatibility code through modelCode", async () => {
+  it("resolves a new compatibility code through an exact modelCode lookup", async () => {
+    const calls: unknown[] = [];
     const prisma = {
       vehicleModelDefinition: {
-        findFirst: async ({ where }: { where: { OR?: Array<{ modelCode?: string }> } }) =>
-          where.OR?.some((candidate) => candidate.modelCode === "MODEL_X_2027")
+        findFirst: async ({ where }: { where: { modelCode?: string; legacyVehicleModel?: string } }) => {
+          calls.push(where);
+          return where.modelCode === "MODEL_X_2027"
             ? {
                 deletedAt: null,
                 displayName: "Model X 2027",
@@ -138,7 +161,8 @@ describe("VehicleModelLegacyAdapter", () => {
                 legacyVehicleModel: null,
                 modelCode: "MODEL_X_2027"
               }
-            : null
+            : null;
+        }
       }
     };
 
@@ -150,13 +174,16 @@ describe("VehicleModelLegacyAdapter", () => {
       legacyVehicleModel: "MODEL_X_2027",
       modelDefinitionId: "model-x-2027"
     });
+    expect(calls).toEqual([{ deletedAt: null, modelCode: "MODEL_X_2027" }]);
   });
 
-  it("resolves deprecated legacy input to modelDefinitionId", async () => {
+  it("falls back to legacy lookup only after exact modelCode lookup misses", async () => {
+    const calls: unknown[] = [];
     const prisma = {
       vehicleModelDefinition: {
-        findFirst: async ({ where }: { where: { OR?: Array<{ legacyVehicleModel?: string }> } }) =>
-          where.OR?.some((candidate) => candidate.legacyVehicleModel === VehicleModel.ET5)
+        findFirst: async ({ where }: { where: { modelCode?: string; legacyVehicleModel?: string } }) => {
+          calls.push(where);
+          return where.legacyVehicleModel === VehicleModel.ET5
             ? {
                 deletedAt: null,
                 displayName: "NIO ET5",
@@ -165,7 +192,8 @@ describe("VehicleModelLegacyAdapter", () => {
                 legacyVehicleModel: VehicleModel.ET5,
                 modelCode: "NIO_ET5"
               }
-            : null
+            : null;
+        }
       }
     };
 
@@ -187,6 +215,10 @@ describe("VehicleModelLegacyAdapter", () => {
       legacyVehicleModelCode: "NIO_ET5",
       modelDefinitionId: "model-et5"
     });
+    expect(calls).toEqual([
+      { deletedAt: null, modelCode: VehicleModel.ET5 },
+      { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
+    ]);
     expect(vehicleModelUsageTracker.report()).toMatchObject({
       businessDecisionUsageCount: 1,
       fallbackUsageCount: 1

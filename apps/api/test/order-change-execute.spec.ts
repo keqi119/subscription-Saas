@@ -12,12 +12,13 @@ import {
   RecordStatus,
   SalePriceStatus,
   SubscriptionPlanStatus,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { OrderService } from "../src/order/order.service";
 

@@ -6,7 +6,6 @@ import {
   Vehicle,
   VehicleAcquisitionMode,
   VehicleBatteryUsageType,
-  VehicleModel,
   VehicleModelDefinition,
   VehicleResidualCurve,
   VehicleResidualCurveMethod,
@@ -24,6 +23,8 @@ import {
   VehicleValuationReviewStatus
 } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { AuditService } from "../src/audit/audit.service";
 import { RequestContext, RequestUser } from "../src/auth/auth.types";

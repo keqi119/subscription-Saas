@@ -13,12 +13,13 @@ import {
   VehicleDepreciationMethod,
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType,
-  VehicleModel,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { AuditService } from "../src/audit/audit.service";
 import { RequestContext, RequestUser } from "../src/auth/auth.types";

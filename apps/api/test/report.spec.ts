@@ -188,7 +188,19 @@ describe("reporting dashboard APIs", () => {
         where: expect.objectContaining({
           OR: [
             { modelDefinitionIdSnapshot: "model-et5" },
-            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } }
+            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } },
+            {
+              modelDefinitionIdSnapshot: null,
+              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
+            },
+            {
+              legacyVehicleModelSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
+              modelDefinitionIdSnapshot: null
+            },
+            {
+              legacyVehicleModelCodeSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
+              modelDefinitionIdSnapshot: null
+            }
           ]
         })
       })
@@ -217,7 +229,7 @@ describe("reporting dashboard APIs", () => {
       expect.objectContaining({
         where: {
           deletedAt: null,
-          OR: [{ modelCode: VehicleModel.ET5 }, { legacyVehicleModel: VehicleModel.ET5 }]
+          legacyVehicleModel: VehicleModel.ET5
         }
       })
     );
@@ -226,7 +238,19 @@ describe("reporting dashboard APIs", () => {
         where: expect.objectContaining({
           OR: [
             { modelDefinitionIdSnapshot: "model-et5" },
-            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } }
+            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } },
+            {
+              modelDefinitionIdSnapshot: null,
+              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
+            },
+            {
+              legacyVehicleModelSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
+              modelDefinitionIdSnapshot: null
+            },
+            {
+              legacyVehicleModelCodeSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
+              modelDefinitionIdSnapshot: null
+            }
           ]
         })
       })
@@ -494,7 +518,13 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          modelDefinitionId: "model-et5",
+          OR: [
+            { modelDefinitionId: "model-et5" },
+            {
+              modelDefinitionId: null,
+              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
+            }
+          ],
           status: VehicleStatus.LEASED
         })
       })
@@ -530,7 +560,13 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          modelDefinitionId: definition.id
+          OR: [
+            { modelDefinitionId: definition.id },
+            {
+              modelDefinitionId: null,
+              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
+            }
+          ]
         })
       })
     );
@@ -2521,7 +2557,13 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          modelDefinitionId: "model-et5",
+          OR: [
+            { modelDefinitionId: "model-et5" },
+            {
+              modelDefinitionId: null,
+              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
+            }
+          ],
           status: VehicleStatus.LEASED
         })
       })
@@ -2772,7 +2814,13 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          modelDefinitionId: "model-et5",
+          OR: [
+            { modelDefinitionId: "model-et5" },
+            {
+              modelDefinitionId: null,
+              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
+            }
+          ],
           status: VehicleStatus.LEASED
         })
       })
@@ -3769,14 +3817,31 @@ function createReportHarness() {
       groupBy: vi.fn()
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: string } }) =>
-        where.id === "missing-model-definition"
-          ? null
-          : reportModelDefinition({
-              id: where.id ?? (where.legacyVehicleModel ? `model-${String(where.legacyVehicleModel).toLowerCase()}` : "model-et5"),
-              legacyVehicleModel: where.legacyVehicleModel ?? VehicleModel.ET5
-            })
-      )
+      findFirst: vi.fn(async ({ where }: {
+        where: {
+          deletedAt?: null;
+          id?: string;
+          legacyVehicleModel?: string;
+          modelCode?: string;
+        };
+      }) => {
+        if (where.id === "missing-model-definition") {
+          return null;
+        }
+        const definition = reportModelDefinition({
+          id: where.id ?? "model-et5"
+        });
+        if (where.modelCode && where.modelCode !== definition.modelCode) {
+          return null;
+        }
+        if (
+          where.legacyVehicleModel &&
+          where.legacyVehicleModel !== definition.legacyVehicleModel
+        ) {
+          return null;
+        }
+        return definition;
+      })
     },
     vehicleCapitalEvent: {
       findMany: vi.fn().mockResolvedValue([])

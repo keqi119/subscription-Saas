@@ -10,10 +10,11 @@ import {
   OrderStatus,
   ProductStatus,
   QuoteStatus,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../src/common/business-number";
 import { STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS } from "../src/contract/contract-pdf-render-model";

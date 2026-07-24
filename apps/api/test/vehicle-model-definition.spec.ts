@@ -2,10 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { BadRequestException } from "@nestjs/common";
-import { VehicleModel } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { VehicleModelDefinitionService } from "../src/vehicle-model-definition/vehicle-model-definition.service";
+import { VehicleModel, type VehicleModel as VehicleModelCode } from "./helpers/vehicle-model-codes";
 
 describe("VehicleModelDefinitionService", () => {
   it("creates an enabled model definition without exposing it to portal by default", async () => {
@@ -76,6 +76,110 @@ describe("VehicleModelDefinitionService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it("rejects a modelCode that collides with another definition legacy alias", async () => {
+    const { service, user } = createHarness({
+      definitions: [
+        createDefinition({
+          id: "definition-existing",
+          legacyVehicleModel: VehicleModel.ET5,
+          modelCode: "NIO_ET5"
+        })
+      ]
+    });
+
+    await expect(
+      service.createDefinition(
+        {
+          brand: "NIO",
+          displayName: "Conflicting ET5",
+          modelCode: VehicleModel.ET5,
+          modelName: "ET5"
+        },
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("rejects a legacy alias that collides with another definition modelCode", async () => {
+    const { service, user } = createHarness({
+      definitions: [
+        createDefinition({
+          id: "definition-existing",
+          legacyVehicleModel: null,
+          modelCode: "MODEL_X_2027"
+        })
+      ]
+    });
+
+    await expect(
+      service.createDefinition(
+        {
+          brand: "NIO",
+          displayName: "Conflicting Model X",
+          legacyVehicleModel: "MODEL_X_2027",
+          modelCode: "MODEL_X_ALIAS",
+          modelName: "Model X"
+        },
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("rejects update collisions across modelCode and legacy alias columns", async () => {
+    const { service, user } = createHarness({
+      definitions: [
+        createDefinition({
+          id: "definition-et5",
+          legacyVehicleModel: VehicleModel.ET5,
+          modelCode: "NIO_ET5"
+        }),
+        createDefinition({
+          id: "definition-model-x",
+          legacyVehicleModel: null,
+          modelCode: "MODEL_X_2027"
+        })
+      ]
+    });
+
+    await expect(
+      service.updateDefinition(
+        "definition-model-x",
+        { legacyVehicleModel: "NIO_ET5" },
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("updates string model codes and legacy aliases as scalar values", async () => {
+    const { prisma, service, user } = createHarness({
+      definitions: [
+        createDefinition({
+          id: "definition-et5",
+          legacyVehicleModel: VehicleModel.ET5,
+          modelCode: "NIO_ET5"
+        })
+      ]
+    });
+
+    await service.updateDefinition(
+      "definition-et5",
+      {
+        legacyVehicleModel: VehicleModel.ET5T,
+        modelCode: "NIO_ET5_TOURING"
+      },
+      user
+    );
+
+    expect(prisma.vehicleModelDefinition.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          legacyVehicleModel: VehicleModel.ET5T,
+          modelCode: "NIO_ET5_TOURING"
+        })
+      })
+    );
+  });
+
   it("allows new model definitions without legacyVehicleModel", async () => {
     const { service, user } = createHarness({ definitions: [] });
 
@@ -143,12 +247,13 @@ describe("VehicleModelDefinitionService", () => {
     expect(seedSource).toContain("prisma.vehicleModelDefinition.upsert");
   });
 
-  it("keeps Vehicle on the legacy VehicleModel enum while allowing optional master-data linkage", () => {
+  it("keeps Vehicle model compatibility columns as strings with optional master-data linkage", () => {
     const schemaSource = fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
 
-    expect(schemaSource).toContain("vehicleModel                  VehicleModel?");
+    expect(schemaSource).toContain("vehicleModel                  String");
     expect(schemaSource).toContain("modelDefinitionId");
     expect(schemaSource).toContain("VehicleModelDefinition?");
+    expect(schemaSource).not.toContain("enum VehicleModel");
   });
 });
 
@@ -210,7 +315,7 @@ function createDefinition(options: {
   displayName?: string;
   enabled?: boolean;
   id?: string;
-  legacyVehicleModel?: VehicleModel | null;
+  legacyVehicleModel?: VehicleModelCode | string | null;
   modelCode?: string;
   portalVisible?: boolean;
 } = {}) {
@@ -287,6 +392,12 @@ function matchesOrFilter(definition: ReturnType<typeof createDefinition>, item: 
     return false;
   }
   return Object.entries(item as Record<string, unknown>).some(([field, filter]) => {
+    if (typeof filter === "string") {
+      return definition[field as keyof typeof definition] === filter;
+    }
+    if (isStringInFilter(filter)) {
+      return filter.in.includes(String(definition[field as keyof typeof definition] ?? ""));
+    }
     if (!isStringContainsFilter(filter)) {
       return false;
     }
@@ -305,5 +416,14 @@ function isNotFilter(value: unknown): value is { not: string } {
 function isStringContainsFilter(value: unknown): value is { contains: string } {
   return Boolean(
     value && typeof value === "object" && typeof (value as { contains?: unknown }).contains === "string"
+  );
+}
+
+function isStringInFilter(value: unknown): value is { in: string[] } {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Array.isArray((value as { in?: unknown }).in) &&
+      (value as { in: unknown[] }).in.every((item) => typeof item === "string")
   );
 }

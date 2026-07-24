@@ -18,9 +18,10 @@ import {
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
   VehicleStatus,
-  VehicleModel
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 import { ProductService } from "../src/product/product.service";

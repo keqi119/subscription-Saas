@@ -70,8 +70,10 @@ export class VehicleModelDefinitionService {
 
   async createDefinition(dto: CreateVehicleModelDefinitionDto, user: RequestUser) {
     const normalized = normalizeCreateInput(dto);
-    await this.assertModelCodeAvailable(normalized.modelCode);
-    await this.assertLegacyVehicleModelAvailable(normalized.legacyVehicleModel);
+    await this.assertCodeNamespaceAvailable([
+      normalized.modelCode,
+      normalized.legacyVehicleModel
+    ]);
 
     try {
       const definition = await this.prisma.vehicleModelDefinition.create({
@@ -92,15 +94,18 @@ export class VehicleModelDefinitionService {
   }
 
   async updateDefinition(id: string, dto: UpdateVehicleModelDefinitionDto, user: RequestUser) {
-    await this.findDefinitionOrThrow(id);
+    const existing = await this.findDefinitionOrThrow(id);
+    const nextModelCode =
+      dto.modelCode === undefined ? existing.modelCode : normalizeModelCode(dto.modelCode);
+    const nextLegacyVehicleModel =
+      dto.legacyVehicleModel === undefined
+        ? existing.legacyVehicleModel
+        : dto.legacyVehicleModel ?? null;
+    await this.assertCodeNamespaceAvailable(
+      [nextModelCode, nextLegacyVehicleModel],
+      id
+    );
     const data = normalizeUpdateInput(dto);
-
-    if (data.modelCode !== undefined) {
-      await this.assertModelCodeAvailable(data.modelCode as string, id);
-    }
-    if (data.legacyVehicleModel !== undefined && data.legacyVehicleModel !== null) {
-      await this.assertLegacyVehicleModelAvailable(data.legacyVehicleModel, id);
-    }
 
     try {
       const definition = await this.prisma.vehicleModelDefinition.update({
@@ -168,35 +173,30 @@ export class VehicleModelDefinitionService {
     return definition;
   }
 
-  private async assertModelCodeAvailable(modelCode: string, excludeId?: string) {
-    const existing = await this.prisma.vehicleModelDefinition.findFirst({
-      select: { id: true },
-      where: {
-        modelCode,
-        ...(excludeId ? { id: { not: excludeId } } : {})
-      }
-    });
-
-    if (existing) {
-      throw new BadRequestException("Vehicle model code already exists.");
-    }
-  }
-
-  private async assertLegacyVehicleModelAvailable(legacyVehicleModel?: string | null, excludeId?: string) {
-    if (!legacyVehicleModel) {
+  private async assertCodeNamespaceAvailable(
+    values: Array<string | null | undefined>,
+    excludeId?: string
+  ) {
+    const codes = [...new Set(values.filter((value): value is string => Boolean(value)))];
+    if (codes.length === 0) {
       return;
     }
 
     const existing = await this.prisma.vehicleModelDefinition.findFirst({
       select: { id: true },
       where: {
-        legacyVehicleModel,
+        OR: [
+          { modelCode: { in: codes } },
+          { legacyVehicleModel: { in: codes } }
+        ],
         ...(excludeId ? { id: { not: excludeId } } : {})
       }
     });
 
     if (existing) {
-      throw new BadRequestException("Legacy vehicle model is already mapped.");
+      throw new BadRequestException(
+        "Vehicle model code or legacy alias conflicts with an existing definition."
+      );
     }
   }
 }

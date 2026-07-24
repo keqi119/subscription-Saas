@@ -120,6 +120,37 @@ describe("VehicleService vehicle model master-data integration", () => {
     expect(result.modelDefinitionId).toBe(definition.id);
   });
 
+  it("accepts a legacy alias and normalizes the new vehicle write to modelCode", async () => {
+    const definition = makeDefinition({
+      id: "definition-et5",
+      legacyVehicleModel: VehicleModel.ET5,
+      modelCode: "NIO_ET5"
+    });
+    const { prisma, service } = createHarness({ definitions: [definition] });
+
+    const result = await service.createVehicle(
+      {
+        brand: "NIO",
+        modelDefinitionId: definition.id,
+        purchasePriceAmount: 16800000,
+        vehicleModel: VehicleModel.ET5,
+        vin: "TESTVINET5ALIAS01"
+      },
+      user,
+      context
+    );
+
+    expect(result.vehicleModel).toBe("NIO_ET5");
+    expect(prisma.vehicle.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinition: { connect: { id: definition.id } },
+          vehicleModel: "NIO_ET5"
+        })
+      })
+    );
+  });
+
   it("rejects modelDefinitionId with mismatched legacy vehicleModel", async () => {
     const definition = makeDefinition({ id: "definition-et7", legacyVehicleModel: VehicleModel.ET7, modelCode: "ET7" });
     const { prisma, service } = createHarness({ definitions: [definition] });
@@ -337,6 +368,33 @@ describe("VehicleService vehicle model master-data integration", () => {
       modelDisplayName: VehicleModel.ET5
     });
   });
+
+  it("lists enabled model definitions even when they have no legacy mapping", async () => {
+    const definition = makeDefinition({
+      id: "definition-model-x-2027",
+      legacyVehicleModel: null,
+      modelCode: "MODEL_X_2027"
+    });
+    const { prisma, service } = createHarness({ definitions: [definition] });
+
+    const result = await service.listVehicleModelDefinitionOptions();
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: definition.id,
+        legacyVehicleModel: null,
+        modelCode: "MODEL_X_2027"
+      })
+    ]);
+    expect(prisma.vehicleModelDefinition.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          deletedAt: null,
+          enabled: true
+        }
+      })
+    );
+  });
 });
 
 function createHarness(options: {
@@ -396,6 +454,20 @@ function createHarness(options: {
       })
     },
     vehicleModelDefinition: {
+      findMany: vi.fn(async ({ where }: { where: { deletedAt?: null; enabled?: boolean; legacyVehicleModel?: unknown } }) =>
+        definitions.filter((definition) => {
+          if (where.deletedAt === null && definition.deletedAt !== null) {
+            return false;
+          }
+          if (where.enabled !== undefined && definition.enabled !== where.enabled) {
+            return false;
+          }
+          if (where.legacyVehicleModel && definition.legacyVehicleModel === null) {
+            return false;
+          }
+          return true;
+        })
+      ),
       findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: string } }) =>
         definitions.find((definition) => {
           if (where.deletedAt === null && definition.deletedAt !== null) {

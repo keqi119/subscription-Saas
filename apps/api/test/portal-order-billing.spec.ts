@@ -13,9 +13,10 @@ import {
   OrderSource,
   OrderStatus,
   Prisma,
-  VehicleModel
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { PortalBillingService } from "../src/portal/portal-billing.service";
 

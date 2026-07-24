@@ -24,6 +24,11 @@ export type VehicleModelResolverDefinition = Prisma.VehicleModelDefinitionGetPay
 
 export type VehicleModelCode = string;
 
+export type VehicleModelCodeDefinition = Pick<
+  VehicleModelResolverDefinition,
+  "id" | "legacyVehicleModel" | "modelCode"
+>;
+
 export type ResolvedVehicleModel = {
   legacyVehicleModel: VehicleModelCode | null;
   legacyVehicleModelCode: VehicleModelCode | null;
@@ -76,6 +81,7 @@ type VehicleModelEvidenceContext = {
 };
 
 export type ResolvedVehicleModelDefinitionInput = {
+  compatibleVehicleModelCodes: VehicleModelCode[];
   legacyVehicleModel: VehicleModelCode;
   legacyVehicleModelCode: VehicleModelCode;
   modelDefinition: VehicleModelResolverDefinition;
@@ -136,6 +142,47 @@ export function resolveVehicleModelLegacyCode(source: VehicleModelComparable): s
   );
 }
 
+export function vehicleModelDefinitionCodeSet(
+  definition: Pick<VehicleModelCodeDefinition, "legacyVehicleModel" | "modelCode">
+): VehicleModelCode[] {
+  return uniqueVehicleModelCodes([definition.modelCode, definition.legacyVehicleModel]);
+}
+
+export function vehicleModelCodeSet(source: VehicleModelComparable): VehicleModelCode[] {
+  return uniqueVehicleModelCodes([
+    source.vehicleModel,
+    source.legacyVehicleModel,
+    source.modelDefinition?.modelCode,
+    source.modelDefinition?.legacyVehicleModel
+  ]);
+}
+
+export function vehicleModelCodeSetsIntersect(
+  left: VehicleModelComparable,
+  right: VehicleModelComparable
+): boolean {
+  const rightCodes = new Set(vehicleModelCodeSet(right));
+  return vehicleModelCodeSet(left).some((code) => rightCodes.has(code));
+}
+
+export function vehicleModelDefinitionAcceptsCode(
+  definition: Pick<VehicleModelCodeDefinition, "legacyVehicleModel" | "modelCode">,
+  code: VehicleModelCode | null | undefined
+): boolean {
+  return !code || vehicleModelDefinitionCodeSet(definition).includes(code);
+}
+
+export function normalizeVehicleModelWriteCode(
+  definition: Pick<VehicleModelCodeDefinition, "legacyVehicleModel" | "modelCode">,
+  inputCode: VehicleModelCode | null | undefined,
+  mismatchMessage = "modelDefinitionId 与 vehicleModel 不一致。"
+): VehicleModelCode {
+  if (!vehicleModelDefinitionAcceptsCode(definition, inputCode)) {
+    throw new BadRequestException(mismatchMessage);
+  }
+  return definition.modelCode;
+}
+
 export function vehicleModelReadPathMatches(
   left: VehicleModelComparable,
   right: VehicleModelComparable,
@@ -160,7 +207,7 @@ export function vehicleModelReadPathMatches(
       legacyVehicleModelCode: leftLegacyCode
     });
   }
-  return Boolean(leftLegacyCode && rightLegacyCode && leftLegacyCode === rightLegacyCode);
+  return vehicleModelCodeSetsIntersect(left, right);
 }
 
 export class VehicleModelLegacyAdapter {
@@ -177,16 +224,7 @@ export class VehicleModelLegacyAdapter {
           where: { deletedAt: null, id: input.modelDefinitionId }
         })
       : input.vehicleModel
-        ? await prisma.vehicleModelDefinition.findFirst({
-            select: vehicleModelResolverDefinitionSelect,
-            where: {
-              deletedAt: null,
-              OR: [
-                { modelCode: input.vehicleModel },
-                { legacyVehicleModel: input.vehicleModel }
-              ]
-            }
-          })
+        ? await findModelDefinitionByCode(prisma, input.vehicleModel)
         : null;
 
     if (!modelDefinition) {
@@ -195,15 +233,10 @@ export class VehicleModelLegacyAdapter {
     if (!options.allowDisabled && !modelDefinition.enabled) {
       throw new BadRequestException("车型主数据已停用。");
     }
-    if (
-      input.vehicleModel &&
-      input.vehicleModel !== modelDefinition.modelCode &&
-      input.vehicleModel !== modelDefinition.legacyVehicleModel
-    ) {
-      throw new BadRequestException(options.mismatchMessage ?? "modelDefinitionId 与 vehicleModel 不一致。");
-    }
+    normalizeVehicleModelWriteCode(modelDefinition, input.vehicleModel, options.mismatchMessage);
 
     return {
+      compatibleVehicleModelCodes: vehicleModelDefinitionCodeSet(modelDefinition),
       legacyVehicleModel: modelDefinition.modelCode,
       legacyVehicleModelCode: modelDefinition.modelCode,
       modelDefinition,
@@ -211,6 +244,29 @@ export class VehicleModelLegacyAdapter {
       modelDisplayName: modelDefinition.displayName
     };
   }
+}
+
+async function findModelDefinitionByCode(
+  prisma: VehicleModelDefinitionReader,
+  code: VehicleModelCode
+): Promise<VehicleModelResolverDefinition | null> {
+  const exactModelCode = await prisma.vehicleModelDefinition.findFirst({
+    select: vehicleModelResolverDefinitionSelect,
+    where: { deletedAt: null, modelCode: code }
+  });
+  if (exactModelCode) {
+    return exactModelCode;
+  }
+  return prisma.vehicleModelDefinition.findFirst({
+    select: vehicleModelResolverDefinitionSelect,
+    where: { deletedAt: null, legacyVehicleModel: code }
+  });
+}
+
+function uniqueVehicleModelCodes(
+  values: Array<VehicleModelCode | null | undefined>
+): VehicleModelCode[] {
+  return [...new Set(values.filter((value): value is VehicleModelCode => Boolean(value)))];
 }
 
 function trackAdapterInput(input: ResolveModelDefinitionInput, evidenceContext: VehicleModelEvidenceContext | undefined) {

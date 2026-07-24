@@ -199,7 +199,15 @@ export class ReportService {
       return {};
     }
 
-    return { modelDefinitionId: definition.modelDefinitionId };
+    return {
+      OR: [
+        { modelDefinitionId: definition.modelDefinitionId },
+        {
+          modelDefinitionId: null,
+          vehicleModel: { in: definition.compatibleVehicleModelCodes }
+        }
+      ]
+    };
   }
 
   private async reportOrderModelWhere(
@@ -213,7 +221,19 @@ export class ReportService {
     return {
       OR: [
         { modelDefinitionIdSnapshot: definition.modelDefinitionId },
-        { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: definition.modelDefinitionId } }
+        { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: definition.modelDefinitionId } },
+        {
+          modelDefinitionIdSnapshot: null,
+          vehicleModel: { in: definition.compatibleVehicleModelCodes }
+        },
+        {
+          legacyVehicleModelSnapshot: { in: definition.compatibleVehicleModelCodes },
+          modelDefinitionIdSnapshot: null
+        },
+        {
+          legacyVehicleModelCodeSnapshot: { in: definition.compatibleVehicleModelCodes },
+          modelDefinitionIdSnapshot: null
+        }
       ]
     };
   }

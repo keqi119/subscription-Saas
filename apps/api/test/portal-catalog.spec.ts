@@ -208,23 +208,108 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
     });
   });
 
-  it("filters modelDefinitionId with legacy fallback vehicles and rejects mismatched legacy filter", async () => {
-    const definition = createModelDefinition({ id: "model-es6", legacyVehicleModel: VehicleModel.ES6 });
+  it("filters modelDefinitionId by canonical and legacy codes while rejecting other definitions", async () => {
+    const definition = createModelDefinition({
+      id: "model-es6",
+      legacyVehicleModel: VehicleModel.ES6,
+      modelCode: "NIO_ES6"
+    });
     const { service } = createHarness({
       modelDefinitions: [definition],
       vehicles: [
         createVehicle({ id: "vehicle-master", modelDefinition: definition, modelDefinitionId: definition.id }),
         createVehicle({ id: "vehicle-legacy", modelDefinitionId: null, vehicleNo: "VH-LEGACY" }),
+        createVehicle({
+          id: "vehicle-canonical",
+          modelDefinitionId: null,
+          vehicleModel: "NIO_ES6",
+          vehicleNo: "VH-CANONICAL"
+        }),
         createVehicle({ id: "vehicle-et5", modelDefinitionId: null, vehicleModel: VehicleModel.ET5 })
       ]
     });
 
-    const rows = await service.listVehicles({ modelDefinitionId: definition.id });
+    const byDefinition = await service.listVehicles({ modelDefinitionId: definition.id });
+    const byLegacyAlias = await service.listVehicles({ vehicleModel: VehicleModel.ES6 });
+    const byCanonicalCode = await service.listVehicles({ vehicleModel: "NIO_ES6" });
 
-    expect(rows.map((row) => row.id)).toEqual(["vehicle-master", "vehicle-legacy"]);
+    expect(byDefinition.map((row) => row.id)).toEqual([
+      "vehicle-master",
+      "vehicle-legacy",
+      "vehicle-canonical"
+    ]);
+    expect(byLegacyAlias.map((row) => row.id)).toEqual([
+      "vehicle-master",
+      "vehicle-legacy",
+      "vehicle-canonical"
+    ]);
+    expect(byCanonicalCode.map((row) => row.id)).toEqual([
+      "vehicle-master",
+      "vehicle-legacy",
+      "vehicle-canonical"
+    ]);
     await expect(
       service.listVehicles({ modelDefinitionId: definition.id, vehicleModel: VehicleModel.ET5 })
     ).rejects.toThrow();
+  });
+
+  it("filters an arbitrary canonical modelCode without a legacy mapping", async () => {
+    const definition = createModelDefinition({
+      id: "model-x-2027",
+      legacyVehicleModel: null,
+      modelCode: "MODEL_X_2027"
+    });
+    const { service } = createHarness({
+      modelDefinitions: [definition],
+      vehicles: [
+        createVehicle({
+          id: "vehicle-model-x",
+          modelDefinition: definition,
+          modelDefinitionId: definition.id,
+          vehicleModel: "MODEL_X_2027"
+        }),
+        createVehicle({
+          id: "vehicle-other",
+          modelDefinitionId: null,
+          vehicleModel: VehicleModel.ET5
+        })
+      ]
+    });
+
+    const rows = await service.listVehicles({ vehicleModel: "MODEL_X_2027" });
+
+    expect(rows.map((row) => row.id)).toEqual(["vehicle-model-x"]);
+  });
+
+  it("matches a historical legacy vehicle with a canonical model package", async () => {
+    const definition = createModelDefinition({
+      id: "model-et5",
+      legacyVehicleModel: VehicleModel.ET5,
+      modelCode: "NIO_ET5"
+    });
+    const plan = createPlan("plan-et5", {
+      vehiclePackage: {
+        ...createPlan("plan-template").vehiclePackage,
+        modelDefinition: definition,
+        modelDefinitionId: definition.id,
+        vehicleModel: "NIO_ET5"
+      }
+    });
+    const vehicle = createVehicle({
+      listingProfile: null,
+      modelDefinition: null,
+      modelDefinitionId: null,
+      vehicleModel: VehicleModel.ET5
+    });
+    const { service } = createHarness({
+      modelDefinitions: [definition],
+      plans: [plan],
+      vehicle
+    });
+
+    const rows = await service.listVehicleSubscriptionPlans(vehicle.id);
+
+    expect(rows.map((row) => row.planId)).toEqual([plan.id]);
   });
 
   it("lists only enabled portal-visible model definitions for filters", async () => {
@@ -262,13 +347,17 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
 function createHarness(
   seed: {
     modelDefinitions?: ReturnType<typeof createModelDefinition>[];
+    plans?: ReturnType<typeof createPlan>[];
     vehicle?: ReturnType<typeof createVehicle>;
     vehicles?: ReturnType<typeof createVehicle>[];
   } = {}
 ) {
   const vehicles = seed.vehicles ?? [seed.vehicle ?? createVehicle()];
   const modelDefinitions = seed.modelDefinitions ?? [createModelDefinition()];
-  const plans = [createPlan("plan-1"), createPlan("plan-2", { planName: "灵活订阅 24 个月" })];
+  const plans = seed.plans ?? [
+    createPlan("plan-1"),
+    createPlan("plan-2", { planName: "灵活订阅 24 个月" })
+  ];
   const prisma = {
     subscriptionPlan: {
       findMany: vi.fn(async () => plans)
@@ -282,10 +371,19 @@ function createHarness(
       )
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+      findFirst: vi.fn(async ({ where }: {
+        where: {
+          deletedAt?: null;
+          id?: string;
+          legacyVehicleModel?: string;
+          modelCode?: string;
+        };
+      }) =>
         modelDefinitions.find(
           (definition) =>
             (!where.id || definition.id === where.id) &&
+            (!where.modelCode || definition.modelCode === where.modelCode) &&
+            (!where.legacyVehicleModel || definition.legacyVehicleModel === where.legacyVehicleModel) &&
             (where.deletedAt !== null || definition.deletedAt === null)
         ) ?? null
       ),
@@ -351,14 +449,26 @@ function filterCatalogVehicles(
     if (where.vehicleModel && vehicle.vehicleModel !== where.vehicleModel) {
       return false;
     }
-    const modelOr = where.OR as Array<{ modelDefinitionId?: string | null; vehicleModel?: string }> | undefined;
+    const modelOr = where.OR as Array<{
+      modelDefinitionId?: string | null;
+      vehicleModel?: string | { in?: string[] };
+    }> | undefined;
     if (modelOr?.length) {
       return modelOr.some((condition) => {
         if (condition.modelDefinitionId !== undefined && vehicle.modelDefinitionId !== condition.modelDefinitionId) {
           return false;
         }
-        if (condition.vehicleModel !== undefined && vehicle.vehicleModel !== condition.vehicleModel) {
-          return false;
+        if (condition.vehicleModel !== undefined) {
+          if (typeof condition.vehicleModel === "string" && vehicle.vehicleModel !== condition.vehicleModel) {
+            return false;
+          }
+          if (
+            typeof condition.vehicleModel === "object" &&
+            condition.vehicleModel.in &&
+            !condition.vehicleModel.in.includes(vehicle.vehicleModel)
+          ) {
+            return false;
+          }
         }
         return true;
       });

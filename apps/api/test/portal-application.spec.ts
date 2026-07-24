@@ -19,12 +19,13 @@ import {
   SubscriptionPlanStatus,
   UserStatus,
   VehicleBatteryUsageType,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { PortalApplicationService } from "../src/portal/portal-application.service";
 import { PortalCatalogService } from "../src/portal/portal-catalog.service";

@@ -111,6 +111,7 @@ jobs:
           push: true
           build-args: |
             NEXT_PUBLIC_API_BASE_URL=${{ inputs.apiBaseUrl }}
+            NEXT_DEPLOYMENT_ID=${{ inputs.imageTag }}
           tags: ${{ env.WEB_IMAGE }}
 
       - name: Check Web image API base

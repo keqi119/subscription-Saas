@@ -106,6 +106,149 @@ test("rejects a real Prisma namespace VehicleModel dependency", () => {
   );
 });
 
+test("rejects VehicleModel references through a named Prisma import", () => {
+  for (const reference of ["Prisma.VehicleModel", "Prisma.$Enums.VehicleModel"]) {
+    assertDependency(
+      "model Vehicle { vehicleModel String? }",
+      [
+        {
+          content: [
+            'import { Prisma } from "@prisma/client";',
+            `export type LegacyModel = ${reference};`
+          ].join("\n"),
+          path: "apps/api/src/vehicle/vehicle.service.ts"
+        }
+      ],
+      { category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: "apps/api/src/vehicle/vehicle.service.ts" }
+    );
+  }
+});
+
+test("rejects VehicleModel re-exports from Prisma", () => {
+  for (const content of [
+    'export { VehicleModel } from "@prisma/client";',
+    'export type { VehicleModel as LegacyModel } from "@prisma/client";',
+    'export * from "@prisma/client";',
+    'export * as PrismaClient from "@prisma/client";'
+  ]) {
+    assertDependency(
+      "model Vehicle { vehicleModel String? }",
+      [
+        {
+          content,
+          path: "apps/api/src/vehicle/vehicle.service.ts"
+        }
+      ],
+      { category: "PRISMA_VEHICLE_MODEL_IMPORT", path: "apps/api/src/vehicle/vehicle.service.ts" }
+    );
+  }
+});
+
+test("rejects VehicleModel import-type expressions", () => {
+  for (const reference of [
+    'import("@prisma/client").VehicleModel',
+    'import("@prisma/client").Prisma.VehicleModel',
+    'import("@prisma/client").Prisma.$Enums.VehicleModel'
+  ]) {
+    assertDependency(
+      "model Vehicle { vehicleModel String? }",
+      [
+        {
+          content: `export type LegacyModel = ${reference};`,
+          path: "apps/api/src/vehicle/vehicle.service.ts"
+        }
+      ],
+      { category: "PRISMA_VEHICLE_MODEL_IMPORT", path: "apps/api/src/vehicle/vehicle.service.ts" }
+    );
+  }
+});
+
+test("rejects CommonJS destructured VehicleModel and Prisma dependencies", () => {
+  for (const fixture of [
+    {
+      content: 'const { VehicleModel } = require("@prisma/client");',
+      category: "PRISMA_VEHICLE_MODEL_IMPORT"
+    },
+    {
+      content: 'const { VehicleModel: LegacyModel } = require("@prisma/client");',
+      category: "PRISMA_VEHICLE_MODEL_IMPORT"
+    },
+    {
+      content: [
+        'const { Prisma } = require("@prisma/client");',
+        "const legacyModel = Prisma.$Enums.VehicleModel;"
+      ].join("\n"),
+      category: "PRISMA_VEHICLE_MODEL_NAMESPACE"
+    }
+  ]) {
+    assertDependency(
+      "model Vehicle { vehicleModel String? }",
+      [
+        {
+          content: fixture.content,
+          path: "apps/api/src/vehicle/vehicle.service.ts"
+        }
+      ],
+      { category: fixture.category, path: "apps/api/src/vehicle/vehicle.service.ts" }
+    );
+  }
+});
+
+test("rejects CommonJS namespace require VehicleModel dependencies", () => {
+  for (const reference of [
+    "PrismaClient.VehicleModel",
+    "PrismaClient.Prisma.VehicleModel",
+    "PrismaClient.Prisma.$Enums.VehicleModel"
+  ]) {
+    assertDependency(
+      "model Vehicle { vehicleModel String? }",
+      [
+        {
+          content: [
+            'const PrismaClient = require("@prisma/client");',
+            `const legacyModel = ${reference};`
+          ].join("\n"),
+          path: "apps/api/src/vehicle/vehicle.service.ts"
+        }
+      ],
+      { category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: "apps/api/src/vehicle/vehicle.service.ts" }
+    );
+  }
+});
+
+test("ignores an imported namespace identifier shadowed by a function parameter", () => {
+  assert.doesNotThrow(() =>
+    assertVehicleModelEnumRemoved("model Vehicle { vehicleModel String? }", [
+      {
+        content: [
+          'import * as PrismaClient from "@prisma/client";',
+          "function getModel(PrismaClient) {",
+          "  return PrismaClient.VehicleModel;",
+          "}"
+        ].join("\n"),
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
+    ])
+  );
+});
+
+test("ignores an imported namespace identifier shadowed by a local binding", () => {
+  assert.doesNotThrow(() =>
+    assertVehicleModelEnumRemoved("model Vehicle { vehicleModel String? }", [
+      {
+        content: [
+          'import * as PrismaClient from "@prisma/client";',
+          "function getModel() {",
+          "  const PrismaClient = { VehicleModel: null };",
+          "  return PrismaClient.VehicleModel;",
+          "}"
+        ].join("\n"),
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
+    ])
+  );
+});
+
 test("rejects a real Prisma import after a regex character class with comment markers", () => {
   assertDependency(
     "model Vehicle { vehicleModel String? }",

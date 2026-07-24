@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = join(__dirname, "..", "..", "..");
 const productsPagePath = "apps/web/src/app/products/page.tsx";
+const vehiclesPagePath = "apps/web/src/app/vehicles/page.tsx";
+const vehicleModelDefinitionsPagePath = "apps/web/src/app/vehicle-model-definitions/page.tsx";
 
 describe("product center access isolation", () => {
   const source = read(productsPagePath);
@@ -81,6 +83,25 @@ describe("product center access isolation", () => {
     expect(source).toContain("tabError");
     expect(source).toContain("403");
   });
+
+  it("keeps legacy model controls out of Admin pages while retaining canonical selectors", () => {
+    const vehiclesSource = read(vehiclesPagePath);
+    const definitionsSource = read(vehicleModelDefinitionsPagePath);
+
+    for (const pageSource of [source, vehiclesSource, definitionsSource]) {
+      expect(pageSource).not.toContain("legacyVehicleModel");
+      expect(pageSource).not.toContain("兼容车型（legacy）");
+      expect(pageSource).not.toContain('label="legacy enum"');
+    }
+
+    expect(vehiclesSource).not.toContain("legacyVehicleModels");
+    expect(vehiclesSource).not.toContain("vehicleModelOptions");
+    expect(vehiclesSource).toContain('name="modelDefinitionId"');
+    expect(source).toContain('name="modelDefinitionId"');
+    expect(functionDeclarationSource(vehiclesSource, "saveCreateVehicle")).not.toContain("vehicleModel");
+    expect(functionDeclarationSource(vehiclesSource, "saveEditVehicle")).not.toContain("vehicleModel");
+    expect(functionDeclarationSource(source, "buildPackagePayload")).not.toMatch(/\bvehicleModel\s*:/);
+  });
 });
 
 function read(file: string) {
@@ -89,6 +110,15 @@ function read(file: string) {
 
 function functionSource(source: string, name: string) {
   const start = source.indexOf(`const ${name} =`);
+  return sourceBlock(source, start);
+}
+
+function functionDeclarationSource(source: string, name: string) {
+  const start = source.indexOf(`function ${name}(`);
+  return sourceBlock(source, start);
+}
+
+function sourceBlock(source: string, start: number) {
   expect(start).toBeGreaterThanOrEqual(0);
 
   const openBrace = source.indexOf("{", start);

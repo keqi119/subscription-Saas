@@ -39,7 +39,6 @@ interface VehicleModelDefinitionRow {
   enabled: boolean;
   energyType?: string | null;
   id: string;
-  legacyVehicleModel?: string | null;
   modelCode: string;
   modelName: string;
   modelYear?: number | null;
@@ -77,7 +76,6 @@ interface ModelDefinitionFormValues {
   driveType?: string | null;
   enabled?: boolean;
   energyType?: string | null;
-  legacyVehicleModel?: string | null;
   modelCode?: string;
   modelName?: string;
   modelYear?: number | null;
@@ -89,13 +87,6 @@ interface ModelDefinitionFormValues {
   sortOrder?: number;
   variantName?: string | null;
 }
-
-const legacyVehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
-  (value) => ({
-    label: value,
-    value
-  })
-);
 
 const yesNoOptions = [
   { label: "是", value: true },
@@ -198,12 +189,6 @@ export default function VehicleModelDefinitionsPage() {
         width: 80
       },
       {
-        dataIndex: "legacyVehicleModel",
-        render: textOrDash,
-        title: "legacy enum",
-        width: 120
-      },
-      {
         dataIndex: "updatedAt",
         render: formatDateTime,
         title: "更新时间",
@@ -251,7 +236,6 @@ export default function VehicleModelDefinitionsPage() {
       driveType: row.driveType,
       enabled: row.enabled,
       energyType: row.energyType,
-      legacyVehicleModel: row.legacyVehicleModel,
       modelCode: row.modelCode,
       modelName: row.modelName,
       modelYear: row.modelYear,
@@ -276,7 +260,6 @@ export default function VehicleModelDefinitionsPage() {
     try {
       const payload = {
         ...values,
-        legacyVehicleModel: values.legacyVehicleModel ?? null,
         portalVisible: values.portalVisible ?? false,
         enabled: values.enabled ?? true,
         sortOrder: values.sortOrder ?? 0
@@ -371,7 +354,7 @@ export default function VehicleModelDefinitionsPage() {
         </Space>
 
         <Alert
-          message="当前车辆新增 / 编辑仍使用 legacy VehicleModel enum；车型主数据将在 Stage 10X-D 接入车辆管理。"
+          message="车辆新增和编辑通过车型主数据关联车型代码。"
           showIcon
           type="info"
         />
@@ -435,9 +418,6 @@ export default function VehicleModelDefinitionsPage() {
             ]}
           >
             <Input placeholder="ET5T" />
-          </Form.Item>
-          <Form.Item label="legacy enum" name="legacyVehicleModel">
-            <Select allowClear options={legacyVehicleModelOptions} placeholder="可选" />
           </Form.Item>
           <Form.Item label="品牌" name="brand" rules={[{ required: true, message: "请输入品牌" }]}>
             <Input placeholder="NIO" />

@@ -79,7 +79,7 @@ export class VehicleModelDefinitionService {
     try {
       const definition = await this.prisma.$transaction(async (tx) => {
         await this.assertCodeNamespaceAvailable(
-          [normalized.modelCode, normalized.legacyVehicleModel],
+          [normalized.modelCode],
           undefined,
           tx
         );
@@ -107,12 +107,8 @@ export class VehicleModelDefinitionService {
         const existing = await this.findDefinitionOrThrow(id, tx);
         const nextModelCode =
           dto.modelCode === undefined ? existing.modelCode : normalizeModelCode(dto.modelCode);
-        const nextLegacyVehicleModel =
-          dto.legacyVehicleModel === undefined
-            ? existing.legacyVehicleModel
-            : dto.legacyVehicleModel ?? null;
         await this.assertCodeNamespaceAvailable(
-          [nextModelCode, nextLegacyVehicleModel],
+          [nextModelCode],
           id,
           tx
         );
@@ -231,7 +227,6 @@ function normalizeCreateInput(dto: CreateVehicleModelDefinitionDto) {
     driveType: normalizeOptionalText(dto.driveType),
     enabled: dto.enabled ?? true,
     energyType: normalizeOptionalText(dto.energyType),
-    legacyVehicleModel: dto.legacyVehicleModel ?? null,
     modelCode: normalizeModelCode(dto.modelCode),
     modelName: normalizeRequiredText(dto.modelName),
     modelYear: dto.modelYear ?? null,
@@ -260,7 +255,6 @@ function normalizeUpdateInput(dto: UpdateVehicleModelDefinitionDto): Prisma.Vehi
   assignIfDefined(data, "driveType", normalizeOptionalText(dto.driveType), dto.driveType !== undefined);
   assignIfDefined(data, "enabled", dto.enabled);
   assignIfDefined(data, "energyType", normalizeOptionalText(dto.energyType), dto.energyType !== undefined);
-  assignIfDefined(data, "legacyVehicleModel", dto.legacyVehicleModel ?? null, dto.legacyVehicleModel !== undefined);
   assignIfDefined(data, "modelCode", dto.modelCode === undefined ? undefined : normalizeModelCode(dto.modelCode));
   assignIfDefined(data, "modelName", dto.modelName === undefined ? undefined : normalizeRequiredText(dto.modelName));
   assignIfDefined(data, "modelYear", dto.modelYear ?? null, dto.modelYear !== undefined);

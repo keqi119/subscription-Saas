@@ -1,4 +1,6 @@
-import { IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsOptional, IsString, IsUUID, Matches, MaxLength } from "class-validator";
+
+const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
 
 export class PortalVehicleCatalogQueryDto {
   @IsOptional()
@@ -20,10 +22,10 @@ export class PortalVehicleCatalogQueryDto {
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
   vehicleModel?: string;
 
   @IsOptional()
   @IsString()
   city?: string;
 }
-

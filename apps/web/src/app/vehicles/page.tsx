@@ -97,15 +97,12 @@ import {
   toCentAmount
 } from "../../lib/capital-format";
 
-type LegacyVehicleModel = "ET5" | "ET5T" | "ET7" | "ES6" | "EC6" | "ES8" | "ET9" | "ES9";
-
 interface VehicleModelDefinitionSummary {
   brand: string;
   customerDisplayName?: string | null;
   displayName: string;
   enabled: boolean;
   id: string;
-  legacyVehicleModel?: LegacyVehicleModel | null;
   modelCode: string;
   modelName: string;
   modelYear?: number | null;
@@ -155,7 +152,7 @@ interface Vehicle {
   salePriceStatus: string;
   series?: string | null;
   status: string;
-  vehicleModel?: LegacyVehicleModel | null;
+  vehicleModel?: string | null;
   vehicleNo: string;
   vin?: string | null;
 }
@@ -269,7 +266,6 @@ interface CreateVehicleValues {
   remark?: string | null;
   series?: string | null;
   modelDefinitionId?: string | null;
-  vehicleModel?: LegacyVehicleModel | null;
   vin: string;
 }
 
@@ -665,12 +661,6 @@ const vehicleStatusOptions = [
   "RETIRED"
 ].map((value) => ({ label: labelOf(STATUS_LABELS, value), value }));
 
-const legacyVehicleModels: LegacyVehicleModel[] = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"];
-
-const vehicleModelOptions = legacyVehicleModels.map(
-  (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
-);
-
 const batteryUsageTypeOptions = [
   { label: "电池买断", value: "BUYOUT" },
   { label: "BaaS / 电池租用", value: "BAAS" }
@@ -1057,8 +1047,7 @@ function vehicleModelText(vehicle: Vehicle) {
 }
 
 function vehicleModelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
-  const legacyText = definition.legacyVehicleModel ? `legacy: ${definition.legacyVehicleModel}` : "未映射 legacy，暂不可用于车辆";
-  return `${definition.modelCode} - ${definition.displayName}（${legacyText}）`;
+  return `${definition.modelCode} - ${definition.displayName}`;
 }
 
 function toReviewQuarter(date: Dayjs) {
@@ -1150,10 +1139,6 @@ export default function VehiclesPage() {
   const canGenerateResidualForecast = permissions.has("residual_forecast:generate");
   const canViewValuationReview = permissions.has("vehicle_valuation_review:view");
   const canCreateValuationReview = permissions.has("vehicle_valuation_review:create");
-  const vehicleModelDefinitionById = useMemo(
-    () => new Map(vehicleModelDefinitions.map((definition) => [definition.id, definition])),
-    [vehicleModelDefinitions]
-  );
   const vehicleModelDefinitionOptions = useMemo(
     () =>
       vehicleModelDefinitions
@@ -1211,22 +1196,6 @@ export default function VehiclesPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
-
-  function syncLegacyVehicleModelFromDefinition(
-    form: FormInstance<CreateVehicleValues>,
-    modelDefinitionId?: string | null
-  ) {
-    if (!modelDefinitionId) {
-      return;
-    }
-
-    const definition = vehicleModelDefinitionById.get(modelDefinitionId);
-    if (definition?.legacyVehicleModel) {
-      form.setFieldsValue({ vehicleModel: definition.legacyVehicleModel });
-    } else {
-      form.setFieldsValue({ vehicleModel: null });
-    }
-  }
 
   const loadFinancingInstruments = useCallback(async () => {
     setFinancingInstrumentsLoading(true);
@@ -1480,20 +1449,13 @@ export default function VehiclesPage() {
       brand: "NIO",
       batteryUsageType: "BUYOUT",
       currentMileageKm: 0,
-      modelDefinitionId: null,
-      vehicleModel: null
+      modelDefinitionId: null
     });
   }
 
   async function saveCreateVehicle(values: CreateVehicleValues) {
     if (!values.modelDefinitionId) {
       void message.error("请选择车型代码。新增车辆必须关联车型主数据。");
-      return;
-    }
-
-    const selectedDefinition = vehicleModelDefinitionById.get(values.modelDefinitionId);
-    if (!selectedDefinition?.legacyVehicleModel) {
-      void message.error("所选车型代码未映射兼容车型，当前阶段不能用于车辆创建。");
       return;
     }
 
@@ -1890,7 +1852,6 @@ export default function VehiclesPage() {
       registrationDate: vehicle.registrationDate ? dayjs(vehicle.registrationDate) : null,
       remark: vehicle.remark,
       series: vehicle.series,
-      vehicleModel: (vehicle.vehicleModel ?? "ET5") as CreateVehicleValues["vehicleModel"],
       vin: vehicle.vin ?? ""
     });
   }
@@ -2353,25 +2314,17 @@ export default function VehiclesPage() {
             <Input maxLength={64} />
           </Form.Item>
           <Form.Item
-            extra="新增车辆必须关联车型主数据；仅展示已映射 legacy 车型的启用主数据。"
+            extra="新增车辆必须关联已启用的车型主数据。"
             label="车型代码（主数据）"
             name="modelDefinitionId"
             rules={[{ required: true, message: "请选择车型代码。新增车辆必须关联车型主数据。" }]}
           >
             <Select
               filterOption={(input, option) => String(option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
-              onChange={(value) => syncLegacyVehicleModelFromDefinition(createForm, value)}
               options={vehicleModelDefinitionOptions}
               placeholder="选择车型代码主数据"
               showSearch
             />
-          </Form.Item>
-          <Form.Item
-            extra="由车型代码自动带出，主要用于历史兼容。"
-            label="兼容车型（legacy）"
-            name="vehicleModel"
-          >
-            <Select disabled options={vehicleModelOptions} />
           </Form.Item>
           <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />
@@ -2450,7 +2403,7 @@ export default function VehiclesPage() {
                   label: "车型代码（主数据）",
                   children: detailVehicle.modelDefinition
                     ? vehicleModelDefinitionOptionLabel(detailVehicle.modelDefinition)
-                    : "未关联，使用兼容车型"
+                    : "未关联车型主数据"
                 },
                 { label: "电池容量", children: formatKwh(detailVehicle.batteryCapacityKwh) },
                 { label: "电池使用方式", children: batteryUsageTypeLabel(detailVehicle) },
@@ -2917,29 +2870,21 @@ export default function VehiclesPage() {
             <Alert
               showIcon
               style={{ marginBottom: 16 }}
-              message="该车辆仍使用兼容车型，建议补充车型代码主数据。"
+              message="该车辆尚未关联车型主数据；可在本次编辑时选择车型代码完成关联。"
               type="warning"
             />
           ) : null}
           <Form.Item
-            extra="选择车型代码后会同步兼容车型；历史车辆可保持未关联。"
+            extra="历史车辆可保持未关联；选择车型代码会关联车型主数据。"
             label="车型代码（主数据）"
             name="modelDefinitionId"
           >
             <Select
               filterOption={(input, option) => String(option?.label ?? "").toLowerCase().includes(input.toLowerCase())}
-              onChange={(value) => syncLegacyVehicleModelFromDefinition(editForm, value)}
               options={vehicleModelDefinitionOptions}
               placeholder="选择车型代码主数据"
               showSearch
             />
-          </Form.Item>
-          <Form.Item
-            extra="由车型代码自动带出，主要用于历史兼容。"
-            label="兼容车型（legacy）"
-            name="vehicleModel"
-          >
-            <Select disabled options={vehicleModelOptions} />
           </Form.Item>
           <Form.Item label="电池容量（kWh）" name="batteryCapacityKwh" rules={[{ required: true, message: "请输入电池容量" }]}>
             <InputNumber min={0.01} precision={2} style={{ width: "100%" }} />

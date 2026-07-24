@@ -54,6 +54,7 @@ export class VehicleModelDefinitionsQueryDto {
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
   legacyVehicleModel?: string;
 
   @IsOptional()
@@ -76,11 +77,6 @@ export class CreateVehicleModelDefinitionDto {
   @MaxLength(64)
   @Matches(MODEL_CODE_PATTERN)
   modelCode!: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  legacyVehicleModel?: string | null;
 
   @IsString()
   @IsNotEmpty()
@@ -177,11 +173,6 @@ export class UpdateVehicleModelDefinitionDto {
   @MaxLength(64)
   @Matches(MODEL_CODE_PATTERN)
   modelCode?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  legacyVehicleModel?: string | null;
 
   @IsOptional()
   @IsString()

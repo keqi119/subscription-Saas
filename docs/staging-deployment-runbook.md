@@ -92,7 +92,7 @@ local or CI build
   -> server docker login
   -> docker compose pull
   -> docker compose up -d
-  -> host BT / Nginx proxies staging domains to 127.0.0.1:3000 / 3001
+  -> host BT / Nginx proxies staging domains to 127.0.0.1:3100 / 3101
 ```
 
 Use:
@@ -163,7 +163,7 @@ Recommended image-based config for the current 2 CPU / 2 GB server:
 
 ```bash
 cp .env.staging.images.example .env.staging.images
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml config
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml config
 ```
 
 The `.env.staging.images` file is server-local and must not be committed. Fill real image names,
@@ -202,7 +202,7 @@ Then pull on the staging server:
 
 ```bash
 docker login <REGISTRY>
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml pull
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml pull
 ```
 
 The Web image uses `NEXT_PUBLIC_API_BASE_URL` at build time.
@@ -216,8 +216,8 @@ the default path for this staging server.
 Image-based path:
 
 ```bash
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d postgres
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml ps
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d postgres
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml ps
 ```
 
 Source-build path on larger hosts:
@@ -247,8 +247,8 @@ Run migration from the API container:
 Image-based path:
 
 ```bash
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:deploy
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:status
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:deploy
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:status
 ```
 
 Source-build path:
@@ -272,7 +272,7 @@ If migration fails, stop the dry run and keep logs.
 Image-based path:
 
 ```bash
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:seed
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:seed
 ```
 
 Source-build path:
@@ -291,8 +291,8 @@ Do not use scenario seed as production or staging baseline data.
 Image-based path:
 
 ```bash
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml ps
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml ps
 ```
 
 Source-build / Caddy path:
@@ -305,9 +305,9 @@ docker compose --env-file .env.staging -f docker-compose.staging.example.yml ps
 Logs:
 
 ```bash
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 api
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 web
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 postgres
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 api
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 web
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml logs --tail=100 postgres
 ```
 
 If using the source-build / Caddy path:
@@ -322,8 +322,8 @@ docker compose --env-file .env.staging -f docker-compose.staging.example.yml log
 For the current server, configure BT / Nginx to terminate HTTPS and proxy:
 
 ```text
-staging-admin.subauto.keybox.cloud -> http://127.0.0.1:3000
-staging-api.subauto.keybox.cloud   -> http://127.0.0.1:3001
+staging-admin.subauto.keybox.cloud -> http://127.0.0.1:3100
+staging-api.subauto.keybox.cloud   -> http://127.0.0.1:3101
 ```
 
 Use `nginx/staging-subauto.example.conf` as a reference. Do not expose PostgreSQL, API, or Web
@@ -463,7 +463,7 @@ If the default `admin` password has already been rotated, use an explicitly appr
 After the upload smoke passes, restart the API container and run the same download check again:
 
 ```bash
-docker compose --env-file .env.staging.images -f docker-compose.staging.images.example.yml restart api
+docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml restart api
 SMOKE_API_BASE_URL=https://staging-api.subauto.keybox.cloud \
 SMOKE_ADMIN_USERNAME=admin \
 SMOKE_ADMIN_PASSWORD=<staging-admin-password> \

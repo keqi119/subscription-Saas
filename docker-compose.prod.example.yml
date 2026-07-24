@@ -1,6 +1,8 @@
 # Production dry-run example for a single-server deployment.
 # For production growth, prefer a managed PostgreSQL service and object storage.
 
+name: subauto-production
+
 services:
   postgres:
     image: postgres:17-alpine

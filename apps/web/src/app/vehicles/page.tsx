@@ -112,6 +112,19 @@ interface VehicleModelDefinitionSummary {
   series?: string | null;
 }
 
+interface VehicleInsurancePolicyCoverageSummary {
+  covered: boolean;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+}
+
+interface VehicleInsuranceCoverageSummary {
+  commercial: VehicleInsurancePolicyCoverageSummary;
+  compulsoryTraffic: VehicleInsurancePolicyCoverageSummary;
+  covered: boolean;
+  evaluatedAt: string;
+}
+
 interface Vehicle {
   acquisitionMode?: string | null;
   assetLocation?: string | null;
@@ -124,8 +137,7 @@ interface Vehicle {
   currentSalePriceInitializedAt?: string | null;
   currentSalePriceReviewedAt?: string | null;
   id: string;
-  insuranceEndDate?: string | null;
-  insuranceStartDate?: string | null;
+  insuranceCoverage: VehicleInsuranceCoverageSummary;
   latestRegistrationDate?: string | null;
   model?: string | null;
   modelDefinition?: VehicleModelDefinitionSummary | null;
@@ -798,11 +810,11 @@ function formatDate(value?: string | null) {
   return parsed.isValid() ? parsed.format("YYYY-MM-DD") : "-";
 }
 
-function formatInsurancePeriod(vehicle: Pick<Vehicle, "insuranceEndDate" | "insuranceStartDate">) {
-  if (!vehicle.insuranceStartDate || !vehicle.insuranceEndDate) {
-    return "-";
+function formatInsuranceCoveragePeriod(coverage: VehicleInsurancePolicyCoverageSummary) {
+  if (!coverage.covered || !coverage.effectiveFrom || !coverage.effectiveTo) {
+    return "未覆盖当前日期";
   }
-  return `${formatDate(vehicle.insuranceStartDate)} 至 ${formatDate(vehicle.insuranceEndDate)}`;
+  return `${formatDate(coverage.effectiveFrom)} 至 ${formatDate(coverage.effectiveTo)}`;
 }
 
 function formatDateTime(value?: string | null) {
@@ -2446,7 +2458,16 @@ export default function VehiclesPage() {
                 { label: "初次上牌日期", children: formatDate(detailVehicle.registrationDate) },
                 { label: "最近一次上牌日期", children: formatDate(detailVehicle.latestRegistrationDate) },
                 { label: "取得方式", children: labelOf(VEHICLE_ACQUISITION_MODE_LABELS, detailVehicle.acquisitionMode) },
-                { label: "保单有效期（关联）", children: formatInsurancePeriod(detailVehicle) },
+                {
+                  label: "交强险",
+                  children: formatInsuranceCoveragePeriod(
+                    detailVehicle.insuranceCoverage.compulsoryTraffic
+                  )
+                },
+                {
+                  label: "商业险",
+                  children: formatInsuranceCoveragePeriod(detailVehicle.insuranceCoverage.commercial)
+                },
                 { label: "当前销售价", children: formatYuan(detailVehicle.currentSalePriceAmount) },
                 { label: "当前里程", children: `${detailVehicle.currentMileageKm.toLocaleString("zh-CN")} km` },
                 { label: "车辆状态", children: labelOf(STATUS_LABELS, detailVehicle.status) },
@@ -6072,7 +6093,21 @@ function buildVehicleColumns(
     { render: (_, record) => batteryUsageTypeLabel(record), title: "电池使用方式", width: 140 },
     { dataIndex: "acquisitionMode", render: (value: string | null) => labelOf(VEHICLE_ACQUISITION_MODE_LABELS, value), title: "取得方式", width: 190 },
     { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 140 },
-    { render: (_, record) => formatInsurancePeriod(record), title: "保单有效期（关联）", width: 230 },
+    {
+      render: (_, record) => (
+        <Space orientation="vertical" size={0}>
+          <Typography.Text>
+            交强险：
+            {formatInsuranceCoveragePeriod(record.insuranceCoverage.compulsoryTraffic)}
+          </Typography.Text>
+          <Typography.Text>
+            商业险：{formatInsuranceCoveragePeriod(record.insuranceCoverage.commercial)}
+          </Typography.Text>
+        </Space>
+      ),
+      title: "保险覆盖（今日）",
+      width: 330
+    },
     { dataIndex: "currentSalePriceReviewedAt", render: formatDateTime, title: "最近复核时间", width: 170 },
     { dataIndex: "nextSalePriceReviewAt", render: formatDate, title: "下次复核时间", width: 140 },
     {

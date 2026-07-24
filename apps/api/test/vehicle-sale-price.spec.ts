@@ -11,6 +11,8 @@ import {
   VehicleAssetCostProfileStatus,
   VehicleBatteryUsageType,
   VehicleDepreciationMethod,
+  VehicleInsurancePolicyStatus,
+  VehicleInsurancePolicyType,
   VehicleModel,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
@@ -594,6 +596,56 @@ describe("VehicleService sale price baseline", () => {
     expect(result[0]?.batteryUsageType).toBe(VehicleBatteryUsageType.BUYOUT);
   });
 
+  it("derives current compulsory and commercial coverage from policy records", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-24T08:00:00.000Z"));
+    const { prisma, service } = makeService();
+    prisma.vehicle.findMany.mockResolvedValueOnce([
+      {
+        ...makeVehicle(),
+        insurancePolicies: [
+          {
+            deletedAt: null,
+            effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+            effectiveTo: new Date("2027-06-30T00:00:00.000Z"),
+            id: "policy-compulsory",
+            policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+            policyType: VehicleInsurancePolicyType.COMPULSORY_TRAFFIC
+          },
+          {
+            deletedAt: null,
+            effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+            effectiveTo: new Date("2027-06-30T00:00:00.000Z"),
+            id: "policy-commercial",
+            policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+            policyType: VehicleInsurancePolicyType.COMMERCIAL
+          }
+        ]
+      }
+    ]);
+
+    try {
+      const result = await service.listVehicles();
+
+      expect(result[0]?.insuranceCoverage).toMatchObject({
+        commercial: {
+          covered: true,
+          effectiveFrom: "2026-07-01",
+          effectiveTo: "2027-06-30"
+        },
+        compulsoryTraffic: {
+          covered: true,
+          effectiveFrom: "2026-07-01",
+          effectiveTo: "2027-06-30"
+        },
+        covered: true,
+        evaluatedAt: "2026-07-24"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps demo seed vehicles eligible for available vehicle lookup", () => {
     const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
     const serviceSource = fs.readFileSync(
@@ -981,8 +1033,6 @@ function makeVehicleBase(): VehicleFixture {
     currentSalePriceReviewedAt: null,
     deletedAt: null,
     id: "vehicle-1",
-    insuranceEndDate: null,
-    insuranceStartDate: null,
     model: null,
     modelYear: null,
     nextSalePriceReviewAt: null,

@@ -9,6 +9,7 @@ import {
   QuoteStatus,
   SalePriceStatus,
   VehicleInsurancePolicyStatus,
+  VehicleInsurancePolicyType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -55,16 +56,19 @@ describe("vehicle delivery handover workflow", () => {
     ).rejects.toThrow("首期月费尚未确认收取");
   });
 
-  it("rejects confirm when insurance is not confirmed or expired", async () => {
+  it("rejects confirm when insurance is not manually confirmed or policy coverage is expired", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness, { insuranceValidConfirmed: false });
 
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
-    ).rejects.toThrow("保险有效性尚未确认");
+    ).rejects.toThrow("保险人工核验尚未确认");
 
     harness.state.delivery = buildReadyDelivery(harness);
-    harness.state.insuranceEndDate = new Date("2026-06-09T00:00:00.000Z");
+    harness.state.insurancePolicies = harness.state.insurancePolicies.map((policy) => ({
+      ...policy,
+      effectiveTo: new Date("2026-06-09T00:00:00.000Z")
+    }));
 
     await expect(
       harness.service.confirmDelivery(harness.orderId, validConfirmDto(), harness.user, harness.context)
@@ -163,66 +167,109 @@ describe("vehicle delivery handover workflow", () => {
     expect(harness.tx.vehicleDelivery.create).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks delivery on missing vehicle insurance master-data dates", async () => {
+  it("blocks delivery when commercial insurance does not cover the delivery date", async () => {
     const harness = createDeliveryHarness();
-    harness.state.insuranceEndDate = null;
-    harness.state.insuranceStartDate = null;
+    harness.state.insurancePolicies = [
+      buildInsurancePolicy(harness, {
+        policyType: VehicleInsurancePolicyType.COMPULSORY_TRAFFIC
+      })
+    ];
 
     const initialCheck = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
       blockingReasons: string[];
       canPrepareDelivery: boolean;
+      insuranceCoverage: {
+        commercialCovered: boolean;
+        compulsoryTrafficCovered: boolean;
+      };
       insuranceValid: boolean;
     };
 
     expect(initialCheck.canPrepareDelivery).toBe(false);
     expect(initialCheck.insuranceValid).toBe(false);
-    expect(initialCheck.blockingReasons).toContain("车辆保险已过期");
+    expect(initialCheck.insuranceCoverage).toMatchObject({
+      commercialCovered: false,
+      compulsoryTrafficCovered: true
+    });
+    expect(initialCheck.blockingReasons).toContain("商业险未覆盖计划交付日");
 
     await expect(
       harness.service.prepareDelivery(harness.orderId, validPrepareDto(), harness.user, harness.context)
-    ).rejects.toThrow("车辆保险已过期");
+    ).rejects.toThrow("商业险未覆盖计划交付日");
   });
 
-  it("accepts an active insurance policy covering the delivery date when vehicle master insurance dates are stale", async () => {
+  it("blocks delivery when compulsory insurance does not cover the delivery date", async () => {
     const harness = createDeliveryHarness();
-    harness.state.insuranceEndDate = null;
-    harness.state.insuranceStartDate = null;
     harness.state.insurancePolicies = [
       buildInsurancePolicy(harness, {
-        effectiveFrom: new Date("2026-06-01T00:00:00.000Z"),
-        effectiveTo: new Date("2026-06-30T00:00:00.000Z"),
-        policyStatus: VehicleInsurancePolicyStatus.ACTIVE
+        policyType: VehicleInsurancePolicyType.COMMERCIAL
       })
     ];
 
     const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      blockingReasons: string[];
       canPrepareDelivery: boolean;
-      insuranceValid: boolean;
-    };
-
-    expect(check.insuranceValid).toBe(true);
-    expect(check.canPrepareDelivery).toBe(true);
-  });
-
-  it("keeps delivery blocked when only expired insurance policy records exist", async () => {
-    const harness = createDeliveryHarness();
-    harness.state.insuranceEndDate = null;
-    harness.state.insuranceStartDate = null;
-    harness.state.insurancePolicies = [
-      buildInsurancePolicy(harness, {
-        effectiveFrom: new Date("2026-05-01T00:00:00.000Z"),
-        effectiveTo: new Date("2026-05-31T00:00:00.000Z"),
-        policyStatus: VehicleInsurancePolicyStatus.ACTIVE
-      })
-    ];
-
-    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
-      canPrepareDelivery: boolean;
+      insuranceCoverage: {
+        commercialCovered: boolean;
+        compulsoryTrafficCovered: boolean;
+      };
       insuranceValid: boolean;
     };
 
     expect(check.insuranceValid).toBe(false);
     expect(check.canPrepareDelivery).toBe(false);
+    expect(check.insuranceCoverage).toMatchObject({
+      commercialCovered: true,
+      compulsoryTrafficCovered: false
+    });
+    expect(check.blockingReasons).toContain("交强险未覆盖计划交付日");
+  });
+
+  it("accepts active compulsory and commercial policies covering the delivery date", async () => {
+    const harness = createDeliveryHarness();
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      canPrepareDelivery: boolean;
+      insuranceCoverage: {
+        commercialCovered: boolean;
+        compulsoryTrafficCovered: boolean;
+        evaluatedAt: Date;
+      };
+      insuranceValid: boolean;
+    };
+
+    expect(check.insuranceValid).toBe(true);
+    expect(check.canPrepareDelivery).toBe(true);
+    expect(check.insuranceCoverage).toMatchObject({
+      commercialCovered: true,
+      compulsoryTrafficCovered: true,
+      evaluatedAt: new Date("2026-06-06T08:00:00.000Z")
+    });
+  });
+
+  it("does not count a NOT_EFFECTIVE policy toward delivery coverage", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.insurancePolicies = harness.state.insurancePolicies.map((policy) =>
+      policy.policyType === VehicleInsurancePolicyType.COMMERCIAL
+        ? { ...policy, policyStatus: VehicleInsurancePolicyStatus.NOT_EFFECTIVE }
+        : policy
+    );
+
+    const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
+      blockingReasons: string[];
+      insuranceCoverage: {
+        commercialCovered: boolean;
+        compulsoryTrafficCovered: boolean;
+      };
+      insuranceValid: boolean;
+    };
+
+    expect(check.insuranceValid).toBe(false);
+    expect(check.insuranceCoverage).toMatchObject({
+      commercialCovered: false,
+      compulsoryTrafficCovered: true
+    });
+    expect(check.blockingReasons).toContain("商业险未覆盖计划交付日");
   });
 
   it("treats zero required deposit as automatically satisfied for delivery readiness", async () => {
@@ -432,9 +479,7 @@ function createDeliveryHarness() {
     depositStatus: DepositStatus;
     evidenceReadiness: ReturnType<typeof buildEvidenceReadiness>;
     finalDepositAmount: bigint | null;
-    insuranceEndDate: Date | null;
     insurancePolicies: Array<Record<string, unknown>>;
-    insuranceStartDate: Date | null;
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
     handover: Record<string, unknown> | null;
@@ -447,9 +492,24 @@ function createDeliveryHarness() {
     evidenceReadiness: buildEvidenceReadiness({ orderId }),
     finalDepositAmount: 500000n,
     handover: null,
-    insuranceEndDate: new Date("2030-12-31T00:00:00.000Z"),
-    insurancePolicies: [],
-    insuranceStartDate: new Date("2026-06-01T00:00:00.000Z"),
+    insurancePolicies: [
+      {
+        deletedAt: null,
+        effectiveFrom: new Date("2026-06-01T00:00:00.000Z"),
+        effectiveTo: new Date("2030-12-31T00:00:00.000Z"),
+        id: "policy-compulsory",
+        policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+        policyType: VehicleInsurancePolicyType.COMPULSORY_TRAFFIC
+      },
+      {
+        deletedAt: null,
+        effectiveFrom: new Date("2026-06-01T00:00:00.000Z"),
+        effectiveTo: new Date("2030-12-31T00:00:00.000Z"),
+        id: "policy-commercial",
+        policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+        policyType: VehicleInsurancePolicyType.COMMERCIAL
+      }
+    ],
     orderStatus: OrderStatus.PENDING_PAYMENT,
     vehicleStatus: VehicleStatus.RESERVED
   };
@@ -462,9 +522,7 @@ function createDeliveryHarness() {
       currentSalePriceAmount: 10000000n,
       deletedAt: null,
       id: vehicleId,
-      insuranceEndDate: state.insuranceEndDate,
       insurancePolicies: state.insurancePolicies,
-      insuranceStartDate: state.insuranceStartDate,
       model: "ET5",
       purchasePriceAmount: 12000000n,
       salePriceStatus: SalePriceStatus.EFFECTIVE,

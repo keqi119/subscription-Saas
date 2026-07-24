@@ -24,6 +24,8 @@ The scope is intentionally operational and back-office controlled. It does not i
 
 The model supports independent `effectiveFrom` and `effectiveTo` dates, so compulsory and commercial policies can have different periods. `renewalReminderAt` records an operational reminder date; this stage does not send automatic reminder notifications.
 
+`VehicleInsurancePolicy` is the sole source of truth for vehicle insurance periods. Delivery readiness requires both `COMPULSORY_TRAFFIC` and `COMMERCIAL` policies to be non-deleted, `ACTIVE`, and date-covering. `NOT_EFFECTIVE` is an explicit operator-maintained status and never satisfies coverage; no vehicle-level insurance date fallback remains.
+
 ## Coverage Model
 
 `VehicleInsuranceCoverage` stores coverage rows under a policy:
@@ -94,7 +96,7 @@ It does not call insurance company APIs, does not submit claims automatically, a
 Back office now includes:
 
 - `/vehicle-insurance-policies` policy management page.
-- Policy list filters by vehicle, policy type, status, effective-to range, and expiring-within days.
+- Policy list shows vehicle VIN and plate number, and filters by vehicle, policy type, status, effective-to range, and expiring-within days. Vehicle selection supports partial VIN search.
 - Policy create/edit drawer with coverage rows.
 - Policy detail drawer with attached documents.
 - Vehicle detail `insurance / documents` summary and vehicle-document upload.

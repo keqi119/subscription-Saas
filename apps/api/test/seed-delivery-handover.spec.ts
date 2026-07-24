@@ -88,8 +88,8 @@ describe("default seed baseline vehicle and flow cleanup", () => {
       'salePriceStatus: "EFFECTIVE"',
       "currentSalePriceAmount: BigInt(vehicleSeed.currentSalePriceAmount)",
       "purchasePriceAmount: BigInt(vehicleSeed.purchasePriceAmount)",
-      "insuranceStartDate",
-      "insuranceEndDate",
+      'policyType: "COMPULSORY_TRAFFIC"',
+      'policyType: "COMMERCIAL"',
       'reviewType: "INITIAL_POOL"'
     ]) {
       expect(seedSource).toContain(marker);

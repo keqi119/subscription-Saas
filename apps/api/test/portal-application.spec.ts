@@ -892,8 +892,6 @@ function createVehicle() {
     currentSalePriceReviewedAt: now,
     deletedAt: null,
     id: "vehicle-1",
-    insuranceEndDate: null,
-    insuranceStartDate: null,
     latestRegistrationDate: null,
     model: "ES6",
     modelYear: 2025,

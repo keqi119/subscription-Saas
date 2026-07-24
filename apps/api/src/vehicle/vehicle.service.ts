@@ -21,6 +21,10 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import {
+  type PolicyTypeCoverage,
+  resolveVehicleInsuranceCoverage
+} from "../common/vehicle-insurance-coverage";
 import { PrismaService } from "../prisma/prisma.service";
 import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
@@ -49,6 +53,17 @@ const vehicleModelDefinitionSelect = {
 } satisfies Prisma.VehicleModelDefinitionSelect;
 
 const vehicleInclude = {
+  insurancePolicies: {
+    select: {
+      deletedAt: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      id: true,
+      policyStatus: true,
+      policyType: true
+    },
+    where: { deletedAt: null }
+  },
   modelDefinition: {
     select: vehicleModelDefinitionSelect
   },
@@ -880,8 +895,6 @@ function createVehicleData(
     acquisitionMode: dto.acquisitionMode ?? VehicleAcquisitionMode.OWNED_CASH,
     brand: dto.brand,
     currentMileageKm: dto.currentMileageKm ?? 0,
-    insuranceEndDate: parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"),
-    insuranceStartDate: parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"),
     latestRegistrationDate: parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"),
     model: dto.model,
     modelYear: dto.modelYear,
@@ -925,8 +938,6 @@ function updateVehicleData(
   assignIfDefined(data, "acquisitionMode", dto.acquisitionMode);
   assignIfDefined(data, "brand", dto.brand);
   assignIfDefined(data, "currentMileageKm", dto.currentMileageKm);
-  assignIfDefined(data, "insuranceEndDate", parseOptionalDateOnly(dto.insuranceEndDate, "insuranceEndDate"));
-  assignIfDefined(data, "insuranceStartDate", parseOptionalDateOnly(dto.insuranceStartDate, "insuranceStartDate"));
   assignIfDefined(data, "latestRegistrationDate", parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"));
   assignIfDefined(data, "model", dto.model);
   assignIfDefined(data, "modelYear", dto.modelYear);
@@ -1169,6 +1180,11 @@ function toReviewQuarter(date: Date) {
 }
 
 function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
+  const resolvedInsuranceCoverage = resolveVehicleInsuranceCoverage(
+    vehicle.insurancePolicies ?? [],
+    today
+  );
+
   return {
     acquisitionMode: vehicle.acquisitionMode,
     assetLocation: vehicle.assetLocation,
@@ -1184,8 +1200,12 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     currentSalePriceReviewedAt: vehicle.currentSalePriceReviewedAt,
     deletedAt: vehicle.deletedAt,
     id: vehicle.id,
-    insuranceEndDate: vehicle.insuranceEndDate,
-    insuranceStartDate: vehicle.insuranceStartDate,
+    insuranceCoverage: {
+      commercial: toPolicyTypeCoverageView(resolvedInsuranceCoverage.commercial),
+      compulsoryTraffic: toPolicyTypeCoverageView(resolvedInsuranceCoverage.compulsoryTraffic),
+      covered: resolvedInsuranceCoverage.covered,
+      evaluatedAt: formatDateOnly(resolvedInsuranceCoverage.evaluationDate)
+    },
     latestRegistrationDate: vehicle.latestRegistrationDate,
     model: vehicle.model,
     modelDefinition: vehicle.modelDefinition ? toVehicleModelDefinitionView(vehicle.modelDefinition) : null,
@@ -1208,6 +1228,14 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     vehicleModel: vehicle.vehicleModel,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
+  };
+}
+
+function toPolicyTypeCoverageView(coverage: PolicyTypeCoverage) {
+  return {
+    covered: coverage.covered,
+    effectiveFrom: coverage.effectiveFrom ? formatDateOnly(coverage.effectiveFrom) : null,
+    effectiveTo: coverage.effectiveTo ? formatDateOnly(coverage.effectiveTo) : null
   };
 }
 

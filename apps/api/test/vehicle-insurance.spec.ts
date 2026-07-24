@@ -75,6 +75,18 @@ describe("VehicleInsuranceService policy and document management", () => {
     );
   });
 
+  it("includes vehicle VIN and plate number in listed policy summaries", async () => {
+    const { service } = createHarness();
+
+    const result = await service.listPolicies({});
+
+    expect(result.items[0]?.vehicle).toMatchObject({
+      plateNo: "沪A12345",
+      vehicleNo: "VH001",
+      vin: "SYNTHETICVIN000001"
+    });
+  });
+
   it("uploads vehicle documents through private storage and hides object fields", async () => {
     const { service, storageService, user } = createHarness();
 
@@ -216,7 +228,8 @@ function vehicleBrief() {
     model: "ES6",
     plateNo: "沪A12345",
     series: "ES6",
-    vehicleNo: "VH001"
+    vehicleNo: "VH001",
+    vin: "SYNTHETICVIN000001"
   };
 }
 

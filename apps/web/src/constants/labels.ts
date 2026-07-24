@@ -313,6 +313,7 @@ export const VEHICLE_INSURANCE_POLICY_STATUS_LABELS: Record<string, string> = {
   ARCHIVED: "已归档",
   CANCELLED: "已取消",
   EXPIRED: "已过期",
+  NOT_EFFECTIVE: "未生效",
   PENDING_RENEWAL: "待续保"
 };
 

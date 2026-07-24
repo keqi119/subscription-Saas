@@ -683,6 +683,7 @@ enum VehicleInsurancePolicyType {
 }
 
 enum VehicleInsurancePolicyStatus {
+  NOT_EFFECTIVE
   ACTIVE
   EXPIRED
   CANCELLED
@@ -2801,8 +2802,6 @@ model Vehicle {
   salePriceStatus               SalePriceStatus           @default(PENDING_INITIALIZE) @map("sale_price_status")
   registrationDate              DateTime?                 @map("registration_date") @db.Date
   latestRegistrationDate        DateTime?                 @map("latest_registration_date") @db.Date
-  insuranceStartDate            DateTime?                 @map("insurance_start_date") @db.Date
-  insuranceEndDate              DateTime?                 @map("insurance_end_date") @db.Date
   status                        VehicleStatus             @default(DRAFT)
   currentMileageKm              Int                       @default(0) @map("current_mileage_km")
   assetLocation                 String?                   @map("asset_location") @db.VarChar(128)

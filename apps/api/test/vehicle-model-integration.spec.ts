@@ -418,8 +418,6 @@ function makeVehicle(options: Record<string, unknown> = {}) {
     currentSalePriceReviewedAt: null,
     deletedAt: null,
     id: "vehicle-1",
-    insuranceEndDate: null,
-    insuranceStartDate: null,
     latestRegistrationDate: null,
     model: null,
     modelDefinition: null,

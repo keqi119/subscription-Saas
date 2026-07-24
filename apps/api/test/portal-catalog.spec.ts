@@ -403,8 +403,6 @@ function createVehicle(overrides: Record<string, unknown> = {}) {
     currentSalePriceReviewedAt: now,
     deletedAt: null,
     id: "vehicle-1",
-    insuranceEndDate: null,
-    insuranceStartDate: null,
     latestRegistrationDate: null,
     listingProfile: createListingProfile(),
     model: "ES6",

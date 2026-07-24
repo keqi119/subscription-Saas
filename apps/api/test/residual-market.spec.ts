@@ -2715,8 +2715,6 @@ function makeVehicle(overrides: Partial<Vehicle> = {}): Vehicle {
     currentSalePriceReviewedAt: null,
     deletedAt: null,
     id: "vehicle-1",
-    insuranceEndDate: null,
-    insuranceStartDate: null,
     model: "ET5",
     modelYear: 2024,
     nextSalePriceReviewAt: null,

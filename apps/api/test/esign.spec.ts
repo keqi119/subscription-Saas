@@ -365,6 +365,233 @@ describe("ESignService", () => {
     expect(prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
   });
 
+  it("rejects an invalid Stage 2 digest before mutating typed signer, task, contract, or handover state", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const before = snapshotTypedStage2State(harness.state);
+    const payload = {
+      ...fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.customerTransactionId
+      }),
+      msg_digest: "invalid"
+    };
+
+    const result = await harness.service.handleCallback("fadada", payload);
+
+    expect(result).toEqual({ handled: false, reason: "UNVERIFIED" });
+    expect(snapshotTypedStage2State(harness.state)).toEqual(before);
+    expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+    expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
+  });
+
+  it("correlates a Stage 2 customer callback by typed transaction and dedupes the canonical sanitized payload", async () => {
+    const harness = createTypedStage2CallbackFixture({
+      customerProviderSignerId: "LEGACY-CUSTOMER-ID"
+    });
+    const payload = {
+      ...fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: `  ${harness.customerTransactionId}  `
+      }),
+      authorization: "Bearer callback-secret",
+      id_number: "310101199001011234",
+      mobile: "13800000000",
+      otp: "123456"
+    };
+
+    const first = await harness.service.handleCallback("fadada", payload);
+    const signedAt = harness.customerSigner.signedAt;
+    const duplicate = await harness.service.handleCallback(
+      "fadada",
+      Object.fromEntries(Object.entries(payload).reverse())
+    );
+
+    expect(first).toMatchObject({
+      handled: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(duplicate).toMatchObject({
+      handled: true,
+      idempotent: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(harness.customerSigner).toMatchObject({
+      providerSignerId: "LEGACY-CUSTOMER-ID",
+      signerStatus: ESignSignerStatus.SIGNED,
+      signedAt
+    });
+    expect(harness.platformSigner.signerStatus).toBe(ESignSignerStatus.PENDING);
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      handled: true,
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      providerTransactionId: harness.customerTransactionId,
+      taskId: harness.task.id,
+      verified: true
+    });
+    const loggedPayload = JSON.stringify(harness.state.callbackLogs[0]!.payload);
+    expect(loggedPayload).not.toContain("callback-secret");
+    expect(loggedPayload).not.toContain("310101199001011234");
+    expect(loggedPayload).not.toContain("13800000000");
+    expect(loggedPayload).not.toContain("123456");
+    expect(loggedPayload).not.toContain("download.example.test");
+    expect(loggedPayload).not.toContain("view.example.test");
+    expect(loggedPayload).not.toContain("msg_digest");
+    expect(JSON.stringify(first)).not.toContain("sign.example.test");
+    expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+    expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
+  });
+
+  it("records an unknown Stage 2 transaction safely without mutating the typed task", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const before = snapshotTypedStage2State(harness.state);
+    const payload = fadadaCallbackPayload({
+      contractId: harness.providerContractId,
+      resultCode: "3000",
+      transactionId: "UNKNOWNSTAGE2H1"
+    });
+
+    const result = await harness.service.handleCallback("fadada", payload);
+
+    expect(result).toEqual({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(snapshotTypedStage2State(harness.state)).toEqual(before);
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+      handled: true,
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      providerTransactionId: "UNKNOWNSTAGE2H1",
+      taskId: harness.task.id,
+      verified: true
+    });
+  });
+
+  it("never falls back to legacy task correlation for a typed Stage 2 task", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.customerSigner.providerTransactionId = null;
+    const before = snapshotTypedStage2State(harness.state);
+    const payload = fadadaCallbackPayload({
+      contractId: "",
+      resultCode: "3000",
+      transactionId: harness.task.providerTaskId
+    });
+
+    const result = await harness.service.handleCallback("fadada", payload);
+
+    expect(result).toEqual({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(snapshotTypedStage2State(harness.state)).toEqual(before);
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+      handled: true,
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      taskId: harness.task.id,
+      verified: true
+    });
+    expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+    expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      firstSlot: "STAGE2_HANDOVER_PLATFORM",
+      firstTransactionKey: "platformTransactionId"
+    },
+    {
+      firstSlot: "STAGE2_HANDOVER_CUSTOMER",
+      firstTransactionKey: "customerTransactionId"
+    }
+  ] as const)(
+    "completes Stage 2 only after both required typed signers when $firstSlot arrives first",
+    async ({ firstSlot, firstTransactionKey }) => {
+      const harness = createTypedStage2CallbackFixture();
+      const stage1Before = {
+        contract: {
+          signedAt: harness.stage1Contract.signedAt,
+          status: harness.stage1Contract.status
+        },
+        orderStatus: harness.stage1Contract.order.orderStatus,
+        task: {
+          completedAt: harness.stage1Task.completedAt,
+          taskStatus: harness.stage1Task.taskStatus
+        }
+      };
+      const secondTransactionId = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+        ? harness.platformTransactionId
+        : harness.customerTransactionId;
+      const otherSignerStatusBefore = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+        ? harness.platformSigner.signerStatus
+        : harness.customerSigner.signerStatus;
+
+      await harness.service.handleCallback("fadada", fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness[firstTransactionKey]
+      }));
+
+      const firstSigner = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+        ? harness.customerSigner
+        : harness.platformSigner;
+      const otherSigner = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+        ? harness.platformSigner
+        : harness.customerSigner;
+      expect(firstSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+      expect(otherSigner.signerStatus).toBe(otherSignerStatusBefore);
+      expect(harness.task).toMatchObject({
+        completedAt: null,
+        taskStatus: ESignTaskStatus.SIGNING
+      });
+      expect(harness.handover).toMatchObject({
+        completedAt: null,
+        status: firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+          ? "PENDING_PLATFORM_SEAL"
+          : "PENDING_CUSTOMER_SIGNATURE"
+      });
+      expect(harness.stage2Contract.status).toBe(ContractStatus.SIGNING);
+
+      await harness.service.handleCallback("fadada", fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: secondTransactionId
+      }));
+
+      expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+      expect(harness.platformSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+      expect(harness.task).toMatchObject({
+        completedAt: expect.any(Date),
+        taskStatus: ESignTaskStatus.COMPLETED
+      });
+      expect(harness.stage2Contract).toMatchObject({
+        signedAt: expect.any(Date),
+        status: ContractStatus.SIGNED
+      });
+      expect(harness.handover).toMatchObject({
+        completedAt: expect.any(Date),
+        customerSignedAt: expect.any(Date),
+        platformSignedAt: expect.any(Date),
+        status: "SIGNED"
+      });
+      expect({
+        contract: {
+          signedAt: harness.stage1Contract.signedAt,
+          status: harness.stage1Contract.status
+        },
+        orderStatus: harness.stage1Contract.order.orderStatus,
+        task: {
+          completedAt: harness.stage1Task.completedAt,
+          taskStatus: harness.stage1Task.taskStatus
+        }
+      }).toEqual(stage1Before);
+      expect(harness.stage1Contract.order.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
+      expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+      expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
+    }
+  );
+
   it("keeps Stage 1 slot rows unchanged for unknown or mismatched callbacks", async () => {
     const provider = stage1SlotProvider();
     const { service, state } = createESignFixture({
@@ -1498,6 +1725,205 @@ describe("ESignService", () => {
   });
 });
 
+function createTypedStage2CallbackFixture(options: {
+  customerProviderSignerId?: string;
+} = {}) {
+  const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
+  const harness = createESignFixture({ ESIGN_PROVIDER: "fadada" }, {
+    createSignTask: vi.fn(),
+    getSignerUrl: vi.fn(),
+    verifyCallback: verifier.verifyCallback.bind(verifier)
+  });
+  const stage1Contract = harness.state.contracts[0]!;
+  stage1Contract.signedAt = new Date("2026-07-26T00:00:00.000Z");
+  stage1Contract.status = ContractStatus.SIGNED;
+  stage1Contract.order.orderStatus = OrderStatus.PENDING_DELIVERY;
+
+  const stage1Task: FakeTask = {
+    callbackSnapshot: null,
+    cancelledAt: null,
+    completedAt: new Date("2026-07-26T00:00:00.000Z"),
+    contractId: stage1Contract.id,
+    createdAt: new Date("2026-07-25T00:00:00.000Z"),
+    customerId: stage1Contract.customerId,
+    deletedAt: null,
+    documentName: "Subscription contract",
+    documentType: "SUBSCRIPTION_CONTRACT",
+    errorSnapshot: null,
+    evidenceObjectKey: null,
+    failedAt: null,
+    id: "stage1-task-existing",
+    orderId: stage1Contract.orderId,
+    provider: ESignProviderType.FADADA,
+    providerEnvelopeId: "STAGE1PROVIDER",
+    providerTaskId: "STAGE1CUSTOMER",
+    requestSnapshot: { signingStage: "STAGE1_CONTRACT" },
+    responseSnapshot: null,
+    signUrl: null,
+    signUrlExpiresAt: null,
+    signedDocumentObjectKey: null,
+    signingStage: "STAGE1_SUBSCRIPTION_CONTRACT",
+    startedAt: new Date("2026-07-25T00:00:00.000Z"),
+    taskNo: "ESGSTAGE1",
+    taskStatus: ESignTaskStatus.COMPLETED,
+    updatedAt: new Date("2026-07-26T00:00:00.000Z")
+  };
+  harness.state.tasks.push(stage1Task);
+
+  const stage2Contract = createContract(
+    "handover-contract-typed",
+    stage1Contract.customerId,
+    stage1Contract.orderId,
+    stage1Contract.order.orderNo
+  );
+  stage2Contract.contractNo = "HDV-TYPED-1";
+  stage2Contract.contractTitle = "Delivery handover confirmation";
+  stage2Contract.order = stage1Contract.order;
+  stage2Contract.status = ContractStatus.SIGNING;
+  harness.state.contracts.push(stage2Contract);
+
+  const providerContractId = "HDVPROVIDER1";
+  const customerTransactionId = "HDVTYPEDH1";
+  const platformTransactionId = "HDVTYPEDH2";
+  const task: FakeTask = {
+    callbackSnapshot: null,
+    cancelledAt: null,
+    completedAt: null,
+    contractId: stage2Contract.id,
+    createdAt: new Date("2026-07-26T01:00:00.000Z"),
+    customerId: stage1Contract.customerId,
+    deletedAt: null,
+    documentName: "Delivery handover confirmation",
+    documentType: "DELIVERY_HANDOVER",
+    errorSnapshot: null,
+    evidenceObjectKey: null,
+    failedAt: null,
+    id: "stage2-task-typed",
+    orderId: stage1Contract.orderId,
+    provider: ESignProviderType.FADADA,
+    providerEnvelopeId: providerContractId,
+    providerTaskId: customerTransactionId,
+    requestSnapshot: {
+      signingStage: "STAGE2_DELIVERY_HANDOVER"
+    },
+    responseSnapshot: null,
+    signUrl: null,
+    signUrlExpiresAt: null,
+    signedDocumentObjectKey: null,
+    signingStage: "STAGE2_DELIVERY_HANDOVER",
+    startedAt: new Date("2026-07-26T01:00:00.000Z"),
+    taskNo: "ESGSTAGE2",
+    taskStatus: ESignTaskStatus.WAITING_CUSTOMER,
+    updatedAt: new Date("2026-07-26T01:00:00.000Z")
+  };
+  harness.state.tasks.push(task);
+
+  const customerSigner: FakeSigner = {
+    customerId: stage1Contract.customerId,
+    deletedAt: null,
+    documentType: "DELIVERY_HANDOVER",
+    id: "stage2-signer-customer-typed",
+    providerActionType: "CUSTOMER_MANUAL_SIGN",
+    providerSignerId:
+      options.customerProviderSignerId ?? "LEGACY-CUSTOMER-ID",
+    providerTransactionId: customerTransactionId,
+    rejectReason: null,
+    rejectedAt: null,
+    required: true,
+    signedAt: null,
+    signerIdNoMasked: null,
+    signerName: "Customer",
+    signerPhone: "13800000000",
+    signerStatus: ESignSignerStatus.SIGNING,
+    signerType: ESignSignerType.CUSTOMER,
+    signUrl: "https://sign.example.test/stage2-customer",
+    signUrlExpiresAt: null,
+    slotId: "STAGE2_HANDOVER_CUSTOMER",
+    snapshot: null,
+    taskId: task.id
+  };
+  const platformSigner: FakeSigner = {
+    customerId: null,
+    deletedAt: null,
+    documentType: "DELIVERY_HANDOVER",
+    id: "stage2-signer-platform-typed",
+    providerActionType: "PLATFORM_AUTO_SEAL",
+    providerSignerId: "LEGACY-PLATFORM-ID",
+    providerTransactionId: platformTransactionId,
+    rejectReason: null,
+    rejectedAt: null,
+    required: true,
+    signedAt: null,
+    signerIdNoMasked: null,
+    signerName: "Platform",
+    signerPhone: null,
+    signerStatus: ESignSignerStatus.PENDING,
+    signerType: ESignSignerType.PLATFORM,
+    signUrl: null,
+    signUrlExpiresAt: null,
+    slotId: "STAGE2_HANDOVER_PLATFORM",
+    snapshot: null,
+    taskId: task.id
+  };
+  harness.state.signers.push(customerSigner, platformSigner);
+
+  const handover: FakeDeliveryHandover = {
+    archiveStatus: "NOT_STARTED",
+    completedAt: null,
+    customerSignedAt: null,
+    deletedAt: null,
+    handoverContractId: stage2Contract.id,
+    handoverESignTaskId: task.id,
+    id: "handover-typed",
+    orderId: stage1Contract.orderId,
+    platformSignedAt: null,
+    status: "PENDING_CUSTOMER_SIGNATURE"
+  };
+  harness.state.deliveryHandovers.push(handover);
+
+  return {
+    ...harness,
+    customerSigner,
+    customerTransactionId,
+    handover,
+    platformSigner,
+    platformTransactionId,
+    providerContractId,
+    stage1Contract,
+    stage1Task,
+    stage2Contract,
+    task
+  };
+}
+
+function snapshotTypedStage2State(state: FakeState) {
+  return {
+    contracts: state.contracts.map((contract) => ({
+      id: contract.id,
+      signedAt: contract.signedAt,
+      status: contract.status
+    })),
+    handovers: state.deliveryHandovers.map((handover) => ({
+      completedAt: handover.completedAt,
+      customerSignedAt: handover.customerSignedAt,
+      id: handover.id,
+      platformSignedAt: handover.platformSignedAt,
+      status: handover.status
+    })),
+    signers: state.signers.map((signer) => ({
+      id: signer.id,
+      signedAt: signer.signedAt,
+      signerStatus: signer.signerStatus
+    })),
+    tasks: state.tasks.map((task) => ({
+      callbackSnapshot: task.callbackSnapshot,
+      completedAt: task.completedAt,
+      id: task.id,
+      taskStatus: task.taskStatus
+    }))
+  };
+}
+
 function createESignFixture(
   env: Record<string, string> = {},
   providerOverride?: ESignProvider,
@@ -1554,6 +1980,17 @@ function createESignFixture(
     },
     contractESignCallbackLog: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const payloadHash = (data.payloadHash as string | null | undefined) ?? null;
+        const duplicate = payloadHash
+          ? state.callbackLogs.find((item) =>
+              item.provider === data.provider && item.payloadHash === payloadHash
+            )
+          : null;
+        if (duplicate) {
+          throw Object.assign(new Error("callback log unique constraint"), {
+            code: "P2002"
+          });
+        }
         const log: FakeCallbackLog = {
           errorMessage: null,
           eventType: (data.eventType as string | null | undefined) ?? null,
@@ -1561,8 +1998,11 @@ function createESignFixture(
           handledAt: (data.handledAt as Date | null | undefined) ?? null,
           id: `callback-${state.callbackLogs.length + 1}`,
           payload: data.payload,
+          payloadHash,
           provider: data.provider as ESignProviderType,
           providerTaskId: (data.providerTaskId as string | null | undefined) ?? null,
+          providerTransactionId:
+            (data.providerTransactionId as string | null | undefined) ?? null,
           receivedAt: new Date(),
           taskId: (data.taskId as string | null | undefined) ?? null,
           verified: Boolean(data.verified)
@@ -1577,10 +2017,33 @@ function createESignFixture(
         }
         Object.assign(log, data);
         return log;
+      }),
+      findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const composite = where.provider_payloadHash as
+          | { payloadHash?: string; provider?: ESignProviderType }
+          | undefined;
+        if (composite?.payloadHash && composite.provider) {
+          return state.callbackLogs.find((item) =>
+            item.provider === composite.provider &&
+            item.payloadHash === composite.payloadHash
+          ) ?? null;
+        }
+        return null;
       })
     },
     contractESignSigner: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const signer = state.signers.find((item) => matchesWhere(item, where));
+        if (!signer) {
+          return null;
+        }
+        const task = state.tasks.find((item) => item.id === signer.taskId);
+        return {
+          ...signer,
+          task: task ? hydrateTask(state, task) : null
+        };
+      }),
+      findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         const signer = state.signers.find((item) => matchesWhere(item, where));
         if (!signer) {
           return null;
@@ -1626,8 +2089,12 @@ function createESignFixture(
           providerTaskId: null,
           requestSnapshot: data.requestSnapshot,
           responseSnapshot: null,
+          documentType: (data.documentType as string | undefined) ?? "SUBSCRIPTION_CONTRACT",
           signUrl: null,
           signUrlExpiresAt: null,
+          signingStage:
+            (data.signingStage as string | undefined) ??
+            "STAGE1_SUBSCRIPTION_CONTRACT",
           signedDocumentObjectKey: null,
           startedAt: null,
           taskNo: data.taskNo as string,
@@ -1640,10 +2107,16 @@ function createESignFixture(
           state.signers.push({
             customerId: (signerInput.customerId as string | null | undefined) ?? null,
             deletedAt: null,
+            documentType:
+              (signerInput.documentType as string | null | undefined) ?? null,
             id: `signer-${state.signers.length + 1}`,
+            providerActionType:
+              (signerInput.providerActionType as string | null | undefined) ?? null,
             providerSignerId: null,
+            providerTransactionId: null,
             rejectReason: null,
             rejectedAt: null,
+            required: (signerInput.required as boolean | undefined) ?? true,
             signedAt: null,
             signerIdNoMasked: null,
             signerName: (signerInput.signerName as string | null | undefined) ?? null,
@@ -1652,6 +2125,7 @@ function createESignFixture(
             signerType: signerInput.signerType as ESignSignerType,
             signUrl: null,
             signUrlExpiresAt: null,
+            slotId: (signerInput.slotId as string | null | undefined) ?? null,
             snapshot: signerInput.snapshot,
             taskId: task.id
           });
@@ -1683,6 +2157,11 @@ function createESignFixture(
         }
         Object.assign(task, data);
         return hydrateTask(state, task);
+      }),
+      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+        const rows = state.tasks.filter((task) => matchesWhere(task, where));
+        rows.forEach((task) => Object.assign(task, data));
+        return { count: rows.length };
       })
     },
     customerESignProviderAccount: {
@@ -1717,6 +2196,7 @@ function createESignFixture(
     ...env
   });
   const auditService = { write: vi.fn(async () => undefined) };
+  const notificationService = { notifyCustomer: vi.fn(async () => undefined) };
   const contractPdfArtifactService = options.contractPdfArtifactService ?? {
     preflightContractPdfArtifact: vi.fn(async () => undefined)
   };
@@ -1725,11 +2205,18 @@ function createESignFixture(
     configService,
     providerOverride ?? new MockESignProvider(configService),
     prisma as never,
-    undefined,
+    notificationService as never,
     contractPdfArtifactService as never
   );
 
-  return { auditService, contractPdfArtifactService, prisma, service, state };
+  return {
+    auditService,
+    contractPdfArtifactService,
+    notificationService,
+    prisma,
+    service,
+    state
+  };
 }
 
 function hydrateContract(state: FakeState, contract: FakeContract) {
@@ -1845,6 +2332,10 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
     if (key === "deletedAt" && expected === null) {
       return row.deletedAt === null;
     }
+    if (expected && typeof expected === "object" && "in" in expected) {
+      return Array.isArray((expected as { in: unknown[] }).in) &&
+        (expected as { in: unknown[] }).in.includes(row[key]);
+    }
     if (key === "providerCustomerId" && expected && typeof expected === "object") {
       const notValue = (expected as Record<string, unknown>).not;
       if (notValue === null) {
@@ -1858,6 +2349,8 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
       key === "orderId" ||
       key === "providerEnvelopeId" ||
       key === "providerSignerId" ||
+      key === "providerTransactionId" ||
+      key === "slotId" ||
       key === "taskId" ||
       key === "taskNo"
     ) {
@@ -1867,11 +2360,15 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
       key === "accountType" ||
       key === "certBindingSource" ||
       key === "certBindingStatus" ||
+      key === "documentType" ||
       key === "provider" ||
+      key === "providerActionType" ||
       key === "providerTaskId" ||
+      key === "required" ||
       key === "realNameProviderStatusSource" ||
       key === "realNameStatus" ||
       key === "registrationStatus" ||
+      key === "signingStage" ||
       key === "taskStatus" ||
       key === "signerType"
     ) {
@@ -2316,6 +2813,7 @@ interface FakeTask extends Record<string, unknown> {
   customerId: string | null;
   deletedAt: Date | null;
   documentName: string | null;
+  documentType?: string;
   errorSnapshot: unknown;
   evidenceObjectKey: string | null;
   failedAt: Date | null;
@@ -2329,6 +2827,7 @@ interface FakeTask extends Record<string, unknown> {
   signUrl: string | null;
   signUrlExpiresAt: Date | null;
   signedDocumentObjectKey: string | null;
+  signingStage?: string;
   startedAt: Date | null;
   taskNo: string;
   taskStatus: ESignTaskStatus;
@@ -2351,10 +2850,14 @@ interface FakeDeliveryHandover extends Record<string, unknown> {
 interface FakeSigner extends Record<string, unknown> {
   customerId: string | null;
   deletedAt: Date | null;
+  documentType?: string | null;
   id: string;
+  providerActionType?: string | null;
   providerSignerId: string | null;
+  providerTransactionId?: string | null;
   rejectReason: string | null;
   rejectedAt: Date | null;
+  required?: boolean;
   signedAt: Date | null;
   signerIdNoMasked: string | null;
   signerName: string | null;
@@ -2363,6 +2866,7 @@ interface FakeSigner extends Record<string, unknown> {
   signerType: ESignSignerType;
   signUrl: string | null;
   signUrlExpiresAt: Date | null;
+  slotId?: string | null;
   snapshot: unknown;
   taskId: string;
 }
@@ -2374,8 +2878,10 @@ interface FakeCallbackLog extends Record<string, unknown> {
   handledAt: Date | null;
   id: string;
   payload: unknown;
+  payloadHash: string | null;
   provider: ESignProviderType;
   providerTaskId: string | null;
+  providerTransactionId: string | null;
   receivedAt: Date;
   taskId: string | null;
   verified: boolean;

@@ -189,6 +189,15 @@ export class HandoverWorkOrderAdminController {
     return this.stage2HandoverESignService.retryPlatformSeal(id, request.user.id);
   }
 
+  @Post("handover-work-orders/:id/esign/archive/retry")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  retryStage2Archive(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.stage2HandoverESignService.retryArchive(id, request.user.id);
+  }
+
   @Post("handover-work-orders/:id/esign/void")
   @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
   voidStage2ESign(

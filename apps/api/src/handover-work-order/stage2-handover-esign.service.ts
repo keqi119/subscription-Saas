@@ -30,6 +30,7 @@ import {
   ESignSigningSlot,
   ESignSigningSlotCoordinate
 } from "../esign/esign.provider";
+import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   Stage2HandoverESignBlocker,
@@ -180,11 +181,15 @@ export interface Stage2HandoverESignView {
 }
 
 export interface Stage2SignedDocumentState {
+  archiveLastAttemptAt: Date | null;
+  archiveLastError: string | null;
+  archiveRetryCount: number;
   archiveStatus: DeliveryHandoverArchiveStatus | null;
   archivedAt: Date | null;
   available: boolean;
   completedAt: Date | null;
   handoverId: string | null;
+  retryAvailable: boolean;
   taskId: string | null;
   workOrderId: string;
 }
@@ -196,7 +201,8 @@ export class Stage2HandoverESignService {
     private readonly readinessService: Stage2HandoverESignReadinessService,
     @Inject(ESIGN_PROVIDER_CLIENT)
     private readonly provider: ESignProvider,
-    private readonly configService: ConfigService
+    private readonly configService: ConfigService,
+    private readonly signedArtifactService?: FadadaSignedArtifactService
   ) {}
 
   async getStatus(workOrderId: string): Promise<Stage2HandoverESignView> {
@@ -729,14 +735,70 @@ export class Stage2HandoverESignService {
       requireTypedSigners(task);
     }
     return {
+      archiveLastAttemptAt: handover?.archiveLastAttemptAt ?? null,
+      archiveLastError: sanitizeArchiveError(handover?.archiveLastError),
+      archiveRetryCount: handover?.archiveRetryCount ?? 0,
       archiveStatus: handover?.archiveStatus ?? null,
       archivedAt: handover?.archivedAt ?? null,
       available: Boolean(handover?.signedDocumentFileId),
       completedAt: handover?.completedAt ?? null,
       handoverId: handover?.id ?? null,
+      retryAvailable: Boolean(
+        handover &&
+        task?.taskStatus === ESignTaskStatus.COMPLETED &&
+        handover.status === DeliveryHandoverStatus.SIGNED &&
+        (
+          handover.archiveStatus === DeliveryHandoverArchiveStatus.NOT_STARTED ||
+          handover.archiveStatus === DeliveryHandoverArchiveStatus.FAILED
+        )
+      ),
       taskId: task?.id ?? null,
       workOrderId
     };
+  }
+
+  async retryArchive(
+    workOrderId: string,
+    actorId: string
+  ): Promise<Stage2SignedDocumentState> {
+    const workOrder = await this.loadWorkOrder(workOrderId);
+    const handover = workOrder.handover;
+    const task = this.pointerTask(workOrder);
+    if (!handover || !task) {
+      throw new NotFoundException({
+        code: "STAGE2_HANDOVER_ESIGN_TASK_MISSING",
+        message: "The Stage 2 eSign task does not exist."
+      });
+    }
+    const { customerSigner, platformSigner } = requireTypedSigners(task);
+    if (
+      task.taskStatus !== ESignTaskStatus.COMPLETED ||
+      !task.completedAt ||
+      customerSigner.signerStatus !== ESignSignerStatus.SIGNED ||
+      platformSigner.signerStatus !== ESignSignerStatus.SIGNED ||
+      (
+        handover.status !== DeliveryHandoverStatus.SIGNED &&
+        handover.status !== DeliveryHandoverStatus.ARCHIVED
+      )
+    ) {
+      throw new BadRequestException({
+        code: "STAGE2_HANDOVER_ARCHIVE_NOT_READY",
+        message: "Both required Stage 2 signers must complete before archive retry."
+      });
+    }
+    assertTaskSourceBinding(task, handover);
+    if (!this.signedArtifactService) {
+      throw new BadGatewayException({
+        code: "STAGE2_HANDOVER_ARCHIVE_UNAVAILABLE",
+        message: "The Stage 2 signed artifact service is unavailable."
+      });
+    }
+
+    await this.signedArtifactService.archiveSignedStage2Handover({
+      actorId,
+      taskId: task.id
+    });
+    return this.getSignedDocumentState(workOrderId);
   }
 
   private async loadWorkOrder(workOrderId: string) {
@@ -1293,6 +1355,15 @@ function buildTransactionId(taskNo: string, suffix: "H2") {
 function sanitizeCode(value: string) {
   const normalized = value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 128);
   return normalized || STAGE2_PLATFORM_SEAL_PROVIDER_FAILED;
+}
+
+function sanitizeArchiveError(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  return /^[A-Z0-9_]{1,128}$/.test(value)
+    ? value
+    : "STAGE2_HANDOVER_ARCHIVE_FAILED";
 }
 
 function normalizeVoidReason(value: string) {

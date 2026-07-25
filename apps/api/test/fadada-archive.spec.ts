@@ -2,9 +2,15 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   ContractStatus,
+  DeliveryHandoverArchiveStatus,
+  DeliveryHandoverStatus,
+  ESignDocumentType,
+  ESignProviderActionType,
   ESignProviderType,
   ESignSignerStatus,
   ESignSignerType,
+  ESignSigningStage,
+  ESignSlotId,
   ESignTaskStatus,
   OrderStatus
 } from "@prisma/client";
@@ -177,6 +183,199 @@ describe("FadadaSignedArtifactService", () => {
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledTimes(2);
   });
 
+  it("archives a typed Stage 2 PDF with a FileObject and signed hash while preserving signed business state", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const completedAt = state.task.completedAt;
+    const contractSignedAt = state.contract.signedAt;
+    const orderStatus = state.contract.order.orderStatus;
+    const finance = financeSnapshot(state);
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true,
+      signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    expect(result).not.toHaveProperty("objectKey");
+    expect(result).not.toHaveProperty("bucket");
+    expect(apiClient.querySignResult).toHaveBeenCalledWith({
+      contractId: "FADADA-HANDOVER-1",
+      transactionId: "STAGE2PLATFORMH2"
+    });
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+    expect(state.fileObjects).toHaveLength(1);
+    expect(state.fileObjects[0]).toMatchObject({
+      mimeType: "application/pdf",
+      originalName: "HDV-1-signed.pdf",
+      sizeBytes: BigInt(minimalPdf().length),
+      uploadedBy: "user-admin"
+    });
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: expect.any(Date),
+      archiveLastError: null,
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archivedAt: expect.any(Date),
+      signedDocumentFileId: state.fileObjects[0]!.id,
+      signedPdfHash: result.signedPdfHash,
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(state.task).toMatchObject({
+      completedAt,
+      signedDocumentObjectKey: expect.any(String),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(state.contract).toMatchObject({
+      signedAt: contractSignedAt,
+      status: ContractStatus.SIGNED
+    });
+    expect(state.contract.order.orderStatus).toBe(orderStatus);
+    expect(financeSnapshot(state)).toEqual(finance);
+  });
+
+  it.each([
+    {
+      buffer: Buffer.from('{"code":"provider-error"}', "utf8"),
+      contentType: "application/json",
+      title: "JSON MIME"
+    },
+    {
+      buffer: Buffer.from('{"code":"not-a-pdf"}', "utf8"),
+      contentType: "application/pdf",
+      title: "invalid PDF magic"
+    }
+  ])("rejects a Stage 2 $title response without storing it", async ({ buffer, contentType }) => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    vi.mocked(apiClient.downloadSignedContract).mockResolvedValueOnce({
+      buffer,
+      contentType,
+      fileName: "provider-response.pdf"
+    });
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF"
+      })
+    });
+
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.fileObjects).toHaveLength(0);
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: expect.any(Date),
+      archiveLastError: "FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF",
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      signedDocumentFileId: null,
+      signedPdfHash: null,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(state.task.taskStatus).toBe(ESignTaskStatus.COMPLETED);
+    expect(state.contract.status).toBe(ContractStatus.SIGNED);
+  });
+
+  it("keeps Stage 2 signed on archive failure, then retries once and skips later duplicates", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    vi.mocked(apiClient.querySignResult)
+      .mockRejectedValueOnce(new Error("provider response contained a secret token"));
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(JSON.stringify(state.handover)).not.toContain("secret token");
+
+    const retried = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+    const duplicate = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(retried).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(duplicate).toEqual({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: false,
+      skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
+    });
+    expect(state.handover!.archiveRetryCount).toBe(2);
+    expect(apiClient.querySignResult).toHaveBeenCalledTimes(2);
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledTimes(1);
+    expect(state.fileObjects).toHaveLength(1);
+  });
+
+  it("rejects a Stage 2 source identity mismatch before provider or storage calls", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.requestSnapshot = {
+      ...(state.task.requestSnapshot as Record<string, unknown>),
+      manifestHash: "c".repeat(64)
+    };
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
+      })
+    });
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.handover).toMatchObject({
+      archiveRetryCount: 0,
+      archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
+  it("rejects a stale Stage 2 source file identity before provider or storage calls", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.requestSnapshot = {
+      ...(state.task.requestSnapshot as Record<string, unknown>),
+      sourceDocumentFileId: "superseded-source-file"
+    };
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
+      })
+    });
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.handover).toMatchObject({
+      archiveRetryCount: 0,
+      archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
   it("streams archived signed PDFs for admins and owning portal customers only", async () => {
     const { service, state, storageService } = createFixture();
     state.task.signedDocumentObjectKey = "contracts/contract-1/esign/fadada/signed/2026/signed.pdf";
@@ -231,7 +430,7 @@ function createFixture() {
         application: { salesUserId: "user-sales" },
         deletedAt: null,
         id: "order-1",
-        orderStatus: OrderStatus.PENDING_PAYMENT
+        orderStatus: OrderStatus.PENDING_PAYMENT as OrderStatus
       },
       signedAt: new Date("2026-01-03T04:05:06.000Z"),
       status: ContractStatus.SIGNED
@@ -265,6 +464,8 @@ function createFixture() {
         }
       ]
     },
+    fileObjects: [] as FakeFileObject[],
+    handover: null as FakeStage2Handover | null,
     signers: [
       {
         deletedAt: null as Date | null,
@@ -280,6 +481,7 @@ function createFixture() {
       contractId: "contract-1",
       customerId: "customer-1",
       deletedAt: null as Date | null,
+      documentType: ESignDocumentType.SUBSCRIPTION_CONTRACT,
       documentName: "Subscription Contract",
       errorSnapshot: null as unknown,
       evidenceObjectKey: null as string | null,
@@ -288,8 +490,10 @@ function createFixture() {
       provider: ESignProviderType.FADADA as ESignProviderType,
       providerEnvelopeId: "FADADA-CON-1",
       providerTaskId: "TX-1",
+      requestSnapshot: null as unknown,
       responseSnapshot: null as unknown,
       signedDocumentObjectKey: null as string | null,
+      signingStage: ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT,
       taskNo: "ESG-1",
       taskStatus: ESignTaskStatus.COMPLETED as ESignTaskStatus
     }
@@ -325,6 +529,12 @@ function createFixture() {
     }))
   };
   const prisma = {
+    $transaction: vi.fn(async (input: unknown) => {
+      if (typeof input === "function") {
+        return (input as (tx: typeof prisma) => unknown)(prisma);
+      }
+      return Promise.all(input as Array<Promise<unknown>>);
+    }),
     contractESignTask: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         if (where.id && where.id !== state.task.id) return null;
@@ -343,6 +553,46 @@ function createFixture() {
         }
         Object.assign(state.task, data);
         return hydrateTask(state);
+      })
+    },
+    fileObject: {
+      create: vi.fn(async ({ data }: { data: Omit<FakeFileObject, "id"> }) => {
+        const fileObject: FakeFileObject = {
+          ...data,
+          id: `signed-file-${state.fileObjects.length + 1}`
+        };
+        state.fileObjects.push(fileObject);
+        return fileObject;
+      })
+    },
+    vehicleDeliveryHandover: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        state.handover?.id === where.id ? state.handover : null
+      ),
+      updateMany: vi.fn(async ({
+        data,
+        where
+      }: {
+        data: Record<string, unknown>;
+        where: Record<string, unknown>;
+      }) => {
+        if (!state.handover || !matchesHandoverWhere(state.handover, where)) {
+          return { count: 0 };
+        }
+        for (const [key, value] of Object.entries(data)) {
+          if (
+            value &&
+            typeof value === "object" &&
+            "increment" in value
+          ) {
+            state.handover[key] =
+              Number(state.handover[key] ?? 0) +
+              Number((value as { increment: number }).increment);
+          } else {
+            state.handover[key] = value;
+          }
+        }
+        return { count: 1 };
       })
     }
   };
@@ -391,8 +641,95 @@ function hydrateTask(state: ReturnType<typeof createFixture>["state"]) {
   return {
     ...state.task,
     contract: state.contract,
+    deliveryHandover: state.handover,
     signers: state.signers.filter((signer) => signer.taskId === state.task.id && !signer.deletedAt)
   };
+}
+
+function createStage2Fixture() {
+  const harness = createFixture();
+  harness.state.contract.contractNo = "HDV-1";
+  harness.state.contract.order.orderStatus = OrderStatus.PENDING_DELIVERY;
+  Object.assign(harness.state.task, {
+    documentName: "Delivery handover confirmation",
+    documentType: ESignDocumentType.DELIVERY_HANDOVER,
+    providerEnvelopeId: "FADADA-HANDOVER-1",
+    providerTaskId: "STAGE2CUSTOMERH1",
+    requestSnapshot: {
+      artifactVersion: 1,
+      contractId: harness.state.contract.id,
+      handoverId: "handover-1",
+      manifestHash: "b".repeat(64),
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourceDocumentFileId: "source-file-1",
+      sourcePdfHash: "a".repeat(64)
+    },
+    signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER
+  });
+  (harness.state.signers as Array<Record<string, unknown>>).splice(
+    0,
+    harness.state.signers.length,
+    {
+      deletedAt: null,
+      documentType: ESignDocumentType.DELIVERY_HANDOVER,
+      id: "stage2-customer",
+      providerActionType: ESignProviderActionType.CUSTOMER_MANUAL_SIGN,
+      providerTransactionId: "STAGE2CUSTOMERH1",
+      required: true,
+      signerStatus: ESignSignerStatus.SIGNED,
+      signerType: ESignSignerType.CUSTOMER,
+      slotId: ESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+      taskId: harness.state.task.id
+    },
+    {
+      deletedAt: null,
+      documentType: ESignDocumentType.DELIVERY_HANDOVER,
+      id: "stage2-platform",
+      providerActionType: ESignProviderActionType.PLATFORM_AUTO_SEAL,
+      providerTransactionId: "STAGE2PLATFORMH2",
+      required: true,
+      signerStatus: ESignSignerStatus.SIGNED,
+      signerType: ESignSignerType.PLATFORM,
+      slotId: ESignSlotId.STAGE2_HANDOVER_PLATFORM,
+      taskId: harness.state.task.id
+    }
+  );
+  harness.state.handover = {
+    archiveLastAttemptAt: null,
+    archiveLastError: null,
+    archiveRetryCount: 0,
+    archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+    archivedAt: null,
+    artifactVersion: 1,
+    completedAt: harness.state.task.completedAt,
+    deletedAt: null,
+    handoverContractId: harness.state.contract.id,
+    handoverESignTaskId: harness.state.task.id,
+    id: "handover-1",
+    manifestHash: "b".repeat(64),
+    signedDocumentFileId: null,
+    signedObjectKey: null,
+    signedPdfHash: null,
+    sourceDocumentFileId: "source-file-1",
+    sourcePdfHash: "a".repeat(64),
+    status: DeliveryHandoverStatus.SIGNED
+  };
+  return harness;
+}
+
+function matchesHandoverWhere(
+  handover: FakeStage2Handover,
+  where: Record<string, unknown>
+) {
+  return Object.entries(where).every(([key, expected]) => {
+    if (expected === undefined) {
+      return true;
+    }
+    if (expected && typeof expected === "object" && "in" in expected) {
+      return (expected as { in: unknown[] }).in.includes(handover[key]);
+    }
+    return handover[key] === expected;
+  });
 }
 
 function financeSnapshot(state: ReturnType<typeof createFixture>["state"]) {
@@ -421,4 +758,35 @@ function currentCustomer(customerId: string): CurrentCustomer {
     customerId,
     phone: "13800000000"
   } as CurrentCustomer;
+}
+
+interface FakeFileObject {
+  bucket: string;
+  id: string;
+  mimeType: string;
+  objectKey: string;
+  originalName: string;
+  sizeBytes: bigint;
+  uploadedBy: string | null;
+}
+
+interface FakeStage2Handover extends Record<string, unknown> {
+  archiveLastAttemptAt: Date | null;
+  archiveLastError: string | null;
+  archiveRetryCount: number;
+  archiveStatus: DeliveryHandoverArchiveStatus;
+  archivedAt: Date | null;
+  artifactVersion: number;
+  completedAt: Date | null;
+  deletedAt: Date | null;
+  handoverContractId: string;
+  handoverESignTaskId: string;
+  id: string;
+  manifestHash: string;
+  signedDocumentFileId: string | null;
+  signedObjectKey: string | null;
+  signedPdfHash: string | null;
+  sourceDocumentFileId: string;
+  sourcePdfHash: string;
+  status: DeliveryHandoverStatus;
 }

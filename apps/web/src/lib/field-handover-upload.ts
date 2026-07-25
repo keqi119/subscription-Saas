@@ -3,6 +3,14 @@ export const MAX_FIELD_VIDEO_SIZE_BYTES = 300 * 1024 * 1024;
 
 export type FieldEvidenceMediaType = "PHOTO" | "VIDEO";
 
+export interface FieldEvidenceUploadInputContract {
+  accept: string;
+  capture?: "environment";
+  key: "library" | "photo-capture" | "video-capture";
+  label: string;
+  multiple: boolean;
+}
+
 const SAFE_PHOTO_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -52,6 +60,46 @@ export function validateFieldEvidenceFile(
     return `视频 ${file.name} 超过 300MB`;
   }
   return null;
+}
+
+export function buildFieldEvidenceUploadInputContracts(
+  allowedMediaTypes: FieldEvidenceMediaType[],
+  allowsMultiple: boolean
+): FieldEvidenceUploadInputContract[] {
+  const contracts: FieldEvidenceUploadInputContract[] = [];
+  if (allowedMediaTypes.includes("PHOTO")) {
+    contracts.push({
+      accept: "image/*",
+      capture: "environment",
+      key: "photo-capture",
+      label: "现场拍照",
+      multiple: false
+    });
+  }
+  if (allowedMediaTypes.includes("VIDEO")) {
+    contracts.push({
+      accept: "video/*",
+      capture: "environment",
+      key: "video-capture",
+      label: "现场录像",
+      multiple: false
+    });
+  }
+  if (allowedMediaTypes.length > 0) {
+    contracts.push({
+      accept: [
+        allowedMediaTypes.includes("PHOTO") ? "image/*" : null,
+        allowedMediaTypes.includes("VIDEO") ? "video/*" : null
+      ].filter(Boolean).join(","),
+      key: "library",
+      label:
+        allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
+          ? "从相册选择"
+          : "从相册/文件选择",
+      multiple: allowsMultiple
+    });
+  }
+  return contracts;
 }
 
 export function formatUploadBytes(value: number): string {

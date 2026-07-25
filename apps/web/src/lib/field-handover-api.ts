@@ -110,6 +110,7 @@ export interface FieldEvidenceUploadProgress {
 
 export interface FieldEvidenceUploadOptions {
   onProgress?: (progress: FieldEvidenceUploadProgress) => void;
+  onUploadComplete?: () => void;
   replaceEvidenceFileId?: string;
   signal?: AbortSignal;
 }
@@ -229,22 +230,28 @@ export function uploadAndAttachFieldHandoverEvidenceFile(
   return new Promise<FieldHandoverEvidenceItem>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const abortFromCaller = () => xhr.abort();
+    xhr.upload.onprogress = (event) => {
+      const totalBytes = Math.max(0, file.size);
+      const rawLoaded = Number.isFinite(event.loaded) ? event.loaded : 0;
+      const loadedBytes = Math.min(totalBytes, Math.max(0, rawLoaded));
+      const percent =
+        totalBytes > 0
+          ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100))
+          : 0;
+      uploadOptions.onProgress?.({ loadedBytes, percent, totalBytes });
+    };
+    xhr.upload.onload = () => uploadOptions.onUploadComplete?.();
+    xhr.onload = () => settleFieldEvidenceUpload(xhr, resolve, reject);
+    xhr.onerror = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_NETWORK_ERROR_MESSAGE, 0));
+    xhr.ontimeout = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_TIMEOUT_ERROR_MESSAGE, 0));
+    xhr.onabort = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE, 0));
+    xhr.onloadend = () => uploadOptions.signal?.removeEventListener("abort", abortFromCaller);
     xhr.open(
       "POST",
       `${API_BASE_URL}/field/handover/work-orders/${encodeURIComponent(id)}/evidence/${encodeURIComponent(itemId)}/upload`
     );
     xhr.withCredentials = true;
     xhr.timeout = FIELD_EVIDENCE_UPLOAD_TIMEOUT_MS;
-    xhr.upload.onprogress = (event) => {
-      const totalBytes = event.lengthComputable ? event.total : file.size;
-      const percent = totalBytes > 0 ? Math.min(100, Math.round((event.loaded / totalBytes) * 100)) : 0;
-      uploadOptions.onProgress?.({ loadedBytes: event.loaded, percent, totalBytes });
-    };
-    xhr.onload = () => settleFieldEvidenceUpload(xhr, resolve, reject);
-    xhr.onerror = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_NETWORK_ERROR_MESSAGE, 0));
-    xhr.ontimeout = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_TIMEOUT_ERROR_MESSAGE, 0));
-    xhr.onabort = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE, 0));
-    xhr.onloadend = () => uploadOptions.signal?.removeEventListener("abort", abortFromCaller);
 
     if (uploadOptions.signal?.aborted) {
       reject(new ApiError(FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE, 0));
@@ -284,6 +291,15 @@ function readFieldEvidenceUploadErrorMessage(responseText: string) {
     const body = JSON.parse(responseText) as { message?: unknown };
     if (typeof body.message === "string" && body.message.trim()) {
       return body.message;
+    }
+    if (Array.isArray(body.message)) {
+      const messages = body.message
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (messages.length > 0) {
+        return messages.join(", ");
+      }
     }
   } catch {
     // Error response bodies are intentionally not exposed to callers.

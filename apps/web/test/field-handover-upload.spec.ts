@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_FIELD_PHOTO_SIZE_BYTES,
   MAX_FIELD_VIDEO_SIZE_BYTES,
+  buildFieldEvidenceUploadInputContracts,
   formatUploadBytes,
   resolveFieldEvidenceMediaType,
   validateFieldEvidenceFile
@@ -62,6 +63,51 @@ describe("field handover evidence upload validation", () => {
   it("formats upload byte counts for the existing evidence display", () => {
     expect(formatUploadBytes(1024)).toBe("1KB");
     expect(formatUploadBytes(1024 * 1024)).toBe("1MB");
+  });
+
+  it("builds executable photo camera and library input contracts", () => {
+    expect(buildFieldEvidenceUploadInputContracts(["PHOTO"], true)).toEqual([
+      {
+        accept: "image/*",
+        capture: "environment",
+        key: "photo-capture",
+        label: "现场拍照",
+        multiple: false
+      },
+      {
+        accept: "image/*",
+        key: "library",
+        label: "从相册选择",
+        multiple: true
+      }
+    ]);
+  });
+
+  it("builds executable video and mixed-media input contracts", () => {
+    expect(buildFieldEvidenceUploadInputContracts(["VIDEO"], false)).toEqual([
+      {
+        accept: "video/*",
+        capture: "environment",
+        key: "video-capture",
+        label: "现场录像",
+        multiple: false
+      },
+      {
+        accept: "video/*",
+        key: "library",
+        label: "从相册/文件选择",
+        multiple: false
+      }
+    ]);
+    expect(
+      buildFieldEvidenceUploadInputContracts(["PHOTO", "VIDEO"], true).map(
+        ({ capture, key, multiple }) => ({ capture, key, multiple })
+      )
+    ).toEqual([
+      { capture: "environment", key: "photo-capture", multiple: false },
+      { capture: "environment", key: "video-capture", multiple: false },
+      { capture: undefined, key: "library", multiple: true }
+    ]);
   });
 });
 

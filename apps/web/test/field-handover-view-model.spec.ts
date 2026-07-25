@@ -162,6 +162,7 @@ describe("field handover view model", () => {
     expect(view.showStartAction).toBe(false);
     expect(view.showSaveAction).toBe(false);
     expect(view.showSubmitAction).toBe(false);
+    expect(view.evidenceItems.every((item) => item.showUpload === false)).toBe(true);
   });
 
   it("reopens legacy customer-reviewing objections when Admin requested field resubmission", () => {

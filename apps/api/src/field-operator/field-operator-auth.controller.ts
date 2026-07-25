@@ -15,13 +15,11 @@ import {
 } from "@nestjs/common";
 import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import type { Request, Response } from "express";
-import { tmpdir } from "node:os";
-import path from "node:path";
 
 import { DeclareNoVisibleDamageDto } from "../delivery-evidence/delivery-evidence.dto";
-import { MAX_FIELD_EVIDENCE_UPLOAD_SIZE_BYTES } from "../handover-work-order/handover-work-order.constants";
 import { UpdateHandoverFieldFactsDto, UploadFieldEvidenceDto } from "../handover-work-order/handover-work-order.dto";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { createFieldEvidenceUploadOptions } from "./field-evidence-upload-options";
 import { FieldEvidenceTempFileCleanupInterceptor } from "./field-evidence-temp-file-cleanup.interceptor";
 import { FieldOperatorAuthGuard } from "./field-operator-auth.guard";
 import { FieldOperatorAuthService } from "./field-operator-auth.service";
@@ -29,10 +27,7 @@ import { FieldOperatorLoginDto, RequestFieldOperatorCodeDto } from "./field-oper
 import { CurrentFieldOperator } from "./field-operator-auth.types";
 import { CurrentFieldOperatorSession } from "./field-operator-current.decorator";
 
-const FIELD_EVIDENCE_UPLOAD_OPTIONS = {
-  dest: path.join(tmpdir(), "subscription-saas-field-evidence"),
-  limits: { fileSize: MAX_FIELD_EVIDENCE_UPLOAD_SIZE_BYTES, files: 1 }
-};
+const FIELD_EVIDENCE_UPLOAD_OPTIONS = createFieldEvidenceUploadOptions();
 
 @Controller("field/handover")
 export class FieldOperatorAuthController {

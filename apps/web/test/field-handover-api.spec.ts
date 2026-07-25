@@ -144,8 +144,77 @@ describe("field handover API client", () => {
     const uploadBody = xhr.body as FormData;
     expect((uploadBody.get("files") as File).name).toBe(file.name);
     expect(uploadBody.get("replaceEvidenceFileId")).toBe("evidence-file-old");
-    expect(onProgress).toHaveBeenCalledWith({ loadedBytes: 5, percent: 50, totalBytes: 10 });
+    expect(onProgress).toHaveBeenCalledWith({
+      loadedBytes: 5,
+      percent: 45,
+      totalBytes: file.size
+    });
     expect(JSON.stringify(xhr)).not.toContain("oss/internal");
+  });
+
+  it("registers Safari upload listeners before open and reports server processing", async () => {
+    const xhrMock = installMockXmlHttpRequest();
+    const onUploadComplete = vi.fn();
+    const request = uploadAndAttachFieldHandoverEvidenceFile(
+      "work-order-1",
+      "evidence-item-1",
+      new File(["image"], "front.jpg", { type: "image/jpeg" }),
+      { onUploadComplete }
+    );
+    const xhr = xhrMock.latest();
+
+    expect(xhr.lifecycle.indexOf("upload:progress-listener")).toBeLessThan(
+      xhr.lifecycle.indexOf("open")
+    );
+    expect(xhr.lifecycle.indexOf("upload:load-listener")).toBeLessThan(
+      xhr.lifecycle.indexOf("open")
+    );
+
+    xhr.emitUploadComplete();
+    expect(onUploadComplete).toHaveBeenCalledTimes(1);
+    xhr.complete(200, { id: "evidence-item-1", status: "UPLOADED" });
+    await expect(request).resolves.toMatchObject({ status: "UPLOADED" });
+  });
+
+  it("uses File.size and clamps anomalous Safari progress values", async () => {
+    const xhrMock = installMockXmlHttpRequest();
+    const onProgress = vi.fn();
+    const file = new File(["0123456789"], "front.jpg", { type: "image/jpeg" });
+    const request = uploadAndAttachFieldHandoverEvidenceFile(
+      "work-order-1",
+      "evidence-item-1",
+      file,
+      { onProgress }
+    );
+    const xhr = xhrMock.latest();
+
+    xhr.emitProgress(5, 999, false);
+    xhr.emitProgress(50, 1, true);
+    xhr.emitProgress(Number.NaN, 0, true);
+    xhr.emitProgress(-5, 0, false);
+    xhr.complete(200, { id: "evidence-item-1", status: "UPLOADED" });
+
+    await request;
+    expect(onProgress).toHaveBeenNthCalledWith(1, {
+      loadedBytes: 5,
+      percent: 50,
+      totalBytes: file.size
+    });
+    expect(onProgress).toHaveBeenNthCalledWith(2, {
+      loadedBytes: file.size,
+      percent: 100,
+      totalBytes: file.size
+    });
+    expect(onProgress).toHaveBeenNthCalledWith(3, {
+      loadedBytes: 0,
+      percent: 0,
+      totalBytes: file.size
+    });
+    expect(onProgress).toHaveBeenNthCalledWith(4, {
+      loadedBytes: 0,
+      percent: 0,
+      totalBytes: file.size
+    });
   });
 
   it("aborts an evidence upload from the caller signal", async () => {
@@ -217,6 +286,23 @@ describe("field handover API client", () => {
     await expect(request).rejects.toMatchObject({ message: "上传失败，请稍后重试。", status: 200 });
   });
 
+  it("preserves safe array-shaped API business errors for evidence uploads", async () => {
+    const xhrMock = installMockXmlHttpRequest();
+    const request = uploadAndAttachFieldHandoverEvidenceFile(
+      "work-order-1",
+      "evidence-item-1",
+      new File(["image"], "front.jpg", { type: "image/jpeg" })
+    );
+    xhrMock.latest().complete(400, {
+      message: ["图片不能超过 10MB。", "任务不可编辑"]
+    });
+
+    await expect(request).rejects.toMatchObject({
+      message: "图片不能超过 10MB。, 任务不可编辑",
+      status: 400
+    });
+  });
+
   it("normalizes validation, rate-limit, login, and unauthorized errors", () => {
     expect(isValidFieldHandoverPhone(VALID_FIELD_PHONE)).toBe(true);
     expect(isValidFieldHandoverPhone("12345")).toBe(false);
@@ -263,6 +349,7 @@ class MockXMLHttpRequest {
   static instances: MockXMLHttpRequest[] = [];
 
   body: Document | XMLHttpRequestBodyInit | null = null;
+  lifecycle: string[] = [];
   method = "";
   onabort: (() => void) | null = null;
   onerror: (() => void) | null = null;
@@ -274,17 +361,27 @@ class MockXMLHttpRequest {
   status = 0;
   statusText = "";
   timeout = 0;
-  upload = {
-    onprogress: null as ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null
-  };
+  upload: MockXMLHttpRequestUpload;
   url = "";
   withCredentials = false;
 
   constructor() {
+    this.upload = new MockXMLHttpRequestUpload(this);
     MockXMLHttpRequest.instances.push(this);
   }
 
+  toJSON() {
+    return {
+      body: this.body,
+      method: this.method,
+      responseText: this.responseText,
+      status: this.status,
+      url: this.url
+    };
+  }
+
   open(method: string, url: string) {
+    this.lifecycle.push("open");
     this.method = method;
     this.url = url;
   }
@@ -315,13 +412,48 @@ class MockXMLHttpRequest {
     this.onloadend?.();
   }
 
-  emitProgress(loaded: number, total: number) {
-    this.upload.onprogress?.({ lengthComputable: true, loaded, total });
+  emitProgress(loaded: number, total: number, lengthComputable = true) {
+    this.upload.onprogress?.({ lengthComputable, loaded, total });
+  }
+
+  emitUploadComplete() {
+    this.upload.onload?.();
   }
 
   emitTimeout() {
     this.ontimeout?.();
     this.onloadend?.();
+  }
+}
+
+class MockXMLHttpRequestUpload {
+  private loadListener: (() => void) | null = null;
+  private progressListener:
+    | ((event: { lengthComputable: boolean; loaded: number; total: number }) => void)
+    | null = null;
+
+  constructor(private readonly request: MockXMLHttpRequest) {}
+
+  get onload() {
+    return this.loadListener;
+  }
+
+  set onload(listener: (() => void) | null) {
+    this.request.lifecycle.push("upload:load-listener");
+    this.loadListener = listener;
+  }
+
+  get onprogress() {
+    return this.progressListener;
+  }
+
+  set onprogress(
+    listener:
+      | ((event: { lengthComputable: boolean; loaded: number; total: number }) => void)
+      | null
+  ) {
+    this.request.lifecycle.push("upload:progress-listener");
+    this.progressListener = listener;
   }
 }
 

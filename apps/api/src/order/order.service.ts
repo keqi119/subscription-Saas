@@ -1860,7 +1860,7 @@ export class OrderService {
         vehicleBefore
       };
     }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
     });
 
     await this.writeAudit(

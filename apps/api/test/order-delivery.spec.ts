@@ -417,7 +417,65 @@ describe("vehicle delivery handover workflow", () => {
       );
       expect(harness.prisma.$transaction).toHaveBeenCalledWith(
         expect.any(Function),
-        { isolationLevel: "Serializable" }
+        { isolationLevel: "ReadCommitted" }
+      );
+      expectNoDeliveryConfirmationSideEffects(harness);
+    }
+  );
+
+  it.each([
+    {
+      childLock: "contract_esign_signer",
+      expectedLockedRows: 3,
+      insert: (harness: ReturnType<typeof createDeliveryHarness>) => {
+        const handover = harness.state.handover as ReturnType<
+          typeof buildHandoverRecord
+        >;
+        handover.handoverESignTask.signers.push({
+          ...buildStage2DeliverySigner("PLATFORM"),
+          id: "stage2-concurrent-extra-signer"
+        });
+      },
+      name: "third signer"
+    },
+    {
+      childLock: "vehicle_delivery_evidence_file",
+      expectedLockedRows: 1,
+      insert: (harness: ReturnType<typeof createDeliveryHarness>) => {
+        harness.state.evidenceFileIds.push(
+          "concurrent-evidence-file"
+        );
+        harness.state.currentEvidenceManifestHash = "d".repeat(64);
+      },
+      name: "evidence file"
+    }
+  ])(
+    "sees and blocks a committed child-only $name insert between the first and parent locks",
+    async ({ childLock, expectedLockedRows, insert }) => {
+      const harness = createDeliveryHarness();
+      harness.state.delivery = buildReadyDelivery(harness);
+      harness.state.afterFirstGateParentLock = async () => {
+        expect(harness.state.gateLockOrder).toEqual([
+          "subscription_order"
+        ]);
+        insert(harness);
+      };
+
+      await expect(
+        harness.service.confirmDelivery(
+          harness.orderId,
+          validConfirmDto(),
+          harness.user,
+          harness.context
+        )
+      ).rejects.toThrow();
+
+      expect(
+        harness.state.gateLockRowCounts.get(childLock)
+      ).toBe(expectedLockedRows);
+      expect(harness.prisma.$transaction).toHaveBeenCalledWith(
+        expect.any(Function),
+        { isolationLevel: "ReadCommitted" }
       );
       expectNoDeliveryConfirmationSideEffects(harness);
     }
@@ -868,13 +926,16 @@ function createDeliveryHarness() {
   const state: {
     activeGateLocks: Set<string>;
     actualDeliveryAt: Date | null;
+    afterFirstGateParentLock: null | (() => Promise<void> | void);
     beforeTransaction: null | (() => Promise<void> | void);
     beforeFirstDeliveryWrite: null | (() => Promise<void> | void);
     contractStatus: ContractStatus;
+    currentEvidenceManifestHash: string;
     delivery: Record<string, unknown> | null;
     depositAmount: bigint;
     depositStatus: DepositStatus;
     evidenceReadiness: ReturnType<typeof buildEvidenceReadiness>;
+    evidenceFileIds: string[];
     fileObjects: Array<Record<string, unknown>>;
     finalDepositAmount: bigint | null;
     insurancePolicies: Array<Record<string, unknown>>;
@@ -882,17 +943,30 @@ function createDeliveryHarness() {
     vehicleStatus: VehicleStatus;
     handover: Record<string, unknown> | null;
     gateLockOrder: string[];
+    gateLockRowCounts: Map<string, number>;
+    transactionGateSnapshot: null | {
+      currentEvidenceManifestHash: string;
+      evidenceFileIds: string[];
+      evidenceReadiness: ReturnType<typeof buildEvidenceReadiness>;
+      fileObjects: Array<Record<string, unknown>>;
+      handover: Record<string, unknown> | null;
+      workOrderObjected: boolean;
+    };
+    transactionIsolationLevel: null | string;
     workOrderObjected: boolean;
   } = {
     activeGateLocks: new Set(),
     actualDeliveryAt: null,
+    afterFirstGateParentLock: null,
     beforeTransaction: null,
     beforeFirstDeliveryWrite: null,
     contractStatus: ContractStatus.SIGNED,
+    currentEvidenceManifestHash: "a".repeat(64),
     delivery: null,
     depositAmount: 500000n,
     depositStatus: DepositStatus.CONFIRMED,
     evidenceReadiness: buildEvidenceReadiness({ orderId }),
+    evidenceFileIds: [],
     fileObjects: [
       {
         id: "source-file-1",
@@ -909,6 +983,7 @@ function createDeliveryHarness() {
     ],
     finalDepositAmount: 500000n,
     gateLockOrder: [],
+    gateLockRowCounts: new Map(),
     handover: null,
     insurancePolicies: [
       {
@@ -929,6 +1004,8 @@ function createDeliveryHarness() {
       }
     ],
     orderStatus: OrderStatus.PENDING_PAYMENT,
+    transactionGateSnapshot: null,
+    transactionIsolationLevel: null,
     vehicleStatus: VehicleStatus.RESERVED,
     workOrderObjected: false
   };
@@ -1031,11 +1108,32 @@ function createDeliveryHarness() {
     return state.delivery ? { ...state.delivery, customer: { id: customerId, mobile: "13800000000", name: "测试客户" }, vehicle: buildVehicle() } : null;
   }
 
+  function readTransactionGateState() {
+    return state.transactionIsolationLevel === "Serializable" &&
+      state.transactionGateSnapshot
+      ? state.transactionGateSnapshot
+      : state;
+  }
+
   const tx = {
     $queryRaw: vi.fn(async (query: unknown) => {
       const text = readPrismaSqlText(query);
       const marker =
         /delivery-gate-lock:([a-z_]+)/.exec(text)?.[1] ?? null;
+      if (
+        !state.transactionGateSnapshot &&
+        state.transactionIsolationLevel === "Serializable"
+      ) {
+        state.transactionGateSnapshot = structuredClone({
+          currentEvidenceManifestHash:
+            state.currentEvidenceManifestHash,
+          evidenceFileIds: state.evidenceFileIds,
+          evidenceReadiness: state.evidenceReadiness,
+          fileObjects: state.fileObjects,
+          handover: state.handover,
+          workOrderObjected: state.workOrderObjected
+        });
+      }
       if (
         marker &&
         text.includes(`"${marker}"`) &&
@@ -1044,11 +1142,33 @@ function createDeliveryHarness() {
         state.activeGateLocks.add(marker);
         state.gateLockOrder.push(marker);
       }
+      if (marker === "contract_esign_signer") {
+        const handover = readTransactionGateState()
+          .handover as ReturnType<typeof buildHandoverRecord> | null;
+        state.gateLockRowCounts.set(
+          marker,
+          handover?.handoverESignTask.signers.length ?? 0
+        );
+      }
+      if (marker === "vehicle_delivery_evidence_file") {
+        state.gateLockRowCounts.set(
+          marker,
+          readTransactionGateState().evidenceFileIds.length
+        );
+      }
+      if (marker === "subscription_order") {
+        const afterFirstGateParentLock =
+          state.afterFirstGateParentLock;
+        state.afterFirstGateParentLock = null;
+        await afterFirstGateParentLock?.();
+      }
       return [];
     }),
     fileObject: {
       findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
-        state.fileObjects.find((file) => file.id === where.id) ?? null
+        readTransactionGateState().fileObjects.find(
+          (file) => file.id === where.id
+        ) ?? null
       )
     },
     subscriptionOrder: {
@@ -1096,12 +1216,20 @@ function createDeliveryHarness() {
       })
     },
     vehicleDeliveryHandover: {
-      findFirst: vi.fn(async () => state.handover)
+      findFirst: vi.fn(
+        async () => readTransactionGateState().handover
+      )
     }
   };
 
   const prisma = {
-    $transaction: vi.fn(async (callback) => {
+    $transaction: vi.fn(async (
+      callback,
+      options?: { isolationLevel?: string }
+    ) => {
+      state.transactionGateSnapshot = null;
+      state.transactionIsolationLevel =
+        options?.isolationLevel ?? null;
       await state.beforeTransaction?.();
       return callback(tx);
     }),
@@ -1126,17 +1254,62 @@ function createDeliveryHarness() {
     })
   };
   const deliveryEvidenceService = {
-    validateEvidenceReadyForDeliveryConfirmation: vi.fn(async () => state.evidenceReadiness)
+    validateEvidenceReadyForDeliveryConfirmation: vi.fn(
+      async (
+        _orderId: string,
+        _handoverId?: string | null,
+        _fieldState?: unknown,
+        db?: unknown
+      ) => db === tx
+        ? readTransactionGateState().evidenceReadiness
+        : state.evidenceReadiness
+    )
   };
   const handoverWorkOrderService = {
-    assertDeliveryCanBeConfirmed: vi.fn(async () => {
-      if (state.workOrderObjected) {
+    assertDeliveryCanBeConfirmed: vi.fn(async (
+      _orderId: string,
+      _handoverId?: string | null,
+      db?: unknown
+    ) => {
+      const gateState = db === tx
+        ? readTransactionGateState()
+        : state;
+      const handover = gateState.handover as ReturnType<
+        typeof buildHandoverRecord
+      > | null;
+      if (gateState.workOrderObjected) {
         throw new Error("The customer has an active handover objection.");
       }
+      if (
+        handover?.manifestHash !==
+        gateState.currentEvidenceManifestHash
+      ) {
+        throw new Error(
+          "Current evidence does not match the signed source manifest."
+        );
+      }
     }),
-    assertReadyForStage2ESign: vi.fn(async () => {
-      if (state.workOrderObjected) {
+    assertReadyForStage2ESign: vi.fn(async (
+      _orderId: string,
+      _handoverId?: string | null,
+      db?: unknown
+    ) => {
+      const gateState = db === tx
+        ? readTransactionGateState()
+        : state;
+      const handover = gateState.handover as ReturnType<
+        typeof buildHandoverRecord
+      > | null;
+      if (gateState.workOrderObjected) {
         throw new Error("The customer has an active handover objection.");
+      }
+      if (
+        handover?.manifestHash !==
+        gateState.currentEvidenceManifestHash
+      ) {
+        throw new Error(
+          "Current evidence does not match the signed source manifest."
+        );
       }
     })
   };

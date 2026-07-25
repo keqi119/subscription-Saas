@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 
 import { BadRequestException } from "@nestjs/common";
@@ -385,6 +389,23 @@ describe("Stage 2 handover PDF renderer", () => {
 });
 
 describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
+  it("builds the current manifest from local metadata without storage or mutation calls", async () => {
+    const harness = createServiceHarness();
+
+    await expect(
+      harness.service.getCurrentEvidencePackage("work-order-1")
+    ).resolves.toMatchObject({
+      manifestHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/)
+    });
+
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.create).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.update).not.toHaveBeenCalled();
+    expect(harness.prisma.fileObject.create).not.toHaveBeenCalled();
+    expect(harness.prisma.vehicleDeliveryHandover.updateMany).not.toHaveBeenCalled();
+  });
+
   it("creates a generated handover contract PDF artifact without starting any e-sign task", async () => {
     const harness = createServiceHarness();
 
@@ -433,9 +454,14 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     });
     expect(harness.prisma.vehicleDeliveryHandover.updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        artifactVersion: 1,
         handoverContractId: "contract-stage2-1",
+        manifestHash: currentManifestDigest(),
         sourceDocumentFileId: "file-pdf-1",
         sourceObjectKey: "contracts/contract-stage2-1/generated/handover.pdf",
+        sourcePdfHash: createHash("sha256")
+          .update(Buffer.from("%PDF-stage2-output"))
+          .digest("hex"),
         status: DeliveryHandoverStatus.SOURCE_GENERATED,
         updatedBy: "admin-1"
       }),
@@ -787,25 +813,30 @@ function createServiceHarness(options: {
     getChecklist: vi.fn(async () => createRenderModelInput().evidenceChecklist)
   };
   const renderer = {
-    renderToFile: vi.fn(async () => ({
-      cleanup: vi.fn(async () => undefined),
-      contentType: "application/pdf",
-      diagnostics: {
-        evidenceFileCount: 14,
-        evidenceItemCount: STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT,
-        hasCustomerSignatureArea: true,
-        hasEvidenceSummary: true,
-        hasPlatformSealArea: true,
-        pageCount: 10,
-        photoCount: 13,
-        targetBytesExceeded: false,
-        videoCount: 1
-      },
-      fileName: "handover.pdf",
-      filePath: "D:\\temp\\handover.pdf",
-      sizeBytes: generatedPdfBuffer.length,
-      slotCoordinates: stage2ArtifactCoordinates()
-    }))
+    renderToFile: vi.fn(async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "stage2-handover-test-"));
+      const filePath = path.join(directory, "handover.pdf");
+      await writeFile(filePath, generatedPdfBuffer);
+      return {
+        cleanup: vi.fn(async () => rm(directory, { force: true, recursive: true })),
+        contentType: "application/pdf",
+        diagnostics: {
+          evidenceFileCount: 14,
+          evidenceItemCount: STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT,
+          hasCustomerSignatureArea: true,
+          hasEvidenceSummary: true,
+          hasPlatformSealArea: true,
+          pageCount: 10,
+          photoCount: 13,
+          targetBytesExceeded: false,
+          videoCount: 1
+        },
+        fileName: "handover.pdf",
+        filePath,
+        sizeBytes: generatedPdfBuffer.length,
+        slotCoordinates: stage2ArtifactCoordinates()
+      };
+    })
   };
   const storageService = {
     deleteObject: vi.fn(async () => undefined),
@@ -881,4 +912,10 @@ function stage2ArtifactCoordinates() {
       y: 980
     }
   ];
+}
+
+function currentManifestDigest() {
+  return buildDeliveryHandoverPdfRenderModel(
+    createRenderModelInput()
+  ).evidencePackage.manifestHash.replace(/^sha256:/, "");
 }

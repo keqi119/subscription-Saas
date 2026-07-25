@@ -10,7 +10,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdtemp, rm, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1615,6 +1615,8 @@ export class HandoverWorkOrderService {
         evidencePackageUrl: this.buildStage2EvidencePackageUrl(workOrder.id),
         loadAsset
       });
+      const sourcePdfHash = await calculateFileSha256(renderedFile.filePath);
+      const manifestHash = requireSha256Digest(evidencePackage.manifestHash);
       const stored = await this.getStorageService().putGeneratedContractPdfArtifactFromPath({
         contentType: renderedFile.contentType,
         contractId: createdContract.id,
@@ -1677,9 +1679,12 @@ export class HandoverWorkOrderService {
         });
         const handoverClaim = await tx.vehicleDeliveryHandover.updateMany({
           data: {
+            artifactVersion: 1,
             handoverContractId: createdContract.id,
+            manifestHash,
             sourceDocumentFileId: createdFileObject.id,
             sourceObjectKey: stored.objectKey,
+            sourcePdfHash,
             status: DeliveryHandoverStatus.SOURCE_GENERATED,
             updatedBy: actorId ?? null
           },
@@ -3448,6 +3453,22 @@ function hasAccessoryChecklist(value: unknown) {
     return Object.keys(value).length > 0;
   }
   return false;
+}
+
+async function calculateFileSha256(filePath: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
+}
+
+function requireSha256Digest(value: string) {
+  const digest = value.trim().toLowerCase().replace(/^sha256:/, "");
+  if (!/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error("STAGE2_HANDOVER_MANIFEST_HASH_INVALID");
+  }
+  return digest;
 }
 
 function nextStatus(current: WorkOrderStatus, next: WorkOrderStatus) {

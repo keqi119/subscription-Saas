@@ -5,6 +5,7 @@ import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.m
 import { DeliveryHandoverEvidenceArtifactService } from "../delivery-handover/delivery-handover-evidence-artifact.service";
 import { DeliveryHandoverPdfRendererService } from "../delivery-handover/delivery-handover-pdf-renderer.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
+import { ESignModule } from "../esign/esign.module";
 import { FieldOperatorAuthController } from "../field-operator/field-operator-auth.controller";
 import { FieldOperatorAuthGuard } from "../field-operator/field-operator-auth.guard";
 import { FieldOperatorAuthService } from "../field-operator/field-operator-auth.service";
@@ -15,6 +16,7 @@ import {
   HandoverWorkOrderFieldController
 } from "./handover-work-order.controller";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
+import { Stage2HandoverESignReadinessService } from "./stage2-handover-esign-readiness.service";
 
 @Module({
   controllers: [
@@ -22,15 +24,16 @@ import { HandoverWorkOrderService } from "./handover-work-order.service";
     FieldOperatorAuthController,
     HandoverWorkOrderFieldController
   ],
-  exports: [HandoverWorkOrderService],
-  imports: [AuthModule, DeliveryEvidenceModule, SmsModule, StorageModule],
+  exports: [HandoverWorkOrderService, Stage2HandoverESignReadinessService],
+  imports: [AuthModule, DeliveryEvidenceModule, ESignModule, SmsModule, StorageModule],
   providers: [
     DeliveryHandoverEvidenceArtifactService,
     DeliveryHandoverPdfRendererService,
     DeliveryHandoverService,
     FieldOperatorAuthGuard,
     FieldOperatorAuthService,
-    HandoverWorkOrderService
+    HandoverWorkOrderService,
+    Stage2HandoverESignReadinessService
   ]
 })
 export class HandoverWorkOrderModule {}

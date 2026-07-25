@@ -2,6 +2,8 @@ import { Module } from "@nestjs/common";
 
 import { AuthModule } from "../auth/auth.module";
 import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
+import { DeliveryHandoverEvidenceArtifactService } from "../delivery-handover/delivery-handover-evidence-artifact.service";
+import { DeliveryHandoverPdfRendererService } from "../delivery-handover/delivery-handover-pdf-renderer.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
 import { FieldOperatorAuthController } from "../field-operator/field-operator-auth.controller";
 import { FieldOperatorAuthGuard } from "../field-operator/field-operator-auth.guard";
@@ -22,6 +24,13 @@ import { HandoverWorkOrderService } from "./handover-work-order.service";
   ],
   exports: [HandoverWorkOrderService],
   imports: [AuthModule, DeliveryEvidenceModule, SmsModule, StorageModule],
-  providers: [DeliveryHandoverService, FieldOperatorAuthGuard, FieldOperatorAuthService, HandoverWorkOrderService]
+  providers: [
+    DeliveryHandoverEvidenceArtifactService,
+    DeliveryHandoverPdfRendererService,
+    DeliveryHandoverService,
+    FieldOperatorAuthGuard,
+    FieldOperatorAuthService,
+    HandoverWorkOrderService
+  ]
 })
 export class HandoverWorkOrderModule {}

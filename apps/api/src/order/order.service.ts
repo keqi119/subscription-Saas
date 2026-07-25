@@ -1635,7 +1635,8 @@ export class OrderService {
 
   async attachDeliveryEvidenceFile(itemId: string, dto: AttachDeliveryEvidenceFileDto, user: RequestUser) {
     await this.assertCanAccessDeliveryEvidenceItem(itemId, user);
-    return this.getDeliveryEvidenceService().attachEvidenceFile(itemId, dto.fileId, dto.mediaType, user.id);
+    void dto;
+    throw new BadRequestException("该文件绑定入口已停用，请使用交接现场证据上传接口完成预处理。");
   }
 
   async approveDeliveryEvidenceItem(itemId: string, user: RequestUser) {
@@ -1659,6 +1660,9 @@ export class OrderService {
     const order = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(order, user);
     const handover = await findActiveDeliveryHandover(this.prisma, id);
+    if (dto.fileId) {
+      throw new BadRequestException("损伤近拍必须通过交接现场证据上传接口完成预处理。");
+    }
     return this.getDeliveryEvidenceService().addDamageCloseup({
       actorId: user.id,
       description: dto.description,

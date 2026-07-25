@@ -58,12 +58,13 @@ export default function PortalHandoverReviewDetailPage() {
   }, [loadReview]);
 
   async function confirmNoObjection() {
-    if (!review || !acknowledged) {
+    const manifestHash = review?.evidencePackage?.manifestHash;
+    if (!review || !acknowledged || !manifestHash) {
       return;
     }
     try {
       setConfirming(true);
-      const nextReview = await confirmPortalHandoverReview(review.id, acknowledged);
+      const nextReview = await confirmPortalHandoverReview(review.id, acknowledged, manifestHash);
       setReview(nextReview);
       setAcknowledged(false);
       void message.success("已确认无异议");
@@ -187,6 +188,25 @@ export default function PortalHandoverReviewDetailPage() {
             资料清单
           </Typography.Title>
           <Typography.Text type="secondary">{view.evidenceSummaryText}</Typography.Text>
+          {review.evidencePackage ? (
+            <Descriptions
+              column={1}
+              items={[
+                {
+                  children: `${review.evidencePackage.fileCount ?? 0}（照片 ${review.evidencePackage.photoCount ?? 0} / 视频 ${review.evidencePackage.videoCount ?? 0}）`,
+                  label: "证据包文件"
+                },
+                {
+                  children: review.evidencePackage.manifestHash
+                    ? <Typography.Text copyable>{review.evidencePackage.manifestHash}</Typography.Text>
+                    : <Typography.Text type="warning">证据文件仍在处理，暂不能确认</Typography.Text>,
+                  label: "证据包哈希"
+                }
+              ]}
+              size="small"
+              style={{ marginTop: 12 }}
+            />
+          ) : null}
           <List
             dataSource={view.evidenceItems}
             locale={{ emptyText: <Empty description="暂无资料清单" /> }}
@@ -282,8 +302,15 @@ export default function PortalHandoverReviewDetailPage() {
           </Typography.Title>
           <DecisionArea
             acknowledged={acknowledged}
+            canConfirmEvidencePackage={Boolean(
+              review.evidencePackage?.ready && review.evidencePackage.manifestHash
+            )}
             confirming={confirming}
             decision={view.decision}
+            evidenceConfirmationText={
+              review.evidencePackage?.confirmationText ??
+              "本人已查看本次交接证据包所列全部照片和视频，并确认其反映的车辆交接状态。"
+            }
             objecting={objecting}
             objectionDetails={objectionDetails}
             objectionReason={objectionReason}
@@ -321,8 +348,10 @@ function formatReviewTime(value?: string | null) {
 
 function DecisionArea({
   acknowledged,
+  canConfirmEvidencePackage,
   confirming,
   decision,
+  evidenceConfirmationText,
   objecting,
   objectionDetails,
   objectionReason,
@@ -333,8 +362,10 @@ function DecisionArea({
   onObject
 }: Readonly<{
   acknowledged: boolean;
+  canConfirmEvidencePackage: boolean;
   confirming: boolean;
   decision: ReturnType<typeof buildPortalHandoverReviewDetailView>["decision"];
+  evidenceConfirmationText: string;
   objecting: boolean;
   objectionDetails: string;
   objectionReason: string;
@@ -348,12 +379,16 @@ function DecisionArea({
     return (
       <Space direction="vertical" size={14} style={{ width: "100%" }}>
         <Alert message={decision.message} showIcon type="info" />
-        <Checkbox checked={acknowledged} onChange={(event) => onAcknowledgeChange(event.target.checked)}>
-          我已查看车辆交接资料，并确认无异议
+        <Checkbox
+          checked={acknowledged}
+          disabled={!canConfirmEvidencePackage}
+          onChange={(event) => onAcknowledgeChange(event.target.checked)}
+        >
+          {evidenceConfirmationText}
         </Checkbox>
         <Button
           block
-          disabled={!acknowledged}
+          disabled={!acknowledged || !canConfirmEvidencePackage}
           icon={<CheckCircleOutlined />}
           loading={confirming}
           onClick={onConfirm}

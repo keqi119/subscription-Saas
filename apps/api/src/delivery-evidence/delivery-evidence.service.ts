@@ -301,7 +301,8 @@ export class DeliveryEvidenceService {
     mediaType: DeliveryEvidenceMediaType,
     actorId?: string,
     db: DeliveryEvidenceDb = this.prisma,
-    lifecycleActorId: string | undefined = actorId
+    lifecycleActorId: string | undefined = actorId,
+    metadata?: Prisma.InputJsonValue
   ) {
     return this.runMutation(db, async (transaction) => {
       const item = await this.findItemOrThrow(itemId, transaction);
@@ -314,6 +315,14 @@ export class DeliveryEvidenceService {
         throw new NotFoundException("文件不存在。");
       }
 
+      await assertEvidenceArtifactsReady(
+        transaction,
+        file,
+        metadata,
+        mediaType,
+        item.evidenceType
+      );
+
       await transaction.vehicleDeliveryEvidenceFile.create({
         data: {
           evidenceItemId: item.id,
@@ -321,6 +330,7 @@ export class DeliveryEvidenceService {
           lifecycleActorId,
           lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE,
           mediaType,
+          metadata,
           objectKey: file.objectKey,
           uploadedBy: actorId
         }
@@ -372,7 +382,8 @@ export class DeliveryEvidenceService {
     mediaType: DeliveryEvidenceMediaType,
     actorId?: string,
     db: DeliveryEvidenceDb = this.prisma,
-    lifecycleActorId: string | undefined = actorId
+    lifecycleActorId: string | undefined = actorId,
+    metadata?: Prisma.InputJsonValue
   ) {
     return this.runMutation(db, async (transaction) => {
       const item = await this.findItemOrThrow(itemId, transaction);
@@ -391,12 +402,21 @@ export class DeliveryEvidenceService {
         throw new NotFoundException("文件不存在。");
       }
 
+      await assertEvidenceArtifactsReady(
+        transaction,
+        file,
+        metadata,
+        mediaType,
+        item.evidenceType
+      );
+
       const replacement = await transaction.vehicleDeliveryEvidenceFile.create({
         data: {
           evidenceItemId: item.id,
           fileId: file.id,
           lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE,
           mediaType,
+          metadata,
           objectKey: file.objectKey,
           uploadedBy: actorId
         }
@@ -651,14 +671,10 @@ export class DeliveryEvidenceService {
     mediaType?: DeliveryEvidenceMediaType;
     orderId: string;
   }) {
-    const item = await this.declareDamage(input.orderId, input.actorId, input.handoverId, input.description);
-    if (!input.fileId) {
-      return item;
+    if (input.fileId) {
+      throw new BadRequestException("Direct evidence file binding is disabled.");
     }
-    if (!input.mediaType) {
-      throw new BadRequestException("请提供损伤近拍文件类型。");
-    }
-    return this.attachEvidenceFile(item.id, input.fileId, input.mediaType, input.actorId);
+    return this.declareDamage(input.orderId, input.actorId, input.handoverId, input.description);
   }
 
   async validateFieldEvidenceComplete(
@@ -1152,6 +1168,7 @@ function toEvidenceItemView(item: EvidenceItemWithFiles) {
       fileId: file.fileId,
       id: file.id,
       lifecycleStatus: file.lifecycleStatus,
+      metadata: file.metadata,
       mediaType: file.mediaType,
       objectKey: file.objectKey,
       uploadedAt: file.uploadedAt,
@@ -1183,6 +1200,87 @@ function readBoolean(value: unknown, key: string) {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+async function assertEvidenceArtifactsReady(
+  db: DeliveryEvidenceDb,
+  file: { id: string; mimeType: string | null; sizeBytes: bigint },
+  value: Prisma.InputJsonValue | undefined,
+  mediaType: DeliveryEvidenceMediaType,
+  evidenceType: DeliveryEvidenceType
+) {
+  const fail = (): never => {
+    throw new BadRequestException("Evidence artifacts are not ready.");
+  };
+  if (!isPlainRecord(value)) {
+    fail();
+  }
+
+  const metadata = value as Record<string, unknown>;
+  const detectedMimeType = typeof metadata.detectedMimeType === "string"
+    ? metadata.detectedMimeType.trim()
+    : "";
+  const processedAt = typeof metadata.processedAt === "string"
+    ? metadata.processedAt
+    : "";
+  const sourceSizeBytes = metadata.sourceSizeBytes;
+  if (
+    metadata.artifactVersion !== 1 ||
+    metadata.processingStatus !== "READY" ||
+    !/^sha256:[0-9a-f]{64}$/.test(String(metadata.sourceSha256 ?? "")) ||
+    typeof sourceSizeBytes !== "number" ||
+    !Number.isSafeInteger(sourceSizeBytes) ||
+    sourceSizeBytes <= 0 ||
+    BigInt(sourceSizeBytes) !== file.sizeBytes ||
+    !processedAt ||
+    Number.isNaN(Date.parse(processedAt)) ||
+    detectedMimeType !== file.mimeType ||
+    !detectedMimeType.startsWith(
+      mediaType === DeliveryEvidenceMediaType.PHOTO ? "image/" : "video/"
+    )
+  ) {
+    fail();
+  }
+
+  const derivativeFileIds = mediaType === DeliveryEvidenceMediaType.PHOTO
+    ? [metadata.photoPreviewFileId]
+    : metadata.videoFrameFileIds;
+  const expectedDerivativeCount = mediaType === DeliveryEvidenceMediaType.PHOTO
+    ? 1
+    : evidenceType === DeliveryEvidenceType.WALKAROUND_VIDEO
+      ? 4
+      : 2;
+  if (
+    !Array.isArray(derivativeFileIds) ||
+    derivativeFileIds.length !== expectedDerivativeCount ||
+    derivativeFileIds.some((id) => typeof id !== "string" || !id.trim() || id === file.id) ||
+    new Set(derivativeFileIds).size !== expectedDerivativeCount
+  ) {
+    fail();
+  }
+  if (
+    mediaType === DeliveryEvidenceMediaType.VIDEO &&
+    (
+      typeof metadata.detectedCodec !== "string" ||
+      !metadata.detectedCodec.trim() ||
+      typeof metadata.videoDurationMs !== "number" ||
+      !Number.isFinite(metadata.videoDurationMs) ||
+      metadata.videoDurationMs <= 0
+    )
+  ) {
+    fail();
+  }
+
+  const derivativeFiles = await db.fileObject.findMany({
+    select: { id: true, mimeType: true },
+    where: { id: { in: derivativeFileIds as string[] } }
+  });
+  if (
+    derivativeFiles.length !== expectedDerivativeCount ||
+    derivativeFiles.some((derivative) => derivative.mimeType !== "image/jpeg")
+  ) {
+    fail();
+  }
 }
 
 function normalizeRequiredText(value: string | undefined, message: string) {

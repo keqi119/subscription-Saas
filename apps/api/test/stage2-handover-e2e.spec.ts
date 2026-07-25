@@ -55,7 +55,7 @@ describe("Stage 2 local handover E2E harness", () => {
       fileCount: 1,
       files: [
         expect.objectContaining({
-          file: expect.objectContaining({ id: "file-1" })
+          mediaType: "PHOTO"
         })
       ]
     });
@@ -63,7 +63,10 @@ describe("Stage 2 local handover E2E harness", () => {
 
     const confirmed = await harness.portalReviewService.confirmNoObjection(
       harness.workOrderId,
-      { acknowledgement: true },
+      {
+        acknowledgement: true,
+        manifestHash: detail.evidencePackage.manifestHash!
+      },
       harness.currentCustomer()
     );
     expect(confirmed).toMatchObject({
@@ -114,7 +117,7 @@ describe("Stage 2 local handover E2E harness", () => {
     await expect(
       harness.portalReviewService.confirmNoObjection(
         harness.workOrderId,
-        { acknowledgement: true },
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
         harness.currentCustomer()
       )
     ).rejects.toBeInstanceOf(BadRequestException);
@@ -135,7 +138,7 @@ describe("Stage 2 local handover E2E harness", () => {
     await expect(
       harness.portalReviewService.confirmNoObjection(
         harness.workOrderId,
-        { acknowledgement: true },
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
         harness.otherCustomer()
       )
     ).rejects.toBeInstanceOf(NotFoundException);
@@ -156,9 +159,16 @@ describe("Stage 2 local handover E2E harness", () => {
       )
     ).rejects.toBeInstanceOf(BadRequestException);
 
+    const confirmable = await harness.portalReviewService.getReview(
+      harness.workOrderId,
+      harness.currentCustomer()
+    );
     await harness.portalReviewService.confirmNoObjection(
       harness.workOrderId,
-      { acknowledgement: true },
+      {
+        acknowledgement: true,
+        manifestHash: confirmable.evidencePackage.manifestHash!
+      },
       harness.currentCustomer()
     );
     await expect(
@@ -179,7 +189,7 @@ describe("Stage 2 local handover E2E harness", () => {
     await expect(
       objectedHarness.portalReviewService.confirmNoObjection(
         objectedHarness.workOrderId,
-        { acknowledgement: true },
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
         objectedHarness.currentCustomer()
       )
     ).rejects.toBeInstanceOf(BadRequestException);
@@ -381,17 +391,57 @@ function createStage2HandoverE2EHarness() {
     isDeliveryReady: vi.fn()
   };
   const storageService = {
+    putDeliveryEvidenceDerivativeFromPath: vi.fn(async (input: TestRecord) => ({
+      bucket: "synthetic-local-bucket",
+      objectKey: `derivatives/${String(input.originalName)}`,
+      stored: { driver: "local-test", key: "synthetic-derivative-key", size: input.sizeBytes }
+    })),
     putDeliveryEvidenceFile: vi.fn(async (input: TestRecord) => ({
       bucket: "synthetic-local-bucket",
       objectKey: `${SYNTHETIC_OBJECT_KEY_SHOULD_NOT_RENDER}:${String(input.originalName)}`,
       stored: { driver: "local-test", key: "synthetic-local-key", size: input.size }
     }))
   };
+  const artifactService = {
+    prepareUpload: vi.fn(async (input: {
+      evidenceType: string;
+      file: { size: number };
+      mediaType: "PHOTO" | "VIDEO";
+    }) => {
+      const frameCount = input.mediaType === "PHOTO"
+        ? 1
+        : input.evidenceType === "WALKAROUND_VIDEO"
+          ? 4
+          : 2;
+      return {
+        cleanup: vi.fn(async () => undefined),
+        derivatives: Array.from({ length: frameCount }, (_, index) => ({
+          contentType: "image/jpeg",
+          filePath: `C:/tmp/stage2-derivative-${index + 1}.jpg`,
+          kind: input.mediaType === "PHOTO" ? "PHOTO_PREVIEW" : "VIDEO_FRAME",
+          originalName: `derivative-${index + 1}.jpg`,
+          sizeBytes: 8
+        })),
+        metadata: {
+          artifactVersion: 1,
+          detectedMimeType: input.mediaType === "PHOTO" ? "image/jpeg" : "video/mp4",
+          processedAt: "2026-07-25T00:00:00.000Z",
+          processingStatus: "READY",
+          sourceSha256: `sha256:${String(state.evidenceFiles.length + 1).padStart(64, "0")}`,
+          sourceSizeBytes: input.file.size,
+          videoDurationMs: input.mediaType === "VIDEO" ? 10_000 : null
+        }
+      };
+    })
+  };
   const workOrderService = new HandoverWorkOrderService(
     prisma as never,
     evidenceService as never,
     deliveryHandoverService as never,
-    storageService as never
+    storageService as never,
+    undefined,
+    undefined,
+    artifactService as never
   );
   const portalReviewService = new PortalHandoverReviewService(
     prisma as never,
@@ -593,8 +643,24 @@ function createEvidenceServiceMock(state: Stage2HarnessState, now: Date) {
         throw new BadRequestException(readiness.blockingReasons[0] ?? "交付证据尚未全部上传。");
       }
     }),
-    validateEvidenceFileMutation: vi.fn(async () => undefined),
-    attachEvidenceFile: vi.fn(async (itemId: string, fileId: string, mediaType: DeliveryEvidenceMediaType) => {
+    validateEvidenceFileMutation: vi.fn(async (itemId: string) => {
+      const item = state.evidenceItems.find((entry) => entry.id === itemId);
+      return {
+        allowsMultiple: false,
+        currentFileCount: 0,
+        evidenceType: item?.evidenceType,
+        itemId
+      };
+    }),
+    attachEvidenceFile: vi.fn(async (
+      itemId: string,
+      fileId: string,
+      mediaType: DeliveryEvidenceMediaType,
+      _actorId?: string,
+      _db?: unknown,
+      _lifecycleActorId?: string,
+      metadata?: unknown
+    ) => {
       const item = state.evidenceItems.find((entry) => entry.id === itemId);
       if (!item) {
         throw new BadRequestException("交付证据项不存在。");
@@ -604,6 +670,7 @@ function createEvidenceServiceMock(state: Stage2HarnessState, now: Date) {
         fileId,
         evidenceItemId: itemId,
         id: `evidence-file-${state.evidenceFiles.length + 1}`,
+        metadata,
         mediaType,
         objectKey: `${SYNTHETIC_OBJECT_KEY_SHOULD_NOT_RENDER}:evidence-link-${state.evidenceFiles.length + 1}`,
         uploadedAt: now,

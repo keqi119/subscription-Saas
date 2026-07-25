@@ -1,7 +1,9 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
 import { ContractStatus } from "@prisma/client";
+import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
+import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 
 describe("HandoverWorkOrderService", () => {
@@ -460,13 +462,30 @@ describe("HandoverWorkOrderService", () => {
         workOrderId: "work-order-visible"
       })
     );
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evidenceType: "VEHICLE_FRONT",
+        mediaType: "PHOTO"
+      })
+    );
+    expect(harness.storageService.putDeliveryEvidenceDerivativeFromPath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "PHOTO_PREVIEW",
+        workOrderId: "work-order-visible"
+      })
+    );
     expect(harness.evidenceService.attachEvidenceFile).toHaveBeenCalledWith(
       "evidence-item-owned",
       "file-1",
       "PHOTO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({
+        photoPreviewFileId: "file-2",
+        processingStatus: "READY",
+        sourceSha256: expect.stringMatching(/^sha256:/)
+      })
     );
     expect(attached).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
     await expect(
@@ -513,7 +532,8 @@ describe("HandoverWorkOrderService", () => {
       "PHOTO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({ processingStatus: "READY" })
     );
     expect(result).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
     expect(harness.state.events).toContainEqual(expect.objectContaining({
@@ -664,16 +684,18 @@ describe("HandoverWorkOrderService", () => {
       "PHOTO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({ photoPreviewFileId: "file-2" })
     );
     expect(harness.evidenceService.attachEvidenceFile).toHaveBeenNthCalledWith(
       2,
       "evidence-item-owned",
-      "file-2",
+      "file-3",
       "VIDEO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({ videoFrameFileIds: ["file-4"] })
     );
   });
 
@@ -743,7 +765,7 @@ describe("HandoverWorkOrderService", () => {
 
     expect(harness.evidenceService.attachEvidenceFile).not.toHaveBeenCalled();
     expect(harness.state.fileObjects).toEqual([]);
-    expect(harness.storageService.deleteObject).toHaveBeenCalledTimes(1);
+    expect(harness.storageService.deleteObject).toHaveBeenCalledTimes(2);
   });
 
   it("requires evidence files to remain ACTIVE before previewing or downloading them", async () => {
@@ -766,6 +788,97 @@ describe("HandoverWorkOrderService", () => {
         })
       })
     );
+  });
+
+  it("repairs historical evidence artifacts once and verifies derivative file objects before treating them as ready", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const workOrder = {
+      ...baseWorkOrder(harness),
+      id: "work-order-visible",
+      status: "FIELD_IN_PROGRESS"
+    };
+    const evidenceFile = {
+      evidenceItem: {
+        evidenceType: "VEHICLE_FRONT",
+        handoverId: "handover-1",
+        orderId: harness.orderId
+      },
+      file: {
+        bucket: "application-materials",
+        mimeType: "image/jpeg",
+        objectKey: "delivery-evidence/legacy/front.jpg",
+        originalName: "legacy-front.jpg",
+        sizeBytes: 5n
+      },
+      id: "evidence-file-legacy",
+      lifecycleStatus: "ACTIVE",
+      mediaType: "PHOTO",
+      metadata: null
+    };
+    harness.state.workOrders.push(workOrder);
+    harness.state.evidenceFiles.push(evidenceFile);
+
+    const repaired = await harness.service.prepareExistingEvidenceFileArtifacts(
+      workOrder.id,
+      evidenceFile.id,
+      harness.admin.id
+    );
+
+    expect(repaired).toMatchObject({
+      alreadyReady: false,
+      evidenceFileId: evidenceFile.id,
+      processingStatus: "READY"
+    });
+    expect(harness.storageService.getObject).toHaveBeenCalledWith(
+      "application-materials",
+      "delivery-evidence/legacy/front.jpg"
+    );
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledTimes(1);
+    expect(harness.state.fileObjects).toHaveLength(1);
+    expect(evidenceFile.metadata).toMatchObject({
+      photoPreviewFileId: "file-1",
+      processingStatus: "READY"
+    });
+
+    const second = await harness.service.prepareExistingEvidenceFileArtifacts(
+      workOrder.id,
+      evidenceFile.id,
+      harness.admin.id
+    );
+    expect(second).toMatchObject({
+      evidenceFileId: evidenceFile.id,
+      processingStatus: "READY"
+    });
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledTimes(1);
+
+    harness.state.fileObjects.splice(0);
+    await harness.service.prepareExistingEvidenceFileArtifacts(
+      workOrder.id,
+      evidenceFile.id,
+      harness.admin.id
+    );
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects the legacy external file-id binding route before evidence can bypass artifact processing", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
+    const assigned = await harness.service.assignExternalOperator(
+      draft.id,
+      {
+        expiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        name: "External field operator",
+        phone: "13900001111"
+      },
+      harness.admin.id
+    );
+
+    await expect(harness.service.attachEvidenceFileWithExternalToken(
+      assigned.accessToken,
+      "evidence-item-owned",
+      { fileId: "unsafe-existing-file", mediaType: "PHOTO" }
+    )).rejects.toThrow(BadRequestException);
+    expect(harness.evidenceService.attachEvidenceFile).not.toHaveBeenCalled();
   });
 
   it("records legacy token operators as display names instead of UUID actor ids", async () => {
@@ -972,7 +1085,12 @@ describe("HandoverWorkOrderService", () => {
 
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("客户尚未确认");
 
-    const confirmed = await harness.service.customerConfirmNoObjection("work-order-1", "customer-1");
+    const manifestHash = (await harness.service.getCurrentEvidencePackage("work-order-1")).manifestHash;
+    const confirmed = await harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      manifestHash
+    );
     expect(confirmed).toMatchObject({
       customerConfirmedAt: expect.any(Date),
       status: "CUSTOMER_CONFIRMED"
@@ -1112,7 +1230,11 @@ describe("HandoverWorkOrderService", () => {
       adminReviewStatus: "RESUBMITTED_PENDING_ADMIN"
     });
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("现场资料已重新提交");
-    await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).rejects.toThrow(
+    await expect(harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      `sha256:${"0".repeat(64)}`
+    )).rejects.toThrow(
       "客户已提交异议"
     );
 
@@ -1140,7 +1262,13 @@ describe("HandoverWorkOrderService", () => {
         })
       ])
     );
-    await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).resolves.toMatchObject({
+    const refreshedManifestHash =
+      (await harness.service.getCurrentEvidencePackage("work-order-1")).manifestHash;
+    await expect(harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      refreshedManifestHash
+    )).resolves.toMatchObject({
       status: "CUSTOMER_CONFIRMED"
     });
     expect(harness.state.events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
@@ -1400,6 +1528,27 @@ function createConfirmedWorkOrderHarness() {
     customerConfirmedAt: harness.now,
     status: "CUSTOMER_CONFIRMED"
   });
+  const evidencePackage = buildDeliveryHandoverEvidencePackage({
+    evidenceChecklist: harness.evidenceService.getCurrentChecklist(),
+    handoverId: "handover-1",
+    orderId: harness.orderId,
+    workOrderId: "work-order-1"
+  });
+  harness.state.reviewAttempts.push({
+    attemptNo: 1,
+    evidenceSnapshot: {
+      evidencePackage: {
+        manifest: evidencePackage.manifest,
+        manifestHash: evidencePackage.manifestHash,
+        stats: evidencePackage.stats
+      }
+    },
+    handoverId: "handover-1",
+    id: "review-attempt-confirmed",
+    orderId: harness.orderId,
+    status: "CUSTOMER_CONFIRMED",
+    workOrderId: "work-order-1"
+  });
   return harness;
 }
 
@@ -1534,6 +1683,10 @@ function createHandoverWorkOrderHarness() {
       findUnique: vi.fn(async () => state.vehicleDelivery)
     },
     fileObject: {
+      count: vi.fn(async ({ where }: { where: { id?: { in?: string[] } } }) => {
+        const ids = where.id?.in ?? [];
+        return state.fileObjects.filter((fileObject) => ids.includes(String(fileObject.id))).length;
+      }),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const fileObject = {
           ...data,
@@ -1549,7 +1702,20 @@ function createHandoverWorkOrderHarness() {
       )
     },
     vehicleDeliveryEvidenceFile: {
-      findFirst: vi.fn(async () => null)
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.evidenceFiles.find((file) =>
+          (!where.id || file.id === where.id) &&
+          (!where.lifecycleStatus || file.lifecycleStatus === where.lifecycleStatus)
+        ) ?? null
+      ),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
+        const evidenceFile = state.evidenceFiles.find((row) => row.id === where.id);
+        if (!evidenceFile) {
+          throw new Error("evidence file not found");
+        }
+        Object.assign(evidenceFile, data);
+        return evidenceFile;
+      })
     },
     vehicleHandoverWorkOrder: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -1630,6 +1796,7 @@ function createHandoverWorkOrderHarness() {
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => {
       const snapshots = {
         events: structuredClone(state.events),
+        evidenceFiles: structuredClone(state.evidenceFiles),
         fileObjects: structuredClone(state.fileObjects),
         reviewAttempts: structuredClone(state.reviewAttempts),
         workOrders: structuredClone(state.workOrders)
@@ -1638,6 +1805,7 @@ function createHandoverWorkOrderHarness() {
         return await callback(prisma);
       } catch (error) {
         state.events.splice(0, state.events.length, ...snapshots.events);
+        state.evidenceFiles.splice(0, state.evidenceFiles.length, ...snapshots.evidenceFiles);
         state.fileObjects.splice(0, state.fileObjects.length, ...snapshots.fileObjects);
         state.reviewAttempts.splice(0, state.reviewAttempts.length, ...snapshots.reviewAttempts);
         state.workOrders.splice(0, state.workOrders.length, ...snapshots.workOrders);
@@ -1647,6 +1815,16 @@ function createHandoverWorkOrderHarness() {
   };
   const storageService = {
     deleteObject: vi.fn(async () => undefined),
+    getObject: vi.fn(async () => ({
+      contentLength: 5,
+      contentType: "image/jpeg",
+      stream: Readable.from([Buffer.from("photo")])
+    })),
+    putDeliveryEvidenceDerivativeFromPath: vi.fn(async (input: Record<string, unknown>) => ({
+      bucket: "application-materials",
+      objectKey: `delivery-evidence/${input.workOrderId}/2026/derivatives/preview.jpg`,
+      stored: { driver: "local", key: "local-derivative-key", size: input.sizeBytes }
+    })),
     putDeliveryEvidenceFileFromPath: vi.fn(async (input: Record<string, unknown>) => ({
       bucket: "application-materials",
       objectKey: `delivery-evidence/${input.workOrderId}/2026/video.mp4`,
@@ -1658,15 +1836,66 @@ function createHandoverWorkOrderHarness() {
       stored: { driver: "local", key: "local-key", size: 5 }
     }))
   };
+  const artifactService = {
+    prepareUpload: vi.fn(async (input: {
+      file: { mimetype?: string; originalname?: string; size: number };
+      mediaType: "PHOTO" | "VIDEO";
+    }) => {
+      const extension = input.file.originalname?.split(".").pop()?.toLowerCase();
+      const detectedMimeType = input.mediaType === "PHOTO"
+        ? extension === "heic"
+          ? "image/heic"
+          : extension === "heif"
+            ? "image/heif"
+            : input.file.mimetype || "image/jpeg"
+        : extension === "mov"
+          ? "video/quicktime"
+          : extension === "m4v"
+            ? "video/x-m4v"
+            : input.file.mimetype || "video/mp4";
+      return {
+        cleanup: vi.fn(async () => undefined),
+        derivatives: input.mediaType === "PHOTO"
+          ? [{
+              contentType: "image/jpeg",
+              filePath: "C:/tmp/stage2-photo-preview.jpg",
+              kind: "PHOTO_PREVIEW",
+              originalName: "front-preview.jpg",
+              sizeBytes: 8
+            }]
+          : [{
+              contentType: "image/jpeg",
+              filePath: "C:/tmp/stage2-video-frame-01.jpg",
+              kind: "VIDEO_FRAME",
+              originalName: "video-frame-01.jpg",
+              sizeBytes: 8
+            }],
+        metadata: {
+          artifactVersion: 1,
+          detectedCodec: input.mediaType === "VIDEO" ? "h264" : null,
+          detectedMimeType,
+          processedAt: "2026-07-25T00:00:00.000Z",
+          processingStatus: "READY",
+          sourceSha256: `sha256:${"a".repeat(64)}`,
+          sourceSizeBytes: input.file.size,
+          videoDurationMs: input.mediaType === "VIDEO" ? 1_000 : null
+        }
+      };
+    })
+  };
   const service = new HandoverWorkOrderService(
     prisma as never,
     evidenceService as never,
     handoverService as never,
-    storageService as never
+    storageService as never,
+    undefined,
+    undefined,
+    artifactService as never
   );
 
   return {
     admin,
+    artifactService,
     evidenceService,
     handoverService,
     internalUser,
@@ -1694,7 +1923,30 @@ function createEvidenceService() {
     items: [
       {
         evidenceType: "VEHICLE_FRONT",
-        files: [{ id: "evidence-file-default", objectKey: "oss/internal/evidence.jpg" }],
+        files: [{
+          file: {
+            id: "file-default",
+            mimeType: "image/jpeg",
+            originalName: "front.jpg",
+            sizeBytes: 1024
+          },
+          fileId: "file-default",
+          id: "evidence-file-default",
+          mediaType: "PHOTO",
+          metadata: {
+            artifactVersion: 1,
+            detectedMimeType: "image/jpeg",
+            photoPreviewFileId: "preview-file-default",
+            processedAt: "2026-07-22T08:00:00.000Z",
+            processingStatus: "READY",
+            sourceSha256: `sha256:${"1".repeat(64)}`,
+            sourceSizeBytes: 1024,
+            videoDurationMs: null,
+            videoFrameFileIds: []
+          },
+          objectKey: "oss/internal/evidence.jpg",
+          uploadedAt: new Date("2026-07-22T08:00:00.000Z")
+        }],
         id: "evidence-item-default",
         isRequired: true,
         reviewStatus: "PENDING",
@@ -1730,6 +1982,9 @@ function createEvidenceService() {
       status: "APPROVED"
     })),
     getChecklist: vi.fn(async () => checklist),
+    getCurrentChecklist() {
+      return checklist;
+    },
     initializeChecklist: vi.fn(async () => ({ items: [] })),
     removeEvidenceFile: vi.fn(async (itemId: string) => ({
       fileCount: 0,

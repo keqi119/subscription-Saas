@@ -2,9 +2,9 @@
 
 ## Scope
 
-This runbook validates the local Stage 2 handover path after field evidence capture and Portal customer review are available. It is a local-first test harness only.
+This runbook validates the local Stage 2 handover path after field evidence capture, Portal customer review, and Admin Stage 2 source PDF generation are available. It is a local-first test harness only.
 
-It does not generate Stage 2 PDF files, create contracts, start eSign, call Fadada, call SMS or WeChat providers, confirm delivery, start lease, or start billing.
+It may generate the local Stage 2 handover source PDF artifact for visual acceptance. It does not start eSign, upload to Fadada, create signing URLs, call SMS or WeChat providers, confirm delivery, start lease, or start billing.
 
 ## Closed-loop workflow
 
@@ -24,6 +24,9 @@ flowchart TD
   L --> M["Admin reviews and sends back to customer"]
   M --> E
   F --> N["Stage 2 PDF/eSign readiness unlocked"]
+  N --> O["Admin generates Stage 2 source PDF"]
+  O --> P["Visual acceptance: content, tables, signature areas, evidence summary"]
+  P --> Q["Later: Fadada Stage 2 signing mapping"]
 ```
 
 The Admin entry points are the order detail Stage 2 module and
@@ -55,9 +58,11 @@ The API harness uses synthetic in-memory data and mocked Prisma/storage/evidence
 - Portal customer confirms no objection;
 - Portal customer submits an objection on a fresh fixture;
 - Admin acknowledges the objection, requests field resubmission, and sends the resubmitted evidence back to Portal review;
+- Admin generates the Stage 2 source PDF after customer confirmation;
+- the generated PDF uses the separate `DELIVERY_HANDOVER` contract path and safe `FileObject` download route;
 - unauthorized customer and field-session boundary checks;
 - terminal and already-confirmed/objected state checks;
-- no PDF/eSign/provider/delivery/lease/billing side effects.
+- no eSign/provider/delivery/lease/billing side effects.
 
 Web test:
 
@@ -70,8 +75,9 @@ The Web harness uses mocked `fetch` calls only. It covers:
 - Portal evidence file viewing boundary;
 - Portal objection API boundary;
 - Admin Stage 2 handover review entry and objection action boundary;
+- Admin Stage 2 source PDF generate/download entry;
 - acknowledgement/object reason view-model behavior;
-- source-level absence of PDF, eSign, delivery confirmation, payment, or billing controls;
+- source-level absence of eSign, delivery confirmation, payment, or billing controls before later phases;
 - view-model serialization that excludes object storage, signing URL, token/cookie, identity, provider, and finance internals.
 
 ## Readiness Expectations
@@ -100,7 +106,25 @@ After customer confirmation:
 
 - the work order moves to customer-confirmed;
 - Stage 2 PDF/eSign readiness is true;
-- no PDF, eSign task, provider call, delivery confirmation, lease, or billing side effect is created.
+- no PDF is created automatically;
+- no eSign task, provider call, delivery confirmation, lease, or billing side effect is created.
+
+After Admin source PDF generation:
+
+- a separate Stage 2 `Contract` is created with an `HDV...` document number and `status=GENERATED`;
+- `VehicleDeliveryHandover` is linked to `handoverContractId`, `sourceDocumentFileId`, `sourceObjectKey`, and `status=SOURCE_GENERATED`;
+- `SubscriptionOrder.contractId`, order status, Stage 1 contract rows, finance, lease, and billing state remain unchanged;
+- no `ContractESignTask`, Fadada upload, signing URL, SMS, WeChat, delivery confirmation, lease, or billing side effect is created;
+- the Admin UI exposes a protected download route for visual acceptance.
+
+Visual acceptance must confirm:
+
+- PDF content and metadata;
+- vehicle/customer/field facts tables;
+- fee/deposit and special-notice sections;
+- customer signature and platform seal/signature areas;
+- 14-row evidence summary with safe file metadata only;
+- absence of raw object storage keys, buckets, signing URLs, provider payloads, full phone numbers, and full identity numbers.
 
 After customer objection:
 
@@ -124,6 +148,12 @@ Focused API harness:
 pnpm --filter @subscription-saas/api exec vitest run test/stage2-handover-e2e.spec.ts
 ```
 
+Focused Stage 2 PDF harness:
+
+```bash
+pnpm --filter @subscription-saas/api exec vitest run test/stage2-handover-pdf.spec.ts
+```
+
 Focused Web harness:
 
 ```bash
@@ -136,6 +166,7 @@ Full verification for this phase:
 pnpm --filter @subscription-saas/api prisma:validate
 pnpm --filter @subscription-saas/api typecheck
 pnpm --filter @subscription-saas/api lint
+pnpm --filter @subscription-saas/api exec vitest run test/stage2-handover-pdf.spec.ts
 pnpm --filter @subscription-saas/api exec vitest run test/stage2-handover-e2e.spec.ts test/portal-handover-review.spec.ts test/field-operator-auth.spec.ts test/handover-work-order.spec.ts test/delivery-evidence.spec.ts
 pnpm --filter @subscription-saas/api exec vitest run test/portal-auth.spec.ts test/order-delivery.spec.ts test/esign.spec.ts test/order-contract.spec.ts
 pnpm --filter @subscription-saas/api build
@@ -149,7 +180,7 @@ pnpm --filter @subscription-saas/web build
 
 Staging smoke should run only after a combined API/Web deployment. The deployed Web API base must point to the public H5/API domain used by that environment; staging validation must not rely on a local loopback API or port 3001.
 
-The staging smoke should cover one controlled field evidence capture path and one Portal customer review path. It should still avoid Fadada, Stage 2 PDF/eSign, real SMS, WeChat, delivery confirmation, lease, and billing until those later phases are explicitly enabled.
+The staging smoke should cover one controlled field evidence capture path, one Portal customer review path, and, when deployment scope includes this renderer, one Admin Stage 2 source PDF generation/download path. It should still avoid Fadada, Stage 2 eSign, real SMS, WeChat, delivery confirmation, lease, and billing until those later phases are explicitly enabled.
 
 Field evidence accepts photos up to 10MB and videos up to 300MB. The API Nginx virtual host must set `client_max_body_size 320m` or higher, `proxy_read_timeout`/`proxy_send_timeout` to `1200s`, and `proxy_request_buffering off`. Uploads are spooled to an OS temporary file before local/OSS persistence and the temporary file is cleaned up on success or failure. Validate proxy size, API multipart size, available temporary disk space, and storage connectivity when a large upload fails.
 
@@ -169,7 +200,9 @@ of leaving the operator on an indefinite spinner.
 
 ## Open Items
 
-- Stage 2 PDF renderer;
-- Stage 2 provider mapping and eSign;
+- Stage 2 PDF visual acceptance in the target environment before provider work;
+- Stage 2 Fadada provider mapping and eSign after PDF visual acceptance;
 - Admin void/escalation handling beyond resubmission/send-back;
-- audit timezone cleanup.
+- audit timezone cleanup;
+- PR #224 upload-limit/proxy rollout is tracked separately from this PDF renderer;
+- real-device H5/WeChat/Safari smoke remains deferred until the deployment smoke window.

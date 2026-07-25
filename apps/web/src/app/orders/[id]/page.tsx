@@ -1,6 +1,15 @@
 "use client";
 
-import { ArrowLeftOutlined, ClockCircleOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, UserAddOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  ClockCircleOutlined,
+  DeleteOutlined,
+  DownloadOutlined,
+  FilePdfOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  UserAddOutlined
+} from "@ant-design/icons";
 import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
@@ -43,6 +52,11 @@ import {
   canGenerateContract as getGenerateContractAvailability
 } from "../../../lib/action-guards";
 import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
+import {
+  buildAdminStage2HandoverPdfUrl,
+  generateStage2HandoverPdf as generateStage2HandoverPdfArtifact,
+  type Stage2HandoverPdfArtifact
+} from "../../../lib/admin-stage2-handover-pdf";
 import type { AuthMeResponse } from "../../../lib/auth";
 
 interface OrderDetail {
@@ -291,8 +305,10 @@ interface HandoverWorkOrderSummary {
   operator?: { name?: string | null; phoneMasked?: string | null; type?: string | null } | null;
   orderId?: string | null;
   orderNo?: string | null;
+  readiness?: { blockingReasons?: string[]; readyForStage2Pdf?: boolean; readyForStage2ESign?: boolean } | null;
   reviewAttempts?: HandoverReviewAttempt[];
   scheduledAt?: string | null;
+  stage2Pdf?: Stage2HandoverPdfArtifact | null;
   status?: string | null;
   vehicle?: { brand?: string | null; model?: string | null; plateMasked?: string | null; vinSuffix?: string | null } | null;
 }
@@ -2563,15 +2579,77 @@ function FinancePanel({
   );
 }
 
+function Stage2HandoverPdfCell({
+  actionLoading,
+  canGeneratePdf,
+  onGeneratePdf,
+  workOrder
+}: {
+  actionLoading: string | null;
+  canGeneratePdf: boolean;
+  onGeneratePdf: (id: string) => void;
+  workOrder: HandoverWorkOrderSummary;
+}) {
+  const artifact = workOrder.stage2Pdf;
+  const generated = artifact?.status === "GENERATED" && artifact.downloadUrl;
+  const blockers = workOrder.readiness?.blockingReasons ?? [];
+  const ready = workOrder.readiness?.readyForStage2Pdf === true;
+  const downloadUrl = buildAdminStage2HandoverPdfUrl(artifact?.downloadUrl);
+
+  if (generated) {
+    return (
+      <Space direction="vertical" size={2}>
+        <Space size={6} wrap>
+          <Tag color="green">已生成</Tag>
+          <Typography.Text type="secondary">{artifact?.documentNo || "-"}</Typography.Text>
+        </Space>
+        <Typography.Text type="secondary">
+          {artifact?.fileName || "车辆交接确认单.pdf"} / {formatEvidenceFileSize(artifact?.fileSize)}
+        </Typography.Text>
+        <Button
+          href={downloadUrl ?? undefined}
+          icon={<DownloadOutlined />}
+          rel="noreferrer"
+          size="small"
+          target="_blank"
+        >
+          下载
+        </Button>
+      </Space>
+    );
+  }
+
+  return (
+    <Space direction="vertical" size={2}>
+      <Button
+        disabled={!canGeneratePdf || !ready}
+        icon={<FilePdfOutlined />}
+        loading={actionLoading === `pdf:${workOrder.id}`}
+        onClick={() => onGeneratePdf(workOrder.id)}
+        size="small"
+      >
+        生成交接 PDF
+      </Button>
+      {blockers.length > 0 ? (
+        <Typography.Text type="secondary">{blockers[0]}</Typography.Text>
+      ) : (
+        <Typography.Text type="secondary">客户确认后可生成</Typography.Text>
+      )}
+    </Space>
+  );
+}
+
 function Stage2HandoverReviewPanel({
   actionLoading,
   canAssignExternal,
+  canGeneratePdf,
   canHandleObjection,
   createAvailability,
   loading,
   onAcknowledge,
   onAssignExternal,
   onCreateWorkOrder,
+  onGeneratePdf,
   onRequestResubmission,
   onSendCustomerReview,
   onViewDetail,
@@ -2579,12 +2657,14 @@ function Stage2HandoverReviewPanel({
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
+  canGeneratePdf: boolean;
   canHandleObjection: boolean;
   createAvailability: ReturnType<typeof actionAvailability>;
   loading: boolean;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onCreateWorkOrder: () => void;
+  onGeneratePdf: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onViewDetail: (id: string) => void;
@@ -2647,6 +2727,18 @@ function Stage2HandoverReviewPanel({
           </Space>
         ) : "-",
       title: "客户异议"
+    },
+    {
+      dataIndex: "stage2Pdf",
+      render: (_value, row) => (
+        <Stage2HandoverPdfCell
+          actionLoading={actionLoading}
+          canGeneratePdf={canGeneratePdf}
+          onGeneratePdf={onGeneratePdf}
+          workOrder={row}
+        />
+      ),
+      title: "交接 PDF"
     },
     {
       key: "actions",
@@ -2784,22 +2876,26 @@ function Stage2HandoverReviewActions({
 function Stage2HandoverReviewDetailModal({
   actionLoading,
   canAssignExternal,
+  canGeneratePdf,
   canHandleObjection,
   detail,
   onAcknowledge,
   onAssignExternal,
   onClose,
+  onGeneratePdf,
   onRequestResubmission,
   onSendCustomerReview,
   open
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
+  canGeneratePdf: boolean;
   canHandleObjection: boolean;
   detail: HandoverWorkOrderDetail | null;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onClose: () => void;
+  onGeneratePdf: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   open: boolean;
@@ -2819,6 +2915,13 @@ function Stage2HandoverReviewDetailModal({
               { label: "客户确认时间", children: formatTime(detail.customerConfirmedAt) },
               { label: "客户异议时间", children: formatTime(detail.customerObjectedAt) }
             ]}
+          />
+
+          <Stage2HandoverPdfCell
+            actionLoading={actionLoading}
+            canGeneratePdf={canGeneratePdf}
+            onGeneratePdf={onGeneratePdf}
+            workOrder={detail}
           />
 
           {detail.objection?.reason ? (
@@ -4200,6 +4303,23 @@ function OrderDetailPageContent() {
     return runHandoverObjectionAction(id, "send-customer-review", "已送回客户复核");
   }
 
+  async function generateStage2HandoverPdfForWorkOrder(id: string) {
+    setHandoverActionLoading(`pdf:${id}`);
+    try {
+      await generateStage2HandoverPdfArtifact(id);
+      void message.success("车辆交接确认单 PDF 已生成");
+      await loadOrder();
+      if (handoverWorkOrderDetail?.id === id) {
+        const nextDetail = await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}`);
+        setHandoverWorkOrderDetail(nextDetail);
+      }
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setHandoverActionLoading(null);
+    }
+  }
+
   function openAssignExternalHandover(id: string) {
     setAssignExternalHandoverId(id);
     assignExternalHandoverForm.resetFields();
@@ -5399,12 +5519,14 @@ function OrderDetailPageContent() {
           <Stage2HandoverReviewPanel
             actionLoading={handoverActionLoading}
             canAssignExternal={permissions.has("delivery:prepare")}
+            canGeneratePdf={permissions.has("delivery:confirm")}
             canHandleObjection={permissions.has("delivery:confirm")}
             createAvailability={createHandoverWorkOrderAvailability}
             loading={handoverWorkOrdersLoading}
             onAcknowledge={acknowledgeCustomerObjection}
             onAssignExternal={openAssignExternalHandover}
             onCreateWorkOrder={createHandoverWorkOrder}
+            onGeneratePdf={generateStage2HandoverPdfForWorkOrder}
             onRequestResubmission={requestCustomerObjectionResubmission}
             onSendCustomerReview={sendCustomerObjectionBackToReview}
             onViewDetail={viewHandoverWorkOrderDetail}
@@ -5415,11 +5537,13 @@ function OrderDetailPageContent() {
         <Stage2HandoverReviewDetailModal
           actionLoading={handoverActionLoading}
           canAssignExternal={permissions.has("delivery:prepare")}
+          canGeneratePdf={permissions.has("delivery:confirm")}
           canHandleObjection={permissions.has("delivery:confirm")}
           detail={handoverWorkOrderDetail}
           onAcknowledge={acknowledgeCustomerObjection}
           onAssignExternal={openAssignExternalHandover}
           onClose={() => setHandoverWorkOrderDetailOpen(false)}
+          onGeneratePdf={generateStage2HandoverPdfForWorkOrder}
           onRequestResubmission={requestCustomerObjectionResubmission}
           onSendCustomerReview={sendCustomerObjectionBackToReview}
           open={handoverWorkOrderDetailOpen}

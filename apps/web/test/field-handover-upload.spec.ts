@@ -4,6 +4,7 @@ import {
   MAX_FIELD_PHOTO_SIZE_BYTES,
   MAX_FIELD_VIDEO_SIZE_BYTES,
   buildFieldEvidenceUploadInputContracts,
+  buildFieldEvidenceUploadRetryDisplay,
   formatUploadBytes,
   resolveFieldEvidenceMediaType,
   validateFieldEvidenceFile
@@ -108,6 +109,24 @@ describe("field handover evidence upload validation", () => {
       { capture: "environment", key: "video-capture", multiple: false },
       { capture: undefined, key: "library", multiple: true }
     ]);
+  });
+
+  it("points retry progress at the first remaining file with a reset ordinal", () => {
+    const second = fileOfSize("second.jpg", "image/jpeg", 20);
+    const third = fileOfSize("third.jpg", "image/jpeg", 30);
+
+    expect(
+      buildFieldEvidenceUploadRetryDisplay("evidence-item-1", [second, third])
+    ).toEqual({
+      fileCount: 2,
+      fileIndex: 1,
+      fileName: "second.jpg",
+      itemId: "evidence-item-1",
+      loadedBytes: 0,
+      percent: 0,
+      phase: "RETRY_PENDING",
+      totalBytes: 20
+    });
   });
 });
 

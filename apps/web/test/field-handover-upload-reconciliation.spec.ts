@@ -4,11 +4,13 @@ import {
   canRetryFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
   cancelFieldEvidenceUploadRequest,
+  retryFieldEvidenceUploadBatch,
   retryFieldEvidenceUploadRefresh,
   runFieldEvidenceUploadBatch,
   startFieldEvidenceUploadBatch,
   type FieldEvidenceUploadSnapshot
 } from "../src/lib/field-handover-upload-batch";
+import { buildFieldEvidenceUploadRetryDisplay } from "../src/lib/field-handover-upload";
 
 describe("field evidence upload reconciliation", () => {
   it("refreshes a sent first upload and removes it when an append committed", async () => {
@@ -18,7 +20,8 @@ describe("field evidence upload reconciliation", () => {
         "damage",
         ["first.jpg", "second.jpg"],
         true,
-        snapshot(["existing"])
+        snapshot(["existing"]),
+        { type: "APPEND" }
       ),
       {
         getInterruptionReason: () => "FAILURE",
@@ -40,7 +43,8 @@ describe("field evidence upload reconciliation", () => {
         "damage",
         ["first.jpg", "second.jpg"],
         true,
-        snapshot(["existing"])
+        snapshot(["existing"]),
+        { type: "APPEND" }
       ),
       {
         getInterruptionReason: () => "USER_CANCEL",
@@ -61,7 +65,8 @@ describe("field evidence upload reconciliation", () => {
         "damage",
         ["first.jpg", "second.jpg", "third.jpg"],
         true,
-        snapshot(["existing"])
+        snapshot(["existing"]),
+        { type: "APPEND" }
       ),
       {
         getInterruptionReason: () => "FAILURE",
@@ -78,6 +83,19 @@ describe("field evidence upload reconciliation", () => {
 
     expect(result.status).toBe("RETRY_PENDING");
     expect(result.batch?.files).toEqual(["third.jpg"]);
+    expect(
+      result.batch
+        ? buildFieldEvidenceUploadRetryDisplay(
+            result.batch.itemViewId,
+            result.batch.files.map((name) => ({ name, size: name.length }))
+          )
+        : null
+    ).toMatchObject({
+      fileCount: 1,
+      fileIndex: 1,
+      fileName: "third.jpg",
+      phase: "RETRY_PENDING"
+    });
   });
 
   it("distinguishes committed and uncommitted singleton replacement IDs", async () => {
@@ -86,7 +104,8 @@ describe("field evidence upload reconciliation", () => {
         "single",
         ["replacement.jpg"],
         false,
-        snapshot(["old-id"])
+        snapshot(["old-id"]),
+        { replaceEvidenceFileId: "old-id", type: "REPLACE" }
       ),
       {
         getInterruptionReason: () => "FAILURE",
@@ -101,7 +120,8 @@ describe("field evidence upload reconciliation", () => {
         "single",
         ["replacement.jpg"],
         false,
-        snapshot(["old-id"])
+        snapshot(["old-id"]),
+        { replaceEvidenceFileId: "old-id", type: "REPLACE" }
       ),
       {
         getInterruptionReason: () => "FAILURE",
@@ -117,12 +137,69 @@ describe("field evidence upload reconciliation", () => {
     expect(uncommitted.batch?.files).toEqual(["replacement.jpg"]);
   });
 
+  it("does not treat an append snapshot decrease as a committed upload", async () => {
+    const result = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch(
+        "damage",
+        ["first.jpg", "second.jpg"],
+        true,
+        snapshot(["old-id"]),
+        { type: "APPEND" }
+      ),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail: async () => snapshot([]),
+        uploadFile: async () => {
+          throw new Error("response lost while another file was deleted");
+        }
+      }
+    );
+
+    expect(result.status).toBe("RETRY_PENDING");
+    expect(result.batch?.files).toEqual(["first.jpg", "second.jpg"]);
+    expect(result.batch?.operation).toEqual({ type: "APPEND" });
+  });
+
+  it("does not treat an empty replacement snapshot as a committed upload", async () => {
+    const result = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch(
+        "single",
+        ["replacement.jpg"],
+        false,
+        snapshot(["old-id"]),
+        { replaceEvidenceFileId: "old-id", type: "REPLACE" }
+      ),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail: async () => snapshot([]),
+        uploadFile: async () => {
+          throw new Error("response lost while old evidence was deleted");
+        }
+      }
+    );
+
+    expect(result.status).toBe("RETRY_PENDING");
+    expect(result.batch?.files).toEqual(["replacement.jpg"]);
+    expect(result.batch?.operation).toEqual({
+      replaceEvidenceFileId: "old-id",
+      type: "REPLACE"
+    });
+
+    const retried = retryFieldEvidenceUploadBatch(
+      result,
+      true,
+      { type: "APPEND" }
+    );
+    expect(retried.batch?.operation).toEqual({ type: "APPEND" });
+  });
+
   it("retains the barrier and uncertain queue until refresh succeeds", async () => {
     const initial = startFieldEvidenceUploadBatch(
       "damage",
       ["first.jpg", "second.jpg"],
       true,
-      snapshot(["existing"])
+      snapshot(["existing"]),
+      { type: "APPEND" }
     );
     const failed = await runFieldEvidenceUploadBatch(initial, {
       getInterruptionReason: () => "FAILURE",
@@ -148,7 +225,13 @@ describe("field evidence upload reconciliation", () => {
     const refreshDetail = vi.fn(async () => snapshot([]));
     const onUploadInterrupted = vi.fn();
     const result = await runFieldEvidenceUploadBatch(
-      startFieldEvidenceUploadBatch("single", ["first.jpg"], false, snapshot([])),
+      startFieldEvidenceUploadBatch(
+        "single",
+        ["first.jpg"],
+        false,
+        snapshot([]),
+        { type: "APPEND" }
+      ),
       {
         getInterruptionReason: () => "UNMOUNT",
         onUploadInterrupted,

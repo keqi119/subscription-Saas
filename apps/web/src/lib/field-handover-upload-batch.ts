@@ -15,10 +15,15 @@ export interface FieldEvidenceUploadSnapshot {
   ids: string[];
 }
 
+export type FieldEvidenceUploadOperation =
+  | { type: "APPEND" }
+  | { replaceEvidenceFileId: string; type: "REPLACE" };
+
 export interface FieldEvidenceUploadBatch<TFile> {
   baseline: FieldEvidenceUploadSnapshot;
   files: TFile[];
   itemViewId: string;
+  operation: FieldEvidenceUploadOperation;
 }
 
 export interface FieldEvidenceUploadBatchState<TFile> {
@@ -64,7 +69,8 @@ export function startFieldEvidenceUploadBatch<TFile>(
   itemViewId: string,
   files: readonly TFile[],
   allowsMultiple: boolean,
-  baseline: FieldEvidenceUploadSnapshot = EMPTY_UPLOAD_SNAPSHOT
+  baseline: FieldEvidenceUploadSnapshot = EMPTY_UPLOAD_SNAPSHOT,
+  operation: FieldEvidenceUploadOperation = { type: "APPEND" }
 ): FieldEvidenceUploadBatchState<TFile> {
   const selectedFiles = allowsMultiple ? [...files] : files.slice(0, 1);
   if (selectedFiles.length === 0) {
@@ -75,7 +81,8 @@ export function startFieldEvidenceUploadBatch<TFile>(
     batch: {
       baseline: normalizeSnapshot(baseline),
       files: selectedFiles,
-      itemViewId
+      itemViewId,
+      operation
     },
     fileIndex: 0,
     status: "UPLOADING"
@@ -120,7 +127,8 @@ export function interruptFieldEvidenceUploadBatch<TFile>(
       batch: {
         baseline: state.batch.baseline,
         files: state.batch.files.slice(state.fileIndex),
-        itemViewId: state.batch.itemViewId
+        itemViewId: state.batch.itemViewId,
+        operation: state.batch.operation
       },
       fileIndex: 0,
       refreshTarget: "RETRY_PENDING",
@@ -131,7 +139,10 @@ export function interruptFieldEvidenceUploadBatch<TFile>(
 
 export function retryFieldEvidenceUploadBatch<TFile>(
   state: FieldEvidenceUploadBatchState<TFile>,
-  canEdit: boolean
+  canEdit: boolean,
+  operation: FieldEvidenceUploadOperation = state.batch?.operation ?? {
+    type: "APPEND"
+  }
 ): FieldEvidenceUploadBatchState<TFile> {
   if (
     !canEdit ||
@@ -142,7 +153,10 @@ export function retryFieldEvidenceUploadBatch<TFile>(
   }
 
   return {
-    batch: state.batch,
+    batch: {
+      ...state.batch,
+      operation
+    },
     fileIndex: 0,
     status: "UPLOADING"
   };
@@ -247,6 +261,12 @@ export function canRetryFieldEvidenceUploadBatch<TFile>(
   );
 }
 
+export function canMutateFieldEvidenceWithUploadBatch<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>
+) {
+  return state.status === "IDLE";
+}
+
 export function cancelFieldEvidenceUploadRequest(
   controller: AbortController | null,
   setReason: (reason: "USER_CANCEL") => void
@@ -292,9 +312,10 @@ function resolveFieldEvidenceUploadRefresh<TFile>(
   }
 
   const authoritative = normalizeSnapshot(refreshed);
-  const currentFileCommitted = snapshotsDiffer(
+  const currentFileCommitted = operationCommitted(
     state.batch.baseline,
-    authoritative
+    authoritative,
+    state.batch.operation
   );
   const remainingFiles = currentFileCommitted
     ? state.batch.files.slice(1)
@@ -307,25 +328,33 @@ function resolveFieldEvidenceUploadRefresh<TFile>(
     batch: {
       baseline: authoritative,
       files: remainingFiles,
-      itemViewId: state.batch.itemViewId
+      itemViewId: state.batch.itemViewId,
+      operation: state.batch.operation
     },
     fileIndex: 0,
     status: "RETRY_PENDING"
   };
 }
 
-function snapshotsDiffer(
+function operationCommitted(
   before: FieldEvidenceUploadSnapshot,
-  after: FieldEvidenceUploadSnapshot
+  after: FieldEvidenceUploadSnapshot,
+  operation: FieldEvidenceUploadOperation
 ) {
-  if (before.count !== after.count) {
-    return true;
+  const beforeIds = new Set(before.ids);
+  const afterIds = new Set(after.ids);
+  const addedIds = [...afterIds].filter((id) => !beforeIds.has(id));
+
+  if (operation.type === "APPEND") {
+    return addedIds.length > 0 && after.count >= before.count + 1;
   }
-  const beforeIds = [...new Set(before.ids)].sort();
-  const afterIds = [...new Set(after.ids)].sort();
+
   return (
-    beforeIds.length !== afterIds.length ||
-    beforeIds.some((id, index) => id !== afterIds[index])
+    after.count > 0 &&
+    after.count >= before.count &&
+    beforeIds.has(operation.replaceEvidenceFileId) &&
+    !afterIds.has(operation.replaceEvidenceFileId) &&
+    addedIds.length > 0
   );
 }
 

@@ -11,6 +11,17 @@ export interface FieldEvidenceUploadInputContract {
   multiple: boolean;
 }
 
+export interface FieldEvidenceUploadRetryDisplay {
+  fileCount: number;
+  fileIndex: number;
+  fileName: string;
+  itemId: string;
+  loadedBytes: number;
+  percent: number;
+  phase: "RETRY_PENDING";
+  totalBytes: number;
+}
+
 const SAFE_PHOTO_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -100,6 +111,26 @@ export function buildFieldEvidenceUploadInputContracts(
     });
   }
   return contracts;
+}
+
+export function buildFieldEvidenceUploadRetryDisplay(
+  itemId: string,
+  files: ReadonlyArray<Pick<File, "name" | "size">>
+): FieldEvidenceUploadRetryDisplay | null {
+  const file = files[0];
+  if (!file) {
+    return null;
+  }
+  return {
+    fileCount: files.length,
+    fileIndex: 1,
+    fileName: file.name,
+    itemId,
+    loadedBytes: 0,
+    percent: 0,
+    phase: "RETRY_PENDING",
+    totalBytes: file.size
+  };
 }
 
 export function formatUploadBytes(value: number): string {

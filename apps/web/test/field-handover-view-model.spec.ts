@@ -7,6 +7,7 @@ import {
   formatFieldHandoverType,
   formatFieldWorkOrderStatus,
   getFieldHandoverSubmitBlockers,
+  resolveFieldHandoverFactsAfterRefresh,
   validateFieldHandoverFactsInput
 } from "../src/lib/field-handover-view-model";
 import type { FieldHandoverWorkOrderDetail, FieldHandoverWorkOrderListItem } from "../src/lib/field-handover-api";
@@ -163,6 +164,43 @@ describe("field handover view model", () => {
     expect(view.showSaveAction).toBe(false);
     expect(view.showSubmitAction).toBe(false);
     expect(view.evidenceItems.every((item) => item.showUpload === false)).toBe(true);
+  });
+
+  it("preserves a local facts draft during upload reconciliation refresh", () => {
+    const draft = {
+      accessoryChecklistText: "本地未保存清单",
+      energyLevelText: "本地 70%",
+      fieldNotes: "上传期间编辑的草稿",
+      handoverMileageKm: 321
+    };
+
+    expect(
+      resolveFieldHandoverFactsAfterRefresh(
+        draft,
+        {
+          accessoryChecklist: { chargingCable: true },
+          energyLevelText: "服务端 50%",
+          fieldNotes: "服务端旧备注",
+          handoverMileageKm: 123
+        },
+        true
+      )
+    ).toEqual(draft);
+    expect(
+      resolveFieldHandoverFactsAfterRefresh(
+        draft,
+        {
+          energyLevelText: "服务端 50%",
+          fieldNotes: "服务端旧备注",
+          handoverMileageKm: 123
+        },
+        false
+      )
+    ).toMatchObject({
+      energyLevelText: "服务端 50%",
+      fieldNotes: "服务端旧备注",
+      handoverMileageKm: 123
+    });
   });
 
   it("reopens legacy customer-reviewing objections when Admin requested field resubmission", () => {

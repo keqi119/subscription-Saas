@@ -294,6 +294,14 @@ export function fieldFactsToDraft(fieldFacts: FieldHandoverFieldFacts | null | u
   };
 }
 
+export function resolveFieldHandoverFactsAfterRefresh(
+  currentDraft: FieldHandoverFactsDraft,
+  fieldFacts: FieldHandoverFieldFacts | null | undefined,
+  preserveFacts: boolean
+) {
+  return preserveFacts ? currentDraft : fieldFactsToDraft(fieldFacts);
+}
+
 function formatEvidenceProgress(progress: FieldHandoverEvidenceProgress | null | undefined) {
   if (!progress) {
     return "资料进度 -";

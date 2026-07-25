@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   canRetryFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
+  canMutateFieldEvidenceWithUploadBatch,
   retryFieldEvidenceUploadBatch,
   startFieldEvidenceUploadBatch
 } from "../src/lib/field-handover-upload-batch";
@@ -66,11 +67,14 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("capture={contract.capture}");
     expect(source).toContain("multiple={contract.multiple}");
     expect(source).toContain("fieldEvidenceUploadSnapshot");
+    expect(source).toContain("preserveFacts: true");
     expect(source).toContain("onUploadComplete");
     expect(source).toContain('phase: "PROCESSING"');
     expect(source).toContain("服务端处理中");
     expect(source).toContain("请求体已上传，正在保存并绑定资料");
     expect(source).toContain("cancelFieldEvidenceUploadRequest");
+    expect(source).toContain("buildFieldEvidenceUploadRetryDisplay");
+    expect(source).toContain("canMutateFieldEvidenceWithUploadBatch");
     expect(source).toContain("取消上传");
     expect(source).toContain("重试上传");
     expect(source).toContain("资料正在上传或等待重试，请完成后再提交");
@@ -151,6 +155,17 @@ describe("field handover upload batch gates", () => {
     expect(canRetryFieldEvidenceUploadBatch(refreshing, true)).toBe(false);
     expect(canRetryFieldEvidenceUploadBatch(refreshFailed, true)).toBe(false);
     expect(canRetryFieldEvidenceUploadBatch(retryPending, true)).toBe(true);
+    expect(canMutateFieldEvidenceWithUploadBatch(uploading)).toBe(false);
+    expect(canMutateFieldEvidenceWithUploadBatch(refreshing)).toBe(false);
+    expect(canMutateFieldEvidenceWithUploadBatch(refreshFailed)).toBe(false);
+    expect(canMutateFieldEvidenceWithUploadBatch(retryPending)).toBe(false);
+    expect(
+      canMutateFieldEvidenceWithUploadBatch({
+        batch: null,
+        fileIndex: 0,
+        status: "IDLE"
+      })
+    ).toBe(true);
   });
 
   it("does not allow a locked task to retry", () => {

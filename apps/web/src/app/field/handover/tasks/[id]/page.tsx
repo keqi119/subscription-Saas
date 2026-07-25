@@ -40,6 +40,7 @@ import {
 } from "../../../../../lib/field-handover-api";
 import {
   buildFieldEvidenceUploadInputContracts,
+  buildFieldEvidenceUploadRetryDisplay,
   type FieldEvidenceMediaType,
   formatUploadBytes,
   validateFieldEvidenceFile
@@ -47,6 +48,7 @@ import {
 import {
   canRetryFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
+  canMutateFieldEvidenceWithUploadBatch,
   cancelFieldEvidenceUploadRequest,
   retryFieldEvidenceUploadBatch,
   retryFieldEvidenceUploadRefresh,
@@ -60,8 +62,8 @@ import {
   buildFieldEvidenceCaptureView,
   buildFieldHandoverDetailView,
   buildFieldHandoverFactsPayload,
-  fieldFactsToDraft,
   getFieldHandoverSubmitBlockers,
+  resolveFieldHandoverFactsAfterRefresh,
   validateFieldHandoverFactsInput,
   type FieldHandoverFactsDraft
 } from "../../../../../lib/field-handover-view-model";
@@ -84,7 +86,7 @@ interface EvidenceUploadState {
   itemId: string;
   loadedBytes: number;
   percent: number;
-  phase: "PROCESSING" | "UPLOADING";
+  phase: "PROCESSING" | "RETRY_PENDING" | "UPLOADING";
   totalBytes: number;
 }
 
@@ -111,7 +113,9 @@ export default function FieldHandoverTaskDetailPage() {
     useState<FieldEvidenceUploadBatchState<File>>(INITIAL_UPLOAD_BATCH_STATE);
   const [uploadState, setUploadState] = useState<EvidenceUploadState | null>(null);
 
-  const loadDetail = useCallback(async (options: { showLoading?: boolean } = {}) => {
+  const loadDetail = useCallback(async (
+    options: { preserveFacts?: boolean; showLoading?: boolean } = {}
+  ) => {
     const showLoading = options.showLoading !== false;
     try {
       if (showLoading) {
@@ -133,7 +137,13 @@ export default function FieldHandoverTaskDetailPage() {
       };
       if (isMountedRef.current) {
         setDetail(mergedDetail);
-        setFacts(fieldFactsToDraft(mergedDetail.fieldFacts));
+        setFacts((current) =>
+          resolveFieldHandoverFactsAfterRefresh(
+            current,
+            mergedDetail.fieldFacts,
+            options.preserveFacts === true
+          )
+        );
       }
       return mergedDetail;
     } catch (error) {
@@ -169,6 +179,7 @@ export default function FieldHandoverTaskDetailPage() {
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
   const reviewContext = detail?.reviewContext;
   const canSubmitUploadBatch = canSubmitWithFieldEvidenceUploadBatch(uploadBatchState);
+  const canMutateEvidence = canMutateFieldEvidenceWithUploadBatch(uploadBatchState);
   const retryUpload = uploadBatchState.status === "RETRY_PENDING" ? uploadBatchState.batch : null;
   const uploadingItemId =
     uploadBatchState.status === "UPLOADING" ? uploadBatchState.batch?.itemViewId ?? null : null;
@@ -232,6 +243,18 @@ export default function FieldHandoverTaskDetailPage() {
     }
   }
 
+  function syncRetryUploadDisplay(state: FieldEvidenceUploadBatchState<File>) {
+    if (!isMountedRef.current || state.status !== "RETRY_PENDING" || !state.batch) {
+      return;
+    }
+    setUploadState(
+      buildFieldEvidenceUploadRetryDisplay(
+        state.batch.itemViewId,
+        state.batch.files
+      )
+    );
+  }
+
   async function uploadEvidence(itemViewId: string, files: File[], isRetry = false) {
     if (!detail || files.length === 0 || uploadAbortControllerRef.current) {
       return;
@@ -246,15 +269,26 @@ export default function FieldHandoverTaskDetailPage() {
       return;
     }
     const itemId = item.id;
+    const replaceEvidenceFileId = item.allowsMultiple
+      ? undefined
+      : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
+    const uploadOperation = replaceEvidenceFileId
+      ? ({ replaceEvidenceFileId, type: "REPLACE" } as const)
+      : ({ type: "APPEND" } as const);
     const currentBatchState = uploadBatchStateRef.current;
     const nextBatchState = isRetry
-      ? retryFieldEvidenceUploadBatch(currentBatchState, captureView?.canEdit === true)
+      ? retryFieldEvidenceUploadBatch(
+          currentBatchState,
+          captureView?.canEdit === true,
+          uploadOperation
+        )
       : canSubmitWithFieldEvidenceUploadBatch(currentBatchState)
         ? startFieldEvidenceUploadBatch(
             itemViewId,
             files,
             item.allowsMultiple === true,
-            fieldEvidenceUploadSnapshot(item)!
+            fieldEvidenceUploadSnapshot(item)!,
+            uploadOperation
           )
         : currentBatchState;
     if (nextBatchState.status !== "UPLOADING" || !nextBatchState.batch) {
@@ -275,9 +309,6 @@ export default function FieldHandoverTaskDetailPage() {
 
     applyUploadBatchState(nextBatchState);
     setBlockers([]);
-    const replaceEvidenceFileId = item.allowsMultiple
-      ? undefined
-      : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
     const finalState = await runFieldEvidenceUploadBatch(nextBatchState, {
       getInterruptionReason: () => {
         const reason = uploadAbortReasonRef.current ?? "FAILURE";
@@ -295,7 +326,10 @@ export default function FieldHandoverTaskDetailPage() {
         );
       },
       refreshDetail: async () => {
-        const refreshedDetail = await loadDetail({ showLoading: false });
+        const refreshedDetail = await loadDetail({
+          preserveFacts: true,
+          showLoading: false
+        });
         return fieldEvidenceUploadSnapshot(
           refreshedDetail
             ? findEvidenceItem(refreshedDetail, itemViewId)
@@ -375,6 +409,7 @@ export default function FieldHandoverTaskDetailPage() {
       }
     });
 
+    syncRetryUploadDisplay(finalState);
     if (isMountedRef.current && finalState.status === "IDLE") {
       void message.success(
         item.allowsMultiple && selectedFiles.length > 1
@@ -409,7 +444,10 @@ export default function FieldHandoverTaskDetailPage() {
       onStateChange: applyUploadBatchState,
       refreshDetail: async () => {
         const itemViewId = uploadBatchStateRef.current.batch?.itemViewId;
-        const refreshedDetail = await loadDetail({ showLoading: false });
+        const refreshedDetail = await loadDetail({
+          preserveFacts: true,
+          showLoading: false
+        });
         return itemViewId && refreshedDetail
           ? fieldEvidenceUploadSnapshot(
               findEvidenceItem(refreshedDetail, itemViewId)
@@ -417,12 +455,18 @@ export default function FieldHandoverTaskDetailPage() {
           : null;
       }
     });
+    syncRetryUploadDisplay(finalState);
     if (isMountedRef.current && finalState.status === "IDLE") {
       setUploadState(null);
     }
   }
 
   async function removeEvidence(itemId: string, evidenceFileId: string) {
+    if (!canMutateFieldEvidenceWithUploadBatch(uploadBatchStateRef.current)) {
+      setBlockers([UPLOAD_SUBMIT_BLOCKER_TEXT]);
+      void message.warning(UPLOAD_SUBMIT_BLOCKER_TEXT);
+      return;
+    }
     try {
       setRemovingFileId(evidenceFileId);
       setBlockers([]);
@@ -745,7 +789,7 @@ export default function FieldHandoverTaskDetailPage() {
                                     />
                                   </Tooltip>
                                 ) : null}
-                                {captureView.canEdit ? (
+                                {captureView.canEdit && canMutateEvidence ? (
                                   <Popconfirm
                                     description="删除后需重新上传才能提交。"
                                     okText="删除"
@@ -778,7 +822,9 @@ export default function FieldHandoverTaskDetailPage() {
                               ? "资料状态同步"
                               : itemUploadState.phase === "PROCESSING"
                                 ? "服务端处理中"
-                                : "上传进度"}
+                                : itemUploadState.phase === "RETRY_PENDING"
+                                  ? "等待重试"
+                                  : "上传进度"}
                           </Typography.Text>
                           {uploadBatchState.status === "REFRESHING" ||
                           uploadBatchState.status === "REFRESH_FAILED" ? null : (

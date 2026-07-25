@@ -237,6 +237,39 @@ describe("FadadaSignedArtifactService", () => {
     expect(financeSnapshot(state)).toEqual(finance);
   });
 
+  it("uses a deterministic object identity and removes a known-uncommitted signed PDF after DB finalization fails", async () => {
+    const { prisma, service, state, storageService } = createStage2Fixture();
+    prisma.$transaction.mockRejectedValueOnce(
+      new Error("simulated archive finalization failure")
+    );
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
+      })
+    });
+
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectIdentity: "task-1-v1"
+      })
+    );
+    expect(storageService.deleteObject).toHaveBeenCalledWith(
+      "application-materials",
+      expect.stringContaining("task-1-v1")
+    );
+    expect(state.fileObjects).toHaveLength(0);
+    expect(state.handover).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      signedDocumentFileId: null,
+      signedObjectKey: null,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
   it.each([
     {
       buffer: Buffer.from('{"code":"provider-error"}', "utf8"),
@@ -721,15 +754,30 @@ function createFixture(env: Record<string, string> = {}) {
   };
   let signedArtifactWriteCount = 0;
   const storageService = {
+    buildContractSignedArtifactObjectKey: vi.fn(
+      (
+        contractId: string,
+        provider: string,
+        originalName: string,
+        objectIdentity: string
+      ) =>
+        `contracts/${contractId}/esign/${provider}/signed/${objectIdentity}-${originalName}`
+    ),
+    deleteObject: vi.fn(async () => undefined),
     getContractSignedArtifactStream: vi.fn(async () => ({
       contentLength: pdf.length,
       contentType: "application/pdf",
       originalName: "signed.pdf",
       stream: Readable.from([pdf])
     })),
-    putContractSignedArtifact: vi.fn(async () => {
+    putContractSignedArtifact: vi.fn(async (input: {
+      objectIdentity?: string;
+      originalName?: string;
+    }) => {
       signedArtifactWriteCount += 1;
-      const objectKey = `contracts/contract-1/esign/fadada/signed/2026/signed-${signedArtifactWriteCount}.pdf`;
+      const objectKey = input.objectIdentity
+        ? `contracts/contract-1/esign/fadada/signed/${input.objectIdentity}-${input.originalName}`
+        : `contracts/contract-1/esign/fadada/signed/2026/signed-${signedArtifactWriteCount}.pdf`;
       return {
         bucket: "application-materials",
         objectKey,

@@ -2,21 +2,22 @@
 
 ## Status And Boundary
 
-This document is a remediation backlog derived from the Stage 1 read-only review at commit `7c17367`. It is not a claim that the findings were fixed by Task 3, by the Stage 2 lifecycle work, or by this documentation task.
+This document is a remediation backlog derived from the Stage 1 read-only review at commit `7c17367`. The schema-expressiveness compatibility item is closed by the Stage 2 provider-mapping branch without changing Stage 1 runtime behavior. The pre-existing Stage 1 runtime findings remain backlog.
 
-The review found no confirmed Critical issue. It found one Stage 2-branch typed-model compatibility gap, eight pre-existing Stage 1 Important findings, and three pre-existing Stage 1 Minor findings. All items below remain backlog until separately implemented, tested, reviewed, and released.
+The review found no confirmed Critical issue. It found one Stage 2-branch typed-model compatibility gap, eight pre-existing Stage 1 Important findings, and three pre-existing Stage 1 Minor findings.
 
-## P0: Typed Compatibility Gap
+## Closed: Typed Compatibility Gap
 
-### P0-1 Typed Stage 1 multi-slot compatibility
+### P0-1 Typed Stage 1 multi-slot compatibility (schema expressiveness only)
 
-This is the review's single branch-introduced compatibility gap and is intentionally separate from the pre-existing Stage 1 backlog.
+This was the review's single branch-introduced compatibility gap and is intentionally separate from the pre-existing Stage 1 runtime backlog.
 
-- Prisma uses `STAGE1_MAIN_*` while runtime canonical slot IDs use `STAGE1_BODY_*`.
-- Prisma's task-level `SUBSCRIPTION_CONTRACT` document type cannot preserve the runtime distinction between `CONTRACT_BODY` and `ATTACHMENT1_SUBSCRIPTION_PLAN`.
-- One Stage 1 customer transaction covers two customer slots and one platform transaction covers two platform slots, while signer-level `providerTransactionId @unique` cannot represent shared transactions.
+- Prisma now uses canonical `STAGE1_BODY_*` slot IDs.
+- `CONTRACT_BODY` and `ATTACHMENT1_SUBSCRIPTION_PLAN` are separately expressible document types.
+- Signer transaction IDs are no longer globally unique, allowing each Stage 1 shared provider action to cover two signer slots.
+- Stage 2 correlation remains uniquely constrained by a partial unique index scoped to active Stage 2 signer slots.
 
-Remediation: introduce a provider-action-to-slots model, or at minimum remove the incompatible global signer transaction uniqueness; align canonical Prisma/TypeScript mappings; add real model/migration round-trip tests for four Stage 1 signer slots and two shared provider actions. Do not enable a typed Stage 1 writer/backfill before this is resolved.
+No Stage 1 writer, backfill, dual-write, callback fallback, `PENDING_PAYMENT`, or other Stage 1 runtime behavior changed. Real PostgreSQL migration round-trip coverage remains required before deploying the migration.
 
 ## P0: Pre-existing Stage 1 Risks
 

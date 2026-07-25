@@ -63,7 +63,7 @@ The Admin-generated Stage 2 source PDF summarizes all 14 checklist rows and bind
 
 Field H5 still cannot start eSign. After customer confirmation and Admin PDF generation, the separate Stage 2 lifecycle uses:
 
-- `STAGE2_DELIVERY_HANDOVER` / `DELIVERY_HANDOVER_CONFIRMATION`;
+- `STAGE2_DELIVERY_HANDOVER` / `DELIVERY_HANDOVER`;
 - customer slot `STAGE2_HANDOVER_CUSTOMER` through one `CUSTOMER_MANUAL_SIGN` transaction;
 - platform slot `STAGE2_HANDOVER_PLATFORM` through one `PLATFORM_AUTO_SEAL` transaction;
 - renderer-owned `FADADA_800_1131_TOP_LEFT` final-page, zero-based, box-center coordinates.

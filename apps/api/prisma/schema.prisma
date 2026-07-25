@@ -1170,14 +1170,16 @@ enum ESignSigningStage {
 
 enum ESignDocumentType {
   SUBSCRIPTION_CONTRACT
+  CONTRACT_BODY
+  ATTACHMENT1_SUBSCRIPTION_PLAN
   DELIVERY_HANDOVER
 
   @@map("esign_document_type")
 }
 
 enum ESignSlotId {
-  STAGE1_MAIN_CUSTOMER
-  STAGE1_MAIN_PLATFORM
+  STAGE1_BODY_CUSTOMER
+  STAGE1_BODY_PLATFORM
   STAGE1_ATTACHMENT1_CUSTOMER
   STAGE1_ATTACHMENT1_PLATFORM
   STAGE2_HANDOVER_CUSTOMER
@@ -5376,7 +5378,7 @@ model ContractESignSigner {
   customerId            String?                 @map("customer_id") @db.Uuid
   signerStatus          ESignSignerStatus       @default(PENDING) @map("signer_status")
   providerSignerId      String?                 @map("provider_signer_id") @db.VarChar(128)
-  providerTransactionId String?                 @unique @map("provider_transaction_id") @db.VarChar(32)
+  providerTransactionId String?                 @map("provider_transaction_id") @db.VarChar(32)
   signUrl               String?                 @map("sign_url") @db.Text
   signUrlExpiresAt      DateTime?               @map("sign_url_expires_at") @db.Timestamptz(6)
   attemptCount          Int                     @default(0) @map("attempt_count")
@@ -5396,6 +5398,7 @@ model ContractESignSigner {
   @@unique([taskId, slotId])
   @@index([taskId])
   @@index([customerId])
+  @@index([providerTransactionId])
   @@index([signerStatus])
   @@map("contract_esign_signer")
 }

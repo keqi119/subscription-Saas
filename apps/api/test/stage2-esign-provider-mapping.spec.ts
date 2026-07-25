@@ -1,4 +1,5 @@
 import { ConfigService } from "@nestjs/config";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -10,6 +11,7 @@ import type {
 import {
   CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID,
   CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING,
+  CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH,
   ContractPdfArtifactService
 } from "../src/esign/contract-pdf-artifact.service";
 import type {
@@ -36,7 +38,7 @@ describe("Stage 2 Fadada provider mapping", () => {
 
     await expect(harness.provider.autoSealTask?.({
       contractId: "contract-stage2-1",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       placement: {
         keyword: "legacy-placement-must-not-run",
         type: "KEYWORD"
@@ -64,7 +66,8 @@ describe("Stage 2 Fadada provider mapping", () => {
         fadadaEnabled: true,
         purpose: "FADADA_UPLOAD",
         requireGeneratedContractArtifact: true,
-        requireStage2SlotCoordinates: true
+        requireStage2SlotCoordinates: true,
+        expectedSha256: sha256(minimalPdf())
       })
     );
     expect(harness.apiClient.uploadDocs).toHaveBeenCalledOnce();
@@ -72,20 +75,20 @@ describe("Stage 2 Fadada provider mapping", () => {
       contractId: `HDV-${"9".repeat(80)}`,
       customerId: "provider-customer-1",
       signaturePositions: [{ pagenum: 9, x: 210, y: 980 }],
-      transactionId: expect.stringMatching(/H1$/)
+      transactionId: "STAGE2CUSTOMERH1"
     }));
     expect(result).toMatchObject({
       actions: [{
         coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
         providerActionType: "CUSTOMER_MANUAL_SIGN",
-        providerTransactionId: expect.stringMatching(/H1$/),
+        providerTransactionId: "STAGE2CUSTOMERH1",
         signerType: "CUSTOMER",
         signingStage: "STAGE2_DELIVERY_HANDOVER"
       }],
       providerEnvelopeId: `HDV-${"9".repeat(80)}`,
-      providerTaskId: expect.stringMatching(/^[A-Za-z0-9]{1,32}$/),
+      providerTaskId: "STAGE2CUSTOMERH1",
       signers: [{
-        documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+        documentType: "DELIVERY_HANDOVER",
         providerActionType: "CUSTOMER_MANUAL_SIGN",
         signingStage: "STAGE2_DELIVERY_HANDOVER",
         slotId: "STAGE2_HANDOVER_CUSTOMER",
@@ -214,14 +217,14 @@ describe("Stage 2 Fadada provider mapping", () => {
       callbackUrl: "https://callback.invalid/stage2",
       contractId: "contract-stage2-1",
       documentName: "handover.pdf",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       providerEnvelopeId: taskNo,
       signingSlotCoordinates: [stage2ProviderCoordinates()[1]!],
       signingSlots: [stage2PlatformSlot()],
       signingStage: "STAGE2_DELIVERY_HANDOVER",
       taskId: "task-stage2-1",
       taskNo,
-      transactionId: "CALLER_VALUE_MUST_NOT_SELECT_STAGE2_TRANSACTION"
+      transactionId: "STAGE2PLATFORMH2"
     } as never);
 
     expect(harness.apiClient.autoSealContract).toHaveBeenCalledWith(expect.objectContaining({
@@ -229,7 +232,7 @@ describe("Stage 2 Fadada provider mapping", () => {
       customerId: "platform-customer-1",
       signatureId: "platform-signature-1",
       signaturePositions: [{ pagenum: 9, x: 590, y: 980 }],
-      transactionId: expect.stringMatching(/^[A-Za-z0-9]{1,32}$/)
+      transactionId: "STAGE2PLATFORMH2"
     }));
     const providerInput = harness.apiClient.autoSealContract.mock.calls[0]![0];
     expect(providerInput.transactionId.endsWith("H2")).toBe(true);
@@ -275,7 +278,7 @@ describe("Stage 2 Fadada provider mapping", () => {
       callbackUrl: "https://callback.invalid/stage2",
       contractId: "contract-stage2-1",
       documentName: "handover.pdf",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       providerEnvelopeId: "HDV-FAIL-PLATFORM",
       signingSlotCoordinates: [stage2ProviderCoordinates()[1]!],
       signingSlots: [stage2PlatformSlot()],
@@ -298,7 +301,7 @@ describe("Stage 2 Fadada provider mapping", () => {
 
     await expect(harness.provider.autoSealTask?.({
       contractId: "contract-stage2-1",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       signingSlotCoordinates: [stage2ProviderCoordinates()[1]!],
       signingSlots: [stage2PlatformSlot()],
       signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -329,6 +332,21 @@ describe("Stage 2 Contract PDF artifact preflight", () => {
       stage2SlotCoordinatesVerified: true
     });
     expect(harness.storageService.getObject).toHaveBeenCalledOnce();
+  });
+
+  it("rejects downloaded Stage 2 PDF bytes whose SHA-256 differs from the bound source hash", async () => {
+    const boundPdf = minimalPdf();
+    const harness = createArtifactHarness({
+      downloadedPdf: Buffer.from("%PDF-1.4\nreplaced artifact\n%%EOF\n", "utf8")
+    });
+
+    await expect(harness.service.preflightContractPdfArtifact("contract-stage2-1", {
+      expectedSha256: sha256(boundPdf),
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true,
+      requireStage2SlotCoordinates: true
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH);
   });
 
   it.each([
@@ -476,10 +494,11 @@ function createProviderHarness(options: {
 
 function createArtifactHarness(options: {
   artifactOverride?: Record<string, unknown>;
+  downloadedPdf?: Buffer;
   omitStage2Artifact?: boolean;
   slotCoordinates?: ReturnType<typeof stage2ArtifactCoordinates>;
 } = {}) {
-  const pdf = minimalPdf();
+  const pdf = options.downloadedPdf ?? minimalPdf();
   const fileObject = {
     bucket: "application-materials",
     id: "file-stage2-1",
@@ -490,7 +509,7 @@ function createArtifactHarness(options: {
   };
   const stage2HandoverPdfArtifact = {
     artifactKind: "stage2-handover-pdf-source",
-    documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+    documentType: "DELIVERY_HANDOVER",
     fileId: fileObject.id,
     pageCount: 10,
     signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -538,7 +557,7 @@ function stage2CustomerInput(taskNo: string): CreateSignTaskInput {
     callbackUrl: "https://callback.invalid/stage2",
     contractId: "contract-stage2-1",
     documentName: "handover.pdf",
-    documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+    documentType: "DELIVERY_HANDOVER",
     redirectUrl: "https://portal.invalid/stage2",
     signers: [{
       customerId: "customer-1",
@@ -548,14 +567,16 @@ function stage2CustomerInput(taskNo: string): CreateSignTaskInput {
     }],
     signingSlots: [stage2CustomerSlot()],
     signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+    sourcePdfHash: sha256(minimalPdf()),
     taskId: "task-stage2-1",
-    taskNo
+    taskNo,
+    transactionId: "STAGE2CUSTOMERH1"
   };
 }
 
 function stage2CustomerSlot(): ESignSigningSlot {
   return {
-    documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+    documentType: "DELIVERY_HANDOVER",
     keyword: "stage2-customer-signature",
     providerActionType: "CUSTOMER_MANUAL_SIGN",
     required: true,
@@ -567,7 +588,7 @@ function stage2CustomerSlot(): ESignSigningSlot {
 
 function stage2PlatformSlot(): ESignSigningSlot {
   return {
-    documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+    documentType: "DELIVERY_HANDOVER",
     keyword: "stage2-platform-seal",
     providerActionType: "PLATFORM_AUTO_SEAL",
     required: true,
@@ -591,7 +612,7 @@ function stage2ArtifactCoordinates(pageNumber = 9): Stage2HandoverPdfArtifactSlo
     {
       coordinateSource: "PDFKIT_RENDERER",
       coordinateSystem: "FADADA_800_1131_TOP_LEFT",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       height: 90,
       pageNumber,
       pdfPageHeight: 841.89,
@@ -605,7 +626,7 @@ function stage2ArtifactCoordinates(pageNumber = 9): Stage2HandoverPdfArtifactSlo
     {
       coordinateSource: "PDFKIT_RENDERER",
       coordinateSystem: "FADADA_800_1131_TOP_LEFT",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       height: 90,
       pageNumber,
       pdfPageHeight: 841.89,
@@ -621,4 +642,8 @@ function stage2ArtifactCoordinates(pageNumber = 9): Stage2HandoverPdfArtifactSlo
 
 function minimalPdf() {
   return Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n", "utf8");
+}
+
+function sha256(buffer: Buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
 }

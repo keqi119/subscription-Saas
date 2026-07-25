@@ -271,7 +271,7 @@ describe("Stage 2 handover PDF renderer", () => {
         coordinate.pdfPageHeight
       ] as number[];
 
-      expect(coordinate.documentType).toBe("DELIVERY_HANDOVER_CONFIRMATION");
+      expect(coordinate.documentType).toBe("DELIVERY_HANDOVER");
       expect(coordinate.signingStage).toBe("STAGE2_DELIVERY_HANDOVER");
       expect(coordinate.coordinateSystem).toBe("FADADA_800_1131_TOP_LEFT");
       expect(coordinate.pageNumber).toBe(finalPageNumber);
@@ -441,7 +441,7 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         contractSnapshot: expect.objectContaining({
           stage2HandoverPdfArtifact: {
             artifactKind: "stage2-handover-pdf-source",
-            documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+            documentType: "DELIVERY_HANDOVER",
             fileId: "file-pdf-1",
             pageCount: 10,
             signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -886,7 +886,7 @@ function stage2ArtifactCoordinates() {
     {
       coordinateSource: "PDFKIT_RENDERER",
       coordinateSystem: "FADADA_800_1131_TOP_LEFT",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       height: 90,
       pageNumber: 9,
       pdfPageHeight: 841.89,
@@ -900,7 +900,7 @@ function stage2ArtifactCoordinates() {
     {
       coordinateSource: "PDFKIT_RENDERER",
       coordinateSystem: "FADADA_800_1131_TOP_LEFT",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
       height: 90,
       pageNumber: 9,
       pdfPageHeight: 841.89,

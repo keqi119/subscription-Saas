@@ -230,6 +230,15 @@ export class FadadaSignedArtifactService {
         skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
       };
     }
+    const originalName = `${sanitizeFileName(task.contract.contractNo)}-signed.pdf`;
+    const objectIdentity = `${task.id}-v${handover.artifactVersion}`;
+    const plannedObjectKey =
+      this.storageService.buildContractSignedArtifactObjectKey(
+        task.contractId,
+        "fadada",
+        originalName,
+        objectIdentity
+      );
     const attemptedAt = new Date();
     const claimTimeoutMs = readStage2ArchiveClaimTimeoutMs(this.configService);
     const stalePendingClaim =
@@ -268,7 +277,8 @@ export class FadadaSignedArtifactService {
         archiveLastAttemptAt: attemptedAt,
         archiveLastError: null,
         archiveRetryCount: { increment: 1 },
-        archiveStatus: DeliveryHandoverArchiveStatus.PENDING
+        archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+        signedObjectKey: plannedObjectKey
       },
       where: {
         ...claimStateWhere,
@@ -318,6 +328,8 @@ export class FadadaSignedArtifactService {
       );
     }
 
+    let signedPdfHash: string | null = null;
+    let storedArtifact: { bucket: string; objectKey: string } | null = null;
     try {
       const providerContractId = task.providerEnvelopeId;
       if (!providerContractId) {
@@ -336,10 +348,9 @@ export class FadadaSignedArtifactService {
         downloadUrl: signResult.downloadUrl
       });
       assertStage2SignedPdf(signedPdf.buffer, signedPdf.contentType);
-      const signedPdfHash = createHash("sha256")
+      signedPdfHash = createHash("sha256")
         .update(signedPdf.buffer)
         .digest("hex");
-      const originalName = `${sanitizeFileName(task.contract.contractNo)}-signed.pdf`;
       const stored = await this.storageService.putContractSignedArtifact({
         buffer: signedPdf.buffer,
         contentType: "application/pdf",
@@ -352,8 +363,13 @@ export class FadadaSignedArtifactService {
           sourcePdfHash: handover.sourcePdfHash!
         },
         originalName,
+        objectIdentity,
         provider: "fadada"
       });
+      storedArtifact = stored;
+      if (stored.objectKey !== plannedObjectKey) {
+        throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
+      }
 
       try {
         await apiClient.createContractFiling({ contractId: providerContractId });
@@ -415,11 +431,59 @@ export class FadadaSignedArtifactService {
       };
     } catch (error) {
       const code = stage2ArchiveFailureCode(error);
+      let current: {
+        archiveLastAttemptAt: Date | null;
+        archiveStatus: DeliveryHandoverArchiveStatus;
+        signedDocumentFileId: string | null;
+        signedObjectKey: string | null;
+        signedPdfHash: string | null;
+      } | null = null;
+      try {
+        current = await this.prisma.vehicleDeliveryHandover.findUnique({
+          where: { id: handover.id }
+        });
+      } catch {
+        // Reconciliation is best-effort; retain the deterministic object pointer.
+      }
+      if (
+        storedArtifact &&
+        signedPdfHash &&
+        current?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
+        current.signedDocumentFileId &&
+        current.signedObjectKey === storedArtifact.objectKey &&
+        current.signedPdfHash === signedPdfHash
+      ) {
+        return {
+          archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+          archived: false,
+          signedPdfHash,
+          skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
+        };
+      }
+      let compensated = false;
+      if (
+        storedArtifact &&
+        current?.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
+        current.archiveLastAttemptAt?.getTime() === attemptedAt.getTime() &&
+        current.signedObjectKey === storedArtifact.objectKey &&
+        !current.signedDocumentFileId
+      ) {
+        try {
+          await this.storageService.deleteObject(
+            storedArtifact.bucket,
+            storedArtifact.objectKey
+          );
+          compensated = true;
+        } catch {
+          // Keep the deterministic key on the claim for a later safe retry.
+        }
+      }
       await this.prisma.vehicleDeliveryHandover.updateMany({
         data: {
           archiveLastAttemptAt: new Date(),
           archiveLastError: code,
           archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+          ...(compensated ? { signedObjectKey: null } : {}),
           status: DeliveryHandoverStatus.SIGNED
         },
         where: {

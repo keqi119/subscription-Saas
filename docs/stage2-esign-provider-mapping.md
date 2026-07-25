@@ -12,7 +12,7 @@ The implementation was verified offline with mocked provider, storage, and Prism
 | --- | --- | --- |
 | Runtime signing stage | `STAGE2_DELIVERY_HANDOVER` | `STAGE2_DELIVERY_HANDOVER` |
 | Prisma signing stage | `STAGE2_DELIVERY_HANDOVER` | `STAGE2_DELIVERY_HANDOVER` |
-| Runtime document type | `DELIVERY_HANDOVER_CONFIRMATION` | `DELIVERY_HANDOVER_CONFIRMATION` |
+| Runtime document type | `DELIVERY_HANDOVER` | `DELIVERY_HANDOVER` |
 | Prisma document type | `DELIVERY_HANDOVER` | `DELIVERY_HANDOVER` |
 | Slot | `STAGE2_HANDOVER_CUSTOMER` | `STAGE2_HANDOVER_PLATFORM` |
 | Signer role/type | `CUSTOMER` | `PLATFORM` |
@@ -23,6 +23,8 @@ The implementation was verified offline with mocked provider, storage, and Prism
 A Stage 2 task contains exactly two required typed signer rows, one for each tuple above. Unknown stages, wrong documents, wrong roles, wrong actions, duplicate or extra slots, missing transactions, and source-binding mismatches fail closed before state advancement.
 
 The customer transaction uploads the generated Stage 2 source PDF and creates the manual-sign action. Platform auto-seal is a separate transaction and can run only for the platform slot after customer completion through the controlled platform-seal action/retry path.
+
+Before either provider action, the service persists a deterministic transaction ID and a leased in-flight claim on the exact typed signer. This makes an early callback correlatable, prevents void from racing a fresh action, and allows the request path to recognize a callback that already reconciled the same transaction. An ambiguous customer initiation retains its claim and retry timestamp for reconciliation instead of falsely declaring local failure after a possible remote success.
 
 ## Renderer-Owned Coordinates
 
@@ -97,11 +99,12 @@ Archive requires a completed typed Fadada Stage 2 task, both required signed sig
 - uses a five-minute default stale-claim lease and atomically reclaims an expired claim;
 - queries/downloads the signed artifact, then validates exact PDF MIME, PDF magic, and the 20 MB limit;
 - calculates and persists the signed PDF SHA-256;
-- stores a linked signed `FileObject`;
+- stores with a deterministic object identity and then links the signed `FileObject`;
+- re-reads committed state after an ambiguous finalization failure, and only compensates a known-uncommitted object while retaining a deterministic reconciliation pointer if deletion is uncertain;
 - returns to `SIGNED` with `archiveStatus=FAILED` on retryable archive failure;
 - skips duplicate retries after a complete archive.
 
-Provider filing is advisory after the signed PDF is stored. Task 6's deferred minor remains open: if storage succeeds and DB finalization fails, an unreferenced stored object can remain and needs a cleanup design.
+Provider filing is advisory after the signed PDF is stored.
 
 ## API Boundaries
 
@@ -122,6 +125,8 @@ Portal exposes only:
 - `POST /portal/handover-reviews/:id/esign/signing/start`
 
 The Portal `GET` returns a safe status with mapped customer blockers and no URL. Only the intentional, customer-owned `POST` start action may return a short-lived signing URL and expiry. Provider URL failures map to `STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE`; customer/action blockers map to stable safe DTOs. There is no optional Stage 2 signed-document preview route in this API surface.
+
+This branch provides the Portal API foundation only. The current Portal Web pages do not call these eSign endpoints, display Stage 2 eSign status, or expose a signing-start control.
 
 ## Final Delivery Gate
 
@@ -145,3 +150,8 @@ The following remain unresolved until controlled sandbox validation:
 3. Whether the configured platform auto-seal authorization and signature remain valid for this action.
 4. The observed delay between final signature completion and signed-document download availability.
 5. Whether archive/filing retries are idempotent after partial success.
+
+## Open Engineering Notes
+
+- Delivery confirmation remains fail-closed if PostgreSQL aborts a lock-order deadlock, but it has no bounded deadlock/P2034 retry. Add a bounded retry before high-concurrency rollout.
+- The third-signer child-phantom unit fixture is not schema-realistic under `(taskId, slotId)` uniqueness. Replace it with a schema-valid malformed child case where possible and retain real-PostgreSQL parent/FK locking coverage.

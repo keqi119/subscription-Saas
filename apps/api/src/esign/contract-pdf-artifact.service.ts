@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 
 import {
   CONTRACT_PDF_GENERATED_ARTIFACT_SOURCE,
@@ -21,6 +22,8 @@ export const CONTRACT_PDF_ARTIFACT_INVALID_OBJECT_KEY = "CONTRACT_PDF_ARTIFACT_I
 export const CONTRACT_PDF_ARTIFACT_INVALID_SOURCE = "CONTRACT_PDF_ARTIFACT_INVALID_SOURCE";
 export const CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID = "CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID";
 export const CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING = "CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING";
+export const CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH =
+  "CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH";
 
 const MAX_FADADA_PDF_BYTES = 20 * 1024 * 1024;
 
@@ -29,6 +32,7 @@ export type ContractPdfArtifactSource = "CONTRACT_FILE" | "CONTRACT_VERSION_FILE
 
 export interface ContractPdfArtifactPolicyOptions {
   enterpriseAutoSealEnabled?: boolean;
+  expectedSha256?: string;
   fadadaEnabled?: boolean;
   maxBytes?: number;
   purpose?: ContractPdfArtifactPurpose;
@@ -40,7 +44,7 @@ export interface ContractPdfArtifactPolicyOptions {
 export interface Stage2HandoverPdfArtifactSlotCoordinate {
   coordinateSource: "PDFKIT_RENDERER";
   coordinateSystem: "FADADA_800_1131_TOP_LEFT";
-  documentType: "DELIVERY_HANDOVER_CONFIRMATION";
+  documentType: "DELIVERY_HANDOVER";
   height: number;
   pageNumber: number;
   pdfPageHeight: number;
@@ -88,6 +92,7 @@ type ContractArtifactSource = Prisma.ContractGetPayload<{ include: typeof contra
 
 interface ResolvedContractPdfArtifactPolicy {
   enterpriseAutoSealEnabled: boolean;
+  expectedSha256?: string;
   fadadaEnabled: boolean;
   maxBytes: number;
   purpose?: ContractPdfArtifactPurpose;
@@ -171,6 +176,7 @@ export class ContractPdfArtifactService {
     const downloaded = await this.storageService.getObject(fileObject.bucket, fileObject.objectKey);
     const buffer = await streamToBuffer(downloaded.stream);
     assertPdfBuffer(buffer, policy.maxBytes);
+    assertExpectedSha256(buffer, policy.expectedSha256);
     const generatedContractArtifact = isGeneratedContractPdfObjectKey(contract.id, fileObject.objectKey);
     const slotCoordinates = policy.requireStage2SlotCoordinates
       ? resolveStage2HandoverSlotCoordinates({
@@ -267,6 +273,7 @@ export class ContractPdfArtifactService {
 
     return {
       enterpriseAutoSealEnabled,
+      expectedSha256: normalizeSha256(options.expectedSha256),
       fadadaEnabled,
       maxBytes,
       purpose,
@@ -337,6 +344,31 @@ function assertPdfBuffer(buffer: Buffer, maxBytes: number) {
   }
 }
 
+function assertExpectedSha256(buffer: Buffer, expectedSha256?: string) {
+  if (!expectedSha256) {
+    return;
+  }
+  const actualSha256 = createHash("sha256").update(buffer).digest("hex");
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH}: downloaded PDF bytes do not match the bound source hash`
+    );
+  }
+}
+
+function normalizeSha256(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH}: expected source hash is invalid`
+    );
+  }
+  return normalized;
+}
+
 function resolveGeneratedContractSlotCoordinates(input: {
   contractSnapshot: unknown;
   fileId: string;
@@ -382,7 +414,7 @@ function resolveStage2HandoverSlotCoordinates(input: {
   }
   if (
     artifact.artifactKind !== "stage2-handover-pdf-source" ||
-    artifact.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+    artifact.documentType !== "DELIVERY_HANDOVER" ||
     artifact.fileId !== input.fileId ||
     artifact.signingStage !== "STAGE2_DELIVERY_HANDOVER"
   ) {
@@ -474,7 +506,7 @@ function validatePersistedStage2SlotCoordinates(
       !coordinate ||
       coordinate.coordinateSource !== "PDFKIT_RENDERER" ||
       coordinate.coordinateSystem !== "FADADA_800_1131_TOP_LEFT" ||
-      coordinate.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+      coordinate.documentType !== "DELIVERY_HANDOVER" ||
       coordinate.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
       !Number.isInteger(coordinate.pageNumber) ||
       (coordinate.pageNumber as number) < 0 ||

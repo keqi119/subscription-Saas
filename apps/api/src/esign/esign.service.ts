@@ -858,13 +858,23 @@ export class ESignService {
     providerContractId?: string | null
   ) {
     if (providerTransactionId) {
-      const signer = await this.prisma.contractESignSigner.findUnique({
+      const signer = await this.prisma.contractESignSigner.findFirst({
         include: {
           task: {
             include: esignTaskInclude
           }
         },
-        where: { providerTransactionId }
+        where: {
+          deletedAt: null,
+          documentType: PrismaESignDocumentType.DELIVERY_HANDOVER,
+          providerTransactionId,
+          slotId: {
+            in: [
+              PrismaESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+              PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM
+            ]
+          }
+        }
       });
       if (
         signer?.task &&
@@ -1028,6 +1038,62 @@ export class ESignService {
         input.eventType === FADADA_FAILED_EVENT ||
         input.eventType === FADADA_REJECTED_EVENT
       ) {
+        if (
+          signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM &&
+          signer.providerActionType ===
+            PrismaESignProviderActionType.PLATFORM_AUTO_SEAL
+        ) {
+          await tx.contractESignSigner.update({
+            data: {
+              claimExpiresAt: null,
+              lastErrorCode: "FADADA_STAGE2_PLATFORM_SEAL_FAILED",
+              lastErrorMessage:
+                "The Stage 2 platform seal was not completed and can be retried.",
+              nextRetryAt: now,
+              rejectReason: null,
+              rejectedAt: null,
+              signerStatus: ESignSignerStatus.PENDING
+            },
+            where: { id: signer.id }
+          });
+          await tx.contractESignTask.update({
+            data: {
+              callbackSnapshot: toJsonValue(input.sanitizedPayload),
+              errorSnapshot: toJsonValue({
+                code: "FADADA_STAGE2_PLATFORM_SEAL_FAILED",
+                slotId: signer.slotId
+              }),
+              failedAt: null,
+              taskStatus: ESignTaskStatus.SIGNING
+            },
+            where: { id: task.id }
+          });
+          await tx.vehicleDeliveryHandover.updateMany({
+            data: {
+              failedAt: null,
+              failureReason:
+                "Stage 2 platform seal failed and can be retried.",
+              status: DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+            },
+            where: {
+              deletedAt: null,
+              handoverContractId: task.contractId,
+              handoverESignTaskId: task.id
+            }
+          });
+          await tx.contractESignCallbackLog.update({
+            data: {
+              handled: true,
+              handledAt: now
+            },
+            where: { id: input.callbackLogId }
+          });
+          return {
+            handled: true,
+            signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+            taskId: task.id
+          };
+        }
         await tx.contractESignSigner.update({
           data: {
             lastErrorCode:
@@ -1087,6 +1153,49 @@ export class ESignService {
       }
 
       if (input.eventType !== "FADADA_SIGN_COMPLETED" || !input.resultCode) {
+        if (
+          signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM &&
+          signer.providerActionType ===
+            PrismaESignProviderActionType.PLATFORM_AUTO_SEAL
+        ) {
+          await tx.contractESignSigner.update({
+            data: {
+              claimExpiresAt: null,
+              lastErrorCode: "FADADA_STAGE2_PLATFORM_RESULT_UNKNOWN",
+              lastErrorMessage:
+                "The Stage 2 platform seal result is unknown and can be retried.",
+              nextRetryAt: now,
+              signerStatus: ESignSignerStatus.PENDING
+            },
+            where: { id: signer.id }
+          });
+          await tx.contractESignTask.update({
+            data: {
+              callbackSnapshot: toJsonValue(input.sanitizedPayload),
+              errorSnapshot: toJsonValue({
+                code: "FADADA_STAGE2_PLATFORM_RESULT_UNKNOWN",
+                resultCode: sanitizeCallbackCode(input.resultCode),
+                slotId: signer.slotId
+              }),
+              failedAt: null,
+              taskStatus: ESignTaskStatus.SIGNING
+            },
+            where: { id: task.id }
+          });
+          await tx.vehicleDeliveryHandover.updateMany({
+            data: {
+              failedAt: null,
+              failureReason:
+                "Stage 2 platform seal result is unknown and can be retried.",
+              status: DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+            },
+            where: {
+              deletedAt: null,
+              handoverContractId: task.contractId,
+              handoverESignTaskId: task.id
+            }
+          });
+        }
         await tx.contractESignCallbackLog.update({
           data: {
             errorMessage: `FADADA_UNKNOWN_RESULT_CODE:${sanitizeCallbackCode(input.resultCode)}`,
@@ -1106,8 +1215,10 @@ export class ESignService {
       if (signer.signerStatus !== ESignSignerStatus.SIGNED) {
         await tx.contractESignSigner.update({
           data: {
+            claimExpiresAt: null,
             lastErrorCode: null,
             lastErrorMessage: null,
+            nextRetryAt: null,
             signedAt: now,
             signerStatus: ESignSignerStatus.SIGNED
           },

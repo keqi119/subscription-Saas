@@ -7,13 +7,15 @@ CREATE TYPE "esign_signing_stage" AS ENUM (
 -- CreateEnum
 CREATE TYPE "esign_document_type" AS ENUM (
   'SUBSCRIPTION_CONTRACT',
+  'CONTRACT_BODY',
+  'ATTACHMENT1_SUBSCRIPTION_PLAN',
   'DELIVERY_HANDOVER'
 );
 
 -- CreateEnum
 CREATE TYPE "esign_slot_id" AS ENUM (
-  'STAGE1_MAIN_CUSTOMER',
-  'STAGE1_MAIN_PLATFORM',
+  'STAGE1_BODY_CUSTOMER',
+  'STAGE1_BODY_PLATFORM',
   'STAGE1_ATTACHMENT1_CUSTOMER',
   'STAGE1_ATTACHMENT1_PLATFORM',
   'STAGE2_HANDOVER_CUSTOMER',
@@ -75,8 +77,16 @@ CREATE INDEX "contract_esign_task_signing_stage_task_status_idx"
   ON "contract_esign_task"("signing_stage", "task_status");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "contract_esign_signer_provider_transaction_id_key"
+CREATE INDEX "contract_esign_signer_provider_transaction_id_idx"
   ON "contract_esign_signer"("provider_transaction_id");
+
+-- Stage 1 deliberately allows one provider action to cover both the contract
+-- body and Attachment 1. Stage 2 keeps one transaction per typed signer.
+CREATE UNIQUE INDEX "contract_esign_signer_stage2_provider_transaction_id_key"
+  ON "contract_esign_signer"("provider_transaction_id")
+  WHERE "provider_transaction_id" IS NOT NULL
+    AND "deleted_at" IS NULL
+    AND "slot_id" IN ('STAGE2_HANDOVER_CUSTOMER', 'STAGE2_HANDOVER_PLATFORM');
 
 -- CreateIndex
 CREATE UNIQUE INDEX "contract_esign_signer_task_id_slot_id_key"

@@ -172,13 +172,15 @@ describe("Stage2HandoverESignService", () => {
       (harness.provider.createSignTask.mock.calls as any[][])[0]?.[0];
     expect(providerInput).toMatchObject({
       contractId: "contract-stage2-1",
-      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      documentType: "DELIVERY_HANDOVER",
+      sourcePdfHash: "b".repeat(64),
       signingStage: "STAGE2_DELIVERY_HANDOVER",
-      taskId: "stage2-task-1"
+      taskId: "stage2-task-1",
+      transactionId: "ESG20260726080000ABCDH1"
     });
     expect(providerInput.signingSlots).toEqual([
       expect.objectContaining({
-        documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+        documentType: "DELIVERY_HANDOVER",
         providerActionType: "CUSTOMER_MANUAL_SIGN",
         signerRole: "CUSTOMER",
         signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -195,28 +197,188 @@ describe("Stage2HandoverESignService", () => {
     ]);
   });
 
+  it("persists the deterministic customer transaction and fresh claim before calling the provider", async () => {
+    const harness = createHarness();
+    let observed: Record<string, unknown> | undefined;
+    harness.provider.createSignTask.mockImplementationOnce(async (input: any) => {
+      const task = harness.state.workOrder.handover.handoverESignTask!;
+      const customerSigner = task.signers[0]!;
+      observed = {
+        attemptCount: customerSigner.attemptCount,
+        claimExpiresAt: customerSigner.claimExpiresAt,
+        providerTaskId: task.providerTaskId,
+        providerTransactionId: customerSigner.providerTransactionId,
+        taskStatus: task.taskStatus,
+        transactionId: input.transactionId
+      };
+      return {
+        actions: [{
+          coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
+          providerActionType: "CUSTOMER_MANUAL_SIGN",
+          providerSignerId: input.transactionId,
+          providerTransactionId: input.transactionId,
+          signUrl: "https://unsafe.example/sign",
+          signerType: "CUSTOMER",
+          signingStage: "STAGE2_DELIVERY_HANDOVER"
+        }],
+        providerEnvelopeId: task.taskNo,
+        providerTaskId: input.transactionId
+      };
+    });
+
+    await harness.service.create("work-order-1", "admin-1");
+
+    expect(observed).toMatchObject({
+      attemptCount: 1,
+      providerTaskId: "ESG20260726080000ABCDH1",
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER,
+      transactionId: "ESG20260726080000ABCDH1"
+    });
+    expect(observed?.claimExpiresAt).toBeInstanceOf(Date);
+  });
+
+  it("accepts an early customer callback reconciled against the preclaimed transaction", async () => {
+    const harness = createHarness();
+    harness.provider.createSignTask.mockImplementationOnce(async (input: any) => {
+      const handover = harness.state.workOrder.handover;
+      const task = handover.handoverESignTask!;
+      const customerSigner = task.signers[0]!;
+      customerSigner.claimExpiresAt = null;
+      customerSigner.providerSignerId = input.transactionId;
+      customerSigner.providerTransactionId = input.transactionId;
+      customerSigner.signedAt = NOW;
+      customerSigner.signerStatus = ESignSignerStatus.SIGNED;
+      task.taskStatus = ESignTaskStatus.SIGNING;
+      handover.status = DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+      return {
+        actions: [{
+          coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
+          providerActionType: "CUSTOMER_MANUAL_SIGN",
+          providerSignerId: input.transactionId,
+          providerTransactionId: input.transactionId,
+          signerType: "CUSTOMER",
+          signingStage: "STAGE2_DELIVERY_HANDOVER"
+        }],
+        providerEnvelopeId: task.taskNo,
+        providerTaskId: input.transactionId
+      };
+    });
+
+    const result = await harness.service.create("work-order-1", "admin-1");
+
+    expect(result.customerSigner.status).toBe(ESignSignerStatus.SIGNED);
+    expect(result.status).toBe(ESignTaskStatus.SIGNING);
+    expect(harness.state.workOrder.handover.status).toBe(
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+    );
+  });
+
+  it("keeps an ambiguous customer provider result recoverable under its fresh claim", async () => {
+    const harness = createHarness();
+    harness.provider.createSignTask.mockRejectedValueOnce(
+      new Error("provider response timed out")
+    );
+
+    await expect(
+      harness.service.create("work-order-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_PROVIDER_FAILED"
+      })
+    });
+
+    const task = harness.state.workOrder.handover.handoverESignTask!;
+    expect(task.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(task.failedAt).toBeNull();
+    expect(task.signers[0]).toMatchObject({
+      claimExpiresAt: expect.any(Date),
+      lastErrorCode: "STAGE2_HANDOVER_ESIGN_PROVIDER_RESULT_AMBIGUOUS",
+      nextRetryAt: expect.any(Date),
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(harness.state.workOrder.handover.status).toBe(
+      DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE
+    );
+  });
+
+  it("rejects void while a required provider action has a fresh claim", async () => {
+    const harness = createHarness();
+    const task = makeTask({ taskStatus: ESignTaskStatus.WAITING_CUSTOMER });
+    task.signers[0]!.claimExpiresAt = new Date(Date.now() + 60_000);
+    harness.state.workOrder.handover.handoverContract.status =
+      ContractStatus.SIGNING;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE;
+
+    await expect(
+      harness.service.voidTask(
+        "work-order-1",
+        "admin-1",
+        "Do not race an in-flight provider action"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
+      })
+    });
+    expect(task.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(harness.state.workOrder.handover.handoverESignTaskId).toBe(task.id);
+  });
+
+  it("rejects an unsafe customer signing URL before persisting the provider result", async () => {
+    const harness = createHarness();
+    harness.provider.createSignTask.mockImplementationOnce(async (input: any) => ({
+      actions: [{
+        coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerTransactionId: input.transactionId,
+        signUrl: "javascript:alert(1)",
+        signerType: "CUSTOMER",
+        signingStage: "STAGE2_DELIVERY_HANDOVER"
+      }],
+      providerEnvelopeId: "provider-envelope-1",
+      providerTaskId: input.transactionId
+    }));
+
+    await expect(
+      harness.service.create("work-order-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_PROVIDER_FAILED"
+      })
+    });
+
+    expect(
+      harness.state.workOrder.handover.handoverESignTask?.signers[0]?.signUrl
+    ).toBeFalsy();
+  });
+
   it("persists the customer provider transaction only on the typed Stage 2 signer", async () => {
     const harness = createHarness();
 
     await harness.service.create("work-order-1", "admin-1");
 
-    expect(harness.prisma.contractESignSigner.update).toHaveBeenCalledWith(
+    expect(harness.prisma.contractESignSigner.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           providerTransactionId: "ESG20260726080000ABCDH1",
-          signerStatus: ESignSignerStatus.SIGNING
+          claimExpiresAt: expect.any(Date)
         }),
-        where: { id: "stage2-customer-signer-1" }
+        where: expect.objectContaining({ id: "stage2-customer-signer-1" })
       })
     );
-    expect(harness.prisma.contractESignSigner.update).not.toHaveBeenCalledWith(
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "stage1-signer-1" }
+        where: expect.objectContaining({ id: "stage1-signer-1" })
       })
     );
-    expect(harness.prisma.contractESignSigner.update).not.toHaveBeenCalledWith(
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "stage2-platform-signer-1" }
+        where: expect.objectContaining({ id: "stage2-platform-signer-1" })
       })
     );
   });
@@ -227,6 +389,8 @@ describe("Stage2HandoverESignService", () => {
       const task = harness.state.workOrder.handover.handoverESignTask!;
       task.taskStatus = ESignTaskStatus.CANCELLED;
       harness.state.workOrder.handover.handoverESignTaskId = null;
+      harness.state.workOrder.handover.handoverContract.status =
+        ContractStatus.GENERATED;
       harness.state.workOrder.handover.status =
         DeliveryHandoverStatus.SOURCE_GENERATED;
       return {
@@ -606,6 +770,52 @@ describe("Stage2HandoverESignService", () => {
       retryAvailable: false,
       status: ESignSignerStatus.SIGNING
     });
+  });
+
+  it("accepts an early platform callback reconciled against the preclaimed transaction", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    harness.state.workOrder.handover.handoverContract.status =
+      ContractStatus.SIGNING;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.provider.autoSealTask.mockImplementationOnce(async (input: any) => {
+      const platformSigner = task.signers[1]!;
+      platformSigner.claimExpiresAt = null;
+      platformSigner.providerSignerId = input.transactionId;
+      platformSigner.providerTransactionId = input.transactionId;
+      platformSigner.signedAt = NOW;
+      platformSigner.signerStatus = ESignSignerStatus.SIGNED;
+      task.completedAt = NOW;
+      task.taskStatus = ESignTaskStatus.COMPLETED;
+      harness.state.workOrder.handover.handoverContract.status =
+        ContractStatus.SIGNED;
+      harness.state.workOrder.handover.status = DeliveryHandoverStatus.SIGNED;
+      return {
+        coveredSlotIds: ["STAGE2_HANDOVER_PLATFORM"],
+        providerActionType: "PLATFORM_AUTO_SEAL",
+        providerSignerId: input.transactionId,
+        providerTransactionId: input.transactionId,
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        status: "COMPLETED"
+      };
+    });
+
+    const result = await harness.service.retryPlatformSeal(
+      "work-order-1",
+      "admin-1"
+    );
+
+    expect(result.platformSigner.status).toBe(ESignSignerStatus.SIGNED);
+    expect(result.status).toBe(ESignTaskStatus.COMPLETED);
+    expect(harness.state.workOrder.handover.status).toBe(
+      DeliveryHandoverStatus.SIGNED
+    );
   });
 
   it("rejects a concurrent platform retry when the typed claim is not acquired", async () => {
@@ -1208,6 +1418,42 @@ describe("Stage2HandoverESignService", () => {
 
   it.each([
     {
+      env: {},
+      name: "credential-bearing URL",
+      signUrl: "https://user:secret@sentinel.example/stage2-sign"
+    },
+    {
+      env: {},
+      name: "unapproved host",
+      signUrl: "https://wrong.example/stage2-sign"
+    },
+    {
+      env: { NODE_ENV: "production" },
+      name: "plain HTTP in production",
+      signUrl: "http://sentinel.example/stage2-sign"
+    }
+  ])("rejects $name at the Portal signing response boundary", async ({
+    env,
+    signUrl
+  }) => {
+    const harness = createHarness(env as Record<string, string>);
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.provider.getSignerUrl.mockResolvedValueOnce({ signUrl });
+
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).rejects.toMatchObject({
+      response: {
+        code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
+        message: "The customer signing link is temporarily unavailable."
+      },
+      status: 502
+    });
+  });
+
+  it.each([
+    {
       mutate: (harness: ReturnType<typeof createHarness>, task: ReturnType<typeof makeTask>) => {
         harness.state.workOrder.order.customerId = "customer-other";
         harness.state.workOrder.order.customer.id = "customer-other";
@@ -1363,7 +1609,7 @@ describe("Stage 2 handover eSign Portal API contract", () => {
   });
 });
 
-function createHarness() {
+function createHarness(env: Record<string, string> = {}) {
   const state: {
     activeTask: null | ReturnType<typeof makeTask>;
     workOrder: ReturnType<typeof makeWorkOrder>;
@@ -1406,11 +1652,11 @@ function createHarness() {
   };
 
   const provider = {
-    autoSealTask: vi.fn(async () => ({
+    autoSealTask: vi.fn(async (input: any): Promise<any> => ({
       coveredSlotIds: ["STAGE2_HANDOVER_PLATFORM"],
       providerActionType: "PLATFORM_AUTO_SEAL",
-      providerSignerId: "ESG20260726080000ABCDH2",
-      providerTransactionId: "ESG20260726080000ABCDH2",
+      providerSignerId: input.transactionId,
+      providerTransactionId: input.transactionId,
       rawResponse: {
         resultCode: "3001",
         unsafeUrl: "https://unsafe.example/provider"
@@ -1419,19 +1665,19 @@ function createHarness() {
       signingStage: "STAGE2_DELIVERY_HANDOVER",
       status: "PENDING"
     })),
-    createSignTask: vi.fn(async () => ({
+    createSignTask: vi.fn(async (input: any): Promise<any> => ({
       actions: [{
         coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
         providerActionType: "CUSTOMER_MANUAL_SIGN",
-        providerSignerId: "ESG20260726080000ABCDH1",
-        providerTransactionId: "ESG20260726080000ABCDH1",
+        providerSignerId: input.transactionId,
+        providerTransactionId: input.transactionId,
         signUrl: "https://unsafe.example/sign?token=secret",
         signUrlExpiresAt: new Date("2026-07-26T08:30:00.000Z"),
         signerType: "CUSTOMER",
         signingStage: "STAGE2_DELIVERY_HANDOVER"
       }],
       providerEnvelopeId: "provider-envelope-1",
-      providerTaskId: "ESG20260726080000ABCDH1",
+      providerTaskId: input.transactionId,
       rawResponse: {
         objectKey: "private/source.pdf",
         signUrl: "https://unsafe.example/sign?token=secret"
@@ -1458,9 +1704,13 @@ function createHarness() {
       })
     },
     contractESignSigner: {
+      findFirst: vi.fn(async ({ where }: any) => {
+        const task = state.workOrder.handover.handoverESignTask ?? state.activeTask;
+        return task?.signers.find((item: any) => matchesSignerWhere(item, where)) ?? null;
+      }),
       update: vi.fn(async ({ data, where }: any) => {
         const task = state.workOrder.handover.handoverESignTask ?? state.activeTask;
-        const signer = task?.signers.find((item) => item.id === where.id);
+        const signer = task?.signers.find((item: any) => item.id === where.id);
         if (signer) {
           Object.assign(signer, data);
         }
@@ -1468,18 +1718,13 @@ function createHarness() {
       }),
       updateMany: vi.fn(async ({ data, where }: any) => {
         const task = state.workOrder.handover.handoverESignTask ?? state.activeTask;
-        const signer = task?.signers.find((item) => item.id === where?.id);
-        if (
-          signer &&
-          where?.claimExpiresAt !== undefined &&
-          where.claimExpiresAt !== signer.claimExpiresAt
-        ) {
-          return { count: 0 };
-        }
+        const signer = task?.signers.find((item: any) =>
+          matchesSignerWhere(item, where)
+        );
         if (signer) {
-          Object.assign(signer, data);
+          applyUpdateData(signer, data);
         }
-        return { count: 1 };
+        return { count: signer ? 1 : 0 };
       })
     },
     contractESignTask: {
@@ -1498,6 +1743,7 @@ function createHarness() {
         task.signingStage = data.signingStage;
         task.signers = data.signers.create.map((signer: any, index: number) => ({
           ...makeSigner(index === 0 ? "CUSTOMER" : "PLATFORM"),
+          providerTransactionId: null,
           ...signer,
           id: index === 0
             ? "stage2-customer-signer-1"
@@ -1519,6 +1765,10 @@ function createHarness() {
             where.documentType !== task.documentType) ||
           (where?.completedAt !== undefined &&
             where.completedAt !== task.completedAt) ||
+          (where?.signers?.none &&
+            task.signers.some((signer: any) =>
+              matchesSignerWhere(signer, where.signers.none)
+            )) ||
           (where?.taskStatus &&
             where.taskStatus !== task.taskStatus &&
             !where.taskStatus.in?.includes(task.taskStatus))
@@ -1572,10 +1822,13 @@ function createHarness() {
 
   const config = new ConfigService({
     API_BASE_URL: "http://localhost:3001/api",
+    ESIGN_SIGN_URL_ALLOWED_HOSTS: "unsafe.example,sentinel.example",
     ESIGN_PROVIDER: "fadada",
+    FADADA_BASE_URL: "https://unsafe.example/api/",
     FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
     FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1",
-    PORTAL_BASE_URL: "http://localhost:3000"
+    PORTAL_BASE_URL: "http://localhost:3000",
+    ...env
   });
   const notification = {
     notifyCustomer: vi.fn()
@@ -1611,7 +1864,7 @@ function makeWorkOrder() {
         contractSnapshot: {
           stage2HandoverPdfArtifact: {
             artifactKind: "stage2-handover-pdf-source",
-            documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+            documentType: "DELIVERY_HANDOVER",
             fileId: "file-stage2-1",
             pageCount: 4,
             signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -1663,7 +1916,7 @@ function makeTask(
     platformStatus?: ESignSignerStatus;
     taskStatus?: ESignTaskStatus;
   } = {}
-) {
+): any {
   return {
     cancelledAt: null,
     completedAt: null as Date | null,
@@ -1720,7 +1973,7 @@ function attachPortalTask(
     DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE;
 }
 
-function makeSigner(type: "CUSTOMER" | "PLATFORM") {
+function makeSigner(type: "CUSTOMER" | "PLATFORM"): any {
   const customer = type === "CUSTOMER";
   return {
     attemptCount: 0,
@@ -1741,6 +1994,8 @@ function makeSigner(type: "CUSTOMER" | "PLATFORM") {
       : null,
     required: true,
     signedAt: null,
+    signUrl: null as null | string,
+    signUrlExpiresAt: null as null | Date,
     signerStatus: customer
       ? ESignSignerStatus.SIGNING
       : ESignSignerStatus.PENDING,
@@ -1757,7 +2012,7 @@ function stage2Slot(
   return {
     coordinateSource: "PDFKIT_RENDERER",
     coordinateSystem: "FADADA_800_1131_TOP_LEFT",
-    documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+    documentType: "DELIVERY_HANDOVER",
     height: 90,
     pageNumber: 3,
     pdfPageHeight: 841.89,
@@ -1768,4 +2023,56 @@ function stage2Slot(
     x: slotId === "STAGE2_HANDOVER_CUSTOMER" ? 220 : 580,
     y: 980
   };
+}
+
+function matchesSignerWhere(
+  signer: ReturnType<typeof makeSigner>,
+  where: Record<string, any>
+): boolean {
+  return Object.entries(where).every(([key, expected]) => {
+    if (key === "AND") {
+      return (expected as Array<Record<string, any>>).every((item) =>
+        matchesSignerWhere(signer, item)
+      );
+    }
+    if (key === "OR") {
+      return (expected as Array<Record<string, any>>).some((item) =>
+        matchesSignerWhere(signer, item)
+      );
+    }
+    const actual = (signer as Record<string, any>)[key];
+    if (
+      expected &&
+      typeof expected === "object" &&
+      !(expected instanceof Date)
+    ) {
+      if ("gt" in expected) {
+        return actual instanceof Date && actual > expected.gt;
+      }
+      if ("lt" in expected) {
+        return actual instanceof Date && actual < expected.lt;
+      }
+      if ("in" in expected) {
+        return expected.in.includes(actual);
+      }
+    }
+    return actual === expected;
+  });
+}
+
+function applyUpdateData(
+  target: Record<string, any>,
+  data: Record<string, any>
+) {
+  for (const [key, value] of Object.entries(data)) {
+    if (
+      value &&
+      typeof value === "object" &&
+      "increment" in value
+    ) {
+      target[key] = Number(target[key] ?? 0) + Number(value.increment);
+    } else {
+      target[key] = value;
+    }
+  }
 }

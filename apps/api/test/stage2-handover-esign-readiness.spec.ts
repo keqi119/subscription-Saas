@@ -728,7 +728,7 @@ function readyWorkOrder() {
           evidencePackage: { manifestHash: MANIFEST_HASH },
           stage2HandoverPdfArtifact: {
             artifactKind: "stage2-handover-pdf-source",
-            documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+            documentType: "DELIVERY_HANDOVER",
             fileId: "file-stage2-1",
             pageCount: 4,
             signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -812,7 +812,7 @@ function stage2Slot(
   return {
     coordinateSource: "PDFKIT_RENDERER",
     coordinateSystem: "FADADA_800_1131_TOP_LEFT",
-    documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+    documentType: "DELIVERY_HANDOVER",
     height: 90,
     pageNumber: 3,
     pdfPageHeight: 841.89,

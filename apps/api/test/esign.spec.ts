@@ -295,7 +295,7 @@ describe("ESignService", () => {
         signUrl: "https://sign.example.test/stage2-customer",
         signUrlExpiresAt: null,
         snapshot: {
-          documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+          documentType: "DELIVERY_HANDOVER",
           providerActionType: "CUSTOMER_MANUAL_SIGN",
           required: true,
           signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -319,7 +319,7 @@ describe("ESignService", () => {
         signUrl: null,
         signUrlExpiresAt: null,
         snapshot: {
-          documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+          documentType: "DELIVERY_HANDOVER",
           providerActionType: "PLATFORM_AUTO_SEAL",
           required: true,
           signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -465,6 +465,80 @@ describe("ESignService", () => {
     expect(JSON.stringify(first)).not.toContain("sign.example.test");
     expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
     expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed Stage 2 platform callback retryable without failing the task or handover", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.customerSigner.signerStatus = ESignSignerStatus.SIGNED;
+    harness.customerSigner.signedAt = new Date("2026-07-26T01:05:00.000Z");
+    harness.platformSigner.claimExpiresAt = new Date(Date.now() + 60_000);
+    harness.task.taskStatus = ESignTaskStatus.SIGNING;
+    harness.handover.customerSignedAt = harness.customerSigner.signedAt;
+    harness.handover.status = "PENDING_PLATFORM_SEAL";
+
+    const result = await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3001",
+        resultDesc: "platform seal failed",
+        transactionId: harness.platformTransactionId
+      })
+    );
+
+    expect(result).toMatchObject({
+      handled: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(harness.platformSigner).toMatchObject({
+      claimExpiresAt: null,
+      lastErrorCode: "FADADA_STAGE2_PLATFORM_SEAL_FAILED",
+      nextRetryAt: expect.any(Date),
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(harness.task.taskStatus).toBe(ESignTaskStatus.SIGNING);
+    expect(harness.handover.status).toBe("PENDING_PLATFORM_SEAL");
+    expect(harness.stage1Contract.order.orderStatus).toBe(
+      OrderStatus.PENDING_DELIVERY
+    );
+    expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unknown Stage 2 platform callback retryable and records a bounded error", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.customerSigner.signerStatus = ESignSignerStatus.SIGNED;
+    harness.customerSigner.signedAt = new Date("2026-07-26T01:05:00.000Z");
+    harness.platformSigner.claimExpiresAt = new Date(Date.now() + 60_000);
+    harness.task.taskStatus = ESignTaskStatus.SIGNING;
+    harness.handover.customerSignedAt = harness.customerSigner.signedAt;
+    harness.handover.status = "PENDING_PLATFORM_SEAL";
+
+    const result = await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3999",
+        resultDesc: "unknown platform result",
+        transactionId: harness.platformTransactionId
+      })
+    );
+
+    expect(result).toMatchObject({
+      handled: false,
+      reason: "UNKNOWN_RESULT_CODE",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(harness.platformSigner).toMatchObject({
+      claimExpiresAt: null,
+      lastErrorCode: "FADADA_STAGE2_PLATFORM_RESULT_UNKNOWN",
+      nextRetryAt: expect.any(Date),
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(harness.task.taskStatus).toBe(ESignTaskStatus.SIGNING);
+    expect(harness.handover.status).toBe("PENDING_PLATFORM_SEAL");
+    expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
   });
 
   it("retries an identical Stage 2 callback when the recorded callback transaction rolled back", async () => {

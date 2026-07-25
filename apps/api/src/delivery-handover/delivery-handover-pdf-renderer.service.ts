@@ -34,7 +34,7 @@ export type DeliveryHandoverPdfSigningSlotId =
 export interface DeliveryHandoverPdfSigningSlotCoordinate {
   coordinateSource: "PDFKIT_RENDERER";
   coordinateSystem: "FADADA_800_1131_TOP_LEFT";
-  documentType: "DELIVERY_HANDOVER_CONFIRMATION";
+  documentType: "DELIVERY_HANDOVER";
   height: number;
   pageNumber: number;
   pdfPageHeight: number;
@@ -617,7 +617,7 @@ function buildSigningSlotCoordinate(input: {
   return {
     coordinateSource: "PDFKIT_RENDERER",
     coordinateSystem: "FADADA_800_1131_TOP_LEFT",
-    documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+    documentType: "DELIVERY_HANDOVER",
     height: toFadadaCoordinate(input.boxHeight, input.page.height, FADADA_COORDINATE_HEIGHT),
     pageNumber: input.pageNumber,
     pdfPageHeight: roundCoordinate(input.page.height),
@@ -665,7 +665,7 @@ function validateSigningSlotCoordinate(
   const isValid =
     coordinate.coordinateSource === "PDFKIT_RENDERER" &&
     coordinate.coordinateSystem === "FADADA_800_1131_TOP_LEFT" &&
-    coordinate.documentType === "DELIVERY_HANDOVER_CONFIRMATION" &&
+    coordinate.documentType === "DELIVERY_HANDOVER" &&
     coordinate.signingStage === "STAGE2_DELIVERY_HANDOVER" &&
     Number.isInteger(coordinate.pageNumber) &&
     coordinate.pageNumber === finalPageNumber &&

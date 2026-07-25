@@ -3,7 +3,7 @@ import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.t
 export const ESIGN_PROVIDER_CLIENT = Symbol("ESIGN_PROVIDER_CLIENT");
 
 export type ESignSigningStage = "STAGE1_CONTRACT" | "STAGE2_DELIVERY_HANDOVER";
-export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER_CONFIRMATION";
+export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER";
 export type ESignSlotId =
   | "STAGE1_BODY_CUSTOMER"
   | "STAGE1_BODY_PLATFORM"
@@ -66,8 +66,10 @@ export interface CreateSignTaskInput {
    */
   signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingStage?: ESignSigningStage;
+  sourcePdfHash?: string;
   taskId?: string;
   taskNo: string;
+  transactionId?: string;
 }
 
 export interface CreateSignTaskResult {

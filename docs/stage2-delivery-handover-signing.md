@@ -156,8 +156,8 @@ The exact mapping is:
 
 | Stage | Document | Slot | Role | Action | Provider API |
 | --- | --- | --- | --- | --- | --- |
-| `STAGE2_DELIVERY_HANDOVER` | `DELIVERY_HANDOVER_CONFIRMATION` | `STAGE2_HANDOVER_CUSTOMER` | `CUSTOMER` | `CUSTOMER_MANUAL_SIGN` | `extsign.api` |
-| `STAGE2_DELIVERY_HANDOVER` | `DELIVERY_HANDOVER_CONFIRMATION` | `STAGE2_HANDOVER_PLATFORM` | `PLATFORM` | `PLATFORM_AUTO_SEAL` | `extsign_auto.api` |
+| `STAGE2_DELIVERY_HANDOVER` | `DELIVERY_HANDOVER` | `STAGE2_HANDOVER_CUSTOMER` | `CUSTOMER` | `CUSTOMER_MANUAL_SIGN` | `extsign.api` |
+| `STAGE2_DELIVERY_HANDOVER` | `DELIVERY_HANDOVER` | `STAGE2_HANDOVER_PLATFORM` | `PLATFORM` | `PLATFORM_AUTO_SEAL` | `extsign_auto.api` |
 
 There is exactly one customer transaction and one platform transaction. The generated artifact persists `FADADA_800_1131_TOP_LEFT` coordinates owned by the PDFKit renderer: page numbers are zero-based, both slots must be on the final page, and `x`/`y` identify the center of each rendered box. The internal source-PDF hard limit is 18 MiB; provider upload and signed-download validation use the 20 MB provider limit.
 

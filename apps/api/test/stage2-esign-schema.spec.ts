@@ -26,9 +26,15 @@ describe("Stage 2 eSign schema migration", () => {
     expect(extractBlock(schema, "enum", "ESignDocumentType")).toContain(
       "SUBSCRIPTION_CONTRACT"
     );
+    expect(extractBlock(schema, "enum", "ESignDocumentType")).toContain(
+      "CONTRACT_BODY"
+    );
+    expect(extractBlock(schema, "enum", "ESignDocumentType")).toContain(
+      "ATTACHMENT1_SUBSCRIPTION_PLAN"
+    );
     expect(extractBlock(schema, "enum", "ESignDocumentType")).toContain("DELIVERY_HANDOVER");
     expect(extractBlock(schema, "enum", "ESignSlotId")).toMatch(
-      /STAGE1_MAIN_CUSTOMER[\s\S]*STAGE1_MAIN_PLATFORM[\s\S]*STAGE1_ATTACHMENT1_CUSTOMER[\s\S]*STAGE1_ATTACHMENT1_PLATFORM[\s\S]*STAGE2_HANDOVER_CUSTOMER[\s\S]*STAGE2_HANDOVER_PLATFORM/
+      /STAGE1_BODY_CUSTOMER[\s\S]*STAGE1_BODY_PLATFORM[\s\S]*STAGE1_ATTACHMENT1_CUSTOMER[\s\S]*STAGE1_ATTACHMENT1_PLATFORM[\s\S]*STAGE2_HANDOVER_CUSTOMER[\s\S]*STAGE2_HANDOVER_PLATFORM/
     );
     expect(extractBlock(schema, "enum", "ESignProviderActionType")).toMatch(
       /CUSTOMER_MANUAL_SIGN[\s\S]*PLATFORM_AUTO_SEAL/
@@ -76,8 +82,9 @@ describe("Stage 2 eSign schema migration", () => {
     );
     expect(signerModel).toMatch(/required\s+Boolean\s+@default\(true\)/);
     expect(signerModel).toMatch(
-      /providerTransactionId\s+String\?\s+@unique\s+@map\("provider_transaction_id"\)\s+@db\.VarChar\(32\)/
+      /providerTransactionId\s+String\?\s+@map\("provider_transaction_id"\)\s+@db\.VarChar\(32\)/
     );
+    expect(signerModel).not.toMatch(/providerTransactionId\s+String\?\s+@unique/);
     expect(signerModel).toMatch(
       /attemptCount\s+Int\s+@default\(0\)\s+@map\("attempt_count"\)/
     );
@@ -100,8 +107,15 @@ describe("Stage 2 eSign schema migration", () => {
     expect(migration).toContain(
       'CREATE UNIQUE INDEX "contract_esign_signer_task_id_slot_id_key"'
     );
+    expect(signerModel).toContain("@@index([providerTransactionId])");
     expect(migration).toContain(
-      'CREATE UNIQUE INDEX "contract_esign_signer_provider_transaction_id_key"'
+      'CREATE INDEX "contract_esign_signer_provider_transaction_id_idx"'
+    );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "contract_esign_signer_stage2_provider_transaction_id_key"'
+    );
+    expect(migration).toMatch(
+      /WHERE "provider_transaction_id" IS NOT NULL[\s\S]*"slot_id" IN \('STAGE2_HANDOVER_CUSTOMER', 'STAGE2_HANDOVER_PLATFORM'\)/
     );
     expect(migration).not.toMatch(/UPDATE\s+"contract_esign_signer"/);
   });

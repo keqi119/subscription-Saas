@@ -172,6 +172,7 @@ export class FadadaESignProvider implements ESignProvider {
     });
 
     const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId, {
+      expectedSha256: input.sourcePdfHash,
       fadadaEnabled: true,
       purpose: "FADADA_UPLOAD",
       requireGeneratedContractArtifact: true,
@@ -183,7 +184,9 @@ export class FadadaESignProvider implements ESignProvider {
     );
     assertStage2CustomerInputCoordinate(input.signingSlotCoordinates, coordinate);
     const providerContractId = input.taskNo;
-    const transactionId = buildStage2TransactionId(input.taskNo, "H1");
+    const transactionId =
+      input.transactionId ?? buildStage2TransactionId(input.taskNo, "H1");
+    assertFadadaTransactionId(transactionId);
     const signaturePositions = [{
       pagenum: coordinate.pageNumber,
       x: coordinate.x,
@@ -421,7 +424,8 @@ export class FadadaESignProvider implements ESignProvider {
     }
 
     const providerContractId = input.providerEnvelopeId ?? input.taskNo;
-    const transactionId = buildStage2TransactionId(input.taskNo, "H2");
+    const transactionId = input.transactionId;
+    assertFadadaTransactionId(transactionId);
     const result = await this.apiClient.autoSealContract({
       contractId: providerContractId,
       customerId: platformCustomerId,
@@ -663,10 +667,10 @@ function resolveStage2ActionSlot(input: {
   const slots = input.slots ?? [];
   const slot = slots[0];
   if (
-    input.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+    input.documentType !== "DELIVERY_HANDOVER" ||
     slots.length !== 1 ||
     !slot ||
-    slot.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+    slot.documentType !== "DELIVERY_HANDOVER" ||
     slot.providerActionType !== input.expectedAction ||
     slot.required === false ||
     slot.signerRole !== input.expectedRole ||
@@ -694,7 +698,7 @@ function resolveStage2ArtifactCoordinate(
     const matches = coordinates.filter((coordinate) => coordinate.slotId === requiredSlotId);
     if (
       matches.length !== 1 ||
-      matches[0]?.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+      matches[0]?.documentType !== "DELIVERY_HANDOVER" ||
       matches[0]?.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
       !isValidProviderCoordinate(matches[0])
     ) {

@@ -144,7 +144,7 @@ Current PDF visual acceptance has passed and covers:
 After Admin Stage 2 eSign creation:
 
 - the task uses `STAGE2_DELIVERY_HANDOVER` with document `DELIVERY_HANDOVER`;
-- the runtime provider mapping uses document `DELIVERY_HANDOVER_CONFIRMATION`;
+- the runtime provider mapping uses document `DELIVERY_HANDOVER`;
 - exactly two required typed signer rows exist;
 - `STAGE2_HANDOVER_CUSTOMER` maps to one `CUSTOMER_MANUAL_SIGN` / `extsign.api` transaction;
 - `STAGE2_HANDOVER_PLATFORM` maps to one `PLATFORM_AUTO_SEAL` / `extsign_auto.api` transaction;

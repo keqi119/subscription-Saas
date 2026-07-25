@@ -748,7 +748,7 @@ function hasStrictStage2ArtifactMetadata(
   if (
     !artifact ||
     artifact.artifactKind !== "stage2-handover-pdf-source" ||
-    artifact.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+    artifact.documentType !== "DELIVERY_HANDOVER" ||
     artifact.fileId !== fileId ||
     artifact.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
     !Number.isInteger(artifact.pageCount) ||
@@ -773,7 +773,7 @@ function hasStrictStage2ArtifactMetadata(
       coordinate &&
       coordinate.coordinateSource === "PDFKIT_RENDERER" &&
       coordinate.coordinateSystem === "FADADA_800_1131_TOP_LEFT" &&
-      coordinate.documentType === "DELIVERY_HANDOVER_CONFIRMATION" &&
+      coordinate.documentType === "DELIVERY_HANDOVER" &&
       coordinate.signingStage === "STAGE2_DELIVERY_HANDOVER" &&
       Number.isInteger(coordinate.pageNumber) &&
       coordinate.pageNumber === pageCount - 1 &&

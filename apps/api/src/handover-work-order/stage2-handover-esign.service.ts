@@ -35,7 +35,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import {
   Stage2HandoverESignBlocker,
   Stage2HandoverESignReadiness,
-  Stage2HandoverESignReadinessService
+  Stage2HandoverESignReadinessService,
+  STAGE2_HANDOVER_ESIGN_NOT_READY
 } from "./stage2-handover-esign-readiness.service";
 
 export const STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED =
@@ -78,6 +79,15 @@ const VOIDABLE_HANDOVER_STATUSES = new Set<DeliveryHandoverStatus>([
   DeliveryHandoverStatus.PENDING_PLATFORM_SEAL,
   DeliveryHandoverStatus.FAILED,
   DeliveryHandoverStatus.CANCELLED
+]);
+const PORTAL_START_EXPECTED_READINESS_BLOCKERS = new Set([
+  "ACTIVE_ESIGN_TASK_CONFLICT",
+  "HANDOVER_SOURCE_NOT_GENERATED",
+  "SOURCE_CONTRACT_INVALID"
+]);
+const PORTAL_START_TASK_STATUSES = new Set<ESignTaskStatus>([
+  ESignTaskStatus.SIGNING,
+  ESignTaskStatus.WAITING_CUSTOMER
 ]);
 
 const CUSTOMER_SIGNING_SLOT: ESignSigningSlot = {
@@ -194,6 +204,17 @@ export interface Stage2SignedDocumentState {
   workOrderId: string;
 }
 
+export interface Stage2PortalESignView extends Stage2HandoverESignView {
+  capability: {
+    canStartSigning: boolean;
+  };
+}
+
+export interface Stage2PortalSigningStartResult {
+  expiresAt: Date | null;
+  signUrl: string;
+}
+
 @Injectable()
 export class Stage2HandoverESignService {
   constructor(
@@ -212,6 +233,63 @@ export class Stage2HandoverESignService {
     ]);
     const task = await this.resolveCurrentTask(workOrder);
     return this.toView(workOrder, task, readiness);
+  }
+
+  async getPortalStatus(
+    workOrderId: string,
+    customerId: string
+  ): Promise<Stage2PortalESignView> {
+    const [workOrder, readiness] = await Promise.all([
+      this.loadOwnedWorkOrder(workOrderId, customerId),
+      this.readinessService.getReadiness(workOrderId)
+    ]);
+    const task = await this.resolveCurrentTask(workOrder);
+    return {
+      ...this.toView(workOrder, task, readiness),
+      capability: {
+        canStartSigning: canStartPortalSigning(
+          workOrder,
+          task,
+          readiness,
+          customerId
+        )
+      }
+    };
+  }
+
+  async startPortalSigning(
+    workOrderId: string,
+    customerId: string
+  ): Promise<Stage2PortalSigningStartResult> {
+    const workOrder = await this.loadOwnedWorkOrder(workOrderId, customerId);
+    const handover = workOrder.handover;
+    const task = this.pointerTask(workOrder);
+    if (!handover || !task) {
+      throw portalSigningNotReady();
+    }
+    const { customerSigner } = requireTypedSigners(task);
+    assertPortalSigningTask(
+      workOrder,
+      task,
+      customerSigner,
+      customerId
+    );
+    assertTaskSourceBinding(task, handover);
+
+    const readiness = await this.readinessService.getReadiness(workOrderId);
+    assertPortalStartReadiness(workOrder, task, readiness);
+
+    const refreshed = await this.provider.getSignerUrl({
+      contractId: task.contractId,
+      providerTaskId: task.providerTaskId ?? task.taskNo,
+      redirectUrl: this.buildPortalHandoverUrl(workOrderId),
+      signerId: customerSigner.id,
+      taskId: task.id
+    });
+    return {
+      expiresAt: refreshed.expiresAt ?? null,
+      signUrl: refreshed.signUrl
+    };
   }
 
   async create(
@@ -815,6 +893,20 @@ export class Stage2HandoverESignService {
     return workOrder;
   }
 
+  private async loadOwnedWorkOrder(workOrderId: string, customerId: string) {
+    const workOrder = await this.loadWorkOrder(workOrderId);
+    if (
+      workOrder.order.customerId !== customerId ||
+      workOrder.order.customer.id !== customerId
+    ) {
+      throw new NotFoundException({
+        code: "STAGE2_HANDOVER_WORK_ORDER_MISSING",
+        message: "The handover work order does not exist."
+      });
+    }
+    return workOrder;
+  }
+
   private pointerTask(workOrder: Stage2LifecycleWorkOrder) {
     const handover = workOrder.handover;
     if (
@@ -1143,6 +1235,14 @@ export class Stage2HandoverESignService {
     ).replace(/\/+$/, "");
     return `${apiBaseUrl}/esign/callback/${provider.toLowerCase()}`;
   }
+
+  private buildPortalHandoverUrl(workOrderId: string) {
+    const portalBaseUrl = (
+      this.configService.get<string>("PORTAL_BASE_URL") ??
+      "http://localhost:3000"
+    ).replace(/\/+$/, "");
+    return `${portalBaseUrl}/portal/handover-reviews/${encodeURIComponent(workOrderId)}`;
+  }
 }
 
 type Stage2Signer = Stage2Task["signers"][number];
@@ -1199,6 +1299,92 @@ function invalidSignerSet() {
   return new BadRequestException({
     code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID",
     message: "Exactly two complete typed Stage 2 signers are required."
+  });
+}
+
+function assertPortalSigningTask(
+  workOrder: Stage2LifecycleWorkOrder,
+  task: Stage2Task,
+  customerSigner: Stage2Signer,
+  customerId: string
+) {
+  if (
+    !PORTAL_START_TASK_STATUSES.has(task.taskStatus) ||
+    task.customerId !== customerId ||
+    task.orderId !== workOrder.order.id ||
+    task.contractId !== workOrder.handover?.handoverContractId ||
+    workOrder.handover?.status !==
+      DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE ||
+    workOrder.handover.handoverContract?.status !== ContractStatus.SIGNING ||
+    customerSigner.customerId !== customerId ||
+    customerSigner.signerStatus === ESignSignerStatus.SIGNED ||
+    !requireProviderTransactionIdOrNull(customerSigner.providerTransactionId)
+  ) {
+    throw portalSigningNotReady();
+  }
+}
+
+function assertPortalStartReadiness(
+  workOrder: Stage2LifecycleWorkOrder,
+  task: Stage2Task,
+  readiness: Stage2HandoverESignReadiness
+) {
+  const stateMatches =
+    readiness.state.esignTaskId === task.id &&
+    readiness.state.esignTaskStatus === task.taskStatus &&
+    readiness.state.handoverContractId ===
+      workOrder.handover?.handoverContractId &&
+    readiness.state.handoverId === workOrder.handover?.id &&
+    readiness.state.handoverStatus === workOrder.handover?.status &&
+    readiness.state.orderId === workOrder.order.id &&
+    readiness.state.workOrderId === workOrder.id;
+  const hasUnexpectedBlocker = readiness.blockers.some(
+    (blocker) => !PORTAL_START_EXPECTED_READINESS_BLOCKERS.has(blocker.code)
+  );
+  if (!stateMatches || hasUnexpectedBlocker) {
+    throw new BadRequestException({
+      blockers: readiness.blockers,
+      code: STAGE2_HANDOVER_ESIGN_NOT_READY,
+      message: "Stage 2 handover eSign is not ready.",
+      ready: false,
+      state: readiness.state
+    });
+  }
+}
+
+function canStartPortalSigning(
+  workOrder: Stage2LifecycleWorkOrder,
+  task: Stage2Task | null,
+  readiness: Stage2HandoverESignReadiness,
+  customerId: string
+) {
+  if (!task) {
+    return false;
+  }
+  try {
+    const { customerSigner } = requireTypedSigners(task);
+    assertPortalSigningTask(
+      workOrder,
+      task,
+      customerSigner,
+      customerId
+    );
+    assertTaskSourceBinding(task, workOrder.handover);
+    assertPortalStartReadiness(workOrder, task, readiness);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function requireProviderTransactionIdOrNull(value: string | null | undefined) {
+  return Boolean(value && /^[A-Za-z0-9]{1,32}$/.test(value));
+}
+
+function portalSigningNotReady() {
+  return new BadRequestException({
+    code: "STAGE2_PORTAL_SIGNING_NOT_READY",
+    message: "The customer Stage 2 signing action is not available."
   });
 }
 

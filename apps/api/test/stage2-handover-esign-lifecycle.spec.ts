@@ -903,6 +903,188 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
     expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
   });
+
+  it("returns a Portal-safe status without refreshing or exposing a signing URL", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    Object.assign(task, {
+      documentObjectKey: "private/source.pdf",
+      signUrl: "https://unsafe.example/task-sign?token=secret"
+    });
+    Object.assign(task.signers[0]!, {
+      signUrl: "https://unsafe.example/signer-sign?token=secret"
+    });
+    attachPortalTask(harness, task);
+
+    const status = await harness.service.getPortalStatus(
+      "work-order-1",
+      "customer-1"
+    );
+    const serialized = JSON.stringify(status);
+
+    expect(status).toMatchObject({
+      capability: {
+        canStartSigning: true
+      },
+      customerSigner: {
+        slotId: ESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+        status: ESignSignerStatus.SIGNING
+      },
+      signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+      taskId: "stage2-task-1"
+    });
+    for (const forbidden of [
+      "signUrl",
+      "signingUrl",
+      "objectKey",
+      "bucket",
+      "provider",
+      "rawResponse",
+      "unsafe.example",
+      "secret"
+    ]) {
+      expect(serialized.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    }
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
+  });
+
+  it("returns only a short-lived URL and expiry from the explicit Portal start action", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.readiness.getReadiness.mockResolvedValueOnce({
+      blockers: [
+        {
+          code: "HANDOVER_SOURCE_NOT_GENERATED",
+          message: "expected after the current task starts"
+        },
+        {
+          code: "ACTIVE_ESIGN_TASK_CONFLICT",
+          message: "the current task is active"
+        }
+      ],
+      ready: false,
+      state: {
+        esignTaskId: task.id,
+        esignTaskStatus: task.taskStatus,
+        handoverContractId: "contract-stage2-1",
+        handoverId: "handover-1",
+        handoverStatus: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+        orderId: "order-1",
+        orderStatus: "PENDING_DELIVERY",
+        workOrderId: "work-order-1",
+        workOrderStatus: "CUSTOMER_CONFIRMED"
+      }
+    });
+    const expiresAt = new Date("2026-07-26T08:15:00.000Z");
+    harness.provider.getSignerUrl.mockResolvedValueOnce({
+      expiresAt,
+      rawResponse: {
+        objectKey: "private/source.pdf",
+        signUrl: "https://unsafe.example/should-not-escape"
+      },
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+
+    const result = await harness.service.startPortalSigning(
+      "work-order-1",
+      "customer-1"
+    );
+
+    expect(result).toEqual({
+      expiresAt,
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledWith({
+      contractId: "contract-stage2-1",
+      providerTaskId: "ESG20260726080000ABCDH1",
+      redirectUrl:
+        "http://localhost:3000/portal/handover-reviews/work-order-1",
+      signerId: "stage2-customer-signer-1",
+      taskId: "stage2-task-1"
+    });
+    expect(harness.prisma.contractESignTask.update).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignTask.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.update).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(harness.prisma.vehicleDelivery.update).not.toHaveBeenCalled();
+    expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      mutate: (harness: ReturnType<typeof createHarness>, task: ReturnType<typeof makeTask>) => {
+        harness.state.workOrder.order.customerId = "customer-other";
+        harness.state.workOrder.order.customer.id = "customer-other";
+        void task;
+      },
+      name: "unrelated customer ownership"
+    },
+    {
+      mutate: (_harness: ReturnType<typeof createHarness>, task: ReturnType<typeof makeTask>) => {
+        task.signers[0]!.customerId = "customer-other";
+      },
+      name: "customer signer ownership"
+    },
+    {
+      mutate: (_harness: ReturnType<typeof createHarness>, task: ReturnType<typeof makeTask>) => {
+        task.signers[0]!.providerTransactionId = null;
+      },
+      name: "customer provider transaction"
+    },
+    {
+      mutate: (harness: ReturnType<typeof createHarness>, task: ReturnType<typeof makeTask>) => {
+        harness.state.workOrder.handover.sourcePdfHash = "c".repeat(64);
+        void task;
+      },
+      name: "current source binding"
+    }
+  ])("blocks Portal signing start when $name is invalid", async ({ mutate }) => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    mutate(harness, task);
+
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).rejects.toBeInstanceOf(Error);
+
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
+  });
+
+  it("blocks Portal signing start when readiness has a new blocker", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.readiness.getReadiness.mockResolvedValueOnce({
+      blockers: [{
+        code: "CUSTOMER_OBJECTION_ACTIVE",
+        message: "The customer has an active handover objection."
+      }],
+      ready: false,
+      state: {
+        esignTaskId: task.id,
+        esignTaskStatus: task.taskStatus,
+        handoverContractId: "contract-stage2-1",
+        handoverId: "handover-1",
+        handoverStatus: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+        orderId: "order-1",
+        orderStatus: "PENDING_DELIVERY",
+        workOrderId: "work-order-1",
+        workOrderStatus: "CUSTOMER_OBJECTED"
+      }
+    });
+
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_NOT_READY"
+      })
+    });
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
+  });
 });
 
 describe("Stage 2 handover eSign Admin API contract", () => {
@@ -958,6 +1140,31 @@ describe("Stage 2 handover eSign Admin API contract", () => {
     for (const [methodName] of expected) {
       expect(fieldPrototype[methodName]).toBeUndefined();
       expect(portalPrototype[methodName]).toBeUndefined();
+    }
+  });
+});
+
+describe("Stage 2 handover eSign Portal API contract", () => {
+  it("exposes only status GET and intentional signing-start POST under the Portal guard", () => {
+    const prototype = PortalHandoverReviewController.prototype;
+    const expected = [
+      ["getESignStatus", ":id/esign", RequestMethod.GET],
+      ["startESignSigning", ":id/esign/signing/start", RequestMethod.POST]
+    ] as const;
+
+    for (const [methodName, path, method] of expected) {
+      const handler = prototype[methodName];
+      expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(path);
+      expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(method);
+    }
+
+    const fieldPrototype =
+      HandoverWorkOrderFieldController.prototype as unknown as Record<string, unknown>;
+    const adminPrototype =
+      HandoverWorkOrderAdminController.prototype as unknown as Record<string, unknown>;
+    for (const [methodName] of expected) {
+      expect(fieldPrototype[methodName]).toBeUndefined();
+      expect(adminPrototype[methodName]).toBeUndefined();
     }
   });
 });
@@ -1173,7 +1380,8 @@ function createHarness() {
     API_BASE_URL: "http://localhost:3001/api",
     ESIGN_PROVIDER: "fadada",
     FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
-    FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1"
+    FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1",
+    PORTAL_BASE_URL: "http://localhost:3000"
   });
   const notification = {
     notifyCustomer: vi.fn()
@@ -1303,6 +1511,19 @@ function makeTask(
     taskStatus: options.taskStatus ?? ESignTaskStatus.WAITING_CUSTOMER,
     updatedAt: NOW
   };
+}
+
+function attachPortalTask(
+  harness: ReturnType<typeof createHarness>,
+  task: ReturnType<typeof makeTask>
+) {
+  harness.state.activeTask = task;
+  harness.state.workOrder.handover.handoverContract.status =
+    ContractStatus.SIGNING;
+  harness.state.workOrder.handover.handoverESignTask = task;
+  harness.state.workOrder.handover.handoverESignTaskId = task.id;
+  harness.state.workOrder.handover.status =
+    DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE;
 }
 
 function makeSigner(type: "CUSTOMER" | "PLATFORM") {

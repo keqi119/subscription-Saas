@@ -9,7 +9,6 @@ import {
   AuditAction,
   BusinessType,
   ContractStatus,
-  DeliveryHandoverStatus,
   ContractVersionStatus,
   CustomerStatus,
   DeliveryStatus,
@@ -79,6 +78,7 @@ import {
 } from "../delivery-evidence/delivery-evidence.service";
 import {
   DELIVERY_HANDOVER_NOT_READY_MESSAGE,
+  findDeliveryHandoverForConfirmation,
   getDeliveryHandoverArchiveWarning,
   isDeliveryHandoverArchived,
   isDeliveryHandoverReadyForDelivery,
@@ -3770,14 +3770,7 @@ function assertCanPrepareDelivery(order: OrderWithDetails, scheduledAt: Date | n
 }
 
 function findActiveDeliveryHandover(prisma: PrismaService, orderId: string) {
-  return prisma.vehicleDeliveryHandover.findFirst({
-    orderBy: { createdAt: "desc" },
-    where: {
-      deletedAt: null,
-      orderId,
-      status: { notIn: [DeliveryHandoverStatus.CANCELLED, DeliveryHandoverStatus.FAILED] }
-    }
-  });
+  return findDeliveryHandoverForConfirmation(prisma, orderId);
 }
 
 function assertCanConfirmDelivery(

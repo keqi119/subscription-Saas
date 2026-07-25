@@ -3,6 +3,13 @@ import {
   ContractStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
+  ESignDocumentType,
+  ESignProviderActionType,
+  ESignSignerStatus,
+  ESignSignerType,
+  ESignSigningStage,
+  ESignSlotId,
+  ESignTaskStatus,
   Prisma
 } from "@prisma/client";
 
@@ -23,6 +30,70 @@ const TERMINAL_HANDOVER_STATUSES = [
 
 type DeliveryHandoverRecord = Prisma.VehicleDeliveryHandoverGetPayload<object>;
 type DeliveryHandoverDb = Prisma.TransactionClient | PrismaService;
+
+export const deliveryHandoverConfirmationInclude = {
+  handoverContract: {
+    select: {
+      deletedAt: true,
+      fileId: true,
+      id: true,
+      status: true
+    }
+  },
+  handoverESignTask: {
+    include: {
+      signers: true
+    }
+  }
+} satisfies Prisma.VehicleDeliveryHandoverInclude;
+
+export async function findDeliveryHandoverForConfirmation(
+  db: DeliveryHandoverDb,
+  orderId: string
+) {
+  const handover = await db.vehicleDeliveryHandover.findFirst({
+    include: deliveryHandoverConfirmationInclude,
+    orderBy: { createdAt: "desc" },
+    where: {
+      deletedAt: null,
+      orderId,
+      status: { notIn: [...TERMINAL_HANDOVER_STATUSES] }
+    }
+  });
+  if (!handover) {
+    return null;
+  }
+
+  const fileSelect = {
+    id: true,
+    mimeType: true,
+    objectKey: true,
+    sizeBytes: true
+  } as const;
+  const [sourceDocumentFile, signedDocumentFile] = await Promise.all([
+    handover.sourceDocumentFileId
+      ? db.fileObject.findUnique({
+          select: fileSelect,
+          where: { id: handover.sourceDocumentFileId }
+        })
+      : null,
+    handover.signedDocumentFileId
+      ? db.fileObject.findUnique({
+          select: fileSelect,
+          where: { id: handover.signedDocumentFileId }
+        })
+      : null
+  ]);
+  return {
+    ...handover,
+    signedDocumentFile,
+    sourceDocumentFile
+  };
+}
+
+type DeliveryHandoverConfirmationRecord = NonNullable<
+  Awaited<ReturnType<typeof findDeliveryHandoverForConfirmation>>
+>;
 
 @Injectable()
 export class DeliveryHandoverService {
@@ -224,7 +295,10 @@ export class DeliveryHandoverService {
   }
 
   async assertDeliveryCanBeConfirmed(orderId: string) {
-    const handover = await this.findActiveHandover(orderId);
+    const handover = await findDeliveryHandoverForConfirmation(
+      this.prisma,
+      orderId
+    );
     assertDeliveryHandoverReadyForDelivery(handover);
     if (this.deliveryEvidenceService) {
       await this.deliveryEvidenceService.assertEvidenceReadyForDeliveryConfirmation(orderId, handover?.id ?? null);
@@ -257,16 +331,17 @@ export class DeliveryHandoverService {
   }
 }
 
-export function assertDeliveryHandoverReadyForDelivery(handover: DeliveryHandoverRecord | null | undefined) {
+export function assertDeliveryHandoverReadyForDelivery(
+  handover: DeliveryHandoverConfirmationRecord | null | undefined
+) {
   if (!isDeliveryHandoverReadyForDelivery(handover)) {
     throw new BadRequestException(DELIVERY_HANDOVER_NOT_READY_MESSAGE);
   }
 }
 
-export function isDeliveryHandoverReadyForDelivery(handover: Pick<
-  DeliveryHandoverRecord,
-  "archiveStatus" | "deletedAt" | "status"
-> | null | undefined) {
+export function isDeliveryHandoverReadyForDelivery(
+  handover: DeliveryHandoverConfirmationRecord | null | undefined
+) {
   if (!handover || handover.deletedAt) {
     return false;
   }
@@ -275,10 +350,19 @@ export function isDeliveryHandoverReadyForDelivery(handover: Pick<
   if (!signed) {
     return false;
   }
-  return true;
+  if (!hasCompleteStage2SignedState(handover)) {
+    return false;
+  }
+  return !DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION ||
+    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED;
 }
 
-export function isDeliveryHandoverSigned(handover: Pick<DeliveryHandoverRecord, "deletedAt" | "status"> | null | undefined) {
+export function isDeliveryHandoverSigned(
+  handover: Pick<
+    DeliveryHandoverRecord,
+    "deletedAt" | "status"
+  > | null | undefined
+) {
   return Boolean(
     handover &&
       !handover.deletedAt &&
@@ -287,10 +371,32 @@ export function isDeliveryHandoverSigned(handover: Pick<DeliveryHandoverRecord, 
 }
 
 export function getDeliveryHandoverArchiveWarning(handover: Pick<
-  DeliveryHandoverRecord,
-  "archiveStatus" | "deletedAt" | "failureReason" | "status"
+  DeliveryHandoverConfirmationRecord,
+  | "archiveStatus"
+  | "artifactVersion"
+  | "completedAt"
+  | "customerSignedAt"
+  | "deletedAt"
+  | "failureReason"
+  | "handoverContract"
+  | "handoverContractId"
+  | "handoverESignTask"
+  | "handoverESignTaskId"
+  | "id"
+  | "manifestHash"
+  | "orderId"
+  | "platformSignedAt"
+  | "signedDocumentFileId"
+  | "signedDocumentFile"
+  | "signedObjectKey"
+  | "signedPdfHash"
+  | "sourceDocumentFileId"
+  | "sourceDocumentFile"
+  | "sourceObjectKey"
+  | "sourcePdfHash"
+  | "status"
 > | null | undefined) {
-  if (!isDeliveryHandoverSigned(handover)) {
+  if (!handover || !hasCompleteStage2SignedState(handover)) {
     return null;
   }
   if (handover?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED) {
@@ -302,6 +408,176 @@ export function getDeliveryHandoverArchiveWarning(handover: Pick<
       : "交付交接确认书已签署，已签 PDF 归档失败，请重试归档。";
   }
   return DELIVERY_HANDOVER_ARCHIVE_WARNING_MESSAGE;
+}
+
+function hasCompleteStage2SignedState(
+  handover: Pick<
+    DeliveryHandoverConfirmationRecord,
+    | "artifactVersion"
+    | "completedAt"
+    | "customerSignedAt"
+    | "handoverContract"
+    | "handoverContractId"
+    | "handoverESignTask"
+    | "handoverESignTaskId"
+    | "id"
+    | "manifestHash"
+    | "orderId"
+    | "platformSignedAt"
+    | "signedDocumentFileId"
+    | "signedDocumentFile"
+    | "signedObjectKey"
+    | "signedPdfHash"
+    | "sourceDocumentFileId"
+    | "sourceDocumentFile"
+    | "sourceObjectKey"
+    | "sourcePdfHash"
+  >
+) {
+  const contract = handover.handoverContract;
+  const task = handover.handoverESignTask;
+  if (
+    !handover.completedAt ||
+    !handover.customerSignedAt ||
+    !handover.platformSignedAt ||
+    !contract ||
+    contract.deletedAt ||
+    contract.id !== handover.handoverContractId ||
+    contract.fileId !== handover.sourceDocumentFileId ||
+    ![ContractStatus.SIGNED, ContractStatus.ARCHIVED].includes(contract.status) ||
+    !task ||
+    task.deletedAt ||
+    task.id !== handover.handoverESignTaskId ||
+    task.contractId !== handover.handoverContractId ||
+    task.orderId !== handover.orderId ||
+    task.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
+    task.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+    task.taskStatus !== ESignTaskStatus.COMPLETED ||
+    !task.completedAt ||
+    !hasSha256(handover.manifestHash) ||
+    !hasSha256(handover.sourcePdfHash) ||
+    !Number.isInteger(handover.artifactVersion) ||
+    handover.artifactVersion < 1 ||
+    !handover.sourceDocumentFileId ||
+    !hasPdfFileIdentity(
+      handover.sourceDocumentFile,
+      handover.sourceDocumentFileId,
+      handover.sourceObjectKey
+    ) ||
+    !handover.signedDocumentFileId ||
+    !handover.signedObjectKey ||
+    !hasSha256(handover.signedPdfHash) ||
+    !hasPdfFileIdentity(
+      handover.signedDocumentFile,
+      handover.signedDocumentFileId,
+      handover.signedObjectKey
+    ) ||
+    task.signedDocumentObjectKey !== handover.signedObjectKey
+  ) {
+    return false;
+  }
+
+  const snapshot = asRecord(task.requestSnapshot);
+  if (
+    snapshot?.artifactVersion !== handover.artifactVersion ||
+    snapshot?.contractId !== task.contractId ||
+    snapshot.contractId !== handover.handoverContractId ||
+    snapshot?.handoverId !== handover.id ||
+    snapshot?.manifestHash !== handover.manifestHash ||
+    snapshot?.sourceDocumentFileId !== handover.sourceDocumentFileId ||
+    snapshot?.sourcePdfHash !== handover.sourcePdfHash
+  ) {
+    return false;
+  }
+
+  if (
+    task.signers.length !== 2 ||
+    task.signers.some((signer) => signer.deletedAt !== null)
+  ) {
+    return false;
+  }
+  const customerSigners = task.signers.filter((signer) =>
+    signerMatchesRequiredTuple(
+      signer,
+      ESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+      ESignSignerType.CUSTOMER,
+      ESignProviderActionType.CUSTOMER_MANUAL_SIGN
+    )
+  );
+  const platformSigners = task.signers.filter((signer) =>
+    signerMatchesRequiredTuple(
+      signer,
+      ESignSlotId.STAGE2_HANDOVER_PLATFORM,
+      ESignSignerType.PLATFORM,
+      ESignProviderActionType.PLATFORM_AUTO_SEAL
+    )
+  );
+  const customerSigner = customerSigners[0];
+  const platformSigner = platformSigners[0];
+  return Boolean(
+    customerSigners.length === 1 &&
+    platformSigners.length === 1 &&
+    customerSigner?.customerId === task.customerId &&
+    signerCompleted(customerSigner) &&
+    signerCompleted(platformSigner)
+  );
+}
+
+type DeliveryHandoverSigner =
+  DeliveryHandoverConfirmationRecord["handoverESignTask"] extends infer Task
+    ? NonNullable<Task>["signers"][number]
+    : never;
+
+function signerMatchesRequiredTuple(
+  signer: DeliveryHandoverSigner,
+  slotId: ESignSlotId,
+  signerType: ESignSignerType,
+  providerActionType: ESignProviderActionType
+) {
+  return (
+    signer.deletedAt === null &&
+    signer.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
+    signer.providerActionType === providerActionType &&
+    signer.required === true &&
+    signer.signerType === signerType &&
+    signer.slotId === slotId
+  );
+}
+
+function signerCompleted(signer: DeliveryHandoverSigner | undefined) {
+  return Boolean(
+    signer &&
+    signer.signedAt &&
+    signer.signerStatus === ESignSignerStatus.SIGNED &&
+    signer.providerTransactionId &&
+    /^[A-Za-z0-9]{1,32}$/.test(signer.providerTransactionId)
+  );
+}
+
+function hasSha256(value: unknown) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function hasPdfFileIdentity(
+  file: DeliveryHandoverConfirmationRecord["sourceDocumentFile"],
+  expectedId: string,
+  expectedObjectKey: string | null
+) {
+  return Boolean(
+    file &&
+    file.id === expectedId &&
+    file.mimeType?.trim().toLowerCase() === "application/pdf" &&
+    file.objectKey === expectedObjectKey &&
+    file.sizeBytes > 0n
+  );
+}
+
+function asRecord(value: unknown) {
+  return value &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 export function isDeliveryHandoverArchived(

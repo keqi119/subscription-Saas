@@ -43,6 +43,17 @@ import {
   validateFieldEvidenceFile
 } from "../../../../../lib/field-handover-upload";
 import {
+  advanceFieldEvidenceUploadBatch,
+  canRetryFieldEvidenceUploadBatch,
+  canSubmitWithFieldEvidenceUploadBatch,
+  completeFieldEvidenceUploadBatch,
+  interruptFieldEvidenceUploadBatch,
+  retryFieldEvidenceUploadBatch,
+  startFieldEvidenceUploadBatch,
+  type FieldEvidenceUploadBatchState,
+  type FieldEvidenceUploadInterruptionReason
+} from "../../../../../lib/field-handover-upload-batch";
+import {
   buildFieldEvidenceCaptureView,
   buildFieldHandoverDetailView,
   buildFieldHandoverFactsPayload,
@@ -56,6 +67,12 @@ const SUBMITTED_TEXT = "现场交接资料已提交，等待客户确认";
 const RESUBMITTED_PENDING_ADMIN_TEXT = "现场交接资料已重新提交，等待后台送回客户复核";
 const LOCKED_TEXT = "当前交接任务已提交或不可继续编辑";
 const MAX_DAMAGE_CLOSEUP_FILES = 20;
+const UPLOAD_SUBMIT_BLOCKER_TEXT = "资料正在上传或等待重试，请完成后再提交";
+const INITIAL_UPLOAD_BATCH_STATE: FieldEvidenceUploadBatchState<File> = {
+  batch: null,
+  fileIndex: 0,
+  status: "IDLE"
+};
 
 interface EvidenceUploadState {
   fileCount: number;
@@ -67,16 +84,15 @@ interface EvidenceUploadState {
   totalBytes: number;
 }
 
-interface RetryEvidenceUpload {
-  files: File[];
-  itemViewId: string;
-}
-
 export default function FieldHandoverTaskDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { message } = App.useApp();
+  const isMountedRef = useRef(true);
+  const submissionInFlightRef = useRef(false);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const uploadAbortReasonRef = useRef<Exclude<FieldEvidenceUploadInterruptionReason, "FAILURE"> | null>(null);
+  const uploadBatchStateRef = useRef<FieldEvidenceUploadBatchState<File>>(INITIAL_UPLOAD_BATCH_STATE);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [blockers, setBlockers] = useState<string[]>([]);
   const [detail, setDetail] = useState<FieldHandoverWorkOrderDetail | null>(null);
@@ -84,10 +100,10 @@ export default function FieldHandoverTaskDetailPage() {
   const [facts, setFacts] = useState<FieldHandoverFactsDraft>({});
   const [loading, setLoading] = useState(true);
   const [removingFileId, setRemovingFileId] = useState<string | null>(null);
-  const [retryUpload, setRetryUpload] = useState<RetryEvidenceUpload | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [uploadBatchState, setUploadBatchState] =
+    useState<FieldEvidenceUploadBatchState<File>>(INITIAL_UPLOAD_BATCH_STATE);
   const [uploadState, setUploadState] = useState<EvidenceUploadState | null>(null);
-  const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
 
   const loadDetail = useCallback(async () => {
     try {
@@ -123,11 +139,26 @@ export default function FieldHandoverTaskDetailPage() {
     void loadDetail();
   }, [loadDetail]);
 
-  useEffect(() => () => uploadAbortControllerRef.current?.abort(), []);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      uploadAbortReasonRef.current = "UNMOUNT";
+      uploadBatchStateRef.current = interruptFieldEvidenceUploadBatch(
+        uploadBatchStateRef.current,
+        "UNMOUNT"
+      ).state;
+      uploadAbortControllerRef.current?.abort();
+    };
+  }, []);
 
   const detailView = detail ? buildFieldHandoverDetailView(detail) : null;
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
   const reviewContext = detail?.reviewContext;
+  const canSubmitUploadBatch = canSubmitWithFieldEvidenceUploadBatch(uploadBatchState);
+  const retryUpload = uploadBatchState.status === "RETRY_PENDING" ? uploadBatchState.batch : null;
+  const uploadingItemId =
+    uploadBatchState.status === "UPLOADING" ? uploadBatchState.batch?.itemViewId ?? null : null;
 
   async function startWork() {
     await runAction("start", async () => {
@@ -175,8 +206,19 @@ export default function FieldHandoverTaskDetailPage() {
     });
   }
 
-  async function uploadEvidence(itemViewId: string, files: File[]) {
+  function applyUploadBatchState(nextState: FieldEvidenceUploadBatchState<File>) {
+    uploadBatchStateRef.current = nextState;
+    if (isMountedRef.current) {
+      setUploadBatchState(nextState);
+    }
+  }
+
+  async function uploadEvidence(itemViewId: string, files: File[], isRetry = false) {
     if (!detail || files.length === 0 || uploadAbortControllerRef.current) {
+      return;
+    }
+    if (submissionInFlightRef.current) {
+      setBlockers(["任务正在提交，暂不能开始上传"]);
       return;
     }
     const item = findEvidenceItem(detail, itemViewId);
@@ -185,7 +227,16 @@ export default function FieldHandoverTaskDetailPage() {
       return;
     }
     const itemId = item.id;
-    const selectedFiles = item.allowsMultiple ? files : files.slice(0, 1);
+    const currentBatchState = uploadBatchStateRef.current;
+    const nextBatchState = isRetry
+      ? retryFieldEvidenceUploadBatch(currentBatchState, captureView?.canEdit === true)
+      : canSubmitWithFieldEvidenceUploadBatch(currentBatchState)
+        ? startFieldEvidenceUploadBatch(itemViewId, files, item.allowsMultiple === true)
+        : currentBatchState;
+    if (nextBatchState.status !== "UPLOADING" || !nextBatchState.batch) {
+      return;
+    }
+    const selectedFiles = nextBatchState.batch.files;
     if (item.allowsMultiple && (item.files?.length ?? 0) + selectedFiles.length > MAX_DAMAGE_CLOSEUP_FILES) {
       setBlockers([`损伤近拍最多上传 ${MAX_DAMAGE_CLOSEUP_FILES} 个文件`]);
       return;
@@ -199,8 +250,7 @@ export default function FieldHandoverTaskDetailPage() {
     }
 
     try {
-      setUploadingItemId(itemId);
-      setRetryUpload(null);
+      applyUploadBatchState(nextBatchState);
       setBlockers([]);
       const replaceEvidenceFileId = item.allowsMultiple
         ? undefined
@@ -208,18 +258,24 @@ export default function FieldHandoverTaskDetailPage() {
       for (const [index, file] of selectedFiles.entries()) {
         const controller = new AbortController();
         uploadAbortControllerRef.current = controller;
-        setUploadState({
-          fileCount: selectedFiles.length,
-          fileIndex: index + 1,
-          fileName: file.name,
-          itemId,
-          loadedBytes: 0,
-          percent: 0,
-          totalBytes: file.size
-        });
+        uploadAbortReasonRef.current = null;
+        if (isMountedRef.current) {
+          setUploadState({
+            fileCount: selectedFiles.length,
+            fileIndex: index + 1,
+            fileName: file.name,
+            itemId,
+            loadedBytes: 0,
+            percent: 0,
+            totalBytes: file.size
+          });
+        }
         try {
           const uploadOptions: FieldEvidenceUploadOptions = {
             onProgress: ({ loadedBytes, percent, totalBytes }: FieldEvidenceUploadProgress) => {
+              if (!isMountedRef.current) {
+                return;
+              }
               setUploadState({
                 fileCount: selectedFiles.length,
                 fileIndex: index + 1,
@@ -235,28 +291,54 @@ export default function FieldHandoverTaskDetailPage() {
           };
           await uploadAndAttachFieldHandoverEvidenceFile(params.id, itemId, file, uploadOptions);
         } catch (error) {
-          setRetryUpload({ files: selectedFiles.slice(index), itemViewId });
-          handleActionError(error, controller.signal.aborted ? "上传已取消，可重试剩余文件" : "上传失败，请重试");
-          await loadDetail();
+          const reason: FieldEvidenceUploadInterruptionReason = controller.signal.aborted
+            ? (uploadAbortReasonRef.current as FieldEvidenceUploadInterruptionReason | null) ?? "USER_CANCEL"
+            : "FAILURE";
+          const interrupted = interruptFieldEvidenceUploadBatch(uploadBatchStateRef.current, reason);
+          if (reason === "UNMOUNT" || !isMountedRef.current) {
+            uploadBatchStateRef.current = interrupted.state;
+            return;
+          }
+          applyUploadBatchState(interrupted.state);
+          if (interrupted.shouldShowUserFeedback) {
+            handleActionError(error, reason === "USER_CANCEL"
+              ? "上传已取消，可重试剩余文件"
+              : "上传失败，请重试");
+          }
+          if (interrupted.shouldReloadDetail) {
+            await loadDetail();
+          }
           return;
         } finally {
           if (uploadAbortControllerRef.current === controller) {
             uploadAbortControllerRef.current = null;
+            uploadAbortReasonRef.current = null;
           }
         }
+        if (index < selectedFiles.length - 1) {
+          applyUploadBatchState(advanceFieldEvidenceUploadBatch(uploadBatchStateRef.current));
+        }
       }
-      void message.success(item.allowsMultiple && selectedFiles.length > 1
-        ? `已上传 ${selectedFiles.length} 个文件`
-        : replaceEvidenceFileId ? "资料已替换" : "资料已上传");
+      if (!isMountedRef.current) {
+        return;
+      }
+      void message.success(
+        item.allowsMultiple && selectedFiles.length > 1
+          ? `已上传 ${selectedFiles.length} 个文件`
+          : replaceEvidenceFileId ? "资料已替换" : "资料已上传"
+      );
       await loadDetail();
-      setUploadState(null);
+      if (isMountedRef.current) {
+        applyUploadBatchState(completeFieldEvidenceUploadBatch(uploadBatchStateRef.current));
+        setUploadState(null);
+      }
     } finally {
       uploadAbortControllerRef.current = null;
-      setUploadingItemId(null);
     }
   }
 
   function cancelEvidenceUpload() {
+    uploadAbortReasonRef.current = "USER_CANCEL";
     uploadAbortControllerRef.current?.abort();
   }
 
@@ -264,7 +346,7 @@ export default function FieldHandoverTaskDetailPage() {
     if (!retryUpload) {
       return;
     }
-    void uploadEvidence(retryUpload.itemViewId, retryUpload.files);
+    void uploadEvidence(retryUpload.itemViewId, retryUpload.files, true);
   }
 
   async function removeEvidence(itemId: string, evidenceFileId: string) {
@@ -282,27 +364,48 @@ export default function FieldHandoverTaskDetailPage() {
   }
 
   async function submitEvidence() {
-    if (!detail) {
-      return;
-    }
-    const currentBlockers = getFieldHandoverSubmitBlockers(detail, facts);
-    if (currentBlockers.length) {
-      setBlockers(currentBlockers);
+    if (!detail || submissionInFlightRef.current || blockSubmitForUploadBatch()) {
       return;
     }
 
-    await runAction("submit", async () => {
-      await updateFieldHandoverFacts(params.id, buildFieldHandoverFactsPayload(facts));
-      const submitted = await submitFieldHandoverEvidence(params.id);
-      const successText =
-        submitted.status === "CUSTOMER_OBJECTED" && submitted.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN"
-          ? RESUBMITTED_PENDING_ADMIN_TEXT
-          : SUBMITTED_TEXT;
-      setBlockers([]);
-      setSuccessMessage(successText);
-      void message.success(successText);
-      await loadDetail();
-    });
+    submissionInFlightRef.current = true;
+    try {
+      const currentBlockers = getFieldHandoverSubmitBlockers(detail, facts);
+      if (currentBlockers.length) {
+        setBlockers(currentBlockers);
+        return;
+      }
+
+      await runAction("submit", async () => {
+        if (blockSubmitForUploadBatch()) {
+          return;
+        }
+        await updateFieldHandoverFacts(params.id, buildFieldHandoverFactsPayload(facts));
+        if (blockSubmitForUploadBatch()) {
+          return;
+        }
+        const submitted = await submitFieldHandoverEvidence(params.id);
+        const successText =
+          submitted.status === "CUSTOMER_OBJECTED" && submitted.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN"
+            ? RESUBMITTED_PENDING_ADMIN_TEXT
+            : SUBMITTED_TEXT;
+        setBlockers([]);
+        setSuccessMessage(successText);
+        void message.success(successText);
+        await loadDetail();
+      });
+    } finally {
+      submissionInFlightRef.current = false;
+    }
+  }
+
+  function blockSubmitForUploadBatch() {
+    if (canSubmitWithFieldEvidenceUploadBatch(uploadBatchStateRef.current)) {
+      return false;
+    }
+    setBlockers([UPLOAD_SUBMIT_BLOCKER_TEXT]);
+    void message.warning(UPLOAD_SUBMIT_BLOCKER_TEXT);
+    return true;
   }
 
   async function runAction(action: string, callback: () => Promise<void>) {
@@ -489,7 +592,9 @@ export default function FieldHandoverTaskDetailPage() {
                   );
                   const isUploading = uploadingItemId === item.id;
                   const itemUploadState = uploadState?.itemId === item.id ? uploadState : null;
-                  const canRetry = captureView.canEdit && retryUpload?.itemViewId === item.id;
+                  const canRetry =
+                    canRetryFieldEvidenceUploadBatch(uploadBatchState, captureView.canEdit) &&
+                    retryUpload?.itemViewId === item.id;
 
                   return (
                     <article key={item.id || item.title} style={itemCardStyle}>
@@ -629,7 +734,7 @@ export default function FieldHandoverTaskDetailPage() {
                         <EvidenceUploadControls
                           accept={item.uploadAccept}
                           allowedMediaTypes={allowedMediaTypes}
-                          disabled={uploadingItemId !== null}
+                          disabled={!canSubmitUploadBatch || actionLoading === "submit"}
                           id={item.id}
                           multiple={item.allowsMultiple}
                           onFiles={(files) => void uploadEvidence(item.id, files)}
@@ -643,8 +748,17 @@ export default function FieldHandoverTaskDetailPage() {
 
             {captureView.showSubmitAction ? (
               <div style={submitBarStyle}>
+                {!canSubmitUploadBatch ? (
+                  <Alert
+                    message={UPLOAD_SUBMIT_BLOCKER_TEXT}
+                    showIcon
+                    style={{ marginBottom: 8 }}
+                    type="warning"
+                  />
+                ) : null}
                 <Button
                   block
+                  disabled={!canSubmitUploadBatch}
                   icon={<CheckCircleOutlined />}
                   loading={actionLoading === "submit"}
                   onClick={() => void submitEvidence()}

@@ -2,19 +2,23 @@
 
 import {
   ArrowLeftOutlined,
+  CameraOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
   ExclamationCircleOutlined,
+  FolderOpenOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
-  UploadOutlined
+  StopOutlined,
+  UploadOutlined,
+  VideoCameraOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Flex, Input, InputNumber, Popconfirm, Radio, Spin, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Flex, Input, InputNumber, Popconfirm, Progress, Radio, Spin, Tag, Tooltip, Typography } from "antd";
 import { useParams, useRouter } from "next/navigation";
-import { type CSSProperties, type ChangeEvent, type ReactNode, useCallback, useEffect, useState } from "react";
+import { type CSSProperties, type ChangeEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   buildFieldHandoverFileUrl,
@@ -29,16 +33,37 @@ import {
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts,
   uploadAndAttachFieldHandoverEvidenceFile,
+  type FieldEvidenceUploadOptions,
+  type FieldEvidenceUploadProgress,
   type FieldHandoverEvidenceItem,
-  type FieldHandoverEvidenceMediaType,
   type FieldHandoverWorkOrderDetail
 } from "../../../../../lib/field-handover-api";
+import {
+  buildFieldEvidenceUploadInputContracts,
+  buildFieldEvidenceUploadRetryDisplay,
+  type FieldEvidenceMediaType,
+  formatUploadBytes,
+  validateFieldEvidenceFile
+} from "../../../../../lib/field-handover-upload";
+import {
+  canRetryFieldEvidenceUploadBatch,
+  canSubmitWithFieldEvidenceUploadBatch,
+  canMutateFieldEvidenceWithUploadBatch,
+  cancelFieldEvidenceUploadRequest,
+  retryFieldEvidenceUploadBatch,
+  retryFieldEvidenceUploadRefresh,
+  runFieldEvidenceUploadBatch,
+  startFieldEvidenceUploadBatch,
+  type FieldEvidenceUploadBatchState,
+  type FieldEvidenceUploadInterruptionReason,
+  type FieldEvidenceUploadSnapshot
+} from "../../../../../lib/field-handover-upload-batch";
 import {
   buildFieldEvidenceCaptureView,
   buildFieldHandoverDetailView,
   buildFieldHandoverFactsPayload,
-  fieldFactsToDraft,
   getFieldHandoverSubmitBlockers,
+  resolveFieldHandoverFactsAfterRefresh,
   validateFieldHandoverFactsInput,
   type FieldHandoverFactsDraft
 } from "../../../../../lib/field-handover-view-model";
@@ -47,26 +72,55 @@ const SUBMITTED_TEXT = "现场交接资料已提交，等待客户确认";
 const RESUBMITTED_PENDING_ADMIN_TEXT = "现场交接资料已重新提交，等待后台送回客户复核";
 const LOCKED_TEXT = "当前交接任务已提交或不可继续编辑";
 const MAX_DAMAGE_CLOSEUP_FILES = 20;
-const MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
-const MAX_VIDEO_SIZE_BYTES = 200 * 1024 * 1024;
+const UPLOAD_SUBMIT_BLOCKER_TEXT = "资料正在上传或等待重试，请完成后再提交";
+const INITIAL_UPLOAD_BATCH_STATE: FieldEvidenceUploadBatchState<File> = {
+  batch: null,
+  fileIndex: 0,
+  status: "IDLE"
+};
+
+interface EvidenceUploadState {
+  fileCount: number;
+  fileIndex: number;
+  fileName: string;
+  itemId: string;
+  loadedBytes: number;
+  percent: number;
+  phase: "PROCESSING" | "RETRY_PENDING" | "UPLOADING";
+  totalBytes: number;
+}
 
 export default function FieldHandoverTaskDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { message } = App.useApp();
+  const isMountedRef = useRef(true);
+  const submissionInFlightRef = useRef(false);
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const uploadAbortReasonRef = useRef<Exclude<FieldEvidenceUploadInterruptionReason, "FAILURE"> | null>(null);
+  const uploadRequestBodyCompleteRef = useRef(false);
+  const uploadBatchStateRef = useRef<FieldEvidenceUploadBatchState<File>>(INITIAL_UPLOAD_BATCH_STATE);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [blockers, setBlockers] = useState<string[]>([]);
   const [detail, setDetail] = useState<FieldHandoverWorkOrderDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [facts, setFacts] = useState<FieldHandoverFactsDraft>({});
+  const [hasActiveUploadRequest, setHasActiveUploadRequest] = useState(false);
   const [loading, setLoading] = useState(true);
   const [removingFileId, setRemovingFileId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
+  const [uploadBatchState, setUploadBatchState] =
+    useState<FieldEvidenceUploadBatchState<File>>(INITIAL_UPLOAD_BATCH_STATE);
+  const [uploadState, setUploadState] = useState<EvidenceUploadState | null>(null);
 
-  const loadDetail = useCallback(async () => {
+  const loadDetail = useCallback(async (
+    options: { preserveFacts?: boolean; showLoading?: boolean } = {}
+  ) => {
+    const showLoading = options.showLoading !== false;
     try {
-      setLoading(true);
+      if (showLoading) {
+        setLoading(true);
+      }
       setErrorMessage(null);
       await getFieldHandoverSession();
       const [nextDetail, readiness] = await Promise.all([
@@ -81,16 +135,30 @@ export default function FieldHandoverTaskDetailPage() {
           ready: readiness.ready ?? nextDetail.evidenceChecklist?.ready ?? false
         }
       };
-      setDetail(mergedDetail);
-      setFacts(fieldFactsToDraft(mergedDetail.fieldFacts));
+      if (isMountedRef.current) {
+        setDetail(mergedDetail);
+        setFacts((current) =>
+          resolveFieldHandoverFactsAfterRefresh(
+            current,
+            mergedDetail.fieldFacts,
+            options.preserveFacts === true
+          )
+        );
+      }
+      return mergedDetail;
     } catch (error) {
       if (isFieldHandoverSessionExpired(error)) {
         router.replace("/field/handover");
-        return;
+        return null;
       }
-      setErrorMessage("无法访问该交接任务，请确认任务仍分配给当前手机号");
+      if (isMountedRef.current) {
+        setErrorMessage("无法访问该交接任务，请确认任务仍分配给当前手机号");
+      }
+      return null;
     } finally {
-      setLoading(false);
+      if (showLoading && isMountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [params.id, router]);
 
@@ -98,9 +166,29 @@ export default function FieldHandoverTaskDetailPage() {
     void loadDetail();
   }, [loadDetail]);
 
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      uploadAbortReasonRef.current = "UNMOUNT";
+      uploadAbortControllerRef.current?.abort();
+    };
+  }, []);
+
   const detailView = detail ? buildFieldHandoverDetailView(detail) : null;
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
   const reviewContext = detail?.reviewContext;
+  const canSubmitUploadBatch = canSubmitWithFieldEvidenceUploadBatch(uploadBatchState);
+  const canMutateEvidence = canMutateFieldEvidenceWithUploadBatch(uploadBatchState);
+  const retryUpload = uploadBatchState.status === "RETRY_PENDING" ? uploadBatchState.batch : null;
+  const uploadingItemId =
+    uploadBatchState.status === "UPLOADING" ? uploadBatchState.batch?.itemViewId ?? null : null;
+  const uploadBarrierText =
+    uploadBatchState.status === "REFRESHING"
+      ? "正在同步最新资料"
+      : uploadBatchState.status === "REFRESH_FAILED"
+        ? "最新资料同步失败，请重新加载状态"
+        : UPLOAD_SUBMIT_BLOCKER_TEXT;
 
   async function startWork() {
     await runAction("start", async () => {
@@ -148,8 +236,31 @@ export default function FieldHandoverTaskDetailPage() {
     });
   }
 
-  async function uploadEvidence(itemViewId: string, files: File[]) {
-    if (!detail || files.length === 0) {
+  function applyUploadBatchState(nextState: FieldEvidenceUploadBatchState<File>) {
+    uploadBatchStateRef.current = nextState;
+    if (isMountedRef.current) {
+      setUploadBatchState(nextState);
+    }
+  }
+
+  function syncRetryUploadDisplay(state: FieldEvidenceUploadBatchState<File>) {
+    if (!isMountedRef.current || state.status !== "RETRY_PENDING" || !state.batch) {
+      return;
+    }
+    setUploadState(
+      buildFieldEvidenceUploadRetryDisplay(
+        state.batch.itemViewId,
+        state.batch.files
+      )
+    );
+  }
+
+  async function uploadEvidence(itemViewId: string, files: File[], isRetry = false) {
+    if (!detail || files.length === 0 || uploadAbortControllerRef.current) {
+      return;
+    }
+    if (submissionInFlightRef.current) {
+      setBlockers(["任务正在提交，暂不能开始上传"]);
       return;
     }
     const item = findEvidenceItem(detail, itemViewId);
@@ -157,45 +268,205 @@ export default function FieldHandoverTaskDetailPage() {
       setBlockers(["资料项不存在，请刷新后重试"]);
       return;
     }
-    const selectedFiles = item.allowsMultiple ? files : files.slice(0, 1);
+    const itemId = item.id;
+    const replaceEvidenceFileId = item.allowsMultiple
+      ? undefined
+      : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
+    const uploadOperation = replaceEvidenceFileId
+      ? ({ replaceEvidenceFileId, type: "REPLACE" } as const)
+      : ({ type: "APPEND" } as const);
+    const currentBatchState = uploadBatchStateRef.current;
+    const nextBatchState = isRetry
+      ? retryFieldEvidenceUploadBatch(
+          currentBatchState,
+          captureView?.canEdit === true,
+          uploadOperation
+        )
+      : canSubmitWithFieldEvidenceUploadBatch(currentBatchState)
+        ? startFieldEvidenceUploadBatch(
+            itemViewId,
+            files,
+            item.allowsMultiple === true,
+            fieldEvidenceUploadSnapshot(item)!,
+            uploadOperation
+          )
+        : currentBatchState;
+    if (nextBatchState.status !== "UPLOADING" || !nextBatchState.batch) {
+      return;
+    }
+    const selectedFiles = nextBatchState.batch.files;
     if (item.allowsMultiple && (item.files?.length ?? 0) + selectedFiles.length > MAX_DAMAGE_CLOSEUP_FILES) {
       setBlockers([`损伤近拍最多上传 ${MAX_DAMAGE_CLOSEUP_FILES} 个文件`]);
       return;
     }
     for (const file of selectedFiles) {
-      const validationError = validateEvidenceFile(item, file);
+      const validationError = validateFieldEvidenceFile((item.allowedMediaTypes ?? []) as FieldEvidenceMediaType[], file);
       if (validationError) {
         setBlockers([validationError]);
         return;
       }
     }
 
-    try {
-      setUploadingItemId(item.id);
-      setBlockers([]);
-      const replaceEvidenceFileId = item.allowsMultiple
-        ? undefined
-        : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
-      for (const [index, file] of selectedFiles.entries()) {
-        await uploadAndAttachFieldHandoverEvidenceFile(
-          params.id,
-          item.id,
-          file,
-          index === 0 ? replaceEvidenceFileId : undefined
+    applyUploadBatchState(nextBatchState);
+    setBlockers([]);
+    const finalState = await runFieldEvidenceUploadBatch(nextBatchState, {
+      getInterruptionReason: () => {
+        const reason = uploadAbortReasonRef.current ?? "FAILURE";
+        uploadAbortReasonRef.current = null;
+        return reason;
+      },
+      onStateChange: applyUploadBatchState,
+      onUploadInterrupted: (error, reason) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+        handleActionError(
+          error,
+          reason === "USER_CANCEL" ? "上传已取消，可重试剩余文件" : undefined
         );
+      },
+      refreshDetail: async () => {
+        const refreshedDetail = await loadDetail({
+          preserveFacts: true,
+          showLoading: false
+        });
+        return fieldEvidenceUploadSnapshot(
+          refreshedDetail
+            ? findEvidenceItem(refreshedDetail, itemViewId)
+            : null
+        );
+      },
+      uploadFile: async (file, index) => {
+        const controller = new AbortController();
+        uploadAbortControllerRef.current = controller;
+        uploadAbortReasonRef.current = null;
+        uploadRequestBodyCompleteRef.current = false;
+        if (isMountedRef.current) {
+          setHasActiveUploadRequest(true);
+          setUploadState({
+            fileCount: selectedFiles.length,
+            fileIndex: index + 1,
+            fileName: file.name,
+            itemId,
+            loadedBytes: 0,
+            percent: 0,
+            phase: "UPLOADING",
+            totalBytes: file.size
+          });
+        }
+        try {
+          const uploadOptions: FieldEvidenceUploadOptions = {
+            onProgress: ({ loadedBytes, percent, totalBytes }: FieldEvidenceUploadProgress) => {
+              if (!isMountedRef.current) {
+                return;
+              }
+              setUploadState({
+                fileCount: selectedFiles.length,
+                fileIndex: index + 1,
+                fileName: file.name,
+                itemId,
+                loadedBytes,
+                percent,
+                phase: "UPLOADING",
+                totalBytes
+              });
+            },
+            onUploadComplete: () => {
+              uploadRequestBodyCompleteRef.current = true;
+              if (!isMountedRef.current) {
+                return;
+              }
+              setUploadState({
+                fileCount: selectedFiles.length,
+                fileIndex: index + 1,
+                fileName: file.name,
+                itemId,
+                loadedBytes: file.size,
+                percent: 100,
+                phase: "PROCESSING",
+                totalBytes: file.size
+              });
+            },
+            replaceEvidenceFileId: index === 0 ? replaceEvidenceFileId : undefined,
+            signal: controller.signal
+          };
+          const uploadedItem = await uploadAndAttachFieldHandoverEvidenceFile(
+            params.id,
+            itemId,
+            file,
+            uploadOptions
+          );
+          return fieldEvidenceUploadSnapshot(uploadedItem)!;
+        } finally {
+          if (uploadAbortControllerRef.current === controller) {
+            uploadAbortControllerRef.current = null;
+          }
+          if (isMountedRef.current) {
+            setHasActiveUploadRequest(false);
+          }
+          uploadRequestBodyCompleteRef.current = false;
+        }
       }
-      void message.success(item.allowsMultiple && selectedFiles.length > 1
-        ? `已上传 ${selectedFiles.length} 个文件`
-        : replaceEvidenceFileId ? "资料已替换" : "资料已上传");
-      await loadDetail();
-    } catch (error) {
-      handleActionError(error, "上传失败，请重试");
-    } finally {
-      setUploadingItemId(null);
+    });
+
+    syncRetryUploadDisplay(finalState);
+    if (isMountedRef.current && finalState.status === "IDLE") {
+      void message.success(
+        item.allowsMultiple && selectedFiles.length > 1
+          ? `已上传 ${selectedFiles.length} 个文件`
+          : replaceEvidenceFileId ? "资料已替换" : "资料已上传"
+      );
+      setUploadState(null);
+    }
+  }
+
+  function cancelEvidenceUpload() {
+    if (uploadRequestBodyCompleteRef.current) {
+      return;
+    }
+    cancelFieldEvidenceUploadRequest(
+      uploadAbortControllerRef.current,
+      (reason) => {
+        uploadAbortReasonRef.current = reason;
+      }
+    );
+  }
+
+  function retryEvidenceUpload() {
+    if (!retryUpload) {
+      return;
+    }
+    void uploadEvidence(retryUpload.itemViewId, retryUpload.files, true);
+  }
+
+  async function reloadUploadState() {
+    const finalState = await retryFieldEvidenceUploadRefresh(uploadBatchStateRef.current, {
+      onStateChange: applyUploadBatchState,
+      refreshDetail: async () => {
+        const itemViewId = uploadBatchStateRef.current.batch?.itemViewId;
+        const refreshedDetail = await loadDetail({
+          preserveFacts: true,
+          showLoading: false
+        });
+        return itemViewId && refreshedDetail
+          ? fieldEvidenceUploadSnapshot(
+              findEvidenceItem(refreshedDetail, itemViewId)
+            )
+          : null;
+      }
+    });
+    syncRetryUploadDisplay(finalState);
+    if (isMountedRef.current && finalState.status === "IDLE") {
+      setUploadState(null);
     }
   }
 
   async function removeEvidence(itemId: string, evidenceFileId: string) {
+    if (!canMutateFieldEvidenceWithUploadBatch(uploadBatchStateRef.current)) {
+      setBlockers([UPLOAD_SUBMIT_BLOCKER_TEXT]);
+      void message.warning(UPLOAD_SUBMIT_BLOCKER_TEXT);
+      return;
+    }
     try {
       setRemovingFileId(evidenceFileId);
       setBlockers([]);
@@ -210,27 +481,48 @@ export default function FieldHandoverTaskDetailPage() {
   }
 
   async function submitEvidence() {
-    if (!detail) {
-      return;
-    }
-    const currentBlockers = getFieldHandoverSubmitBlockers(detail, facts);
-    if (currentBlockers.length) {
-      setBlockers(currentBlockers);
+    if (!detail || submissionInFlightRef.current || blockSubmitForUploadBatch()) {
       return;
     }
 
-    await runAction("submit", async () => {
-      await updateFieldHandoverFacts(params.id, buildFieldHandoverFactsPayload(facts));
-      const submitted = await submitFieldHandoverEvidence(params.id);
-      const successText =
-        submitted.status === "CUSTOMER_OBJECTED" && submitted.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN"
-          ? RESUBMITTED_PENDING_ADMIN_TEXT
-          : SUBMITTED_TEXT;
-      setBlockers([]);
-      setSuccessMessage(successText);
-      void message.success(successText);
-      await loadDetail();
-    });
+    submissionInFlightRef.current = true;
+    try {
+      const currentBlockers = getFieldHandoverSubmitBlockers(detail, facts);
+      if (currentBlockers.length) {
+        setBlockers(currentBlockers);
+        return;
+      }
+
+      await runAction("submit", async () => {
+        if (blockSubmitForUploadBatch()) {
+          return;
+        }
+        await updateFieldHandoverFacts(params.id, buildFieldHandoverFactsPayload(facts));
+        if (blockSubmitForUploadBatch()) {
+          return;
+        }
+        const submitted = await submitFieldHandoverEvidence(params.id);
+        const successText =
+          submitted.status === "CUSTOMER_OBJECTED" && submitted.adminReviewStatus === "RESUBMITTED_PENDING_ADMIN"
+            ? RESUBMITTED_PENDING_ADMIN_TEXT
+            : SUBMITTED_TEXT;
+        setBlockers([]);
+        setSuccessMessage(successText);
+        void message.success(successText);
+        await loadDetail();
+      });
+    } finally {
+      submissionInFlightRef.current = false;
+    }
+  }
+
+  function blockSubmitForUploadBatch() {
+    if (canSubmitWithFieldEvidenceUploadBatch(uploadBatchStateRef.current)) {
+      return false;
+    }
+    setBlockers([uploadBarrierText]);
+    void message.warning(uploadBarrierText);
+    return true;
   }
 
   async function runAction(action: string, callback: () => Promise<void>) {
@@ -409,130 +701,209 @@ export default function FieldHandoverTaskDetailPage() {
                 资料清单
               </Typography.Title>
               <Flex gap={10} vertical>
-                {captureView.evidenceItems.map((item) => (
-                  <article key={item.id || item.title} style={itemCardStyle}>
-                    <Flex align="flex-start" justify="space-between" style={{ gap: 10 }}>
-                      <div>
-                        <Typography.Text strong>{item.title}</Typography.Text>
-                        {item.description ? (
-                          <Typography.Paragraph style={{ color: "#607086", margin: "4px 0 0" }}>
-                            {item.description}
-                          </Typography.Paragraph>
-                        ) : null}
-                      </div>
-                      <Flex gap={6} wrap="wrap" justify="flex-end">
-                        <Tag color={item.requiredText === "必传" ? "red" : "blue"} style={{ marginInlineEnd: 0 }}>
-                          {item.requiredText}
-                        </Tag>
-                        <Tag color={item.statusLabel === "待上传" ? "default" : "green"} style={{ marginInlineEnd: 0 }}>
-                          {item.statusLabel}
-                        </Tag>
+                {captureView.evidenceItems.map((item) => {
+                  const allowedMediaTypes = (
+                    (detail ? findEvidenceItem(detail, item.id) : null)?.allowedMediaTypes ?? []
+                  ).filter((mediaType): mediaType is FieldEvidenceMediaType =>
+                    mediaType === "PHOTO" || mediaType === "VIDEO"
+                  );
+                  const isUploading = uploadingItemId === item.id;
+                  const itemUploadState = uploadState?.itemId === item.id ? uploadState : null;
+                  const canRetry =
+                    canRetryFieldEvidenceUploadBatch(uploadBatchState, captureView.canEdit) &&
+                    retryUpload?.itemViewId === item.id;
+
+                  return (
+                    <article key={item.id || item.title} style={itemCardStyle}>
+                      <Flex align="flex-start" justify="space-between" style={{ gap: 10 }}>
+                        <div>
+                          <Typography.Text strong>{item.title}</Typography.Text>
+                          {item.description ? (
+                            <Typography.Paragraph style={{ color: "#607086", margin: "4px 0 0" }}>
+                              {item.description}
+                            </Typography.Paragraph>
+                          ) : null}
+                        </div>
+                        <Flex gap={6} wrap="wrap" justify="flex-end">
+                          <Tag color={item.requiredText === "必传" ? "red" : "blue"} style={{ marginInlineEnd: 0 }}>
+                            {item.requiredText}
+                          </Tag>
+                          <Tag color={item.statusLabel === "待上传" ? "default" : "green"} style={{ marginInlineEnd: 0 }}>
+                            {item.statusLabel}
+                          </Tag>
+                        </Flex>
                       </Flex>
-                    </Flex>
 
-                    <Typography.Text style={{ color: "#607086", display: "block", marginTop: 8 }}>
-                      {item.fileCountText}
-                    </Typography.Text>
-
-                    {item.rejectionReason ? (
-                      <Alert message={item.rejectionReason} showIcon style={{ marginTop: 8 }} type="warning" />
-                    ) : null}
-
-                    {item.showDeclarationComplete ? (
-                      <Typography.Text style={{ color: "#2f7d32", display: "block", marginTop: 8 }}>
-                        无可见损伤声明已完成
+                      <Typography.Text style={{ color: "#607086", display: "block", marginTop: 8 }}>
+                        {item.fileCountText}
                       </Typography.Text>
-                    ) : null}
 
-                    {item.files.length > 0 ? (
-                      <Flex gap={8} style={{ marginTop: 10 }} vertical>
-                        {item.files.map((file) => (
-                          <Flex
-                            align="center"
-                            gap={8}
-                            justify="space-between"
-                            key={file.evidenceFileId}
-                            style={{ borderTop: "1px solid #e2e8f0", paddingTop: 8 }}
-                          >
-                            <div style={{ minWidth: 0 }}>
-                              <Typography.Text ellipsis style={{ display: "block", maxWidth: 260 }}>
-                                {file.displayName}
-                              </Typography.Text>
-                              <Typography.Text style={{ color: "#718096", fontSize: 12 }}>
-                                {file.sizeText}
-                              </Typography.Text>
-                            </div>
-                            <Flex gap={4}>
-                              {file.previewUrl ? (
-                                <Tooltip title="查看资料">
-                                  <Button
-                                    aria-label="查看资料"
-                                    href={buildFieldHandoverFileUrl(file.previewUrl) ?? undefined}
-                                    icon={<EyeOutlined />}
-                                    target="_blank"
-                                    type="text"
-                                  />
-                                </Tooltip>
-                              ) : null}
-                              {file.downloadUrl ? (
-                                <Tooltip title="下载资料">
-                                  <Button
-                                    aria-label="下载资料"
-                                    href={buildFieldHandoverFileUrl(file.downloadUrl) ?? undefined}
-                                    icon={<DownloadOutlined />}
-                                    target="_blank"
-                                    type="text"
-                                  />
-                                </Tooltip>
-                              ) : null}
-                              {captureView.canEdit ? (
-                                <Popconfirm
-                                  description="删除后需重新上传才能提交。"
-                                  okText="删除"
-                                  cancelText="取消"
-                                  onConfirm={() => void removeEvidence(item.id, file.evidenceFileId)}
-                                  title="删除这份资料？"
-                                >
-                                  <Tooltip title="删除资料">
+                      {item.rejectionReason ? (
+                        <Alert message={item.rejectionReason} showIcon style={{ marginTop: 8 }} type="warning" />
+                      ) : null}
+
+                      {item.showDeclarationComplete ? (
+                        <Typography.Text style={{ color: "#2f7d32", display: "block", marginTop: 8 }}>
+                          无可见损伤声明已完成
+                        </Typography.Text>
+                      ) : null}
+
+                      {item.files.length > 0 ? (
+                        <Flex gap={8} style={{ marginTop: 10 }} vertical>
+                          {item.files.map((file) => (
+                            <Flex
+                              align="center"
+                              gap={8}
+                              justify="space-between"
+                              key={file.evidenceFileId}
+                              style={{ borderTop: "1px solid #e2e8f0", paddingTop: 8 }}
+                            >
+                              <div style={{ minWidth: 0 }}>
+                                <Typography.Text ellipsis style={{ display: "block", maxWidth: 260 }}>
+                                  {file.displayName}
+                                </Typography.Text>
+                                <Typography.Text style={{ color: "#718096", fontSize: 12 }}>
+                                  {file.sizeText}
+                                </Typography.Text>
+                              </div>
+                              <Flex gap={4}>
+                                {file.previewUrl ? (
+                                  <Tooltip title="查看资料">
                                     <Button
-                                      aria-label="删除资料"
-                                      danger
-                                      icon={<DeleteOutlined />}
-                                      loading={removingFileId === file.evidenceFileId}
+                                      aria-label="查看资料"
+                                      href={buildFieldHandoverFileUrl(file.previewUrl) ?? undefined}
+                                      icon={<EyeOutlined />}
+                                      target="_blank"
                                       type="text"
                                     />
                                   </Tooltip>
-                                </Popconfirm>
-                              ) : null}
+                                ) : null}
+                                {file.downloadUrl ? (
+                                  <Tooltip title="下载资料">
+                                    <Button
+                                      aria-label="下载资料"
+                                      href={buildFieldHandoverFileUrl(file.downloadUrl) ?? undefined}
+                                      icon={<DownloadOutlined />}
+                                      target="_blank"
+                                      type="text"
+                                    />
+                                  </Tooltip>
+                                ) : null}
+                                {captureView.canEdit && canMutateEvidence ? (
+                                  <Popconfirm
+                                    description="删除后需重新上传才能提交。"
+                                    okText="删除"
+                                    cancelText="取消"
+                                    onConfirm={() => void removeEvidence(item.id, file.evidenceFileId)}
+                                    title="删除这份资料？"
+                                  >
+                                    <Tooltip title="删除资料">
+                                      <Button
+                                        aria-label="删除资料"
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        loading={removingFileId === file.evidenceFileId}
+                                        type="text"
+                                      />
+                                    </Tooltip>
+                                  </Popconfirm>
+                                ) : null}
+                              </Flex>
                             </Flex>
-                          </Flex>
-                        ))}
-                      </Flex>
-                    ) : null}
+                          ))}
+                        </Flex>
+                      ) : null}
 
-                    {item.showUpload ? (
-                      <EvidenceUploadControl
-                        accept={item.uploadAccept}
-                        disabled={uploadingItemId === item.id}
-                        id={item.id}
-                        label={item.uploadLabel}
-                        multiple={item.allowsMultiple}
-                        onChange={(event) => {
-                          const files = Array.from(event.currentTarget.files ?? []);
-                          event.currentTarget.value = "";
-                          void uploadEvidence(item.id, files);
-                        }}
-                      />
-                    ) : null}
-                  </article>
-                ))}
+                      {itemUploadState ? (
+                        <div aria-live="polite" style={uploadProgressStyle}>
+                          <Typography.Text strong>
+                            {uploadBatchState.status === "REFRESHING" ||
+                            uploadBatchState.status === "REFRESH_FAILED"
+                              ? "资料状态同步"
+                              : itemUploadState.phase === "PROCESSING"
+                                ? "服务端处理中"
+                                : itemUploadState.phase === "RETRY_PENDING"
+                                  ? "等待重试"
+                                  : "上传进度"}
+                          </Typography.Text>
+                          {uploadBatchState.status === "REFRESHING" ||
+                          uploadBatchState.status === "REFRESH_FAILED" ? null : (
+                            <>
+                              <Typography.Text ellipsis style={{ display: "block", marginTop: 4 }}>
+                                {itemUploadState.fileIndex} / {itemUploadState.fileCount} · {itemUploadState.fileName}
+                              </Typography.Text>
+                              <Progress percent={itemUploadState.percent} size="small" />
+                            </>
+                          )}
+                          <Flex align="center" gap={8} justify="space-between" wrap="wrap">
+                            <Typography.Text style={{ color: "#607086", fontSize: 12 }}>
+                              {uploadBatchState.status === "REFRESHING" ||
+                              uploadBatchState.status === "REFRESH_FAILED"
+                                ? uploadBarrierText
+                                : itemUploadState.phase === "PROCESSING"
+                                  ? "请求体已上传，正在保存并绑定资料"
+                                  : `${formatUploadBytes(itemUploadState.loadedBytes)} / ${formatUploadBytes(itemUploadState.totalBytes)}`}
+                            </Typography.Text>
+                            {isUploading &&
+                            hasActiveUploadRequest &&
+                            itemUploadState.phase === "UPLOADING" ? (
+                              <Button
+                                danger
+                                icon={<StopOutlined />}
+                                onClick={cancelEvidenceUpload}
+                                style={{ minHeight: 44 }}
+                              >
+                                取消上传
+                              </Button>
+                            ) : uploadBatchState.status === "REFRESH_FAILED" ? (
+                              <Button
+                                icon={<ReloadOutlined />}
+                                onClick={() => void reloadUploadState()}
+                                style={{ minHeight: 44 }}
+                              >
+                                重新加载状态
+                              </Button>
+                            ) : canRetry ? (
+                              <Button
+                                icon={<ReloadOutlined />}
+                                onClick={retryEvidenceUpload}
+                                style={{ minHeight: 44 }}
+                              >
+                                重试上传
+                              </Button>
+                            ) : null}
+                          </Flex>
+                        </div>
+                      ) : null}
+
+                      {item.showUpload ? (
+                        <EvidenceUploadControls
+                          allowedMediaTypes={allowedMediaTypes}
+                          disabled={!canSubmitUploadBatch || actionLoading === "submit"}
+                          id={item.id}
+                          multiple={item.allowsMultiple}
+                          onFiles={(files) => void uploadEvidence(item.id, files)}
+                        />
+                      ) : null}
+                    </article>
+                  );
+                })}
               </Flex>
             </article>
 
             {captureView.showSubmitAction ? (
               <div style={submitBarStyle}>
+                {!canSubmitUploadBatch ? (
+                  <Alert
+                    message={uploadBarrierText}
+                    showIcon
+                    style={{ marginBottom: 8 }}
+                    type="warning"
+                  />
+                ) : null}
                 <Button
                   block
+                  disabled={!canSubmitUploadBatch}
                   icon={<CheckCircleOutlined />}
                   loading={actionLoading === "submit"}
                   onClick={() => void submitEvidence()}
@@ -607,53 +978,102 @@ function LabeledControl({ children, label }: { children: ReactNode; label: strin
   );
 }
 
-function EvidenceUploadControl({
-  accept,
+function EvidenceUploadControls({
+  allowedMediaTypes,
   disabled,
+  id,
+  multiple,
+  onFiles
+}: {
+  allowedMediaTypes: FieldEvidenceMediaType[];
+  disabled: boolean;
+  id: string;
+  multiple: boolean;
+  onFiles: (files: File[]) => void;
+}) {
+  const contracts = buildFieldEvidenceUploadInputContracts(
+    allowedMediaTypes,
+    multiple
+  );
+
+  return (
+    <Flex gap={8} style={{ marginTop: 10 }} vertical>
+      {contracts.map((contract) => (
+        <CaptureInput
+          accept={contract.accept}
+          capture={contract.capture}
+          disabled={disabled}
+          icon={
+            contract.key === "photo-capture"
+              ? <CameraOutlined />
+              : contract.key === "video-capture"
+                ? <VideoCameraOutlined />
+                : contract.accept === "image/*"
+                  ? <FolderOpenOutlined />
+                  : <UploadOutlined />
+          }
+          id={`${id}-${contract.key}`}
+          key={contract.key}
+          label={contract.label}
+          multiple={contract.multiple}
+          onFiles={onFiles}
+        />
+      ))}
+    </Flex>
+  );
+}
+
+function CaptureInput({
+  accept,
+  capture,
+  disabled,
+  icon,
   id,
   label,
   multiple,
-  onChange
+  onFiles
 }: {
   accept: string;
+  capture?: "environment";
   disabled: boolean;
+  icon: ReactNode;
   id: string;
   label: string;
   multiple: boolean;
-  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFiles: (files: File[]) => void;
 }) {
   const inputId = `field-evidence-file-${id}`;
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    onFiles(files);
+  }
+
   return (
-    <div style={{ marginTop: 10 }}>
+    <div>
       <input
         accept={accept}
+        capture={capture}
         disabled={disabled}
         id={inputId}
         multiple={multiple}
-        onChange={onChange}
+        onChange={handleChange}
+        ref={inputRef}
         style={{ display: "none" }}
         type="file"
       />
-      <label
-        htmlFor={inputId}
-        style={{
-          alignItems: "center",
-          background: disabled ? "#eef2f7" : "#1677ff",
-          borderRadius: 8,
-          color: disabled ? "#8a95a6" : "#fff",
-          cursor: disabled ? "not-allowed" : "pointer",
-          display: "flex",
-          fontWeight: 600,
-          gap: 8,
-          justifyContent: "center",
-          minHeight: 44,
-          pointerEvents: disabled ? "none" : "auto",
-          width: "100%"
-        }}
+      <Button
+        block
+        disabled={disabled}
+        icon={icon}
+        onClick={() => inputRef.current?.click()}
+        style={{ minHeight: 44 }}
+        type="primary"
       >
-        <UploadOutlined />
-        {disabled ? "上传中..." : label}
-      </label>
+        {label}
+      </Button>
     </div>
   );
 }
@@ -671,45 +1091,26 @@ function findEvidenceItem(detail: FieldHandoverWorkOrderDetail, itemId: string) 
   return (detail.evidenceChecklist?.items ?? []).find((item) => item.id === itemId) ?? null;
 }
 
-function resolveMediaType(file: File): FieldHandoverEvidenceMediaType | null {
-  const mimeType = file.type.trim().toLowerCase();
-  if (mimeType && mimeType !== "application/octet-stream") {
-    return SAFE_PHOTO_MIME_TYPES.has(mimeType)
-      ? "PHOTO"
-      : SAFE_VIDEO_MIME_TYPES.has(mimeType)
-        ? "VIDEO"
-        : null;
+function fieldEvidenceUploadSnapshot(
+  item: FieldHandoverEvidenceItem | null
+): FieldEvidenceUploadSnapshot | null {
+  if (!item) {
+    return null;
   }
-  if (/\.(heic|heif|jpe?g|png|webp)$/i.test(file.name)) {
-    return "PHOTO";
-  }
-  if (/\.(m4v|mov|mp4|webm)$/i.test(file.name)) {
-    return "VIDEO";
-  }
-  return null;
+  const ids = (item.files ?? [])
+    .map((file) => file.evidenceFileId || file.id || "")
+    .filter(Boolean);
+  const count =
+    typeof item.fileCount === "number"
+      ? Math.max(item.fileCount, ids.length)
+      : ids.length;
+  return { count, ids };
 }
 
 function formatReviewFieldKey(value: string) {
   return REVIEW_FIELD_LABELS[value] ?? value;
 }
 
-function isAllowedMediaType(item: FieldHandoverEvidenceItem, mediaType: FieldHandoverEvidenceMediaType) {
-  return (item.allowedMediaTypes ?? []).includes(mediaType);
-}
-
-function validateEvidenceFile(item: FieldHandoverEvidenceItem, file: File) {
-  const mediaType = resolveMediaType(file);
-  if (!mediaType || !isAllowedMediaType(item, mediaType)) {
-    return "请选择符合要求的图片或视频";
-  }
-  if (mediaType === "PHOTO" && file.size > MAX_PHOTO_SIZE_BYTES) {
-    return `图片 ${file.name} 超过 5MB`;
-  }
-  if (mediaType === "VIDEO" && file.size > MAX_VIDEO_SIZE_BYTES) {
-    return `视频 ${file.name} 超过 200MB`;
-  }
-  return null;
-}
 
 function splitBlockingMessages(message: string) {
   return message
@@ -733,28 +1134,20 @@ const itemCardStyle: CSSProperties = {
   padding: 12
 };
 
+const uploadProgressStyle: CSSProperties = {
+  background: "#fff",
+  border: "1px solid #d9e2ef",
+  borderRadius: 8,
+  marginTop: 10,
+  padding: 10
+};
+
 const submitBarStyle: CSSProperties = {
   background: "rgba(245, 248, 252, 0.94)",
   bottom: 0,
   padding: "8px 0 max(8px, env(safe-area-inset-bottom))",
   position: "sticky"
 };
-
-const SAFE_PHOTO_MIME_TYPES = new Set([
-  "image/heic",
-  "image/heif",
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp"
-]);
-
-const SAFE_VIDEO_MIME_TYPES = new Set([
-  "video/mp4",
-  "video/quicktime",
-  "video/webm",
-  "video/x-m4v"
-]);
 
 const REVIEW_FIELD_LABELS: Record<string, string> = {
   accessoryChecklist: "随车物品",

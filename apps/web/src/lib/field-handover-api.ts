@@ -1,6 +1,10 @@
 import { API_BASE_URL, ApiError, apiFetch } from "./api";
 
 const FIELD_EVIDENCE_UPLOAD_TIMEOUT_MS = 20 * 60 * 1000;
+const FIELD_EVIDENCE_UPLOAD_FAILED_MESSAGE = "上传失败，请稍后重试。";
+const FIELD_EVIDENCE_UPLOAD_NETWORK_ERROR_MESSAGE = "上传失败，请检查网络后重试。";
+const FIELD_EVIDENCE_UPLOAD_TIMEOUT_ERROR_MESSAGE = "上传超时，请检查网络后重试。";
+const FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE = "上传已取消。";
 
 export interface FieldHandoverCodeResponse {
   expiresIn: number;
@@ -96,6 +100,19 @@ export interface FieldHandoverEvidenceItem {
   reviewStatus?: string | null;
   status?: string | null;
   title?: string | null;
+}
+
+export interface FieldEvidenceUploadProgress {
+  loadedBytes: number;
+  percent: number;
+  totalBytes: number;
+}
+
+export interface FieldEvidenceUploadOptions {
+  onProgress?: (progress: FieldEvidenceUploadProgress) => void;
+  onUploadComplete?: () => void;
+  replaceEvidenceFileId?: string;
+  signal?: AbortSignal;
 }
 
 export interface FieldHandoverFieldFacts {
@@ -197,25 +214,107 @@ export function updateFieldHandoverFacts(id: string, input: UpdateFieldHandoverF
   });
 }
 
-export async function uploadAndAttachFieldHandoverEvidenceFile(
+export function uploadAndAttachFieldHandoverEvidenceFile(
   id: string,
   itemId: string,
   file: File,
-  replaceEvidenceFileId?: string
+  options: FieldEvidenceUploadOptions | string = {}
 ) {
+  const uploadOptions = typeof options === "string" ? { replaceEvidenceFileId: options } : options;
   const formData = new FormData();
   formData.append("files", file, file.name);
-  if (replaceEvidenceFileId) {
-    formData.append("replaceEvidenceFileId", replaceEvidenceFileId);
+  if (uploadOptions.replaceEvidenceFileId) {
+    formData.append("replaceEvidenceFileId", uploadOptions.replaceEvidenceFileId);
   }
-  return apiFetch<FieldHandoverEvidenceItem>(
-    `/field/handover/work-orders/${encodeURIComponent(id)}/evidence/${encodeURIComponent(itemId)}/upload`,
-    {
-      body: formData,
-      method: "POST",
-      timeoutMs: FIELD_EVIDENCE_UPLOAD_TIMEOUT_MS
+
+  return new Promise<FieldHandoverEvidenceItem>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const abortFromCaller = () => xhr.abort();
+    xhr.upload.onprogress = (event) => {
+      const totalBytes = Math.max(0, file.size);
+      const rawLoaded = Number.isFinite(event.loaded) ? event.loaded : 0;
+      const loadedBytes = Math.min(totalBytes, Math.max(0, rawLoaded));
+      const percent =
+        totalBytes > 0
+          ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100))
+          : 0;
+      uploadOptions.onProgress?.({ loadedBytes, percent, totalBytes });
+    };
+    xhr.upload.onload = () => uploadOptions.onUploadComplete?.();
+    xhr.onload = () => settleFieldEvidenceUpload(xhr, resolve, reject);
+    xhr.onerror = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_NETWORK_ERROR_MESSAGE, 0));
+    xhr.ontimeout = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_TIMEOUT_ERROR_MESSAGE, 0));
+    xhr.onabort = () => reject(new ApiError(FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE, 0));
+    xhr.onloadend = () => uploadOptions.signal?.removeEventListener("abort", abortFromCaller);
+    xhr.open(
+      "POST",
+      `${API_BASE_URL}/field/handover/work-orders/${encodeURIComponent(id)}/evidence/${encodeURIComponent(itemId)}/upload`
+    );
+    xhr.withCredentials = true;
+    xhr.timeout = FIELD_EVIDENCE_UPLOAD_TIMEOUT_MS;
+
+    if (uploadOptions.signal?.aborted) {
+      reject(new ApiError(FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE, 0));
+      return;
     }
-  );
+
+    uploadOptions.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    xhr.send(formData);
+  });
+}
+
+function settleFieldEvidenceUpload(
+  xhr: XMLHttpRequest,
+  resolve: (item: FieldHandoverEvidenceItem) => void,
+  reject: (error: ApiError) => void
+) {
+  if (xhr.status < 200 || xhr.status >= 300) {
+    reject(new ApiError(readFieldEvidenceUploadErrorMessage(xhr.responseText), xhr.status));
+    return;
+  }
+
+  try {
+    const item = JSON.parse(xhr.responseText) as unknown;
+    if (isFieldHandoverEvidenceItem(item)) {
+      resolve(item);
+      return;
+    }
+  } catch {
+    // The caller receives a safe error for malformed successful responses.
+  }
+
+  reject(new ApiError(FIELD_EVIDENCE_UPLOAD_FAILED_MESSAGE, xhr.status));
+}
+
+function readFieldEvidenceUploadErrorMessage(responseText: string) {
+  try {
+    const body = JSON.parse(responseText) as { message?: unknown };
+    if (typeof body.message === "string" && body.message.trim()) {
+      return body.message;
+    }
+    if (Array.isArray(body.message)) {
+      const messages = body.message
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (messages.length > 0) {
+        return messages.join(", ");
+      }
+    }
+  } catch {
+    // Error response bodies are intentionally not exposed to callers.
+  }
+
+  return FIELD_EVIDENCE_UPLOAD_FAILED_MESSAGE;
+}
+
+function isFieldHandoverEvidenceItem(value: unknown): value is FieldHandoverEvidenceItem {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const item = value as { id?: unknown; status?: unknown };
+  return typeof item.id === "string" && typeof item.status === "string";
 }
 
 export function removeFieldHandoverEvidenceFile(id: string, itemId: string, evidenceFileId: string) {

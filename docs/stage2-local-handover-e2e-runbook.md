@@ -96,7 +96,7 @@ Before a new order can enter the local or staging handover work-order path:
 
 - Stage 1 signing must be complete.
 - Delivery readiness must pass the base order/vehicle checks.
-- A non-deleted active vehicle insurance policy covering the delivery check date is enough to satisfy insurance readiness; vehicle master insurance dates are fallback/read-model data.
+- Insurance readiness requires both a non-deleted active compulsory traffic policy and a non-deleted active commercial policy from `VehicleInsurancePolicy` to cover the planned delivery date. `VehicleInsurancePolicy` is the sole source of truth; vehicle master policy dates are not used as fallback.
 - A zero required deposit must be treated as satisfied automatically. Non-zero deposits still require confirmation.
 - First monthly fee readiness depends on receivable bill write-off. A confirmed payment record without write-off should be shown as registered but pending write-off, not as settled.
 - Admin order detail must expose the Stage 2 create-work-order action once delivery preparation is ready and no active work order exists.
@@ -137,7 +137,9 @@ Current PDF visual acceptance has passed and covers:
 - all prepared photo derivatives at four photos per attachment page;
 - video inventory, source SHA-256, duration, protected evidence-package reference, and four `WALKAROUND_VIDEO` keyframes;
 - no embedded original video stream;
-- absence of raw object storage keys, buckets, signing URLs, provider payloads, full phone numbers, and full identity numbers.
+- full customer legal name, mobile, and identity number, full VIN, and the full lessor operator contact phone in the protected signing PDF;
+- absence of raw object storage keys, buckets, private storage paths, signing URLs, and provider payloads from the signing PDF;
+- masked/safe Portal, Field, and Admin status DTOs that do not expose the signing PDF's full identity or contact values.
 
 After Admin Stage 2 eSign creation:
 

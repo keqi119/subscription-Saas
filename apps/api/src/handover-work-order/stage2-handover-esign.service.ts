@@ -41,6 +41,8 @@ export const STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED =
   "STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED";
 export const STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED =
   "STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED";
+export const STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT =
+  "STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT";
 export const STAGE2_PLATFORM_SEAL_PROVIDER_FAILED =
   "STAGE2_PLATFORM_SEAL_PROVIDER_FAILED";
 export const STAGE2_HANDOVER_ESIGN_RESULT_STALE =
@@ -60,6 +62,21 @@ const TERMINAL_REBUILD_STATUSES = new Set<ESignTaskStatus>([
   ESignTaskStatus.CANCELLED,
   ESignTaskStatus.EXPIRED,
   ESignTaskStatus.FAILED
+]);
+const VOIDABLE_TASK_STATUSES = [
+  ESignTaskStatus.CREATED,
+  ESignTaskStatus.WAITING_CUSTOMER,
+  ESignTaskStatus.SIGNING,
+  ESignTaskStatus.FAILED,
+  ESignTaskStatus.CANCELLED,
+  ESignTaskStatus.EXPIRED
+] as const;
+const VOIDABLE_HANDOVER_STATUSES = new Set<DeliveryHandoverStatus>([
+  DeliveryHandoverStatus.SOURCE_GENERATED,
+  DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+  DeliveryHandoverStatus.PENDING_PLATFORM_SEAL,
+  DeliveryHandoverStatus.FAILED,
+  DeliveryHandoverStatus.CANCELLED
 ]);
 
 const CUSTOMER_SIGNING_SLOT: ESignSigningSlot = {
@@ -198,6 +215,7 @@ export class Stage2HandoverESignService {
     const initialWorkOrder = await this.loadWorkOrder(workOrderId);
     const existingActiveTask = await this.findActiveTask(initialWorkOrder);
     if (existingActiveTask) {
+      requireTypedSigners(existingActiveTask);
       assertTaskSourceBinding(existingActiveTask, initialWorkOrder.handover);
       return this.toView(initialWorkOrder, existingActiveTask, emptyReadiness(workOrderId));
     }
@@ -226,11 +244,11 @@ export class Stage2HandoverESignService {
     const providerType = parseProvider(
       this.configService.get<string>("ESIGN_PROVIDER") ?? "mock"
     );
-    const taskNo = createBusinessNo("ESG");
     const now = new Date();
 
-    const task = await withUniqueBusinessNoRetry(() =>
-      this.prisma.$transaction(async (tx) => {
+    const task = await withUniqueBusinessNoRetry(() => {
+      const taskNo = createBusinessNo("ESG");
+      return this.prisma.$transaction(async (tx) => {
         const created = await tx.contractESignTask.create({
           data: {
             contractId: context.handover.handoverContract.id,
@@ -243,7 +261,8 @@ export class Stage2HandoverESignService {
             orderId: context.order.id,
             provider: providerType,
             requestSnapshot: toJson({
-              artifactVersion: 1,
+              artifactVersion: context.handover.artifactVersion,
+              contractId: context.handover.handoverContract.id,
               documentType: "DELIVERY_HANDOVER",
               handoverId: context.handover.id,
               manifestHash: context.handover.manifestHash,
@@ -252,6 +271,7 @@ export class Stage2HandoverESignService {
                 "STAGE2_HANDOVER_CUSTOMER",
                 "STAGE2_HANDOVER_PLATFORM"
               ],
+              sourceDocumentFileId: context.handover.sourceDocumentFileId,
               sourcePdfHash: context.handover.sourcePdfHash
             }),
             signers: {
@@ -308,10 +328,10 @@ export class Stage2HandoverESignService {
           });
         }
         return created;
-      })
-    );
+      });
+    });
 
-    const customerSigner = requireTypedSigner(task, CUSTOMER_SLOT_ID);
+    const { customerSigner } = requireTypedSigners(task);
     try {
       const providerResult = await this.provider.createSignTask({
         callbackUrl: this.buildCallbackUrl(providerType),
@@ -446,8 +466,7 @@ export class Stage2HandoverESignService {
     }
     assertTaskSourceBinding(task, context.handover);
 
-    const customerSigner = requireTypedSigner(task, CUSTOMER_SLOT_ID);
-    const platformSigner = requireTypedSigner(task, PLATFORM_SLOT_ID);
+    const { customerSigner, platformSigner } = requireTypedSigners(task);
     if (customerSigner.signerStatus !== ESignSignerStatus.SIGNED) {
       throw new BadRequestException({
         code: "STAGE2_CUSTOMER_SIGNATURE_REQUIRED",
@@ -614,16 +633,20 @@ export class Stage2HandoverESignService {
         message: "The Stage 2 eSign task does not exist."
       });
     }
+    requireTypedSigners(task);
     if (task.taskStatus === ESignTaskStatus.COMPLETED) {
       throw new BadRequestException({
         code: "STAGE2_HANDOVER_ESIGN_VOID_NOT_ALLOWED",
         message: "A completed Stage 2 signing task cannot be voided for rebuild."
       });
     }
+    if (!VOIDABLE_HANDOVER_STATUSES.has(handover.status)) {
+      throw voidNotAllowed();
+    }
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      await tx.contractESignTask.update({
+      const taskVoided = await tx.contractESignTask.updateMany({
         data: {
           cancelledAt: now,
           errorSnapshot: toJson({
@@ -636,10 +659,16 @@ export class Stage2HandoverESignService {
           updatedBy: actorId
         },
         where: {
+          completedAt: null,
+          documentType: ESignDocumentType.DELIVERY_HANDOVER,
           id: task.id,
-          signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER
+          signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+          taskStatus: { in: [...VOIDABLE_TASK_STATUSES] }
         }
       });
+      if (taskVoided.count !== 1) {
+        throw voidNotAllowed();
+      }
       await tx.contractESignSigner.updateMany({
         data: {
           claimExpiresAt: null,
@@ -675,7 +704,8 @@ export class Stage2HandoverESignService {
         },
         where: {
           handoverESignTaskId: task.id,
-          id: handover.id
+          id: handover.id,
+          status: handover.status
         }
       });
       if (released.count !== 1) {
@@ -695,6 +725,9 @@ export class Stage2HandoverESignService {
     const workOrder = await this.loadWorkOrder(workOrderId);
     const handover = workOrder.handover;
     const task = await this.resolveCurrentTask(workOrder);
+    if (task) {
+      requireTypedSigners(task);
+    }
     return {
       archiveStatus: handover?.archiveStatus ?? null,
       archivedAt: handover?.archivedAt ?? null,
@@ -725,6 +758,7 @@ export class Stage2HandoverESignService {
     if (
       !handover?.handoverESignTaskId ||
       handover.handoverESignTask?.id !== handover.handoverESignTaskId ||
+      Boolean(handover.handoverESignTask.deletedAt) ||
       handover.handoverESignTask.signingStage !==
         ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
       handover.handoverESignTask.documentType !==
@@ -737,17 +771,11 @@ export class Stage2HandoverESignService {
 
   private async findActiveTask(workOrder: Stage2LifecycleWorkOrder) {
     const pointer = this.pointerTask(workOrder);
-    if (
-      pointer &&
-      ACTIVE_TASK_STATUSES.includes(pointer.taskStatus as typeof ACTIVE_TASK_STATUSES[number])
-    ) {
-      return pointer;
-    }
     const contractId = workOrder.handover?.handoverContractId;
     if (!contractId) {
       return null;
     }
-    return this.prisma.contractESignTask.findFirst({
+    const contractTask = await this.prisma.contractESignTask.findFirst({
       include: stage2TaskInclude,
       orderBy: { createdAt: "desc" },
       where: {
@@ -757,18 +785,25 @@ export class Stage2HandoverESignService {
         taskStatus: { in: [...ACTIVE_TASK_STATUSES] }
       }
     });
+    if (contractTask && pointer?.id !== contractTask.id) {
+      throw orphanConflict();
+    }
+    if (
+      pointer &&
+      ACTIVE_TASK_STATUSES.includes(pointer.taskStatus as typeof ACTIVE_TASK_STATUSES[number])
+    ) {
+      return pointer;
+    }
+    return null;
   }
 
   private async resolveCurrentTask(workOrder: Stage2LifecycleWorkOrder) {
     const pointer = this.pointerTask(workOrder);
-    if (pointer) {
-      return pointer;
-    }
     const contractId = workOrder.handover?.handoverContractId;
     if (!contractId) {
-      return null;
+      return pointer;
     }
-    return this.prisma.contractESignTask.findFirst({
+    const contractTask = await this.prisma.contractESignTask.findFirst({
       include: stage2TaskInclude,
       orderBy: { createdAt: "desc" },
       where: {
@@ -777,6 +812,16 @@ export class Stage2HandoverESignService {
         signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER
       }
     });
+    if (
+      contractTask &&
+      ACTIVE_TASK_STATUSES.includes(
+        contractTask.taskStatus as typeof ACTIVE_TASK_STATUSES[number]
+      ) &&
+      pointer?.id !== contractTask.id
+    ) {
+      throw orphanConflict();
+    }
+    return pointer ?? contractTask;
   }
 
   private requireCreationContext(workOrder: Stage2LifecycleWorkOrder) {
@@ -980,8 +1025,9 @@ export class Stage2HandoverESignService {
     readiness: Stage2HandoverESignReadiness
   ): Stage2HandoverESignView {
     const handover = workOrder.handover;
-    const customerSigner = findTypedSigner(task, CUSTOMER_SLOT_ID);
-    const platformSigner = findTypedSigner(task, PLATFORM_SLOT_ID);
+    const signers = task ? requireTypedSigners(task) : null;
+    const customerSigner = signers?.customerSigner ?? null;
+    const platformSigner = signers?.platformSigner ?? null;
     const customerSigned =
       customerSigner?.signerStatus === ESignSignerStatus.SIGNED;
     return {
@@ -1037,31 +1083,65 @@ export class Stage2HandoverESignService {
   }
 }
 
-function findTypedSigner(task: Stage2Task | null, slotId: ESignSlotId) {
-  return task?.signers.find(
-    (signer) =>
-      signer.slotId === slotId &&
-      signer.documentType === ESignDocumentType.DELIVERY_HANDOVER
-  ) ?? null;
+type Stage2Signer = Stage2Task["signers"][number];
+
+function requireTypedSigners(task: Stage2Task) {
+  if (
+    task.signers.length !== 2 ||
+    task.signers.some((signer) => signer.deletedAt !== null)
+  ) {
+    throw invalidSignerSet();
+  }
+  const customerMatches = task.signers.filter((signer) =>
+    signerMatchesTuple(
+      signer,
+      CUSTOMER_SLOT_ID,
+      ESignSignerType.CUSTOMER,
+      ESignProviderActionType.CUSTOMER_MANUAL_SIGN
+    )
+  );
+  const platformMatches = task.signers.filter((signer) =>
+    signerMatchesTuple(
+      signer,
+      PLATFORM_SLOT_ID,
+      ESignSignerType.PLATFORM,
+      ESignProviderActionType.PLATFORM_AUTO_SEAL
+    )
+  );
+  if (customerMatches.length !== 1 || platformMatches.length !== 1) {
+    throw invalidSignerSet();
+  }
+  return {
+    customerSigner: customerMatches[0]!,
+    platformSigner: platformMatches[0]!
+  };
 }
 
-function requireTypedSigner(task: Stage2Task, slotId: ESignSlotId) {
-  const matches = task.signers.filter(
-    (signer) =>
-      signer.slotId === slotId &&
-      signer.documentType === ESignDocumentType.DELIVERY_HANDOVER
+function signerMatchesTuple(
+  signer: Stage2Signer,
+  slotId: ESignSlotId,
+  signerType: ESignSignerType,
+  providerActionType: ESignProviderActionType
+) {
+  return (
+    signer.deletedAt === null &&
+    signer.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
+    signer.providerActionType === providerActionType &&
+    signer.required === true &&
+    signer.signerType === signerType &&
+    signer.slotId === slotId
   );
-  if (matches.length !== 1) {
-    throw new BadRequestException({
-      code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID",
-      message: `Exactly one typed signer is required for ${slotId}.`
-    });
-  }
-  return matches[0]!;
+}
+
+function invalidSignerSet() {
+  return new BadRequestException({
+    code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID",
+    message: "Exactly two complete typed Stage 2 signers are required."
+  });
 }
 
 function toSignerView(
-  signer: ReturnType<typeof findTypedSigner>,
+  signer: Stage2Signer | null,
   slotId: ESignSlotId,
   retryAvailable: boolean
 ): Stage2HandoverESignSignerView {
@@ -1247,6 +1327,20 @@ function lostPlatformClaim() {
   });
 }
 
+function orphanConflict() {
+  return new ConflictException({
+    code: STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT,
+    message: "The active Stage 2 eSign task is not linked by the handover pointer."
+  });
+}
+
+function voidNotAllowed() {
+  return new BadRequestException({
+    code: "STAGE2_HANDOVER_ESIGN_VOID_NOT_ALLOWED",
+    message: "A completed or changed Stage 2 signing task cannot be voided for rebuild."
+  });
+}
+
 function toJson(value: Record<string, unknown>) {
   return value as Prisma.InputJsonValue;
 }
@@ -1289,9 +1383,18 @@ function taskMatchesSourceBinding(
     return false;
   }
   const snapshot = asRecord(task.requestSnapshot);
+  const contract = handover.handoverContract;
   return (
+    task.contractId === handover.handoverContractId &&
+    contract?.id === handover.handoverContractId &&
+    contract.fileId === handover.sourceDocumentFileId &&
+    snapshot?.artifactVersion === handover.artifactVersion &&
+    snapshot?.contractId === task.contractId &&
+    snapshot.contractId === contract.id &&
     snapshot?.handoverId === handover.id &&
     snapshot?.manifestHash === handover.manifestHash &&
+    snapshot?.sourceDocumentFileId === handover.sourceDocumentFileId &&
+    snapshot.sourceDocumentFileId === contract.fileId &&
     snapshot?.sourcePdfHash === handover.sourcePdfHash
   );
 }

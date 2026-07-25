@@ -18,6 +18,19 @@ import {
 import { PermissionCode } from "@subscription-saas/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const businessNumberMocks = vi.hoisted(() => ({
+  createBusinessNo: vi.fn()
+}));
+
+vi.mock("../src/common/business-number", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/common/business-number")>();
+  return {
+    ...actual,
+    createBusinessNo: businessNumberMocks.createBusinessNo
+  };
+});
+
 import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { AuthGuard } from "../src/auth/auth.guard";
 import { PermissionsGuard } from "../src/auth/permissions.guard";
@@ -39,6 +52,10 @@ const PLATFORM_SLOT = ESignSlotId.STAGE2_HANDOVER_PLATFORM;
 describe("Stage2HandoverESignService", () => {
   beforeEach(() => {
     vi.useRealTimers();
+    businessNumberMocks.createBusinessNo.mockReset();
+    businessNumberMocks.createBusinessNo.mockReturnValue(
+      "ESG20260726080000ABCD"
+    );
   });
 
   it("stops on readiness blockers without provider or persistence calls", async () => {
@@ -90,6 +107,12 @@ describe("Stage2HandoverESignService", () => {
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
       taskStatus: ESignTaskStatus.CREATED
     });
+    expect(createData.requestSnapshot).toMatchObject({
+      artifactVersion: 3,
+      contractId: "contract-stage2-1",
+      handoverId: "handover-1",
+      sourceDocumentFileId: "file-stage2-1"
+    });
     expect(createData.signers.create).toEqual([
       expect.objectContaining({
         customerId: "customer-1",
@@ -114,6 +137,28 @@ describe("Stage2HandoverESignService", () => {
       status: ESignTaskStatus.WAITING_CUSTOMER,
       taskId: "stage2-task-1"
     });
+  });
+
+  it("generates a new task number when a P2002 create collision is retried", async () => {
+    const harness = createHarness();
+    businessNumberMocks.createBusinessNo
+      .mockReturnValueOnce("ESG20260726080000AAAA")
+      .mockReturnValueOnce("ESG20260726080000BBBB");
+    harness.prisma.contractESignTask.create.mockRejectedValueOnce(
+      Object.assign(new Error("task number collision"), { code: "P2002" })
+    );
+
+    await harness.service.create("work-order-1", "admin-1");
+
+    expect(
+      harness.prisma.contractESignTask.create.mock.calls.map(
+        ([input]: any[]) => input.data.taskNo
+      )
+    ).toEqual([
+      "ESG20260726080000AAAA",
+      "ESG20260726080000BBBB"
+    ]);
+    expect(businessNumberMocks.createBusinessNo).toHaveBeenCalledTimes(2);
   });
 
   it("passes exactly the persisted customer slot and coordinate to provider create", async () => {
@@ -239,9 +284,12 @@ describe("Stage2HandoverESignService", () => {
 
   it("returns the existing active task without readiness, persistence, or provider calls", async () => {
     const harness = createHarness();
-    harness.state.activeTask = makeTask({
+    const task = makeTask({
       taskStatus: ESignTaskStatus.WAITING_CUSTOMER
     });
+    harness.state.activeTask = task;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
 
     const result = await harness.service.create("work-order-1", "admin-1");
 
@@ -249,6 +297,46 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.readiness.assertReady).not.toHaveBeenCalled();
     expect(harness.prisma.contractESignTask.create).not.toHaveBeenCalled();
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects an active contract task whose handover pointer is missing", async () => {
+    const harness = createHarness();
+    harness.state.activeTask = makeTask({
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+    });
+
+    await expect(
+      harness.service.create("work-order-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT"
+      })
+    });
+    expect(harness.readiness.assertReady).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignTask.create).not.toHaveBeenCalled();
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects an active idempotent task with a wrong platform action tuple", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+    });
+    task.signers[1]!.providerActionType =
+      ESignProviderActionType.CUSTOMER_MANUAL_SIGN;
+    harness.state.activeTask = task;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.create("work-order-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID"
+      })
+    });
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
   });
 
   it("requires explicit void before rebuilding a terminal pointer task", async () => {
@@ -282,17 +370,21 @@ describe("Stage2HandoverESignService", () => {
       "Source artifact was superseded"
     );
 
-    expect(harness.prisma.contractESignTask.update).toHaveBeenCalledWith(
+    expect(harness.prisma.contractESignTask.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           cancelledAt: expect.any(Date),
           taskStatus: ESignTaskStatus.CANCELLED,
           updatedBy: "admin-1"
         }),
-        where: {
+        where: expect.objectContaining({
+          completedAt: null,
           id: "stage2-task-1",
-          signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER
-        }
+          signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+          taskStatus: expect.objectContaining({
+            in: expect.not.arrayContaining([ESignTaskStatus.COMPLETED])
+          })
+        })
       })
     );
     expect(harness.prisma.vehicleDeliveryHandover.updateMany).toHaveBeenCalledWith(
@@ -375,6 +467,76 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.state.workOrder.handover.status).toBe(
       DeliveryHandoverStatus.SIGNED
     );
+  });
+
+  it("does not downgrade a task completed after the initial void read", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    harness.state.workOrder.handover.handoverContract.status =
+      ContractStatus.SIGNING;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.prisma.$transaction.mockImplementationOnce(
+      async (operation: (tx: any) => Promise<unknown>) => {
+        task.taskStatus = ESignTaskStatus.COMPLETED;
+        task.completedAt = NOW;
+        task.signers[1]!.signerStatus = ESignSignerStatus.SIGNED;
+        harness.state.workOrder.handover.handoverContract.status =
+          ContractStatus.SIGNED;
+        harness.state.workOrder.handover.completedAt = NOW;
+        harness.state.workOrder.handover.platformSignedAt = NOW;
+        harness.state.workOrder.handover.status = DeliveryHandoverStatus.SIGNED;
+        return operation(harness.prisma);
+      }
+    );
+
+    await expect(
+      harness.service.voidTask(
+        "work-order-1",
+        "admin-1",
+        "Concurrent completion must win"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_VOID_NOT_ALLOWED"
+      })
+    });
+    expect(task.taskStatus).toBe(ESignTaskStatus.COMPLETED);
+    expect(task.completedAt).toEqual(NOW);
+    expect(harness.state.workOrder.handover.handoverContract.status).toBe(
+      ContractStatus.SIGNED
+    );
+    expect(harness.state.workOrder.handover.handoverESignTaskId).toBe(task.id);
+    expect(harness.state.workOrder.handover.status).toBe(
+      DeliveryHandoverStatus.SIGNED
+    );
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.vehicleDeliveryHandover.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects void when a required typed signer is soft-deleted", async () => {
+    const harness = createHarness();
+    const task = makeTask({ taskStatus: ESignTaskStatus.FAILED });
+    task.signers[0]!.deletedAt = NOW;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.voidTask("work-order-1", "admin-1", "Invalid signer set")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID"
+      })
+    });
+    expect(harness.prisma.contractESignTask.updateMany).not.toHaveBeenCalled();
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
   });
 
   it("claims platform retry once and passes exactly the persisted platform slot", async () => {
@@ -472,8 +634,11 @@ describe("Stage2HandoverESignService", () => {
       customerStatus: ESignSignerStatus.SIGNED
     });
     task.requestSnapshot = {
+      artifactVersion: 3,
+      contractId: "contract-stage2-1",
       handoverId: "handover-1",
       manifestHash: "a".repeat(64),
+      sourceDocumentFileId: "file-stage2-1",
       sourcePdfHash: "c".repeat(64)
     };
     harness.state.workOrder.handover.handoverESignTask = task;
@@ -484,6 +649,76 @@ describe("Stage2HandoverESignService", () => {
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED
+      })
+    });
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects equal-hash retry when the task contract identity is stale", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    task.contractId = "contract-stage2-old";
+    (task.requestSnapshot as Record<string, unknown>).contractId =
+      "contract-stage2-old";
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.retryPlatformSeal("work-order-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED
+      })
+    });
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects equal-hash retry when the source file identity is stale", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    harness.state.workOrder.handover.handoverContract.fileId =
+      "file-stage2-replacement";
+    harness.state.workOrder.handover.handoverContract.contractSnapshot
+      .stage2HandoverPdfArtifact.fileId = "file-stage2-replacement";
+    harness.state.workOrder.handover.sourceDocumentFileId =
+      "file-stage2-replacement";
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.retryPlatformSeal("work-order-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED
+      })
+    });
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects platform retry when the platform signer is not required", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    task.signers[1]!.required = false;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.retryPlatformSeal("work-order-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID"
       })
     });
     expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
@@ -628,6 +863,45 @@ describe("Stage2HandoverESignService", () => {
     ]) {
       expect(serialized.toLowerCase()).not.toContain(forbidden.toLowerCase());
     }
+  });
+
+  it("rejects status when the customer signer has the wrong role", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    task.signers[0]!.signerType = ESignSignerType.PLATFORM;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID"
+      })
+    });
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects status when an extra signer row is present", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    task.signers.push({
+      ...makeSigner("PLATFORM"),
+      id: "stage2-extra-signer-1"
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID"
+      })
+    });
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
   });
 });
 
@@ -837,6 +1111,13 @@ function createHarness() {
         const task = state.workOrder.handover.handoverESignTask ?? state.activeTask;
         if (
           !task ||
+          (where?.id !== undefined && where.id !== task.id) ||
+          (where?.signingStage !== undefined &&
+            where.signingStage !== task.signingStage) ||
+          (where?.documentType !== undefined &&
+            where.documentType !== task.documentType) ||
+          (where?.completedAt !== undefined &&
+            where.completedAt !== task.completedAt) ||
           (where?.taskStatus &&
             where.taskStatus !== task.taskStatus &&
             !where.taskStatus.in?.includes(task.taskStatus))
@@ -865,14 +1146,21 @@ function createHarness() {
     },
     vehicleDeliveryHandover: {
       updateMany: vi.fn(async ({ data, where }: any) => {
+        const handover = state.workOrder.handover;
         if (
+          (where?.id !== undefined && where.id !== handover.id) ||
+          (where?.handoverContractId !== undefined &&
+            where.handoverContractId !== handover.handoverContractId) ||
+          (where?.sourceDocumentFileId !== undefined &&
+            where.sourceDocumentFileId !== handover.sourceDocumentFileId) ||
+          (where?.status !== undefined && where.status !== handover.status) ||
           where?.handoverESignTaskId !== undefined &&
           where.handoverESignTaskId !==
-            state.workOrder.handover.handoverESignTaskId
+            handover.handoverESignTaskId
         ) {
           return { count: 0 };
         }
-        Object.assign(state.workOrder.handover, data);
+        Object.assign(handover, data);
         return { count: 1 };
       })
     },
@@ -914,6 +1202,7 @@ function makeWorkOrder() {
     handover: {
       archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
       archivedAt: null,
+      artifactVersion: 3,
       completedAt: null,
       customerSignedAt: null,
       handoverContract: {
@@ -989,8 +1278,11 @@ function makeTask(
     providerEnvelopeId: "provider-envelope-1",
     providerTaskId: "ESG20260726080000ABCDH1",
     requestSnapshot: {
+      artifactVersion: 3,
+      contractId: "contract-stage2-1",
       handoverId: "handover-1",
       manifestHash: "a".repeat(64),
+      sourceDocumentFileId: "file-stage2-1",
       sourcePdfHash: "b".repeat(64)
     } as unknown,
     responseSnapshot: null,
@@ -1019,6 +1311,7 @@ function makeSigner(type: "CUSTOMER" | "PLATFORM") {
     attemptCount: 0,
     claimExpiresAt: null,
     customerId: customer ? "customer-1" : null,
+    deletedAt: null as null | Date,
     documentType: ESignDocumentType.DELIVERY_HANDOVER,
     id: customer ? "stage2-customer-signer-1" : "stage2-platform-signer-1",
     lastAttemptAt: null,

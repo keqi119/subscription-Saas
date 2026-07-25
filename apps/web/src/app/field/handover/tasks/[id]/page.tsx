@@ -43,12 +43,12 @@ import {
   validateFieldEvidenceFile
 } from "../../../../../lib/field-handover-upload";
 import {
-  advanceFieldEvidenceUploadBatch,
   canRetryFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
-  completeFieldEvidenceUploadBatch,
   interruptFieldEvidenceUploadBatch,
   retryFieldEvidenceUploadBatch,
+  retryFieldEvidenceUploadRefresh,
+  runFieldEvidenceUploadBatch,
   startFieldEvidenceUploadBatch,
   type FieldEvidenceUploadBatchState,
   type FieldEvidenceUploadInterruptionReason
@@ -98,6 +98,7 @@ export default function FieldHandoverTaskDetailPage() {
   const [detail, setDetail] = useState<FieldHandoverWorkOrderDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [facts, setFacts] = useState<FieldHandoverFactsDraft>({});
+  const [hasActiveUploadRequest, setHasActiveUploadRequest] = useState(false);
   const [loading, setLoading] = useState(true);
   const [removingFileId, setRemovingFileId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -105,9 +106,12 @@ export default function FieldHandoverTaskDetailPage() {
     useState<FieldEvidenceUploadBatchState<File>>(INITIAL_UPLOAD_BATCH_STATE);
   const [uploadState, setUploadState] = useState<EvidenceUploadState | null>(null);
 
-  const loadDetail = useCallback(async () => {
+  const loadDetail = useCallback(async (options: { showLoading?: boolean } = {}) => {
+    const showLoading = options.showLoading !== false;
     try {
-      setLoading(true);
+      if (showLoading) {
+        setLoading(true);
+      }
       setErrorMessage(null);
       await getFieldHandoverSession();
       const [nextDetail, readiness] = await Promise.all([
@@ -122,16 +126,25 @@ export default function FieldHandoverTaskDetailPage() {
           ready: readiness.ready ?? nextDetail.evidenceChecklist?.ready ?? false
         }
       };
+      if (!isMountedRef.current) {
+        return false;
+      }
       setDetail(mergedDetail);
       setFacts(fieldFactsToDraft(mergedDetail.fieldFacts));
+      return true;
     } catch (error) {
       if (isFieldHandoverSessionExpired(error)) {
         router.replace("/field/handover");
-        return;
+        return false;
       }
-      setErrorMessage("无法访问该交接任务，请确认任务仍分配给当前手机号");
+      if (isMountedRef.current) {
+        setErrorMessage("无法访问该交接任务，请确认任务仍分配给当前手机号");
+      }
+      return false;
     } finally {
-      setLoading(false);
+      if (showLoading && isMountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [params.id, router]);
 
@@ -159,6 +172,12 @@ export default function FieldHandoverTaskDetailPage() {
   const retryUpload = uploadBatchState.status === "RETRY_PENDING" ? uploadBatchState.batch : null;
   const uploadingItemId =
     uploadBatchState.status === "UPLOADING" ? uploadBatchState.batch?.itemViewId ?? null : null;
+  const uploadBarrierText =
+    uploadBatchState.status === "REFRESHING"
+      ? "正在同步最新资料"
+      : uploadBatchState.status === "REFRESH_FAILED"
+        ? "最新资料同步失败，请重新加载状态"
+        : UPLOAD_SUBMIT_BLOCKER_TEXT;
 
   async function startWork() {
     await runAction("start", async () => {
@@ -249,17 +268,34 @@ export default function FieldHandoverTaskDetailPage() {
       }
     }
 
-    try {
-      applyUploadBatchState(nextBatchState);
-      setBlockers([]);
-      const replaceEvidenceFileId = item.allowsMultiple
-        ? undefined
-        : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
-      for (const [index, file] of selectedFiles.entries()) {
+    applyUploadBatchState(nextBatchState);
+    setBlockers([]);
+    const replaceEvidenceFileId = item.allowsMultiple
+      ? undefined
+      : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
+    const finalState = await runFieldEvidenceUploadBatch(nextBatchState, {
+      getInterruptionReason: () => {
+        const reason = uploadAbortReasonRef.current ?? "FAILURE";
+        uploadAbortReasonRef.current = null;
+        return reason;
+      },
+      onStateChange: applyUploadBatchState,
+      onUploadInterrupted: (error, reason) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+        handleActionError(
+          error,
+          reason === "USER_CANCEL" ? "上传已取消，可重试剩余文件" : "上传失败，请重试"
+        );
+      },
+      refreshDetail: () => loadDetail({ showLoading: false }),
+      uploadFile: async (file, index) => {
         const controller = new AbortController();
         uploadAbortControllerRef.current = controller;
         uploadAbortReasonRef.current = null;
         if (isMountedRef.current) {
+          setHasActiveUploadRequest(true);
           setUploadState({
             fileCount: selectedFiles.length,
             fileIndex: index + 1,
@@ -290,50 +326,24 @@ export default function FieldHandoverTaskDetailPage() {
             signal: controller.signal
           };
           await uploadAndAttachFieldHandoverEvidenceFile(params.id, itemId, file, uploadOptions);
-        } catch (error) {
-          const reason: FieldEvidenceUploadInterruptionReason = controller.signal.aborted
-            ? (uploadAbortReasonRef.current as FieldEvidenceUploadInterruptionReason | null) ?? "USER_CANCEL"
-            : "FAILURE";
-          const interrupted = interruptFieldEvidenceUploadBatch(uploadBatchStateRef.current, reason);
-          if (reason === "UNMOUNT" || !isMountedRef.current) {
-            uploadBatchStateRef.current = interrupted.state;
-            return;
-          }
-          applyUploadBatchState(interrupted.state);
-          if (interrupted.shouldShowUserFeedback) {
-            handleActionError(error, reason === "USER_CANCEL"
-              ? "上传已取消，可重试剩余文件"
-              : "上传失败，请重试");
-          }
-          if (interrupted.shouldReloadDetail) {
-            await loadDetail();
-          }
-          return;
         } finally {
           if (uploadAbortControllerRef.current === controller) {
             uploadAbortControllerRef.current = null;
-            uploadAbortReasonRef.current = null;
+          }
+          if (isMountedRef.current) {
+            setHasActiveUploadRequest(false);
           }
         }
-        if (index < selectedFiles.length - 1) {
-          applyUploadBatchState(advanceFieldEvidenceUploadBatch(uploadBatchStateRef.current));
-        }
       }
-      if (!isMountedRef.current) {
-        return;
-      }
+    });
+
+    if (isMountedRef.current && finalState.status === "IDLE") {
       void message.success(
         item.allowsMultiple && selectedFiles.length > 1
           ? `已上传 ${selectedFiles.length} 个文件`
           : replaceEvidenceFileId ? "资料已替换" : "资料已上传"
       );
-      await loadDetail();
-      if (isMountedRef.current) {
-        applyUploadBatchState(completeFieldEvidenceUploadBatch(uploadBatchStateRef.current));
-        setUploadState(null);
-      }
-    } finally {
-      uploadAbortControllerRef.current = null;
+      setUploadState(null);
     }
   }
 
@@ -347,6 +357,16 @@ export default function FieldHandoverTaskDetailPage() {
       return;
     }
     void uploadEvidence(retryUpload.itemViewId, retryUpload.files, true);
+  }
+
+  async function reloadUploadState() {
+    const finalState = await retryFieldEvidenceUploadRefresh(uploadBatchStateRef.current, {
+      onStateChange: applyUploadBatchState,
+      refreshDetail: () => loadDetail({ showLoading: false })
+    });
+    if (isMountedRef.current && finalState.status === "IDLE") {
+      setUploadState(null);
+    }
   }
 
   async function removeEvidence(itemId: string, evidenceFileId: string) {
@@ -403,8 +423,8 @@ export default function FieldHandoverTaskDetailPage() {
     if (canSubmitWithFieldEvidenceUploadBatch(uploadBatchStateRef.current)) {
       return false;
     }
-    setBlockers([UPLOAD_SUBMIT_BLOCKER_TEXT]);
-    void message.warning(UPLOAD_SUBMIT_BLOCKER_TEXT);
+    setBlockers([uploadBarrierText]);
+    void message.warning(uploadBarrierText);
     return true;
   }
 
@@ -699,16 +719,29 @@ export default function FieldHandoverTaskDetailPage() {
 
                       {itemUploadState ? (
                         <div aria-live="polite" style={uploadProgressStyle}>
-                          <Typography.Text strong>上传进度</Typography.Text>
-                          <Typography.Text ellipsis style={{ display: "block", marginTop: 4 }}>
-                            {itemUploadState.fileIndex} / {itemUploadState.fileCount} · {itemUploadState.fileName}
+                          <Typography.Text strong>
+                            {uploadBatchState.status === "REFRESHING" ||
+                            uploadBatchState.status === "REFRESH_FAILED"
+                              ? "资料状态同步"
+                              : "上传进度"}
                           </Typography.Text>
-                          <Progress percent={itemUploadState.percent} size="small" />
+                          {uploadBatchState.status === "REFRESHING" ||
+                          uploadBatchState.status === "REFRESH_FAILED" ? null : (
+                            <>
+                              <Typography.Text ellipsis style={{ display: "block", marginTop: 4 }}>
+                                {itemUploadState.fileIndex} / {itemUploadState.fileCount} · {itemUploadState.fileName}
+                              </Typography.Text>
+                              <Progress percent={itemUploadState.percent} size="small" />
+                            </>
+                          )}
                           <Flex align="center" gap={8} justify="space-between" wrap="wrap">
                             <Typography.Text style={{ color: "#607086", fontSize: 12 }}>
-                              {formatUploadBytes(itemUploadState.loadedBytes)} / {formatUploadBytes(itemUploadState.totalBytes)}
+                              {uploadBatchState.status === "REFRESHING" ||
+                              uploadBatchState.status === "REFRESH_FAILED"
+                                ? uploadBarrierText
+                                : `${formatUploadBytes(itemUploadState.loadedBytes)} / ${formatUploadBytes(itemUploadState.totalBytes)}`}
                             </Typography.Text>
-                            {isUploading ? (
+                            {isUploading && hasActiveUploadRequest ? (
                               <Button
                                 danger
                                 icon={<StopOutlined />}
@@ -716,6 +749,14 @@ export default function FieldHandoverTaskDetailPage() {
                                 style={{ minHeight: 44 }}
                               >
                                 取消上传
+                              </Button>
+                            ) : uploadBatchState.status === "REFRESH_FAILED" ? (
+                              <Button
+                                icon={<ReloadOutlined />}
+                                onClick={() => void reloadUploadState()}
+                                style={{ minHeight: 44 }}
+                              >
+                                重新加载状态
                               </Button>
                             ) : canRetry ? (
                               <Button
@@ -750,7 +791,7 @@ export default function FieldHandoverTaskDetailPage() {
               <div style={submitBarStyle}>
                 {!canSubmitUploadBatch ? (
                   <Alert
-                    message={UPLOAD_SUBMIT_BLOCKER_TEXT}
+                    message={uploadBarrierText}
                     showIcon
                     style={{ marginBottom: 8 }}
                     type="warning"

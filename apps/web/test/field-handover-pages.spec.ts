@@ -1,15 +1,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   advanceFieldEvidenceUploadBatch,
   canRetryFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
-  completeFieldEvidenceUploadBatch,
   interruptFieldEvidenceUploadBatch,
   retryFieldEvidenceUploadBatch,
+  retryFieldEvidenceUploadRefresh,
+  runFieldEvidenceUploadBatch,
   startFieldEvidenceUploadBatch
 } from "../src/lib/field-handover-upload-batch";
 
@@ -81,6 +82,9 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("interruptFieldEvidenceUploadBatch");
     expect(source).toContain('uploadAbortReasonRef.current = "UNMOUNT"');
     expect(source).toContain("submissionInFlightRef.current");
+    expect(source).toContain("正在同步最新资料");
+    expect(source).toContain("重新加载状态");
+    expect(source).toContain("hasActiveUploadRequest");
     expect(source).toContain("multiple={false}");
     expect(source).toContain("multiple={multiple}");
     expect(source).toContain("reviewContext.customerObjectionReason");
@@ -109,7 +113,7 @@ describe("field handover H5 pages", () => {
 });
 
 describe("field handover upload batch state", () => {
-  it("retains the current and remaining files after user cancellation", () => {
+  it("opens retry immediately when the first file is cancelled without refreshing", () => {
     const uploading = startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true);
     const interrupted = interruptFieldEvidenceUploadBatch(uploading, "USER_CANCEL");
 
@@ -118,11 +122,11 @@ describe("field handover upload batch state", () => {
       fileIndex: 0,
       status: "RETRY_PENDING"
     });
-    expect(interrupted.shouldReloadDetail).toBe(true);
+    expect(interrupted.shouldReloadDetail).toBe(false);
     expect(interrupted.shouldShowUserFeedback).toBe(true);
   });
 
-  it("retains only the failed and later files after partial success", () => {
+  it("enters authoritative refresh with the failed and later files after partial success", () => {
     const uploading = startFieldEvidenceUploadBatch(
       "damage",
       ["first.jpg", "second.jpg", "third.jpg"],
@@ -131,28 +135,44 @@ describe("field handover upload batch state", () => {
     const afterFirstSuccess = advanceFieldEvidenceUploadBatch(uploading);
     const interrupted = interruptFieldEvidenceUploadBatch(afterFirstSuccess, "FAILURE");
 
-    expect(interrupted.state.status).toBe("RETRY_PENDING");
+    expect(interrupted.state.status).toBe("REFRESHING");
     expect(interrupted.state.batch?.files).toEqual(["second.jpg", "third.jpg"]);
+    expect(canRetryFieldEvidenceUploadBatch(interrupted.state, true)).toBe(false);
+    expect(canSubmitWithFieldEvidenceUploadBatch(interrupted.state)).toBe(false);
   });
 
-  it("updates the remaining queue when a retry partially fails again", () => {
-    const uploading = startFieldEvidenceUploadBatch(
-      "damage",
-      ["first.jpg", "second.jpg", "third.jpg"],
-      true
+  it("updates the remaining queue when an asynchronous retry partially fails again", async () => {
+    const firstRun = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch(
+        "damage",
+        ["first.jpg", "second.jpg", "third.jpg"],
+        true
+      ),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail: async () => true,
+        uploadFile: async (file) => {
+          if (file === "second.jpg") {
+            throw new Error("first failure");
+          }
+        }
+      }
     );
-    const firstFailure = interruptFieldEvidenceUploadBatch(
-      advanceFieldEvidenceUploadBatch(uploading),
-      "FAILURE"
-    );
-    const retrying = retryFieldEvidenceUploadBatch(firstFailure.state, true);
-    const secondFailure = interruptFieldEvidenceUploadBatch(
-      advanceFieldEvidenceUploadBatch(retrying),
-      "FAILURE"
-    );
+    const retrying = retryFieldEvidenceUploadBatch(firstRun, true);
+    const secondRun = await runFieldEvidenceUploadBatch(retrying, {
+      getInterruptionReason: () => "FAILURE",
+      refreshDetail: async () => true,
+      uploadFile: async (file) => {
+        if (file === "third.jpg") {
+          throw new Error("second failure");
+        }
+      }
+    });
 
-    expect(secondFailure.state.status).toBe("RETRY_PENDING");
-    expect(secondFailure.state.batch?.files).toEqual(["third.jpg"]);
+    expect(firstRun.status).toBe("RETRY_PENDING");
+    expect(firstRun.batch?.files).toEqual(["second.jpg", "third.jpg"]);
+    expect(secondRun.status).toBe("RETRY_PENDING");
+    expect(secondRun.batch?.files).toEqual(["third.jpg"]);
   });
 
   it("keeps one file for single-file evidence and all files for multi-file evidence", () => {
@@ -162,30 +182,185 @@ describe("field handover upload batch state", () => {
       .toEqual(["first.jpg", "second.jpg"]);
   });
 
-  it("blocks submit during an active upload or pending retry", () => {
-    const uploading = startFieldEvidenceUploadBatch("damage", ["first.jpg"], true);
-    const retryPending = interruptFieldEvidenceUploadBatch(uploading, "FAILURE").state;
+  it("blocks submit during upload, refresh, refresh failure, or pending retry", () => {
+    const uploading = startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true);
+    const refreshing = interruptFieldEvidenceUploadBatch(
+      advanceFieldEvidenceUploadBatch(uploading),
+      "FAILURE"
+    ).state;
+    const refreshFailed = { ...refreshing, status: "REFRESH_FAILED" as const };
+    const retryPending = { ...refreshing, refreshTarget: undefined, status: "RETRY_PENDING" as const };
 
     expect(canSubmitWithFieldEvidenceUploadBatch(uploading)).toBe(false);
+    expect(canSubmitWithFieldEvidenceUploadBatch(refreshing)).toBe(false);
+    expect(canSubmitWithFieldEvidenceUploadBatch(refreshFailed)).toBe(false);
     expect(canSubmitWithFieldEvidenceUploadBatch(retryPending)).toBe(false);
-    expect(canSubmitWithFieldEvidenceUploadBatch(completeFieldEvidenceUploadBatch(uploading))).toBe(true);
+    expect(canSubmitWithFieldEvidenceUploadBatch({
+      batch: null,
+      fileIndex: 0,
+      status: "IDLE"
+    })).toBe(true);
   });
 
   it("does not allow a locked task to retry", () => {
-    const uploading = startFieldEvidenceUploadBatch("damage", ["first.jpg"], true);
-    const retryPending = interruptFieldEvidenceUploadBatch(uploading, "FAILURE").state;
+    const retryPending = interruptFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("damage", ["first.jpg"], true),
+      "FAILURE"
+    ).state;
 
     expect(canRetryFieldEvidenceUploadBatch(retryPending, false)).toBe(false);
     expect(retryFieldEvidenceUploadBatch(retryPending, false)).toBe(retryPending);
   });
+});
 
-  it("treats unmount abort as silent cleanup without retry or detail reload", () => {
-    const uploading = startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true);
-    const interrupted = interruptFieldEvidenceUploadBatch(uploading, "UNMOUNT");
+describe("field handover upload batch orchestration", () => {
+  it("makes retry available after partial success and authoritative refresh success", async () => {
+    const refreshDetail = vi.fn(async () => true);
+    const result = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch(
+        "damage",
+        ["first.jpg", "second.jpg", "third.jpg"],
+        true
+      ),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail,
+        uploadFile: async (file) => {
+          if (file === "second.jpg") {
+            throw new Error("upload failed");
+          }
+        }
+      }
+    );
 
-    expect(interrupted.state).toEqual({ batch: null, fileIndex: 0, status: "IDLE" });
-    expect(interrupted.shouldReloadDetail).toBe(false);
-    expect(interrupted.shouldShowUserFeedback).toBe(false);
+    expect(refreshDetail).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("RETRY_PENDING");
+    expect(result.batch?.files).toEqual(["second.jpg", "third.jpg"]);
+    expect(canRetryFieldEvidenceUploadBatch(result, true)).toBe(true);
+  });
+
+  it("preserves remaining files and blocks retry and submit after partial refresh failure", async () => {
+    const failed = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch(
+        "damage",
+        ["first.jpg", "second.jpg", "third.jpg"],
+        true
+      ),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail: async () => false,
+        uploadFile: async (file) => {
+          if (file === "second.jpg") {
+            throw new Error("upload failed");
+          }
+        }
+      }
+    );
+
+    expect(failed.status).toBe("REFRESH_FAILED");
+    expect(failed.batch?.files).toEqual(["second.jpg", "third.jpg"]);
+    expect(canRetryFieldEvidenceUploadBatch(failed, true)).toBe(false);
+    expect(canSubmitWithFieldEvidenceUploadBatch(failed)).toBe(false);
+
+    const recovered = await retryFieldEvidenceUploadRefresh(failed, {
+      refreshDetail: async () => true
+    });
+    expect(recovered.status).toBe("RETRY_PENDING");
+    expect(recovered.batch?.files).toEqual(["second.jpg", "third.jpg"]);
+  });
+
+  it("returns to idle only after all uploads and authoritative refresh succeed", async () => {
+    const states: string[] = [];
+    const result = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true),
+      {
+        getInterruptionReason: () => "FAILURE",
+        onStateChange: (state) => states.push(state.status),
+        refreshDetail: async () => true,
+        uploadFile: async () => undefined
+      }
+    );
+
+    expect(states).toContain("REFRESHING");
+    expect(result).toEqual({ batch: null, fileIndex: 0, status: "IDLE" });
+  });
+
+  it("keeps submit blocked when all uploads succeed but authoritative refresh fails", async () => {
+    const result = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("single", ["first.jpg"], false),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail: async () => false,
+        uploadFile: async () => undefined
+      }
+    );
+
+    expect(result.status).toBe("REFRESH_FAILED");
+    expect(result.batch).toBeNull();
+    expect(canSubmitWithFieldEvidenceUploadBatch(result)).toBe(false);
+  });
+
+  it("does not refresh or show feedback for unmount abort", async () => {
+    const refreshDetail = vi.fn(async () => true);
+    const onUploadInterrupted = vi.fn();
+    const result = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true),
+      {
+        getInterruptionReason: () => "UNMOUNT",
+        onUploadInterrupted,
+        refreshDetail,
+        uploadFile: async () => {
+          throw new Error("aborted on unmount");
+        }
+      }
+    );
+
+    expect(result).toEqual({ batch: null, fileIndex: 0, status: "IDLE" });
+    expect(refreshDetail).not.toHaveBeenCalled();
+    expect(onUploadInterrupted).not.toHaveBeenCalled();
+  });
+
+  it("keeps mutex and submit barriers active while authoritative refresh is pending", async () => {
+    let resolveRefresh!: (value: boolean) => void;
+    const states: Array<ReturnType<typeof startFieldEvidenceUploadBatch<string>>> = [];
+    const refreshDetail = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    const runPromise = runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("single", ["first.jpg"], false),
+      {
+        getInterruptionReason: () => "FAILURE",
+        onStateChange: (state) => states.push(state),
+        refreshDetail,
+        uploadFile: async () => undefined
+      }
+    );
+
+    await vi.waitFor(() => expect(states.at(-1)?.status).toBe("REFRESHING"));
+    const refreshing = states.at(-1);
+    expect(refreshing && canSubmitWithFieldEvidenceUploadBatch(refreshing)).toBe(false);
+    expect(refreshing && canRetryFieldEvidenceUploadBatch(refreshing, true)).toBe(false);
+
+    resolveRefresh(true);
+    await expect(runPromise).resolves.toEqual({ batch: null, fileIndex: 0, status: "IDLE" });
+  });
+
+  it("opens retry without authoritative refresh when the first upload fails", async () => {
+    const refreshDetail = vi.fn(async () => true);
+    const result = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail,
+        uploadFile: async () => {
+          throw new Error("first upload failed");
+        }
+      }
+    );
+
+    expect(refreshDetail).not.toHaveBeenCalled();
+    expect(result.status).toBe("RETRY_PENDING");
+    expect(result.batch?.files).toEqual(["first.jpg", "second.jpg"]);
   });
 });
 

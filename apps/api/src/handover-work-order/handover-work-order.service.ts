@@ -1658,6 +1658,13 @@ export class HandoverWorkOrderService {
               handoverId,
               orderId: workOrder.orderId,
               orderNo: order.orderNo,
+              stage2HandoverPdfArtifact: {
+                artifactKind: "stage2-handover-pdf-source",
+                documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+                fileId: createdFileObject.id,
+                signingStage: "STAGE2_DELIVERY_HANDOVER",
+                slotCoordinates: renderedFile!.slotCoordinates
+              },
               templateName: template.templateName,
               templateVersion: template.versionNo,
               workOrderId: workOrder.id

@@ -34,7 +34,27 @@ export interface ContractPdfArtifactPolicyOptions {
   purpose?: ContractPdfArtifactPurpose;
   requireGeneratedContractArtifact?: boolean;
   requireStage1SlotCoordinates?: boolean;
+  requireStage2SlotCoordinates?: boolean;
 }
+
+export interface Stage2HandoverPdfArtifactSlotCoordinate {
+  coordinateSource: "PDFKIT_RENDERER";
+  coordinateSystem: "FADADA_800_1131_TOP_LEFT";
+  documentType: "DELIVERY_HANDOVER_CONFIRMATION";
+  height: number;
+  pageNumber: number;
+  pdfPageHeight: number;
+  pdfPageWidth: number;
+  signingStage: "STAGE2_DELIVERY_HANDOVER";
+  slotId: "STAGE2_HANDOVER_CUSTOMER" | "STAGE2_HANDOVER_PLATFORM";
+  width: number;
+  x: number;
+  y: number;
+}
+
+export type ResolvedContractPdfArtifactSlotCoordinate =
+  | ContractPdfArtifactSlotCoordinateDiagnostic
+  | Stage2HandoverPdfArtifactSlotCoordinate;
 
 export interface ContractPdfArtifactPreflightDiagnostics {
   enterpriseAutoSealEnabled: boolean;
@@ -42,9 +62,10 @@ export interface ContractPdfArtifactPreflightDiagnostics {
   generatedContractArtifact: boolean;
   maxBytes: number;
   purpose?: ContractPdfArtifactPurpose;
-  slotCoordinates?: ContractPdfArtifactSlotCoordinateDiagnostic[];
+  slotCoordinates?: ResolvedContractPdfArtifactSlotCoordinate[];
   source: ContractPdfArtifactSource;
   stage1SlotCoordinatesVerified: boolean;
+  stage2SlotCoordinatesVerified: boolean;
   textExtractionVerified: false;
 }
 
@@ -55,7 +76,7 @@ export interface ContractPdfArtifact {
   objectKey?: string;
   preflight?: ContractPdfArtifactPreflightDiagnostics;
   size: number;
-  slotCoordinates?: ContractPdfArtifactSlotCoordinateDiagnostic[];
+  slotCoordinates?: ResolvedContractPdfArtifactSlotCoordinate[];
   source: ContractPdfArtifactSource;
 }
 
@@ -72,6 +93,7 @@ interface ResolvedContractPdfArtifactPolicy {
   purpose?: ContractPdfArtifactPurpose;
   requireGeneratedContractArtifact: boolean;
   requireStage1SlotCoordinates: boolean;
+  requireStage2SlotCoordinates: boolean;
   strictPdfMetadata: boolean;
 }
 
@@ -150,17 +172,29 @@ export class ContractPdfArtifactService {
     const buffer = await streamToBuffer(downloaded.stream);
     assertPdfBuffer(buffer, policy.maxBytes);
     const generatedContractArtifact = isGeneratedContractPdfObjectKey(contract.id, fileObject.objectKey);
-    const slotCoordinates = resolveGeneratedContractSlotCoordinates({
-      contractSnapshot: contract.contractSnapshot,
-      fileId,
-      generatedContractArtifact,
-      objectKey: fileObject.objectKey,
-      source
-    });
+    const slotCoordinates = policy.requireStage2SlotCoordinates
+      ? resolveStage2HandoverSlotCoordinates({
+          contractSnapshot: contract.contractSnapshot,
+          fileId,
+          generatedContractArtifact,
+          source
+        })
+      : resolveGeneratedContractSlotCoordinates({
+          contractSnapshot: contract.contractSnapshot,
+          fileId,
+          generatedContractArtifact,
+          objectKey: fileObject.objectKey,
+          source
+        });
 
     if (policy.requireStage1SlotCoordinates && !slotCoordinates) {
       throw new Error(
         `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING}: generated Stage 1 slot coordinates are required`
+      );
+    }
+    if (policy.requireStage2SlotCoordinates && !slotCoordinates) {
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING}: generated Stage 2 slot coordinates are required`
       );
     }
 
@@ -223,7 +257,11 @@ export class ContractPdfArtifactService {
       parseBoolean(this.configService.get<string>("ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED"));
     const requireGeneratedContractArtifact =
       options.requireGeneratedContractArtifact ??
-      (enterpriseAutoSealEnabled || options.requireStage1SlotCoordinates === true);
+      (
+        enterpriseAutoSealEnabled ||
+        options.requireStage1SlotCoordinates === true ||
+        options.requireStage2SlotCoordinates === true
+      );
     const purpose = options.purpose ?? (fadadaEnabled ? "FADADA_UPLOAD" : undefined);
     const maxBytes = options.maxBytes ?? MAX_FADADA_PDF_BYTES;
 
@@ -234,10 +272,12 @@ export class ContractPdfArtifactService {
       purpose,
       requireGeneratedContractArtifact,
       requireStage1SlotCoordinates: options.requireStage1SlotCoordinates === true,
+      requireStage2SlotCoordinates: options.requireStage2SlotCoordinates === true,
       strictPdfMetadata:
         fadadaEnabled ||
         enterpriseAutoSealEnabled ||
         options.requireStage1SlotCoordinates === true ||
+        options.requireStage2SlotCoordinates === true ||
         purpose === "FADADA_UPLOAD"
     };
   }
@@ -322,10 +362,39 @@ function resolveGeneratedContractSlotCoordinates(input: {
     return undefined;
   }
 
-  return validatePersistedSlotCoordinates(artifact.slotCoordinates);
+  return validatePersistedStage1SlotCoordinates(artifact.slotCoordinates);
 }
 
-function validatePersistedSlotCoordinates(value: unknown): ContractPdfArtifactSlotCoordinateDiagnostic[] {
+function resolveStage2HandoverSlotCoordinates(input: {
+  contractSnapshot: unknown;
+  fileId: string;
+  generatedContractArtifact: boolean;
+  source: ContractPdfArtifactSource;
+}): Stage2HandoverPdfArtifactSlotCoordinate[] | undefined {
+  if (input.source !== "CONTRACT_FILE" || !input.generatedContractArtifact) {
+    return undefined;
+  }
+
+  const snapshot = asRecord(input.contractSnapshot);
+  const artifact = asRecord(snapshot?.stage2HandoverPdfArtifact);
+  if (!artifact) {
+    return undefined;
+  }
+  if (
+    artifact.artifactKind !== "stage2-handover-pdf-source" ||
+    artifact.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+    artifact.fileId !== input.fileId ||
+    artifact.signingStage !== "STAGE2_DELIVERY_HANDOVER"
+  ) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: Stage 2 artifact metadata is invalid`
+    );
+  }
+
+  return validatePersistedStage2SlotCoordinates(artifact.slotCoordinates);
+}
+
+function validatePersistedStage1SlotCoordinates(value: unknown): ContractPdfArtifactSlotCoordinateDiagnostic[] {
   if (!Array.isArray(value)) {
     throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: slotCoordinates must be an array`);
   }
@@ -366,6 +435,63 @@ function validatePersistedSlotCoordinates(value: unknown): ContractPdfArtifactSl
   return coordinates;
 }
 
+function validatePersistedStage2SlotCoordinates(value: unknown): Stage2HandoverPdfArtifactSlotCoordinate[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: slotCoordinates must be an array`);
+  }
+
+  const requiredSlotIds: Stage2HandoverPdfArtifactSlotCoordinate["slotId"][] = [
+    "STAGE2_HANDOVER_CUSTOMER",
+    "STAGE2_HANDOVER_PLATFORM"
+  ];
+  if (value.length !== requiredSlotIds.length) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: exactly two Stage 2 coordinates are required`
+    );
+  }
+
+  const coordinates = requiredSlotIds.map((slotId) => {
+    const matches = value.filter((item) => asRecord(item)?.slotId === slotId);
+    if (matches.length !== 1) {
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: ${slotId} coordinate must appear once`
+      );
+    }
+    const coordinate = asRecord(matches[0]);
+    if (
+      !coordinate ||
+      coordinate.coordinateSource !== "PDFKIT_RENDERER" ||
+      coordinate.coordinateSystem !== "FADADA_800_1131_TOP_LEFT" ||
+      coordinate.documentType !== "DELIVERY_HANDOVER_CONFIRMATION" ||
+      coordinate.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+      !Number.isInteger(coordinate.pageNumber) ||
+      (coordinate.pageNumber as number) < 0 ||
+      !isFiniteNumberInRange(coordinate.x, 0, 800) ||
+      !isFiniteNumberInRange(coordinate.y, 0, 1131) ||
+      !isFinitePositiveNumber(coordinate.width) ||
+      !isFinitePositiveNumber(coordinate.height) ||
+      !isFinitePositiveNumber(coordinate.pdfPageWidth) ||
+      !isFinitePositiveNumber(coordinate.pdfPageHeight) ||
+      (coordinate.x as number) - (coordinate.width as number) / 2 < 0 ||
+      (coordinate.x as number) + (coordinate.width as number) / 2 > 800 ||
+      (coordinate.y as number) - (coordinate.height as number) / 2 < 0 ||
+      (coordinate.y as number) + (coordinate.height as number) / 2 > 1131
+    ) {
+      throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: ${slotId} coordinate is invalid`);
+    }
+
+    return coordinate as unknown as Stage2HandoverPdfArtifactSlotCoordinate;
+  });
+
+  if (coordinates[0]!.pageNumber !== coordinates[1]!.pageNumber) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: Stage 2 coordinates must share one signature page`
+    );
+  }
+
+  return coordinates;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -385,8 +511,9 @@ function buildPreflightDiagnostics(
   policy: ResolvedContractPdfArtifactPolicy,
   source: ContractPdfArtifactSource,
   generatedContractArtifact: boolean,
-  slotCoordinates?: ContractPdfArtifactSlotCoordinateDiagnostic[]
+  slotCoordinates?: ResolvedContractPdfArtifactSlotCoordinate[]
 ): ContractPdfArtifactPreflightDiagnostics {
+  const signingStage = slotCoordinates?.[0]?.signingStage;
   return {
     enterpriseAutoSealEnabled: policy.enterpriseAutoSealEnabled,
     fadadaEnabled: policy.fadadaEnabled,
@@ -395,7 +522,8 @@ function buildPreflightDiagnostics(
     purpose: policy.purpose,
     ...(slotCoordinates ? { slotCoordinates } : {}),
     source,
-    stage1SlotCoordinatesVerified: Boolean(slotCoordinates?.length),
+    stage1SlotCoordinatesVerified: signingStage === "STAGE1_CONTRACT",
+    stage2SlotCoordinatesVerified: signingStage === "STAGE2_DELIVERY_HANDOVER",
     textExtractionVerified: false
   };
 }

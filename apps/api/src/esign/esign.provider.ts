@@ -50,6 +50,7 @@ export interface CreateSignTaskInput {
   callbackUrl?: string;
   contractId: string;
   documentName: string;
+  documentType?: ESignDocumentType;
   redirectUrl?: string;
   signers: Array<{
     customerId?: string;
@@ -58,6 +59,11 @@ export interface CreateSignTaskInput {
     signerType: "CUSTOMER" | "PLATFORM";
   }>;
   signingSlots?: ESignSigningSlot[];
+  /**
+   * Stage 2 customer signing uses persisted artifact coordinates as the source
+   * of truth. When supplied, this must contain exactly the matching customer
+   * coordinate and acts only as a fail-closed consistency assertion.
+   */
   signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingStage?: ESignSigningStage;
   taskId?: string;
@@ -127,6 +133,7 @@ export interface AutoSealTaskInput {
   callbackUrl?: string;
   contractId: string;
   documentName?: string;
+  documentType?: ESignDocumentType;
   placement?: AutoSealPlacement;
   platformCustomerId?: string;
   platformSignatureId?: string;

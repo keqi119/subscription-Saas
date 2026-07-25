@@ -415,6 +415,21 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         uploadedBy: "admin-1"
       })
     });
+    expect(harness.prisma.contract.update).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        contractSnapshot: expect.objectContaining({
+          stage2HandoverPdfArtifact: {
+            artifactKind: "stage2-handover-pdf-source",
+            documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+            fileId: "file-pdf-1",
+            signingStage: "STAGE2_DELIVERY_HANDOVER",
+            slotCoordinates: stage2ArtifactCoordinates()
+          }
+        }),
+        fileId: "file-pdf-1"
+      }),
+      where: { id: "contract-stage2-1" }
+    });
     expect(harness.prisma.vehicleDeliveryHandover.updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({
         handoverContractId: "contract-stage2-1",
@@ -787,7 +802,8 @@ function createServiceHarness(options: {
       },
       fileName: "handover.pdf",
       filePath: "D:\\temp\\handover.pdf",
-      sizeBytes: generatedPdfBuffer.length
+      sizeBytes: generatedPdfBuffer.length,
+      slotCoordinates: stage2ArtifactCoordinates()
     }))
   };
   const storageService = {
@@ -831,4 +847,37 @@ function createServiceHarness(options: {
     ),
     storageService
   };
+}
+
+function stage2ArtifactCoordinates() {
+  return [
+    {
+      coordinateSource: "PDFKIT_RENDERER",
+      coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      height: 90,
+      pageNumber: 9,
+      pdfPageHeight: 841.89,
+      pdfPageWidth: 595.28,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      width: 250,
+      x: 210,
+      y: 980
+    },
+    {
+      coordinateSource: "PDFKIT_RENDERER",
+      coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+      documentType: "DELIVERY_HANDOVER_CONFIRMATION",
+      height: 90,
+      pageNumber: 9,
+      pdfPageHeight: 841.89,
+      pdfPageWidth: 595.28,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      slotId: "STAGE2_HANDOVER_PLATFORM",
+      width: 250,
+      x: 590,
+      y: 980
+    }
+  ];
 }

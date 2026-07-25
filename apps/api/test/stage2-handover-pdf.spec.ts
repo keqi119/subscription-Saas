@@ -57,6 +57,18 @@ const pdfKitMock = vi.hoisted(() => {
     private listeners = new Map<string, Array<(...args: unknown[]) => void>>();
     private pageNumber = 1;
 
+    constructor(options: { margin?: number; size?: string | [number, number] } = {}) {
+      const margin = options.margin ?? 45;
+      const [width, height] = Array.isArray(options.size) ? options.size : [595.28, 841.89];
+      this.page = {
+        height,
+        margins: { bottom: margin, left: margin, right: margin, top: margin },
+        width
+      };
+      this.x = margin;
+      this.y = margin;
+    }
+
     addPage() {
       this.pageNumber += 1;
       this.y = this.page.margins.top;
@@ -295,6 +307,39 @@ describe("Stage 2 handover PDF renderer", () => {
       "fadada"
     ]) {
       expect(visibleText.toLowerCase()).not.toContain(hiddenValue.toLowerCase());
+    }
+  });
+
+  it("keeps signing slots on the final page when operation tips paginate on a short supported page", async () => {
+    const renderer = new DeliveryHandoverPdfRendererService();
+    const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
+    const { textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+
+    const result = await renderer.render(model, {
+      cjkFontPath: process.execPath,
+      evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset: async () => Buffer.from("synthetic-jpeg"),
+      pageSize: [595.28, 320]
+    });
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+    const finalPageNumber = result.diagnostics.pageCount - 1;
+
+    expect(result.slotCoordinates.map((coordinate) => coordinate.pageNumber)).toEqual([
+      finalPageNumber,
+      finalPageNumber
+    ]);
+    expect(finalPageNumber).toBeGreaterThan(0);
+    for (const tip of model.operationTips) {
+      expect(visibleText).toContain(tip);
+    }
+    for (const hiddenValue of [
+      "STAGE2_HANDOVER_CUSTOMER",
+      "STAGE2_HANDOVER_PLATFORM",
+      "STAGE2_DELIVERY_HANDOVER",
+      "FADADA_800_1131_TOP_LEFT",
+      "Render Diagnostics"
+    ]) {
+      expect(visibleText).not.toContain(hiddenValue);
     }
   });
 

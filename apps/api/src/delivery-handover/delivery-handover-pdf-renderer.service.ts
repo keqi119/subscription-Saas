@@ -296,14 +296,14 @@ async function renderPdf(
   await writeVideoAttachments(doc, model, evidencePackageUrl, options.loadAsset!);
 
   doc.addPage();
+  writeSection(doc, "操作提示");
+  model.operationTips.forEach((tip) => writeParagraph(doc, tip));
+
   ensureSpace(doc, 230);
   writeSection(doc, "九、签字确认");
   writeParagraph(doc, model.confirmationText);
   writeSignatureArea(doc, model, slotCoordinates, () => pageCount - 1);
   validateSigningSlotCoordinates(slotCoordinates, pageCount - 1);
-
-  writeSection(doc, "操作提示");
-  model.operationTips.forEach((tip) => writeParagraph(doc, tip));
 
   doc.end();
   const buffer = await done;

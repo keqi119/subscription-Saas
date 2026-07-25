@@ -90,12 +90,24 @@ describe("DeliveryHandoverService", () => {
   it("requires a signed Stage 2 handover before delivery confirmation while archive failure stays retryable", async () => {
     const harness = createDeliveryHandoverHarness();
 
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(BadRequestException);
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "a".repeat(64)
+      )
+    ).rejects.toThrow(BadRequestException);
 
     const draft = await harness.service.createHandoverRecord(harness.orderId, harness.user.id);
     await harness.service.markCompleted(draft.id, new Date("2026-07-21T04:12:00.000Z"), harness.user.id);
     completeStage2SignedState(harness, draft.id);
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "a".repeat(64)
+      )
+    ).resolves.toBeUndefined();
     const signedHandover = await findDeliveryHandoverForConfirmation(
       harness.prisma as never,
       harness.orderId
@@ -108,7 +120,13 @@ describe("DeliveryHandoverService", () => {
       failureReason: "temporary provider download timeout",
       status: "SIGNED"
     });
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "a".repeat(64)
+      )
+    ).resolves.toBeUndefined();
   });
 
   it("delegates Stage 2 PDF, eSign, and delivery confirmation evidence gates", async () => {
@@ -124,7 +142,11 @@ describe("DeliveryHandoverService", () => {
 
     await harness.service.assertStage2PdfCanBeGenerated(harness.orderId, draft.id);
     await harness.service.assertStage2ESignCanStart(harness.orderId, draft.id);
-    await harness.service.assertDeliveryCanBeConfirmed(harness.orderId);
+    await harness.service.assertDeliveryCanBeConfirmed(
+      harness.orderId,
+      harness.prisma as never,
+      "a".repeat(64)
+    );
 
     expect(evidenceService.assertEvidenceReadyForStage2Pdf).toHaveBeenCalledWith(harness.orderId, draft.id);
     expect(evidenceService.assertEvidenceReadyForStage2ESign).toHaveBeenCalledWith(harness.orderId, draft.id);
@@ -134,6 +156,28 @@ describe("DeliveryHandoverService", () => {
       harness.prisma
     );
     expect(harness.providerCallCount).toBe(0);
+  });
+
+  it("blocks a newly confirmed evidence manifest that still points at an older signed source", async () => {
+    const harness = createDeliveryHandoverHarness();
+    const draft = await harness.service.createHandoverRecord(
+      harness.orderId,
+      harness.user.id
+    );
+    await harness.service.markCompleted(
+      draft.id,
+      new Date("2026-07-21T04:12:00.000Z"),
+      harness.user.id
+    );
+    completeStage2SignedState(harness, draft.id);
+
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "d".repeat(64)
+      )
+    ).rejects.toThrow(BadRequestException);
   });
 });
 

@@ -423,6 +423,115 @@ describe("vehicle delivery handover workflow", () => {
     }
   );
 
+  it("holds every mutable delivery gate row across gate reads and the first delivery write", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    const committedRevocations: string[] = [];
+    const blockedRevocations: string[] = [];
+    const attempts = [
+      {
+        lock: "contract_esign_signer",
+        mutate: () => {
+          const handover = harness.state.handover as ReturnType<
+            typeof buildHandoverRecord
+          >;
+          handover.handoverESignTask.signers[0].signerStatus =
+            ESignSignerStatus.REJECTED;
+        },
+        name: "signer"
+      },
+      {
+        lock: "vehicle_handover_work_order",
+        mutate: () => {
+          harness.state.workOrderObjected = true;
+        },
+        name: "work-order objection"
+      },
+      {
+        lock: "vehicle_delivery_evidence_item",
+        mutate: () => {
+          harness.state.evidenceReadiness = buildEvidenceReadiness(harness, {
+            blockingReasons: ["Concurrent evidence revocation committed."],
+            ready: false
+          });
+        },
+        name: "evidence parent"
+      },
+      {
+        lock: "file_object",
+        mutate: () => {
+          const sourceFile = harness.state.fileObjects.find(
+            (file) => file.id === "source-file-1"
+          );
+          if (sourceFile) {
+            sourceFile.objectKey =
+              "contracts/handover-1/concurrent-source.pdf";
+          }
+        },
+        name: "source FileObject"
+      }
+    ];
+    harness.state.beforeFirstDeliveryWrite = async () => {
+      expect(harness.tx.subscriptionOrder.findUnique).toHaveBeenCalled();
+      expect(harness.tx.vehicleDelivery.findUnique).toHaveBeenCalled();
+      expect(harness.tx.vehicleDeliveryHandover.findFirst).toHaveBeenCalled();
+      expect(
+        harness.deliveryEvidenceService
+          .validateEvidenceReadyForDeliveryConfirmation
+      ).toHaveBeenLastCalledWith(
+        harness.orderId,
+        "handover-1",
+        undefined,
+        harness.tx
+      );
+      expect(
+        harness.handoverWorkOrderService.assertDeliveryCanBeConfirmed
+      ).toHaveBeenLastCalledWith(
+        harness.orderId,
+        "handover-1",
+        harness.tx
+      );
+      for (const attempt of attempts) {
+        if (harness.state.activeGateLocks.has(attempt.lock)) {
+          blockedRevocations.push(attempt.name);
+        } else {
+          attempt.mutate();
+          committedRevocations.push(attempt.name);
+        }
+      }
+    };
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        validConfirmDto(),
+        harness.user,
+        harness.context
+      )
+    ).resolves.toMatchObject({
+      deliveryStatus: DeliveryStatus.DELIVERED
+    });
+
+    expect(committedRevocations).toEqual([]);
+    expect(blockedRevocations).toEqual(attempts.map((attempt) => attempt.name));
+    expect(harness.state.gateLockOrder).toEqual([
+      "subscription_order",
+      "vehicle",
+      "vehicle_insurance_policy",
+      "vehicle_delivery",
+      "order_change",
+      "contract",
+      "contract_esign_task",
+      "contract_esign_signer",
+      "vehicle_delivery_handover",
+      "vehicle_handover_work_order",
+      "vehicle_handover_review_attempt",
+      "vehicle_delivery_evidence_item",
+      "vehicle_delivery_evidence_file",
+      "file_object"
+    ]);
+  });
+
   it("rejects confirm when required delivery evidence is not approved", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
@@ -757,8 +866,10 @@ function createDeliveryHarness() {
   };
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state: {
+    activeGateLocks: Set<string>;
     actualDeliveryAt: Date | null;
     beforeTransaction: null | (() => Promise<void> | void);
+    beforeFirstDeliveryWrite: null | (() => Promise<void> | void);
     contractStatus: ContractStatus;
     delivery: Record<string, unknown> | null;
     depositAmount: bigint;
@@ -770,10 +881,13 @@ function createDeliveryHarness() {
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
     handover: Record<string, unknown> | null;
+    gateLockOrder: string[];
     workOrderObjected: boolean;
   } = {
+    activeGateLocks: new Set(),
     actualDeliveryAt: null,
     beforeTransaction: null,
+    beforeFirstDeliveryWrite: null,
     contractStatus: ContractStatus.SIGNED,
     delivery: null,
     depositAmount: 500000n,
@@ -794,6 +908,7 @@ function createDeliveryHarness() {
       }
     ],
     finalDepositAmount: 500000n,
+    gateLockOrder: [],
     handover: null,
     insurancePolicies: [
       {
@@ -917,6 +1032,20 @@ function createDeliveryHarness() {
   }
 
   const tx = {
+    $queryRaw: vi.fn(async (query: unknown) => {
+      const text = readPrismaSqlText(query);
+      const marker =
+        /delivery-gate-lock:([a-z_]+)/.exec(text)?.[1] ?? null;
+      if (
+        marker &&
+        text.includes(`"${marker}"`) &&
+        /\bFOR\s+UPDATE\b/i.test(text)
+      ) {
+        state.activeGateLocks.add(marker);
+        state.gateLockOrder.push(marker);
+      }
+      return [];
+    }),
     fileObject: {
       findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
         state.fileObjects.find((file) => file.id === where.id) ?? null
@@ -958,6 +1087,9 @@ function createDeliveryHarness() {
         if (!state.delivery) {
           throw new Error("Delivery not found");
         }
+        const beforeFirstDeliveryWrite = state.beforeFirstDeliveryWrite;
+        state.beforeFirstDeliveryWrite = null;
+        await beforeFirstDeliveryWrite?.();
         applyDefined(state.delivery, data);
         state.delivery.updatedAt = now;
         return buildDelivery();
@@ -1239,6 +1371,18 @@ function applyDefined(target: object, data: Record<string, unknown>) {
       record[key] = value;
     }
   }
+}
+
+function readPrismaSqlText(query: unknown) {
+  if (
+    query &&
+    typeof query === "object" &&
+    "strings" in query &&
+    Array.isArray(query.strings)
+  ) {
+    return query.strings.join("?");
+  }
+  return String(query);
 }
 
 function expectNoDeliveryConfirmationSideEffects(

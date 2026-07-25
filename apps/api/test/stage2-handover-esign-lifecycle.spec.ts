@@ -963,10 +963,29 @@ describe("Stage2HandoverESignService", () => {
     });
     attachPortalTask(harness, task);
     harness.readiness.getReadiness.mockResolvedValueOnce({
-      blockers: [{
-        code: "CUSTOMER_OBJECTION_ACTIVE",
-        message: "The customer has an active handover objection."
-      }],
+      blockers: [
+        {
+          code: "CUSTOMER_OBJECTION_ACTIVE",
+          message: "The customer has an active handover objection."
+        },
+        {
+          code: "CUSTOMER_ESIGN_NOT_READY",
+          message: "The customer Fadada account is not ready for signing."
+        },
+        {
+          code: "PLATFORM_CUSTOMER_ID_MISSING",
+          message: "The platform Fadada customer ID is not configured."
+        },
+        {
+          code: "PLATFORM_SIGNATURE_ID_MISSING",
+          message: "The platform Fadada signature ID is not configured."
+        },
+        {
+          code: "CUSTOMER_READINESS_FRESHNESS_UNCONFIGURED",
+          message:
+            "Customer provider-readiness freshness is not configured."
+        }
+      ],
       ready: false,
       state: {
         esignTaskId: task.id,
@@ -989,10 +1008,16 @@ describe("Stage2HandoverESignService", () => {
 
     expect(status).toEqual({
       archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
-      blockers: [{
-        code: "CUSTOMER_OBJECTION_ACTIVE",
-        message: "The customer has an active handover objection."
-      }],
+      blockers: [
+        {
+          code: "CUSTOMER_OBJECTION_ACTIVE",
+          message: "The customer has an active handover objection."
+        },
+        {
+          code: "STAGE2_SIGNING_NOT_AVAILABLE",
+          message: "Stage 2 signing is not currently available."
+        }
+      ],
       capability: {
         canStartSigning: false
       },
@@ -1021,6 +1046,9 @@ describe("Stage2HandoverESignService", () => {
       "lasterrorcode",
       "fada",
       "provider",
+      "platform_customer",
+      "platform_signature",
+      "customer_id",
       "rawresponse",
       "unsafe.example",
       "secret",

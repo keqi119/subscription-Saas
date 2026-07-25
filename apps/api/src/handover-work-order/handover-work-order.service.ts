@@ -1767,11 +1767,20 @@ export class HandoverWorkOrderService {
       handoverId,
       db
     );
-    await this.assertWorkOrderReadyForStage2(workOrder, db);
+    const confirmedEvidenceManifestHash =
+      await this.assertWorkOrderReadyForStage2(workOrder, db) ??
+      (
+        await this.buildCurrentEvidencePackage(
+          workOrder,
+          undefined,
+          db
+        )
+      ).manifestHash;
     if (this.deliveryHandoverService) {
       await this.deliveryHandoverService.assertDeliveryCanBeConfirmed(
         orderId,
-        db
+        db,
+        confirmedEvidenceManifestHash
       );
       return;
     }
@@ -1782,7 +1791,11 @@ export class HandoverWorkOrderService {
         orderId
       }
     });
-    if (!handover || !["SIGNED", "ARCHIVED"].includes(handover.status)) {
+    if (
+      !handover ||
+      !["SIGNED", "ARCHIVED"].includes(handover.status) ||
+      handover.manifestHash !== confirmedEvidenceManifestHash
+    ) {
       throw new BadRequestException("交付交接确认书尚未完成签署。");
     }
   }
@@ -1811,7 +1824,7 @@ export class HandoverWorkOrderService {
       db
     );
     if (!this.getReviewAttemptModel(db)) {
-      return;
+      return null;
     }
     const evidencePackage = await this.buildCurrentEvidencePackage(
       workOrder,
@@ -1823,6 +1836,7 @@ export class HandoverWorkOrderService {
       evidencePackage,
       db
     );
+    return evidencePackage.manifestHash;
   }
 
   private async findActiveWorkOrderOrThrow(

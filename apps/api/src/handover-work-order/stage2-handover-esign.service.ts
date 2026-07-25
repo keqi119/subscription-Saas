@@ -214,9 +214,20 @@ export interface Stage2PortalESignSignerView {
   status: ESignSignerStatus | null;
 }
 
+export type Stage2PortalESignBlockerCode =
+  | "CUSTOMER_CONFIRMATION_MISSING"
+  | "CUSTOMER_OBJECTION_ACTIVE"
+  | "EVIDENCE_NOT_READY"
+  | "STAGE2_SIGNING_NOT_AVAILABLE";
+
+export interface Stage2PortalESignBlocker {
+  code: Stage2PortalESignBlockerCode;
+  message: string;
+}
+
 export interface Stage2PortalESignView {
   archiveStatus: DeliveryHandoverArchiveStatus | null;
-  blockers: Stage2HandoverESignBlocker[];
+  blockers: Stage2PortalESignBlocker[];
   capability: {
     canStartSigning: boolean;
   };
@@ -271,7 +282,7 @@ export class Stage2HandoverESignService {
     const signers = task ? requireTypedSigners(task) : null;
     return {
       archiveStatus: workOrder.handover?.archiveStatus ?? null,
-      blockers: readiness.blockers,
+      blockers: toPortalBlockers(readiness.blockers),
       capability: {
         canStartSigning: canStartPortalSigning(
           workOrder,
@@ -1402,7 +1413,7 @@ function assertPortalStartReadiness(
   );
   if (!stateMatches || hasUnexpectedBlocker) {
     throw new BadRequestException({
-      blockers: readiness.blockers,
+      blockers: toPortalBlockers(readiness.blockers),
       code: STAGE2_HANDOVER_ESIGN_NOT_READY,
       message: "Stage 2 handover eSign is not ready.",
       ready: false,
@@ -1453,6 +1464,49 @@ function portalSigningUrlUnavailable() {
     code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
     message: "The customer signing link is temporarily unavailable."
   });
+}
+
+const PORTAL_BLOCKER_MESSAGES: Record<
+  Exclude<
+    Stage2PortalESignBlockerCode,
+    "STAGE2_SIGNING_NOT_AVAILABLE"
+  >,
+  string
+> = {
+  CUSTOMER_CONFIRMATION_MISSING:
+    "Customer no-objection confirmation is required.",
+  CUSTOMER_OBJECTION_ACTIVE:
+    "The customer has an active handover objection.",
+  EVIDENCE_NOT_READY: "Required handover evidence is not ready."
+};
+
+const PORTAL_GENERIC_BLOCKER: Stage2PortalESignBlocker = {
+  code: "STAGE2_SIGNING_NOT_AVAILABLE",
+  message: "Stage 2 signing is not currently available."
+};
+
+function toPortalBlockers(
+  blockers: Stage2HandoverESignBlocker[]
+): Stage2PortalESignBlocker[] {
+  const portalBlockers: Stage2PortalESignBlocker[] = [];
+  for (const blocker of blockers) {
+    const safeMessage =
+      blocker.code in PORTAL_BLOCKER_MESSAGES
+        ? PORTAL_BLOCKER_MESSAGES[
+            blocker.code as keyof typeof PORTAL_BLOCKER_MESSAGES
+          ]
+        : null;
+    const mapped: Stage2PortalESignBlocker = safeMessage
+      ? {
+          code: blocker.code as keyof typeof PORTAL_BLOCKER_MESSAGES,
+          message: safeMessage
+        }
+      : PORTAL_GENERIC_BLOCKER;
+    if (!portalBlockers.some((existing) => existing.code === mapped.code)) {
+      portalBlockers.push(mapped);
+    }
+  }
+  return portalBlockers;
 }
 
 function toPortalSignerView(

@@ -85,6 +85,7 @@ import {
   isDeliveryHandoverSigned
 } from "../delivery-handover/delivery-handover.service";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
 import {
   ArchiveContractDto,
   CancelOrderDto,
@@ -1767,6 +1768,7 @@ export class OrderService {
     await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(id, handover?.id ?? null);
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockDeliveryConfirmationGateRows(tx, id);
       const orderBefore = await tx.subscriptionOrder.findUnique({
         include: orderInclude,
         where: { id }

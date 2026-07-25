@@ -296,13 +296,17 @@ export class DeliveryHandoverService {
 
   async assertDeliveryCanBeConfirmed(
     orderId: string,
-    db: DeliveryHandoverDb = this.prisma
+    db: DeliveryHandoverDb,
+    currentEvidenceManifestHash: string
   ) {
     const handover = await findDeliveryHandoverForConfirmation(
       db,
       orderId
     );
-    assertDeliveryHandoverReadyForDelivery(handover);
+    assertDeliveryHandoverReadyForDelivery(
+      handover,
+      currentEvidenceManifestHash
+    );
     if (this.deliveryEvidenceService) {
       await this.deliveryEvidenceService.assertEvidenceReadyForDeliveryConfirmation(
         orderId,
@@ -339,9 +343,13 @@ export class DeliveryHandoverService {
 }
 
 export function assertDeliveryHandoverReadyForDelivery(
-  handover: DeliveryHandoverConfirmationRecord | null | undefined
+  handover: DeliveryHandoverConfirmationRecord | null | undefined,
+  currentEvidenceManifestHash: string
 ) {
-  if (!isDeliveryHandoverReadyForDelivery(handover)) {
+  if (
+    !isDeliveryHandoverReadyForDelivery(handover) ||
+    handover?.manifestHash !== currentEvidenceManifestHash
+  ) {
     throw new BadRequestException(DELIVERY_HANDOVER_NOT_READY_MESSAGE);
   }
 }

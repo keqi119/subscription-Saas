@@ -391,7 +391,16 @@ function resolveStage2HandoverSlotCoordinates(input: {
     );
   }
 
-  return validatePersistedStage2SlotCoordinates(artifact.slotCoordinates);
+  if (!Number.isInteger(artifact.pageCount) || (artifact.pageCount as number) <= 0) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: Stage 2 artifact pageCount must be a positive integer`
+    );
+  }
+
+  return validatePersistedStage2SlotCoordinates(
+    artifact.slotCoordinates,
+    artifact.pageCount as number
+  );
 }
 
 function validatePersistedStage1SlotCoordinates(value: unknown): ContractPdfArtifactSlotCoordinateDiagnostic[] {
@@ -435,7 +444,10 @@ function validatePersistedStage1SlotCoordinates(value: unknown): ContractPdfArti
   return coordinates;
 }
 
-function validatePersistedStage2SlotCoordinates(value: unknown): Stage2HandoverPdfArtifactSlotCoordinate[] {
+function validatePersistedStage2SlotCoordinates(
+  value: unknown,
+  pageCount: number
+): Stage2HandoverPdfArtifactSlotCoordinate[] {
   if (!Array.isArray(value)) {
     throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: slotCoordinates must be an array`);
   }
@@ -483,9 +495,9 @@ function validatePersistedStage2SlotCoordinates(value: unknown): Stage2HandoverP
     return coordinate as unknown as Stage2HandoverPdfArtifactSlotCoordinate;
   });
 
-  if (coordinates[0]!.pageNumber !== coordinates[1]!.pageNumber) {
+  if (coordinates.some((coordinate) => coordinate.pageNumber !== pageCount - 1)) {
     throw new Error(
-      `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: Stage 2 coordinates must share one signature page`
+      `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID}: Stage 2 coordinates must use the final PDF page`
     );
   }
 

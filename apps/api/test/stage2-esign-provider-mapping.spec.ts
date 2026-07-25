@@ -110,6 +110,26 @@ describe("Stage 2 Fadada provider mapping", () => {
     }));
   });
 
+  it("rejects persisted Stage 2 slots on a non-final page before provider endpoints", async () => {
+    const artifactHarness = createArtifactHarness({
+      artifactOverride: { pageCount: 10 },
+      slotCoordinates: stage2ArtifactCoordinates(8)
+    });
+    const harness = createProviderHarness();
+    const provider = new FadadaESignProvider(
+      harness.config,
+      harness.apiClient as never,
+      artifactHarness.service
+    );
+
+    await expect(provider.createSignTask(
+      stage2CustomerInput("HDV-NON-FINAL-PAGE")
+    )).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID);
+
+    expect(harness.apiClient.uploadDocs).not.toHaveBeenCalled();
+    expect(harness.apiClient.createExternalSignUrl).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["an empty coordinate list", []],
     ["the platform coordinate", [stage2ProviderCoordinates()[1]!]],
@@ -312,6 +332,23 @@ describe("Stage 2 Contract PDF artifact preflight", () => {
   });
 
   it.each([
+    ["missing", undefined],
+    ["zero", 0],
+    ["fractional", 1.5]
+  ])("rejects a Stage 2 artifact with %s pageCount", async (_label, pageCount) => {
+    const harness = createArtifactHarness({
+      artifactOverride: { pageCount }
+    });
+
+    await expect(harness.service.preflightContractPdfArtifact("contract-stage2-1", {
+      fadadaEnabled: true,
+      purpose: "FADADA_UPLOAD",
+      requireGeneratedContractArtifact: true,
+      requireStage2SlotCoordinates: true
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_INVALID);
+  });
+
+  it.each([
     ["file id", {
       fileId: "different-file"
     }],
@@ -427,6 +464,7 @@ function createProviderHarness(options: {
 
   return {
     apiClient,
+    config,
     pdfArtifactService,
     provider: new FadadaESignProvider(
       config,
@@ -454,6 +492,7 @@ function createArtifactHarness(options: {
     artifactKind: "stage2-handover-pdf-source",
     documentType: "DELIVERY_HANDOVER_CONFIRMATION",
     fileId: fileObject.id,
+    pageCount: 10,
     signingStage: "STAGE2_DELIVERY_HANDOVER",
     slotCoordinates: options.slotCoordinates ?? stage2ArtifactCoordinates(),
     ...options.artifactOverride
@@ -547,14 +586,14 @@ function stage2ProviderCoordinates(): ESignSigningSlotCoordinate[] {
   }));
 }
 
-function stage2ArtifactCoordinates(): Stage2HandoverPdfArtifactSlotCoordinate[] {
+function stage2ArtifactCoordinates(pageNumber = 9): Stage2HandoverPdfArtifactSlotCoordinate[] {
   return [
     {
       coordinateSource: "PDFKIT_RENDERER",
       coordinateSystem: "FADADA_800_1131_TOP_LEFT",
       documentType: "DELIVERY_HANDOVER_CONFIRMATION",
       height: 90,
-      pageNumber: 9,
+      pageNumber,
       pdfPageHeight: 841.89,
       pdfPageWidth: 595.28,
       signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -568,7 +607,7 @@ function stage2ArtifactCoordinates(): Stage2HandoverPdfArtifactSlotCoordinate[] 
       coordinateSystem: "FADADA_800_1131_TOP_LEFT",
       documentType: "DELIVERY_HANDOVER_CONFIRMATION",
       height: 90,
-      pageNumber: 9,
+      pageNumber,
       pdfPageHeight: 841.89,
       pdfPageWidth: 595.28,
       signingStage: "STAGE2_DELIVERY_HANDOVER",

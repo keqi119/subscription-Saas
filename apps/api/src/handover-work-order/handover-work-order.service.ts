@@ -1662,6 +1662,7 @@ export class HandoverWorkOrderService {
                 artifactKind: "stage2-handover-pdf-source",
                 documentType: "DELIVERY_HANDOVER_CONFIRMATION",
                 fileId: createdFileObject.id,
+                pageCount: renderedFile!.diagnostics.pageCount,
                 signingStage: "STAGE2_DELIVERY_HANDOVER",
                 slotCoordinates: renderedFile!.slotCoordinates
               },

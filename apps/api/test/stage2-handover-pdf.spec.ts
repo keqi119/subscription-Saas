@@ -422,6 +422,7 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
             artifactKind: "stage2-handover-pdf-source",
             documentType: "DELIVERY_HANDOVER_CONFIRMATION",
             fileId: "file-pdf-1",
+            pageCount: 10,
             signingStage: "STAGE2_DELIVERY_HANDOVER",
             slotCoordinates: stage2ArtifactCoordinates()
           }

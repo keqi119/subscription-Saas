@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min
 } from "class-validator";
 
@@ -116,6 +117,12 @@ export class VoidHandoverWorkOrderDto {
   @IsOptional()
   @IsIn(["VOIDED", "FAILED", "CANCELLED"])
   status?: "VOIDED" | "FAILED" | "CANCELLED";
+}
+
+export class VoidStage2HandoverESignDto {
+  @IsString()
+  @MaxLength(500)
+  reason!: string;
 }
 
 export class OpsReviewDto {

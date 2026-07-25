@@ -17,6 +17,7 @@ import {
 } from "./handover-work-order.controller";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { Stage2HandoverESignReadinessService } from "./stage2-handover-esign-readiness.service";
+import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
 
 @Module({
   controllers: [
@@ -24,7 +25,11 @@ import { Stage2HandoverESignReadinessService } from "./stage2-handover-esign-rea
     FieldOperatorAuthController,
     HandoverWorkOrderFieldController
   ],
-  exports: [HandoverWorkOrderService, Stage2HandoverESignReadinessService],
+  exports: [
+    HandoverWorkOrderService,
+    Stage2HandoverESignReadinessService,
+    Stage2HandoverESignService
+  ],
   imports: [AuthModule, DeliveryEvidenceModule, ESignModule, SmsModule, StorageModule],
   providers: [
     DeliveryHandoverEvidenceArtifactService,
@@ -33,7 +38,8 @@ import { Stage2HandoverESignReadinessService } from "./stage2-handover-esign-rea
     FieldOperatorAuthGuard,
     FieldOperatorAuthService,
     HandoverWorkOrderService,
-    Stage2HandoverESignReadinessService
+    Stage2HandoverESignReadinessService,
+    Stage2HandoverESignService
   ]
 })
 export class HandoverWorkOrderModule {}

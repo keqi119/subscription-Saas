@@ -52,7 +52,13 @@ export function createESignProviderClient(
     CustomerESignProviderAccountController,
     CustomerESignOnboardingController
   ],
-  exports: [ESignService, CustomerESignOnboardingService, FadadaCustomerReadinessService, FadadaSignedArtifactService],
+  exports: [
+    ESIGN_PROVIDER_CLIENT,
+    ESignService,
+    CustomerESignOnboardingService,
+    FadadaCustomerReadinessService,
+    FadadaSignedArtifactService
+  ],
   imports: [AuditModule, AuthModule, NotificationModule, PrismaModule, StorageModule],
   providers: [
     ContractPdfArtifactService,

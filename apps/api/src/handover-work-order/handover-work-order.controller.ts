@@ -14,14 +14,19 @@ import {
   HandoverObjectionResubmissionDto,
   OpsReviewDto,
   UpdateHandoverFieldFactsDto,
+  VoidStage2HandoverESignDto,
   VoidHandoverWorkOrderDto
 } from "./handover-work-order.dto";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
+import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
 
 @Controller()
 @UseGuards(AuthGuard, PermissionsGuard)
 export class HandoverWorkOrderAdminController {
-  constructor(private readonly handoverWorkOrderService: HandoverWorkOrderService) {}
+  constructor(
+    private readonly handoverWorkOrderService: HandoverWorkOrderService,
+    private readonly stage2HandoverESignService: Stage2HandoverESignService
+  ) {}
 
   @Post("orders/:orderId/handover-work-orders")
   @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
@@ -161,6 +166,47 @@ export class HandoverWorkOrderAdminController {
     const file = await this.handoverWorkOrderService.downloadStage2HandoverPdf(id);
     setEvidenceFileHeaders(response, file, "attachment");
     return new StreamableFile(file.stream);
+  }
+
+  @Get("handover-work-orders/:id/esign")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  getStage2ESign(@Param("id") id: string) {
+    return this.stage2HandoverESignService.getStatus(id);
+  }
+
+  @Post("handover-work-orders/:id/esign")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  createStage2ESign(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.stage2HandoverESignService.create(id, request.user.id);
+  }
+
+  @Post("handover-work-orders/:id/esign/platform-seal/retry")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  retryStage2PlatformSeal(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.stage2HandoverESignService.retryPlatformSeal(id, request.user.id);
+  }
+
+  @Post("handover-work-orders/:id/esign/void")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  voidStage2ESign(
+    @Param("id") id: string,
+    @Body() dto: VoidStage2HandoverESignDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.stage2HandoverESignService.voidTask(
+      id,
+      request.user.id,
+      dto.reason
+    );
+  }
+
+  @Get("handover-work-orders/:id/esign/signed-document")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  getStage2SignedDocument(@Param("id") id: string) {
+    return this.stage2HandoverESignService.getSignedDocumentState(id);
   }
 
   @Post("handover-work-orders/:id/ops-review/pending")

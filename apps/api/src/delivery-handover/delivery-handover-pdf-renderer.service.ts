@@ -307,13 +307,18 @@ async function writePhotoAttachments(
   loadAsset: (fileId: string) => Promise<Buffer>
 ) {
   const photos = model.evidencePackage.files.filter((file) => file.mediaType === "PHOTO");
-  for (let index = 0; index < photos.length; index += 2) {
+  const columns = 2;
+  const photosPerPage = 4;
+  for (let index = 0; index < photos.length; index += photosPerPage) {
     doc.addPage();
-    writeSection(doc, `七、照片证据附件（第 ${Math.floor(index / 2) + 1} 页）`);
-    const pagePhotos = photos.slice(index, index + 2);
+    writeSection(doc, `七、照片证据附件（第 ${Math.floor(index / photosPerPage) + 1} 页）`);
+    const pagePhotos = photos.slice(index, index + photosPerPage);
     const gap = 14;
     const cellWidth = (contentWidth(doc) - gap) / 2;
-    const imageHeight = 235;
+    const imageHeight = 150;
+    const metadataHeight = 112;
+    const rowGap = 16;
+    const cellBlockHeight = imageHeight + metadataHeight;
     const startY = doc.y;
 
     for (let cellIndex = 0; cellIndex < pagePhotos.length; cellIndex += 1) {
@@ -322,15 +327,18 @@ async function writePhotoAttachments(
       if (!derivativeFileId) {
         throw new Error(`STAGE2_HANDOVER_PDF_DERIVATIVE_MISSING: ${file.evidenceFileId}`);
       }
-      const x = doc.page.margins.left + cellIndex * (cellWidth + gap);
+      const columnIndex = cellIndex % columns;
+      const rowIndex = Math.floor(cellIndex / columns);
+      const x = doc.page.margins.left + columnIndex * (cellWidth + gap);
+      const y = startY + rowIndex * (cellBlockHeight + rowGap);
       const preview = await loadAsset(derivativeFileId);
-      doc.rect(x, startY, cellWidth, imageHeight).stroke();
-      doc.image(preview, x + 5, startY + 5, {
+      doc.rect(x, y, cellWidth, imageHeight).stroke();
+      doc.image(preview, x + 5, y + 5, {
         align: "center",
         fit: [cellWidth - 10, imageHeight - 10],
         valign: "center"
       });
-      const metadataY = startY + imageHeight + 8;
+      const metadataY = y + imageHeight + 8;
       doc.fontSize(9).text(file.evidenceTitle, x, metadataY, { width: cellWidth });
       doc.fontSize(8).text(`证据文件 ID：${file.evidenceFileId}`, x, doc.y + 3, { width: cellWidth });
       doc.fontSize(8).text(`文件：${file.originalName}`, x, doc.y + 3, { width: cellWidth });
@@ -341,7 +349,8 @@ async function writePhotoAttachments(
         width: cellWidth
       });
     }
-    doc.y = startY + imageHeight + 112;
+    const rowCount = Math.ceil(pagePhotos.length / columns);
+    doc.y = startY + rowCount * cellBlockHeight + Math.max(0, rowCount - 1) * rowGap;
     resetCursorX(doc);
   }
 }

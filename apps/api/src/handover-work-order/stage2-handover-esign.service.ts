@@ -89,6 +89,10 @@ const PORTAL_START_TASK_STATUSES = new Set<ESignTaskStatus>([
   ESignTaskStatus.SIGNING,
   ESignTaskStatus.WAITING_CUSTOMER
 ]);
+const PORTAL_START_CUSTOMER_SIGNER_STATUSES = new Set<ESignSignerStatus>([
+  ESignSignerStatus.PENDING,
+  ESignSignerStatus.SIGNING
+]);
 
 const CUSTOMER_SIGNING_SLOT: ESignSigningSlot = {
   documentType: "DELIVERY_HANDOVER_CONFIRMATION",
@@ -204,10 +208,30 @@ export interface Stage2SignedDocumentState {
   workOrderId: string;
 }
 
-export interface Stage2PortalESignView extends Stage2HandoverESignView {
+export interface Stage2PortalESignSignerView {
+  signedAt: Date | null;
+  slotId: ESignSlotId;
+  status: ESignSignerStatus | null;
+}
+
+export interface Stage2PortalESignView {
+  archiveStatus: DeliveryHandoverArchiveStatus | null;
+  blockers: Stage2HandoverESignBlocker[];
   capability: {
     canStartSigning: boolean;
   };
+  createdAt: Date | null;
+  customerSigner: Stage2PortalESignSignerView;
+  documentType: typeof ESignDocumentType.DELIVERY_HANDOVER;
+  handoverId: string | null;
+  platformSigner: Stage2PortalESignSignerView;
+  ready: boolean;
+  signedArtifactAvailable: boolean;
+  signingStage: typeof ESignSigningStage.STAGE2_DELIVERY_HANDOVER;
+  status: ESignTaskStatus | null;
+  taskId: string | null;
+  updatedAt: Date | null;
+  workOrderId: string;
 }
 
 export interface Stage2PortalSigningStartResult {
@@ -244,8 +268,10 @@ export class Stage2HandoverESignService {
       this.readinessService.getReadiness(workOrderId)
     ]);
     const task = await this.resolveCurrentTask(workOrder);
+    const signers = task ? requireTypedSigners(task) : null;
     return {
-      ...this.toView(workOrder, task, readiness),
+      archiveStatus: workOrder.handover?.archiveStatus ?? null,
+      blockers: readiness.blockers,
       capability: {
         canStartSigning: canStartPortalSigning(
           workOrder,
@@ -253,7 +279,31 @@ export class Stage2HandoverESignService {
           readiness,
           customerId
         )
-      }
+      },
+      createdAt:
+        task?.createdAt ??
+        workOrder.handover?.handoverContract?.createdAt ??
+        null,
+      customerSigner: toPortalSignerView(
+        signers?.customerSigner ?? null,
+        CUSTOMER_SLOT_ID
+      ),
+      documentType: ESignDocumentType.DELIVERY_HANDOVER,
+      handoverId: workOrder.handover?.id ?? null,
+      platformSigner: toPortalSignerView(
+        signers?.platformSigner ?? null,
+        PLATFORM_SLOT_ID
+      ),
+      ready: readiness.ready,
+      signedArtifactAvailable: Boolean(
+        workOrder.handover?.signedDocumentFileId
+      ),
+      signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+      status: task?.taskStatus ?? null,
+      taskId: task?.id ?? null,
+      updatedAt:
+        task?.updatedAt ?? workOrder.handover?.updatedAt ?? null,
+      workOrderId: workOrder.id
     };
   }
 
@@ -267,11 +317,12 @@ export class Stage2HandoverESignService {
     if (!handover || !task) {
       throw portalSigningNotReady();
     }
-    const { customerSigner } = requireTypedSigners(task);
+    const { customerSigner, platformSigner } = requireTypedSigners(task);
     assertPortalSigningTask(
       workOrder,
       task,
       customerSigner,
+      platformSigner,
       customerId
     );
     assertTaskSourceBinding(task, handover);
@@ -279,17 +330,21 @@ export class Stage2HandoverESignService {
     const readiness = await this.readinessService.getReadiness(workOrderId);
     assertPortalStartReadiness(workOrder, task, readiness);
 
-    const refreshed = await this.provider.getSignerUrl({
-      contractId: task.contractId,
-      providerTaskId: task.providerTaskId ?? task.taskNo,
-      redirectUrl: this.buildPortalHandoverUrl(workOrderId),
-      signerId: customerSigner.id,
-      taskId: task.id
-    });
-    return {
-      expiresAt: refreshed.expiresAt ?? null,
-      signUrl: refreshed.signUrl
-    };
+    try {
+      const refreshed = await this.provider.getSignerUrl({
+        contractId: task.contractId,
+        providerTaskId: task.providerTaskId ?? task.taskNo,
+        redirectUrl: this.buildPortalHandoverUrl(workOrderId),
+        signerId: customerSigner.id,
+        taskId: task.id
+      });
+      return {
+        expiresAt: refreshed.expiresAt ?? null,
+        signUrl: refreshed.signUrl
+      };
+    } catch {
+      throw portalSigningUrlUnavailable();
+    }
   }
 
   async create(
@@ -1306,6 +1361,7 @@ function assertPortalSigningTask(
   workOrder: Stage2LifecycleWorkOrder,
   task: Stage2Task,
   customerSigner: Stage2Signer,
+  platformSigner: Stage2Signer,
   customerId: string
 ) {
   if (
@@ -1317,7 +1373,10 @@ function assertPortalSigningTask(
       DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE ||
     workOrder.handover.handoverContract?.status !== ContractStatus.SIGNING ||
     customerSigner.customerId !== customerId ||
-    customerSigner.signerStatus === ESignSignerStatus.SIGNED ||
+    !PORTAL_START_CUSTOMER_SIGNER_STATUSES.has(
+      customerSigner.signerStatus
+    ) ||
+    platformSigner.signerStatus !== ESignSignerStatus.PENDING ||
     !requireProviderTransactionIdOrNull(customerSigner.providerTransactionId)
   ) {
     throw portalSigningNotReady();
@@ -1362,11 +1421,12 @@ function canStartPortalSigning(
     return false;
   }
   try {
-    const { customerSigner } = requireTypedSigners(task);
+    const { customerSigner, platformSigner } = requireTypedSigners(task);
     assertPortalSigningTask(
       workOrder,
       task,
       customerSigner,
+      platformSigner,
       customerId
     );
     assertTaskSourceBinding(task, workOrder.handover);
@@ -1386,6 +1446,24 @@ function portalSigningNotReady() {
     code: "STAGE2_PORTAL_SIGNING_NOT_READY",
     message: "The customer Stage 2 signing action is not available."
   });
+}
+
+function portalSigningUrlUnavailable() {
+  return new BadGatewayException({
+    code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
+    message: "The customer signing link is temporarily unavailable."
+  });
+}
+
+function toPortalSignerView(
+  signer: Stage2Signer | null,
+  slotId: ESignSlotId
+): Stage2PortalESignSignerView {
+  return {
+    signedAt: signer?.signedAt ?? null,
+    slotId,
+    status: signer?.signerStatus ?? null
+  };
 }
 
 function toSignerView(

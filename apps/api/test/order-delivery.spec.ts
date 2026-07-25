@@ -343,6 +343,86 @@ describe("vehicle delivery handover workflow", () => {
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      mutate: (harness: ReturnType<typeof createDeliveryHarness>) => {
+        const handover = harness.state.handover as ReturnType<
+          typeof buildHandoverRecord
+        >;
+        handover.handoverESignTask.signers[0].signerStatus =
+          ESignSignerStatus.REJECTED;
+        handover.handoverESignTask.signers[0].signedAt = null;
+      },
+      name: "customer signer"
+    },
+    {
+      mutate: (harness: ReturnType<typeof createDeliveryHarness>) => {
+        const handover = harness.state.handover as ReturnType<
+          typeof buildHandoverRecord
+        >;
+        handover.sourceObjectKey =
+          "contracts/handover-1/replaced-source.pdf";
+      },
+      name: "source artifact identity"
+    },
+    {
+      mutate: (harness: ReturnType<typeof createDeliveryHarness>) => {
+        harness.state.workOrderObjected = true;
+      },
+      name: "customer objection"
+    },
+    {
+      mutate: (harness: ReturnType<typeof createDeliveryHarness>) => {
+        harness.state.evidenceReadiness = buildEvidenceReadiness(harness, {
+          blockingReasons: ["Current delivery evidence is no longer ready."],
+          ready: false
+        });
+      },
+      name: "delivery evidence"
+    }
+  ])(
+    "rechecks the current $name inside the delivery transaction",
+    async ({ mutate }) => {
+      const harness = createDeliveryHarness();
+      harness.state.delivery = buildReadyDelivery(harness);
+      harness.state.beforeTransaction = async () => mutate(harness);
+
+      await expect(
+        harness.service.confirmDelivery(
+          harness.orderId,
+          validConfirmDto(),
+          harness.user,
+          harness.context
+        )
+      ).rejects.toThrow();
+
+      expect(harness.tx.subscriptionOrder.findUnique).toHaveBeenCalled();
+      expect(harness.tx.vehicleDelivery.findUnique).toHaveBeenCalled();
+      expect(harness.tx.vehicleDeliveryHandover.findFirst).toHaveBeenCalled();
+      expect(
+        harness.deliveryEvidenceService
+          .validateEvidenceReadyForDeliveryConfirmation
+      ).toHaveBeenLastCalledWith(
+        harness.orderId,
+        "handover-1",
+        undefined,
+        harness.tx
+      );
+      expect(
+        harness.handoverWorkOrderService.assertReadyForStage2ESign
+      ).toHaveBeenLastCalledWith(
+        harness.orderId,
+        "handover-1",
+        harness.tx
+      );
+      expect(harness.prisma.$transaction).toHaveBeenCalledWith(
+        expect.any(Function),
+        { isolationLevel: "Serializable" }
+      );
+      expectNoDeliveryConfirmationSideEffects(harness);
+    }
+  );
+
   it("rejects confirm when required delivery evidence is not approved", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
@@ -678,6 +758,7 @@ function createDeliveryHarness() {
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state: {
     actualDeliveryAt: Date | null;
+    beforeTransaction: null | (() => Promise<void> | void);
     contractStatus: ContractStatus;
     delivery: Record<string, unknown> | null;
     depositAmount: bigint;
@@ -689,8 +770,10 @@ function createDeliveryHarness() {
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
     handover: Record<string, unknown> | null;
+    workOrderObjected: boolean;
   } = {
     actualDeliveryAt: null,
+    beforeTransaction: null,
     contractStatus: ContractStatus.SIGNED,
     delivery: null,
     depositAmount: 500000n,
@@ -731,7 +814,8 @@ function createDeliveryHarness() {
       }
     ],
     orderStatus: OrderStatus.PENDING_PAYMENT,
-    vehicleStatus: VehicleStatus.RESERVED
+    vehicleStatus: VehicleStatus.RESERVED,
+    workOrderObjected: false
   };
   state.handover = buildHandoverRecord({ orderId, user });
 
@@ -833,8 +917,14 @@ function createDeliveryHarness() {
   }
 
   const tx = {
+    fileObject: {
+      findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        state.fileObjects.find((file) => file.id === where.id) ?? null
+      )
+    },
     subscriptionOrder: {
       count: vi.fn(async () => 0),
+      findUnique: vi.fn(async () => buildOrder()),
       update: vi.fn(async ({ data }) => {
         applyDefined(state, {
           actualDeliveryAt: data.actualDeliveryAt,
@@ -872,11 +962,17 @@ function createDeliveryHarness() {
         state.delivery.updatedAt = now;
         return buildDelivery();
       })
+    },
+    vehicleDeliveryHandover: {
+      findFirst: vi.fn(async () => state.handover)
     }
   };
 
   const prisma = {
-    $transaction: vi.fn(async (callback) => callback(tx)),
+    $transaction: vi.fn(async (callback) => {
+      await state.beforeTransaction?.();
+      return callback(tx);
+    }),
     fileObject: {
       findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
         state.fileObjects.find((file) => file.id === where.id) ?? null
@@ -900,16 +996,42 @@ function createDeliveryHarness() {
   const deliveryEvidenceService = {
     validateEvidenceReadyForDeliveryConfirmation: vi.fn(async () => state.evidenceReadiness)
   };
+  const handoverWorkOrderService = {
+    assertDeliveryCanBeConfirmed: vi.fn(async () => {
+      if (state.workOrderObjected) {
+        throw new Error("The customer has an active handover objection.");
+      }
+    }),
+    assertReadyForStage2ESign: vi.fn(async () => {
+      if (state.workOrderObjected) {
+        throw new Error("The customer has an active handover objection.");
+      }
+    })
+  };
   const service = new OrderService(
     auditService as never,
     prisma as never,
     undefined,
     undefined,
     undefined,
-    deliveryEvidenceService as never
+    deliveryEvidenceService as never,
+    handoverWorkOrderService as never
   );
 
-  return { auditService, context, customerId, deliveryEvidenceService, orderId, prisma, service, state, tx, user, vehicleId };
+  return {
+    auditService,
+    context,
+    customerId,
+    deliveryEvidenceService,
+    handoverWorkOrderService,
+    orderId,
+    prisma,
+    service,
+    state,
+    tx,
+    user,
+    vehicleId
+  };
 }
 
 function buildEvidenceReadiness(
@@ -943,7 +1065,8 @@ function buildHandoverRecord(
   const signedPdfHash = "c".repeat(64);
   const signedObjectKey = "contracts/handover-1/signed.pdf";
   const stage2Task = {
-    completedAt: new Date("2026-06-09T04:10:00.000Z"),
+    completedAt:
+      new Date("2026-06-09T04:10:00.000Z") as Date | null,
     contractId: "handover-contract-1",
     customerId: "customer-1",
     deletedAt: null,
@@ -964,21 +1087,26 @@ function buildHandoverRecord(
     signers: [
       buildStage2DeliverySigner("CUSTOMER"),
       buildStage2DeliverySigner("PLATFORM")
+    ] as [
+      ReturnType<typeof buildStage2DeliverySigner>,
+      ReturnType<typeof buildStage2DeliverySigner>
     ],
     signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
     taskNo: "ESGSTAGE2",
-    taskStatus: ESignTaskStatus.COMPLETED
+    taskStatus: ESignTaskStatus.COMPLETED as ESignTaskStatus
   };
   return {
     archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
     archivedAt: new Date("2026-06-09T04:20:00.000Z"),
     artifactVersion: 1,
     cancelledAt: null,
-    completedAt: new Date("2026-06-09T04:10:00.000Z"),
+    completedAt:
+      new Date("2026-06-09T04:10:00.000Z") as Date | null,
     createdAt: now,
     createdBy: harness.user.id,
-    customerSignedAt: new Date("2026-06-09T04:00:00.000Z"),
-    deletedAt: null,
+    customerSignedAt:
+      new Date("2026-06-09T04:00:00.000Z") as Date | null,
+    deletedAt: null as Date | null,
     failedAt: null,
     failureReason: null,
     handoverContract: {
@@ -994,7 +1122,8 @@ function buildHandoverRecord(
     manifestHash,
     metadata: {},
     orderId: harness.orderId,
-    platformSignedAt: new Date("2026-06-09T04:10:00.000Z"),
+    platformSignedAt:
+      new Date("2026-06-09T04:10:00.000Z") as Date | null,
     signedDocumentFileId: "signed-file-1",
     signedObjectKey,
     signedPdfHash,
@@ -1003,7 +1132,7 @@ function buildHandoverRecord(
     sourceObjectKey: "contracts/handover-1/source.pdf",
     sourcePdfHash,
     stage1ContractId: "contract-1",
-    status: DeliveryHandoverStatus.ARCHIVED,
+    status: DeliveryHandoverStatus.ARCHIVED as DeliveryHandoverStatus,
     updatedAt: now,
     updatedBy: harness.user.id,
     vehicleDeliveryId: "delivery-1",
@@ -1015,7 +1144,7 @@ function buildStage2DeliverySigner(type: "CUSTOMER" | "PLATFORM") {
   const customer = type === "CUSTOMER";
   return {
     customerId: customer ? "customer-1" : null,
-    deletedAt: null,
+    deletedAt: null as Date | null,
     documentType: ESignDocumentType.DELIVERY_HANDOVER,
     id: customer ? "stage2-customer-signer" : "stage2-platform-signer",
     providerActionType: customer
@@ -1025,8 +1154,8 @@ function buildStage2DeliverySigner(type: "CUSTOMER" | "PLATFORM") {
       ? "STAGE2CUSTOMERH1"
       : "STAGE2PLATFORMH2",
     required: true,
-    signedAt: new Date("2026-06-09T04:10:00.000Z"),
-    signerStatus: ESignSignerStatus.SIGNED,
+    signedAt: new Date("2026-06-09T04:10:00.000Z") as Date | null,
+    signerStatus: ESignSignerStatus.SIGNED as ESignSignerStatus,
     signerType: customer
       ? ESignSignerType.CUSTOMER
       : ESignSignerType.PLATFORM,

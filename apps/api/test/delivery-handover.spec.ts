@@ -130,7 +130,8 @@ describe("DeliveryHandoverService", () => {
     expect(evidenceService.assertEvidenceReadyForStage2ESign).toHaveBeenCalledWith(harness.orderId, draft.id);
     expect(evidenceService.assertEvidenceReadyForDeliveryConfirmation).toHaveBeenCalledWith(
       harness.orderId,
-      draft.id
+      draft.id,
+      harness.prisma
     );
     expect(harness.providerCallCount).toBe(0);
   });

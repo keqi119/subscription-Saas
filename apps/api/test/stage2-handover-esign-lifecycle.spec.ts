@@ -43,6 +43,7 @@ import {
   STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED,
   Stage2HandoverESignService
 } from "../src/handover-work-order/stage2-handover-esign.service";
+import type { Stage2HandoverESignReadiness } from "../src/handover-work-order/stage2-handover-esign-readiness.service";
 import { PortalHandoverReviewController } from "../src/portal/portal-handover-review.controller";
 
 const NOW = new Date("2026-07-26T08:00:00.000Z");
@@ -948,6 +949,89 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
   });
 
+  it("maps an error-state Portal status through an explicit safe DTO", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    Object.assign(task.signers[0]!, {
+      lastAttemptAt: new Date("2026-07-26T08:01:00.000Z"),
+      lastErrorCode: "FADADA_PROVIDER_SECRET",
+      lastErrorMessage:
+        "provider rawResponse https://unsafe.example/sign?token=secret"
+    });
+    Object.assign(task.signers[1]!, {
+      lastErrorCode: "PROVIDER_PLATFORM_FAILURE"
+    });
+    attachPortalTask(harness, task);
+    harness.readiness.getReadiness.mockResolvedValueOnce({
+      blockers: [{
+        code: "CUSTOMER_OBJECTION_ACTIVE",
+        message: "The customer has an active handover objection."
+      }],
+      ready: false,
+      state: {
+        esignTaskId: task.id,
+        esignTaskStatus: task.taskStatus,
+        handoverContractId: "contract-stage2-1",
+        handoverId: "handover-1",
+        handoverStatus: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+        orderId: "order-1",
+        orderStatus: "PENDING_DELIVERY",
+        workOrderId: "work-order-1",
+        workOrderStatus: "CUSTOMER_OBJECTED"
+      }
+    });
+
+    const status = await harness.service.getPortalStatus(
+      "work-order-1",
+      "customer-1"
+    );
+    const serialized = JSON.stringify(status).toLowerCase();
+
+    expect(status).toEqual({
+      archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+      blockers: [{
+        code: "CUSTOMER_OBJECTION_ACTIVE",
+        message: "The customer has an active handover objection."
+      }],
+      capability: {
+        canStartSigning: false
+      },
+      createdAt: NOW,
+      customerSigner: {
+        signedAt: null,
+        slotId: ESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+        status: ESignSignerStatus.SIGNING
+      },
+      documentType: ESignDocumentType.DELIVERY_HANDOVER,
+      handoverId: "handover-1",
+      platformSigner: {
+        signedAt: null,
+        slotId: ESignSlotId.STAGE2_HANDOVER_PLATFORM,
+        status: ESignSignerStatus.PENDING
+      },
+      ready: false,
+      signedArtifactAvailable: false,
+      signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+      status: ESignTaskStatus.WAITING_CUSTOMER,
+      taskId: "stage2-task-1",
+      updatedAt: NOW,
+      workOrderId: "work-order-1"
+    });
+    for (const forbidden of [
+      "lasterrorcode",
+      "fada",
+      "provider",
+      "rawresponse",
+      "unsafe.example",
+      "secret",
+      "signurl",
+      "objectkey",
+      "bucket"
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
   it("returns only a short-lived URL and expiry from the explicit Portal start action", async () => {
     const harness = createHarness();
     const task = makeTask();
@@ -1003,6 +1087,88 @@ describe("Stage2HandoverESignService", () => {
       signerId: "stage2-customer-signer-1",
       taskId: "stage2-task-1"
     });
+    expect(harness.prisma.contractESignTask.update).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignTask.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.update).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(harness.prisma.vehicleDelivery.update).not.toHaveBeenCalled();
+    expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      customerStatus: ESignSignerStatus.SIGNED,
+      name: "signed customer"
+    },
+    {
+      customerStatus: ESignSignerStatus.REJECTED,
+      name: "rejected customer"
+    },
+    {
+      customerStatus: ESignSignerStatus.EXPIRED,
+      name: "expired customer"
+    },
+    {
+      name: "platform signed before customer",
+      platformStatus: ESignSignerStatus.SIGNED
+    }
+  ])("does not call the provider for $name state", async ({
+    customerStatus,
+    platformStatus
+  }) => {
+    const harness = createHarness();
+    const task = makeTask({ customerStatus, platformStatus });
+    attachPortalTask(harness, task);
+
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_PORTAL_SIGNING_NOT_READY"
+      })
+    });
+
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
+  });
+
+  it("maps provider signing URL failures to a stable Portal-safe error", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.provider.getSignerUrl.mockRejectedValueOnce(
+      new Error(
+        "FADADA_PROVIDER_SECRET rawResponse=https://unsafe.example/sign?token=secret"
+      )
+    );
+
+    let caught: unknown;
+    try {
+      await harness.service.startPortalSigning(
+        "work-order-1",
+        "customer-1"
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      response: {
+        code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
+        message: "The customer signing link is temporarily unavailable."
+      },
+      status: 502
+    });
+    const serialized = JSON.stringify(caught).toLowerCase();
+    for (const forbidden of [
+      "fada",
+      "provider_secret",
+      "rawresponse",
+      "unsafe.example",
+      "token=secret"
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
     expect(harness.prisma.contractESignTask.update).not.toHaveBeenCalled();
     expect(harness.prisma.contractESignTask.updateMany).not.toHaveBeenCalled();
     expect(harness.prisma.contractESignSigner.update).not.toHaveBeenCalled();
@@ -1194,7 +1360,7 @@ function createHarness() {
         workOrderStatus: "CUSTOMER_CONFIRMED"
       }
     })),
-    getReadiness: vi.fn(async () => ({
+    getReadiness: vi.fn(async (): Promise<Stage2HandoverESignReadiness> => ({
       blockers: [],
       ready: true,
       state: {

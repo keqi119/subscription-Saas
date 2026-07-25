@@ -1746,18 +1746,36 @@ export class HandoverWorkOrderService {
     await this.assertWorkOrderReadyForStage2(await this.findActiveWorkOrderOrThrow(orderId, handoverId));
   }
 
-  async assertReadyForStage2ESign(orderId: string, handoverId?: string | null) {
-    await this.assertWorkOrderReadyForStage2(await this.findActiveWorkOrderOrThrow(orderId, handoverId));
+  async assertReadyForStage2ESign(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    await this.assertWorkOrderReadyForStage2(
+      await this.findActiveWorkOrderOrThrow(orderId, handoverId, db),
+      db
+    );
   }
 
-  async assertDeliveryCanBeConfirmed(orderId: string, handoverId?: string | null) {
-    const workOrder = await this.findActiveWorkOrderOrThrow(orderId, handoverId);
-    await this.assertWorkOrderReadyForStage2(workOrder);
+  async assertDeliveryCanBeConfirmed(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await this.findActiveWorkOrderOrThrow(
+      orderId,
+      handoverId,
+      db
+    );
+    await this.assertWorkOrderReadyForStage2(workOrder, db);
     if (this.deliveryHandoverService) {
-      await this.deliveryHandoverService.assertDeliveryCanBeConfirmed(orderId);
+      await this.deliveryHandoverService.assertDeliveryCanBeConfirmed(
+        orderId,
+        db
+      );
       return;
     }
-    const handover = await this.prisma.vehicleDeliveryHandover.findFirst({
+    const handover = await db.vehicleDeliveryHandover.findFirst({
       where: {
         deletedAt: null,
         id: workOrder.handoverId ?? undefined,
@@ -1769,7 +1787,10 @@ export class HandoverWorkOrderService {
     }
   }
 
-  private async assertWorkOrderReadyForStage2(workOrder: WorkOrderRecord) {
+  private async assertWorkOrderReadyForStage2(
+    workOrder: WorkOrderRecord,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
     if (isTerminalWorkOrderStatus(workOrder.status)) {
       throw new BadRequestException("交付工单已终止。");
     }
@@ -1786,17 +1807,30 @@ export class HandoverWorkOrderService {
     await this.deliveryEvidenceService.assertFieldEvidenceComplete(
       workOrder.orderId,
       workOrder.handoverId ?? null,
-      toFieldEvidenceState(workOrder)
+      toFieldEvidenceState(workOrder),
+      db
     );
-    if (!this.getReviewAttemptModel()) {
+    if (!this.getReviewAttemptModel(db)) {
       return;
     }
-    const evidencePackage = await this.buildCurrentEvidencePackage(workOrder);
-    await this.assertEvidencePackageMatchesLatestConfirmation(workOrder, evidencePackage);
+    const evidencePackage = await this.buildCurrentEvidencePackage(
+      workOrder,
+      undefined,
+      db
+    );
+    await this.assertEvidencePackageMatchesLatestConfirmation(
+      workOrder,
+      evidencePackage,
+      db
+    );
   }
 
-  private async findActiveWorkOrderOrThrow(orderId: string, handoverId?: string | null) {
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findFirst({
+  private async findActiveWorkOrderOrThrow(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await db.vehicleHandoverWorkOrder.findFirst({
       orderBy: { createdAt: "desc" },
       where: {
         ...(handoverId ? { handoverId } : {}),
@@ -1805,7 +1839,7 @@ export class HandoverWorkOrderService {
       }
     });
     if (!workOrder) {
-      const latest = await this.prisma.vehicleHandoverWorkOrder.findFirst({
+      const latest = await db.vehicleHandoverWorkOrder.findFirst({
         orderBy: { createdAt: "desc" },
         where: {
           ...(handoverId ? { handoverId } : {}),

@@ -294,14 +294,21 @@ export class DeliveryHandoverService {
     });
   }
 
-  async assertDeliveryCanBeConfirmed(orderId: string) {
+  async assertDeliveryCanBeConfirmed(
+    orderId: string,
+    db: DeliveryHandoverDb = this.prisma
+  ) {
     const handover = await findDeliveryHandoverForConfirmation(
-      this.prisma,
+      db,
       orderId
     );
     assertDeliveryHandoverReadyForDelivery(handover);
     if (this.deliveryEvidenceService) {
-      await this.deliveryEvidenceService.assertEvidenceReadyForDeliveryConfirmation(orderId, handover?.id ?? null);
+      await this.deliveryEvidenceService.assertEvidenceReadyForDeliveryConfirmation(
+        orderId,
+        handover?.id ?? null,
+        db
+      );
     }
   }
 
@@ -444,7 +451,10 @@ function hasCompleteStage2SignedState(
     contract.deletedAt ||
     contract.id !== handover.handoverContractId ||
     contract.fileId !== handover.sourceDocumentFileId ||
-    ![ContractStatus.SIGNED, ContractStatus.ARCHIVED].includes(contract.status) ||
+    (
+      contract.status !== ContractStatus.SIGNED &&
+      contract.status !== ContractStatus.ARCHIVED
+    ) ||
     !task ||
     task.deletedAt ||
     task.id !== handover.handoverESignTaskId ||
@@ -523,10 +533,9 @@ function hasCompleteStage2SignedState(
   );
 }
 
-type DeliveryHandoverSigner =
-  DeliveryHandoverConfirmationRecord["handoverESignTask"] extends infer Task
-    ? NonNullable<Task>["signers"][number]
-    : never;
+type DeliveryHandoverSigner = NonNullable<
+  DeliveryHandoverConfirmationRecord["handoverESignTask"]
+>["signers"][number];
 
 function signerMatchesRequiredTuple(
   signer: DeliveryHandoverSigner,

@@ -1767,7 +1767,47 @@ export class OrderService {
     await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(id, handover?.id ?? null);
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
+      const orderBefore = await tx.subscriptionOrder.findUnique({
+        include: orderInclude,
+        where: { id }
+      });
+      if (!orderBefore || orderBefore.deletedAt) {
+        throw new NotFoundException("Order not found.");
+      }
+      ensureCanAccessOrder(orderBefore, user);
+      assertNoActiveOrderChange(orderBefore);
+      assertOrderNotDelivered(orderBefore);
+
+      const deliveryBefore = await tx.vehicleDelivery.findUnique({
+        include: deliveryInclude,
+        where: { orderId: id }
+      });
+      const currentHandover = await findDeliveryHandoverForConfirmation(
+        tx,
+        id
+      );
+      const currentEvidenceReadiness =
+        await this.getDeliveryConfirmationReadiness(
+          id,
+          currentHandover?.id ?? null,
+          tx
+        );
+      assertCanConfirmDelivery(
+        orderBefore,
+        deliveryBefore,
+        deliveredAt,
+        currentHandover,
+        currentEvidenceReadiness
+      );
+      await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(
+        id,
+        currentHandover?.id ?? null,
+        tx
+      );
+
+      const vehicleBefore = await tx.vehicle.findUnique({
+        where: { id: orderBefore.vehicleId! }
+      });
       if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.RESERVED) {
         throw new BadRequestException("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
       }
@@ -1775,9 +1815,9 @@ export class OrderService {
       const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
         where: {
           deletedAt: null,
-          id: { not: beforeOrder.id },
+          id: { not: orderBefore.id },
           orderStatus: { notIn: VEHICLE_OCCUPYING_FINAL_STATUSES },
-          vehicleId: beforeOrder.vehicleId
+          vehicleId: orderBefore.vehicleId
         }
       });
       if (occupiedByOtherOrderCount > 0) {
@@ -1793,7 +1833,7 @@ export class OrderService {
           updatedBy: user.id
         },
         include: deliveryInclude,
-        where: { id: beforeDelivery!.id }
+        where: { id: deliveryBefore!.id }
       });
       const order = await tx.subscriptionOrder.update({
         data: {
@@ -1806,17 +1846,26 @@ export class OrderService {
       });
       const vehicleAfter = await tx.vehicle.update({
         data: { status: VehicleStatus.LEASED, updatedBy: user.id },
-        where: { id: beforeOrder.vehicleId! }
+        where: { id: orderBefore.vehicleId! }
       });
 
-      return { delivery, order, vehicleAfter, vehicleBefore };
+      return {
+        delivery,
+        deliveryBefore,
+        order,
+        orderBefore,
+        vehicleAfter,
+        vehicleBefore
+      };
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
 
     await this.writeAudit(
       AuditAction.UPDATE,
       "subscription_order",
       id,
-      toOrderView(beforeOrder),
+      toOrderView(result.orderBefore),
       toOrderView(result.order),
       user,
       context
@@ -1824,7 +1873,7 @@ export class OrderService {
     await this.writeDeliveryAudit(
       AuditAction.UPDATE,
       result.delivery.id,
-      toDeliveryView(beforeDelivery!),
+      toDeliveryView(result.deliveryBefore!),
       toDeliveryView(result.delivery),
       user,
       context
@@ -2683,16 +2732,26 @@ export class OrderService {
     return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
   }
 
-  private async getDeliveryConfirmationReadiness(orderId: string, handoverId?: string | null) {
+  private async getDeliveryConfirmationReadiness(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
     const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
       orderId,
-      handoverId ?? null
+      handoverId ?? null,
+      undefined,
+      db
     );
     if (!this.handoverWorkOrderService) {
       return evidenceReadiness;
     }
     try {
-      await this.handoverWorkOrderService.assertReadyForStage2ESign(orderId, handoverId ?? null);
+      await this.handoverWorkOrderService.assertReadyForStage2ESign(
+        orderId,
+        handoverId ?? null,
+        db
+      );
       return evidenceReadiness;
     } catch (error) {
       const message = error instanceof Error ? error.message : "交付工单尚未就绪。";

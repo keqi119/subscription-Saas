@@ -132,13 +132,14 @@ const pdfKitMock = vi.hoisted(() => {
 vi.mock("pdfkit", () => ({ default: pdfKitMock.FakePDFDocument }));
 
 describe("Stage 2 handover PDF renderer", () => {
-  it("builds a safe handover render model with 14 evidence summary rows and masked customer identifiers", () => {
+  it("builds a safe handover render model with full signing-party identifiers and VIN", () => {
     const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
     const serialized = JSON.stringify(model);
 
     expect(model.documentNo).toBe("HDV-STAGE2-PDF-001");
-    expect(model.customer.idNumberMasked).toBe("**************5678");
-    expect(model.customer.mobileMasked).toBe("138****5678");
+    expect(model.customer.idNumber).toBe("110101199001015678");
+    expect(model.customer.mobile).toBe("13812345678");
+    expect(model.vehicle.vin).toBe("LTESTVIN123456789");
     expect(model.evidenceSummary.items).toHaveLength(STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT);
     expect(model.evidenceSummary.items[0]?.files[0]).toMatchObject({
       displayName: "front.jpg",
@@ -186,6 +187,12 @@ describe("Stage 2 handover PDF renderer", () => {
     expect(visibleText).toContain("详见照片/视频证据附件");
     expect(visibleText).toContain("承租方");
     expect(visibleText).toContain("出租方");
+    expect(visibleText).toContain("身份证号：110101199001015678");
+    expect(visibleText).toContain("联系电话：13812345678");
+    expect(visibleText).toContain("车架号（VIN）");
+    expect(visibleText).toContain("LTESTVIN123456789");
+    expect(visibleText).not.toContain("138****5678");
+    expect(visibleText).not.toContain("车架号（后6位）");
     expect(visibleText).not.toContain("APPROVED/APPROVED");
     expect(visibleText).not.toContain("Render Diagnostics");
     expect(imageCalls).toHaveLength(17);
@@ -412,7 +419,9 @@ function createRenderModelInput() {
     },
     order: {
       customer: {
-        idNumber: "110101199001015678",
+        identity: {
+          idCardNo: "110101199001015678"
+        },
         mobile: "13812345678",
         name: "张三",
         registeredAddress: "上海市浦东新区"

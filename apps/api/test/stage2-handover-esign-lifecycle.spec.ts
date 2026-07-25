@@ -1203,7 +1203,7 @@ function makeWorkOrder() {
       archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
       archivedAt: null,
       artifactVersion: 3,
-      completedAt: null,
+      completedAt: null as Date | null,
       customerSignedAt: null,
       handoverContract: {
         contractSnapshot: {
@@ -1231,7 +1231,7 @@ function makeWorkOrder() {
       handoverESignTaskId: null as null | string,
       id: "handover-1",
       manifestHash: "a".repeat(64),
-      platformSignedAt: null,
+      platformSignedAt: null as Date | null,
       signedDocumentFileId: null as null | string,
       signedObjectKey: null as null | string,
       sourceDocumentFileId: "file-stage2-1" as null | string,
@@ -1264,7 +1264,7 @@ function makeTask(
 ) {
   return {
     cancelledAt: null,
-    completedAt: null,
+    completedAt: null as Date | null,
     contractId: "contract-stage2-1",
     createdAt: NOW,
     customerId: "customer-1",

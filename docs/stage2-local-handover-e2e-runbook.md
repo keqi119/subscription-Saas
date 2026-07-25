@@ -157,7 +157,7 @@ After callback completion and archive:
 - canonical sanitized payload hash deduplication is provider-scoped;
 - customer/platform completion can arrive in either order and completes only after both exact signer rows are signed;
 - archive has a five-minute default stale claim lease/reclaim, PDF MIME/magic/size checks, signed SHA-256, and explicit retry;
-- Task 6 orphan-object cleanup after storage succeeds but DB finalization fails remains deferred;
+- archive uses a content-addressed object identity, rechecks the active claim before storage write, and conditionally cleans a known-uncommitted object;
 - eSign does not auto-confirm delivery, write `actualDeliveryAt`, activate a lease, start billing, or trigger Stage 1 `PENDING_PAYMENT`.
 
 At final delivery:
@@ -243,7 +243,7 @@ of leaving the operator on an indefinite spinner.
 ## Open Items
 
 - Controlled provider sandbox and real database concurrency validation have not run.
-- Task 6 archive orphan-object cleanup remains deferred.
+- Production storage immutability, cleanup permissions, and lifecycle retention still require controlled validation.
 - Delivery lock overlap can still surface a transient deadlock abort and may need a bounded retry policy.
 - The child-phantom regression fixture uses a third signer that the real `(taskId, slotId)` uniqueness constraint would reject; retain a real-DB concurrency test in follow-up.
 - Admin void/escalation handling beyond resubmission/send-back, audit timezone cleanup, upload proxy rollout, and real-device H5/WeChat/Safari smoke remain open.

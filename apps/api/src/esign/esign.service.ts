@@ -1045,7 +1045,6 @@ export class ESignService {
         ) {
           await tx.contractESignSigner.update({
             data: {
-              claimExpiresAt: null,
               lastErrorCode: "FADADA_STAGE2_PLATFORM_SEAL_FAILED",
               lastErrorMessage:
                 "The Stage 2 platform seal was not completed and can be retried.",
@@ -1160,7 +1159,6 @@ export class ESignService {
         ) {
           await tx.contractESignSigner.update({
             data: {
-              claimExpiresAt: null,
               lastErrorCode: "FADADA_STAGE2_PLATFORM_RESULT_UNKNOWN",
               lastErrorMessage:
                 "The Stage 2 platform seal result is unknown and can be retried.",
@@ -2116,7 +2114,10 @@ export class ESignService {
 
     const platformSigner = getPlatformSigner(task);
     const transactionId = platformSigner?.providerSignerId ?? buildProviderTransactionId(task.taskNo, 2);
-    if (!this.provider.autoSealTask) {
+    if (
+      !this.provider.autoSealTask ||
+      task.provider === ESignProviderType.MOCK
+    ) {
       return this.recordPlatformAutoSealFailure(task.id, {
         errorMessage: "ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED",
         providerSignerId: transactionId,
@@ -2171,7 +2172,10 @@ export class ESignService {
   ) {
     const platformSigners = getStage1PlatformSlotSigners(task);
     const transactionId = buildProviderTransactionId(task.taskNo, 2);
-    if (!this.provider.autoSealTask) {
+    if (
+      !this.provider.autoSealTask ||
+      task.provider === ESignProviderType.MOCK
+    ) {
       return this.recordPlatformAutoSealFailure(task.id, {
         errorMessage: "ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED",
         providerSignerId: transactionId,

@@ -254,7 +254,9 @@ describe("FadadaSignedArtifactService", () => {
 
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
       expect.objectContaining({
-        objectIdentity: "task-1-v1"
+        objectIdentity: expect.stringMatching(
+          /^task-1-v1-[a-f0-9]{64}$/
+        )
       })
     );
     expect(storageService.deleteObject).toHaveBeenCalledWith(
@@ -384,11 +386,12 @@ describe("FadadaSignedArtifactService", () => {
   });
 
   it("atomically reclaims a stale Stage 2 archive claim after the default five-minute lease", async () => {
-    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const { apiClient, prisma, service, state, storageService } = createStage2Fixture();
     const staleAttemptAt = new Date(Date.now() - 6 * 60 * 1000);
     state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
     state.handover!.archiveLastAttemptAt = staleAttemptAt;
     state.handover!.archiveRetryCount = 1;
+    state.handover!.signedObjectKey = "application-materials/stale-signed.pdf";
 
     const result = await service.archiveSignedStage2Handover({
       actorId: "user-admin",
@@ -407,6 +410,63 @@ describe("FadadaSignedArtifactService", () => {
     expect(state.handover!.archiveLastAttemptAt).not.toEqual(staleAttemptAt);
     expect(apiClient.querySignResult).toHaveBeenCalledOnce();
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+    const clearPointerCall = vi.mocked(
+      prisma.vehicleDeliveryHandover.updateMany
+    ).mock.calls.find((call) =>
+      (call[0] as { data: Record<string, unknown> }).data.signedObjectKey === null
+    );
+    expect(clearPointerCall).toBeDefined();
+    expect(
+      vi.mocked(prisma.vehicleDeliveryHandover.updateMany).mock.invocationCallOrder[
+        vi.mocked(prisma.vehicleDeliveryHandover.updateMany).mock.calls.indexOf(
+          clearPointerCall!
+        )
+      ]
+    ).toBeLessThan(
+      vi.mocked(storageService.deleteContractSignedArtifactObject)
+        .mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("binds the Stage 2 archive object identity to the downloaded signed PDF hash", async () => {
+    const { service, state, storageService } = createStage2Fixture();
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectIdentity: `${state.task.id}-v1-${result.signedPdfHash}`
+      })
+    );
+  });
+
+  it("fences a reclaimed Stage 2 archive worker after download and before storage write", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const newerAttemptAt = new Date(Date.now() + 60_000);
+    vi.mocked(apiClient.downloadSignedContract).mockImplementationOnce(async () => {
+      state.handover!.archiveLastAttemptAt = newerAttemptAt;
+      state.handover!.archiveRetryCount = 2;
+      return {
+        buffer: Buffer.from("%PDF-1.4\nnewer worker owns the claim\n%%EOF\n"),
+        contentType: "application/pdf",
+        fileName: "signed.pdf"
+      };
+    });
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
+      })
+    });
+
+    expect(state.handover!.archiveLastAttemptAt).toEqual(newerAttemptAt);
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
   });
 
   it("uses a valid configured Stage 2 archive claim timeout", async () => {
@@ -763,6 +823,7 @@ function createFixture(env: Record<string, string> = {}) {
       ) =>
         `contracts/${contractId}/esign/${provider}/signed/${objectIdentity}-${originalName}`
     ),
+    deleteContractSignedArtifactObject: vi.fn(async () => undefined),
     deleteObject: vi.fn(async () => undefined),
     getContractSignedArtifactStream: vi.fn(async () => ({
       contentLength: pdf.length,

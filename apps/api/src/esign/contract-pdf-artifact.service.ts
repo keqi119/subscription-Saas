@@ -270,10 +270,17 @@ export class ContractPdfArtifactService {
       );
     const purpose = options.purpose ?? (fadadaEnabled ? "FADADA_UPLOAD" : undefined);
     const maxBytes = options.maxBytes ?? MAX_FADADA_PDF_BYTES;
+    const expectedSha256Required = Object.prototype.hasOwnProperty.call(
+      options,
+      "expectedSha256"
+    );
 
     return {
       enterpriseAutoSealEnabled,
-      expectedSha256: normalizeSha256(options.expectedSha256),
+      expectedSha256: normalizeSha256(
+        options.expectedSha256,
+        expectedSha256Required
+      ),
       fadadaEnabled,
       maxBytes,
       purpose,
@@ -356,9 +363,14 @@ function assertExpectedSha256(buffer: Buffer, expectedSha256?: string) {
   }
 }
 
-function normalizeSha256(value: string | undefined) {
+function normalizeSha256(value: string | undefined, required = false) {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) {
+    if (required) {
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH}: expected source hash is required`
+      );
+    }
     return undefined;
   }
   if (!/^[a-f0-9]{64}$/.test(normalized)) {

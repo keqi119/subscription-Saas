@@ -103,6 +103,25 @@ describe("Stage 2 Fadada provider mapping", () => {
     );
   });
 
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+    ["malformed", "not-a-sha256"]
+  ])("rejects a %s Stage 2 source hash before provider upload", async (
+    _label,
+    sourcePdfHash
+  ) => {
+    const harness = createProviderHarness();
+
+    await expect(harness.provider.createSignTask({
+      ...stage2CustomerInput("HDV-SOURCE-HASH"),
+      sourcePdfHash
+    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH);
+
+    expect(harness.apiClient.uploadDocs).not.toHaveBeenCalled();
+    expect(harness.apiClient.createExternalSignUrl).not.toHaveBeenCalled();
+  });
+
   it("uses persisted Stage 2 customer coordinates when the optional input assertion is omitted", async () => {
     const harness = createProviderHarness();
 

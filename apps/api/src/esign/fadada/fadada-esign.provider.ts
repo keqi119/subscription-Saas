@@ -21,6 +21,7 @@ import {
   VerifyCallbackResult
 } from "../esign.provider";
 import {
+  CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH,
   ContractPdfArtifactService,
   ResolvedContractPdfArtifactSlotCoordinate
 } from "../contract-pdf-artifact.service";
@@ -153,6 +154,7 @@ export class FadadaESignProvider implements ESignProvider {
 
   private async createStage2CustomerSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
     const customerSlot = resolveStage2CustomerSlot(input);
+    const sourcePdfHash = requireStage2SourcePdfHash(input.sourcePdfHash);
     if (!this.apiClient || !this.pdfArtifactService) {
       throw new Error(`${FADADA_PROVIDER_DEPENDENCY_MISSING}: Stage 2 Fadada dependencies are not wired`);
     }
@@ -172,7 +174,7 @@ export class FadadaESignProvider implements ESignProvider {
     });
 
     const artifact = await this.pdfArtifactService.getContractPdfArtifact(input.contractId, {
-      expectedSha256: input.sourcePdfHash,
+      expectedSha256: sourcePdfHash,
       fadadaEnabled: true,
       purpose: "FADADA_UPLOAD",
       requireGeneratedContractArtifact: true,
@@ -583,6 +585,16 @@ export class FadadaESignProvider implements ESignProvider {
 
     return account?.providerCustomerId ?? undefined;
   }
+}
+
+function requireStage2SourcePdfHash(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || !/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_SOURCE_HASH_MISMATCH}: Stage 2 source hash is required`
+    );
+  }
+  return normalized;
 }
 
 function mapFadadaResultCode(resultCode: string | undefined) {

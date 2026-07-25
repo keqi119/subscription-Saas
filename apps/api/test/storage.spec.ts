@@ -175,6 +175,39 @@ describe("Storage providers", () => {
     expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/materials\/app-1\/\d{4}\/\d{2}\//);
   });
 
+  it("deletes a contract signed artifact through its encoded storage driver", async () => {
+    const local = {
+      deleteObject: vi.fn(async () => undefined)
+    };
+    const oss = {
+      deleteObject: vi.fn(async () => undefined)
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "oss" }) as never,
+      local as never,
+      oss as never
+    );
+
+    await localService.deleteContractSignedArtifactObject(
+      "contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+    await ossService.deleteContractSignedArtifactObject(
+      "oss:subscription/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+
+    expect(local.deleteObject).toHaveBeenCalledWith(
+      "application-materials/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+    expect(oss.deleteObject).toHaveBeenCalledWith(
+      "subscription/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+  });
+
   it("maps vehicle listing media uploads to private local or OSS database fields", async () => {
     const local = {
       deleteObject: vi.fn(),

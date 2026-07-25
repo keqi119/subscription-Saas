@@ -165,7 +165,7 @@ Readiness returns stable blocker codes for current Stage 1 contract, order/work-
 
 Verified callbacks correlate by typed `providerTransactionId`. The implementation sanitizes sensitive fields and URLs, sorts object keys, hashes the canonical sanitized payload, and deduplicates by provider plus payload hash. Customer and platform callbacks may arrive in either order; Serializable reconciliation re-reads the exact two-signer set and completes only after both required signers are signed.
 
-Archive uses an atomic claim with a five-minute default stale lease/reclaim, validates PDF MIME, magic, and size, records the signed SHA-256, and supports explicit retry. Task 6 orphan-object cleanup after storage success plus DB finalization failure remains deferred.
+Archive uses an atomic claim with a five-minute default stale lease/reclaim, validates PDF MIME, magic, and size, records the signed SHA-256, and supports explicit retry. Signed objects use content-addressed identities, are rebound to the active claim before storage write, and are conditionally removed when DB finalization is known not to have committed.
 
 ## Portal Customer Review
 
@@ -290,13 +290,13 @@ Void/rebuild foundation:
 - Failed, cancelled, or voided handovers remain as historical evidence.
 - A new active handover may supersede a cancelled/failed one.
 - Only the latest active handover can satisfy the delivery/evidence gate.
-- If the customer has signed but the platform has not sealed, void/rebuild is allowed.
+- An active task with any accepted provider transaction cannot be locally voided without a confirmed provider cancellation path. Failed, cancelled, or expired terminal tasks may still use the explicit void/rebuild path.
 - Old artifacts/tasks should not be deleted.
 
 ## Open Items
 
 - Controlled sandbox validation is still required; this documentation round used no real provider or database.
 - Sandbox questions: duplicate transaction idempotency, callback retry/out-of-order behavior, auto-seal authorization validity, sign-to-download delay, and archive/filing idempotency.
-- Task 6 orphan-object cleanup after archive storage succeeds but DB finalization fails.
+- Controlled storage validation for content-addressed overwrite behavior, cleanup permissions, and lifecycle retention.
 - Admin void/escalation policy beyond the basic objection resubmission loop.
 - Portal has no optional Stage 2 signed-document preview in the implemented API surface.

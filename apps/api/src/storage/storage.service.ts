@@ -261,6 +261,13 @@ export class StorageService {
       : key;
   }
 
+  async deleteContractSignedArtifactObject(objectKey: string): Promise<void> {
+    const bucket = objectKey.startsWith(OSS_KEY_PREFIX)
+      ? OSS_BUCKET_PREFIX
+      : LOCAL_BUCKET;
+    await this.deleteObject(bucket, objectKey);
+  }
+
   private async putPrivateObject(key: string, input: Omit<UploadObjectInput, "key">): Promise<{
     bucket: string;
     objectKey: string;

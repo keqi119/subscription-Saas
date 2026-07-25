@@ -24,7 +24,7 @@ A Stage 2 task contains exactly two required typed signer rows, one for each tup
 
 The customer transaction uploads the generated Stage 2 source PDF and creates the manual-sign action. Platform auto-seal is a separate transaction and can run only for the platform slot after customer completion through the controlled platform-seal action/retry path.
 
-Before either provider action, the service persists a deterministic transaction ID and a leased in-flight claim on the exact typed signer. This makes an early callback correlatable, prevents void from racing a fresh action, and allows the request path to recognize a callback that already reconciled the same transaction. An ambiguous customer initiation retains its claim and retry timestamp for reconciliation instead of falsely declaring local failure after a possible remote success.
+Before either provider action, the service persists a deterministic transaction ID and a leased in-flight claim on the exact typed signer. This makes an early callback correlatable, prevents void from racing a fresh action, and allows the request path to recognize a callback that already reconciled the same transaction. An ambiguous customer initiation retains its claim and retry timestamp for reconciliation instead of falsely declaring local failure after a possible remote success. Once any provider transaction is accepted, the active task cannot be locally voided without a confirmed provider cancellation path.
 
 ## Renderer-Owned Coordinates
 
@@ -74,7 +74,7 @@ Readiness is local and fail-closed. It does not generate a PDF, call the provide
 
 ## Lifecycle And Callback Contract
 
-Admin explicitly creates the task. The lifecycle persists one typed customer signer and one typed platform signer, preserves source PDF/manifest identity, and supports explicit void/rebuild, platform-seal retry, and archive retry.
+Admin explicitly creates the task. The lifecycle persists one typed customer signer and one typed platform signer, preserves source PDF/manifest identity, and supports terminal-task void/rebuild, platform-seal retry, and archive retry. Active tasks with accepted provider transactions remain correlated and fail closed on void.
 
 Verified Stage 2 callbacks:
 
@@ -99,7 +99,7 @@ Archive requires a completed typed Fadada Stage 2 task, both required signed sig
 - uses a five-minute default stale-claim lease and atomically reclaims an expired claim;
 - queries/downloads the signed artifact, then validates exact PDF MIME, PDF magic, and the 20 MB limit;
 - calculates and persists the signed PDF SHA-256;
-- stores with a deterministic object identity and then links the signed `FileObject`;
+- binds a content-addressed object identity to the still-current claim before storage write and then links the signed `FileObject`;
 - re-reads committed state after an ambiguous finalization failure, and only compensates a known-uncommitted object while retaining a deterministic reconciliation pointer if deletion is uncertain;
 - returns to `SIGNED` with `archiveStatus=FAILED` on retryable archive failure;
 - skips duplicate retries after a complete archive.

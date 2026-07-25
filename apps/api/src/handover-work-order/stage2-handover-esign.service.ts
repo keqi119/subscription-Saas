@@ -823,6 +823,20 @@ export class Stage2HandoverESignService {
         signer.claimExpiresAt &&
         signer.claimExpiresAt.getTime() > now.getTime()
     );
+    const hadAcceptedProviderAction =
+      !TERMINAL_REBUILD_STATUSES.has(task.taskStatus) &&
+      task.signers.some(
+        (signer) =>
+          signer.required &&
+          signer.deletedAt === null &&
+          Boolean(signer.providerTransactionId)
+      );
+    const signerBlockers = [
+      { claimExpiresAt: { gt: now } },
+      ...(!TERMINAL_REBUILD_STATUSES.has(task.taskStatus)
+        ? [{ providerTransactionId: { not: null } }]
+        : [])
+    ];
     await this.prisma.$transaction(async (tx) => {
       const taskVoided = await tx.contractESignTask.updateMany({
         data: {
@@ -842,8 +856,8 @@ export class Stage2HandoverESignService {
           id: task.id,
           signers: {
             none: {
-              claimExpiresAt: { gt: now },
               deletedAt: null,
+              OR: signerBlockers,
               required: true
             }
           },
@@ -852,11 +866,11 @@ export class Stage2HandoverESignService {
         }
       });
       if (taskVoided.count !== 1) {
-        if (hadFreshProviderClaim) {
+        if (hadFreshProviderClaim || hadAcceptedProviderAction) {
           throw new ConflictException({
             code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
             message:
-              "A required Stage 2 provider action is still in progress."
+              "A required Stage 2 provider action is active or still in progress."
           });
         }
         throw voidNotAllowed();
@@ -1094,7 +1108,8 @@ export class Stage2HandoverESignService {
       !handover.handoverContractId ||
       handover.handoverContract.id !== handover.handoverContractId ||
       !handover.sourceDocumentFileId ||
-      handover.handoverContract.fileId !== handover.sourceDocumentFileId
+      handover.handoverContract.fileId !== handover.sourceDocumentFileId ||
+      !isSha256Digest(handover.sourcePdfHash)
     ) {
       throw new BadRequestException({
         code: "STAGE2_HANDOVER_SOURCE_INVALID",
@@ -1489,6 +1504,15 @@ export class Stage2HandoverESignService {
       canVoid: Boolean(
         task &&
         task.taskStatus !== ESignTaskStatus.COMPLETED &&
+        (
+          TERMINAL_REBUILD_STATUSES.has(task.taskStatus) ||
+          !task.signers.some(
+            (signer) =>
+              signer.required &&
+              signer.deletedAt === null &&
+              Boolean(signer.providerTransactionId)
+          )
+        ) &&
         !task.signers.some(
           (signer) =>
             signer.required &&
@@ -1903,6 +1927,10 @@ function requireProviderTransactionId(value: string | undefined) {
     throw new Error("Stage 2 provider transaction ID is invalid.");
   }
   return value;
+}
+
+function isSha256Digest(value: string | null | undefined) {
+  return Boolean(value && /^[a-f0-9]{64}$/i.test(value.trim()));
 }
 
 function buildTransactionId(taskNo: string, suffix: "H1" | "H2") {

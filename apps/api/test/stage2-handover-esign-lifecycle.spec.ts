@@ -329,6 +329,32 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.state.workOrder.handover.handoverESignTaskId).toBe(task.id);
   });
 
+  it("rejects void after the customer provider action is accepted", async () => {
+    const harness = createHarness();
+
+    await harness.service.create("work-order-1", "admin-1");
+    const task = harness.state.workOrder.handover.handoverESignTask!;
+
+    expect(task.signers[0]).toMatchObject({
+      claimExpiresAt: null,
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+    await expect(
+      harness.service.voidTask(
+        "work-order-1",
+        "admin-1",
+        "Accepted provider action must remain correlated"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
+      })
+    });
+    expect(task.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(harness.state.workOrder.handover.handoverESignTaskId).toBe(task.id);
+  });
+
   it("rejects an unsafe customer signing URL before persisting the provider result", async () => {
     const harness = createHarness();
     harness.provider.createSignTask.mockImplementationOnce(async (input: any) => ({
@@ -668,7 +694,7 @@ describe("Stage2HandoverESignService", () => {
       )
     ).rejects.toMatchObject({
       response: expect.objectContaining({
-        code: "STAGE2_HANDOVER_ESIGN_VOID_NOT_ALLOWED"
+        code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
       })
     });
     expect(task.taskStatus).toBe(ESignTaskStatus.COMPLETED);
@@ -770,6 +796,39 @@ describe("Stage2HandoverESignService", () => {
       retryAvailable: false,
       status: ESignSignerStatus.SIGNING
     });
+  });
+
+  it("rejects void after an asynchronous platform action is accepted", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+
+    await harness.service.retryPlatformSeal("work-order-1", "admin-1");
+
+    expect(task.signers[1]).toMatchObject({
+      claimExpiresAt: null,
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+    await expect(
+      harness.service.voidTask(
+        "work-order-1",
+        "admin-1",
+        "Accepted platform action must remain correlated"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
+      })
+    });
+    expect(task.taskStatus).toBe(ESignTaskStatus.SIGNING);
+    expect(harness.state.workOrder.handover.handoverESignTaskId).toBe(task.id);
   });
 
   it("accepts an early platform callback reconciled against the preclaimed transaction", async () => {
@@ -2054,6 +2113,9 @@ function matchesSignerWhere(
       }
       if ("in" in expected) {
         return expected.in.includes(actual);
+      }
+      if ("not" in expected) {
+        return actual !== expected.not;
       }
     }
     return actual === expected;

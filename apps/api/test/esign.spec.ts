@@ -471,7 +471,8 @@ describe("ESignService", () => {
     const harness = createTypedStage2CallbackFixture();
     harness.customerSigner.signerStatus = ESignSignerStatus.SIGNED;
     harness.customerSigner.signedAt = new Date("2026-07-26T01:05:00.000Z");
-    harness.platformSigner.claimExpiresAt = new Date(Date.now() + 60_000);
+    const freshClaimExpiresAt = new Date(Date.now() + 60_000);
+    harness.platformSigner.claimExpiresAt = freshClaimExpiresAt;
     harness.task.taskStatus = ESignTaskStatus.SIGNING;
     harness.handover.customerSignedAt = harness.customerSigner.signedAt;
     harness.handover.status = "PENDING_PLATFORM_SEAL";
@@ -492,7 +493,7 @@ describe("ESignService", () => {
       taskId: harness.task.id
     });
     expect(harness.platformSigner).toMatchObject({
-      claimExpiresAt: null,
+      claimExpiresAt: freshClaimExpiresAt,
       lastErrorCode: "FADADA_STAGE2_PLATFORM_SEAL_FAILED",
       nextRetryAt: expect.any(Date),
       signerStatus: ESignSignerStatus.PENDING
@@ -509,7 +510,8 @@ describe("ESignService", () => {
     const harness = createTypedStage2CallbackFixture();
     harness.customerSigner.signerStatus = ESignSignerStatus.SIGNED;
     harness.customerSigner.signedAt = new Date("2026-07-26T01:05:00.000Z");
-    harness.platformSigner.claimExpiresAt = new Date(Date.now() + 60_000);
+    const freshClaimExpiresAt = new Date(Date.now() + 60_000);
+    harness.platformSigner.claimExpiresAt = freshClaimExpiresAt;
     harness.task.taskStatus = ESignTaskStatus.SIGNING;
     harness.handover.customerSignedAt = harness.customerSigner.signedAt;
     harness.handover.status = "PENDING_PLATFORM_SEAL";
@@ -531,7 +533,7 @@ describe("ESignService", () => {
       taskId: harness.task.id
     });
     expect(harness.platformSigner).toMatchObject({
-      claimExpiresAt: null,
+      claimExpiresAt: freshClaimExpiresAt,
       lastErrorCode: "FADADA_STAGE2_PLATFORM_RESULT_UNKNOWN",
       nextRetryAt: expect.any(Date),
       signerStatus: ESignSignerStatus.PENDING

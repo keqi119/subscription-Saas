@@ -151,7 +151,7 @@ Staging smoke should run only after a combined API/Web deployment. The deployed 
 
 The staging smoke should cover one controlled field evidence capture path and one Portal customer review path. It should still avoid Fadada, Stage 2 PDF/eSign, real SMS, WeChat, delivery confirmation, lease, and billing until those later phases are explicitly enabled.
 
-Field evidence accepts photos up to 5MB and videos up to 200MB. The API Nginx virtual host must set `client_max_body_size 210m` (or higher); the API multipart limit remains 200MB. Uploads are spooled to an OS temporary file before local/OSS persistence and the temporary file is cleaned up on success or failure. Validate proxy size, API multipart size, available temporary disk space, and storage connectivity when a large upload fails.
+Field evidence accepts photos up to 10MB and videos up to 300MB. The API Nginx virtual host must set `client_max_body_size 320m` or higher, `proxy_read_timeout`/`proxy_send_timeout` to `1200s`, and `proxy_request_buffering off`. Uploads are spooled to an OS temporary file before local/OSS persistence and the temporary file is cleaned up on success or failure. Validate proxy size, API multipart size, available temporary disk space, and storage connectivity when a large upload fails.
 
 Browser smoke must cover:
 

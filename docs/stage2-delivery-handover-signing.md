@@ -135,6 +135,7 @@ The PDF includes:
 
 - document/order/template metadata and the Stage 1 contract number;
 - full customer legal name, mobile, and identity number for the signing document;
+- full lessor operator name and contact phone in the signature area;
 - vehicle brand/model, plate, full VIN, mileage, fuel/energy level, and accessory checklist;
 - condition confirmation and damage/no-damage field notes;
 - fee/deposit confirmation rows;
@@ -143,7 +144,7 @@ The PDF includes:
 - customer signature and platform seal/signature areas for later provider mapping;
 - operation tips.
 
-The protected signing PDF contains the full customer mobile and identity number plus the full VIN, because it is part of the subscription contract and must identify the signing party and vehicle unambiguously. Portal, field, queue, and other API views remain masked. Neither the PDF nor API views may expose raw object storage keys, buckets, private storage paths, signing URLs, provider payloads, SMS/WeChat data, or finance internals.
+The protected signing PDF contains the full customer mobile and identity number, the full lessor operator contact phone, and the full VIN, because it is part of the subscription contract and must identify the signing parties and vehicle unambiguously. Portal, field, queue, and other API views remain masked. Neither the PDF nor API views may expose raw object storage keys, buckets, private storage paths, signing URLs, provider payloads, SMS/WeChat data, or finance internals.
 
 Visual acceptance for this stage must confirm PDF content, table layout, signature areas, and evidence summary before Stage 2 Fadada upload/signing coordinate mapping begins.
 

@@ -189,9 +189,11 @@ describe("Stage 2 handover PDF renderer", () => {
     expect(visibleText).toContain("出租方");
     expect(visibleText).toContain("身份证号：110101199001015678");
     expect(visibleText).toContain("联系电话：13812345678");
+    expect(visibleText).toContain("联系电话：13900001111");
     expect(visibleText).toContain("车架号（VIN）");
     expect(visibleText).toContain("LTESTVIN123456789");
     expect(visibleText).not.toContain("138****5678");
+    expect(visibleText).not.toContain("139****1111");
     expect(visibleText).not.toContain("车架号（后6位）");
     expect(visibleText).not.toContain("APPROVED/APPROVED");
     expect(visibleText).not.toContain("Render Diagnostics");
@@ -203,6 +205,25 @@ describe("Stage 2 handover PDF renderer", () => {
       expect(visibleText).toContain(file.evidenceFileId);
       expect(visibleText.split(file.sourceSha256)).toHaveLength(2);
     }
+  });
+
+  it("lays out photo evidence four per page", async () => {
+    const renderer = new DeliveryHandoverPdfRendererService();
+    const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
+    const { imageCalls } = pdfKitMock.FakePDFDocument.startCapture();
+
+    await renderer.render(model, {
+      cjkFontPath: process.execPath,
+      evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset: async () => Buffer.from("synthetic-jpeg")
+    });
+
+    const photoCalls = imageCalls.slice(0, model.evidencePackage.stats.photoCount);
+    const photoCountsByPage = [...photoCalls.reduce((counts, call) => {
+      counts.set(call.pageNumber, (counts.get(call.pageNumber) ?? 0) + 1);
+      return counts;
+    }, new Map<number, number>()).values()];
+    expect(photoCountsByPage).toEqual([4, 4, 4, 1]);
   });
 
   it("uses the approved 15 MiB target, 18 MiB hard limit, and 100-page ceiling", () => {

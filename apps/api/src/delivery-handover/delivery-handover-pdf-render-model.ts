@@ -199,8 +199,8 @@ export function buildDeliveryHandoverPdfRenderModel(
         readString(workOrder, "externalOperatorName") ??
         EMPTY_VALUE,
       contactPhone:
-        maskPhone(input.platform?.contactPhone) ??
-        maskPhone(readString(workOrder, "externalOperatorPhone")) ??
+        normalizeText(input.platform?.contactPhone) ??
+        readString(workOrder, "externalOperatorPhone") ??
         EMPTY_VALUE,
       legalName: normalizeText(input.platform?.legalName) ?? "汽车订阅平台"
     },
@@ -325,16 +325,6 @@ function toDate(value: unknown) {
 
 function toIso(value: Date | null | string | undefined) {
   return toDate(value)?.toISOString() ?? null;
-}
-
-function maskPhone(value: null | string | undefined) {
-  if (!value) {
-    return null;
-  }
-  if (value.length < 7) {
-    return "***";
-  }
-  return `${value.slice(0, 3)}****${value.slice(-4)}`;
 }
 
 function readString(record: null | Record<string, unknown>, key: string) {

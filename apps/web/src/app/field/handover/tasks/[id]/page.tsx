@@ -29,10 +29,9 @@ import {
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts,
   uploadAndAttachFieldHandoverEvidenceFile,
-  type FieldHandoverEvidenceItem,
-  type FieldHandoverEvidenceMediaType,
   type FieldHandoverWorkOrderDetail
 } from "../../../../../lib/field-handover-api";
+import { type FieldEvidenceMediaType, validateFieldEvidenceFile } from "../../../../../lib/field-handover-upload";
 import {
   buildFieldEvidenceCaptureView,
   buildFieldHandoverDetailView,
@@ -47,8 +46,6 @@ const SUBMITTED_TEXT = "现场交接资料已提交，等待客户确认";
 const RESUBMITTED_PENDING_ADMIN_TEXT = "现场交接资料已重新提交，等待后台送回客户复核";
 const LOCKED_TEXT = "当前交接任务已提交或不可继续编辑";
 const MAX_DAMAGE_CLOSEUP_FILES = 20;
-const MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
-const MAX_VIDEO_SIZE_BYTES = 200 * 1024 * 1024;
 
 export default function FieldHandoverTaskDetailPage() {
   const params = useParams<{ id: string }>();
@@ -163,7 +160,7 @@ export default function FieldHandoverTaskDetailPage() {
       return;
     }
     for (const file of selectedFiles) {
-      const validationError = validateEvidenceFile(item, file);
+      const validationError = validateFieldEvidenceFile((item.allowedMediaTypes ?? []) as FieldEvidenceMediaType[], file);
       if (validationError) {
         setBlockers([validationError]);
         return;
@@ -671,45 +668,10 @@ function findEvidenceItem(detail: FieldHandoverWorkOrderDetail, itemId: string) 
   return (detail.evidenceChecklist?.items ?? []).find((item) => item.id === itemId) ?? null;
 }
 
-function resolveMediaType(file: File): FieldHandoverEvidenceMediaType | null {
-  const mimeType = file.type.trim().toLowerCase();
-  if (mimeType && mimeType !== "application/octet-stream") {
-    return SAFE_PHOTO_MIME_TYPES.has(mimeType)
-      ? "PHOTO"
-      : SAFE_VIDEO_MIME_TYPES.has(mimeType)
-        ? "VIDEO"
-        : null;
-  }
-  if (/\.(heic|heif|jpe?g|png|webp)$/i.test(file.name)) {
-    return "PHOTO";
-  }
-  if (/\.(m4v|mov|mp4|webm)$/i.test(file.name)) {
-    return "VIDEO";
-  }
-  return null;
-}
-
 function formatReviewFieldKey(value: string) {
   return REVIEW_FIELD_LABELS[value] ?? value;
 }
 
-function isAllowedMediaType(item: FieldHandoverEvidenceItem, mediaType: FieldHandoverEvidenceMediaType) {
-  return (item.allowedMediaTypes ?? []).includes(mediaType);
-}
-
-function validateEvidenceFile(item: FieldHandoverEvidenceItem, file: File) {
-  const mediaType = resolveMediaType(file);
-  if (!mediaType || !isAllowedMediaType(item, mediaType)) {
-    return "请选择符合要求的图片或视频";
-  }
-  if (mediaType === "PHOTO" && file.size > MAX_PHOTO_SIZE_BYTES) {
-    return `图片 ${file.name} 超过 5MB`;
-  }
-  if (mediaType === "VIDEO" && file.size > MAX_VIDEO_SIZE_BYTES) {
-    return `视频 ${file.name} 超过 200MB`;
-  }
-  return null;
-}
 
 function splitBlockingMessages(message: string) {
   return message
@@ -739,22 +701,6 @@ const submitBarStyle: CSSProperties = {
   padding: "8px 0 max(8px, env(safe-area-inset-bottom))",
   position: "sticky"
 };
-
-const SAFE_PHOTO_MIME_TYPES = new Set([
-  "image/heic",
-  "image/heif",
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp"
-]);
-
-const SAFE_VIDEO_MIME_TYPES = new Set([
-  "video/mp4",
-  "video/quicktime",
-  "video/webm",
-  "video/x-m4v"
-]);
 
 const REVIEW_FIELD_LABELS: Record<string, string> = {
   accessoryChecklist: "随车物品",

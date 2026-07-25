@@ -54,6 +54,10 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("updateFieldHandoverFacts");
     expect(source).toContain("uploadAndAttachFieldHandoverEvidenceFile");
     expect(source).toContain("removeFieldHandoverEvidenceFile");
+    expect(source).toContain("validateFieldEvidenceFile");
+    expect(source).not.toContain("function validateEvidenceFile");
+    expect(source).not.toContain("MAX_PHOTO_SIZE_BYTES");
+    expect(source).not.toContain("MAX_VIDEO_SIZE_BYTES");
     expect(source).toContain("multiple={item.allowsMultiple}");
     expect(source).toContain("reviewContext.customerObjectionReason");
     expect(source).toContain("reviewContext.customerObjectionDetails");

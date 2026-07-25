@@ -25,6 +25,10 @@ import {
 } from "../delivery-evidence/delivery-evidence.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
 import {
+  MAX_FIELD_PHOTO_SIZE_BYTES,
+  MAX_FIELD_VIDEO_SIZE_BYTES
+} from "./handover-work-order.constants";
+import {
   normalizeFieldOperatorPhone,
   normalizeOptionalFieldOperatorPhone
 } from "../field-operator/field-operator-phone";
@@ -97,8 +101,6 @@ const PREVIEWABLE_EVIDENCE_MIME_TYPES = new Set([
   "image/webp",
   ...SAFE_FIELD_VIDEO_MIME_TYPES
 ]);
-const MAX_FIELD_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
-const MAX_FIELD_VIDEO_SIZE_BYTES = 200 * 1024 * 1024;
 const HANDOVER_FIELD_FACT_KEYS = [
   "accessoryChecklist",
   "damageDeclared",
@@ -2476,10 +2478,10 @@ function assertSupportedFieldEvidenceFile(file: UploadedFieldEvidenceFile) {
   }
   const sizeBytes = Math.max(file.size, file.buffer?.length ?? 0);
   if (mediaType === DeliveryEvidenceMediaType.PHOTO && sizeBytes > MAX_FIELD_PHOTO_SIZE_BYTES) {
-    throw new BadRequestException("图片不能超过 5MB。");
+    throw new BadRequestException("图片不能超过 10MB。");
   }
   if (mediaType === DeliveryEvidenceMediaType.VIDEO && sizeBytes > MAX_FIELD_VIDEO_SIZE_BYTES) {
-    throw new BadRequestException("视频不能超过 200MB。");
+    throw new BadRequestException("视频不能超过 300MB。");
   }
   return mediaType;
 }

@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { DeclareNoVisibleDamageDto } from "../delivery-evidence/delivery-evidence.dto";
+import { MAX_FIELD_EVIDENCE_UPLOAD_SIZE_BYTES } from "../handover-work-order/handover-work-order.constants";
 import { UpdateHandoverFieldFactsDto, UploadFieldEvidenceDto } from "../handover-work-order/handover-work-order.dto";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { FieldEvidenceTempFileCleanupInterceptor } from "./field-evidence-temp-file-cleanup.interceptor";
@@ -30,7 +31,7 @@ import { CurrentFieldOperatorSession } from "./field-operator-current.decorator"
 
 const FIELD_EVIDENCE_UPLOAD_OPTIONS = {
   dest: path.join(tmpdir(), "subscription-saas-field-evidence"),
-  limits: { fileSize: 200 * 1024 * 1024, files: 1 }
+  limits: { fileSize: MAX_FIELD_EVIDENCE_UPLOAD_SIZE_BYTES, files: 1 }
 };
 
 @Controller("field/handover")

@@ -560,7 +560,7 @@ describe("HandoverWorkOrderService", () => {
     expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
   });
 
-  it("enforces 5 MiB photo and 200 MiB video upload limits before storage", async () => {
+  it("enforces 10 MiB photo and 300 MiB video upload limits before storage", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push({
       ...baseWorkOrder(harness),
@@ -576,26 +576,43 @@ describe("HandoverWorkOrderService", () => {
       orderId: harness.orderId
     });
 
+    await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [uploadFile("photo-at-limit.jpg", "image/jpeg", 10 * 1024 * 1024)],
+      {},
+      "field-session-1"
+    );
+    await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [uploadFile("video-at-limit.mp4", "video/mp4", 300 * 1024 * 1024)],
+      {},
+      "field-session-1"
+    );
+    harness.storageService.putDeliveryEvidenceFile.mockClear();
     await expect(
       harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
         "work-order-visible",
         "13800000000",
         "evidence-item-owned",
-        [uploadFile("too-large.jpg", "image/jpeg", 5 * 1024 * 1024 + 1)],
+        [uploadFile("photo-over-limit.jpg", "image/jpeg", 10 * 1024 * 1024 + 1)],
         {},
         "field-session-1"
       )
-    ).rejects.toThrow("图片不能超过 5MB");
+    ).rejects.toThrow("图片不能超过 10MB");
     await expect(
       harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
         "work-order-visible",
         "13800000000",
         "evidence-item-owned",
-        [uploadFile("too-large.mp4", "video/mp4", 200 * 1024 * 1024 + 1)],
+        [uploadFile("video-over-limit.mp4", "video/mp4", 300 * 1024 * 1024 + 1)],
         {},
         "field-session-1"
       )
-    ).rejects.toThrow("视频不能超过 200MB");
+    ).rejects.toThrow("视频不能超过 300MB");
     expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
   });
 

@@ -247,7 +247,7 @@ export function uploadAndAttachFieldHandoverEvidenceFile(
     xhr.onloadend = () => uploadOptions.signal?.removeEventListener("abort", abortFromCaller);
 
     if (uploadOptions.signal?.aborted) {
-      abortFromCaller();
+      reject(new ApiError(FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE, 0));
       return;
     }
 

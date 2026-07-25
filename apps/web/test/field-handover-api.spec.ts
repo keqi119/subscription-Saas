@@ -164,6 +164,30 @@ describe("field handover API client", () => {
     await expect(request).rejects.toMatchObject({ message: "上传已取消。", status: 0 });
   });
 
+  it("rejects a pre-aborted caller signal without sending an evidence upload", async () => {
+    const xhrMock = installMockXmlHttpRequest();
+    const controller = new AbortController();
+    controller.abort();
+
+    const request = uploadAndAttachFieldHandoverEvidenceFile(
+      "work-order-1",
+      "evidence-item-1",
+      new File(["video"], "walkaround.mp4", { type: "video/mp4" }),
+      { signal: controller.signal }
+    );
+    const xhr = xhrMock.latest();
+    const result = await Promise.race([
+      request.then(
+        () => null,
+        (error) => error
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 0))
+    ]);
+
+    expect(xhr.body).toBeNull();
+    expect(result).toMatchObject({ message: "上传已取消。", status: 0 });
+  });
+
   it("uses safe API, network, and timeout errors for evidence uploads", async () => {
     const xhrMock = installMockXmlHttpRequest();
     const file = new File(["image"], "front.jpg", { type: "image/jpeg" });
@@ -246,6 +270,7 @@ class MockXMLHttpRequest {
   onloadend: (() => void) | null = null;
   ontimeout: (() => void) | null = null;
   responseText = "";
+  sent = false;
   status = 0;
   statusText = "";
   timeout = 0;
@@ -265,10 +290,14 @@ class MockXMLHttpRequest {
   }
 
   send(body: Document | XMLHttpRequestBodyInit | null) {
+    this.sent = true;
     this.body = body;
   }
 
   abort() {
+    if (!this.sent) {
+      return;
+    }
     this.onabort?.();
     this.onloadend?.();
   }

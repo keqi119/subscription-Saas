@@ -2,6 +2,10 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { Prisma } from "@prisma/client";
 
 import { DeliveryEvidenceService } from "../delivery-evidence/delivery-evidence.service";
+import {
+  STAGE2_EVIDENCE_ARTIFACT_NOT_READY,
+  STAGE2_EVIDENCE_CONFIRMATION_TEXT
+} from "../delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "./portal-auth.types";
@@ -107,12 +111,16 @@ export class PortalHandoverReviewService {
 
   async confirmNoObjection(
     id: string,
-    _dto: ConfirmPortalHandoverReviewDto,
+    dto: ConfirmPortalHandoverReviewDto,
     currentCustomer: CurrentCustomer
   ) {
     const workOrder = await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
     assertCanConfirmNoObjection(workOrder.status);
-    await this.handoverWorkOrderService.customerConfirmNoObjection(id, currentCustomer.customerId);
+    await this.handoverWorkOrderService.customerConfirmNoObjection(
+      id,
+      currentCustomer.customerId,
+      dto.manifestHash
+    );
     return this.getReview(id, currentCustomer);
   }
 
@@ -211,9 +219,29 @@ export class PortalHandoverReviewService {
       }),
       this.handoverWorkOrderService.getReadiness(workOrder.id)
     ]);
+    let evidencePackage;
+    try {
+      evidencePackage = await this.handoverWorkOrderService.getCurrentEvidencePackage(workOrder.id);
+    } catch (error) {
+      if (!isEvidencePackageNotReadyError(error)) {
+        throw error;
+      }
+      evidencePackage = null;
+    }
+    const checklistStats = summarizeEvidenceFileTypes(evidenceChecklist);
 
     return {
       ...listItem,
+      evidencePackage: {
+        confirmationText: STAGE2_EVIDENCE_CONFIRMATION_TEXT,
+        evidencePackageId: evidencePackage?.manifest.evidencePackageId ?? null,
+        fileCount: evidencePackage?.stats.fileCount ?? checklistStats.fileCount,
+        manifestHash: evidencePackage?.manifestHash ?? null,
+        photoCount: evidencePackage?.stats.photoCount ?? checklistStats.photoCount,
+        ready: Boolean(evidencePackage),
+        schemaVersion: evidencePackage?.manifest.schemaVersion ?? null,
+        videoCount: evidencePackage?.stats.videoCount ?? checklistStats.videoCount
+      },
       evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist, workOrder.id),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
@@ -373,14 +401,12 @@ function toSafeEvidenceFile(file: Record<string, unknown>, reviewId?: string) {
     evidenceFileId,
     file: linkedFile
       ? {
-          id: readString(linkedFile, "id"),
           mimeType,
           originalName: displayName,
           sizeBytes
         }
       : null,
-    fileId: readString(file, "fileId"),
-    id: readString(file, "id"),
+    id: evidenceFileId,
     mimeType,
     mediaType: readString(file, "mediaType"),
     previewAvailable,
@@ -391,6 +417,21 @@ function toSafeEvidenceFile(file: Record<string, unknown>, reviewId?: string) {
     sizeBytes,
     uploadedAt: readUnknown(file, "uploadedAt")
   };
+}
+
+function summarizeEvidenceFileTypes(checklist: unknown) {
+  const files = getChecklistItems(checklist).flatMap((item) =>
+    Array.isArray(item.files) ? item.files.filter(isPlainObject) : []
+  );
+  return {
+    fileCount: files.length,
+    photoCount: files.filter((file) => readString(file, "mediaType") === "PHOTO").length,
+    videoCount: files.filter((file) => readString(file, "mediaType") === "VIDEO").length
+  };
+}
+
+function isEvidencePackageNotReadyError(error: unknown) {
+  return error instanceof Error && error.message.startsWith(`${STAGE2_EVIDENCE_ARTIFACT_NOT_READY}:`);
 }
 
 function getChecklistItems(checklist: unknown) {

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
   UnsupportedMediaTypeException,
@@ -9,8 +10,12 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash, randomBytes } from "node:crypto";
-import { unlink } from "node:fs/promises";
-import type { Readable } from "node:stream";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, rm, unlink } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Transform, type Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import {
   BusinessType,
   ContractStatus,
@@ -30,10 +35,22 @@ import {
   DeliveryEvidenceService
 } from "../delivery-evidence/delivery-evidence.service";
 import {
+  DeliveryHandoverEvidenceArtifactService,
+  PreparedDeliveryEvidenceArtifacts
+} from "../delivery-handover/delivery-handover-evidence-artifact.service";
+import {
+  buildDeliveryHandoverEvidencePackage,
+  DeliveryHandoverEvidencePackage
+} from "../delivery-handover/delivery-handover-evidence-manifest";
+import {
   buildDeliveryHandoverPdfRenderModel,
   DeliveryHandoverPdfRenderModelInput
 } from "../delivery-handover/delivery-handover-pdf-render-model";
-import { DeliveryHandoverPdfRendererService } from "../delivery-handover/delivery-handover-pdf-renderer.service";
+import {
+  DeliveryHandoverPdfRenderFileResult,
+  DeliveryHandoverPdfRendererService,
+  STAGE2_HANDOVER_PDF_TARGET_BYTES
+} from "../delivery-handover/delivery-handover-pdf-renderer.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
@@ -93,6 +110,8 @@ const ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN = "RESUBMITTED_PENDING_ADMIN
 const ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW = "SENT_BACK_TO_CUSTOMER_REVIEW";
 const ADMIN_REVIEW_STATUS_RESOLVED = "RESOLVED";
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
+const STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV = "STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL";
+const MAX_STAGE2_EVIDENCE_DERIVATIVE_BYTES = 1024 * 1024;
 const SAFE_FIELD_PHOTO_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -235,13 +254,16 @@ export interface RequestCustomerObjectionResubmissionInput {
 
 @Injectable()
 export class HandoverWorkOrderService {
+  private readonly logger = new Logger(HandoverWorkOrderService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveryEvidenceService: DeliveryEvidenceService,
     @Optional() private readonly deliveryHandoverService?: DeliveryHandoverService,
     @Optional() private readonly storageService?: StorageService,
     @Optional() private readonly handoverPdfRenderer?: DeliveryHandoverPdfRendererService,
-    @Optional() private readonly configService?: ConfigService
+    @Optional() private readonly configService?: ConfigService,
+    @Optional() private readonly evidenceArtifactService?: DeliveryHandoverEvidenceArtifactService
   ) {}
 
   async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
@@ -464,6 +486,7 @@ export class HandoverWorkOrderService {
   ) {
     const uploadedFiles = files ?? [];
     const file = uploadedFiles.find(hasUploadedFieldEvidenceContent);
+    let prepared: PreparedDeliveryEvidenceArtifacts | undefined;
     try {
       if (!file) {
         throw new BadRequestException("请上传现场证据文件。");
@@ -472,15 +495,52 @@ export class HandoverWorkOrderService {
       assertFieldSessionEditable(workOrder);
       const normalizedPhone = normalizeFieldOperatorPhone(phone);
       const mediaType = assertSupportedFieldEvidenceFile(file);
-      const mimeType = normalizedFieldEvidenceMimeType(file);
       const item = await this.assertEvidenceItemBelongsToWorkOrder(workOrder, itemId);
-      await this.deliveryEvidenceService.validateEvidenceFileMutation(
+      const mutation = await this.deliveryEvidenceService.validateEvidenceFileMutation(
         item.id,
         mediaType,
         options.replaceEvidenceFileId
       );
-      const stored = await this.storeFieldEvidenceFile(workOrder, file, mimeType);
+      prepared = await this.getEvidenceArtifactService().prepareUpload({
+        evidenceType: readString(mutation as unknown as Record<string, unknown>, "evidenceType") ?? "UNKNOWN",
+        file,
+        mediaType
+      });
+      const detectedMimeType = prepared.metadata.detectedMimeType;
+      const storedObjects: Array<{ bucket: string; objectKey: string }> = [];
       try {
+        const stored = await this.storeFieldEvidenceFile(
+          workOrder,
+          file,
+          detectedMimeType,
+          prepared.metadata.sourceSizeBytes
+        );
+        storedObjects.push({ bucket: stored.bucket, objectKey: stored.objectKey });
+        const storedDerivatives: Array<
+          PreparedDeliveryEvidenceArtifacts["derivatives"][number] & {
+            stored: Awaited<ReturnType<StorageService["putDeliveryEvidenceDerivativeFromPath"]>>;
+          }
+        > = [];
+        for (const derivative of prepared.derivatives) {
+          const derivativeStored = await this.getStorageService().putDeliveryEvidenceDerivativeFromPath({
+            contentType: derivative.contentType,
+            filePath: derivative.filePath,
+            kind: derivative.kind,
+            metadata: {
+              artifactKind: derivative.kind,
+              sourceOriginalName: file.originalname
+            },
+            orderId: workOrder.orderId,
+            originalName: derivative.originalName,
+            sizeBytes: derivative.sizeBytes,
+            workOrderId: workOrder.id
+          });
+          storedObjects.push({
+            bucket: derivativeStored.bucket,
+            objectKey: derivativeStored.objectKey
+          });
+          storedDerivatives.push({ ...derivative, stored: derivativeStored });
+        }
         return await this.runSerializableTransaction(async (tx) => {
           const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
           if (!isFieldAccessibleWorkOrder(current, normalizedPhone)) {
@@ -491,13 +551,39 @@ export class HandoverWorkOrderService {
           const fileObject = await tx.fileObject.create({
             data: {
               bucket: stored.bucket,
-              mimeType,
+              mimeType: detectedMimeType,
               objectKey: stored.objectKey,
               originalName: file.originalname,
-              sizeBytes: BigInt(file.size),
+              sizeBytes: BigInt(prepared!.metadata.sourceSizeBytes),
               uploadedBy: null
             }
           });
+          const derivativeFileObjects = [];
+          for (const derivative of storedDerivatives) {
+            derivativeFileObjects.push(await tx.fileObject.create({
+              data: {
+                bucket: derivative.stored.bucket,
+                mimeType: derivative.contentType,
+                objectKey: derivative.stored.objectKey,
+                originalName: derivative.originalName,
+                sizeBytes: BigInt(derivative.sizeBytes),
+                uploadedBy: null
+              }
+            }));
+          }
+          const artifactMetadata = {
+            ...prepared!.metadata,
+            photoPreviewFileId:
+              mediaType === DeliveryEvidenceMediaType.PHOTO
+                ? readString(derivativeFileObjects[0] as unknown as Record<string, unknown>, "id")
+                : null,
+            videoFrameFileIds:
+              mediaType === DeliveryEvidenceMediaType.VIDEO
+                ? derivativeFileObjects
+                    .map((entry) => readString(entry as unknown as Record<string, unknown>, "id"))
+                    .filter((value): value is string => Boolean(value))
+                : []
+          } as Prisma.InputJsonValue;
           const result = options.replaceEvidenceFileId
             ? await this.deliveryEvidenceService.replaceEvidenceFile(
                 currentItem.id,
@@ -506,7 +592,8 @@ export class HandoverWorkOrderService {
                 mediaType,
                 undefined,
                 tx,
-                actorId
+                actorId,
+                artifactMetadata
               )
             : await this.deliveryEvidenceService.attachEvidenceFile(
                 currentItem.id,
@@ -514,7 +601,8 @@ export class HandoverWorkOrderService {
                 mediaType,
                 undefined,
                 tx,
-                actorId
+                actorId,
+                artifactMetadata
               );
           await this.recordEvent(
             current,
@@ -537,10 +625,11 @@ export class HandoverWorkOrderService {
           return result;
         });
       } catch (error) {
-        await Promise.allSettled([this.getStorageService().deleteObject(stored.bucket, stored.objectKey)]);
+        await this.deleteStoredObjectsWithRetry(storedObjects);
         throw error;
       }
     } finally {
+      await prepared?.cleanup();
       await Promise.all(uploadedFiles.map(cleanupUploadedFieldEvidenceTempFile));
     }
   }
@@ -625,6 +714,151 @@ export class HandoverWorkOrderService {
 
   async downloadEvidenceFile(id: string, evidenceFileId: string): Promise<EvidenceFileStreamResult> {
     return this.getEvidenceFileStream(id, evidenceFileId, { preview: false });
+  }
+
+  async prepareExistingEvidenceFileArtifacts(
+    id: string,
+    evidenceFileId: string,
+    actorId?: string
+  ) {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    this.assertEvidenceArtifactRepairAllowed(workOrder);
+    const evidenceFile = await this.findScopedActiveEvidenceFile(workOrder, evidenceFileId);
+    if (await this.hasReadyEvidenceArtifacts(evidenceFile, this.prisma)) {
+      return {
+        evidenceFileId,
+        metadata: evidenceFile.metadata,
+        processingStatus: "READY"
+      };
+    }
+
+    const mediaType = evidenceFile.mediaType === DeliveryEvidenceMediaType.VIDEO
+      ? DeliveryEvidenceMediaType.VIDEO
+      : DeliveryEvidenceMediaType.PHOTO;
+    const maxBytes = mediaType === DeliveryEvidenceMediaType.VIDEO
+      ? MAX_FIELD_VIDEO_SIZE_BYTES
+      : MAX_FIELD_PHOTO_SIZE_BYTES;
+    const sourceSizeBytes = toNumberOrNull(evidenceFile.file.sizeBytes);
+    if (sourceSizeBytes !== null && sourceSizeBytes > maxBytes) {
+      throw new BadRequestException("历史交接证据源文件超出当前处理大小限制。");
+    }
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "stage2-evidence-repair-"));
+    const sourcePath = path.join(directory, sanitizeTempEvidenceFileName(evidenceFile.file.originalName));
+    const storedDerivatives: Array<{ bucket: string; objectKey: string }> = [];
+    let prepared: PreparedDeliveryEvidenceArtifacts | undefined;
+    try {
+      const downloaded = await this.getStorageService().getObject(
+        evidenceFile.file.bucket,
+        evidenceFile.file.objectKey
+      );
+      const actualSizeBytes = await writeStreamToBoundedFile(
+        downloaded.stream,
+        sourcePath,
+        maxBytes,
+        "历史交接证据源文件超出当前处理大小限制。"
+      );
+      prepared = await this.getEvidenceArtifactService().prepareUpload({
+        evidenceType: String(evidenceFile.evidenceItem.evidenceType),
+        file: {
+          mimetype: evidenceFile.file.mimeType ?? downloaded.contentType ?? undefined,
+          originalname: evidenceFile.file.originalName ?? "evidence-file",
+          path: sourcePath,
+          size: actualSizeBytes
+        },
+        mediaType
+      });
+      const derivatives: Array<{
+        derivative: PreparedDeliveryEvidenceArtifacts["derivatives"][number];
+        stored: Awaited<ReturnType<StorageService["putDeliveryEvidenceDerivativeFromPath"]>>;
+      }> = [];
+      for (const derivative of prepared.derivatives) {
+        const stored = await this.getStorageService().putDeliveryEvidenceDerivativeFromPath({
+          contentType: derivative.contentType,
+          filePath: derivative.filePath,
+          kind: derivative.kind,
+          metadata: {
+            artifactKind: derivative.kind,
+            repairedEvidenceFileId: evidenceFileId
+          },
+          orderId: workOrder.orderId,
+          originalName: derivative.originalName,
+          sizeBytes: derivative.sizeBytes,
+          workOrderId: workOrder.id
+        });
+        storedDerivatives.push({ bucket: stored.bucket, objectKey: stored.objectKey });
+        derivatives.push({ derivative, stored });
+      }
+
+      const result = await this.runSerializableTransaction(async (tx) => {
+        const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
+        this.assertEvidenceArtifactRepairAllowed(current);
+        const currentEvidenceFile = await tx.vehicleDeliveryEvidenceFile.findFirst({
+          include: { evidenceItem: true, file: true },
+          where: {
+            id: evidenceFileId,
+            lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE
+          }
+        });
+        if (!currentEvidenceFile) {
+          throw new NotFoundException("交接资料文件不存在。");
+        }
+        if (await this.hasReadyEvidenceArtifacts(currentEvidenceFile, tx)) {
+          return {
+            alreadyReady: true,
+            evidenceFileId,
+            metadata: currentEvidenceFile.metadata,
+            processingStatus: "READY"
+          };
+        }
+        const derivativeFileObjects = [];
+        for (const item of derivatives) {
+          derivativeFileObjects.push(await tx.fileObject.create({
+            data: {
+              bucket: item.stored.bucket,
+              mimeType: item.derivative.contentType,
+              objectKey: item.stored.objectKey,
+              originalName: item.derivative.originalName,
+              sizeBytes: BigInt(item.derivative.sizeBytes),
+              uploadedBy: actorId ?? null
+            }
+          }));
+        }
+        const metadata = {
+          ...prepared!.metadata,
+          photoPreviewFileId:
+            mediaType === DeliveryEvidenceMediaType.PHOTO
+              ? derivativeFileObjects[0]?.id ?? null
+              : null,
+          videoFrameFileIds:
+            mediaType === DeliveryEvidenceMediaType.VIDEO
+              ? derivativeFileObjects.map((fileObject) => fileObject.id)
+              : []
+        } as Prisma.InputJsonValue;
+        await tx.vehicleDeliveryEvidenceFile.update({
+          data: { metadata },
+          where: { id: evidenceFileId }
+        });
+        return {
+          alreadyReady: false,
+          evidenceFileId,
+          metadata,
+          processingStatus: "READY"
+        };
+      });
+      if (result.alreadyReady) {
+        await this.deleteStoredObjectsWithRetry(storedDerivatives);
+      }
+      return result;
+    } catch (error) {
+      await this.deleteStoredObjectsWithRetry(storedDerivatives);
+      throw error;
+    } finally {
+      await Promise.allSettled([
+        prepared?.cleanup() ?? Promise.resolve(),
+        rm(directory, { force: true, recursive: true })
+      ]);
+    }
   }
 
   async previewFieldAccessibleEvidenceFile(
@@ -762,20 +996,9 @@ export class HandoverWorkOrderService {
   async attachEvidenceFileWithExternalToken(token: string, itemId: string, input: AttachFieldEvidenceFileInput) {
     const workOrder = await this.resolveExternalWorkOrder(token);
     assertFieldSessionEditable(workOrder);
-    return this.runSerializableTransaction(async (tx) => {
-      const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
-      assertFieldSessionEditable(current);
-      const attached = await this.attachEvidenceFileForWorkOrder(current, itemId, input, tx);
-      await this.recordEvent(current, VehicleHandoverEventType.EVIDENCE_FILE_ADDED, {
-        actorDisplay: workOrder.externalOperatorName,
-        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
-        detail: {
-          evidenceFileId: readString(attached, "id"),
-          evidenceItemId: itemId
-        }
-      }, tx);
-      return attached;
-    });
+    void itemId;
+    void input;
+    throw new BadRequestException("该文件绑定入口已停用，请使用现场证据文件上传接口完成预处理后再提交。");
   }
 
   async acknowledgeCustomerObjection(id: string, actorId: string, note?: string | null) {
@@ -1066,7 +1289,7 @@ export class HandoverWorkOrderService {
     });
   }
 
-  async customerConfirmNoObjection(id: string, customerId: string) {
+  async customerConfirmNoObjection(id: string, customerId: string, manifestHash: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     await this.assertCustomerOwnsWorkOrder(workOrder, customerId);
     this.assertMutable(workOrder);
@@ -1086,7 +1309,19 @@ export class HandoverWorkOrderService {
       toFieldEvidenceState(workOrder)
     );
     const confirmedAt = workOrder.customerConfirmedAt ?? new Date();
-    return this.prisma.$transaction(async (tx) => {
+    return this.runSerializableTransaction(async (tx) => {
+      const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId
+      }, tx);
+      const evidencePackage = await this.buildCurrentEvidencePackage(
+        workOrder,
+        evidenceChecklist,
+        tx
+      );
+      if (evidencePackage.manifestHash !== manifestHash) {
+        throw new ConflictException("交接证据已变化，请刷新并重新查看全部资料后再确认。");
+      }
       const updated = await this.updateWorkOrderVersioned(workOrder, {
         adminReviewStatus: VehicleHandoverAdminReviewStatus.RESOLVED,
         customerConfirmedAt: confirmedAt,
@@ -1103,7 +1338,14 @@ export class HandoverWorkOrderService {
         customerConfirmedAt: confirmedAt,
         resolvedAt: confirmedAt,
         resolvedById: null
-      }, {}, tx);
+      }, {
+        snapshot: await this.buildReviewAttemptSnapshot(
+          updated,
+          tx,
+          evidenceChecklist,
+          evidencePackage
+        )
+      }, tx);
       await this.recordEvent(updated, VehicleHandoverEventType.CUSTOMER_CONFIRMED, {
         actorId: customerId,
         actorType: VehicleHandoverEventActorType.CUSTOMER,
@@ -1294,9 +1536,17 @@ export class HandoverWorkOrderService {
     };
   }
 
+  async getCurrentEvidencePackage(id: string) {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    return this.buildCurrentEvidencePackage(workOrder);
+  }
+
   async getStage2HandoverPdf(id: string): Promise<Stage2HandoverPdfArtifactView> {
     const workOrder = await this.getWorkOrderOrThrow(id);
     const handover = await this.findStage2HandoverForWorkOrder(workOrder, { includeHandoverContract: true });
+    if (handover && readString(handover, "sourceDocumentFileId")) {
+      await this.assertGeneratedStage2PdfMatchesCurrentEvidence(workOrder, handover);
+    }
     return this.toStage2HandoverPdfArtifactView(workOrder, handover);
   }
 
@@ -1339,79 +1589,102 @@ export class HandoverWorkOrderService {
       }
     }));
 
+    let renderedFile: DeliveryHandoverPdfRenderFileResult | null = null;
     let storedObject: null | { bucket: string; objectKey: string } = null;
     try {
       const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       });
+      const evidencePackage = await this.buildCurrentEvidencePackage(workOrder, evidenceChecklist);
+      await this.assertEvidencePackageMatchesLatestConfirmation(workOrder, evidencePackage);
+      const loadAsset = await this.buildStage2EvidenceAssetLoader(evidencePackage);
       const renderModel = buildDeliveryHandoverPdfRenderModel(
         this.buildStage2HandoverPdfRenderModelInput({
           createdContract,
           evidenceChecklist,
+          evidencePackage,
           handover,
           order,
           template,
           workOrder
         })
       );
-      const rendered = await this.getHandoverPdfRenderer().render(renderModel, {
-        cjkFontPath: this.configService?.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV)
+      renderedFile = await this.getHandoverPdfRenderer().renderToFile(renderModel, {
+        cjkFontPath: this.configService?.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV),
+        evidencePackageUrl: this.buildStage2EvidencePackageUrl(workOrder.id),
+        loadAsset
       });
-      const stored = await this.getStorageService().putGeneratedContractPdfArtifact({
-        buffer: rendered.buffer,
-        contentType: rendered.contentType,
+      const stored = await this.getStorageService().putGeneratedContractPdfArtifactFromPath({
+        contentType: renderedFile.contentType,
         contractId: createdContract.id,
+        filePath: renderedFile.filePath,
         metadata: {
           artifactKind: "stage2-handover-pdf-source",
           documentNo: createdContract.contractNo,
+          evidenceManifestHash: evidencePackage.manifestHash,
           orderNo: order.orderNo,
           templateName: template.templateName,
           templateVersion: template.versionNo
         },
-        originalName: rendered.fileName
+        originalName: renderedFile.fileName,
+        sizeBytes: renderedFile.sizeBytes
       });
       storedObject = { bucket: stored.bucket, objectKey: stored.objectKey };
-      const fileObject = await this.prisma.fileObject.create({
-        data: {
-          bucket: stored.bucket,
-          mimeType: stored.contentType,
-          objectKey: stored.objectKey,
-          originalName: stored.originalName,
-          sizeBytes: BigInt(stored.sizeBytes),
-          uploadedBy: actorId ?? null
+      const fileObject = await this.runSerializableTransaction(async (tx) => {
+        const createdFileObject = await tx.fileObject.create({
+          data: {
+            bucket: stored.bucket,
+            mimeType: stored.contentType,
+            objectKey: stored.objectKey,
+            originalName: stored.originalName,
+            sizeBytes: BigInt(stored.sizeBytes),
+            uploadedBy: actorId ?? null
+          }
+        });
+        await tx.contract.update({
+          data: {
+            contractSnapshot: toJsonValue({
+              artifactKind: "stage2-handover-pdf-source",
+              diagnostics: renderedFile!.diagnostics,
+              documentNo: createdContract.contractNo,
+              evidencePackage: {
+                manifest: evidencePackage.manifest,
+                manifestHash: evidencePackage.manifestHash,
+                stats: evidencePackage.stats
+              },
+              fileId: createdFileObject.id,
+              fileName: createdFileObject.originalName,
+              handoverId,
+              orderId: workOrder.orderId,
+              orderNo: order.orderNo,
+              templateName: template.templateName,
+              templateVersion: template.versionNo,
+              workOrderId: workOrder.id
+            }),
+            fileId: createdFileObject.id,
+            updatedBy: actorId ?? null
+          },
+          where: { id: createdContract.id }
+        });
+        const handoverClaim = await tx.vehicleDeliveryHandover.updateMany({
+          data: {
+            handoverContractId: createdContract.id,
+            sourceDocumentFileId: createdFileObject.id,
+            sourceObjectKey: stored.objectKey,
+            status: DeliveryHandoverStatus.SOURCE_GENERATED,
+            updatedBy: actorId ?? null
+          },
+          where: {
+            handoverContractId: null,
+            id: handoverId,
+            sourceDocumentFileId: null
+          }
+        });
+        if (handoverClaim.count !== 1) {
+          throw new ConflictException("车辆交接确认单已由其他请求生成，请刷新后查看。");
         }
-      });
-
-      await this.prisma.contract.update({
-        data: {
-          contractSnapshot: toJsonValue({
-            artifactKind: "stage2-handover-pdf-source",
-            diagnostics: rendered.diagnostics,
-            documentNo: createdContract.contractNo,
-            fileId: fileObject.id,
-            fileName: fileObject.originalName,
-            handoverId,
-            orderId: workOrder.orderId,
-            orderNo: order.orderNo,
-            templateName: template.templateName,
-            templateVersion: template.versionNo,
-            workOrderId: workOrder.id
-          }),
-          fileId: fileObject.id,
-          updatedBy: actorId ?? null
-        },
-        where: { id: createdContract.id }
-      });
-      await this.prisma.vehicleDeliveryHandover.update({
-        data: {
-          handoverContractId: createdContract.id,
-          sourceDocumentFileId: fileObject.id,
-          sourceObjectKey: stored.objectKey,
-          status: DeliveryHandoverStatus.SOURCE_GENERATED,
-          updatedBy: actorId ?? null
-        },
-        where: { id: handoverId }
+        return createdFileObject;
       });
 
       return this.toStage2HandoverPdfArtifactView(workOrder, {
@@ -1424,16 +1697,21 @@ export class HandoverWorkOrderService {
       }, fileObject);
     } catch (error) {
       if (storedObject) {
-        await Promise.allSettled([this.getStorageService().deleteObject(storedObject.bucket, storedObject.objectKey)]);
+        await this.deleteStoredObjectsWithRetry([storedObject]);
       }
       await this.cancelStage2HandoverContractAfterPdfFailure(createdContract.id, actorId);
       throw error;
+    } finally {
+      if (renderedFile) {
+        await Promise.allSettled([renderedFile.cleanup()]);
+      }
     }
   }
 
   async downloadStage2HandoverPdf(id: string): Promise<EvidenceFileStreamResult> {
     const workOrder = await this.getWorkOrderOrThrow(id);
     const handover = await this.findStage2HandoverForWorkOrderOrThrow(workOrder);
+    await this.assertGeneratedStage2PdfMatchesCurrentEvidence(workOrder, handover);
     const fileId = readString(handover as unknown as Record<string, unknown>, "sourceDocumentFileId");
     if (!fileId) {
       throw new NotFoundException("车辆交接确认单 PDF 尚未生成。");
@@ -1497,6 +1775,11 @@ export class HandoverWorkOrderService {
       workOrder.handoverId ?? null,
       toFieldEvidenceState(workOrder)
     );
+    if (!this.getReviewAttemptModel()) {
+      return;
+    }
+    const evidencePackage = await this.buildCurrentEvidencePackage(workOrder);
+    await this.assertEvidencePackageMatchesLatestConfirmation(workOrder, evidencePackage);
   }
 
   private async findActiveWorkOrderOrThrow(orderId: string, handoverId?: string | null) {
@@ -1653,9 +1936,28 @@ export class HandoverWorkOrderService {
     }
   }
 
+  private async assertGeneratedStage2PdfMatchesCurrentEvidence(
+    workOrder: WorkOrderRecord,
+    handover: Record<string, unknown>
+  ) {
+    const contract = asRecord(handover.handoverContract);
+    const contractSnapshot = asRecord(contract?.contractSnapshot);
+    const evidencePackageSnapshot = asRecord(contractSnapshot?.evidencePackage);
+    const generatedManifestHash = evidencePackageSnapshot
+      ? readString(evidencePackageSnapshot, "manifestHash")
+      : null;
+    const currentPackage = await this.buildCurrentEvidencePackage(workOrder);
+    if (!generatedManifestHash || generatedManifestHash !== currentPackage.manifestHash) {
+      throw new ConflictException(
+        "车辆交接确认单源 PDF 已因证据变化失效，必须重新确认全部资料并生成新版本。"
+      );
+    }
+  }
+
   private buildStage2HandoverPdfRenderModelInput(input: {
     createdContract: Record<string, unknown>;
     evidenceChecklist: unknown;
+    evidencePackage: DeliveryHandoverEvidencePackage;
     handover: unknown;
     order: unknown;
     template: unknown;
@@ -1666,6 +1968,7 @@ export class HandoverWorkOrderService {
     return {
       documentNo: readString(input.createdContract, "contractNo") ?? "",
       evidenceChecklist: input.evidenceChecklist,
+      evidencePackage: input.evidencePackage,
       generatedAt: toDateOrNull(readUnknown(input.createdContract, "createdAt")),
       handover: {
         ...(handover ?? {}),
@@ -1731,6 +2034,60 @@ export class HandoverWorkOrderService {
       throw new BadRequestException("车辆交接确认单 PDF 渲染服务未配置。");
     }
     return this.handoverPdfRenderer;
+  }
+
+  private buildStage2EvidencePackageUrl(workOrderId: string) {
+    const configured = this.configService?.get<string>(STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV)?.trim();
+    if (!configured) {
+      throw new BadRequestException(
+        `${STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV} 未配置，无法生成稳定的证据包查阅地址。`
+      );
+    }
+    return `${configured.replace(/\/+$/, "")}/portal/handover-reviews/${encodeURIComponent(workOrderId)}`;
+  }
+
+  private async buildStage2EvidenceAssetLoader(evidencePackage: DeliveryHandoverEvidencePackage) {
+    const derivativeIds = Array.from(new Set(
+      evidencePackage.manifest.files.flatMap((file) => file.derivativeFileIds)
+    ));
+    const allowedIds = new Set(derivativeIds);
+    const fileObjects = await this.prisma.fileObject.findMany({
+      where: { id: { in: derivativeIds } }
+    });
+    const fileObjectsById = new Map(fileObjects.map((fileObject) => [fileObject.id, fileObject]));
+    const missingIds = derivativeIds.filter((fileId) => !fileObjectsById.has(fileId));
+    if (missingIds.length > 0) {
+      throw new BadRequestException(`交接证据衍生文件缺失：${missingIds.join(", ")}`);
+    }
+    const derivativeBytes = fileObjects.reduce(
+      (total, fileObject) => total + (toNumberOrNull(fileObject.sizeBytes) ?? 0),
+      0
+    );
+    const targetMediaBudget = STAGE2_HANDOVER_PDF_TARGET_BYTES - 1024 * 1024;
+    if (derivativeBytes > targetMediaBudget) {
+      throw new BadRequestException(
+        "交接证据展示文件预计会使 PDF 超过 15 MiB 目标，请先按较低质量档位重新处理。"
+      );
+    }
+
+    return async (fileId: string) => {
+      if (!allowedIds.has(fileId)) {
+        throw new BadRequestException("PDF 渲染仅允许读取当前证据包中的衍生文件。");
+      }
+      const fileObject = fileObjectsById.get(fileId);
+      if (!fileObject?.bucket || !fileObject.objectKey) {
+        throw new BadRequestException(`交接证据衍生文件不可用：${fileId}`);
+      }
+      if (fileObject.mimeType !== "image/jpeg") {
+        throw new BadRequestException(`交接证据衍生文件格式无效：${fileId}`);
+      }
+      const downloaded = await this.getStorageService().getObject(fileObject.bucket, fileObject.objectKey);
+      return readStreamToBoundedBuffer(
+        downloaded.stream,
+        MAX_STAGE2_EVIDENCE_DERIVATIVE_BYTES,
+        `交接证据衍生文件超出大小限制：${fileId}`
+      );
+    };
   }
 
   private async cancelStage2HandoverContractAfterPdfFailure(contractId: string, actorId?: string) {
@@ -1800,6 +2157,86 @@ export class HandoverWorkOrderService {
       sizeBytes: toNumberOrNull(fileObject.sizeBytes ?? downloaded.contentLength ?? null),
       stream: downloaded.stream
     };
+  }
+
+  private async findScopedActiveEvidenceFile(workOrder: WorkOrderRecord, evidenceFileId: string) {
+    const evidenceFile = await this.prisma.vehicleDeliveryEvidenceFile.findFirst({
+      include: {
+        evidenceItem: true,
+        file: true
+      },
+      where: {
+        id: evidenceFileId,
+        lifecycleStatus: DeliveryEvidenceFileLifecycleStatus.ACTIVE,
+        evidenceItem: {
+          orderId: workOrder.orderId,
+          ...(workOrder.handoverId
+            ? { OR: [{ handoverId: null }, { handoverId: workOrder.handoverId }] }
+            : {})
+        }
+      }
+    });
+    if (!evidenceFile?.file?.bucket || !evidenceFile.file.objectKey) {
+      throw new NotFoundException("交接资料文件不存在。");
+    }
+    return evidenceFile;
+  }
+
+  private assertEvidenceArtifactRepairAllowed(workOrder: WorkOrderRecord) {
+    if (workOrder.customerConfirmedAt || isReadyForStage2Status(workOrder.status)) {
+      throw new BadRequestException("客户确认后不能重新处理证据，必须先发起新的复核版本。");
+    }
+    if (isTerminalWorkOrderStatus(workOrder.status)) {
+      throw new BadRequestException("已终止的交接工单不能重新处理证据。");
+    }
+  }
+
+  private async hasReadyEvidenceArtifacts(
+    evidenceFile: {
+      evidenceItem: { evidenceType: unknown };
+      mediaType: unknown;
+      metadata: unknown;
+    },
+    db: Pick<PrismaService, "fileObject">
+  ) {
+    if (!isEvidenceArtifactMetadataReady(
+      evidenceFile.metadata,
+      String(evidenceFile.mediaType),
+      String(evidenceFile.evidenceItem.evidenceType)
+    )) {
+      return false;
+    }
+    const derivativeFileIds = getEvidenceArtifactDerivativeFileIds(
+      evidenceFile.metadata,
+      String(evidenceFile.mediaType)
+    );
+    const existingCount = await db.fileObject.count({
+      where: { id: { in: derivativeFileIds } }
+    });
+    return existingCount === derivativeFileIds.length;
+  }
+
+  private async deleteStoredObjectsWithRetry(
+    storedObjects: Array<{ bucket: string; objectKey: string }>
+  ) {
+    for (const storedObject of storedObjects) {
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          await this.getStorageService().deleteObject(storedObject.bucket, storedObject.objectKey);
+          lastError = undefined;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError) {
+        this.logger.error(
+          `Failed to delete rolled-back storage object ${storedObject.bucket}/${storedObject.objectKey}`,
+          lastError instanceof Error ? lastError.stack : String(lastError)
+        );
+      }
+    }
   }
 
   private async toAdminWorkOrderSummary(workOrder: WorkOrderRecord) {
@@ -1937,7 +2374,7 @@ export class HandoverWorkOrderService {
     const latest = await this.findLatestReviewAttempt(workOrder.id, db);
     return model.create({
       data: compactUndefined({
-        ...(await this.buildReviewAttemptSnapshot(workOrder)),
+        ...(await this.buildReviewAttemptSnapshot(workOrder, db)),
         ...data,
         attemptNo: nextAttemptNo(latest),
         handoverId: workOrder.handoverId ?? null,
@@ -1952,7 +2389,7 @@ export class HandoverWorkOrderService {
     workOrder: WorkOrderRecord,
     status: string,
     data: Record<string, unknown> = {},
-    options: { refreshSnapshot?: boolean } = {},
+    options: { refreshSnapshot?: boolean; snapshot?: Record<string, unknown> } = {},
     db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
     const model = this.getReviewAttemptModel(db);
@@ -1961,11 +2398,20 @@ export class HandoverWorkOrderService {
     }
     const latest = await this.findLatestReviewAttempt(workOrder.id, db);
     if (!latest) {
-      return this.createReviewAttempt(workOrder, status, data, db);
+      return this.createReviewAttempt(workOrder, status, {
+        ...(options.snapshot ?? {}),
+        ...data
+      }, db);
     }
     return model.update({
       data: compactUndefined({
-        ...(options.refreshSnapshot ? await this.buildReviewAttemptSnapshot(workOrder) : {}),
+        ...(
+          "snapshot" in options && options.snapshot
+            ? options.snapshot
+            : options.refreshSnapshot
+              ? await this.buildReviewAttemptSnapshot(workOrder, db)
+              : {}
+        ),
         ...data,
         status
       }),
@@ -1973,18 +2419,52 @@ export class HandoverWorkOrderService {
     });
   }
 
-  private async buildReviewAttemptSnapshot(workOrder: WorkOrderRecord) {
-    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+  private async buildCurrentEvidencePackage(
+    workOrder: WorkOrderRecord,
+    evidenceChecklist?: unknown,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ): Promise<DeliveryHandoverEvidencePackage> {
+    const checklist = evidenceChecklist ?? await this.deliveryEvidenceService.getChecklist({
       handoverId: workOrder.handoverId ?? null,
       orderId: workOrder.orderId
+    }, db);
+    if (!workOrder.handoverId) {
+      throw new BadRequestException("交接工单尚未关联车辆交接记录。");
+    }
+    return buildDeliveryHandoverEvidencePackage({
+      evidenceChecklist: checklist,
+      handoverId: workOrder.handoverId,
+      orderId: workOrder.orderId,
+      workOrderId: workOrder.id
     });
+  }
+
+  private async buildReviewAttemptSnapshot(
+    workOrder: WorkOrderRecord,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+    suppliedEvidenceChecklist?: unknown,
+    suppliedEvidencePackage?: DeliveryHandoverEvidencePackage
+  ) {
+    const evidenceChecklist = suppliedEvidenceChecklist ?? await this.deliveryEvidenceService.getChecklist({
+      handoverId: workOrder.handoverId ?? null,
+      orderId: workOrder.orderId
+    }, db);
+    const evidencePackage = suppliedEvidencePackage ??
+      await this.buildCurrentEvidencePackage(workOrder, evidenceChecklist, db);
     return {
       customerConfirmedAt: workOrder.customerConfirmedAt ?? null,
       customerObjectedAt: workOrder.customerObjectedAt ?? null,
       customerObjectionDetails: readMetadataString(workOrder.metadata, "customerObjectionDetails"),
       customerObjectionReason: workOrder.customerObjectionReason ?? null,
       customerReviewStartedAt: workOrder.customerReviewStartedAt ?? null,
-      evidenceSnapshot: toJsonValue(toSafeEvidenceChecklist(evidenceChecklist)),
+      evidenceSnapshot: toJsonValue({
+        ...toSafeEvidenceChecklist(evidenceChecklist),
+        evidencePackage: {
+          manifest: evidencePackage.manifest,
+          manifestHash: evidencePackage.manifestHash,
+          stats: evidencePackage.stats
+        }
+      }),
       fieldFactsSnapshot: toJsonValue({
         accessoryChecklist: workOrder.accessoryChecklist ?? null,
         damageDeclared: workOrder.damageDeclared ?? null,
@@ -2002,6 +2482,27 @@ export class HandoverWorkOrderService {
         sourceWorkOrderStatus: workOrder.status
       })
     };
+  }
+
+  private async assertEvidencePackageMatchesLatestConfirmation(
+    workOrder: WorkOrderRecord,
+    evidencePackage: DeliveryHandoverEvidencePackage,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    if (!this.getReviewAttemptModel(db)) {
+      return;
+    }
+    const latestAttempt = await this.findLatestReviewAttempt(workOrder.id, db);
+    const confirmedManifestHash = readEvidencePackageManifestHash(
+      readUnknownRecordValue(latestAttempt, "evidenceSnapshot")
+    );
+    if (
+      !latestAttempt ||
+      readString(latestAttempt, "status") !== "CUSTOMER_CONFIRMED" ||
+      confirmedManifestHash !== evidencePackage.manifestHash
+    ) {
+      throw new BadRequestException("客户确认未绑定当前交接证据，请重新查看并确认全部资料。");
+    }
   }
 
   private async buildResubmissionChangeSummary(
@@ -2146,10 +2647,18 @@ export class HandoverWorkOrderService {
     return this.storageService;
   }
 
+  private getEvidenceArtifactService() {
+    if (!this.evidenceArtifactService) {
+      throw new BadRequestException("交接证据媒体处理服务未配置。");
+    }
+    return this.evidenceArtifactService;
+  }
+
   private storeFieldEvidenceFile(
     workOrder: WorkOrderRecord,
     file: UploadedFieldEvidenceFile,
-    mimeType: string
+    mimeType: string,
+    sourceSizeBytes = file.size
   ) {
     const storage = this.getStorageService();
     const common = {
@@ -2163,7 +2672,7 @@ export class HandoverWorkOrderService {
       return storage.putDeliveryEvidenceFileFromPath({
         ...common,
         filePath: file.path,
-        sizeBytes: file.size
+        sizeBytes: sourceSizeBytes
       });
     }
     if (file.buffer?.length) {
@@ -2673,6 +3182,11 @@ function evidenceItemFingerprintMap(snapshot: unknown) {
   return map;
 }
 
+function readEvidencePackageManifestHash(snapshot: unknown) {
+  const evidencePackage = asRecord(asRecord(snapshot)?.evidencePackage);
+  return evidencePackage ? readString(evidencePackage, "manifestHash") : null;
+}
+
 function stableSerialize(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(stableSerialize).join(",")}]`;
@@ -2904,26 +3418,6 @@ function fieldEvidenceMediaType(file: UploadedFieldEvidenceFile) {
   return null;
 }
 
-function normalizedFieldEvidenceMimeType(file: UploadedFieldEvidenceFile) {
-  const mimeType = normalizeMimeType(file.mimetype);
-  if (SAFE_FIELD_PHOTO_MIME_TYPES.has(mimeType) || SAFE_FIELD_VIDEO_MIME_TYPES.has(mimeType)) {
-    return mimeType;
-  }
-  const extension = file.originalname.toLowerCase().split(".").pop();
-  return {
-    heic: "image/heic",
-    heif: "image/heif",
-    jpeg: "image/jpeg",
-    jpg: "image/jpeg",
-    m4v: "video/x-m4v",
-    mov: "video/quicktime",
-    mp4: "video/mp4",
-    png: "image/png",
-    webm: "video/webm",
-    webp: "image/webp"
-  }[extension ?? ""] ?? "application/octet-stream";
-}
-
 function normalizeMimeType(value: null | string | undefined) {
   return (value ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "";
 }
@@ -2966,6 +3460,87 @@ function parseDate(value: Date | string, fieldName: string) {
     throw new BadRequestException(`${fieldName} 时间格式不正确。`);
   }
   return date;
+}
+
+async function readStreamToBoundedBuffer(stream: Readable, maxBytes: number, errorMessage: string) {
+  const chunks: Buffer[] = [];
+  let sizeBytes = 0;
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    sizeBytes += buffer.length;
+    if (sizeBytes > maxBytes) {
+      stream.destroy();
+      throw new BadRequestException(errorMessage);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, sizeBytes);
+}
+
+async function writeStreamToBoundedFile(
+  stream: Readable,
+  filePath: string,
+  maxBytes: number,
+  errorMessage: string
+) {
+  let sizeBytes = 0;
+  const limiter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      sizeBytes += chunk.length;
+      if (sizeBytes > maxBytes) {
+        callback(new BadRequestException(errorMessage));
+        return;
+      }
+      callback(null, chunk);
+    }
+  });
+  await pipeline(stream, limiter, createWriteStream(filePath, { flags: "wx" }));
+  return sizeBytes;
+}
+
+function sanitizeTempEvidenceFileName(value: null | string) {
+  const extension = path.extname(value ?? "").replace(/[^\w.]+/g, "").slice(0, 12);
+  return `source${extension && extension !== "." ? extension : ".bin"}`;
+}
+
+function isEvidenceArtifactMetadataReady(
+  value: unknown,
+  mediaType: string,
+  evidenceType: string
+) {
+  const metadata = asRecord(value);
+  if (
+    metadata?.processingStatus !== "READY" ||
+    typeof metadata.sourceSha256 !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/.test(metadata.sourceSha256)
+  ) {
+    return false;
+  }
+  if (mediaType === DeliveryEvidenceMediaType.PHOTO) {
+    return Boolean(readString(metadata, "photoPreviewFileId"));
+  }
+  const frameIds = Array.isArray(metadata.videoFrameFileIds)
+    ? metadata.videoFrameFileIds.filter((entry): entry is string =>
+        typeof entry === "string" && Boolean(entry.trim())
+      )
+    : [];
+  return frameIds.length === (evidenceType === "WALKAROUND_VIDEO" ? 4 : 2);
+}
+
+function getEvidenceArtifactDerivativeFileIds(value: unknown, mediaType: string) {
+  const metadata = asRecord(value);
+  if (!metadata) {
+    return [];
+  }
+  if (mediaType === DeliveryEvidenceMediaType.PHOTO) {
+    const photoPreviewFileId = readString(metadata, "photoPreviewFileId");
+    return photoPreviewFileId ? [photoPreviewFileId] : [];
+  }
+  return Array.isArray(metadata?.videoFrameFileIds)
+    ? metadata.videoFrameFileIds.filter((entry): entry is string =>
+        typeof entry === "string" && Boolean(entry.trim())
+      )
+    : [];
 }
 
 function normalizeRequiredText(value: unknown, message: string) {

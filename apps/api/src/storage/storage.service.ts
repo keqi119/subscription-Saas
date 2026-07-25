@@ -25,6 +25,13 @@ export interface GeneratedContractPdfArtifactStorageInput extends Omit<UploadObj
   originalName: string;
 }
 
+export interface GeneratedContractPdfArtifactFileStorageInput extends Omit<UploadFileObjectInput, "key"> {
+  contractId: string;
+  contentType: "application/pdf";
+  objectKey?: string;
+  originalName: string;
+}
+
 export interface GeneratedContractPdfArtifactStorageResult {
   bucket: string;
   contentType: "application/pdf";
@@ -140,6 +147,23 @@ export class StorageService {
     return this.putPrivateFile(key, input);
   }
 
+  async putDeliveryEvidenceDerivativeFromPath(input: Omit<UploadFileObjectInput, "key"> & {
+    kind: "PHOTO_PREVIEW" | "VIDEO_FRAME";
+    orderId: string;
+    workOrderId: string;
+  }): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildDeliveryEvidenceDerivativeKey(
+      input.workOrderId,
+      input.kind,
+      input.originalName ?? "derivative.jpg"
+    );
+    return this.putPrivateFile(key, input);
+  }
+
   getVehicleBaasContractAttachmentStream(bucket: string, objectKey: string): Promise<DownloadObjectResult> {
     return this.getObject(bucket, objectKey);
   }
@@ -181,6 +205,31 @@ export class StorageService {
       objectKey: stored.objectKey,
       originalName: input.originalName,
       sizeBytes: input.buffer.length,
+      stored: stored.stored
+    };
+  }
+
+  async putGeneratedContractPdfArtifactFromPath(
+    input: GeneratedContractPdfArtifactFileStorageInput
+  ): Promise<GeneratedContractPdfArtifactStorageResult> {
+    const objectKey = normalizeGeneratedContractPdfObjectKey(
+      input.contractId,
+      input.objectKey ?? this.buildGeneratedContractPdfArtifactKey(input.contractId, input.originalName)
+    );
+    const stored = await this.putPrivateFile(objectKey, {
+      contentType: input.contentType,
+      filePath: input.filePath,
+      metadata: input.metadata,
+      originalName: input.originalName,
+      sizeBytes: input.sizeBytes
+    });
+
+    return {
+      bucket: stored.bucket,
+      contentType: input.contentType,
+      objectKey: stored.objectKey,
+      originalName: input.originalName,
+      sizeBytes: input.sizeBytes,
       stored: stored.stored
     };
   }
@@ -317,6 +366,16 @@ export class StorageService {
     const now = new Date();
     const year = String(now.getUTCFullYear());
     return `delivery-evidence/${sanitizeKeyPart(workOrderId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildDeliveryEvidenceDerivativeKey(
+    workOrderId: string,
+    kind: "PHOTO_PREVIEW" | "VIDEO_FRAME",
+    originalName: string
+  ) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    return `delivery-evidence/${sanitizeKeyPart(workOrderId)}/${year}/derivatives/${kind.toLowerCase()}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
   private buildContractSignedArtifactKey(contractId: string, provider: string, originalName: string) {

@@ -226,7 +226,7 @@ function buildEvidenceFileView(file: PortalHandoverReviewEvidenceFile): PortalHa
   return {
     displayName: file.displayName || file.file?.originalName || "资料文件",
     downloadUrl: file.downloadUrl ?? null,
-    id: file.evidenceFileId || file.id || file.fileId || "",
+    id: file.evidenceFileId || file.id || "",
     mediaType: file.mediaType || "-",
     previewAvailable: file.previewAvailable === true,
     previewUrl: file.previewUrl ?? null,

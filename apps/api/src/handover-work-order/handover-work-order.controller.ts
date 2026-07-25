@@ -79,6 +79,20 @@ export class HandoverWorkOrderAdminController {
     return new StreamableFile(file.stream);
   }
 
+  @Post("handover-work-orders/:id/evidence-files/:evidenceFileId/prepare-artifacts")
+  @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
+  prepareEvidenceFileArtifacts(
+    @Param("id") id: string,
+    @Param("evidenceFileId") evidenceFileId: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.handoverWorkOrderService.prepareExistingEvidenceFileArtifacts(
+      id,
+      evidenceFileId,
+      request.user.id
+    );
+  }
+
   @Post("handover-work-orders/:id/assign-internal")
   @RequirePermissions(PermissionCode.DELIVERY_PREPARE)
   assignInternal(

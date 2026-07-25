@@ -45,23 +45,21 @@ describe("DeliveryEvidenceService", () => {
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
 
     const firstFile = harness.addFile("damage-1.jpg", "image/jpeg");
-    const first = await harness.service.addDamageCloseup({
-      actorId: harness.userId,
-      fileId: firstFile.id,
-      handoverId: harness.handoverId,
-      mediaType: DeliveryEvidenceMediaType.PHOTO,
-      orderId: harness.orderId
-    });
+    const first = await harness.service.declareDamage(
+      harness.orderId,
+      harness.userId,
+      harness.handoverId
+    );
+    await harness.attachEvidenceFile(first.id, firstFile, DeliveryEvidenceMediaType.PHOTO);
     await harness.service.approveEvidenceItem(first.id, harness.userId);
 
     const secondFile = harness.addFile("damage-2.jpg", "image/jpeg");
-    await harness.service.addDamageCloseup({
-      actorId: harness.userId,
-      fileId: secondFile.id,
-      handoverId: harness.handoverId,
-      mediaType: DeliveryEvidenceMediaType.PHOTO,
-      orderId: harness.orderId
-    });
+    const second = await harness.service.declareDamage(
+      harness.orderId,
+      harness.userId,
+      harness.handoverId
+    );
+    await harness.attachEvidenceFile(second.id, secondFile, DeliveryEvidenceMediaType.PHOTO);
 
     const damageItems = harness.state.items.filter(
       (item) => item.evidenceType === DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP
@@ -118,7 +116,7 @@ describe("DeliveryEvidenceService", () => {
     const item = harness.findItem(DeliveryEvidenceType.CUSTOMER_WITH_VEHICLE_FRONT);
     const file = harness.addFile("customer-front.jpg", "image/jpeg");
 
-    await harness.service.attachEvidenceFile(item.id, file.id, DeliveryEvidenceMediaType.PHOTO, harness.userId);
+    await harness.attachEvidenceFile(item.id, file, DeliveryEvidenceMediaType.PHOTO);
     await harness.service.rejectEvidenceItem(item.id, harness.userId, "画面不清晰");
     const readiness = await harness.service.validateEvidenceReadyForStage2Pdf(harness.orderId, harness.handoverId);
 
@@ -161,7 +159,7 @@ describe("DeliveryEvidenceService", () => {
 
     const file = harness.addFile("damage.jpg", "image/jpeg");
     const damageItem = harness.findItem(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
-    await harness.service.attachEvidenceFile(damageItem.id, file.id, DeliveryEvidenceMediaType.PHOTO, harness.userId);
+    await harness.attachEvidenceFile(damageItem.id, file, DeliveryEvidenceMediaType.PHOTO);
     await harness.service.approveEvidenceItem(damageItem.id, harness.userId);
     const ready = await harness.service.validateEvidenceReadyForDeliveryConfirmation(
       harness.orderId,
@@ -205,7 +203,7 @@ describe("DeliveryEvidenceService", () => {
 
     const file = harness.addFile("damage.jpg", "image/jpeg");
     const damageItem = harness.findItem(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
-    await harness.service.attachEvidenceFile(damageItem.id, file.id, DeliveryEvidenceMediaType.PHOTO, harness.userId);
+    await harness.attachEvidenceFile(damageItem.id, file, DeliveryEvidenceMediaType.PHOTO);
     const readiness = await harness.service.validateFieldEvidenceComplete(
       harness.orderId,
       harness.handoverId,
@@ -222,7 +220,7 @@ describe("DeliveryEvidenceService", () => {
 
     const file = harness.addFile("damage.jpg", "image/jpeg");
     const damageItem = harness.findItem(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP);
-    await harness.service.attachEvidenceFile(damageItem.id, file.id, DeliveryEvidenceMediaType.PHOTO, harness.userId);
+    await harness.attachEvidenceFile(damageItem.id, file, DeliveryEvidenceMediaType.PHOTO);
     const readiness = await harness.service.validateFieldEvidenceComplete(
       harness.orderId,
       harness.handoverId,
@@ -243,11 +241,10 @@ describe("DeliveryEvidenceService", () => {
       harness.service.attachEvidenceFile(photoOnly.id, videoFile.id, DeliveryEvidenceMediaType.VIDEO, harness.userId)
     ).rejects.toThrow("文件类型不符合该交付证据项要求");
 
-    const linked = await harness.service.attachEvidenceFile(
+    const linked = await harness.attachEvidenceFile(
       wheel.id,
-      videoFile.id,
-      DeliveryEvidenceMediaType.VIDEO,
-      harness.userId
+      videoFile,
+      DeliveryEvidenceMediaType.VIDEO
     );
 
     expect(linked.files).toEqual([
@@ -264,6 +261,63 @@ describe("DeliveryEvidenceService", () => {
     expect(JSON.stringify(linked)).not.toContain("idCardNo");
   });
 
+  it("rejects evidence bindings that bypass artifact preparation", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const item = harness.findItem(DeliveryEvidenceType.VEHICLE_FRONT);
+    const file = harness.addFile("vehicle-front.jpg", "image/jpeg");
+
+    await expect(
+      harness.service.attachEvidenceFile(
+        item.id,
+        file.id,
+        DeliveryEvidenceMediaType.PHOTO,
+        harness.userId
+      )
+    ).rejects.toThrow("Evidence artifacts are not ready.");
+  });
+
+  it("rejects artifact metadata whose derivative FileObject is missing", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const item = harness.findItem(DeliveryEvidenceType.VEHICLE_FRONT);
+    const file = harness.addFile("vehicle-front.jpg", "image/jpeg");
+    const metadata = harness.prepareArtifactMetadata(
+      file,
+      DeliveryEvidenceMediaType.PHOTO,
+      item.evidenceType
+    );
+    metadata.photoPreviewFileId = "missing-preview";
+
+    await expect(
+      harness.service.attachEvidenceFile(
+        item.id,
+        file.id,
+        DeliveryEvidenceMediaType.PHOTO,
+        harness.userId,
+        harness.prisma as never,
+        harness.userId,
+        metadata as never
+      )
+    ).rejects.toThrow("Evidence artifacts are not ready.");
+  });
+
+  it("rejects the legacy damage fileId shortcut", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const file = harness.addFile("damage.jpg", "image/jpeg");
+
+    await expect(
+      harness.service.addDamageCloseup({
+        actorId: harness.userId,
+        fileId: file.id,
+        handoverId: harness.handoverId,
+        mediaType: DeliveryEvidenceMediaType.PHOTO,
+        orderId: harness.orderId
+      })
+    ).rejects.toThrow("Direct evidence file binding is disabled.");
+  });
+
   it("replaces singleton evidence while retaining the superseded file revision", async () => {
     const harness = createDeliveryEvidenceHarness();
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
@@ -271,18 +325,16 @@ describe("DeliveryEvidenceService", () => {
     const originalFile = harness.addFile("vehicle-front-original.jpg", "image/jpeg");
     const replacementFile = harness.addFile("vehicle-front-replacement.jpg", "image/jpeg");
 
-    const original = await harness.service.attachEvidenceFile(
+    const original = await harness.attachEvidenceFile(
       item.id,
-      originalFile.id,
-      DeliveryEvidenceMediaType.PHOTO,
-      harness.userId
+      originalFile,
+      DeliveryEvidenceMediaType.PHOTO
     );
-    const replaced = await harness.service.replaceEvidenceFile(
+    const replaced = await harness.replaceEvidenceFile(
       item.id,
       String(original.files[0]?.id),
-      replacementFile.id,
-      DeliveryEvidenceMediaType.PHOTO,
-      harness.userId
+      replacementFile,
+      DeliveryEvidenceMediaType.PHOTO
     );
 
     expect(replaced.files).toEqual([
@@ -309,11 +361,10 @@ describe("DeliveryEvidenceService", () => {
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
     const item = harness.findItem(DeliveryEvidenceType.VEHICLE_REAR);
     const file = harness.addFile("vehicle-rear.jpg", "image/jpeg");
-    const attached = await harness.service.attachEvidenceFile(
+    const attached = await harness.attachEvidenceFile(
       item.id,
-      file.id,
-      DeliveryEvidenceMediaType.PHOTO,
-      harness.userId
+      file,
+      DeliveryEvidenceMediaType.PHOTO
     );
 
     const removed = await harness.service.removeEvidenceFile(
@@ -340,21 +391,19 @@ describe("DeliveryEvidenceService", () => {
 
     for (let index = 1; index <= 20; index += 1) {
       const file = harness.addFile(`damage-${index}.jpg`, "image/jpeg");
-      await harness.service.attachEvidenceFile(
+      await harness.attachEvidenceFile(
         item.id,
-        file.id,
-        DeliveryEvidenceMediaType.PHOTO,
-        harness.userId
+        file,
+        DeliveryEvidenceMediaType.PHOTO
       );
     }
     const overflow = harness.addFile("damage-21.jpg", "image/jpeg");
 
     await expect(
-      harness.service.attachEvidenceFile(
+      harness.attachEvidenceFile(
         item.id,
-        overflow.id,
-        DeliveryEvidenceMediaType.PHOTO,
-        harness.userId
+        overflow,
+        DeliveryEvidenceMediaType.PHOTO
       )
     ).rejects.toThrow("损伤近拍最多上传 20 个文件");
   });
@@ -367,11 +416,10 @@ describe("DeliveryEvidenceService", () => {
     harness.prisma.$transaction.mockRejectedValueOnce({ code: "P2034" });
 
     await expect(
-      harness.service.attachEvidenceFile(
+      harness.attachEvidenceFile(
         item.id,
-        file.id,
-        DeliveryEvidenceMediaType.PHOTO,
-        harness.userId
+        file,
+        DeliveryEvidenceMediaType.PHOTO
       )
     ).rejects.toThrow(ConflictException);
   });
@@ -396,7 +444,7 @@ async function uploadRequiredFileEvidence(harness: ReturnType<typeof createDeliv
     const extension = mediaType === DeliveryEvidenceMediaType.VIDEO ? "mp4" : "jpg";
     const mimeType = mediaType === DeliveryEvidenceMediaType.VIDEO ? "video/mp4" : "image/jpeg";
     const file = harness.addFile(`${definition.evidenceType}.${extension}`, mimeType);
-    await harness.service.attachEvidenceFile(item.id, file.id, mediaType, harness.userId);
+    await harness.attachEvidenceFile(item.id, file, mediaType);
     uploaded.push(item);
   }
   return uploaded;
@@ -430,6 +478,11 @@ function createDeliveryEvidenceHarness() {
 
   const prisma = {
     fileObject: {
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+        state.files
+          .filter((file) => where.id.in.includes(file.id))
+          .map((file) => ({ id: file.id, mimeType: file.mimeType }))
+      ),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         state.files.find((file) => file.id === where.id) ?? null
       )
@@ -525,20 +578,69 @@ function createDeliveryEvidenceHarness() {
   };
   const service = new DeliveryEvidenceService(prisma as never);
 
+  const addFile = (originalName: string, mimeType: string) => {
+    const file = {
+      bucket: "application-materials",
+      createdAt: now,
+      id: `file-${state.files.length + 1}`,
+      mimeType,
+      objectKey: `delivery-evidence/${originalName}`,
+      originalName,
+      sizeBytes: 1024n,
+      uploadedBy: userId
+    } as TestFileObject;
+    state.files.push(file);
+    return file;
+  };
+  const prepareArtifactMetadata = (
+    file: TestFileObject,
+    mediaType: DeliveryEvidenceMediaType,
+    evidenceType: DeliveryEvidenceType
+  ) => {
+    const derivativeCount = mediaType === DeliveryEvidenceMediaType.PHOTO
+      ? 1
+      : evidenceType === DeliveryEvidenceType.WALKAROUND_VIDEO
+        ? 4
+        : 2;
+    const derivativeFileIds = Array.from({ length: derivativeCount }, (_, index) =>
+      addFile(`${file.originalName}-derivative-${index + 1}.jpg`, "image/jpeg").id
+    );
+    return {
+      artifactVersion: 1,
+      detectedCodec: mediaType === DeliveryEvidenceMediaType.VIDEO ? "h264" : null,
+      detectedMimeType: file.mimeType,
+      photoPreviewFileId:
+        mediaType === DeliveryEvidenceMediaType.PHOTO ? derivativeFileIds[0] : null,
+      processedAt: now.toISOString(),
+      processingStatus: "READY",
+      sourceSha256: `sha256:${"a".repeat(64)}`,
+      sourceSizeBytes: Number(file.sizeBytes),
+      videoDurationMs: mediaType === DeliveryEvidenceMediaType.VIDEO ? 12_000 : null,
+      videoFrameFileIds:
+        mediaType === DeliveryEvidenceMediaType.VIDEO ? derivativeFileIds : []
+    };
+  };
+
   return {
-    addFile(originalName: string, mimeType: string) {
-      const file = {
-        bucket: "application-materials",
-        createdAt: now,
-        id: `file-${state.files.length + 1}`,
-        mimeType,
-        objectKey: `delivery-evidence/${originalName}`,
-        originalName,
-        sizeBytes: 1024n,
-        uploadedBy: userId
-      } as TestFileObject;
-      state.files.push(file);
-      return file;
+    addFile,
+    attachEvidenceFile(
+      itemId: string,
+      file: TestFileObject,
+      mediaType: DeliveryEvidenceMediaType
+    ) {
+      const item = state.items.find((row) => row.id === itemId);
+      if (!item) {
+        throw new Error(`Missing item: ${itemId}`);
+      }
+      return service.attachEvidenceFile(
+        itemId,
+        file.id,
+        mediaType,
+        userId,
+        prisma as never,
+        userId,
+        prepareArtifactMetadata(file, mediaType, item.evidenceType) as never
+      );
     },
     findItem(evidenceType: DeliveryEvidenceType) {
       const item = state.items.find((row) => row.evidenceType === evidenceType);
@@ -549,7 +651,29 @@ function createDeliveryEvidenceHarness() {
     },
     handoverId,
     orderId,
+    prepareArtifactMetadata,
     prisma,
+    replaceEvidenceFile(
+      itemId: string,
+      evidenceFileId: string,
+      file: TestFileObject,
+      mediaType: DeliveryEvidenceMediaType
+    ) {
+      const item = state.items.find((row) => row.id === itemId);
+      if (!item) {
+        throw new Error(`Missing item: ${itemId}`);
+      }
+      return service.replaceEvidenceFile(
+        itemId,
+        evidenceFileId,
+        file.id,
+        mediaType,
+        userId,
+        prisma as never,
+        userId,
+        prepareArtifactMetadata(file, mediaType, item.evidenceType) as never
+      );
+    },
     service,
     state,
     userId

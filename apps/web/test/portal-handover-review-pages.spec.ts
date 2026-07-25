@@ -35,7 +35,8 @@ describe("portal handover review pages", () => {
     expect(source).toContain("现场交接信息");
     expect(source).toContain("资料清单");
     expect(source).toContain("客户确认");
-    expect(source).toContain("我已查看车辆交接资料，并确认无异议");
+    expect(source).toContain("本人已查看本次交接证据包所列全部照片和视频");
+    expect(source).toContain("manifestHash");
     expect(source).toContain("确认无异议");
     expect(source).toContain("提出异议");
     expect(source).toContain("提交异议");

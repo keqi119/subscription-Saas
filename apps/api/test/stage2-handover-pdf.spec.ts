@@ -15,16 +15,26 @@ import {
   buildDeliveryHandoverPdfRenderModel,
   STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT
 } from "../src/delivery-handover/delivery-handover-pdf-render-model";
-import { DeliveryHandoverPdfRendererService } from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
+import {
+  DeliveryHandoverPdfRendererService,
+  STAGE2_HANDOVER_PDF_HARD_MAX_BYTES,
+  STAGE2_HANDOVER_PDF_MAX_PAGES,
+  STAGE2_HANDOVER_PDF_TARGET_BYTES
+} from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 
 const pdfKitMock = vi.hoisted(() => {
   class FakePDFDocument {
+    static imageCalls: Array<{ image: Buffer | string; pageNumber: number }> = [];
     static textCalls: Array<{ pageNumber: number; text: string }> = [];
 
     static startCapture() {
+      FakePDFDocument.imageCalls = [];
       FakePDFDocument.textCalls = [];
-      return { textCalls: FakePDFDocument.textCalls };
+      return {
+        imageCalls: FakePDFDocument.imageCalls,
+        textCalls: FakePDFDocument.textCalls
+      };
     }
 
     info: Record<string, unknown> = {};
@@ -52,7 +62,7 @@ const pdfKitMock = vi.hoisted(() => {
     }
 
     end() {
-      this.emit("data", Buffer.from("%PDF-fake-stage2-output"));
+      this.emit("data", Buffer.from("%PDF-fake-stage2-output\n%%EOF"));
       this.emit("end");
     }
 
@@ -70,6 +80,11 @@ const pdfKitMock = vi.hoisted(() => {
 
     heightOfString(text: string) {
       return Math.max(12, Math.ceil(String(text).length / 48) * 14);
+    }
+
+    image(image: Buffer | string) {
+      FakePDFDocument.imageCalls.push({ image, pageNumber: this.pageNumber });
+      return this;
     }
 
     lineTo() {
@@ -139,10 +154,13 @@ describe("Stage 2 handover PDF renderer", () => {
 
   it("renders visible handover sections, evidence summary, and signature areas without debug text", async () => {
     const renderer = new DeliveryHandoverPdfRendererService();
-    const { textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+    const { imageCalls, textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+    const loadAsset = vi.fn(async () => Buffer.from("synthetic-jpeg"));
 
     const result = await renderer.render(buildDeliveryHandoverPdfRenderModel(createRenderModelInput()), {
-      cjkFontPath: process.execPath
+      cjkFontPath: process.execPath,
+      evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset
     });
     const visibleText = textCalls.map((call) => call.text).join("\n");
 
@@ -158,9 +176,47 @@ describe("Stage 2 handover PDF renderer", () => {
     expect(visibleText).toContain("车辆基本信息");
     expect(visibleText).toContain("车况确认");
     expect(visibleText).toContain("证据摘要");
+    expect(visibleText).toContain("证据包声明");
+    expect(visibleText).toContain("照片证据附件");
+    expect(visibleText).toContain("视频证据附件");
+    expect(visibleText).toContain("sha256:");
+    expect(visibleText).toContain("https://portal.example.test/portal/handover-reviews/work-order-1");
+    expect(visibleText).toContain("原始大小");
+    expect(visibleText).toContain("上传时间");
+    expect(visibleText).toContain("详见照片/视频证据附件");
     expect(visibleText).toContain("承租方");
     expect(visibleText).toContain("出租方");
+    expect(visibleText).not.toContain("APPROVED/APPROVED");
     expect(visibleText).not.toContain("Render Diagnostics");
+    expect(imageCalls).toHaveLength(17);
+    expect(loadAsset).toHaveBeenCalledTimes(17);
+    expect(loadAsset).not.toHaveBeenCalledWith("file-8");
+    const evidenceFiles = buildDeliveryHandoverPdfRenderModel(createRenderModelInput()).evidencePackage.files;
+    for (const file of evidenceFiles) {
+      expect(visibleText).toContain(file.evidenceFileId);
+      expect(visibleText.split(file.sourceSha256)).toHaveLength(2);
+    }
+  });
+
+  it("uses the approved 15 MiB target, 18 MiB hard limit, and 100-page ceiling", () => {
+    expect(STAGE2_HANDOVER_PDF_TARGET_BYTES).toBe(15 * 1024 * 1024);
+    expect(STAGE2_HANDOVER_PDF_HARD_MAX_BYTES).toBe(18 * 1024 * 1024);
+    expect(STAGE2_HANDOVER_PDF_MAX_PAGES).toBe(100);
+  });
+
+  it("fails closed when the rendered byte or page budget is exceeded", async () => {
+    const renderer = new DeliveryHandoverPdfRendererService();
+    const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
+    const options = {
+      cjkFontPath: process.execPath,
+      evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset: vi.fn(async () => Buffer.from("synthetic-jpeg"))
+    };
+
+    await expect(renderer.render(model, { ...options, maxBytes: 5 }))
+      .rejects.toThrow("STAGE2_HANDOVER_PDF_RENDER_TOO_LARGE");
+    await expect(renderer.render(model, { ...options, maxPages: 1 }))
+      .rejects.toThrow("STAGE2_HANDOVER_PDF_RENDER_TOO_MANY_PAGES");
   });
 });
 
@@ -184,7 +240,8 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         status: ContractStatus.GENERATED
       })
     });
-    expect(harness.storageService.putGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath).toHaveBeenCalledOnce();
+    expect(harness.storageService.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
     expect(harness.prisma.fileObject.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         bucket: "application-materials",
@@ -194,7 +251,7 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         uploadedBy: "admin-1"
       })
     });
-    expect(harness.prisma.vehicleDeliveryHandover.update).toHaveBeenCalledWith({
+    expect(harness.prisma.vehicleDeliveryHandover.updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({
         handoverContractId: "contract-stage2-1",
         sourceDocumentFileId: "file-pdf-1",
@@ -202,7 +259,11 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         status: DeliveryHandoverStatus.SOURCE_GENERATED,
         updatedBy: "admin-1"
       }),
-      where: { id: "handover-1" }
+      where: {
+        handoverContractId: null,
+        id: "handover-1",
+        sourceDocumentFileId: null
+      }
     });
     expect(harness.prisma.contractESignTask.create).not.toHaveBeenCalled();
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
@@ -218,7 +279,32 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
 
     await expect(harness.service.generateStage2HandoverPdf("work-order-1", "admin-1"))
       .rejects.toBeInstanceOf(BadRequestException);
-    expect(harness.storageService.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the uploaded source when another request wins the handover claim", async () => {
+    const harness = createServiceHarness();
+    harness.prisma.vehicleDeliveryHandover.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      harness.service.generateStage2HandoverPdf("work-order-1", "admin-1")
+    ).rejects.toThrow("已由其他请求生成");
+
+    expect(harness.storageService.deleteObject).toHaveBeenCalledWith(
+      "application-materials",
+      "contracts/contract-stage2-1/generated/handover.pdf"
+    );
+  });
+
+  it("rejects evidence derivatives predicted to exceed the 15 MiB target before rendering", async () => {
+    const harness = createServiceHarness({ derivativeSizeBytes: 1024 * 1024 });
+
+    await expect(
+      harness.service.generateStage2HandoverPdf("work-order-1", "admin-1")
+    ).rejects.toThrow("15 MiB");
+
+    expect(harness.renderer.renderToFile).not.toHaveBeenCalled();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath).not.toHaveBeenCalled();
   });
 
   it("downloads the generated PDF through FileObject storage without exposing object keys", async () => {
@@ -238,28 +324,74 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     );
     expect(downloaded).not.toHaveProperty("objectKey");
   });
+
+  it("refuses to download a generated PDF after its manifest hash becomes stale", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        handoverContract: {
+          contractSnapshot: {
+            evidencePackage: { manifestHash: `sha256:${"f".repeat(64)}` }
+          }
+        },
+        sourceDocumentFileId: "file-pdf-1"
+      }
+    });
+
+    await expect(harness.service.downloadStage2HandoverPdf("work-order-1"))
+      .rejects.toThrow("源 PDF 已因证据变化失效");
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
 });
 
 function createRenderModelInput() {
   const generatedAt = new Date("2026-07-25T10:00:00.000Z");
+  const evidenceTypes = [
+    "CUSTOMER_WITH_VEHICLE_FRONT",
+    "VEHICLE_FRONT",
+    "VEHICLE_REAR",
+    "VIN_OR_FRAME_NUMBER",
+    "ODOMETER_DASHBOARD",
+    "INTERIOR_REAR",
+    "INTERIOR_FRONT",
+    "WALKAROUND_VIDEO",
+    "WHEEL_CLOSEUP_FRONT_LEFT",
+    "WHEEL_CLOSEUP_FRONT_RIGHT",
+    "WHEEL_CLOSEUP_REAR_LEFT",
+    "WHEEL_CLOSEUP_REAR_RIGHT",
+    "DAMAGE_STATIC_CLOSEUP",
+    "NO_VISIBLE_DAMAGE_DECLARATION"
+  ];
   return {
     documentNo: "HDV-STAGE2-PDF-001",
     evidenceChecklist: {
       items: Array.from({ length: STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT }, (_, index) => ({
-        evidenceType: `EVIDENCE_${index + 1}`,
+        evidenceType: evidenceTypes[index],
         fileRequired: index !== 13,
         files: [
           {
             file: {
               id: `file-${index + 1}`,
-              mimeType: "image/jpeg",
+              mimeType: index === 7 ? "video/mp4" : "image/jpeg",
               objectKey: `application-materials/delivery-evidence/${index + 1}/front.jpg`,
               originalName: index === 0 ? "front.jpg" : `evidence-${index + 1}.jpg`,
               sizeBytes: 1024 + index
             },
             fileId: `file-${index + 1}`,
-            id: `evidence-file-${index + 1}`,
-            mediaType: "PHOTO",
+          id: `evidence-file-${index + 1}`,
+            mediaType: index === 7 ? "VIDEO" : "PHOTO",
+            metadata: {
+              artifactVersion: 1,
+              detectedMimeType: index === 7 ? "video/mp4" : "image/jpeg",
+              photoPreviewFileId: index === 7 ? null : `preview-file-${index + 1}`,
+              processedAt: generatedAt.toISOString(),
+              processingStatus: "READY",
+              sourceSha256: `sha256:${String(index + 1).padStart(64, "0")}`,
+              sourceSizeBytes: 1024 + index,
+              videoDurationMs: index === 7 ? 20_000 : null,
+              videoFrameFileIds: index === 7
+                ? ["frame-8-1", "frame-8-2", "frame-8-3", "frame-8-4"]
+                : []
+            },
             objectKey: `application-materials/raw/${index + 1}`,
             uploadedAt: generatedAt
           }
@@ -322,9 +454,19 @@ function createRenderModelInput() {
 }
 
 function createServiceHarness(options: {
+  derivativeSizeBytes?: number;
   handover?: Partial<Record<string, unknown>>;
 } = {}) {
   const generatedPdfBuffer = Buffer.from("%PDF-stage2-output");
+  const currentManifestHash = buildDeliveryHandoverPdfRenderModel(
+    createRenderModelInput()
+  ).evidencePackage.manifestHash;
+  const derivativeIds = createRenderModelInput().evidenceChecklist.items.flatMap((item) => {
+    const metadata = item.files[0]!.metadata;
+    return metadata.photoPreviewFileId
+      ? [metadata.photoPreviewFileId]
+      : metadata.videoFrameFileIds;
+  });
   const records = {
     contract: {
       contractNo: "CON-STAGE1-001",
@@ -340,9 +482,22 @@ function createServiceHarness(options: {
       originalName: "handover.pdf",
       sizeBytes: BigInt(generatedPdfBuffer.length)
     },
+    derivativeFileObjects: derivativeIds.map((id) => ({
+      bucket: "application-materials",
+      id,
+      mimeType: "image/jpeg",
+      objectKey: `delivery-evidence/work-order-1/derivatives/${id}.jpg`,
+      originalName: `${id}.jpg`,
+      sizeBytes: BigInt(options.derivativeSizeBytes ?? 1024)
+    })),
     handover: {
       deletedAt: null,
       handoverContractId: null,
+      handoverContract: {
+        contractSnapshot: {
+          evidencePackage: { manifestHash: currentManifestHash }
+        }
+      },
       id: "handover-1",
       orderId: "order-1",
       sourceDocumentFileId: null,
@@ -421,6 +576,9 @@ function createServiceHarness(options: {
     },
     fileObject: {
       create: vi.fn(async () => records.fileObject),
+      findMany: vi.fn(async ({ where }) =>
+        records.derivativeFileObjects.filter((fileObject) => where.id.in.includes(fileObject.id))
+      ),
       findUnique: vi.fn(async ({ where }) => where.id === "file-pdf-1" ? records.fileObject : null)
     },
     subscriptionOrder: {
@@ -429,28 +587,41 @@ function createServiceHarness(options: {
     },
     vehicleDeliveryHandover: {
       findFirst: vi.fn(async () => records.handover),
-      update: vi.fn(async () => ({ ...records.handover, sourceDocumentFileId: "file-pdf-1" }))
+      update: vi.fn(async () => ({ ...records.handover, sourceDocumentFileId: "file-pdf-1" })),
+      updateMany: vi.fn(async () => ({ count: 1 }))
     },
     vehicleHandoverWorkOrder: {
       findUnique: vi.fn(async () => records.workOrder)
     }
   };
+  Object.assign(prisma, {
+    $transaction: vi.fn(async (callback: (transaction: typeof prisma) => Promise<unknown>) =>
+      callback(prisma)
+    )
+  });
 
   const deliveryEvidenceService = {
     assertFieldEvidenceComplete: vi.fn(async () => undefined),
     getChecklist: vi.fn(async () => createRenderModelInput().evidenceChecklist)
   };
   const renderer = {
-    render: vi.fn(async () => ({
-      buffer: generatedPdfBuffer,
+    renderToFile: vi.fn(async () => ({
+      cleanup: vi.fn(async () => undefined),
       contentType: "application/pdf",
       diagnostics: {
+        evidenceFileCount: 14,
         evidenceItemCount: STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT,
         hasCustomerSignatureArea: true,
         hasEvidenceSummary: true,
-        hasPlatformSealArea: true
+        hasPlatformSealArea: true,
+        pageCount: 10,
+        photoCount: 13,
+        targetBytesExceeded: false,
+        videoCount: 1
       },
-      fileName: "handover.pdf"
+      fileName: "handover.pdf",
+      filePath: "D:\\temp\\handover.pdf",
+      sizeBytes: generatedPdfBuffer.length
     }))
   };
   const storageService = {
@@ -467,18 +638,30 @@ function createServiceHarness(options: {
       originalName: "handover.pdf",
       sizeBytes: generatedPdfBuffer.length,
       stored: { driver: "local", key: "application-materials/contracts/contract-stage2-1/generated/handover.pdf" }
+    })),
+    putGeneratedContractPdfArtifactFromPath: vi.fn(async () => ({
+      bucket: "application-materials",
+      contentType: "application/pdf",
+      objectKey: "contracts/contract-stage2-1/generated/handover.pdf",
+      originalName: "handover.pdf",
+      sizeBytes: generatedPdfBuffer.length,
+      stored: { driver: "local", key: "application-materials/contracts/contract-stage2-1/generated/handover.pdf" }
     }))
   };
 
   return {
     prisma,
+    renderer,
     service: new HandoverWorkOrderService(
       prisma as never,
       deliveryEvidenceService as never,
       undefined,
       storageService as never,
       renderer as never,
-      new ConfigService({ CONTRACT_PDF_CJK_FONT_PATH: process.execPath })
+      new ConfigService({
+        CONTRACT_PDF_CJK_FONT_PATH: process.execPath,
+        STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL: "https://portal.example.test"
+      })
     ),
     storageService
   };

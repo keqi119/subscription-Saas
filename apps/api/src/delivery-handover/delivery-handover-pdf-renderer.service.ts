@@ -1,5 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import fs from "node:fs";
+import { mkdtemp, open, rm, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import PDFDocument from "pdfkit";
 
@@ -11,9 +13,13 @@ import {
 export const STAGE2_HANDOVER_PDF_RENDER_CJK_FONT_REQUIRED =
   "STAGE2_HANDOVER_PDF_RENDER_CJK_FONT_REQUIRED";
 export const STAGE2_HANDOVER_PDF_RENDER_NOT_PDF = "STAGE2_HANDOVER_PDF_RENDER_NOT_PDF";
+export const STAGE2_HANDOVER_PDF_RENDER_TOO_MANY_PAGES =
+  "STAGE2_HANDOVER_PDF_RENDER_TOO_MANY_PAGES";
 export const STAGE2_HANDOVER_PDF_RENDER_TOO_LARGE = "STAGE2_HANDOVER_PDF_RENDER_TOO_LARGE";
+export const STAGE2_HANDOVER_PDF_TARGET_BYTES = 15 * 1024 * 1024;
+export const STAGE2_HANDOVER_PDF_HARD_MAX_BYTES = 18 * 1024 * 1024;
+export const STAGE2_HANDOVER_PDF_MAX_PAGES = 100;
 
-const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE = "A4";
 const EMPTY_VALUE = "-";
 const CJK_PATTERN = /[\u3400-\u9fff\uf900-\ufaff]/;
@@ -21,16 +27,24 @@ const TABLE_LABEL_WIDTH = 92;
 
 export interface DeliveryHandoverPdfRenderOptions {
   cjkFontPath?: string;
+  evidencePackageUrl?: string;
+  loadAsset?: (fileId: string) => Promise<Buffer>;
   maxBytes?: number;
+  maxPages?: number;
   pageSize?: PDFKit.PDFDocumentOptions["size"];
 }
 
 export interface DeliveryHandoverPdfRenderDiagnostics {
+  evidenceFileCount: number;
   evidenceItemCount: number;
   hasCjkContent: boolean;
   hasCustomerSignatureArea: boolean;
   hasEvidenceSummary: boolean;
   hasPlatformSealArea: boolean;
+  pageCount: number;
+  photoCount: number;
+  targetBytesExceeded: boolean;
+  videoCount: number;
 }
 
 export interface DeliveryHandoverPdfRenderResult {
@@ -38,6 +52,15 @@ export interface DeliveryHandoverPdfRenderResult {
   contentType: "application/pdf";
   diagnostics: DeliveryHandoverPdfRenderDiagnostics;
   fileName: string;
+}
+
+export interface DeliveryHandoverPdfRenderFileResult {
+  cleanup: () => Promise<void>;
+  contentType: "application/pdf";
+  diagnostics: DeliveryHandoverPdfRenderDiagnostics;
+  fileName: string;
+  filePath: string;
+  sizeBytes: number;
 }
 
 @Injectable()
@@ -49,26 +72,74 @@ export class DeliveryHandoverPdfRendererService {
     const diagnostics = buildDiagnostics(model);
     validateRenderModel(model, diagnostics);
     const fontPath = resolveFontPath(options, diagnostics);
-    const buffer = await renderPdf(model, fontPath, options);
-    validatePdfBuffer(buffer, options.maxBytes ?? DEFAULT_MAX_BYTES);
+    const rendered = await renderPdf(model, fontPath, options);
+    if (!rendered.buffer) {
+      throw new Error(`${STAGE2_HANDOVER_PDF_RENDER_NOT_PDF}: renderer buffer is missing`);
+    }
+    validatePdfBuffer(rendered.buffer, options.maxBytes ?? STAGE2_HANDOVER_PDF_HARD_MAX_BYTES);
+    validatePageCount(rendered.pageCount, options.maxPages ?? STAGE2_HANDOVER_PDF_MAX_PAGES);
 
     return {
-      buffer,
+      buffer: rendered.buffer,
       contentType: "application/pdf",
-      diagnostics,
+      diagnostics: {
+        ...diagnostics,
+        pageCount: rendered.pageCount,
+        targetBytesExceeded: rendered.buffer.length > STAGE2_HANDOVER_PDF_TARGET_BYTES
+      },
       fileName: `${sanitizeFileName(model.documentNo)}.pdf`
     };
+  }
+
+  async renderToFile(
+    model: DeliveryHandoverPdfRenderModel,
+    options: DeliveryHandoverPdfRenderOptions = {}
+  ): Promise<DeliveryHandoverPdfRenderFileResult> {
+    const diagnostics = buildDiagnostics(model);
+    validateRenderModel(model, diagnostics);
+    const fontPath = resolveFontPath(options, diagnostics);
+    const directory = await mkdtemp(path.join(os.tmpdir(), "stage2-handover-pdf-"));
+    const filePath = path.join(directory, `${sanitizeFileName(model.documentNo)}.pdf`);
+    const cleanup = () => rm(directory, { force: true, recursive: true });
+
+    try {
+      const rendered = await renderPdf(model, fontPath, options, filePath);
+      const fileStat = await stat(filePath);
+      await validatePdfFile(filePath, fileStat.size, options.maxBytes ?? STAGE2_HANDOVER_PDF_HARD_MAX_BYTES);
+      validatePageCount(rendered.pageCount, options.maxPages ?? STAGE2_HANDOVER_PDF_MAX_PAGES);
+
+      return {
+        cleanup,
+        contentType: "application/pdf",
+        diagnostics: {
+          ...diagnostics,
+          pageCount: rendered.pageCount,
+          targetBytesExceeded: fileStat.size > STAGE2_HANDOVER_PDF_TARGET_BYTES
+        },
+        fileName: `${sanitizeFileName(model.documentNo)}.pdf`,
+        filePath,
+        sizeBytes: fileStat.size
+      };
+    } catch (error) {
+      await Promise.allSettled([cleanup()]);
+      throw error;
+    }
   }
 }
 
 function buildDiagnostics(model: DeliveryHandoverPdfRenderModel): DeliveryHandoverPdfRenderDiagnostics {
   const searchable = JSON.stringify(model);
   return {
+    evidenceFileCount: model.evidencePackage.stats.fileCount,
     evidenceItemCount: model.evidenceSummary.items.length,
     hasCjkContent: CJK_PATTERN.test(searchable),
     hasCustomerSignatureArea: true,
     hasEvidenceSummary: model.evidenceSummary.items.length === STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT,
-    hasPlatformSealArea: true
+    hasPlatformSealArea: true,
+    pageCount: 0,
+    photoCount: model.evidencePackage.stats.photoCount,
+    targetBytesExceeded: false,
+    videoCount: model.evidencePackage.stats.videoCount
   };
 }
 
@@ -114,18 +185,38 @@ function assertUsableFont(fontPath: string) {
 async function renderPdf(
   model: DeliveryHandoverPdfRenderModel,
   fontPath: string | undefined,
-  options: DeliveryHandoverPdfRenderOptions
+  options: DeliveryHandoverPdfRenderOptions,
+  outputPath?: string
 ) {
+  const evidencePackageUrl = options.evidencePackageUrl?.trim();
+  if (!evidencePackageUrl) {
+    throw new Error("STAGE2_HANDOVER_PDF_EVIDENCE_PACKAGE_URL_REQUIRED: protected evidence package URL is required");
+  }
+  if (model.evidencePackage.files.length > 0 && !options.loadAsset) {
+    throw new Error("STAGE2_HANDOVER_PDF_ASSET_LOADER_REQUIRED: derivative asset loader is required");
+  }
+
   const doc = new PDFDocument({
     autoFirstPage: true,
     margin: 45,
     size: options.pageSize ?? DEFAULT_PAGE_SIZE
   });
+  let pageCount = 1;
   const chunks: Buffer[] = [];
-  const done = new Promise<Buffer>((resolve, reject) => {
-    doc.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
+  const output = outputPath ? fs.createWriteStream(outputPath, { flags: "wx" }) : null;
+  const done = new Promise<Buffer | null>((resolve, reject) => {
+    if (output) {
+      doc.pipe(output);
+      output.on("finish", () => resolve(null));
+      output.on("error", reject);
+    } else {
+      doc.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+    }
     doc.on("error", reject);
+  });
+  doc.on("pageAdded", () => {
+    pageCount += 1;
   });
 
   doc.font(fontPath ?? "Helvetica");
@@ -169,11 +260,18 @@ async function renderPdf(
   writeSection(doc, "四、特别约定与告知");
   model.specialNotices.forEach((notice) => writeParagraph(doc, notice));
 
-  writeSection(doc, "五、证据摘要");
+  writeSection(doc, "五、证据包声明");
+  writeEvidencePackageDeclaration(doc, model, evidencePackageUrl);
+
+  writeSection(doc, "六、证据摘要");
   writeEvidenceSummaryTable(doc, model);
 
+  await writePhotoAttachments(doc, model, options.loadAsset!);
+  await writeVideoAttachments(doc, model, evidencePackageUrl, options.loadAsset!);
+
+  doc.addPage();
   ensureSpace(doc, 230);
-  writeSection(doc, "六、签字确认");
+  writeSection(doc, "九、签字确认");
   writeParagraph(doc, model.confirmationText);
   writeSignatureArea(doc, model);
 
@@ -181,7 +279,124 @@ async function renderPdf(
   model.operationTips.forEach((tip) => writeParagraph(doc, tip));
 
   doc.end();
-  return done;
+  const buffer = await done;
+  return { buffer, pageCount };
+}
+
+function writeEvidencePackageDeclaration(
+  doc: PDFKit.PDFDocument,
+  model: DeliveryHandoverPdfRenderModel,
+  evidencePackageUrl: string
+) {
+  writeParagraph(
+    doc,
+    "本确认单、下列全量照片附件、全量视频清单及关键帧共同构成一个不可分割的交接证据包。原始文件以清单中的 SHA-256 摘要绑定，签署后任何文件变化都会形成不同的证据包摘要。"
+  );
+  writeKeyValueTable(doc, [
+    ["证据包编号", model.evidencePackage.packageId],
+    ["清单版本", String(model.evidencePackage.schemaVersion)],
+    ["证据包摘要", model.evidencePackage.manifestHash],
+    ["文件统计", `${model.evidencePackage.stats.fileCount} 个文件（照片 ${model.evidencePackage.stats.photoCount}，视频 ${model.evidencePackage.stats.videoCount}）`],
+    ["受保护查阅地址", evidencePackageUrl]
+  ]);
+}
+
+async function writePhotoAttachments(
+  doc: PDFKit.PDFDocument,
+  model: DeliveryHandoverPdfRenderModel,
+  loadAsset: (fileId: string) => Promise<Buffer>
+) {
+  const photos = model.evidencePackage.files.filter((file) => file.mediaType === "PHOTO");
+  for (let index = 0; index < photos.length; index += 2) {
+    doc.addPage();
+    writeSection(doc, `七、照片证据附件（第 ${Math.floor(index / 2) + 1} 页）`);
+    const pagePhotos = photos.slice(index, index + 2);
+    const gap = 14;
+    const cellWidth = (contentWidth(doc) - gap) / 2;
+    const imageHeight = 235;
+    const startY = doc.y;
+
+    for (let cellIndex = 0; cellIndex < pagePhotos.length; cellIndex += 1) {
+      const file = pagePhotos[cellIndex]!;
+      const derivativeFileId = file.derivativeFileIds[0];
+      if (!derivativeFileId) {
+        throw new Error(`STAGE2_HANDOVER_PDF_DERIVATIVE_MISSING: ${file.evidenceFileId}`);
+      }
+      const x = doc.page.margins.left + cellIndex * (cellWidth + gap);
+      const preview = await loadAsset(derivativeFileId);
+      doc.rect(x, startY, cellWidth, imageHeight).stroke();
+      doc.image(preview, x + 5, startY + 5, {
+        align: "center",
+        fit: [cellWidth - 10, imageHeight - 10],
+        valign: "center"
+      });
+      const metadataY = startY + imageHeight + 8;
+      doc.fontSize(9).text(file.evidenceTitle, x, metadataY, { width: cellWidth });
+      doc.fontSize(8).text(`证据文件 ID：${file.evidenceFileId}`, x, doc.y + 3, { width: cellWidth });
+      doc.fontSize(8).text(`文件：${file.originalName}`, x, doc.y + 3, { width: cellWidth });
+      doc.text(`原始大小：${formatFileSize(file.sourceSizeBytes)}`, x, doc.y + 3, { width: cellWidth });
+      doc.text(`上传时间：${file.uploadedAt}`, x, doc.y + 3, { width: cellWidth });
+      doc.text(`SHA-256：${file.sourceSha256}`, x, doc.y + 3, {
+        lineBreak: true,
+        width: cellWidth
+      });
+    }
+    doc.y = startY + imageHeight + 112;
+    resetCursorX(doc);
+  }
+}
+
+async function writeVideoAttachments(
+  doc: PDFKit.PDFDocument,
+  model: DeliveryHandoverPdfRenderModel,
+  evidencePackageUrl: string,
+  loadAsset: (fileId: string) => Promise<Buffer>
+) {
+  const videos = model.evidencePackage.files.filter((file) => file.mediaType === "VIDEO");
+  for (let videoIndex = 0; videoIndex < videos.length; videoIndex += 1) {
+    const file = videos[videoIndex]!;
+    doc.addPage();
+    writeSection(doc, `八、视频证据附件（${videoIndex + 1}/${videos.length}）`);
+    writeKeyValueTable(doc, [
+      ["证据项", file.evidenceTitle],
+      ["证据文件 ID", file.evidenceFileId],
+      ["原始文件", file.originalName],
+      ["视频时长", formatDuration(file.videoDurationMs)],
+      ["原始大小", formatFileSize(file.sourceSizeBytes)],
+      ["上传时间", file.uploadedAt],
+      ["原始文件摘要", file.sourceSha256],
+      ["受保护查阅地址", evidencePackageUrl]
+    ]);
+    writeParagraph(
+      doc,
+      "下列关键帧用于在签署文件中识别视频内容；完整原始视频按上述 SHA-256 摘要归档，并可通过受保护地址查阅。"
+    );
+
+    const gap = 12;
+    const cellWidth = (contentWidth(doc) - gap) / 2;
+    const frameHeight = 155;
+    const startY = doc.y;
+    for (let frameIndex = 0; frameIndex < file.derivativeFileIds.length; frameIndex += 1) {
+      const frameId = file.derivativeFileIds[frameIndex]!;
+      const column = frameIndex % 2;
+      const row = Math.floor(frameIndex / 2);
+      const x = doc.page.margins.left + column * (cellWidth + gap);
+      const y = startY + row * (frameHeight + 30);
+      const frame = await loadAsset(frameId);
+      doc.rect(x, y, cellWidth, frameHeight).stroke();
+      doc.image(frame, x + 5, y + 5, {
+        align: "center",
+        fit: [cellWidth - 10, frameHeight - 10],
+        valign: "center"
+      });
+      doc.fontSize(8.5).text(`关键帧 ${frameIndex + 1}`, x, y + frameHeight + 6, {
+        align: "center",
+        width: cellWidth
+      });
+    }
+    doc.y = startY + Math.ceil(file.derivativeFileIds.length / 2) * (frameHeight + 30);
+    resetCursorX(doc);
+  }
 }
 
 function writeTitle(doc: PDFKit.PDFDocument, title: string) {
@@ -260,9 +475,11 @@ function writeEvidenceSummaryTable(doc: PDFKit.PDFDocument, model: DeliveryHando
   for (const item of model.evidenceSummary.items) {
     const rowValues = {
       fileCount: String(item.fileCount),
-      files: item.files.map((file) => `${file.displayName}/${file.mediaType}`).join("; ") || EMPTY_VALUE,
+      files: item.files.length > 0
+        ? `${item.files.length} 个文件，详见照片/视频证据附件`
+        : EMPTY_VALUE,
       requirement: item.fileRequired ? "必需" : item.isConditional ? "条件项" : "可选",
-      status: `${item.status}/${item.reviewStatus}`,
+      status: formatEvidenceStatus(item.status, item.reviewStatus),
       title: item.title
     };
     const rowHeight = Math.max(
@@ -357,12 +574,71 @@ function joinValues(values: string[]) {
   return filtered.length ? filtered.join(" / ") : EMPTY_VALUE;
 }
 
+function formatDuration(value: number | null) {
+  if (!value) {
+    return EMPTY_VALUE;
+  }
+  const totalSeconds = Math.round(value / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatFileSize(value: number) {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KiB`;
+  }
+  return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
+}
+
+function formatEvidenceStatus(status: string, reviewStatus: string) {
+  const values = Array.from(new Set(
+    [status, reviewStatus].filter((value) => value && value !== EMPTY_VALUE)
+  ));
+  return values.length > 0 ? values.join("/") : EMPTY_VALUE;
+}
+
 function validatePdfBuffer(buffer: Buffer, maxBytes: number) {
   if (!buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
     throw new Error(`${STAGE2_HANDOVER_PDF_RENDER_NOT_PDF}: renderer output is not a PDF`);
   }
+  if (!buffer.subarray(Math.max(0, buffer.length - 1024)).includes(Buffer.from("%%EOF"))) {
+    throw new Error(`${STAGE2_HANDOVER_PDF_RENDER_NOT_PDF}: renderer output is truncated`);
+  }
   if (buffer.length > maxBytes) {
     throw new Error(`${STAGE2_HANDOVER_PDF_RENDER_TOO_LARGE}: renderer output exceeds max bytes`);
+  }
+}
+
+async function validatePdfFile(filePath: string, sizeBytes: number, maxBytes: number) {
+  const handle = await open(filePath, "r");
+  try {
+    const header = Buffer.alloc(5);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    if (bytesRead !== header.length || !header.equals(Buffer.from("%PDF-"))) {
+      throw new Error(`${STAGE2_HANDOVER_PDF_RENDER_NOT_PDF}: renderer output is not a PDF`);
+    }
+    const tail = Buffer.alloc(Math.min(1024, sizeBytes));
+    const tailResult = await handle.read(tail, 0, tail.length, sizeBytes - tail.length);
+    if (!tail.subarray(0, tailResult.bytesRead).includes(Buffer.from("%%EOF"))) {
+      throw new Error(`${STAGE2_HANDOVER_PDF_RENDER_NOT_PDF}: renderer output is truncated`);
+    }
+  } finally {
+    await handle.close();
+  }
+  if (sizeBytes > maxBytes) {
+    throw new Error(`${STAGE2_HANDOVER_PDF_RENDER_TOO_LARGE}: renderer output exceeds max bytes`);
+  }
+}
+
+function validatePageCount(pageCount: number, maxPages: number) {
+  if (pageCount > maxPages) {
+    throw new Error(
+      `${STAGE2_HANDOVER_PDF_RENDER_TOO_MANY_PAGES}: renderer output has ${pageCount} pages; max is ${maxPages}`
+    );
   }
 }
 

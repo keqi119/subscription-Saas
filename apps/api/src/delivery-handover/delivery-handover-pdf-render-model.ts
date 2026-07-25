@@ -1,3 +1,10 @@
+import {
+  buildDeliveryHandoverEvidencePackage,
+  DeliveryHandoverEvidenceManifestFile,
+  DeliveryHandoverEvidencePackage,
+  STAGE2_EVIDENCE_CONFIRMATION_TEXT
+} from "./delivery-handover-evidence-manifest";
+
 export const STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT = 14;
 
 const EMPTY_VALUE = "-";
@@ -6,6 +13,7 @@ const UNSAFE_KEY_PATTERN = /(bucket|objectKey|signUrl|signingUrl|storageKey|url)
 export interface DeliveryHandoverPdfRenderModelInput {
   documentNo: string;
   evidenceChecklist?: unknown;
+  evidencePackage?: DeliveryHandoverEvidencePackage;
   generatedAt?: Date | string | null;
   handover?: unknown;
   order?: unknown;
@@ -34,6 +42,13 @@ export interface DeliveryHandoverPdfRenderModel {
   evidenceSummary: {
     itemCount: number;
     items: DeliveryHandoverPdfEvidenceSummaryItem[];
+  };
+  evidencePackage: {
+    files: DeliveryHandoverEvidenceManifestFile[];
+    manifestHash: string;
+    packageId: string;
+    schemaVersion: number;
+    stats: DeliveryHandoverEvidencePackage["stats"];
   };
   fees: {
     otherFees: string;
@@ -109,12 +124,18 @@ export function buildDeliveryHandoverPdfRenderModel(
   const template = asRecord(input.template);
   const generatedAt = toIso(input.generatedAt) ?? new Date().toISOString();
   const evidenceItems = normalizeEvidenceSummary(input.evidenceChecklist);
+  const evidencePackage = input.evidencePackage ?? buildDeliveryHandoverEvidencePackage({
+    evidenceChecklist: input.evidenceChecklist,
+    handoverId: readString(handover, "id") ?? "",
+    orderId: readString(order, "id") ?? "",
+    workOrderId: readString(workOrder, "id") ?? ""
+  });
   const noVisibleDamageDeclared = readBoolean(workOrder, "noVisibleDamageDeclared");
   const damageDeclared = readBoolean(workOrder, "damageDeclared");
 
   const model: DeliveryHandoverPdfRenderModel = {
     confirmationText:
-      "本人已仔细检查车辆外观、内饰及随车物品，确认上述车况描述无误，并已知悉《汽车订阅服务合同》及本交接单所有条款。",
+      `${STAGE2_EVIDENCE_CONFIRMATION_TEXT} 本人确认本次签署对应证据包 ${evidencePackage.manifest.evidencePackageId} 及 ${evidencePackage.manifestHash}。`,
     customer: {
       address:
         readString(profile, "residenceAddress") ??
@@ -132,6 +153,13 @@ export function buildDeliveryHandoverPdfRenderModel(
     evidenceSummary: {
       itemCount: evidenceItems.length,
       items: evidenceItems
+    },
+    evidencePackage: {
+      files: evidencePackage.manifest.files,
+      manifestHash: evidencePackage.manifestHash,
+      packageId: evidencePackage.manifest.evidencePackageId,
+      schemaVersion: evidencePackage.manifest.schemaVersion,
+      stats: evidencePackage.stats
     },
     fees: {
       otherFees: formatCurrencyLike(order?.otherFeeAmount),

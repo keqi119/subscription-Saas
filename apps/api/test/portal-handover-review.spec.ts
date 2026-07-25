@@ -89,6 +89,13 @@ describe("Portal handover review API", () => {
     const serialized = stringifyForSafety(detail);
 
     expect(detail).toMatchObject({
+      evidencePackage: {
+        confirmationText: expect.stringContaining("全部照片和视频"),
+        fileCount: 14,
+        manifestHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        photoCount: 14,
+        videoCount: 0
+      },
       evidenceChecklist: {
         ready: true
       },
@@ -107,7 +114,7 @@ describe("Portal handover review API", () => {
       fileCount: 1,
       files: [
         expect.objectContaining({
-          file: expect.objectContaining({ id: "file-1" })
+          mediaType: "PHOTO"
         })
       ]
     });
@@ -128,7 +135,6 @@ describe("Portal handover review API", () => {
       displayName: "evidence-1.jpg",
       downloadUrl: "/api/portal/handover-reviews/work-order-1/evidence-files/evidence-file-1/download",
       evidenceFileId: "evidence-file-1",
-      fileId: "file-1",
       mimeType: "image/jpeg",
       previewAvailable: true,
       previewUrl: "/api/portal/handover-reviews/work-order-1/evidence-files/evidence-file-1/preview",
@@ -137,6 +143,38 @@ describe("Portal handover review API", () => {
     expect(serialized).not.toContain("oss/private");
     expect(serialized).not.toContain("objectKey");
     expect(serialized).not.toContain("bucket");
+    expect(firstFile).not.toHaveProperty("fileId");
+    expect(firstFile?.file).not.toHaveProperty("id");
+  });
+
+  it("keeps historical unprocessed evidence visible but disables manifest-bound confirmation", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    harness.state.evidenceChecklist.items[0]!.files[0]!.metadata.processingStatus = "PENDING";
+
+    const detail = await harness.service.getReview("work-order-1", currentCustomer("customer-1"));
+
+    expect(detail.evidenceChecklist.items[0]?.files).toHaveLength(1);
+    expect(detail.evidencePackage).toMatchObject({
+      fileCount: 14,
+      manifestHash: null,
+      ready: false
+    });
+    expect(detail.readiness).toMatchObject({
+      readyForStage2ESign: false,
+      readyForStage2Pdf: false
+    });
+  });
+
+  it("does not disguise unexpected evidence package failures as normal processing state", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    vi.spyOn(harness.handoverWorkOrderService, "getCurrentEvidencePackage")
+      .mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(
+      harness.service.getReview("work-order-1", currentCustomer("customer-1"))
+    ).rejects.toThrow("database unavailable");
   });
 
   it("streams only customer-owned evidence files through the Portal proxy", async () => {
@@ -201,10 +239,14 @@ describe("Portal handover review API", () => {
     await expect(harness.handoverWorkOrderService.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow(
       "客户尚未确认"
     );
+    const review = await harness.service.getReview("work-order-1", currentCustomer("customer-1"));
 
     const detail = await harness.service.confirmNoObjection(
       "work-order-1",
-      { acknowledgement: true },
+      {
+        acknowledgement: true,
+        manifestHash: review.evidencePackage.manifestHash!
+      },
       currentCustomer("customer-1")
     );
 
@@ -218,7 +260,39 @@ describe("Portal handover review API", () => {
       status: "CUSTOMER_CONFIRMED"
     });
     await expect(harness.handoverWorkOrderService.assertReadyForStage2ESign(harness.orderId)).resolves.toBeUndefined();
+    expect(harness.state.reviewAttempts[0]).toMatchObject({
+      evidenceSnapshot: {
+        evidencePackage: {
+          manifestHash: review.evidencePackage.manifestHash
+        }
+      },
+      status: "CUSTOMER_CONFIRMED"
+    });
+    const firstMetadata = harness.state.evidenceChecklist.items[0]!.files[0]!.metadata;
+    firstMetadata.sourceSha256 = `sha256:${"e".repeat(64)}`;
+    await expect(harness.handoverWorkOrderService.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow(
+      "客户确认未绑定当前交接证据"
+    );
     expectNoStage2SideEffects(harness);
+  });
+
+  it("rejects a stale evidence manifest hash and leaves the review unconfirmed", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+
+    await expect(harness.service.confirmNoObjection(
+      "work-order-1",
+      {
+        acknowledgement: true,
+        manifestHash: `sha256:${"f".repeat(64)}`
+      },
+      currentCustomer("customer-1")
+    )).rejects.toThrow("交接证据已变化");
+
+    expect(harness.state.workOrders[0]).toMatchObject({
+      customerConfirmedAt: null,
+      status: "CUSTOMER_REVIEWING"
+    });
   });
 
   it("blocks confirmation before field evidence is submitted", async () => {
@@ -226,7 +300,11 @@ describe("Portal handover review API", () => {
     harness.state.workOrders.push(completeReviewWorkOrder(harness, { status: "FIELD_IN_PROGRESS" }));
 
     await expect(
-      harness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-1"))
+      harness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-1")
+      )
     ).rejects.toBeInstanceOf(BadRequestException);
     expectNoStage2SideEffects(harness);
   });
@@ -241,7 +319,11 @@ describe("Portal handover review API", () => {
     );
 
     await expect(
-      harness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-1"))
+      harness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-1")
+      )
     ).rejects.toThrow("客户已确认");
   });
 
@@ -255,13 +337,21 @@ describe("Portal handover review API", () => {
       })
     );
     await expect(
-      objectedHarness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-1"))
+      objectedHarness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-1")
+      )
     ).rejects.toThrow("客户已提交异议");
 
     const unrelatedHarness = createPortalReviewHarness();
     unrelatedHarness.state.workOrders.push(completeReviewWorkOrder(unrelatedHarness));
     await expect(
-      unrelatedHarness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-other"))
+      unrelatedHarness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-other")
+      )
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -429,6 +519,7 @@ function createPortalReviewHarness() {
         vehicleId: "vehicle-other"
       }
     ],
+    reviewAttempts: [] as Array<Record<string, unknown>>,
     workOrders: [] as Array<Record<string, unknown>>
   };
 
@@ -450,6 +541,37 @@ function createPortalReviewHarness() {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         state.evidenceFiles.find((file) => matchesEvidenceFileWhere(file, where)) ?? null
       )
+    },
+    vehicleHandoverReviewAttempt: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const attempt = {
+          ...data,
+          createdAt: now,
+          id: `review-attempt-${state.reviewAttempts.length + 1}`,
+          updatedAt: now
+        };
+        state.reviewAttempts.push(attempt);
+        return attempt;
+      }),
+      findFirst: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
+        [...state.reviewAttempts]
+          .filter((attempt) => attempt.workOrderId === where.workOrderId)
+          .sort((left, right) => Number(right.attemptNo) - Number(left.attemptNo))[0] ?? null
+      ),
+      findMany: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
+        state.reviewAttempts.filter((attempt) => attempt.workOrderId === where.workOrderId)
+      ),
+      update: vi.fn(async ({ data, where }: {
+        data: Record<string, unknown>;
+        where: { id?: string };
+      }) => {
+        const attempt = state.reviewAttempts.find((item) => item.id === where.id);
+        if (!attempt) {
+          throw new Error("review attempt not found");
+        }
+        Object.assign(attempt, data, { updatedAt: now });
+        return attempt;
+      })
     },
     vehicleHandoverWorkOrder: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
@@ -588,6 +710,17 @@ function completeEvidenceChecklist(now: Date) {
           },
           fileId: `file-${index + 1}`,
           id: `evidence-file-${index + 1}`,
+          metadata: {
+            artifactVersion: 1,
+            detectedMimeType: "image/jpeg",
+            photoPreviewFileId: `preview-file-${index + 1}`,
+            processedAt: now.toISOString(),
+            processingStatus: "READY",
+            sourceSha256: `sha256:${String(index + 1).padStart(64, "0")}`,
+            sourceSizeBytes: 1024,
+            videoDurationMs: null,
+            videoFrameFileIds: []
+          },
           mediaType: "PHOTO",
           objectKey: `oss/private/evidence-link/${index + 1}.jpg`,
           uploadedAt: now,
@@ -619,7 +752,8 @@ function withRelations(workOrder: Record<string, unknown> | null, state: ReturnT
       id: workOrder.handoverId,
       status: "DRAFT"
     },
-    order
+    order,
+    reviewAttempts: state.reviewAttempts.filter((attempt) => attempt.workOrderId === workOrder.id)
   };
 }
 

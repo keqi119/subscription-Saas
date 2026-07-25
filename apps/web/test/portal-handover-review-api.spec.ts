@@ -24,7 +24,7 @@ describe("portal handover review API client", () => {
 
     await listPortalHandoverReviews();
     await getPortalHandoverReview("review/with space");
-    await confirmPortalHandoverReview("review-1", true);
+    await confirmPortalHandoverReview("review-1", true, `sha256:${"a".repeat(64)}`);
     await objectPortalHandoverReview("review-1", {
       details: "右前轮毂需复核",
       reason: "车辆外观有异议"
@@ -39,7 +39,10 @@ describe("portal handover review API client", () => {
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ credentials: "include" }));
     expect(fetchMock.mock.calls[2]?.[1]).toEqual(
       expect.objectContaining({
-        body: JSON.stringify({ acknowledgement: true }),
+        body: JSON.stringify({
+          acknowledgement: true,
+          manifestHash: `sha256:${"a".repeat(64)}`
+        }),
         credentials: "include",
         method: "POST"
       })

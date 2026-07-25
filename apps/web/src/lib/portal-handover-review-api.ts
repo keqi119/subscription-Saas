@@ -100,12 +100,10 @@ export interface PortalHandoverReviewEvidenceFile {
   downloadUrl?: string | null;
   evidenceFileId?: string | null;
   file?: {
-    id?: string | null;
     mimeType?: string | null;
     originalName?: string | null;
     sizeBytes?: number | string | null;
   } | null;
-  fileId?: string | null;
   id?: string | null;
   mimeType?: string | null;
   mediaType?: string | null;
@@ -137,8 +135,20 @@ export interface PortalHandoverReviewHistoryItem {
   status?: string | null;
 }
 
+export interface PortalHandoverReviewEvidencePackage {
+  confirmationText?: string | null;
+  evidencePackageId?: string | null;
+  fileCount?: number | null;
+  manifestHash?: string | null;
+  photoCount?: number | null;
+  ready?: boolean | null;
+  schemaVersion?: number | null;
+  videoCount?: number | null;
+}
+
 export interface PortalHandoverReviewDetail extends PortalHandoverReviewListItem {
   evidenceChecklist?: PortalHandoverReviewEvidenceChecklist | null;
+  evidencePackage?: PortalHandoverReviewEvidencePackage | null;
   fieldFacts?: PortalHandoverReviewFieldFacts | null;
   readiness?: PortalHandoverReviewReadiness | null;
   reviewHistory?: PortalHandoverReviewHistoryItem[];
@@ -157,11 +167,15 @@ export function getPortalHandoverReview(id: string) {
   return portalApiFetch<PortalHandoverReviewDetail>(`/portal/handover-reviews/${encodeURIComponent(id)}`);
 }
 
-export function confirmPortalHandoverReview(id: string, acknowledgement: boolean) {
+export function confirmPortalHandoverReview(
+  id: string,
+  acknowledgement: boolean,
+  manifestHash: string
+) {
   return portalApiFetch<PortalHandoverReviewDetail>(
     `/portal/handover-reviews/${encodeURIComponent(id)}/confirm`,
     {
-      body: JSON.stringify({ acknowledgement }),
+      body: JSON.stringify({ acknowledgement, manifestHash }),
       method: "POST"
     }
   );

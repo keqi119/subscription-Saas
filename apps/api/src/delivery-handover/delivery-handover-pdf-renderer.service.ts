@@ -230,7 +230,7 @@ async function renderPdf(
   writeKeyValueTable(doc, [
     ["车牌号码", model.vehicle.plateNo],
     ["车辆品牌/型号", model.vehicle.brandModel],
-    ["车架号（后6位）", model.vehicle.vinSuffix],
+    ["车架号（VIN）", model.vehicle.vin],
     ["当前里程数", model.fieldFacts.handoverMileageKm],
     ["油量/电量", joinValues([model.fieldFacts.fuelLevelText, model.fieldFacts.energyLevelText])],
     ["随车证件", model.fieldFacts.accessoryChecklistText]
@@ -413,7 +413,7 @@ function writeMetadata(doc: PDFKit.PDFDocument, model: DeliveryHandoverPdfRender
     ["订单编号", model.orderNo],
     ["合同编号", model.stage1ContractNo],
     ["生成时间", model.generatedAt],
-    ["承租方", `${model.customer.name} / ${model.customer.mobileMasked} / ${model.customer.idNumberMasked}`],
+    ["承租方", `${model.customer.name} / ${model.customer.mobile} / ${model.customer.idNumber}`],
     ["出租方", model.platform.legalName],
     ["客户确认", `${model.customerReview.objectionStatus} / ${model.customerReview.confirmedAt}`]
   ]);
@@ -528,8 +528,8 @@ function writeSignatureArea(doc: PDFKit.PDFDocument, model: DeliveryHandoverPdfR
   const headers = ["承租方", "出租方"];
   const rows = [
     ["（签字/手印）", "（盖章）"],
-    [`身份证号：${model.customer.idNumberMasked}`, `经办人：${model.platform.contactName}`],
-    [`联系电话：${model.customer.mobileMasked}`, `联系电话：${model.platform.contactPhone}`],
+    [`身份证号：${model.customer.idNumber}`, `经办人：${model.platform.contactName}`],
+    [`联系电话：${model.customer.mobile}`, `联系电话：${model.platform.contactPhone}`],
     ["日期：      年    月    日", "日期：      年    月    日"]
   ];
   const startY = doc.y;

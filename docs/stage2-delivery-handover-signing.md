@@ -134,8 +134,8 @@ The generator selects an active `ContractVersion` with `templateType=DELIVERY_HA
 The PDF includes:
 
 - document/order/template metadata and the Stage 1 contract number;
-- masked customer identity and mobile;
-- vehicle brand/model, plate, VIN suffix, mileage, fuel/energy level, and accessory checklist;
+- full customer legal name, mobile, and identity number for the signing document;
+- vehicle brand/model, plate, full VIN, mileage, fuel/energy level, and accessory checklist;
 - condition confirmation and damage/no-damage field notes;
 - fee/deposit confirmation rows;
 - special notices preserved from the handover confirmation template semantics;
@@ -143,7 +143,7 @@ The PDF includes:
 - customer signature and platform seal/signature areas for later provider mapping;
 - operation tips.
 
-The PDF and API views must not expose raw object storage keys, buckets, private storage paths, signing URLs, provider payloads, SMS/WeChat data, finance internals, full phone numbers, or full identity numbers. Evidence media is summarized; photos and videos are not embedded in this PDF.
+The protected signing PDF contains the full customer mobile and identity number plus the full VIN, because it is part of the subscription contract and must identify the signing party and vehicle unambiguously. Portal, field, queue, and other API views remain masked. Neither the PDF nor API views may expose raw object storage keys, buckets, private storage paths, signing URLs, provider payloads, SMS/WeChat data, or finance internals.
 
 Visual acceptance for this stage must confirm PDF content, table layout, signature areas, and evidence summary before Stage 2 Fadada upload/signing coordinate mapping begins.
 

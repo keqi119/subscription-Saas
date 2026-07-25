@@ -30,8 +30,8 @@ export interface DeliveryHandoverPdfRenderModel {
   confirmationText: string;
   customer: {
     address: string;
-    idNumberMasked: string;
-    mobileMasked: string;
+    idNumber: string;
+    mobile: string;
     name: string;
   };
   customerReview: {
@@ -83,7 +83,7 @@ export interface DeliveryHandoverPdfRenderModel {
   vehicle: {
     brandModel: string;
     plateNo: string;
-    vinSuffix: string;
+    vin: string;
   };
   workOrderId: string;
 }
@@ -141,8 +141,11 @@ export function buildDeliveryHandoverPdfRenderModel(
         readString(profile, "residenceAddress") ??
         readString(customer, "registeredAddress") ??
         EMPTY_VALUE,
-      idNumberMasked: maskIdNumber(readString(identity, "idCardNo") ?? readString(customer, "idNumber")),
-      mobileMasked: maskPhone(readString(customer, "mobile")) ?? EMPTY_VALUE,
+      idNumber:
+        readString(identity, "idCardNo") ??
+        readString(customer, "idNumber") ??
+        EMPTY_VALUE,
+      mobile: readString(customer, "mobile") ?? EMPTY_VALUE,
       name: readString(customer, "name") ?? EMPTY_VALUE
     },
     customerReview: {
@@ -216,7 +219,7 @@ export function buildDeliveryHandoverPdfRenderModel(
     vehicle: {
       brandModel: [readString(vehicle, "brand"), readString(vehicle, "model")].filter(Boolean).join(" ") || EMPTY_VALUE,
       plateNo: readString(vehicle, "plateNo") ?? EMPTY_VALUE,
-      vinSuffix: suffix(readString(vehicle, "vin"), 6) ?? EMPTY_VALUE
+      vin: readString(vehicle, "vin") ?? EMPTY_VALUE
     },
     workOrderId: readString(workOrder, "id") ?? EMPTY_VALUE
   };
@@ -324,16 +327,6 @@ function toIso(value: Date | null | string | undefined) {
   return toDate(value)?.toISOString() ?? null;
 }
 
-function maskIdNumber(value: null | string) {
-  if (!value) {
-    return EMPTY_VALUE;
-  }
-  if (value.length <= 4) {
-    return "****";
-  }
-  return `${"*".repeat(Math.max(4, value.length - 4))}${value.slice(-4)}`;
-}
-
 function maskPhone(value: null | string | undefined) {
   if (!value) {
     return null;
@@ -342,10 +335,6 @@ function maskPhone(value: null | string | undefined) {
     return "***";
   }
   return `${value.slice(0, 3)}****${value.slice(-4)}`;
-}
-
-function suffix(value: null | string, length: number) {
-  return value ? value.slice(-length) : null;
 }
 
 function readString(record: null | Record<string, unknown>, key: string) {

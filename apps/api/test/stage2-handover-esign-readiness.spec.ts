@@ -11,7 +11,7 @@ import {
   VehicleHandoverReviewAttemptStatus,
   VehicleHandoverWorkOrderStatus
 } from "@prisma/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   Stage2HandoverESignReadinessService
@@ -23,8 +23,19 @@ const MANIFEST_DIGEST = "a".repeat(64);
 const SOURCE_PDF_DIGEST = "b".repeat(64);
 const MANIFEST_HASH = `sha256:${MANIFEST_DIGEST}`;
 const NOW = new Date("2026-07-26T08:00:00.000Z");
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CUSTOMER_READINESS_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 describe("Stage2HandoverESignReadinessService", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("is registered, exported, and wired to the existing eSign readiness module", () => {
     expect(Reflect.getMetadata("providers", HandoverWorkOrderModule)).toContain(
       Stage2HandoverESignReadinessService
@@ -50,6 +61,47 @@ describe("Stage2HandoverESignReadinessService", () => {
     });
 
     await expectBlocker(harness.service, "STAGE1_CONTRACT_NOT_SIGNED");
+  });
+
+  it("accepts an archived current Stage 1 contract as signing-complete", async () => {
+    const harness = createHarness();
+    Object.assign(harness.state.workOrder!.handover.stage1Contract, {
+      status: ContractStatus.ARCHIVED
+    });
+
+    const readiness = await harness.service.getReadiness("work-order-1");
+
+    expect(readiness.ready).toBe(true);
+    expect(readiness.blockers).toEqual([]);
+  });
+
+  it("keeps current and deleted safeguards for archived Stage 1 contracts", async () => {
+    const nonCurrent = createHarness();
+    Object.assign(nonCurrent.state.workOrder!.handover.stage1Contract, {
+      status: ContractStatus.ARCHIVED
+    });
+    Object.assign(nonCurrent.state.workOrder!.order, {
+      contractId: "contract-stage1-new"
+    });
+    const deleted = createHarness();
+    Object.assign(deleted.state.workOrder!.handover.stage1Contract, {
+      deletedAt: NOW,
+      status: ContractStatus.ARCHIVED
+    });
+
+    const nonCurrentReadiness =
+      await nonCurrent.service.getReadiness("work-order-1");
+    const deletedReadiness = await deleted.service.getReadiness("work-order-1");
+
+    expect(nonCurrentReadiness.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "STAGE1_CONTRACT_NOT_CURRENT" })
+    ]));
+    expect(nonCurrentReadiness.blockers).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "STAGE1_CONTRACT_NOT_SIGNED" })
+    ]));
+    expect(deletedReadiness.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "STAGE1_CONTRACT_NOT_SIGNED" })
+    ]));
   });
 
   it("blocks when the signed Stage 1 contract is no longer current for the order", async () => {
@@ -113,6 +165,36 @@ describe("Stage2HandoverESignReadinessService", () => {
       VehicleHandoverReviewAttemptStatus.CUSTOMER_REVIEWING;
 
     await expectBlocker(harness.service, "LATEST_REVIEW_NOT_CONFIRMED");
+  });
+
+  it("fails closed when the latest confirmed attempt has no field facts snapshot", async () => {
+    const harness = createHarness();
+    harness.state.reviewAttempt.fieldFactsSnapshot = null;
+
+    await expectBlocker(harness.service, "CONFIRMED_FIELD_FACTS_MISMATCH");
+    expectNoSideEffects(harness.sideEffects);
+  });
+
+  it("fails closed when a signing-relevant field facts key is missing", async () => {
+    const harness = createHarness();
+    const incompleteSnapshot: Record<string, unknown> =
+      readyFieldFactsSnapshot();
+    delete incompleteSnapshot.scheduledAt;
+    harness.state.reviewAttempt.fieldFactsSnapshot = incompleteSnapshot;
+
+    await expectBlocker(harness.service, "CONFIRMED_FIELD_FACTS_MISMATCH");
+    expectNoSideEffects(harness.sideEffects);
+  });
+
+  it("fails closed when confirmed field facts differ from the current work order", async () => {
+    const harness = createHarness();
+    harness.state.reviewAttempt.fieldFactsSnapshot = {
+      ...readyFieldFactsSnapshot(),
+      handoverMileageKm: 28001
+    };
+
+    await expectBlocker(harness.service, "CONFIRMED_FIELD_FACTS_MISMATCH");
+    expectNoSideEffects(harness.sideEffects);
   });
 
   it("blocks when field evidence readiness fails", async () => {
@@ -251,11 +333,61 @@ describe("Stage2HandoverESignReadinessService", () => {
   it("fails closed when customer provider readiness evidence is stale", async () => {
     const harness = createHarness({
       customerReadiness: readyCustomerReadiness({
-        lastProviderCheckAt: new Date("2026-05-01T00:00:00.000Z")
+        lastProviderCheckAt: new Date(NOW.getTime() - 30 * DAY_MS - 1)
       })
     });
 
     await expectBlocker(harness.service, "CUSTOMER_READINESS_STALE");
+  });
+
+  it("fails closed when customer provider readiness timestamp is invalid", async () => {
+    const harness = createHarness({
+      customerReadiness: readyCustomerReadiness({
+        lastProviderCheckAt: new Date(Number.NaN)
+      })
+    });
+
+    await expectBlocker(
+      harness.service,
+      "CUSTOMER_READINESS_TIMESTAMP_INVALID"
+    );
+  });
+
+  it("fails closed when customer provider readiness timestamp exceeds clock skew", async () => {
+    const harness = createHarness({
+      customerReadiness: readyCustomerReadiness({
+        lastProviderCheckAt: new Date(
+          NOW.getTime() + CUSTOMER_READINESS_CLOCK_SKEW_MS + 1
+        )
+      })
+    });
+
+    await expectBlocker(
+      harness.service,
+      "CUSTOMER_READINESS_TIMESTAMP_INVALID"
+    );
+  });
+
+  it.each([
+    {
+      label: "the five-minute future clock-skew boundary",
+      lastProviderCheckAt: new Date(
+        NOW.getTime() + CUSTOMER_READINESS_CLOCK_SKEW_MS
+      )
+    },
+    {
+      label: "the configured freshness boundary",
+      lastProviderCheckAt: new Date(NOW.getTime() - 30 * DAY_MS)
+    }
+  ])("accepts $label", async ({ lastProviderCheckAt }) => {
+    const harness = createHarness({
+      customerReadiness: readyCustomerReadiness({ lastProviderCheckAt })
+    });
+
+    const readiness = await harness.service.getReadiness("work-order-1");
+
+    expect(readiness.ready).toBe(true);
+    expect(readiness.blockers).toEqual([]);
   });
 
   it("requires both platform customer and signature configuration", async () => {
@@ -278,7 +410,7 @@ describe("Stage2HandoverESignReadinessService", () => {
     await expectBlocker(signatureHarness.service, "PLATFORM_SIGNATURE_ID_MISSING");
   });
 
-  it("blocks an active Stage 2 task conflict", async () => {
+  it("queries and blocks an active Stage 2 task by contract pointer", async () => {
     const harness = createHarness({
       activeTask: {
         id: "esign-task-1",
@@ -293,6 +425,40 @@ describe("Stage2HandoverESignReadinessService", () => {
     ]));
     expect(readiness.state.esignTaskId).toBe("esign-task-1");
     expect(readiness.state.esignTaskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
+    expect(harness.prisma.contractESignTask.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ contractId: "contract-stage2-1" }]
+        })
+      })
+    );
+  });
+
+  it("queries and blocks an active Stage 2 task by task pointer alone", async () => {
+    const harness = createHarness({
+      activeTask: {
+        id: "esign-task-1",
+        taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+      }
+    });
+    Object.assign(harness.state.workOrder!.handover, {
+      handoverContractId: null,
+      handoverESignTaskId: "esign-task-1"
+    });
+
+    const readiness = await harness.service.getReadiness("work-order-1");
+
+    expect(readiness.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ACTIVE_ESIGN_TASK_CONFLICT" })
+    ]));
+    expect(readiness.state.esignTaskId).toBe("esign-task-1");
+    expect(harness.prisma.contractESignTask.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ id: "esign-task-1" }]
+        })
+      })
+    );
   });
 
   it("blocks terminal or incorrect order states", async () => {
@@ -443,6 +609,7 @@ function createHarness(overrides: {
       evidenceSnapshot: {
         evidencePackage: { manifestHash: MANIFEST_HASH }
       },
+      fieldFactsSnapshot: readyFieldFactsSnapshot(),
       id: "review-attempt-1",
       status: VehicleHandoverReviewAttemptStatus.CUSTOMER_CONFIRMED
     },
@@ -516,6 +683,7 @@ function createHarness(overrides: {
   );
 
   return {
+    prisma,
     service,
     sideEffects,
     state
@@ -534,6 +702,7 @@ interface ReadyState {
   reviewAttempt: {
     attemptNo: number;
     evidenceSnapshot: Record<string, unknown>;
+    fieldFactsSnapshot: null | Record<string, unknown>;
     id: string;
     status: VehicleHandoverReviewAttemptStatus;
   };
@@ -547,7 +716,10 @@ function readyWorkOrder() {
     customerConfirmedAt: NOW,
     customerObjectedAt: null,
     damageDeclared: false,
+    deliveryLocation: "garage bay A",
     energyLevelText: "80%",
+    fieldNotes: "ready for delivery",
+    fuelLevelText: null,
     handover: {
       artifactVersion: 1,
       deletedAt: null,
@@ -607,8 +779,31 @@ function readyWorkOrder() {
       orderStatus: OrderStatus.PENDING_DELIVERY
     },
     orderId: "order-1",
+    scheduledAt: new Date("2026-07-27T02:00:00.000Z"),
     status: VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED
   };
+}
+
+function readyFieldFactsSnapshot() {
+  return {
+    accessoryChecklist: [{ checked: true, key: "spare-key" }],
+    damageDeclared: false,
+    deliveryLocation: "garage bay A",
+    energyLevelText: "80%",
+    fieldNotes: "ready for delivery",
+    fuelLevelText: null,
+    handoverMileageKm: 28000,
+    noVisibleDamageDeclared: true,
+    scheduledAt: "2026-07-27T02:00:00.000Z"
+  };
+}
+
+function expectNoSideEffects(
+  sideEffects: Record<string, ReturnType<typeof vi.fn>>
+) {
+  for (const operation of Object.values(sideEffects)) {
+    expect(operation).not.toHaveBeenCalled();
+  }
 }
 
 function stage2Slot(

@@ -7,6 +7,7 @@ Stage 2 is the vehicle delivery handover signing domain. It is separate from the
 Stage 2 represents:
 
 - a Vehicle Delivery Handover Confirmation source document;
+- an Admin-generated Stage 2 source PDF artifact for visual acceptance;
 - a second provider contract/task;
 - one customer handover confirmation signature;
 - one platform/operator seal or signature;
@@ -14,7 +15,7 @@ Stage 2 represents:
 - a structured delivery evidence checklist;
 - the delivery confirmation gate before lease/billing start.
 
-This foundation does not execute provider calls, upload documents, start real eSign, generate final legal PDF wording, or activate live lease/billing data.
+This foundation generates the Stage 2 handover source PDF only. It does not execute provider calls, upload documents to Fadada, create signing URLs, start real eSign, send SMS/WeChat notifications, or activate live lease/billing data.
 
 ## Invariants
 
@@ -26,6 +27,8 @@ This foundation does not execute provider calls, upload documents, start real eS
 - Required delivery evidence must be uploaded before customer review, Stage 2 PDF generation, Stage 2 eSign start, and Admin delivery confirmation.
 - Back-office evidence approval is an ops/QA review state. It is not a hard pre-eSign gate in the current policy.
 - Customer no-objection confirmation is a hard gate before Stage 2 PDF generation and eSign start. Customer objection moves the work order to `CUSTOMER_OBJECTED` and requires Admin intervention.
+- Stage 2 PDF generation creates a separate `Contract` linked from `VehicleDeliveryHandover.handoverContractId`; it must not update `SubscriptionOrder.contractId`, order status, Stage 1 contract rows, finance, lease, or billing state.
+- Stage 2 source PDF generation is not Stage 2 eSign start. It must not create `ContractESignTask`, Fadada upload requests, signing URLs, provider payloads, or customer notification side effects.
 - External field tokens are task-scoped only. They are never Admin authentication, and misuse against Admin routes should be rejected with 401/403 instead of a server error.
 - Ops review is a post-signing / QA / settlement review signal. It should not be started before customer signing, platform sealing, or field completion.
 - Delivery confirmation requires the Stage 2 handover to be signed.
@@ -113,6 +116,36 @@ Conditional damage evidence:
 The Stage 2 PDF should list checklist status and file references only. It must not embed the source photos or videos.
 
 Field H5 upload stores files through private storage and `FileObject`, then attaches the returned safe `fileId` to a checklist item. H5 responses and view models must not render raw object storage keys.
+
+## Stage 2 Source PDF
+
+Admin order detail exposes the Stage 2 handover PDF status on each handover work order. The protected Admin API surface is:
+
+- `GET /handover-work-orders/:id/pdf`
+- `POST /handover-work-orders/:id/pdf`
+- `GET /handover-work-orders/:id/pdf/download`
+
+`POST /handover-work-orders/:id/pdf` requires `delivery:confirm`. `GET` and download require `delivery:view`.
+
+Generation is allowed only after the existing Stage 2 readiness gate passes: field facts complete, required evidence complete, customer confirmed no objection, no active customer objection, no `RESUBMITTED_PENDING_ADMIN` state, and no terminal work-order state. The linked Stage 1 contract must already be signed. A work order with an existing `sourceDocumentFileId` or `handoverContractId` is not regenerated.
+
+The generator selects an active `ContractVersion` with `templateType=DELIVERY_HANDOVER` and `businessType=SUBSCRIPTION`, creates a new `Contract` with an `HDV...` contract number and `status=GENERATED`, stores the generated PDF through private storage, creates a `FileObject`, and updates `VehicleDeliveryHandover` with `handoverContractId`, `sourceDocumentFileId`, `sourceObjectKey`, and `status=SOURCE_GENERATED`.
+
+The PDF includes:
+
+- document/order/template metadata and the Stage 1 contract number;
+- masked customer identity and mobile;
+- vehicle brand/model, plate, VIN suffix, mileage, fuel/energy level, and accessory checklist;
+- condition confirmation and damage/no-damage field notes;
+- fee/deposit confirmation rows;
+- special notices preserved from the handover confirmation template semantics;
+- a 14-row evidence summary with safe file identifiers and display names only;
+- customer signature and platform seal/signature areas for later provider mapping;
+- operation tips.
+
+The PDF and API views must not expose raw object storage keys, buckets, private storage paths, signing URLs, provider payloads, SMS/WeChat data, finance internals, full phone numbers, or full identity numbers. Evidence media is summarized; photos and videos are not embedded in this PDF.
+
+Visual acceptance for this stage must confirm PDF content, table layout, signature areas, and evidence summary before Stage 2 Fadada upload/signing coordinate mapping begins.
 
 ## Portal Customer Review
 
@@ -238,8 +271,8 @@ Void/rebuild foundation:
 
 ## Open Items
 
-- Final legal handover wording/template approval.
-- Stage 2 provider upload/signing/auto-seal mapping.
+- Final legal handover wording/template approval after visual acceptance.
+- Stage 2 Fadada provider upload/signing/auto-seal mapping after the PDF is visually accepted.
 - Admin void/escalation policy beyond the basic objection resubmission loop.
-- Admin/Portal UX for handover generation, signing, archive retry, and PDF review.
+- Admin/Portal UX for signing, archive retry, and signed PDF review.
 - Portal signed handover PDF viewing/downloading after archive is available.

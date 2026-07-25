@@ -4,7 +4,7 @@
 
 Field handover work orders coordinate the pre-customer-review evidence collection step for Stage 2 vehicle delivery handover. The current H5 phase lets an assigned external field operator open `/field/handover/tasks/[id]`, edit field facts, upload checklist evidence, declare damage or no visible damage, and submit the evidence for customer review.
 
-This phase does not generate Stage 2 PDFs, start eSign, confirm delivery, start lease, start billing, or perform customer Portal review.
+This Field H5 phase does not generate Stage 2 PDFs, start eSign, confirm delivery, start lease, start billing, or perform customer Portal review. Stage 2 source PDF generation is an Admin-only action after Portal customer no-objection confirmation.
 
 Work orders are created from Admin order detail after delivery preparation is ready. Field H5 can only operate on an assigned existing work order; it must not create orders, mutate delivery readiness, allocate payments, or start downstream delivery/lease/billing side effects.
 
@@ -55,7 +55,9 @@ Submit is blocked until:
 - all required evidence files are uploaded;
 - damage close-up evidence exists when damage is declared.
 
-On first success, the work order moves to customer review. On Admin-requested resubmission after a customer objection, the work order stays blocked for Admin review until Admin sends it back to customer review. Customer Portal review is a separate downstream phase: confirming no objection only unlocks Stage 2 PDF/eSign readiness; submitting an objection blocks Stage 2 readiness and requires Admin follow-up. Stage 2 PDF generation, eSign, delivery confirmation, lease, and billing remain unavailable from the field H5 flow.
+On first success, the work order moves to customer review. On Admin-requested resubmission after a customer objection, the work order stays blocked for Admin review until Admin sends it back to customer review. Customer Portal review is a separate downstream phase: confirming no objection only unlocks Stage 2 PDF/eSign readiness; submitting an objection blocks Stage 2 readiness and requires Admin follow-up. Stage 2 source PDF generation, eSign, delivery confirmation, lease, and billing remain unavailable from the field H5 flow.
+
+The later Admin-generated Stage 2 source PDF summarizes the 14 evidence checklist rows and safe file identifiers. It must not embed field photos/videos or expose object storage keys, buckets, signing URLs, provider payloads, tokens, full phone numbers, or full identity numbers.
 
 The upstream Admin readiness path must distinguish:
 

@@ -7,12 +7,18 @@ import {
   UnsupportedMediaTypeException,
   UnauthorizedException
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { createHash, randomBytes } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import type { Readable } from "node:stream";
 import {
+  BusinessType,
+  ContractStatus,
+  ContractTemplateType,
+  ContractVersionStatus,
   DeliveryEvidenceFileLifecycleStatus,
   DeliveryEvidenceMediaType,
+  DeliveryHandoverStatus,
   Prisma,
   VehicleHandoverAdminReviewStatus,
   VehicleHandoverEventActorType,
@@ -23,7 +29,13 @@ import {
   DeliveryEvidenceFieldState,
   DeliveryEvidenceService
 } from "../delivery-evidence/delivery-evidence.service";
+import {
+  buildDeliveryHandoverPdfRenderModel,
+  DeliveryHandoverPdfRenderModelInput
+} from "../delivery-handover/delivery-handover-pdf-render-model";
+import { DeliveryHandoverPdfRendererService } from "../delivery-handover/delivery-handover-pdf-renderer.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
+import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
   MAX_FIELD_PHOTO_SIZE_BYTES,
   MAX_FIELD_VIDEO_SIZE_BYTES
@@ -80,6 +92,7 @@ const ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED = "RESUBMISSION_REQUESTED";
 const ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN = "RESUBMITTED_PENDING_ADMIN";
 const ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW = "SENT_BACK_TO_CUSTOMER_REVIEW";
 const ADMIN_REVIEW_STATUS_RESOLVED = "RESOLVED";
+const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
 const SAFE_FIELD_PHOTO_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -166,6 +179,18 @@ export interface EvidenceFileStreamResult {
   stream: Readable;
 }
 
+export interface Stage2HandoverPdfArtifactView {
+  artifactId: null | string;
+  documentNo: null | string;
+  downloadUrl: null | string;
+  fileName: null | string;
+  fileSize: null | number;
+  generatedAt: Date | null;
+  orderNo: null | string;
+  status: "GENERATED" | "NOT_GENERATED";
+  workOrderId: string;
+}
+
 export interface AssignExternalOperatorInput {
   expiresAt?: Date | string | null;
   name: string;
@@ -214,7 +239,9 @@ export class HandoverWorkOrderService {
     private readonly prisma: PrismaService,
     private readonly deliveryEvidenceService: DeliveryEvidenceService,
     @Optional() private readonly deliveryHandoverService?: DeliveryHandoverService,
-    @Optional() private readonly storageService?: StorageService
+    @Optional() private readonly storageService?: StorageService,
+    @Optional() private readonly handoverPdfRenderer?: DeliveryHandoverPdfRendererService,
+    @Optional() private readonly configService?: ConfigService
   ) {}
 
   async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
@@ -1267,6 +1294,163 @@ export class HandoverWorkOrderService {
     };
   }
 
+  async getStage2HandoverPdf(id: string): Promise<Stage2HandoverPdfArtifactView> {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    const handover = await this.findStage2HandoverForWorkOrder(workOrder, { includeHandoverContract: true });
+    return this.toStage2HandoverPdfArtifactView(workOrder, handover);
+  }
+
+  async generateStage2HandoverPdf(id: string, actorId?: string): Promise<Stage2HandoverPdfArtifactView> {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    await this.assertWorkOrderReadyForStage2(workOrder);
+
+    const handover = await this.findStage2HandoverForWorkOrderOrThrow(workOrder);
+    this.assertStage2HandoverPdfCanBeGenerated(handover);
+    const handoverId = readString(handover, "id");
+    if (!handoverId) {
+      throw new BadRequestException("车辆交接记录缺少有效 ID。");
+    }
+    const order = await this.getStage2PdfOrderOrThrow(workOrder.orderId);
+    const template = await this.findActiveStage2HandoverTemplate();
+    if (!template) {
+      throw new BadRequestException("未找到生效中的车辆交接确认单模板。");
+    }
+
+    const createdContract = await withUniqueBusinessNoRetry(() => this.prisma.contract.create({
+      data: {
+        businessType: BusinessType.SUBSCRIPTION,
+        contractNo: createBusinessNo("HDV"),
+        contractSnapshot: toJsonValue({
+          artifactKind: "stage2-handover-pdf-source",
+          handoverId,
+          orderId: workOrder.orderId,
+          orderNo: order.orderNo,
+          templateName: template.templateName,
+          templateVersion: template.versionNo,
+          workOrderId: workOrder.id
+        }),
+        contractTitle: `${template.templateName} ${template.versionNo}`,
+        contractVersionId: template.id,
+        createdBy: actorId ?? null,
+        customerId: order.customerId,
+        orderId: workOrder.orderId,
+        status: ContractStatus.GENERATED,
+        updatedBy: actorId ?? null
+      }
+    }));
+
+    let storedObject: null | { bucket: string; objectKey: string } = null;
+    try {
+      const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId
+      });
+      const renderModel = buildDeliveryHandoverPdfRenderModel(
+        this.buildStage2HandoverPdfRenderModelInput({
+          createdContract,
+          evidenceChecklist,
+          handover,
+          order,
+          template,
+          workOrder
+        })
+      );
+      const rendered = await this.getHandoverPdfRenderer().render(renderModel, {
+        cjkFontPath: this.configService?.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV)
+      });
+      const stored = await this.getStorageService().putGeneratedContractPdfArtifact({
+        buffer: rendered.buffer,
+        contentType: rendered.contentType,
+        contractId: createdContract.id,
+        metadata: {
+          artifactKind: "stage2-handover-pdf-source",
+          documentNo: createdContract.contractNo,
+          orderNo: order.orderNo,
+          templateName: template.templateName,
+          templateVersion: template.versionNo
+        },
+        originalName: rendered.fileName
+      });
+      storedObject = { bucket: stored.bucket, objectKey: stored.objectKey };
+      const fileObject = await this.prisma.fileObject.create({
+        data: {
+          bucket: stored.bucket,
+          mimeType: stored.contentType,
+          objectKey: stored.objectKey,
+          originalName: stored.originalName,
+          sizeBytes: BigInt(stored.sizeBytes),
+          uploadedBy: actorId ?? null
+        }
+      });
+
+      await this.prisma.contract.update({
+        data: {
+          contractSnapshot: toJsonValue({
+            artifactKind: "stage2-handover-pdf-source",
+            diagnostics: rendered.diagnostics,
+            documentNo: createdContract.contractNo,
+            fileId: fileObject.id,
+            fileName: fileObject.originalName,
+            handoverId,
+            orderId: workOrder.orderId,
+            orderNo: order.orderNo,
+            templateName: template.templateName,
+            templateVersion: template.versionNo,
+            workOrderId: workOrder.id
+          }),
+          fileId: fileObject.id,
+          updatedBy: actorId ?? null
+        },
+        where: { id: createdContract.id }
+      });
+      await this.prisma.vehicleDeliveryHandover.update({
+        data: {
+          handoverContractId: createdContract.id,
+          sourceDocumentFileId: fileObject.id,
+          sourceObjectKey: stored.objectKey,
+          status: DeliveryHandoverStatus.SOURCE_GENERATED,
+          updatedBy: actorId ?? null
+        },
+        where: { id: handoverId }
+      });
+
+      return this.toStage2HandoverPdfArtifactView(workOrder, {
+        ...handover,
+        handoverContractId: createdContract.id,
+        handoverContract: createdContract,
+        sourceDocumentFileId: fileObject.id,
+        sourceObjectKey: stored.objectKey,
+        status: DeliveryHandoverStatus.SOURCE_GENERATED
+      }, fileObject);
+    } catch (error) {
+      if (storedObject) {
+        await Promise.allSettled([this.getStorageService().deleteObject(storedObject.bucket, storedObject.objectKey)]);
+      }
+      await this.cancelStage2HandoverContractAfterPdfFailure(createdContract.id, actorId);
+      throw error;
+    }
+  }
+
+  async downloadStage2HandoverPdf(id: string): Promise<EvidenceFileStreamResult> {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    const handover = await this.findStage2HandoverForWorkOrderOrThrow(workOrder);
+    const fileId = readString(handover as unknown as Record<string, unknown>, "sourceDocumentFileId");
+    if (!fileId) {
+      throw new NotFoundException("车辆交接确认单 PDF 尚未生成。");
+    }
+    const fileObject = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
+    if (!fileObject?.bucket || !fileObject.objectKey) {
+      throw new NotFoundException("车辆交接确认单 PDF 文件不存在。");
+    }
+    const downloaded = await this.getStorageService().getObject(fileObject.bucket, fileObject.objectKey);
+    return {
+      filename: fileObject.originalName ?? "handover.pdf",
+      mimeType: downloaded.contentType ?? fileObject.mimeType ?? "application/pdf",
+      sizeBytes: toNumberOrNull(fileObject.sizeBytes ?? downloaded.contentLength ?? null),
+      stream: downloaded.stream
+    };
+  }
+
   async assertReadyForStage2Pdf(orderId: string, handoverId?: string | null) {
     await this.assertWorkOrderReadyForStage2(await this.findActiveWorkOrderOrThrow(orderId, handoverId));
   }
@@ -1379,6 +1563,190 @@ export class HandoverWorkOrderService {
     return order;
   }
 
+  private async getStage2PdfOrderOrThrow(orderId: string) {
+    const order = await this.prisma.subscriptionOrder.findUnique({
+      include: {
+        customer: {
+          include: {
+            identity: true,
+            profile: true
+          }
+        },
+        vehicle: true
+      },
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt) {
+      throw new NotFoundException("订单不存在。");
+    }
+    return order;
+  }
+
+  private async findActiveStage2HandoverTemplate() {
+    const now = new Date();
+    return this.prisma.contractVersion.findFirst({
+      orderBy: { effectiveFrom: "desc" },
+      where: {
+        businessType: BusinessType.SUBSCRIPTION,
+        deletedAt: null,
+        effectiveFrom: { lte: now },
+        OR: [
+          { effectiveTo: null },
+          { effectiveTo: { gte: now } }
+        ],
+        status: ContractVersionStatus.ACTIVE,
+        templateType: ContractTemplateType.DELIVERY_HANDOVER
+      }
+    });
+  }
+
+  private async findStage2HandoverForWorkOrder(
+    workOrder: WorkOrderRecord,
+    options: { includeHandoverContract?: boolean } = {}
+  ) {
+    const handoverModel = (this.prisma as unknown as {
+      vehicleDeliveryHandover?: {
+        findFirst: (args: Prisma.VehicleDeliveryHandoverFindFirstArgs) => Promise<null | Record<string, unknown>>;
+      };
+    }).vehicleDeliveryHandover;
+    if (!handoverModel) {
+      return null;
+    }
+    const args: Prisma.VehicleDeliveryHandoverFindFirstArgs = {
+      where: {
+        deletedAt: null,
+        ...(workOrder.handoverId ? { id: workOrder.handoverId } : {}),
+        orderId: workOrder.orderId,
+        status: {
+          notIn: [DeliveryHandoverStatus.FAILED, DeliveryHandoverStatus.CANCELLED]
+        }
+      }
+    };
+    if (options.includeHandoverContract) {
+      args.include = {
+        handoverContract: true,
+        stage1Contract: true
+      };
+    }
+    return handoverModel.findFirst(args);
+  }
+
+  private async findStage2HandoverForWorkOrderOrThrow(workOrder: WorkOrderRecord) {
+    const handover = await this.findStage2HandoverForWorkOrder(workOrder, { includeHandoverContract: true });
+    if (!handover) {
+      throw new BadRequestException("车辆交接记录尚未创建或已终止。");
+    }
+    return handover;
+  }
+
+  private assertStage2HandoverPdfCanBeGenerated(handover: unknown) {
+    const record = asRecord(handover);
+    if (!record) {
+      throw new BadRequestException("车辆交接记录尚未创建。");
+    }
+    if (readString(record, "handoverContractId") || readString(record, "sourceDocumentFileId")) {
+      throw new BadRequestException("车辆交接确认单 PDF 已生成，请勿重复生成。");
+    }
+    const stage1Contract = asRecord(record.stage1Contract);
+    if (!stage1Contract || readString(stage1Contract, "status") !== ContractStatus.SIGNED) {
+      throw new BadRequestException("Stage 1 合同尚未完成签署，不能生成车辆交接确认单 PDF。");
+    }
+  }
+
+  private buildStage2HandoverPdfRenderModelInput(input: {
+    createdContract: Record<string, unknown>;
+    evidenceChecklist: unknown;
+    handover: unknown;
+    order: unknown;
+    template: unknown;
+    workOrder: WorkOrderRecord;
+  }): DeliveryHandoverPdfRenderModelInput {
+    const handover = asRecord(input.handover);
+    const stage1Contract = asRecord(handover?.stage1Contract);
+    return {
+      documentNo: readString(input.createdContract, "contractNo") ?? "",
+      evidenceChecklist: input.evidenceChecklist,
+      generatedAt: toDateOrNull(readUnknown(input.createdContract, "createdAt")),
+      handover: {
+        ...(handover ?? {}),
+        stage1ContractNo: stage1Contract ? readString(stage1Contract, "contractNo") : null,
+        stage1SignedAt: stage1Contract ? readUnknown(stage1Contract, "signedAt") : null
+      },
+      order: input.order,
+      platform: {
+        legalName:
+          this.configService?.get<string>("STAGE2_HANDOVER_PLATFORM_LEGAL_NAME") ??
+          this.configService?.get<string>("PLATFORM_LEGAL_NAME") ??
+          null
+      },
+      template: input.template,
+      workOrder: input.workOrder
+    };
+  }
+
+  private async toStage2HandoverPdfArtifactView(
+    workOrder: WorkOrderRecord,
+    handover: null | Record<string, unknown>,
+    fileObject?: null | Record<string, unknown>
+  ): Promise<Stage2HandoverPdfArtifactView> {
+    const order = await this.getOrderOrThrow(workOrder.orderId);
+    const sourceDocumentFileId = handover ? readString(handover, "sourceDocumentFileId") : null;
+    if (!handover || !sourceDocumentFileId) {
+      return {
+        artifactId: null,
+        documentNo: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSize: null,
+        generatedAt: null,
+        orderNo: order.orderNo,
+        status: "NOT_GENERATED",
+        workOrderId: workOrder.id
+      };
+    }
+
+    const resolvedFileObject =
+      fileObject ?? await this.prisma.fileObject.findUnique({ where: { id: sourceDocumentFileId } });
+    const handoverContract = asRecord(handover.handoverContract);
+    const fileRecord = asRecord(resolvedFileObject);
+
+    return {
+      artifactId: sourceDocumentFileId,
+      documentNo: handoverContract ? readString(handoverContract, "contractNo") : null,
+      downloadUrl: `/api/handover-work-orders/${encodeURIComponent(workOrder.id)}/pdf/download`,
+      fileName: fileRecord ? readString(fileRecord, "originalName") ?? "handover.pdf" : "handover.pdf",
+      fileSize: toNumberOrNull(fileRecord?.sizeBytes ?? null),
+      generatedAt:
+        toDateOrNull(fileRecord?.createdAt) ??
+        toDateOrNull(handoverContract ? readUnknown(handoverContract, "createdAt") : null) ??
+        null,
+      orderNo: order.orderNo,
+      status: "GENERATED",
+      workOrderId: workOrder.id
+    };
+  }
+
+  private getHandoverPdfRenderer() {
+    if (!this.handoverPdfRenderer) {
+      throw new BadRequestException("车辆交接确认单 PDF 渲染服务未配置。");
+    }
+    return this.handoverPdfRenderer;
+  }
+
+  private async cancelStage2HandoverContractAfterPdfFailure(contractId: string, actorId?: string) {
+    try {
+      await this.prisma.contract.update({
+        data: {
+          status: ContractStatus.CANCELLED,
+          updatedBy: actorId ?? null
+        },
+        where: { id: contractId }
+      });
+    } catch {
+      return;
+    }
+  }
+
   private async assertCustomerOwnsWorkOrder(workOrder: WorkOrderRecord, customerId: string) {
     const order = await this.getOrderOrThrow(workOrder.orderId);
     if (order.customerId !== customerId) {
@@ -1435,14 +1803,16 @@ export class HandoverWorkOrderService {
   }
 
   private async toAdminWorkOrderSummary(workOrder: WorkOrderRecord) {
-    const [order, evidenceChecklist, reviewAttempts, events] = await Promise.all([
+    const [order, evidenceChecklist, reviewAttempts, events, readiness, stage2Pdf] = await Promise.all([
       this.getOrderOrThrow(workOrder.orderId),
       this.deliveryEvidenceService.getChecklist({
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }),
       this.listReviewAttempts(workOrder.id),
-      this.listEvents(workOrder.id)
+      this.listEvents(workOrder.id),
+      this.getReadiness(workOrder.id),
+      this.getStage2HandoverPdf(workOrder.id)
     ]);
 
     return {
@@ -1470,9 +1840,11 @@ export class HandoverWorkOrderService {
       },
       orderId: workOrder.orderId,
       orderNo: order.orderNo,
+      readiness,
       reviewAttempts: reviewAttempts.map(toSafeReviewAttempt),
       reviewVersion: workOrder.reviewVersion ?? 0,
       scheduledAt: workOrder.scheduledAt,
+      stage2Pdf,
       status: workOrder.status,
       vehicle: {
         brand: order.vehicle?.brand ?? null,
@@ -2438,6 +2810,17 @@ function toNumberOrNull(value: unknown) {
   }
   if (typeof value === "bigint") {
     return Number(value);
+  }
+  return null;
+}
+
+function toDateOrNull(value: unknown) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
   return null;
 }

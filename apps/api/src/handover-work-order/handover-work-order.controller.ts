@@ -126,6 +126,29 @@ export class HandoverWorkOrderAdminController {
     return this.handoverWorkOrderService.getReadiness(id);
   }
 
+  @Get("handover-work-orders/:id/pdf")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  getStage2HandoverPdf(@Param("id") id: string) {
+    return this.handoverWorkOrderService.getStage2HandoverPdf(id);
+  }
+
+  @Post("handover-work-orders/:id/pdf")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  generateStage2HandoverPdf(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.handoverWorkOrderService.generateStage2HandoverPdf(id, request.user.id);
+  }
+
+  @Get("handover-work-orders/:id/pdf/download")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  async downloadStage2HandoverPdf(
+    @Param("id") id: string,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const file = await this.handoverWorkOrderService.downloadStage2HandoverPdf(id);
+    setEvidenceFileHeaders(response, file, "attachment");
+    return new StreamableFile(file.stream);
+  }
+
   @Post("handover-work-orders/:id/ops-review/pending")
   @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
   markOpsReviewPending(@Param("id") id: string, @Req() request: AuthenticatedRequest) {

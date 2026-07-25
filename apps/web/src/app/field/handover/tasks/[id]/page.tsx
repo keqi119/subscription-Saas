@@ -2,19 +2,23 @@
 
 import {
   ArrowLeftOutlined,
+  CameraOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
   ExclamationCircleOutlined,
+  FolderOpenOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
-  UploadOutlined
+  StopOutlined,
+  UploadOutlined,
+  VideoCameraOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Flex, Input, InputNumber, Popconfirm, Radio, Spin, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Flex, Input, InputNumber, Popconfirm, Progress, Radio, Spin, Tag, Tooltip, Typography } from "antd";
 import { useParams, useRouter } from "next/navigation";
-import { type CSSProperties, type ChangeEvent, type ReactNode, useCallback, useEffect, useState } from "react";
+import { type CSSProperties, type ChangeEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   buildFieldHandoverFileUrl,
@@ -29,9 +33,15 @@ import {
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts,
   uploadAndAttachFieldHandoverEvidenceFile,
+  type FieldEvidenceUploadOptions,
+  type FieldEvidenceUploadProgress,
   type FieldHandoverWorkOrderDetail
 } from "../../../../../lib/field-handover-api";
-import { type FieldEvidenceMediaType, validateFieldEvidenceFile } from "../../../../../lib/field-handover-upload";
+import {
+  type FieldEvidenceMediaType,
+  formatUploadBytes,
+  validateFieldEvidenceFile
+} from "../../../../../lib/field-handover-upload";
 import {
   buildFieldEvidenceCaptureView,
   buildFieldHandoverDetailView,
@@ -47,10 +57,26 @@ const RESUBMITTED_PENDING_ADMIN_TEXT = "现场交接资料已重新提交，等�
 const LOCKED_TEXT = "当前交接任务已提交或不可继续编辑";
 const MAX_DAMAGE_CLOSEUP_FILES = 20;
 
+interface EvidenceUploadState {
+  fileCount: number;
+  fileIndex: number;
+  fileName: string;
+  itemId: string;
+  loadedBytes: number;
+  percent: number;
+  totalBytes: number;
+}
+
+interface RetryEvidenceUpload {
+  files: File[];
+  itemViewId: string;
+}
+
 export default function FieldHandoverTaskDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { message } = App.useApp();
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [blockers, setBlockers] = useState<string[]>([]);
   const [detail, setDetail] = useState<FieldHandoverWorkOrderDetail | null>(null);
@@ -58,7 +84,9 @@ export default function FieldHandoverTaskDetailPage() {
   const [facts, setFacts] = useState<FieldHandoverFactsDraft>({});
   const [loading, setLoading] = useState(true);
   const [removingFileId, setRemovingFileId] = useState<string | null>(null);
+  const [retryUpload, setRetryUpload] = useState<RetryEvidenceUpload | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [uploadState, setUploadState] = useState<EvidenceUploadState | null>(null);
   const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
 
   const loadDetail = useCallback(async () => {
@@ -94,6 +122,8 @@ export default function FieldHandoverTaskDetailPage() {
   useEffect(() => {
     void loadDetail();
   }, [loadDetail]);
+
+  useEffect(() => () => uploadAbortControllerRef.current?.abort(), []);
 
   const detailView = detail ? buildFieldHandoverDetailView(detail) : null;
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
@@ -146,7 +176,7 @@ export default function FieldHandoverTaskDetailPage() {
   }
 
   async function uploadEvidence(itemViewId: string, files: File[]) {
-    if (!detail || files.length === 0) {
+    if (!detail || files.length === 0 || uploadAbortControllerRef.current) {
       return;
     }
     const item = findEvidenceItem(detail, itemViewId);
@@ -154,6 +184,7 @@ export default function FieldHandoverTaskDetailPage() {
       setBlockers(["资料项不存在，请刷新后重试"]);
       return;
     }
+    const itemId = item.id;
     const selectedFiles = item.allowsMultiple ? files : files.slice(0, 1);
     if (item.allowsMultiple && (item.files?.length ?? 0) + selectedFiles.length > MAX_DAMAGE_CLOSEUP_FILES) {
       setBlockers([`损伤近拍最多上传 ${MAX_DAMAGE_CLOSEUP_FILES} 个文件`]);
@@ -168,28 +199,72 @@ export default function FieldHandoverTaskDetailPage() {
     }
 
     try {
-      setUploadingItemId(item.id);
+      setUploadingItemId(itemId);
+      setRetryUpload(null);
       setBlockers([]);
       const replaceEvidenceFileId = item.allowsMultiple
         ? undefined
         : item.files?.[0]?.evidenceFileId || item.files?.[0]?.id || undefined;
       for (const [index, file] of selectedFiles.entries()) {
-        await uploadAndAttachFieldHandoverEvidenceFile(
-          params.id,
-          item.id,
-          file,
-          index === 0 ? replaceEvidenceFileId : undefined
-        );
+        const controller = new AbortController();
+        uploadAbortControllerRef.current = controller;
+        setUploadState({
+          fileCount: selectedFiles.length,
+          fileIndex: index + 1,
+          fileName: file.name,
+          itemId,
+          loadedBytes: 0,
+          percent: 0,
+          totalBytes: file.size
+        });
+        try {
+          const uploadOptions: FieldEvidenceUploadOptions = {
+            onProgress: ({ loadedBytes, percent, totalBytes }: FieldEvidenceUploadProgress) => {
+              setUploadState({
+                fileCount: selectedFiles.length,
+                fileIndex: index + 1,
+                fileName: file.name,
+                itemId,
+                loadedBytes,
+                percent,
+                totalBytes
+              });
+            },
+            replaceEvidenceFileId: index === 0 ? replaceEvidenceFileId : undefined,
+            signal: controller.signal
+          };
+          await uploadAndAttachFieldHandoverEvidenceFile(params.id, itemId, file, uploadOptions);
+        } catch (error) {
+          setRetryUpload({ files: selectedFiles.slice(index), itemViewId });
+          handleActionError(error, controller.signal.aborted ? "上传已取消，可重试剩余文件" : "上传失败，请重试");
+          await loadDetail();
+          return;
+        } finally {
+          if (uploadAbortControllerRef.current === controller) {
+            uploadAbortControllerRef.current = null;
+          }
+        }
       }
       void message.success(item.allowsMultiple && selectedFiles.length > 1
         ? `已上传 ${selectedFiles.length} 个文件`
         : replaceEvidenceFileId ? "资料已替换" : "资料已上传");
       await loadDetail();
-    } catch (error) {
-      handleActionError(error, "上传失败，请重试");
+      setUploadState(null);
     } finally {
+      uploadAbortControllerRef.current = null;
       setUploadingItemId(null);
     }
+  }
+
+  function cancelEvidenceUpload() {
+    uploadAbortControllerRef.current?.abort();
+  }
+
+  function retryEvidenceUpload() {
+    if (!retryUpload) {
+      return;
+    }
+    void uploadEvidence(retryUpload.itemViewId, retryUpload.files);
   }
 
   async function removeEvidence(itemId: string, evidenceFileId: string) {
@@ -406,123 +481,163 @@ export default function FieldHandoverTaskDetailPage() {
                 资料清单
               </Typography.Title>
               <Flex gap={10} vertical>
-                {captureView.evidenceItems.map((item) => (
-                  <article key={item.id || item.title} style={itemCardStyle}>
-                    <Flex align="flex-start" justify="space-between" style={{ gap: 10 }}>
-                      <div>
-                        <Typography.Text strong>{item.title}</Typography.Text>
-                        {item.description ? (
-                          <Typography.Paragraph style={{ color: "#607086", margin: "4px 0 0" }}>
-                            {item.description}
-                          </Typography.Paragraph>
-                        ) : null}
-                      </div>
-                      <Flex gap={6} wrap="wrap" justify="flex-end">
-                        <Tag color={item.requiredText === "必传" ? "red" : "blue"} style={{ marginInlineEnd: 0 }}>
-                          {item.requiredText}
-                        </Tag>
-                        <Tag color={item.statusLabel === "待上传" ? "default" : "green"} style={{ marginInlineEnd: 0 }}>
-                          {item.statusLabel}
-                        </Tag>
+                {captureView.evidenceItems.map((item) => {
+                  const allowedMediaTypes = (
+                    (detail ? findEvidenceItem(detail, item.id) : null)?.allowedMediaTypes ?? []
+                  ).filter((mediaType): mediaType is FieldEvidenceMediaType =>
+                    mediaType === "PHOTO" || mediaType === "VIDEO"
+                  );
+                  const isUploading = uploadingItemId === item.id;
+                  const itemUploadState = uploadState?.itemId === item.id ? uploadState : null;
+                  const canRetry = captureView.canEdit && retryUpload?.itemViewId === item.id;
+
+                  return (
+                    <article key={item.id || item.title} style={itemCardStyle}>
+                      <Flex align="flex-start" justify="space-between" style={{ gap: 10 }}>
+                        <div>
+                          <Typography.Text strong>{item.title}</Typography.Text>
+                          {item.description ? (
+                            <Typography.Paragraph style={{ color: "#607086", margin: "4px 0 0" }}>
+                              {item.description}
+                            </Typography.Paragraph>
+                          ) : null}
+                        </div>
+                        <Flex gap={6} wrap="wrap" justify="flex-end">
+                          <Tag color={item.requiredText === "必传" ? "red" : "blue"} style={{ marginInlineEnd: 0 }}>
+                            {item.requiredText}
+                          </Tag>
+                          <Tag color={item.statusLabel === "待上传" ? "default" : "green"} style={{ marginInlineEnd: 0 }}>
+                            {item.statusLabel}
+                          </Tag>
+                        </Flex>
                       </Flex>
-                    </Flex>
 
-                    <Typography.Text style={{ color: "#607086", display: "block", marginTop: 8 }}>
-                      {item.fileCountText}
-                    </Typography.Text>
-
-                    {item.rejectionReason ? (
-                      <Alert message={item.rejectionReason} showIcon style={{ marginTop: 8 }} type="warning" />
-                    ) : null}
-
-                    {item.showDeclarationComplete ? (
-                      <Typography.Text style={{ color: "#2f7d32", display: "block", marginTop: 8 }}>
-                        无可见损伤声明已完成
+                      <Typography.Text style={{ color: "#607086", display: "block", marginTop: 8 }}>
+                        {item.fileCountText}
                       </Typography.Text>
-                    ) : null}
 
-                    {item.files.length > 0 ? (
-                      <Flex gap={8} style={{ marginTop: 10 }} vertical>
-                        {item.files.map((file) => (
-                          <Flex
-                            align="center"
-                            gap={8}
-                            justify="space-between"
-                            key={file.evidenceFileId}
-                            style={{ borderTop: "1px solid #e2e8f0", paddingTop: 8 }}
-                          >
-                            <div style={{ minWidth: 0 }}>
-                              <Typography.Text ellipsis style={{ display: "block", maxWidth: 260 }}>
-                                {file.displayName}
-                              </Typography.Text>
-                              <Typography.Text style={{ color: "#718096", fontSize: 12 }}>
-                                {file.sizeText}
-                              </Typography.Text>
-                            </div>
-                            <Flex gap={4}>
-                              {file.previewUrl ? (
-                                <Tooltip title="查看资料">
-                                  <Button
-                                    aria-label="查看资料"
-                                    href={buildFieldHandoverFileUrl(file.previewUrl) ?? undefined}
-                                    icon={<EyeOutlined />}
-                                    target="_blank"
-                                    type="text"
-                                  />
-                                </Tooltip>
-                              ) : null}
-                              {file.downloadUrl ? (
-                                <Tooltip title="下载资料">
-                                  <Button
-                                    aria-label="下载资料"
-                                    href={buildFieldHandoverFileUrl(file.downloadUrl) ?? undefined}
-                                    icon={<DownloadOutlined />}
-                                    target="_blank"
-                                    type="text"
-                                  />
-                                </Tooltip>
-                              ) : null}
-                              {captureView.canEdit ? (
-                                <Popconfirm
-                                  description="删除后需重新上传才能提交。"
-                                  okText="删除"
-                                  cancelText="取消"
-                                  onConfirm={() => void removeEvidence(item.id, file.evidenceFileId)}
-                                  title="删除这份资料？"
-                                >
-                                  <Tooltip title="删除资料">
+                      {item.rejectionReason ? (
+                        <Alert message={item.rejectionReason} showIcon style={{ marginTop: 8 }} type="warning" />
+                      ) : null}
+
+                      {item.showDeclarationComplete ? (
+                        <Typography.Text style={{ color: "#2f7d32", display: "block", marginTop: 8 }}>
+                          无可见损伤声明已完成
+                        </Typography.Text>
+                      ) : null}
+
+                      {item.files.length > 0 ? (
+                        <Flex gap={8} style={{ marginTop: 10 }} vertical>
+                          {item.files.map((file) => (
+                            <Flex
+                              align="center"
+                              gap={8}
+                              justify="space-between"
+                              key={file.evidenceFileId}
+                              style={{ borderTop: "1px solid #e2e8f0", paddingTop: 8 }}
+                            >
+                              <div style={{ minWidth: 0 }}>
+                                <Typography.Text ellipsis style={{ display: "block", maxWidth: 260 }}>
+                                  {file.displayName}
+                                </Typography.Text>
+                                <Typography.Text style={{ color: "#718096", fontSize: 12 }}>
+                                  {file.sizeText}
+                                </Typography.Text>
+                              </div>
+                              <Flex gap={4}>
+                                {file.previewUrl ? (
+                                  <Tooltip title="查看资料">
                                     <Button
-                                      aria-label="删除资料"
-                                      danger
-                                      icon={<DeleteOutlined />}
-                                      loading={removingFileId === file.evidenceFileId}
+                                      aria-label="查看资料"
+                                      href={buildFieldHandoverFileUrl(file.previewUrl) ?? undefined}
+                                      icon={<EyeOutlined />}
+                                      target="_blank"
                                       type="text"
                                     />
                                   </Tooltip>
-                                </Popconfirm>
-                              ) : null}
+                                ) : null}
+                                {file.downloadUrl ? (
+                                  <Tooltip title="下载资料">
+                                    <Button
+                                      aria-label="下载资料"
+                                      href={buildFieldHandoverFileUrl(file.downloadUrl) ?? undefined}
+                                      icon={<DownloadOutlined />}
+                                      target="_blank"
+                                      type="text"
+                                    />
+                                  </Tooltip>
+                                ) : null}
+                                {captureView.canEdit ? (
+                                  <Popconfirm
+                                    description="删除后需重新上传才能提交。"
+                                    okText="删除"
+                                    cancelText="取消"
+                                    onConfirm={() => void removeEvidence(item.id, file.evidenceFileId)}
+                                    title="删除这份资料？"
+                                  >
+                                    <Tooltip title="删除资料">
+                                      <Button
+                                        aria-label="删除资料"
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        loading={removingFileId === file.evidenceFileId}
+                                        type="text"
+                                      />
+                                    </Tooltip>
+                                  </Popconfirm>
+                                ) : null}
+                              </Flex>
                             </Flex>
-                          </Flex>
-                        ))}
-                      </Flex>
-                    ) : null}
+                          ))}
+                        </Flex>
+                      ) : null}
 
-                    {item.showUpload ? (
-                      <EvidenceUploadControl
-                        accept={item.uploadAccept}
-                        disabled={uploadingItemId === item.id}
-                        id={item.id}
-                        label={item.uploadLabel}
-                        multiple={item.allowsMultiple}
-                        onChange={(event) => {
-                          const files = Array.from(event.currentTarget.files ?? []);
-                          event.currentTarget.value = "";
-                          void uploadEvidence(item.id, files);
-                        }}
-                      />
-                    ) : null}
-                  </article>
-                ))}
+                      {itemUploadState ? (
+                        <div aria-live="polite" style={uploadProgressStyle}>
+                          <Typography.Text strong>上传进度</Typography.Text>
+                          <Typography.Text ellipsis style={{ display: "block", marginTop: 4 }}>
+                            {itemUploadState.fileIndex} / {itemUploadState.fileCount} · {itemUploadState.fileName}
+                          </Typography.Text>
+                          <Progress percent={itemUploadState.percent} size="small" />
+                          <Flex align="center" gap={8} justify="space-between" wrap="wrap">
+                            <Typography.Text style={{ color: "#607086", fontSize: 12 }}>
+                              {formatUploadBytes(itemUploadState.loadedBytes)} / {formatUploadBytes(itemUploadState.totalBytes)}
+                            </Typography.Text>
+                            {isUploading ? (
+                              <Button
+                                danger
+                                icon={<StopOutlined />}
+                                onClick={cancelEvidenceUpload}
+                                style={{ minHeight: 44 }}
+                              >
+                                取消上传
+                              </Button>
+                            ) : canRetry ? (
+                              <Button
+                                icon={<ReloadOutlined />}
+                                onClick={retryEvidenceUpload}
+                                style={{ minHeight: 44 }}
+                              >
+                                重试上传
+                              </Button>
+                            ) : null}
+                          </Flex>
+                        </div>
+                      ) : null}
+
+                      {item.showUpload ? (
+                        <EvidenceUploadControls
+                          accept={item.uploadAccept}
+                          allowedMediaTypes={allowedMediaTypes}
+                          disabled={uploadingItemId !== null}
+                          id={item.id}
+                          multiple={item.allowsMultiple}
+                          onFiles={(files) => void uploadEvidence(item.id, files)}
+                        />
+                      ) : null}
+                    </article>
+                  );
+                })}
               </Flex>
             </article>
 
@@ -604,53 +719,119 @@ function LabeledControl({ children, label }: { children: ReactNode; label: strin
   );
 }
 
-function EvidenceUploadControl({
+function EvidenceUploadControls({
   accept,
+  allowedMediaTypes,
   disabled,
+  id,
+  multiple,
+  onFiles
+}: {
+  accept: string;
+  allowedMediaTypes: FieldEvidenceMediaType[];
+  disabled: boolean;
+  id: string;
+  multiple: boolean;
+  onFiles: (files: File[]) => void;
+}) {
+  const libraryLabel = allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
+    ? "从相册选择"
+    : "从相册/文件选择";
+
+  return (
+    <Flex gap={8} style={{ marginTop: 10 }} vertical>
+      {allowedMediaTypes.includes("PHOTO") ? (
+        <CaptureInput
+          accept="image/*"
+          capture="environment"
+          disabled={disabled}
+          icon={<CameraOutlined />}
+          id={`${id}-photo`}
+          label="现场拍照"
+          multiple={false}
+          onFiles={onFiles}
+        />
+      ) : null}
+      {allowedMediaTypes.includes("VIDEO") ? (
+        <CaptureInput
+          accept="video/*"
+          capture="environment"
+          disabled={disabled}
+          icon={<VideoCameraOutlined />}
+          id={`${id}-video`}
+          label="现场录像"
+          multiple={false}
+          onFiles={onFiles}
+        />
+      ) : null}
+      {allowedMediaTypes.length > 0 ? (
+        <CaptureInput
+          accept={accept}
+          disabled={disabled}
+          icon={allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
+            ? <FolderOpenOutlined />
+            : <UploadOutlined />}
+          id={`${id}-library`}
+          label={libraryLabel}
+          multiple={multiple}
+          onFiles={onFiles}
+        />
+      ) : null}
+    </Flex>
+  );
+}
+
+function CaptureInput({
+  accept,
+  capture,
+  disabled,
+  icon,
   id,
   label,
   multiple,
-  onChange
+  onFiles
 }: {
   accept: string;
+  capture?: "environment";
   disabled: boolean;
+  icon: ReactNode;
   id: string;
   label: string;
   multiple: boolean;
-  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFiles: (files: File[]) => void;
 }) {
   const inputId = `field-evidence-file-${id}`;
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    onFiles(files);
+  }
+
   return (
-    <div style={{ marginTop: 10 }}>
+    <div>
       <input
         accept={accept}
+        capture={capture}
         disabled={disabled}
         id={inputId}
         multiple={multiple}
-        onChange={onChange}
+        onChange={handleChange}
+        ref={inputRef}
         style={{ display: "none" }}
         type="file"
       />
-      <label
-        htmlFor={inputId}
-        style={{
-          alignItems: "center",
-          background: disabled ? "#eef2f7" : "#1677ff",
-          borderRadius: 8,
-          color: disabled ? "#8a95a6" : "#fff",
-          cursor: disabled ? "not-allowed" : "pointer",
-          display: "flex",
-          fontWeight: 600,
-          gap: 8,
-          justifyContent: "center",
-          minHeight: 44,
-          pointerEvents: disabled ? "none" : "auto",
-          width: "100%"
-        }}
+      <Button
+        block
+        disabled={disabled}
+        icon={icon}
+        onClick={() => inputRef.current?.click()}
+        style={{ minHeight: 44 }}
+        type="primary"
       >
-        <UploadOutlined />
-        {disabled ? "上传中..." : label}
-      </label>
+        {label}
+      </Button>
     </div>
   );
 }
@@ -693,6 +874,14 @@ const itemCardStyle: CSSProperties = {
   border: "1px solid #e2e8f0",
   borderRadius: 8,
   padding: 12
+};
+
+const uploadProgressStyle: CSSProperties = {
+  background: "#fff",
+  border: "1px solid #d9e2ef",
+  borderRadius: 8,
+  marginTop: 10,
+  padding: 10
 };
 
 const submitBarStyle: CSSProperties = {

@@ -58,7 +58,16 @@ describe("field handover H5 pages", () => {
     expect(source).not.toContain("function validateEvidenceFile");
     expect(source).not.toContain("MAX_PHOTO_SIZE_BYTES");
     expect(source).not.toContain("MAX_VIDEO_SIZE_BYTES");
-    expect(source).toContain("multiple={item.allowsMultiple}");
+    expect(source).toContain('capture="environment"');
+    expect(source).toContain("现场拍照");
+    expect(source).toContain("现场录像");
+    expect(source).toContain("从相册选择");
+    expect(source).toContain("从相册/文件选择");
+    expect(source).toContain("上传进度");
+    expect(source).toContain("取消上传");
+    expect(source).toContain("重试上传");
+    expect(source).toContain("multiple={false}");
+    expect(source).toContain("multiple={multiple}");
     expect(source).toContain("reviewContext.customerObjectionReason");
     expect(source).toContain("reviewContext.customerObjectionDetails");
     expect(source).toContain("reviewContext.requestedEvidenceItems");

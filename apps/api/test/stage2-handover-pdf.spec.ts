@@ -26,13 +26,22 @@ import { HandoverWorkOrderService } from "../src/handover-work-order/handover-wo
 const pdfKitMock = vi.hoisted(() => {
   class FakePDFDocument {
     static imageCalls: Array<{ image: Buffer | string; pageNumber: number }> = [];
+    static rectCalls: Array<{
+      height: number;
+      pageNumber: number;
+      width: number;
+      x: number;
+      y: number;
+    }> = [];
     static textCalls: Array<{ pageNumber: number; text: string }> = [];
 
     static startCapture() {
       FakePDFDocument.imageCalls = [];
+      FakePDFDocument.rectCalls = [];
       FakePDFDocument.textCalls = [];
       return {
         imageCalls: FakePDFDocument.imageCalls,
+        rectCalls: FakePDFDocument.rectCalls,
         textCalls: FakePDFDocument.textCalls
       };
     }
@@ -105,7 +114,8 @@ const pdfKitMock = vi.hoisted(() => {
       return this;
     }
 
-    rect() {
+    rect(x: number, y: number, width: number, height: number) {
+      FakePDFDocument.rectCalls.push({ height, pageNumber: this.pageNumber, width, x, y });
       return this;
     }
 
@@ -204,6 +214,87 @@ describe("Stage 2 handover PDF renderer", () => {
     for (const file of evidenceFiles) {
       expect(visibleText).toContain(file.evidenceFileId);
       expect(visibleText.split(file.sourceSha256)).toHaveLength(2);
+    }
+  });
+
+  it("emits exactly two bounded signing slots at the final signature boxes without visible metadata", async () => {
+    const renderer = new DeliveryHandoverPdfRendererService();
+    const { rectCalls, textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+
+    const result = await renderer.render(buildDeliveryHandoverPdfRenderModel(createRenderModelInput()), {
+      cjkFontPath: process.execPath,
+      evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset: async () => Buffer.from("synthetic-jpeg")
+    });
+    const coordinates = result.slotCoordinates;
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+
+    expect(coordinates).toHaveLength(2);
+    expect(coordinates.map((coordinate) => coordinate.slotId).sort()).toEqual([
+      "STAGE2_HANDOVER_CUSTOMER",
+      "STAGE2_HANDOVER_PLATFORM"
+    ]);
+    for (const slotId of ["STAGE2_HANDOVER_CUSTOMER", "STAGE2_HANDOVER_PLATFORM"]) {
+      expect(coordinates.filter((coordinate) => coordinate.slotId === slotId)).toHaveLength(1);
+    }
+
+    const finalPageNumber = result.diagnostics.pageCount - 1;
+    const finalPageSignatureBoxes = rectCalls
+      .filter((call) => call.pageNumber === result.diagnostics.pageCount)
+      .slice(2, 4);
+
+    expect(finalPageSignatureBoxes).toHaveLength(2);
+    coordinates.forEach((coordinate, index) => {
+      const signatureBox = finalPageSignatureBoxes[index]!;
+      const numericValues = [
+        coordinate.x,
+        coordinate.y,
+        coordinate.width,
+        coordinate.height,
+        coordinate.pdfPageWidth,
+        coordinate.pdfPageHeight
+      ] as number[];
+
+      expect(coordinate.documentType).toBe("DELIVERY_HANDOVER_CONFIRMATION");
+      expect(coordinate.signingStage).toBe("STAGE2_DELIVERY_HANDOVER");
+      expect(coordinate.coordinateSystem).toBe("FADADA_800_1131_TOP_LEFT");
+      expect(coordinate.pageNumber).toBe(finalPageNumber);
+      expect(Number.isInteger(coordinate.pageNumber)).toBe(true);
+      expect(numericValues.every(Number.isFinite)).toBe(true);
+      expect(coordinate.pdfPageWidth).toBe(595.28);
+      expect(coordinate.pdfPageHeight).toBe(841.89);
+      expect(coordinate.x).toBeCloseTo(
+        ((signatureBox.x + signatureBox.width / 2) / 595.28) * 800,
+        3
+      );
+      expect(coordinate.y).toBeCloseTo(
+        ((signatureBox.y + signatureBox.height / 2) / 841.89) * 1131,
+        3
+      );
+      expect(coordinate.width).toBeCloseTo((signatureBox.width / 595.28) * 800, 3);
+      expect(coordinate.height).toBeCloseTo((signatureBox.height / 841.89) * 1131, 3);
+      expect(coordinate.x - coordinate.width / 2).toBeGreaterThanOrEqual(0);
+      expect(coordinate.x + coordinate.width / 2).toBeLessThanOrEqual(800);
+      expect(coordinate.y - coordinate.height / 2).toBeGreaterThanOrEqual(0);
+      expect(coordinate.y + coordinate.height / 2).toBeLessThanOrEqual(1131);
+    });
+    expect(new Set(coordinates.map((coordinate) => coordinate.pageNumber))).toEqual(
+      new Set([finalPageNumber])
+    );
+
+    for (const hiddenValue of [
+      "STAGE2_HANDOVER_CUSTOMER",
+      "STAGE2_HANDOVER_PLATFORM",
+      "STAGE2_DELIVERY_HANDOVER",
+      "FADADA_800_1131_TOP_LEFT",
+      "Render Diagnostics",
+      "objectKey",
+      "application-materials",
+      "signUrl",
+      "oss://",
+      "fadada"
+    ]) {
+      expect(visibleText.toLowerCase()).not.toContain(hiddenValue.toLowerCase());
     }
   });
 

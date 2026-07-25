@@ -396,8 +396,16 @@ describe("ESignService", () => {
         transactionId: `  ${harness.customerTransactionId}  `
       }),
       authorization: "Bearer callback-secret",
+      certNo: "CERT-NO-ORIGINAL",
+      certNumber: "CERT-NUMBER-ORIGINAL",
+      idCard: "ID-CARD-ORIGINAL",
       id_number: "310101199001011234",
+      identityNo: "IDENTITY-NO-ORIGINAL",
       mobile: "13800000000",
+      nestedIdentity: {
+        CertificateNo: "CERTIFICATE-NO-ORIGINAL",
+        IDCard: "NESTED-ID-CARD-ORIGINAL"
+      },
       otp: "123456"
     };
 
@@ -438,12 +446,110 @@ describe("ESignService", () => {
     expect(loggedPayload).not.toContain("310101199001011234");
     expect(loggedPayload).not.toContain("13800000000");
     expect(loggedPayload).not.toContain("123456");
+    expect(loggedPayload).not.toContain("CERT-NO-ORIGINAL");
+    expect(loggedPayload).not.toContain("CERT-NUMBER-ORIGINAL");
+    expect(loggedPayload).not.toContain("ID-CARD-ORIGINAL");
+    expect(loggedPayload).not.toContain("IDENTITY-NO-ORIGINAL");
+    expect(loggedPayload).not.toContain("CERTIFICATE-NO-ORIGINAL");
+    expect(loggedPayload).not.toContain("NESTED-ID-CARD-ORIGINAL");
     expect(loggedPayload).not.toContain("download.example.test");
     expect(loggedPayload).not.toContain("view.example.test");
     expect(loggedPayload).not.toContain("msg_digest");
+    const callbackSnapshot = JSON.stringify(harness.task.callbackSnapshot);
+    expect(callbackSnapshot).not.toContain("CERT-NO-ORIGINAL");
+    expect(callbackSnapshot).not.toContain("CERT-NUMBER-ORIGINAL");
+    expect(callbackSnapshot).not.toContain("ID-CARD-ORIGINAL");
+    expect(callbackSnapshot).not.toContain("IDENTITY-NO-ORIGINAL");
+    expect(callbackSnapshot).not.toContain("CERTIFICATE-NO-ORIGINAL");
+    expect(callbackSnapshot).not.toContain("NESTED-ID-CARD-ORIGINAL");
     expect(JSON.stringify(first)).not.toContain("sign.example.test");
     expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
     expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
+  });
+
+  it("retries an identical Stage 2 callback when the recorded callback transaction rolled back", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const payload = fadadaCallbackPayload({
+      contractId: harness.providerContractId,
+      resultCode: "3000",
+      transactionId: harness.customerTransactionId
+    });
+    harness.prisma.$transaction.mockRejectedValueOnce(
+      new Error("simulated callback transaction rollback")
+    );
+
+    await expect(
+      harness.service.handleCallback("fadada", payload)
+    ).rejects.toThrow("simulated callback transaction rollback");
+
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      handled: false,
+      handledAt: null,
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNING);
+
+    const retried = await harness.service.handleCallback("fadada", payload);
+
+    expect(retried).toMatchObject({
+      handled: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(retried).not.toHaveProperty("idempotent");
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      handled: true,
+      handledAt: expect.any(Date)
+    });
+    expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+  });
+
+  it("lets an overlapping identical callback recover an in-flight callback that rolls back", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const payload = fadadaCallbackPayload({
+      contractId: harness.providerContractId,
+      resultCode: "3000",
+      transactionId: harness.customerTransactionId
+    });
+    let firstTransactionEntered!: () => void;
+    let rejectFirstTransaction!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      firstTransactionEntered = resolve;
+    });
+    const rejected = new Promise<void>((resolve) => {
+      rejectFirstTransaction = resolve;
+    });
+    harness.prisma.$transaction.mockImplementationOnce(async () => {
+      firstTransactionEntered();
+      await rejected;
+      throw new Error("simulated overlapping callback rollback");
+    });
+
+    const first = harness.service.handleCallback("fadada", payload);
+    await entered;
+    const second = await harness.service.handleCallback(
+      "fadada",
+      Object.fromEntries(Object.entries(payload).reverse())
+    );
+    rejectFirstTransaction();
+
+    await expect(first).rejects.toThrow(
+      "simulated overlapping callback rollback"
+    );
+    expect(second).toMatchObject({
+      handled: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(second).not.toHaveProperty("idempotent");
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      handled: true,
+      handledAt: expect.any(Date)
+    });
+    expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
   });
 
   it("records an unknown Stage 2 transaction safely without mutating the typed task", async () => {
@@ -466,6 +572,39 @@ describe("ESignService", () => {
       payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       providerTransactionId: "UNKNOWNSTAGE2H1",
       taskId: harness.task.id,
+      verified: true
+    });
+  });
+
+  it("canonically dedupes a verified callback when both transaction and contract are unknown", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const before = snapshotTypedStage2State(harness.state);
+    const payload = fadadaCallbackPayload({
+      contractId: "UNKNOWNPROVIDERCONTRACT",
+      resultCode: "3000",
+      transactionId: "UNKNOWNPROVIDERTRANSACTION"
+    });
+
+    const first = await harness.service.handleCallback("fadada", payload);
+    const duplicate = await harness.service.handleCallback(
+      "fadada",
+      Object.fromEntries(Object.entries(payload).reverse())
+    );
+
+    expect(first).toEqual({ handled: false, reason: "TASK_NOT_FOUND" });
+    expect(duplicate).toEqual({
+      handled: true,
+      idempotent: true
+    });
+    expect(snapshotTypedStage2State(harness.state)).toEqual(before);
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+      handled: true,
+      handledAt: expect.any(Date),
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      providerTransactionId: "UNKNOWNPROVIDERTRANSACTION",
+      taskId: null,
       verified: true
     });
   });
@@ -591,6 +730,76 @@ describe("ESignService", () => {
       expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
     }
   );
+
+  it("reconciles the exact Stage 2 signer set after concurrent customer and platform callbacks conflict", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const runTransaction = harness.prisma.$transaction.getMockImplementation()!;
+    let initialTransactionCount = 0;
+    let releaseInitialTransactions!: () => void;
+    const initialTransactionsReady = new Promise<void>((resolve) => {
+      releaseInitialTransactions = resolve;
+    });
+    const transactionOptions: unknown[] = [];
+    harness.prisma.$transaction.mockImplementation(
+      async (input: unknown, options?: unknown) => {
+        transactionOptions.push(options);
+        initialTransactionCount += 1;
+        const attempt = initialTransactionCount;
+        if (attempt <= 2) {
+          if (attempt === 2) {
+            releaseInitialTransactions();
+          }
+          await initialTransactionsReady;
+          if (attempt === 2) {
+            throw Object.assign(new Error("serialization conflict"), {
+              code: "P2034"
+            });
+          }
+        }
+        return runTransaction(input);
+      }
+    );
+
+    const [customerResult, platformResult] = await Promise.all([
+      harness.service.handleCallback("fadada", fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.customerTransactionId
+      })),
+      harness.service.handleCallback("fadada", fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.platformTransactionId
+      }))
+    ]);
+
+    expect(customerResult).toMatchObject({ handled: true });
+    expect(platformResult).toMatchObject({ handled: true });
+    expect(initialTransactionCount).toBe(3);
+    expect(transactionOptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ isolationLevel: "Serializable" })
+      ])
+    );
+    expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+    expect(harness.platformSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+    expect(harness.task).toMatchObject({
+      completedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(harness.stage2Contract).toMatchObject({
+      signedAt: expect.any(Date),
+      status: ContractStatus.SIGNED
+    });
+    expect(harness.handover).toMatchObject({
+      completedAt: expect.any(Date),
+      customerSignedAt: expect.any(Date),
+      platformSignedAt: expect.any(Date),
+      status: "SIGNED"
+    });
+    expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+    expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
+  });
 
   it("keeps Stage 1 slot rows unchanged for unknown or mismatched callbacks", async () => {
     const provider = stage1SlotProvider();
@@ -1598,8 +1807,12 @@ describe("ESignService", () => {
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
     expect(state.callbackLogs[0]).toMatchObject({
-      handled: false,
+      errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+      handled: true,
+      handledAt: expect.any(Date),
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       providerTaskId: "unknown-transaction",
+      providerTransactionId: "unknown-transaction",
       taskId: null,
       verified: true
     });
@@ -1620,8 +1833,12 @@ describe("ESignService", () => {
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
     expect(state.callbackLogs[0]).toMatchObject({
-      handled: false,
+      errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+      handled: true,
+      handledAt: expect.any(Date),
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       providerTaskId: "unknowntransaction",
+      providerTransactionId: "unknowntransaction",
       taskId: null,
       verified: true
     });
@@ -1642,8 +1859,12 @@ describe("ESignService", () => {
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
     expect(state.callbackLogs[0]).toMatchObject({
-      handled: false,
+      errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+      handled: true,
+      handledAt: expect.any(Date),
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       providerTaskId: task.providerTaskId,
+      providerTransactionId: task.providerTaskId,
       taskId: null,
       verified: true
     });

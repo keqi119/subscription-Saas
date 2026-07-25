@@ -138,6 +138,7 @@ const CALLBACK_COMPLETED_EVENTS = new Set([
 const FADADA_FAILED_EVENT = "FADADA_SIGN_FAILED";
 const FADADA_REJECTED_EVENT = "FADADA_SIGN_REJECTED";
 const FADADA_UNKNOWN_EVENT = "FADADA_SIGN_UNKNOWN";
+const STAGE2_CALLBACK_TRANSACTION_ATTEMPTS = 3;
 const ENTERPRISE_AUTO_SEAL_ENABLED_ENV = "ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED";
 const STAGE1_MULTI_SLOT_ENABLED_ENV = "ESIGN_STAGE1_MULTI_SLOT_ENABLED";
 const PLATFORM_SEAL_KEYWORD_ENV = "ESIGN_PLATFORM_SEAL_KEYWORD";
@@ -697,11 +698,12 @@ export class ESignService {
     );
     if (stage2Context) {
       if (!stage2Context.signer) {
-        return this.recordUnknownTypedStage2Callback({
+        return this.recordUnknownVerifiedCallback({
           eventType,
           payload: sanitizedPayload,
           provider,
           providerTransactionId: normalizedProviderTransactionId,
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
           taskId: stage2Context.task.id
         });
       }
@@ -734,12 +736,21 @@ export class ESignService {
 
     const task = await this.findCallbackTask(provider, providerTaskId, providerContractId);
     if (task && isTypedStage2Task(task)) {
-      return this.recordUnknownTypedStage2Callback({
+      return this.recordUnknownVerifiedCallback({
         eventType,
         payload: sanitizedPayload,
         provider,
         providerTransactionId: normalizedProviderTransactionId,
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
         taskId: task.id
+      });
+    }
+    if (!task) {
+      return this.recordUnknownVerifiedCallback({
+        eventType,
+        payload: sanitizedPayload,
+        provider,
+        providerTransactionId: normalizedProviderTransactionId
       });
     }
 
@@ -749,29 +760,10 @@ export class ESignService {
         payload: toJsonValue(sanitizedPayload),
         provider,
         providerTaskId,
-        taskId: task?.id,
+        taskId: task.id,
         verified: verified.verified
       }
     });
-
-    if (!task) {
-      await this.prisma.contractESignCallbackLog.update({
-        data: {
-          errorMessage: "未找到对应电子签任务。",
-          handled: true,
-          handledAt: new Date()
-        },
-        where: { id: callbackLog.id }
-      });
-      await this.prisma.contractESignCallbackLog.update({
-        data: {
-          handled: false,
-          handledAt: null
-        },
-        where: { id: callbackLog.id }
-      });
-      return { handled: false, reason: "TASK_NOT_FOUND" };
-    }
 
     if (provider === ESignProviderType.FADADA) {
       return this.handleFadadaCallback({
@@ -825,12 +817,13 @@ export class ESignService {
     return { handled: true };
   }
 
-  private async recordUnknownTypedStage2Callback(input: {
+  private async recordUnknownVerifiedCallback(input: {
     eventType?: string | null;
     payload: unknown;
     provider: ESignProviderType;
     providerTransactionId?: string | null;
-    taskId: string;
+    signingStage?: "STAGE2_DELIVERY_HANDOVER";
+    taskId?: string;
   }) {
     const callbackClaim = await this.claimStage2CallbackLog({
       eventType: input.eventType,
@@ -844,8 +837,8 @@ export class ESignService {
       return {
         handled: true,
         idempotent: true,
-        signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
-        taskId: input.taskId
+        ...(input.signingStage ? { signingStage: input.signingStage } : {}),
+        ...(input.taskId ? { taskId: input.taskId } : {})
       };
     }
     await this.prisma.contractESignCallbackLog.update({
@@ -917,7 +910,7 @@ export class ESignService {
     payloadHash: string;
     provider: ESignProviderType;
     providerTransactionId?: string | null;
-    taskId: string;
+    taskId?: string;
   }): Promise<{ duplicate: boolean; id: string }> {
     try {
       const callbackLog = await this.prisma.contractESignCallbackLog.create({
@@ -952,7 +945,7 @@ export class ESignService {
         throw error;
       }
       return {
-        duplicate: true,
+        duplicate: existing.handled,
         id: existing.id
       };
     }
@@ -967,7 +960,7 @@ export class ESignService {
     taskId: string;
   }) {
     const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
+    return this.runStage2CallbackReconciliation(async (tx) => {
       const task = await tx.contractESignTask.findUnique({
         include: esignTaskInclude,
         where: { id: input.taskId }
@@ -1192,6 +1185,30 @@ export class ESignService {
         taskId: refreshed.id
       };
     });
+  }
+
+  private async runStage2CallbackReconciliation<T>(
+    callback: (tx: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    for (
+      let attempt = 1;
+      attempt <= STAGE2_CALLBACK_TRANSACTION_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(callback, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        });
+      } catch (error) {
+        if (
+          !isPrismaSerializationConflict(error) ||
+          attempt === STAGE2_CALLBACK_TRANSACTION_ATTEMPTS
+        ) {
+          throw error;
+        }
+      }
+    }
+    throw new Error("ESIGN_STAGE2_CALLBACK_RECONCILIATION_EXHAUSTED");
   }
 
   private async recordUnverifiedCallback(input: {
@@ -2802,7 +2819,7 @@ function sanitizeCallbackPayloadForLog(value: unknown): unknown {
 
 function isSensitiveCallbackField(key: string) {
   const normalized = key.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
-  return /(^|_)(authorization|bucket|cookie|digest|id_no|id_number|identity_number|jwt|mobile|object_key|otp|password|phone|provider_customer_id|secret|session|token)($|_)/
+  return /(^|_)(authorization|bucket|cert_?no|cert_?number|certificate_?no|certificate_?number|cookie|credential_?no|credential_?number|digest|id_?card|id_no|id_number|identity_?no|identity_?number|jwt|mobile|object_key|otp|password|phone|provider_customer_id|secret|session|token)($|_)/
     .test(normalized);
 }
 
@@ -2817,6 +2834,14 @@ function isPrismaUniqueConstraintError(error: unknown) {
     error &&
     typeof error === "object" &&
     (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+function isPrismaSerializationConflict(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === "P2034"
   );
 }
 

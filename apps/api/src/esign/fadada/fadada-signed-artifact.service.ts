@@ -40,6 +40,11 @@ export const STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH = "STAGE2_HANDOVER_ARCHIVE_
 export const STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED = "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED";
 
 const MAX_SIGNED_PDF_BYTES = 20 * 1024 * 1024;
+const DEFAULT_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
+const MIN_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 1000;
+const MAX_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 60 * 60 * 1000;
+const STAGE2_ARCHIVE_CLAIM_TIMEOUT_ENV =
+  "STAGE2_HANDOVER_ARCHIVE_CLAIM_TIMEOUT_MS";
 
 const signedArtifactTaskInclude = {
   contract: {
@@ -225,7 +230,19 @@ export class FadadaSignedArtifactService {
         skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
       };
     }
-    if (handover.archiveStatus === DeliveryHandoverArchiveStatus.PENDING) {
+    const attemptedAt = new Date();
+    const claimTimeoutMs = readStage2ArchiveClaimTimeoutMs(this.configService);
+    const stalePendingClaim =
+      handover.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
+      !isFreshStage2ArchiveClaim(
+        handover.archiveLastAttemptAt,
+        attemptedAt,
+        claimTimeoutMs
+      );
+    if (
+      handover.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
+      !stalePendingClaim
+    ) {
       return {
         archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
         archived: false,
@@ -233,7 +250,19 @@ export class FadadaSignedArtifactService {
       };
     }
 
-    const attemptedAt = new Date();
+    const claimStateWhere = stalePendingClaim
+      ? {
+          archiveLastAttemptAt: handover.archiveLastAttemptAt,
+          archiveStatus: DeliveryHandoverArchiveStatus.PENDING
+        }
+      : {
+          archiveStatus: {
+            in: [
+              DeliveryHandoverArchiveStatus.NOT_STARTED,
+              DeliveryHandoverArchiveStatus.FAILED
+            ]
+          }
+        };
     const claimed = await this.prisma.vehicleDeliveryHandover.updateMany({
       data: {
         archiveLastAttemptAt: attemptedAt,
@@ -242,12 +271,7 @@ export class FadadaSignedArtifactService {
         archiveStatus: DeliveryHandoverArchiveStatus.PENDING
       },
       where: {
-        archiveStatus: {
-          in: [
-            DeliveryHandoverArchiveStatus.NOT_STARTED,
-            DeliveryHandoverArchiveStatus.FAILED
-          ]
-        },
+        ...claimStateWhere,
         artifactVersion: handover.artifactVersion,
         deletedAt: null,
         handoverContractId: task.contractId,
@@ -274,7 +298,14 @@ export class FadadaSignedArtifactService {
           skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
         };
       }
-      if (current?.archiveStatus === DeliveryHandoverArchiveStatus.PENDING) {
+      if (
+        current?.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
+        isFreshStage2ArchiveClaim(
+          current.archiveLastAttemptAt,
+          new Date(),
+          claimTimeoutMs
+        )
+      ) {
         return {
           archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
           archived: false,
@@ -361,6 +392,7 @@ export class FadadaSignedArtifactService {
             updatedBy: input.actorId ?? null
           },
           where: {
+            archiveLastAttemptAt: attemptedAt,
             archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
             artifactVersion: handover.artifactVersion,
             handoverContractId: task.contractId,
@@ -391,6 +423,7 @@ export class FadadaSignedArtifactService {
           status: DeliveryHandoverStatus.SIGNED
         },
         where: {
+          archiveLastAttemptAt: attemptedAt,
           archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
           handoverESignTaskId: task.id,
           id: handover.id
@@ -622,6 +655,29 @@ function stage2ArchiveBadRequest(code: string, message: string) {
 
 function isSha256Digest(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
+function readStage2ArchiveClaimTimeoutMs(configService: ConfigService) {
+  const configured = Number(
+    configService.get<string>(STAGE2_ARCHIVE_CLAIM_TIMEOUT_ENV)
+  );
+  return Number.isSafeInteger(configured) &&
+    configured >= MIN_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS &&
+    configured <= MAX_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS
+    ? configured
+    : DEFAULT_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS;
+}
+
+function isFreshStage2ArchiveClaim(
+  lastAttemptAt: Date | null,
+  now: Date,
+  timeoutMs: number
+) {
+  return Boolean(
+    lastAttemptAt &&
+    Number.isFinite(lastAttemptAt.getTime()) &&
+    now.getTime() - lastAttemptAt.getTime() < timeoutMs
+  );
 }
 
 function asPlainRecord(value: unknown): Record<string, unknown> {

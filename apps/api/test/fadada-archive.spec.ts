@@ -326,6 +326,129 @@ describe("FadadaSignedArtifactService", () => {
     expect(state.fileObjects).toHaveLength(1);
   });
 
+  it("does not steal a fresh Stage 2 archive claim within the default five-minute lease", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = new Date(Date.now() - 4 * 60 * 1000);
+    state.handover!.archiveRetryCount = 1;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toEqual({
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+      archived: false,
+      skippedReason: "ARCHIVE_IN_PROGRESS"
+    });
+    expect(state.handover).toMatchObject({
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING
+    });
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("atomically reclaims a stale Stage 2 archive claim after the default five-minute lease", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const staleAttemptAt = new Date(Date.now() - 6 * 60 * 1000);
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = staleAttemptAt;
+    state.handover!.archiveRetryCount = 1;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: expect.any(Date),
+      archiveRetryCount: 2,
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED
+    });
+    expect(state.handover!.archiveLastAttemptAt).not.toEqual(staleAttemptAt);
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it("uses a valid configured Stage 2 archive claim timeout", async () => {
+    const { apiClient, service, state } = createStage2Fixture({
+      STAGE2_HANDOVER_ARCHIVE_CLAIM_TIMEOUT_MS: "60000"
+    });
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = new Date(Date.now() - 2 * 60 * 1000);
+    state.handover!.archiveRetryCount = 1;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the five-minute archive lease for an unsafe configured timeout", async () => {
+    const { apiClient, service, state } = createStage2Fixture({
+      STAGE2_HANDOVER_ARCHIVE_CLAIM_TIMEOUT_MS: "0"
+    });
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = new Date(Date.now() - 4 * 60 * 1000);
+    state.handover!.archiveRetryCount = 1;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+      archived: false,
+      skippedReason: "ARCHIVE_IN_PROGRESS"
+    });
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+  });
+
+  it("does not let an expired archive worker overwrite a newer reclaimed lease", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const staleAttemptAt = new Date(Date.now() - 6 * 60 * 1000);
+    const newerAttemptAt = new Date(Date.now() + 60 * 1000);
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = staleAttemptAt;
+    state.handover!.archiveRetryCount = 1;
+    vi.mocked(apiClient.querySignResult).mockImplementationOnce(async () => {
+      state.handover!.archiveLastAttemptAt = newerAttemptAt;
+      state.handover!.archiveRetryCount = 3;
+      throw new Error("expired worker resumed after lease takeover");
+    });
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: newerAttemptAt,
+      archiveLastError: null,
+      archiveRetryCount: 3,
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
   it("rejects a Stage 2 source identity mismatch before provider or storage calls", async () => {
     const { apiClient, service, state, storageService } = createStage2Fixture();
     state.task.requestSnapshot = {
@@ -419,7 +542,7 @@ class TestFadadaSignedArtifactService extends FadadaSignedArtifactService {
   }
 }
 
-function createFixture() {
+function createFixture(env: Record<string, string> = {}) {
   const state = {
     contract: {
       contractNo: "CON-1",
@@ -629,7 +752,8 @@ function createFixture() {
       FADADA_APP_SECRET: "secret-xyz",
       FADADA_BASE_URL: "https://testapi.fadada.com:8443/api/",
       FADADA_ENABLED: "false",
-      FADADA_ENV: "sandbox"
+      FADADA_ENV: "sandbox",
+      ...env
     }),
     apiClient
   );
@@ -646,8 +770,8 @@ function hydrateTask(state: ReturnType<typeof createFixture>["state"]) {
   };
 }
 
-function createStage2Fixture() {
-  const harness = createFixture();
+function createStage2Fixture(env: Record<string, string> = {}) {
+  const harness = createFixture(env);
   harness.state.contract.contractNo = "HDV-1";
   harness.state.contract.order.orderStatus = OrderStatus.PENDING_DELIVERY;
   Object.assign(harness.state.task, {

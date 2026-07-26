@@ -10,8 +10,10 @@ import {
   canSubmitWithFieldEvidenceUploadBatch,
   canMutateFieldEvidenceWithUploadBatch,
   hasFieldEvidenceUploadRecoveries,
+  replaceAndStartFieldEvidenceUploadRecovery,
   retryFieldEvidenceUploadBatch,
-  startFieldEvidenceUploadBatch
+  startFieldEvidenceUploadBatch,
+  startFieldEvidenceUploadBatchFromState
 } from "../src/lib/field-handover-upload-batch";
 
 const repoRoot = join(__dirname, "..", "..", "..");
@@ -201,6 +203,18 @@ describe("field handover upload batch gates", () => {
     expect(retryFieldEvidenceUploadBatch(refreshFailed, "damage", true)).toBe(refreshFailed);
     expect(canRetryFieldEvidenceUploadBatch(refreshFailed, "damage", true)).toBe(false);
     expect(abandonFieldEvidenceUploadRecovery(refreshFailed, "damage")).toBe(refreshFailed);
+    expect(startFieldEvidenceUploadBatchFromState(refreshFailed, "side", ["side.jpg"], false)).toBe(
+      refreshFailed
+    );
+    expect(
+      replaceAndStartFieldEvidenceUploadRecovery(
+        refreshFailed,
+        "damage",
+        ["replacement.jpg"],
+        false,
+        true
+      )
+    ).toBe(refreshFailed);
   });
 });
 

@@ -6,10 +6,13 @@ import {
   canSubmitWithFieldEvidenceUploadBatch,
   cancelFieldEvidenceUploadRequest,
   hasFieldEvidenceUploadRecoveries,
+  replaceAndStartFieldEvidenceUploadRecovery,
   retryFieldEvidenceUploadBatch,
   retryFieldEvidenceUploadRefresh,
   runFieldEvidenceUploadBatch,
   startFieldEvidenceUploadBatch,
+  startFieldEvidenceUploadBatchFromState,
+  type FieldEvidenceUploadBatchState,
   type FieldEvidenceUploadSnapshot
 } from "../src/lib/field-handover-upload-batch";
 import { buildFieldEvidenceUploadRetryDisplay } from "../src/lib/field-handover-upload";
@@ -104,6 +107,112 @@ describe("field evidence upload reconciliation", () => {
       side: recovery("side", ["side.jpg"])
     });
     expect(canSubmitWithFieldEvidenceUploadBatch(retried)).toBe(false);
+  });
+
+  it("starts and completes another item without discarding an unresolved recovery", async () => {
+    const started = startFieldEvidenceUploadBatchFromState(
+      failedState(),
+      "side",
+      ["side.jpg"],
+      false,
+      snapshot([])
+    );
+
+    expect(started.status).toBe("UPLOADING");
+    expect(started.recoveries).toEqual({
+      front: recovery("front", ["front.jpg"])
+    });
+
+    const completed = await runFieldEvidenceUploadBatch(started, {
+      getInterruptionReason: () => "FAILURE",
+      refreshDetail: async () => snapshot(["side-id"]),
+      uploadFile: async () => snapshot(["side-id"])
+    });
+
+    expect(completed).toMatchObject({
+      batch: null,
+      recoveries: {
+        front: recovery("front", ["front.jpg"])
+      },
+      status: "IDLE"
+    });
+    expect(canSubmitWithFieldEvidenceUploadBatch(completed)).toBe(false);
+  });
+
+  it("atomically replaces one recovery and preserves unrelated recoveries", () => {
+    const state = {
+      ...failedState(),
+      recoveries: {
+        ...failedState().recoveries,
+        side: recovery("side", ["side.jpg"])
+      }
+    };
+
+    const replaced = replaceAndStartFieldEvidenceUploadRecovery(
+      state,
+      "front",
+      ["new-front.jpg", "ignored-front.jpg"],
+      false,
+      true,
+      { replaceEvidenceFileId: "old-front-id", type: "REPLACE" }
+    );
+
+    expect(replaced).toEqual({
+      batch: {
+        baseline: snapshot([]),
+        files: ["new-front.jpg"],
+        itemViewId: "front",
+        operation: {
+          replaceEvidenceFileId: "old-front-id",
+          type: "REPLACE"
+        }
+      },
+      fileIndex: 0,
+      recoveries: {
+        side: recovery("side", ["side.jpg"])
+      },
+      status: "UPLOADING"
+    });
+    expect(canSubmitWithFieldEvidenceUploadBatch(replaced)).toBe(false);
+  });
+
+  it("keeps legacy page states and retry signatures safe until page wiring", async () => {
+    const legacyIdle: FieldEvidenceUploadBatchState<string> = {
+      batch: null,
+      fileIndex: 0,
+      status: "IDLE"
+    };
+    const legacyRetryPending: FieldEvidenceUploadBatchState<string> = {
+      batch: {
+        baseline: snapshot([]),
+        files: ["legacy.jpg"],
+        itemViewId: "legacy",
+        operation: { type: "APPEND" }
+      },
+      fileIndex: 0,
+      status: "RETRY_PENDING"
+    };
+
+    expect(hasFieldEvidenceUploadRecoveries(legacyIdle)).toBe(false);
+    expect(canStartFieldEvidenceUploadBatch(legacyIdle, "side")).toBe(true);
+    expect(canSubmitWithFieldEvidenceUploadBatch(legacyIdle)).toBe(true);
+    expect(canSubmitWithFieldEvidenceUploadBatch(legacyRetryPending)).toBe(false);
+    expect(retryFieldEvidenceUploadBatch(legacyRetryPending, true)).toMatchObject({
+      recoveries: {},
+      status: "UPLOADING"
+    });
+
+    const failed = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("front", ["front.jpg"], false, snapshot([])),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail: async () => snapshot([]),
+        uploadFile: async () => {
+          throw new Error("rejected");
+        }
+      }
+    );
+    expect(failed.recoveries?.front?.errorMessage).toBe("资料上传失败，请重试");
   });
 
   it("reconciles partial append success against the latest successful response", async () => {

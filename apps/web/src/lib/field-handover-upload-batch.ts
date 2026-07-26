@@ -1,6 +1,11 @@
-export type FieldEvidenceUploadBatchStatus = "IDLE" | "REFRESH_FAILED" | "REFRESHING" | "UPLOADING";
+export type FieldEvidenceUploadBatchStatus =
+  | "IDLE"
+  | "REFRESH_FAILED"
+  | "REFRESHING"
+  | "RETRY_PENDING"
+  | "UPLOADING";
 export type FieldEvidenceUploadInterruptionReason = "FAILURE" | "UNMOUNT" | "USER_CANCEL";
-export type FieldEvidenceUploadRefreshTarget = "IDLE" | "RECOVERABLE";
+export type FieldEvidenceUploadRefreshTarget = "IDLE" | "RECOVERABLE" | "RETRY_PENDING";
 
 export interface FieldEvidenceUploadSnapshot {
   count: number;
@@ -29,7 +34,7 @@ export interface FieldEvidenceUploadRecovery<TFile> {
 export interface FieldEvidenceUploadBatchState<TFile> {
   batch: FieldEvidenceUploadBatch<TFile> | null;
   fileIndex: number;
-  recoveries: Record<string, FieldEvidenceUploadRecovery<TFile>>;
+  recoveries?: Record<string, FieldEvidenceUploadRecovery<TFile>>;
   refreshTarget?: FieldEvidenceUploadRefreshTarget;
   status: FieldEvidenceUploadBatchStatus;
 }
@@ -41,7 +46,7 @@ export interface FieldEvidenceUploadInterruption<TFile> {
 }
 
 export interface FieldEvidenceUploadBatchDependencies<TFile> {
-  getFailureMessage: (error: unknown) => string;
+  getFailureMessage?: (error: unknown) => string;
   getInterruptionReason: (error: unknown) => FieldEvidenceUploadInterruptionReason;
   onStateChange?: (state: FieldEvidenceUploadBatchState<TFile>) => void;
   onUploadInterrupted?: (error: unknown, reason: FieldEvidenceUploadInterruptionReason) => void;
@@ -58,6 +63,7 @@ const EMPTY_UPLOAD_SNAPSHOT: FieldEvidenceUploadSnapshot = {
   count: 0,
   ids: []
 };
+const DEFAULT_UPLOAD_FAILURE_MESSAGE = "资料上传失败，请重试";
 
 export function startFieldEvidenceUploadBatch<TFile>(
   itemViewId: string,
@@ -81,6 +87,35 @@ export function startFieldEvidenceUploadBatch<TFile>(
     fileIndex: 0,
     recoveries: {},
     status: "UPLOADING"
+  };
+}
+
+export function startFieldEvidenceUploadBatchFromState<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>,
+  itemViewId: string,
+  files: readonly TFile[],
+  allowsMultiple: boolean,
+  baseline: FieldEvidenceUploadSnapshot = EMPTY_UPLOAD_SNAPSHOT,
+  operation: FieldEvidenceUploadOperation = { type: "APPEND" }
+): FieldEvidenceUploadBatchState<TFile> {
+  if (!canStartFieldEvidenceUploadBatch(state, itemViewId)) {
+    return state;
+  }
+
+  const started = startFieldEvidenceUploadBatch(
+    itemViewId,
+    files,
+    allowsMultiple,
+    baseline,
+    operation
+  );
+  if (started.status !== "UPLOADING") {
+    return state;
+  }
+
+  return {
+    ...started,
+    recoveries: fieldEvidenceUploadRecoveries(state)
   };
 }
 
@@ -136,7 +171,7 @@ export function interruptFieldEvidenceUploadBatch<TFile>(
       },
       fileIndex: 0,
       recoveries: {
-        ...state.recoveries,
+        ...fieldEvidenceUploadRecoveries(state),
         [state.batch.itemViewId]: recovery
       },
       refreshTarget: "RECOVERABLE",
@@ -150,13 +185,46 @@ export function retryFieldEvidenceUploadBatch<TFile>(
   itemViewId: string,
   canEdit: boolean,
   operation?: FieldEvidenceUploadOperation
+): FieldEvidenceUploadBatchState<TFile>;
+export function retryFieldEvidenceUploadBatch<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>,
+  canEdit: boolean,
+  operation?: FieldEvidenceUploadOperation
+): FieldEvidenceUploadBatchState<TFile>;
+export function retryFieldEvidenceUploadBatch<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>,
+  itemViewIdOrCanEdit: string | boolean,
+  canEditOrOperation?: boolean | FieldEvidenceUploadOperation,
+  operation?: FieldEvidenceUploadOperation
 ): FieldEvidenceUploadBatchState<TFile> {
-  const recovery = state.recoveries[itemViewId];
+  if (typeof itemViewIdOrCanEdit === "boolean") {
+    const legacyOperation =
+      typeof canEditOrOperation === "object" ? canEditOrOperation : state.batch?.operation;
+    if (!itemViewIdOrCanEdit || state.status !== "RETRY_PENDING" || !state.batch) {
+      return state;
+    }
+
+    return {
+      ...state,
+      batch: {
+        ...state.batch,
+        operation: legacyOperation ?? { type: "APPEND" }
+      },
+      fileIndex: 0,
+      recoveries: fieldEvidenceUploadRecoveries(state),
+      status: "UPLOADING"
+    };
+  }
+
+  const itemViewId = itemViewIdOrCanEdit;
+  const canEdit = typeof canEditOrOperation === "boolean" && canEditOrOperation;
+  const recoveries = fieldEvidenceUploadRecoveries(state);
+  const recovery = recoveries[itemViewId];
   if (!canEdit || state.status !== "IDLE" || !recovery) {
     return state;
   }
 
-  const remainingRecoveries = { ...state.recoveries };
+  const remainingRecoveries = { ...recoveries };
   delete remainingRecoveries[itemViewId];
   return {
     batch: {
@@ -171,15 +239,46 @@ export function retryFieldEvidenceUploadBatch<TFile>(
   };
 }
 
+export function replaceAndStartFieldEvidenceUploadRecovery<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>,
+  itemViewId: string,
+  files: readonly TFile[],
+  allowsMultiple: boolean,
+  canEdit: boolean,
+  operation?: FieldEvidenceUploadOperation
+): FieldEvidenceUploadBatchState<TFile> {
+  const recoveries = fieldEvidenceUploadRecoveries(state);
+  const recovery = recoveries[itemViewId];
+  const selectedFiles = allowsMultiple ? [...files] : files.slice(0, 1);
+  if (!canEdit || state.status !== "IDLE" || !recovery || selectedFiles.length === 0) {
+    return state;
+  }
+
+  const remainingRecoveries = { ...recoveries };
+  delete remainingRecoveries[itemViewId];
+  return {
+    batch: {
+      baseline: recovery.baseline,
+      files: selectedFiles,
+      itemViewId,
+      operation: operation ?? recovery.operation
+    },
+    fileIndex: 0,
+    recoveries: remainingRecoveries,
+    status: "UPLOADING"
+  };
+}
+
 export function abandonFieldEvidenceUploadRecovery<TFile>(
   state: FieldEvidenceUploadBatchState<TFile>,
   itemViewId: string
 ): FieldEvidenceUploadBatchState<TFile> {
-  if (state.status !== "IDLE" || !state.recoveries[itemViewId]) {
+  const recoveries = fieldEvidenceUploadRecoveries(state);
+  if (state.status !== "IDLE" || !recoveries[itemViewId]) {
     return state;
   }
 
-  const remainingRecoveries = { ...state.recoveries };
+  const remainingRecoveries = { ...recoveries };
   delete remainingRecoveries[itemViewId];
   return {
     ...state,
@@ -217,7 +316,7 @@ export async function runFieldEvidenceUploadBatch<TFile>(
       const interrupted = interruptFieldEvidenceUploadBatch(
         currentState,
         reason,
-        dependencies.getFailureMessage(error)
+        fieldEvidenceUploadFailureMessage(error, dependencies.getFailureMessage)
       );
       currentState = publishState(interrupted.state, dependencies.onStateChange);
       if (interrupted.shouldShowUserFeedback) {
@@ -238,7 +337,7 @@ export async function runFieldEvidenceUploadBatch<TFile>(
     {
       batch: null,
       fileIndex: 0,
-      recoveries: currentState.recoveries,
+      recoveries: fieldEvidenceUploadRecoveries(currentState),
       refreshTarget: "IDLE",
       status: "REFRESHING"
     },
@@ -272,21 +371,40 @@ export function canRetryFieldEvidenceUploadBatch<TFile>(
   state: FieldEvidenceUploadBatchState<TFile>,
   itemViewId: string,
   canEdit: boolean
+): boolean;
+export function canRetryFieldEvidenceUploadBatch<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>,
+  canEdit: boolean
+): boolean;
+export function canRetryFieldEvidenceUploadBatch<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>,
+  itemViewIdOrCanEdit: string | boolean,
+  canEdit?: boolean
 ) {
-  return canEdit && state.status === "IDLE" && Boolean(state.recoveries[itemViewId]?.files.length);
+  if (typeof itemViewIdOrCanEdit === "boolean") {
+    return (
+      itemViewIdOrCanEdit && state.status === "RETRY_PENDING" && Boolean(state.batch?.files.length)
+    );
+  }
+
+  return (
+    canEdit === true &&
+    state.status === "IDLE" &&
+    Boolean(fieldEvidenceUploadRecoveries(state)[itemViewIdOrCanEdit]?.files.length)
+  );
 }
 
 export function canStartFieldEvidenceUploadBatch<TFile>(
   state: FieldEvidenceUploadBatchState<TFile>,
   itemViewId: string
 ) {
-  return state.status === "IDLE" && !state.recoveries[itemViewId];
+  return state.status === "IDLE" && !fieldEvidenceUploadRecoveries(state)[itemViewId];
 }
 
 export function hasFieldEvidenceUploadRecoveries<TFile>(
   state: FieldEvidenceUploadBatchState<TFile>
 ) {
-  return Object.keys(state.recoveries).length > 0;
+  return Object.keys(fieldEvidenceUploadRecoveries(state)).length > 0;
 }
 
 export function canMutateFieldEvidenceWithUploadBatch<TFile>(
@@ -333,10 +451,10 @@ function resolveFieldEvidenceUploadRefresh<TFile>(
     return { ...state, status: "REFRESH_FAILED" };
   }
   if (state.refreshTarget === "IDLE") {
-    return idleFieldEvidenceUploadBatch(state.recoveries);
+    return idleFieldEvidenceUploadBatch(fieldEvidenceUploadRecoveries(state));
   }
   if (!state.batch) {
-    return idleFieldEvidenceUploadBatch(state.recoveries);
+    return idleFieldEvidenceUploadBatch(fieldEvidenceUploadRecoveries(state));
   }
 
   const authoritative = normalizeSnapshot(refreshed);
@@ -346,18 +464,33 @@ function resolveFieldEvidenceUploadRefresh<TFile>(
     state.batch.operation
   );
   const remainingFiles = currentFileCommitted ? state.batch.files.slice(1) : state.batch.files;
+  const currentRecoveries = fieldEvidenceUploadRecoveries(state);
   if (remainingFiles.length === 0) {
-    const remainingRecoveries = { ...state.recoveries };
+    const remainingRecoveries = { ...currentRecoveries };
     delete remainingRecoveries[state.batch.itemViewId];
     return idleFieldEvidenceUploadBatch(remainingRecoveries);
   }
 
-  const recovery = state.recoveries[state.batch.itemViewId];
+  if (state.refreshTarget === "RETRY_PENDING") {
+    return {
+      batch: {
+        baseline: authoritative,
+        files: remainingFiles,
+        itemViewId: state.batch.itemViewId,
+        operation: state.batch.operation
+      },
+      fileIndex: 0,
+      recoveries: currentRecoveries,
+      status: "RETRY_PENDING"
+    };
+  }
+
+  const recovery = currentRecoveries[state.batch.itemViewId];
   const recoveries = {
-    ...state.recoveries,
+    ...currentRecoveries,
     [state.batch.itemViewId]: {
       ...(recovery ?? {
-        errorMessage: "",
+        errorMessage: DEFAULT_UPLOAD_FAILURE_MESSAGE,
         itemViewId: state.batch.itemViewId
       }),
       baseline: authoritative,
@@ -406,6 +539,24 @@ function publishState<TFile>(
 ) {
   onStateChange?.(state);
   return state;
+}
+
+function fieldEvidenceUploadRecoveries<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>
+): Record<string, FieldEvidenceUploadRecovery<TFile>> {
+  return state.recoveries ?? {};
+}
+
+function fieldEvidenceUploadFailureMessage(
+  error: unknown,
+  getFailureMessage?: (error: unknown) => string
+) {
+  try {
+    const message = getFailureMessage?.(error)?.trim();
+    return message || DEFAULT_UPLOAD_FAILURE_MESSAGE;
+  } catch {
+    return DEFAULT_UPLOAD_FAILURE_MESSAGE;
+  }
 }
 
 function idleFieldEvidenceUploadBatch<TFile>(

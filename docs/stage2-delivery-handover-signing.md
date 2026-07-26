@@ -186,13 +186,13 @@ Customer confirmation is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REV
 
 Customer objection is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`. It records `customerObjectedAt`, keeps the reason on `customerObjectionReason`, stores optional details in work-order metadata, moves the work order to `CUSTOMER_OBJECTED`, and blocks Stage 2 PDF/eSign readiness until Admin intervention.
 
-The customer Portal UI is available at `/portal/handover-reviews` and `/portal/handover-reviews/[id]`. It presents safe field facts, evidence checklist labels/status/file counts, safe evidence preview/download actions, and the confirm/object decision controls. It intentionally does not show file object keys, buckets, storage paths, provider fields, signing URLs, finance/payment/deposit fields, raw DTO JSON, or full identity data.
+The customer Portal UI is available at `/portal/handover-reviews` and `/portal/handover-reviews/[id]`. It presents safe field facts, evidence checklist labels/status/file counts, safe evidence preview/download actions, the confirm/object decision controls, and Stage 2 signing status. The signing URL is requested only by an intentional customer click and is used immediately for redirect; it is not included in normal status state or rendered on the page. The UI does not show file object keys, buckets, storage paths, provider fields, finance/payment/deposit fields, raw DTO JSON, or full identity data.
 
 Confirming no objection from Portal is a readiness transition only. It must not generate the Stage 2 PDF, create an eSign task, call a provider, confirm delivery, activate lease, or start billing. Submitting an objection keeps the flow in an Admin-follow-up state and must not create provider or delivery side effects.
 
 ## Admin Review Loop
 
-Admin order detail exposes Stage 2 handover work orders, evidence file preview/download actions, customer objection details, and review attempt history. The Admin display uses the same safe file proxy policy: storage object keys and buckets remain server-side only.
+Admin order detail exposes Stage 2 handover work orders, evidence file preview/download actions, customer objection details, review attempt history, and the typed Stage 2 eSign lifecycle. It displays readiness, customer signature, platform seal, and signed-file archive state without signing URLs or provider/storage internals. Provider task creation and platform sealing require explicit confirmation and are guarded against duplicate submission. Retryable platform/archive failures and locally voidable terminal tasks expose narrow recovery actions; accepted provider transactions that cannot be locally voided are shown as an escalation state.
 
 Admin order detail is also the business entry point for creating the Stage 2 field handover work order. After Stage 1 is signed and the vehicle delivery module has been prepared, Admin can create a `DELIVERY_OUTBOUND` work order from the Stage 2 handover module. The UI must not show a duplicate create action while an active work order exists; the API still keeps the duplicate active-work-order guard.
 
@@ -298,5 +298,5 @@ Void/rebuild foundation:
 - Controlled sandbox validation is still required; this documentation round used no real provider or database.
 - Sandbox questions: duplicate transaction idempotency, callback retry/out-of-order behavior, auto-seal authorization validity, sign-to-download delay, and archive/filing idempotency.
 - Controlled storage validation for content-addressed overwrite behavior, cleanup permissions, and lifecycle retention.
-- Admin void/escalation policy beyond the basic objection resubmission loop.
+- Stage 1 generic contract entry points must be isolated from Stage 2 handover contracts before production rollout.
 - Portal has no optional Stage 2 signed-document preview in the implemented API surface.

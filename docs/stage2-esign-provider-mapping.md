@@ -126,7 +126,7 @@ Portal exposes only:
 
 The Portal `GET` returns a safe status with mapped customer blockers and no URL. Only the intentional, customer-owned `POST` start action may return a short-lived signing URL and expiry. Provider URL failures map to `STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE`; customer/action blockers map to stable safe DTOs. There is no optional Stage 2 signed-document preview route in this API surface.
 
-This branch provides the Portal API foundation only. The current Portal Web pages do not call these eSign endpoints, display Stage 2 eSign status, or expose a signing-start control.
+The Web integration uses these boundaries directly. Admin order detail displays readiness, customer signature, platform seal, and archive state, and requires explicit confirmation before provider mutations. Portal handover detail reads the safe status endpoint and exposes `去签署` only when `capability.canStartSigning` is true. It requests the short-lived URL only after that deliberate click and immediately redirects without storing or rendering the URL.
 
 ## Final Delivery Gate
 

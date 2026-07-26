@@ -697,7 +697,7 @@ export class ESignService {
       providerContractId
     );
     if (stage2Context) {
-      if (!stage2Context.signer) {
+      if (!stage2Context.signer || !normalizedProviderTransactionId) {
         return this.recordUnknownVerifiedCallback({
           eventType,
           payload: sanitizedPayload,
@@ -730,7 +730,8 @@ export class ESignService {
         resultCode,
         sanitizedPayload,
         signerId: stage2Context.signer.id,
-        taskId: stage2Context.task.id
+        taskId: stage2Context.task.id,
+        providerTransactionId: normalizedProviderTransactionId
       });
     }
 
@@ -880,7 +881,9 @@ export class ESignService {
         signer?.task &&
         signer.task.provider === provider &&
         isTypedStage2Task(signer.task) &&
-        isTypedStage2Signer(signer) &&
+        isTypedStage2SignerStructure(signer) &&
+        normalizeProviderTransactionId(signer.providerTransactionId) ===
+          providerTransactionId &&
         taskMatchesProviderContract(signer.task, providerContractId)
       ) {
         return {
@@ -968,6 +971,7 @@ export class ESignService {
     sanitizedPayload: unknown;
     signerId: string;
     taskId: string;
+    providerTransactionId: string;
   }) {
     const now = new Date();
     return this.runStage2CallbackReconciliation(async (tx) => {
@@ -989,16 +993,14 @@ export class ESignService {
 
       const requiredSigners = requireTypedStage2RequiredSigners(task);
       const signer = requiredSigners.find((item) => item.id === input.signerId);
-      if (!signer) {
-        await tx.contractESignCallbackLog.update({
-          data: {
-            errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
-            handled: true,
-            handledAt: now
-          },
-          where: { id: input.callbackLogId }
-        });
-        return { handled: false, reason: "TASK_NOT_FOUND" };
+      if (
+        !signer ||
+        normalizeProviderTransactionId(signer.providerTransactionId) !==
+          input.providerTransactionId
+      ) {
+        throw new BadRequestException(
+          "ESIGN_STAGE2_CALLBACK_SIGNER_TRANSACTION_INVALID"
+        );
       }
 
       if (task.taskStatus === ESignTaskStatus.COMPLETED) {
@@ -2840,14 +2842,13 @@ function isTypedStage2Task(task: ESignTaskWithDetails) {
   );
 }
 
-function isTypedStage2Signer(
+function isTypedStage2SignerStructure(
   signer: ESignTaskWithDetails["signers"][number]
 ) {
   if (
     signer.deletedAt ||
     !signer.required ||
-    signer.documentType !== PrismaESignDocumentType.DELIVERY_HANDOVER ||
-    !normalizeProviderTransactionId(signer.providerTransactionId)
+    signer.documentType !== PrismaESignDocumentType.DELIVERY_HANDOVER
   ) {
     return false;
   }
@@ -2877,17 +2878,22 @@ function requireTypedStage2RequiredSigners(task: ESignTaskWithDetails) {
   const customerSigners = signers.filter(
     (signer) =>
       signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_CUSTOMER &&
-      isTypedStage2Signer(signer)
+      isTypedStage2SignerStructure(signer)
   );
   const platformSigners = signers.filter(
     (signer) =>
       signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM &&
-      isTypedStage2Signer(signer)
+      isTypedStage2SignerStructure(signer)
   );
   if (
     signers.length !== 2 ||
     customerSigners.length !== 1 ||
-    platformSigners.length !== 1
+    platformSigners.length !== 1 ||
+    [...customerSigners, ...platformSigners].some(
+      (signer) =>
+        signer.signerStatus === ESignSignerStatus.SIGNED &&
+        !normalizeProviderTransactionId(signer.providerTransactionId)
+    )
   ) {
     throw new BadRequestException("ESIGN_STAGE2_HANDOVER_TYPED_SIGNERS_INVALID");
   }

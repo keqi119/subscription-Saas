@@ -20,7 +20,7 @@ The implementation was verified offline with mocked provider, storage, and Prism
 | Fadada API action | `extsign.api` | `extsign_auto.api` |
 | Provider transaction count | exactly one customer transaction | exactly one platform transaction |
 
-A Stage 2 task contains exactly two required typed signer rows, one for each tuple above. Unknown stages, wrong documents, wrong roles, wrong actions, duplicate or extra slots, missing transactions, and source-binding mismatches fail closed before state advancement.
+A Stage 2 task contains exactly two required typed signer rows, one for each tuple above. Unknown stages, wrong documents, wrong roles, wrong actions, duplicate or extra slots, and source-binding mismatches fail closed before state advancement. The signer targeted by the current callback and every already-signed signer must have a matching provider transaction. The structurally required platform signer may remain without a provider transaction until the platform auto-seal action is claimed after customer completion.
 
 The customer transaction uploads the generated Stage 2 source PDF and creates the manual-sign action. Platform auto-seal is a separate transaction and can run only for the platform slot after customer completion through the controlled platform-seal action/retry path.
 
@@ -83,6 +83,7 @@ Verified Stage 2 callbacks:
 - remove sensitive fields and redact provider descriptions and URLs before persistence;
 - recursively sort object keys, serialize the sanitized payload, and compute SHA-256;
 - deduplicate through the provider-scoped canonical payload hash;
+- reclaim an identical verified callback when its existing callback log is still unhandled after a rolled-back reconciliation;
 - accept customer/platform completion in either order;
 - re-read the exact required signer set and retry Serializable reconciliation conflicts;
 - complete the task, Stage 2 contract, and handover only when both required typed signers are signed;
@@ -124,7 +125,7 @@ Portal exposes only:
 - `GET /portal/handover-reviews/:id/esign`
 - `POST /portal/handover-reviews/:id/esign/signing/start`
 
-The Portal `GET` returns a safe status with mapped customer blockers and no URL. Only the intentional, customer-owned `POST` start action may return a short-lived signing URL and expiry. Provider URL failures map to `STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE`; customer/action blockers map to stable safe DTOs. There is no optional Stage 2 signed-document preview route in this API surface.
+The Portal `GET` returns a safe status with mapped customer blockers and no URL. Expected readiness conflicts caused by the already-created current signing task are omitted only when the readiness task, handover, order, and work-order state still match the current read and `capability.canStartSigning` is true, so the response never simultaneously reports that signing is available and unavailable. Only the intentional, customer-owned `POST` start action may return a short-lived signing URL and expiry. Provider URL failures map to `STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE`; customer/action blockers map to stable safe DTOs. There is no optional Stage 2 signed-document preview route in this API surface.
 
 The Web integration uses these boundaries directly. Admin order detail displays readiness, customer signature, platform seal, and archive state, and requires explicit confirmation before provider mutations. Portal handover detail reads the safe status endpoint and exposes `去签署` only when `capability.canStartSigning` is true. It requests the short-lived URL only after that deliberate click and immediately redirects without storing or rendering the URL.
 

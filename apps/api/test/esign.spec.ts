@@ -385,6 +385,44 @@ describe("ESignService", () => {
     expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
   });
 
+  it("handles a Stage 2 customer callback before the platform transaction exists", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.platformSigner.providerTransactionId = null;
+
+    const result = await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.customerTransactionId
+      })
+    );
+
+    expect(result).toMatchObject({
+      handled: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+    expect(harness.platformSigner).toMatchObject({
+      providerTransactionId: null,
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(harness.task).toMatchObject({
+      completedAt: null,
+      taskStatus: ESignTaskStatus.SIGNING
+    });
+    expect(harness.handover).toMatchObject({
+      completedAt: null,
+      status: "PENDING_PLATFORM_SEAL"
+    });
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      handled: true,
+      handledAt: expect.any(Date)
+    });
+  });
+
   it("correlates a Stage 2 customer callback by typed transaction and dedupes the canonical sanitized payload", async () => {
     const harness = createTypedStage2CallbackFixture({
       customerProviderSignerId: "LEGACY-CUSTOMER-ID"
@@ -545,6 +583,7 @@ describe("ESignService", () => {
 
   it("retries an identical Stage 2 callback when the recorded callback transaction rolled back", async () => {
     const harness = createTypedStage2CallbackFixture();
+    harness.platformSigner.providerTransactionId = null;
     const payload = fadadaCallbackPayload({
       contractId: harness.providerContractId,
       resultCode: "3000",
@@ -580,6 +619,7 @@ describe("ESignService", () => {
       handledAt: expect.any(Date)
     });
     expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
+    expect(harness.platformSigner.providerTransactionId).toBeNull();
   });
 
   it("lets an overlapping identical callback recover an in-flight callback that rolls back", async () => {

@@ -280,16 +280,17 @@ export class Stage2HandoverESignService {
     ]);
     const task = await this.resolveCurrentTask(workOrder);
     const signers = task ? requireTypedSigners(task) : null;
+    const canStartSigning = canStartPortalSigning(
+      workOrder,
+      task,
+      readiness,
+      customerId
+    );
     return {
       archiveStatus: workOrder.handover?.archiveStatus ?? null,
-      blockers: toPortalBlockers(readiness.blockers),
+      blockers: canStartSigning ? [] : toPortalBlockers(readiness.blockers),
       capability: {
-        canStartSigning: canStartPortalSigning(
-          workOrder,
-          task,
-          readiness,
-          customerId
-        )
+        canStartSigning
       },
       createdAt:
         task?.createdAt ??

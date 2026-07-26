@@ -1329,6 +1329,48 @@ describe("Stage2HandoverESignService", () => {
     }
   });
 
+  it("omits expected readiness blockers when Portal signing can start", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.readiness.getReadiness.mockResolvedValueOnce({
+      blockers: [
+        {
+          code: "HANDOVER_SOURCE_NOT_GENERATED",
+          message: "expected after the current task starts"
+        },
+        {
+          code: "ACTIVE_ESIGN_TASK_CONFLICT",
+          message: "the current task is active"
+        }
+      ],
+      ready: false,
+      state: {
+        esignTaskId: task.id,
+        esignTaskStatus: task.taskStatus,
+        handoverContractId: "contract-stage2-1",
+        handoverId: "handover-1",
+        handoverStatus: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+        orderId: "order-1",
+        orderStatus: "PENDING_DELIVERY",
+        workOrderId: "work-order-1",
+        workOrderStatus: "CUSTOMER_CONFIRMED"
+      }
+    });
+
+    const status = await harness.service.getPortalStatus(
+      "work-order-1",
+      "customer-1"
+    );
+
+    expect(status).toMatchObject({
+      blockers: [],
+      capability: {
+        canStartSigning: true
+      }
+    });
+  });
+
   it("returns only a short-lived URL and expiry from the explicit Portal start action", async () => {
     const harness = createHarness();
     const task = makeTask();

@@ -3,7 +3,7 @@ import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.t
 export const ESIGN_PROVIDER_CLIENT = Symbol("ESIGN_PROVIDER_CLIENT");
 
 export type ESignSigningStage = "STAGE1_CONTRACT" | "STAGE2_DELIVERY_HANDOVER";
-export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER_CONFIRMATION";
+export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER";
 export type ESignSlotId =
   | "STAGE1_BODY_CUSTOMER"
   | "STAGE1_BODY_PLATFORM"
@@ -50,6 +50,7 @@ export interface CreateSignTaskInput {
   callbackUrl?: string;
   contractId: string;
   documentName: string;
+  documentType?: ESignDocumentType;
   redirectUrl?: string;
   signers: Array<{
     customerId?: string;
@@ -58,10 +59,17 @@ export interface CreateSignTaskInput {
     signerType: "CUSTOMER" | "PLATFORM";
   }>;
   signingSlots?: ESignSigningSlot[];
+  /**
+   * Stage 2 customer signing uses persisted artifact coordinates as the source
+   * of truth. When supplied, this must contain exactly the matching customer
+   * coordinate and acts only as a fail-closed consistency assertion.
+   */
   signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingStage?: ESignSigningStage;
+  sourcePdfHash?: string;
   taskId?: string;
   taskNo: string;
+  transactionId?: string;
 }
 
 export interface CreateSignTaskResult {
@@ -127,6 +135,7 @@ export interface AutoSealTaskInput {
   callbackUrl?: string;
   contractId: string;
   documentName?: string;
+  documentType?: ESignDocumentType;
   placement?: AutoSealPlacement;
   platformCustomerId?: string;
   platformSignatureId?: string;

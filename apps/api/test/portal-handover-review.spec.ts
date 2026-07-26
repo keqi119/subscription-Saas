@@ -637,7 +637,16 @@ function createPortalReviewHarness() {
     undefined,
     storageService as never
   );
-  const service = new PortalHandoverReviewService(prisma as never, evidenceService, handoverWorkOrderService);
+  const stage2HandoverESignService = {
+    getPortalStatus: vi.fn(),
+    startPortalSigning: vi.fn()
+  };
+  const service = new PortalHandoverReviewService(
+    prisma as never,
+    evidenceService,
+    handoverWorkOrderService,
+    stage2HandoverESignService as never
+  );
 
   return {
     handoverWorkOrderService,
@@ -645,6 +654,7 @@ function createPortalReviewHarness() {
     orderId,
     prisma,
     service,
+    stage2HandoverESignService,
     state,
     storageService
   };

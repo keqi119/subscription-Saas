@@ -170,13 +170,19 @@ export class StorageService {
 
   async putContractSignedArtifact(input: Omit<UploadObjectInput, "key"> & {
     contractId: string;
+    objectIdentity?: string;
     provider: string;
   }): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
   }> {
-    const key = this.buildContractSignedArtifactKey(input.contractId, input.provider, input.originalName ?? "signed.pdf");
+    const key = this.buildContractSignedArtifactKey(
+      input.contractId,
+      input.provider,
+      input.originalName ?? "signed.pdf",
+      input.objectIdentity
+    );
     return this.putPrivateObject(key, {
       buffer: input.buffer,
       contentType: input.contentType,
@@ -236,6 +242,30 @@ export class StorageService {
 
   getContractSignedArtifactStream(objectKey: string): Promise<DownloadObjectResult> {
     return this.getObject(LOCAL_BUCKET, objectKey);
+  }
+
+  buildContractSignedArtifactObjectKey(
+    contractId: string,
+    provider: string,
+    originalName: string,
+    objectIdentity: string
+  ) {
+    const key = this.buildContractSignedArtifactKey(
+      contractId,
+      provider,
+      originalName,
+      objectIdentity
+    );
+    return this.getDriver() === "oss"
+      ? `${OSS_KEY_PREFIX}${this.withOssPrefix(key)}`
+      : key;
+  }
+
+  async deleteContractSignedArtifactObject(objectKey: string): Promise<void> {
+    const bucket = objectKey.startsWith(OSS_KEY_PREFIX)
+      ? OSS_BUCKET_PREFIX
+      : LOCAL_BUCKET;
+    await this.deleteObject(bucket, objectKey);
   }
 
   private async putPrivateObject(key: string, input: Omit<UploadObjectInput, "key">): Promise<{
@@ -378,7 +408,15 @@ export class StorageService {
     return `delivery-evidence/${sanitizeKeyPart(workOrderId)}/${year}/derivatives/${kind.toLowerCase()}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
-  private buildContractSignedArtifactKey(contractId: string, provider: string, originalName: string) {
+  private buildContractSignedArtifactKey(
+    contractId: string,
+    provider: string,
+    originalName: string,
+    objectIdentity?: string
+  ) {
+    if (objectIdentity) {
+      return `contracts/${sanitizeKeyPart(contractId)}/esign/${sanitizeKeyPart(provider)}/signed/${sanitizeKeyPart(objectIdentity)}-${sanitizeFilename(originalName)}`;
+    }
     const now = new Date();
     const year = String(now.getUTCFullYear());
     return `contracts/${sanitizeKeyPart(contractId)}/esign/${sanitizeKeyPart(provider)}/signed/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;

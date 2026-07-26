@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 
 import { BadRequestException } from "@nestjs/common";
@@ -26,13 +30,22 @@ import { HandoverWorkOrderService } from "../src/handover-work-order/handover-wo
 const pdfKitMock = vi.hoisted(() => {
   class FakePDFDocument {
     static imageCalls: Array<{ image: Buffer | string; pageNumber: number }> = [];
+    static rectCalls: Array<{
+      height: number;
+      pageNumber: number;
+      width: number;
+      x: number;
+      y: number;
+    }> = [];
     static textCalls: Array<{ pageNumber: number; text: string }> = [];
 
     static startCapture() {
       FakePDFDocument.imageCalls = [];
+      FakePDFDocument.rectCalls = [];
       FakePDFDocument.textCalls = [];
       return {
         imageCalls: FakePDFDocument.imageCalls,
+        rectCalls: FakePDFDocument.rectCalls,
         textCalls: FakePDFDocument.textCalls
       };
     }
@@ -47,6 +60,18 @@ const pdfKitMock = vi.hoisted(() => {
     y = 45;
     private listeners = new Map<string, Array<(...args: unknown[]) => void>>();
     private pageNumber = 1;
+
+    constructor(options: { margin?: number; size?: string | [number, number] } = {}) {
+      const margin = options.margin ?? 45;
+      const [width, height] = Array.isArray(options.size) ? options.size : [595.28, 841.89];
+      this.page = {
+        height,
+        margins: { bottom: margin, left: margin, right: margin, top: margin },
+        width
+      };
+      this.x = margin;
+      this.y = margin;
+    }
 
     addPage() {
       this.pageNumber += 1;
@@ -105,7 +130,8 @@ const pdfKitMock = vi.hoisted(() => {
       return this;
     }
 
-    rect() {
+    rect(x: number, y: number, width: number, height: number) {
+      FakePDFDocument.rectCalls.push({ height, pageNumber: this.pageNumber, width, x, y });
       return this;
     }
 
@@ -207,6 +233,120 @@ describe("Stage 2 handover PDF renderer", () => {
     }
   });
 
+  it("emits exactly two bounded signing slots at the final signature boxes without visible metadata", async () => {
+    const renderer = new DeliveryHandoverPdfRendererService();
+    const { rectCalls, textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+
+    const result = await renderer.render(buildDeliveryHandoverPdfRenderModel(createRenderModelInput()), {
+      cjkFontPath: process.execPath,
+      evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset: async () => Buffer.from("synthetic-jpeg")
+    });
+    const coordinates = result.slotCoordinates;
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+
+    expect(coordinates).toHaveLength(2);
+    expect(coordinates.map((coordinate) => coordinate.slotId).sort()).toEqual([
+      "STAGE2_HANDOVER_CUSTOMER",
+      "STAGE2_HANDOVER_PLATFORM"
+    ]);
+    for (const slotId of ["STAGE2_HANDOVER_CUSTOMER", "STAGE2_HANDOVER_PLATFORM"]) {
+      expect(coordinates.filter((coordinate) => coordinate.slotId === slotId)).toHaveLength(1);
+    }
+
+    const finalPageNumber = result.diagnostics.pageCount - 1;
+    const finalPageSignatureBoxes = rectCalls
+      .filter((call) => call.pageNumber === result.diagnostics.pageCount)
+      .slice(2, 4);
+
+    expect(finalPageSignatureBoxes).toHaveLength(2);
+    coordinates.forEach((coordinate, index) => {
+      const signatureBox = finalPageSignatureBoxes[index]!;
+      const numericValues = [
+        coordinate.x,
+        coordinate.y,
+        coordinate.width,
+        coordinate.height,
+        coordinate.pdfPageWidth,
+        coordinate.pdfPageHeight
+      ] as number[];
+
+      expect(coordinate.documentType).toBe("DELIVERY_HANDOVER");
+      expect(coordinate.signingStage).toBe("STAGE2_DELIVERY_HANDOVER");
+      expect(coordinate.coordinateSystem).toBe("FADADA_800_1131_TOP_LEFT");
+      expect(coordinate.pageNumber).toBe(finalPageNumber);
+      expect(Number.isInteger(coordinate.pageNumber)).toBe(true);
+      expect(numericValues.every(Number.isFinite)).toBe(true);
+      expect(coordinate.pdfPageWidth).toBe(595.28);
+      expect(coordinate.pdfPageHeight).toBe(841.89);
+      expect(coordinate.x).toBeCloseTo(
+        ((signatureBox.x + signatureBox.width / 2) / 595.28) * 800,
+        3
+      );
+      expect(coordinate.y).toBeCloseTo(
+        ((signatureBox.y + signatureBox.height / 2) / 841.89) * 1131,
+        3
+      );
+      expect(coordinate.width).toBeCloseTo((signatureBox.width / 595.28) * 800, 3);
+      expect(coordinate.height).toBeCloseTo((signatureBox.height / 841.89) * 1131, 3);
+      expect(coordinate.x - coordinate.width / 2).toBeGreaterThanOrEqual(0);
+      expect(coordinate.x + coordinate.width / 2).toBeLessThanOrEqual(800);
+      expect(coordinate.y - coordinate.height / 2).toBeGreaterThanOrEqual(0);
+      expect(coordinate.y + coordinate.height / 2).toBeLessThanOrEqual(1131);
+    });
+    expect(new Set(coordinates.map((coordinate) => coordinate.pageNumber))).toEqual(
+      new Set([finalPageNumber])
+    );
+
+    for (const hiddenValue of [
+      "STAGE2_HANDOVER_CUSTOMER",
+      "STAGE2_HANDOVER_PLATFORM",
+      "STAGE2_DELIVERY_HANDOVER",
+      "FADADA_800_1131_TOP_LEFT",
+      "Render Diagnostics",
+      "objectKey",
+      "application-materials",
+      "signUrl",
+      "oss://",
+      "fadada"
+    ]) {
+      expect(visibleText.toLowerCase()).not.toContain(hiddenValue.toLowerCase());
+    }
+  });
+
+  it("keeps signing slots on the final page when operation tips paginate on a short supported page", async () => {
+    const renderer = new DeliveryHandoverPdfRendererService();
+    const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
+    const { textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+
+    const result = await renderer.render(model, {
+      cjkFontPath: process.execPath,
+      evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset: async () => Buffer.from("synthetic-jpeg"),
+      pageSize: [595.28, 320]
+    });
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+    const finalPageNumber = result.diagnostics.pageCount - 1;
+
+    expect(result.slotCoordinates.map((coordinate) => coordinate.pageNumber)).toEqual([
+      finalPageNumber,
+      finalPageNumber
+    ]);
+    expect(finalPageNumber).toBeGreaterThan(0);
+    for (const tip of model.operationTips) {
+      expect(visibleText).toContain(tip);
+    }
+    for (const hiddenValue of [
+      "STAGE2_HANDOVER_CUSTOMER",
+      "STAGE2_HANDOVER_PLATFORM",
+      "STAGE2_DELIVERY_HANDOVER",
+      "FADADA_800_1131_TOP_LEFT",
+      "Render Diagnostics"
+    ]) {
+      expect(visibleText).not.toContain(hiddenValue);
+    }
+  });
+
   it("lays out photo evidence four per page", async () => {
     const renderer = new DeliveryHandoverPdfRendererService();
     const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
@@ -249,6 +389,23 @@ describe("Stage 2 handover PDF renderer", () => {
 });
 
 describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
+  it("builds the current manifest from local metadata without storage or mutation calls", async () => {
+    const harness = createServiceHarness();
+
+    await expect(
+      harness.service.getCurrentEvidencePackage("work-order-1")
+    ).resolves.toMatchObject({
+      manifestHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/)
+    });
+
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.create).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.update).not.toHaveBeenCalled();
+    expect(harness.prisma.fileObject.create).not.toHaveBeenCalled();
+    expect(harness.prisma.vehicleDeliveryHandover.updateMany).not.toHaveBeenCalled();
+  });
+
   it("creates a generated handover contract PDF artifact without starting any e-sign task", async () => {
     const harness = createServiceHarness();
 
@@ -279,11 +436,32 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         uploadedBy: "admin-1"
       })
     });
+    expect(harness.prisma.contract.update).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        contractSnapshot: expect.objectContaining({
+          stage2HandoverPdfArtifact: {
+            artifactKind: "stage2-handover-pdf-source",
+            documentType: "DELIVERY_HANDOVER",
+            fileId: "file-pdf-1",
+            pageCount: 10,
+            signingStage: "STAGE2_DELIVERY_HANDOVER",
+            slotCoordinates: stage2ArtifactCoordinates()
+          }
+        }),
+        fileId: "file-pdf-1"
+      }),
+      where: { id: "contract-stage2-1" }
+    });
     expect(harness.prisma.vehicleDeliveryHandover.updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        artifactVersion: 1,
         handoverContractId: "contract-stage2-1",
+        manifestHash: currentManifestDigest(),
         sourceDocumentFileId: "file-pdf-1",
         sourceObjectKey: "contracts/contract-stage2-1/generated/handover.pdf",
+        sourcePdfHash: createHash("sha256")
+          .update(Buffer.from("%PDF-stage2-output"))
+          .digest("hex"),
         status: DeliveryHandoverStatus.SOURCE_GENERATED,
         updatedBy: "admin-1"
       }),
@@ -635,24 +813,30 @@ function createServiceHarness(options: {
     getChecklist: vi.fn(async () => createRenderModelInput().evidenceChecklist)
   };
   const renderer = {
-    renderToFile: vi.fn(async () => ({
-      cleanup: vi.fn(async () => undefined),
-      contentType: "application/pdf",
-      diagnostics: {
-        evidenceFileCount: 14,
-        evidenceItemCount: STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT,
-        hasCustomerSignatureArea: true,
-        hasEvidenceSummary: true,
-        hasPlatformSealArea: true,
-        pageCount: 10,
-        photoCount: 13,
-        targetBytesExceeded: false,
-        videoCount: 1
-      },
-      fileName: "handover.pdf",
-      filePath: "D:\\temp\\handover.pdf",
-      sizeBytes: generatedPdfBuffer.length
-    }))
+    renderToFile: vi.fn(async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "stage2-handover-test-"));
+      const filePath = path.join(directory, "handover.pdf");
+      await writeFile(filePath, generatedPdfBuffer);
+      return {
+        cleanup: vi.fn(async () => rm(directory, { force: true, recursive: true })),
+        contentType: "application/pdf",
+        diagnostics: {
+          evidenceFileCount: 14,
+          evidenceItemCount: STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT,
+          hasCustomerSignatureArea: true,
+          hasEvidenceSummary: true,
+          hasPlatformSealArea: true,
+          pageCount: 10,
+          photoCount: 13,
+          targetBytesExceeded: false,
+          videoCount: 1
+        },
+        fileName: "handover.pdf",
+        filePath,
+        sizeBytes: generatedPdfBuffer.length,
+        slotCoordinates: stage2ArtifactCoordinates()
+      };
+    })
   };
   const storageService = {
     deleteObject: vi.fn(async () => undefined),
@@ -695,4 +879,43 @@ function createServiceHarness(options: {
     ),
     storageService
   };
+}
+
+function stage2ArtifactCoordinates() {
+  return [
+    {
+      coordinateSource: "PDFKIT_RENDERER",
+      coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+      documentType: "DELIVERY_HANDOVER",
+      height: 90,
+      pageNumber: 9,
+      pdfPageHeight: 841.89,
+      pdfPageWidth: 595.28,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      width: 250,
+      x: 210,
+      y: 980
+    },
+    {
+      coordinateSource: "PDFKIT_RENDERER",
+      coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+      documentType: "DELIVERY_HANDOVER",
+      height: 90,
+      pageNumber: 9,
+      pdfPageHeight: 841.89,
+      pdfPageWidth: 595.28,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      slotId: "STAGE2_HANDOVER_PLATFORM",
+      width: 250,
+      x: 590,
+      y: 980
+    }
+  ];
+}
+
+function currentManifestDigest() {
+  return buildDeliveryHandoverPdfRenderModel(
+    createRenderModelInput()
+  ).evidencePackage.manifestHash.replace(/^sha256:/, "");
 }

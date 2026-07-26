@@ -15,7 +15,7 @@ Stage 2 represents:
 - a structured delivery evidence checklist;
 - the delivery confirmation gate before lease/billing start.
 
-This foundation generates the Stage 2 handover source PDF only. It does not execute provider calls, upload documents to Fadada, create signing URLs, start real eSign, send SMS/WeChat notifications, or activate live lease/billing data.
+The current backend implements the Stage 2 source PDF, readiness, typed Fadada mapping, Admin/Portal lifecycle, typed callback reconciliation, archive retry, and final-delivery evidence gate. Provider calls remain behind explicit Admin or customer actions; eSign does not automatically confirm delivery, write `actualDeliveryAt`, activate a lease, start billing, or run Stage 1 payment side effects.
 
 ## Invariants
 
@@ -32,7 +32,7 @@ This foundation generates the Stage 2 handover source PDF only. It does not exec
 - External field tokens are task-scoped only. They are never Admin authentication, and misuse against Admin routes should be rejected with 401/403 instead of a server error.
 - Ops review is a post-signing / QA / settlement review signal. It should not be started before customer signing, platform sealing, or field completion.
 - Delivery confirmation requires the Stage 2 handover to be signed.
-- Signed PDF archival is strongly required for evidence completeness, but a temporary archive failure is a visible warning/retry state rather than an absolute delivery confirmation blocker.
+- A complete signed PDF artifact is required for delivery evidence. With the current archive policy constant set to `false`, `archiveStatus=FAILED` is a visible warning/retry state only when the full signed artifact and identity chain already exist; a missing or inconsistent signed artifact blocks delivery.
 - Lease activation reports missing Stage 2 handover readiness before it can become eligible.
 - Billing remains protected by the existing `OrderStatus.ACTIVE` and `actualDeliveryAt` checks.
 - `actualDeliveryAt` is the server timestamp from successful Admin delivery confirmation and is the lease start source. Stage 2 customer/platform signing timestamps remain audit evidence only.
@@ -64,7 +64,7 @@ Prisma cannot express a portable partial unique constraint for "only one active 
 - reviewer and review timestamps
 - zero or more `VehicleDeliveryEvidenceFile` rows
 
-`VehicleDeliveryEvidenceFile` links an evidence item to an existing `FileObject`. This Phase 1 backend foundation stores photo/video references and review state; it does not embed photos or videos in the Stage 2 PDF.
+`VehicleDeliveryEvidenceFile` links an evidence item to an existing `FileObject`. Ready media metadata binds each source file by SHA-256 and identifies prepared JPEG derivatives. The accepted Stage 2 PDF embeds all photo preview derivatives at four photos per attachment page. For video, it renders the manifest entry and required JPEG keyframes; it does not embed the original video stream.
 
 Singleton evidence item duplication is guarded in service code. Damage close-up evidence is intentionally allowed to have multiple item rows/files.
 
@@ -113,7 +113,7 @@ Conditional damage evidence:
 - Rejected evidence blocks the field completeness gate until replaced or reprocessed.
 - Pending ops review does not block Stage 2 PDF/eSign in the current policy.
 
-The Stage 2 PDF should list checklist status and file references only. It must not embed the source photos or videos.
+The Stage 2 PDF contains the 14-row checklist summary plus the accepted media attachments. Photo derivatives are rendered four per page. A `WALKAROUND_VIDEO` entry must have four distinct keyframe derivatives; the PDF renders those keyframes together with duration, source SHA-256, and the protected evidence-package reference. The original video stream is not embedded.
 
 Field H5 upload stores files through private storage and `FileObject`, then attaches the returned safe `fileId` to a checklist item. H5 responses and view models must not render raw object storage keys.
 
@@ -140,13 +140,32 @@ The PDF includes:
 - condition confirmation and damage/no-damage field notes;
 - fee/deposit confirmation rows;
 - special notices preserved from the handover confirmation template semantics;
-- a 14-row evidence summary with safe file identifiers and display names only;
-- customer signature and platform seal/signature areas for later provider mapping;
+- a 14-row evidence summary with safe file identifiers and display names;
+- full photo derivative attachment pages, four photos per page;
+- video manifest details and four required `WALKAROUND_VIDEO` keyframes, without embedding the original video stream;
+- renderer-owned customer signature and platform seal/signature areas;
 - operation tips.
 
 The protected signing PDF contains the full customer mobile and identity number, the full lessor operator contact phone, and the full VIN, because it is part of the subscription contract and must identify the signing parties and vehicle unambiguously. Portal, field, queue, and other API views remain masked. Neither the PDF nor API views may expose raw object storage keys, buckets, private storage paths, signing URLs, provider payloads, SMS/WeChat data, or finance internals.
 
-Visual acceptance for this stage must confirm PDF content, table layout, signature areas, and evidence summary before Stage 2 Fadada upload/signing coordinate mapping begins.
+PDF visual acceptance has passed for the current renderer, including content, tables, photo attachments, video manifest/keyframes, and the final signature page. The mapping and lifecycle now consume the persisted renderer-owned coordinates. See `docs/stage2-esign-provider-mapping.md`.
+
+## Stage 2 eSign Mapping And Lifecycle
+
+The exact mapping is:
+
+| Stage | Document | Slot | Role | Action | Provider API |
+| --- | --- | --- | --- | --- | --- |
+| `STAGE2_DELIVERY_HANDOVER` | `DELIVERY_HANDOVER` | `STAGE2_HANDOVER_CUSTOMER` | `CUSTOMER` | `CUSTOMER_MANUAL_SIGN` | `extsign.api` |
+| `STAGE2_DELIVERY_HANDOVER` | `DELIVERY_HANDOVER` | `STAGE2_HANDOVER_PLATFORM` | `PLATFORM` | `PLATFORM_AUTO_SEAL` | `extsign_auto.api` |
+
+There is exactly one customer transaction and one platform transaction. The generated artifact persists `FADADA_800_1131_TOP_LEFT` coordinates owned by the PDFKit renderer: page numbers are zero-based, both slots must be on the final page, and `x`/`y` identify the center of each rendered box. The internal source-PDF hard limit is 18 MiB; provider upload and signed-download validation use the 20 MB provider limit.
+
+Readiness returns stable blocker codes for current Stage 1 contract, order/work-order state, customer confirmation and field-fact snapshot, evidence/manifest identity, source contract/PDF/hash/slots, customer provider/certificate freshness, platform configuration, and active-task conflict. It is local and fail-closed.
+
+Verified callbacks correlate by typed `providerTransactionId`. The implementation sanitizes sensitive fields and URLs, sorts object keys, hashes the canonical sanitized payload, and deduplicates by provider plus payload hash. Customer and platform callbacks may arrive in either order; Serializable reconciliation re-reads the exact two-signer set and completes only after both required signers are signed.
+
+Archive uses an atomic claim with a five-minute default stale lease/reclaim, validates PDF MIME, magic, and size, records the signed SHA-256, and supports explicit retry. Signed objects use content-addressed identities, are rebound to the active claim before storage write, and are conditionally removed when DB finalization is known not to have committed.
 
 ## Portal Customer Review
 
@@ -158,8 +177,10 @@ After the field operator submits evidence, Portal customer review becomes availa
 - `GET /portal/handover-reviews/:id/evidence-files/:evidenceFileId/download`
 - `POST /portal/handover-reviews/:id/confirm`
 - `POST /portal/handover-reviews/:id/object`
+- `GET /portal/handover-reviews/:id/esign`
+- `POST /portal/handover-reviews/:id/esign/signing/start`
 
-The Portal APIs require customer auth and filter by `order.customerId`. They expose safe review DTOs only: order number, work-order status, handover type/status, scheduled/location fields, field submitted time, masked customer phone, masked plate, VIN suffix, field facts, evidence checklist labels/status/file counts, safe `fileId` metadata, and Portal proxy preview/download URLs. They must not expose object storage keys, bucket paths, provider payloads, signing URLs, finance/payment/deposit fields, tokens, cookies, full phone numbers, or full identity numbers.
+The Portal APIs require customer auth and filter by `order.customerId`. Review and eSign status DTOs do not expose a signing URL, provider payload, storage locator, finance/payment/deposit fields, credentials, full phone numbers, or full identity numbers. Only the intentional customer-owned signing-start command may return a short-lived URL and expiry. Provider failures and customer blockers are mapped to stable Portal-safe errors. The Stage 2 eSign surface has no optional signed-document preview route.
 
 Customer confirmation is allowed only from `EVIDENCE_SUBMITTED` or `CUSTOMER_REVIEWING`. It records `customerConfirmedAt`, clears objection fields, and makes Stage 2 PDF/eSign readiness true if evidence and field facts remain complete. It does not generate a PDF, create a contract, start eSign, call Fadada, confirm delivery, start lease, or start billing.
 
@@ -242,7 +263,7 @@ FIELD_COMPLETENESS + CUSTOMER_NO_OBJECTION + NOT_OBJECTED_OR_CANCELLED
 
 Field completeness requires required files uploaded, field facts completed, damage/no-damage state resolved, and the field operator submitted the work order. Customer no-objection confirmation is required before Stage 2 PDF/eSign. Ops review may be pending or rejected without blocking PDF/eSign; it remains a back-office QA/settlement signal.
 
-Portal review detail may show "not ready" before customer confirmation or after customer objection. That readiness state is a gate only; it should not be interpreted as PDF/eSign provider failure because this phase does not call providers or create signing tasks.
+Portal review detail may show "not ready" before customer confirmation or after customer objection. Readiness blockers are distinct from mapped provider URL failures. A status read never refreshes or exposes a signing URL.
 
 Ops review pending may be requested only from `CUSTOMER_SIGNED`, `PLATFORM_SEALED`, `FIELD_COMPLETED`, `OPS_REVIEW_PENDING`, or `OPS_REVIEWED`. It must be blocked from draft, assigned, field-in-progress, customer-reviewing, customer-confirmed, customer-objected, and terminal work-order states.
 
@@ -252,7 +273,9 @@ Current delivery confirmation gate:
 STAGE2_HANDOVER_SIGNED + FIELD_COMPLETENESS + CUSTOMER_NO_OBJECTION + NOT_OBJECTED_OR_CANCELLED
 ```
 
-Delivery cannot be confirmed until the Stage 2 handover is signed and the work order/evidence/customer confirmation gates are satisfied. If the signed PDF archive is missing or failed after signing, the task must expose the archive risk and retry path, but the temporary archive issue is not an absolute delivery confirmation blocker.
+Delivery cannot be confirmed until the Stage 2 handover, typed task, exact two required signer rows, source/signed PDF identities, SHA-256 bindings, current evidence-to-signed manifest bridge, and work-order/evidence/customer confirmation gates are satisfied. A missing signed artifact blocks. With `DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION=false`, `archiveStatus=FAILED` is warning-only when that complete signed state exists.
+
+Final delivery remains an explicit Admin action. Its transaction uses `READ COMMITTED`, obtains fixed parent-to-child `FOR UPDATE` locks over all mutable gate rows, re-reads readiness, and only then writes delivery, order, vehicle, and `actualDeliveryAt` state. Stage 2 eSign itself never performs those writes.
 
 Lease start policy:
 
@@ -267,13 +290,13 @@ Void/rebuild foundation:
 - Failed, cancelled, or voided handovers remain as historical evidence.
 - A new active handover may supersede a cancelled/failed one.
 - Only the latest active handover can satisfy the delivery/evidence gate.
-- If the customer has signed but the platform has not sealed, void/rebuild is allowed.
+- An active task with any accepted provider transaction cannot be locally voided without a confirmed provider cancellation path. Failed, cancelled, or expired terminal tasks may still use the explicit void/rebuild path.
 - Old artifacts/tasks should not be deleted.
 
 ## Open Items
 
-- Final legal handover wording/template approval after visual acceptance.
-- Stage 2 Fadada provider upload/signing/auto-seal mapping after the PDF is visually accepted.
+- Controlled sandbox validation is still required; this documentation round used no real provider or database.
+- Sandbox questions: duplicate transaction idempotency, callback retry/out-of-order behavior, auto-seal authorization validity, sign-to-download delay, and archive/filing idempotency.
+- Controlled storage validation for content-addressed overwrite behavior, cleanup permissions, and lifecycle retention.
 - Admin void/escalation policy beyond the basic objection resubmission loop.
-- Admin/Portal UX for signing, archive retry, and signed PDF review.
-- Portal signed handover PDF viewing/downloading after archive is available.
+- Portal has no optional Stage 2 signed-document preview in the implemented API surface.

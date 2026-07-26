@@ -57,7 +57,20 @@ Submit is blocked until:
 
 On first success, the work order moves to customer review. On Admin-requested resubmission after a customer objection, the work order stays blocked for Admin review until Admin sends it back to customer review. Customer Portal review is a separate downstream phase: confirming no objection only unlocks Stage 2 PDF/eSign readiness; submitting an objection blocks Stage 2 readiness and requires Admin follow-up. Stage 2 source PDF generation, eSign, delivery confirmation, lease, and billing remain unavailable from the field H5 flow.
 
-The later Admin-generated Stage 2 source PDF summarizes the 14 evidence checklist rows and safe file identifiers. It must not embed field photos/videos or expose object storage keys, buckets, signing URLs, provider payloads, tokens, full phone numbers, or full identity numbers.
+The Admin-generated Stage 2 source PDF summarizes all 14 checklist rows and binds the canonical evidence manifest. The accepted renderer embeds prepared photo JPEG derivatives at four photos per attachment page. For `WALKAROUND_VIDEO`, readiness requires four distinct keyframe derivatives and the PDF renders those frames with video metadata and source SHA-256; it does not embed the original video stream. Storage locators, provider payloads, and credentials remain excluded.
+
+## Downstream eSign Boundary
+
+Field H5 still cannot start eSign. After customer confirmation and Admin PDF generation, the separate Stage 2 lifecycle uses:
+
+- `STAGE2_DELIVERY_HANDOVER` / `DELIVERY_HANDOVER`;
+- customer slot `STAGE2_HANDOVER_CUSTOMER` through one `CUSTOMER_MANUAL_SIGN` transaction;
+- platform slot `STAGE2_HANDOVER_PLATFORM` through one `PLATFORM_AUTO_SEAL` transaction;
+- renderer-owned `FADADA_800_1131_TOP_LEFT` final-page, zero-based, box-center coordinates.
+
+The eSign readiness gate rechecks the latest customer-confirmed field-facts snapshot and canonical evidence manifest against the current work order. Any field or evidence change after confirmation makes readiness fail closed until the review/PDF identity is rebuilt. Stable blocker codes are returned to Admin; Portal sees only safe mapped blockers. See `docs/stage2-esign-provider-mapping.md`.
+
+eSign completion and archive do not confirm delivery, write `actualDeliveryAt`, activate a lease, start billing, or run Stage 1 `PENDING_PAYMENT` behavior. Final delivery remains an explicit Admin action after the signed artifact and current manifest bridge pass.
 
 The upstream Admin readiness path must distinguish:
 

@@ -446,7 +446,11 @@ function createStage2HandoverE2EHarness() {
   const portalReviewService = new PortalHandoverReviewService(
     prisma as never,
     evidenceService as unknown as DeliveryEvidenceService,
-    workOrderService
+    workOrderService,
+    {
+      getPortalStatus: vi.fn(),
+      startPortalSigning: vi.fn()
+    } as never
   );
 
   return {

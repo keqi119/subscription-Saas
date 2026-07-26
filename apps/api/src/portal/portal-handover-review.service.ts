@@ -7,6 +7,7 @@ import {
   STAGE2_EVIDENCE_CONFIRMATION_TEXT
 } from "../delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { Stage2HandoverESignService } from "../handover-work-order/stage2-handover-esign.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
@@ -72,7 +73,8 @@ export class PortalHandoverReviewService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveryEvidenceService: DeliveryEvidenceService,
-    private readonly handoverWorkOrderService: HandoverWorkOrderService
+    private readonly handoverWorkOrderService: HandoverWorkOrderService,
+    private readonly stage2HandoverESignService: Stage2HandoverESignService
   ) {}
 
   async listReviews(currentCustomer: CurrentCustomer) {
@@ -97,6 +99,22 @@ export class PortalHandoverReviewService {
   async getReview(id: string, currentCustomer: CurrentCustomer) {
     const workOrder = await this.findVisibleReviewOrThrow(id, currentCustomer.customerId);
     return this.toReviewDetail(workOrder);
+  }
+
+  async getESignStatus(id: string, currentCustomer: CurrentCustomer) {
+    await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
+    return this.stage2HandoverESignService.getPortalStatus(
+      id,
+      currentCustomer.customerId
+    );
+  }
+
+  async startESignSigning(id: string, currentCustomer: CurrentCustomer) {
+    await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
+    return this.stage2HandoverESignService.startPortalSigning(
+      id,
+      currentCustomer.customerId
+    );
   }
 
   async previewEvidenceFile(id: string, evidenceFileId: string, currentCustomer: CurrentCustomer) {

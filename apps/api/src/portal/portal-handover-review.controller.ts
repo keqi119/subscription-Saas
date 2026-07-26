@@ -28,6 +28,25 @@ export class PortalHandoverReviewController {
     return this.portalHandoverReviewService.getReview(id, currentCustomer);
   }
 
+  @Get(":id/esign")
+  getESignStatus(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
+  ) {
+    return this.portalHandoverReviewService.getESignStatus(id, currentCustomer);
+  }
+
+  @Post(":id/esign/signing/start")
+  startESignSigning(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
+  ) {
+    return this.portalHandoverReviewService.startESignSigning(
+      id,
+      currentCustomer
+    );
+  }
+
   @Get(":id/evidence-files/:evidenceFileId/preview")
   async previewEvidenceFile(
     @Param("id") id: string,

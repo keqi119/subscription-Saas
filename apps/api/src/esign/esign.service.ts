@@ -7,13 +7,18 @@ import {
   Optional
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { createHash } from "node:crypto";
 import {
   AuditAction,
   ContractStatus,
   DeliveryHandoverStatus,
+  ESignDocumentType as PrismaESignDocumentType,
+  ESignProviderActionType as PrismaESignProviderActionType,
   ESignProviderType,
   ESignSignerStatus,
   ESignSignerType,
+  ESignSigningStage as PrismaESignSigningStage,
+  ESignSlotId as PrismaESignSlotId,
   ESignTaskStatus,
   NotificationEventType,
   NotificationType,
@@ -133,6 +138,7 @@ const CALLBACK_COMPLETED_EVENTS = new Set([
 const FADADA_FAILED_EVENT = "FADADA_SIGN_FAILED";
 const FADADA_REJECTED_EVENT = "FADADA_SIGN_REJECTED";
 const FADADA_UNKNOWN_EVENT = "FADADA_SIGN_UNKNOWN";
+const STAGE2_CALLBACK_TRANSACTION_ATTEMPTS = 3;
 const ENTERPRISE_AUTO_SEAL_ENABLED_ENV = "ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED";
 const STAGE1_MULTI_SLOT_ENABLED_ENV = "ESIGN_STAGE1_MULTI_SLOT_ENABLED";
 const PLATFORM_SEAL_KEYWORD_ENV = "ESIGN_PLATFORM_SEAL_KEYWORD";
@@ -672,48 +678,92 @@ export class ESignService {
     const resultCode = verified.resultCode ?? stringOrNull(record.result_code);
     const resultDescription = verified.resultDescription ?? stringOrNull(record.result_desc);
     const eventType = verified.eventType ?? stringOrNull(record.eventType);
+    const sanitizedPayload = sanitizeCallbackPayloadForLog(verified.payload);
 
     if (!verified.verified) {
       await this.recordUnverifiedCallback({
         eventType,
-        payload: verified.payload,
+        payload: sanitizedPayload,
         provider,
         providerTaskId
       });
       return { handled: false, reason: "UNVERIFIED" };
     }
 
+    const normalizedProviderTransactionId = normalizeProviderTransactionId(providerTaskId);
+    const stage2Context = await this.findTypedStage2CallbackContext(
+      provider,
+      normalizedProviderTransactionId,
+      providerContractId
+    );
+    if (stage2Context) {
+      if (!stage2Context.signer) {
+        return this.recordUnknownVerifiedCallback({
+          eventType,
+          payload: sanitizedPayload,
+          provider,
+          providerTransactionId: normalizedProviderTransactionId,
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          taskId: stage2Context.task.id
+        });
+      }
+      const payloadHash = hashCanonicalPayload(sanitizedPayload);
+      const callbackClaim = await this.claimStage2CallbackLog({
+        eventType,
+        payload: sanitizedPayload,
+        payloadHash,
+        provider,
+        providerTransactionId: normalizedProviderTransactionId,
+        taskId: stage2Context.task.id
+      });
+      if (callbackClaim.duplicate) {
+        return {
+          handled: true,
+          idempotent: true,
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          taskId: stage2Context.task.id
+        };
+      }
+      return this.handleTypedStage2FadadaCallback({
+        callbackLogId: callbackClaim.id,
+        eventType,
+        resultCode,
+        sanitizedPayload,
+        signerId: stage2Context.signer.id,
+        taskId: stage2Context.task.id
+      });
+    }
+
     const task = await this.findCallbackTask(provider, providerTaskId, providerContractId);
+    if (task && isTypedStage2Task(task)) {
+      return this.recordUnknownVerifiedCallback({
+        eventType,
+        payload: sanitizedPayload,
+        provider,
+        providerTransactionId: normalizedProviderTransactionId,
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        taskId: task.id
+      });
+    }
+    if (!task) {
+      return this.recordUnknownVerifiedCallback({
+        eventType,
+        payload: sanitizedPayload,
+        provider,
+        providerTransactionId: normalizedProviderTransactionId
+      });
+    }
 
     const callbackLog = await this.prisma.contractESignCallbackLog.create({
       data: {
         eventType,
-        payload: toJsonValue(verified.payload),
+        payload: toJsonValue(sanitizedPayload),
         provider,
         providerTaskId,
-        taskId: task?.id,
+        taskId: task.id,
         verified: verified.verified
       }
     });
-
-    if (!task) {
-      await this.prisma.contractESignCallbackLog.update({
-        data: {
-          errorMessage: "未找到对应电子签任务。",
-          handled: true,
-          handledAt: new Date()
-        },
-        where: { id: callbackLog.id }
-      });
-      await this.prisma.contractESignCallbackLog.update({
-        data: {
-          handled: false,
-          handledAt: null
-        },
-        where: { id: callbackLog.id }
-      });
-      return { handled: false, reason: "TASK_NOT_FOUND" };
-    }
 
     if (provider === ESignProviderType.FADADA) {
       return this.handleFadadaCallback({
@@ -723,7 +773,7 @@ export class ESignService {
         providerTaskId,
         resultCode,
         resultDescription,
-        sanitizedPayload: verified.payload,
+        sanitizedPayload,
         task
       });
     }
@@ -745,7 +795,7 @@ export class ESignService {
       }
       const completed = await this.completeTask(task.id, {
         callbackLogId: callbackLog.id,
-        callbackPayload: verified.payload,
+        callbackPayload: sanitizedPayload,
         eventType,
         providerTaskId,
         source: "provider_callback"
@@ -765,6 +815,509 @@ export class ESignService {
     });
 
     return { handled: true };
+  }
+
+  private async recordUnknownVerifiedCallback(input: {
+    eventType?: string | null;
+    payload: unknown;
+    provider: ESignProviderType;
+    providerTransactionId?: string | null;
+    signingStage?: "STAGE2_DELIVERY_HANDOVER";
+    taskId?: string;
+  }) {
+    const callbackClaim = await this.claimStage2CallbackLog({
+      eventType: input.eventType,
+      payload: input.payload,
+      payloadHash: hashCanonicalPayload(input.payload),
+      provider: input.provider,
+      providerTransactionId: input.providerTransactionId,
+      taskId: input.taskId
+    });
+    if (callbackClaim.duplicate) {
+      return {
+        handled: true,
+        idempotent: true,
+        ...(input.signingStage ? { signingStage: input.signingStage } : {}),
+        ...(input.taskId ? { taskId: input.taskId } : {})
+      };
+    }
+    await this.prisma.contractESignCallbackLog.update({
+      data: {
+        errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+        handled: true,
+        handledAt: new Date()
+      },
+      where: { id: callbackClaim.id }
+    });
+    return { handled: false, reason: "TASK_NOT_FOUND" as const };
+  }
+
+  private async findTypedStage2CallbackContext(
+    provider: ESignProviderType,
+    providerTransactionId?: string | null,
+    providerContractId?: string | null
+  ) {
+    if (providerTransactionId) {
+      const signer = await this.prisma.contractESignSigner.findFirst({
+        include: {
+          task: {
+            include: esignTaskInclude
+          }
+        },
+        where: {
+          deletedAt: null,
+          documentType: PrismaESignDocumentType.DELIVERY_HANDOVER,
+          providerTransactionId,
+          slotId: {
+            in: [
+              PrismaESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+              PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM
+            ]
+          }
+        }
+      });
+      if (
+        signer?.task &&
+        signer.task.provider === provider &&
+        isTypedStage2Task(signer.task) &&
+        isTypedStage2Signer(signer) &&
+        taskMatchesProviderContract(signer.task, providerContractId)
+      ) {
+        return {
+          signer,
+          task: signer.task
+        };
+      }
+    }
+
+    if (!providerContractId) {
+      return null;
+    }
+    const task = await this.prisma.contractESignTask.findFirst({
+      include: esignTaskInclude,
+      where: {
+        OR: [
+          { providerEnvelopeId: providerContractId },
+          { taskNo: providerContractId }
+        ],
+        deletedAt: null,
+        documentType: PrismaESignDocumentType.DELIVERY_HANDOVER,
+        provider,
+        signingStage: PrismaESignSigningStage.STAGE2_DELIVERY_HANDOVER
+      }
+    });
+    return task
+      ? {
+          signer: null,
+          task
+        }
+      : null;
+  }
+
+  private async claimStage2CallbackLog(input: {
+    eventType?: string | null;
+    payload: unknown;
+    payloadHash: string;
+    provider: ESignProviderType;
+    providerTransactionId?: string | null;
+    taskId?: string;
+  }): Promise<{ duplicate: boolean; id: string }> {
+    try {
+      const callbackLog = await this.prisma.contractESignCallbackLog.create({
+        data: {
+          eventType: input.eventType,
+          payload: toJsonValue(input.payload),
+          payloadHash: input.payloadHash,
+          provider: input.provider,
+          providerTaskId: input.providerTransactionId,
+          providerTransactionId: input.providerTransactionId,
+          taskId: input.taskId,
+          verified: true
+        }
+      });
+      return {
+        duplicate: false,
+        id: callbackLog.id
+      };
+    } catch (error) {
+      if (!isPrismaUniqueConstraintError(error)) {
+        throw error;
+      }
+      const existing = await this.prisma.contractESignCallbackLog.findUnique({
+        where: {
+          provider_payloadHash: {
+            payloadHash: input.payloadHash,
+            provider: input.provider
+          }
+        }
+      });
+      if (!existing) {
+        throw error;
+      }
+      return {
+        duplicate: existing.handled,
+        id: existing.id
+      };
+    }
+  }
+
+  private async handleTypedStage2FadadaCallback(input: {
+    callbackLogId: string;
+    eventType?: string | null;
+    resultCode?: string | null;
+    sanitizedPayload: unknown;
+    signerId: string;
+    taskId: string;
+  }) {
+    const now = new Date();
+    return this.runStage2CallbackReconciliation(async (tx) => {
+      const task = await tx.contractESignTask.findUnique({
+        include: esignTaskInclude,
+        where: { id: input.taskId }
+      });
+      if (!task || task.deletedAt || !isTypedStage2Task(task)) {
+        await tx.contractESignCallbackLog.update({
+          data: {
+            errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+            handled: true,
+            handledAt: now
+          },
+          where: { id: input.callbackLogId }
+        });
+        return { handled: false, reason: "TASK_NOT_FOUND" };
+      }
+
+      const requiredSigners = requireTypedStage2RequiredSigners(task);
+      const signer = requiredSigners.find((item) => item.id === input.signerId);
+      if (!signer) {
+        await tx.contractESignCallbackLog.update({
+          data: {
+            errorMessage: "ESIGN_CALLBACK_TRANSACTION_NOT_FOUND",
+            handled: true,
+            handledAt: now
+          },
+          where: { id: input.callbackLogId }
+        });
+        return { handled: false, reason: "TASK_NOT_FOUND" };
+      }
+
+      if (task.taskStatus === ESignTaskStatus.COMPLETED) {
+        await tx.contractESignCallbackLog.update({
+          data: {
+            handled: true,
+            handledAt: now
+          },
+          where: { id: input.callbackLogId }
+        });
+        return {
+          handled: true,
+          idempotent: true,
+          signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+          taskId: task.id
+        };
+      }
+      if (BLOCKED_COMPLETE_ESIGN_TASK_STATUSES.includes(task.taskStatus)) {
+        await tx.contractESignCallbackLog.update({
+          data: {
+            errorMessage: "FADADA_TERMINAL_CONFLICT_IGNORED",
+            handled: true,
+            handledAt: now
+          },
+          where: { id: input.callbackLogId }
+        });
+        return {
+          handled: true,
+          ignored: true,
+          reason: "TERMINAL_TASK_CONFLICT",
+          signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+          taskId: task.id
+        };
+      }
+
+      if (
+        input.eventType === FADADA_FAILED_EVENT ||
+        input.eventType === FADADA_REJECTED_EVENT
+      ) {
+        if (
+          signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM &&
+          signer.providerActionType ===
+            PrismaESignProviderActionType.PLATFORM_AUTO_SEAL
+        ) {
+          await tx.contractESignSigner.update({
+            data: {
+              lastErrorCode: "FADADA_STAGE2_PLATFORM_SEAL_FAILED",
+              lastErrorMessage:
+                "The Stage 2 platform seal was not completed and can be retried.",
+              nextRetryAt: now,
+              rejectReason: null,
+              rejectedAt: null,
+              signerStatus: ESignSignerStatus.PENDING
+            },
+            where: { id: signer.id }
+          });
+          await tx.contractESignTask.update({
+            data: {
+              callbackSnapshot: toJsonValue(input.sanitizedPayload),
+              errorSnapshot: toJsonValue({
+                code: "FADADA_STAGE2_PLATFORM_SEAL_FAILED",
+                slotId: signer.slotId
+              }),
+              failedAt: null,
+              taskStatus: ESignTaskStatus.SIGNING
+            },
+            where: { id: task.id }
+          });
+          await tx.vehicleDeliveryHandover.updateMany({
+            data: {
+              failedAt: null,
+              failureReason:
+                "Stage 2 platform seal failed and can be retried.",
+              status: DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+            },
+            where: {
+              deletedAt: null,
+              handoverContractId: task.contractId,
+              handoverESignTaskId: task.id
+            }
+          });
+          await tx.contractESignCallbackLog.update({
+            data: {
+              handled: true,
+              handledAt: now
+            },
+            where: { id: input.callbackLogId }
+          });
+          return {
+            handled: true,
+            signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+            taskId: task.id
+          };
+        }
+        await tx.contractESignSigner.update({
+          data: {
+            lastErrorCode:
+              input.eventType === FADADA_REJECTED_EVENT
+                ? "FADADA_STAGE2_SIGN_REJECTED"
+                : "FADADA_STAGE2_SIGN_FAILED",
+            lastErrorMessage: "The Stage 2 signing action was not completed.",
+            ...(input.eventType === FADADA_REJECTED_EVENT
+              ? {
+                  rejectReason: "The provider rejected the Stage 2 signing action.",
+                  rejectedAt: now,
+                  signerStatus: ESignSignerStatus.REJECTED
+                }
+              : {})
+          },
+          where: { id: signer.id }
+        });
+        await tx.contractESignTask.update({
+          data: {
+            callbackSnapshot: toJsonValue(input.sanitizedPayload),
+            errorSnapshot: toJsonValue({
+              code:
+                input.eventType === FADADA_REJECTED_EVENT
+                  ? "FADADA_STAGE2_SIGN_REJECTED"
+                  : "FADADA_STAGE2_SIGN_FAILED",
+              slotId: signer.slotId
+            }),
+            failedAt: task.failedAt ?? now,
+            taskStatus: ESignTaskStatus.FAILED
+          },
+          where: { id: task.id }
+        });
+        await tx.vehicleDeliveryHandover.updateMany({
+          data: {
+            failedAt: now,
+            failureReason: "Stage 2 eSign provider action failed.",
+            status: DeliveryHandoverStatus.FAILED
+          },
+          where: {
+            deletedAt: null,
+            handoverContractId: task.contractId,
+            handoverESignTaskId: task.id
+          }
+        });
+        await tx.contractESignCallbackLog.update({
+          data: {
+            handled: true,
+            handledAt: now
+          },
+          where: { id: input.callbackLogId }
+        });
+        return {
+          handled: true,
+          signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+          taskId: task.id
+        };
+      }
+
+      if (input.eventType !== "FADADA_SIGN_COMPLETED" || !input.resultCode) {
+        if (
+          signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM &&
+          signer.providerActionType ===
+            PrismaESignProviderActionType.PLATFORM_AUTO_SEAL
+        ) {
+          await tx.contractESignSigner.update({
+            data: {
+              lastErrorCode: "FADADA_STAGE2_PLATFORM_RESULT_UNKNOWN",
+              lastErrorMessage:
+                "The Stage 2 platform seal result is unknown and can be retried.",
+              nextRetryAt: now,
+              signerStatus: ESignSignerStatus.PENDING
+            },
+            where: { id: signer.id }
+          });
+          await tx.contractESignTask.update({
+            data: {
+              callbackSnapshot: toJsonValue(input.sanitizedPayload),
+              errorSnapshot: toJsonValue({
+                code: "FADADA_STAGE2_PLATFORM_RESULT_UNKNOWN",
+                resultCode: sanitizeCallbackCode(input.resultCode),
+                slotId: signer.slotId
+              }),
+              failedAt: null,
+              taskStatus: ESignTaskStatus.SIGNING
+            },
+            where: { id: task.id }
+          });
+          await tx.vehicleDeliveryHandover.updateMany({
+            data: {
+              failedAt: null,
+              failureReason:
+                "Stage 2 platform seal result is unknown and can be retried.",
+              status: DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+            },
+            where: {
+              deletedAt: null,
+              handoverContractId: task.contractId,
+              handoverESignTaskId: task.id
+            }
+          });
+        }
+        await tx.contractESignCallbackLog.update({
+          data: {
+            errorMessage: `FADADA_UNKNOWN_RESULT_CODE:${sanitizeCallbackCode(input.resultCode)}`,
+            handled: true,
+            handledAt: now
+          },
+          where: { id: input.callbackLogId }
+        });
+        return {
+          handled: false,
+          reason: "UNKNOWN_RESULT_CODE",
+          signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+          taskId: task.id
+        };
+      }
+
+      if (signer.signerStatus !== ESignSignerStatus.SIGNED) {
+        await tx.contractESignSigner.update({
+          data: {
+            claimExpiresAt: null,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            nextRetryAt: null,
+            signedAt: now,
+            signerStatus: ESignSignerStatus.SIGNED
+          },
+          where: { id: signer.id }
+        });
+      }
+
+      const refreshed = await tx.contractESignTask.findUniqueOrThrow({
+        include: esignTaskInclude,
+        where: { id: task.id }
+      });
+      const refreshedRequiredSigners = requireTypedStage2RequiredSigners(refreshed);
+      const customerSigner = refreshedRequiredSigners.find(
+        (item) => item.slotId === PrismaESignSlotId.STAGE2_HANDOVER_CUSTOMER
+      )!;
+      const platformSigner = refreshedRequiredSigners.find(
+        (item) => item.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM
+      )!;
+      const customerSigned =
+        customerSigner.signerStatus === ESignSignerStatus.SIGNED;
+      const platformSigned =
+        platformSigner.signerStatus === ESignSignerStatus.SIGNED;
+      const completed = customerSigned && platformSigned;
+
+      await tx.contractESignTask.update({
+        data: {
+          callbackSnapshot: toJsonValue(input.sanitizedPayload),
+          completedAt: completed ? refreshed.completedAt ?? now : null,
+          taskStatus: completed
+            ? ESignTaskStatus.COMPLETED
+            : ESignTaskStatus.SIGNING
+        },
+        where: { id: refreshed.id }
+      });
+      const handoverUpdate = await tx.vehicleDeliveryHandover.updateMany({
+        data: {
+          completedAt: completed ? refreshed.completedAt ?? now : null,
+          customerSignedAt: customerSigned ? customerSigner.signedAt ?? now : null,
+          platformSignedAt: platformSigned ? platformSigner.signedAt ?? now : null,
+          status: completed
+            ? DeliveryHandoverStatus.SIGNED
+            : customerSigned
+              ? DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+              : DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE
+        },
+        where: {
+          deletedAt: null,
+          handoverContractId: refreshed.contractId,
+          handoverESignTaskId: refreshed.id
+        }
+      });
+      if (handoverUpdate.count !== 1) {
+        throw new BadRequestException("ESIGN_STAGE2_HANDOVER_POINTER_INVALID");
+      }
+      if (completed) {
+        await tx.contract.update({
+          data: {
+            signedAt: refreshed.contract.signedAt ?? now,
+            status: ContractStatus.SIGNED
+          },
+          where: { id: refreshed.contractId }
+        });
+      }
+      await tx.contractESignCallbackLog.update({
+        data: {
+          handled: true,
+          handledAt: now
+        },
+        where: { id: input.callbackLogId }
+      });
+
+      return {
+        handled: true,
+        signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+        taskId: refreshed.id
+      };
+    });
+  }
+
+  private async runStage2CallbackReconciliation<T>(
+    callback: (tx: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    for (
+      let attempt = 1;
+      attempt <= STAGE2_CALLBACK_TRANSACTION_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(callback, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        });
+      } catch (error) {
+        if (
+          !isPrismaSerializationConflict(error) ||
+          attempt === STAGE2_CALLBACK_TRANSACTION_ATTEMPTS
+        ) {
+          throw error;
+        }
+      }
+    }
+    throw new Error("ESIGN_STAGE2_CALLBACK_RECONCILIATION_EXHAUSTED");
   }
 
   private async recordUnverifiedCallback(input: {
@@ -1561,7 +2114,10 @@ export class ESignService {
 
     const platformSigner = getPlatformSigner(task);
     const transactionId = platformSigner?.providerSignerId ?? buildProviderTransactionId(task.taskNo, 2);
-    if (!this.provider.autoSealTask) {
+    if (
+      !this.provider.autoSealTask ||
+      task.provider === ESignProviderType.MOCK
+    ) {
       return this.recordPlatformAutoSealFailure(task.id, {
         errorMessage: "ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED",
         providerSignerId: transactionId,
@@ -1616,7 +2172,10 @@ export class ESignService {
   ) {
     const platformSigners = getStage1PlatformSlotSigners(task);
     const transactionId = buildProviderTransactionId(task.taskNo, 2);
-    if (!this.provider.autoSealTask) {
+    if (
+      !this.provider.autoSealTask ||
+      task.provider === ESignProviderType.MOCK
+    ) {
       return this.recordPlatformAutoSealFailure(task.id, {
         errorMessage: "ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED",
         providerSignerId: transactionId,
@@ -2272,6 +2831,140 @@ function readSnapshotValue(snapshot: unknown, key: string) {
     return undefined;
   }
   return (snapshot as Record<string, unknown>)[key];
+}
+
+function isTypedStage2Task(task: ESignTaskWithDetails) {
+  return (
+    task.signingStage === PrismaESignSigningStage.STAGE2_DELIVERY_HANDOVER &&
+    task.documentType === PrismaESignDocumentType.DELIVERY_HANDOVER
+  );
+}
+
+function isTypedStage2Signer(
+  signer: ESignTaskWithDetails["signers"][number]
+) {
+  if (
+    signer.deletedAt ||
+    !signer.required ||
+    signer.documentType !== PrismaESignDocumentType.DELIVERY_HANDOVER ||
+    !normalizeProviderTransactionId(signer.providerTransactionId)
+  ) {
+    return false;
+  }
+  if (signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_CUSTOMER) {
+    return (
+      signer.providerActionType ===
+        PrismaESignProviderActionType.CUSTOMER_MANUAL_SIGN &&
+      signer.signerType === ESignSignerType.CUSTOMER
+    );
+  }
+  if (signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM) {
+    return (
+      signer.providerActionType ===
+        PrismaESignProviderActionType.PLATFORM_AUTO_SEAL &&
+      signer.signerType === ESignSignerType.PLATFORM
+    );
+  }
+  return false;
+}
+
+function requireTypedStage2RequiredSigners(task: ESignTaskWithDetails) {
+  const signers = task.signers.filter(
+    (signer) =>
+      signer.required &&
+      signer.documentType === PrismaESignDocumentType.DELIVERY_HANDOVER
+  );
+  const customerSigners = signers.filter(
+    (signer) =>
+      signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_CUSTOMER &&
+      isTypedStage2Signer(signer)
+  );
+  const platformSigners = signers.filter(
+    (signer) =>
+      signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM &&
+      isTypedStage2Signer(signer)
+  );
+  if (
+    signers.length !== 2 ||
+    customerSigners.length !== 1 ||
+    platformSigners.length !== 1
+  ) {
+    throw new BadRequestException("ESIGN_STAGE2_HANDOVER_TYPED_SIGNERS_INVALID");
+  }
+  return [customerSigners[0]!, platformSigners[0]!];
+}
+
+function normalizeProviderTransactionId(value?: string | null) {
+  const normalized = value?.trim();
+  return normalized || null;
+}
+
+function sanitizeCallbackPayloadForLog(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeCallbackPayloadForLog);
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([key, item]) => {
+        if (isSensitiveCallbackField(key)) {
+          return [];
+        }
+        if (/result_?desc(?:ription)?$/i.test(key)) {
+          return [[key, "[redacted-provider-description]"]];
+        }
+        if (/url$/i.test(key)) {
+          return [[key, "[redacted-url]"]];
+        }
+        return [[key, sanitizeCallbackPayloadForLog(item)]];
+      });
+    return Object.fromEntries(entries);
+  }
+  if (typeof value === "string" && /^https?:\/\//i.test(value)) {
+    return "[redacted-url]";
+  }
+  return value;
+}
+
+function isSensitiveCallbackField(key: string) {
+  const normalized = key.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
+  return /(^|_)(authorization|bucket|cert_?no|cert_?number|certificate_?no|certificate_?number|cookie|credential_?no|credential_?number|digest|id_?card|id_no|id_number|identity_?no|identity_?number|jwt|mobile|object_key|otp|password|phone|provider_customer_id|secret|session|token)($|_)/
+    .test(normalized);
+}
+
+function hashCanonicalPayload(payload: unknown) {
+  return createHash("sha256")
+    .update(JSON.stringify(payload), "utf8")
+    .digest("hex");
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+function isPrismaSerializationConflict(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === "P2034"
+  );
+}
+
+function sanitizeCallbackCode(value?: string | null) {
+  if (!value) {
+    return "missing";
+  }
+  return value.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || "unknown";
 }
 
 function isFiniteNumberInRange(value: unknown, min: number, max: number) {

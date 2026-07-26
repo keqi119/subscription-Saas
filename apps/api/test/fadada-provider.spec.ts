@@ -15,6 +15,75 @@ describe("Fadada provider configuration", () => {
     expect(provider).toBeInstanceOf(MockESignProvider);
   });
 
+  it("maps the actual mock provider through typed Stage 2 customer and platform actions", async () => {
+    const provider = createESignProviderClient(new ConfigService({
+      ESIGN_PROVIDER: "mock",
+      PORTAL_BASE_URL: "https://portal.invalid"
+    }));
+    const customer = await provider.createSignTask({
+      contractId: "contract-stage2-mock",
+      documentName: "handover.pdf",
+      documentType: "DELIVERY_HANDOVER",
+      signers: [{ customerId: "customer-1", signerType: "CUSTOMER" }],
+      signingSlots: [{
+        documentType: "DELIVERY_HANDOVER",
+        keyword: "stage2-handover-customer",
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        required: true,
+        signerRole: "CUSTOMER",
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        slotId: "STAGE2_HANDOVER_CUSTOMER"
+      }],
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourcePdfHash: "a".repeat(64),
+      taskId: "task-stage2-mock",
+      taskNo: "MOCKSTAGE2TASK",
+      transactionId: "MOCKSTAGE2H1"
+    });
+    const platform = await provider.autoSealTask?.({
+      contractId: "contract-stage2-mock",
+      documentType: "DELIVERY_HANDOVER",
+      signingSlots: [{
+        documentType: "DELIVERY_HANDOVER",
+        keyword: "stage2-handover-platform",
+        providerActionType: "PLATFORM_AUTO_SEAL",
+        required: true,
+        signerRole: "PLATFORM",
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        slotId: "STAGE2_HANDOVER_PLATFORM"
+      }],
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskNo: "MOCKSTAGE2TASK",
+      transactionId: "MOCKSTAGE2H2"
+    });
+
+    expect(customer).toMatchObject({
+      actions: [{
+        coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerTransactionId: "MOCKSTAGE2H1",
+        signerType: "CUSTOMER",
+        signingStage: "STAGE2_DELIVERY_HANDOVER"
+      }],
+      providerEnvelopeId: "MOCKSTAGE2TASK",
+      providerTaskId: "MOCKSTAGE2H1"
+    });
+    expect(platform).toMatchObject({
+      coveredSlotIds: ["STAGE2_HANDOVER_PLATFORM"],
+      providerActionType: "PLATFORM_AUTO_SEAL",
+      providerTransactionId: "MOCKSTAGE2H2",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      status: "COMPLETED"
+    });
+
+    await expect(provider.autoSealTask?.({
+      contractId: "contract-stage1-mock",
+      signingStage: "STAGE1_CONTRACT",
+      taskNo: "MOCKSTAGE1TASK",
+      transactionId: "MOCKSTAGE1H2"
+    })).rejects.toThrow(/ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED/);
+  });
+
   it("requires base URL, app ID, and app secret when ESIGN_PROVIDER=fadada", () => {
     expect(() => loadFadadaConfig(new ConfigService({ ESIGN_PROVIDER: "fadada" }))).toThrow(
       /FADADA_CONFIG_MISSING: FADADA_BASE_URL, FADADA_APP_ID, FADADA_APP_SECRET/

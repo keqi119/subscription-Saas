@@ -10,7 +10,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdtemp, rm, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1615,6 +1615,8 @@ export class HandoverWorkOrderService {
         evidencePackageUrl: this.buildStage2EvidencePackageUrl(workOrder.id),
         loadAsset
       });
+      const sourcePdfHash = await calculateFileSha256(renderedFile.filePath);
+      const manifestHash = requireSha256Digest(evidencePackage.manifestHash);
       const stored = await this.getStorageService().putGeneratedContractPdfArtifactFromPath({
         contentType: renderedFile.contentType,
         contractId: createdContract.id,
@@ -1658,6 +1660,14 @@ export class HandoverWorkOrderService {
               handoverId,
               orderId: workOrder.orderId,
               orderNo: order.orderNo,
+              stage2HandoverPdfArtifact: {
+                artifactKind: "stage2-handover-pdf-source",
+                documentType: "DELIVERY_HANDOVER",
+                fileId: createdFileObject.id,
+                pageCount: renderedFile!.diagnostics.pageCount,
+                signingStage: "STAGE2_DELIVERY_HANDOVER",
+                slotCoordinates: renderedFile!.slotCoordinates
+              },
               templateName: template.templateName,
               templateVersion: template.versionNo,
               workOrderId: workOrder.id
@@ -1669,9 +1679,12 @@ export class HandoverWorkOrderService {
         });
         const handoverClaim = await tx.vehicleDeliveryHandover.updateMany({
           data: {
+            artifactVersion: 1,
             handoverContractId: createdContract.id,
+            manifestHash,
             sourceDocumentFileId: createdFileObject.id,
             sourceObjectKey: stored.objectKey,
+            sourcePdfHash,
             status: DeliveryHandoverStatus.SOURCE_GENERATED,
             updatedBy: actorId ?? null
           },
@@ -1733,30 +1746,64 @@ export class HandoverWorkOrderService {
     await this.assertWorkOrderReadyForStage2(await this.findActiveWorkOrderOrThrow(orderId, handoverId));
   }
 
-  async assertReadyForStage2ESign(orderId: string, handoverId?: string | null) {
-    await this.assertWorkOrderReadyForStage2(await this.findActiveWorkOrderOrThrow(orderId, handoverId));
+  async assertReadyForStage2ESign(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    await this.assertWorkOrderReadyForStage2(
+      await this.findActiveWorkOrderOrThrow(orderId, handoverId, db),
+      db
+    );
   }
 
-  async assertDeliveryCanBeConfirmed(orderId: string, handoverId?: string | null) {
-    const workOrder = await this.findActiveWorkOrderOrThrow(orderId, handoverId);
-    await this.assertWorkOrderReadyForStage2(workOrder);
+  async assertDeliveryCanBeConfirmed(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await this.findActiveWorkOrderOrThrow(
+      orderId,
+      handoverId,
+      db
+    );
+    const confirmedEvidenceManifestHash =
+      await this.assertWorkOrderReadyForStage2(workOrder, db) ??
+      (
+        await this.buildCurrentEvidencePackage(
+          workOrder,
+          undefined,
+          db
+        )
+      ).manifestHash;
     if (this.deliveryHandoverService) {
-      await this.deliveryHandoverService.assertDeliveryCanBeConfirmed(orderId);
+      await this.deliveryHandoverService.assertDeliveryCanBeConfirmed(
+        orderId,
+        db,
+        confirmedEvidenceManifestHash
+      );
       return;
     }
-    const handover = await this.prisma.vehicleDeliveryHandover.findFirst({
+    const handover = await db.vehicleDeliveryHandover.findFirst({
       where: {
         deletedAt: null,
         id: workOrder.handoverId ?? undefined,
         orderId
       }
     });
-    if (!handover || !["SIGNED", "ARCHIVED"].includes(handover.status)) {
+    if (
+      !handover ||
+      !["SIGNED", "ARCHIVED"].includes(handover.status) ||
+      handover.manifestHash !== confirmedEvidenceManifestHash
+    ) {
       throw new BadRequestException("交付交接确认书尚未完成签署。");
     }
   }
 
-  private async assertWorkOrderReadyForStage2(workOrder: WorkOrderRecord) {
+  private async assertWorkOrderReadyForStage2(
+    workOrder: WorkOrderRecord,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
     if (isTerminalWorkOrderStatus(workOrder.status)) {
       throw new BadRequestException("交付工单已终止。");
     }
@@ -1773,17 +1820,31 @@ export class HandoverWorkOrderService {
     await this.deliveryEvidenceService.assertFieldEvidenceComplete(
       workOrder.orderId,
       workOrder.handoverId ?? null,
-      toFieldEvidenceState(workOrder)
+      toFieldEvidenceState(workOrder),
+      db
     );
-    if (!this.getReviewAttemptModel()) {
-      return;
+    if (!this.getReviewAttemptModel(db)) {
+      return null;
     }
-    const evidencePackage = await this.buildCurrentEvidencePackage(workOrder);
-    await this.assertEvidencePackageMatchesLatestConfirmation(workOrder, evidencePackage);
+    const evidencePackage = await this.buildCurrentEvidencePackage(
+      workOrder,
+      undefined,
+      db
+    );
+    await this.assertEvidencePackageMatchesLatestConfirmation(
+      workOrder,
+      evidencePackage,
+      db
+    );
+    return evidencePackage.manifestHash;
   }
 
-  private async findActiveWorkOrderOrThrow(orderId: string, handoverId?: string | null) {
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findFirst({
+  private async findActiveWorkOrderOrThrow(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await db.vehicleHandoverWorkOrder.findFirst({
       orderBy: { createdAt: "desc" },
       where: {
         ...(handoverId ? { handoverId } : {}),
@@ -1792,7 +1853,7 @@ export class HandoverWorkOrderService {
       }
     });
     if (!workOrder) {
-      const latest = await this.prisma.vehicleHandoverWorkOrder.findFirst({
+      const latest = await db.vehicleHandoverWorkOrder.findFirst({
         orderBy: { createdAt: "desc" },
         where: {
           ...(handoverId ? { handoverId } : {}),
@@ -3440,6 +3501,22 @@ function hasAccessoryChecklist(value: unknown) {
     return Object.keys(value).length > 0;
   }
   return false;
+}
+
+async function calculateFileSha256(filePath: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
+}
+
+function requireSha256Digest(value: string) {
+  const digest = value.trim().toLowerCase().replace(/^sha256:/, "");
+  if (!/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error("STAGE2_HANDOVER_MANIFEST_HASH_INVALID");
+  }
+  return digest;
 }
 
 function nextStatus(current: WorkOrderStatus, next: WorkOrderStatus) {

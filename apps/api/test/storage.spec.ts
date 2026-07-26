@@ -175,6 +175,39 @@ describe("Storage providers", () => {
     expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/materials\/app-1\/\d{4}\/\d{2}\//);
   });
 
+  it("deletes a contract signed artifact through its encoded storage driver", async () => {
+    const local = {
+      deleteObject: vi.fn(async () => undefined)
+    };
+    const oss = {
+      deleteObject: vi.fn(async () => undefined)
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "oss" }) as never,
+      local as never,
+      oss as never
+    );
+
+    await localService.deleteContractSignedArtifactObject(
+      "contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+    await ossService.deleteContractSignedArtifactObject(
+      "oss:subscription/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+
+    expect(local.deleteObject).toHaveBeenCalledWith(
+      "application-materials/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+    expect(oss.deleteObject).toHaveBeenCalledWith(
+      "subscription/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+  });
+
   it("maps vehicle listing media uploads to private local or OSS database fields", async () => {
     const local = {
       deleteObject: vi.fn(),
@@ -271,6 +304,68 @@ describe("Storage providers", () => {
     expect(localStored.objectKey).toMatch(/^delivery-evidence\/work-order-1\/\d{4}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
     expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/delivery-evidence\/work-order-1\/\d{4}\//);
+  });
+
+  it("plans the same deterministic signed-artifact locator returned by each storage driver", async () => {
+    const local = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        driver: "local" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const oss = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        bucket: "private-bucket",
+        driver: "oss" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({
+        OSS_PREFIX: "subscription-saas/staging",
+        UPLOAD_STORAGE_DRIVER: "oss"
+      }) as never,
+      local as never,
+      oss as never
+    );
+    const originalName = "contract-signed.pdf";
+    const objectIdentity = "task-1-v3";
+    const input = {
+      buffer: Buffer.from("%PDF-1.7"),
+      contractId: "contract-1",
+      objectIdentity,
+      originalName,
+      provider: "fadada"
+    };
+
+    const localPlanned = localService.buildContractSignedArtifactObjectKey(
+      input.contractId,
+      input.provider,
+      originalName,
+      objectIdentity
+    );
+    const ossPlanned = ossService.buildContractSignedArtifactObjectKey(
+      input.contractId,
+      input.provider,
+      originalName,
+      objectIdentity
+    );
+    const localStored = await localService.putContractSignedArtifact(input);
+    const ossStored = await ossService.putContractSignedArtifact(input);
+
+    expect(localPlanned).toBe(localStored.objectKey);
+    expect(ossPlanned).toBe(ossStored.objectKey);
   });
 
   it("maps disk-backed field evidence to local or OSS providers", async () => {

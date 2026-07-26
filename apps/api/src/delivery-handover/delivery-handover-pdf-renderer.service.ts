@@ -23,7 +23,28 @@ export const STAGE2_HANDOVER_PDF_MAX_PAGES = 100;
 const DEFAULT_PAGE_SIZE = "A4";
 const EMPTY_VALUE = "-";
 const CJK_PATTERN = /[\u3400-\u9fff\uf900-\ufaff]/;
+const FADADA_COORDINATE_HEIGHT = 1131;
+const FADADA_COORDINATE_WIDTH = 800;
 const TABLE_LABEL_WIDTH = 92;
+
+export type DeliveryHandoverPdfSigningSlotId =
+  | "STAGE2_HANDOVER_CUSTOMER"
+  | "STAGE2_HANDOVER_PLATFORM";
+
+export interface DeliveryHandoverPdfSigningSlotCoordinate {
+  coordinateSource: "PDFKIT_RENDERER";
+  coordinateSystem: "FADADA_800_1131_TOP_LEFT";
+  documentType: "DELIVERY_HANDOVER";
+  height: number;
+  pageNumber: number;
+  pdfPageHeight: number;
+  pdfPageWidth: number;
+  signingStage: "STAGE2_DELIVERY_HANDOVER";
+  slotId: DeliveryHandoverPdfSigningSlotId;
+  width: number;
+  x: number;
+  y: number;
+}
 
 export interface DeliveryHandoverPdfRenderOptions {
   cjkFontPath?: string;
@@ -52,6 +73,7 @@ export interface DeliveryHandoverPdfRenderResult {
   contentType: "application/pdf";
   diagnostics: DeliveryHandoverPdfRenderDiagnostics;
   fileName: string;
+  slotCoordinates: DeliveryHandoverPdfSigningSlotCoordinate[];
 }
 
 export interface DeliveryHandoverPdfRenderFileResult {
@@ -61,6 +83,7 @@ export interface DeliveryHandoverPdfRenderFileResult {
   fileName: string;
   filePath: string;
   sizeBytes: number;
+  slotCoordinates: DeliveryHandoverPdfSigningSlotCoordinate[];
 }
 
 @Injectable()
@@ -87,7 +110,8 @@ export class DeliveryHandoverPdfRendererService {
         pageCount: rendered.pageCount,
         targetBytesExceeded: rendered.buffer.length > STAGE2_HANDOVER_PDF_TARGET_BYTES
       },
-      fileName: `${sanitizeFileName(model.documentNo)}.pdf`
+      fileName: `${sanitizeFileName(model.documentNo)}.pdf`,
+      slotCoordinates: rendered.slotCoordinates
     };
   }
 
@@ -118,7 +142,8 @@ export class DeliveryHandoverPdfRendererService {
         },
         fileName: `${sanitizeFileName(model.documentNo)}.pdf`,
         filePath,
-        sizeBytes: fileStat.size
+        sizeBytes: fileStat.size,
+        slotCoordinates: rendered.slotCoordinates
       };
     } catch (error) {
       await Promise.allSettled([cleanup()]);
@@ -203,6 +228,7 @@ async function renderPdf(
   });
   let pageCount = 1;
   const chunks: Buffer[] = [];
+  const slotCoordinates: DeliveryHandoverPdfSigningSlotCoordinate[] = [];
   const output = outputPath ? fs.createWriteStream(outputPath, { flags: "wx" }) : null;
   const done = new Promise<Buffer | null>((resolve, reject) => {
     if (output) {
@@ -270,17 +296,18 @@ async function renderPdf(
   await writeVideoAttachments(doc, model, evidencePackageUrl, options.loadAsset!);
 
   doc.addPage();
-  ensureSpace(doc, 230);
-  writeSection(doc, "九、签字确认");
-  writeParagraph(doc, model.confirmationText);
-  writeSignatureArea(doc, model);
-
   writeSection(doc, "操作提示");
   model.operationTips.forEach((tip) => writeParagraph(doc, tip));
 
+  ensureSpace(doc, 230);
+  writeSection(doc, "九、签字确认");
+  writeParagraph(doc, model.confirmationText);
+  writeSignatureArea(doc, model, slotCoordinates, () => pageCount - 1);
+  validateSigningSlotCoordinates(slotCoordinates, pageCount - 1);
+
   doc.end();
   const buffer = await done;
-  return { buffer, pageCount };
+  return { buffer, pageCount, slotCoordinates };
 }
 
 function writeEvidencePackageDeclaration(
@@ -528,7 +555,12 @@ function writeEvidenceHeader(
   doc.y = y + 24;
 }
 
-function writeSignatureArea(doc: PDFKit.PDFDocument, model: DeliveryHandoverPdfRenderModel) {
+function writeSignatureArea(
+  doc: PDFKit.PDFDocument,
+  model: DeliveryHandoverPdfRenderModel,
+  slotCoordinates: DeliveryHandoverPdfSigningSlotCoordinate[],
+  getPageNumber: () => number
+) {
   ensureSpace(doc, 170);
   resetCursorX(doc);
   const width = contentWidth(doc);
@@ -554,12 +586,110 @@ function writeSignatureArea(doc: PDFKit.PDFDocument, model: DeliveryHandoverPdfR
     row.forEach((cell, columnIndex) => {
       const x = doc.page.margins.left + columnIndex * columnWidth;
       doc.rect(x, y, columnWidth, rowHeight).stroke();
+      if (rowIndex === 0) {
+        slotCoordinates.push(buildSigningSlotCoordinate({
+          boxHeight: rowHeight,
+          boxWidth: columnWidth,
+          boxX: x,
+          boxY: y,
+          page: doc.page,
+          pageNumber: getPageNumber(),
+          slotId: columnIndex === 0 ? "STAGE2_HANDOVER_CUSTOMER" : "STAGE2_HANDOVER_PLATFORM"
+        }));
+      }
       doc.fontSize(9.5).text(cell, x + 8, y + 8, { width: columnWidth - 16 });
     });
   });
   doc.y = startY + rowHeight * (rows.length + 1);
   resetCursorX(doc);
   doc.moveDown(0.5);
+}
+
+function buildSigningSlotCoordinate(input: {
+  boxHeight: number;
+  boxWidth: number;
+  boxX: number;
+  boxY: number;
+  page: PDFKit.PDFPage;
+  pageNumber: number;
+  slotId: DeliveryHandoverPdfSigningSlotId;
+}): DeliveryHandoverPdfSigningSlotCoordinate {
+  return {
+    coordinateSource: "PDFKIT_RENDERER",
+    coordinateSystem: "FADADA_800_1131_TOP_LEFT",
+    documentType: "DELIVERY_HANDOVER",
+    height: toFadadaCoordinate(input.boxHeight, input.page.height, FADADA_COORDINATE_HEIGHT),
+    pageNumber: input.pageNumber,
+    pdfPageHeight: roundCoordinate(input.page.height),
+    pdfPageWidth: roundCoordinate(input.page.width),
+    signingStage: "STAGE2_DELIVERY_HANDOVER",
+    slotId: input.slotId,
+    width: toFadadaCoordinate(input.boxWidth, input.page.width, FADADA_COORDINATE_WIDTH),
+    x: toFadadaCoordinate(input.boxX + input.boxWidth / 2, input.page.width, FADADA_COORDINATE_WIDTH),
+    y: toFadadaCoordinate(input.boxY + input.boxHeight / 2, input.page.height, FADADA_COORDINATE_HEIGHT)
+  };
+}
+
+function validateSigningSlotCoordinates(
+  coordinates: DeliveryHandoverPdfSigningSlotCoordinate[],
+  finalPageNumber: number
+) {
+  const requiredSlotIds: DeliveryHandoverPdfSigningSlotId[] = [
+    "STAGE2_HANDOVER_CUSTOMER",
+    "STAGE2_HANDOVER_PLATFORM"
+  ];
+  for (const slotId of requiredSlotIds) {
+    const matchingCoordinates = coordinates.filter((coordinate) => coordinate.slotId === slotId);
+    if (matchingCoordinates.length !== 1) {
+      throw new Error(`STAGE2_HANDOVER_PDF_SIGNING_SLOT_INVALID: ${slotId} must appear exactly once`);
+    }
+    validateSigningSlotCoordinate(matchingCoordinates[0]!, finalPageNumber);
+  }
+  if (coordinates.length !== requiredSlotIds.length) {
+    throw new Error("STAGE2_HANDOVER_PDF_SIGNING_SLOT_INVALID: exactly two signing slots are required");
+  }
+}
+
+function validateSigningSlotCoordinate(
+  coordinate: DeliveryHandoverPdfSigningSlotCoordinate,
+  finalPageNumber: number
+) {
+  const finiteValues = [
+    coordinate.x,
+    coordinate.y,
+    coordinate.width,
+    coordinate.height,
+    coordinate.pdfPageWidth,
+    coordinate.pdfPageHeight
+  ];
+  const isValid =
+    coordinate.coordinateSource === "PDFKIT_RENDERER" &&
+    coordinate.coordinateSystem === "FADADA_800_1131_TOP_LEFT" &&
+    coordinate.documentType === "DELIVERY_HANDOVER" &&
+    coordinate.signingStage === "STAGE2_DELIVERY_HANDOVER" &&
+    Number.isInteger(coordinate.pageNumber) &&
+    coordinate.pageNumber === finalPageNumber &&
+    finiteValues.every(Number.isFinite) &&
+    coordinate.width > 0 &&
+    coordinate.height > 0 &&
+    coordinate.pdfPageWidth > 0 &&
+    coordinate.pdfPageHeight > 0 &&
+    coordinate.x - coordinate.width / 2 >= 0 &&
+    coordinate.x + coordinate.width / 2 <= FADADA_COORDINATE_WIDTH &&
+    coordinate.y - coordinate.height / 2 >= 0 &&
+    coordinate.y + coordinate.height / 2 <= FADADA_COORDINATE_HEIGHT;
+
+  if (!isValid) {
+    throw new Error(`STAGE2_HANDOVER_PDF_SIGNING_SLOT_INVALID: ${coordinate.slotId} coordinate is invalid`);
+  }
+}
+
+function toFadadaCoordinate(value: number, pdfDimension: number, fadadaDimension: number) {
+  return roundCoordinate((value / pdfDimension) * fadadaDimension);
+}
+
+function roundCoordinate(value: number) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function ensureSpace(doc: PDFKit.PDFDocument, neededHeight: number) {

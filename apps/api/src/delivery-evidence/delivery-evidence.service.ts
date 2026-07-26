@@ -680,12 +680,13 @@ export class DeliveryEvidenceService {
   async validateFieldEvidenceComplete(
     orderId: string,
     handoverId?: string | null,
-    fieldState?: DeliveryEvidenceFieldState
+    fieldState?: DeliveryEvidenceFieldState,
+    db: DeliveryEvidenceDb = this.prisma
   ) {
     return this.validateEvidenceReady({ handoverId, orderId }, {
       fieldState,
       mode: "FIELD_COMPLETENESS"
-    });
+    }, db);
   }
 
   async validateEvidenceReadyForOpsReview(orderId: string, handoverId?: string | null) {
@@ -711,9 +712,15 @@ export class DeliveryEvidenceService {
   async validateEvidenceReadyForDeliveryConfirmation(
     orderId: string,
     handoverId?: string | null,
-    fieldState?: DeliveryEvidenceFieldState
+    fieldState?: DeliveryEvidenceFieldState,
+    db: DeliveryEvidenceDb = this.prisma
   ) {
-    return this.validateFieldEvidenceComplete(orderId, handoverId, fieldState);
+    return this.validateFieldEvidenceComplete(
+      orderId,
+      handoverId,
+      fieldState,
+      db
+    );
   }
 
   async assertEvidenceReadyForStage2Pdf(orderId: string, handoverId?: string | null) {
@@ -724,16 +731,35 @@ export class DeliveryEvidenceService {
     assertDeliveryEvidenceReady(await this.validateEvidenceReadyForStage2ESign(orderId, handoverId));
   }
 
-  async assertEvidenceReadyForDeliveryConfirmation(orderId: string, handoverId?: string | null) {
-    assertDeliveryEvidenceReady(await this.validateEvidenceReadyForDeliveryConfirmation(orderId, handoverId));
+  async assertEvidenceReadyForDeliveryConfirmation(
+    orderId: string,
+    handoverId?: string | null,
+    db: DeliveryEvidenceDb = this.prisma
+  ) {
+    assertDeliveryEvidenceReady(
+      await this.validateEvidenceReadyForDeliveryConfirmation(
+        orderId,
+        handoverId,
+        undefined,
+        db
+      )
+    );
   }
 
   async assertFieldEvidenceComplete(
     orderId: string,
     handoverId?: string | null,
-    fieldState?: DeliveryEvidenceFieldState
+    fieldState?: DeliveryEvidenceFieldState,
+    db: DeliveryEvidenceDb = this.prisma
   ) {
-    assertDeliveryEvidenceReady(await this.validateFieldEvidenceComplete(orderId, handoverId, fieldState));
+    assertDeliveryEvidenceReady(
+      await this.validateFieldEvidenceComplete(
+        orderId,
+        handoverId,
+        fieldState,
+        db
+      )
+    );
   }
 
   async assertEvidenceReadyForOpsReview(orderId: string, handoverId?: string | null) {
@@ -743,9 +769,9 @@ export class DeliveryEvidenceService {
   private async validateEvidenceReady(scopeInput: ChecklistScopeInput, options?: {
     fieldState?: DeliveryEvidenceFieldState;
     mode?: EvidenceReadinessMode;
-  }) {
-    const scope = await this.resolveScope(scopeInput);
-    const items = await this.findScopedItems(scope);
+  }, db: DeliveryEvidenceDb = this.prisma) {
+    const scope = await this.resolveScope(scopeInput, db);
+    const items = await this.findScopedItems(scope, db);
     return this.buildReadiness(scope, items, options);
   }
 

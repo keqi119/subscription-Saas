@@ -34,6 +34,7 @@ export interface FieldEvidenceUploadRecovery<TFile> {
 export interface FieldEvidenceUploadBatchState<TFile> {
   batch: FieldEvidenceUploadBatch<TFile> | null;
   fileIndex: number;
+  reconciliationItemViewId?: string;
   recoveries?: Record<string, FieldEvidenceUploadRecovery<TFile>>;
   refreshTarget?: FieldEvidenceUploadRefreshTarget;
   status: FieldEvidenceUploadBatchStatus;
@@ -170,6 +171,7 @@ export function interruptFieldEvidenceUploadBatch<TFile>(
         operation: state.batch.operation
       },
       fileIndex: 0,
+      reconciliationItemViewId: state.batch.itemViewId,
       recoveries: {
         ...fieldEvidenceUploadRecoveries(state),
         [state.batch.itemViewId]: recovery
@@ -337,6 +339,7 @@ export async function runFieldEvidenceUploadBatch<TFile>(
     {
       batch: null,
       fileIndex: 0,
+      reconciliationItemViewId: currentState.batch?.itemViewId ?? initialState.batch.itemViewId,
       recoveries: fieldEvidenceUploadRecoveries(currentState),
       refreshTarget: "IDLE",
       status: "REFRESHING"
@@ -405,6 +408,12 @@ export function hasFieldEvidenceUploadRecoveries<TFile>(
   state: FieldEvidenceUploadBatchState<TFile>
 ) {
   return Object.keys(fieldEvidenceUploadRecoveries(state)).length > 0;
+}
+
+export function getFieldEvidenceUploadReconciliationItemViewId<TFile>(
+  state: FieldEvidenceUploadBatchState<TFile>
+) {
+  return state.reconciliationItemViewId ?? state.batch?.itemViewId ?? null;
 }
 
 export function canMutateFieldEvidenceWithUploadBatch<TFile>(
@@ -480,6 +489,7 @@ function resolveFieldEvidenceUploadRefresh<TFile>(
         operation: state.batch.operation
       },
       fileIndex: 0,
+      reconciliationItemViewId: state.reconciliationItemViewId,
       recoveries: currentRecoveries,
       status: "RETRY_PENDING"
     };

@@ -224,6 +224,7 @@ describe("field handover view model", () => {
       deliveryLocation: "上海交付中心 B 区",
       energyLevelText: "72%",
       fieldNotes: "右前轮毂轻微划痕",
+      fuelLevelText: "满油",
       handoverMileageKm: 321,
       noVisibleDamageDeclared: false,
       scheduledAt: "2026-07-26T07:30:00.000Z"
@@ -238,6 +239,7 @@ describe("field handover view model", () => {
           deliveryLocation: "",
           energyLevelText: "",
           fieldNotes: "",
+          fuelLevelText: "",
           handoverMileageKm: null,
           noVisibleDamageDeclared: false,
           scheduledAt: null

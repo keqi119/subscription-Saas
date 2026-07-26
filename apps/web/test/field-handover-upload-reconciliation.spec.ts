@@ -5,6 +5,7 @@ import {
   canStartFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
   cancelFieldEvidenceUploadRequest,
+  getFieldEvidenceUploadReconciliationItemViewId,
   hasFieldEvidenceUploadRecoveries,
   replaceAndStartFieldEvidenceUploadRecovery,
   retryFieldEvidenceUploadBatch,
@@ -376,6 +377,39 @@ describe("field evidence upload reconciliation", () => {
     expect(recovered.status).toBe("IDLE");
     expect(recovered.batch).toBeNull();
     expect(recovered.recoveries.damage?.files).toEqual(["second.jpg"]);
+  });
+
+  it("retains the item id when a post-success refresh fails until retry reaches idle", async () => {
+    const failed = await runFieldEvidenceUploadBatch(
+      startFieldEvidenceUploadBatch("front", ["front.jpg"], false, snapshot([])),
+      {
+        getInterruptionReason: () => "FAILURE",
+        refreshDetail: async () => null,
+        uploadFile: async () => snapshot(["front-id"])
+      }
+    );
+
+    expect(failed).toMatchObject({
+      batch: null,
+      reconciliationItemViewId: "front",
+      status: "REFRESH_FAILED"
+    });
+    expect(getFieldEvidenceUploadReconciliationItemViewId(failed)).toBe("front");
+
+    const recovered = await retryFieldEvidenceUploadRefresh(failed, {
+      refreshDetail: async () =>
+        getFieldEvidenceUploadReconciliationItemViewId(failed) === "front"
+          ? snapshot(["front-id"])
+          : null
+    });
+
+    expect(recovered).toEqual({
+      batch: null,
+      fileIndex: 0,
+      recoveries: {},
+      status: "IDLE"
+    });
+    expect(getFieldEvidenceUploadReconciliationItemViewId(recovered)).toBeNull();
   });
 
   it("silently refreshes after an unmount abort that was already sent", async () => {

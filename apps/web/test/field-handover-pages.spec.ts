@@ -97,6 +97,7 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("replaceAndStartFieldEvidenceUploadRecovery");
     expect(source).toContain("abandonFieldEvidenceUploadRecovery");
     expect(source).toContain("canStartFieldEvidenceUploadBatch");
+    expect(source.match(/uploadOperation/g)).toHaveLength(4);
     expect(source).not.toContain("startFieldEvidenceUploadBatch(");
     expect(source).not.toContain('status === "RETRY_PENDING"');
     expect(source.match(/await loadDetail\(\{ preserveFacts: true \}\);/g)).toHaveLength(2);
@@ -233,6 +234,36 @@ describe("field handover upload batch gates", () => {
         true
       )
     ).toBe(refreshFailed);
+  });
+
+  it("overrides a stale replacement operation for retry and reselect", () => {
+    const staleRecovery = {
+      batch: null,
+      fileIndex: 0,
+      recoveries: {
+        front: {
+          baseline: { count: 1, ids: ["deleted-evidence-id"] },
+          errorMessage: "upload failed",
+          files: ["original.jpg"],
+          itemViewId: "front",
+          operation: {
+            replaceEvidenceFileId: "deleted-evidence-id",
+            type: "REPLACE" as const
+          }
+        }
+      },
+      status: "IDLE" as const
+    };
+
+    expect(
+      retryFieldEvidenceUploadBatch(staleRecovery, "front", true, { type: "APPEND" }).batch
+        ?.operation
+    ).toEqual({ type: "APPEND" });
+    expect(
+      replaceAndStartFieldEvidenceUploadRecovery(staleRecovery, "front", ["new.jpg"], false, true, {
+        type: "APPEND"
+      }).batch?.operation
+    ).toEqual({ type: "APPEND" });
   });
 });
 

@@ -70,6 +70,7 @@ import {
   canSubmitWithFieldEvidenceUploadBatch,
   canMutateFieldEvidenceWithUploadBatch,
   cancelFieldEvidenceUploadRequest,
+  getFieldEvidenceUploadReconciliationItemViewId,
   hasFieldEvidenceUploadRecoveries,
   replaceAndStartFieldEvidenceUploadRecovery,
   retryFieldEvidenceUploadBatch,
@@ -334,7 +335,8 @@ export default function FieldHandoverTaskDetailPage() {
         ? retryFieldEvidenceUploadBatch(
             currentBatchState,
             itemViewId,
-            captureView?.canEdit === true
+            captureView?.canEdit === true,
+            uploadOperation
           )
         : startMode === "RESELECT"
           ? replaceAndStartFieldEvidenceUploadRecovery(
@@ -342,7 +344,8 @@ export default function FieldHandoverTaskDetailPage() {
               itemViewId,
               files,
               item.allowsMultiple === true,
-              captureView?.canEdit === true
+              captureView?.canEdit === true,
+              uploadOperation
             )
           : startFieldEvidenceUploadBatchFromState(
               currentBatchState,
@@ -520,7 +523,9 @@ export default function FieldHandoverTaskDetailPage() {
     const finalState = await retryFieldEvidenceUploadRefresh(uploadBatchStateRef.current, {
       onStateChange: applyUploadBatchState,
       refreshDetail: async () => {
-        const itemViewId = uploadBatchStateRef.current.batch?.itemViewId;
+        const itemViewId = getFieldEvidenceUploadReconciliationItemViewId(
+          uploadBatchStateRef.current
+        );
         const refreshedDetail = await loadDetail({
           preserveFacts: true,
           showLoading: false

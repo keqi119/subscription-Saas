@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { EvidenceUploadControls } from "../src/app/field/handover/tasks/[id]/page";
+import { EvidenceUploadControls } from "../src/components/field-handover-evidence-upload-controls";
 
 import {
   MAX_FIELD_PHOTO_SIZE_BYTES,

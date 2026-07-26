@@ -2,24 +2,21 @@
 
 import {
   ArrowLeftOutlined,
-  CameraOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
   ExclamationCircleOutlined,
-  FolderOpenOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
   StopOutlined,
-  UploadOutlined,
-  VideoCameraOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Drawer, Flex, Input, InputNumber, Popconfirm, Progress, Radio, Spin, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Flex, Input, InputNumber, Popconfirm, Progress, Radio, Spin, Tag, Tooltip, Typography } from "antd";
 import { useParams, useRouter } from "next/navigation";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
+import { EvidenceUploadControls } from "../../../../../components/field-handover-evidence-upload-controls";
 import {
   buildFieldHandoverFileUrl,
   declareFieldHandoverNoVisibleDamage,
@@ -39,15 +36,11 @@ import {
   type FieldHandoverWorkOrderDetail
 } from "../../../../../lib/field-handover-api";
 import {
-  buildFieldEvidenceUploadInputContracts,
   buildFieldEvidenceUploadRetryDisplay,
-  completeFieldEvidenceUploadSelection,
   detectFieldEvidenceUploadEnvironment,
   type FieldEvidenceUploadEnvironment,
-  type FieldEvidenceUploadInputContract,
   type FieldEvidenceMediaType,
   formatUploadBytes,
-  routeFieldEvidenceUploadPrimaryAction,
   validateFieldEvidenceFile
 } from "../../../../../lib/field-handover-upload";
 import {
@@ -1000,105 +993,6 @@ function LabeledControl({ children, label }: { children: ReactNode; label: strin
       </Typography.Text>
       {children}
     </label>
-  );
-}
-
-export function EvidenceUploadControls({
-  allowedMediaTypes,
-  disabled,
-  environment,
-  id,
-  multiple,
-  onFiles
-}: {
-  allowedMediaTypes: FieldEvidenceMediaType[];
-  disabled: boolean;
-  environment: FieldEvidenceUploadEnvironment;
-  id: string;
-  multiple: boolean;
-  onFiles: (files: File[]) => void;
-}) {
-  const contracts = buildFieldEvidenceUploadInputContracts(allowedMediaTypes, multiple, environment);
-  const inputRefs = useRef<Partial<Record<FieldEvidenceUploadInputContract["key"], HTMLInputElement>>>({});
-  const [chooserOpen, setChooserOpen] = useState(false);
-
-  function selectContract(contract: FieldEvidenceUploadInputContract) {
-    inputRefs.current[contract.key]?.click();
-  }
-
-  return (
-    <div style={{ marginTop: 10 }}>
-      {contracts.map((contract) => (
-        <input
-          accept={contract.accept}
-          capture={contract.capture}
-          disabled={disabled}
-          id={`${id}-${contract.key}`}
-          key={contract.key}
-          multiple={contract.multiple}
-          onChange={(event) => {
-            const files = Array.from(event.currentTarget.files ?? []);
-            event.currentTarget.value = "";
-            completeFieldEvidenceUploadSelection(files, {
-              closeMobileChooser: () => setChooserOpen(false),
-              onFiles
-            });
-          }}
-          ref={(node) => {
-            inputRefs.current[contract.key] = node ?? undefined;
-          }}
-          style={{ display: "none" }}
-          type="file"
-        />
-      ))}
-      <Button
-        block
-        disabled={disabled}
-        icon={<UploadOutlined />}
-        onClick={() =>
-          routeFieldEvidenceUploadPrimaryAction(environment, contracts, {
-            openMobileChooser: () => setChooserOpen(true),
-            selectContract
-          })
-        }
-        style={{ minHeight: 44 }}
-        type="primary"
-      >
-        资料上传
-      </Button>
-      {environment === "MOBILE" ? (
-        <Drawer
-          closable
-          onClose={() => setChooserOpen(false)}
-          open={chooserOpen}
-          placement="bottom"
-          title="资料上传"
-        >
-          <Flex gap={8} vertical>
-            {contracts.map((contract) => (
-              <Button
-                block
-                disabled={disabled}
-                icon={
-                  contract.key === "photo-capture"
-                    ? <CameraOutlined />
-                    : contract.key === "video-capture"
-                      ? <VideoCameraOutlined />
-                      : contract.accept === "image/*"
-                        ? <FolderOpenOutlined />
-                        : <UploadOutlined />
-                }
-                key={contract.key}
-                onClick={() => selectContract(contract)}
-                size="large"
-              >
-                {contract.label}
-              </Button>
-            ))}
-          </Flex>
-        </Drawer>
-      ) : null}
-    </div>
   );
 }
 

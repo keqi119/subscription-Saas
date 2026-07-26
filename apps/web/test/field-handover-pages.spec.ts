@@ -20,6 +20,8 @@ const repoRoot = join(__dirname, "..", "..", "..");
 const loginPagePath = "apps/web/src/app/field/handover/page.tsx";
 const tasksPagePath = "apps/web/src/app/field/handover/tasks/page.tsx";
 const detailPagePath = "apps/web/src/app/field/handover/tasks/[id]/page.tsx";
+const evidenceUploadControlsPath =
+  "apps/web/src/components/field-handover-evidence-upload-controls.tsx";
 
 describe("field handover H5 pages", () => {
   it("adds the fixed login route without Admin or Portal auth redirects", () => {
@@ -60,6 +62,7 @@ describe("field handover H5 pages", () => {
 
   it("wires capture contracts, processing state, reconciliation, and cancellation", () => {
     const source = read(detailPagePath);
+    const uploadControlsSource = read(evidenceUploadControlsPath);
 
     expect(source).toContain("现场资料采集");
     expect(source).toContain("保存现场信息");
@@ -68,9 +71,12 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("uploadAndAttachFieldHandoverEvidenceFile");
     expect(source).toContain("removeFieldHandoverEvidenceFile");
     expect(source).toContain("validateFieldEvidenceFile");
-    expect(source).toContain("buildFieldEvidenceUploadInputContracts");
-    expect(source).toContain("capture={contract.capture}");
-    expect(source).toContain("multiple={contract.multiple}");
+    expect(source).toContain("import { EvidenceUploadControls }");
+    expect(source).toContain("export default function");
+    expect(source.match(/^export (?!default)/gm)).toBeNull();
+    expect(uploadControlsSource).toContain("buildFieldEvidenceUploadInputContracts");
+    expect(uploadControlsSource).toContain("capture={contract.capture}");
+    expect(uploadControlsSource).toContain("multiple={contract.multiple}");
     expect(source).toContain("fieldEvidenceUploadSnapshot");
     expect(source).toContain("preserveFacts: true");
     expect(source).toContain("onUploadComplete");

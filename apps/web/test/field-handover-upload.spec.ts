@@ -130,7 +130,7 @@ describe("field handover evidence upload validation", () => {
       {
         accept: "video/*",
         key: "library",
-        label: "从相册/文件选择",
+        label: "从相册选择",
         multiple: false
       }
     ]);
@@ -152,7 +152,7 @@ describe("field handover evidence upload validation", () => {
       {
         accept: "image/*,video/*",
         key: "library",
-        label: "从相册/文件选择",
+        label: "从相册选择",
         multiple: true
       }
     ]);

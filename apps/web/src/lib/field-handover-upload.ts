@@ -170,12 +170,7 @@ export function buildFieldEvidenceUploadInputContracts(
         .filter(Boolean)
         .join(","),
       key: "library",
-      label:
-        environment === "DESKTOP"
-          ? "资料上传"
-          : allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
-            ? "从相册选择"
-            : "从相册/文件选择",
+      label: environment === "DESKTOP" ? "资料上传" : "从相册选择",
       multiple: allowsMultiple
     });
   }

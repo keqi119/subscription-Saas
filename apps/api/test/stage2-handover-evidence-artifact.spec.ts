@@ -9,7 +9,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   calculateDeliveryEvidenceSourceSha256,
   DeliveryHandoverEvidenceArtifactService,
-  framePercentagesForEvidence
+  framePercentagesForEvidence,
+  isDeliveryEvidenceArtifactProcessingError
 } from "../src/delivery-handover/delivery-handover-evidence-artifact.service";
 
 describe("Stage 2 handover evidence artifact preparation", () => {
@@ -165,6 +166,15 @@ describe("Stage 2 handover evidence artifact preparation", () => {
     expect(existsSync(path.dirname(outputPath))).toBe(false);
   });
 
+  it("classifies normalized media processing errors without exposing internals", async () => {
+    const service = new DeliveryHandoverEvidenceArtifactService(undefined, async () => {
+      throw new Error("spawn ffmpeg ENOENT");
+    });
+    const error = await service.prepareUpload(photoInput()).catch((value) => value);
+
+    expect(isDeliveryEvidenceArtifactProcessingError(error)).toBe(true);
+  });
+
   it("bounds cross-request media processing concurrency and queue depth", async () => {
     const releases: Array<() => void> = [];
     const runner = vi.fn(async (_command: string, args: string[]) => {
@@ -216,6 +226,19 @@ function sourceHeic() {
   bytes.write("heic", 8, "ascii");
   bytes.write("mif1", 16, "ascii");
   return bytes;
+}
+
+function photoInput() {
+  return {
+    evidenceType: "VEHICLE_FRONT",
+    file: {
+      buffer: sourceJpeg(),
+      mimetype: "image/jpeg",
+      originalname: "front.jpg",
+      size: 12
+    },
+    mediaType: "PHOTO" as const
+  };
 }
 
 async function writeFakeJpeg(filePath: string, marker = 1) {

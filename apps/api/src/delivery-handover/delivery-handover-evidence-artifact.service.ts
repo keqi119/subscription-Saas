@@ -549,8 +549,13 @@ function safeExtension(originalName: string) {
   return extension && extension !== "." ? extension : ".bin";
 }
 
+export function isDeliveryEvidenceArtifactProcessingError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.startsWith(STAGE2_EVIDENCE_ARTIFACT_PROCESSING_FAILED);
+}
+
 function normalizeProcessingError(error: unknown) {
-  if (error instanceof Error && error.message.startsWith(STAGE2_EVIDENCE_ARTIFACT_PROCESSING_FAILED)) {
+  if (isDeliveryEvidenceArtifactProcessingError(error)) {
     return error;
   }
   const message = error instanceof Error ? error.message : "unknown media processing failure";

@@ -4,17 +4,24 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  abandonFieldEvidenceUploadRecovery,
   canRetryFieldEvidenceUploadBatch,
+  canStartFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
   canMutateFieldEvidenceWithUploadBatch,
+  hasFieldEvidenceUploadRecoveries,
+  replaceAndStartFieldEvidenceUploadRecovery,
   retryFieldEvidenceUploadBatch,
-  startFieldEvidenceUploadBatch
+  startFieldEvidenceUploadBatch,
+  startFieldEvidenceUploadBatchFromState
 } from "../src/lib/field-handover-upload-batch";
 
 const repoRoot = join(__dirname, "..", "..", "..");
 const loginPagePath = "apps/web/src/app/field/handover/page.tsx";
 const tasksPagePath = "apps/web/src/app/field/handover/tasks/page.tsx";
 const detailPagePath = "apps/web/src/app/field/handover/tasks/[id]/page.tsx";
+const evidenceUploadControlsPath =
+  "apps/web/src/components/field-handover-evidence-upload-controls.tsx";
 
 describe("field handover H5 pages", () => {
   it("adds the fixed login route without Admin or Portal auth redirects", () => {
@@ -55,6 +62,7 @@ describe("field handover H5 pages", () => {
 
   it("wires capture contracts, processing state, reconciliation, and cancellation", () => {
     const source = read(detailPagePath);
+    const uploadControlsSource = read(evidenceUploadControlsPath);
 
     expect(source).toContain("现场资料采集");
     expect(source).toContain("保存现场信息");
@@ -63,9 +71,12 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("uploadAndAttachFieldHandoverEvidenceFile");
     expect(source).toContain("removeFieldHandoverEvidenceFile");
     expect(source).toContain("validateFieldEvidenceFile");
-    expect(source).toContain("buildFieldEvidenceUploadInputContracts");
-    expect(source).toContain("capture={contract.capture}");
-    expect(source).toContain("multiple={contract.multiple}");
+    expect(source).toContain("import { EvidenceUploadControls }");
+    expect(source).toContain("export default function");
+    expect(source.match(/^export (?!default)/gm)).toBeNull();
+    expect(uploadControlsSource).toContain("buildFieldEvidenceUploadInputContracts");
+    expect(uploadControlsSource).toContain("capture={contract.capture}");
+    expect(uploadControlsSource).toContain("multiple={contract.multiple}");
     expect(source).toContain("fieldEvidenceUploadSnapshot");
     expect(source).toContain("preserveFacts: true");
     expect(source).toContain("onUploadComplete");
@@ -73,12 +84,25 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("服务端处理中");
     expect(source).toContain("请求体已上传，正在保存并绑定资料");
     expect(source).toContain("cancelFieldEvidenceUploadRequest");
-    expect(source).toContain("buildFieldEvidenceUploadRetryDisplay");
+    expect(source).not.toContain("buildFieldEvidenceUploadRetryDisplay");
     expect(source).toContain("canMutateFieldEvidenceWithUploadBatch");
     expect(source).toContain("取消上传");
-    expect(source).toContain("重试上传");
+    expect(source).toContain("重试原文件");
+    expect(source).toContain("重新选择");
+    expect(source).toContain("放弃本次上传");
     expect(source).toContain("资料正在上传或等待重试，请完成后再提交");
     expect(source).toContain("canSubmitWithFieldEvidenceUploadBatch");
+    expect(source).toContain("hasFieldEvidenceUploadRecoveries");
+    expect(source).toContain("startFieldEvidenceUploadBatchFromState");
+    expect(source).toContain("replaceAndStartFieldEvidenceUploadRecovery");
+    expect(source).toContain("abandonFieldEvidenceUploadRecovery");
+    expect(source).toContain("canStartFieldEvidenceUploadBatch");
+    expect(source.match(/uploadOperation/g)).toHaveLength(4);
+    expect(source).not.toContain("startFieldEvidenceUploadBatch(");
+    expect(source).not.toContain('status === "RETRY_PENDING"');
+    expect(source.match(/await loadDetail\(\{ preserveFacts: true \}\);/g)).toHaveLength(2);
+    expect(uploadControlsSource).toContain('label = "资料上传"');
+    expect(uploadControlsSource).toContain('variant = "primary"');
     expect(source).toContain('uploadAbortReasonRef.current = "UNMOUNT"');
     expect(source).toContain("正在同步最新资料");
     expect(source).toContain("重新加载状态");
@@ -109,80 +133,137 @@ describe("field handover upload batch gates", () => {
     const baseline = { count: 1, ids: ["existing"] };
 
     expect(
-      startFieldEvidenceUploadBatch(
-        "single",
-        ["first.jpg", "second.jpg"],
-        false,
-        baseline
-      ).batch?.files
+      startFieldEvidenceUploadBatch("single", ["first.jpg", "second.jpg"], false, baseline).batch
+        ?.files
     ).toEqual(["first.jpg"]);
     expect(
-      startFieldEvidenceUploadBatch(
-        "damage",
-        ["first.jpg", "second.jpg"],
-        true,
-        baseline
-      ).batch?.files
+      startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true, baseline).batch
+        ?.files
     ).toEqual(["first.jpg", "second.jpg"]);
   });
 
   it("blocks submit and retry while upload evidence is not authoritative", () => {
-    const uploading = startFieldEvidenceUploadBatch(
-      "damage",
-      ["first.jpg"],
-      true,
-      { count: 0, ids: [] }
-    );
+    const uploading = startFieldEvidenceUploadBatch("damage", ["first.jpg"], true, {
+      count: 0,
+      ids: []
+    });
     const refreshing = {
       ...uploading,
-      refreshTarget: "RETRY_PENDING" as const,
+      refreshTarget: "RECOVERABLE" as const,
       status: "REFRESHING" as const
     };
     const refreshFailed = {
       ...refreshing,
       status: "REFRESH_FAILED" as const
     };
-    const retryPending = {
-      ...refreshing,
-      refreshTarget: undefined,
-      status: "RETRY_PENDING" as const
+    const recoverable = {
+      batch: null,
+      fileIndex: 0,
+      recoveries: {
+        damage: {
+          baseline: { count: 0, ids: [] },
+          errorMessage: "upload failed",
+          files: ["first.jpg"],
+          itemViewId: "damage",
+          operation: { type: "APPEND" as const }
+        }
+      },
+      status: "IDLE" as const
     };
 
     expect(canSubmitWithFieldEvidenceUploadBatch(uploading)).toBe(false);
     expect(canSubmitWithFieldEvidenceUploadBatch(refreshing)).toBe(false);
     expect(canSubmitWithFieldEvidenceUploadBatch(refreshFailed)).toBe(false);
-    expect(canSubmitWithFieldEvidenceUploadBatch(retryPending)).toBe(false);
-    expect(canRetryFieldEvidenceUploadBatch(refreshing, true)).toBe(false);
-    expect(canRetryFieldEvidenceUploadBatch(refreshFailed, true)).toBe(false);
-    expect(canRetryFieldEvidenceUploadBatch(retryPending, true)).toBe(true);
+    expect(canSubmitWithFieldEvidenceUploadBatch(recoverable)).toBe(false);
+    expect(canStartFieldEvidenceUploadBatch(refreshing, "side")).toBe(false);
+    expect(canStartFieldEvidenceUploadBatch(refreshFailed, "side")).toBe(false);
+    expect(canStartFieldEvidenceUploadBatch(recoverable, "side")).toBe(true);
+    expect(canStartFieldEvidenceUploadBatch(recoverable, "damage")).toBe(false);
+    expect(canRetryFieldEvidenceUploadBatch(recoverable, "damage", true)).toBe(true);
+    expect(canRetryFieldEvidenceUploadBatch(recoverable, "side", true)).toBe(false);
+    expect(canRetryFieldEvidenceUploadBatch(recoverable, "damage", false)).toBe(false);
     expect(canMutateFieldEvidenceWithUploadBatch(uploading)).toBe(false);
     expect(canMutateFieldEvidenceWithUploadBatch(refreshing)).toBe(false);
     expect(canMutateFieldEvidenceWithUploadBatch(refreshFailed)).toBe(false);
-    expect(canMutateFieldEvidenceWithUploadBatch(retryPending)).toBe(false);
+    expect(canMutateFieldEvidenceWithUploadBatch(recoverable)).toBe(true);
+    expect(hasFieldEvidenceUploadRecoveries(recoverable)).toBe(true);
     expect(
       canMutateFieldEvidenceWithUploadBatch({
         batch: null,
         fileIndex: 0,
+        recoveries: {},
         status: "IDLE"
       })
     ).toBe(true);
   });
 
-  it("does not allow a locked task to retry", () => {
-    const retryPending = {
-      ...startFieldEvidenceUploadBatch(
-        "damage",
-        ["first.jpg"],
-        true,
-        { count: 0, ids: [] }
-      ),
-      status: "RETRY_PENDING" as const
+  it("does not allow a locked task to retry or abandon a recovery", () => {
+    const refreshFailed = {
+      batch: {
+        baseline: { count: 0, ids: [] },
+        files: ["first.jpg"],
+        itemViewId: "damage",
+        operation: { type: "APPEND" as const }
+      },
+      fileIndex: 0,
+      recoveries: {
+        damage: {
+          baseline: { count: 0, ids: [] },
+          errorMessage: "upload failed",
+          files: ["first.jpg"],
+          itemViewId: "damage",
+          operation: { type: "APPEND" as const }
+        }
+      },
+      refreshTarget: "RECOVERABLE" as const,
+      status: "REFRESH_FAILED" as const
     };
 
-    expect(canRetryFieldEvidenceUploadBatch(retryPending, false)).toBe(false);
-    expect(retryFieldEvidenceUploadBatch(retryPending, false)).toBe(
-      retryPending
+    expect(retryFieldEvidenceUploadBatch(refreshFailed, "damage", true)).toBe(refreshFailed);
+    expect(canRetryFieldEvidenceUploadBatch(refreshFailed, "damage", true)).toBe(false);
+    expect(abandonFieldEvidenceUploadRecovery(refreshFailed, "damage")).toBe(refreshFailed);
+    expect(startFieldEvidenceUploadBatchFromState(refreshFailed, "side", ["side.jpg"], false)).toBe(
+      refreshFailed
     );
+    expect(
+      replaceAndStartFieldEvidenceUploadRecovery(
+        refreshFailed,
+        "damage",
+        ["replacement.jpg"],
+        false,
+        true
+      )
+    ).toBe(refreshFailed);
+  });
+
+  it("overrides a stale replacement operation for retry and reselect", () => {
+    const staleRecovery = {
+      batch: null,
+      fileIndex: 0,
+      recoveries: {
+        front: {
+          baseline: { count: 1, ids: ["deleted-evidence-id"] },
+          errorMessage: "upload failed",
+          files: ["original.jpg"],
+          itemViewId: "front",
+          operation: {
+            replaceEvidenceFileId: "deleted-evidence-id",
+            type: "REPLACE" as const
+          }
+        }
+      },
+      status: "IDLE" as const
+    };
+
+    expect(
+      retryFieldEvidenceUploadBatch(staleRecovery, "front", true, { type: "APPEND" }).batch
+        ?.operation
+    ).toEqual({ type: "APPEND" });
+    expect(
+      replaceAndStartFieldEvidenceUploadRecovery(staleRecovery, "front", ["new.jpg"], false, true, {
+        type: "APPEND"
+      }).batch?.operation
+    ).toEqual({ type: "APPEND" });
   });
 });
 

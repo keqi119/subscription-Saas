@@ -127,6 +127,56 @@ describe("Storage providers", () => {
     await expect(readStream(downloaded.stream)).resolves.toBe("hello");
   });
 
+  it("encodes Unicode OSS metadata values for object and file uploads while preserving ASCII and undefined metadata", async () => {
+    const put = vi.fn(async () => ({ res: { headers: { etag: "etag-1" } }, url: "private-url" }));
+    const factory: OssClientFactory = vi.fn(() => ({
+      delete: vi.fn(),
+      getStream: vi.fn(),
+      put
+    }));
+    const provider = new OssStorageProvider(
+      config({
+        OSS_ACCESS_KEY_ID: "test-key",
+        OSS_ACCESS_KEY_SECRET: "test-secret",
+        OSS_BUCKET: "private-bucket",
+        OSS_ENDPOINT: "https://oss-cn-shanghai.aliyuncs.com",
+        OSS_REGION: "oss-cn-shanghai"
+      }) as never,
+      factory
+    );
+    const templateName = "车辆交接确认单";
+    const metadata = { templateName, templateVersion: "V1.0" };
+
+    await provider.putObject({
+      buffer: Buffer.from("hello"),
+      key: "materials/app-1/object.pdf",
+      metadata
+    });
+    await provider.putFile({
+      filePath: "temporary-source.pdf",
+      key: "materials/app-1/file.pdf",
+      metadata,
+      sizeBytes: 5
+    });
+    await provider.putObject({
+      buffer: Buffer.from("hello"),
+      key: "materials/app-1/no-metadata.pdf"
+    });
+
+    expect(put).toHaveBeenNthCalledWith(1, "materials/app-1/object.pdf", expect.any(Buffer), {
+      headers: undefined,
+      meta: { templateName: encodeURIComponent(templateName), templateVersion: "V1.0" }
+    });
+    expect(put).toHaveBeenNthCalledWith(2, "materials/app-1/file.pdf", "temporary-source.pdf", {
+      headers: undefined,
+      meta: { templateName: encodeURIComponent(templateName), templateVersion: "V1.0" }
+    });
+    expect(put).toHaveBeenNthCalledWith(3, "materials/app-1/no-metadata.pdf", expect.any(Buffer), {
+      headers: undefined,
+      meta: undefined
+    });
+  });
+
   it("maps material uploads to local or OSS database fields", async () => {
     const local = {
       deleteObject: vi.fn(),

@@ -45,7 +45,7 @@ export class OssStorageProvider implements StorageProvider {
     const key = sanitizeObjectKey(input.key);
     const result = await this.getClient().put(key, input.buffer, {
       headers: input.contentType ? { "Content-Type": input.contentType } : undefined,
-      meta: input.metadata
+      meta: normalizeMetadata(input.metadata)
     });
 
     return {
@@ -64,7 +64,7 @@ export class OssStorageProvider implements StorageProvider {
     const key = sanitizeObjectKey(input.key);
     const result = await this.getClient().put(key, input.filePath, {
       headers: input.contentType ? { "Content-Type": input.contentType } : undefined,
-      meta: input.metadata
+      meta: normalizeMetadata(input.metadata)
     });
 
     return {
@@ -142,6 +142,15 @@ function sanitizeObjectKey(key: string) {
     throw new BadRequestException("文件路径无效。");
   }
   return normalized;
+}
+
+function normalizeMetadata(metadata: Record<string, string> | undefined) {
+  if (!metadata) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(metadata).map(([key, value]) => [key, encodeURIComponent(value)])
+  );
 }
 
 function getHeader(headers: Record<string, string | string[] | undefined> | undefined, name: string) {

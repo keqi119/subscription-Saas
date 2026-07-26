@@ -19,6 +19,16 @@ export interface FieldEvidenceUploadInputContract {
   multiple: boolean;
 }
 
+export interface FieldEvidenceUploadPrimaryActionHandlers {
+  openMobileChooser: () => void;
+  selectContract: (contract: FieldEvidenceUploadInputContract) => void;
+}
+
+export interface FieldEvidenceUploadSelectionHandlers {
+  closeMobileChooser: () => void;
+  onFiles: (files: File[]) => void;
+}
+
 export interface FieldEvidenceUploadRetryDisplay {
   fileCount: number;
   fileIndex: number;
@@ -46,14 +56,15 @@ const SAFE_VIDEO_MIME_TYPES = new Set([
   "video/x-m4v"
 ]);
 
-const MOBILE_USER_AGENT_PATTERN = /android|avantgo|blackberry|iemobile|ip(?:ad|hone|od)|mobile|opera mini|windows phone/i;
+const MOBILE_USER_AGENT_PATTERN =
+  /android|avantgo|blackberry|iemobile|ip(?:ad|hone|od)|mobile|opera mini|windows phone/i;
 const MOBILE_UPLOAD_MAX_VIEWPORT_WIDTH = 768;
 
 export function detectFieldEvidenceUploadEnvironment(
   signals: FieldEvidenceUploadEnvironmentSignals = {}
 ): FieldEvidenceUploadEnvironment {
-  if (signals.userAgentDataMobile === true) {
-    return "MOBILE";
+  if (typeof signals.userAgentDataMobile === "boolean") {
+    return signals.userAgentDataMobile ? "MOBILE" : "DESKTOP";
   }
   if (signals.userAgent && MOBILE_USER_AGENT_PATTERN.test(signals.userAgent)) {
     return "MOBILE";
@@ -66,6 +77,29 @@ export function detectFieldEvidenceUploadEnvironment(
     return "MOBILE";
   }
   return "DESKTOP";
+}
+
+export function routeFieldEvidenceUploadPrimaryAction(
+  environment: FieldEvidenceUploadEnvironment,
+  contracts: FieldEvidenceUploadInputContract[],
+  handlers: FieldEvidenceUploadPrimaryActionHandlers
+) {
+  if (environment === "MOBILE") {
+    handlers.openMobileChooser();
+    return;
+  }
+  const libraryContract = contracts.find((contract) => contract.key === "library");
+  if (libraryContract) {
+    handlers.selectContract(libraryContract);
+  }
+}
+
+export function completeFieldEvidenceUploadSelection(
+  files: File[],
+  handlers: FieldEvidenceUploadSelectionHandlers
+) {
+  handlers.closeMobileChooser();
+  handlers.onFiles(files);
 }
 
 export function resolveFieldEvidenceMediaType(file: File): FieldEvidenceMediaType | null {
@@ -132,13 +166,16 @@ export function buildFieldEvidenceUploadInputContracts(
       accept: [
         allowedMediaTypes.includes("PHOTO") ? "image/*" : null,
         allowedMediaTypes.includes("VIDEO") ? "video/*" : null
-      ].filter(Boolean).join(","),
+      ]
+        .filter(Boolean)
+        .join(","),
       key: "library",
-      label: environment === "DESKTOP"
-        ? "资料上传"
-        : allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
-          ? "从相册选择"
-          : "从相册/文件选择",
+      label:
+        environment === "DESKTOP"
+          ? "资料上传"
+          : allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
+            ? "从相册选择"
+            : "从相册/文件选择",
       multiple: allowsMultiple
     });
   }

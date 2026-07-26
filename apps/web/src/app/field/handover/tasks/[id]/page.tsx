@@ -41,11 +41,13 @@ import {
 import {
   buildFieldEvidenceUploadInputContracts,
   buildFieldEvidenceUploadRetryDisplay,
+  completeFieldEvidenceUploadSelection,
   detectFieldEvidenceUploadEnvironment,
   type FieldEvidenceUploadEnvironment,
   type FieldEvidenceUploadInputContract,
   type FieldEvidenceMediaType,
   formatUploadBytes,
+  routeFieldEvidenceUploadPrimaryAction,
   validateFieldEvidenceFile
 } from "../../../../../lib/field-handover-upload";
 import {
@@ -1001,7 +1003,7 @@ function LabeledControl({ children, label }: { children: ReactNode; label: strin
   );
 }
 
-function EvidenceUploadControls({
+export function EvidenceUploadControls({
   allowedMediaTypes,
   disabled,
   environment,
@@ -1019,11 +1021,9 @@ function EvidenceUploadControls({
   const contracts = buildFieldEvidenceUploadInputContracts(allowedMediaTypes, multiple, environment);
   const inputRefs = useRef<Partial<Record<FieldEvidenceUploadInputContract["key"], HTMLInputElement>>>({});
   const [chooserOpen, setChooserOpen] = useState(false);
-  const libraryContract = contracts.find((contract) => contract.key === "library");
 
   function selectContract(contract: FieldEvidenceUploadInputContract) {
     inputRefs.current[contract.key]?.click();
-    setChooserOpen(false);
   }
 
   return (
@@ -1039,7 +1039,10 @@ function EvidenceUploadControls({
           onChange={(event) => {
             const files = Array.from(event.currentTarget.files ?? []);
             event.currentTarget.value = "";
-            onFiles(files);
+            completeFieldEvidenceUploadSelection(files, {
+              closeMobileChooser: () => setChooserOpen(false),
+              onFiles
+            });
           }}
           ref={(node) => {
             inputRefs.current[contract.key] = node ?? undefined;
@@ -1052,15 +1055,12 @@ function EvidenceUploadControls({
         block
         disabled={disabled}
         icon={<UploadOutlined />}
-        onClick={() => {
-          if (environment === "MOBILE") {
-            setChooserOpen(true);
-            return;
-          }
-          if (libraryContract) {
-            selectContract(libraryContract);
-          }
-        }}
+        onClick={() =>
+          routeFieldEvidenceUploadPrimaryAction(environment, contracts, {
+            openMobileChooser: () => setChooserOpen(true),
+            selectContract
+          })
+        }
         style={{ minHeight: 44 }}
         type="primary"
       >

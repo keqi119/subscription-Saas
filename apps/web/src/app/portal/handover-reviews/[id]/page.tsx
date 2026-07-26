@@ -1,18 +1,32 @@
 "use client";
 
-import { ArrowLeftOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  CheckCircleOutlined,
+  EditOutlined,
+  ExclamationCircleOutlined,
+  ReloadOutlined
+} from "@ant-design/icons";
 import { Alert, App, Button, Checkbox, Descriptions, Empty, Flex, Input, List, Space, Spin, Tag, Typography } from "antd";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  confirmPortalHandoverReview,
   buildPortalHandoverReviewFileUrl,
+  confirmPortalHandoverReview,
+  getPortalHandoverESign,
+  getPortalHandoverESignErrorMessage,
   getPortalHandoverReview,
   getPortalHandoverReviewErrorMessage,
   objectPortalHandoverReview,
-  PortalHandoverReviewDetail
+  PortalHandoverReviewDetail,
+  Stage2PortalESignView,
+  startPortalHandoverSigning
 } from "../../../../lib/portal-handover-review-api";
+import {
+  buildPortalHandoverESignView,
+  validatePortalHandoverSigningRedirect
+} from "../../../../lib/portal-handover-esign-view-model";
 import {
   buildPortalHandoverReviewDetailView,
   validatePortalHandoverObjectionReason
@@ -31,6 +45,11 @@ export default function PortalHandoverReviewDetailPage() {
   const [objecting, setObjecting] = useState(false);
   const [objectionReason, setObjectionReason] = useState("");
   const [objectionDetails, setObjectionDetails] = useState("");
+  const [esignView, setESignView] = useState<Stage2PortalESignView>();
+  const [esignLoading, setESignLoading] = useState(true);
+  const [esignErrorMessage, setESignErrorMessage] = useState<string | null>(null);
+  const [startingSigning, setStartingSigning] = useState(false);
+  const signingStartInFlight = useRef(false);
 
   const loadReview = useCallback(async () => {
     if (!params.id) {
@@ -53,9 +72,33 @@ export default function PortalHandoverReviewDetailPage() {
     }
   }, [message, params.id, router]);
 
+  const loadESignStatus = useCallback(async () => {
+    if (!params.id) {
+      return;
+    }
+    setESignErrorMessage(null);
+    setESignLoading(true);
+    try {
+      setESignView(await getPortalHandoverESign(params.id));
+    } catch (error) {
+      if (error instanceof PortalApiError && error.status === 401) {
+        router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`);
+        return;
+      }
+      setESignErrorMessage(getPortalHandoverESignErrorMessage(error));
+    } finally {
+      setESignLoading(false);
+    }
+  }, [params.id, router]);
+
   useEffect(() => {
     void loadReview();
-  }, [loadReview]);
+    void loadESignStatus();
+  }, [loadESignStatus, loadReview]);
+
+  const refreshPage = useCallback(async () => {
+    await Promise.all([loadReview(), loadESignStatus()]);
+  }, [loadESignStatus, loadReview]);
 
   async function confirmNoObjection() {
     const manifestHash = review?.evidencePackage?.manifestHash;
@@ -68,7 +111,7 @@ export default function PortalHandoverReviewDetailPage() {
       setReview(nextReview);
       setAcknowledged(false);
       void message.success("已确认无异议");
-      await loadReview();
+      await refreshPage();
     } catch (error) {
       void message.error(getPortalHandoverReviewErrorMessage(error));
     } finally {
@@ -95,11 +138,38 @@ export default function PortalHandoverReviewDetailPage() {
       setObjectionDetails("");
       setObjectionReason("");
       void message.success("已提交异议，工作人员将联系您处理");
-      await loadReview();
+      await refreshPage();
     } catch (error) {
       void message.error(getPortalHandoverReviewErrorMessage(error));
     } finally {
       setObjecting(false);
+    }
+  }
+
+  async function startSigning() {
+    if (!esignView || signingStartInFlight.current || startingSigning || !esignView.capability.canStartSigning) {
+      return;
+    }
+
+    signingStartInFlight.current = true;
+    setStartingSigning(true);
+    try {
+      const result = await startPortalHandoverSigning(params.id);
+      window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl));
+    } catch (error) {
+      if (error instanceof PortalApiError && error.status === 401) {
+        router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`);
+        return;
+      }
+      const nextMessage =
+        error instanceof Error && error.message === "签署链接无效，请稍后重试"
+          ? error.message
+          : getPortalHandoverESignErrorMessage(error);
+      void message.error(nextMessage);
+      await loadESignStatus();
+    } finally {
+      signingStartInFlight.current = false;
+      setStartingSigning(false);
     }
   }
 
@@ -138,6 +208,9 @@ export default function PortalHandoverReviewDetailPage() {
   }
 
   const view = buildPortalHandoverReviewDetailView(review);
+  const esignDisplay = esignView
+    ? buildPortalHandoverESignView(esignView)
+    : null;
 
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
@@ -146,7 +219,11 @@ export default function PortalHandoverReviewDetailPage() {
           <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/portal/handover-reviews")}>
             返回交接确认
           </Button>
-          <Button icon={<ReloadOutlined />} loading={loading} onClick={loadReview}>
+          <Button
+            icon={<ReloadOutlined />}
+            loading={loading || esignLoading}
+            onClick={refreshPage}
+          >
             刷新
           </Button>
         </Flex>
@@ -321,6 +398,61 @@ export default function PortalHandoverReviewDetailPage() {
             onObject={submitObjection}
           />
         </section>
+
+        <section style={esignSectionStyle}>
+          <Typography.Title level={4} style={{ marginTop: 0 }}>
+            车辆交接确认单签署
+          </Typography.Title>
+          {esignLoading ? (
+            <Flex align="center" gap={12}>
+              <Spin size="small" />
+              <Typography.Text type="secondary">
+                正在加载签署状态...
+              </Typography.Text>
+            </Flex>
+          ) : esignErrorMessage ? (
+            <Alert
+              action={
+                <Button
+                  icon={<ReloadOutlined />}
+                  onClick={loadESignStatus}
+                  size="small"
+                >
+                  重试
+                </Button>
+              }
+              message="签署状态加载失败"
+              description={esignErrorMessage}
+              showIcon
+              type="warning"
+            />
+          ) : esignView && esignDisplay ? (
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              <Tag color={esignDisplay.statusTone}>{esignDisplay.statusLabel}</Tag>
+              <Typography.Text type="secondary">
+                {esignDisplay.description}
+              </Typography.Text>
+              {esignDisplay.blockers.map((blocker) => (
+                <Alert key={blocker} message={blocker} showIcon type="info" />
+              ))}
+              {esignView.capability.canStartSigning ? (
+                <Button
+                  block
+                  disabled={!esignView.capability.canStartSigning || startingSigning}
+                  icon={<EditOutlined />}
+                  loading={startingSigning}
+                  onClick={startSigning}
+                  size="large"
+                  type="primary"
+                >
+                  去签署
+                </Button>
+              ) : null}
+            </Space>
+          ) : (
+            <Alert message="签署状态暂不可用，请稍后刷新" showIcon type="info" />
+          )}
+        </section>
       </section>
     </main>
   );
@@ -466,4 +598,9 @@ const inlinePanelStyle = {
   border: "1px solid #e5eaf2",
   borderRadius: 8,
   padding: 14
+};
+
+const esignSectionStyle = {
+  marginBottom: 14,
+  padding: "18px 0"
 };

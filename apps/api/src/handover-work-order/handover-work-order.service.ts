@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   Optional,
+  UnprocessableEntityException,
   UnsupportedMediaTypeException,
   UnauthorizedException
 } from "@nestjs/common";
@@ -36,6 +37,7 @@ import {
 } from "../delivery-evidence/delivery-evidence.service";
 import {
   DeliveryHandoverEvidenceArtifactService,
+  isDeliveryEvidenceArtifactProcessingError,
   PreparedDeliveryEvidenceArtifacts
 } from "../delivery-handover/delivery-handover-evidence-artifact.service";
 import {
@@ -501,11 +503,20 @@ export class HandoverWorkOrderService {
         mediaType,
         options.replaceEvidenceFileId
       );
-      prepared = await this.getEvidenceArtifactService().prepareUpload({
-        evidenceType: readString(mutation as unknown as Record<string, unknown>, "evidenceType") ?? "UNKNOWN",
-        file,
-        mediaType
-      });
+      try {
+        prepared = await this.getEvidenceArtifactService().prepareUpload({
+          evidenceType: readString(mutation as unknown as Record<string, unknown>, "evidenceType") ?? "UNKNOWN",
+          file,
+          mediaType
+        });
+      } catch (error) {
+        if (isDeliveryEvidenceArtifactProcessingError(error)) {
+          throw new UnprocessableEntityException(
+            "资料文件处理失败，请重新选择文件后重试。"
+          );
+        }
+        throw error;
+      }
       const detectedMimeType = prepared.metadata.detectedMimeType;
       const storedObjects: Array<{ bucket: string; objectKey: string }> = [];
       try {

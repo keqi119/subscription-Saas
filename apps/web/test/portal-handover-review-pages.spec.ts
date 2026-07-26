@@ -51,9 +51,31 @@ describe("portal handover review pages", () => {
     expect(source).toContain("下载/打开");
     expect(source).toContain("复核历史");
     expect(source).toContain("reviewHistory");
+    expect(source).toContain("车辆交接确认单签署");
+    expect(source).toContain("getPortalHandoverESign");
+    expect(source).toContain("startPortalHandoverSigning");
+    expect(source).toContain("buildPortalHandoverESignView");
+    expect(source).toContain("正在加载签署状态...");
+    expect(source).toContain("签署状态加载失败");
+    expect(source).toContain("去签署");
+    expect(source).toContain("loading={startingSigning}");
+    expect(source).toContain("!esignView.capability.canStartSigning || startingSigning");
+    expect(source).toContain(
+      "window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl))"
+    );
     expect(source).toContain('router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`)');
     expect(source).not.toMatch(/objectKey|bucket|storage path|signingUrl|idCard|deposit|payment|lease|billing|raw DTO|JSON.stringify/i);
-    expect(source).not.toMatch(/生成.*PDF|电子签|去签署|确认交付|去支付|付款|账单/);
+    expect(source).not.toMatch(/setSignUrl|localStorage|sessionStorage|console\.(log|info|debug)|href=\{[^}]*signUrl/i);
+    expect(source).not.toMatch(/生成.*PDF|确认交付|去支付|付款|账单/);
+  });
+
+  it("guards the intentional signing start action against repeated clicks", () => {
+    const source = read(detailPagePath);
+
+    expect(source).toContain("signingStartInFlight.current");
+    expect(source).toContain("startingSigning || !esignView.capability.canStartSigning");
+    expect(source).toContain("signingStartInFlight.current = true");
+    expect(source).toContain("signingStartInFlight.current = false");
   });
 });
 

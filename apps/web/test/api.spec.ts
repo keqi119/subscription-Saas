@@ -60,4 +60,23 @@ describe("apiFetch browser resilience", () => {
     await rejection;
     expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
   });
+
+  it("preserves a structured backend error code without exposing it as the display message", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "STAGE2_HANDOVER_ESIGN_NOT_READY",
+      message: "Raw provider readiness details must remain internal"
+    }), {
+      headers: { "Content-Type": "application/json" },
+      status: 400
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiFetch("/handover-work-orders/work-order/esign")).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        code: "STAGE2_HANDOVER_ESIGN_NOT_READY",
+        message: "Raw provider readiness details must remain internal",
+        status: 400
+      })
+    );
+  });
 });

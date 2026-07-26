@@ -12,11 +12,16 @@ import type { FieldHandoverWorkOrderDetail } from "../src/lib/field-handover-api
 import { buildFieldEvidenceCaptureView } from "../src/lib/field-handover-view-model";
 import {
   confirmPortalHandoverReview,
+  getPortalHandoverESign,
   getPortalHandoverReview,
   listPortalHandoverReviews,
-  objectPortalHandoverReview
+  objectPortalHandoverReview,
+  startPortalHandoverSigning
 } from "../src/lib/portal-handover-review-api";
-import type { PortalHandoverReviewDetail } from "../src/lib/portal-handover-review-api";
+import type {
+  PortalHandoverReviewDetail,
+  Stage2PortalESignView
+} from "../src/lib/portal-handover-review-api";
 import {
   buildPortalHandoverReviewDetailView,
   validatePortalHandoverObjectionReason
@@ -26,13 +31,14 @@ const repoRoot = join(__dirname, "..", "..", "..");
 const SENSITIVE_OBJECT_KEY = "SYNTHETIC_OBJECT_KEY_SHOULD_NOT_RENDER";
 const SENSITIVE_SIGNING_URL = "SYNTHETIC_SIGNING_URL_SHOULD_NOT_RENDER";
 const SENSITIVE_FULL_ID = "SYNTHETIC_FULL_ID_SHOULD_NOT_RENDER";
+const INTENTIONAL_SIGNING_URL = "https://provider.example/stage2/customer-sign";
 
 describe("Stage 2 handover mocked UI flow", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("runs field submit to Portal confirmation with mocked API calls and no PDF/eSign controls", async () => {
+  it("runs field submit to Portal confirmation through the safe eSign status and intentional start boundary", async () => {
     const result = await runMockedStage2HandoverConfirmFlow();
 
     expect(result.fieldAfterSubmit.canEdit).toBe(false);
@@ -42,13 +48,44 @@ describe("Stage 2 handover mocked UI flow", () => {
     expect(result.portalPending.decision.mode).toBe("ACTIONABLE");
     expect(result.portalConfirmed.decision.mode).toBe("CONFIRMED");
     expect(result.portalConfirmed.decision.message).toBe("您已确认无异议，后续将进入车辆交接确认单签署流程");
+    expect(result.portalESignStatus.capability.canStartSigning).toBe(true);
+    expect(JSON.stringify(result.portalESignStatus)).not.toMatch(/signUrl|signingUrl|provider/i);
+    expect(result.signingStart).toEqual({
+      expiresAt: "2026-07-22T09:00:00.000Z",
+      signUrl: INTENTIONAL_SIGNING_URL
+    });
     expect(result.calls).toEqual(expect.arrayContaining([
       expect.stringContaining("/field/handover/work-orders/work-order-ui-flow/submit"),
       expect.stringContaining("/portal/handover-reviews"),
-      expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/confirm")
+      expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/confirm"),
+      expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign"),
+      expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign/signing/start")
+    ]));
+    expect(result.requests).toEqual(expect.arrayContaining([
+      {
+        method: "GET",
+        url: expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign")
+      },
+      {
+        method: "POST",
+        url: expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign/signing/start")
+      }
     ]));
     expect(result.serialized).not.toMatch(/objectKey|bucket|signingUrl|token|cookie|fullId|deposit|payment/i);
-    expect(result.pageSources).not.toMatch(/生成.*PDF|电子签|去签署|确认交付|去支付|付款|账单/);
+    expect(result.portalPageSources).toContain("getPortalHandoverESign");
+    expect(result.portalPageSources).toContain("startPortalHandoverSigning");
+    expect(result.portalPageSources).toContain(
+      "window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl))"
+    );
+    expect(result.portalPageSources).not.toMatch(
+      /objectKey|bucket|storage path|provider|appId|transactionId|setSignUrl|localStorage|sessionStorage|console\.(log|info|debug)|href=\{[^}]*signUrl/i
+    );
+    expect(result.portalPageSources).not.toMatch(
+      /生成.*PDF|确认交付|去支付|付款|账单|confirmDelivery|startDelivery|completeDelivery|\/delivery(?:\/|["'`])|payment|lease|billing/i
+    );
+    expect(result.fieldPageSource).not.toMatch(
+      /\/esign|电子签|去签署|signUrl|startPortalHandoverSigning/i
+    );
   });
 
   it("runs Portal objection flow with mocked API calls and keeps the UI read-only", async () => {
@@ -57,11 +94,28 @@ describe("Stage 2 handover mocked UI flow", () => {
     expect(result.validationMessage).toBe("请填写异议原因");
     expect(result.portalObjected.decision.mode).toBe("OBJECTED");
     expect(result.portalObjected.decision.message).toBe("您已提交异议，工作人员正在处理");
+    expect(result.portalESignStatus.capability.canStartSigning).toBe(false);
+    expect(JSON.stringify(result.portalESignStatus)).not.toMatch(/signUrl|signingUrl|provider/i);
     expect(result.calls).toEqual(expect.arrayContaining([
-      expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/object")
+      expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/object"),
+      expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign")
+    ]));
+    expect(result.requests).not.toEqual(expect.arrayContaining([
+      {
+        method: "POST",
+        url: expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign/signing/start")
+      }
     ]));
     expect(result.serialized).not.toMatch(/objectKey|bucket|signingUrl|token|cookie|fullId|deposit|payment/i);
-    expect(result.pageSources).not.toMatch(/生成.*PDF|电子签|去签署|确认交付|去支付|付款|账单/);
+    expect(result.portalPageSources).not.toMatch(
+      /objectKey|bucket|storage path|provider|appId|transactionId|setSignUrl|localStorage|sessionStorage|console\.(log|info|debug)|href=\{[^}]*signUrl/i
+    );
+    expect(result.portalPageSources).not.toMatch(
+      /生成.*PDF|确认交付|去支付|付款|账单|confirmDelivery|startDelivery|completeDelivery|\/delivery(?:\/|["'`])|payment|lease|billing/i
+    );
+    expect(result.fieldPageSource).not.toMatch(
+      /\/esign|电子签|去签署|signUrl|startPortalHandoverSigning/i
+    );
   });
 });
 
@@ -82,7 +136,17 @@ async function runMockedStage2HandoverConfirmFlow() {
         workOrderId: "work-order-ui-flow"
       },
       status: "CUSTOMER_CONFIRMED"
-    })
+    }),
+    stage2PortalESignStatus({
+      capability: { canStartSigning: true },
+      ready: true,
+      status: "WAITING_CUSTOMER",
+      taskId: "stage2-task-ui-flow"
+    }),
+    {
+      expiresAt: "2026-07-22T09:00:00.000Z",
+      signUrl: INTENTIONAL_SIGNING_URL
+    }
   ]);
 
   await startFieldHandoverWorkOrder("work-order-ui-flow");
@@ -98,16 +162,31 @@ async function runMockedStage2HandoverConfirmFlow() {
   await listPortalHandoverReviews();
   const pending = await getPortalHandoverReview("work-order-ui-flow");
   const portalPending = buildPortalHandoverReviewDetailView(pending);
-  const confirmed = await confirmPortalHandoverReview("work-order-ui-flow", true);
+  const confirmed = await confirmPortalHandoverReview(
+    "work-order-ui-flow",
+    true,
+    `sha256:${"a".repeat(64)}`
+  );
   const portalConfirmed = buildPortalHandoverReviewDetailView(confirmed);
+  const portalESignStatus = await getPortalHandoverESign("work-order-ui-flow");
+  const signingStart = await startPortalHandoverSigning("work-order-ui-flow");
 
   return {
     calls: fetchMock.mock.calls.map((call) => String(call[0])),
+    fieldPageSource: readFieldHandoverPageSource(),
     fieldAfterSubmit,
-    pageSources: readHandoverPageSources(),
     portalConfirmed,
+    portalESignStatus,
+    portalPageSources: readPortalHandoverPageSources(),
     portalPending,
-    serialized: JSON.stringify({ fieldAfterSubmit, portalConfirmed, portalPending })
+    requests: fetchMock.mock.calls.map(toRequestSummary),
+    serialized: JSON.stringify({
+      fieldAfterSubmit,
+      portalConfirmed,
+      portalESignStatus,
+      portalPending
+    }),
+    signingStart
   };
 }
 
@@ -128,6 +207,12 @@ async function runMockedStage2HandoverObjectionFlow() {
         workOrderId: "work-order-ui-flow"
       },
       status: "CUSTOMER_OBJECTED"
+    }),
+    stage2PortalESignStatus({
+      blockers: [{
+        code: "CUSTOMER_OBJECTION_ACTIVE",
+        message: "The customer has an active handover objection."
+      }]
     })
   ]);
 
@@ -138,13 +223,48 @@ async function runMockedStage2HandoverObjectionFlow() {
     reason: "车辆外观有异议"
   });
   const portalObjected = buildPortalHandoverReviewDetailView(objected);
+  const portalESignStatus = await getPortalHandoverESign("work-order-ui-flow");
 
   return {
     calls: fetchMock.mock.calls.map((call) => String(call[0])),
-    pageSources: readHandoverPageSources(),
+    fieldPageSource: readFieldHandoverPageSource(),
+    portalESignStatus,
     portalObjected,
-    serialized: JSON.stringify({ portalObjected }),
+    portalPageSources: readPortalHandoverPageSources(),
+    requests: fetchMock.mock.calls.map(toRequestSummary),
+    serialized: JSON.stringify({ portalESignStatus, portalObjected }),
     validationMessage
+  };
+}
+
+function stage2PortalESignStatus(
+  overrides: Partial<Stage2PortalESignView> = {}
+): Stage2PortalESignView {
+  return {
+    archiveStatus: "NOT_STARTED",
+    blockers: [],
+    capability: { canStartSigning: false },
+    createdAt: null,
+    customerSigner: {
+      signedAt: null,
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      status: "PENDING"
+    },
+    documentType: "DELIVERY_HANDOVER",
+    handoverId: "handover-ui-flow",
+    platformSigner: {
+      signedAt: null,
+      slotId: "STAGE2_HANDOVER_PLATFORM",
+      status: "PENDING"
+    },
+    ready: false,
+    signedArtifactAvailable: false,
+    signingStage: "STAGE2_DELIVERY_HANDOVER",
+    status: null,
+    taskId: null,
+    updatedAt: null,
+    workOrderId: "work-order-ui-flow",
+    ...overrides
   };
 }
 
@@ -298,10 +418,24 @@ function mockJsonSequence(bodies: unknown[]) {
   return fetchMock;
 }
 
-function readHandoverPageSources() {
+function readFieldHandoverPageSource() {
+  return readFileSync(
+    join(repoRoot, "apps/web/src/app/field/handover/tasks/[id]/page.tsx"),
+    "utf8"
+  );
+}
+
+function readPortalHandoverPageSources() {
   return [
-    "apps/web/src/app/field/handover/tasks/[id]/page.tsx",
     "apps/web/src/app/portal/handover-reviews/page.tsx",
     "apps/web/src/app/portal/handover-reviews/[id]/page.tsx"
   ].map((file) => readFileSync(join(repoRoot, file), "utf8")).join("\n");
+}
+
+function toRequestSummary(call: unknown[]) {
+  const [url, init] = call as [unknown, RequestInit | undefined];
+  return {
+    method: init?.method ?? "GET",
+    url: String(url)
+  };
 }

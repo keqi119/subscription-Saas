@@ -2,13 +2,13 @@
 
 ## Status And Boundary
 
-This document is a remediation backlog derived from the Stage 1 read-only review at commit `7c17367`. The schema-expressiveness compatibility item is closed by the Stage 2 provider-mapping branch without changing Stage 1 runtime behavior. The pre-existing Stage 1 runtime findings remain backlog.
+This document is a remediation backlog derived from the Stage 1 read-only review at commit `7c17367` and rechecked against `c3b36e0` on 2026-07-27. The schema-expressiveness compatibility item is closed by the Stage 2 provider-mapping branch without changing Stage 1 runtime behavior. The pre-existing Stage 1 runtime findings remain backlog.
 
-The review found no confirmed Critical issue. It found one Stage 2-branch typed-model compatibility gap, eight pre-existing Stage 1 Important findings, and three pre-existing Stage 1 Minor findings.
+The 2026-07-27 recheck confirmed that the backlog still applies and added a production-blocking Stage 1/Stage 2 entry-point isolation requirement. These findings do not change the dedicated Stage 2 service, but controlled Stage 2 validation must use only the handover-specific Admin and Portal routes until the Stage 1 containment work is complete.
 
 ## Closed: Typed Compatibility Gap
 
-### P0-1 Typed Stage 1 multi-slot compatibility (schema expressiveness only)
+### COMPAT-1 Typed Stage 1 multi-slot compatibility (schema expressiveness only)
 
 This was the review's single branch-introduced compatibility gap and is intentionally separate from the pre-existing Stage 1 runtime backlog.
 
@@ -20,6 +20,10 @@ This was the review's single branch-introduced compatibility gap and is intentio
 No Stage 1 writer, backfill, dual-write, callback fallback, `PENDING_PAYMENT`, or other Stage 1 runtime behavior changed. Real PostgreSQL migration round-trip coverage remains required before deploying the migration.
 
 ## P0: Pre-existing Stage 1 Risks
+
+### P0-1 Stage boundary isolation
+
+Stage 1 generic contract sign, archive, cancel, and eSign-task creation entry points must reject a Stage 2 handover contract. Enforce that the target is the order's current Stage 1 main contract and add an explicit contract purpose/type guard. Stage 2 handover contracts must flow only through the typed `STAGE2_DELIVERY_HANDOVER` service and routes. Add regression coverage proving that a Stage 2 contract cannot trigger Stage 1 `PENDING_PAYMENT`, notification, manual-sign, archive, or cancellation side effects.
 
 ### P0-2 Cancellation/completion invariant
 
@@ -73,7 +77,7 @@ Make the persisted Stage 1 artifact the coordinate source of truth, validate exa
 
 The backlog above preserves the original review order:
 
-1. typed model compatibility gap: P0-1;
+1. Stage 1 generic entry points accepting Stage 2 contracts: P0-1;
 2. cancellation and late callback: P0-2;
 3. object authorization/manual sign: P0-3;
 4. expired signing URL recovery: P0-4;

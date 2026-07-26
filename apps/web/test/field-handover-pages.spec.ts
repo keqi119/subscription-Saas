@@ -4,9 +4,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  abandonFieldEvidenceUploadRecovery,
   canRetryFieldEvidenceUploadBatch,
+  canStartFieldEvidenceUploadBatch,
   canSubmitWithFieldEvidenceUploadBatch,
   canMutateFieldEvidenceWithUploadBatch,
+  hasFieldEvidenceUploadRecoveries,
   retryFieldEvidenceUploadBatch,
   startFieldEvidenceUploadBatch
 } from "../src/lib/field-handover-upload-batch";
@@ -109,80 +112,95 @@ describe("field handover upload batch gates", () => {
     const baseline = { count: 1, ids: ["existing"] };
 
     expect(
-      startFieldEvidenceUploadBatch(
-        "single",
-        ["first.jpg", "second.jpg"],
-        false,
-        baseline
-      ).batch?.files
+      startFieldEvidenceUploadBatch("single", ["first.jpg", "second.jpg"], false, baseline).batch
+        ?.files
     ).toEqual(["first.jpg"]);
     expect(
-      startFieldEvidenceUploadBatch(
-        "damage",
-        ["first.jpg", "second.jpg"],
-        true,
-        baseline
-      ).batch?.files
+      startFieldEvidenceUploadBatch("damage", ["first.jpg", "second.jpg"], true, baseline).batch
+        ?.files
     ).toEqual(["first.jpg", "second.jpg"]);
   });
 
   it("blocks submit and retry while upload evidence is not authoritative", () => {
-    const uploading = startFieldEvidenceUploadBatch(
-      "damage",
-      ["first.jpg"],
-      true,
-      { count: 0, ids: [] }
-    );
+    const uploading = startFieldEvidenceUploadBatch("damage", ["first.jpg"], true, {
+      count: 0,
+      ids: []
+    });
     const refreshing = {
       ...uploading,
-      refreshTarget: "RETRY_PENDING" as const,
+      refreshTarget: "RECOVERABLE" as const,
       status: "REFRESHING" as const
     };
     const refreshFailed = {
       ...refreshing,
       status: "REFRESH_FAILED" as const
     };
-    const retryPending = {
-      ...refreshing,
-      refreshTarget: undefined,
-      status: "RETRY_PENDING" as const
+    const recoverable = {
+      batch: null,
+      fileIndex: 0,
+      recoveries: {
+        damage: {
+          baseline: { count: 0, ids: [] },
+          errorMessage: "upload failed",
+          files: ["first.jpg"],
+          itemViewId: "damage",
+          operation: { type: "APPEND" as const }
+        }
+      },
+      status: "IDLE" as const
     };
 
     expect(canSubmitWithFieldEvidenceUploadBatch(uploading)).toBe(false);
     expect(canSubmitWithFieldEvidenceUploadBatch(refreshing)).toBe(false);
     expect(canSubmitWithFieldEvidenceUploadBatch(refreshFailed)).toBe(false);
-    expect(canSubmitWithFieldEvidenceUploadBatch(retryPending)).toBe(false);
-    expect(canRetryFieldEvidenceUploadBatch(refreshing, true)).toBe(false);
-    expect(canRetryFieldEvidenceUploadBatch(refreshFailed, true)).toBe(false);
-    expect(canRetryFieldEvidenceUploadBatch(retryPending, true)).toBe(true);
+    expect(canSubmitWithFieldEvidenceUploadBatch(recoverable)).toBe(false);
+    expect(canStartFieldEvidenceUploadBatch(refreshing, "side")).toBe(false);
+    expect(canStartFieldEvidenceUploadBatch(refreshFailed, "side")).toBe(false);
+    expect(canStartFieldEvidenceUploadBatch(recoverable, "side")).toBe(true);
+    expect(canStartFieldEvidenceUploadBatch(recoverable, "damage")).toBe(false);
+    expect(canRetryFieldEvidenceUploadBatch(recoverable, "damage", true)).toBe(true);
+    expect(canRetryFieldEvidenceUploadBatch(recoverable, "side", true)).toBe(false);
+    expect(canRetryFieldEvidenceUploadBatch(recoverable, "damage", false)).toBe(false);
     expect(canMutateFieldEvidenceWithUploadBatch(uploading)).toBe(false);
     expect(canMutateFieldEvidenceWithUploadBatch(refreshing)).toBe(false);
     expect(canMutateFieldEvidenceWithUploadBatch(refreshFailed)).toBe(false);
-    expect(canMutateFieldEvidenceWithUploadBatch(retryPending)).toBe(false);
+    expect(canMutateFieldEvidenceWithUploadBatch(recoverable)).toBe(true);
+    expect(hasFieldEvidenceUploadRecoveries(recoverable)).toBe(true);
     expect(
       canMutateFieldEvidenceWithUploadBatch({
         batch: null,
         fileIndex: 0,
+        recoveries: {},
         status: "IDLE"
       })
     ).toBe(true);
   });
 
-  it("does not allow a locked task to retry", () => {
-    const retryPending = {
-      ...startFieldEvidenceUploadBatch(
-        "damage",
-        ["first.jpg"],
-        true,
-        { count: 0, ids: [] }
-      ),
-      status: "RETRY_PENDING" as const
+  it("does not allow a locked task to retry or abandon a recovery", () => {
+    const refreshFailed = {
+      batch: {
+        baseline: { count: 0, ids: [] },
+        files: ["first.jpg"],
+        itemViewId: "damage",
+        operation: { type: "APPEND" as const }
+      },
+      fileIndex: 0,
+      recoveries: {
+        damage: {
+          baseline: { count: 0, ids: [] },
+          errorMessage: "upload failed",
+          files: ["first.jpg"],
+          itemViewId: "damage",
+          operation: { type: "APPEND" as const }
+        }
+      },
+      refreshTarget: "RECOVERABLE" as const,
+      status: "REFRESH_FAILED" as const
     };
 
-    expect(canRetryFieldEvidenceUploadBatch(retryPending, false)).toBe(false);
-    expect(retryFieldEvidenceUploadBatch(retryPending, false)).toBe(
-      retryPending
-    );
+    expect(retryFieldEvidenceUploadBatch(refreshFailed, "damage", true)).toBe(refreshFailed);
+    expect(canRetryFieldEvidenceUploadBatch(refreshFailed, "damage", true)).toBe(false);
+    expect(abandonFieldEvidenceUploadRecovery(refreshFailed, "damage")).toBe(refreshFailed);
   });
 });
 

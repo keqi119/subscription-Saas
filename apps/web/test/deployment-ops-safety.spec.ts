@@ -55,6 +55,17 @@ describe("Deployment operations safety", () => {
       expect(command).toContain("-p subauto-staging");
     }
   });
+
+  it("configures the public Stage 2 handover evidence URL for staging", () => {
+    for (const file of [
+      ".env.staging.example",
+      ".env.staging.images.example"
+    ]) {
+      expect(read(file)).toContain(
+        "STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL=https://staging-app.subauto.keybox.cloud"
+      );
+    }
+  });
 });
 
 function read(file: string) {

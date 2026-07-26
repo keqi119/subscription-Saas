@@ -1,7 +1,7 @@
 "use client";
 
 import { PlusOutlined } from "@ant-design/icons";
-import { App, Button, DatePicker, Drawer, Form, Input, Space, Table, Tag, Typography } from "antd";
+import { App, Button, DatePicker, Drawer, Form, Input, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -11,6 +11,13 @@ import { ProtectedShell } from "../../components/protected-shell";
 import { STATUS_LABELS, labelOf } from "../../constants/labels";
 import { apiFetch, ApiError } from "../../lib/api";
 import type { AuthMeResponse } from "../../lib/auth";
+import {
+  buildContractVersionCreatePayload,
+  CONTRACT_TEMPLATE_TYPE_OPTIONS,
+  DEFAULT_CONTRACT_TEMPLATE_TYPE,
+  labelContractTemplateType,
+  type ContractTemplateType
+} from "../../lib/contract-version-form";
 
 interface ContractVersionRow {
   businessType: string;
@@ -20,6 +27,7 @@ interface ContractVersionRow {
   id: string;
   status: string;
   templateName: string;
+  templateType: ContractTemplateType;
   versionNo: string;
 }
 
@@ -28,6 +36,7 @@ interface ContractVersionFormValues {
   effectiveFrom?: dayjs.Dayjs;
   effectiveTo?: dayjs.Dayjs;
   templateName: string;
+  templateType: ContractTemplateType;
   versionNo: string;
 }
 
@@ -72,14 +81,14 @@ export default function ContractVersionsPage() {
     const values = await form.validateFields();
     try {
       await apiFetch("/contract-versions", {
-        body: JSON.stringify({
-          businessType: "SUBSCRIPTION",
+        body: JSON.stringify(buildContractVersionCreatePayload({
           contentTemplate: values.contentTemplate,
           effectiveFrom: values.effectiveFrom?.format("YYYY-MM-DD"),
           effectiveTo: values.effectiveTo?.format("YYYY-MM-DD"),
           templateName: values.templateName,
+          templateType: values.templateType,
           versionNo: values.versionNo
-        }),
+        })),
         method: "POST"
       });
       void message.success("合同模板已创建");
@@ -105,6 +114,12 @@ export default function ContractVersionsPage() {
     { dataIndex: "templateName", title: "模板名称", width: 220 },
     { dataIndex: "versionNo", title: "版本号", width: 100 },
     { dataIndex: "businessType", render: () => "订阅业务", title: "业务类型", width: 120 },
+    {
+      dataIndex: "templateType",
+      render: (value: string) => labelContractTemplateType(value),
+      title: "模板类型",
+      width: 150
+    },
     { dataIndex: "status", render: (value: string) => <Tag>{labelOf(STATUS_LABELS, value)}</Tag>, title: "状态", width: 110 },
     { dataIndex: "effectiveFrom", render: formatTime, title: "生效日期", width: 150 },
     { dataIndex: "effectiveTo", render: formatTime, title: "失效日期", width: 150 },
@@ -166,12 +181,23 @@ export default function ContractVersionsPage() {
         title="新增合同模板"
         size={560}
       >
-        <Form form={form} layout="vertical">
+        <Form
+          form={form}
+          initialValues={{ templateType: DEFAULT_CONTRACT_TEMPLATE_TYPE }}
+          layout="vertical"
+        >
           <Form.Item label="模板名称" name="templateName" rules={[{ required: true, message: "请输入模板名称" }]}>
             <Input />
           </Form.Item>
           <Form.Item label="版本号" name="versionNo" rules={[{ required: true, message: "请输入版本号" }]}>
             <Input placeholder="V1.0" />
+          </Form.Item>
+          <Form.Item
+            label="模板类型"
+            name="templateType"
+            rules={[{ required: true, message: "请选择模板类型" }]}
+          >
+            <Select options={CONTRACT_TEMPLATE_TYPE_OPTIONS.map((option) => ({ ...option }))} />
           </Form.Item>
           <Form.Item label="生效日期" name="effectiveFrom">
             <DatePicker style={{ width: "100%" }} />

@@ -51,6 +51,41 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("进入订单处理");
     expect(source).not.toMatch(/accessToken|objectKey|bucket|signingUrl|idCard|fullPhone/i);
   });
+
+  it("integrates safe Stage 2 eSign status and actions into the existing review panel and detail modal", () => {
+    const source = read(orderPagePath);
+
+    expect(source).toContain("Stage2HandoverESignCell");
+    expect(source).toContain("loadAdminStage2HandoverESign");
+    expect(source).toContain("startAdminStage2HandoverESign");
+    expect(source).toContain("retryAdminStage2PlatformSeal");
+    expect(source).toContain("retryAdminStage2HandoverArchive");
+    expect(source).toContain("getAdminStage2HandoverESignErrorMessage");
+    expect(source).toContain('canManageESign={permissions.has("delivery:confirm")}');
+    expect(source).toContain("发起电子签");
+    expect(source).toContain("发起平台盖章");
+    expect(source).toContain("重试平台盖章");
+    expect(source).toContain("重试签署文件归档");
+    expect(source).toContain("电子签状态");
+    expect(source).toContain("客户签署");
+    expect(source).toContain("平台盖章");
+    expect(source).toContain("签署文件归档");
+    expect(source).not.toMatch(
+      /signUrl|providerTransactionId|providerTaskId|providerEnvelopeId|objectKey|bucket|idCard|fullPhone/i
+    );
+  });
+
+  it("refreshes Stage 2 eSign status after every signing action without coupling it to delivery confirmation", () => {
+    const source = read(orderPagePath);
+    const actionBlock = source.slice(
+      source.indexOf("async function runStage2HandoverESignAction"),
+      source.indexOf("function openAssignExternalHandover")
+    );
+
+    expect(actionBlock).toContain("await action(id)");
+    expect(actionBlock).toContain("await refreshStage2HandoverESignStatus(id)");
+    expect(actionBlock).not.toMatch(/confirmDelivery|prepareDelivery|lease|billing|payment/i);
+  });
 });
 
 function read(file: string) {

@@ -99,8 +99,12 @@ export function buildPortalHandoverESignView(
 export function validatePortalHandoverSigningRedirect(signUrl: string) {
   try {
     const redirect = new URL(signUrl);
+    const isDevelopmentLoopback =
+      process.env.NODE_ENV !== "production" &&
+      redirect.protocol === "http:" &&
+      isLoopbackHost(redirect.hostname);
     if (
-      redirect.protocol !== "https:" ||
+      (redirect.protocol !== "https:" && !isDevelopmentLoopback) ||
       redirect.username ||
       redirect.password
     ) {
@@ -110,4 +114,9 @@ export function validatePortalHandoverSigningRedirect(signUrl: string) {
   } catch {
     throw new Error("签署链接无效，请稍后重试");
   }
+}
+
+function isLoopbackHost(hostname: string) {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "[::1]";
 }

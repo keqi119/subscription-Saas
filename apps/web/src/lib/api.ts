@@ -8,7 +8,8 @@ export type ApiFetchInit = RequestInit & {
 export class ApiError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    readonly code?: string
   ) {
     super(message);
   }
@@ -58,7 +59,8 @@ export async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T>
   }
 
   if (!response.ok) {
-    throw new ApiError(await readErrorMessage(response), response.status);
+    const error = await readError(response);
+    throw new ApiError(error.message, response.status, error.code);
   }
 
   const text = await response.text();
@@ -69,20 +71,31 @@ export async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T>
   return JSON.parse(text) as T;
 }
 
-async function readErrorMessage(response: Response) {
+async function readError(response: Response) {
   try {
-    const body = (await response.json()) as { message?: unknown };
+    const body = (await response.json()) as { code?: unknown; message?: unknown };
+    const code =
+      typeof body.code === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(body.code)
+        ? body.code
+        : undefined;
 
     if (Array.isArray(body.message)) {
-      return body.message
-        .map((item) => (typeof item === "string" ? item : "请求参数不正确，请检查输入内容"))
-        .join(", ");
+      return {
+        code,
+        message: body.message
+          .map((item) => (typeof item === "string" ? item : "请求参数不正确，请检查输入内容"))
+          .join(", ")
+      };
     }
 
-    return typeof body.message === "string" && body.message.trim()
-      ? body.message
-      : response.statusText;
+    return {
+      code,
+      message:
+        typeof body.message === "string" && body.message.trim()
+          ? body.message
+          : response.statusText
+    };
   } catch {
-    return response.statusText;
+    return { code: undefined, message: response.statusText };
   }
 }

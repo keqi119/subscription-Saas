@@ -8,6 +8,9 @@ import {
   retryAdminStage2HandoverArchive,
   retryAdminStage2PlatformSeal,
   startAdminStage2HandoverESign,
+  validateAdminStage2HandoverVoidReason,
+  voidAdminStage2HandoverESign,
+  type AdminStage2HandoverSignedDocumentState,
   type AdminStage2HandoverESignStatus
 } from "../src/lib/admin-stage2-handover-esign";
 
@@ -51,6 +54,44 @@ describe("Admin Stage 2 handover eSign API", () => {
     expect(JSON.stringify(fetchMock.mock.calls[0])).not.toMatch(
       /signUrl|providerTransactionId|objectKey|bucket|idCard|fullPhone/i
     );
+  });
+
+  it("posts an explicit bounded reason when an Admin voids a recoverable task", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(esignStatus({ taskId: null })), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await voidAdminStage2HandoverESign("work order", "客户拒签后重新核验签署材料");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://localhost:3001/api/handover-work-orders/work%20order/esign/void"
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      body: JSON.stringify({ reason: "客户拒签后重新核验签署材料" }),
+      credentials: "include",
+      method: "POST"
+    });
+  });
+
+  it("types archive retry as the signed-document state returned by the backend", async () => {
+    const archiveState = signedDocumentState();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(archiveState), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      })
+    ));
+
+    const result: AdminStage2HandoverSignedDocumentState =
+      await retryAdminStage2HandoverArchive("work-order");
+
+    expect(result).toEqual(archiveState);
+    expect(result).not.toHaveProperty("customerSigner");
   });
 });
 
@@ -142,6 +183,48 @@ describe("Admin Stage 2 handover eSign display", () => {
     });
     expect(display.startAvailable).toBe(false);
     expect(display.platformActionLabel).toBeNull();
+    expect(display.voidAvailable).toBe(true);
+  });
+
+  it("shows a non-force-void escalation when a provider transaction prevents local recovery", () => {
+    const display = getAdminStage2HandoverESignDisplay(esignStatus({
+      canVoid: false,
+      ready: false,
+      rebuildRequired: true,
+      status: "FAILED",
+      taskId: "task-private-id"
+    }));
+
+    expect(display.readiness).toEqual({
+      color: "red",
+      detail: "供应商已受理该签署交易，不能在本地强制作废，请联系管理员核验处理",
+      label: "签署任务需人工处理"
+    });
+    expect(display.voidAvailable).toBe(false);
+    expect(JSON.stringify(display)).not.toMatch(/transaction|provider|task-private-id/i);
+  });
+
+  it.each([
+    ["CREATED", "签署任务创建中", "processing"],
+    ["WAITING_CUSTOMER", "待客户签署", "warning"],
+    ["SIGNING", "签署进行中", "processing"],
+    ["COMPLETED", "签署已完成", "success"],
+    ["FAILED", "签署失败", "error"],
+    ["CANCELLED", "签署任务已作废", "default"],
+    ["EXPIRED", "签署任务已过期", "error"]
+  ])("shows task lifecycle %s instead of create-readiness blockers", (status, label, color) => {
+    const display = getAdminStage2HandoverESignDisplay(esignStatus({
+      blockers: [{
+        code: "ACTIVE_ESIGN_TASK_CONFLICT",
+        message: "An active task exists"
+      }],
+      ready: false,
+      status,
+      taskId: "task-private-id"
+    }));
+
+    expect(display.readiness).toMatchObject({ color, detail: null, label });
+    expect(JSON.stringify(display.readiness)).not.toContain("已有进行中的电子签任务");
   });
 
   it("keeps completed signing distinct from a retryable signed-file archive", () => {
@@ -179,14 +262,31 @@ describe("Admin Stage 2 handover eSign display", () => {
 
 describe("Admin Stage 2 handover eSign safe errors", () => {
   it.each([
-    [new ApiError("STAGE2_HANDOVER_ESIGN_NOT_READY", 400), "交接材料尚未满足电子签条件"],
-    [new ApiError("STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED", 409), "当前签署任务需先作废后才能重新发起"],
+    [new ApiError("raw readiness details", 400, "STAGE2_HANDOVER_ESIGN_NOT_READY"), "交接材料尚未满足电子签条件"],
+    [new ApiError("raw rebuild details", 409, "STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED"), "当前签署任务需先作废后才能重新发起"],
     [new ApiError("raw provider rejection with transaction 998877", 502), "电子签服务暂不可用，请稍后重试"],
     [new ApiError("Forbidden", 403), "无发起或重试电子签权限"],
     [new Error("storage object and provider details"), "电子签操作失败，请刷新状态后重试"]
   ])("maps backend failures to readable safe copy", (error, expected) => {
     expect(getAdminStage2HandoverESignErrorMessage(error)).toBe(expected);
     expect(getAdminStage2HandoverESignErrorMessage(error)).not.toMatch(/998877|storage object|provider details/i);
+  });
+
+  it("does not infer a trusted backend code from raw message contents", () => {
+    expect(getAdminStage2HandoverESignErrorMessage(
+      new ApiError("STAGE2_HANDOVER_ESIGN_NOT_READY raw provider text", 400)
+    )).toBe("电子签操作失败，请刷新状态后重试");
+  });
+});
+
+describe("Admin Stage 2 handover eSign void reason", () => {
+  it.each([
+    ["", "请填写作废原因"],
+    ["ab", "作废原因需为 3-500 个字符"],
+    ["a".repeat(501), "作废原因需为 3-500 个字符"],
+    [" 客户拒签后重新核验材料 ", null]
+  ])("validates the explicit reason boundary", (reason, expected) => {
+    expect(validateAdminStage2HandoverVoidReason(reason)).toBe(expected);
   });
 });
 
@@ -227,5 +327,21 @@ function signer(
     slotId: "STAGE2_HANDOVER_CUSTOMER",
     status: "PENDING",
     ...overrides
+  };
+}
+
+function signedDocumentState(): AdminStage2HandoverSignedDocumentState {
+  return {
+    archiveLastAttemptAt: "2026-07-27T09:00:00.000Z",
+    archiveLastError: null,
+    archiveRetryCount: 1,
+    archiveStatus: "ARCHIVED",
+    archivedAt: "2026-07-27T09:00:02.000Z",
+    available: true,
+    completedAt: "2026-07-27T08:59:00.000Z",
+    handoverId: "handover-private-id",
+    retryAvailable: false,
+    taskId: "task-private-id",
+    workOrderId: "work-order-id"
   };
 }

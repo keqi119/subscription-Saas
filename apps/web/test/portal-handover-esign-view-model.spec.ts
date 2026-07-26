@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Stage2PortalESignView } from "../src/lib/portal-handover-review-api";
 import {
@@ -7,6 +7,10 @@ import {
 } from "../src/lib/portal-handover-esign-view-model";
 
 describe("Portal Stage 2 handover eSign view model", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it.each([
     {
       expected: "等待工作人员发起签署",
@@ -94,16 +98,44 @@ describe("Portal Stage 2 handover eSign view model", () => {
     expect(JSON.stringify(view)).not.toMatch(/FADADA|appId|transaction/i);
   });
 
-  it("accepts only HTTPS provider redirects without embedded credentials", () => {
+  it("accepts HTTPS provider redirects without embedded credentials", () => {
     expect(validatePortalHandoverSigningRedirect("https://provider.example/sign?id=1")).toBe(
       "https://provider.example/sign?id=1"
     );
-    expect(() => validatePortalHandoverSigningRedirect("http://provider.example/sign")).toThrow(
+  });
+
+  it.each([
+    "http://localhost:3001/mock-sign?id=1",
+    "http://127.0.0.1:3001/mock-sign",
+    "http://[::1]:3001/mock-sign"
+  ])("allows an HTTP loopback Mock-provider redirect outside production: %s", (url) => {
+    vi.stubEnv("NODE_ENV", "development");
+
+    expect(validatePortalHandoverSigningRedirect(url)).toBe(url);
+  });
+
+  it.each([
+    "http://provider.example/sign",
+    "http://localhost.evil.example/sign",
+    "javascript:alert(1)",
+    "https://user:password@provider.example/sign"
+  ])("rejects unsafe or non-loopback signing redirects: %s", (url) => {
+    vi.stubEnv("NODE_ENV", "development");
+
+    expect(() => validatePortalHandoverSigningRedirect(url)).toThrow(
       "签署链接无效，请稍后重试"
     );
-    expect(() => validatePortalHandoverSigningRedirect("javascript:alert(1)")).toThrow(
+  });
+
+  it("rejects an HTTP loopback redirect in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+
+    expect(() => validatePortalHandoverSigningRedirect("http://localhost:3001/mock-sign")).toThrow(
       "签署链接无效，请稍后重试"
     );
+  });
+
+  it("rejects credentials even on an HTTPS redirect", () => {
     expect(() => validatePortalHandoverSigningRedirect(
       "https://user:password@provider.example/sign"
     )).toThrow("签署链接无效，请稍后重试");

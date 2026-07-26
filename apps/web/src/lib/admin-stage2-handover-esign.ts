@@ -35,6 +35,20 @@ export interface AdminStage2HandoverESignStatus {
   workOrderId: string;
 }
 
+export interface AdminStage2HandoverSignedDocumentState {
+  archiveLastAttemptAt: string | null;
+  archiveLastError: string | null;
+  archiveRetryCount: number;
+  archiveStatus: string | null;
+  archivedAt: string | null;
+  available: boolean;
+  completedAt: string | null;
+  handoverId: string | null;
+  retryAvailable: boolean;
+  taskId: string | null;
+  workOrderId: string;
+}
+
 export interface AdminStage2HandoverESignDisplayState {
   color?: string;
   detail?: string | null;
@@ -49,6 +63,7 @@ export interface AdminStage2HandoverESignDisplay {
   platformActionLabel: "发起平台盖章" | "重试平台盖章" | null;
   readiness: AdminStage2HandoverESignDisplayState;
   startAvailable: boolean;
+  voidAvailable: boolean;
 }
 
 const BLOCKER_MESSAGES: Record<string, string> = {
@@ -109,15 +124,36 @@ export function loadAdminStage2HandoverESign(id: string) {
 }
 
 export function startAdminStage2HandoverESign(id: string) {
-  return postStage2ESign(id, "");
+  return postStage2ESignStatus(id, "");
 }
 
 export function retryAdminStage2PlatformSeal(id: string) {
-  return postStage2ESign(id, "/platform-seal/retry");
+  return postStage2ESignStatus(id, "/platform-seal/retry");
 }
 
 export function retryAdminStage2HandoverArchive(id: string) {
-  return postStage2ESign(id, "/archive/retry");
+  return apiFetch<AdminStage2HandoverSignedDocumentState>(
+    `${stage2ESignPath(id)}/archive/retry`,
+    { method: "POST" }
+  );
+}
+
+export function voidAdminStage2HandoverESign(id: string, reason: string) {
+  return apiFetch<AdminStage2HandoverESignStatus>(`${stage2ESignPath(id)}/void`, {
+    body: JSON.stringify({ reason: reason.trim() }),
+    method: "POST"
+  });
+}
+
+export function validateAdminStage2HandoverVoidReason(reason: string) {
+  const normalized = reason.trim();
+  if (!normalized) {
+    return "请填写作废原因";
+  }
+  if (normalized.length < 3 || normalized.length > 500) {
+    return "作废原因需为 3-500 个字符";
+  }
+  return null;
 }
 
 export function getAdminStage2HandoverESignDisplay(
@@ -140,7 +176,8 @@ export function getAdminStage2HandoverESignDisplay(
         : "发起平台盖章"
       : null,
     readiness: getReadinessDisplay(status),
-    startAvailable: status.ready && !taskExists
+    startAvailable: status.ready && !taskExists,
+    voidAvailable: status.canVoid === true
   };
 }
 
@@ -149,9 +186,9 @@ export function getAdminStage2HandoverESignErrorMessage(error: unknown) {
     return "电子签操作失败，请刷新状态后重试";
   }
 
-  const mapped = Object.entries(ERROR_MESSAGES).find(([code]) => error.message.includes(code));
-  if (mapped) {
-    return mapped[1];
+  const mappedMessage = error.code ? ERROR_MESSAGES[error.code] : undefined;
+  if (mappedMessage) {
+    return mappedMessage;
   }
   if (error.status === 403) {
     return "无发起或重试电子签权限";
@@ -168,7 +205,7 @@ export function getAdminStage2HandoverESignErrorMessage(error: unknown) {
   return "电子签操作失败，请刷新状态后重试";
 }
 
-function postStage2ESign(id: string, suffix: string) {
+function postStage2ESignStatus(id: string, suffix: string) {
   return apiFetch<AdminStage2HandoverESignStatus>(`${stage2ESignPath(id)}${suffix}`, {
     method: "POST"
   });
@@ -187,17 +224,42 @@ function getReadinessDisplay(
   status: AdminStage2HandoverESignStatus
 ): AdminStage2HandoverESignDisplayState {
   if (status.rebuildRequired) {
+    if (!status.canVoid) {
+      return {
+        color: "red",
+        detail: "供应商已受理该签署交易，不能在本地强制作废，请联系管理员核验处理",
+        label: "签署任务需人工处理"
+      };
+    }
     return {
       color: "red",
       detail: "当前签署任务需先作废后才能重新发起",
       label: "签署任务需处理"
     };
   }
+  if (status.taskId) {
+    return getTaskLifecycleDisplay(status.status);
+  }
   return {
     color: status.ready ? "green" : "orange",
     detail: status.ready ? null : formatBlockers(status.blockers),
     label: status.ready ? "签署条件已就绪" : "暂不可发起"
   };
+}
+
+function getTaskLifecycleDisplay(status: string | null): AdminStage2HandoverESignDisplayState {
+  const states: Record<string, AdminStage2HandoverESignDisplayState> = {
+    CANCELLED: { color: "default", detail: null, label: "签署任务已作废" },
+    COMPLETED: { color: "success", detail: null, label: "签署已完成" },
+    CREATED: { color: "processing", detail: null, label: "签署任务创建中" },
+    EXPIRED: { color: "error", detail: null, label: "签署任务已过期" },
+    FAILED: { color: "error", detail: null, label: "签署失败" },
+    SIGNING: { color: "processing", detail: null, label: "签署进行中" },
+    WAITING_CUSTOMER: { color: "warning", detail: null, label: "待客户签署" }
+  };
+  return status && states[status]
+    ? states[status]
+    : { color: "default", detail: null, label: "签署状态待刷新" };
 }
 
 function getCustomerDisplay(status: AdminStage2HandoverESignStatus): AdminStage2HandoverESignDisplayState {

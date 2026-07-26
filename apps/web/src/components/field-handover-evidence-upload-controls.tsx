@@ -23,8 +23,10 @@ export interface EvidenceUploadControlsProps {
   disabled: boolean;
   environment: FieldEvidenceUploadEnvironment;
   id: string;
+  label?: string;
   multiple: boolean;
   onFiles: (files: File[]) => void;
+  variant?: "primary" | "secondary";
 }
 
 export function EvidenceUploadControls({
@@ -32,8 +34,10 @@ export function EvidenceUploadControls({
   disabled,
   environment,
   id,
+  label = "资料上传",
   multiple,
-  onFiles
+  onFiles,
+  variant = "primary"
 }: EvidenceUploadControlsProps) {
   const contracts = buildFieldEvidenceUploadInputContracts(
     allowedMediaTypes,
@@ -85,9 +89,9 @@ export function EvidenceUploadControls({
           })
         }
         style={{ minHeight: 44 }}
-        type="primary"
+        type={variant === "primary" ? "primary" : "default"}
       >
-        资料上传
+        {label}
       </Button>
       {environment === "MOBILE" ? (
         <Drawer

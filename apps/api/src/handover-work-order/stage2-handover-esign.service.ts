@@ -148,7 +148,8 @@ const stage2LifecycleInclude = {
       },
       customerId: true,
       id: true,
-      orderNo: true
+      orderNo: true,
+      orderStatus: true
     }
   }
 } satisfies Prisma.VehicleHandoverWorkOrderInclude;
@@ -1675,7 +1676,9 @@ function assertPortalStartReadiness(
     readiness.state.handoverId === workOrder.handover?.id &&
     readiness.state.handoverStatus === workOrder.handover?.status &&
     readiness.state.orderId === workOrder.order.id &&
-    readiness.state.workOrderId === workOrder.id;
+    readiness.state.orderStatus === workOrder.order.orderStatus &&
+    readiness.state.workOrderId === workOrder.id &&
+    readiness.state.workOrderStatus === workOrder.status;
   const hasUnexpectedBlocker = readiness.blockers.some(
     (blocker) => !PORTAL_START_EXPECTED_READINESS_BLOCKERS.has(blocker.code)
   );

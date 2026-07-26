@@ -2,6 +2,14 @@ export const MAX_FIELD_PHOTO_SIZE_BYTES = 10 * 1024 * 1024;
 export const MAX_FIELD_VIDEO_SIZE_BYTES = 300 * 1024 * 1024;
 
 export type FieldEvidenceMediaType = "PHOTO" | "VIDEO";
+export type FieldEvidenceUploadEnvironment = "DESKTOP" | "MOBILE";
+
+export interface FieldEvidenceUploadEnvironmentSignals {
+  pointerCoarse?: boolean;
+  userAgent?: string;
+  userAgentDataMobile?: boolean;
+  viewportWidth?: number;
+}
 
 export interface FieldEvidenceUploadInputContract {
   accept: string;
@@ -37,6 +45,28 @@ const SAFE_VIDEO_MIME_TYPES = new Set([
   "video/webm",
   "video/x-m4v"
 ]);
+
+const MOBILE_USER_AGENT_PATTERN = /android|avantgo|blackberry|iemobile|ip(?:ad|hone|od)|mobile|opera mini|windows phone/i;
+const MOBILE_UPLOAD_MAX_VIEWPORT_WIDTH = 768;
+
+export function detectFieldEvidenceUploadEnvironment(
+  signals: FieldEvidenceUploadEnvironmentSignals = {}
+): FieldEvidenceUploadEnvironment {
+  if (signals.userAgentDataMobile === true) {
+    return "MOBILE";
+  }
+  if (signals.userAgent && MOBILE_USER_AGENT_PATTERN.test(signals.userAgent)) {
+    return "MOBILE";
+  }
+  if (
+    signals.pointerCoarse === true &&
+    typeof signals.viewportWidth === "number" &&
+    signals.viewportWidth <= MOBILE_UPLOAD_MAX_VIEWPORT_WIDTH
+  ) {
+    return "MOBILE";
+  }
+  return "DESKTOP";
+}
 
 export function resolveFieldEvidenceMediaType(file: File): FieldEvidenceMediaType | null {
   const mimeType = file.type.trim().toLowerCase();
@@ -75,19 +105,20 @@ export function validateFieldEvidenceFile(
 
 export function buildFieldEvidenceUploadInputContracts(
   allowedMediaTypes: FieldEvidenceMediaType[],
-  allowsMultiple: boolean
+  allowsMultiple: boolean,
+  environment: FieldEvidenceUploadEnvironment = "DESKTOP"
 ): FieldEvidenceUploadInputContract[] {
   const contracts: FieldEvidenceUploadInputContract[] = [];
-  if (allowedMediaTypes.includes("PHOTO")) {
+  if (environment === "MOBILE" && allowedMediaTypes.includes("PHOTO")) {
     contracts.push({
       accept: "image/*",
       capture: "environment",
       key: "photo-capture",
-      label: "现场拍照",
+      label: "现场拍摄",
       multiple: false
     });
   }
-  if (allowedMediaTypes.includes("VIDEO")) {
+  if (environment === "MOBILE" && allowedMediaTypes.includes("VIDEO")) {
     contracts.push({
       accept: "video/*",
       capture: "environment",
@@ -103,8 +134,9 @@ export function buildFieldEvidenceUploadInputContracts(
         allowedMediaTypes.includes("VIDEO") ? "video/*" : null
       ].filter(Boolean).join(","),
       key: "library",
-      label:
-        allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
+      label: environment === "DESKTOP"
+        ? "资料上传"
+        : allowedMediaTypes.length === 1 && allowedMediaTypes[0] === "PHOTO"
           ? "从相册选择"
           : "从相册/文件选择",
       multiple: allowsMultiple

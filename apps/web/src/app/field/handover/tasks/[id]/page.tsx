@@ -16,9 +16,9 @@ import {
   UploadOutlined,
   VideoCameraOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Flex, Input, InputNumber, Popconfirm, Progress, Radio, Spin, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Drawer, Flex, Input, InputNumber, Popconfirm, Progress, Radio, Spin, Tag, Tooltip, Typography } from "antd";
 import { useParams, useRouter } from "next/navigation";
-import { type CSSProperties, type ChangeEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   buildFieldHandoverFileUrl,
@@ -41,6 +41,9 @@ import {
 import {
   buildFieldEvidenceUploadInputContracts,
   buildFieldEvidenceUploadRetryDisplay,
+  detectFieldEvidenceUploadEnvironment,
+  type FieldEvidenceUploadEnvironment,
+  type FieldEvidenceUploadInputContract,
   type FieldEvidenceMediaType,
   formatUploadBytes,
   validateFieldEvidenceFile
@@ -112,6 +115,25 @@ export default function FieldHandoverTaskDetailPage() {
   const [uploadBatchState, setUploadBatchState] =
     useState<FieldEvidenceUploadBatchState<File>>(INITIAL_UPLOAD_BATCH_STATE);
   const [uploadState, setUploadState] = useState<EvidenceUploadState | null>(null);
+  const [uploadEnvironment, setUploadEnvironment] =
+    useState<FieldEvidenceUploadEnvironment>("DESKTOP");
+
+  useEffect(() => {
+    const browserNavigator = navigator as Navigator & {
+      userAgentData?: { mobile?: boolean };
+    };
+    const pointerCoarse =
+      typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+
+    setUploadEnvironment(
+      detectFieldEvidenceUploadEnvironment({
+        pointerCoarse,
+        userAgent: browserNavigator.userAgent,
+        userAgentDataMobile: browserNavigator.userAgentData?.mobile,
+        viewportWidth: window.innerWidth
+      })
+    );
+  }, []);
 
   const loadDetail = useCallback(async (
     options: { preserveFacts?: boolean; showLoading?: boolean } = {}
@@ -880,6 +902,7 @@ export default function FieldHandoverTaskDetailPage() {
                         <EvidenceUploadControls
                           allowedMediaTypes={allowedMediaTypes}
                           disabled={!canSubmitUploadBatch || actionLoading === "submit"}
+                          environment={uploadEnvironment}
                           id={item.id}
                           multiple={item.allowsMultiple}
                           onFiles={(files) => void uploadEvidence(item.id, files)}
@@ -981,99 +1004,100 @@ function LabeledControl({ children, label }: { children: ReactNode; label: strin
 function EvidenceUploadControls({
   allowedMediaTypes,
   disabled,
+  environment,
   id,
   multiple,
   onFiles
 }: {
   allowedMediaTypes: FieldEvidenceMediaType[];
   disabled: boolean;
+  environment: FieldEvidenceUploadEnvironment;
   id: string;
   multiple: boolean;
   onFiles: (files: File[]) => void;
 }) {
-  const contracts = buildFieldEvidenceUploadInputContracts(
-    allowedMediaTypes,
-    multiple
-  );
+  const contracts = buildFieldEvidenceUploadInputContracts(allowedMediaTypes, multiple, environment);
+  const inputRefs = useRef<Partial<Record<FieldEvidenceUploadInputContract["key"], HTMLInputElement>>>({});
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const libraryContract = contracts.find((contract) => contract.key === "library");
 
-  return (
-    <Flex gap={8} style={{ marginTop: 10 }} vertical>
-      {contracts.map((contract) => (
-        <CaptureInput
-          accept={contract.accept}
-          capture={contract.capture}
-          disabled={disabled}
-          icon={
-            contract.key === "photo-capture"
-              ? <CameraOutlined />
-              : contract.key === "video-capture"
-                ? <VideoCameraOutlined />
-                : contract.accept === "image/*"
-                  ? <FolderOpenOutlined />
-                  : <UploadOutlined />
-          }
-          id={`${id}-${contract.key}`}
-          key={contract.key}
-          label={contract.label}
-          multiple={contract.multiple}
-          onFiles={onFiles}
-        />
-      ))}
-    </Flex>
-  );
-}
-
-function CaptureInput({
-  accept,
-  capture,
-  disabled,
-  icon,
-  id,
-  label,
-  multiple,
-  onFiles
-}: {
-  accept: string;
-  capture?: "environment";
-  disabled: boolean;
-  icon: ReactNode;
-  id: string;
-  label: string;
-  multiple: boolean;
-  onFiles: (files: File[]) => void;
-}) {
-  const inputId = `field-evidence-file-${id}`;
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  function handleChange(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.currentTarget.files ?? []);
-    event.currentTarget.value = "";
-    onFiles(files);
+  function selectContract(contract: FieldEvidenceUploadInputContract) {
+    inputRefs.current[contract.key]?.click();
+    setChooserOpen(false);
   }
 
   return (
-    <div>
-      <input
-        accept={accept}
-        capture={capture}
-        disabled={disabled}
-        id={inputId}
-        multiple={multiple}
-        onChange={handleChange}
-        ref={inputRef}
-        style={{ display: "none" }}
-        type="file"
-      />
+    <div style={{ marginTop: 10 }}>
+      {contracts.map((contract) => (
+        <input
+          accept={contract.accept}
+          capture={contract.capture}
+          disabled={disabled}
+          id={`${id}-${contract.key}`}
+          key={contract.key}
+          multiple={contract.multiple}
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = "";
+            onFiles(files);
+          }}
+          ref={(node) => {
+            inputRefs.current[contract.key] = node ?? undefined;
+          }}
+          style={{ display: "none" }}
+          type="file"
+        />
+      ))}
       <Button
         block
         disabled={disabled}
-        icon={icon}
-        onClick={() => inputRef.current?.click()}
+        icon={<UploadOutlined />}
+        onClick={() => {
+          if (environment === "MOBILE") {
+            setChooserOpen(true);
+            return;
+          }
+          if (libraryContract) {
+            selectContract(libraryContract);
+          }
+        }}
         style={{ minHeight: 44 }}
         type="primary"
       >
-        {label}
+        资料上传
       </Button>
+      {environment === "MOBILE" ? (
+        <Drawer
+          closable
+          onClose={() => setChooserOpen(false)}
+          open={chooserOpen}
+          placement="bottom"
+          title="资料上传"
+        >
+          <Flex gap={8} vertical>
+            {contracts.map((contract) => (
+              <Button
+                block
+                disabled={disabled}
+                icon={
+                  contract.key === "photo-capture"
+                    ? <CameraOutlined />
+                    : contract.key === "video-capture"
+                      ? <VideoCameraOutlined />
+                      : contract.accept === "image/*"
+                        ? <FolderOpenOutlined />
+                        : <UploadOutlined />
+                }
+                key={contract.key}
+                onClick={() => selectContract(contract)}
+                size="large"
+              >
+                {contract.label}
+              </Button>
+            ))}
+          </Flex>
+        </Drawer>
+      ) : null}
     </div>
   );
 }

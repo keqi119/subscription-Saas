@@ -5,6 +5,7 @@ import {
   MAX_FIELD_VIDEO_SIZE_BYTES,
   buildFieldEvidenceUploadInputContracts,
   buildFieldEvidenceUploadRetryDisplay,
+  detectFieldEvidenceUploadEnvironment,
   formatUploadBytes,
   resolveFieldEvidenceMediaType,
   validateFieldEvidenceFile
@@ -66,13 +67,24 @@ describe("field handover evidence upload validation", () => {
     expect(formatUploadBytes(1024 * 1024)).toBe("1MB");
   });
 
-  it("builds executable photo camera and library input contracts", () => {
-    expect(buildFieldEvidenceUploadInputContracts(["PHOTO"], true)).toEqual([
+  it("uses one direct library contract on desktop", () => {
+    expect(buildFieldEvidenceUploadInputContracts(["PHOTO"], true, "DESKTOP")).toEqual([
+      {
+        accept: "image/*",
+        key: "library",
+        label: "资料上传",
+        multiple: true
+      }
+    ]);
+  });
+
+  it("offers capture and library contracts on mobile", () => {
+    expect(buildFieldEvidenceUploadInputContracts(["PHOTO"], true, "MOBILE")).toEqual([
       {
         accept: "image/*",
         capture: "environment",
         key: "photo-capture",
-        label: "现场拍照",
+        label: "现场拍摄",
         multiple: false
       },
       {
@@ -84,8 +96,8 @@ describe("field handover evidence upload validation", () => {
     ]);
   });
 
-  it("builds executable video and mixed-media input contracts", () => {
-    expect(buildFieldEvidenceUploadInputContracts(["VIDEO"], false)).toEqual([
+  it("keeps video and mixed-media input semantics on mobile", () => {
+    expect(buildFieldEvidenceUploadInputContracts(["VIDEO"], false, "MOBILE")).toEqual([
       {
         accept: "video/*",
         capture: "environment",
@@ -101,7 +113,7 @@ describe("field handover evidence upload validation", () => {
       }
     ]);
     expect(
-      buildFieldEvidenceUploadInputContracts(["PHOTO", "VIDEO"], true).map(
+      buildFieldEvidenceUploadInputContracts(["PHOTO", "VIDEO"], true, "MOBILE").map(
         ({ capture, key, multiple }) => ({ capture, key, multiple })
       )
     ).toEqual([
@@ -109,6 +121,22 @@ describe("field handover evidence upload validation", () => {
       { capture: "environment", key: "video-capture", multiple: false },
       { capture: undefined, key: "library", multiple: true }
     ]);
+  });
+
+  it("detects mobile devices from browser signals and defaults SSR to desktop", () => {
+    expect(detectFieldEvidenceUploadEnvironment()).toBe("DESKTOP");
+    expect(detectFieldEvidenceUploadEnvironment({ userAgentDataMobile: true })).toBe("MOBILE");
+    expect(
+      detectFieldEvidenceUploadEnvironment({
+        userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"
+      })
+    ).toBe("MOBILE");
+    expect(
+      detectFieldEvidenceUploadEnvironment({ pointerCoarse: true, viewportWidth: 640 })
+    ).toBe("MOBILE");
+    expect(
+      detectFieldEvidenceUploadEnvironment({ pointerCoarse: true, viewportWidth: 1280 })
+    ).toBe("DESKTOP");
   });
 
   it("points retry progress at the first remaining file with a reset ordinal", () => {

@@ -23,6 +23,28 @@ const workflowJobTypes = [
 
 const workflowJobStatuses = ["PENDING", "PROCESSING", "COMPLETED", "DEAD_LETTER", "CANCELLED"];
 const handoverNotificationValues = ["HANDOVER_ESIGN_PENDING", "HANDOVER_ESIGN_READY"];
+const workflowJobColumnDefinitions = [
+  '"id" UUID NOT NULL,',
+  '"work_order_id" UUID NOT NULL,',
+  '"handover_id" UUID,',
+  '"esign_task_id" UUID,',
+  '"job_type" "vehicle_handover_workflow_job_type" NOT NULL,',
+  '"job_status" "vehicle_handover_workflow_job_status" NOT NULL DEFAULT \'PENDING\',',
+  '"idempotency_key" VARCHAR(256) NOT NULL,',
+  '"available_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,',
+  '"attempt_count" INTEGER NOT NULL DEFAULT 0,',
+  '"max_attempts" INTEGER NOT NULL DEFAULT 5,',
+  '"lease_token" UUID,',
+  '"lease_expires_at" TIMESTAMPTZ(6),',
+  '"payload" JSONB,',
+  '"result_snapshot" JSONB,',
+  '"last_error_code" VARCHAR(128),',
+  '"last_error_message" VARCHAR(512),',
+  '"started_at" TIMESTAMPTZ(6),',
+  '"completed_at" TIMESTAMPTZ(6),',
+  '"created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,',
+  '"updated_at" TIMESTAMPTZ(6) NOT NULL,'
+];
 const environmentDefaults = {
   ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "<CHANGE_ME>",
   ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "<CHANGE_ME>",
@@ -52,6 +74,18 @@ function sqlEnumValues(source: string, name: string): string[] {
   );
   expect(match, `missing SQL enum ${name}`).not.toBeNull();
   return [...match![1]!.matchAll(/'([^']+)'/g)].map((value) => value[1]!);
+}
+
+function normalizeSql(source: string): string {
+  return source.replace(/\s+/g, " ").trim();
+}
+
+function extractSqlTable(source: string, name: string): string {
+  const match = source.match(
+    new RegExp(`CREATE\\s+TABLE\\s+"${name}"\\s*\\(([\\s\\S]*?)\\);`)
+  );
+  expect(match, `missing SQL table ${name}`).not.toBeNull();
+  return normalizeSql(match![1]!);
 }
 
 function environmentValue(source: string, name: string): string | undefined {
@@ -120,6 +154,33 @@ describe("Stage 2 durable workflow schema", () => {
     expect(job).toContain("@@index([leaseExpiresAt])");
     expect(job).toContain('@@map("vehicle_handover_workflow_job")');
     expect(workOrder).toContain("workflowJobs                 VehicleHandoverWorkflowJob[]");
+  });
+
+  it("creates the durable job table, foreign key, unique key, and claim indexes", () => {
+    const jobTable = extractSqlTable(migration, "vehicle_handover_workflow_job");
+    const normalizedMigration = normalizeSql(migration);
+
+    for (const definition of workflowJobColumnDefinitions) {
+      expect(jobTable).toContain(definition);
+    }
+    expect(jobTable).toContain(
+      'CONSTRAINT "vehicle_handover_workflow_job_pkey" PRIMARY KEY ("id")'
+    );
+    expect(normalizedMigration).toContain(
+      'ALTER TABLE "vehicle_handover_workflow_job" ADD CONSTRAINT "vehicle_handover_workflow_job_work_order_id_fkey" FOREIGN KEY ("work_order_id") REFERENCES "vehicle_handover_work_order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;'
+    );
+    expect(normalizedMigration).toContain(
+      'CREATE UNIQUE INDEX "vehicle_handover_workflow_job_idempotency_key_key" ON "vehicle_handover_workflow_job"("idempotency_key");'
+    );
+    expect(normalizedMigration).toContain(
+      'CREATE INDEX "vehicle_handover_workflow_job_job_status_available_at_idx" ON "vehicle_handover_workflow_job"("job_status", "available_at");'
+    );
+    expect(normalizedMigration).toContain(
+      'CREATE INDEX "vehicle_handover_workflow_job_work_order_id_created_at_idx" ON "vehicle_handover_workflow_job"("work_order_id", "created_at");'
+    );
+    expect(normalizedMigration).toContain(
+      'CREATE INDEX "vehicle_handover_workflow_job_lease_expires_at_idx" ON "vehicle_handover_workflow_job"("lease_expires_at");'
+    );
   });
 
   it("adds canonical operator snapshots and backfills external and internal assignments", () => {

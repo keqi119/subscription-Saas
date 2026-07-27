@@ -98,15 +98,14 @@ export class FieldOperatorAuthController {
     @CurrentFieldOperatorSession() current: CurrentFieldOperator,
     @Req() request: Request
   ) {
-    const [task, readiness] = await Promise.all([
-      this.handoverWorkOrderService.getFieldAccessibleWorkOrder(
+    const task =
+      await this.handoverWorkOrderService.getFieldAccessibleWorkOrder(
         id,
         current.phone
-      ),
-      this.stage2HandoverESignReadinessService
-        .getReadiness(id)
-        .catch(() => null)
-    ]);
+      );
+    const readiness = await this.stage2HandoverESignReadinessService
+      .getReadiness(id)
+      .catch(() => null);
     await this.fieldOperatorAuthService.recordTaskViewed(current, id, requestContext(request));
     const generated = task.stage2Pdf.status === "GENERATED";
     const hasCurrentTask = Boolean(task.stage2ESign.taskId);

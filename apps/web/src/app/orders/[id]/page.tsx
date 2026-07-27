@@ -52,6 +52,7 @@ import {
 } from "../../../lib/action-guards";
 import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
 import {
+  createAdminStage2DeliveryConfirmationController,
   createAdminStage2DeliveryVerifier,
   getAdminStage2HandoverESignErrorMessage,
   getAdminStage2HandoverWorkflowDisplay,
@@ -3984,6 +3985,20 @@ function OrderDetailPageContent() {
       }),
     []
   );
+  const stage2DeliveryConfirmationController = useMemo(
+    () =>
+      createAdminStage2DeliveryConfirmationController({
+        onBlocked: (verification) => {
+          void message.warning(
+            verification.reason === "LOAD_ERROR"
+              ? "交接签署归档状态加载失败，请刷新后重试"
+              : "交接签署文件归档完成后才可确认交付"
+          );
+        },
+        verifier: stage2DeliveryVerifier
+      }),
+    [message, stage2DeliveryVerifier]
+  );
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const hasBillingViewPermission = permissions.has("billing:view");
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
@@ -4699,32 +4714,23 @@ function OrderDetailPageContent() {
     prepareDeliveryForm.resetFields();
   }
 
-  async function verifyStage2DeliveryArchive() {
-    if (!order) {
-      return false;
-    }
-    const verification = await stage2DeliveryVerifier.verify(order.id);
-    if (verification.allowed) {
-      return true;
-    }
-    void message.warning(
-      verification.reason === "LOAD_ERROR"
-        ? "交接签署归档状态加载失败，请刷新后重试"
-        : "交接签署文件归档完成后才可确认交付"
-    );
-    return false;
-  }
-
   async function openConfirmDeliveryModal() {
-    if (!(await verifyStage2DeliveryArchive())) {
+    if (!order) {
       return;
     }
-    confirmDeliveryForm.setFieldsValue({
-      deliveredAt: dayjs(),
-      handoverMileageKm: order?.vehicle?.currentMileageKm ?? undefined,
-      remark: delivery?.remark ?? undefined
+    await stage2DeliveryConfirmationController.run({
+      boundary: "MODAL_OPEN",
+      onAllowed: () => {
+        confirmDeliveryForm.setFieldsValue({
+          deliveredAt: dayjs(),
+          handoverMileageKm:
+            order.vehicle?.currentMileageKm ?? undefined,
+          remark: delivery?.remark ?? undefined
+        });
+        setConfirmDeliveryModalOpen(true);
+      },
+      orderId: order.id
     });
-    setConfirmDeliveryModalOpen(true);
   }
 
   function closeConfirmDeliveryModal() {
@@ -5365,18 +5371,24 @@ function OrderDetailPageContent() {
       return;
     }
     const values = await confirmDeliveryForm.validateFields();
-    if (!(await verifyStage2DeliveryArchive())) {
-      return;
-    }
     try {
-      await apiFetch(`/orders/${order.id}/confirm-delivery`, {
-        body: JSON.stringify({
-          deliveredAt: values.deliveredAt?.toISOString(),
-          handoverMileageKm: values.handoverMileageKm,
-          remark: values.remark
-        }),
-        method: "POST"
-      });
+      const submitted =
+        await stage2DeliveryConfirmationController.run({
+          boundary: "BEFORE_POST",
+          onAllowed: () =>
+            apiFetch(`/orders/${order.id}/confirm-delivery`, {
+              body: JSON.stringify({
+                deliveredAt: values.deliveredAt?.toISOString(),
+                handoverMileageKm: values.handoverMileageKm,
+                remark: values.remark
+              }),
+              method: "POST"
+            }),
+          orderId: order.id
+        });
+      if (!submitted) {
+        return;
+      }
       void message.success("车辆已确认交付");
       closeConfirmDeliveryModal();
       await loadOrder();

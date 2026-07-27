@@ -265,18 +265,6 @@ export function getAdminStage2HandoverWorkflowDisplay(
 ): AdminStage2HandoverWorkflowDisplay {
   const workflowJobs = status?.workflowJobs ?? context.workflowJobs ?? [];
   const currentJobs = getAuthoritativeCurrentWorkflowJobs(workflowJobs);
-  const currentDeadLetters = currentJobs.valid
-    ? currentJobs.jobs.filter((job) => job.jobStatus === "DEAD_LETTER")
-    : [];
-  const newestDeadLetter = selectSingleNewestJob(currentDeadLetters);
-  const recovery = newestDeadLetter
-    ? toWorkflowRecovery(newestDeadLetter)
-    : null;
-  const recoveries = recovery ? [recovery] : [];
-  const errorSteps = new Set(
-    currentDeadLetters
-      .map((job) => WORKFLOW_JOB_STEP[job.jobType])
-  );
   const archived =
     status?.archiveStatus === "ARCHIVED" && status.signedArtifactAvailable === true;
   const platformComplete =
@@ -296,6 +284,21 @@ export function getAdminStage2HandoverWorkflowDisplay(
     PLATFORM_SEAL: platformComplete,
     SOURCE_PDF: pdfComplete
   };
+  const currentDeadLetters = currentJobs.valid
+    ? currentJobs.jobs.filter(
+        (job) =>
+          job.jobStatus === "DEAD_LETTER" &&
+          !completed[WORKFLOW_JOB_STEP[job.jobType]]
+      )
+    : [];
+  const newestDeadLetter = selectSingleNewestJob(currentDeadLetters);
+  const recovery = newestDeadLetter
+    ? toWorkflowRecovery(newestDeadLetter)
+    : null;
+  const recoveries = recovery ? [recovery] : [];
+  const errorSteps = new Set(
+    currentDeadLetters.map((job) => WORKFLOW_JOB_STEP[job.jobType])
+  );
   const firstIncomplete = WORKFLOW_STEP_KEYS.find((key) => !completed[key]) ?? null;
 
   return {
@@ -360,6 +363,39 @@ export function createAdminStage2DeliveryVerifier({
       } catch {
         return { allowed: false, reason: "LOAD_ERROR" };
       }
+    }
+  };
+}
+
+export function createAdminStage2DeliveryConfirmationController({
+  onBlocked,
+  verifier
+}: {
+  onBlocked: (
+    verification: AdminStage2DeliveryVerification,
+    boundary: "BEFORE_POST" | "MODAL_OPEN"
+  ) => void;
+  verifier: {
+    verify(orderId: string): Promise<AdminStage2DeliveryVerification>;
+  };
+}) {
+  return {
+    async run({
+      boundary,
+      onAllowed,
+      orderId
+    }: {
+      boundary: "BEFORE_POST" | "MODAL_OPEN";
+      onAllowed: () => Promise<void> | void;
+      orderId: string;
+    }) {
+      const verification = await verifier.verify(orderId);
+      if (!verification.allowed) {
+        onBlocked(verification, boundary);
+        return false;
+      }
+      await onAllowed();
+      return true;
     }
   };
 }

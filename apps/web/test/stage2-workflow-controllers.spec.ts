@@ -66,6 +66,32 @@ describe("Portal Stage 2 workflow request controller", () => {
     await vi.advanceTimersByTimeAsync(9_000);
     expect(load).toHaveBeenCalledTimes(2);
   });
+
+  it("does not apply an in-flight response that resolves after disposal", async () => {
+    const pending = deferred<{
+      canStartSigning: boolean;
+      statusLabel: string;
+    }>();
+    const onApply = vi.fn();
+    const onError = vi.fn();
+    const controller =
+      portalWorkflowModule.createPortalWorkflowRequestController({
+        load: vi.fn(() => pending.promise),
+        onApply,
+        onError
+      });
+
+    const refresh = controller.refresh();
+    controller.dispose();
+    pending.resolve({
+      canStartSigning: false,
+      statusLabel: "签署已完成"
+    });
+    await refresh;
+
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
 });
 
 describe("Field Stage 2 interaction controller", () => {
@@ -175,12 +201,16 @@ describe("Admin Stage 2 delivery and recovery controllers", () => {
     });
   });
 
-  it("requires an authoritative archived projection and rechecks it on every verification", async () => {
+  it("uses the production boundary controller to recheck modal-open and immediately-before-POST", async () => {
     const loadWorkOrders = vi.fn(async () => [
       { id: "work-order-1", status: "CUSTOMER_CONFIRMED" }
     ]);
     const loadESignStatus = vi
       .fn()
+      .mockResolvedValueOnce({
+        archiveStatus: "ARCHIVED",
+        signedArtifactAvailable: true
+      })
       .mockResolvedValueOnce({
         archiveStatus: "PENDING",
         signedArtifactAvailable: false
@@ -189,28 +219,103 @@ describe("Admin Stage 2 delivery and recovery controllers", () => {
         archiveStatus: "ARCHIVED",
         signedArtifactAvailable: true
       });
-    const factory = (
+    const verifierFactory = (
       adminStage2Module as Record<string, unknown>
     ).createAdminStage2DeliveryVerifier;
+    const controllerFactory = (
+      adminStage2Module as Record<string, unknown>
+    ).createAdminStage2DeliveryConfirmationController;
+
+    expect(verifierFactory).toBeTypeOf("function");
+    expect(controllerFactory).toBeTypeOf("function");
+    if (
+      typeof verifierFactory !== "function" ||
+      typeof controllerFactory !== "function"
+    ) {
+      return;
+    }
+
+    const verifier = verifierFactory({ loadESignStatus, loadWorkOrders }) as {
+      verify(orderId: string): Promise<{ allowed: boolean; reason: string }>;
+    };
+    const onBlocked = vi.fn();
+    const controller = controllerFactory({
+      onBlocked,
+      verifier
+    }) as {
+      run(input: {
+        boundary: "BEFORE_POST" | "MODAL_OPEN";
+        onAllowed: () => Promise<void> | void;
+        orderId: string;
+      }): Promise<boolean>;
+    };
+    const openModal = vi.fn();
+    const postDelivery = vi.fn(async () => undefined);
+
+    await expect(controller.run({
+      boundary: "MODAL_OPEN",
+      onAllowed: openModal,
+      orderId: "order-1"
+    })).resolves.toBe(true);
+    expect(openModal).toHaveBeenCalledTimes(1);
+
+    await expect(controller.run({
+      boundary: "BEFORE_POST",
+      onAllowed: postDelivery,
+      orderId: "order-1"
+    })).resolves.toBe(false);
+    expect(postDelivery).not.toHaveBeenCalled();
+    expect(onBlocked).toHaveBeenLastCalledWith(
+      { allowed: false, reason: "NOT_ARCHIVED" },
+      "BEFORE_POST"
+    );
+
+    await expect(controller.run({
+      boundary: "BEFORE_POST",
+      onAllowed: postDelivery,
+      orderId: "order-1"
+    })).resolves.toBe(true);
+    expect(postDelivery).toHaveBeenCalledTimes(1);
+    expect(loadWorkOrders).toHaveBeenCalledTimes(3);
+    expect(loadESignStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails the production delivery boundary closed when its authoritative load fails", async () => {
+    const verifier =
+      adminStage2Module.createAdminStage2DeliveryVerifier({
+        loadESignStatus: vi.fn(),
+        loadWorkOrders: vi.fn(async () => {
+          throw new Error("network");
+        })
+      });
+    const onBlocked = vi.fn();
+    const factory = (
+      adminStage2Module as Record<string, unknown>
+    ).createAdminStage2DeliveryConfirmationController;
 
     expect(factory).toBeTypeOf("function");
     if (typeof factory !== "function") {
       return;
     }
-
-    const verifier = factory({ loadESignStatus, loadWorkOrders }) as {
-      verify(orderId: string): Promise<{ allowed: boolean; reason: string }>;
+    const controller = factory({ onBlocked, verifier }) as {
+      run(input: {
+        boundary: "BEFORE_POST" | "MODAL_OPEN";
+        onAllowed: () => Promise<void> | void;
+        orderId: string;
+      }): Promise<boolean>;
     };
-    await expect(verifier.verify("order-1")).resolves.toMatchObject({
+    const openModal = vi.fn();
+
+    await expect(controller.run({
+      boundary: "MODAL_OPEN",
+      onAllowed: openModal,
+      orderId: "order-1"
+    })).resolves.toBe(false);
+    expect(openModal).not.toHaveBeenCalled();
+    expect(onBlocked).toHaveBeenCalledWith({
       allowed: false,
-      reason: "NOT_ARCHIVED"
-    });
-    await expect(verifier.verify("order-1")).resolves.toMatchObject({
-      allowed: true,
-      reason: "ARCHIVED"
-    });
-    expect(loadWorkOrders).toHaveBeenCalledTimes(2);
-    expect(loadESignStatus).toHaveBeenCalledTimes(2);
+      reason: "LOAD_ERROR"
+    }, "MODAL_OPEN");
   });
 
   it("enforces recovery permission in the executable handler", async () => {

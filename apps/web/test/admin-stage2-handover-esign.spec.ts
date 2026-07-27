@@ -17,7 +17,9 @@ import {
   voidAdminStage2HandoverESign,
   type AdminStage2HandoverSignedDocumentState,
   type AdminStage2HandoverESignStatus,
+  type AdminStage2HandoverWorkflowContext,
   type AdminStage2HandoverWorkflowJob,
+  type AdminStage2HandoverWorkflowStepKey,
   type AdminStage2HandoverWorkflowJobType
 } from "../src/lib/admin-stage2-handover-esign";
 
@@ -412,6 +414,24 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(display.recoveries).toEqual([]);
   });
 
+  it.each(completedRecoveryFixtures())(
+    "suppresses a stale $jobType dead letter after $step is authoritatively complete",
+    ({ context, jobType, status, step }) => {
+      const display = getAdminStage2HandoverWorkflowDisplay(
+        esignStatus({
+          ...status,
+          workflowJobs: [workflowJob({ jobType })]
+        }),
+        context
+      );
+
+      expect(display.recoveries).toEqual([]);
+      expect(display.steps.find(({ key }) => key === step)?.state).toBe(
+        "complete"
+      );
+    }
+  );
+
   it("selects only the newest authoritative actionable dead letter", () => {
     const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
       workflowJobs: [
@@ -464,6 +484,11 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(source).toContain("Stage2HandoverWorkflowCell");
     expect(source).toContain("getAdminStage2HandoverWorkflowDisplay");
     expect(source).toContain("display.recoveries.map");
+    expect(source).toContain(
+      "createAdminStage2DeliveryConfirmationController"
+    );
+    expect(source).toContain('boundary: "MODAL_OPEN"');
+    expect(source).toContain('boundary: "BEFORE_POST"');
     expect(source).toContain("retryAdminStage2WorkflowJob");
     expect(source).toContain("reconcileAdminStage2CustomerSignature");
     expect(source).toContain('canRecoverWorkflow={permissions.has("delivery:confirm")}');
@@ -577,4 +602,53 @@ function workflowJob(
     updatedAt: "2026-07-27T10:00:00.000Z",
     ...overrides
   };
+}
+
+function completedRecoveryFixtures(): Array<{
+  context?: AdminStage2HandoverWorkflowContext;
+  jobType: AdminStage2HandoverWorkflowJobType;
+  status: Partial<AdminStage2HandoverESignStatus>;
+  step: AdminStage2HandoverWorkflowStepKey;
+}> {
+  return [
+    {
+      context: { pdfStatus: "GENERATED" },
+      jobType: "GENERATE_SOURCE_PDF",
+      status: {},
+      step: "SOURCE_PDF"
+    },
+    {
+      jobType: "NOTIFY_FIELD_ESIGN_READY",
+      status: { taskId: "stage2-task-current" },
+      step: "FIELD_INITIATION"
+    },
+    {
+      jobType: "NOTIFY_CUSTOMER_ESIGN_READY",
+      status: { customerSigner: signer({ status: "SIGNED" }) },
+      step: "CUSTOMER_SIGNATURE"
+    },
+    {
+      jobType: "RECONCILE_CUSTOMER_SIGNATURE",
+      status: { customerSigner: signer({ status: "SIGNED" }) },
+      step: "CUSTOMER_SIGNATURE"
+    },
+    {
+      jobType: "AUTO_SEAL_PLATFORM",
+      status: { platformSigner: signer({ status: "SIGNED" }) },
+      step: "PLATFORM_SEAL"
+    },
+    {
+      jobType: "RECONCILE_PLATFORM_SEAL",
+      status: { platformSigner: signer({ status: "SIGNED" }) },
+      step: "PLATFORM_SEAL"
+    },
+    {
+      jobType: "ARCHIVE_SIGNED_PDF",
+      status: {
+        archiveStatus: "ARCHIVED",
+        signedArtifactAvailable: true
+      },
+      step: "ARCHIVE"
+    }
+  ];
 }

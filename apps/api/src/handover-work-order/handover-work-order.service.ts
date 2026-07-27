@@ -26,6 +26,7 @@ import {
   DeliveryEvidenceMediaType,
   DeliveryHandoverStatus,
   ESignSigningStage,
+  ESignTaskStatus,
   Prisma,
   UserStatus,
   VehicleHandoverAdminReviewStatus,
@@ -90,6 +91,11 @@ const READY_FOR_STAGE2_STATUSES = [
   "FIELD_COMPLETED",
   "OPS_REVIEW_PENDING",
   "OPS_REVIEWED"
+] as const;
+const ACTIVE_STAGE2_ESIGN_TASK_STATUSES = [
+  ESignTaskStatus.CREATED,
+  ESignTaskStatus.WAITING_CUSTOMER,
+  ESignTaskStatus.SIGNING
 ] as const;
 const CUSTOMER_REVIEW_ACTIONABLE_STATUSES = new Set(["CUSTOMER_REVIEWING", "EVIDENCE_SUBMITTED"]);
 const OPS_REVIEW_PENDING_ALLOWED_STATUSES = new Set([
@@ -3663,21 +3669,25 @@ export class HandoverWorkOrderService {
         ) => Promise<null | { jobStatus: string }>;
       };
     }).vehicleHandoverWorkflowJob;
-    const taskPointers: Prisma.ContractESignTaskWhereInput[] = [];
     const handoverTaskId = handoverRecord
       ? readString(handoverRecord, "handoverESignTaskId")
       : null;
     const handoverContractId = handoverRecord
       ? readString(handoverRecord, "handoverContractId")
       : null;
-    if (handoverTaskId) {
-      taskPointers.push({ id: handoverTaskId });
-    }
-    if (handoverContractId) {
-      taskPointers.push({ contractId: handoverContractId });
-    }
+    const taskPointer: Prisma.ContractESignTaskWhereInput | null =
+      handoverTaskId
+        ? { id: handoverTaskId }
+        : handoverContractId
+          ? {
+              contractId: handoverContractId,
+              taskStatus: {
+                in: [...ACTIVE_STAGE2_ESIGN_TASK_STATUSES]
+              }
+            }
+          : null;
     const [task, notification] = await Promise.all([
-      typeof taskModel?.findFirst === "function" && taskPointers.length > 0
+      typeof taskModel?.findFirst === "function" && taskPointer
         ? taskModel.findFirst({
             orderBy: { createdAt: "desc" },
             select: {
@@ -3686,7 +3696,7 @@ export class HandoverWorkOrderService {
             },
             where: {
               deletedAt: null,
-              OR: taskPointers,
+              ...taskPointer,
               signingStage:
                 ESignSigningStage.STAGE2_DELIVERY_HANDOVER
             }

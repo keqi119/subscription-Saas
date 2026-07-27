@@ -10,6 +10,7 @@ import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/
 import {
   ContractStatus,
   DeliveryHandoverStatus,
+  ESignTaskStatus,
   VehicleHandoverWorkflowJobType,
   VehicleHandoverWorkOrderStatus
 } from "@prisma/client";
@@ -153,8 +154,9 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
   it("projects an existing Stage 2 task and explicitly disables another Field initiation", async () => {
     const harness = createHarness();
     harness.state.activeTask = {
+      contractId: "contract-stage2-1",
       id: "stage2-task-existing",
-      taskStatus: "WAITING_CUSTOMER"
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER
     };
     const readiness = {
       getReadiness: vi.fn(async () => ({
@@ -185,6 +187,87 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
       status: "WAITING_CUSTOMER",
       taskId: "stage2-task-existing"
     });
+  });
+
+  it.each([
+    ESignTaskStatus.CANCELLED,
+    ESignTaskStatus.FAILED,
+    ESignTaskStatus.EXPIRED
+  ])(
+    "does not rediscover a terminal historical %s task after its authoritative pointer is cleared",
+    async (taskStatus) => {
+      const harness = createHarness();
+      harness.handover.handoverESignTaskId = null;
+      harness.state.activeTask = {
+        contractId: "contract-stage2-1",
+        id: `stage2-task-historical-${taskStatus.toLowerCase()}`,
+        taskStatus
+      };
+      const readiness = {
+        getReadiness: vi.fn(async () => ({
+          blockers: [],
+          ready: true,
+          state: {
+            esignTaskId: null,
+            esignTaskStatus: null,
+            workOrderId: "work-order-1"
+          }
+        }))
+      };
+      const controller = Reflect.construct(FieldOperatorAuthController, [
+        { recordTaskViewed: vi.fn(async () => undefined) },
+        harness.service,
+        {},
+        readiness
+      ]) as FieldOperatorAuthController;
+
+      const result = await controller.getWorkOrder(
+        "work-order-1",
+        { phone: FIELD_PHONE } as never,
+        { headers: {}, ip: "127.0.0.1" } as never
+      );
+
+      expect(result.stage2ESign).toEqual({
+        status: null,
+        taskId: null
+      });
+      expect(result.stage2Capabilities.canStartESign).toBe(true);
+    }
+  );
+
+  it("authorizes the canonical Field phone before any readiness or workflow-status read", async () => {
+    const harness = createHarness();
+    const readiness = {
+      getReadiness: vi.fn(async () => ({
+        blockers: [],
+        ready: true,
+        state: {
+          esignTaskId: null,
+          esignTaskStatus: null,
+          workOrderId: "work-order-1"
+        }
+      }))
+    };
+    const controller = Reflect.construct(FieldOperatorAuthController, [
+      { recordTaskViewed: vi.fn(async () => undefined) },
+      harness.service,
+      {},
+      readiness
+    ]) as FieldOperatorAuthController;
+
+    await expect(
+      controller.getWorkOrder(
+        "work-order-1",
+        { phone: OTHER_PHONE } as never,
+        { headers: {}, ip: "127.0.0.1" } as never
+      )
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(readiness.getReadiness).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignTask.findFirst).not.toHaveBeenCalled();
+    expect(
+      harness.prisma.vehicleHandoverWorkflowJob.findFirst
+    ).not.toHaveBeenCalled();
   });
 
   it("allows only the canonical assigned phone to preview and download the PDF", async () => {
@@ -410,6 +493,7 @@ function createHarness() {
       status: ContractStatus.GENERATED
     },
     handoverContractId: "contract-stage2-1",
+    handoverESignTaskId: null as string | null,
     id: "handover-1",
     manifestHash,
     orderId: "order-1",
@@ -435,7 +519,11 @@ function createHarness() {
     }
   };
   const state: {
-    activeTask: null | { id: string; taskStatus: string };
+    activeTask: null | {
+      contractId: string;
+      id: string;
+      taskStatus: ESignTaskStatus;
+    };
     notificationJob: {
       jobStatus: string;
     };
@@ -447,7 +535,12 @@ function createHarness() {
   };
   const prisma = {
     contractESignTask: {
-      findFirst: vi.fn(async () => state.activeTask)
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) =>
+          state.activeTask && matchesTaskWhere(state.activeTask, where)
+            ? state.activeTask
+            : null
+      )
     },
     fileObject: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
@@ -498,6 +591,7 @@ function createHarness() {
   return {
     evidence,
     handover,
+    prisma,
     service: new HandoverWorkOrderService(
       prisma as never,
       evidence as never,
@@ -508,6 +602,54 @@ function createHarness() {
     storage,
     workOrder
   };
+}
+
+function matchesTaskWhere(
+  task: {
+    contractId: string;
+    id: string;
+    taskStatus: ESignTaskStatus;
+  },
+  where: Record<string, unknown>
+): boolean {
+  if (typeof where.id === "string" && where.id !== task.id) {
+    return false;
+  }
+  if (
+    typeof where.contractId === "string" &&
+    where.contractId !== task.contractId
+  ) {
+    return false;
+  }
+  const status = where.taskStatus;
+  if (typeof status === "string" && status !== task.taskStatus) {
+    return false;
+  }
+  if (
+    status &&
+    typeof status === "object" &&
+    "in" in status &&
+    Array.isArray(status.in) &&
+    !status.in.includes(task.taskStatus)
+  ) {
+    return false;
+  }
+  const alternatives = where.OR;
+  if (
+    Array.isArray(alternatives) &&
+    !alternatives.some(
+      (alternative) =>
+        alternative &&
+        typeof alternative === "object" &&
+        matchesTaskWhere(
+          task,
+          alternative as Record<string, unknown>
+        )
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function emptyChecklist() {

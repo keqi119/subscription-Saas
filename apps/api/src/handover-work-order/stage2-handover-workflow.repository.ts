@@ -40,8 +40,14 @@ export class Stage2HandoverWorkflowRepository {
     });
   }
 
-  async claimDue(limit: number, leaseMs: number): Promise<ClaimedStage2WorkflowJob[]> {
-    if (limit <= 0 || leaseMs <= 0) {
+  async claimDue(
+    limit: number,
+    leaseMs: number,
+    supportedJobTypes: readonly VehicleHandoverWorkflowJobType[] = [
+      VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF
+    ]
+  ): Promise<ClaimedStage2WorkflowJob[]> {
+    if (limit <= 0 || leaseMs <= 0 || supportedJobTypes.length === 0) {
       return [];
     }
 
@@ -51,12 +57,20 @@ export class Stage2HandoverWorkflowRepository {
         SELECT "id"
         FROM "vehicle_handover_workflow_job"
         WHERE (
-          "job_status" = 'PENDING'
-          AND "available_at" <= now()
-        ) OR (
-          "job_status" = 'PROCESSING'
-          AND "lease_expires_at" <= now()
+          (
+            "job_status" = 'PENDING'
+            AND "available_at" <= now()
+          ) OR (
+            "job_status" = 'PROCESSING'
+            AND "lease_expires_at" <= now()
+          )
         )
+          AND "job_type" IN (${Prisma.join(
+            supportedJobTypes.map(
+              (jobType) =>
+                Prisma.sql`${jobType}::"vehicle_handover_workflow_job_type"`
+            )
+          )})
         ORDER BY "available_at" ASC, "created_at" ASC
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED

@@ -64,7 +64,11 @@ export class Stage2HandoverWorkflowWorker implements OnModuleInit, OnModuleDestr
     }
 
     const concurrency = this.concurrency();
-    const jobs = await this.repository.claimDue(concurrency, this.leaseMs());
+    const jobs = await this.repository.claimDue(
+      concurrency,
+      this.leaseMs(),
+      this.handler.supportedJobTypes
+    );
     await runWithConcurrency(jobs, concurrency, (job) => this.handleClaimedJob(job));
   }
 

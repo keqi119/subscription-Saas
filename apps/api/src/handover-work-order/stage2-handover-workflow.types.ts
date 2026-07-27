@@ -53,4 +53,5 @@ export type WorkflowHandlerResult =
 
 export interface Stage2HandoverWorkflowHandler {
   handle(job: ClaimedStage2WorkflowJob): Promise<WorkflowHandlerResult>;
+  readonly supportedJobTypes: readonly VehicleHandoverWorkflowJobType[];
 }

@@ -168,19 +168,40 @@ describe("Stage 2 workflow customer confirmation", () => {
 });
 
 function completeLocalSource() {
+  const manifestHash = "a".repeat(64);
+  const sourcePdfHash = "b".repeat(64);
   return {
     artifactVersion: 1,
     handoverContract: {
+      contractSnapshot: {
+        evidencePackage: {
+          manifestHash: `sha256:${manifestHash}`
+        },
+        fileId: "file-pdf-1",
+        handoverId: "handover-1",
+        orderId: "order-1",
+        stage2HandoverPdfArtifact: {
+          artifactVersion: 1,
+          fileId: "file-pdf-1",
+          sourcePdfHash
+        },
+        workOrderId: "work-order-1"
+      },
+      customerId: "customer-1",
       deletedAt: null,
       fileId: "file-pdf-1",
       id: "contract-stage2-1",
+      orderId: "order-1",
       status: "GENERATED"
     },
     handoverContractId: "contract-stage2-1",
-    manifestHash: "a".repeat(64),
+    id: "handover-1",
+    manifestHash,
+    orderId: "order-1",
     sourceDocumentFileId: "file-pdf-1",
     sourceObjectKey: "contracts/contract-stage2-1/generated/handover.pdf",
-    sourcePdfHash: "b".repeat(64)
+    sourcePdfHash,
+    status: "SOURCE_GENERATED"
   };
 }
 
@@ -219,7 +240,10 @@ function localProjectionPrisma(
     vehicleHandoverWorkOrder: {
       findUnique: vi.fn(async () => ({
         handover: source,
-        id: "work-order-1"
+        handoverId: "handover-1",
+        id: "work-order-1",
+        order: { customerId: "customer-1" },
+        orderId: "order-1"
       }))
     }
   };

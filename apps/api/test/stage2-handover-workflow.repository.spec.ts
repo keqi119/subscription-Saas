@@ -91,6 +91,41 @@ describe("Stage2HandoverWorkflowRepository", () => {
     expect(claims.flat().filter((claimed) => claimed.id === job.id)).toHaveLength(1);
   });
 
+  it("leaves unsupported next-step jobs pending", async () => {
+    const unsupported = await repository.enqueue(prisma, {
+      ...workflowJobInput("unsupported-next-step"),
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY
+    });
+    const supported = await repository.enqueue(
+      prisma,
+      workflowJobInput("supported-source-pdf")
+    );
+
+    const claimDueWithSupportedTypes = repository.claimDue as unknown as (
+      limit: number,
+      leaseMs: number,
+      supportedJobTypes: readonly VehicleHandoverWorkflowJobType[]
+    ) => ReturnType<Stage2HandoverWorkflowRepository["claimDue"]>;
+    const claimed = await claimDueWithSupportedTypes.call(
+      repository,
+      1,
+      120_000,
+      [VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF]
+    );
+
+    expect(claimed.map((job) => job.id)).toEqual([supported.id]);
+    await expect(
+      prisma.vehicleHandoverWorkflowJob.findUniqueOrThrow({
+        where: { id: unsupported.id }
+      })
+    ).resolves.toMatchObject({
+      attemptCount: 0,
+      jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
+      leaseExpiresAt: null,
+      leaseToken: null
+    });
+  });
+
   it("does not claim a processing job with a live lease", async () => {
     const job = await prisma.vehicleHandoverWorkflowJob.create({
       data: {

@@ -1,13 +1,14 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
-  ContractStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 
+import { STAGE2_HANDOVER_PDF_HARD_MAX_BYTES } from "../delivery-handover/delivery-handover-pdf-renderer.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
+import { validateStage2SourceArtifactBinding } from "./stage2-handover-source-artifact";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 import {
   ClaimedStage2WorkflowJob,
@@ -38,25 +39,42 @@ const sourceProjectionSelect = {
       artifactVersion: true,
       handoverContract: {
         select: {
+          contractSnapshot: true,
+          customerId: true,
           deletedAt: true,
           fileId: true,
           id: true,
+          orderId: true,
           status: true
         }
       },
       handoverContractId: true,
+      id: true,
       manifestHash: true,
+      orderId: true,
       sourceDocumentFileId: true,
       sourceObjectKey: true,
-      sourcePdfHash: true
+      sourcePdfHash: true,
+      status: true
     }
   },
-  id: true
+  handoverId: true,
+  id: true,
+  order: {
+    select: {
+      customerId: true
+    }
+  },
+  orderId: true
 } as const;
 
 @Injectable()
 export class Stage2HandoverWorkflowService
   implements Stage2HandoverWorkflowHandler {
+  readonly supportedJobTypes = [
+    VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF
+  ] as const;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -127,12 +145,22 @@ export class Stage2HandoverWorkflowService
           where: { id: source.sourceDocumentFileId }
         })
       : null;
-    if (
-      source &&
-      isLocallyReadySource(source, fileObject, readManifestHash(job.payload))
-    ) {
+    const expectedManifestHash = readManifestHash(job.payload);
+    const binding = workOrder && source && expectedManifestHash
+      ? validateStage2SourceArtifactBinding({
+          expectedCustomerId: workOrder.order.customerId,
+          expectedHandoverId: workOrder.handoverId ?? "",
+          expectedManifestHash,
+          expectedOrderId: workOrder.orderId,
+          expectedWorkOrderId: workOrder.id,
+          fileObject,
+          handover: source,
+          maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
+        })
+      : null;
+    if (binding) {
       return {
-        artifactVersion: source.artifactVersion,
+        artifactVersion: binding.artifactVersion,
         errorCode: null,
         jobId: job.id,
         state: "PDF_READY"
@@ -213,53 +241,6 @@ export class Stage2HandoverWorkflowService
       await heartbeat;
     }
   }
-}
-
-function isLocallyReadySource(
-  source: null | {
-    artifactVersion: number;
-    handoverContract: null | {
-      deletedAt: Date | null;
-      fileId: null | string;
-      id: string;
-      status: ContractStatus;
-    };
-    handoverContractId: null | string;
-    manifestHash: null | string;
-    sourceDocumentFileId: null | string;
-    sourceObjectKey: null | string;
-    sourcePdfHash: null | string;
-  },
-  fileObject: null | {
-    bucket: string;
-    id: string;
-    mimeType: null | string;
-    objectKey: string;
-    sizeBytes: bigint;
-  },
-  expectedManifestHash: null | string
-) {
-  if (!source || !fileObject || !expectedManifestHash) {
-    return false;
-  }
-  const contract = source.handoverContract;
-  const fileSize = Number(fileObject.sizeBytes);
-  return (
-    source.artifactVersion === 1 &&
-    normalizeSha256(source.manifestHash) === expectedManifestHash &&
-    normalizeSha256(source.sourcePdfHash) !== null &&
-    Boolean(source.handoverContractId) &&
-    contract?.id === source.handoverContractId &&
-    !contract.deletedAt &&
-    contract.status === ContractStatus.GENERATED &&
-    contract.fileId === source.sourceDocumentFileId &&
-    fileObject.id === source.sourceDocumentFileId &&
-    Boolean(fileObject.bucket) &&
-    fileObject.objectKey === source.sourceObjectKey &&
-    fileObject.mimeType?.trim().toLowerCase() === "application/pdf" &&
-    Number.isSafeInteger(fileSize) &&
-    fileSize > 0
-  );
 }
 
 function readManifestHash(payload: unknown) {

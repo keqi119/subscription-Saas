@@ -2,6 +2,8 @@ import { BadRequestException, ExecutionContext, NotFoundException, UnauthorizedE
 import { ConfigService } from "@nestjs/config";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
 import {
+  ContractStatus,
+  DeliveryHandoverStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
@@ -10,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DeliveryEvidenceService } from "../src/delivery-evidence/delivery-evidence.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
+import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
 import { CustomerAuthGuard } from "../src/portal/portal-auth.guard";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
 import { PortalHandoverReviewController } from "../src/portal/portal-handover-review.controller";
@@ -498,6 +501,110 @@ describe("Portal handover review API", () => {
       ).rejects.toBeInstanceOf(NotFoundException);
     }
   });
+});
+
+describe("Stage2HandoverWorkflowService local projection", () => {
+  it.each([
+    {
+      label: "handover status",
+      mutate(source: Record<string, unknown>) {
+        source.status = DeliveryHandoverStatus.DRAFT;
+      }
+    },
+    {
+      label: "Contract artifact snapshot",
+      mutate(source: Record<string, unknown>) {
+        const contract = source.handoverContract as Record<string, unknown>;
+        const snapshot = contract.contractSnapshot as Record<string, unknown>;
+        snapshot.stage2HandoverPdfArtifact = {
+          artifactVersion: 2,
+          fileId: "different-file",
+          sourcePdfHash: "f".repeat(64)
+        };
+      }
+    }
+  ])(
+    "returns WORKFLOW_EXCEPTION when the local $label is invalid",
+    async ({ mutate }) => {
+      const manifestHash = "a".repeat(64);
+      const sourcePdfHash = "b".repeat(64);
+      const source: Record<string, unknown> = {
+        artifactVersion: 1,
+        handoverContract: {
+          contractSnapshot: {
+            evidencePackage: {
+              manifestHash: `sha256:${manifestHash}`
+            },
+            fileId: "file-pdf-1",
+            handoverId: "handover-1",
+            orderId: "order-1",
+            stage2HandoverPdfArtifact: {
+              artifactVersion: 1,
+              fileId: "file-pdf-1",
+              sourcePdfHash
+            },
+            workOrderId: "work-order-1"
+          },
+          customerId: "customer-1",
+          deletedAt: null,
+          fileId: "file-pdf-1",
+          id: "contract-stage2-1",
+          orderId: "order-1",
+          status: ContractStatus.GENERATED
+        },
+        handoverContractId: "contract-stage2-1",
+        id: "handover-1",
+        manifestHash,
+        orderId: "order-1",
+        sourceDocumentFileId: "file-pdf-1",
+        sourceObjectKey: "contracts/contract-stage2-1/generated/source.pdf",
+        sourcePdfHash,
+        status: DeliveryHandoverStatus.SOURCE_GENERATED
+      };
+      mutate(source);
+      const prisma = {
+        fileObject: {
+          findUnique: vi.fn(async () => ({
+            bucket: "application-materials",
+            id: "file-pdf-1",
+            mimeType: "application/pdf",
+            objectKey: source.sourceObjectKey,
+            sizeBytes: 1024n
+          }))
+        },
+        vehicleHandoverWorkflowJob: {
+          findFirst: vi.fn(async () => ({
+            id: "workflow-job-1",
+            jobStatus: VehicleHandoverWorkflowJobStatus.COMPLETED,
+            payload: { manifestHash: `sha256:${manifestHash}` }
+          }))
+        },
+        vehicleHandoverWorkOrder: {
+          findUnique: vi.fn(async () => ({
+            handover: source,
+            handoverId: "handover-1",
+            id: "work-order-1",
+            order: { customerId: "customer-1" },
+            orderId: "order-1"
+          }))
+        }
+      };
+      const service = new Stage2HandoverWorkflowService(
+        prisma as never,
+        new ConfigService({ STAGE2_HANDOVER_WORKFLOW_ENABLED: "true" }),
+        {} as never,
+        {} as never
+      );
+
+      await expect(service.getProjection("work-order-1")).resolves.toEqual({
+        artifactVersion: null,
+        errorCode: "SOURCE_ARTIFACT_INVALID",
+        jobId: "workflow-job-1",
+        state: "WORKFLOW_EXCEPTION"
+      });
+      expect(prisma.fileObject.findUnique).toHaveBeenCalledOnce();
+    }
+  );
 });
 
 function createPortalReviewHarness(options: {

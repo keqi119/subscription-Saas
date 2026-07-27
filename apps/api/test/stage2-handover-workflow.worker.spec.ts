@@ -38,6 +38,27 @@ describe("Stage2HandoverWorkflowWorker", () => {
     expect(harness.repository.deadLetter).not.toHaveBeenCalled();
   });
 
+  it("claims only the job types supported by its handler", async () => {
+    const supportedJobTypes = [
+      VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF
+    ] as const;
+    const handler = {
+      handle: vi.fn(async () => ({ kind: "COMPLETED" as const })),
+      supportedJobTypes
+    } as Stage2HandoverWorkflowHandler & {
+      supportedJobTypes: typeof supportedJobTypes;
+    };
+    const harness = createWorkerHarness({ handler });
+
+    await harness.worker.runOnce();
+
+    expect(harness.repository.claimDue).toHaveBeenCalledWith(
+      1,
+      120_000,
+      supportedJobTypes
+    );
+  });
+
   it("uses 1m, 5m, 15m, 1h, and 6h retry delays", async () => {
     const now = new Date("2026-07-27T08:00:00.000Z");
     vi.spyOn(Date, "now").mockReturnValue(now.getTime());
@@ -233,7 +254,8 @@ describe("Stage2HandoverWorkflowWorker", () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         activeHandlers -= 1;
         return { kind: "COMPLETED" };
-      }
+      },
+      supportedJobTypes: [VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF]
     };
     const harness = createWorkerHarness({
       config: { STAGE2_HANDOVER_WORKER_CONCURRENCY: "2" },
@@ -273,7 +295,8 @@ describe("Stage2HandoverWorkflowWorker", () => {
         return new Promise((resolve) => {
           releaseSecond = () => resolve({ kind: "COMPLETED" });
         });
-      }
+      },
+      supportedJobTypes: [VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF]
     };
     const errorLog = vi.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
     const harness = createWorkerHarness({
@@ -454,7 +477,8 @@ function createWorkerHarness(options: WorkerHarnessOptions = {}) {
           return Promise.reject(options.error);
         }
         return Promise.resolve(options.result ?? { kind: "COMPLETED" });
-      })
+      }),
+      supportedJobTypes: [VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF]
     } satisfies Stage2HandoverWorkflowHandler);
   const config = new ConfigService({
     STAGE2_HANDOVER_WORKER_CONCURRENCY: "1",

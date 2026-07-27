@@ -146,6 +146,24 @@ const STAGE1_MULTI_SLOT_ENABLED_ENV = "ESIGN_STAGE1_MULTI_SLOT_ENABLED";
 const PLATFORM_SEAL_KEYWORD_ENV = "ESIGN_PLATFORM_SEAL_KEYWORD";
 const FADADA_CUSTOMER_SIGNING_NOT_READY = "FADADA_CUSTOMER_SIGNING_NOT_READY";
 const STAGE1_SIGNING_STAGE: ESignSigningStage = "STAGE1_CONTRACT";
+type Stage2SignedReconciliationInput = {
+  completedAt: Date;
+  eSignTaskId: string;
+  providerTransactionId: string;
+} & (
+  | {
+    queryResult: {
+      resultCode: string;
+      status: "SIGNED";
+    };
+    source: "QUERY";
+  }
+  | {
+    queryResult?: never;
+    source: "CALLBACK";
+  }
+);
+
 const STAGE1_SIGNING_SLOTS: readonly ESignSigningSlot[] = [
   {
     documentType: "CONTRACT_BODY",
@@ -664,15 +682,13 @@ export class ESignService {
     };
   }
 
-  async reconcileCustomerSigned(input: {
-    completedAt: Date;
-    eSignTaskId: string;
-    providerTransactionId: string;
-    source: "CALLBACK" | "QUERY";
-  }): Promise<void> {
+  async reconcileCustomerSigned(
+    input: Stage2SignedReconciliationInput
+  ): Promise<void> {
     if (
       !Number.isFinite(input.completedAt.getTime()) ||
-      !normalizeProviderTransactionId(input.providerTransactionId)
+      !normalizeProviderTransactionId(input.providerTransactionId) ||
+      !hasValidStage2QueryResult(input)
     ) {
       throw new BadRequestException(
         "ESIGN_STAGE2_CUSTOMER_RECONCILIATION_INVALID"
@@ -683,15 +699,13 @@ export class ESignService {
     );
   }
 
-  async reconcilePlatformSigned(input: {
-    completedAt: Date;
-    eSignTaskId: string;
-    providerTransactionId: string;
-    source: "CALLBACK" | "QUERY";
-  }): Promise<void> {
+  async reconcilePlatformSigned(
+    input: Stage2SignedReconciliationInput
+  ): Promise<void> {
     if (
       !Number.isFinite(input.completedAt.getTime()) ||
-      !normalizeProviderTransactionId(input.providerTransactionId)
+      !normalizeProviderTransactionId(input.providerTransactionId) ||
+      !hasValidStage2QueryResult(input)
     ) {
       throw new BadRequestException(
         "ESIGN_STAGE2_PLATFORM_RECONCILIATION_INVALID"
@@ -1357,12 +1371,7 @@ export class ESignService {
 
   private async reconcileCustomerSignedInTransaction(
     tx: Prisma.TransactionClient,
-    input: {
-      completedAt: Date;
-      eSignTaskId: string;
-      providerTransactionId: string;
-      source: "CALLBACK" | "QUERY";
-    }
+    input: Stage2SignedReconciliationInput
   ) {
     const task = await tx.contractESignTask.findUnique({
       include: esignTaskInclude,
@@ -1440,6 +1449,17 @@ export class ESignService {
     }
     const workOrder = workOrders[0]!;
 
+    await this.recordStage2ProviderQueryAudit(
+      tx,
+      task,
+      PrismaESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+      expectedCustomerTransactionId,
+      input
+    );
+    if (handover.status === DeliveryHandoverStatus.ARCHIVED) {
+      return;
+    }
+
     if (customerSigner.signerStatus !== ESignSignerStatus.SIGNED) {
       const signerUpdated =
         await tx.contractESignSigner.updateMany({
@@ -1474,8 +1494,7 @@ export class ESignService {
     }
 
     const handoverAlreadyCompleted =
-      handover.status === DeliveryHandoverStatus.SIGNED ||
-      handover.status === DeliveryHandoverStatus.ARCHIVED;
+      handover.status === DeliveryHandoverStatus.SIGNED;
     if (!handoverAlreadyCompleted) {
       await tx.contractESignTask.update({
         data: {
@@ -1548,17 +1567,11 @@ export class ESignService {
     });
 
     void platformSigner;
-    void input.source;
   }
 
   private async reconcilePlatformSignedInTransaction(
     tx: Prisma.TransactionClient,
-    input: {
-      completedAt: Date;
-      eSignTaskId: string;
-      providerTransactionId: string;
-      source: "CALLBACK" | "QUERY";
-    }
+    input: Stage2SignedReconciliationInput
   ) {
     const task = await tx.contractESignTask.findUnique({
       include: esignTaskInclude,
@@ -1641,6 +1654,17 @@ export class ESignService {
     }
     const workOrder = workOrders[0]!;
 
+    await this.recordStage2ProviderQueryAudit(
+      tx,
+      task,
+      PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM,
+      expectedPlatformTransactionId,
+      input
+    );
+    if (handover.status === DeliveryHandoverStatus.ARCHIVED) {
+      return;
+    }
+
     if (platformSigner.signerStatus !== ESignSignerStatus.SIGNED) {
       const signerUpdated =
         await tx.contractESignSigner.updateMany({
@@ -1703,7 +1727,14 @@ export class ESignService {
           deletedAt: null,
           handoverContractId: task.contractId,
           handoverESignTaskId: task.id,
-          id: handover.id
+          id: handover.id,
+          status: {
+            in: [
+              DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+              DeliveryHandoverStatus.PENDING_PLATFORM_SEAL,
+              DeliveryHandoverStatus.SIGNED
+            ]
+          }
         }
       });
     if (handoverUpdated.count !== 1) {
@@ -1759,7 +1790,50 @@ export class ESignService {
       }
     });
 
-    void input.source;
+  }
+
+  private async recordStage2ProviderQueryAudit(
+    tx: Prisma.TransactionClient,
+    task: ESignTaskWithDetails,
+    slotId: PrismaESignSlotId,
+    providerTransactionId: string,
+    input: Stage2SignedReconciliationInput
+  ) {
+    if (input.source !== "QUERY") {
+      return;
+    }
+    const afterSnapshot = toJsonValue({
+      eventType: "STAGE2_PROVIDER_SIGNER_STATUS_QUERY",
+      observedAt: input.completedAt.toISOString(),
+      provider: task.provider,
+      providerContractId: task.providerEnvelopeId,
+      providerTaskId: task.providerTaskId,
+      providerTransactionId,
+      resultCode: input.queryResult.resultCode,
+      providerStatus: input.queryResult.status,
+      signingStage: task.signingStage,
+      slotId,
+      source: input.source
+    });
+    const id = buildStage2ProviderQueryAuditId(
+      task.id,
+      slotId,
+      providerTransactionId
+    );
+    await tx.auditLog.upsert({
+      create: {
+        action: AuditAction.UPDATE,
+        afterSnapshot,
+        entityId: task.id,
+        entityType: "ContractESignTaskProviderQuery",
+        id,
+        module: "esign"
+      },
+      update: {
+        afterSnapshot
+      },
+      where: { id }
+    });
   }
 
   private async recordUnverifiedCallback(input: {
@@ -3356,6 +3430,45 @@ function buildStage2ProviderTransactionId(
     );
   }
   return `${normalized.slice(0, 32 - suffix.length)}${suffix}`;
+}
+
+function hasValidStage2QueryResult(
+  input: Stage2SignedReconciliationInput
+) {
+  if (input.source === "CALLBACK") {
+    return input.queryResult === undefined;
+  }
+  return input.source === "QUERY" &&
+    input.queryResult?.status === "SIGNED" &&
+    input.queryResult.resultCode === "3000";
+}
+
+function buildStage2ProviderQueryAuditId(
+  taskId: string,
+  slotId: PrismaESignSlotId,
+  providerTransactionId: string
+) {
+  const hash = createHash("sha256")
+    .update(
+      [
+        "stage2-provider-query",
+        taskId,
+        slotId,
+        providerTransactionId
+      ].join(":"),
+      "utf8"
+    )
+    .digest();
+  hash[6] = (hash[6]! & 0x0f) | 0x50;
+  hash[8] = (hash[8]! & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString("hex");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20)
+  ].join("-");
 }
 
 function sanitizeCallbackPayloadForLog(value: unknown): unknown {

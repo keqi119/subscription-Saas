@@ -470,6 +470,45 @@ export class Stage2HandoverWorkflowService
           }
         };
       }
+      if (providerStatus.status === "FAILED") {
+        const view = await stage2ESignService.retryPlatformSeal(
+          job.workOrderId,
+          undefined,
+          platformTransactionId
+        );
+        await lease.assertLease();
+        if (
+          view.platformSigner?.status === ESignSignerStatus.SIGNED &&
+          view.status === ESignTaskStatus.COMPLETED
+        ) {
+          return {
+            kind: "COMPLETED",
+            result: {
+              providerStatus: "SIGNED",
+              recoveredFrom: "FAILED",
+              resultCode: providerStatus.resultCode ?? null
+            }
+          };
+        }
+        if (
+          view.platformSigner?.status !== ESignSignerStatus.SIGNING
+        ) {
+          throw new Error(
+            "STAGE2_PLATFORM_RECONCILIATION_RECOVERY_STATUS_INVALID"
+          );
+        }
+        return {
+          availableAt: new Date(
+            Date.now() + PLATFORM_RECONCILIATION_DELAY_MS
+          ),
+          kind: "OBSERVED_SIGNING",
+          result: {
+            providerStatus: "SIGNING",
+            recoveredFrom: "FAILED",
+            resultCode: providerStatus.resultCode ?? null
+          }
+        };
+      }
       if (providerStatus.status !== "SIGNING") {
         throw new Error(
           "STAGE2_PLATFORM_RECONCILIATION_PROVIDER_STATUS_INVALID"

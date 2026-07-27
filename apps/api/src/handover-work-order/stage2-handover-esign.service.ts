@@ -434,6 +434,10 @@ export class Stage2HandoverESignService {
             eSignTaskId: task.id,
             providerTransactionId:
               customerSigner.providerTransactionId!,
+            queryResult: {
+              resultCode: "3000",
+              status: "SIGNED"
+            },
             source: "QUERY"
           });
           return {
@@ -583,6 +587,10 @@ export class Stage2HandoverESignService {
         completedAt: new Date(),
         eSignTaskId: task.id,
         providerTransactionId: expectedTransactionId,
+        queryResult: {
+          resultCode: "3000",
+          status: "SIGNED"
+        },
         source: "QUERY"
       });
     }
@@ -955,6 +963,7 @@ export class Stage2HandoverESignService {
         message: "The platform seal transaction does not match the typed H2 slot."
       });
     }
+    let exactFailedH2Observed = false;
     if (
       platformSigner.providerTransactionId === platformTransactionId ||
       platformSigner.signerStatus === ESignSignerStatus.SIGNING ||
@@ -971,9 +980,56 @@ export class Stage2HandoverESignService {
       ) {
         return this.getStatus(workOrderId);
       }
-      throw platformStatusUnavailable();
+      const canReissueExactFailedH2 =
+        providerStatus.status === "FAILED" &&
+        platformSigner.signerStatus !== ESignSignerStatus.SIGNED &&
+        task.taskStatus !== ESignTaskStatus.COMPLETED &&
+        context.handover.status !== DeliveryHandoverStatus.SIGNED &&
+        context.handover.status !== DeliveryHandoverStatus.ARCHIVED;
+      if (!canReissueExactFailedH2) {
+        throw platformStatusUnavailable();
+      }
+      const released =
+        await this.prisma.contractESignSigner.updateMany({
+          data: {
+            claimExpiresAt: null,
+            lastErrorCode:
+              STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
+            lastErrorMessage:
+              "Exact provider query confirmed the platform seal failed.",
+            nextRetryAt: null,
+            signerStatus: ESignSignerStatus.PENDING
+          },
+          where: {
+            id: platformSigner.id,
+            providerTransactionId: platformTransactionId,
+            signerStatus: {
+              in: [
+                ESignSignerStatus.PENDING,
+                ESignSignerStatus.SIGNING
+              ]
+            },
+            slotId: PLATFORM_SLOT_ID,
+            taskId: task.id
+          }
+        });
+      if (released.count !== 1) {
+        if (
+          await this.platformProviderActionWasReconciled(
+            workOrderId,
+            task.id,
+            platformSigner.id,
+            platformTransactionId
+          )
+        ) {
+          return this.getStatus(workOrderId);
+        }
+        throw lostPlatformClaim();
+      }
+      exactFailedH2Observed = true;
     }
     if (
+      !exactFailedH2Observed &&
       platformSigner.nextRetryAt &&
       platformSigner.nextRetryAt.getTime() > now.getTime()
     ) {
@@ -1208,6 +1264,10 @@ export class Stage2HandoverESignService {
         completedAt: new Date(),
         eSignTaskId: task.id,
         providerTransactionId: expectedTransactionId,
+        queryResult: {
+          resultCode: "3000",
+          status: "SIGNED"
+        },
         source: "QUERY"
       });
       return providerStatus;

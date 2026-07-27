@@ -27,6 +27,10 @@ import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2
 
 const TASK_NO = "ESG20260726080000ABCD";
 const TRANSACTION_ID = "ESG20260726080000ABCDH1";
+const SIGNED_QUERY_RESULT = {
+  resultCode: "3000",
+  status: "SIGNED"
+} as const;
 const QUERY_INPUT: QuerySignerStatusInput = {
   contractId: TASK_NO,
   providerCustomerId: "fadada-customer-1",
@@ -500,6 +504,7 @@ describe("Stage 2 customer completion reconciliation", () => {
       }),
       (harness.service as any).reconcileCustomerSigned({
         ...input,
+        queryResult: SIGNED_QUERY_RESULT,
         source: "QUERY"
       })
     ]);
@@ -537,6 +542,7 @@ describe("Stage 2 customer completion reconciliation", () => {
       completedAt: new Date("2026-07-28T02:00:00.000Z"),
       eSignTaskId: "stage2-task-1",
       providerTransactionId: TRANSACTION_ID,
+      queryResult: SIGNED_QUERY_RESULT,
       source: "QUERY"
     });
 
@@ -572,6 +578,82 @@ describe("Stage 2 customer completion reconciliation", () => {
     expect(harness.downstream.paymentWrite).not.toHaveBeenCalled();
     expect(harness.downstream.accountingWrite).not.toHaveBeenCalled();
     expect(harness.downstream.depreciationWrite).not.toHaveBeenCalled();
+  });
+
+  it("persists one bounded sanitized audit event for repeated exact H1 queries", async () => {
+    const harness = customerTransitionHarness();
+    const firstObservedAt =
+      new Date("2026-07-28T02:00:00.000Z");
+    const secondObservedAt =
+      new Date("2026-07-28T02:01:00.000Z");
+
+    for (const completedAt of [
+      firstObservedAt,
+      secondObservedAt
+    ]) {
+      await (harness.service as any).reconcileCustomerSigned({
+        completedAt,
+        eSignTaskId: "stage2-task-1",
+        providerTransactionId: TRANSACTION_ID,
+        queryResult: SIGNED_QUERY_RESULT,
+        source: "QUERY"
+      });
+    }
+
+    expect(harness.auditLogs).toHaveLength(1);
+    expect(harness.auditLogs[0]).toMatchObject({
+      action: "UPDATE",
+      afterSnapshot: {
+        eventType: "STAGE2_PROVIDER_SIGNER_STATUS_QUERY",
+        observedAt: secondObservedAt.toISOString(),
+        provider: ESignProviderType.FADADA,
+        providerContractId: TASK_NO,
+        providerTaskId: TRANSACTION_ID,
+        providerTransactionId: TRANSACTION_ID,
+        resultCode: "3000",
+        providerStatus: "SIGNED",
+        signingStage:
+          ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+        slotId: ESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+        source: "QUERY"
+      },
+      entityId: "stage2-task-1",
+      entityType: "ContractESignTaskProviderQuery",
+      module: "esign"
+    });
+    const serialized = JSON.stringify(harness.auditLogs);
+    expect(serialized).not.toMatch(
+      /customer-1|providerCustomerId|resultDescription|https?:|token|vehicle/i
+    );
+  });
+
+  it("rejects UNKNOWN query evidence before writing an audit or transition", async () => {
+    const harness = customerTransitionHarness();
+
+    await expect(
+      (harness.service as any).reconcileCustomerSigned({
+        completedAt:
+          new Date("2026-07-28T02:00:00.000Z"),
+        eSignTaskId: "stage2-task-1",
+        providerTransactionId: TRANSACTION_ID,
+        queryResult: {
+          resultCode: "9999",
+          status: "UNKNOWN"
+        },
+        source: "QUERY"
+      })
+    ).rejects.toThrow(
+      "ESIGN_STAGE2_CUSTOMER_RECONCILIATION_INVALID"
+    );
+
+    expect(harness.auditLogs).toHaveLength(0);
+    expect(harness.customerSigner).toMatchObject({
+      signedAt: null,
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+    expect(
+      harness.prisma.vehicleHandoverWorkflowJob.upsert
+    ).not.toHaveBeenCalled();
   });
 });
 
@@ -647,6 +729,7 @@ describe("Stage 2 platform completion reconciliation", () => {
       completedAt,
       eSignTaskId: harness.task.id,
       providerTransactionId: `${TASK_NO}H2`,
+      queryResult: SIGNED_QUERY_RESULT,
       source: "QUERY"
     });
 
@@ -711,6 +794,7 @@ describe("Stage 2 platform completion reconciliation", () => {
       }),
       (harness.service as any).reconcilePlatformSigned({
         ...input,
+        queryResult: SIGNED_QUERY_RESULT,
         source: "QUERY"
       })
     ]);
@@ -722,6 +806,101 @@ describe("Stage 2 platform completion reconciliation", () => {
           VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
       )
     ).toHaveLength(1);
+  });
+
+  it("treats an archived handover as terminal for repeated H2 query and callback completion", async () => {
+    const harness = customerTransitionHarness();
+    const completedAt =
+      new Date("2026-07-28T02:05:00.000Z");
+    const archivedAt =
+      new Date("2026-07-28T02:10:00.000Z");
+    Object.assign(harness.customerSigner, {
+      signedAt: new Date("2026-07-28T02:00:00.000Z"),
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    Object.assign(harness.platformSigner, {
+      providerTransactionId: `${TASK_NO}H2`,
+      signedAt: completedAt,
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    Object.assign(harness.task, {
+      completedAt,
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    Object.assign(harness.handover, {
+      archiveStatus: "ARCHIVED",
+      archivedAt,
+      completedAt,
+      customerSignedAt: harness.customerSigner.signedAt,
+      platformSignedAt: completedAt,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/signed.pdf",
+      signedPdfHash: "d".repeat(64),
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    harness.jobs.set("archive:stage2-task-1:3", {
+      completedAt: archivedAt,
+      eSignTaskId: harness.task.id,
+      handoverId: harness.handover.id,
+      idempotencyKey: "archive:stage2-task-1:3",
+      jobStatus: VehicleHandoverWorkflowJobStatus.COMPLETED,
+      jobType:
+        VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF,
+      payload: {
+        artifactVersion: 3
+      },
+      workOrderId: "work-order-1"
+    });
+    harness.prisma.vehicleHandoverWorkflowJob.upsert.mockClear();
+
+    await (harness.service as any).reconcilePlatformSigned({
+      completedAt: new Date("2026-07-28T02:15:00.000Z"),
+      eSignTaskId: harness.task.id,
+      providerTransactionId: `${TASK_NO}H2`,
+      queryResult: SIGNED_QUERY_RESULT,
+      source: "QUERY"
+    });
+    await (harness.service as any).reconcilePlatformSigned({
+      completedAt: new Date("2026-07-28T02:16:00.000Z"),
+      eSignTaskId: harness.task.id,
+      providerTransactionId: `${TASK_NO}H2`,
+      source: "CALLBACK"
+    });
+
+    expect(harness.handover).toMatchObject({
+      archiveStatus: "ARCHIVED",
+      archivedAt,
+      completedAt,
+      customerSignedAt: harness.customerSigner.signedAt,
+      platformSignedAt: completedAt,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/signed.pdf",
+      signedPdfHash: "d".repeat(64),
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(
+      [...harness.jobs.values()].filter(
+        (job) =>
+          job.jobType ===
+          VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
+      )
+    ).toHaveLength(1);
+    expect(
+      harness.prisma.vehicleHandoverWorkflowJob.upsert
+    ).not.toHaveBeenCalled();
+    expect(harness.auditLogs).toHaveLength(1);
+    expect(harness.auditLogs[0]).toMatchObject({
+      afterSnapshot: {
+        eventType: "STAGE2_PROVIDER_SIGNER_STATUS_QUERY",
+        providerStatus: "SIGNED",
+        providerTransactionId: `${TASK_NO}H2`,
+        resultCode: "3000",
+        slotId: ESignSlotId.STAGE2_HANDOVER_PLATFORM,
+        source: "QUERY"
+      },
+      entityId: harness.task.id,
+      entityType: "ContractESignTaskProviderQuery"
+    });
   });
 });
 
@@ -793,6 +972,81 @@ describe("Stage 2 platform workflow polling", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("recovers exact FAILED H2 polling through the same deterministic retry path", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(
+      new Date("2026-07-28T02:00:00.000Z")
+    );
+    try {
+      const harness = platformWorkflowHarness();
+      harness.stage2ESignService.reconcilePlatformSeal
+        .mockResolvedValueOnce({
+          resultCode: "4000",
+          status: "FAILED"
+        });
+
+      const result = await harness.service.handle(
+        platformWorkflowJob(
+          VehicleHandoverWorkflowJobType.RECONCILE_PLATFORM_SEAL
+        )
+      );
+
+      expect(
+        harness.stage2ESignService.reconcilePlatformSeal
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        harness.stage2ESignService.retryPlatformSeal
+      ).toHaveBeenCalledWith(
+        "work-order-1",
+        undefined,
+        `${TASK_NO}H2`
+      );
+      expect(
+        harness.stage2ESignService.reconcilePlatformSeal
+          .mock.invocationCallOrder[0]
+      ).toBeLessThan(
+        harness.stage2ESignService.retryPlatformSeal
+          .mock.invocationCallOrder[0]!
+      );
+      expect(result).toEqual({
+        availableAt: new Date(
+          Date.now() + 2 * 60 * 1000
+        ),
+        kind: "OBSERVED_SIGNING",
+        result: {
+          providerStatus: "SIGNING",
+          recoveredFrom: "FAILED",
+          resultCode: "4000"
+        }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a platform write from UNKNOWN polling evidence", async () => {
+    const harness = platformWorkflowHarness();
+    harness.stage2ESignService.reconcilePlatformSeal
+      .mockResolvedValueOnce({
+        resultCode: "9999",
+        status: "UNKNOWN"
+      });
+
+    await expect(
+      harness.service.handle(
+        platformWorkflowJob(
+          VehicleHandoverWorkflowJobType.RECONCILE_PLATFORM_SEAL
+        )
+      )
+    ).rejects.toThrow(
+      "STAGE2_PLATFORM_RECONCILIATION_PROVIDER_STATUS_INVALID"
+    );
+
+    expect(
+      harness.stage2ESignService.retryPlatformSeal
+    ).not.toHaveBeenCalled();
   });
 });
 
@@ -950,6 +1204,7 @@ function mockConfig() {
 }
 
 function customerTransitionHarness() {
+  const auditLogs: Array<Record<string, any>> = [];
   const customerSigner = {
     customerId: "customer-1",
     deletedAt: null,
@@ -1056,6 +1311,28 @@ function customerTransitionHarness() {
         }
       }
     ),
+    auditLog: {
+      upsert: vi.fn(async ({ create, update, where }: any) => {
+        if (transactionDepth === 0) {
+          throw new Error(
+            "provider query audit was not written transactionally"
+          );
+        }
+        const existing = auditLogs.find(
+          (auditLog) => auditLog.id === where.id
+        );
+        if (existing) {
+          Object.assign(existing, update);
+          return existing;
+        }
+        const created = {
+          ...create,
+          id: where.id
+        };
+        auditLogs.push(created);
+        return created;
+      })
+    },
     contract: {
       update: vi.fn(async ({ data }: any) => {
         Object.assign(contract, data);
@@ -1103,7 +1380,15 @@ function customerTransitionHarness() {
           where.handoverContractId !==
             handover.handoverContractId ||
           where.handoverESignTaskId !==
-            handover.handoverESignTaskId
+            handover.handoverESignTaskId ||
+          (
+            where.status !== undefined &&
+            (
+              typeof where.status === "object"
+                ? !where.status.in?.includes(handover.status)
+                : where.status !== handover.status
+            )
+          )
         ) {
           return { count: 0 };
         }
@@ -1187,11 +1472,13 @@ function customerTransitionHarness() {
   );
 
   return {
+    auditLogs,
     customerSigner,
     downstream,
     handover,
     jobs,
     platformSigner,
+    prisma,
     provider,
     service,
     task,

@@ -881,6 +881,10 @@ describe("ESignService", () => {
           eSignTaskId: harness.task.id,
           providerTransactionId:
             harness.platformTransactionId,
+          queryResult: {
+            resultCode: "3000",
+            status: "SIGNED"
+          },
           source: "QUERY"
         });
       }
@@ -917,6 +921,99 @@ describe("ESignService", () => {
       expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
     }
   );
+
+  it("keeps an archived Stage 2 handover terminal after a repeated platform callback", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const completedAt =
+      new Date("2026-07-28T02:05:00.000Z");
+    const archivedAt =
+      new Date("2026-07-28T02:10:00.000Z");
+    Object.assign(harness.customerSigner, {
+      signedAt: new Date("2026-07-28T02:00:00.000Z"),
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    Object.assign(harness.platformSigner, {
+      signedAt: completedAt,
+      signerStatus: ESignSignerStatus.SIGNED
+    });
+    Object.assign(harness.task, {
+      completedAt,
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    Object.assign(harness.stage2Contract, {
+      signedAt: completedAt,
+      status: ContractStatus.SIGNED
+    });
+    Object.assign(harness.handover, {
+      archiveStatus: "ARCHIVED",
+      archivedAt,
+      completedAt,
+      customerSignedAt: harness.customerSigner.signedAt,
+      platformSignedAt: completedAt,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/signed.pdf",
+      signedPdfHash: "d".repeat(64),
+      status: "ARCHIVED"
+    });
+    harness.state.workflowJobs.push({
+      completedAt: archivedAt,
+      eSignTaskId: harness.task.id,
+      handoverId: harness.handover.id,
+      idempotencyKey:
+        `archive:${harness.task.id}:3`,
+      jobStatus: VehicleHandoverWorkflowJobStatus.COMPLETED,
+      jobType:
+        VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF,
+      payload: {
+        artifactVersion: 3
+      },
+      workOrderId: "work-order-typed"
+    });
+    harness.prisma.vehicleHandoverWorkflowJob.upsert.mockClear();
+
+    const result = await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.platformTransactionId
+      })
+    );
+
+    expect(result).toMatchObject({
+      handled: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(harness.handover).toMatchObject({
+      archiveStatus: "ARCHIVED",
+      archivedAt,
+      completedAt,
+      customerSignedAt: harness.customerSigner.signedAt,
+      platformSignedAt: completedAt,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/signed.pdf",
+      signedPdfHash: "d".repeat(64),
+      status: "ARCHIVED"
+    });
+    expect(
+      harness.state.workflowJobs.filter(
+        (job) =>
+          job.jobType ===
+          VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
+      )
+    ).toHaveLength(1);
+    expect(
+      harness.prisma.vehicleHandoverWorkflowJob.upsert
+    ).not.toHaveBeenCalled();
+    expect(harness.state.callbackLogs).toHaveLength(1);
+    expect(harness.state.callbackLogs[0]).toMatchObject({
+      handled: true,
+      taskId: harness.task.id,
+      verified: true
+    });
+    expect(harness.state.auditLogs).toHaveLength(0);
+  });
 
   it("reconciles the exact Stage 2 signer set after concurrent customer and platform callbacks conflict", async () => {
     const harness = createTypedStage2CallbackFixture();
@@ -2373,6 +2470,7 @@ function createESignFixture(
   } = {}
 ) {
   const state = {
+    auditLogs: [] as Array<Record<string, unknown>>,
     callbackLogs: [] as FakeCallbackLog[],
     contracts: [
       createContract("contract-1", "customer-1", "order-1", "ORD-1"),
@@ -2393,6 +2491,31 @@ function createESignFixture(
       }
       return Promise.all(input as Array<Promise<unknown>>);
     }),
+    auditLog: {
+      upsert: vi.fn(async ({
+        create,
+        update,
+        where
+      }: {
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+        where: { id: string };
+      }) => {
+        const existing = state.auditLogs.find(
+          (auditLog) => auditLog.id === where.id
+        );
+        if (existing) {
+          Object.assign(existing, update);
+          return existing;
+        }
+        const created = {
+          ...create,
+          id: where.id
+        };
+        state.auditLogs.push(created);
+        return created;
+      })
+    },
     contract: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         const contract = state.contracts.find((item) =>
@@ -3234,6 +3357,7 @@ function requestContext() {
 }
 
 interface FakeState {
+  auditLogs: Array<Record<string, unknown>>;
   callbackLogs: FakeCallbackLog[];
   contracts: FakeContract[];
   deliveryHandovers: FakeDeliveryHandover[];

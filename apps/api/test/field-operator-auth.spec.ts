@@ -614,6 +614,7 @@ function createSmsProvider(result?: SendSmsCodeResult) {
       };
 
       return result ?? defaultResult;
-    })
+    }),
+    sendTemplate: vi.fn()
   } satisfies SmsProvider;
 }

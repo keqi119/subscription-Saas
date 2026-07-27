@@ -1,12 +1,17 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  CustomerAccountStatus,
+  NotificationStatus,
+  SmsSendStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 
 import { STAGE2_HANDOVER_PDF_HARD_MAX_BYTES } from "../delivery-handover/delivery-handover-pdf-renderer.service";
+import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { SmsService } from "../sms/sms.service";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { validateStage2SourceArtifactBinding } from "./stage2-handover-source-artifact";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
@@ -72,14 +77,18 @@ const sourceProjectionSelect = {
 export class Stage2HandoverWorkflowService
   implements Stage2HandoverWorkflowHandler {
   readonly supportedJobTypes = [
-    VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF
+    VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+    VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
+    VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY
   ] as const;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly repository: Stage2HandoverWorkflowRepository,
-    private readonly handoverWorkOrderService: HandoverWorkOrderService
+    private readonly handoverWorkOrderService: HandoverWorkOrderService,
+    @Optional() private readonly smsService?: SmsService,
+    @Optional() private readonly notificationService?: NotificationService
   ) {}
 
   isEnabled() {
@@ -92,9 +101,21 @@ export class Stage2HandoverWorkflowService
   async handle(
     job: ClaimedStage2WorkflowJob
   ): Promise<WorkflowHandlerResult> {
-    if (job.jobType !== VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF) {
-      throw new Error("STAGE2_HANDOVER_WORKFLOW_JOB_NOT_IMPLEMENTED");
+    switch (job.jobType) {
+      case VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF:
+        return this.handleGenerateSourcePdf(job);
+      case VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY:
+        return this.handleFieldNotification(job);
+      case VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY:
+        return this.handleCustomerNotification(job);
+      default:
+        throw new Error("STAGE2_HANDOVER_WORKFLOW_JOB_NOT_IMPLEMENTED");
     }
+  }
+
+  private async handleGenerateSourcePdf(
+    job: ClaimedStage2WorkflowJob
+  ): Promise<WorkflowHandlerResult> {
     const manifestHash = readRequiredManifestHash(job.payload);
     return this.withLeaseHeartbeat(job, async (lease) => {
       const artifact = await this.handoverWorkOrderService
@@ -104,6 +125,133 @@ export class Stage2HandoverWorkflowService
         result: {
           artifactId: artifact.artifactId,
           artifactStatus: artifact.status
+        }
+      };
+    });
+  }
+
+  private async handleFieldNotification(
+    job: ClaimedStage2WorkflowJob
+  ): Promise<WorkflowHandlerResult> {
+    const smsService = this.requireSmsService();
+    return this.withLeaseHeartbeat(job, async (lease) => {
+      const workOrder =
+        await this.prisma.vehicleHandoverWorkOrder.findUnique({
+          select: { fieldOperatorPhone: true },
+          where: { id: job.workOrderId }
+        });
+      const phone = readRequiredString(
+        workOrder?.fieldOperatorPhone,
+        "FIELD_NOTIFICATION_RECIPIENT_MISSING"
+      );
+      const sms = await smsService.sendStage2FieldReady({
+        idempotencyKey: job.idempotencyKey,
+        phone
+      });
+      await lease.assertLease();
+      if (sms.sendStatus !== SmsSendStatus.SENT) {
+        throw new Error("FIELD_NOTIFICATION_INCOMPLETE");
+      }
+      return {
+        kind: "COMPLETED",
+        result: {
+          sms: {
+            recordId: sms.sendLogId ?? null,
+            status: sms.sendStatus
+          }
+        }
+      };
+    });
+  }
+
+  private async handleCustomerNotification(
+    job: ClaimedStage2WorkflowJob
+  ): Promise<WorkflowHandlerResult> {
+    const smsService = this.requireSmsService();
+    const notificationService = this.requireNotificationService();
+    const eSignTaskId = readRequiredString(
+      job.eSignTaskId,
+      "CUSTOMER_NOTIFICATION_ESIGN_TASK_MISSING"
+    );
+    const customerTransactionId = readRequiredCustomerTransactionId(
+      job.payload
+    );
+    return this.withLeaseHeartbeat(job, async (lease) => {
+      const workOrder =
+        await this.prisma.vehicleHandoverWorkOrder.findUnique({
+          select: {
+            order: {
+              select: {
+                customer: {
+                  select: {
+                    id: true,
+                    mobile: true
+                  }
+                },
+                customerId: true
+              }
+            }
+          },
+          where: { id: job.workOrderId }
+        });
+      if (!workOrder) {
+        throw new Error("CUSTOMER_NOTIFICATION_WORK_ORDER_MISSING");
+      }
+      const customerId = workOrder.order.customerId;
+      const account = await this.prisma.customerAccount.findFirst({
+        orderBy: { updatedAt: "desc" },
+        select: { phone: true },
+        where: {
+          accountStatus: CustomerAccountStatus.ACTIVE,
+          customerId,
+          deletedAt: null
+        }
+      });
+      const phone = readRequiredString(
+        account?.phone ?? workOrder.order.customer.mobile,
+        "CUSTOMER_NOTIFICATION_RECIPIENT_MISSING"
+      );
+      const smsKey =
+        `customer-sms:${eSignTaskId}:${customerTransactionId}`;
+      const inAppKey =
+        `customer-in-app:${eSignTaskId}:${customerTransactionId}`;
+      const [smsOutcome, inAppOutcome] = await Promise.allSettled([
+        smsService.sendStage2CustomerReady({
+          idempotencyKey: smsKey,
+          phone
+        }),
+        notificationService.notifyStage2CustomerReady({
+          customerId,
+          idempotencyKey: inAppKey,
+          workOrderId: job.workOrderId
+        })
+      ]);
+      await lease.assertLease();
+
+      const sms =
+        smsOutcome.status === "fulfilled" ? smsOutcome.value : null;
+      const inApp =
+        inAppOutcome.status === "fulfilled" ? inAppOutcome.value : null;
+      if (
+        sms?.sendStatus !== SmsSendStatus.SENT ||
+        (
+          inApp?.notificationStatus !== NotificationStatus.SENT &&
+          inApp?.notificationStatus !== NotificationStatus.READ
+        )
+      ) {
+        throw new Error("CUSTOMER_NOTIFICATION_INCOMPLETE");
+      }
+      return {
+        kind: "COMPLETED",
+        result: {
+          inApp: {
+            recordId: inApp.id,
+            status: inApp.notificationStatus
+          },
+          sms: {
+            recordId: sms.sendLogId ?? null,
+            status: sms.sendStatus
+          }
         }
       };
     });
@@ -241,6 +389,20 @@ export class Stage2HandoverWorkflowService
       await heartbeat;
     }
   }
+
+  private requireSmsService() {
+    if (!this.smsService) {
+      throw new Error("STAGE2_HANDOVER_SMS_SERVICE_UNAVAILABLE");
+    }
+    return this.smsService;
+  }
+
+  private requireNotificationService() {
+    if (!this.notificationService) {
+      throw new Error("STAGE2_HANDOVER_NOTIFICATION_SERVICE_UNAVAILABLE");
+    }
+    return this.notificationService;
+  }
 }
 
 function readManifestHash(payload: unknown) {
@@ -273,4 +435,21 @@ function readRequiredManifestHash(payload: unknown) {
 function readPositiveInteger(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readRequiredCustomerTransactionId(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("CUSTOMER_NOTIFICATION_TRANSACTION_MISSING");
+  }
+  return readRequiredString(
+    (payload as Record<string, unknown>).customerTransactionId,
+    "CUSTOMER_NOTIFICATION_TRANSACTION_MISSING"
+  );
+}
+
+function readRequiredString(value: unknown, errorCode: string) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(errorCode);
+  }
+  return value.trim();
 }

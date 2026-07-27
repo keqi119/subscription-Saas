@@ -9,6 +9,7 @@ import { ESignModule } from "../esign/esign.module";
 import { FieldOperatorAuthController } from "../field-operator/field-operator-auth.controller";
 import { FieldOperatorAuthGuard } from "../field-operator/field-operator-auth.guard";
 import { FieldOperatorAuthService } from "../field-operator/field-operator-auth.service";
+import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
 import { StorageModule } from "../storage/storage.module";
@@ -41,6 +42,7 @@ import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker"
     AuthModule,
     DeliveryEvidenceModule,
     ESignModule,
+    NotificationModule,
     PrismaModule,
     SmsModule,
     StorageModule

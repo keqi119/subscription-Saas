@@ -1,6 +1,12 @@
 import { Injectable } from "@nestjs/common";
 
-import { SendSmsCodeInput, SendSmsCodeResult, SmsProvider } from "./sms-provider";
+import {
+  SendSmsCodeInput,
+  SendSmsCodeResult,
+  SendSmsTemplateInput,
+  SmsProvider,
+  SmsSendResult
+} from "./sms-provider";
 
 @Injectable()
 export class MockSmsProvider implements SmsProvider {
@@ -12,6 +18,18 @@ export class MockSmsProvider implements SmsProvider {
         expiresInSeconds: input.expiresInSeconds,
         mock: true,
         phoneMasked: maskPhone(input.phone),
+        purpose: input.purpose
+      },
+      success: true
+    };
+  }
+
+  async sendTemplate(input: SendSmsTemplateInput): Promise<SmsSendResult> {
+    return {
+      provider: "mock",
+      providerMessageId: `mock_${Date.now()}`,
+      providerResponse: {
+        mock: true,
         purpose: input.purpose
       },
       success: true

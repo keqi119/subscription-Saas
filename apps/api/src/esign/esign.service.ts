@@ -68,6 +68,20 @@ const contractForESignInclude = {
     orderBy: { createdAt: "desc" as const },
     where: { deletedAt: null }
   },
+  handoverDeliveryHandover: {
+    select: {
+      id: true,
+      workOrders: {
+        orderBy: { createdAt: "desc" as const },
+        select: {
+          createdAt: true,
+          id: true,
+          status: true
+        },
+        take: 2
+      }
+    }
+  },
   order: {
     include: {
       application: { select: { applicationNo: true, id: true, salesUserId: true } },
@@ -603,7 +617,13 @@ export class ESignService {
 
   async startPortalSigning(id: string, currentCustomer: CurrentCustomer) {
     const contract = await this.findPortalContractOrThrow(id, currentCustomer.customerId);
-    const task = findCurrentPortalSigningTask(contract);
+    const identity = getPortalContractSigningIdentity(contract);
+    if (identity.signingStage === "STAGE2_DELIVERY_HANDOVER") {
+      throw new BadRequestException(
+        "车辆交接确认单必须从交接复核页面发起签署。"
+      );
+    }
+    const task = findCurrentPortalStage1SigningTask(contract);
 
     if (!task) {
       throw new BadRequestException("合同尚未发起电子签，请等待平台处理。");
@@ -3105,6 +3125,26 @@ function findCurrentPortalSigningTask(contract: ContractForESign) {
   );
 }
 
+function findCurrentPortalStage1SigningTask(contract: ContractForESign) {
+  return contract.esignTasks.find(
+    (task) =>
+      ACTIVE_ESIGN_TASK_STATUSES.includes(task.taskStatus) &&
+      task.signingStage ===
+        PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT &&
+      task.documentType ===
+        PrismaESignDocumentType.SUBSCRIPTION_CONTRACT
+  );
+}
+
+function findStage2PortalSigningTask(contract: ContractForESign) {
+  return contract.esignTasks.find(
+    (task) =>
+      task.signingStage ===
+        PrismaESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+      task.documentType === PrismaESignDocumentType.DELIVERY_HANDOVER
+  );
+}
+
 function ensureTaskOwnedByCustomer(task: ESignTaskWithDetails, customerId: string) {
   if (task.customerId !== customerId || task.contract.customerId !== customerId) {
     throw new NotFoundException("电子签任务不存在。");
@@ -3621,23 +3661,33 @@ function toESignTaskView(task: ESignTaskWithDetails) {
 
 function toPortalContractListItem(contract: ContractForESign) {
   const task = findCurrentPortalSigningTask(contract);
+  const identity = getPortalContractSigningIdentity(contract);
   return {
     contractNo: contract.contractNo,
     contractStatus: contract.status,
     createdAt: contract.createdAt,
+    documentType: identity.documentType,
     id: contract.id,
     hasSignedDocument: Boolean(task?.signedDocumentObjectKey),
     orderNo: contract.order.orderNo,
     signedAt: contract.signedAt,
-    signStatus: task?.taskStatus ?? null
+    signingStage: identity.signingStage,
+    signStatus: task?.taskStatus ?? null,
+    workOrderId: identity.workOrderId
   };
 }
 
 function toPortalContractDetail(contract: ContractForESign) {
   const task = findCurrentPortalSigningTask(contract);
+  const identity = getPortalContractSigningIdentity(contract);
   return {
     ...toPortalContractListItem(contract),
-    canSign: Boolean(task && PORTAL_SIGNABLE_ESIGN_TASK_STATUSES.includes(task.taskStatus)),
+    canSign: Boolean(
+      task &&
+      identity.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" &&
+      identity.documentType === "SUBSCRIPTION_CONTRACT" &&
+      PORTAL_SIGNABLE_ESIGN_TASK_STATUSES.includes(task.taskStatus)
+    ),
     customer: {
       mobile: maskPhone(contract.customer.mobile),
       name: contract.customer.name
@@ -3654,6 +3704,7 @@ function toPortalContractDetail(contract: ContractForESign) {
           hasSignedDocument: Boolean(task.signedDocumentObjectKey),
           id: task.id,
           provider: task.provider,
+          documentType: identity.documentType,
           signers: task.signers.map((signer) => ({
             signedAt: signer.signedAt,
             signerName: signer.signerName,
@@ -3661,12 +3712,56 @@ function toPortalContractDetail(contract: ContractForESign) {
             signerStatus: signer.signerStatus,
             signerType: signer.signerType
           })),
+          signingStage: identity.signingStage,
           signUrlExpiresAt: task.signUrlExpiresAt,
           taskNo: task.taskNo,
-          taskStatus: task.taskStatus
+          taskStatus: task.taskStatus,
+          workOrderId: identity.workOrderId
         }
       : null,
     vehicle: toPortalVehicleSummary(contract.order.vehicle)
+  };
+}
+
+function getPortalContractSigningIdentity(contract: ContractForESign) {
+  const stage2Task = findStage2PortalSigningTask(contract);
+  const task = findCurrentPortalSigningTask(contract);
+  const handover = contract.handoverDeliveryHandover;
+  const stage2Typed =
+    Boolean(handover) ||
+    Boolean(stage2Task);
+  if (stage2Typed) {
+    const activeWorkOrders = (handover?.workOrders ?? []).filter(
+      (workOrder) =>
+        !["CANCELLED", "FAILED", "VOIDED"].includes(
+          String(workOrder.status)
+        )
+    );
+    return {
+      documentType: "DELIVERY_HANDOVER" as const,
+      signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+      workOrderId:
+        activeWorkOrders.length === 1
+          ? activeWorkOrders[0]!.id
+          : null
+    };
+  }
+  if (
+    task?.signingStage ===
+      PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT &&
+    task.documentType ===
+      PrismaESignDocumentType.SUBSCRIPTION_CONTRACT
+  ) {
+    return {
+      documentType: "SUBSCRIPTION_CONTRACT" as const,
+      signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" as const,
+      workOrderId: null
+    };
+  }
+  return {
+    documentType: null,
+    signingStage: null,
+    workOrderId: null
   };
 }
 

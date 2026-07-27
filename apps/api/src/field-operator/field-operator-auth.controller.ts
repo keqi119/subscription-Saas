@@ -23,6 +23,7 @@ import {
   UploadFieldEvidenceDto
 } from "../handover-work-order/handover-work-order.dto";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { Stage2HandoverESignReadinessService } from "../handover-work-order/stage2-handover-esign-readiness.service";
 import { Stage2HandoverESignService } from "../handover-work-order/stage2-handover-esign.service";
 import { createFieldEvidenceUploadOptions } from "./field-evidence-upload-options";
 import { FieldEvidenceTempFileCleanupInterceptor } from "./field-evidence-temp-file-cleanup.interceptor";
@@ -39,7 +40,9 @@ export class FieldOperatorAuthController {
   constructor(
     private readonly fieldOperatorAuthService: FieldOperatorAuthService,
     private readonly handoverWorkOrderService: HandoverWorkOrderService,
-    private readonly stage2HandoverESignService: Stage2HandoverESignService
+    private readonly stage2HandoverESignService: Stage2HandoverESignService,
+    private readonly stage2HandoverESignReadinessService:
+      Stage2HandoverESignReadinessService
   ) {}
 
   @Post("send-code")
@@ -95,9 +98,37 @@ export class FieldOperatorAuthController {
     @CurrentFieldOperatorSession() current: CurrentFieldOperator,
     @Req() request: Request
   ) {
-    const task = await this.handoverWorkOrderService.getFieldAccessibleWorkOrder(id, current.phone);
+    const [task, readiness] = await Promise.all([
+      this.handoverWorkOrderService.getFieldAccessibleWorkOrder(
+        id,
+        current.phone
+      ),
+      this.stage2HandoverESignReadinessService
+        .getReadiness(id)
+        .catch(() => null)
+    ]);
     await this.fieldOperatorAuthService.recordTaskViewed(current, id, requestContext(request));
-    return task;
+    const generated = task.stage2Pdf.status === "GENERATED";
+    const hasCurrentTask = Boolean(task.stage2ESign.taskId);
+    return {
+      ...task,
+      stage2Capabilities: {
+        canDownload:
+          generated && Boolean(task.stage2Pdf.downloadUrl),
+        canPreview:
+          generated && Boolean(task.stage2Pdf.previewUrl),
+        canStartESign:
+          readiness?.ready === true &&
+          task.status === "CUSTOMER_CONFIRMED" &&
+          generated &&
+          Number.isInteger(task.stage2Pdf.artifactVersion) &&
+          (task.stage2Pdf.artifactVersion ?? 0) > 0 &&
+          /^[a-f0-9]{64}$/i.test(
+            task.stage2Pdf.sourcePdfHash ?? ""
+          ) &&
+          !hasCurrentTask
+      }
+    };
   }
 
   @Post("work-orders/:id/start")

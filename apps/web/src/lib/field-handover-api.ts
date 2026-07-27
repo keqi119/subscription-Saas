@@ -133,16 +133,16 @@ export interface FieldHandoverWorkOrderDetail extends FieldHandoverWorkOrderList
   evidenceChecklist?: FieldHandoverEvidenceChecklist | null;
   fieldFacts?: FieldHandoverFieldFacts | null;
   reviewContext?: FieldHandoverReviewContext | null;
-  stage2Capabilities?: FieldStage2HandoverCapabilities | null;
-  stage2ESign?: FieldStage2ESignSummary | null;
-  stage2Notification?: FieldStage2NotificationSummary | null;
-  stage2Pdf?: FieldStage2HandoverPdfArtifact | null;
+  stage2Capabilities: FieldStage2HandoverCapabilities;
+  stage2ESign: FieldStage2ESignSummary;
+  stage2Notification: FieldStage2NotificationSummary;
+  stage2Pdf: FieldStage2HandoverPdfArtifact;
 }
 
 export interface FieldStage2HandoverCapabilities {
-  canDownload?: boolean;
-  canPreview?: boolean;
-  canStartESign?: boolean;
+  canDownload: boolean;
+  canPreview: boolean;
+  canStartESign: boolean;
 }
 
 export interface FieldStage2HandoverPdfArtifact {
@@ -163,12 +163,12 @@ export interface FieldStage2HandoverPdfArtifact {
 }
 
 export interface FieldStage2ESignSummary {
-  status?: string | null;
-  taskId?: string | null;
+  status: string | null;
+  taskId: string | null;
 }
 
 export interface FieldStage2NotificationSummary {
-  status?: string | null;
+  status: string | null;
 }
 
 export interface StartFieldHandoverESignInput {
@@ -414,6 +414,38 @@ export function startFieldHandoverESign(
       method: "POST"
     }
   );
+}
+
+export function createFieldESignSubmissionController<TResult>({
+  submit
+}: {
+  submit: (input: StartFieldHandoverESignInput) => Promise<TResult>;
+}) {
+  let inFlight: null | Promise<TResult> = null;
+  return {
+    submit(
+      input: Omit<StartFieldHandoverESignInput, "acknowledgement"> & {
+        acknowledgement: boolean;
+      }
+    ) {
+      if (input.acknowledgement !== true) {
+        return null;
+      }
+      if (inFlight) {
+        return inFlight;
+      }
+      const request = submit({
+        ...input,
+        acknowledgement: true
+      }).finally(() => {
+        if (inFlight === request) {
+          inFlight = null;
+        }
+      });
+      inFlight = request;
+      return request;
+    }
+  };
 }
 
 export function isFieldHandoverUnauthorized(error: unknown) {

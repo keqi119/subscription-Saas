@@ -298,6 +298,45 @@ describe("HandoverWorkOrderService", () => {
     await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([]);
   });
 
+  it("projects safe read-only workflow jobs in Admin work-order responses", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push(baseWorkOrder(harness));
+    harness.state.workflowJobs.push({
+      attemptCount: 5,
+      createdAt: new Date("2026-07-27T08:00:00.000Z"),
+      id: "workflow-job-current",
+      idempotencyKey: "archive:secret-task:1",
+      jobStatus: "DEAD_LETTER",
+      jobType: "ARCHIVE_SIGNED_PDF",
+      lastErrorMessage: "private provider detail",
+      maxAttempts: 5,
+      payload: { providerTransactionId: "PRIVATE-H2" },
+      updatedAt: new Date("2026-07-27T08:05:00.000Z"),
+      workOrderId: "work-order-1"
+    });
+
+    const [summary] = await harness.service.listByOrder(harness.orderId);
+
+    expect(summary).toBeDefined();
+    if (!summary) {
+      throw new Error("expected projected work order");
+    }
+    expect(summary.workflowJobs).toEqual([
+      {
+        attemptCount: 5,
+        createdAt: new Date("2026-07-27T08:00:00.000Z"),
+        id: "workflow-job-current",
+        jobStatus: "DEAD_LETTER",
+        jobType: "ARCHIVE_SIGNED_PDF",
+        maxAttempts: 5,
+        updatedAt: new Date("2026-07-27T08:05:00.000Z")
+      }
+    ]);
+    expect(JSON.stringify(summary.workflowJobs)).not.toMatch(
+      /idempotencyKey|payload|lastErrorMessage|PRIVATE-H2|secret-task/
+    );
+  });
+
   it("returns safe field task detail only for the assigned phone", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.evidenceService.setChecklist({
@@ -1662,7 +1701,8 @@ function createHandoverWorkOrderHarness() {
     events: [] as Array<Record<string, unknown>>,
     fileObjects: [] as Array<Record<string, unknown>>,
     reviewAttempts: [] as Array<Record<string, unknown>>,
-    workOrders: [] as Array<Record<string, unknown>>
+    workOrders: [] as Array<Record<string, unknown>>,
+    workflowJobs: [] as Array<Record<string, unknown>>
   };
   const evidenceService = createEvidenceService();
   const handoverService = {
@@ -1800,6 +1840,17 @@ function createHandoverWorkOrderHarness() {
         Object.assign(attempt, data, { updatedAt: now });
         return attempt;
       })
+    },
+    vehicleHandoverWorkflowJob: {
+      findMany: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
+        state.workflowJobs
+          .filter((job) => job.workOrderId === where.workOrderId)
+          .sort(
+            (left, right) =>
+              new Date(String(right.updatedAt)).getTime() -
+              new Date(String(left.updatedAt)).getTime()
+          )
+      )
     },
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => {
       const snapshots = {

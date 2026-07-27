@@ -42,6 +42,7 @@ import {
 import { EvidenceUploadControls } from "../../../../../components/field-handover-evidence-upload-controls";
 import {
   buildFieldHandoverFileUrl,
+  createFieldESignSubmissionController,
   declareFieldHandoverNoVisibleDamage,
   getFieldHandoverActionErrorMessage,
   getFieldHandoverReadiness,
@@ -127,6 +128,9 @@ export default function FieldHandoverTaskDetailPage() {
   const { message } = App.useApp();
   const isMountedRef = useRef(true);
   const eSignInFlightRef = useRef(false);
+  const eSignSubmissionControllerRef = useRef<ReturnType<
+    typeof createFieldESignSubmissionController
+  > | null>(null);
   const submissionInFlightRef = useRef(false);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const uploadAbortReasonRef = useRef<Exclude<
@@ -229,12 +233,17 @@ export default function FieldHandoverTaskDetailPage() {
 
   useEffect(() => {
     isMountedRef.current = true;
+    eSignSubmissionControllerRef.current =
+      createFieldESignSubmissionController({
+        submit: (input) => startFieldHandoverESign(params.id, input)
+      });
     return () => {
       isMountedRef.current = false;
+      eSignSubmissionControllerRef.current = null;
       uploadAbortReasonRef.current = "UNMOUNT";
       uploadAbortControllerRef.current?.abort();
     };
-  }, []);
+  }, [params.id]);
 
   const detailView = detail ? buildFieldHandoverDetailView(detail) : null;
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
@@ -283,14 +292,19 @@ export default function FieldHandoverTaskDetailPage() {
       return;
     }
 
+    const request = eSignSubmissionControllerRef.current?.submit({
+      acknowledgement: eSignAcknowledged,
+      artifactVersion: stage2View.artifactVersion,
+      sourcePdfHash: stage2View.sourcePdfHash
+    });
+    if (!request) {
+      return;
+    }
+
     eSignInFlightRef.current = true;
     setActionLoading("esign");
     try {
-      await startFieldHandoverESign(params.id, {
-        acknowledgement: true,
-        artifactVersion: stage2View.artifactVersion,
-        sourcePdfHash: stage2View.sourcePdfHash
-      });
+      await request;
       setESignDialogOpen(false);
       setESignAcknowledged(false);
       setSuccessMessage("电子签任务已发起，等待客户签署");

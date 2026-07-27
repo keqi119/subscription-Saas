@@ -1738,6 +1738,64 @@ describe("ESignService", () => {
     );
   });
 
+  it("projects authoritative Stage 2 routing identity in portal contract list and detail responses", async () => {
+    const harness = createTypedStage2CallbackFixture();
+
+    const contracts = await harness.service.listPortalContracts(
+      currentCustomer("customer-1")
+    );
+    const listItem = contracts.find(
+      (contract) => contract.id === harness.stage2Contract.id
+    );
+    const detail = await harness.service.getPortalContract(
+      harness.stage2Contract.id,
+      currentCustomer("customer-1")
+    );
+
+    expect(listItem).toMatchObject({
+      documentType: "DELIVERY_HANDOVER",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: "work-order-typed"
+    });
+    expect(detail).toMatchObject({
+      canSign: false,
+      documentType: "DELIVERY_HANDOVER",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: "work-order-typed"
+    });
+    expect(detail.signTask).toMatchObject({
+      documentType: "DELIVERY_HANDOVER",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: "work-order-typed"
+    });
+  });
+
+  it("fails the generic Stage 1 signing endpoint closed for Stage 2 even when its work-order pointer is missing", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.state.deliveryHandovers[0]!.handoverContractId = null;
+    harness.state.workOrders.splice(0);
+    harness.task.taskStatus = ESignTaskStatus.COMPLETED;
+
+    const detail = await harness.service.getPortalContract(
+      harness.stage2Contract.id,
+      currentCustomer("customer-1")
+    );
+
+    expect(detail).toMatchObject({
+      canSign: false,
+      documentType: "DELIVERY_HANDOVER",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: null
+    });
+    await expect(
+      harness.service.startPortalSigning(
+        harness.stage2Contract.id,
+        currentCustomer("customer-1")
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
+  });
+
   it("exposes signed artifact availability without leaking storage object keys", async () => {
     const { service, state } = createESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
@@ -2242,13 +2300,17 @@ function createTypedStage2CallbackFixture(options: {
 } = {}) {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
   const autoSealTask = vi.fn();
-  const harness = createESignFixture({ ESIGN_PROVIDER: "fadada" }, {
+  const provider = {
     autoSealTask,
     createSignTask: vi.fn(),
     getSignerUrl: vi.fn(),
     querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: verifier.verifyCallback.bind(verifier)
-  });
+  };
+  const harness = createESignFixture(
+    { ESIGN_PROVIDER: "fadada" },
+    provider
+  );
   const stage1Contract = harness.state.contracts[0]!;
   stage1Contract.signedAt = new Date("2026-07-26T00:00:00.000Z");
   stage1Contract.status = ContractStatus.SIGNED;
@@ -2423,6 +2485,7 @@ function createTypedStage2CallbackFixture(options: {
     handover,
     platformSigner,
     platformTransactionId,
+    provider,
     providerContractId,
     stage1Contract,
     stage1Task,
@@ -2823,6 +2886,11 @@ function createESignFixture(
 }
 
 function hydrateContract(state: FakeState, contract: FakeContract) {
+  const handover = state.deliveryHandovers.find(
+    (candidate) =>
+      candidate.handoverContractId === contract.id &&
+      !candidate.deletedAt
+  );
   return {
     ...contract,
     esignTasks: state.tasks
@@ -2830,7 +2898,15 @@ function hydrateContract(state: FakeState, contract: FakeContract) {
       .map((task) => ({
         ...task,
         signers: state.signers.filter((signer) => signer.taskId === task.id && !signer.deletedAt)
-      }))
+      })),
+    handoverDeliveryHandover: handover
+      ? {
+          ...handover,
+          workOrders: state.workOrders.filter(
+            (workOrder) => workOrder.handoverId === handover.id
+          )
+        }
+      : null
   };
 }
 

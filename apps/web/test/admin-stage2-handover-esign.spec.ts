@@ -392,6 +392,72 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(display.recoveries).toEqual([]);
   });
 
+  it("suppresses a historical dead letter when a newer replacement for the logical step is active", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      workflowJobs: [
+        workflowJob({
+          id: "dead-platform-seal",
+          jobType: "AUTO_SEAL_PLATFORM",
+          updatedAt: "2026-07-27T10:00:00.000Z"
+        }),
+        workflowJob({
+          id: "replacement-platform-reconcile",
+          jobStatus: "PROCESSING",
+          jobType: "RECONCILE_PLATFORM_SEAL",
+          updatedAt: "2026-07-27T10:05:00.000Z"
+        })
+      ]
+    }));
+
+    expect(display.recoveries).toEqual([]);
+  });
+
+  it("selects only the newest authoritative actionable dead letter", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      workflowJobs: [
+        workflowJob({
+          id: "older-pdf-dead-letter",
+          jobType: "GENERATE_SOURCE_PDF",
+          updatedAt: "2026-07-27T10:00:00.000Z"
+        }),
+        workflowJob({
+          id: "current-archive-dead-letter",
+          jobType: "ARCHIVE_SIGNED_PDF",
+          updatedAt: "2026-07-27T10:05:00.000Z"
+        })
+      ]
+    }));
+
+    expect(display.recoveries).toEqual([
+      {
+        jobId: "current-archive-dead-letter",
+        jobType: "ARCHIVE_SIGNED_PDF",
+        kind: "RETRY_JOB",
+        label: "重试签署文件归档"
+      }
+    ]);
+  });
+
+  it("fails recovery closed when the newest workflow job type is unknown", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      workflowJobs: [
+        workflowJob({
+          id: "older-known-dead-letter",
+          updatedAt: "2026-07-27T10:00:00.000Z"
+        }),
+        {
+          ...workflowJob({
+            id: "newer-unknown-dead-letter",
+            updatedAt: "2026-07-27T10:05:00.000Z"
+          }),
+          jobType: "UNKNOWN_FUTURE_JOB"
+        } as unknown as AdminStage2HandoverWorkflowJob
+      ]
+    }));
+
+    expect(display.recoveries).toEqual([]);
+  });
+
   it("renders the compact workflow timeline without happy-path mutation controls", () => {
     const source = readFileSync(orderPagePath, "utf8");
 

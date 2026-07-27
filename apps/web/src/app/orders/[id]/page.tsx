@@ -52,11 +52,13 @@ import {
 } from "../../../lib/action-guards";
 import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
 import {
+  createAdminStage2DeliveryVerifier,
   getAdminStage2HandoverESignErrorMessage,
   getAdminStage2HandoverWorkflowDisplay,
   loadAdminStage2HandoverESign,
   reconcileAdminStage2CustomerSignature,
   retryAdminStage2WorkflowJob,
+  runAdminStage2WorkflowRecovery,
   type AdminStage2HandoverESignStatus,
   type AdminStage2HandoverWorkflowJob,
   type AdminStage2HandoverWorkflowRecovery
@@ -321,6 +323,12 @@ interface HandoverWorkOrderSummary {
   vehicle?: { brand?: string | null; model?: string | null; plateMasked?: string | null; vinSuffix?: string | null } | null;
   workflowJobs?: AdminStage2HandoverWorkflowJob[];
 }
+
+type HandoverWorkOrdersLoadState =
+  | "ERROR"
+  | "LOADED"
+  | "LOADING"
+  | "UNKNOWN";
 
 interface AssignExternalHandoverFormValues {
   expiresAt?: Dayjs;
@@ -2715,6 +2723,7 @@ function Stage2HandoverReviewPanel({
   esignLoading,
   esignStatuses,
   loading,
+  loadState,
   mutationInFlight,
   onAcknowledge,
   onAssignExternal,
@@ -2735,6 +2744,7 @@ function Stage2HandoverReviewPanel({
   esignLoading: Record<string, boolean | undefined>;
   esignStatuses: Record<string, AdminStage2HandoverESignStatus | undefined>;
   loading: boolean;
+  loadState: HandoverWorkOrdersLoadState;
   mutationInFlight: boolean;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
@@ -2759,7 +2769,8 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatHandoverType(row.handoverType)}</Typography.Text>
         </Space>
       ),
-      title: "工单"
+      title: "工单",
+      width: 180
     },
     {
       dataIndex: "status",
@@ -2769,43 +2780,8 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatAdminReviewStatus(row.adminReview?.status)}</Typography.Text>
         </Space>
       ),
-      title: "状态"
-    },
-    {
-      dataIndex: "customer",
-      render: (_value, row) => joinText(row.customer?.displayName, row.customer?.mobileMasked),
-      title: "客户"
-    },
-    {
-      dataIndex: "operator",
-      render: (_value, row) => (
-        <Space orientation="vertical" size={2}>
-          <Typography.Text>{row.operator?.name || "尚未指派"}</Typography.Text>
-          <Typography.Text type="secondary">{row.operator?.phone || "-"}</Typography.Text>
-        </Space>
-      ),
-      title: "Field 人员"
-    },
-    {
-      dataIndex: "fieldSubmittedAt",
-      render: (_value, row) => (
-        <Space orientation="vertical" size={2}>
-          <Typography.Text>{formatTime(row.fieldSubmittedAt)}</Typography.Text>
-          <Typography.Text type="secondary">{formatHandoverEvidenceProgress(row.evidenceProgress)}</Typography.Text>
-        </Space>
-      ),
-      title: "现场资料"
-    },
-    {
-      dataIndex: "objection",
-      render: (_value, row) =>
-        row.objection?.reason ? (
-          <Space orientation="vertical" size={2}>
-            <Typography.Text type="danger">{row.objection.reason}</Typography.Text>
-            <Typography.Text type="secondary">{formatTime(row.objection.objectedAt)}</Typography.Text>
-          </Space>
-        ) : "-",
-      title: "客户异议"
+      title: "状态",
+      width: 150
     },
     {
       key: "stage2ESign",
@@ -2823,7 +2799,47 @@ function Stage2HandoverReviewPanel({
         />
       ),
       title: "交接签署流程",
-      width: 340
+      width: 360
+    },
+    {
+      dataIndex: "customer",
+      render: (_value, row) => joinText(row.customer?.displayName, row.customer?.mobileMasked),
+      title: "客户",
+      width: 160
+    },
+    {
+      dataIndex: "operator",
+      render: (_value, row) => (
+        <Space orientation="vertical" size={2}>
+          <Typography.Text>{row.operator?.name || "尚未指派"}</Typography.Text>
+          <Typography.Text type="secondary">{row.operator?.phone || "-"}</Typography.Text>
+        </Space>
+      ),
+      title: "Field 人员",
+      width: 244
+    },
+    {
+      dataIndex: "fieldSubmittedAt",
+      render: (_value, row) => (
+        <Space orientation="vertical" size={2}>
+          <Typography.Text>{formatTime(row.fieldSubmittedAt)}</Typography.Text>
+          <Typography.Text type="secondary">{formatHandoverEvidenceProgress(row.evidenceProgress)}</Typography.Text>
+        </Space>
+      ),
+      title: "现场资料",
+      width: 180
+    },
+    {
+      dataIndex: "objection",
+      render: (_value, row) =>
+        row.objection?.reason ? (
+          <Space orientation="vertical" size={2}>
+            <Typography.Text type="danger">{row.objection.reason}</Typography.Text>
+            <Typography.Text type="secondary">{formatTime(row.objection.objectedAt)}</Typography.Text>
+          </Space>
+        ) : "-",
+      title: "客户异议",
+      width: 180
     },
     {
       key: "actions",
@@ -2840,7 +2856,8 @@ function Stage2HandoverReviewPanel({
           workOrder={row}
         />
       ),
-      title: "操作"
+      title: "操作",
+      width: 280
     }
   ];
 
@@ -2864,7 +2881,16 @@ function Stage2HandoverReviewPanel({
       }
       title="Stage 2 现场交接 / 客户复核"
     >
-      {workOrders.length === 0 ? (
+      {loadState === "ERROR" ? (
+        <Alert
+          message="Stage 2 现场交接工单加载失败"
+          description="当前无法确认签署归档状态，请刷新页面后重试。"
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="error"
+        />
+      ) : null}
+      {loadState === "LOADED" && workOrders.length === 0 ? (
         <Alert
           message="暂无 Stage 2 现场交接工单"
           description="完成准备交付后，可在此创建交付工单并指派现场交付人员。"
@@ -2880,8 +2906,9 @@ function Stage2HandoverReviewPanel({
         locale={{ emptyText: "暂无 Stage 2 现场交接记录" }}
         pagination={false}
         rowKey="id"
-        scroll={{ x: 1380 }}
+        scroll={{ x: 1734 }}
         size="small"
+        tableLayout="fixed"
       />
     </Card>
   );
@@ -3890,6 +3917,8 @@ function OrderDetailPageContent() {
   const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
   const [handoverWorkOrders, setHandoverWorkOrders] = useState<HandoverWorkOrderSummary[]>([]);
   const [handoverWorkOrdersLoading, setHandoverWorkOrdersLoading] = useState(false);
+  const [handoverWorkOrdersLoadState, setHandoverWorkOrdersLoadState] =
+    useState<HandoverWorkOrdersLoadState>("UNKNOWN");
   const [handoverWorkOrderDetail, setHandoverWorkOrderDetail] = useState<HandoverWorkOrderDetail | null>(null);
   const [handoverWorkOrderDetailOpen, setHandoverWorkOrderDetailOpen] = useState(false);
   const [handoverActionLoading, setHandoverActionLoading] = useState<string | null>(null);
@@ -3944,6 +3973,17 @@ function OrderDetailPageContent() {
   const writeOffEnabled = Form.useWatch("writeOffEnabled", paymentForm);
   const writeOffItems = Form.useWatch("writeOffItems", paymentForm);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
+  const stage2DeliveryVerifier = useMemo(
+    () =>
+      createAdminStage2DeliveryVerifier({
+        loadESignStatus: loadAdminStage2HandoverESign,
+        loadWorkOrders: (orderId) =>
+          apiFetch<HandoverWorkOrderSummary[]>(
+            `/orders/${encodeURIComponent(orderId)}/handover-work-orders`
+          )
+      }),
+    []
+  );
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const hasBillingViewPermission = permissions.has("billing:view");
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
@@ -4127,17 +4167,27 @@ function OrderDetailPageContent() {
     permission: "delivery:prepare",
     permissions
   });
-  const activeHandoverWorkOrder = handoverWorkOrders.find(isActiveHandoverWorkOrder);
-  const stage2ArchiveReady = activeHandoverWorkOrder
-    ? getAdminStage2HandoverWorkflowDisplay(
-        handoverESignStatuses[activeHandoverWorkOrder.id],
-        {
-          customerConfirmedAt: activeHandoverWorkOrder.customerConfirmedAt,
-          pdfStatus: activeHandoverWorkOrder.stage2Pdf?.status,
-          workflowJobs: activeHandoverWorkOrder.workflowJobs
-        }
-      ).deliveryConfirmationAvailable
-    : true;
+  const activeHandoverWorkOrders = handoverWorkOrders.filter(
+    isActiveHandoverWorkOrder
+  );
+  const activeHandoverWorkOrder = activeHandoverWorkOrders[0];
+  const stage2ArchiveReady =
+    handoverWorkOrdersLoadState === "LOADED" &&
+    (
+      activeHandoverWorkOrders.length === 0 ||
+      (
+        activeHandoverWorkOrders.length === 1 &&
+        activeHandoverWorkOrder !== undefined &&
+        getAdminStage2HandoverWorkflowDisplay(
+          handoverESignStatuses[activeHandoverWorkOrder.id],
+          {
+            customerConfirmedAt: activeHandoverWorkOrder.customerConfirmedAt,
+            pdfStatus: activeHandoverWorkOrder.stage2Pdf?.status,
+            workflowJobs: activeHandoverWorkOrder.workflowJobs
+          }
+        ).deliveryConfirmationAvailable
+      )
+    );
   const confirmDeliveryDisabledReason = getConfirmDeliveryDisabledReason(
     order,
     deliveryCheck,
@@ -4302,6 +4352,9 @@ function OrderDetailPageContent() {
       setEntitlementLoading(canViewEntitlement);
       setEntitlementUsageLoading(canViewEntitlement);
       setHandoverWorkOrdersLoading(canViewDelivery);
+      setHandoverWorkOrdersLoadState(
+        canViewDelivery ? "LOADING" : "UNKNOWN"
+      );
       setDepositSettlementError(null);
       const [
         nextOrder,
@@ -4313,7 +4366,7 @@ function OrderDetailPageContent() {
         nextDelivery,
         nextReturnCheck,
         nextReturn,
-        nextHandoverWorkOrders,
+        nextHandoverWorkOrdersResult,
         nextEntitlements,
         nextEntitlementUsages
       ] = await Promise.all([
@@ -4332,8 +4385,21 @@ function OrderDetailPageContent() {
         canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
         canViewReturn ? apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`) : Promise.resolve(null),
         canViewDelivery
-          ? apiFetch<HandoverWorkOrderSummary[]>(`/orders/${params.id}/handover-work-orders`).catch(() => [])
-          : Promise.resolve([]),
+          ? apiFetch<HandoverWorkOrderSummary[]>(
+              `/orders/${params.id}/handover-work-orders`
+            )
+              .then((workOrders) => ({
+                loadState: "LOADED" as const,
+                workOrders
+              }))
+              .catch(() => ({
+                loadState: "ERROR" as const,
+                workOrders: [] as HandoverWorkOrderSummary[]
+              }))
+          : Promise.resolve({
+              loadState: "UNKNOWN" as const,
+              workOrders: [] as HandoverWorkOrderSummary[]
+            }),
         canViewEntitlement
           ? apiFetch<OrderEntitlementsResponse>(`/orders/${params.id}/entitlements`)
           : Promise.resolve({ account: null, grants: [] }),
@@ -4351,16 +4417,22 @@ function OrderDetailPageContent() {
       setDelivery(nextDelivery);
       setReturnCheck(nextReturnCheck);
       setVehicleReturn(nextReturn);
-      setHandoverWorkOrders(nextHandoverWorkOrders);
-      await Promise.all(
-        nextHandoverWorkOrders.map((workOrder) => refreshStage2HandoverESignStatus(workOrder.id))
-      );
+      setHandoverWorkOrders(nextHandoverWorkOrdersResult.workOrders);
+      setHandoverWorkOrdersLoadState(nextHandoverWorkOrdersResult.loadState);
+      if (nextHandoverWorkOrdersResult.loadState === "LOADED") {
+        await Promise.all(
+          nextHandoverWorkOrdersResult.workOrders.map((workOrder) =>
+            refreshStage2HandoverESignStatus(workOrder.id)
+          )
+        );
+      }
       setEntitlements(nextEntitlements);
       setEntitlementUsages(nextEntitlementUsages.items);
       setEntitlementUsageTotal(nextEntitlementUsages.total);
       setEntitlementUsagePage(nextEntitlementUsages.page);
       setEntitlementUsagePageSize(nextEntitlementUsages.pageSize);
     } catch (error) {
+      setHandoverWorkOrdersLoadState("ERROR");
       void message.error(getErrorMessage(error));
     } finally {
       setLoading(false);
@@ -4470,10 +4542,23 @@ function OrderDetailPageContent() {
       `workflow-recovery:${id}:${recovery.jobId}`
     );
     try {
-      if (recovery.kind === "RECONCILE_CUSTOMER") {
-        await reconcileAdminStage2CustomerSignature(id);
-      } else {
-        await retryAdminStage2WorkflowJob(id, recovery.jobId);
+      const executed = await runAdminStage2WorkflowRecovery({
+        allowed: permissions.has("delivery:confirm"),
+        execute: async (workOrderId, selectedRecovery) => {
+          if (selectedRecovery.kind === "RECONCILE_CUSTOMER") {
+            await reconcileAdminStage2CustomerSignature(workOrderId);
+          } else {
+            await retryAdminStage2WorkflowJob(
+              workOrderId,
+              selectedRecovery.jobId
+            );
+          }
+        },
+        recovery,
+        workOrderId: id
+      });
+      if (!executed) {
+        return;
       }
       setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
       void message.success("异常恢复任务已提交");
@@ -4499,6 +4584,9 @@ function OrderDetailPageContent() {
     id: string,
     recovery: AdminStage2HandoverWorkflowRecovery
   ) {
+    if (!permissions.has("delivery:confirm")) {
+      return;
+    }
     modal.confirm({
       cancelText: "取消",
       content: `仅重新提交“${recovery.label}”对应的异常任务。`,
@@ -4611,7 +4699,26 @@ function OrderDetailPageContent() {
     prepareDeliveryForm.resetFields();
   }
 
-  function openConfirmDeliveryModal() {
+  async function verifyStage2DeliveryArchive() {
+    if (!order) {
+      return false;
+    }
+    const verification = await stage2DeliveryVerifier.verify(order.id);
+    if (verification.allowed) {
+      return true;
+    }
+    void message.warning(
+      verification.reason === "LOAD_ERROR"
+        ? "交接签署归档状态加载失败，请刷新后重试"
+        : "交接签署文件归档完成后才可确认交付"
+    );
+    return false;
+  }
+
+  async function openConfirmDeliveryModal() {
+    if (!(await verifyStage2DeliveryArchive())) {
+      return;
+    }
     confirmDeliveryForm.setFieldsValue({
       deliveredAt: dayjs(),
       handoverMileageKm: order?.vehicle?.currentMileageKm ?? undefined,
@@ -5258,6 +5365,9 @@ function OrderDetailPageContent() {
       return;
     }
     const values = await confirmDeliveryForm.validateFields();
+    if (!(await verifyStage2DeliveryArchive())) {
+      return;
+    }
     try {
       await apiFetch(`/orders/${order.id}/confirm-delivery`, {
         body: JSON.stringify({
@@ -5714,6 +5824,7 @@ function OrderDetailPageContent() {
             esignLoading={handoverESignLoading}
             esignStatuses={handoverESignStatuses}
             loading={handoverWorkOrdersLoading}
+            loadState={handoverWorkOrdersLoadState}
             mutationInFlight={stage2WorkflowRecoveryInFlight}
             onAcknowledge={acknowledgeCustomerObjection}
             onAssignExternal={openAssignExternalHandover}

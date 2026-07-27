@@ -422,11 +422,17 @@ export interface PortalContractListItem {
   contractNo: string;
   contractStatus: string;
   createdAt: string;
+  documentType: "DELIVERY_HANDOVER" | "SUBSCRIPTION_CONTRACT" | null;
   hasSignedDocument: boolean;
   id: string;
   orderNo: string;
   signedAt: string | null;
+  signingStage:
+    | "STAGE1_SUBSCRIPTION_CONTRACT"
+    | "STAGE2_DELIVERY_HANDOVER"
+    | null;
   signStatus: string | null;
+  workOrderId: string | null;
 }
 
 export interface PortalContractDetail extends PortalContractListItem {
@@ -446,14 +452,20 @@ export interface PortalContractDetail extends PortalContractListItem {
 
 export interface PortalContractESignTask {
   completedAt: string | null;
+  documentType: "DELIVERY_HANDOVER" | "SUBSCRIPTION_CONTRACT" | null;
   hasEvidenceDocument: boolean;
   hasSignedDocument: boolean;
   id: string;
   provider: string;
   signers: PortalContractESignSigner[];
+  signingStage:
+    | "STAGE1_SUBSCRIPTION_CONTRACT"
+    | "STAGE2_DELIVERY_HANDOVER"
+    | null;
   signUrlExpiresAt: string | null;
   taskNo: string;
   taskStatus: string;
+  workOrderId: string | null;
 }
 
 export interface PortalContractESignSigner {

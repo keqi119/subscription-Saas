@@ -212,7 +212,7 @@ export function buildFieldStage2HandoverView(
   detail: FieldHandoverWorkOrderDetail
 ): FieldStage2HandoverView {
   const artifact = detail.stage2Pdf;
-  const capabilities = detail.stage2Capabilities ?? artifact?.capabilities;
+  const capabilities = detail.stage2Capabilities;
   const generated = artifact?.status === "GENERATED";
   const artifactVersion =
     typeof artifact?.artifactVersion === "number" &&
@@ -231,25 +231,25 @@ export function buildFieldStage2HandoverView(
     canDownload:
       generated &&
       Boolean(artifact?.downloadUrl) &&
-      capabilities?.canDownload !== false,
+      capabilities?.canDownload === true,
     canPreview:
       generated &&
       Boolean(artifact?.previewUrl) &&
-      capabilities?.canPreview !== false,
+      capabilities?.canPreview === true,
     canStartESign:
       detail.status === "CUSTOMER_CONFIRMED" &&
       generated &&
       artifactVersion !== null &&
       sourcePdfHash !== null &&
       !hasActiveESign &&
-      capabilities?.canStartESign !== false,
+      capabilities?.canStartESign === true,
     documentNoText: artifact?.documentNo || "-",
     downloadUrl: artifact?.downloadUrl ?? null,
     fileNameText: artifact?.fileName || "车辆交接确认单.pdf",
     fileSizeText: formatFileSize(artifact?.fileSize),
     generatedAtText: formatDateTime(artifact?.generatedAt),
     notificationStatusText: formatFieldNotificationStatus(
-      detail.stage2Notification?.status ?? artifact?.notificationStatus,
+      detail.stage2Notification?.status,
       generated
     ),
     previewUrl: artifact?.previewUrl ?? null,

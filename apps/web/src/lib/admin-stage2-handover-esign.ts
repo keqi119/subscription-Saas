@@ -34,6 +34,7 @@ export type AdminStage2HandoverWorkflowJobStatus =
 
 export interface AdminStage2HandoverWorkflowJob {
   attemptCount: number;
+  createdAt?: string | null;
   id: string;
   jobStatus: AdminStage2HandoverWorkflowJobStatus;
   jobType: AdminStage2HandoverWorkflowJobType;
@@ -123,6 +124,15 @@ export interface AdminStage2HandoverWorkflowDisplay {
   deliveryConfirmationAvailable: boolean;
   recoveries: AdminStage2HandoverWorkflowRecovery[];
   steps: AdminStage2HandoverWorkflowStep[];
+}
+
+export interface AdminStage2DeliveryVerification {
+  allowed: boolean;
+  reason:
+    | "ARCHIVED"
+    | "LOAD_ERROR"
+    | "NO_STAGE2_WORK_ORDER"
+    | "NOT_ARCHIVED";
 }
 
 const BLOCKER_MESSAGES: Record<string, string> = {
@@ -254,15 +264,17 @@ export function getAdminStage2HandoverWorkflowDisplay(
   context: AdminStage2HandoverWorkflowContext = {}
 ): AdminStage2HandoverWorkflowDisplay {
   const workflowJobs = status?.workflowJobs ?? context.workflowJobs ?? [];
-  const recoveries = workflowJobs
-    .filter((job) => job.jobStatus === "DEAD_LETTER")
-    .map(toWorkflowRecovery)
-    .filter((recovery): recovery is AdminStage2HandoverWorkflowRecovery =>
-      recovery !== null
-    );
+  const currentJobs = getAuthoritativeCurrentWorkflowJobs(workflowJobs);
+  const currentDeadLetters = currentJobs.valid
+    ? currentJobs.jobs.filter((job) => job.jobStatus === "DEAD_LETTER")
+    : [];
+  const newestDeadLetter = selectSingleNewestJob(currentDeadLetters);
+  const recovery = newestDeadLetter
+    ? toWorkflowRecovery(newestDeadLetter)
+    : null;
+  const recoveries = recovery ? [recovery] : [];
   const errorSteps = new Set(
-    workflowJobs
-      .filter((job) => job.jobStatus === "DEAD_LETTER")
+    currentDeadLetters
       .map((job) => WORKFLOW_JOB_STEP[job.jobType])
   );
   const archived =
@@ -304,6 +316,73 @@ export function getAdminStage2HandoverWorkflowDisplay(
       };
     })
   };
+}
+
+export function createAdminStage2DeliveryVerifier({
+  loadESignStatus,
+  loadWorkOrders
+}: {
+  loadESignStatus: (
+    workOrderId: string
+  ) => Promise<Pick<
+    AdminStage2HandoverESignStatus,
+    "archiveStatus" | "signedArtifactAvailable"
+  >>;
+  loadWorkOrders: (
+    orderId: string
+  ) => Promise<Array<{ id: string; status?: string | null }>>;
+}) {
+  return {
+    async verify(orderId: string): Promise<AdminStage2DeliveryVerification> {
+      try {
+        const workOrders = await loadWorkOrders(orderId);
+        const activeWorkOrders = workOrders.filter(
+          (workOrder) =>
+            !["CANCELLED", "FAILED", "VOIDED"].includes(
+              workOrder.status ?? ""
+            )
+        );
+        if (activeWorkOrders.length === 0) {
+          return { allowed: true, reason: "NO_STAGE2_WORK_ORDER" };
+        }
+        if (activeWorkOrders.length !== 1) {
+          return { allowed: false, reason: "NOT_ARCHIVED" };
+        }
+        const [activeWorkOrder] = activeWorkOrders;
+        if (!activeWorkOrder) {
+          return { allowed: false, reason: "NOT_ARCHIVED" };
+        }
+        const status = await loadESignStatus(activeWorkOrder.id);
+        return status.archiveStatus === "ARCHIVED" &&
+          status.signedArtifactAvailable === true
+          ? { allowed: true, reason: "ARCHIVED" }
+          : { allowed: false, reason: "NOT_ARCHIVED" };
+      } catch {
+        return { allowed: false, reason: "LOAD_ERROR" };
+      }
+    }
+  };
+}
+
+export async function runAdminStage2WorkflowRecovery({
+  allowed,
+  execute,
+  recovery,
+  workOrderId
+}: {
+  allowed: boolean;
+  execute: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => Promise<unknown>;
+  recovery: AdminStage2HandoverWorkflowRecovery;
+  workOrderId: string;
+}) {
+  if (!allowed) {
+    return false;
+  }
+  await execute(workOrderId, recovery);
+  return true;
 }
 
 export function getAdminStage2HandoverESignErrorMessage(error: unknown) {
@@ -395,6 +474,88 @@ const WORKFLOW_RECOVERY: Record<
     label: "重试平台盖章"
   }
 };
+
+const WORKFLOW_JOB_STATUSES = new Set<AdminStage2HandoverWorkflowJobStatus>([
+  "CANCELLED",
+  "COMPLETED",
+  "DEAD_LETTER",
+  "PENDING",
+  "PROCESSING"
+]);
+
+function getAuthoritativeCurrentWorkflowJobs(
+  jobs: readonly AdminStage2HandoverWorkflowJob[]
+): {
+  jobs: AdminStage2HandoverWorkflowJob[];
+  valid: boolean;
+} {
+  const newestByStep = new Map<
+    AdminStage2HandoverWorkflowStepKey,
+    AdminStage2HandoverWorkflowJob
+  >();
+  for (const job of jobs) {
+    if (
+      !job.id ||
+      !Object.prototype.hasOwnProperty.call(
+        WORKFLOW_JOB_STEP,
+        job.jobType
+      ) ||
+      !WORKFLOW_JOB_STATUSES.has(job.jobStatus) ||
+      getWorkflowJobTimestamp(job) === null
+    ) {
+      return { jobs: [], valid: false };
+    }
+    const step = WORKFLOW_JOB_STEP[job.jobType];
+    const current = newestByStep.get(step);
+    if (!current) {
+      newestByStep.set(step, job);
+      continue;
+    }
+    const currentTimestamp = getWorkflowJobTimestamp(current);
+    const nextTimestamp = getWorkflowJobTimestamp(job);
+    if (currentTimestamp === nextTimestamp) {
+      return { jobs: [], valid: false };
+    }
+    if (
+      currentTimestamp !== null &&
+      nextTimestamp !== null &&
+      nextTimestamp > currentTimestamp
+    ) {
+      newestByStep.set(step, job);
+    }
+  }
+  return { jobs: Array.from(newestByStep.values()), valid: true };
+}
+
+function selectSingleNewestJob(
+  jobs: readonly AdminStage2HandoverWorkflowJob[]
+) {
+  let newest: AdminStage2HandoverWorkflowJob | null = null;
+  for (const job of jobs) {
+    if (!newest) {
+      newest = job;
+      continue;
+    }
+    const newestTimestamp = getWorkflowJobTimestamp(newest);
+    const nextTimestamp = getWorkflowJobTimestamp(job);
+    if (newestTimestamp === nextTimestamp) {
+      return null;
+    }
+    if (
+      newestTimestamp !== null &&
+      nextTimestamp !== null &&
+      nextTimestamp > newestTimestamp
+    ) {
+      newest = job;
+    }
+  }
+  return newest;
+}
+
+function getWorkflowJobTimestamp(job: AdminStage2HandoverWorkflowJob) {
+  const timestamp = Date.parse(job.updatedAt ?? job.createdAt ?? "");
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
 
 function toWorkflowRecovery(
   job: AdminStage2HandoverWorkflowJob

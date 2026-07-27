@@ -25,6 +25,7 @@ import {
   DeliveryEvidenceFileLifecycleStatus,
   DeliveryEvidenceMediaType,
   DeliveryHandoverStatus,
+  ESignSigningStage,
   Prisma,
   UserStatus,
   VehicleHandoverAdminReviewStatus,
@@ -2975,17 +2976,26 @@ export class HandoverWorkOrderService {
   }
 
   private async toAdminWorkOrderSummary(workOrder: WorkOrderRecord) {
-    const [order, evidenceChecklist, reviewAttempts, events, readiness, stage2Pdf] = await Promise.all([
-      this.getOrderOrThrow(workOrder.orderId),
-      this.deliveryEvidenceService.getChecklist({
-        handoverId: workOrder.handoverId ?? null,
-        orderId: workOrder.orderId
-      }),
-      this.listReviewAttempts(workOrder.id),
-      this.listEvents(workOrder.id),
-      this.getReadiness(workOrder.id),
-      this.getStage2HandoverPdf(workOrder.id)
-    ]);
+    const [
+      order,
+      evidenceChecklist,
+      reviewAttempts,
+      events,
+      readiness,
+      stage2Pdf,
+      workflowJobs
+    ] = await Promise.all([
+        this.getOrderOrThrow(workOrder.orderId),
+        this.deliveryEvidenceService.getChecklist({
+          handoverId: workOrder.handoverId ?? null,
+          orderId: workOrder.orderId
+        }),
+        this.listReviewAttempts(workOrder.id),
+        this.listEvents(workOrder.id),
+        this.getReadiness(workOrder.id),
+        this.getStage2HandoverPdf(workOrder.id),
+        this.listSafeStage2WorkflowJobs(workOrder.id)
+      ]);
 
     return {
       adminReview: toAdminReviewView(workOrder, reviewAttempts),
@@ -3024,7 +3034,8 @@ export class HandoverWorkOrderService {
         model: order.vehicle?.model ?? null,
         plateMasked: maskPlate(order.vehicle?.plateNo),
         vinSuffix: suffix(order.vehicle?.vin, 6)
-      }
+      },
+      workflowJobs
     };
   }
 
@@ -3575,7 +3586,13 @@ export class HandoverWorkOrderService {
   private async toFieldTaskDetail(workOrder: WorkOrderRecord) {
     const evidenceRouteBase =
       `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/evidence-files`;
-    const [listItem, evidenceChecklist, latestAttempt, stage2Pdf] =
+    const [
+      listItem,
+      evidenceChecklist,
+      latestAttempt,
+      stage2Pdf,
+      stage2Workflow
+    ] =
       await Promise.all([
         this.toFieldTaskListItem(workOrder),
         this.deliveryEvidenceService.getChecklist({
@@ -3583,7 +3600,8 @@ export class HandoverWorkOrderService {
           orderId: workOrder.orderId
         }),
         this.findLatestReviewAttempt(workOrder.id),
-        this.getStage2HandoverPdf(workOrder.id)
+        this.getStage2HandoverPdf(workOrder.id),
+        this.getFieldStage2WorkflowProjection(workOrder)
       ]);
     const fieldPdfRouteBase =
       `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/pdf`;
@@ -3610,6 +3628,8 @@ export class HandoverWorkOrderService {
         latestAttempt,
         evidenceChecklist
       ),
+      stage2ESign: stage2Workflow.eSign,
+      stage2Notification: stage2Workflow.notification,
       stage2Pdf: {
         ...stage2Pdf,
         downloadUrl:
@@ -3622,6 +3642,124 @@ export class HandoverWorkOrderService {
             : null
       }
     };
+  }
+
+  private async getFieldStage2WorkflowProjection(
+    workOrder: WorkOrderRecord
+  ) {
+    const handover = await this.findStage2HandoverForWorkOrder(workOrder);
+    const handoverRecord = asRecord(handover);
+    const taskModel = (this.prisma as unknown as {
+      contractESignTask?: {
+        findFirst: (
+          args: Prisma.ContractESignTaskFindFirstArgs
+        ) => Promise<null | { id: string; taskStatus: string }>;
+      };
+    }).contractESignTask;
+    const notificationModel = (this.prisma as unknown as {
+      vehicleHandoverWorkflowJob?: {
+        findFirst: (
+          args: Prisma.VehicleHandoverWorkflowJobFindFirstArgs
+        ) => Promise<null | { jobStatus: string }>;
+      };
+    }).vehicleHandoverWorkflowJob;
+    const taskPointers: Prisma.ContractESignTaskWhereInput[] = [];
+    const handoverTaskId = handoverRecord
+      ? readString(handoverRecord, "handoverESignTaskId")
+      : null;
+    const handoverContractId = handoverRecord
+      ? readString(handoverRecord, "handoverContractId")
+      : null;
+    if (handoverTaskId) {
+      taskPointers.push({ id: handoverTaskId });
+    }
+    if (handoverContractId) {
+      taskPointers.push({ contractId: handoverContractId });
+    }
+    const [task, notification] = await Promise.all([
+      typeof taskModel?.findFirst === "function" && taskPointers.length > 0
+        ? taskModel.findFirst({
+            orderBy: { createdAt: "desc" },
+            select: {
+              id: true,
+              taskStatus: true
+            },
+            where: {
+              deletedAt: null,
+              OR: taskPointers,
+              signingStage:
+                ESignSigningStage.STAGE2_DELIVERY_HANDOVER
+            }
+          })
+        : Promise.resolve(null),
+      typeof notificationModel?.findFirst === "function"
+        ? notificationModel.findFirst({
+            orderBy: { createdAt: "desc" },
+            select: { jobStatus: true },
+            where: {
+              jobType:
+                VehicleHandoverWorkflowJobType
+                  .NOTIFY_FIELD_ESIGN_READY,
+              workOrderId: workOrder.id
+            }
+          })
+        : Promise.resolve(null)
+    ]);
+    return {
+      eSign: {
+        status: task?.taskStatus ?? null,
+        taskId: task?.id ?? null
+      },
+      notification: {
+        status: notification?.jobStatus ?? null
+      }
+    };
+  }
+
+  private async listSafeStage2WorkflowJobs(workOrderId: string) {
+    const model = (this.prisma as unknown as {
+      vehicleHandoverWorkflowJob?: {
+        findMany: (
+          args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
+        ) => Promise<Array<{
+          attemptCount: number;
+          createdAt: Date;
+          id: string;
+          jobStatus: string;
+          jobType: string;
+          maxAttempts: number;
+          updatedAt: Date;
+        }>>;
+      };
+    }).vehicleHandoverWorkflowJob;
+    if (typeof model?.findMany !== "function") {
+      return [];
+    }
+    const jobs = await model.findMany({
+      orderBy: [
+        { updatedAt: "desc" },
+        { createdAt: "desc" }
+      ],
+      select: {
+        attemptCount: true,
+        createdAt: true,
+        id: true,
+        jobStatus: true,
+        jobType: true,
+        maxAttempts: true,
+        updatedAt: true
+      },
+      where: { workOrderId }
+    });
+    return jobs.map((job) => ({
+      attemptCount: job.attemptCount,
+      createdAt: job.createdAt,
+      id: job.id,
+      jobStatus: job.jobStatus,
+      jobType: job.jobType,
+      maxAttempts: job.maxAttempts,
+      updatedAt: job.updatedAt
+    }));
   }
 
   private updateWorkOrder(id: string, data: Record<string, unknown>) {

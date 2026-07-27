@@ -60,11 +60,18 @@ export default function PortalContractDetailPage() {
     try {
       const nextContract = await portalApiFetch<PortalContractDetail>(`/portal/contracts/${params.id}`);
       const stage2Destination = getPortalContractDestination(nextContract);
-      if (stage2Destination !== `/portal/contracts/${encodeURIComponent(nextContract.id)}`) {
+      if (
+        stage2Destination &&
+        stage2Destination !== `/portal/contracts/${encodeURIComponent(nextContract.id)}`
+      ) {
         router.replace(stage2Destination);
         return;
       }
       setContract(nextContract);
+      if (!stage2Destination) {
+        setOnboardingStatus(null);
+        return;
+      }
       const nextOnboardingStatus = await portalApiFetch<PortalFadadaOnboardingStatus>(
         "/portal/esign-onboarding/status"
       ).catch((error) => {
@@ -92,6 +99,9 @@ export default function PortalContractDetailPage() {
       return;
     }
     const stage2Destination = getPortalContractDestination(contract);
+    if (!stage2Destination) {
+      return;
+    }
     if (stage2Destination !== `/portal/contracts/${encodeURIComponent(contract.id)}`) {
       router.push(stage2Destination);
       return;
@@ -331,15 +341,17 @@ export default function PortalContractDetailPage() {
                 {contract.signTask ? labelOf(ESIGN_PROVIDER_LABELS, contract.signTask.provider) : "平台尚未发起电子签任务"}
               </Typography.Text>
             </div>
-            <Button
-              disabled={!contract.canSign || !getFadadaReadinessAvailability(onboardingStatus).allowed}
-              icon={contract.contractStatus === "SIGNED" ? <CheckCircleOutlined /> : <FileTextOutlined />}
-              loading={starting}
-              onClick={startSigning}
-              type="primary"
-            >
-              去签署
-            </Button>
+            {getPortalContractDestination(contract) ? (
+              <Button
+                disabled={!contract.canSign || !getFadadaReadinessAvailability(onboardingStatus).allowed}
+                icon={contract.contractStatus === "SIGNED" ? <CheckCircleOutlined /> : <FileTextOutlined />}
+                loading={starting}
+                onClick={startSigning}
+                type="primary"
+              >
+                去签署
+              </Button>
+            ) : null}
           </Flex>
 
           <Alert

@@ -255,6 +255,12 @@ describe("portal handover review view model", () => {
       id: "stage1-contract-1",
       signingStage: "STAGE1_CONTRACT"
     })).toBe("/portal/contracts/stage1-contract-1");
+    expect(getPortalContractDestination({
+      documentType: "DELIVERY_HANDOVER",
+      id: "handover-contract-without-work-order",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: null
+    })).toBeNull();
   });
 
   it("validates objection reason before submit", () => {

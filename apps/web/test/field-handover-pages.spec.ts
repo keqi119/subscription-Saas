@@ -135,7 +135,8 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("发起电子签");
     expect(source).toContain("<Modal");
     expect(source).toContain("<Checkbox");
-    expect(source).toContain("acknowledgement: true");
+    expect(source).toContain("createFieldESignSubmissionController");
+    expect(source).toContain("acknowledgement: eSignAcknowledged");
     expect(source).toContain("artifactVersion: stage2View.artifactVersion");
     expect(source).toContain("sourcePdfHash: stage2View.sourcePdfHash");
     expect(source).toContain('actionLoading === "esign"');

@@ -104,6 +104,89 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it("returns authoritative Field capabilities, current task, and generic notification status", async () => {
+    const harness = createHarness();
+    const readiness = {
+      getReadiness: vi.fn(async () => ({
+        blockers: [],
+        ready: true,
+        state: {
+          esignTaskId: null,
+          esignTaskStatus: null,
+          workOrderId: "work-order-1"
+        }
+      }))
+    };
+    const auth = {
+      recordTaskViewed: vi.fn(async () => undefined)
+    };
+    const controller = Reflect.construct(FieldOperatorAuthController, [
+      auth,
+      harness.service,
+      {},
+      readiness
+    ]) as FieldOperatorAuthController;
+
+    const result = await controller.getWorkOrder(
+      "work-order-1",
+      { phone: FIELD_PHONE } as never,
+      { headers: {}, ip: "127.0.0.1" } as never
+    );
+
+    expect(result).toMatchObject({
+      stage2Capabilities: {
+        canDownload: true,
+        canPreview: true,
+        canStartESign: true
+      },
+      stage2ESign: {
+        status: null,
+        taskId: null
+      },
+      stage2Notification: {
+        status: "COMPLETED"
+      }
+    });
+    expect(JSON.stringify(result.stage2Notification)).not.toContain(FIELD_PHONE);
+  });
+
+  it("projects an existing Stage 2 task and explicitly disables another Field initiation", async () => {
+    const harness = createHarness();
+    harness.state.activeTask = {
+      id: "stage2-task-existing",
+      taskStatus: "WAITING_CUSTOMER"
+    };
+    const readiness = {
+      getReadiness: vi.fn(async () => ({
+        blockers: [{ code: "ACTIVE_ESIGN_TASK_CONFLICT" }],
+        ready: false,
+        state: {
+          esignTaskId: "stage2-task-existing",
+          esignTaskStatus: "WAITING_CUSTOMER",
+          workOrderId: "work-order-1"
+        }
+      }))
+    };
+    const controller = Reflect.construct(FieldOperatorAuthController, [
+      { recordTaskViewed: vi.fn(async () => undefined) },
+      harness.service,
+      {},
+      readiness
+    ]) as FieldOperatorAuthController;
+
+    const result = await controller.getWorkOrder(
+      "work-order-1",
+      { phone: FIELD_PHONE } as never,
+      { headers: {}, ip: "127.0.0.1" } as never
+    );
+
+    expect(result.stage2Capabilities.canStartESign).toBe(false);
+    expect(result.stage2ESign).toEqual({
+      status: "WAITING_CUSTOMER",
+      taskId: "stage2-task-existing"
+    });
+  });
+
   it("allows only the canonical assigned phone to preview and download the PDF", async () => {
     const harness = createHarness();
 
@@ -351,7 +434,21 @@ function createHarness() {
       vin: "VIN123456789"
     }
   };
+  const state: {
+    activeTask: null | { id: string; taskStatus: string };
+    notificationJob: {
+      jobStatus: string;
+    };
+  } = {
+    activeTask: null,
+    notificationJob: {
+      jobStatus: "COMPLETED"
+    }
+  };
   const prisma = {
+    contractESignTask: {
+      findFirst: vi.fn(async () => state.activeTask)
+    },
     fileObject: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         where.id === fileObject.id ? fileObject : null
@@ -382,6 +479,9 @@ function createHarness() {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         where.id === workOrder.id ? workOrder : null
       )
+    },
+    vehicleHandoverWorkflowJob: {
+      findFirst: vi.fn(async () => state.notificationJob)
     }
   };
   const evidence = {
@@ -404,6 +504,7 @@ function createHarness() {
       undefined,
       storage as never
     ),
+    state,
     storage,
     workOrder
   };

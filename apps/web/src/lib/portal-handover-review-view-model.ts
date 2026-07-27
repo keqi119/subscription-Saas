@@ -67,6 +67,7 @@ export interface PortalHandoverWorkflowView {
 }
 
 export interface PortalContractDestinationSource {
+  documentType?: null | string;
   handoverWorkOrderId?: null | string;
   id: string;
   signingStage?: null | string;
@@ -255,8 +256,9 @@ export function buildPortalHandoverWorkflowView(
 export function getPortalContractDestination(contract: PortalContractDestinationSource) {
   const stage2SignTask = contract.signTask as
     | {
-        signingStage?: null | string;
-        workOrderId?: null | string;
+      signingStage?: null | string;
+      documentType?: null | string;
+      workOrderId?: null | string;
       }
     | null
     | undefined;
@@ -267,10 +269,91 @@ export function getPortalContractDestination(contract: PortalContractDestination
   const signingStage =
     contract.signingStage ??
     stage2SignTask?.signingStage;
-  if (workOrderId && signingStage === "STAGE2_DELIVERY_HANDOVER") {
-    return `/portal/handover-reviews/${encodeURIComponent(workOrderId)}`;
+  const documentType =
+    contract.documentType ??
+    stage2SignTask?.documentType;
+  const stage2Typed =
+    signingStage === "STAGE2_DELIVERY_HANDOVER" ||
+    documentType === "DELIVERY_HANDOVER";
+  if (stage2Typed) {
+    return workOrderId
+      ? `/portal/handover-reviews/${encodeURIComponent(workOrderId)}`
+      : null;
   }
   return `/portal/contracts/${encodeURIComponent(contract.id)}`;
+}
+
+export function createPortalWorkflowRequestController<T>({
+  load,
+  onApply,
+  onError
+}: {
+  load: () => Promise<T>;
+  onApply: (value: T) => void;
+  onError: (error: unknown) => void;
+}) {
+  let active = true;
+  let generation = 0;
+  let inFlight: null | Promise<void> = null;
+  let timer: null | ReturnType<typeof setInterval> = null;
+
+  const refresh = () => {
+    if (!active) {
+      return Promise.resolve();
+    }
+    if (inFlight) {
+      return inFlight;
+    }
+    const requestGeneration = generation;
+    const request = load()
+      .then((value) => {
+        if (active && requestGeneration === generation) {
+          onApply(value);
+        }
+      })
+      .catch((error) => {
+        if (active && requestGeneration === generation) {
+          onError(error);
+        }
+      })
+      .finally(() => {
+        if (inFlight === request) {
+          inFlight = null;
+        }
+      });
+    inFlight = request;
+    return request;
+  };
+
+  const stopPolling = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+
+  return {
+    dispose() {
+      active = false;
+      generation += 1;
+      inFlight = null;
+      stopPolling();
+    },
+    invalidate() {
+      generation += 1;
+      inFlight = null;
+    },
+    refresh,
+    startPolling(intervalMs: number) {
+      stopPolling();
+      if (active) {
+        timer = setInterval(() => {
+          void refresh();
+        }, intervalMs);
+      }
+    },
+    stopPolling
+  };
 }
 
 function buildFieldFactRows(detail: PortalHandoverReviewDetail) {

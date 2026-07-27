@@ -67,7 +67,9 @@ describe("portal handover review pages", () => {
       "window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl))"
     );
     expect(source).toContain('"alreadySigned" in result');
-    expect(source).toContain("setInterval");
+    expect(source).toContain("createPortalWorkflowRequestController");
+    expect(source).toContain("startPolling(3000)");
+    expect(source).not.toContain("window.setInterval");
     expect(source).toContain("PENDING_CUSTOMER_SIGNATURE");
     expect(source).toContain('router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`)');
     expect(source).not.toMatch(/objectKey|bucket|storage path|signingUrl|idCard|deposit|payment|lease|billing|raw DTO|JSON.stringify/i);

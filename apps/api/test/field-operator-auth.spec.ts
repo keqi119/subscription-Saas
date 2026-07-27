@@ -226,6 +226,7 @@ describe("FieldOperatorAuthController", () => {
     const controller = new FieldOperatorAuthController(
       service,
       {} as never,
+      {} as never,
       {} as never
     );
     const response = {
@@ -279,7 +280,8 @@ describe("FieldOperatorAuthController", () => {
     const controller = new FieldOperatorAuthController(
       service,
       handoverService as never,
-      stage2ESignService as never
+      stage2ESignService as never,
+      {} as never
     );
     const current = { sessionId: "field-session-1", phone: "13800000000" };
     const response = { setHeader: vi.fn() };

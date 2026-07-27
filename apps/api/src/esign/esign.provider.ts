@@ -157,7 +157,9 @@ export interface AutoSealTaskInput {
   platformCustomerId?: string;
   platformSignatureId?: string;
   providerEnvelopeId?: string;
+  providerTaskId?: string;
   sealId?: string;
+  signerId?: string;
   signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingSlots?: ESignSigningSlot[];
   signingStage?: ESignSigningStage;

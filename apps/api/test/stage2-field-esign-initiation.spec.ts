@@ -265,8 +265,13 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
         }
       ]
     ]);
-    expect(service.supportedJobTypes).not.toContain(
-      VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
+    expect(service.supportedJobTypes).toEqual(
+      expect.arrayContaining([
+        VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+        VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM,
+        VehicleHandoverWorkflowJobType.RECONCILE_PLATFORM_SEAL,
+        VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
+      ])
     );
   });
 });

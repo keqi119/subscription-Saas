@@ -13,7 +13,9 @@ import {
   ESignSignerStatus,
   ESignSignerType,
   ESignTaskStatus,
-  OrderStatus
+  OrderStatus,
+  VehicleHandoverWorkflowJobStatus,
+  VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -432,6 +434,57 @@ describe("ESignService", () => {
     });
   });
 
+  it("returns HTTP 200 before the platform provider call runs and cancels obsolete customer reconciliation", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.platformSigner.providerTransactionId = null;
+
+    const result = await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.customerTransactionId
+      })
+    );
+
+    expect(result).toMatchObject({
+      handled: true,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: harness.task.id
+    });
+    expect(harness.autoSealTask).not.toHaveBeenCalled();
+    expect(
+      harness.state.workflowJobs.filter(
+        (job) =>
+          job.jobType ===
+          VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM
+      )
+    ).toEqual([
+      expect.objectContaining({
+        eSignTaskId: harness.task.id,
+        handoverId: harness.handover.id,
+        idempotencyKey:
+          `platform-seal:${harness.task.id}:${harness.platformTransactionId}`,
+        jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
+        payload: {
+          platformTransactionId:
+            harness.platformTransactionId
+        },
+        workOrderId: "work-order-typed"
+      })
+    ]);
+    expect(
+      harness.state.workflowJobs.find(
+        (job) =>
+          job.jobType ===
+          VehicleHandoverWorkflowJobType
+            .RECONCILE_CUSTOMER_SIGNATURE
+      )
+    ).toMatchObject({
+      jobStatus: VehicleHandoverWorkflowJobStatus.CANCELLED
+    });
+  });
+
   it("correlates a Stage 2 customer callback by typed transaction and dedupes the canonical sanitized payload", async () => {
     const harness = createTypedStage2CallbackFixture({
       customerProviderSignerId: "LEGACY-CUSTOMER-ID"
@@ -822,6 +875,15 @@ describe("ESignService", () => {
         resultCode: "3000",
         transactionId: secondTransactionId
       }));
+      if (firstSlot === "STAGE2_HANDOVER_PLATFORM") {
+        await harness.service.reconcilePlatformSigned({
+          completedAt: new Date(),
+          eSignTaskId: harness.task.id,
+          providerTransactionId:
+            harness.platformTransactionId,
+          source: "QUERY"
+        });
+      }
 
       expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
       expect(harness.platformSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
@@ -2082,7 +2144,9 @@ function createTypedStage2CallbackFixture(options: {
   customerProviderSignerId?: string;
 } = {}) {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
+  const autoSealTask = vi.fn();
   const harness = createESignFixture({ ESIGN_PROVIDER: "fadada" }, {
+    autoSealTask,
     createSignTask: vi.fn(),
     getSignerUrl: vi.fn(),
     querySignerStatus: unknownSignerStatusQuery(),
@@ -2136,9 +2200,9 @@ function createTypedStage2CallbackFixture(options: {
   stage2Contract.status = ContractStatus.SIGNING;
   harness.state.contracts.push(stage2Contract);
 
-  const providerContractId = "HDVPROVIDER1";
-  const customerTransactionId = "HDVTYPEDH1";
-  const platformTransactionId = "HDVTYPEDH2";
+  const providerContractId = "HDVTYPED";
+  const customerTransactionId = `${providerContractId}H1`;
+  const platformTransactionId = `${providerContractId}H2`;
   const task: FakeTask = {
     callbackSnapshot: null,
     cancelledAt: null,
@@ -2166,7 +2230,7 @@ function createTypedStage2CallbackFixture(options: {
     signedDocumentObjectKey: null,
     signingStage: "STAGE2_DELIVERY_HANDOVER",
     startedAt: new Date("2026-07-26T01:00:00.000Z"),
-    taskNo: "ESGSTAGE2",
+    taskNo: providerContractId,
     taskStatus: ESignTaskStatus.WAITING_CUSTOMER,
     updatedAt: new Date("2026-07-26T01:00:00.000Z")
   };
@@ -2223,6 +2287,7 @@ function createTypedStage2CallbackFixture(options: {
 
   const handover: FakeDeliveryHandover = {
     archiveStatus: "NOT_STARTED",
+    artifactVersion: 3,
     completedAt: null,
     customerSignedAt: null,
     deletedAt: null,
@@ -2234,9 +2299,28 @@ function createTypedStage2CallbackFixture(options: {
     status: "PENDING_CUSTOMER_SIGNATURE"
   };
   harness.state.deliveryHandovers.push(handover);
+  harness.state.workOrders.push({
+    handoverId: handover.id,
+    id: "work-order-typed"
+  });
+  harness.state.workflowJobs.push({
+    completedAt: null,
+    eSignTaskId: task.id,
+    handoverId: handover.id,
+    idempotencyKey:
+      `customer-reconcile:${task.id}:${customerTransactionId}`,
+    jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
+    jobType:
+      VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+    payload: {
+      customerTransactionId
+    },
+    workOrderId: "work-order-typed"
+  });
 
   return {
     ...harness,
+    autoSealTask,
     customerSigner,
     customerTransactionId,
     handover,
@@ -2297,7 +2381,9 @@ function createESignFixture(
     deliveryHandovers: [] as FakeDeliveryHandover[],
     providerAccounts: options.providerAccounts ?? [createProviderAccount("customer-1")],
     signers: [] as FakeSigner[],
-    tasks: [] as FakeTask[]
+    tasks: [] as FakeTask[],
+    workOrders: [] as FakeWorkOrder[],
+    workflowJobs: [] as FakeWorkflowJob[]
   };
 
   const prisma = {
@@ -2533,10 +2619,50 @@ function createESignFixture(
       })
     },
     vehicleDeliveryHandover: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.deliveryHandovers.find((handover) =>
+          matchesWhere(handover, where)
+        ) ?? null
+      ),
       updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
         const rows = state.deliveryHandovers.filter((handover) => matchesWhere(handover, where));
         rows.forEach((handover) => Object.assign(handover, data));
         return { count: rows.length };
+      })
+    },
+    vehicleHandoverWorkOrder: {
+      findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.workOrders.filter((workOrder) =>
+          matchesWhere(workOrder, where)
+        )
+      )
+    },
+    vehicleHandoverWorkflowJob: {
+      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+        const rows = state.workflowJobs.filter((job) =>
+          matchesWhere(job, where)
+        );
+        rows.forEach((job) => Object.assign(job, data));
+        return { count: rows.length };
+      }),
+      upsert: vi.fn(async ({ create, where }: {
+        create: FakeWorkflowJob;
+        where: { idempotencyKey: string };
+      }) => {
+        const existing = state.workflowJobs.find(
+          (job) =>
+            job.idempotencyKey === where.idempotencyKey
+        );
+        if (existing) {
+          return existing;
+        }
+        const created = {
+          ...create,
+          completedAt: null,
+          jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
+        };
+        state.workflowJobs.push(created);
+        return created;
       })
     }
   };
@@ -3114,6 +3240,24 @@ interface FakeState {
   providerAccounts: FakeProviderAccount[];
   signers: FakeSigner[];
   tasks: FakeTask[];
+  workOrders: FakeWorkOrder[];
+  workflowJobs: FakeWorkflowJob[];
+}
+
+interface FakeWorkOrder extends Record<string, unknown> {
+  handoverId: string;
+  id: string;
+}
+
+interface FakeWorkflowJob extends Record<string, unknown> {
+  completedAt?: Date | null;
+  eSignTaskId?: string;
+  handoverId?: string;
+  idempotencyKey: string;
+  jobStatus?: VehicleHandoverWorkflowJobStatus;
+  jobType: VehicleHandoverWorkflowJobType;
+  payload?: unknown;
+  workOrderId: string;
 }
 
 interface FakeProviderAccount extends Record<string, unknown> {
@@ -3195,6 +3339,7 @@ interface FakeTask extends Record<string, unknown> {
 
 interface FakeDeliveryHandover extends Record<string, unknown> {
   archiveStatus: string;
+  artifactVersion?: number;
   completedAt: Date | null;
   customerSignedAt?: Date | null;
   deletedAt: Date | null;

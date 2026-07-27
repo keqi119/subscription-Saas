@@ -124,6 +124,24 @@ export class MockESignProvider implements ESignProvider {
       "PLATFORM",
       "PLATFORM_AUTO_SEAL"
     );
+    if (
+      !input.platformCustomerId ||
+      !input.providerTaskId ||
+      !input.signerId ||
+      !input.taskId
+    ) {
+      throw new Error("MOCK_STAGE2_PLATFORM_BINDING_INVALID");
+    }
+    this.signerOperations.set(transactionId, {
+      contractId: input.providerEnvelopeId ?? input.taskNo,
+      providerCustomerId: input.platformCustomerId,
+      providerTaskId: input.providerTaskId,
+      providerTransactionId: transactionId,
+      signerId: input.signerId,
+      slotId: "STAGE2_HANDOVER_PLATFORM",
+      status: "SIGNED",
+      taskId: input.taskId
+    });
     return {
       coveredSlotIds: ["STAGE2_HANDOVER_PLATFORM"],
       providerActionType: "PLATFORM_AUTO_SEAL",
@@ -207,9 +225,14 @@ export class MockESignProvider implements ESignProvider {
       return { status: "UNKNOWN" };
     }
     return {
-      resultCode: "MOCK_SIGNING",
+      resultCode:
+        operation.status === "SIGNED"
+          ? "3000"
+          : "MOCK_SIGNING",
       resultDescription:
-        "Mock customer signing operation is active.",
+        operation.status === "SIGNED"
+          ? "Mock Stage 2 platform seal completed."
+          : "Mock customer signing operation is active.",
       status: operation.status
     };
   }
@@ -247,8 +270,10 @@ interface MockSignerOperation {
   providerTaskId: string;
   providerTransactionId: string;
   signerId: string;
-  slotId: "STAGE2_HANDOVER_CUSTOMER";
-  status: "SIGNING";
+  slotId:
+    | "STAGE2_HANDOVER_CUSTOMER"
+    | "STAGE2_HANDOVER_PLATFORM";
+  status: "SIGNED" | "SIGNING";
   taskId: string;
 }
 

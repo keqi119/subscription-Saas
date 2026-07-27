@@ -4,7 +4,7 @@ import {
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
@@ -13,6 +13,12 @@ import {
   Stage2HandoverWorkflowHandler
 } from "../src/handover-work-order/stage2-handover-workflow.types";
 import { Stage2HandoverWorkflowWorker } from "../src/handover-work-order/stage2-handover-workflow.worker";
+
+beforeEach(() => {
+  vi.spyOn(Logger.prototype, "warn").mockImplementation(
+    () => undefined
+  );
+});
 
 afterEach(() => {
   vi.useRealTimers();

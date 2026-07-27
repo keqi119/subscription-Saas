@@ -159,17 +159,18 @@ describe("Stage 2 handover notifications", () => {
     expect(serialized).not.toContain("task-token-secret");
   });
 
-  it("claims only the notification job types implemented by this handler", () => {
+  it("claims every workflow job type with an implemented handler", () => {
     const harness = createHarness();
 
     expect(harness.workflow.supportedJobTypes).toEqual([
       VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
       VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
-      VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY
+      VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY,
+      VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+      VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM,
+      VehicleHandoverWorkflowJobType.RECONCILE_PLATFORM_SEAL,
+      VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
     ]);
-    expect(harness.workflow.supportedJobTypes).not.toContain(
-      VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
-    );
   });
 });
 

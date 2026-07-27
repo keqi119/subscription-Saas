@@ -2,6 +2,7 @@ import {
   BadGatewayException,
   BadRequestException,
   ConflictException,
+  forwardRef,
   Inject,
   Injectable,
   NotFoundException,
@@ -34,9 +35,11 @@ import {
   ESIGN_PROVIDER_CLIENT,
   ESignProvider,
   ESignProviderActionResult,
+  ESignProviderSignerStatusResult,
   ESignSigningSlot,
   ESignSigningSlotCoordinate
 } from "../esign/esign.provider";
+import { ESignService } from "../esign/esign.service";
 import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
 import { normalizeFieldOperatorPhone } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
@@ -108,6 +111,12 @@ const PORTAL_START_CUSTOMER_SIGNER_STATUSES = new Set<ESignSignerStatus>([
   ESignSignerStatus.PENDING,
   ESignSignerStatus.SIGNING
 ]);
+const PLATFORM_SEAL_RECONCILABLE_STATUSES =
+  new Set<ESignSignerStatus>([
+    ESignSignerStatus.PENDING,
+    ESignSignerStatus.SIGNING,
+    ESignSignerStatus.SIGNED
+  ]);
 
 const CUSTOMER_SIGNING_SLOT: ESignSigningSlot = {
   documentType: "DELIVERY_HANDOVER",
@@ -261,10 +270,15 @@ export interface Stage2PortalESignView {
   workOrderId: string;
 }
 
-export interface Stage2PortalSigningStartResult {
-  expiresAt: Date | null;
-  signUrl: string;
-}
+export type Stage2PortalSigningStartResult =
+  | {
+      expiresAt: Date | null;
+      signUrl: string;
+    }
+  | {
+      alreadySigned: true;
+      eSign: Stage2PortalESignView;
+    };
 
 export interface Stage2ESignInitiator {
   actorId?: string;
@@ -307,7 +321,10 @@ export class Stage2HandoverESignService {
     @Optional()
     private readonly signedArtifactService?: FadadaSignedArtifactService,
     @Optional()
-    private readonly workflowService?: Stage2HandoverWorkflowService
+    @Inject(forwardRef(() => Stage2HandoverWorkflowService))
+    private readonly workflowService?: Stage2HandoverWorkflowService,
+    @Optional()
+    private readonly eSignService?: ESignService
   ) {}
 
   async getStatus(workOrderId: string): Promise<Stage2HandoverESignView> {
@@ -390,8 +407,47 @@ export class Stage2HandoverESignService {
 
     const readiness = await this.readinessService.getReadiness(workOrderId);
     assertPortalStartReadiness(workOrder, task, readiness);
+    const requiresRecovery =
+      !customerSigner.signUrl ||
+      (
+        customerSigner.signUrlExpiresAt !== null &&
+        customerSigner.signUrlExpiresAt.getTime() <= Date.now()
+      );
 
     try {
+      if (requiresRecovery) {
+        const providerStatus = await this.queryCustomerProviderStatus(
+          task,
+          customerSigner
+        );
+        if (
+          providerStatus.status === "SIGNED" &&
+          providerStatus.resultCode === "3000"
+        ) {
+          if (!this.eSignService) {
+            throw new Error(
+              "STAGE2_HANDOVER_ESIGN_TRANSITION_SERVICE_UNAVAILABLE"
+            );
+          }
+          await this.eSignService.reconcileCustomerSigned({
+            completedAt: new Date(),
+            eSignTaskId: task.id,
+            providerTransactionId:
+              customerSigner.providerTransactionId!,
+            source: "QUERY"
+          });
+          return {
+            alreadySigned: true,
+            eSign: await this.getPortalStatus(workOrderId, customerId)
+          };
+        }
+        if (providerStatus.status !== "SIGNING") {
+          throw new Error(
+            "STAGE2_HANDOVER_CUSTOMER_STATUS_NOT_RECOVERABLE"
+          );
+        }
+      }
+
       const refreshed = await this.provider.getSignerUrl({
         contractId: task.providerEnvelopeId ?? task.taskNo,
         providerTaskId: task.providerTaskId ?? task.taskNo,
@@ -404,6 +460,34 @@ export class Stage2HandoverESignService {
         task.provider,
         this.configService
       );
+      if (requiresRecovery) {
+        const persisted =
+          await this.prisma.contractESignSigner.updateMany({
+            data: {
+              signUrl,
+              signUrlExpiresAt: refreshed.expiresAt ?? null,
+              signerStatus: ESignSignerStatus.SIGNING
+            },
+            where: {
+              id: customerSigner.id,
+              providerTransactionId:
+                customerSigner.providerTransactionId,
+              signerStatus: {
+                in: [
+                  ESignSignerStatus.PENDING,
+                  ESignSignerStatus.SIGNING
+                ]
+              },
+              slotId: CUSTOMER_SLOT_ID,
+              taskId: task.id
+            }
+          });
+        if (persisted.count !== 1) {
+          throw new Error(
+            "STAGE2_HANDOVER_CUSTOMER_URL_REFRESH_STALE"
+          );
+        }
+      }
       return {
         expiresAt: refreshed.expiresAt ?? null,
         signUrl
@@ -411,6 +495,98 @@ export class Stage2HandoverESignService {
     } catch {
       throw portalSigningUrlUnavailable();
     }
+  }
+
+  private async queryCustomerProviderStatus(
+    task: Stage2Task,
+    customerSigner: Stage2Task["signers"][number]
+  ) {
+    const providerCustomerId =
+      await this.loadBoundProviderCustomerId(
+        task.provider,
+        customerSigner.customerId
+      );
+    if (!providerCustomerId) {
+      throw new Error(
+        "STAGE2_HANDOVER_CUSTOMER_PROVIDER_BINDING_MISSING"
+      );
+    }
+    return this.provider.querySignerStatus({
+      contractId: task.providerEnvelopeId ?? task.taskNo,
+      providerCustomerId,
+      providerTaskId: task.providerTaskId ?? task.taskNo,
+      providerTransactionId:
+        customerSigner.providerTransactionId!,
+      signerId: customerSigner.id,
+      slotId: CUSTOMER_SLOT_ID,
+      taskId: task.id
+    });
+  }
+
+  async reconcileCustomerSignature(input: {
+    eSignTaskId: string;
+    providerTransactionId: string;
+    workOrderId: string;
+  }) {
+    const workOrder = await this.loadWorkOrder(
+      input.workOrderId
+    );
+    const handover = workOrder.handover;
+    const task = this.pointerTask(workOrder);
+    if (
+      !handover ||
+      !task ||
+      task.id !== input.eSignTaskId
+    ) {
+      throw new Error(
+        "STAGE2_CUSTOMER_RECONCILIATION_TASK_INVALID"
+      );
+    }
+    const { customerSigner } = requireTypedSigners(task);
+    const expectedTransactionId = buildTransactionId(
+      task.taskNo,
+      "H1"
+    );
+    if (
+      input.providerTransactionId !== expectedTransactionId ||
+      customerSigner.providerTransactionId !==
+        expectedTransactionId
+    ) {
+      throw new Error(
+        "STAGE2_CUSTOMER_RECONCILIATION_TRANSACTION_INVALID"
+      );
+    }
+    assertTaskSourceBinding(task, handover);
+    if (
+      customerSigner.signerStatus === ESignSignerStatus.SIGNED
+    ) {
+      return {
+        status: "SIGNED" as const
+      };
+    }
+
+    const providerStatus =
+      await this.queryCustomerProviderStatus(
+        task,
+        customerSigner
+      );
+    if (
+      providerStatus.status === "SIGNED" &&
+      providerStatus.resultCode === "3000"
+    ) {
+      if (!this.eSignService) {
+        throw new Error(
+          "STAGE2_HANDOVER_ESIGN_TRANSITION_SERVICE_UNAVAILABLE"
+        );
+      }
+      await this.eSignService.reconcileCustomerSigned({
+        completedAt: new Date(),
+        eSignTaskId: task.id,
+        providerTransactionId: expectedTransactionId,
+        source: "QUERY"
+      });
+    }
+    return providerStatus;
   }
 
   async create(
@@ -717,7 +893,8 @@ export class Stage2HandoverESignService {
 
   async retryPlatformSeal(
     workOrderId: string,
-    actorId: string
+    actorId?: string,
+    expectedProviderTransactionId?: string
   ): Promise<Stage2HandoverESignView> {
     const workOrder = await this.loadWorkOrder(workOrderId);
     const context = this.requireCreationContext(workOrder);
@@ -747,8 +924,9 @@ export class Stage2HandoverESignService {
       });
     }
     if (
-      platformSigner.signerStatus !== ESignSignerStatus.PENDING ||
-      task.taskStatus === ESignTaskStatus.COMPLETED ||
+      !PLATFORM_SEAL_RECONCILABLE_STATUSES.has(
+        platformSigner.signerStatus
+      ) ||
       TERMINAL_REBUILD_STATUSES.has(task.taskStatus)
     ) {
       throw new BadRequestException({
@@ -758,6 +936,43 @@ export class Stage2HandoverESignService {
     }
 
     const now = new Date();
+    const platformTransactionId = buildTransactionId(task.taskNo, "H2");
+    if (
+      expectedProviderTransactionId &&
+      expectedProviderTransactionId !== platformTransactionId
+    ) {
+      throw new BadRequestException({
+        code: "STAGE2_PLATFORM_SEAL_TRANSACTION_INVALID",
+        message: "The workflow job is not bound to the deterministic H2 transaction."
+      });
+    }
+    if (
+      platformSigner.providerTransactionId &&
+      platformSigner.providerTransactionId !== platformTransactionId
+    ) {
+      throw new BadRequestException({
+        code: "STAGE2_PLATFORM_SEAL_TRANSACTION_INVALID",
+        message: "The platform seal transaction does not match the typed H2 slot."
+      });
+    }
+    if (
+      platformSigner.providerTransactionId === platformTransactionId ||
+      platformSigner.signerStatus === ESignSignerStatus.SIGNING ||
+      platformSigner.signerStatus === ESignSignerStatus.SIGNED
+    ) {
+      const providerStatus = await this.reconcilePlatformSeal({
+        eSignTaskId: task.id,
+        providerTransactionId: platformTransactionId,
+        workOrderId
+      });
+      if (
+        providerStatus.status === "SIGNED" ||
+        providerStatus.status === "SIGNING"
+      ) {
+        return this.getStatus(workOrderId);
+      }
+      throw platformStatusUnavailable();
+    }
     if (
       platformSigner.nextRetryAt &&
       platformSigner.nextRetryAt.getTime() > now.getTime()
@@ -768,7 +983,6 @@ export class Stage2HandoverESignService {
       });
     }
     const claimExpiresAt = new Date(now.getTime() + PLATFORM_CLAIM_MS);
-    const platformTransactionId = buildTransactionId(task.taskNo, "H2");
     const claimed = await this.prisma.contractESignSigner.updateMany({
       data: {
         attemptCount: { increment: 1 },
@@ -812,6 +1026,7 @@ export class Stage2HandoverESignService {
       context.handover.sourceDocumentFileId!
     ).find((coordinate) => coordinate.slotId === "STAGE2_HANDOVER_PLATFORM")!;
 
+    let platformResultPersisted = false;
     try {
       if (!this.provider.autoSealTask) {
         throw new Error("provider auto seal is unavailable");
@@ -832,6 +1047,8 @@ export class Stage2HandoverESignService {
           "FADADA_PLATFORM_SIGNATURE_ID"
         ),
         providerEnvelopeId: task.providerEnvelopeId ?? task.taskNo,
+        providerTaskId: task.providerTaskId ?? undefined,
+        signerId: platformSigner.id,
         signingSlotCoordinates: [platformCoordinate],
         signingSlots: [PLATFORM_SIGNING_SLOT],
         signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -873,11 +1090,23 @@ export class Stage2HandoverESignService {
         platformSignerId: platformSigner.id,
         providerSignerId: result.providerSignerId ?? providerTransactionId,
         providerTransactionId,
-        status: result.status,
+        status: "PENDING",
         task,
         claimExpiresAt,
         when: now
       });
+      platformResultPersisted = true;
+      const providerStatus = await this.reconcilePlatformSeal({
+        eSignTaskId: task.id,
+        providerTransactionId,
+        workOrderId
+      });
+      if (
+        providerStatus.status !== "SIGNED" &&
+        providerStatus.status !== "SIGNING"
+      ) {
+        throw platformStatusUnavailable();
+      }
     } catch (error) {
       if (
         await this.platformProviderActionWasReconciled(
@@ -888,6 +1117,16 @@ export class Stage2HandoverESignService {
         )
       ) {
         return this.getStatus(workOrderId);
+      }
+      if (platformResultPersisted) {
+        if (
+          error instanceof BadGatewayException &&
+          exceptionCode(error) ===
+            STAGE2_PLATFORM_SEAL_PROVIDER_FAILED
+        ) {
+          throw error;
+        }
+        throw platformStatusUnavailable();
       }
       if (
         error instanceof BadGatewayException &&
@@ -914,6 +1153,109 @@ export class Stage2HandoverESignService {
     }
 
     return this.getStatus(workOrderId);
+  }
+
+  async reconcilePlatformSeal(input: {
+    eSignTaskId: string;
+    providerTransactionId: string;
+    workOrderId: string;
+  }): Promise<ESignProviderSignerStatusResult> {
+    const workOrder = await this.loadWorkOrder(
+      input.workOrderId
+    );
+    const handover = workOrder.handover;
+    const task = this.pointerTask(workOrder);
+    if (
+      !handover ||
+      !task ||
+      task.id !== input.eSignTaskId
+    ) {
+      throw new Error(
+        "STAGE2_PLATFORM_RECONCILIATION_TASK_INVALID"
+      );
+    }
+    const { platformSigner } = requireTypedSigners(task);
+    const expectedTransactionId = buildTransactionId(
+      task.taskNo,
+      "H2"
+    );
+    if (
+      input.providerTransactionId !== expectedTransactionId ||
+      platformSigner.providerTransactionId !==
+        expectedTransactionId
+    ) {
+      throw new Error(
+        "STAGE2_PLATFORM_RECONCILIATION_TRANSACTION_INVALID"
+      );
+    }
+    assertTaskSourceBinding(task, handover);
+
+    const providerStatus =
+      await this.queryPlatformProviderStatus(
+        task,
+        platformSigner
+      );
+    if (
+      providerStatus.status === "SIGNED" &&
+      providerStatus.resultCode === "3000"
+    ) {
+      if (!this.eSignService) {
+        throw new Error(
+          "STAGE2_HANDOVER_ESIGN_TRANSITION_SERVICE_UNAVAILABLE"
+        );
+      }
+      await this.eSignService.reconcilePlatformSigned({
+        completedAt: new Date(),
+        eSignTaskId: task.id,
+        providerTransactionId: expectedTransactionId,
+        source: "QUERY"
+      });
+      return providerStatus;
+    }
+    if (providerStatus.status === "SIGNING") {
+      await this.prisma.contractESignSigner.updateMany({
+        data: {
+          claimExpiresAt: null,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          nextRetryAt: null,
+          signerStatus: ESignSignerStatus.SIGNING
+        },
+        where: {
+          id: platformSigner.id,
+          providerTransactionId: expectedTransactionId,
+          signerStatus: {
+            in: [
+              ESignSignerStatus.PENDING,
+              ESignSignerStatus.SIGNING
+            ]
+          },
+          slotId: PLATFORM_SLOT_ID,
+          taskId: task.id
+        }
+      });
+    }
+    return providerStatus;
+  }
+
+  private async queryPlatformProviderStatus(
+    task: Stage2Task,
+    platformSigner: Stage2Task["signers"][number]
+  ) {
+    const platformCustomerId = requiredConfig(
+      this.configService,
+      "FADADA_PLATFORM_CUSTOMER_ID"
+    );
+    return this.provider.querySignerStatus({
+      contractId: task.providerEnvelopeId ?? task.taskNo,
+      providerCustomerId: platformCustomerId,
+      providerTaskId: task.providerTaskId ?? task.taskNo,
+      providerTransactionId:
+        platformSigner.providerTransactionId!,
+      signerId: platformSigner.id,
+      slotId: PLATFORM_SLOT_ID,
+      taskId: task.id
+    });
   }
 
   async voidTask(
@@ -2070,7 +2412,7 @@ export class Stage2HandoverESignService {
   }
 
   private async persistPlatformResult(input: {
-    actorId: string;
+    actorId?: string;
     handoverId: string;
     platformSignerId: string;
     providerSignerId: string;
@@ -2112,7 +2454,9 @@ export class Stage2HandoverESignService {
           taskStatus: completed
             ? ESignTaskStatus.COMPLETED
             : ESignTaskStatus.SIGNING,
-          updatedBy: input.actorId
+          ...(input.actorId
+            ? { updatedBy: input.actorId }
+            : {})
         },
         where: {
           id: input.task.id,
@@ -2135,7 +2479,9 @@ export class Stage2HandoverESignService {
           status: completed
             ? DeliveryHandoverStatus.SIGNED
             : DeliveryHandoverStatus.PENDING_PLATFORM_SEAL,
-          updatedBy: input.actorId
+          ...(input.actorId
+            ? { updatedBy: input.actorId }
+            : {})
         },
         where: {
           handoverESignTaskId: input.task.id,
@@ -2150,7 +2496,9 @@ export class Stage2HandoverESignService {
           data: {
             signedAt: input.when,
             status: ContractStatus.SIGNED,
-            updatedBy: input.actorId
+            ...(input.actorId
+              ? { updatedBy: input.actorId }
+              : {})
           },
           where: { id: input.task.contractId }
         });
@@ -2403,6 +2751,14 @@ function portalSigningUrlUnavailable() {
   return new BadGatewayException({
     code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
     message: "The customer signing link is temporarily unavailable."
+  });
+}
+
+function platformStatusUnavailable() {
+  return new BadGatewayException({
+    code: STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
+    message:
+      "The Stage 2 platform seal status is not confirmed and will be reconciled."
   });
 }
 

@@ -47,6 +47,10 @@ describe("Fadada provider configuration", () => {
     const platform = await provider.autoSealTask?.({
       contractId: "contract-stage2-mock",
       documentType: "DELIVERY_HANDOVER",
+      platformCustomerId: "platform-customer-1",
+      providerEnvelopeId: "MOCKSTAGE2TASK",
+      providerTaskId: "MOCKSTAGE2H1",
+      signerId: "platform-signer-stage2-mock",
       signingSlots: [{
         documentType: "DELIVERY_HANDOVER",
         keyword: "stage2-handover-platform",
@@ -57,6 +61,7 @@ describe("Fadada provider configuration", () => {
         slotId: "STAGE2_HANDOVER_PLATFORM"
       }],
       signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: "task-stage2-mock",
       taskNo: "MOCKSTAGE2TASK",
       transactionId: "MOCKSTAGE2H2"
     });

@@ -46,6 +46,7 @@ import {
 import {
   STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
   STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED,
+  STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
   Stage2HandoverESignService
 } from "../src/handover-work-order/stage2-handover-esign.service";
 import type { Stage2HandoverESignReadiness } from "../src/handover-work-order/stage2-handover-esign-readiness.service";
@@ -1420,6 +1421,172 @@ describe("Stage2HandoverESignService", () => {
     });
   });
 
+  it("queries H2 before retrying an ambiguous platform operation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    Object.assign(task.signers[1]!, {
+      attemptCount: 1,
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "1000",
+      resultDescription: "active",
+      status: "SIGNING"
+    });
+
+    await harness.service.retryPlatformSeal(
+      "work-order-1",
+      "admin-1"
+    );
+
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledWith({
+      contractId: "provider-envelope-1",
+      providerCustomerId: "platform-customer-1",
+      providerTaskId: "ESG20260726080000ABCDH1",
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerId: "stage2-platform-signer-1",
+      slotId: "STAGE2_HANDOVER_PLATFORM",
+      taskId: "stage2-task-1"
+    });
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+  });
+
+  it("does not issue another seal when exact H2 is already signed", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    Object.assign(task.signers[1]!, {
+      attemptCount: 1,
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "3000",
+      resultDescription: "completed",
+      status: "SIGNED"
+    });
+
+    await harness.service.retryPlatformSeal(
+      "work-order-1",
+      "admin-1"
+    );
+
+    expect(
+      harness.transitions.reconcilePlatformSigned
+    ).toHaveBeenCalledWith({
+      completedAt: expect.any(Date),
+      eSignTaskId: task.id,
+      providerTransactionId:
+        "ESG20260726080000ABCDH2",
+      source: "QUERY"
+    });
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+  });
+
+  it("does not mark H2 signed from the platform write response alone", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.provider.autoSealTask.mockResolvedValueOnce({
+      coveredSlotIds: ["STAGE2_HANDOVER_PLATFORM"],
+      providerActionType: "PLATFORM_AUTO_SEAL",
+      providerSignerId: "ESG20260726080000ABCDH2",
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      resultCode: "3000",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      status: "COMPLETED"
+    });
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "1000",
+      resultDescription: "active",
+      status: "SIGNING"
+    });
+
+    const result = await harness.service.retryPlatformSeal(
+      "work-order-1",
+      "admin-1"
+    );
+
+    expect(harness.provider.autoSealTask).toHaveBeenCalledTimes(1);
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledTimes(1);
+    expect(
+      harness.transitions.reconcilePlatformSigned
+    ).not.toHaveBeenCalled();
+    expect(result.platformSigner.status).toBe(
+      ESignSignerStatus.SIGNING
+    );
+    expect(result.status).toBe(ESignTaskStatus.SIGNING);
+  });
+
+  it("queries H2 without repeating the provider write after an ambiguous status response", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.provider.querySignerStatus.mockRejectedValueOnce(
+      new Error("provider status timeout")
+    );
+
+    await expect(
+      harness.service.retryPlatformSeal(
+        "work-order-1",
+        "admin-1"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_PLATFORM_SEAL_PROVIDER_FAILED
+      })
+    });
+    expect(task.signers[1]).toMatchObject({
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "1000",
+      resultDescription: "active",
+      status: "SIGNING"
+    });
+    await harness.service.retryPlatformSeal(
+      "work-order-1",
+      "admin-1"
+    );
+
+    expect(harness.provider.autoSealTask).toHaveBeenCalledTimes(1);
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects void after an asynchronous platform action is accepted", async () => {
     const harness = createHarness();
     const task = makeTask({
@@ -1516,6 +1683,30 @@ describe("Stage2HandoverESignService", () => {
         code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
       })
     });
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects a workflow auto-seal job that is not bound to deterministic H2", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+
+    await expect(
+      harness.service.retryPlatformSeal(
+        "work-order-1",
+        undefined,
+        "OTHERTRANSACTION"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_PLATFORM_SEAL_TRANSACTION_INVALID"
+      })
+    });
+    expect(harness.provider.querySignerStatus).not.toHaveBeenCalled();
     expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
   });
 
@@ -2053,8 +2244,14 @@ describe("Stage2HandoverESignService", () => {
   );
 
   it("returns only a short-lived URL and expiry from the explicit Portal start action", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     const harness = createHarness();
     const task = makeTask();
+    Object.assign(task.signers[0]!, {
+      signUrl: "https://sentinel.example/stage2-sign",
+      signUrlExpiresAt: new Date("2026-07-26T08:10:00.000Z")
+    });
     attachPortalTask(harness, task);
     harness.readiness.getReadiness.mockResolvedValueOnce({
       blockers: [
@@ -2114,6 +2311,117 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
     expect(harness.prisma.vehicleDelivery.update).not.toHaveBeenCalled();
     expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
+  });
+
+  it("refreshes an expired URL without re-uploading or creating a new transaction", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = createHarness();
+    const task = makeTask();
+    Object.assign(task.signers[0]!, {
+      signUrl: "https://sentinel.example/expired-stage2-sign",
+      signUrlExpiresAt: new Date(NOW.getTime() - 1)
+    });
+    attachPortalTask(harness, task);
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "1000",
+      resultDescription: "active",
+      status: "SIGNING"
+    });
+    const expiresAt = new Date(NOW.getTime() + 30 * 60 * 1000);
+    harness.provider.getSignerUrl.mockResolvedValueOnce({
+      expiresAt,
+      signUrl: "https://sentinel.example/refreshed-stage2-sign"
+    });
+
+    const result = await harness.service.startPortalSigning(
+      "work-order-1",
+      "customer-1"
+    );
+
+    expect(result).toEqual({
+      expiresAt,
+      signUrl: "https://sentinel.example/refreshed-stage2-sign"
+    });
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledWith({
+      contractId: "provider-envelope-1",
+      providerCustomerId: "fadada-customer-1",
+      providerTaskId: "ESG20260726080000ABCDH1",
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      signerId: "stage2-customer-signer-1",
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      taskId: "stage2-task-1"
+    });
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledWith({
+      contractId: "provider-envelope-1",
+      providerTaskId: "ESG20260726080000ABCDH1",
+      redirectUrl:
+        "http://localhost:3000/portal/handover-reviews/work-order-1",
+      signerId: "stage2-customer-signer-1",
+      taskId: "stage2-task-1"
+    });
+    expect(task.signers[0]).toMatchObject({
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      signUrl: "https://sentinel.example/refreshed-stage2-sign",
+      signUrlExpiresAt: expiresAt,
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(harness.prisma.vehicleDelivery.update).not.toHaveBeenCalled();
+    expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
+  });
+
+  it("returns an already-signed projection instead of a URL when provider reports 3000", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    Object.assign(task.signers[0]!, {
+      signUrl: "https://sentinel.example/expired-stage2-sign",
+      signUrlExpiresAt: new Date(NOW.getTime() - 1)
+    });
+    attachPortalTask(harness, task);
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "3000",
+      resultDescription: "completed",
+      status: "SIGNED"
+    });
+    harness.transitions.reconcileCustomerSigned.mockImplementationOnce(
+      async ({ completedAt }: { completedAt: Date }) => {
+        Object.assign(task.signers[0]!, {
+          signedAt: completedAt,
+          signerStatus: ESignSignerStatus.SIGNED
+        });
+        task.taskStatus = ESignTaskStatus.SIGNING;
+        Object.assign(harness.state.workOrder.handover, {
+          customerSignedAt: completedAt,
+          status: DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+        });
+      }
+    );
+
+    const result = await harness.service.startPortalSigning(
+      "work-order-1",
+      "customer-1"
+    );
+
+    expect(result).toEqual({
+      alreadySigned: true,
+      eSign: expect.objectContaining({
+        customerSigner: expect.objectContaining({
+          status: ESignSignerStatus.SIGNED
+        }),
+        status: ESignTaskStatus.SIGNING,
+        taskId: "stage2-task-1"
+      })
+    });
+    expect(harness.transitions.reconcileCustomerSigned).toHaveBeenCalledWith({
+      completedAt: expect.any(Date),
+      eSignTaskId: "stage2-task-1",
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      source: "QUERY"
+    });
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2468,7 +2776,9 @@ function createHarness(env: Record<string, string> = {}) {
     getSignerUrl: vi.fn(),
     querySignerStatus: vi.fn(
       async (): Promise<ESignProviderSignerStatusResult> => ({
-        status: "UNKNOWN"
+        resultCode: "1000",
+        resultDescription: "active",
+        status: "SIGNING"
       })
     ),
     verifyCallback: vi.fn()
@@ -2655,6 +2965,10 @@ function createHarness(env: Record<string, string> = {}) {
       );
     })
   };
+  const transitions = {
+    reconcileCustomerSigned: vi.fn(),
+    reconcilePlatformSigned: vi.fn()
+  };
   const generatePdf = vi.fn();
   const service = new Stage2HandoverESignService(
     prisma,
@@ -2664,6 +2978,9 @@ function createHarness(env: Record<string, string> = {}) {
     undefined,
     workflow as never
   );
+  Object.assign(service as object, {
+    eSignService: transitions
+  });
 
   return {
     customerJobs,
@@ -2677,6 +2994,7 @@ function createHarness(env: Record<string, string> = {}) {
     readiness,
     service,
     state,
+    transitions,
     workflow
   };
 }

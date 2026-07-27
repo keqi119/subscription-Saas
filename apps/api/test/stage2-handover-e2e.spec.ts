@@ -357,7 +357,7 @@ function createStage2HandoverE2EHarness() {
         deliveryLocation: "本地交付测试点",
         energyLevelText: null,
         externalOperatorName: "本地测试交付员",
-        externalOperatorPhone: FIELD_OPERATOR_PHONE,
+        fieldOperatorPhone: FIELD_OPERATOR_PHONE,
         fieldCompletedAt: null,
         fieldNotes: null,
         fieldStartedAt: null,
@@ -846,8 +846,8 @@ function matchesWorkOrderWhere(workOrder: TestRecord, where: TestRecord): boolea
     if (key === "operatorType") {
       return workOrder.operatorType === expected;
     }
-    if (key === "externalOperatorPhone") {
-      return workOrder.externalOperatorPhone === expected;
+    if (key === "fieldOperatorPhone") {
+      return workOrder.fieldOperatorPhone === expected;
     }
     if (key === "accessTokenRevokedAt") {
       return workOrder.accessTokenRevokedAt === expected;

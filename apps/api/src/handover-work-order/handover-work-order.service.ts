@@ -25,8 +25,6 @@ import {
   DeliveryEvidenceFileLifecycleStatus,
   DeliveryEvidenceMediaType,
   DeliveryHandoverStatus,
-  ESignSigningStage,
-  ESignTaskStatus,
   Prisma,
   UserStatus,
   VehicleHandoverAdminReviewStatus,
@@ -73,6 +71,9 @@ import {
   normalizeStage2Sha256,
   validateStage2SourceArtifactBinding
 } from "./stage2-handover-source-artifact";
+import {
+  buildAuthoritativeStage2TaskWhere
+} from "./stage2-handover-task-binding";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
@@ -91,11 +92,6 @@ const READY_FOR_STAGE2_STATUSES = [
   "FIELD_COMPLETED",
   "OPS_REVIEW_PENDING",
   "OPS_REVIEWED"
-] as const;
-const ACTIVE_STAGE2_ESIGN_TASK_STATUSES = [
-  ESignTaskStatus.CREATED,
-  ESignTaskStatus.WAITING_CUSTOMER,
-  ESignTaskStatus.SIGNING
 ] as const;
 const CUSTOMER_REVIEW_ACTIONABLE_STATUSES = new Set(["CUSTOMER_REVIEWING", "EVIDENCE_SUBMITTED"]);
 const OPS_REVIEW_PENDING_ALLOWED_STATUSES = new Set([
@@ -3675,31 +3671,20 @@ export class HandoverWorkOrderService {
     const handoverContractId = handoverRecord
       ? readString(handoverRecord, "handoverContractId")
       : null;
-    const taskPointer: Prisma.ContractESignTaskWhereInput | null =
-      handoverTaskId
-        ? { id: handoverTaskId }
-        : handoverContractId
-          ? {
-              contractId: handoverContractId,
-              taskStatus: {
-                in: [...ACTIVE_STAGE2_ESIGN_TASK_STATUSES]
-              }
-            }
-          : null;
+    const taskWhere = buildAuthoritativeStage2TaskWhere({
+      contractId: handoverContractId,
+      orderId: workOrder.orderId,
+      taskId: handoverTaskId
+    });
     const [task, notification] = await Promise.all([
-      typeof taskModel?.findFirst === "function" && taskPointer
+      typeof taskModel?.findFirst === "function" && taskWhere
         ? taskModel.findFirst({
             orderBy: { createdAt: "desc" },
             select: {
               id: true,
               taskStatus: true
             },
-            where: {
-              deletedAt: null,
-              ...taskPointer,
-              signingStage:
-                ESignSigningStage.STAGE2_DELIVERY_HANDOVER
-            }
+            where: taskWhere
           })
         : Promise.resolve(null),
       typeof notificationModel?.findFirst === "function"

@@ -5,7 +5,6 @@ import {
   ContractTemplateType,
   ContractVersionStatus,
   DeliveryHandoverStatus,
-  ESignSigningStage,
   ESignTaskStatus,
   OrderStatus,
   Prisma,
@@ -19,6 +18,9 @@ import { STAGE2_HANDOVER_PDF_HARD_MAX_BYTES } from "../delivery-handover/deliver
 import { FadadaCustomerReadinessService } from "../esign/fadada-customer-readiness.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
+import {
+  buildAuthoritativeStage2TaskWhere
+} from "./stage2-handover-task-binding";
 
 export const STAGE2_HANDOVER_ESIGN_NOT_READY = "STAGE2_HANDOVER_ESIGN_NOT_READY";
 
@@ -136,11 +138,6 @@ const TERMINAL_WORK_ORDER_STATUSES = new Set<VehicleHandoverWorkOrderStatus>([
   VehicleHandoverWorkOrderStatus.FAILED,
   VehicleHandoverWorkOrderStatus.VOIDED
 ]);
-const ACTIVE_ESIGN_TASK_STATUSES = [
-  ESignTaskStatus.CREATED,
-  ESignTaskStatus.SIGNING,
-  ESignTaskStatus.WAITING_CUSTOMER
-] as const;
 const CUSTOMER_READINESS_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const SHA256_DIGEST_PATTERN = /^[0-9a-f]{64}$/i;
 const VALID_STAGE1_CONTRACT_STATUSES = new Set<ContractStatus>([
@@ -297,26 +294,19 @@ export class Stage2HandoverESignReadinessService {
       : null;
     this.checkSourceFile(handover, sourceFile, addBlocker);
 
-    const activeTaskPointers: Prisma.ContractESignTaskWhereInput[] = [];
-    if (handover?.handoverContractId) {
-      activeTaskPointers.push({ contractId: handover.handoverContractId });
-    }
-    if (handover?.handoverESignTaskId) {
-      activeTaskPointers.push({ id: handover.handoverESignTaskId });
-    }
-    const activeTask = activeTaskPointers.length > 0
+    const activeTaskWhere = buildAuthoritativeStage2TaskWhere({
+      contractId: handover?.handoverContractId,
+      orderId: workOrder.order.id,
+      taskId: handover?.handoverESignTaskId
+    });
+    const activeTask = activeTaskWhere
       ? await this.prisma.contractESignTask.findFirst({
           orderBy: { createdAt: "desc" },
           select: {
             id: true,
             taskStatus: true
           },
-          where: {
-            deletedAt: null,
-            OR: activeTaskPointers,
-            signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
-            taskStatus: { in: [...ACTIVE_ESIGN_TASK_STATUSES] }
-          }
+          where: activeTaskWhere
         })
       : null;
     if (activeTask) {

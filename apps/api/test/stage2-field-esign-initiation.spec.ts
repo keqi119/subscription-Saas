@@ -10,6 +10,8 @@ import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/
 import {
   ContractStatus,
   DeliveryHandoverStatus,
+  ESignDocumentType,
+  ESignSigningStage,
   ESignTaskStatus,
   VehicleHandoverWorkflowJobType,
   VehicleHandoverWorkOrderStatus
@@ -153,11 +155,11 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
 
   it("projects an existing Stage 2 task and explicitly disables another Field initiation", async () => {
     const harness = createHarness();
-    harness.state.activeTask = {
-      contractId: "contract-stage2-1",
+    harness.handover.handoverESignTaskId = "stage2-task-existing";
+    harness.state.activeTask = stage2Task({
       id: "stage2-task-existing",
       taskStatus: ESignTaskStatus.WAITING_CUSTOMER
-    };
+    });
     const readiness = {
       getReadiness: vi.fn(async () => ({
         blockers: [{ code: "ACTIVE_ESIGN_TASK_CONFLICT" }],
@@ -194,15 +196,108 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
     ESignTaskStatus.FAILED,
     ESignTaskStatus.EXPIRED
   ])(
+    "does not project a terminal %s task retained by the authoritative pointer",
+    async (taskStatus) => {
+      const harness = createHarness();
+      const pointerTask = stage2Task({
+        id: `stage2-task-pointer-${taskStatus.toLowerCase()}`,
+        taskStatus
+      });
+      harness.handover.handoverESignTaskId = pointerTask.id;
+      harness.state.activeTask = pointerTask;
+      harness.state.otherTasks = [
+        stage2Task({ id: "stage2-task-unrelated-fallback" })
+      ];
+      const controller = fieldDetailController(harness, {
+        blockers: [],
+        ready: true
+      });
+
+      const result = await controller.getWorkOrder(
+        "work-order-1",
+        { phone: FIELD_PHONE } as never,
+        { headers: {}, ip: "127.0.0.1" } as never
+      );
+
+      expect(result.stage2ESign).toEqual({
+        status: null,
+        taskId: null
+      });
+      expect(result.stage2Capabilities.canStartESign).toBe(true);
+    }
+  );
+
+  it.each([
+    [
+      "wrong document",
+      {
+        documentType: ESignDocumentType.SUBSCRIPTION_CONTRACT
+      }
+    ],
+    [
+      "wrong signing stage",
+      {
+        signingStage:
+          ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT
+      }
+    ],
+    [
+      "wrong contract",
+      {
+        contractId: "contract-stage2-other"
+      }
+    ],
+    [
+      "wrong order",
+      {
+        orderId: "order-other"
+      }
+    ]
+  ] as const)(
+    "fails closed for a pointer with %s and does not replace it with fallback",
+    async (_name, taskOverrides) => {
+      const harness = createHarness();
+      const pointerTask = stage2Task({
+        id: "stage2-task-invalid-pointer",
+        ...taskOverrides
+      });
+      harness.handover.handoverESignTaskId = pointerTask.id;
+      harness.state.activeTask = pointerTask;
+      harness.state.otherTasks = [
+        stage2Task({ id: "stage2-task-valid-fallback" })
+      ];
+      const controller = fieldDetailController(harness, {
+        blockers: [],
+        ready: true
+      });
+
+      const result = await controller.getWorkOrder(
+        "work-order-1",
+        { phone: FIELD_PHONE } as never,
+        { headers: {}, ip: "127.0.0.1" } as never
+      );
+
+      expect(result.stage2ESign).toEqual({
+        status: null,
+        taskId: null
+      });
+      expect(result.stage2Capabilities.canStartESign).toBe(true);
+    }
+  );
+
+  it.each([
+    ESignTaskStatus.CANCELLED,
+    ESignTaskStatus.FAILED,
+    ESignTaskStatus.EXPIRED
+  ])(
     "does not rediscover a terminal historical %s task after its authoritative pointer is cleared",
     async (taskStatus) => {
       const harness = createHarness();
       harness.handover.handoverESignTaskId = null;
-      harness.state.activeTask = {
-        contractId: "contract-stage2-1",
+      harness.state.activeTask = stage2Task({
         id: `stage2-task-historical-${taskStatus.toLowerCase()}`,
         taskStatus
-      };
+      });
       const readiness = {
         getReadiness: vi.fn(async () => ({
           blockers: [],
@@ -519,27 +614,25 @@ function createHarness() {
     }
   };
   const state: {
-    activeTask: null | {
-      contractId: string;
-      id: string;
-      taskStatus: ESignTaskStatus;
-    };
+    activeTask: null | TestESignTask;
     notificationJob: {
       jobStatus: string;
     };
+    otherTasks: TestESignTask[];
   } = {
     activeTask: null,
     notificationJob: {
       jobStatus: "COMPLETED"
-    }
+    },
+    otherTasks: []
   };
   const prisma = {
     contractESignTask: {
       findFirst: vi.fn(
         async ({ where }: { where: Record<string, unknown> }) =>
-          state.activeTask && matchesTaskWhere(state.activeTask, where)
-            ? state.activeTask
-            : null
+          [state.activeTask, ...state.otherTasks]
+            .filter((task): task is TestESignTask => task !== null)
+            .find((task) => matchesTaskWhere(task, where)) ?? null
       )
     },
     fileObject: {
@@ -605,21 +698,19 @@ function createHarness() {
 }
 
 function matchesTaskWhere(
-  task: {
-    contractId: string;
-    id: string;
-    taskStatus: ESignTaskStatus;
-  },
+  task: TestESignTask,
   where: Record<string, unknown>
 ): boolean {
-  if (typeof where.id === "string" && where.id !== task.id) {
-    return false;
-  }
-  if (
-    typeof where.contractId === "string" &&
-    where.contractId !== task.contractId
-  ) {
-    return false;
+  for (const key of [
+    "contractId",
+    "documentType",
+    "id",
+    "orderId",
+    "signingStage"
+  ] as const) {
+    if (typeof where[key] === "string" && where[key] !== task[key]) {
+      return false;
+    }
   }
   const status = where.taskStatus;
   if (typeof status === "string" && status !== task.taskStatus) {
@@ -650,6 +741,54 @@ function matchesTaskWhere(
     return false;
   }
   return true;
+}
+
+type TestESignTask = {
+  contractId: string;
+  documentType: ESignDocumentType;
+  id: string;
+  orderId: string;
+  signingStage: ESignSigningStage;
+  taskStatus: ESignTaskStatus;
+};
+
+function stage2Task(
+  overrides: Partial<TestESignTask> = {}
+): TestESignTask {
+  return {
+    contractId: "contract-stage2-1",
+    documentType: ESignDocumentType.DELIVERY_HANDOVER,
+    id: "stage2-task-current",
+    orderId: "order-1",
+    signingStage:
+      ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+    taskStatus: ESignTaskStatus.CREATED,
+    ...overrides
+  };
+}
+
+function fieldDetailController(
+  harness: ReturnType<typeof createHarness>,
+  readinessResult: {
+    blockers: Array<{ code: string }>;
+    ready: boolean;
+  }
+) {
+  return Reflect.construct(FieldOperatorAuthController, [
+    { recordTaskViewed: vi.fn(async () => undefined) },
+    harness.service,
+    {},
+    {
+      getReadiness: vi.fn(async () => ({
+        ...readinessResult,
+        state: {
+          esignTaskId: null,
+          esignTaskStatus: null,
+          workOrderId: "work-order-1"
+        }
+      }))
+    }
+  ]) as FieldOperatorAuthController;
 }
 
 function emptyChecklist() {

@@ -522,6 +522,155 @@ describe("Stage2HandoverESignService", () => {
     expectCustomerWorkflowJobs(harness);
   });
 
+  it("recovers an accepted provider action from its durable claim after interruption before marker persistence", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    const updateSigner =
+      harness.prisma.contractESignSigner.updateMany.getMockImplementation()!;
+    let finalizationInterruptions = 2;
+    harness.prisma.contractESignSigner.updateMany.mockImplementation(
+      async (input: any) => {
+        if (
+          input.data?.claimExpiresAt === null &&
+          input.data?.providerSignerId &&
+          finalizationInterruptions > 0
+        ) {
+          finalizationInterruptions -= 1;
+          throw new Error(
+            "simulated accepted-result finalization interruption"
+          );
+        }
+        return updateSigner(input);
+      }
+    );
+    const updateTask =
+      harness.prisma.contractESignTask.updateMany.getMockImplementation()!;
+    harness.prisma.contractESignTask.updateMany.mockImplementation(
+      async (input: any) => {
+        if (
+          input.data?.errorSnapshot?.code ===
+          "STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING"
+        ) {
+          throw new Error(
+            "simulated abrupt process interruption before marker persistence"
+          );
+        }
+        return updateTask(input);
+      }
+    );
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        fieldInitiator(),
+        fieldReview()
+      )
+    ).rejects.toThrow(
+      "simulated abrupt process interruption before marker persistence"
+    );
+
+    const task = harness.state.workOrder.handover.handoverESignTask!;
+    const customerSigner = task.signers[0]!;
+    expect(task).toMatchObject({
+      errorSnapshot: null,
+      providerEnvelopeId: task.taskNo,
+      providerTaskId: "ESG20260726080000ABCDH1",
+      responseSnapshot: null,
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+    });
+    expect(customerSigner).toMatchObject({
+      claimExpiresAt: expect.any(Date),
+      lastErrorCode: null,
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(customerSigner.providerSignerId ?? null).toBeNull();
+    expect(harness.customerJobs.size).toBe(0);
+    expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+
+    harness.provider.getSignerUrl.mockResolvedValueOnce({
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+      signUrl: "https://unsafe.example/recovered-sign?token=secret"
+    });
+    const recovered = await harness.service.create(
+      "work-order-1",
+      fieldInitiator(),
+      fieldReview()
+    );
+
+    expect(recovered.taskId).toBe(task.id);
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledWith({
+      contractId: task.taskNo,
+      providerTaskId: "ESG20260726080000ABCDH1",
+      redirectUrl:
+        "http://localhost:3000/portal/handover-reviews/work-order-1",
+      signerId: customerSigner.id,
+      taskId: task.id
+    });
+    expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+    expectCustomerWorkflowJobs(harness);
+    expect(JSON.stringify(task.errorSnapshot)).not.toContain(
+      "acceptedCustomerProviderResult"
+    );
+    expect(JSON.stringify(task.responseSnapshot)).not.toMatch(
+      /recovered-sign|token=secret/
+    );
+
+    const repeated = await harness.service.create(
+      "work-order-1",
+      fieldInitiator(),
+      fieldReview()
+    );
+
+    expect(repeated.taskId).toBe(task.id);
+    expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(1);
+    expectCustomerWorkflowJobs(harness);
+  });
+
+  it("fails closed without customer jobs when an abandoned durable claim cannot establish provider acceptance", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    const task = makeTask({
+      customerStatus: ESignSignerStatus.PENDING,
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+    });
+    const customerSigner = task.signers[0]!;
+    task.errorSnapshot = null;
+    task.providerEnvelopeId = task.taskNo;
+    task.responseSnapshot = null;
+    customerSigner.claimExpiresAt = new Date(Date.now() - 60_000);
+    customerSigner.providerSignerId = null;
+    customerSigner.signUrl = null;
+    customerSigner.signUrlExpiresAt = null;
+    attachPortalTask(harness, task);
+    harness.provider.getSignerUrl.mockRejectedValueOnce(
+      new Error("provider has no accepted action for this transaction")
+    );
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        fieldInitiator(),
+        fieldReview()
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code:
+          "STAGE2_HANDOVER_ESIGN_PROVIDER_ACCEPTANCE_UNCONFIRMED"
+      })
+    });
+
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(1);
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.workflow.enqueueCustomerESignJobs).not.toHaveBeenCalled();
+    expect(harness.customerJobs.size).toBe(0);
+    expect(customerSigner.claimExpiresAt).not.toBeNull();
+    expect(task.errorSnapshot).toBeNull();
+  });
+
   it("keeps an ambiguous customer provider result recoverable under its fresh claim", async () => {
     const harness = createHarness();
     harness.provider.createSignTask.mockRejectedValueOnce(

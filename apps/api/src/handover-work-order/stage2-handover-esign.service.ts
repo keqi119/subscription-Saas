@@ -53,6 +53,8 @@ export const STAGE2_PLATFORM_SEAL_PROVIDER_FAILED =
   "STAGE2_PLATFORM_SEAL_PROVIDER_FAILED";
 export const STAGE2_HANDOVER_ESIGN_RESULT_STALE =
   "STAGE2_HANDOVER_ESIGN_RESULT_STALE";
+export const STAGE2_HANDOVER_ESIGN_PROVIDER_ACCEPTANCE_UNCONFIRMED =
+  "STAGE2_HANDOVER_ESIGN_PROVIDER_ACCEPTANCE_UNCONFIRMED";
 export const STAGE2_PLATFORM_SEAL_CLAIM_LOST =
   "STAGE2_PLATFORM_SEAL_CLAIM_LOST";
 
@@ -1199,12 +1201,20 @@ export class Stage2HandoverESignService {
   ) {
     requireTypedSigners(task);
     assertTaskSourceBinding(task, workOrder.handover);
-    const acceptedResult =
+    let acceptedResult =
       this.acceptedCustomerProviderResultFromTask(
         workOrder,
         task,
         actorId
       );
+    if (!acceptedResult && this.isStage2HandoverWorkflowEnabled()) {
+      acceptedResult =
+        await this.recoverAcceptedCustomerProviderResultFromClaim(
+          workOrder,
+          task,
+          actorId
+        );
+    }
     if (acceptedResult && this.isStage2HandoverWorkflowEnabled()) {
       await this.finalizeAcceptedCustomerProviderResultWithRetry(
         acceptedResult
@@ -1330,6 +1340,85 @@ export class Stage2HandoverESignService {
       when: task.startedAt ?? task.updatedAt,
       workOrderId: workOrder.id
     };
+  }
+
+  private async recoverAcceptedCustomerProviderResultFromClaim(
+    workOrder: Stage2LifecycleWorkOrder,
+    task: Stage2Task,
+    actorId: string | null
+  ): Promise<AcceptedCustomerProviderResult | null> {
+    const handoverId = workOrder.handover?.id;
+    if (!handoverId) {
+      return null;
+    }
+    const { customerSigner } = requireTypedSigners(task);
+    const claimExpiresAt = customerSigner.claimExpiresAt;
+    const transactionId = customerSigner.providerTransactionId;
+    if (
+      !claimExpiresAt ||
+      task.taskStatus !== ESignTaskStatus.WAITING_CUSTOMER ||
+      customerSigner.signerStatus !== ESignSignerStatus.PENDING ||
+      !transactionId
+    ) {
+      return null;
+    }
+    if (
+      !requireProviderTransactionIdOrNull(transactionId) ||
+      transactionId !== buildTransactionId(task.taskNo, "H1") ||
+      task.providerTaskId !== transactionId ||
+      task.providerEnvelopeId !== task.taskNo
+    ) {
+      throw staleCreateResult();
+    }
+
+    try {
+      const refreshed = await this.provider.getSignerUrl({
+        contractId: task.providerEnvelopeId,
+        providerTaskId: transactionId,
+        redirectUrl: this.buildPortalHandoverUrl(workOrder.id),
+        signerId: customerSigner.id,
+        taskId: task.id
+      });
+      if (
+        !refreshed?.signUrl ||
+        (
+          refreshed.expiresAt &&
+          refreshed.expiresAt.getTime() <= Date.now()
+        )
+      ) {
+        throw new Error(
+          "The provider did not return a usable accepted signing action."
+        );
+      }
+      const signUrl = assertSafeProviderSigningUrl(
+        refreshed.signUrl,
+        task.provider,
+        this.configService
+      );
+      return {
+        actorId,
+        claimExpiresAt,
+        customerSignerId: customerSigner.id,
+        handoverId,
+        providerEnvelopeId: task.providerEnvelopeId,
+        providerSignerId: transactionId,
+        providerTaskId: transactionId,
+        signUrl,
+        signUrlExpiresAt: refreshed.expiresAt,
+        taskId: task.id,
+        transactionId,
+        when:
+          customerSigner.lastAttemptAt ??
+          task.startedAt ??
+          task.updatedAt,
+        workOrderId: workOrder.id
+      };
+    } catch {
+      if (claimExpiresAt.getTime() > Date.now()) {
+        return null;
+      }
+      throw providerAcceptanceUnconfirmed();
+    }
   }
 
   private async resolveCurrentTask(workOrder: Stage2LifecycleWorkOrder) {
@@ -2241,6 +2330,14 @@ function portalSigningUrlUnavailable() {
   return new BadGatewayException({
     code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
     message: "The customer signing link is temporarily unavailable."
+  });
+}
+
+function providerAcceptanceUnconfirmed() {
+  return new BadGatewayException({
+    code: STAGE2_HANDOVER_ESIGN_PROVIDER_ACCEPTANCE_UNCONFIRMED,
+    message:
+      "The Stage 2 customer signing request could not be confirmed by the provider."
   });
 }
 

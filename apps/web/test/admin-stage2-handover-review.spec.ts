@@ -127,12 +127,16 @@ describe("Admin Stage 2 handover review order page", () => {
 
   it("keeps delivery blocked until archive and exposes no manual void or reissue UI", () => {
     const source = read(orderPagePath);
+    const archiveGateBlock = source.slice(
+      source.indexOf("const stage2ArchiveReady ="),
+      source.indexOf("const confirmDeliveryDisabledReason")
+    );
 
     expect(source).toContain("交接签署文件归档完成后才可确认交付");
-    expect(source).toContain("deliveryConfirmationAvailable");
-    expect(source).toMatch(
-      /const stage2ArchiveReady = activeHandoverWorkOrder[\s\S]*?: true;/
-    );
+    expect(archiveGateBlock).toContain('handoverWorkOrdersLoadState === "LOADED"');
+    expect(archiveGateBlock).toContain("activeHandoverWorkOrders.length === 0");
+    expect(archiveGateBlock).toContain("activeHandoverWorkOrders.length === 1");
+    expect(archiveGateBlock).toContain("deliveryConfirmationAvailable");
     expect(source).not.toContain("voidAdminStage2HandoverESign");
     expect(source).not.toContain("作废签署任务");
     expect(source).not.toContain("重新发起电子签");

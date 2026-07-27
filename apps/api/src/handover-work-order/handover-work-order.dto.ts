@@ -1,4 +1,8 @@
-import { DeliveryEvidenceMediaType } from "@prisma/client";
+import {
+  DeliveryEvidenceMediaType,
+  VehicleHandoverWorkflowJobStatus,
+  VehicleHandoverWorkflowJobType
+} from "@prisma/client";
 import {
   ArrayMaxSize,
   Equals,
@@ -124,6 +128,17 @@ export class VoidStage2HandoverESignDto {
   @IsString()
   @MaxLength(500)
   reason!: string;
+}
+
+export class Stage2WorkflowRecoveryJobDto {
+  id!: string;
+  jobStatus!: VehicleHandoverWorkflowJobStatus;
+  jobType!: VehicleHandoverWorkflowJobType;
+}
+
+export class Stage2WorkflowRecoveryResultDto {
+  created!: boolean;
+  job!: Stage2WorkflowRecoveryJobDto;
 }
 
 export class StartFieldStage2ESignDto {

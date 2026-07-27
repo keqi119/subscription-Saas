@@ -61,6 +61,8 @@ const PLATFORM_SLOT_ID = ESignSlotId.STAGE2_HANDOVER_PLATFORM;
 const PLATFORM_CLAIM_MS = 5 * 60 * 1000;
 const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV =
   "STAGE2_HANDOVER_WORKFLOW_ENABLED";
+const STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING =
+  "STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING";
 const ACTIVE_TASK_STATUSES = [
   ESignTaskStatus.CREATED,
   ESignTaskStatus.WAITING_CUSTOMER,
@@ -271,6 +273,22 @@ export interface Stage2ESignReviewAcknowledgement {
   sourcePdfHash: string;
 }
 
+interface AcceptedCustomerProviderResult {
+  actorId: string | null;
+  claimExpiresAt: Date | null;
+  customerSignerId: string;
+  handoverId: string;
+  providerEnvelopeId: string;
+  providerSignerId: string;
+  providerTaskId: string;
+  signUrl?: string;
+  signUrlExpiresAt?: Date;
+  taskId: string;
+  transactionId: string;
+  when: Date;
+  workOrderId: string;
+}
+
 @Injectable()
 export class Stage2HandoverESignService {
   constructor(
@@ -399,11 +417,28 @@ export class Stage2HandoverESignService {
       initiator,
       review
     );
-    const existingActiveTask = await this.findActiveTask(initialWorkOrder);
+    let existingActiveTask: Stage2Task | null;
+    try {
+      existingActiveTask = await this.findActiveTask(initialWorkOrder);
+    } catch (error) {
+      if (isCreateWinnerRace(error)) {
+        const winner = await this.resolveCreateWinner(
+          workOrderId,
+          initiator,
+          review
+        );
+        if (winner) {
+          return winner;
+        }
+      }
+      throw error;
+    }
     if (existingActiveTask) {
-      requireTypedSigners(existingActiveTask);
-      assertTaskSourceBinding(existingActiveTask, initialWorkOrder.handover);
-      return this.toView(initialWorkOrder, existingActiveTask, emptyReadiness(workOrderId));
+      return this.returnActiveCreateTask(
+        initialWorkOrder,
+        existingActiveTask,
+        initiation.actorUserId
+      );
     }
 
     const pointerTask = this.pointerTask(initialWorkOrder);
@@ -420,6 +455,10 @@ export class Stage2HandoverESignService {
     await this.readinessService.assertReady(workOrderId);
     const workOrder = await this.loadWorkOrder(workOrderId);
     const context = this.requireCreationContext(workOrder);
+    this.assertReviewedSourceMatchesHandover(
+      initiation.fieldAudit?.reviewAcknowledgement ?? null,
+      context.handover
+    );
     const coordinates = readStage2Coordinates(
       context.handover.handoverContract.contractSnapshot,
       context.handover.sourceDocumentFileId!
@@ -432,97 +471,118 @@ export class Stage2HandoverESignService {
     );
     const now = new Date();
 
-    const task = await withUniqueBusinessNoRetry(() => {
-      const taskNo = createBusinessNo("ESG");
-      return this.prisma.$transaction(async (tx) => {
-        const created = await tx.contractESignTask.create({
-          data: {
-            contractId: context.handover.handoverContract.id,
-            createdBy: initiation.actorUserId,
-            customerId: context.order.customer.id,
-            documentName:
-              context.handover.handoverContract.contractTitle ||
-              "Delivery handover confirmation",
-            documentType: ESignDocumentType.DELIVERY_HANDOVER,
-            orderId: context.order.id,
-            provider: providerType,
-            requestSnapshot: toJson({
-              artifactVersion: context.handover.artifactVersion,
+    let task: Stage2Task;
+    try {
+      task = await withUniqueBusinessNoRetry(() => {
+        const taskNo = createBusinessNo("ESG");
+        return this.prisma.$transaction(async (tx) => {
+          const created = await tx.contractESignTask.create({
+            data: {
               contractId: context.handover.handoverContract.id,
-              documentType: "DELIVERY_HANDOVER",
-              handoverId: context.handover.id,
-              manifestHash: context.handover.manifestHash,
-              ...(initiation.fieldAudit
-                ? {
-                    initiator: initiation.fieldAudit.initiator,
-                    reviewAcknowledgement:
-                      initiation.fieldAudit.reviewAcknowledgement
+              createdBy: initiation.actorUserId,
+              customerId: context.order.customer.id,
+              documentName:
+                context.handover.handoverContract.contractTitle ||
+                "Delivery handover confirmation",
+              documentType: ESignDocumentType.DELIVERY_HANDOVER,
+              orderId: context.order.id,
+              provider: providerType,
+              requestSnapshot: toJson({
+                artifactVersion: context.handover.artifactVersion,
+                contractId: context.handover.handoverContract.id,
+                documentType: "DELIVERY_HANDOVER",
+                handoverId: context.handover.id,
+                manifestHash: context.handover.manifestHash,
+                ...(initiation.fieldAudit
+                  ? {
+                      initiator: initiation.fieldAudit.initiator,
+                      reviewAcknowledgement:
+                        initiation.fieldAudit.reviewAcknowledgement
+                    }
+                  : {}),
+                signingStage: "STAGE2_DELIVERY_HANDOVER",
+                slotIds: [
+                  "STAGE2_HANDOVER_CUSTOMER",
+                  "STAGE2_HANDOVER_PLATFORM"
+                ],
+                sourceDocumentFileId:
+                  context.handover.sourceDocumentFileId,
+                sourcePdfHash: context.handover.sourcePdfHash
+              }),
+              signers: {
+                create: [
+                  {
+                    customerId: context.order.customer.id,
+                    documentType: ESignDocumentType.DELIVERY_HANDOVER,
+                    providerActionType:
+                      ESignProviderActionType.CUSTOMER_MANUAL_SIGN,
+                    required: true,
+                    signerName: context.order.customer.name,
+                    signerStatus: ESignSignerStatus.PENDING,
+                    signerType: ESignSignerType.CUSTOMER,
+                    slotId: CUSTOMER_SLOT_ID
+                  },
+                  {
+                    documentType: ESignDocumentType.DELIVERY_HANDOVER,
+                    providerActionType:
+                      ESignProviderActionType.PLATFORM_AUTO_SEAL,
+                    required: true,
+                    signerName: "Platform",
+                    signerStatus: ESignSignerStatus.PENDING,
+                    signerType: ESignSignerType.PLATFORM,
+                    slotId: PLATFORM_SLOT_ID
                   }
-                : {}),
-              signingStage: "STAGE2_DELIVERY_HANDOVER",
-              slotIds: [
-                "STAGE2_HANDOVER_CUSTOMER",
-                "STAGE2_HANDOVER_PLATFORM"
-              ],
-              sourceDocumentFileId: context.handover.sourceDocumentFileId,
-              sourcePdfHash: context.handover.sourcePdfHash
-            }),
-            signers: {
-              create: [
-                {
-                  customerId: context.order.customer.id,
-                  documentType: ESignDocumentType.DELIVERY_HANDOVER,
-                  providerActionType:
-                    ESignProviderActionType.CUSTOMER_MANUAL_SIGN,
-                  required: true,
-                  signerName: context.order.customer.name,
-                  signerStatus: ESignSignerStatus.PENDING,
-                  signerType: ESignSignerType.CUSTOMER,
-                  slotId: CUSTOMER_SLOT_ID
-                },
-                {
-                  documentType: ESignDocumentType.DELIVERY_HANDOVER,
-                  providerActionType:
-                    ESignProviderActionType.PLATFORM_AUTO_SEAL,
-                  required: true,
-                  signerName: "Platform",
-                  signerStatus: ESignSignerStatus.PENDING,
-                  signerType: ESignSignerType.PLATFORM,
-                  slotId: PLATFORM_SLOT_ID
-                }
-              ]
+                ]
+              },
+              signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+              taskNo,
+              taskStatus: ESignTaskStatus.CREATED,
+              updatedBy: initiation.actorUserId
             },
-            signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
-            taskNo,
-            taskStatus: ESignTaskStatus.CREATED,
-            updatedBy: initiation.actorUserId
-          },
-          include: stage2TaskInclude
-        });
-        const claimed = await tx.vehicleDeliveryHandover.updateMany({
-          data: {
-            failureReason: null,
-            handoverESignTaskId: created.id,
-            status: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
-            updatedBy: initiation.actorUserId
-          },
-          where: {
-            handoverContractId: context.handover.handoverContract.id,
-            handoverESignTaskId: null,
-            id: context.handover.id,
-            sourceDocumentFileId: context.handover.sourceDocumentFileId,
-            status: DeliveryHandoverStatus.SOURCE_GENERATED
-          }
-        });
-        if (claimed.count !== 1) {
-          throw new ConflictException({
-            code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
-            message: "Another Stage 2 eSign create action already claimed this handover."
+            include: stage2TaskInclude
           });
-        }
-        return created;
+          const claimed = await tx.vehicleDeliveryHandover.updateMany({
+            data: {
+              failureReason: null,
+              handoverESignTaskId: created.id,
+              status: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+              updatedBy: initiation.actorUserId
+            },
+            where: {
+              artifactVersion: context.handover.artifactVersion,
+              handoverContractId: context.handover.handoverContract.id,
+              handoverESignTaskId: null,
+              id: context.handover.id,
+              manifestHash: context.handover.manifestHash,
+              sourceDocumentFileId:
+                context.handover.sourceDocumentFileId,
+              sourceObjectKey: context.handover.sourceObjectKey,
+              sourcePdfHash: context.handover.sourcePdfHash,
+              status: DeliveryHandoverStatus.SOURCE_GENERATED
+            }
+          });
+          if (claimed.count !== 1) {
+            throw new ConflictException({
+              code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
+              message: "Another Stage 2 eSign create action already claimed this handover."
+            });
+          }
+          return created;
+        });
       });
-    });
+    } catch (error) {
+      if (isCreateWinnerRace(error)) {
+        const winner = await this.resolveCreateWinner(
+          workOrderId,
+          initiator,
+          review
+        );
+        if (winner) {
+          return winner;
+        }
+      }
+      throw error;
+    }
 
     const { customerSigner } = requireTypedSigners(task);
     const customerTransactionId = buildTransactionId(task.taskNo, "H1");
@@ -537,6 +597,7 @@ export class Stage2HandoverESignService {
       transactionId: customerTransactionId,
       when: now
     });
+    let acceptedResult: AcceptedCustomerProviderResult | null = null;
     try {
       const providerResult = await this.provider.createSignTask({
         callbackUrl: this.buildCallbackUrl(providerType),
@@ -575,7 +636,7 @@ export class Stage2HandoverESignService {
         : undefined;
       const startedAt = new Date();
 
-      await this.persistCustomerProviderResult({
+      acceptedResult = {
         actorId: initiation.actorUserId,
         claimExpiresAt: customerClaimExpiresAt,
         customerSignerId: customerSigner.id,
@@ -591,16 +652,25 @@ export class Stage2HandoverESignService {
         transactionId: providerTransactionId,
         when: startedAt,
         workOrderId
-      });
+      };
+      await this.finalizeAcceptedCustomerProviderResultWithRetry(
+        acceptedResult
+      );
     } catch (error) {
-      if (
-        await this.customerProviderActionWasReconciled(
-          workOrderId,
-          task.id,
-          customerSigner.id,
-          customerTransactionId
-        )
-      ) {
+      const reconciledResult =
+        await this.loadReconciledCustomerProviderResult({
+          actorId: initiation.actorUserId,
+          claimExpiresAt: customerClaimExpiresAt,
+          customerSignerId: customerSigner.id,
+          handoverId: context.handover.id,
+          taskId: task.id,
+          transactionId: customerTransactionId,
+          workOrderId
+        });
+      if (reconciledResult) {
+        await this.finalizeAcceptedCustomerProviderResultWithRetry(
+          reconciledResult
+        );
         return this.getStatus(workOrderId);
       }
       if (
@@ -608,6 +678,16 @@ export class Stage2HandoverESignService {
         exceptionCode(error) === STAGE2_HANDOVER_ESIGN_RESULT_STALE
       ) {
         throw error;
+      }
+      if (acceptedResult) {
+        await this.recordAcceptedCustomerProviderResultPending(
+          acceptedResult
+        );
+        throw new BadGatewayException({
+          code: "STAGE2_HANDOVER_ESIGN_FINALIZATION_FAILED",
+          message:
+            "The accepted Stage 2 customer signing request is pending local finalization."
+        });
       }
       await this.recordCreateFailure(
         context.handover.id,
@@ -1112,6 +1192,146 @@ export class Stage2HandoverESignService {
     return null;
   }
 
+  private async returnActiveCreateTask(
+    workOrder: Stage2LifecycleWorkOrder,
+    task: Stage2Task,
+    actorId: string | null
+  ) {
+    requireTypedSigners(task);
+    assertTaskSourceBinding(task, workOrder.handover);
+    const acceptedResult =
+      this.acceptedCustomerProviderResultFromTask(
+        workOrder,
+        task,
+        actorId
+      );
+    if (acceptedResult && this.isStage2HandoverWorkflowEnabled()) {
+      await this.finalizeAcceptedCustomerProviderResultWithRetry(
+        acceptedResult
+      );
+      const current = await this.loadWorkOrder(workOrder.id);
+      const currentTask = this.pointerTask(current);
+      if (!currentTask || currentTask.id !== task.id) {
+        throw staleCreateResult();
+      }
+      requireTypedSigners(currentTask);
+      assertTaskSourceBinding(currentTask, current.handover);
+      return this.toView(
+        current,
+        currentTask,
+        emptyReadiness(workOrder.id)
+      );
+    }
+    return this.toView(workOrder, task, emptyReadiness(workOrder.id));
+  }
+
+  private async resolveCreateWinner(
+    workOrderId: string,
+    initiator: Stage2ESignInitiator,
+    review?: Stage2ESignReviewAcknowledgement
+  ) {
+    const current = await this.loadWorkOrder(workOrderId);
+    const initiation = this.assertCreateInitiator(
+      current,
+      initiator,
+      review
+    );
+    const winner = await this.findActiveTask(current);
+    if (!winner) {
+      return null;
+    }
+    return this.returnActiveCreateTask(
+      current,
+      winner,
+      initiation.actorUserId
+    );
+  }
+
+  private acceptedCustomerProviderResultFromTask(
+    workOrder: Stage2LifecycleWorkOrder,
+    task: Stage2Task,
+    actorId: string | null
+  ): AcceptedCustomerProviderResult | null {
+    const handoverId = workOrder.handover?.id;
+    if (!handoverId) {
+      return null;
+    }
+    const snapshot = asRecord(task.errorSnapshot);
+    const pending = asRecord(snapshot?.acceptedCustomerProviderResult);
+    if (
+      snapshot?.code === STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING &&
+      pending
+    ) {
+      const claimExpiresAt = readSnapshotDate(pending.claimExpiresAt);
+      const when = readSnapshotDate(pending.when);
+      const transactionId = readSnapshotString(pending.transactionId);
+      const providerEnvelopeId = readSnapshotString(
+        pending.providerEnvelopeId
+      );
+      const providerSignerId = readSnapshotString(
+        pending.providerSignerId
+      );
+      const providerTaskId = readSnapshotString(pending.providerTaskId);
+      if (
+        !claimExpiresAt ||
+        !when ||
+        !transactionId ||
+        !requireProviderTransactionIdOrNull(transactionId) ||
+        !providerEnvelopeId ||
+        !providerSignerId ||
+        !providerTaskId
+      ) {
+        throw staleCreateResult();
+      }
+      const { customerSigner } = requireTypedSigners(task);
+      return {
+        actorId,
+        claimExpiresAt,
+        customerSignerId: customerSigner.id,
+        handoverId,
+        providerEnvelopeId,
+        providerSignerId,
+        providerTaskId,
+        taskId: task.id,
+        transactionId,
+        when,
+        workOrderId: workOrder.id
+      };
+    }
+
+    const { customerSigner } = requireTypedSigners(task);
+    const transactionId = customerSigner.providerTransactionId;
+    if (
+      customerSigner.claimExpiresAt !== null ||
+      !transactionId ||
+      !requireProviderTransactionIdOrNull(transactionId) ||
+      !new Set<ESignSignerStatus>([
+        ESignSignerStatus.PENDING,
+        ESignSignerStatus.SIGNING,
+        ESignSignerStatus.SIGNED
+      ]).has(customerSigner.signerStatus)
+    ) {
+      return null;
+    }
+    return {
+      actorId,
+      claimExpiresAt: null,
+      customerSignerId: customerSigner.id,
+      handoverId,
+      providerEnvelopeId: task.providerEnvelopeId ?? task.taskNo,
+      providerSignerId:
+        customerSigner.providerSignerId ?? transactionId,
+      providerTaskId: task.providerTaskId ?? transactionId,
+      signUrl: customerSigner.signUrl ?? undefined,
+      signUrlExpiresAt:
+        customerSigner.signUrlExpiresAt ?? undefined,
+      taskId: task.id,
+      transactionId,
+      when: task.startedAt ?? task.updatedAt,
+      workOrderId: workOrder.id
+    };
+  }
+
   private async resolveCurrentTask(workOrder: Stage2LifecycleWorkOrder) {
     const pointer = this.pointerTask(workOrder);
     const contractId = workOrder.handover?.handoverContractId;
@@ -1260,6 +1480,30 @@ export class Stage2HandoverESignService {
       .toLowerCase() === "true";
   }
 
+  private assertReviewedSourceMatchesHandover(
+    review: {
+      artifactVersion: number;
+      sourcePdfHash: string | null;
+    } | null,
+    handover: {
+      artifactVersion: number;
+      sourcePdfHash: string | null;
+    }
+  ) {
+    if (
+      review &&
+      (
+        review.artifactVersion !== handover.artifactVersion ||
+        review.sourcePdfHash !== handover.sourcePdfHash
+      )
+    ) {
+      throw new ConflictException({
+        code: "STAGE2_HANDOVER_FIELD_REVIEW_STALE",
+        message: "The reviewed Stage 2 source PDF is stale."
+      });
+    }
+  }
+
   private async claimCustomerProviderAction(input: {
     actorId: string | null;
     claimExpiresAt: Date;
@@ -1326,49 +1570,74 @@ export class Stage2HandoverESignService {
     });
   }
 
-  private async persistCustomerProviderResult(input: {
-    actorId: string | null;
-    claimExpiresAt: Date;
-    customerSignerId: string;
-    handoverId: string;
-    providerEnvelopeId: string;
-    providerSignerId: string;
-    providerTaskId: string;
-    signUrl?: string;
-    signUrlExpiresAt?: Date;
-    taskId: string;
-    transactionId: string;
-    when: Date;
-    workOrderId: string;
-  }) {
+  private async finalizeAcceptedCustomerProviderResultWithRetry(
+    input: AcceptedCustomerProviderResult
+  ) {
+    try {
+      await this.persistCustomerProviderResult(input);
+    } catch (error) {
+      if (
+        error instanceof ConflictException &&
+        exceptionCode(error) === STAGE2_HANDOVER_ESIGN_RESULT_STALE
+      ) {
+        throw error;
+      }
+      await this.persistCustomerProviderResult(input);
+    }
+  }
+
+  private async persistCustomerProviderResult(
+    input: AcceptedCustomerProviderResult
+  ) {
     await this.prisma.$transaction(async (tx) => {
-      const signerUpdated = await tx.contractESignSigner.updateMany({
-        data: {
-          claimExpiresAt: null,
-          lastErrorCode: null,
-          lastErrorMessage: null,
-          nextRetryAt: null,
-          providerSignerId: input.providerSignerId,
-          signUrl: input.signUrl,
-          signUrlExpiresAt: input.signUrlExpiresAt,
-          signerStatus: input.signUrl
-            ? ESignSignerStatus.SIGNING
-            : ESignSignerStatus.PENDING
-        },
-        where: {
-          claimExpiresAt: input.claimExpiresAt,
-          id: input.customerSignerId,
-          providerTransactionId: input.transactionId,
-          signerStatus: ESignSignerStatus.PENDING,
-          slotId: CUSTOMER_SLOT_ID,
-          taskId: input.taskId
-        }
-      });
+      const signerUpdated = input.claimExpiresAt
+        ? await tx.contractESignSigner.updateMany({
+            data: {
+              claimExpiresAt: null,
+              lastErrorCode: null,
+              lastErrorMessage: null,
+              nextRetryAt: null,
+              providerSignerId: input.providerSignerId,
+              signUrl: input.signUrl,
+              signUrlExpiresAt: input.signUrlExpiresAt,
+              signerStatus: input.signUrl
+                ? ESignSignerStatus.SIGNING
+                : ESignSignerStatus.PENDING
+            },
+            where: {
+              claimExpiresAt: input.claimExpiresAt,
+              id: input.customerSignerId,
+              providerTransactionId: input.transactionId,
+              signerStatus: ESignSignerStatus.PENDING,
+              slotId: CUSTOMER_SLOT_ID,
+              taskId: input.taskId
+            }
+          })
+        : { count: 0 };
       if (signerUpdated.count !== 1) {
-        throw staleCreateResult();
+        const acceptedSigner = await tx.contractESignSigner.findFirst({
+          where: {
+            claimExpiresAt: null,
+            id: input.customerSignerId,
+            providerTransactionId: input.transactionId,
+            signerStatus: {
+              in: [
+                ESignSignerStatus.PENDING,
+                ESignSignerStatus.SIGNING,
+                ESignSignerStatus.SIGNED
+              ]
+            },
+            slotId: CUSTOMER_SLOT_ID,
+            taskId: input.taskId
+          }
+        });
+        if (!acceptedSigner) {
+          throw staleCreateResult();
+        }
       }
       const taskUpdated = await tx.contractESignTask.updateMany({
         data: {
+          errorSnapshot: Prisma.JsonNull,
           providerEnvelopeId: input.providerEnvelopeId,
           providerTaskId: input.providerTaskId,
           responseSnapshot: toJson({
@@ -1384,7 +1653,13 @@ export class Stage2HandoverESignService {
         where: {
           id: input.taskId,
           signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
-          taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+          taskStatus: {
+            in: [
+              ESignTaskStatus.WAITING_CUSTOMER,
+              ESignTaskStatus.SIGNING,
+              ESignTaskStatus.COMPLETED
+            ]
+          }
         }
       });
       if (taskUpdated.count !== 1) {
@@ -1392,12 +1667,19 @@ export class Stage2HandoverESignService {
       }
       const handoverUpdated = await tx.vehicleDeliveryHandover.updateMany({
         data: {
-          status: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+          failureReason: null,
           updatedBy: input.actorId
         },
         where: {
           handoverESignTaskId: input.taskId,
-          id: input.handoverId
+          id: input.handoverId,
+          status: {
+            in: [
+              DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+              DeliveryHandoverStatus.PENDING_PLATFORM_SEAL,
+              DeliveryHandoverStatus.SIGNED
+            ]
+          }
         }
       });
       if (handoverUpdated.count !== 1) {
@@ -1418,23 +1700,102 @@ export class Stage2HandoverESignService {
     });
   }
 
-  private async customerProviderActionWasReconciled(
-    workOrderId: string,
-    taskId: string,
-    signerId: string,
-    transactionId: string
-  ) {
-    const current = await this.loadWorkOrder(workOrderId);
+  private async loadReconciledCustomerProviderResult(input: {
+    actorId: string | null;
+    claimExpiresAt: Date;
+    customerSignerId: string;
+    handoverId: string;
+    taskId: string;
+    transactionId: string;
+    workOrderId: string;
+  }): Promise<AcceptedCustomerProviderResult | null> {
+    const current = await this.loadWorkOrder(input.workOrderId);
     const task = this.pointerTask(current);
-    if (!task || task.id !== taskId) {
-      return false;
+    if (!task || task.id !== input.taskId) {
+      return null;
     }
-    const signer = task.signers.find((item) => item.id === signerId);
-    return Boolean(
-      signer &&
-      signer.providerTransactionId === transactionId &&
-      signer.signerStatus === ESignSignerStatus.SIGNED
+    const signer = task.signers.find(
+      (item) => item.id === input.customerSignerId
     );
+    if (
+      !signer ||
+      signer.providerTransactionId !== input.transactionId ||
+      signer.signerStatus !== ESignSignerStatus.SIGNED
+    ) {
+      return null;
+    }
+    return {
+      actorId: input.actorId,
+      claimExpiresAt: null,
+      customerSignerId: signer.id,
+      handoverId: input.handoverId,
+      providerEnvelopeId: task.providerEnvelopeId ?? task.taskNo,
+      providerSignerId:
+        signer.providerSignerId ?? input.transactionId,
+      providerTaskId: task.providerTaskId ?? input.transactionId,
+      signUrl: signer.signUrl ?? undefined,
+      signUrlExpiresAt: signer.signUrlExpiresAt ?? undefined,
+      taskId: task.id,
+      transactionId: input.transactionId,
+      when: task.startedAt ?? new Date(),
+      workOrderId: input.workOrderId
+    };
+  }
+
+  private async recordAcceptedCustomerProviderResultPending(
+    input: AcceptedCustomerProviderResult
+  ) {
+    await this.prisma.$transaction(async (tx) => {
+      const taskUpdated = await tx.contractESignTask.updateMany({
+        data: {
+          errorSnapshot: toJson({
+            acceptedCustomerProviderResult: {
+              claimExpiresAt: input.claimExpiresAt?.toISOString() ?? null,
+              providerEnvelopeId: input.providerEnvelopeId,
+              providerSignerId: input.providerSignerId,
+              providerTaskId: input.providerTaskId,
+              transactionId: input.transactionId,
+              when: input.when.toISOString()
+            },
+            code: STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING
+          }),
+          updatedBy: input.actorId
+        },
+        where: {
+          id: input.taskId,
+          signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+          taskStatus: {
+            in: [
+              ESignTaskStatus.WAITING_CUSTOMER,
+              ESignTaskStatus.SIGNING
+            ]
+          }
+        }
+      });
+      if (taskUpdated.count !== 1) {
+        throw staleCreateResult();
+      }
+      const handoverUpdated = await tx.vehicleDeliveryHandover.updateMany({
+        data: {
+          failureReason:
+            "The accepted Stage 2 customer signing request is pending local finalization.",
+          updatedBy: input.actorId
+        },
+        where: {
+          handoverESignTaskId: input.taskId,
+          id: input.handoverId,
+          status: {
+            in: [
+              DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+              DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+            ]
+          }
+        }
+      });
+      if (handoverUpdated.count !== 1) {
+        throw staleCreateResult();
+      }
+    });
   }
 
   private async platformProviderActionWasReconciled(
@@ -2044,6 +2405,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function readSnapshotDate(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function readSnapshotString(value: unknown) {
+  return typeof value === "string" && value.trim()
+    ? value
+    : null;
+}
+
 function isCoordinateNumber(value: unknown, min: number, max: number) {
   return (
     typeof value === "number" &&
@@ -2187,6 +2562,17 @@ function exceptionCode(error: { getResponse(): object | string }) {
   return typeof response === "object" && response && "code" in response
     ? (response as { code?: unknown }).code
     : undefined;
+}
+
+function isCreateWinnerRace(error: unknown) {
+  if (!(error instanceof ConflictException)) {
+    return false;
+  }
+  const code = exceptionCode(error);
+  return (
+    code === STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED ||
+    code === STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT
+  );
 }
 
 function staleCreateResult() {

@@ -9,6 +9,7 @@ import { ESignModule } from "../esign/esign.module";
 import { FieldOperatorAuthController } from "../field-operator/field-operator-auth.controller";
 import { FieldOperatorAuthGuard } from "../field-operator/field-operator-auth.guard";
 import { FieldOperatorAuthService } from "../field-operator/field-operator-auth.service";
+import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
 import { StorageModule } from "../storage/storage.module";
 import {
@@ -18,6 +19,8 @@ import {
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { Stage2HandoverESignReadinessService } from "./stage2-handover-esign-readiness.service";
 import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
+import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
+import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker";
 
 @Module({
   controllers: [
@@ -28,9 +31,17 @@ import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
   exports: [
     HandoverWorkOrderService,
     Stage2HandoverESignReadinessService,
-    Stage2HandoverESignService
+    Stage2HandoverESignService,
+    Stage2HandoverWorkflowRepository
   ],
-  imports: [AuthModule, DeliveryEvidenceModule, ESignModule, SmsModule, StorageModule],
+  imports: [
+    AuthModule,
+    DeliveryEvidenceModule,
+    ESignModule,
+    PrismaModule,
+    SmsModule,
+    StorageModule
+  ],
   providers: [
     DeliveryHandoverEvidenceArtifactService,
     DeliveryHandoverPdfRendererService,
@@ -39,7 +50,9 @@ import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
     FieldOperatorAuthService,
     HandoverWorkOrderService,
     Stage2HandoverESignReadinessService,
-    Stage2HandoverESignService
+    Stage2HandoverESignService,
+    Stage2HandoverWorkflowRepository,
+    Stage2HandoverWorkflowWorker
   ]
 })
 export class HandoverWorkOrderModule {}

@@ -1,5 +1,10 @@
 # Stage 2 Provider Status Reconciliation Design
 
+> Superseded by
+> `2026-07-27-stage2-field-orchestrated-esign-workflow-design.md`.
+> This document remains as incident analysis, but it is not an implementation
+> baseline.
+
 ## Context
 
 Stage 2 handover eSign task `ESG20260726180905RWYU` exposed a recovery gap:

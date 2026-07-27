@@ -6,6 +6,9 @@ import {
   buildStage2HandoverWorkflowBackfillPlan,
   parseStage2HandoverWorkflowBackfillMode
 } from "./stage2-handover-workflow-backfill-core.mjs";
+import {
+  applyStage2BackfillJobCandidates
+} from "./stage2-handover-workflow-backfill-apply.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requireFromApi = createRequire(resolve(repoRoot, "apps/api/package.json"));
@@ -34,7 +37,7 @@ async function main() {
         tx,
         plan.operatorSnapshotUpdates
       );
-      await applyJobCandidates(tx, plan.jobCandidates);
+      await applyStage2BackfillJobCandidates(tx, plan.jobCandidates);
       return {
         exceptionsObserved: plan.exceptions.length,
         jobCandidatesApplied: plan.jobCandidates.length,
@@ -49,7 +52,11 @@ async function main() {
   );
   const remaining = buildStage2HandoverWorkflowBackfillPlan(await loadRecords(prisma));
   const converged =
-    remaining.operatorSnapshotUpdates.length === 0 && remaining.jobCandidates.length === 0;
+    remaining.operatorSnapshotUpdates.length === 0 &&
+    remaining.jobCandidates.length === 0 &&
+    !remaining.exceptions.some(
+      ({ code }) => code === "STAGE2_WORKFLOW_JOB_CONFLICT"
+    );
   printReport({
     applied: {
       ...applied,
@@ -94,13 +101,21 @@ async function loadRecords(db) {
     select: {
       assignedInternalUserId: true,
       customerConfirmedAt: true,
+      customerObjectedAt: true,
       externalOperatorName: true,
       externalOperatorPhone: true,
       fieldOperatorName: true,
       fieldOperatorPhone: true,
       handoverId: true,
+      handoverType: true,
       id: true,
       operatorType: true,
+      order: {
+        select: {
+          customerId: true,
+          id: true
+        }
+      },
       orderId: true,
       status: true
     }
@@ -136,10 +151,24 @@ async function loadRecords(db) {
             archivedAt: true,
             artifactVersion: true,
             deletedAt: true,
+            handoverContract: {
+              select: {
+                contractSnapshot: true,
+                customerId: true,
+                deletedAt: true,
+                fileId: true,
+                id: true,
+                orderId: true,
+                status: true
+              }
+            },
+            handoverContractId: true,
             handoverESignTaskId: true,
             id: true,
             manifestHash: true,
+            orderId: true,
             sourceDocumentFileId: true,
+            sourceObjectKey: true,
             sourcePdfHash: true,
             status: true
           },
@@ -151,9 +180,13 @@ async function loadRecords(db) {
       ? []
       : await db.contractESignTask.findMany({
           select: {
+            contractId: true,
+            customerId: true,
             deletedAt: true,
             documentType: true,
             id: true,
+            orderId: true,
+            requestSnapshot: true,
             signingStage: true,
             taskNo: true,
             taskStatus: true
@@ -165,6 +198,7 @@ async function loadRecords(db) {
       ? []
       : await db.contractESignSigner.findMany({
           select: {
+            customerId: true,
             deletedAt: true,
             documentType: true,
             providerActionType: true,
@@ -180,22 +214,35 @@ async function loadRecords(db) {
   const reviews = await db.vehicleHandoverReviewAttempt.findMany({
     orderBy: [{ workOrderId: "asc" }, { attemptNo: "desc" }],
     select: {
+      customerConfirmedAt: true,
       evidenceSnapshot: true,
+      handoverId: true,
       id: true,
+      orderId: true,
       status: true,
       workOrderId: true
     },
     where: { workOrderId: { in: workOrderIds } }
   });
-  const workflowJobs = await db.vehicleHandoverWorkflowJob.findMany({
-    select: {
-      idempotencyKey: true,
-      workOrderId: true
-    },
-    where: { workOrderId: { in: workOrderIds } }
-  });
+  const sourceFileIds = uniqueNonNull(
+    handovers.map(({ sourceDocumentFileId }) => sourceDocumentFileId)
+  );
+  const sourceFileObjects =
+    sourceFileIds.length === 0
+      ? []
+      : await db.fileObject.findMany({
+          select: {
+            bucket: true,
+            id: true,
+            mimeType: true,
+            objectKey: true,
+            sizeBytes: true
+          },
+          where: { id: { in: sourceFileIds } }
+        });
 
   const usersById = indexBy(users, "id");
+  const sourceFileObjectsById = indexBy(sourceFileObjects, "id");
   const tasksById = indexBy(
     tasks.map((task) => ({
       ...task,
@@ -206,7 +253,9 @@ async function loadRecords(db) {
   const handoversById = indexBy(
     handovers.map((handover) => ({
       ...handover,
-      handoverESignTask: tasksById.get(handover.handoverESignTaskId) ?? null
+      handoverESignTask: tasksById.get(handover.handoverESignTaskId) ?? null,
+      sourceFileObject:
+        sourceFileObjectsById.get(handover.sourceDocumentFileId) ?? null
     })),
     "id"
   );
@@ -217,13 +266,54 @@ async function loadRecords(db) {
     }
   }
 
-  return workOrders.map((record) => ({
+  const records = workOrders.map((record) => ({
     ...record,
     assignedInternalUser: usersById.get(record.assignedInternalUserId) ?? null,
     handover: handoversById.get(record.handoverId) ?? null,
     latestReview: latestReviewsByWorkOrderId.get(record.id) ?? null,
-    workflowJobs: workflowJobs.filter(({ workOrderId }) => workOrderId === record.id)
+    workflowJobs: []
   }));
+  const initialPlan = buildStage2HandoverWorkflowBackfillPlan(records);
+  const candidateKeys = initialPlan.jobCandidates.map(
+    ({ idempotencyKey }) => idempotencyKey
+  );
+  if (candidateKeys.length === 0) {
+    return records;
+  }
+  const workflowJobs = await db.vehicleHandoverWorkflowJob.findMany({
+    select: {
+      eSignTaskId: true,
+      handoverId: true,
+      id: true,
+      idempotencyKey: true,
+      jobStatus: true,
+      jobType: true,
+      payload: true,
+      workOrderId: true
+    },
+    where: {
+      idempotencyKey: {
+        in: candidateKeys
+      }
+    }
+  });
+  const workflowJobsByKey = indexBy(workflowJobs, "idempotencyKey");
+  const candidateKeysByWorkOrderId = new Map(
+    initialPlan.jobCandidates.map(({ idempotencyKey, workOrderId }) => [
+      workOrderId,
+      idempotencyKey
+    ])
+  );
+  return records.map((record) => {
+    const idempotencyKey = candidateKeysByWorkOrderId.get(record.id);
+    const existing = idempotencyKey
+      ? workflowJobsByKey.get(idempotencyKey)
+      : null;
+    return {
+      ...record,
+      workflowJobs: existing ? [existing] : []
+    };
+  });
 }
 
 function uniqueNonNull(values) {
@@ -260,25 +350,6 @@ async function applyOperatorSnapshotUpdates(tx, updates) {
     updated += result.count;
   }
   return updated;
-}
-
-async function applyJobCandidates(tx, candidates) {
-  for (const candidate of candidates) {
-    await tx.vehicleHandoverWorkflowJob.upsert({
-      create: {
-        eSignTaskId: candidate.eSignTaskId,
-        handoverId: candidate.handoverId,
-        idempotencyKey: candidate.idempotencyKey,
-        jobType: candidate.jobType,
-        payload: candidate.payload,
-        workOrderId: candidate.workOrderId
-      },
-      update: {},
-      where: {
-        idempotencyKey: candidate.idempotencyKey
-      }
-    });
-  }
 }
 
 function printReport({ applied, mode, plan, remaining }) {

@@ -10,6 +10,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import {
   AuditAction,
+  ContractStatus,
   CustomerAccountStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
@@ -25,6 +26,8 @@ import {
   SmsSendStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType,
+  VehicleHandoverReviewAttemptStatus,
+  VehicleHandoverType,
   VehicleHandoverWorkOrderStatus
 } from "@prisma/client";
 
@@ -35,7 +38,12 @@ import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artif
 import { SmsService } from "../sms/sms.service";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
-import { validateStage2SourceArtifactBinding } from "./stage2-handover-source-artifact";
+import {
+  hasStage2SourceArtifactState,
+  normalizeStage2Sha256,
+  validateStage2SourceArtifactBinding
+} from "./stage2-handover-source-artifact";
+import { matchesStage2HandoverTaskSourceBinding } from "./stage2-handover-task-binding";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 import {
   ClaimedStage2WorkflowJob,
@@ -56,11 +64,30 @@ const CUSTOMER_RECONCILIATION_DELAYS_MS = [
 const PLATFORM_RECONCILIATION_DELAY_MS = 2 * 60 * 1000;
 const SHA256_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const STAGE2_RECOVERY_AUDIT_MODULE = "stage2-handover-workflow";
+const STAGE2_RECOVERY_MAX_ATTEMPTS = 5;
 const TERMINAL_WORK_ORDER_STATUSES =
   new Set<VehicleHandoverWorkOrderStatus>([
     VehicleHandoverWorkOrderStatus.CANCELLED,
     VehicleHandoverWorkOrderStatus.FAILED,
     VehicleHandoverWorkOrderStatus.VOIDED
+  ]);
+const CUSTOMER_RECOVERY_WORK_ORDER_STATUSES =
+  new Set<VehicleHandoverWorkOrderStatus>([
+    VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+    VehicleHandoverWorkOrderStatus.SIGNING
+  ]);
+const PLATFORM_RECOVERY_WORK_ORDER_STATUSES =
+  new Set<VehicleHandoverWorkOrderStatus>([
+    VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+    VehicleHandoverWorkOrderStatus.SIGNING,
+    VehicleHandoverWorkOrderStatus.CUSTOMER_SIGNED
+  ]);
+const ARCHIVE_RECOVERY_WORK_ORDER_STATUSES =
+  new Set<VehicleHandoverWorkOrderStatus>([
+    VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+    VehicleHandoverWorkOrderStatus.SIGNING,
+    VehicleHandoverWorkOrderStatus.CUSTOMER_SIGNED,
+    VehicleHandoverWorkOrderStatus.PLATFORM_SEALED
   ]);
 
 export interface EnqueueCustomerESignJobsInput {
@@ -127,17 +154,39 @@ const sourceProjectionSelect = {
   orderId: true
 } as const;
 
-const customerRecoveryWorkOrderSelect = {
+const recoveryWorkOrderSelect = {
+  customerConfirmedAt: true,
+  customerObjectedAt: true,
   handover: {
     select: {
       archiveStatus: true,
+      archivedAt: true,
+      artifactVersion: true,
+      deletedAt: true,
+      handoverContract: {
+        select: {
+          contractSnapshot: true,
+          customerId: true,
+          deletedAt: true,
+          fileId: true,
+          id: true,
+          orderId: true,
+          status: true
+        }
+      },
+      handoverContractId: true,
       handoverESignTask: {
         select: {
+          contractId: true,
+          customerId: true,
           deletedAt: true,
           documentType: true,
           id: true,
+          orderId: true,
+          requestSnapshot: true,
           signers: {
             select: {
+              customerId: true,
               deletedAt: true,
               documentType: true,
               providerActionType: true,
@@ -155,18 +204,56 @@ const customerRecoveryWorkOrderSelect = {
       },
       handoverESignTaskId: true,
       id: true,
+      manifestHash: true,
+      orderId: true,
+      sourceDocumentFileId: true,
+      sourceObjectKey: true,
+      sourcePdfHash: true,
       status: true
     }
   },
   handoverId: true,
+  handoverType: true,
   id: true,
+  order: {
+    select: {
+      customerId: true,
+      id: true
+    }
+  },
+  orderId: true,
+  reviewAttempts: {
+    orderBy: {
+      attemptNo: "desc"
+    },
+    select: {
+      customerConfirmedAt: true,
+      evidenceSnapshot: true,
+      handoverId: true,
+      id: true,
+      orderId: true,
+      status: true,
+      workOrderId: true
+    },
+    take: 1
+  },
   status: true
 } satisfies Prisma.VehicleHandoverWorkOrderSelect;
 
-type CustomerRecoveryWorkOrder =
+type RecoveryWorkOrder =
   Prisma.VehicleHandoverWorkOrderGetPayload<{
-    select: typeof customerRecoveryWorkOrderSelect;
+    select: typeof recoveryWorkOrderSelect;
   }>;
+
+interface RecoveryJobExpectation {
+  eSignTaskId: null | string;
+  handoverId: string;
+  jobType: VehicleHandoverWorkflowJobType;
+  maxAttempts: number;
+  notificationIdempotencyKey?: string;
+  payload?: Prisma.InputJsonObject;
+  sourcePayloads: Array<Prisma.InputJsonObject | undefined>;
+}
 
 @Injectable()
 export class Stage2HandoverWorkflowService
@@ -208,11 +295,7 @@ export class Stage2HandoverWorkflowService
     actorId: string
   ): Promise<Stage2HandoverWorkflowRecoveryResult> {
     const idempotencyKey = `recovery:${sourceJobId}`;
-    let sourceBinding: null | {
-      eSignTaskId: null | string;
-      handoverId: null | string;
-      jobType: VehicleHandoverWorkflowJobType;
-    } = null;
+    let sourceBinding: null | RecoveryJobExpectation = null;
     try {
       return await this.prisma.$transaction(async (tx) => {
         const source = await tx.vehicleHandoverWorkflowJob.findUnique({
@@ -224,33 +307,41 @@ export class Stage2HandoverWorkflowService
         if (source.jobStatus !== VehicleHandoverWorkflowJobStatus.DEAD_LETTER) {
           throw workflowJobNotDeadLetter();
         }
-        const binding = {
-          eSignTaskId: source.eSignTaskId,
-          handoverId: source.handoverId,
-          jobType: source.jobType
-        };
+        const workOrder = await tx.vehicleHandoverWorkOrder.findUnique({
+          select: recoveryWorkOrderSelect,
+          where: { id: workOrderId }
+        });
+        const binding = await buildCanonicalRecoveryExpectation(
+          tx,
+          source.jobType,
+          workOrder
+        );
+        if (!matchesRecoverySource(source, workOrderId, binding)) {
+          throw workflowJobNotRecoverable();
+        }
         sourceBinding = binding;
 
         const existing = await tx.vehicleHandoverWorkflowJob.findUnique({
           where: { idempotencyKey }
         });
         if (existing) {
-          if (!matchesRecoveryBinding(existing, workOrderId, binding)) {
+          if (!matchesRecoveryReplacement(existing, workOrderId, binding)) {
             throw workflowRecoveryConflict();
           }
           return toRecoveryResult(existing, false);
         }
 
-        const payload = boundedRecoveryPayload(source.jobType, source.payload);
         const replacement = await tx.vehicleHandoverWorkflowJob.create({
           data: {
             availableAt: new Date(),
-            eSignTaskId: source.eSignTaskId,
-            handoverId: source.handoverId,
+            eSignTaskId: binding.eSignTaskId,
+            handoverId: binding.handoverId,
             idempotencyKey,
-            jobType: source.jobType,
-            maxAttempts: readPositiveInteger(source.maxAttempts, 5),
-            ...(payload === undefined ? {} : { payload }),
+            jobType: binding.jobType,
+            maxAttempts: binding.maxAttempts,
+            ...(binding.payload === undefined
+              ? {}
+              : { payload: binding.payload }),
             workOrderId
           }
         });
@@ -279,7 +370,7 @@ export class Stage2HandoverWorkflowService
         if (
           existing &&
           sourceBinding &&
-          matchesRecoveryBinding(existing, workOrderId, sourceBinding)
+          matchesRecoveryReplacement(existing, workOrderId, sourceBinding)
         ) {
           return toRecoveryResult(existing, false);
         }
@@ -296,18 +387,24 @@ export class Stage2HandoverWorkflowService
     actorId: string
   ): Promise<Stage2HandoverWorkflowRecoveryResult> {
     let idempotencyKey: null | string = null;
-    let recoveryBinding: null | {
-      customerTransactionId: string;
-      eSignTaskId: string;
-      handoverId: string;
-    } = null;
+    let recoveryBinding: null | RecoveryJobExpectation = null;
     try {
       return await this.prisma.$transaction(async (tx) => {
         const workOrder = await tx.vehicleHandoverWorkOrder.findUnique({
-          select: customerRecoveryWorkOrderSelect,
+          select: recoveryWorkOrderSelect,
           where: { id: workOrderId }
         });
-        const active = requireActiveCustomerRecoveryTransaction(workOrder);
+        const active = await buildCanonicalRecoveryExpectation(
+          tx,
+          VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+          workOrder,
+          customerReconciliationNotAvailable
+        );
+        const customerTransactionId =
+          readCustomerTransactionId(active.payload);
+        if (!active.eSignTaskId || !customerTransactionId) {
+          throw customerReconciliationNotAvailable();
+        }
         recoveryBinding = active;
         const sourceDeadLetter = await tx.vehicleHandoverWorkflowJob.findFirst({
           orderBy: { createdAt: "desc" },
@@ -321,18 +418,18 @@ export class Stage2HandoverWorkflowService
         });
         const exactDeadLetter =
           sourceDeadLetter &&
-          readCustomerTransactionId(sourceDeadLetter.payload) === active.customerTransactionId
+          exactPayloadMatches(sourceDeadLetter.payload, active.payload)
             ? sourceDeadLetter
             : null;
         idempotencyKey = exactDeadLetter
           ? `recovery:${exactDeadLetter.id}`
-          : `customer-reconcile-recovery:${active.eSignTaskId}:${active.customerTransactionId}`;
+          : `customer-reconcile-recovery:${active.eSignTaskId}:${customerTransactionId}`;
 
         const existing = await tx.vehicleHandoverWorkflowJob.findUnique({
           where: { idempotencyKey }
         });
         if (existing) {
-          if (!matchesCustomerRecoveryBinding(existing, workOrderId, active)) {
+          if (!matchesRecoveryReplacement(existing, workOrderId, active)) {
             throw workflowRecoveryConflict();
           }
           return toRecoveryResult(existing, false);
@@ -345,9 +442,8 @@ export class Stage2HandoverWorkflowService
             handoverId: active.handoverId,
             idempotencyKey,
             jobType: VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
-            payload: {
-              customerTransactionId: active.customerTransactionId
-            },
+            maxAttempts: active.maxAttempts,
+            payload: active.payload!,
             workOrderId
           }
         });
@@ -375,7 +471,7 @@ export class Stage2HandoverWorkflowService
         if (
           existing &&
           recoveryBinding &&
-          matchesCustomerRecoveryBinding(existing, workOrderId, recoveryBinding)
+          matchesRecoveryReplacement(existing, workOrderId, recoveryBinding)
         ) {
           return toRecoveryResult(existing, false);
         }
@@ -463,6 +559,11 @@ export class Stage2HandoverWorkflowService
   ): Promise<WorkflowHandlerResult> {
     const smsService = this.requireSmsService();
     return this.withLeaseHeartbeat(job, async (lease) => {
+      const expected = await this.assertCanonicalNotificationJob(job);
+      const idempotencyKey = readRequiredString(
+        expected.notificationIdempotencyKey,
+        "FIELD_NOTIFICATION_IDEMPOTENCY_KEY_MISSING"
+      );
       const workOrder =
         await this.prisma.vehicleHandoverWorkOrder.findUnique({
           select: { fieldOperatorPhone: true },
@@ -473,7 +574,7 @@ export class Stage2HandoverWorkflowService
         "FIELD_NOTIFICATION_RECIPIENT_MISSING"
       );
       const sms = await smsService.sendStage2FieldReady({
-        idempotencyKey: job.idempotencyKey,
+        idempotencyKey,
         phone
       });
       await lease.assertLease();
@@ -505,6 +606,7 @@ export class Stage2HandoverWorkflowService
       job.payload
     );
     return this.withLeaseHeartbeat(job, async (lease) => {
+      await this.assertCanonicalNotificationJob(job);
       const workOrder =
         await this.prisma.vehicleHandoverWorkOrder.findUnique({
           select: {
@@ -583,6 +685,29 @@ export class Stage2HandoverWorkflowService
         }
       };
     });
+  }
+
+  private async assertCanonicalNotificationJob(
+    job: ClaimedStage2WorkflowJob
+  ) {
+    try {
+      const workOrder =
+        await this.prisma.vehicleHandoverWorkOrder.findUnique({
+          select: recoveryWorkOrderSelect,
+          where: { id: job.workOrderId }
+        });
+      const expected = await buildCanonicalRecoveryExpectation(
+        this.prisma,
+        job.jobType,
+        workOrder
+      );
+      if (!matchesRecoverySource(job, job.workOrderId, expected)) {
+        throw new Error("notification binding changed");
+      }
+      return expected;
+    } catch {
+      throw new Error("STAGE2_HANDOVER_NOTIFICATION_JOB_STALE");
+    }
   }
 
   private async handleCustomerSignatureReconciliation(
@@ -1020,69 +1145,314 @@ export class Stage2HandoverWorkflowService
   }
 }
 
-function boundedRecoveryPayload(
+async function buildCanonicalRecoveryExpectation(
+  db: Stage2HandoverWorkflowDb,
   jobType: VehicleHandoverWorkflowJobType,
-  payload: unknown
-): Prisma.InputJsonObject | undefined {
+  workOrder: RecoveryWorkOrder | null,
+  unavailable: () => BadRequestException = workflowJobNotRecoverable
+): Promise<RecoveryJobExpectation> {
+  const context = requireCanonicalRecoveryContext(workOrder, unavailable);
+
   switch (jobType) {
     case VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF: {
-      const manifestHash = readManifestHash(payload);
-      if (!manifestHash) {
-        throw workflowJobPayloadInvalid();
+      if (
+        workOrder?.status !== VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED ||
+        context.handover.status !== DeliveryHandoverStatus.DRAFT ||
+        context.handover.handoverESignTaskId !== null ||
+        context.handover.handoverESignTask !== null ||
+        hasStage2SourceArtifactState(context.handover)
+      ) {
+        throw unavailable();
       }
-      return { manifestHash };
+      const payload = {
+        manifestHash: context.manifestHash
+      } satisfies Prisma.InputJsonObject;
+      return {
+        eSignTaskId: null,
+        handoverId: context.handover.id,
+        jobType,
+        maxAttempts: STAGE2_RECOVERY_MAX_ATTEMPTS,
+        payload,
+        sourcePayloads: [
+          payload,
+          {
+            manifestHash: context.manifestHash,
+            reviewAttemptId: context.review.id
+          }
+        ]
+      };
     }
-    case VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY:
-      return undefined;
+    case VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY: {
+      if (
+        workOrder?.status !== VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED ||
+        context.handover.status !== DeliveryHandoverStatus.SOURCE_GENERATED ||
+        context.handover.handoverESignTaskId !== null ||
+        context.handover.handoverESignTask !== null
+      ) {
+        throw unavailable();
+      }
+      const source = await requireCanonicalRecoverySource(
+        db,
+        context,
+        [DeliveryHandoverStatus.SOURCE_GENERATED],
+        [ContractStatus.GENERATED],
+        unavailable
+      );
+      return {
+        eSignTaskId: null,
+        handoverId: context.handover.id,
+        jobType,
+        maxAttempts: STAGE2_RECOVERY_MAX_ATTEMPTS,
+        notificationIdempotencyKey:
+          `field-notify:${context.workOrder.id}:${source.artifactVersion}`,
+        sourcePayloads: [
+          undefined,
+          {
+            artifactVersion: source.artifactVersion,
+            manifestHash: context.manifestHash,
+            sourcePdfHash: source.sourcePdfHash
+          }
+        ]
+      };
+    }
     case VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY:
     case VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE: {
-      const customerTransactionId = readCustomerTransactionId(payload);
-      if (!customerTransactionId) {
-        throw workflowJobPayloadInvalid();
+      if (
+        !workOrder ||
+        !CUSTOMER_RECOVERY_WORK_ORDER_STATUSES.has(workOrder.status) ||
+        context.handover.status !==
+          DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE
+      ) {
+        throw unavailable();
       }
-      return { customerTransactionId };
+      await requireCanonicalRecoverySource(
+        db,
+        context,
+        [DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE],
+        [ContractStatus.SIGNING],
+        unavailable
+      );
+      const task = requireCanonicalRecoveryTask(context, unavailable);
+      if (
+        (
+          task.task.taskStatus !== ESignTaskStatus.WAITING_CUSTOMER &&
+          task.task.taskStatus !== ESignTaskStatus.SIGNING
+        ) ||
+        (
+          task.customerSigner.signerStatus !== ESignSignerStatus.PENDING &&
+          task.customerSigner.signerStatus !== ESignSignerStatus.SIGNING
+        ) ||
+        task.customerSigner.providerTransactionId !==
+          task.customerTransactionId ||
+        task.platformSigner.signerStatus !== ESignSignerStatus.PENDING ||
+        task.platformSigner.providerTransactionId !== null
+      ) {
+        throw unavailable();
+      }
+      const payload = {
+        customerTransactionId: task.customerTransactionId
+      } satisfies Prisma.InputJsonObject;
+      return {
+        eSignTaskId: task.task.id,
+        handoverId: context.handover.id,
+        jobType,
+        maxAttempts: STAGE2_RECOVERY_MAX_ATTEMPTS,
+        payload,
+        sourcePayloads: [payload]
+      };
     }
     case VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM:
     case VehicleHandoverWorkflowJobType.RECONCILE_PLATFORM_SEAL: {
-      const platformTransactionId = readPlatformTransactionId(payload);
-      if (!platformTransactionId) {
-        throw workflowJobPayloadInvalid();
+      if (
+        !workOrder ||
+        !PLATFORM_RECOVERY_WORK_ORDER_STATUSES.has(workOrder.status) ||
+        context.handover.status !==
+          DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+      ) {
+        throw unavailable();
       }
-      return { platformTransactionId };
+      await requireCanonicalRecoverySource(
+        db,
+        context,
+        [DeliveryHandoverStatus.PENDING_PLATFORM_SEAL],
+        [ContractStatus.SIGNING],
+        unavailable
+      );
+      const task = requireCanonicalRecoveryTask(context, unavailable);
+      const platformStatus =
+        jobType === VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM
+          ? ESignSignerStatus.PENDING
+          : ESignSignerStatus.SIGNING;
+      if (
+        task.task.taskStatus !== ESignTaskStatus.SIGNING ||
+        task.customerSigner.signerStatus !== ESignSignerStatus.SIGNED ||
+        task.customerSigner.providerTransactionId !==
+          task.customerTransactionId ||
+        task.platformSigner.signerStatus !== platformStatus ||
+        (
+          task.platformSigner.providerTransactionId !== null &&
+          task.platformSigner.providerTransactionId !==
+            task.platformTransactionId
+        ) ||
+        (
+          platformStatus === ESignSignerStatus.SIGNING &&
+          task.platformSigner.providerTransactionId !==
+            task.platformTransactionId
+        )
+      ) {
+        throw unavailable();
+      }
+      const payload = {
+        platformTransactionId: task.platformTransactionId
+      } satisfies Prisma.InputJsonObject;
+      return {
+        eSignTaskId: task.task.id,
+        handoverId: context.handover.id,
+        jobType,
+        maxAttempts: STAGE2_RECOVERY_MAX_ATTEMPTS,
+        payload,
+        sourcePayloads: [payload]
+      };
     }
     case VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF: {
-      const artifactVersion = readArtifactVersion(payload);
-      if (!artifactVersion) {
-        throw workflowJobPayloadInvalid();
+      if (
+        !workOrder ||
+        !ARCHIVE_RECOVERY_WORK_ORDER_STATUSES.has(workOrder.status) ||
+        context.handover.status !== DeliveryHandoverStatus.SIGNED
+      ) {
+        throw unavailable();
       }
-      return { artifactVersion };
+      const source = await requireCanonicalRecoverySource(
+        db,
+        context,
+        [DeliveryHandoverStatus.SIGNED],
+        [ContractStatus.SIGNED],
+        unavailable
+      );
+      const task = requireCanonicalRecoveryTask(context, unavailable);
+      if (
+        task.task.taskStatus !== ESignTaskStatus.COMPLETED ||
+        task.customerSigner.signerStatus !== ESignSignerStatus.SIGNED ||
+        task.customerSigner.providerTransactionId !==
+          task.customerTransactionId ||
+        task.platformSigner.signerStatus !== ESignSignerStatus.SIGNED ||
+        task.platformSigner.providerTransactionId !==
+          task.platformTransactionId
+      ) {
+        throw unavailable();
+      }
+      const payload = {
+        artifactVersion: source.artifactVersion
+      } satisfies Prisma.InputJsonObject;
+      return {
+        eSignTaskId: task.task.id,
+        handoverId: context.handover.id,
+        jobType,
+        maxAttempts: STAGE2_RECOVERY_MAX_ATTEMPTS,
+        payload,
+        sourcePayloads: [payload]
+      };
     }
   }
 }
 
-function requireActiveCustomerRecoveryTransaction(workOrder: CustomerRecoveryWorkOrder | null) {
-  const handover = workOrder?.handover;
-  const task = handover?.handoverESignTask;
+function requireCanonicalRecoveryContext(
+  workOrder: RecoveryWorkOrder | null,
+  unavailable: () => BadRequestException
+) {
+  const handover = workOrder?.handover ?? null;
+  const review = workOrder?.reviewAttempts[0] ?? null;
+  const manifestHash = canonicalManifestHash(
+    asRecord(asRecord(review?.evidenceSnapshot)?.evidencePackage)?.manifestHash
+  );
   if (
     !workOrder ||
     TERMINAL_WORK_ORDER_STATUSES.has(workOrder.status) ||
+    workOrder.handoverType !== VehicleHandoverType.DELIVERY_OUTBOUND ||
+    workOrder.customerConfirmedAt === null ||
+    workOrder.customerObjectedAt !== null ||
+    workOrder.order.id !== workOrder.orderId ||
     !handover ||
     workOrder.handoverId !== handover.id ||
+    handover.orderId !== workOrder.orderId ||
+    handover.deletedAt !== null ||
+    handover.archivedAt !== null ||
     handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED ||
-    handover.status !== DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE ||
+    !review ||
+    review.workOrderId !== workOrder.id ||
+    review.orderId !== workOrder.orderId ||
+    review.handoverId !== handover.id ||
+    review.status !== VehicleHandoverReviewAttemptStatus.CUSTOMER_CONFIRMED ||
+    review.customerConfirmedAt === null ||
+    review.customerConfirmedAt.getTime() !==
+      workOrder.customerConfirmedAt.getTime() ||
+    !manifestHash
+  ) {
+    throw unavailable();
+  }
+  return {
+    handover,
+    manifestHash,
+    review,
+    workOrder
+  };
+}
+
+async function requireCanonicalRecoverySource(
+  db: Stage2HandoverWorkflowDb,
+  context: ReturnType<typeof requireCanonicalRecoveryContext>,
+  allowedHandoverStatuses: readonly DeliveryHandoverStatus[],
+  allowedContractStatuses: readonly ContractStatus[],
+  unavailable: () => BadRequestException
+) {
+  const fileId = context.handover.sourceDocumentFileId;
+  const fileObject = fileId
+    ? await db.fileObject.findUnique({
+        where: { id: fileId }
+      })
+    : null;
+  const source = validateStage2SourceArtifactBinding({
+    allowedContractStatuses,
+    allowedHandoverStatuses,
+    expectedCustomerId: context.workOrder.order.customerId,
+    expectedHandoverId: context.handover.id,
+    expectedManifestHash: context.manifestHash,
+    expectedOrderId: context.workOrder.orderId,
+    expectedWorkOrderId: context.workOrder.id,
+    fileObject,
+    handover: context.handover,
+    maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
+  });
+  if (!source) {
+    throw unavailable();
+  }
+  return source;
+}
+
+function requireCanonicalRecoveryTask(
+  context: ReturnType<typeof requireCanonicalRecoveryContext>,
+  unavailable: () => BadRequestException
+) {
+  const task = context.handover.handoverESignTask;
+  if (
     !task ||
-    handover.handoverESignTaskId !== task.id ||
+    context.handover.handoverESignTaskId !== task.id ||
     task.deletedAt !== null ||
     task.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
     task.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
-    (task.taskStatus !== ESignTaskStatus.WAITING_CUSTOMER &&
-      task.taskStatus !== ESignTaskStatus.SIGNING)
+    !matchesStage2HandoverTaskSourceBinding({
+      expectedCustomerId: context.workOrder.order.customerId,
+      expectedOrderId: context.workOrder.orderId,
+      handover: context.handover,
+      task
+    }) ||
+    !requestSnapshotHasCanonicalStage2Tuple(task.requestSnapshot)
   ) {
-    throw customerReconciliationNotAvailable();
+    throw unavailable();
   }
-
   const customerSigners = task.signers.filter(
     (signer) =>
+      signer.customerId === context.workOrder.order.customerId &&
       signer.deletedAt === null &&
       signer.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
       signer.providerActionType === ESignProviderActionType.CUSTOMER_MANUAL_SIGN &&
@@ -1092,6 +1462,7 @@ function requireActiveCustomerRecoveryTransaction(workOrder: CustomerRecoveryWor
   );
   const platformSigners = task.signers.filter(
     (signer) =>
+      signer.customerId === null &&
       signer.deletedAt === null &&
       signer.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
       signer.providerActionType === ESignProviderActionType.PLATFORM_AUTO_SEAL &&
@@ -1101,49 +1472,59 @@ function requireActiveCustomerRecoveryTransaction(workOrder: CustomerRecoveryWor
   );
   const customerSigner = customerSigners[0];
   const platformSigner = platformSigners[0];
-  const customerTransactionId = buildStage2ProviderTransactionId(task.taskNo, "H1");
   if (
     task.signers.length !== 2 ||
     customerSigners.length !== 1 ||
     platformSigners.length !== 1 ||
     !customerSigner ||
-    !platformSigner ||
-    (customerSigner.signerStatus !== ESignSignerStatus.PENDING &&
-      customerSigner.signerStatus !== ESignSignerStatus.SIGNING) ||
-    customerSigner.providerTransactionId !== customerTransactionId ||
-    platformSigner.signerStatus !== ESignSignerStatus.PENDING
+    !platformSigner
   ) {
-    throw customerReconciliationNotAvailable();
+    throw unavailable();
   }
   return {
-    customerTransactionId,
-    eSignTaskId: task.id,
-    handoverId: handover.id
+    customerSigner,
+    customerTransactionId: buildStage2ProviderTransactionId(
+      task.taskNo,
+      "H1",
+      unavailable
+    ),
+    platformSigner,
+    platformTransactionId: buildStage2ProviderTransactionId(
+      task.taskNo,
+      "H2",
+      unavailable
+    ),
+    task
   };
 }
 
-function buildStage2ProviderTransactionId(taskNo: string, suffix: "H1" | "H2") {
+function requestSnapshotHasCanonicalStage2Tuple(snapshotValue: unknown) {
+  const snapshot = asRecord(snapshotValue);
+  const slotIds = snapshot?.slotIds;
+  return (
+    snapshot?.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
+    snapshot.signingStage === ESignSigningStage.STAGE2_DELIVERY_HANDOVER &&
+    Array.isArray(slotIds) &&
+    slotIds.length === 2 &&
+    slotIds.includes(ESignSlotId.STAGE2_HANDOVER_CUSTOMER) &&
+    slotIds.includes(ESignSlotId.STAGE2_HANDOVER_PLATFORM)
+  );
+}
+
+function buildStage2ProviderTransactionId(
+  taskNo: string,
+  suffix: "H1" | "H2",
+  unavailable: () => BadRequestException
+) {
   const normalized = taskNo.replace(/[^A-Za-z0-9]/g, "");
   if (!normalized) {
-    throw customerReconciliationNotAvailable();
+    throw unavailable();
   }
   return `${normalized.slice(0, 32 - suffix.length)}${suffix}`;
 }
 
 function readCustomerTransactionId(payload: unknown) {
   return readPayloadString(payload, "customerTransactionId");
-}
-
-function readPlatformTransactionId(payload: unknown) {
-  return readPayloadString(payload, "platformTransactionId");
-}
-
-function readArtifactVersion(payload: unknown) {
-  if (!isPlainRecord(payload)) {
-    return null;
-  }
-  const value = payload.artifactVersion;
-  return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : null;
 }
 
 function readPayloadString(payload: unknown, key: string) {
@@ -1158,29 +1539,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function matchesRecoveryBinding(
-  job: {
-    eSignTaskId: null | string;
-    handoverId: null | string;
-    jobType: VehicleHandoverWorkflowJobType;
-    workOrderId: string;
-  },
-  workOrderId: string,
-  binding: {
-    eSignTaskId: null | string;
-    handoverId: null | string;
-    jobType: VehicleHandoverWorkflowJobType;
-  }
-) {
-  return (
-    job.workOrderId === workOrderId &&
-    job.jobType === binding.jobType &&
-    job.handoverId === binding.handoverId &&
-    job.eSignTaskId === binding.eSignTaskId
-  );
-}
-
-function matchesCustomerRecoveryBinding(
+function matchesRecoverySource(
   job: {
     eSignTaskId: null | string;
     handoverId: null | string;
@@ -1189,19 +1548,84 @@ function matchesCustomerRecoveryBinding(
     workOrderId: string;
   },
   workOrderId: string,
-  binding: {
-    customerTransactionId: string;
-    eSignTaskId: string;
-    handoverId: string;
-  }
+  binding: RecoveryJobExpectation
 ) {
   return (
     job.workOrderId === workOrderId &&
-    job.jobType === VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE &&
+    job.jobType === binding.jobType &&
     job.handoverId === binding.handoverId &&
     job.eSignTaskId === binding.eSignTaskId &&
-    readCustomerTransactionId(job.payload) === binding.customerTransactionId
+    binding.sourcePayloads.some((payload) =>
+      exactPayloadMatches(job.payload, payload)
+    )
   );
+}
+
+function matchesRecoveryReplacement(
+  job: {
+    eSignTaskId: null | string;
+    handoverId: null | string;
+    jobType: VehicleHandoverWorkflowJobType;
+    maxAttempts: number;
+    payload: Prisma.JsonValue;
+    workOrderId: string;
+  },
+  workOrderId: string,
+  binding: RecoveryJobExpectation
+) {
+  return (
+    job.workOrderId === workOrderId &&
+    job.jobType === binding.jobType &&
+    job.handoverId === binding.handoverId &&
+    job.eSignTaskId === binding.eSignTaskId &&
+    job.maxAttempts === binding.maxAttempts &&
+    exactPayloadMatches(job.payload, binding.payload)
+  );
+}
+
+function exactPayloadMatches(actual: unknown, expected: unknown): boolean {
+  if (expected === undefined) {
+    return actual === undefined || actual === null;
+  }
+  if (
+    actual === null ||
+    expected === null ||
+    typeof actual !== "object" ||
+    typeof expected !== "object"
+  ) {
+    return actual === expected;
+  }
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    return (
+      Array.isArray(actual) &&
+      Array.isArray(expected) &&
+      actual.length === expected.length &&
+      actual.every((value, index) =>
+        exactPayloadMatches(value, expected[index])
+      )
+    );
+  }
+  const actualRecord = actual as Record<string, unknown>;
+  const expectedRecord = expected as Record<string, unknown>;
+  const actualKeys = Object.keys(actualRecord).sort();
+  const expectedKeys = Object.keys(expectedRecord).sort();
+  return (
+    exactPayloadMatches(actualKeys, expectedKeys) &&
+    expectedKeys.every((key) =>
+      exactPayloadMatches(actualRecord[key], expectedRecord[key])
+    )
+  );
+}
+
+function canonicalManifestHash(value: unknown) {
+  const digest = normalizeStage2Sha256(value);
+  return digest ? `sha256:${digest}` : null;
+}
+
+function asRecord(value: unknown): null | Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function toRecoveryResult(
@@ -1245,10 +1669,10 @@ function workflowJobNotDeadLetter() {
   });
 }
 
-function workflowJobPayloadInvalid() {
+function workflowJobNotRecoverable() {
   return new BadRequestException({
-    code: "STAGE2_WORKFLOW_JOB_PAYLOAD_INVALID",
-    message: "The Stage 2 workflow job cannot be retried safely."
+    code: "STAGE2_WORKFLOW_JOB_NOT_RECOVERABLE",
+    message: "The Stage 2 workflow job no longer matches active canonical work."
   });
 }
 

@@ -119,7 +119,7 @@ describe("Stage 2 handover notifications", () => {
   });
 
   it("completes the Field job only after its idempotent SMS succeeds", async () => {
-    const harness = createHarness();
+    const harness = createHarness({ notificationStage: "FIELD_READY" });
     const job = fieldJob();
 
     const result = await harness.workflow.handle(job);
@@ -142,6 +142,54 @@ describe("Stage 2 handover notifications", () => {
       }
     });
     expect(harness.notificationRecords).toHaveLength(0);
+  });
+
+  it("uses the canonical Field SMS key when a recovery job is processed", async () => {
+    const harness = createHarness({ notificationStage: "FIELD_READY" });
+    const job = fieldJob();
+    job.idempotencyKey = "recovery:dead-letter-field-notification";
+    job.payload = null;
+
+    await harness.workflow.handle(job);
+
+    expect(harness.smsProvider.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey:
+          "field-notify:00000000-0000-4000-8000-000000000003:1"
+      })
+    );
+  });
+
+  it.each([
+    ["Field", "FIELD_READY", fieldJob],
+    ["Customer", "CUSTOMER_READY", customerJob]
+  ] as const)(
+    "does not send a stale %s notification after the work order becomes terminal",
+    async (_label, notificationStage, jobFactory) => {
+      const harness = createHarness({ notificationStage });
+      harness.workOrder.status = "CANCELLED";
+
+      await expect(harness.workflow.handle(jobFactory())).rejects.toThrow(
+        "STAGE2_HANDOVER_NOTIFICATION_JOB_STALE"
+      );
+
+      expect(harness.smsProvider.sendTemplate).not.toHaveBeenCalled();
+      expect(harness.smsLogs).toEqual([]);
+      expect(harness.notificationRecords).toEqual([]);
+    }
+  );
+
+  it("does not send a Field notification after the handover is archived", async () => {
+    const harness = createHarness({ notificationStage: "FIELD_READY" });
+    harness.workOrder.handover.archivedAt =
+      new Date("2026-07-27T08:00:00.000Z");
+
+    await expect(harness.workflow.handle(fieldJob())).rejects.toThrow(
+      "STAGE2_HANDOVER_NOTIFICATION_JOB_STALE"
+    );
+
+    expect(harness.smsProvider.sendTemplate).not.toHaveBeenCalled();
+    expect(harness.smsLogs).toEqual([]);
   });
 
   it("persists only bounded notification outcomes in workflow results", async () => {
@@ -175,6 +223,7 @@ describe("Stage 2 handover notifications", () => {
 });
 
 function createHarness(options: {
+  notificationStage?: "CUSTOMER_READY" | "FIELD_READY";
   smsResults?: Array<{
     errorCode?: string;
     errorMessage?: string;
@@ -189,6 +238,9 @@ function createHarness(options: {
   const smsLogs: TestRow[] = [];
   const notificationRecords: TestRow[] = [];
   const notificationEvents: TestRow[] = [];
+  const workOrder = notificationWorkOrder(
+    options.notificationStage ?? "CUSTOMER_READY"
+  );
   const smsResults = [...(options.smsResults ?? [{
     provider: "mock" as const,
     providerMessageId: "mock-business-message",
@@ -327,25 +379,17 @@ function createHarness(options: {
         return log;
       })
     },
+    fileObject: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === "00000000-0000-4000-8000-000000000030"
+          ? workOrder.handover.sourceFileObject
+          : null
+      )
+    },
     vehicleHandoverWorkOrder: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         where.id === "00000000-0000-4000-8000-000000000003"
-          ? {
-              fieldOperatorPhone: "13800000000",
-              id: where.id,
-              order: {
-                customer: {
-                  id: "customer-1",
-                  mobile: "13912345678",
-                  name: "Customer Sensitive Name"
-                },
-                customerId: "customer-1",
-                vehicle: {
-                  licensePlate: "沪A12345",
-                  vin: "VIN-SENSITIVE-001"
-                }
-              }
-            }
+          ? workOrder
           : null
       )
     }
@@ -386,13 +430,163 @@ function createHarness(options: {
     prisma,
     smsLogs,
     smsProvider,
+    workOrder,
     workflow
+  };
+}
+
+function notificationWorkOrder(
+  notificationStage: "CUSTOMER_READY" | "FIELD_READY"
+) {
+  const manifestDigest = "a".repeat(64);
+  const sourcePdfHash = "b".repeat(64);
+  const customerReady = notificationStage === "CUSTOMER_READY";
+  const handover = {
+    archiveStatus: "NOT_STARTED",
+    archivedAt: null as Date | null,
+    artifactVersion: 1,
+    deletedAt: null,
+    handoverContract: {
+      contractSnapshot: {
+        evidencePackage: {
+          manifestHash: `sha256:${manifestDigest}`
+        },
+        fileId: "00000000-0000-4000-8000-000000000030",
+        handoverId: "00000000-0000-4000-8000-000000000020",
+        orderId: "order-1",
+        stage2HandoverPdfArtifact: {
+          artifactVersion: 1,
+          fileId: "00000000-0000-4000-8000-000000000030",
+          sourcePdfHash
+        },
+        workOrderId: "00000000-0000-4000-8000-000000000003"
+      },
+      customerId: "customer-1",
+      deletedAt: null,
+      fileId: "00000000-0000-4000-8000-000000000030",
+      id: "contract-stage2-1",
+      orderId: "order-1",
+      status: customerReady ? "SIGNING" : "GENERATED"
+    },
+    handoverContractId: "contract-stage2-1",
+    handoverESignTask: customerReady
+      ? {
+          contractId: "contract-stage2-1",
+          customerId: "customer-1",
+          deletedAt: null,
+          documentType: "DELIVERY_HANDOVER",
+          id: "00000000-0000-4000-8000-000000000010",
+          orderId: "order-1",
+          requestSnapshot: {
+            artifactVersion: 1,
+            contractId: "contract-stage2-1",
+            documentType: "DELIVERY_HANDOVER",
+            handoverId: "00000000-0000-4000-8000-000000000020",
+            manifestHash: manifestDigest,
+            signingStage: "STAGE2_DELIVERY_HANDOVER",
+            slotIds: [
+              "STAGE2_HANDOVER_CUSTOMER",
+              "STAGE2_HANDOVER_PLATFORM"
+            ],
+            sourceDocumentFileId:
+              "00000000-0000-4000-8000-000000000030",
+            sourcePdfHash
+          },
+          signers: [
+            {
+              customerId: "customer-1",
+              deletedAt: null,
+              documentType: "DELIVERY_HANDOVER",
+              providerActionType: "CUSTOMER_MANUAL_SIGN",
+              providerTransactionId: "HDVTRANSACTIONH1",
+              required: true,
+              signerStatus: "SIGNING",
+              signerType: "CUSTOMER",
+              slotId: "STAGE2_HANDOVER_CUSTOMER"
+            },
+            {
+              customerId: null,
+              deletedAt: null,
+              documentType: "DELIVERY_HANDOVER",
+              providerActionType: "PLATFORM_AUTO_SEAL",
+              providerTransactionId: null,
+              required: true,
+              signerStatus: "PENDING",
+              signerType: "PLATFORM",
+              slotId: "STAGE2_HANDOVER_PLATFORM"
+            }
+          ],
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          taskNo: "HDVTRANSACTION",
+          taskStatus: "WAITING_CUSTOMER"
+        }
+      : null,
+    handoverESignTaskId: customerReady
+      ? "00000000-0000-4000-8000-000000000010"
+      : null,
+    id: "00000000-0000-4000-8000-000000000020",
+    manifestHash: manifestDigest,
+    orderId: "order-1",
+    sourceDocumentFileId: "00000000-0000-4000-8000-000000000030",
+    sourceFileObject: {
+      bucket: "application-materials",
+      id: "00000000-0000-4000-8000-000000000030",
+      mimeType: "application/pdf",
+      objectKey: "contracts/contract-stage2-1/generated/handover.pdf",
+      sizeBytes: 1024n
+    },
+    sourceObjectKey: "contracts/contract-stage2-1/generated/handover.pdf",
+    sourcePdfHash,
+    status: customerReady
+      ? "PENDING_CUSTOMER_SIGNATURE"
+      : "SOURCE_GENERATED"
+  };
+  const confirmedAt = new Date("2026-07-27T07:00:00.000Z");
+  return {
+    customerConfirmedAt: confirmedAt,
+    customerObjectedAt: null,
+    fieldOperatorPhone: "13800000000",
+    handover,
+    handoverId: handover.id,
+    handoverType: "DELIVERY_OUTBOUND",
+    id: "00000000-0000-4000-8000-000000000003",
+    order: {
+      customer: {
+        id: "customer-1",
+        mobile: "13912345678",
+        name: "Customer Sensitive Name"
+      },
+      customerId: "customer-1",
+      id: "order-1",
+      vehicle: {
+        licensePlate: "沪A12345",
+        vin: "VIN-SENSITIVE-001"
+      }
+    },
+    orderId: "order-1",
+    reviewAttempts: [
+      {
+        customerConfirmedAt: confirmedAt,
+        evidenceSnapshot: {
+          evidencePackage: {
+            manifestHash: `sha256:${manifestDigest}`
+          }
+        },
+        handoverId: handover.id,
+        id: "review-attempt-1",
+        orderId: "order-1",
+        status: "CUSTOMER_CONFIRMED",
+        workOrderId: "00000000-0000-4000-8000-000000000003"
+      }
+    ],
+    status: customerReady ? "SIGNING" : "CUSTOMER_CONFIRMED"
   };
 }
 
 function customerJob(): ClaimedStage2WorkflowJob {
   return claimedJob({
     eSignTaskId: "00000000-0000-4000-8000-000000000010",
+    handoverId: "00000000-0000-4000-8000-000000000020",
     idempotencyKey:
       "customer-notify:00000000-0000-4000-8000-000000000010:HDVTRANSACTIONH1",
     jobType: VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY,

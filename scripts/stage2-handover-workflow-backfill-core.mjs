@@ -1,7 +1,20 @@
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+import {
+  STAGE2_HANDOVER_PDF_HARD_MAX_BYTES,
+  STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
+  buildCanonicalStage2PdfJobKey,
+  canonicalStage2Sha256,
+  stage2BackfillJobMatchesCandidate,
+  stage2Sha256Digest
+} from "./stage2-handover-workflow-contract.mjs";
+
 const TERMINAL_WORK_ORDER_STATUSES = new Set(["CANCELLED", "FAILED", "VOIDED"]);
 const TERMINAL_HANDOVER_STATUSES = new Set(["ARCHIVED", "CANCELLED", "FAILED"]);
 const TERMINAL_TASK_STATUSES = new Set(["CANCELLED", "EXPIRED", "FAILED"]);
+const CUSTOMER_TASK_WORK_ORDER_STATUSES = new Set(["CUSTOMER_CONFIRMED", "SIGNING"]);
+const PLATFORM_TASK_WORK_ORDER_STATUSES =
+  new Set(["CUSTOMER_CONFIRMED", "SIGNING", "CUSTOMER_SIGNED"]);
+const ARCHIVE_TASK_WORK_ORDER_STATUSES =
+  new Set(["CUSTOMER_CONFIRMED", "SIGNING", "CUSTOMER_SIGNED", "PLATFORM_SEALED"]);
 
 export function parseStage2HandoverWorkflowBackfillMode(args) {
   if (args.length !== 1 || (args[0] !== "--dry-run" && args[0] !== "--apply")) {
@@ -30,11 +43,22 @@ export function buildStage2HandoverWorkflowBackfillPlan(records) {
     if (workflow.exception) {
       exceptions.push(workflow.exception);
     }
-    if (
-      workflow.candidate &&
-      !existingIdempotencyKeys(record).has(workflow.candidate.idempotencyKey)
-    ) {
-      jobCandidates.push(workflow.candidate);
+    if (workflow.candidate) {
+      const existing = findExistingWorkflowJob(
+        record,
+        workflow.candidate.idempotencyKey
+      );
+      if (!existing) {
+        jobCandidates.push(workflow.candidate);
+      } else if (
+        !stage2BackfillJobMatchesCandidate(existing, workflow.candidate)
+      ) {
+        exceptions.push({
+          code: "STAGE2_WORKFLOW_JOB_CONFLICT",
+          sourceId: nonEmptyString(existing.id) ? existing.id : record.id,
+          workOrderId: record.id
+        });
+      }
     }
   }
 
@@ -160,22 +184,57 @@ function planNextWorkflowJob(record, { operatorReady }) {
     return noWorkflowChange();
   }
 
+  if (record.handoverType !== "DELIVERY_OUTBOUND") {
+    return workflowException(record, "STAGE2_HANDOVER_TYPE_INVALID");
+  }
+
   const handover = record.handover;
-  if (!handover || !record.handoverId || handover.id !== record.handoverId || handover.deletedAt) {
+  if (
+    !handover ||
+    !record.handoverId ||
+    handover.id !== record.handoverId ||
+    handover.orderId !== record.orderId ||
+    record.order?.id !== record.orderId ||
+    handover.deletedAt
+  ) {
     return workflowException(record, "STAGE2_HANDOVER_BINDING_INVALID");
   }
 
-  const typedTask = readTypedTask(handover);
+  const confirmedReview = readConfirmedReview(record);
+  if (!confirmedReview) {
+    return workflowException(record, "STAGE2_REVIEW_BINDING_INVALID");
+  }
+
+  const sourceState = readReadySource(record, handover, confirmedReview);
+  if (sourceState.invalid) {
+    return workflowException(record, "STAGE2_SOURCE_BINDING_INVALID");
+  }
+  const source = sourceState.source;
+  const typedTask = readTypedTask(record, handover, source);
   if (typedTask.invalid) {
     return workflowException(record, "STAGE2_TASK_BINDING_INVALID");
   }
   if (typedTask.task) {
-    const signerJob = planSignerJob(record, handover, typedTask.task);
+    if (!source) {
+      return workflowException(record, "STAGE2_SOURCE_BINDING_INVALID");
+    }
+    const signerJob = planSignerJob(
+      record,
+      handover,
+      source,
+      typedTask.task
+    );
     return signerJob ?? noWorkflowChange();
   }
 
-  const source = readReadySource(handover);
-  if (source) {
+  if (handover.status === "SOURCE_GENERATED") {
+    if (
+      !source ||
+      record.status !== "CUSTOMER_CONFIRMED" ||
+      source.contractStatus !== "GENERATED"
+    ) {
+      return workflowException(record, "STAGE2_SOURCE_BINDING_INVALID");
+    }
     if (!operatorReady) {
       return noWorkflowChange();
     }
@@ -196,15 +255,26 @@ function planNextWorkflowJob(record, { operatorReady }) {
     };
   }
 
-  const confirmedReview = readConfirmedReview(record);
-  if (!confirmedReview) {
-    return noWorkflowChange();
+  if (
+    handover.status !== "DRAFT" ||
+    record.status !== "CUSTOMER_CONFIRMED" ||
+    source
+  ) {
+    return workflowException(record, "STAGE2_WORKFLOW_STATE_INVALID");
+  }
+  const idempotencyKey = buildCanonicalStage2PdfJobKey({
+    manifestHash: confirmedReview.manifestHash,
+    reviewAttemptId: confirmedReview.id,
+    workOrderId: record.id
+  });
+  if (!idempotencyKey) {
+    return workflowException(record, "STAGE2_REVIEW_BINDING_INVALID");
   }
   return {
     candidate: {
       eSignTaskId: null,
       handoverId: handover.id,
-      idempotencyKey: `pdf:${record.id}:${confirmedReview.id}:${confirmedReview.manifestHash}`,
+      idempotencyKey,
       jobType: "GENERATE_SOURCE_PDF",
       payload: {
         manifestHash: confirmedReview.manifestHash,
@@ -216,9 +286,9 @@ function planNextWorkflowJob(record, { operatorReady }) {
   };
 }
 
-function planSignerJob(record, handover, task) {
+function planSignerJob(record, handover, source, task) {
   if (TERMINAL_TASK_STATUSES.has(task.taskStatus)) {
-    return noWorkflowChange();
+    return workflowException(record, "STAGE2_TASK_NOT_ACTIVE");
   }
 
   const signers = readTypedSigners(task);
@@ -239,17 +309,21 @@ function planSignerJob(record, handover, task) {
   }
 
   if (customerSigner.signerStatus === "SIGNED" && platformSigner.signerStatus === "SIGNED") {
-    const artifactVersion = positiveInteger(handover.artifactVersion);
-    if (!artifactVersion) {
-      return workflowException(record, "STAGE2_ARTIFACT_VERSION_INVALID");
+    if (
+      !ARCHIVE_TASK_WORK_ORDER_STATUSES.has(record.status) ||
+      handover.status !== "SIGNED" ||
+      source.contractStatus !== "SIGNED" ||
+      task.taskStatus !== "COMPLETED"
+    ) {
+      return workflowException(record, "STAGE2_WORKFLOW_STATE_INVALID");
     }
     return {
       candidate: {
         eSignTaskId: task.id,
         handoverId: handover.id,
-        idempotencyKey: `archive:${task.id}:${artifactVersion}`,
+        idempotencyKey: `archive:${task.id}:${source.artifactVersion}`,
         jobType: "ARCHIVE_SIGNED_PDF",
-        payload: { artifactVersion },
+        payload: { artifactVersion: source.artifactVersion },
         workOrderId: record.id
       },
       exception: null
@@ -257,6 +331,14 @@ function planSignerJob(record, handover, task) {
   }
 
   if (customerSigner.signerStatus === "SIGNED") {
+    if (
+      !PLATFORM_TASK_WORK_ORDER_STATUSES.has(record.status) ||
+      handover.status !== "PENDING_PLATFORM_SEAL" ||
+      source.contractStatus !== "SIGNING" ||
+      task.taskStatus !== "SIGNING"
+    ) {
+      return workflowException(record, "STAGE2_WORKFLOW_STATE_INVALID");
+    }
     const jobType =
       platformSigner.signerStatus === "SIGNING"
         ? "RECONCILE_PLATFORM_SEAL"
@@ -264,7 +346,7 @@ function planSignerJob(record, handover, task) {
           ? "AUTO_SEAL_PLATFORM"
           : null;
     if (!jobType) {
-      return noWorkflowChange();
+      return workflowException(record, "STAGE2_WORKFLOW_STATE_INVALID");
     }
     const keyPrefix = jobType === "AUTO_SEAL_PLATFORM" ? "platform-seal" : "platform-reconcile";
     return {
@@ -284,6 +366,16 @@ function planSignerJob(record, handover, task) {
     ["PENDING", "SIGNING"].includes(customerSigner.signerStatus) &&
     customerSigner.providerTransactionId === customerTransactionId
   ) {
+    if (
+      !CUSTOMER_TASK_WORK_ORDER_STATUSES.has(record.status) ||
+      handover.status !== "PENDING_CUSTOMER_SIGNATURE" ||
+      source.contractStatus !== "SIGNING" ||
+      !["WAITING_CUSTOMER", "SIGNING"].includes(task.taskStatus) ||
+      platformSigner.signerStatus !== "PENDING" ||
+      platformSigner.providerTransactionId
+    ) {
+      return workflowException(record, "STAGE2_WORKFLOW_STATE_INVALID");
+    }
     return {
       candidate: {
         eSignTaskId: task.id,
@@ -297,20 +389,38 @@ function planSignerJob(record, handover, task) {
     };
   }
 
-  return noWorkflowChange();
+  return workflowException(record, "STAGE2_WORKFLOW_STATE_INVALID");
 }
 
-function readTypedTask(handover) {
+function readTypedTask(record, handover, source) {
   const task = handover.handoverESignTask;
   if (!handover.handoverESignTaskId && !task) {
     return { invalid: false, task: null };
   }
+  const snapshot = asRecord(task?.requestSnapshot);
+  const slotIds = snapshot?.slotIds;
   if (
+    !source ||
     !task ||
     handover.handoverESignTaskId !== task.id ||
     task.deletedAt ||
     task.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
-    task.documentType !== "DELIVERY_HANDOVER"
+    task.documentType !== "DELIVERY_HANDOVER" ||
+    task.orderId !== record.orderId ||
+    task.customerId !== record.order?.customerId ||
+    task.contractId !== source.contractId ||
+    snapshot?.artifactVersion !== source.artifactVersion ||
+    snapshot?.contractId !== source.contractId ||
+    snapshot?.documentType !== "DELIVERY_HANDOVER" ||
+    snapshot?.handoverId !== handover.id ||
+    snapshot?.manifestHash !== source.manifestDigest ||
+    snapshot?.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+    snapshot?.sourceDocumentFileId !== source.fileId ||
+    snapshot?.sourcePdfHash !== source.sourcePdfHash ||
+    !Array.isArray(slotIds) ||
+    slotIds.length !== 2 ||
+    !slotIds.includes("STAGE2_HANDOVER_CUSTOMER") ||
+    !slotIds.includes("STAGE2_HANDOVER_PLATFORM")
   ) {
     return { invalid: true, task: null };
   }
@@ -328,6 +438,12 @@ function readTypedSigners(task) {
     signerMatches(signer, "STAGE2_HANDOVER_PLATFORM", "PLATFORM", "PLATFORM_AUTO_SEAL")
   );
   if (customer.length !== 1 || platform.length !== 1) {
+    return null;
+  }
+  if (
+    customer[0].customerId !== task.customerId ||
+    (platform[0].customerId ?? null) !== null
+  ) {
     return null;
   }
   const customerTransactionId = buildProviderTransactionId(task.taskNo, "H1");
@@ -354,31 +470,88 @@ function signerMatches(signer, slotId, signerType, providerActionType) {
   );
 }
 
-function readReadySource(handover) {
+function readReadySource(record, handover, confirmedReview) {
+  if (!hasSourceState(handover)) {
+    return {
+      invalid: false,
+      source: null
+    };
+  }
+
   const artifactVersion = positiveInteger(handover.artifactVersion);
-  const manifestHash = normalizeDigest(handover.manifestHash);
-  const sourcePdfHash = normalizeDigest(handover.sourcePdfHash);
+  const manifestDigest = stage2Sha256Digest(handover.manifestHash);
+  const sourcePdfHash = stage2Sha256Digest(handover.sourcePdfHash);
+  const contract = asRecord(handover.handoverContract);
+  const contractSnapshot = asRecord(contract?.contractSnapshot);
+  const evidencePackage = asRecord(contractSnapshot?.evidencePackage);
+  const artifact = asRecord(contractSnapshot?.stage2HandoverPdfArtifact);
+  const fileObject = asRecord(handover.sourceFileObject);
+  const fileSize = Number(fileObject?.sizeBytes);
   if (
-    !artifactVersion ||
-    !manifestHash ||
+    artifactVersion !== STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION ||
+    !manifestDigest ||
+    canonicalStage2Sha256(manifestDigest) !== confirmedReview.manifestHash ||
     !sourcePdfHash ||
-    !nonEmptyString(handover.sourceDocumentFileId)
+    !nonEmptyString(handover.handoverContractId) ||
+    !nonEmptyString(handover.sourceDocumentFileId) ||
+    !nonEmptyString(handover.sourceObjectKey) ||
+    !contract ||
+    contract.id !== handover.handoverContractId ||
+    contract.deletedAt ||
+    contract.orderId !== record.orderId ||
+    contract.customerId !== record.order?.customerId ||
+    contract.fileId !== handover.sourceDocumentFileId ||
+    !["GENERATED", "SIGNING", "SIGNED"].includes(contract.status) ||
+    contractSnapshot?.workOrderId !== record.id ||
+    contractSnapshot?.handoverId !== handover.id ||
+    contractSnapshot?.orderId !== record.orderId ||
+    contractSnapshot?.fileId !== handover.sourceDocumentFileId ||
+    canonicalStage2Sha256(evidencePackage?.manifestHash) !==
+      confirmedReview.manifestHash ||
+    artifact?.artifactVersion !== artifactVersion ||
+    artifact?.fileId !== handover.sourceDocumentFileId ||
+    stage2Sha256Digest(artifact?.sourcePdfHash) !== sourcePdfHash ||
+    fileObject?.id !== handover.sourceDocumentFileId ||
+    !nonEmptyString(fileObject.bucket) ||
+    fileObject.objectKey !== handover.sourceObjectKey ||
+    fileObject.mimeType?.trim().toLowerCase() !== "application/pdf" ||
+    !Number.isSafeInteger(fileSize) ||
+    fileSize <= 0 ||
+    fileSize > STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
   ) {
-    return null;
+    return {
+      invalid: true,
+      source: null
+    };
   }
   return {
-    artifactVersion,
-    manifestHash,
-    sourcePdfHash
+    invalid: false,
+    source: {
+      artifactVersion,
+      contractId: contract.id,
+      contractStatus: contract.status,
+      fileId: handover.sourceDocumentFileId,
+      manifestDigest,
+      manifestHash: confirmedReview.manifestHash,
+      sourcePdfHash
+    }
   };
 }
 
 function readConfirmedReview(record) {
   const review = record.latestReview;
-  const manifestHash = normalizeDigest(review?.evidenceSnapshot?.evidencePackage?.manifestHash);
+  const manifestHash = canonicalStage2Sha256(
+    review?.evidenceSnapshot?.evidencePackage?.manifestHash
+  );
   if (
+    record.status === "CUSTOMER_OBJECTED" ||
     !record.customerConfirmedAt ||
+    record.customerObjectedAt ||
     review?.status !== "CUSTOMER_CONFIRMED" ||
+    review?.workOrderId !== record.id ||
+    review?.orderId !== record.orderId ||
+    review?.handoverId !== record.handoverId ||
+    !sameTimestamp(review?.customerConfirmedAt, record.customerConfirmedAt) ||
     !nonEmptyString(review.id) ||
     !manifestHash
   ) {
@@ -400,9 +573,11 @@ function isTerminal(record) {
   );
 }
 
-function existingIdempotencyKeys(record) {
-  return new Set(
-    (record.workflowJobs ?? []).map((job) => job?.idempotencyKey).filter(nonEmptyString)
+function findExistingWorkflowJob(record, idempotencyKey) {
+  return (
+    (record.workflowJobs ?? []).find(
+      (job) => job?.idempotencyKey === idempotencyKey
+    ) ?? null
   );
 }
 
@@ -439,17 +614,6 @@ function stripWrappingQuotes(value) {
   return trimmed;
 }
 
-function normalizeDigest(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/^sha256:/, "");
-  return SHA256_PATTERN.test(normalized) ? normalized : null;
-}
-
 function buildProviderTransactionId(taskNo, suffix) {
   if (typeof taskNo !== "string") {
     return null;
@@ -464,6 +628,33 @@ function positiveInteger(value) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && Boolean(value.trim());
+}
+
+function hasSourceState(handover) {
+  return Boolean(
+    handover.status === "SOURCE_GENERATED" ||
+    handover.handoverContractId ||
+    handover.sourceDocumentFileId ||
+    handover.sourceObjectKey ||
+    handover.sourcePdfHash ||
+    handover.manifestHash
+  );
+}
+
+function sameTimestamp(left, right) {
+  const leftTime = new Date(left).getTime();
+  const rightTime = new Date(right).getTime();
+  return (
+    Number.isFinite(leftTime) &&
+    Number.isFinite(rightTime) &&
+    leftTime === rightTime
+  );
+}
+
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : null;
 }
 
 function noWorkflowChange() {

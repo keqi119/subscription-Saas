@@ -50,6 +50,7 @@ import {
   STAGE2_HANDOVER_ESIGN_NOT_READY
 } from "./stage2-handover-esign-readiness.service";
 import { Stage2HandoverWorkflowService } from "./stage2-handover-workflow.service";
+import { matchesStage2HandoverTaskSourceBinding } from "./stage2-handover-task-binding";
 
 export const STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED =
   "STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED";
@@ -3275,22 +3276,8 @@ function taskMatchesSourceBinding(
   task: Stage2Task,
   handover: Stage2LifecycleWorkOrder["handover"]
 ) {
-  if (!handover) {
-    return false;
-  }
-  const snapshot = asRecord(task.requestSnapshot);
-  const contract = handover.handoverContract;
-  return (
-    task.contractId === handover.handoverContractId &&
-    contract?.id === handover.handoverContractId &&
-    contract.fileId === handover.sourceDocumentFileId &&
-    snapshot?.artifactVersion === handover.artifactVersion &&
-    snapshot?.contractId === task.contractId &&
-    snapshot.contractId === contract.id &&
-    snapshot?.handoverId === handover.id &&
-    snapshot?.manifestHash === handover.manifestHash &&
-    snapshot?.sourceDocumentFileId === handover.sourceDocumentFileId &&
-    snapshot.sourceDocumentFileId === contract.fileId &&
-    snapshot?.sourcePdfHash === handover.sourcePdfHash
-  );
+  return matchesStage2HandoverTaskSourceBinding({
+    handover,
+    task
+  });
 }

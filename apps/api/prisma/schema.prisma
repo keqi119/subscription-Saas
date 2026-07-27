@@ -85,6 +85,8 @@ enum CustomerVerificationCodePurpose {
   LOGIN
   BIND_PHONE
   FIELD_HANDOVER_LOGIN
+  FIELD_HANDOVER_ESIGN_READY
+  CUSTOMER_HANDOVER_ESIGN_READY
 
   @@map("customer_verification_code_purpose")
 }
@@ -801,6 +803,8 @@ enum NotificationTemplateType {
   BILL_OVERDUE
   SERVICE_CASE_UPDATE
   RESCUE_UPDATE
+  HANDOVER_ESIGN_PENDING
+  HANDOVER_ESIGN_READY
   SYSTEM
 
   @@map("notification_template_type")
@@ -823,6 +827,8 @@ enum NotificationType {
   BILL_OVERDUE
   SERVICE_CASE_UPDATE
   RESCUE_UPDATE
+  HANDOVER_ESIGN_PENDING
+  HANDOVER_ESIGN_READY
   SYSTEM
 
   @@map("notification_type")
@@ -850,6 +856,8 @@ enum NotificationEventType {
   SERVICE_CASE_SUBMITTED
   SERVICE_CASE_UPDATED
   RESCUE_UPDATED
+  HANDOVER_ESIGN_PENDING
+  HANDOVER_ESIGN_READY
 
   @@map("notification_event_type")
 }
@@ -1006,6 +1014,28 @@ enum VehicleHandoverWorkOrderStatus {
   CANCELLED
 
   @@map("vehicle_handover_work_order_status")
+}
+
+enum VehicleHandoverWorkflowJobType {
+  GENERATE_SOURCE_PDF
+  NOTIFY_FIELD_ESIGN_READY
+  NOTIFY_CUSTOMER_ESIGN_READY
+  RECONCILE_CUSTOMER_SIGNATURE
+  AUTO_SEAL_PLATFORM
+  RECONCILE_PLATFORM_SEAL
+  ARCHIVE_SIGNED_PDF
+
+  @@map("vehicle_handover_workflow_job_type")
+}
+
+enum VehicleHandoverWorkflowJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  DEAD_LETTER
+  CANCELLED
+
+  @@map("vehicle_handover_workflow_job_status")
 }
 
 enum VehicleHandoverOpsReviewStatus {
@@ -2140,6 +2170,7 @@ model SmsSendLog {
   purpose            CustomerVerificationCodePurpose
   provider           SmsProviderType
   sendStatus         SmsSendStatus                   @map("send_status")
+  idempotencyKey     String?                         @unique @map("idempotency_key") @db.VarChar(256)
   providerMessageId  String?                         @map("provider_message_id") @db.VarChar(128)
   providerRequestId  String?                         @map("provider_request_id") @db.VarChar(128)
   providerResponse   Json?                           @map("provider_response")
@@ -4972,6 +5003,8 @@ model VehicleHandoverWorkOrder {
   externalOperatorName         String?                        @map("external_operator_name") @db.VarChar(64)
   externalOperatorPhone        String?                        @map("external_operator_phone") @db.VarChar(32)
   externalOperatorOrganization String?                        @map("external_operator_organization") @db.VarChar(128)
+  fieldOperatorName            String?                        @map("field_operator_name") @db.VarChar(64)
+  fieldOperatorPhone           String?                        @map("field_operator_phone") @db.VarChar(32)
   accessTokenHash              String?                        @unique @map("access_token_hash") @db.VarChar(128)
   accessTokenExpiresAt         DateTime?                      @map("access_token_expires_at") @db.Timestamptz(6)
   accessTokenRevokedAt         DateTime?                      @map("access_token_revoked_at") @db.Timestamptz(6)
@@ -5003,6 +5036,7 @@ model VehicleHandoverWorkOrder {
   metadata                     Json?
   reviewAttempts               VehicleHandoverReviewAttempt[]
   events                       VehicleHandoverEvent[]
+  workflowJobs                 VehicleHandoverWorkflowJob[]
   createdAt                    DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                    DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -5013,10 +5047,40 @@ model VehicleHandoverWorkOrder {
   @@index([status])
   @@index([operatorType])
   @@index([assignedInternalUserId])
+  @@index([fieldOperatorPhone])
   @@index([accessTokenExpiresAt])
   @@index([opsReviewStatus])
   @@index([opsReviewedBy])
   @@map("vehicle_handover_work_order")
+}
+
+model VehicleHandoverWorkflowJob {
+  id               String                           @id @default(uuid()) @db.Uuid
+  workOrderId      String                           @map("work_order_id") @db.Uuid
+  workOrder        VehicleHandoverWorkOrder         @relation(fields: [workOrderId], references: [id])
+  handoverId       String?                          @map("handover_id") @db.Uuid
+  eSignTaskId      String?                          @map("esign_task_id") @db.Uuid
+  jobType          VehicleHandoverWorkflowJobType   @map("job_type")
+  jobStatus        VehicleHandoverWorkflowJobStatus @default(PENDING) @map("job_status")
+  idempotencyKey   String                           @unique @map("idempotency_key") @db.VarChar(256)
+  availableAt      DateTime                         @default(now()) @map("available_at") @db.Timestamptz(6)
+  attemptCount     Int                              @default(0) @map("attempt_count")
+  maxAttempts      Int                              @default(5) @map("max_attempts")
+  leaseToken       String?                          @map("lease_token") @db.Uuid
+  leaseExpiresAt   DateTime?                        @map("lease_expires_at") @db.Timestamptz(6)
+  payload          Json?
+  resultSnapshot   Json?                            @map("result_snapshot")
+  lastErrorCode    String?                          @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage String?                          @map("last_error_message") @db.VarChar(512)
+  startedAt        DateTime?                        @map("started_at") @db.Timestamptz(6)
+  completedAt      DateTime?                        @map("completed_at") @db.Timestamptz(6)
+  createdAt        DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([jobStatus, availableAt])
+  @@index([workOrderId, createdAt])
+  @@index([leaseExpiresAt])
+  @@map("vehicle_handover_workflow_job")
 }
 
 model VehicleHandoverReviewAttempt {

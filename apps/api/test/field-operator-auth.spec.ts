@@ -151,7 +151,7 @@ describe("FieldOperatorAuthService", () => {
     await expect(service.validateToken(portalToken)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it("session DTO includes masked phone and assigned task count without exposing the session token", async () => {
+  it("session DTO is origin-neutral and includes assigned task count without exposing the session token", async () => {
     const { handoverService, service } = createFieldAuthFixture();
     handoverService.countFieldAccessibleWorkOrders.mockResolvedValueOnce(2);
     const code = (await service.requestCode({ phone: "13800000000" }, requestContext())).debugCode!;
@@ -161,7 +161,7 @@ describe("FieldOperatorAuthService", () => {
 
     expect(session).toEqual({
       authenticated: true,
-      operatorType: VehicleHandoverOperatorType.EXTERNAL,
+      operatorType: null,
       phoneMasked: "138****0000",
       taskCount: 2
     });
@@ -405,7 +405,8 @@ class FakePrismaService {
         ipHash: data.ipHash ?? null,
         lastSeenAt: data.lastSeenAt ?? null,
         metadata: data.metadata ?? null,
-        operatorType: data.operatorType ?? VehicleHandoverOperatorType.EXTERNAL,
+        operatorType:
+          data.operatorType === undefined ? VehicleHandoverOperatorType.EXTERNAL : data.operatorType,
         phone: data.phone!,
         revokedAt: data.revokedAt ?? null,
         sessionTokenHash: data.sessionTokenHash!,
@@ -500,7 +501,7 @@ interface FakeSession {
   ipHash: string | null;
   lastSeenAt: Date | null;
   metadata: unknown;
-  operatorType: VehicleHandoverOperatorType;
+  operatorType: VehicleHandoverOperatorType | null;
   phone: string;
   revokedAt: Date | null;
   sessionTokenHash: string;

@@ -51,9 +51,8 @@ export class AssignExternalOperatorDto {
   @IsString()
   organization?: string;
 
-  @IsOptional()
   @IsString()
-  phone?: string;
+  phone!: string;
 }
 
 export class UpdateHandoverFieldFactsDto {

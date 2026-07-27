@@ -60,8 +60,7 @@ import {
   MAX_FIELD_VIDEO_SIZE_BYTES
 } from "./handover-work-order.constants";
 import {
-  normalizeFieldOperatorPhone,
-  normalizeOptionalFieldOperatorPhone
+  normalizeFieldOperatorPhone
 } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
@@ -176,6 +175,8 @@ export interface WorkOrderRecord {
   externalOperatorPhone?: string | null;
   fieldCompletedAt?: Date | null;
   fieldNotes?: string | null;
+  fieldOperatorName?: string | null;
+  fieldOperatorPhone?: string | null;
   fieldStartedAt?: Date | null;
   fieldSubmittedAt?: Date | null;
   fuelLevelText?: string | null;
@@ -216,7 +217,7 @@ export interface AssignExternalOperatorInput {
   expiresAt?: Date | string | null;
   name: string;
   organization?: string | null;
-  phone?: string | null;
+  phone: string;
 }
 
 export interface UpdateFieldFactsInput {
@@ -323,9 +324,9 @@ export class HandoverWorkOrderService {
   }
 
   async assignInternalOperator(id: string, userId: string, actorId?: string) {
-    await this.assertUserExists(userId);
+    const operator = await this.getAssignableInternalUser(userId);
     const workOrder = await this.getWorkOrderOrThrow(id);
-    this.assertMutable(workOrder);
+    await this.assertAssignmentMutable(workOrder);
     return this.updateWorkOrderWithEvent(workOrder, {
       accessTokenExpiresAt: null,
       accessTokenHash: null,
@@ -334,6 +335,8 @@ export class HandoverWorkOrderService {
       externalOperatorName: null,
       externalOperatorOrganization: null,
       externalOperatorPhone: null,
+      fieldOperatorName: operator.name,
+      fieldOperatorPhone: operator.phone,
       metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
       operatorType: "INTERNAL",
       status: nextStatus(workOrder.status, "ASSIGNED")
@@ -347,11 +350,11 @@ export class HandoverWorkOrderService {
   async assignExternalOperator(id: string, input: AssignExternalOperatorInput, actorId?: string) {
     const name = normalizeRequiredText(input.name, "请填写外部交付员姓名。");
     const workOrder = await this.getWorkOrderOrThrow(id);
-    this.assertMutable(workOrder);
+    await this.assertAssignmentMutable(workOrder);
     const accessToken = randomBytes(32).toString("base64url");
     const accessTokenHash = hashAccessToken(accessToken);
     const expiresAt = input.expiresAt ? parseDate(input.expiresAt, "accessTokenExpiresAt") : defaultTokenExpiry();
-    const phone = normalizeOptionalFieldOperatorPhone(input.phone);
+    const phone = normalizeFieldOperatorPhone(input.phone ?? "");
 
     const updated = await this.updateWorkOrderWithEvent(workOrder, {
       accessTokenExpiresAt: expiresAt,
@@ -361,6 +364,8 @@ export class HandoverWorkOrderService {
       externalOperatorName: name,
       externalOperatorOrganization: normalizeOptionalText(input.organization),
       externalOperatorPhone: phone,
+      fieldOperatorName: name,
+      fieldOperatorPhone: phone,
       metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
       operatorType: "EXTERNAL",
       status: nextStatus(workOrder.status, "ASSIGNED")
@@ -402,20 +407,13 @@ export class HandoverWorkOrderService {
 
   async listFieldAccessibleWorkOrders(phone: string) {
     const normalizedPhone = normalizeFieldOperatorPhone(phone);
-    const now = new Date();
     const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
       orderBy: [
         { scheduledAt: "asc" },
         { createdAt: "desc" }
       ],
       where: {
-        OR: [
-          { accessTokenExpiresAt: null },
-          { accessTokenExpiresAt: { gt: now } }
-        ],
-        accessTokenRevokedAt: null,
-        externalOperatorPhone: normalizedPhone,
-        operatorType: "EXTERNAL",
+        fieldOperatorPhone: normalizedPhone,
         status: { notIn: [...FIELD_HIDDEN_WORK_ORDER_STATUSES] }
       }
     });
@@ -2343,8 +2341,9 @@ export class HandoverWorkOrderService {
       id: workOrder.id,
       objection: toObjectionView(workOrder),
       operator: {
-        name: workOrder.externalOperatorName ?? null,
-        phoneMasked: maskPhone(workOrder.externalOperatorPhone),
+        name: workOrder.fieldOperatorName ?? workOrder.externalOperatorName ?? null,
+        phone: workOrder.fieldOperatorPhone ?? workOrder.externalOperatorPhone ?? null,
+        phoneMasked: maskPhone(workOrder.fieldOperatorPhone ?? workOrder.externalOperatorPhone),
         type: workOrder.operatorType ?? null
       },
       orderId: workOrder.orderId,
@@ -2683,8 +2682,12 @@ export class HandoverWorkOrderService {
     });
   }
 
-  private async assertUserExists(userId: string) {
+  private async getAssignableInternalUser(userId: string) {
     const user = await this.prisma.user.findFirst({
+      select: {
+        mobile: true,
+        name: true
+      },
       where: {
         deletedAt: null,
         id: userId
@@ -2692,6 +2695,21 @@ export class HandoverWorkOrderService {
     });
     if (!user) {
       throw new NotFoundException("内部交付员不存在。");
+    }
+    return {
+      name: normalizeRequiredText(user.name, "内部交付员姓名无效。"),
+      phone: normalizeFieldOperatorPhone(user.mobile ?? "")
+    };
+  }
+
+  private async assertAssignmentMutable(workOrder: WorkOrderRecord) {
+    this.assertMutable(workOrder);
+    const currentAttempt = await this.findLatestReviewAttempt(workOrder.id);
+    if (
+      workOrder.customerReviewStartedAt ||
+      (currentAttempt && readUnknown(currentAttempt, "customerReviewStartedAt"))
+    ) {
+      throw new BadRequestException("Field operator assignment is frozen after customer review starts.");
     }
   }
 
@@ -2703,7 +2721,12 @@ export class HandoverWorkOrderService {
 
   private async getFieldAccessibleWorkOrderRecord(id: string, phone: string) {
     const normalizedPhone = normalizeFieldOperatorPhone(phone);
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({ where: { id } });
+    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findFirst({
+      where: {
+        fieldOperatorPhone: normalizedPhone,
+        id
+      }
+    });
 
     if (!workOrder || !isFieldAccessibleWorkOrder(workOrder, normalizedPhone)) {
       throw new UnauthorizedException("No access to this field handover work order.");
@@ -3049,19 +3072,13 @@ function hasActiveCustomerObjection(workOrder: WorkOrderRecord) {
 }
 
 function isFieldAccessibleWorkOrder(workOrder: null | WorkOrderRecord, phone: string) {
-  if (!workOrder || workOrder.operatorType !== "EXTERNAL") {
-    return false;
-  }
-  if (workOrder.externalOperatorPhone !== phone) {
-    return false;
-  }
-  if (workOrder.accessTokenRevokedAt) {
+  if (!workOrder || workOrder.fieldOperatorPhone !== phone) {
     return false;
   }
   if (FIELD_HIDDEN_WORK_ORDER_STATUSES.includes(workOrder.status as typeof FIELD_HIDDEN_WORK_ORDER_STATUSES[number])) {
     return false;
   }
-  return !workOrder.accessTokenExpiresAt || workOrder.accessTokenExpiresAt.getTime() > Date.now();
+  return true;
 }
 
 function compareFieldWorkOrders(left: WorkOrderRecord, right: WorkOrderRecord) {

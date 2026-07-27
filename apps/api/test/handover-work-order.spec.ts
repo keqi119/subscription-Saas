@@ -176,7 +176,7 @@ describe("HandoverWorkOrderService", () => {
     );
   });
 
-  it("lists only active external work orders assigned to the field operator phone with safe summaries", async () => {
+  it("lists active work orders by canonical phone regardless of legacy token state with safe summaries", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push(
       {
@@ -238,7 +238,12 @@ describe("HandoverWorkOrderService", () => {
 
     const list = await harness.service.listFieldAccessibleWorkOrders("+86 138-0000-0000");
 
-    expect(list.map((item) => item.id)).toEqual(["work-order-visible-early", "work-order-visible-late"]);
+    expect(list.map((item) => item.id)).toEqual([
+      "work-order-visible-early",
+      "work-order-visible-late",
+      "work-order-expired",
+      "work-order-revoked"
+    ]);
     expect(list[0]).toMatchObject({
       customer: {
         mobileMasked: "186****0212"
@@ -1602,7 +1607,7 @@ function createHandoverWorkOrderHarness() {
   const now = new Date("2026-07-21T08:00:00.000Z");
   const orderId = "order-1";
   const admin = { id: "admin-1" };
-  const internalUser = { id: "user-field-1" };
+  const internalUser = { id: "user-field-1", mobile: "13800000000" };
   const state = {
     handover: {
       archiveStatus: "NOT_STARTED",
@@ -1643,7 +1648,7 @@ function createHandoverWorkOrderHarness() {
     },
     users: [
       { deletedAt: null, id: admin.id, name: "管理员" },
-      { deletedAt: null, id: internalUser.id, name: "内部交付员" }
+      { deletedAt: null, id: internalUser.id, mobile: internalUser.mobile, name: "内部交付员" }
     ],
     vehicleDelivery: {
       deletedAt: null,
@@ -1727,11 +1732,14 @@ function createHandoverWorkOrderHarness() {
         state.workOrders.push(workOrder);
         return workOrder;
       }),
-      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.workOrders.find((workOrder) => matchesWorkOrderWhere(workOrder, where)) ?? null
-      ),
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const workOrder = state.workOrders.find((row) => matchesWorkOrderWhere(row, where));
+        return workOrder ? applyCanonicalOperatorBackfill(workOrder) : null;
+      }),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.workOrders.filter((workOrder) => matchesWorkOrderWhere(workOrder, where))
+        state.workOrders
+          .filter((workOrder) => matchesWorkOrderWhere(workOrder, where))
+          .map(applyCanonicalOperatorBackfill)
       ),
       findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
         state.workOrders.find((workOrder) => workOrder.id === where.id) ?? null
@@ -2042,6 +2050,9 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
     if (key === "externalOperatorPhone") {
       return workOrder.externalOperatorPhone === expected;
     }
+    if (key === "fieldOperatorPhone") {
+      return (workOrder.fieldOperatorPhone ?? workOrder.externalOperatorPhone) === expected;
+    }
     if (key === "accessTokenRevokedAt") {
       return workOrder.accessTokenRevokedAt === expected;
     }
@@ -2075,6 +2086,16 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
     }
     return true;
   });
+}
+
+function applyCanonicalOperatorBackfill(workOrder: Record<string, unknown>) {
+  if (!workOrder.fieldOperatorName && workOrder.externalOperatorName) {
+    workOrder.fieldOperatorName = workOrder.externalOperatorName;
+  }
+  if (!workOrder.fieldOperatorPhone && workOrder.externalOperatorPhone) {
+    workOrder.fieldOperatorPhone = workOrder.externalOperatorPhone;
+  }
+  return workOrder;
 }
 
 function matchesHandoverEventWhere(event: Record<string, unknown>, where: Record<string, unknown>): boolean {

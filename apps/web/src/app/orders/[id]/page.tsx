@@ -313,7 +313,7 @@ interface HandoverWorkOrderSummary {
   handoverType?: string | null;
   id: string;
   objection?: { adminStatus?: string | null; details?: string | null; objectedAt?: string | null; reason?: string | null } | null;
-  operator?: { name?: string | null; phoneMasked?: string | null; type?: string | null } | null;
+  operator?: { name?: string | null; phone?: string | null; type?: string | null } | null;
   orderId?: string | null;
   orderNo?: string | null;
   readiness?: { blockingReasons?: string[]; readyForStage2Pdf?: boolean; readyForStage2ESign?: boolean } | null;
@@ -2863,7 +2863,7 @@ function Stage2HandoverReviewPanel({
       render: (_value, row) => (
         <Space orientation="vertical" size={2}>
           <Typography.Text>{row.operator?.name || "尚未指派"}</Typography.Text>
-          <Typography.Text type="secondary">{row.operator?.phoneMasked || "-"}</Typography.Text>
+          <Typography.Text type="secondary">{row.operator?.phone || "-"}</Typography.Text>
         </Space>
       ),
       title: "Field 人员"

@@ -170,7 +170,7 @@ export class FieldOperatorAuthService {
         data: {
           expiresAt,
           ipHash: hashContextValue(context.ipAddress),
-          operatorType: VehicleHandoverOperatorType.EXTERNAL,
+          operatorType: null,
           phone,
           sessionTokenHash: hashSessionToken(jti),
           userAgentHash: hashContextValue(normalizeUserAgent(context.userAgent))

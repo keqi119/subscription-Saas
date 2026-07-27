@@ -42,6 +42,14 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).not.toMatch(/accessTokenHash|objectKey|bucket|signingUrl|idCard|fullPhone|raw DTO/i);
   });
 
+  it("renders canonical full Field identity and states equal OTP task permissions", () => {
+    const source = read(orderPagePath);
+
+    expect(source).toContain("row.operator?.phone || \"-\"");
+    expect(source).toContain("请填写用于 Field 登录的手机号");
+    expect(source).not.toContain("row.operator?.phoneMasked || \"-\"");
+  });
+
   it("provides an Admin objection queue entry with links back to the order workflow", () => {
     const source = read(reviewQueuePagePath);
 

@@ -4,14 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
-import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   BusinessType,
   ContractStatus,
   ContractTemplateType,
   ContractVersionStatus,
-  DeliveryHandoverStatus
+  DeliveryHandoverStatus,
+  VehicleHandoverWorkflowJobStatus,
+  VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -26,6 +27,7 @@ import {
   STAGE2_HANDOVER_PDF_TARGET_BYTES
 } from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 
 const pdfKitMock = vi.hoisted(() => {
   class FakePDFDocument {
@@ -415,42 +417,61 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(result.artifactId).toBe("file-pdf-1");
     expect(result.documentNo).toMatch(/^HDV\d{14}[A-Z2-9]{4}$/);
     expect(result.downloadUrl).toBe("/api/handover-work-orders/work-order-1/pdf/download");
-    expect(harness.prisma.contract.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
+    expect(harness.prisma.contract.upsert).toHaveBeenCalledWith({
+      create: expect.objectContaining({
         businessType: BusinessType.SUBSCRIPTION,
         contractVersionId: "template-handover-v1",
         contractTitle: "车辆交接确认单 V1.0",
         customerId: "customer-1",
         orderId: "order-1",
-        status: ContractStatus.GENERATED
-      })
+        status: ContractStatus.CANCELLED
+      }),
+      update: {},
+      where: { id: expect.any(String) }
     });
     expect(harness.storageService.putGeneratedContractPdfArtifactFromPath).toHaveBeenCalledOnce();
     expect(harness.storageService.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
-    expect(harness.prisma.fileObject.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
+    expect(harness.prisma.fileObject.upsert).toHaveBeenCalledWith({
+      create: expect.objectContaining({
         bucket: "application-materials",
         mimeType: "application/pdf",
         objectKey: "contracts/contract-stage2-1/generated/handover.pdf",
         originalName: "handover.pdf",
         uploadedBy: "admin-1"
-      })
+      }),
+      update: {},
+      where: { id: expect.any(String) }
     });
-    expect(harness.prisma.contract.update).toHaveBeenCalledWith({
-      data: expect.objectContaining({
+    expect(harness.prisma.contract.upsert).toHaveBeenCalledWith({
+      create: expect.objectContaining({
         contractSnapshot: expect.objectContaining({
           stage2HandoverPdfArtifact: {
             artifactKind: "stage2-handover-pdf-source",
+            artifactVersion: 1,
             documentType: "DELIVERY_HANDOVER",
             fileId: "file-pdf-1",
             pageCount: 10,
             signingStage: "STAGE2_DELIVERY_HANDOVER",
-            slotCoordinates: stage2ArtifactCoordinates()
+            slotCoordinates: stage2ArtifactCoordinates(),
+            sourcePdfHash: createHash("sha256")
+              .update(Buffer.from("%PDF-stage2-output"))
+              .digest("hex")
           }
         }),
         fileId: "file-pdf-1"
       }),
-      where: { id: "contract-stage2-1" }
+      update: expect.objectContaining({
+        contractSnapshot: expect.objectContaining({
+          stage2HandoverPdfArtifact: expect.objectContaining({
+            sourcePdfHash: createHash("sha256")
+              .update(Buffer.from("%PDF-stage2-output"))
+              .digest("hex")
+          })
+        }),
+        fileId: "file-pdf-1",
+        status: ContractStatus.GENERATED
+      }),
+      where: { id: expect.any(String) }
     });
     expect(harness.prisma.vehicleDeliveryHandover.updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -475,6 +496,154 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
   });
 
+  it("reuses a source artifact with the same manifest hash and source PDF hash", async () => {
+    const harness = createServiceHarness();
+    linkCompleteSourceArtifact(harness);
+
+    const result = await ensureStage2HandoverPdf(
+      harness.service,
+      "work-order-1",
+      harness.currentManifestHash
+    );
+
+    expect(result).toMatchObject({
+      artifactId: "file-pdf-1",
+      status: "GENERATED",
+      workOrderId: "work-order-1"
+    });
+    expect(harness.renderer.renderToFile).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.create).not.toHaveBeenCalled();
+    expect(harness.prisma.fileObject.create).not.toHaveBeenCalled();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath)
+      .not.toHaveBeenCalled();
+    expect(harness.workflowJobs).toHaveLength(1);
+    expect(harness.workflowJobs[0]).toMatchObject({
+      idempotencyKey: "field-notify:work-order-1:1",
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY
+    });
+  });
+
+  it("does not duplicate Contract, FileObject, storage object, or next job on retry", async () => {
+    const harness = createServiceHarness();
+
+    const first = await ensureStage2HandoverPdf(
+      harness.service,
+      "work-order-1",
+      harness.currentManifestHash
+    );
+    const repeated = await ensureStage2HandoverPdf(
+      harness.service,
+      "work-order-1",
+      harness.currentManifestHash
+    );
+
+    expect(repeated.artifactId).toBe(first.artifactId);
+    expect(harness.prisma.contract.create).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.fileObject.create).toHaveBeenCalledTimes(1);
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath)
+      .toHaveBeenCalledTimes(1);
+    expect(harness.workflowJobs).toHaveLength(1);
+  });
+
+  it("renders with the persisted deterministic Contract creation time", async () => {
+    const harness = createServiceHarness();
+
+    await ensureStage2HandoverPdf(
+      harness.service,
+      "work-order-1",
+      harness.currentManifestHash
+    );
+
+    const renderModel = harness.renderer.renderToFile.mock.calls[0]?.[0] as
+      | { generatedAt: string }
+      | undefined;
+    expect(renderModel?.generatedAt).toBe("2026-07-25T10:00:00.000Z");
+    expect(harness.prisma.contract.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the current manifest differs from the queued hash", async () => {
+    const harness = createServiceHarness();
+
+    await expect(
+      ensureStage2HandoverPdf(
+        harness.service,
+        "work-order-1",
+        `sha256:${"f".repeat(64)}`
+      )
+    ).rejects.toThrow("queued manifest");
+
+    expect(harness.renderer.renderToFile).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.create).not.toHaveBeenCalled();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath)
+      .not.toHaveBeenCalled();
+    expect(harness.workflowJobs).toEqual([]);
+  });
+
+  it("enqueues one NOTIFY_FIELD_ESIGN_READY job in the artifact transaction", async () => {
+    const harness = createServiceHarness();
+
+    await ensureStage2HandoverPdf(
+      harness.service,
+      "work-order-1",
+      harness.currentManifestHash
+    );
+
+    expect(harness.workflowJobs).toHaveLength(1);
+    expect(harness.workflowJobs[0]).toMatchObject({
+      handoverId: "handover-1",
+      idempotencyKey: "field-notify:work-order-1:1",
+      jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
+      payload: {
+        artifactVersion: 1,
+        manifestHash: harness.currentManifestHash,
+        sourcePdfHash: createHash("sha256")
+          .update(harness.generatedPdfBuffer)
+          .digest("hex")
+      },
+      workOrderId: "work-order-1"
+    });
+    expect(harness.workflowEnqueueObservedArtifact).toEqual({
+      artifactVersion: 1,
+      handoverContractId: "contract-stage2-1",
+      sourceDocumentFileId: "file-pdf-1"
+    });
+  });
+
+  it("does not finalize or enqueue when the PDF worker lease is lost", async () => {
+    const harness = createServiceHarness();
+    harness.prisma.$executeRaw.mockResolvedValueOnce(0);
+
+    await expect(
+      ensureStage2HandoverPdf(
+        harness.service,
+        "work-order-1",
+        harness.currentManifestHash,
+        {
+          assertLease: vi.fn(async () => undefined),
+          jobId: "workflow-job-pdf",
+          leaseMs: 120_000,
+          leaseToken: "lease-token-pdf"
+        }
+      )
+    ).rejects.toThrow("LEASE_LOST");
+
+    expect(harness.prisma.vehicleDeliveryHandover.updateMany)
+      .not.toHaveBeenCalled();
+    expect(harness.prisma.contract.upsert).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.contract.upsert).toHaveBeenCalledWith({
+      create: expect.objectContaining({
+        status: ContractStatus.CANCELLED
+      }),
+      update: {},
+      where: { id: expect.any(String) }
+    });
+    expect(harness.prisma.contract.upsert.mock.calls[0]?.[0].create)
+      .not.toHaveProperty("fileId");
+    expect(harness.prisma.fileObject.upsert).not.toHaveBeenCalled();
+    expect(harness.workflowJobs).toEqual([]);
+  });
+
   it("blocks regeneration after the source PDF has been linked", async () => {
     const harness = createServiceHarness({
       handover: {
@@ -483,23 +652,29 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
       }
     });
 
-    await expect(harness.service.generateStage2HandoverPdf("work-order-1", "admin-1"))
-      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      harness.service.generateStage2HandoverPdf("work-order-1", "admin-1")
+    ).rejects.toThrow("artifact binding is invalid");
     expect(harness.storageService.putGeneratedContractPdfArtifactFromPath).not.toHaveBeenCalled();
   });
 
-  it("rolls back the uploaded source when another request wins the handover claim", async () => {
+  it("reuses the deterministic source when another request wins the handover claim", async () => {
     const harness = createServiceHarness();
-    harness.prisma.vehicleDeliveryHandover.updateMany.mockResolvedValueOnce({ count: 0 });
+    harness.prisma.vehicleDeliveryHandover.updateMany.mockImplementationOnce(
+      async ({ data }) => {
+        Object.assign(harness.records.handover, data);
+        return { count: 0 };
+      }
+    );
 
     await expect(
       harness.service.generateStage2HandoverPdf("work-order-1", "admin-1")
-    ).rejects.toThrow("已由其他请求生成");
+    ).resolves.toMatchObject({
+      artifactId: "file-pdf-1",
+      status: "GENERATED"
+    });
 
-    expect(harness.storageService.deleteObject).toHaveBeenCalledWith(
-      "application-materials",
-      "contracts/contract-stage2-1/generated/handover.pdf"
-    );
+    expect(harness.storageService.deleteObject).not.toHaveBeenCalled();
   });
 
   it("rejects evidence derivatives predicted to exceed the 15 MiB target before rendering", async () => {
@@ -765,16 +940,38 @@ function createServiceHarness(options: {
       status: "CUSTOMER_CONFIRMED"
     }
   };
+  const workflowJobs: Array<Record<string, unknown>> = [];
+  let workflowEnqueueObservedArtifact: null | Record<string, unknown> = null;
+  let persistedStage2Contract: null | Record<string, unknown> = null;
 
   const prisma = {
+    $executeRaw: vi.fn(async () => 1),
     contract: {
-      create: vi.fn(async ({ data }) => ({
-        ...data,
-        createdAt: new Date("2026-07-25T10:00:00.000Z"),
-        id: "contract-stage2-1",
-        updatedAt: new Date("2026-07-25T10:00:00.000Z")
-      })),
-      update: vi.fn(async () => ({}))
+      create: vi.fn(async ({ data }) => {
+        const created = {
+          ...data,
+          createdAt: new Date("2026-07-25T10:00:00.000Z"),
+          id: "contract-stage2-1",
+          updatedAt: new Date("2026-07-25T10:00:00.000Z")
+        };
+        records.handover.handoverContract = created;
+        return created;
+      }),
+      upsert: vi.fn(async ({ create, update }) => {
+        if (!persistedStage2Contract) {
+          persistedStage2Contract = await prisma.contract.create({
+            data: create
+          });
+        } else {
+          Object.assign(persistedStage2Contract, update);
+          records.handover.handoverContract = persistedStage2Contract as never;
+        }
+        return persistedStage2Contract;
+      }),
+      update: vi.fn(async ({ data }) => {
+        Object.assign(records.handover.handoverContract, data);
+        return records.handover.handoverContract;
+      })
     },
     contractESignTask: {
       create: vi.fn(async () => ({}))
@@ -783,11 +980,15 @@ function createServiceHarness(options: {
       findFirst: vi.fn(async () => records.template)
     },
     fileObject: {
-      create: vi.fn(async () => records.fileObject),
+      create: vi.fn(async (args?: unknown) => {
+        void args;
+        return records.fileObject;
+      }),
       findMany: vi.fn(async ({ where }) =>
         records.derivativeFileObjects.filter((fileObject) => where.id.in.includes(fileObject.id))
       ),
-      findUnique: vi.fn(async ({ where }) => where.id === "file-pdf-1" ? records.fileObject : null)
+      findUnique: vi.fn(async ({ where }) => where.id === "file-pdf-1" ? records.fileObject : null),
+      upsert: vi.fn(async ({ create }) => prisma.fileObject.create({ data: create }))
     },
     subscriptionOrder: {
       findUnique: vi.fn(async () => records.order),
@@ -796,7 +997,34 @@ function createServiceHarness(options: {
     vehicleDeliveryHandover: {
       findFirst: vi.fn(async () => records.handover),
       update: vi.fn(async () => ({ ...records.handover, sourceDocumentFileId: "file-pdf-1" })),
-      updateMany: vi.fn(async () => ({ count: 1 }))
+      updateMany: vi.fn(async ({ data }) => {
+        Object.assign(records.handover, data);
+        return { count: 1 };
+      })
+    },
+    vehicleHandoverWorkflowJob: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      upsert: vi.fn(async ({ create, where }) => {
+        const existing = workflowJobs.find(
+          (job) => job.idempotencyKey === where.idempotencyKey
+        );
+        if (existing) {
+          return existing;
+        }
+        workflowEnqueueObservedArtifact = {
+          artifactVersion: (records.handover as Record<string, unknown>)
+            .artifactVersion,
+          handoverContractId: records.handover.handoverContractId,
+          sourceDocumentFileId: records.handover.sourceDocumentFileId
+        };
+        const job = {
+          ...create,
+          id: `workflow-job-${workflowJobs.length + 1}`,
+          jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
+        };
+        workflowJobs.push(job);
+        return job;
+      })
     },
     vehicleHandoverWorkOrder: {
       findUnique: vi.fn(async () => records.workOrder)
@@ -813,7 +1041,8 @@ function createServiceHarness(options: {
     getChecklist: vi.fn(async () => createRenderModelInput().evidenceChecklist)
   };
   const renderer = {
-    renderToFile: vi.fn(async () => {
+    renderToFile: vi.fn(async (renderModel: unknown) => {
+      void renderModel;
       const directory = await mkdtemp(path.join(os.tmpdir(), "stage2-handover-test-"));
       const filePath = path.join(directory, "handover.pdf");
       await writeFile(filePath, generatedPdfBuffer);
@@ -862,9 +1091,15 @@ function createServiceHarness(options: {
       stored: { driver: "local", key: "application-materials/contracts/contract-stage2-1/generated/handover.pdf" }
     }))
   };
+  const workflowRepository = new Stage2HandoverWorkflowRepository(
+    prisma as never
+  );
 
   return {
+    currentManifestHash,
+    generatedPdfBuffer,
     prisma,
+    records,
     renderer,
     service: new HandoverWorkOrderService(
       prisma as never,
@@ -875,10 +1110,77 @@ function createServiceHarness(options: {
       new ConfigService({
         CONTRACT_PDF_CJK_FONT_PATH: process.execPath,
         STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL: "https://portal.example.test"
-      })
+      }),
+      undefined,
+      workflowRepository
     ),
-    storageService
+    storageService,
+    get workflowEnqueueObservedArtifact() {
+      return workflowEnqueueObservedArtifact;
+    },
+    workflowJobs
   };
+}
+
+function ensureStage2HandoverPdf(
+  service: HandoverWorkOrderService,
+  workOrderId: string,
+  expectedManifestHash: string,
+  lease?: {
+    assertLease(): Promise<void>;
+    jobId: string;
+    leaseMs: number;
+    leaseToken: string;
+  }
+) {
+  return (
+    service as HandoverWorkOrderService & {
+      ensureStage2HandoverPdf(
+        id: string,
+        manifestHash: string,
+        options?: { lease?: typeof lease }
+      ): ReturnType<HandoverWorkOrderService["generateStage2HandoverPdf"]>;
+    }
+  ).ensureStage2HandoverPdf(
+    workOrderId,
+    expectedManifestHash,
+    lease ? { lease } : undefined
+  );
+}
+
+function linkCompleteSourceArtifact(
+  harness: ReturnType<typeof createServiceHarness>
+) {
+  Object.assign(harness.records.handover, {
+    artifactVersion: 1,
+    handoverContractId: "contract-stage2-1",
+    handoverContract: {
+      contractNo: "HDV20260725100000ABCD",
+      contractSnapshot: {
+        evidencePackage: { manifestHash: harness.currentManifestHash },
+        stage2HandoverPdfArtifact: {
+          artifactKind: "stage2-handover-pdf-source",
+          documentType: "DELIVERY_HANDOVER",
+          fileId: "file-pdf-1",
+          pageCount: 10,
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          slotCoordinates: stage2ArtifactCoordinates()
+        }
+      },
+      createdAt: new Date("2026-07-25T10:00:00.000Z"),
+      deletedAt: null,
+      fileId: "file-pdf-1",
+      id: "contract-stage2-1",
+      status: ContractStatus.GENERATED
+    },
+    manifestHash: harness.currentManifestHash.replace(/^sha256:/, ""),
+    sourceDocumentFileId: "file-pdf-1",
+    sourceObjectKey: harness.records.fileObject.objectKey,
+    sourcePdfHash: createHash("sha256")
+      .update(harness.generatedPdfBuffer)
+      .digest("hex"),
+    status: DeliveryHandoverStatus.SOURCE_GENERATED
+  });
 }
 
 function stage2ArtifactCoordinates() {

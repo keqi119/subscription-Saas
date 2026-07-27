@@ -161,19 +161,28 @@ export class Stage2HandoverWorkflowRepository {
     return updated.count === 1;
   }
 
-  async renewLease(jobId: string, leaseToken: string, leaseMs: number): Promise<boolean> {
+  async renewLease(
+    jobId: string,
+    leaseToken: string,
+    leaseMs: number,
+    db: Stage2HandoverWorkflowDb = this.prisma
+  ): Promise<boolean> {
     if (leaseMs <= 0) {
       return false;
     }
 
-    const updated = await this.prisma.vehicleHandoverWorkflowJob.updateMany({
-      data: {
-        leaseExpiresAt: new Date(Date.now() + leaseMs)
-      },
-      where: processingLease(jobId, leaseToken)
-    });
+    const updated = await db.$executeRaw(Prisma.sql`
+      UPDATE "vehicle_handover_workflow_job"
+      SET
+        "lease_expires_at" = now() + (${leaseMs} * interval '1 millisecond'),
+        "updated_at" = now()
+      WHERE "id" = ${jobId}::uuid
+        AND "job_status" = 'PROCESSING'
+        AND "lease_token" = ${leaseToken}::uuid
+        AND "lease_expires_at" > now()
+    `);
 
-    return updated.count === 1;
+    return updated === 1;
   }
 
   async cancelPending(

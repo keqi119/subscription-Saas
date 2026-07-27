@@ -7,6 +7,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
+import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
 import {
   ClaimedStage2WorkflowJob,
   Stage2HandoverWorkflowHandler
@@ -319,6 +320,114 @@ describe("Stage2HandoverWorkflowWorker", () => {
       operation: "STAGE2_WORKFLOW_POLL"
     });
     expect(JSON.stringify(errorLog.mock.calls)).not.toContain("repo-secret");
+  });
+});
+
+describe("Stage2HandoverWorkflowService worker handler", () => {
+  it("dispatches GENERATE_SOURCE_PDF and stops its bounded lease heartbeat", async () => {
+    const repository = {
+      renewLease: vi.fn(async () => true)
+    };
+    const handoverWorkOrderService = {
+      ensureStage2HandoverPdf: vi.fn(async (
+        _workOrderId: string,
+        _manifestHash: string,
+        options: { lease: { assertLease(): Promise<void> } }
+      ) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await options.lease.assertLease();
+        return {
+          artifactId: "file-pdf-1",
+          documentNo: "HDV20260727080000ABCD",
+          downloadUrl: "/api/handover-work-orders/work-order-1/pdf/download",
+          fileName: "handover.pdf",
+          fileSize: 1024,
+          generatedAt: new Date("2026-07-27T08:00:00.000Z"),
+          orderNo: "ORD-001",
+          status: "GENERATED",
+          workOrderId: "work-order-1"
+        };
+      })
+    };
+    const service = new Stage2HandoverWorkflowService(
+      {} as never,
+      new ConfigService({
+        STAGE2_HANDOVER_WORKER_LEASE_MS: "30",
+        STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+      }),
+      repository as never,
+      handoverWorkOrderService as never
+    );
+    const job = claimedJob({
+      jobType: VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+      payload: {
+        manifestHash: `sha256:${"a".repeat(64)}`,
+        reviewAttemptId: "review-attempt-1"
+      }
+    });
+
+    await expect(service.handle(job)).resolves.toEqual({
+      kind: "COMPLETED",
+      result: {
+        artifactId: "file-pdf-1",
+        artifactStatus: "GENERATED"
+      }
+    });
+    expect(handoverWorkOrderService.ensureStage2HandoverPdf)
+      .toHaveBeenCalledWith(
+        job.workOrderId,
+        `sha256:${"a".repeat(64)}`,
+        {
+          lease: expect.objectContaining({
+            jobId: job.id,
+            leaseMs: 30,
+            leaseToken: job.leaseToken
+          })
+        }
+      );
+    expect(repository.renewLease.mock.calls.length).toBeGreaterThan(1);
+    const renewalsAfterCompletion = repository.renewLease.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(repository.renewLease).toHaveBeenCalledTimes(
+      renewalsAfterCompletion
+    );
+  });
+
+  it("rejects stale PDF work after heartbeat lease loss", async () => {
+    const repository = {
+      renewLease: vi.fn()
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false)
+    };
+    const handoverWorkOrderService = {
+      ensureStage2HandoverPdf: vi.fn(async (
+        _workOrderId: string,
+        _manifestHash: string,
+        options: { lease: { assertLease(): Promise<void> } }
+      ) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await options.lease.assertLease();
+        throw new Error("stale worker continued");
+      })
+    };
+    const service = new Stage2HandoverWorkflowService(
+      {} as never,
+      new ConfigService({
+        STAGE2_HANDOVER_WORKER_LEASE_MS: "30",
+        STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+      }),
+      repository as never,
+      handoverWorkOrderService as never
+    );
+    const job = claimedJob({
+      jobType: VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+      payload: {
+        manifestHash: `sha256:${"a".repeat(64)}`,
+        reviewAttemptId: "review-attempt-1"
+      }
+    });
+
+    await expect(service.handle(job)).rejects.toThrow("LEASE_LOST");
   });
 });
 

@@ -183,6 +183,32 @@ describe("Stage2HandoverWorkflowRepository", () => {
     });
   });
 
+  it("renews only a live matching lease", async () => {
+    const job = await repository.enqueue(
+      prisma,
+      workflowJobInput("guard-renew")
+    );
+    const [claim] = await repository.claimDue(1, 120_000);
+
+    await expect(
+      repository.renewLease(job.id, claim!.leaseToken, 120_000)
+    ).resolves.toBe(true);
+    await prisma.$executeRaw`
+      UPDATE "vehicle_handover_workflow_job"
+      SET "lease_expires_at" = now() - interval '1 second'
+      WHERE "id" = ${job.id}::uuid
+    `;
+    const [expired] = await prisma.$queryRaw<Array<{ expired: boolean }>>`
+      SELECT "lease_expires_at" <= now() AS "expired"
+      FROM "vehicle_handover_workflow_job"
+      WHERE "id" = ${job.id}::uuid
+    `;
+    expect(expired?.expired).toBe(true);
+    await expect(
+      repository.renewLease(job.id, claim!.leaseToken, 120_000)
+    ).resolves.toBe(false);
+  });
+
   function workflowJobInput(suffix: string) {
     return {
       idempotencyKey: `stage2-workflow-repository-test:${workOrderId}:${suffix}`,

@@ -12,6 +12,7 @@ import {
   labelOf
 } from "../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
+import { getPortalContractDestination } from "../../../lib/portal-handover-review-view-model";
 import { PortalContractListItem } from "../../../lib/portal-types";
 
 export default function PortalContractsPage() {
@@ -57,7 +58,7 @@ export default function PortalContractsPage() {
               actions={[
                 <Button
                   key="detail"
-                  onClick={() => router.push(`/portal/contracts/${contract.id}`)}
+                  onClick={() => router.push(getPortalContractDestination(contract))}
                   type="link"
                 >
                   查看详情

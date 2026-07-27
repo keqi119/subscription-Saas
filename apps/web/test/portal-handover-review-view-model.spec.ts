@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   buildPortalHandoverReviewCard,
   buildPortalHandoverReviewDetailView,
+  buildPortalHandoverWorkflowView,
   formatPortalHandoverReviewStatus,
+  getPortalContractDestination,
   isPortalHandoverReviewActionable,
   validatePortalHandoverObjectionReason
 } from "../src/lib/portal-handover-review-view-model";
 import type {
   PortalHandoverReviewDetail,
-  PortalHandoverReviewListItem
+  PortalHandoverReviewListItem,
+  Stage2PortalESignView
 } from "../src/lib/portal-handover-review-api";
 
 const FULL_PHONE_SHOULD_NOT_RENDER = ["139", "0000", "1111"].join("");
@@ -120,6 +123,140 @@ describe("portal handover review view model", () => {
     });
   });
 
+  it.each([
+    {
+      detail: {
+        ...sampleDetail(),
+        stage2Workflow: {
+          artifactVersion: null,
+          errorCode: null,
+          jobId: "job-pdf",
+          state: "PDF_PENDING"
+        },
+        status: "CUSTOMER_CONFIRMED"
+      },
+      esign: undefined,
+      expected: {
+        canStartSigning: false,
+        shouldPoll: true,
+        statusLabel: "交接确认单生成中"
+      }
+    },
+    {
+      detail: {
+        ...sampleDetail(),
+        stage2Workflow: {
+          artifactVersion: 3,
+          errorCode: null,
+          jobId: "job-pdf",
+          state: "PDF_READY"
+        },
+        status: "CUSTOMER_CONFIRMED"
+      },
+      esign: createESignStatus(),
+      expected: {
+        canStartSigning: false,
+        shouldPoll: true,
+        statusLabel: "等待经办人发起签署"
+      }
+    },
+    {
+      detail: {
+        ...sampleDetail(),
+        handover: {
+          archiveStatus: "NOT_STARTED",
+          id: "handover-1",
+          status: "PENDING_CUSTOMER_SIGNATURE"
+        },
+        status: "CUSTOMER_CONFIRMED"
+      },
+      esign: createESignStatus({
+        capability: { canStartSigning: true },
+        status: "WAITING_CUSTOMER",
+        taskId: "task-1"
+      }),
+      expected: {
+        canStartSigning: true,
+        shouldPoll: true,
+        statusLabel: "待客户签署"
+      }
+    },
+    {
+      detail: {
+        ...sampleDetail(),
+        handover: {
+          archiveStatus: "NOT_STARTED",
+          id: "handover-1",
+          status: "PENDING_PLATFORM_SEAL"
+        },
+        status: "CUSTOMER_CONFIRMED"
+      },
+      esign: createESignStatus({
+        customerSigner: {
+          signedAt: "2026-07-27T08:10:00.000Z",
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "SIGNED"
+        },
+        status: "SIGNING",
+        taskId: "task-1"
+      }),
+      expected: {
+        canStartSigning: false,
+        shouldPoll: true,
+        statusLabel: "平台盖章处理中"
+      }
+    },
+    {
+      detail: {
+        ...sampleDetail(),
+        handover: {
+          archiveStatus: "ARCHIVED",
+          id: "handover-1",
+          status: "ARCHIVED"
+        },
+        status: "CUSTOMER_CONFIRMED"
+      },
+      esign: createESignStatus({
+        archiveStatus: "ARCHIVED",
+        customerSigner: {
+          signedAt: "2026-07-27T08:10:00.000Z",
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "SIGNED"
+        },
+        platformSigner: {
+          signedAt: "2026-07-27T08:12:00.000Z",
+          slotId: "STAGE2_HANDOVER_PLATFORM",
+          status: "SIGNED"
+        },
+        signedArtifactAvailable: true,
+        status: "COMPLETED",
+        taskId: "task-1"
+      }),
+      expected: {
+        canStartSigning: false,
+        shouldPoll: false,
+        statusLabel: "签署已完成"
+      }
+    }
+  ])("projects the Stage 2 workflow as $expected.statusLabel", ({ detail, esign, expected }) => {
+    expect(buildPortalHandoverWorkflowView(
+      detail as PortalHandoverReviewDetail,
+      esign
+    )).toMatchObject(expected);
+  });
+
+  it("routes Stage 2 generic contract entries to the handover review and keeps Stage 1 details unchanged", () => {
+    expect(getPortalContractDestination({
+      handoverWorkOrderId: "work-order-1",
+      id: "handover-contract-1",
+      signingStage: "STAGE2_DELIVERY_HANDOVER"
+    })).toBe("/portal/handover-reviews/work-order-1");
+    expect(getPortalContractDestination({
+      id: "stage1-contract-1",
+      signingStage: "STAGE1_CONTRACT"
+    })).toBe("/portal/contracts/stage1-contract-1");
+  });
+
   it("validates objection reason before submit", () => {
     expect(validatePortalHandoverObjectionReason("   ")).toBe("请填写异议原因");
     expect(validatePortalHandoverObjectionReason("车辆外观有异议")).toBeNull();
@@ -221,4 +358,35 @@ function sampleDetail(): PortalHandoverReviewDetail {
       workOrderId: "review-1"
     }
   } as PortalHandoverReviewDetail;
+}
+
+function createESignStatus(
+  overrides: Partial<Stage2PortalESignView> = {}
+): Stage2PortalESignView {
+  return {
+    archiveStatus: null,
+    blockers: [],
+    capability: { canStartSigning: false },
+    createdAt: null,
+    customerSigner: {
+      signedAt: null,
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      status: null
+    },
+    documentType: "DELIVERY_HANDOVER",
+    handoverId: "handover-1",
+    platformSigner: {
+      signedAt: null,
+      slotId: "STAGE2_HANDOVER_PLATFORM",
+      status: null
+    },
+    ready: false,
+    signedArtifactAvailable: false,
+    signingStage: "STAGE2_DELIVERY_HANDOVER",
+    status: null,
+    taskId: null,
+    updatedAt: null,
+    workOrderId: "review-1",
+    ...overrides
+  };
 }

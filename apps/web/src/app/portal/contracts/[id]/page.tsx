@@ -22,6 +22,7 @@ import {
   getFadadaReadinessTone,
   isApplyCertReadiness
 } from "../../../../lib/fadada-onboarding-ui";
+import { getPortalContractDestination } from "../../../../lib/portal-handover-review-view-model";
 import {
   PortalContractDetail,
   PortalFadadaOnboardingStatus,
@@ -58,6 +59,11 @@ export default function PortalContractDetailPage() {
     setLoading(true);
     try {
       const nextContract = await portalApiFetch<PortalContractDetail>(`/portal/contracts/${params.id}`);
+      const stage2Destination = getPortalContractDestination(nextContract);
+      if (stage2Destination !== `/portal/contracts/${encodeURIComponent(nextContract.id)}`) {
+        router.replace(stage2Destination);
+        return;
+      }
       setContract(nextContract);
       const nextOnboardingStatus = await portalApiFetch<PortalFadadaOnboardingStatus>(
         "/portal/esign-onboarding/status"
@@ -83,6 +89,11 @@ export default function PortalContractDetailPage() {
 
   async function startSigning() {
     if (!contract) {
+      return;
+    }
+    const stage2Destination = getPortalContractDestination(contract);
+    if (stage2Destination !== `/portal/contracts/${encodeURIComponent(contract.id)}`) {
+      router.push(stage2Destination);
       return;
     }
     const availability = getFadadaReadinessAvailability(onboardingStatus);

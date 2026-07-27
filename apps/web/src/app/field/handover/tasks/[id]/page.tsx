@@ -16,9 +16,11 @@ import {
   Alert,
   App,
   Button,
+  Checkbox,
   Flex,
   Input,
   InputNumber,
+  Modal,
   Popconfirm,
   Progress,
   Radio,
@@ -47,6 +49,7 @@ import {
   getFieldHandoverWorkOrder,
   isFieldHandoverSessionExpired,
   removeFieldHandoverEvidenceFile,
+  startFieldHandoverESign,
   startFieldHandoverWorkOrder,
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts,
@@ -85,6 +88,7 @@ import {
   buildFieldEvidenceCaptureView,
   buildFieldHandoverDetailView,
   buildFieldHandoverFactsPayload,
+  buildFieldStage2HandoverView,
   getFieldHandoverSubmitBlockers,
   resolveFieldHandoverFactsAfterRefresh,
   validateFieldHandoverFactsInput,
@@ -122,6 +126,7 @@ export default function FieldHandoverTaskDetailPage() {
   const router = useRouter();
   const { message } = App.useApp();
   const isMountedRef = useRef(true);
+  const eSignInFlightRef = useRef(false);
   const submissionInFlightRef = useRef(false);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const uploadAbortReasonRef = useRef<Exclude<
@@ -137,6 +142,8 @@ export default function FieldHandoverTaskDetailPage() {
   const [detail, setDetail] = useState<FieldHandoverWorkOrderDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [facts, setFacts] = useState<FieldHandoverFactsDraft>({});
+  const [eSignAcknowledged, setESignAcknowledged] = useState(false);
+  const [eSignDialogOpen, setESignDialogOpen] = useState(false);
   const [hasActiveUploadRequest, setHasActiveUploadRequest] = useState(false);
   const [loading, setLoading] = useState(true);
   const [removingFileId, setRemovingFileId] = useState<string | null>(null);
@@ -231,6 +238,7 @@ export default function FieldHandoverTaskDetailPage() {
 
   const detailView = detail ? buildFieldHandoverDetailView(detail) : null;
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
+  const stage2View = detail ? buildFieldStage2HandoverView(detail) : null;
   const reviewContext = detail?.reviewContext;
   const canSubmitUploadBatch = canSubmitWithFieldEvidenceUploadBatch(uploadBatchState);
   const canMutateEvidence = canMutateFieldEvidenceWithUploadBatch(uploadBatchState);
@@ -254,6 +262,46 @@ export default function FieldHandoverTaskDetailPage() {
       void message.success("已开始现场采集");
       await loadDetail();
     });
+  }
+
+  function openStage2ESignDialog() {
+    if (!stage2View?.canStartESign || eSignInFlightRef.current) {
+      return;
+    }
+    setESignAcknowledged(false);
+    setESignDialogOpen(true);
+  }
+
+  async function submitStage2ESign() {
+    if (
+      !stage2View?.canStartESign ||
+      !eSignAcknowledged ||
+      stage2View.artifactVersion === null ||
+      !stage2View.sourcePdfHash ||
+      eSignInFlightRef.current
+    ) {
+      return;
+    }
+
+    eSignInFlightRef.current = true;
+    setActionLoading("esign");
+    try {
+      await startFieldHandoverESign(params.id, {
+        acknowledgement: true,
+        artifactVersion: stage2View.artifactVersion,
+        sourcePdfHash: stage2View.sourcePdfHash
+      });
+      setESignDialogOpen(false);
+      setESignAcknowledged(false);
+      setSuccessMessage("电子签任务已发起，等待客户签署");
+      void message.success("电子签任务已发起");
+      await loadDetail({ showLoading: false });
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      eSignInFlightRef.current = false;
+      setActionLoading(null);
+    }
   }
 
   async function saveFacts() {
@@ -634,6 +682,28 @@ export default function FieldHandoverTaskDetailPage() {
         padding: "max(22px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom))"
       }}
     >
+      <Modal
+        cancelButtonProps={{ disabled: actionLoading === "esign" }}
+        confirmLoading={actionLoading === "esign"}
+        okButtonProps={{ disabled: !eSignAcknowledged }}
+        okText="确认发起"
+        onCancel={() => {
+          if (actionLoading !== "esign") {
+            setESignDialogOpen(false);
+          }
+        }}
+        onOk={() => void submitStage2ESign()}
+        open={eSignDialogOpen}
+        title="发起电子签"
+      >
+        <Checkbox
+          checked={eSignAcknowledged}
+          disabled={actionLoading === "esign"}
+          onChange={(event) => setESignAcknowledged(event.target.checked)}
+        >
+          我已核对交接确认单与现场交接情况一致
+        </Checkbox>
+      </Modal>
       <section style={{ margin: "0 auto", maxWidth: 520 }}>
         <Button
           icon={<ArrowLeftOutlined />}
@@ -725,6 +795,14 @@ export default function FieldHandoverTaskDetailPage() {
               />
             ) : null}
             {blockers.length ? <BlockerAlert blockers={blockers} /> : null}
+
+            {stage2View?.shouldShow ? (
+              <Stage2HandoverESignPanel
+                onStart={openStage2ESignDialog}
+                submitting={actionLoading === "esign"}
+                view={stage2View}
+              />
+            ) : null}
 
             <article style={cardStyle}>
               <Typography.Title level={3} style={{ fontSize: 18, marginTop: 0 }}>
@@ -1123,6 +1201,79 @@ export default function FieldHandoverTaskDetailPage() {
         ) : null}
       </section>
     </main>
+  );
+}
+
+function Stage2HandoverESignPanel({
+  onStart,
+  submitting,
+  view
+}: {
+  onStart: () => void;
+  submitting: boolean;
+  view: ReturnType<typeof buildFieldStage2HandoverView>;
+}) {
+  return (
+    <article style={cardStyle}>
+      <Typography.Title level={3} style={{ fontSize: 18, marginTop: 0 }}>
+        交接确认单
+      </Typography.Title>
+      <Flex gap={8} vertical>
+        <InfoRow label="文档编号" value={view.documentNoText} />
+        <InfoRow label="生成时间" value={view.generatedAtText} />
+        <InfoRow label="文件名称" value={view.fileNameText} />
+        <InfoRow label="文件大小" value={view.fileSizeText} />
+        <InfoRow label="通知状态" value={view.notificationStatusText} />
+        <Flex justify="space-between" style={{ gap: 12 }}>
+          <Typography.Text style={{ color: "#718096", flex: "0 0 82px" }}>
+            SHA-256
+          </Typography.Text>
+          <Typography.Text
+            copyable={Boolean(view.sourcePdfHash)}
+            style={{
+              flex: 1,
+              overflowWrap: "anywhere",
+              textAlign: "right",
+              wordBreak: "break-all"
+            }}
+          >
+            {view.sourcePdfHash ?? "-"}
+          </Typography.Text>
+        </Flex>
+      </Flex>
+      <Flex gap={8} style={{ marginTop: 14 }} wrap="wrap">
+        <Button
+          disabled={!view.canPreview}
+          href={buildFieldHandoverFileUrl(view.previewUrl) ?? undefined}
+          icon={<EyeOutlined />}
+          style={{ flex: "1 1 140px" }}
+          target="_blank"
+        >
+          预览
+        </Button>
+        <Button
+          disabled={!view.canDownload}
+          href={buildFieldHandoverFileUrl(view.downloadUrl) ?? undefined}
+          icon={<DownloadOutlined />}
+          style={{ flex: "1 1 140px" }}
+          target="_blank"
+        >
+          下载
+        </Button>
+      </Flex>
+      <Button
+        block
+        disabled={!view.canStartESign || submitting}
+        icon={<CheckCircleOutlined />}
+        loading={submitting}
+        onClick={onStart}
+        size="large"
+        style={{ marginTop: 10 }}
+        type="primary"
+      >
+        发起电子签
+      </Button>
+    </article>
   );
 }
 

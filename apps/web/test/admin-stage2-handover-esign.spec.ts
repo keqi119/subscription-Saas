@@ -1,22 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { ApiError } from "../src/lib/api";
 import {
   getAdminStage2HandoverESignDisplay,
   getAdminStage2HandoverESignErrorMessage,
+  getAdminStage2HandoverWorkflowDisplay,
   loadAdminStage2HandoverESign,
+  reconcileAdminStage2CustomerSignature,
   retryAdminStage2HandoverArchive,
   retryAdminStage2PlatformSeal,
+  retryAdminStage2WorkflowJob,
   startAdminStage2HandoverESign,
   validateAdminStage2HandoverVoidReason,
   voidAdminStage2HandoverESign,
   type AdminStage2HandoverSignedDocumentState,
-  type AdminStage2HandoverESignStatus
+  type AdminStage2HandoverESignStatus,
+  type AdminStage2HandoverWorkflowJob,
+  type AdminStage2HandoverWorkflowJobType
 } from "../src/lib/admin-stage2-handover-esign";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+const repoRoot = join(__dirname, "..", "..", "..");
+const orderPagePath = join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx");
 
 describe("Admin Stage 2 handover eSign API", () => {
   it.each([
@@ -93,10 +103,40 @@ describe("Admin Stage 2 handover eSign API", () => {
     expect(result).toEqual(archiveState);
     expect(result).not.toHaveProperty("customerSigner");
   });
+
+  it.each([
+    [
+      "dead-letter retry",
+      () => retryAdminStage2WorkflowJob("work order", "job/id"),
+      "/handover-work-orders/work%20order/workflow-jobs/job%2Fid/retry"
+    ],
+    [
+      "typed customer reconciliation",
+      () => reconcileAdminStage2CustomerSignature("work order"),
+      "/handover-work-orders/work%20order/workflow/reconcile-customer"
+    ]
+  ])("uses the approved %s recovery endpoint", async (_name, action, path) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ accepted: true }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await action();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`http://localhost:3001/api${path}`);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      credentials: "include",
+      method: "POST"
+    });
+  });
 });
 
 describe("Admin Stage 2 handover eSign display", () => {
-  it("offers eSign creation only when readiness passes and no task exists", () => {
+  it("omits every manual workflow mutation on the normal path", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus());
 
     expect(display).toMatchObject({
@@ -104,7 +144,7 @@ describe("Admin Stage 2 handover eSign display", () => {
       customer: { label: "待发起" },
       platform: { label: "待发起" },
       readiness: { label: "签署条件已就绪" },
-      startAvailable: true
+      startAvailable: false
     });
     expect(display.platformActionLabel).toBeNull();
     expect(display.archiveRetryAvailable).toBe(false);
@@ -132,7 +172,7 @@ describe("Admin Stage 2 handover eSign display", () => {
     expect(JSON.stringify(display)).not.toMatch(/998877|private storage|provider account/i);
   });
 
-  it("offers the initial platform seal only after the customer signs", () => {
+  it("does not expose a manual platform-seal action after the customer signs", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       customerSigner: signer({ signedAt: "2026-07-27T08:00:00.000Z", status: "SIGNED" }),
       platformSigner: signer({ retryAvailable: true }),
@@ -142,12 +182,12 @@ describe("Admin Stage 2 handover eSign display", () => {
 
     expect(display.customer.label).toBe("已签署");
     expect(display.platform.label).toBe("待平台盖章");
-    expect(display.platformActionLabel).toBe("发起平台盖章");
+    expect(display.platformActionLabel).toBeNull();
     expect(display.startAvailable).toBe(false);
     expect(JSON.stringify(display)).not.toContain("task-private-id");
   });
 
-  it("offers a platform seal retry after a failed attempt without exposing the provider error", () => {
+  it("keeps provider errors generic without exposing a manual retry", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       customerSigner: signer({ status: "SIGNED" }),
       platformSigner: signer({
@@ -163,7 +203,7 @@ describe("Admin Stage 2 handover eSign display", () => {
       detail: "平台盖章未完成，请重试",
       label: "平台盖章失败"
     });
-    expect(display.platformActionLabel).toBe("重试平台盖章");
+    expect(display.platformActionLabel).toBeNull();
     expect(JSON.stringify(display)).not.toContain("FADADA_PROVIDER_SECRET_RAW_FAILURE");
   });
 
@@ -240,7 +280,7 @@ describe("Admin Stage 2 handover eSign display", () => {
     expect(display.customer.label).toBe("已签署");
     expect(display.platform.label).toBe("已盖章");
     expect(display.archive.label).toBe("签署文件归档失败");
-    expect(display.archiveRetryAvailable).toBe(true);
+    expect(display.archiveRetryAvailable).toBe(false);
     expect(display.startAvailable).toBe(false);
   });
 
@@ -257,6 +297,117 @@ describe("Admin Stage 2 handover eSign display", () => {
     expect(display.archive.label).toBe("签署文件已归档");
     expect(display.archiveRetryAvailable).toBe(false);
     expect(JSON.stringify(display)).not.toMatch(/确认交付|delivery|lease|billing|payment/i);
+  });
+
+  it("keeps void and reissue unavailable after provider signing completes", () => {
+    const display = getAdminStage2HandoverESignDisplay(esignStatus({
+      canVoid: true,
+      customerSigner: signer({ status: "SIGNED" }),
+      platformSigner: signer({ status: "SIGNED" }),
+      status: "COMPLETED",
+      taskId: "task-private-id"
+    }));
+
+    expect(display.voidAvailable).toBe(false);
+  });
+});
+
+describe("Admin Stage 2 workflow timeline and recovery", () => {
+  it("renders one stable timeline from customer confirmation through archive", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(
+      esignStatus({
+        archiveStatus: "PENDING",
+        customerSigner: signer({ status: "SIGNED" }),
+        platformSigner: signer({ status: "SIGNED" }),
+        status: "COMPLETED",
+        taskId: "task-private-id"
+      }),
+      {
+        customerConfirmedAt: "2026-07-27T07:00:00.000Z",
+        pdfStatus: "GENERATED"
+      }
+    );
+
+    expect(display.steps.map(({ label, state }) => ({ label, state }))).toEqual([
+      { label: "客户已确认", state: "complete" },
+      { label: "交接确认单已生成", state: "complete" },
+      { label: "经办人已发起签署", state: "complete" },
+      { label: "客户已签署", state: "complete" },
+      { label: "平台已盖章", state: "complete" },
+      { label: "签署文件归档中", state: "current" }
+    ]);
+    expect(display.deliveryConfirmationAvailable).toBe(false);
+  });
+
+  it("enables delivery confirmation only after the signed artifact is archived", () => {
+    const pending = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      archiveStatus: "PENDING",
+      signedArtifactAvailable: false
+    }));
+    const archived = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      archiveStatus: "ARCHIVED",
+      signedArtifactAvailable: true
+    }));
+
+    expect(pending.deliveryConfirmationAvailable).toBe(false);
+    expect(archived.deliveryConfirmationAvailable).toBe(true);
+  });
+
+  it.each([
+    ["GENERATE_SOURCE_PDF", "RETRY_JOB", "重试生成交接确认单"],
+    ["NOTIFY_FIELD_ESIGN_READY", "RETRY_JOB", "重发经办人通知"],
+    ["NOTIFY_CUSTOMER_ESIGN_READY", "RETRY_JOB", "重发客户通知"],
+    ["RECONCILE_CUSTOMER_SIGNATURE", "RECONCILE_CUSTOMER", "核对客户签署状态"],
+    ["AUTO_SEAL_PLATFORM", "RETRY_JOB", "重试平台盖章"],
+    ["RECONCILE_PLATFORM_SEAL", "RETRY_JOB", "重试平台盖章"],
+    ["ARCHIVE_SIGNED_PDF", "RETRY_JOB", "重试签署文件归档"]
+  ] as const)(
+    "maps a DEAD_LETTER %s row to only its matching action",
+    (jobType, kind, label) => {
+      const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+        workflowJobs: [workflowJob({ jobType })]
+      }));
+
+      expect(display.recoveries).toEqual([
+        {
+          jobId: "workflow-job-id",
+          jobType,
+          kind,
+          label
+        }
+      ]);
+    }
+  );
+
+  it("renders no recovery controls for pending, processing, completed, or cancelled jobs", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      workflowJobs: [
+        workflowJob({ jobStatus: "PENDING" }),
+        workflowJob({ id: "job-2", jobStatus: "PROCESSING" }),
+        workflowJob({ id: "job-3", jobStatus: "COMPLETED" }),
+        workflowJob({ id: "job-4", jobStatus: "CANCELLED" })
+      ]
+    }));
+
+    expect(display.recoveries).toEqual([]);
+  });
+
+  it("renders the compact workflow timeline without happy-path mutation controls", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+
+    expect(source).toContain("Stage2HandoverWorkflowCell");
+    expect(source).toContain("getAdminStage2HandoverWorkflowDisplay");
+    expect(source).toContain("display.recoveries.map");
+    expect(source).toContain("retryAdminStage2WorkflowJob");
+    expect(source).toContain("reconcileAdminStage2CustomerSignature");
+    expect(source).toContain('canRecoverWorkflow={permissions.has("delivery:confirm")}');
+    expect(source).toContain("交接签署文件归档完成后才可确认交付");
+    expect(source).not.toContain("function Stage2HandoverPdfCell");
+    expect(source).not.toContain("function Stage2HandoverESignCell");
+    expect(source).not.toContain("onGeneratePdf=");
+    expect(source).not.toContain("onStartESign=");
+    expect(source).not.toContain("onRetryPlatformSeal=");
+    expect(source).not.toContain("onRetryESignArchive=");
   });
 });
 
@@ -343,5 +494,21 @@ function signedDocumentState(): AdminStage2HandoverSignedDocumentState {
     retryAvailable: false,
     taskId: "task-private-id",
     workOrderId: "work-order-id"
+  };
+}
+
+function workflowJob(
+  overrides: Partial<AdminStage2HandoverWorkflowJob> & {
+    jobType?: AdminStage2HandoverWorkflowJobType;
+  } = {}
+): AdminStage2HandoverWorkflowJob {
+  return {
+    attemptCount: 5,
+    id: "workflow-job-id",
+    jobStatus: "DEAD_LETTER",
+    jobType: "GENERATE_SOURCE_PDF",
+    maxAttempts: 5,
+    updatedAt: "2026-07-27T10:00:00.000Z",
+    ...overrides
   };
 }

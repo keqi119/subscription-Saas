@@ -29,6 +29,7 @@ import {
 } from "../../../../lib/portal-handover-esign-view-model";
 import {
   buildPortalHandoverReviewDetailView,
+  buildPortalHandoverWorkflowView,
   validatePortalHandoverObjectionReason
 } from "../../../../lib/portal-handover-review-view-model";
 import { PortalApiError } from "../../../../lib/portal-api";
@@ -96,9 +97,44 @@ export default function PortalHandoverReviewDetailPage() {
     void loadESignStatus();
   }, [loadESignStatus, loadReview]);
 
+  const refreshWorkflowProjection = useCallback(async () => {
+    if (!params.id) {
+      return;
+    }
+    try {
+      const [nextReview, nextESignView] = await Promise.all([
+        getPortalHandoverReview(params.id),
+        getPortalHandoverESign(params.id)
+      ]);
+      setReview(nextReview);
+      setESignView(nextESignView);
+      setESignErrorMessage(null);
+    } catch (error) {
+      if (error instanceof PortalApiError && error.status === 401) {
+        router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`);
+        return;
+      }
+      setESignErrorMessage(getPortalHandoverESignErrorMessage(error));
+    }
+  }, [params.id, router]);
+
+  const workflowDisplay = review
+    ? buildPortalHandoverWorkflowView(review, esignView)
+    : null;
+
+  useEffect(() => {
+    if (!workflowDisplay?.shouldPoll) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshWorkflowProjection();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshWorkflowProjection, workflowDisplay?.shouldPoll]);
+
   const refreshPage = useCallback(async () => {
-    await Promise.all([loadReview(), loadESignStatus()]);
-  }, [loadESignStatus, loadReview]);
+    await refreshWorkflowProjection();
+  }, [refreshWorkflowProjection]);
 
   async function confirmNoObjection() {
     const manifestHash = review?.evidencePackage?.manifestHash;
@@ -111,7 +147,7 @@ export default function PortalHandoverReviewDetailPage() {
       setReview(nextReview);
       setAcknowledged(false);
       void message.success("已确认无异议");
-      await refreshPage();
+      await refreshWorkflowProjection();
     } catch (error) {
       void message.error(getPortalHandoverReviewErrorMessage(error));
     } finally {
@@ -138,7 +174,7 @@ export default function PortalHandoverReviewDetailPage() {
       setObjectionDetails("");
       setObjectionReason("");
       void message.success("已提交异议，工作人员将联系您处理");
-      await refreshPage();
+      await refreshWorkflowProjection();
     } catch (error) {
       void message.error(getPortalHandoverReviewErrorMessage(error));
     } finally {
@@ -147,7 +183,13 @@ export default function PortalHandoverReviewDetailPage() {
   }
 
   async function startSigning() {
-    if (!esignView || signingStartInFlight.current || startingSigning || !esignView.capability.canStartSigning) {
+    if (
+      !esignView ||
+      !workflowDisplay?.canStartSigning ||
+      review?.handover?.status !== "PENDING_CUSTOMER_SIGNATURE" ||
+      signingStartInFlight.current ||
+      startingSigning
+    ) {
       return;
     }
 
@@ -155,6 +197,12 @@ export default function PortalHandoverReviewDetailPage() {
     setStartingSigning(true);
     try {
       const result = await startPortalHandoverSigning(params.id);
+      if ("alreadySigned" in result) {
+        setESignView(result.eSign);
+        void message.success("签署状态已更新");
+        await refreshWorkflowProjection();
+        return;
+      }
       window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl));
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
@@ -403,6 +451,11 @@ export default function PortalHandoverReviewDetailPage() {
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             车辆交接确认单签署
           </Typography.Title>
+          {workflowDisplay ? (
+            <Tag color={workflowDisplay.statusTone} style={{ marginBottom: 12 }}>
+              {workflowDisplay.statusLabel}
+            </Tag>
+          ) : null}
           {esignLoading ? (
             <Flex align="center" gap={12}>
               <Spin size="small" />
@@ -428,17 +481,16 @@ export default function PortalHandoverReviewDetailPage() {
             />
           ) : esignView && esignDisplay ? (
             <Space direction="vertical" size={12} style={{ width: "100%" }}>
-              <Tag color={esignDisplay.statusTone}>{esignDisplay.statusLabel}</Tag>
               <Typography.Text type="secondary">
                 {esignDisplay.description}
               </Typography.Text>
               {esignDisplay.blockers.map((blocker) => (
                 <Alert key={blocker} message={blocker} showIcon type="info" />
               ))}
-              {esignView.capability.canStartSigning ? (
+              {workflowDisplay?.canStartSigning ? (
                 <Button
                   block
-                  disabled={!esignView.capability.canStartSigning || startingSigning}
+                  disabled={!workflowDisplay.canStartSigning || startingSigning}
                   icon={<EditOutlined />}
                   loading={startingSigning}
                   onClick={startSigning}

@@ -16,6 +16,31 @@ export interface AdminStage2HandoverESignSigner {
   status: string | null;
 }
 
+export type AdminStage2HandoverWorkflowJobType =
+  | "GENERATE_SOURCE_PDF"
+  | "NOTIFY_FIELD_ESIGN_READY"
+  | "NOTIFY_CUSTOMER_ESIGN_READY"
+  | "RECONCILE_CUSTOMER_SIGNATURE"
+  | "AUTO_SEAL_PLATFORM"
+  | "RECONCILE_PLATFORM_SEAL"
+  | "ARCHIVE_SIGNED_PDF";
+
+export type AdminStage2HandoverWorkflowJobStatus =
+  | "PENDING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "DEAD_LETTER"
+  | "CANCELLED";
+
+export interface AdminStage2HandoverWorkflowJob {
+  attemptCount: number;
+  id: string;
+  jobStatus: AdminStage2HandoverWorkflowJobStatus;
+  jobType: AdminStage2HandoverWorkflowJobType;
+  maxAttempts: number;
+  updatedAt: string | null;
+}
+
 export interface AdminStage2HandoverESignStatus {
   archiveStatus: string | null;
   blockers: AdminStage2HandoverESignBlocker[];
@@ -33,6 +58,7 @@ export interface AdminStage2HandoverESignStatus {
   taskId: string | null;
   updatedAt: string | null;
   workOrderId: string;
+  workflowJobs?: AdminStage2HandoverWorkflowJob[];
 }
 
 export interface AdminStage2HandoverSignedDocumentState {
@@ -64,6 +90,39 @@ export interface AdminStage2HandoverESignDisplay {
   readiness: AdminStage2HandoverESignDisplayState;
   startAvailable: boolean;
   voidAvailable: boolean;
+}
+
+export type AdminStage2HandoverWorkflowStepKey =
+  | "CUSTOMER_CONFIRMATION"
+  | "SOURCE_PDF"
+  | "FIELD_INITIATION"
+  | "CUSTOMER_SIGNATURE"
+  | "PLATFORM_SEAL"
+  | "ARCHIVE";
+
+export interface AdminStage2HandoverWorkflowStep {
+  key: AdminStage2HandoverWorkflowStepKey;
+  label: string;
+  state: "complete" | "current" | "error" | "waiting";
+}
+
+export interface AdminStage2HandoverWorkflowRecovery {
+  jobId: string;
+  jobType: AdminStage2HandoverWorkflowJobType;
+  kind: "RECONCILE_CUSTOMER" | "RETRY_JOB";
+  label: string;
+}
+
+export interface AdminStage2HandoverWorkflowContext {
+  customerConfirmedAt?: string | null;
+  pdfStatus?: string | null;
+  workflowJobs?: AdminStage2HandoverWorkflowJob[];
+}
+
+export interface AdminStage2HandoverWorkflowDisplay {
+  deliveryConfirmationAvailable: boolean;
+  recoveries: AdminStage2HandoverWorkflowRecovery[];
+  steps: AdminStage2HandoverWorkflowStep[];
 }
 
 const BLOCKER_MESSAGES: Record<string, string> = {
@@ -138,6 +197,20 @@ export function retryAdminStage2HandoverArchive(id: string) {
   );
 }
 
+export function retryAdminStage2WorkflowJob(workOrderId: string, jobId: string) {
+  return apiFetch<Record<string, unknown>>(
+    `/handover-work-orders/${encodeURIComponent(workOrderId)}/workflow-jobs/${encodeURIComponent(jobId)}/retry`,
+    { method: "POST" }
+  );
+}
+
+export function reconcileAdminStage2CustomerSignature(workOrderId: string) {
+  return apiFetch<Record<string, unknown>>(
+    `/handover-work-orders/${encodeURIComponent(workOrderId)}/workflow/reconcile-customer`,
+    { method: "POST" }
+  );
+}
+
 export function voidAdminStage2HandoverESign(id: string, reason: string) {
   return apiFetch<AdminStage2HandoverESignStatus>(`${stage2ESignPath(id)}/void`, {
     body: JSON.stringify({ reason: reason.trim() }),
@@ -159,25 +232,77 @@ export function validateAdminStage2HandoverVoidReason(reason: string) {
 export function getAdminStage2HandoverESignDisplay(
   status: AdminStage2HandoverESignStatus
 ): AdminStage2HandoverESignDisplay {
-  const taskExists = Boolean(status.taskId);
-  const platformRetryAvailable = status.platformSigner.retryAvailable === true;
+  const providerSigningCompleted =
+    status.status === "COMPLETED" ||
+    status.customerSigner.status === "SIGNED" ||
+    status.platformSigner.status === "SIGNED";
 
   return {
     archive: getArchiveDisplay(status),
-    archiveRetryAvailable:
-      status.status === "COMPLETED" &&
-      !status.signedArtifactAvailable &&
-      (status.archiveStatus === "NOT_STARTED" || status.archiveStatus === "FAILED"),
+    archiveRetryAvailable: false,
     customer: getCustomerDisplay(status),
     platform: getPlatformDisplay(status),
-    platformActionLabel: platformRetryAvailable
-      ? status.platformSigner.attemptCount > 0
-        ? "重试平台盖章"
-        : "发起平台盖章"
-      : null,
+    platformActionLabel: null,
     readiness: getReadinessDisplay(status),
-    startAvailable: status.ready && !taskExists,
-    voidAvailable: status.canVoid === true
+    startAvailable: false,
+    voidAvailable: status.canVoid === true && !providerSigningCompleted
+  };
+}
+
+export function getAdminStage2HandoverWorkflowDisplay(
+  status?: AdminStage2HandoverESignStatus | null,
+  context: AdminStage2HandoverWorkflowContext = {}
+): AdminStage2HandoverWorkflowDisplay {
+  const workflowJobs = status?.workflowJobs ?? context.workflowJobs ?? [];
+  const recoveries = workflowJobs
+    .filter((job) => job.jobStatus === "DEAD_LETTER")
+    .map(toWorkflowRecovery)
+    .filter((recovery): recovery is AdminStage2HandoverWorkflowRecovery =>
+      recovery !== null
+    );
+  const errorSteps = new Set(
+    workflowJobs
+      .filter((job) => job.jobStatus === "DEAD_LETTER")
+      .map((job) => WORKFLOW_JOB_STEP[job.jobType])
+  );
+  const archived =
+    status?.archiveStatus === "ARCHIVED" && status.signedArtifactAvailable === true;
+  const platformComplete =
+    archived || status?.platformSigner.status === "SIGNED";
+  const customerComplete =
+    platformComplete || status?.customerSigner.status === "SIGNED";
+  const fieldInitiationComplete = customerComplete || Boolean(status?.taskId);
+  const pdfComplete =
+    fieldInitiationComplete || context.pdfStatus === "GENERATED";
+  const customerConfirmationComplete =
+    pdfComplete || Boolean(context.customerConfirmedAt);
+  const completed: Record<AdminStage2HandoverWorkflowStepKey, boolean> = {
+    ARCHIVE: archived,
+    CUSTOMER_CONFIRMATION: customerConfirmationComplete,
+    CUSTOMER_SIGNATURE: customerComplete,
+    FIELD_INITIATION: fieldInitiationComplete,
+    PLATFORM_SEAL: platformComplete,
+    SOURCE_PDF: pdfComplete
+  };
+  const firstIncomplete = WORKFLOW_STEP_KEYS.find((key) => !completed[key]) ?? null;
+
+  return {
+    deliveryConfirmationAvailable: archived,
+    recoveries,
+    steps: WORKFLOW_STEP_KEYS.map((key) => {
+      const state = completed[key]
+        ? "complete"
+        : errorSteps.has(key)
+          ? "error"
+          : key === firstIncomplete
+            ? "current"
+            : "waiting";
+      return {
+        key,
+        label: workflowStepLabel(key, state, status),
+        state
+      };
+    })
   };
 }
 
@@ -213,6 +338,124 @@ function postStage2ESignStatus(id: string, suffix: string) {
 
 function stage2ESignPath(id: string) {
   return `/handover-work-orders/${encodeURIComponent(id)}/esign`;
+}
+
+const WORKFLOW_STEP_KEYS: AdminStage2HandoverWorkflowStepKey[] = [
+  "CUSTOMER_CONFIRMATION",
+  "SOURCE_PDF",
+  "FIELD_INITIATION",
+  "CUSTOMER_SIGNATURE",
+  "PLATFORM_SEAL",
+  "ARCHIVE"
+];
+
+const WORKFLOW_JOB_STEP: Record<
+  AdminStage2HandoverWorkflowJobType,
+  AdminStage2HandoverWorkflowStepKey
+> = {
+  ARCHIVE_SIGNED_PDF: "ARCHIVE",
+  AUTO_SEAL_PLATFORM: "PLATFORM_SEAL",
+  GENERATE_SOURCE_PDF: "SOURCE_PDF",
+  NOTIFY_CUSTOMER_ESIGN_READY: "CUSTOMER_SIGNATURE",
+  NOTIFY_FIELD_ESIGN_READY: "FIELD_INITIATION",
+  RECONCILE_CUSTOMER_SIGNATURE: "CUSTOMER_SIGNATURE",
+  RECONCILE_PLATFORM_SEAL: "PLATFORM_SEAL"
+};
+
+const WORKFLOW_RECOVERY: Record<
+  AdminStage2HandoverWorkflowJobType,
+  Pick<AdminStage2HandoverWorkflowRecovery, "kind" | "label">
+> = {
+  ARCHIVE_SIGNED_PDF: {
+    kind: "RETRY_JOB",
+    label: "重试签署文件归档"
+  },
+  AUTO_SEAL_PLATFORM: {
+    kind: "RETRY_JOB",
+    label: "重试平台盖章"
+  },
+  GENERATE_SOURCE_PDF: {
+    kind: "RETRY_JOB",
+    label: "重试生成交接确认单"
+  },
+  NOTIFY_CUSTOMER_ESIGN_READY: {
+    kind: "RETRY_JOB",
+    label: "重发客户通知"
+  },
+  NOTIFY_FIELD_ESIGN_READY: {
+    kind: "RETRY_JOB",
+    label: "重发经办人通知"
+  },
+  RECONCILE_CUSTOMER_SIGNATURE: {
+    kind: "RECONCILE_CUSTOMER",
+    label: "核对客户签署状态"
+  },
+  RECONCILE_PLATFORM_SEAL: {
+    kind: "RETRY_JOB",
+    label: "重试平台盖章"
+  }
+};
+
+function toWorkflowRecovery(
+  job: AdminStage2HandoverWorkflowJob
+): AdminStage2HandoverWorkflowRecovery | null {
+  const recovery = WORKFLOW_RECOVERY[job.jobType];
+  if (!job.id || !recovery) {
+    return null;
+  }
+  return {
+    jobId: job.id,
+    jobType: job.jobType,
+    ...recovery
+  };
+}
+
+function workflowStepLabel(
+  key: AdminStage2HandoverWorkflowStepKey,
+  state: AdminStage2HandoverWorkflowStep["state"],
+  status?: AdminStage2HandoverESignStatus | null
+) {
+  if (state === "complete") {
+    return {
+      ARCHIVE: "签署文件已归档",
+      CUSTOMER_CONFIRMATION: "客户已确认",
+      CUSTOMER_SIGNATURE: "客户已签署",
+      FIELD_INITIATION: "经办人已发起签署",
+      PLATFORM_SEAL: "平台已盖章",
+      SOURCE_PDF: "交接确认单已生成"
+    }[key];
+  }
+  if (state === "error") {
+    return {
+      ARCHIVE: "签署文件归档异常",
+      CUSTOMER_CONFIRMATION: "客户确认异常",
+      CUSTOMER_SIGNATURE: "客户签署流程异常",
+      FIELD_INITIATION: "经办人签署发起流程异常",
+      PLATFORM_SEAL: "平台盖章流程异常",
+      SOURCE_PDF: "交接确认单生成异常"
+    }[key];
+  }
+  if (state === "current") {
+    return {
+      ARCHIVE:
+        status?.archiveStatus === "PENDING"
+          ? "签署文件归档中"
+          : "等待签署文件归档",
+      CUSTOMER_CONFIRMATION: "等待客户确认",
+      CUSTOMER_SIGNATURE: "待客户签署",
+      FIELD_INITIATION: "等待经办人发起签署",
+      PLATFORM_SEAL: "平台盖章处理中",
+      SOURCE_PDF: "交接确认单生成中"
+    }[key];
+  }
+  return {
+    ARCHIVE: "等待签署文件归档",
+    CUSTOMER_CONFIRMATION: "等待客户确认",
+    CUSTOMER_SIGNATURE: "等待客户签署",
+    FIELD_INITIATION: "等待经办人发起签署",
+    PLATFORM_SEAL: "等待平台盖章",
+    SOURCE_PDF: "等待生成交接确认单"
+  }[key];
 }
 
 function formatBlockers(blockers: readonly AdminStage2HandoverESignBlocker[]) {

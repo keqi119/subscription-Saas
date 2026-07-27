@@ -8,7 +8,8 @@ const migration = readFileSync(
   join(root, "prisma/migrations/20260727120000_stage2_field_orchestrated_workflow/migration.sql"),
   "utf8"
 );
-const executableMigration = stripSqlComments(migration);
+const executableMigrationStatements = splitSqlStatements(migration);
+const executableMigration = `${executableMigrationStatements.join(";\n")};`;
 const developmentEnv = readFileSync(join(root, ".env.example"), "utf8");
 const productionEnv = readFileSync(join(root, ".env.production.example"), "utf8");
 
@@ -46,7 +47,12 @@ const workflowJobColumnDefinitions = [
   '"created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,',
   '"updated_at" TIMESTAMPTZ(6) NOT NULL,'
 ];
-const workflowJobTableStatement = 'CREATE TABLE "vehicle_handover_workflow_job" (';
+const workflowJobPrimaryKeyDefinition =
+  'CONSTRAINT "vehicle_handover_workflow_job_pkey" PRIMARY KEY ("id")';
+const workflowJobTableStatement = `CREATE TABLE "vehicle_handover_workflow_job" (
+  ${workflowJobColumnDefinitions.join("\n  ")}
+  ${workflowJobPrimaryKeyDefinition}
+);`;
 const workflowJobForeignKeyStatement =
   'ALTER TABLE "vehicle_handover_workflow_job" ADD CONSTRAINT "vehicle_handover_workflow_job_work_order_id_fkey" FOREIGN KEY ("work_order_id") REFERENCES "vehicle_handover_work_order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;';
 const workflowJobIndexStatements = [
@@ -84,9 +90,7 @@ function prismaEnumValues(source: string, name: string): string[] {
 }
 
 function sqlEnumValues(source: string, name: string): string[] {
-  const match = source.match(
-    new RegExp(`CREATE TYPE "${name}" AS ENUM \\(([\\s\\S]*?)\\);`)
-  );
+  const match = source.match(new RegExp(`CREATE TYPE "${name}" AS ENUM \\(([\\s\\S]*?)\\);`));
   expect(match, `missing SQL enum ${name}`).not.toBeNull();
   return [...match![1]!.matchAll(/'([^']+)'/g)].map((value) => value[1]!);
 }
@@ -95,57 +99,62 @@ function normalizeSql(source: string): string {
   return source.replace(/\s+/g, " ").trim();
 }
 
-function stripSqlComments(source: string): string {
-  let output = "";
+function splitSqlStatements(source: string): string[] {
+  const statements: string[] = [];
+  let statement = "";
   let index = 0;
-  let insideDoubleQuote = false;
-  let insideSingleQuote = false;
 
   while (index < source.length) {
     const current = source[index]!;
     const next = source[index + 1];
 
-    if (insideSingleQuote) {
-      output += current;
+    if (current === "'" || current === '"') {
+      const quote = current;
+      statement += current;
       index += 1;
-      if (current === "'" && next === "'") {
-        output += next;
+      while (index < source.length) {
+        const quoted = source[index]!;
+        const afterQuoted = source[index + 1];
+
+        statement += quoted;
         index += 1;
-      } else if (current === "'") {
-        insideSingleQuote = false;
+        if (quoted === "\\" && afterQuoted !== undefined) {
+          statement += afterQuoted;
+          index += 1;
+        } else if (quoted === quote && afterQuoted === quote) {
+          statement += afterQuoted;
+          index += 1;
+        } else if (quoted === quote) {
+          break;
+        }
       }
       continue;
     }
 
-    if (insideDoubleQuote) {
-      output += current;
-      index += 1;
-      if (current === '"' && next === '"') {
-        output += next;
-        index += 1;
-      } else if (current === '"') {
-        insideDoubleQuote = false;
+    if (current === "$") {
+      const dollarQuote = source.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0];
+      if (dollarQuote !== undefined) {
+        statement += dollarQuote;
+        index += dollarQuote.length;
+        while (index < source.length) {
+          if (source.startsWith(dollarQuote, index)) {
+            statement += dollarQuote;
+            index += dollarQuote.length;
+            break;
+          }
+          statement += source[index]!;
+          index += 1;
+        }
+        continue;
       }
-      continue;
     }
 
-    if (current === "'") {
-      insideSingleQuote = true;
-      output += current;
-      index += 1;
-      continue;
-    }
-    if (current === '"') {
-      insideDoubleQuote = true;
-      output += current;
-      index += 1;
-      continue;
-    }
     if (current === "-" && next === "-") {
       index += 2;
       while (index < source.length && source[index] !== "\n" && source[index] !== "\r") {
         index += 1;
       }
+      statement += "\n";
       continue;
     }
     if (current === "/" && next === "*") {
@@ -160,35 +169,46 @@ function stripSqlComments(source: string): string {
           index += 2;
         } else {
           if (source[index] === "\n" || source[index] === "\r") {
-            output += source[index];
+            statement += source[index];
           }
           index += 1;
         }
       }
+      statement += " ";
+      continue;
+    }
+    if (current === ";") {
+      if (statement.trim().length > 0) {
+        statements.push(statement.trim());
+      }
+      statement = "";
+      index += 1;
       continue;
     }
 
-    output += current;
+    statement += current;
     index += 1;
   }
 
-  return output;
+  if (statement.trim().length > 0) {
+    statements.push(statement.trim());
+  }
+
+  return statements;
 }
 
 function extractSqlTable(source: string, name: string): string {
-  const match = source.match(
-    new RegExp(`CREATE\\s+TABLE\\s+"${name}"\\s*\\(([\\s\\S]*?)\\);`)
-  );
+  const match = source.match(new RegExp(`^CREATE\\s+TABLE\\s+"${name}"\\s*\\(([\\s\\S]*)\\)$`));
   expect(match, `missing SQL table ${name}`).not.toBeNull();
   return normalizeSql(match![1]!);
 }
 
-function expectSingleSqlStatement(source: string, statement: string): void {
-  const normalizedSource = normalizeSql(source);
-  const normalizedStatement = normalizeSql(statement);
-  const count = normalizedSource.split(normalizedStatement).length - 1;
+function expectSingleSqlStatement(statements: readonly string[], expected: string): string {
+  const normalizedExpected = normalizeSql(expected).replace(/;$/, "");
+  const matches = statements.filter((statement) => normalizeSql(statement) === normalizedExpected);
 
-  expect(count, `expected one executable instance of ${normalizedStatement}`).toBe(1);
+  expect(matches, `expected one executable instance of ${normalizedExpected}`).toHaveLength(1);
+  return matches[0]!;
 }
 
 function environmentValue(source: string, name: string): string | undefined {
@@ -251,7 +271,9 @@ describe("Stage 2 durable workflow schema", () => {
     expect(job).toMatch(
       /createdAt\s+DateTime\s+@default\(now\(\)\)\s+@map\("created_at"\)\s+@db\.Timestamptz\(6\)/
     );
-    expect(job).toMatch(/updatedAt\s+DateTime\s+@updatedAt\s+@map\("updated_at"\)\s+@db\.Timestamptz\(6\)/);
+    expect(job).toMatch(
+      /updatedAt\s+DateTime\s+@updatedAt\s+@map\("updated_at"\)\s+@db\.Timestamptz\(6\)/
+    );
     expect(job).toContain("@@index([jobStatus, availableAt])");
     expect(job).toContain("@@index([workOrderId, createdAt])");
     expect(job).toContain("@@index([leaseExpiresAt])");
@@ -260,16 +282,18 @@ describe("Stage 2 durable workflow schema", () => {
   });
 
   it("creates the durable job table, foreign key, unique key, and claim indexes", () => {
-    const jobTable = extractSqlTable(executableMigration, "vehicle_handover_workflow_job");
+    const jobTableStatement = expectSingleSqlStatement(
+      executableMigrationStatements,
+      workflowJobTableStatement
+    );
+    const jobTable = extractSqlTable(jobTableStatement, "vehicle_handover_workflow_job");
 
     for (const definition of workflowJobColumnDefinitions) {
       expect(jobTable).toContain(definition);
     }
-    expect(jobTable).toContain(
-      'CONSTRAINT "vehicle_handover_workflow_job_pkey" PRIMARY KEY ("id")'
-    );
-    for (const statement of requiredWorkflowMigrationStatements) {
-      expectSingleSqlStatement(executableMigration, statement);
+    expect(jobTable).toContain(workflowJobPrimaryKeyDefinition);
+    for (const statement of requiredWorkflowMigrationStatements.slice(1)) {
+      expectSingleSqlStatement(executableMigrationStatements, statement);
     }
   });
 
@@ -337,10 +361,10 @@ describe("Stage 2 durable workflow schema", () => {
       }
     }
     expect(executableMigration).toContain(
-      'ALTER TYPE "customer_verification_code_purpose"\n  ADD VALUE IF NOT EXISTS \'FIELD_HANDOVER_ESIGN_READY\';'
+      "ALTER TYPE \"customer_verification_code_purpose\"\n  ADD VALUE IF NOT EXISTS 'FIELD_HANDOVER_ESIGN_READY';"
     );
     expect(executableMigration).toContain(
-      'ALTER TYPE "customer_verification_code_purpose"\n  ADD VALUE IF NOT EXISTS \'CUSTOMER_HANDOVER_ESIGN_READY\';'
+      "ALTER TYPE \"customer_verification_code_purpose\"\n  ADD VALUE IF NOT EXISTS 'CUSTOMER_HANDOVER_ESIGN_READY';"
     );
   });
 
@@ -358,7 +382,7 @@ describe("Stage 2 durable workflow schema", () => {
 
   it("rejects commented-out and duplicate workflow migration statements", () => {
     const quotedComments = `SELECT '-- literal', "/* identifier */"; -- comment\n/* outer /* nested */ comment */ SELECT '/* literal */';`;
-    const uncommented = stripSqlComments(quotedComments);
+    const uncommented = splitSqlStatements(quotedComments).join(";\n");
 
     expect(uncommented).toContain("'-- literal'");
     expect(uncommented).toContain('"/* identifier */"');
@@ -366,8 +390,56 @@ describe("Stage 2 durable workflow schema", () => {
     expect(uncommented).not.toContain("outer");
 
     for (const statement of requiredWorkflowMigrationStatements) {
-      expect(() => expectSingleSqlStatement(stripSqlComments(`-- ${statement}`), statement)).toThrow();
-      expect(() => expectSingleSqlStatement(`${executableMigration}\n${statement}`, statement)).toThrow();
+      expect(() =>
+        expectSingleSqlStatement(splitSqlStatements(`-- ${statement}`), statement)
+      ).toThrow();
+      expect(() =>
+        expectSingleSqlStatement(splitSqlStatements(`/* ${statement} */`), statement)
+      ).toThrow();
+      expect(() =>
+        expectSingleSqlStatement(splitSqlStatements(`${migration}\n${statement}`), statement)
+      ).toThrow();
     }
+  });
+
+  it("rejects required workflow statements embedded in quoted literals", () => {
+    for (const statement of requiredWorkflowMigrationStatements) {
+      const quotedDecoys = [
+        `SELECT '${statement.replaceAll("'", "''")}';`,
+        `SELECT "${statement.replaceAll('"', '""')}";`,
+        `SELECT $$${statement}$$;`,
+        `SELECT $decoy$${statement}$decoy$;`
+      ];
+
+      for (const quotedDecoy of quotedDecoys) {
+        expect(() =>
+          expectSingleSqlStatement(splitSqlStatements(quotedDecoy), statement)
+        ).toThrow();
+      }
+    }
+  });
+
+  it("preserves quoted identifiers, defaults, and semicolons inside quoted regions", () => {
+    const jobTableStatement = expectSingleSqlStatement(
+      executableMigrationStatements,
+      workflowJobTableStatement
+    );
+    const quotedFixture = `CREATE TABLE "workflow""job" (
+      "status" TEXT DEFAULT 'PEND''ING',
+      "backslash" TEXT DEFAULT E'it\\'s pending',
+      "body" TEXT DEFAULT $value$semi; -- literal$value$
+    );
+    SELECT 1;`;
+
+    expect(jobTableStatement).toContain('"job_status"');
+    expect(jobTableStatement).toContain("DEFAULT 'PENDING'");
+    expect(splitSqlStatements(quotedFixture)).toEqual([
+      `CREATE TABLE "workflow""job" (
+      "status" TEXT DEFAULT 'PEND''ING',
+      "backslash" TEXT DEFAULT E'it\\'s pending',
+      "body" TEXT DEFAULT $value$semi; -- literal$value$
+    )`,
+      "SELECT 1"
+    ]);
   });
 });

@@ -223,6 +223,7 @@ async function renderPdf(
 
   const doc = new PDFDocument({
     autoFirstPage: true,
+    info: buildStablePdfInfo(model),
     margin: 45,
     size: options.pageSize ?? DEFAULT_PAGE_SIZE
   });
@@ -246,9 +247,6 @@ async function renderPdf(
   });
 
   doc.font(fontPath ?? "Helvetica");
-  doc.info.Title = model.documentNo;
-  doc.info.Subject = "Stage 2 delivery handover PDF source artifact";
-  doc.info.Keywords = "delivery,handover,stage2,pdf";
 
   writeTitle(doc, "车辆交接确认单");
   writeMetadata(doc, model);
@@ -308,6 +306,21 @@ async function renderPdf(
   doc.end();
   const buffer = await done;
   return { buffer, pageCount, slotCoordinates };
+}
+
+function buildStablePdfInfo(
+  model: DeliveryHandoverPdfRenderModel
+): PDFKit.DocumentInfo {
+  const generatedAt = new Date(model.generatedAt);
+  return {
+    CreationDate: generatedAt,
+    Creator: "Stage 2 Delivery Handover PDF Renderer",
+    Keywords: "delivery,handover,stage2,pdf",
+    ModDate: generatedAt,
+    Producer: "Subscription SaaS",
+    Subject: "Stage 2 delivery handover PDF source artifact",
+    Title: model.documentNo
+  };
 }
 
 function writeEvidencePackageDeclaration(

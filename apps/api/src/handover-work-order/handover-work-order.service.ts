@@ -2265,10 +2265,7 @@ export class HandoverWorkOrderService {
           throw new BadRequestException("未找到生效中的车辆交接确认单模板。");
         }
         generatedAt = await readStage2DatabaseNow(tx);
-        contractNo = createReservedStage2ContractNo(
-          generatedAt,
-          `${workOrder.id}:${artifactVersion}:${manifestHash}`
-        );
+        contractNo = createReservedStage2ContractNo(contractId);
         templateId = activeTemplateId;
       }
 
@@ -4212,25 +4209,8 @@ function readStage2SourcePdfReservation(
   };
 }
 
-function createReservedStage2ContractNo(
-  generatedAt: Date,
-  identity: string
-) {
-  const timestamp = [
-    generatedAt.getUTCFullYear(),
-    String(generatedAt.getUTCMonth() + 1).padStart(2, "0"),
-    String(generatedAt.getUTCDate()).padStart(2, "0"),
-    String(generatedAt.getUTCHours()).padStart(2, "0"),
-    String(generatedAt.getUTCMinutes()).padStart(2, "0"),
-    String(generatedAt.getUTCSeconds()).padStart(2, "0")
-  ].join("");
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const digest = createHash("sha256").update(identity, "utf8").digest();
-  const suffix = Array.from(
-    digest.subarray(0, 4),
-    (byte) => alphabet[byte % alphabet.length]
-  ).join("");
-  return `HDV${timestamp}${suffix}`;
+function createReservedStage2ContractNo(contractId: string) {
+  return `HDV-${contractId.replaceAll("-", "").toLowerCase()}`;
 }
 
 function sameStage2SourceBinding(

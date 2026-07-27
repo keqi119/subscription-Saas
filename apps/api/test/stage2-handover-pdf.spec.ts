@@ -20,6 +20,7 @@ import {
   buildDeliveryHandoverPdfRenderModel,
   STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT
 } from "../src/delivery-handover/delivery-handover-pdf-render-model";
+import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
 import {
   DeliveryHandoverPdfRendererService,
   STAGE2_HANDOVER_PDF_HARD_MAX_BYTES,
@@ -32,6 +33,7 @@ import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/sta
 const pdfKitMock = vi.hoisted(() => {
   class FakePDFDocument {
     static imageCalls: Array<{ image: Buffer | string; pageNumber: number }> = [];
+    static options: Record<string, unknown> = {};
     static rectCalls: Array<{
       height: number;
       pageNumber: number;
@@ -43,6 +45,7 @@ const pdfKitMock = vi.hoisted(() => {
 
     static startCapture() {
       FakePDFDocument.imageCalls = [];
+      FakePDFDocument.options = {};
       FakePDFDocument.rectCalls = [];
       FakePDFDocument.textCalls = [];
       return {
@@ -63,7 +66,12 @@ const pdfKitMock = vi.hoisted(() => {
     private listeners = new Map<string, Array<(...args: unknown[]) => void>>();
     private pageNumber = 1;
 
-    constructor(options: { margin?: number; size?: string | [number, number] } = {}) {
+    constructor(options: {
+      info?: Record<string, unknown>;
+      margin?: number;
+      size?: string | [number, number];
+    } = {}) {
+      FakePDFDocument.options = options;
       const margin = options.margin ?? 45;
       const [width, height] = Array.isArray(options.size) ? options.size : [595.28, 841.89];
       this.page = {
@@ -233,6 +241,31 @@ describe("Stage 2 handover PDF renderer", () => {
       expect(visibleText).toContain(file.evidenceFileId);
       expect(visibleText.split(file.sourceSha256)).toHaveLength(2);
     }
+  });
+
+  it("binds stable PDFKit metadata and file-ID input to the reserved generation time", async () => {
+    const renderer = new DeliveryHandoverPdfRendererService();
+    const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
+    pdfKitMock.FakePDFDocument.startCapture();
+
+    await renderer.render(model, {
+      cjkFontPath: process.execPath,
+      evidencePackageUrl:
+        "https://portal.example.test/portal/handover-reviews/work-order-1",
+      loadAsset: async () => Buffer.from("synthetic-jpeg")
+    });
+
+    expect(pdfKitMock.FakePDFDocument.options).toMatchObject({
+      info: {
+        CreationDate: new Date("2026-07-25T10:00:00.000Z"),
+        Creator: "Stage 2 Delivery Handover PDF Renderer",
+        Keywords: "delivery,handover,stage2,pdf",
+        ModDate: new Date("2026-07-25T10:00:00.000Z"),
+        Producer: "Subscription SaaS",
+        Subject: "Stage 2 delivery handover PDF source artifact",
+        Title: "HDV-STAGE2-PDF-001"
+      }
+    });
   });
 
   it("emits exactly two bounded signing slots at the final signature boxes without visible metadata", async () => {
@@ -415,7 +448,7 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
 
     expect(result.status).toBe("GENERATED");
     expect(result.artifactId).toBe("file-pdf-1");
-    expect(result.documentNo).toMatch(/^HDV\d{14}[A-Z2-9]{4}$/);
+    expect(result.documentNo).toMatch(/^HDV-[0-9a-f]{32}$/);
     expect(result.downloadUrl).toBe("/api/handover-work-orders/work-order-1/pdf/download");
     expect(harness.prisma.contract.upsert).not.toHaveBeenCalled();
     expect(harness.prisma.contract.create).toHaveBeenCalledWith({
@@ -587,6 +620,68 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
       | undefined;
     expect(renderModel?.generatedAt).toBe("2026-07-25T10:00:00.000Z");
     expect(harness.prisma.contract.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("reserves globally distinct Contract numbers for legacy-suffix collisions and retries", async () => {
+    const [firstIdentity, secondIdentity] =
+      findLegacyStage2ContractNumberCollision();
+    const persistedContractNumbers = new Set<string>();
+    const createHarness = (
+      identity: ReturnType<typeof findLegacyStage2ContractNumberCollision>[number]
+    ) => {
+      const harness = createServiceHarness();
+      harness.records.workOrder.id = identity.workOrderId;
+      const createContract =
+        harness.prisma.contract.create.getMockImplementation()!;
+      harness.prisma.contract.create.mockImplementation(async (args) => {
+        const contractNo = String(args.data.contractNo);
+        if (persistedContractNumbers.has(contractNo)) {
+          throw Object.assign(
+            new Error(`Duplicate Contract number: ${contractNo}`),
+            { code: "P2002" }
+          );
+        }
+        persistedContractNumbers.add(contractNo);
+        return createContract(args);
+      });
+      return harness;
+    };
+    const first = createHarness(firstIdentity);
+    const second = createHarness(secondIdentity);
+
+    await expect(
+      ensureStage2HandoverPdf(
+        first.service,
+        firstIdentity.workOrderId,
+        firstIdentity.manifestHash
+      )
+    ).resolves.toMatchObject({ status: "GENERATED" });
+    await expect(
+      ensureStage2HandoverPdf(
+        second.service,
+        secondIdentity.workOrderId,
+        secondIdentity.manifestHash
+      )
+    ).resolves.toMatchObject({ status: "GENERATED" });
+    await expect(
+      ensureStage2HandoverPdf(
+        second.service,
+        secondIdentity.workOrderId,
+        secondIdentity.manifestHash
+      )
+    ).resolves.toMatchObject({ status: "GENERATED" });
+
+    const contractNumbers = [
+      first.prisma.contract.create.mock.calls[0]?.[0].data.contractNo,
+      second.prisma.contract.create.mock.calls[0]?.[0].data.contractNo
+    ];
+    expect(firstIdentity.legacyContractNo).toBe(secondIdentity.legacyContractNo);
+    expect(contractNumbers).toEqual([
+      expect.stringMatching(/^HDV-[0-9a-f]{32}$/),
+      expect.stringMatching(/^HDV-[0-9a-f]{32}$/)
+    ]);
+    expect(new Set(contractNumbers).size).toBe(2);
+    expect(second.prisma.contract.create).toHaveBeenCalledTimes(1);
   });
 
   it("does not expose a Contract when rendering fails", async () => {
@@ -1360,6 +1455,46 @@ function createServiceHarness(options: {
     },
     workflowJobs
   };
+}
+
+function findLegacyStage2ContractNumberCollision() {
+  const generatedAt = new Date("2026-07-25T10:00:00.000Z");
+  const timestamp = "20260725100000";
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const seen = new Map<string, {
+    legacyContractNo: string;
+    manifestHash: string;
+    workOrderId: string;
+  }>();
+  const evidenceChecklist = createRenderModelInput().evidenceChecklist;
+  for (let index = 1; index <= 10_000; index += 1) {
+    const workOrderId =
+      `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+    const manifestHash = buildDeliveryHandoverEvidencePackage({
+      evidenceChecklist,
+      handoverId: "handover-1",
+      orderId: "order-1",
+      workOrderId
+    }).manifestHash;
+    const manifestDigest = manifestHash.replace(/^sha256:/, "");
+    const digest = createHash("sha256")
+      .update(`${workOrderId}:1:${manifestDigest}`, "utf8")
+      .digest();
+    const suffix = Array.from(
+      digest.subarray(0, 4),
+      (byte) => alphabet[byte % alphabet.length]
+    ).join("");
+    const legacyContractNo = `HDV${timestamp}${suffix}`;
+    const identity = { legacyContractNo, manifestHash, workOrderId };
+    const collision = seen.get(legacyContractNo);
+    if (collision) {
+      return [collision, identity] as const;
+    }
+    seen.set(legacyContractNo, identity);
+  }
+  throw new Error(
+    `No legacy Stage 2 Contract number collision found at ${generatedAt.toISOString()}.`
+  );
 }
 
 function ensureStage2HandoverPdf(

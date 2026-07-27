@@ -22,9 +22,12 @@ import {
 } from "vitest";
 
 import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
+import { DeliveryHandoverPdfRenderModel } from "../src/delivery-handover/delivery-handover-pdf-render-model";
+import { DeliveryHandoverPdfRendererService } from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { createDeterministicStage2PdfModel } from "./stage2-handover-pdf-real-render.fixture";
 
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL ??
@@ -135,20 +138,22 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
     }
   });
 
-  it("rolls back Contract, FileObject, handover, and notification when enqueue fails", async () => {
+  it("reuses one deterministic object after notification rollback and finalizes retry", async () => {
     const fixture = await createDatabaseFixture(prisma);
-    const pdf = Buffer.from("%PDF-enqueue-rollback");
     const storage = coordinatedStorage();
-    const renderer = queuedRenderer([pdf]);
+    const renderer = realReservationRenderer();
     const repository = new Stage2HandoverWorkflowRepository(prisma);
     const enqueue = repository.enqueue.bind(repository);
+    let failNotification = true;
     vi.spyOn(repository, "enqueue").mockImplementation(
       async (tx, input) => {
         const job = await enqueue(tx, input);
         if (
+          failNotification &&
           input.jobType ===
           VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY
         ) {
+          failNotification = false;
           throw new Error("synthetic notification enqueue failure");
         }
         return job;
@@ -170,8 +175,20 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
         )
       ).rejects.toThrow("synthetic notification enqueue failure");
 
+      const keysAfterFailure = [...storage.objects.keys()];
+      expect(keysAfterFailure).toHaveLength(1);
+      const sourceObjectPrefix = sourceObjectKeyPrefix(keysAfterFailure[0]!);
+      await expect(
+        findUnboundSourceFiles(prisma, sourceObjectPrefix)
+      ).resolves.toEqual([]);
+
+      const retry = await service.ensureStage2HandoverPdf(
+        fixture.workOrderId,
+        fixture.manifestHash
+      );
       const handover =
         await prisma.vehicleDeliveryHandover.findUniqueOrThrow({
+          include: { handoverContract: true },
           where: { id: fixture.handoverId }
         });
       const sourceContracts = await prisma.contract.findMany({
@@ -182,9 +199,13 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
       });
       const sourceFiles = await prisma.fileObject.findMany({
         where: {
-          objectKey: { startsWith: "contracts/" }
+          objectKey: { startsWith: sourceObjectPrefix }
         }
       });
+      const unboundSourceFiles = await findUnboundSourceFiles(
+        prisma,
+        sourceObjectPrefix
+      );
       const notifications =
         await prisma.vehicleHandoverWorkflowJob.findMany({
           where: {
@@ -193,21 +214,26 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
             workOrderId: fixture.workOrderId
           }
         });
+      const storedKeys = [...storage.objects.keys()];
+      const uploadedKeys =
+        storage.putGeneratedContractPdfArtifactFromPath.mock.calls.map(
+          ([input]) => input.objectKey
+        );
+      const storedBytes = storage.objects.get(handover.sourceObjectKey!);
 
+      expect(retry.artifactId).toBe(handover.sourceDocumentFileId);
       expect(handover).toMatchObject({
-        handoverContractId: null,
-        sourceDocumentFileId: null,
-        sourceObjectKey: null,
-        sourcePdfHash: null,
-        status: DeliveryHandoverStatus.DRAFT
+        status: DeliveryHandoverStatus.SOURCE_GENERATED
       });
-      expect(sourceContracts).toEqual([]);
-      expect(
-        sourceFiles.filter((file) =>
-          storage.objects.has(file.objectKey)
-        )
-      ).toEqual([]);
-      expect(notifications).toEqual([]);
+      expect(renderer.renderToFile).toHaveBeenCalledTimes(2);
+      expect(uploadedKeys).toEqual([keysAfterFailure[0], keysAfterFailure[0]]);
+      expect(storedKeys).toEqual(keysAfterFailure);
+      expect(sourceContracts).toHaveLength(1);
+      expect(sourceFiles).toHaveLength(1);
+      expect(unboundSourceFiles).toEqual([]);
+      expect(notifications).toHaveLength(1);
+      expect(storedBytes).toBeDefined();
+      expect(sha256(storedBytes!)).toBe(handover.sourcePdfHash);
     } finally {
       await fixture.cleanup();
     }
@@ -395,7 +421,7 @@ async function createDatabaseFixture(prisma: PrismaService) {
 function createService(
   prisma: PrismaService,
   evidenceChecklist: unknown,
-  renderer: ReturnType<typeof queuedRenderer>,
+  renderer: object,
   storage: ReturnType<typeof coordinatedStorage>,
   repository: Stage2HandoverWorkflowRepository
 ) {
@@ -415,6 +441,27 @@ function createService(
     undefined,
     repository
   );
+}
+
+function realReservationRenderer() {
+  const renderer = new DeliveryHandoverPdfRendererService();
+  return {
+    renderToFile: vi.fn(async (model: DeliveryHandoverPdfRenderModel) =>
+      renderer.renderToFile(
+        createDeterministicStage2PdfModel({
+          documentNo: model.documentNo,
+          generatedAt: model.generatedAt,
+          handoverId: model.handoverId,
+          manifestHash: model.evidencePackage.manifestHash,
+          workOrderId: model.workOrderId
+        }),
+        {
+          evidencePackageUrl:
+            "https://portal.example.test/portal/handover-reviews/integration"
+        }
+      )
+    )
+  };
 }
 
 function queuedRenderer(buffers: Buffer[]) {
@@ -454,6 +501,31 @@ function queuedRenderer(buffers: Buffer[]) {
       };
     })
   };
+}
+
+async function findUnboundSourceFiles(
+  prisma: PrismaService,
+  objectKeyPrefix: string
+) {
+  return prisma.$queryRaw<Array<{ id: string; objectKey: string }>>`
+    SELECT
+      file_object."id",
+      file_object."object_key" AS "objectKey"
+    FROM "file_object"
+    LEFT JOIN "contract"
+      ON "contract"."file_id" = file_object."id"
+    WHERE file_object."object_key" LIKE ${`${objectKeyPrefix}%`}
+      AND "contract"."id" IS NULL
+  `;
+}
+
+function sourceObjectKeyPrefix(objectKey: string) {
+  const marker = "/generated/";
+  const markerIndex = objectKey.indexOf(marker);
+  if (markerIndex < 0) {
+    throw new Error(`Unexpected Stage 2 source object key: ${objectKey}`);
+  }
+  return objectKey.slice(0, markerIndex + 1);
 }
 
 function coordinatedStorage(options: {

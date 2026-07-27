@@ -1,4 +1,8 @@
-import { BadRequestException, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  NotFoundException,
+  UnauthorizedException
+} from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
@@ -35,6 +39,15 @@ describe("Stage 2 canonical Field operator identity", () => {
     await expect(
       harness.service.assignInternalOperator(harness.workOrder.id, harness.user.id, "admin-1")
     ).rejects.toBeInstanceOf(BadRequestException);
+    expect(harness.prisma.vehicleHandoverWorkOrder.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects disabled internal users through the safe assignment error", async () => {
+    const harness = createIdentityHarness({ user: { status: "DISABLED" } });
+
+    await expect(
+      harness.service.assignInternalOperator(harness.workOrder.id, harness.user.id, "admin-1")
+    ).rejects.toBeInstanceOf(NotFoundException);
     expect(harness.prisma.vehicleHandoverWorkOrder.updateMany).not.toHaveBeenCalled();
   });
 
@@ -114,6 +127,60 @@ describe("Stage 2 canonical Field operator identity", () => {
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
+  it("authorizes INTERNAL task detail and mutation by matching canonical phone", async () => {
+    const harness = createIdentityHarness({
+      workOrders: [
+        workOrder({
+          fieldOperatorName: "Internal Operator",
+          fieldOperatorPhone: MATCHING_PHONE,
+          operatorType: "INTERNAL"
+        })
+      ]
+    });
+
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder(
+        harness.workOrder.id,
+        "+86 138-0000-0000"
+      )
+    ).resolves.toMatchObject({ id: harness.workOrder.id });
+    await expect(
+      harness.service.startFieldAccessibleWorkOrder(
+        harness.workOrder.id,
+        "+86 138-0000-0000",
+        "session-1"
+      )
+    ).resolves.toMatchObject({
+      fieldOperatorPhone: MATCHING_PHONE,
+      operatorType: "INTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+  });
+
+  it("denies INTERNAL task detail and mutation for a nonmatching canonical phone", async () => {
+    const harness = createIdentityHarness({
+      workOrders: [
+        workOrder({
+          fieldOperatorName: "Internal Operator",
+          fieldOperatorPhone: MATCHING_PHONE,
+          operatorType: "INTERNAL"
+        })
+      ]
+    });
+
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder(harness.workOrder.id, "13900001111")
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      harness.service.startFieldAccessibleWorkOrder(
+        harness.workOrder.id,
+        "13900001111",
+        "session-1"
+      )
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(harness.prisma.vehicleHandoverWorkOrder.updateMany).not.toHaveBeenCalled();
+  });
+
   it("rejects reassignment after customerReviewStartedAt is set", async () => {
     const harness = createIdentityHarness({
       workOrders: [
@@ -159,7 +226,7 @@ describe("Stage 2 canonical Field operator identity", () => {
 function createIdentityHarness(
   options: {
     reviewAttempts?: Array<Record<string, unknown>>;
-    user?: { mobile?: string | null; name?: string };
+    user?: { mobile?: string | null; name?: string; status?: string };
     workOrders?: TestWorkOrder[];
   } = {}
 ) {
@@ -168,6 +235,7 @@ function createIdentityHarness(
     id: "user-1",
     mobile: MATCHING_PHONE,
     name: "Internal Operator",
+    status: "ACTIVE",
     ...options.user
   };
   const workOrders = options.workOrders ?? [workOrder()];
@@ -193,9 +261,17 @@ function createIdentityHarness(
       findUnique: vi.fn(async () => order)
     },
     user: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt: null; id: string } }) =>
-        where.id === user.id && user.deletedAt === where.deletedAt ? user : null
-      )
+      findFirst: vi.fn(async ({
+        where
+      }: {
+        where: { deletedAt: null; id: string; status?: string };
+      }) => (
+        where.id === user.id &&
+        user.deletedAt === where.deletedAt &&
+        (where.status === undefined || user.status === where.status)
+          ? user
+          : null
+      ))
     },
     vehicleHandoverEvent: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {

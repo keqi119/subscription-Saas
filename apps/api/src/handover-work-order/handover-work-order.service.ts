@@ -26,6 +26,7 @@ import {
   DeliveryEvidenceMediaType,
   DeliveryHandoverStatus,
   Prisma,
+  UserStatus,
   VehicleHandoverAdminReviewStatus,
   VehicleHandoverEventActorType,
   VehicleHandoverEventType
@@ -2690,7 +2691,8 @@ export class HandoverWorkOrderService {
       },
       where: {
         deletedAt: null,
-        id: userId
+        id: userId,
+        status: UserStatus.ACTIVE
       }
     });
     if (!user) {

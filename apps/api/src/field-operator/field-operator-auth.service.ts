@@ -227,7 +227,7 @@ export class FieldOperatorAuthService {
     });
 
     return {
-      operatorType: session.operatorType,
+      operatorType: null,
       phone: session.phone,
       sessionId: session.id
     };
@@ -237,7 +237,7 @@ export class FieldOperatorAuthService {
     const taskCount = await this.handoverWorkOrderService.countFieldAccessibleWorkOrders(current.phone);
     return {
       authenticated: true,
-      operatorType: current.operatorType,
+      operatorType: null,
       phoneMasked: maskFieldOperatorPhone(current.phone),
       taskCount
     };
@@ -404,7 +404,7 @@ function isFieldOperatorJwtPayload(payload: JwtPayload): payload is FieldOperato
 
 function toSafeSessionView(session: { operatorType: VehicleHandoverOperatorType | null; phone: string }) {
   return {
-    operatorType: session.operatorType,
+    operatorType: null,
     phoneMasked: maskFieldOperatorPhone(session.phone)
   };
 }

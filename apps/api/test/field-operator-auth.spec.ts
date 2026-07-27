@@ -123,6 +123,35 @@ describe("FieldOperatorAuthService", () => {
     await expect(service.validateToken(login.token)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
+  it("validates persisted legacy session origins as origin-neutral without rewriting storage", async () => {
+    const { prisma, service } = createFieldAuthFixture();
+    const code = (await service.requestCode({ phone: "13800000000" }, requestContext())).debugCode!;
+    const login = await service.login({ code, phone: "13800000000" }, requestContext());
+    prisma.sessions[0]!.operatorType = VehicleHandoverOperatorType.EXTERNAL;
+
+    const current = await service.validateToken(login.token);
+
+    expect(current.operatorType).toBeNull();
+    expect(prisma.sessions[0]!.operatorType).toBe(VehicleHandoverOperatorType.EXTERNAL);
+  });
+
+  it("projects getSession as origin-neutral for a persisted legacy session", async () => {
+    const { prisma, service } = createFieldAuthFixture();
+    const code = (await service.requestCode({ phone: "13800000000" }, requestContext())).debugCode!;
+    await service.login({ code, phone: "13800000000" }, requestContext());
+    prisma.sessions[0]!.operatorType = VehicleHandoverOperatorType.EXTERNAL;
+    const persisted = prisma.sessions[0]!;
+
+    const session = await service.getSession({
+      operatorType: persisted.operatorType,
+      phone: persisted.phone,
+      sessionId: persisted.id
+    });
+
+    expect(session.operatorType).toBeNull();
+    expect(persisted.operatorType).toBe(VehicleHandoverOperatorType.EXTERNAL);
+  });
+
   it("rejects admin and portal-shaped tokens as field sessions", async () => {
     const { service } = createFieldAuthFixture();
     const adminToken = jwt.sign({ username: "admin" }, ADMIN_SECRET, { subject: "user-admin" });

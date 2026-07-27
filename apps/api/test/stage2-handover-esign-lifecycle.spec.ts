@@ -1517,6 +1517,200 @@ describe("Stage2HandoverESignService", () => {
     );
   });
 
+  it("does not release an exact FAILED H2 claim that is still active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    const activeClaimExpiresAt =
+      new Date(NOW.getTime() + 60_000);
+    Object.assign(task.signers[1]!, {
+      attemptCount: 2,
+      claimExpiresAt: activeClaimExpiresAt,
+      lastAttemptAt: NOW,
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "4000",
+      resultDescription: "failed",
+      status: "FAILED"
+    });
+
+    const result = await harness.service.retryPlatformSeal(
+      "work-order-1",
+      "admin-1"
+    );
+
+    expect(harness.provider.autoSealTask).not.toHaveBeenCalled();
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledTimes(1);
+    expect(task.signers[1]).toMatchObject({
+      attemptCount: 2,
+      claimExpiresAt: activeClaimExpiresAt,
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.PENDING
+    });
+    expect(result.platformSigner).toMatchObject({
+      retryAvailable: false,
+      status: ESignSignerStatus.PENDING
+    });
+  });
+
+  it("allows only one FAILED H2 retry to replace the same abandoned claim", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = createHarness();
+    const task = makeTask({
+      taskStatus: ESignTaskStatus.SIGNING,
+      customerStatus: ESignSignerStatus.SIGNED
+    });
+    const abandonedClaimExpiresAt =
+      new Date(NOW.getTime() - 60_000);
+    Object.assign(task.signers[1]!, {
+      attemptCount: 1,
+      claimExpiresAt: abandonedClaimExpiresAt,
+      lastAttemptAt: new Date(NOW.getTime() - 10 * 60_000),
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status =
+      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+    harness.prisma.vehicleHandoverWorkOrder.findUnique.mockImplementation(
+      async () => structuredClone(harness.state.workOrder)
+    );
+
+    let queryCount = 0;
+    let releaseFailedQueries!: () => void;
+    const failedQueriesReady = new Promise<void>((resolve) => {
+      releaseFailedQueries = resolve;
+    });
+    harness.provider.querySignerStatus.mockImplementation(async () => {
+      queryCount += 1;
+      if (queryCount <= 2) {
+        if (queryCount === 2) {
+          releaseFailedQueries();
+        }
+        await failedQueriesReady;
+        return {
+          resultCode: "4000",
+          resultDescription: "failed",
+          status: "FAILED"
+        };
+      }
+      return {
+        resultCode: "1000",
+        resultDescription: "active",
+        status: "SIGNING"
+      };
+    });
+
+    const applySignerUpdate =
+      harness.prisma.contractESignSigner.updateMany
+        .getMockImplementation()!;
+    let recoveryCasCount = 0;
+    let freshClaimSignalled = false;
+    let signalFreshClaim!: () => void;
+    const freshClaimInstalled = new Promise<void>((resolve) => {
+      signalFreshClaim = resolve;
+    });
+    const markFreshClaimInstalled = () => {
+      if (!freshClaimSignalled) {
+        freshClaimSignalled = true;
+        signalFreshClaim();
+      }
+    };
+    harness.prisma.contractESignSigner.updateMany.mockImplementation(
+      async (args: any) => {
+        const recoveryCas =
+          args.where?.id === "stage2-platform-signer-1" &&
+          args.where?.providerTransactionId ===
+            "ESG20260726080000ABCDH2" &&
+          args.where?.AND === undefined &&
+          args.data?.signerStatus === ESignSignerStatus.PENDING;
+        if (recoveryCas) {
+          const ordinal = ++recoveryCasCount;
+          if (ordinal === 2) {
+            await freshClaimInstalled;
+          }
+          const result = await applySignerUpdate(args);
+          if (
+            ordinal === 1 &&
+            result.count === 1 &&
+            args.data?.attemptCount?.increment === 1 &&
+            args.data?.claimExpiresAt instanceof Date
+          ) {
+            markFreshClaimInstalled();
+          }
+          return result;
+        }
+
+        const result = await applySignerUpdate(args);
+        if (
+          args.where?.AND &&
+          args.data?.attemptCount?.increment === 1 &&
+          result.count === 1
+        ) {
+          markFreshClaimInstalled();
+        }
+        return result;
+      }
+    );
+
+    const settled = await Promise.allSettled([
+      harness.service.retryPlatformSeal(
+        "work-order-1",
+        "admin-1"
+      ),
+      harness.service.retryPlatformSeal(
+        "work-order-1",
+        "admin-2"
+      )
+    ]);
+
+    expect(harness.provider.autoSealTask).toHaveBeenCalledTimes(1);
+    expect(
+      settled.every((result) => result.status === "fulfilled")
+    ).toBe(true);
+    expect(
+      settled.map((result) =>
+        result.status === "fulfilled"
+          ? result.value.taskId
+          : null
+      )
+    ).toEqual([task.id, task.id]);
+    expect(recoveryCasCount).toBe(2);
+    expect(harness.provider.autoSealTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transactionId: "ESG20260726080000ABCDH2"
+      })
+    );
+    expect(
+      harness.provider.querySignerStatus.mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      harness.provider.autoSealTask.mock.invocationCallOrder[0]!
+    );
+    expect(
+      harness.provider.querySignerStatus.mock.invocationCallOrder[1]
+    ).toBeLessThan(
+      harness.provider.autoSealTask.mock.invocationCallOrder[0]!
+    );
+    expect(task.signers[1]).toMatchObject({
+      attemptCount: 2,
+      claimExpiresAt: null,
+      providerTransactionId: "ESG20260726080000ABCDH2",
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+  });
+
   it("fails closed without a platform write when exact H2 is UNKNOWN", async () => {
     const harness = createHarness();
     const task = makeTask({
@@ -3389,6 +3583,10 @@ function matchesSignerWhere(
       );
     }
     const actual = (signer as Record<string, any>)[key];
+    if (expected instanceof Date) {
+      return actual instanceof Date &&
+        actual.getTime() === expected.getTime();
+    }
     if (
       expected &&
       typeof expected === "object" &&

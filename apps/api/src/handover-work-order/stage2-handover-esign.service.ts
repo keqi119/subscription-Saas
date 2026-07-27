@@ -944,6 +944,10 @@ export class Stage2HandoverESignService {
     }
 
     const now = new Date();
+    let claimAttemptedAt = now;
+    let claimExpiresAt =
+      new Date(claimAttemptedAt.getTime() + PLATFORM_CLAIM_MS);
+    let platformClaimAcquired = false;
     const platformTransactionId = buildTransactionId(task.taskNo, "H2");
     if (
       expectedProviderTransactionId &&
@@ -963,7 +967,6 @@ export class Stage2HandoverESignService {
         message: "The platform seal transaction does not match the typed H2 slot."
       });
     }
-    let exactFailedH2Observed = false;
     if (
       platformSigner.providerTransactionId === platformTransactionId ||
       platformSigner.signerStatus === ESignSignerStatus.SIGNING ||
@@ -989,92 +992,103 @@ export class Stage2HandoverESignService {
       if (!canReissueExactFailedH2) {
         throw platformStatusUnavailable();
       }
-      const released =
+      const failedObservedAt = new Date();
+      if (
+        platformSigner.claimExpiresAt &&
+        platformSigner.claimExpiresAt.getTime() >=
+          failedObservedAt.getTime()
+      ) {
+        return this.getStatus(workOrderId);
+      }
+      claimAttemptedAt = failedObservedAt;
+      claimExpiresAt =
+        new Date(claimAttemptedAt.getTime() + PLATFORM_CLAIM_MS);
+      const recoveredClaim =
         await this.prisma.contractESignSigner.updateMany({
           data: {
-            claimExpiresAt: null,
-            lastErrorCode:
-              STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
-            lastErrorMessage:
-              "Exact provider query confirmed the platform seal failed.",
+            attemptCount: { increment: 1 },
+            claimExpiresAt,
+            lastAttemptAt: claimAttemptedAt,
+            lastErrorCode: null,
+            lastErrorMessage: null,
             nextRetryAt: null,
             signerStatus: ESignSignerStatus.PENDING
           },
           where: {
+            attemptCount: platformSigner.attemptCount,
+            claimExpiresAt:
+              platformSigner.claimExpiresAt ?? null,
             id: platformSigner.id,
             providerTransactionId: platformTransactionId,
-            signerStatus: {
-              in: [
-                ESignSignerStatus.PENDING,
-                ESignSignerStatus.SIGNING
-              ]
-            },
+            signerStatus: platformSigner.signerStatus,
             slotId: PLATFORM_SLOT_ID,
             taskId: task.id
           }
         });
-      if (released.count !== 1) {
-        if (
-          await this.platformProviderActionWasReconciled(
-            workOrderId,
-            task.id,
-            platformSigner.id,
-            platformTransactionId
-          )
-        ) {
-          return this.getStatus(workOrderId);
-        }
-        throw lostPlatformClaim();
+      if (recoveredClaim.count !== 1) {
+        return this.deferToPlatformSealClaimWinner({
+          observedAttemptCount: platformSigner.attemptCount,
+          platformSignerId: platformSigner.id,
+          platformTransactionId,
+          taskId: task.id,
+          workOrderId
+        });
       }
-      exactFailedH2Observed = true;
+      platformClaimAcquired = true;
     }
     if (
-      !exactFailedH2Observed &&
+      !platformClaimAcquired &&
       platformSigner.nextRetryAt &&
-      platformSigner.nextRetryAt.getTime() > now.getTime()
+      platformSigner.nextRetryAt.getTime() >
+        claimAttemptedAt.getTime()
     ) {
       throw new BadRequestException({
         code: "STAGE2_PLATFORM_SEAL_RETRY_NOT_DUE",
         message: "The platform seal retry is not due yet."
       });
     }
-    const claimExpiresAt = new Date(now.getTime() + PLATFORM_CLAIM_MS);
-    const claimed = await this.prisma.contractESignSigner.updateMany({
-      data: {
-        attemptCount: { increment: 1 },
-        claimExpiresAt,
-        lastAttemptAt: now,
-        lastErrorCode: null,
-        lastErrorMessage: null,
-        nextRetryAt: null,
-        providerTransactionId: platformTransactionId
-      },
-      where: {
-        AND: [
-          {
-            OR: [
-              { claimExpiresAt: null },
-              { claimExpiresAt: { lt: now } }
-            ]
+    if (!platformClaimAcquired) {
+      const claimed =
+        await this.prisma.contractESignSigner.updateMany({
+          data: {
+            attemptCount: { increment: 1 },
+            claimExpiresAt,
+            lastAttemptAt: claimAttemptedAt,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            nextRetryAt: null,
+            providerTransactionId: platformTransactionId
           },
-          {
-            OR: [
-              { providerTransactionId: null },
-              { providerTransactionId: platformTransactionId }
-            ]
+          where: {
+            AND: [
+              {
+                OR: [
+                  { claimExpiresAt: null },
+                  { claimExpiresAt: { lt: claimAttemptedAt } }
+                ]
+              },
+              {
+                OR: [
+                  { providerTransactionId: null },
+                  {
+                    providerTransactionId:
+                      platformTransactionId
+                  }
+                ]
+              }
+            ],
+            id: platformSigner.id,
+            signerStatus: ESignSignerStatus.PENDING,
+            slotId: PLATFORM_SLOT_ID,
+            taskId: task.id
           }
-        ],
-        id: platformSigner.id,
-        signerStatus: ESignSignerStatus.PENDING,
-        slotId: PLATFORM_SLOT_ID,
-        taskId: task.id
+        });
+      if (claimed.count !== 1) {
+        throw new ConflictException({
+          code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
+          message: "The platform seal retry is already in progress."
+        });
       }
-    });
-    if (claimed.count !== 1) {
-      throw new ConflictException({
-        code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
-        message: "The platform seal retry is already in progress."
-      });
     }
 
     const platformCoordinate = readStage2Coordinates(
@@ -1128,12 +1142,12 @@ export class Stage2HandoverESignService {
       }
       if (result.status === "FAILED") {
         await this.recordPlatformFailure(
-        platformSigner.id,
-        result.resultCode ?? STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
-        now,
-        claimExpiresAt,
-        providerTransactionId
-      );
+          platformSigner.id,
+          result.resultCode ?? STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
+          claimAttemptedAt,
+          claimExpiresAt,
+          providerTransactionId
+        );
         throw new BadGatewayException({
           code: STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
           message: "The Stage 2 platform seal request failed and can be retried."
@@ -1149,7 +1163,7 @@ export class Stage2HandoverESignService {
         status: "PENDING",
         task,
         claimExpiresAt,
-        when: now
+        when: claimAttemptedAt
       });
       platformResultPersisted = true;
       const providerStatus = await this.reconcilePlatformSeal({
@@ -1199,7 +1213,7 @@ export class Stage2HandoverESignService {
       await this.recordPlatformFailure(
         platformSigner.id,
         STAGE2_PLATFORM_SEAL_PROVIDER_FAILED,
-        now,
+        claimAttemptedAt,
         claimExpiresAt
       );
       throw new BadGatewayException({
@@ -2379,6 +2393,40 @@ export class Stage2HandoverESignService {
       signer.providerTransactionId === transactionId &&
       signer.signerStatus === ESignSignerStatus.SIGNED
     );
+  }
+
+  private async deferToPlatformSealClaimWinner(input: {
+    observedAttemptCount: number;
+    platformSignerId: string;
+    platformTransactionId: string;
+    taskId: string;
+    workOrderId: string;
+  }) {
+    const current = await this.loadWorkOrder(input.workOrderId);
+    const task = this.pointerTask(current);
+    if (!task || task.id !== input.taskId) {
+      throw lostPlatformClaim();
+    }
+    const { platformSigner } = requireTypedSigners(task);
+    const activeClaim = Boolean(
+      platformSigner.claimExpiresAt &&
+      platformSigner.claimExpiresAt.getTime() >= Date.now()
+    );
+    const winnerAdvanced =
+      platformSigner.attemptCount > input.observedAttemptCount;
+    if (
+      platformSigner.id !== input.platformSignerId ||
+      platformSigner.providerTransactionId !==
+        input.platformTransactionId ||
+      (
+        platformSigner.signerStatus !== ESignSignerStatus.SIGNED &&
+        !activeClaim &&
+        !winnerAdvanced
+      )
+    ) {
+      throw lostPlatformClaim();
+    }
+    return this.getStatus(input.workOrderId);
   }
 
   private async recordCreateFailure(

@@ -13,7 +13,8 @@ import {
   ClaimedStage2WorkflowJob,
   STAGE2_HANDOVER_WORKFLOW_HANDLER,
   Stage2HandoverWorkflowHandler,
-  Stage2WorkflowError
+  Stage2WorkflowError,
+  WorkflowHandlerResult
 } from "./stage2-handover-workflow.types";
 
 const DEFAULT_CONCURRENCY = 1;
@@ -68,19 +69,9 @@ export class Stage2HandoverWorkflowWorker implements OnModuleInit, OnModuleDestr
   }
 
   private async handleClaimedJob(job: ClaimedStage2WorkflowJob) {
+    let result: WorkflowHandlerResult;
     try {
-      const result = await this.handler!.handle(job);
-
-      if (result.kind === "OBSERVED_SIGNING") {
-        await this.repository.reschedule(job.id, job.leaseToken, {
-          availableAt: result.availableAt,
-          incrementAttempt: false,
-          result: result.result
-        });
-        return;
-      }
-
-      await this.repository.complete(job.id, job.leaseToken, result.result);
+      result = await this.handler!.handle(job);
     } catch (error) {
       const sanitized = sanitizeWorkflowError(error);
       const failedAttempt = job.attemptCount + 1;
@@ -100,7 +91,19 @@ export class Stage2HandoverWorkflowWorker implements OnModuleInit, OnModuleDestr
         jobId: job.id,
         jobType: job.jobType
       });
+      return;
     }
+
+    if (result.kind === "OBSERVED_SIGNING") {
+      await this.repository.reschedule(job.id, job.leaseToken, {
+        availableAt: result.availableAt,
+        incrementAttempt: false,
+        result: result.result
+      });
+      return;
+    }
+
+    await this.repository.complete(job.id, job.leaseToken, result.result);
   }
 
   private schedulePoll(delayMs: number) {
@@ -157,35 +160,11 @@ export class Stage2HandoverWorkflowWorker implements OnModuleInit, OnModuleDestr
 }
 
 export function sanitizeWorkflowError(error: unknown): Stage2WorkflowError {
-  const errorCode =
-    typeof error === "object" && error !== null && "code" in error
-      ? String(error.code)
-      : error instanceof Error
-        ? error.name
-        : "WORKFLOW_HANDLER_ERROR";
-  const normalizedCode =
-    errorCode
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9_]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 128) || "WORKFLOW_HANDLER_ERROR";
-  const rawMessage =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "Workflow handler failed.";
-  const message =
-    rawMessage
-      .replace(/https?:\/\/\S+/gi, "[REDACTED_URL]")
-      .replace(/\b1\d{10}\b/g, "[REDACTED_MOBILE]")
-      .replace(/\b[A-Za-z0-9+/=_-]{32,}\b/g, "[REDACTED_TOKEN]")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 512) || "Workflow handler failed.";
-
-  return { code: normalizedCode, message };
+  void error;
+  return {
+    code: "WORKFLOW_ERROR",
+    message: "Workflow operation failed."
+  };
 }
 
 function retryDelayMs(attemptCount: number) {
@@ -209,7 +188,13 @@ async function runWithConcurrency<T>(
     }
   );
 
-  await Promise.all(workers);
+  const results = await Promise.allSettled(workers);
+  const failure = results.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected"
+  );
+  if (failure) {
+    throw failure.reason;
+  }
 }
 
 function readPositiveInteger(config: ConfigService, key: string, fallback: number) {

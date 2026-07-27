@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   VehicleHandoverWorkflowJobStatus,
@@ -56,8 +57,8 @@ describe("Stage2HandoverWorkflowWorker", () => {
         expect.objectContaining({
           availableAt: new Date(now.getTime() + expectedDelay),
           error: {
-            code: "ERROR",
-            message: "Provider request failed."
+            code: "WORKFLOW_ERROR",
+            message: "Workflow operation failed."
           }
         })
       );
@@ -79,8 +80,8 @@ describe("Stage2HandoverWorkflowWorker", () => {
       job.id,
       job.leaseToken,
       {
-        code: "PROVIDER_TIMEOUT",
-        message: "Provider request failed."
+        code: "WORKFLOW_ERROR",
+        message: "Workflow operation failed."
       }
     );
     expect(harness.repository.reschedule).not.toHaveBeenCalled();
@@ -110,6 +111,97 @@ describe("Stage2HandoverWorkflowWorker", () => {
       }
     );
     expect(harness.repository.complete).not.toHaveBeenCalled();
+  });
+
+  it("persists and logs only generic errors without sensitive source values", async () => {
+    const rawCode = "provider_password=short-code-secret otp=482913";
+    const sensitiveValues = [
+      rawCode,
+      "482913",
+      "+86 138-0013-8000",
+      "138 0013 8000",
+      "http://evidence.example/private?id=482913",
+      "https://evidence.example/private",
+      "oss://handover/private/object.jpg",
+      "s3://handover/private/object.jpg",
+      "file:///C:/handover/private/object.jpg",
+      "C:\\handover\\private\\object.jpg",
+      "/api/v1/evidence/private/object.jpg",
+      "/object-storage/private/object.jpg",
+      "tok7",
+      "dig8",
+      "sec9",
+      "pwd0",
+      "key1"
+    ];
+    const error = Object.assign(
+      new Error(
+        [
+          "OTP 482913",
+          "mobiles +86 138-0013-8000 and 138 0013 8000",
+          "http://evidence.example/private?id=482913",
+          "https://evidence.example/private",
+          "oss://handover/private/object.jpg",
+          "s3://handover/private/object.jpg",
+          "file:///C:/handover/private/object.jpg",
+          "C:\\handover\\private\\object.jpg",
+          "/api/v1/evidence/private/object.jpg",
+          "/object-storage/private/object.jpg",
+          "token=tok7 digest=dig8 secret=sec9 password=pwd0 key=key1"
+        ].join(" ")
+      ),
+      { code: rawCode }
+    );
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const harness = createWorkerHarness({ error, jobs: [claimedJob()] });
+
+    await harness.worker.runOnce();
+
+    expect(harness.repository.reschedule).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        error: {
+          code: "WORKFLOW_ERROR",
+          message: "Workflow operation failed."
+        }
+      })
+    );
+    const persistedAndLogged = JSON.stringify({
+      logs: warn.mock.calls,
+      reschedule: harness.repository.reschedule.mock.calls
+    });
+    for (const sensitiveValue of sensitiveValues) {
+      expect(persistedAndLogged).not.toContain(sensitiveValue);
+    }
+  });
+
+  it("does not consume an attempt when persisting observed SIGNING fails", async () => {
+    const transitionError = new Error("Signing observation persistence failed.");
+    const availableAt = new Date("2026-07-27T08:05:00.000Z");
+    const harness = createWorkerHarness({
+      jobs: [claimedJob({ attemptCount: 2 })],
+      result: {
+        availableAt,
+        kind: "OBSERVED_SIGNING",
+        result: { providerStatus: "SIGNING" }
+      }
+    });
+    harness.repository.reschedule.mockRejectedValueOnce(transitionError);
+
+    await expect(harness.worker.runOnce()).rejects.toBe(transitionError);
+
+    expect(harness.repository.reschedule).toHaveBeenCalledTimes(1);
+    expect(harness.repository.reschedule).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      {
+        availableAt,
+        incrementAttempt: false,
+        result: { providerStatus: "SIGNING" }
+      }
+    );
+    expect(harness.repository.deadLetter).not.toHaveBeenCalled();
   });
 
   it("does not poll when STAGE2_HANDOVER_WORKER_ENABLED is false", async () => {
@@ -152,6 +244,81 @@ describe("Stage2HandoverWorkflowWorker", () => {
 
     expect(maxActiveHandlers).toBe(2);
     expect(harness.repository.complete).toHaveBeenCalledTimes(5);
+  });
+
+  it("waits for every started lane before poll completion and module shutdown", async () => {
+    const firstJob = claimedJob({
+      id: "00000000-0000-4000-8000-000000000011"
+    });
+    const secondJob = claimedJob({
+      id: "00000000-0000-4000-8000-000000000012"
+    });
+    const repositoryError = new Error("repository password=repo-secret");
+    let releaseSecond!: () => void;
+    let markSecondStarted!: () => void;
+    let markSecondCompleted!: () => void;
+    const secondStarted = new Promise<void>((resolve) => {
+      markSecondStarted = resolve;
+    });
+    const secondCompleted = new Promise<void>((resolve) => {
+      markSecondCompleted = resolve;
+    });
+    const handler: Stage2HandoverWorkflowHandler = {
+      handle(job) {
+        if (job.id === firstJob.id) {
+          return Promise.resolve({ kind: "COMPLETED" });
+        }
+        markSecondStarted();
+        return new Promise((resolve) => {
+          releaseSecond = () => resolve({ kind: "COMPLETED" });
+        });
+      }
+    };
+    const errorLog = vi.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    const harness = createWorkerHarness({
+      config: {
+        STAGE2_HANDOVER_WORKER_CONCURRENCY: "2",
+        STAGE2_HANDOVER_WORKER_ENABLED: "true"
+      },
+      handler,
+      jobs: [firstJob, secondJob]
+    });
+    harness.repository.complete.mockImplementation((jobId: string) => {
+      if (jobId === firstJob.id) {
+        return Promise.reject(repositoryError);
+      }
+      markSecondCompleted();
+      return Promise.resolve(true);
+    });
+    harness.repository.reschedule.mockRejectedValue(repositoryError);
+
+    harness.worker.onModuleInit();
+    await secondStarted;
+    const shutdown = harness.worker.onModuleDestroy();
+    let shutdownSettled = false;
+    void shutdown.then(
+      () => {
+        shutdownSettled = true;
+      },
+      () => {
+        shutdownSettled = true;
+      }
+    );
+
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(shutdownSettled).toBe(false);
+    } finally {
+      releaseSecond();
+      await secondCompleted;
+      await shutdown;
+    }
+
+    expect(errorLog).toHaveBeenCalledWith({
+      errorCode: "WORKFLOW_ERROR",
+      operation: "STAGE2_WORKFLOW_POLL"
+    });
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain("repo-secret");
   });
 });
 

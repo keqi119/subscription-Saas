@@ -39,10 +39,10 @@ export interface NotifyCustomerInput {
   url?: string;
 }
 
-const TEMPLATE_CODE_BY_EVENT: Record<NotificationEventType, {
+const TEMPLATE_CODE_BY_EVENT: Partial<Record<NotificationEventType, {
   inApp: string;
   wechat: string;
-}> = {
+}>> = {
   [NotificationEventType.APPLICATION_SUBMITTED]: {
     inApp: "APPLICATION_SUBMITTED_IN_APP",
     wechat: "APPLICATION_SUBMITTED_WECHAT"
@@ -85,7 +85,7 @@ const TEMPLATE_CODE_BY_EVENT: Record<NotificationEventType, {
   }
 };
 
-const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Record<NotificationType, NotificationTemplateType> = {
+const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Partial<Record<NotificationType, NotificationTemplateType>> = {
   [NotificationType.APPLICATION_PROGRESS]: NotificationTemplateType.APPLICATION_PROGRESS,
   [NotificationType.MATERIAL_REQUIRED]: NotificationTemplateType.MATERIAL_REQUIRED,
   [NotificationType.FINAL_PLAN_PENDING]: NotificationTemplateType.FINAL_PLAN_PENDING,
@@ -339,6 +339,9 @@ export class NotificationService {
       }
     });
     const templateCodes = TEMPLATE_CODE_BY_EVENT[input.eventType];
+    if (!templateCodes) {
+      throw new Error(`Notification event type ${input.eventType} is not configured.`);
+    }
     const [inAppTemplate, wechatTemplate] = await Promise.all([
       this.findTemplate(templateCodes.inApp),
       this.findTemplate(templateCodes.wechat)
@@ -611,7 +614,7 @@ export class NotificationService {
 
   private envTemplateId(notificationType: NotificationType) {
     const templateType = TEMPLATE_TYPE_BY_NOTIFICATION_TYPE[notificationType];
-    const envKey = WECHAT_TEMPLATE_ENV_BY_TYPE[templateType];
+    const envKey = templateType ? WECHAT_TEMPLATE_ENV_BY_TYPE[templateType] : undefined;
     const value = envKey ? this.configService.get<string>(envKey)?.trim() : undefined;
     if (!value || value === "<CHANGE_ME>") {
       return null;

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const root = join(import.meta.dirname, "..");
+const root = join(__dirname, "..");
 const schema = readFileSync(join(root, "prisma/schema.prisma"), "utf8");
 const migration = readFileSync(
   join(root, "prisma/migrations/20260727120000_stage2_field_orchestrated_workflow/migration.sql"),

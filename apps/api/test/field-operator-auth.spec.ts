@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 import { ExecutionContext, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -221,7 +223,11 @@ describe("FieldOperatorAuthGuard", () => {
 describe("FieldOperatorAuthController", () => {
   it("sets and clears only the field session cookie", async () => {
     const { service } = createFieldAuthFixture();
-    const controller = new FieldOperatorAuthController(service, {} as never);
+    const controller = new FieldOperatorAuthController(
+      service,
+      {} as never,
+      {} as never
+    );
     const response = {
       clearCookie: vi.fn(),
       cookie: vi.fn()
@@ -244,16 +250,44 @@ describe("FieldOperatorAuthController", () => {
 
   it("delegates field work-order actions with the current field session phone", async () => {
     const { service } = createFieldAuthFixture();
+    const pdfFile = {
+      filename: "handover.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 9,
+      stream: Readable.from([Buffer.from("pdf-bytes")])
+    };
+    const fieldReview = {
+      acknowledgement: true as const,
+      artifactVersion: 1,
+      reviewedAt: new Date("2026-07-27T08:00:00.000Z"),
+      sourcePdfHash: "b".repeat(64)
+    };
     const handoverService = {
+      assertFieldStage2ESignReview: vi.fn(async () => fieldReview),
       declareFieldAccessibleNoVisibleDamage: vi.fn(async () => ({ id: "work-order-1" })),
+      downloadFieldAccessibleStage2HandoverPdf: vi.fn(async () => pdfFile),
       getFieldAccessibleReadiness: vi.fn(async () => ({ blockingReasons: [], ready: true })),
+      previewFieldAccessibleStage2HandoverPdf: vi.fn(async () => pdfFile),
       startFieldAccessibleWorkOrder: vi.fn(async () => ({ id: "work-order-1" })),
       submitFieldAccessibleEvidence: vi.fn(async () => ({ id: "work-order-1" })),
       updateFieldAccessibleFacts: vi.fn(async () => ({ id: "work-order-1" })),
       uploadAndAttachFieldAccessibleEvidenceFile: vi.fn(async () => ({ id: "evidence-item-1" }))
     };
-    const controller = new FieldOperatorAuthController(service, handoverService as never);
+    const stage2ESignService = {
+      create: vi.fn(async () => ({ taskId: "stage2-task-1" }))
+    };
+    const controller = new FieldOperatorAuthController(
+      service,
+      handoverService as never,
+      stage2ESignService as never
+    );
     const current = { sessionId: "field-session-1", phone: "13800000000" };
+    const response = { setHeader: vi.fn() };
+    const reviewDto = {
+      acknowledgement: true as const,
+      artifactVersion: 1,
+      sourcePdfHash: "b".repeat(64)
+    };
 
     await controller.startWorkOrder("work-order-1", current as never);
     await controller.updateWorkOrderFacts("work-order-1", { handoverMileageKm: 28600 }, current as never);
@@ -267,6 +301,21 @@ describe("FieldOperatorAuthController", () => {
     await controller.declareNoVisibleDamage("work-order-1", { remark: "现场确认" }, current as never);
     await controller.getWorkOrderReadiness("work-order-1", current as never);
     await controller.submitEvidence("work-order-1", current as never);
+    await controller.previewStage2HandoverPdf(
+      "work-order-1",
+      current as never,
+      response as never
+    );
+    await controller.downloadStage2HandoverPdf(
+      "work-order-1",
+      current as never,
+      response as never
+    );
+    await controller.createStage2ESign(
+      "work-order-1",
+      reviewDto,
+      current as never
+    );
 
     expect(handoverService.startFieldAccessibleWorkOrder).toHaveBeenCalledWith(
       "work-order-1",
@@ -298,6 +347,26 @@ describe("FieldOperatorAuthController", () => {
       "work-order-1",
       "13800000000",
       "field-session-1"
+    );
+    expect(
+      handoverService.previewFieldAccessibleStage2HandoverPdf
+    ).toHaveBeenCalledWith("work-order-1", "13800000000");
+    expect(
+      handoverService.downloadFieldAccessibleStage2HandoverPdf
+    ).toHaveBeenCalledWith("work-order-1", "13800000000");
+    expect(handoverService.assertFieldStage2ESignReview).toHaveBeenCalledWith(
+      "work-order-1",
+      "13800000000",
+      reviewDto
+    );
+    expect(stage2ESignService.create).toHaveBeenCalledWith(
+      "work-order-1",
+      {
+        actorType: "FIELD_OPERATOR",
+        fieldOperatorPhone: "13800000000",
+        fieldOperatorSessionId: "field-session-1"
+      },
+      fieldReview
     );
   });
 });

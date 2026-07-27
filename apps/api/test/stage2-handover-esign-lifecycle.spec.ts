@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { RequestMethod } from "@nestjs/common";
+import { BadRequestException, RequestMethod } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import {
@@ -68,7 +68,7 @@ describe("Stage2HandoverESignService", () => {
     );
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toThrow("STAGE2_HANDOVER_ESIGN_NOT_READY");
 
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
@@ -86,7 +86,7 @@ describe("Stage2HandoverESignService", () => {
     harness.state.workOrder.handover.handoverContract.fileId = null;
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toThrow("HANDOVER_SOURCE_NOT_GENERATED");
 
     expect(harness.generatePdf).not.toHaveBeenCalled();
@@ -97,7 +97,10 @@ describe("Stage2HandoverESignService", () => {
   it("creates one typed Stage 2 task and exactly two one-slot signer rows", async () => {
     const harness = createHarness();
 
-    const result = await harness.service.create("work-order-1", "admin-1");
+    const result = await harness.service.create(
+      "work-order-1",
+      adminInitiator()
+    );
 
     expect(harness.prisma.contractESignTask.create).toHaveBeenCalledTimes(1);
     const createData =
@@ -142,6 +145,92 @@ describe("Stage2HandoverESignService", () => {
     });
   });
 
+  it("records the Field session, canonical identity, artifact version, hash, and timestamp", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+
+    await harness.service.create(
+      "work-order-1",
+      fieldInitiator(),
+      fieldReview()
+    );
+
+    const createData =
+      (harness.prisma.contractESignTask.create.mock.calls[0]?.[0] as any).data;
+    expect(createData.createdBy).toBeNull();
+    expect(createData.updatedBy).toBeNull();
+    expect(createData.requestSnapshot).toMatchObject({
+      initiator: {
+        actorType: "FIELD_OPERATOR",
+        fieldOperatorPhone: "13800000000",
+        fieldOperatorSessionId: "field-session-1"
+      },
+      reviewAcknowledgement: {
+        acknowledgement: true,
+        artifactVersion: 3,
+        reviewedAt: NOW.toISOString(),
+        sourcePdfHash: "b".repeat(64)
+      }
+    });
+    expect(harness.workflow.enqueueCustomerESignJobs).toHaveBeenCalledWith(
+      harness.prisma,
+      {
+        customerTransactionId: "ESG20260726080000ABCDH1",
+        eSignTaskId: "stage2-task-1",
+        handoverId: "handover-1",
+        initiatedAt: NOW,
+        workOrderId: "work-order-1"
+      }
+    );
+    expect(
+      (harness.prisma.vehicleDeliveryHandover.updateMany.mock.calls as any[])
+        .flatMap(([input]) => [input.data.updatedBy])
+        .filter((value) => value !== undefined)
+    ).toEqual([null, null]);
+  });
+
+  it("does not enqueue customer work when provider-backed initiation fails", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.provider.createSignTask.mockRejectedValueOnce(
+      new Error("provider unavailable")
+    );
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        fieldInitiator(),
+        fieldReview()
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ESIGN_PROVIDER_FAILED"
+      })
+    });
+    expect(harness.workflow.enqueueCustomerESignJobs).not.toHaveBeenCalled();
+  });
+
+  it("keeps Admin create compatibility behind the disabled workflow flag", async () => {
+    const compatibility = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "false"
+    });
+    await expect(
+      compatibility.service.create("work-order-1", adminInitiator())
+    ).resolves.toMatchObject({ taskId: "stage2-task-1" });
+
+    const workflow = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    await expect(
+      workflow.service.create("work-order-1", adminInitiator())
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(workflow.provider.createSignTask).not.toHaveBeenCalled();
+  });
+
   it("generates a new task number when a P2002 create collision is retried", async () => {
     const harness = createHarness();
     businessNumberMocks.createBusinessNo
@@ -151,7 +240,7 @@ describe("Stage2HandoverESignService", () => {
       Object.assign(new Error("task number collision"), { code: "P2002" })
     );
 
-    await harness.service.create("work-order-1", "admin-1");
+    await harness.service.create("work-order-1", adminInitiator());
 
     expect(
       harness.prisma.contractESignTask.create.mock.calls.map(
@@ -167,7 +256,7 @@ describe("Stage2HandoverESignService", () => {
   it("passes exactly the persisted customer slot and coordinate to provider create", async () => {
     const harness = createHarness();
 
-    await harness.service.create("work-order-1", "admin-1");
+    await harness.service.create("work-order-1", adminInitiator());
 
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
     const providerInput =
@@ -228,7 +317,7 @@ describe("Stage2HandoverESignService", () => {
       };
     });
 
-    await harness.service.create("work-order-1", "admin-1");
+    await harness.service.create("work-order-1", adminInitiator());
 
     expect(observed).toMatchObject({
       attemptCount: 1,
@@ -267,7 +356,10 @@ describe("Stage2HandoverESignService", () => {
       };
     });
 
-    const result = await harness.service.create("work-order-1", "admin-1");
+    const result = await harness.service.create(
+      "work-order-1",
+      adminInitiator()
+    );
 
     expect(result.customerSigner.status).toBe(ESignSignerStatus.SIGNED);
     expect(result.status).toBe(ESignTaskStatus.SIGNING);
@@ -283,7 +375,7 @@ describe("Stage2HandoverESignService", () => {
     );
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ESIGN_PROVIDER_FAILED"
@@ -334,7 +426,7 @@ describe("Stage2HandoverESignService", () => {
   it("rejects void after the customer provider action is accepted", async () => {
     const harness = createHarness();
 
-    await harness.service.create("work-order-1", "admin-1");
+    await harness.service.create("work-order-1", adminInitiator());
     const task = harness.state.workOrder.handover.handoverESignTask!;
 
     expect(task.signers[0]).toMatchObject({
@@ -373,7 +465,7 @@ describe("Stage2HandoverESignService", () => {
     }));
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ESIGN_PROVIDER_FAILED"
@@ -388,7 +480,7 @@ describe("Stage2HandoverESignService", () => {
   it("persists the customer provider transaction only on the typed Stage 2 signer", async () => {
     const harness = createHarness();
 
-    await harness.service.create("work-order-1", "admin-1");
+    await harness.service.create("work-order-1", adminInitiator());
 
     expect(harness.prisma.contractESignSigner.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -435,7 +527,7 @@ describe("Stage2HandoverESignService", () => {
     });
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ESIGN_RESULT_STALE"
@@ -461,7 +553,7 @@ describe("Stage2HandoverESignService", () => {
     });
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ESIGN_RESULT_STALE"
@@ -475,8 +567,10 @@ describe("Stage2HandoverESignService", () => {
     );
   });
 
-  it("returns the existing active task without readiness, persistence, or provider calls", async () => {
-    const harness = createHarness();
+  it("returns the same active task for repeated initiation", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
     const task = makeTask({
       taskStatus: ESignTaskStatus.WAITING_CUSTOMER
     });
@@ -484,7 +578,11 @@ describe("Stage2HandoverESignService", () => {
     harness.state.workOrder.handover.handoverESignTask = task;
     harness.state.workOrder.handover.handoverESignTaskId = task.id;
 
-    const result = await harness.service.create("work-order-1", "admin-1");
+    const result = await harness.service.create(
+      "work-order-1",
+      fieldInitiator(),
+      fieldReview()
+    );
 
     expect(result.taskId).toBe("stage2-task-1");
     expect(harness.readiness.assertReady).not.toHaveBeenCalled();
@@ -499,7 +597,7 @@ describe("Stage2HandoverESignService", () => {
     });
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT"
@@ -522,7 +620,7 @@ describe("Stage2HandoverESignService", () => {
     harness.state.workOrder.handover.handoverESignTaskId = task.id;
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ESIGN_SIGNERS_INVALID"
@@ -540,7 +638,7 @@ describe("Stage2HandoverESignService", () => {
     harness.state.workOrder.handover.handoverESignTaskId = "stage2-task-1";
 
     await expect(
-      harness.service.create("work-order-1", "admin-1")
+      harness.service.create("work-order-1", adminInitiator())
     ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED
@@ -1849,8 +1947,16 @@ function createHarness(env: Record<string, string> = {}) {
     verifyCallback: vi.fn()
   };
 
+  let transactionDepth = 0;
   const prisma: any = {
-    $transaction: vi.fn(async (operation: (tx: any) => Promise<unknown>) => operation(prisma)),
+    $transaction: vi.fn(async (operation: (tx: any) => Promise<unknown>) => {
+      transactionDepth += 1;
+      try {
+        return await operation(prisma);
+      } finally {
+        transactionDepth -= 1;
+      }
+    }),
     contract: {
       updateMany: vi.fn(async ({ data, where }: any) => {
         const contract = state.workOrder.handover.handoverContract;
@@ -1995,12 +2101,21 @@ function createHarness(env: Record<string, string> = {}) {
   const notification = {
     notifyCustomer: vi.fn()
   };
+  const workflow = {
+    enqueueCustomerESignJobs: vi.fn(async (tx: unknown) => {
+      if (tx !== prisma || transactionDepth === 0) {
+        throw new Error("customer eSign jobs were not enqueued transactionally");
+      }
+    })
+  };
   const generatePdf = vi.fn();
   const service = new Stage2HandoverESignService(
     prisma,
     readiness as never,
     provider as never,
-    config
+    config,
+    undefined,
+    workflow as never
   );
 
   return {
@@ -2010,7 +2125,8 @@ function createHarness(env: Record<string, string> = {}) {
     provider,
     readiness,
     service,
-    state
+    state,
+    workflow
   };
 }
 
@@ -2056,6 +2172,7 @@ function makeWorkOrder() {
       status: DeliveryHandoverStatus.SOURCE_GENERATED as DeliveryHandoverStatus,
       updatedAt: NOW
     },
+    fieldOperatorPhone: "13800000000",
     handoverId: "handover-1",
     id: "work-order-1",
     order: {
@@ -2072,6 +2189,29 @@ function makeWorkOrder() {
     orderId: "order-1",
     status:
       VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED as VehicleHandoverWorkOrderStatus
+  };
+}
+
+function adminInitiator() {
+  return {
+    actorId: "admin-1",
+    actorType: "ADMIN" as const
+  };
+}
+
+function fieldInitiator() {
+  return {
+    actorType: "FIELD_OPERATOR" as const,
+    fieldOperatorPhone: "13800000000",
+    fieldOperatorSessionId: "field-session-1"
+  };
+}
+
+function fieldReview() {
+  return {
+    acknowledgement: true as const,
+    artifactVersion: 3,
+    sourcePdfHash: "b".repeat(64)
   };
 }
 

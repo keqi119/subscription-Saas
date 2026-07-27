@@ -68,6 +68,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import {
   hasStage2SourceArtifactState,
+  normalizeStage2Sha256,
   validateStage2SourceArtifactBinding
 } from "./stage2-handover-source-artifact";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
@@ -211,14 +212,27 @@ export interface EvidenceFileStreamResult {
 
 export interface Stage2HandoverPdfArtifactView {
   artifactId: null | string;
+  artifactVersion: null | number;
   documentNo: null | string;
   downloadUrl: null | string;
   fileName: null | string;
   fileSize: null | number;
   generatedAt: Date | null;
   orderNo: null | string;
+  previewUrl: null | string;
+  sourcePdfHash: null | string;
   status: "GENERATED" | "NOT_GENERATED";
   workOrderId: string;
+}
+
+export interface FieldStage2ESignReviewInput {
+  acknowledgement: true;
+  artifactVersion: number;
+  sourcePdfHash: string;
+}
+
+export interface FieldStage2ESignReview extends FieldStage2ESignReviewInput {
+  reviewedAt: Date;
 }
 
 export interface Stage2HandoverPdfLease {
@@ -923,6 +937,56 @@ export class HandoverWorkOrderService {
   ): Promise<EvidenceFileStreamResult> {
     await this.getFieldAccessibleWorkOrderRecord(id, phone);
     return this.getEvidenceFileStream(id, evidenceFileId, { preview: false });
+  }
+
+  async previewFieldAccessibleStage2HandoverPdf(
+    id: string,
+    phone: string
+  ): Promise<EvidenceFileStreamResult> {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    return this.getValidatedStage2HandoverPdfStream(workOrder);
+  }
+
+  async downloadFieldAccessibleStage2HandoverPdf(
+    id: string,
+    phone: string
+  ): Promise<EvidenceFileStreamResult> {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    return this.getValidatedStage2HandoverPdfStream(workOrder);
+  }
+
+  async assertFieldStage2ESignReview(
+    id: string,
+    phone: string,
+    input: FieldStage2ESignReviewInput
+  ): Promise<FieldStage2ESignReview> {
+    if (input.acknowledgement !== true) {
+      throw new BadRequestException(
+        "The Stage 2 source PDF review acknowledgement is required."
+      );
+    }
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    if (workOrder.status !== "CUSTOMER_CONFIRMED") {
+      throw new BadRequestException(
+        "The handover is not ready for Field eSign initiation."
+      );
+    }
+    const binding = await this.resolveFieldStage2SourceArtifact(workOrder);
+    const requestedHash = normalizeStage2Sha256(input.sourcePdfHash);
+    if (
+      input.artifactVersion !== binding.artifactVersion ||
+      requestedHash !== binding.sourcePdfHash
+    ) {
+      throw new ConflictException(
+        "The reviewed Stage 2 source PDF is stale."
+      );
+    }
+    return {
+      acknowledgement: true,
+      artifactVersion: binding.artifactVersion,
+      reviewedAt: new Date(),
+      sourcePdfHash: binding.sourcePdfHash
+    };
   }
 
   async submitFieldAccessibleEvidence(id: string, phone: string, actorId?: string) {
@@ -1990,6 +2054,69 @@ export class HandoverWorkOrderService {
     };
   }
 
+  private async getValidatedStage2HandoverPdfStream(
+    workOrder: WorkOrderRecord
+  ): Promise<EvidenceFileStreamResult> {
+    const binding = await this.resolveFieldStage2SourceArtifact(workOrder);
+    const bucket = readRequiredString(binding.fileObject, "bucket");
+    const downloaded = await this.getStorageService().getObject(
+      bucket,
+      binding.sourceObjectKey
+    );
+    return {
+      filename:
+        readString(binding.fileObject, "originalName") ?? "handover.pdf",
+      mimeType:
+        downloaded.contentType ??
+        readString(binding.fileObject, "mimeType") ??
+        "application/pdf",
+      sizeBytes: toNumberOrNull(
+        binding.fileObject.sizeBytes ?? downloaded.contentLength ?? null
+      ),
+      stream: downloaded.stream
+    };
+  }
+
+  private async resolveFieldStage2SourceArtifact(
+    workOrder: WorkOrderRecord
+  ) {
+    const handover = await this.findStage2HandoverForWorkOrderOrThrow(
+      workOrder
+    );
+    const currentPackage = await this.buildCurrentEvidencePackage(workOrder);
+    const fileId = readString(handover, "sourceDocumentFileId");
+    const fileObject = fileId
+      ? await this.prisma.fileObject.findUnique({ where: { id: fileId } })
+      : null;
+    const order = await this.getOrderOrThrow(workOrder.orderId);
+    const binding = validateStage2SourceArtifactBinding({
+      allowedContractStatuses: [
+        ContractStatus.GENERATED,
+        ContractStatus.SIGNING
+      ],
+      allowedHandoverStatuses: [
+        DeliveryHandoverStatus.SOURCE_GENERATED,
+        DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+        DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+      ],
+      expectedCustomerId:
+        readString(order as unknown as Record<string, unknown>, "customerId"),
+      expectedHandoverId: workOrder.handoverId ?? "",
+      expectedManifestHash: currentPackage.manifestHash,
+      expectedOrderId: workOrder.orderId,
+      expectedWorkOrderId: workOrder.id,
+      fileObject,
+      handover,
+      maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
+    });
+    if (!binding) {
+      throw new ConflictException(
+        "The current Stage 2 source PDF binding is invalid."
+      );
+    }
+    return binding;
+  }
+
   async assertReadyForStage2Pdf(orderId: string, handoverId?: string | null) {
     await this.assertWorkOrderReadyForStage2(await this.findActiveWorkOrderOrThrow(orderId, handoverId));
   }
@@ -2611,12 +2738,15 @@ export class HandoverWorkOrderService {
     if (!handover || !sourceDocumentFileId) {
       return {
         artifactId: null,
+        artifactVersion: null,
         documentNo: null,
         downloadUrl: null,
         fileName: null,
         fileSize: null,
         generatedAt: null,
         orderNo: order.orderNo,
+        previewUrl: null,
+        sourcePdfHash: null,
         status: "NOT_GENERATED",
         workOrderId: workOrder.id
       };
@@ -2629,6 +2759,7 @@ export class HandoverWorkOrderService {
 
     return {
       artifactId: sourceDocumentFileId,
+      artifactVersion: readPositiveInteger(handover, "artifactVersion"),
       documentNo: handoverContract ? readString(handoverContract, "contractNo") : null,
       downloadUrl: `/api/handover-work-orders/${encodeURIComponent(workOrder.id)}/pdf/download`,
       fileName: fileRecord ? readString(fileRecord, "originalName") ?? "handover.pdf" : "handover.pdf",
@@ -2638,6 +2769,10 @@ export class HandoverWorkOrderService {
         toDateOrNull(handoverContract ? readUnknown(handoverContract, "createdAt") : null) ??
         null,
       orderNo: order.orderNo,
+      previewUrl: null,
+      sourcePdfHash: normalizeStage2Sha256(
+        readString(handover, "sourcePdfHash")
+      ),
       status: "GENERATED",
       workOrderId: workOrder.id
     };
@@ -3440,14 +3575,18 @@ export class HandoverWorkOrderService {
   private async toFieldTaskDetail(workOrder: WorkOrderRecord) {
     const evidenceRouteBase =
       `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/evidence-files`;
-    const [listItem, evidenceChecklist, latestAttempt] = await Promise.all([
-      this.toFieldTaskListItem(workOrder),
-      this.deliveryEvidenceService.getChecklist({
-        handoverId: workOrder.handoverId ?? null,
-        orderId: workOrder.orderId
-      }),
-      this.findLatestReviewAttempt(workOrder.id)
-    ]);
+    const [listItem, evidenceChecklist, latestAttempt, stage2Pdf] =
+      await Promise.all([
+        this.toFieldTaskListItem(workOrder),
+        this.deliveryEvidenceService.getChecklist({
+          handoverId: workOrder.handoverId ?? null,
+          orderId: workOrder.orderId
+        }),
+        this.findLatestReviewAttempt(workOrder.id),
+        this.getStage2HandoverPdf(workOrder.id)
+      ]);
+    const fieldPdfRouteBase =
+      `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/pdf`;
 
     return {
       ...listItem,
@@ -3466,7 +3605,22 @@ export class HandoverWorkOrderService {
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
         scheduledAt: workOrder.scheduledAt
       },
-      reviewContext: toFieldReviewContext(workOrder, latestAttempt, evidenceChecklist)
+      reviewContext: toFieldReviewContext(
+        workOrder,
+        latestAttempt,
+        evidenceChecklist
+      ),
+      stage2Pdf: {
+        ...stage2Pdf,
+        downloadUrl:
+          stage2Pdf.status === "GENERATED"
+            ? `${fieldPdfRouteBase}/download`
+            : null,
+        previewUrl:
+          stage2Pdf.status === "GENERATED"
+            ? `${fieldPdfRouteBase}/preview`
+            : null
+      }
     };
   }
 

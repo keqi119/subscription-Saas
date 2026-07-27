@@ -1,6 +1,7 @@
 import { DeliveryEvidenceMediaType } from "@prisma/client";
 import {
   ArrayMaxSize,
+  Equals,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -11,6 +12,7 @@ import {
   IsString,
   IsUUID,
   MaxLength,
+  Matches,
   Min
 } from "class-validator";
 
@@ -122,6 +124,19 @@ export class VoidStage2HandoverESignDto {
   @IsString()
   @MaxLength(500)
   reason!: string;
+}
+
+export class StartFieldStage2ESignDto {
+  @Equals(true)
+  acknowledgement!: true;
+
+  @IsInt()
+  @Min(1)
+  artifactVersion!: number;
+
+  @IsString()
+  @Matches(/^[a-f0-9]{64}$/)
+  sourcePdfHash!: string;
 }
 
 export class OpsReviewDto {

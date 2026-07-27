@@ -4,7 +4,9 @@ import {
   ConflictException,
   Inject,
   Injectable,
-  NotFoundException
+  NotFoundException,
+  Optional,
+  UnauthorizedException
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -31,6 +33,7 @@ import {
   ESignSigningSlotCoordinate
 } from "../esign/esign.provider";
 import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
+import { normalizeFieldOperatorPhone } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   Stage2HandoverESignBlocker,
@@ -38,6 +41,7 @@ import {
   Stage2HandoverESignReadinessService,
   STAGE2_HANDOVER_ESIGN_NOT_READY
 } from "./stage2-handover-esign-readiness.service";
+import { Stage2HandoverWorkflowService } from "./stage2-handover-workflow.service";
 
 export const STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED =
   "STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED";
@@ -55,6 +59,8 @@ export const STAGE2_PLATFORM_SEAL_CLAIM_LOST =
 const CUSTOMER_SLOT_ID = ESignSlotId.STAGE2_HANDOVER_CUSTOMER;
 const PLATFORM_SLOT_ID = ESignSlotId.STAGE2_HANDOVER_PLATFORM;
 const PLATFORM_CLAIM_MS = 5 * 60 * 1000;
+const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV =
+  "STAGE2_HANDOVER_WORKFLOW_ENABLED";
 const ACTIVE_TASK_STATUSES = [
   ESignTaskStatus.CREATED,
   ESignTaskStatus.WAITING_CUSTOMER,
@@ -251,6 +257,20 @@ export interface Stage2PortalSigningStartResult {
   signUrl: string;
 }
 
+export interface Stage2ESignInitiator {
+  actorId?: string;
+  actorType: "ADMIN" | "FIELD_OPERATOR";
+  fieldOperatorSessionId?: string;
+  fieldOperatorPhone?: string;
+}
+
+export interface Stage2ESignReviewAcknowledgement {
+  acknowledgement: true;
+  artifactVersion: number;
+  reviewedAt?: Date;
+  sourcePdfHash: string;
+}
+
 @Injectable()
 export class Stage2HandoverESignService {
   constructor(
@@ -259,7 +279,10 @@ export class Stage2HandoverESignService {
     @Inject(ESIGN_PROVIDER_CLIENT)
     private readonly provider: ESignProvider,
     private readonly configService: ConfigService,
-    private readonly signedArtifactService?: FadadaSignedArtifactService
+    @Optional()
+    private readonly signedArtifactService?: FadadaSignedArtifactService,
+    @Optional()
+    private readonly workflowService?: Stage2HandoverWorkflowService
   ) {}
 
   async getStatus(workOrderId: string): Promise<Stage2HandoverESignView> {
@@ -367,9 +390,15 @@ export class Stage2HandoverESignService {
 
   async create(
     workOrderId: string,
-    actorId: string
+    initiator: Stage2ESignInitiator,
+    review?: Stage2ESignReviewAcknowledgement
   ): Promise<Stage2HandoverESignView> {
     const initialWorkOrder = await this.loadWorkOrder(workOrderId);
+    const initiation = this.assertCreateInitiator(
+      initialWorkOrder,
+      initiator,
+      review
+    );
     const existingActiveTask = await this.findActiveTask(initialWorkOrder);
     if (existingActiveTask) {
       requireTypedSigners(existingActiveTask);
@@ -409,7 +438,7 @@ export class Stage2HandoverESignService {
         const created = await tx.contractESignTask.create({
           data: {
             contractId: context.handover.handoverContract.id,
-            createdBy: actorId,
+            createdBy: initiation.actorUserId,
             customerId: context.order.customer.id,
             documentName:
               context.handover.handoverContract.contractTitle ||
@@ -423,6 +452,13 @@ export class Stage2HandoverESignService {
               documentType: "DELIVERY_HANDOVER",
               handoverId: context.handover.id,
               manifestHash: context.handover.manifestHash,
+              ...(initiation.fieldAudit
+                ? {
+                    initiator: initiation.fieldAudit.initiator,
+                    reviewAcknowledgement:
+                      initiation.fieldAudit.reviewAcknowledgement
+                  }
+                : {}),
               signingStage: "STAGE2_DELIVERY_HANDOVER",
               slotIds: [
                 "STAGE2_HANDOVER_CUSTOMER",
@@ -459,7 +495,7 @@ export class Stage2HandoverESignService {
             signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
             taskNo,
             taskStatus: ESignTaskStatus.CREATED,
-            updatedBy: actorId
+            updatedBy: initiation.actorUserId
           },
           include: stage2TaskInclude
         });
@@ -468,7 +504,7 @@ export class Stage2HandoverESignService {
             failureReason: null,
             handoverESignTaskId: created.id,
             status: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
-            updatedBy: actorId
+            updatedBy: initiation.actorUserId
           },
           where: {
             handoverContractId: context.handover.handoverContract.id,
@@ -492,7 +528,7 @@ export class Stage2HandoverESignService {
     const customerTransactionId = buildTransactionId(task.taskNo, "H1");
     const customerClaimExpiresAt = new Date(now.getTime() + PLATFORM_CLAIM_MS);
     await this.claimCustomerProviderAction({
-      actorId,
+      actorId: initiation.actorUserId,
       claimExpiresAt: customerClaimExpiresAt,
       contractId: task.contractId,
       customerSignerId: customerSigner.id,
@@ -540,7 +576,7 @@ export class Stage2HandoverESignService {
       const startedAt = new Date();
 
       await this.persistCustomerProviderResult({
-        actorId,
+        actorId: initiation.actorUserId,
         claimExpiresAt: customerClaimExpiresAt,
         customerSignerId: customerSigner.id,
         handoverId: context.handover.id,
@@ -553,7 +589,8 @@ export class Stage2HandoverESignService {
         signUrlExpiresAt: action.signUrlExpiresAt,
         taskId: task.id,
         transactionId: providerTransactionId,
-        when: startedAt
+        when: startedAt,
+        workOrderId
       });
     } catch (error) {
       if (
@@ -576,7 +613,7 @@ export class Stage2HandoverESignService {
         context.handover.id,
         task.id,
         customerSigner.id,
-        actorId,
+        initiation.actorUserId,
         now,
         customerClaimExpiresAt,
         customerTransactionId
@@ -1127,8 +1164,104 @@ export class Stage2HandoverESignService {
     };
   }
 
+  private assertCreateInitiator(
+    workOrder: Stage2LifecycleWorkOrder,
+    initiator: Stage2ESignInitiator,
+    review?: Stage2ESignReviewAcknowledgement
+  ) {
+    const workflowEnabled = this.isStage2HandoverWorkflowEnabled();
+    if (workflowEnabled && initiator.actorType !== "FIELD_OPERATOR") {
+      throw new BadRequestException({
+        code: "STAGE2_HANDOVER_FIELD_INITIATOR_REQUIRED",
+        message: "The Stage 2 workflow must be initiated by the assigned Field operator."
+      });
+    }
+    if (!workflowEnabled && initiator.actorType !== "ADMIN") {
+      throw new BadRequestException({
+        code: "STAGE2_HANDOVER_FIELD_WORKFLOW_DISABLED",
+        message: "Field Stage 2 eSign initiation is disabled."
+      });
+    }
+    if (initiator.actorType === "ADMIN") {
+      const actorId = initiator.actorId?.trim();
+      if (!actorId) {
+        throw new BadRequestException("An Admin initiator is required.");
+      }
+      return {
+        actorUserId: actorId,
+        fieldAudit: null
+      };
+    }
+
+    const fieldOperatorSessionId = initiator.fieldOperatorSessionId?.trim();
+    const fieldOperatorPhone = initiator.fieldOperatorPhone
+      ? normalizeFieldOperatorPhone(initiator.fieldOperatorPhone)
+      : null;
+    if (
+      !fieldOperatorSessionId ||
+      !fieldOperatorPhone ||
+      workOrder.fieldOperatorPhone !== fieldOperatorPhone
+    ) {
+      throw new UnauthorizedException(
+        "No access to this field handover work order."
+      );
+    }
+    const handover = workOrder.handover;
+    const sourcePdfHash =
+      typeof review?.sourcePdfHash === "string"
+        ? review.sourcePdfHash.trim().toLowerCase()
+        : null;
+    if (
+      review?.acknowledgement !== true ||
+      !handover ||
+      !Number.isSafeInteger(review.artifactVersion) ||
+      review.artifactVersion <= 0 ||
+      review.artifactVersion !== handover.artifactVersion ||
+      !isSha256Digest(sourcePdfHash) ||
+      sourcePdfHash !== handover.sourcePdfHash
+    ) {
+      throw new ConflictException({
+        code: "STAGE2_HANDOVER_FIELD_REVIEW_STALE",
+        message: "The reviewed Stage 2 source PDF is stale."
+      });
+    }
+    const reviewedAt =
+      review.reviewedAt === undefined ? new Date() : review.reviewedAt;
+    if (
+      !(reviewedAt instanceof Date) ||
+      !Number.isFinite(reviewedAt.getTime())
+    ) {
+      throw new BadRequestException(
+        "The Stage 2 source PDF review timestamp is invalid."
+      );
+    }
+    return {
+      actorUserId: null,
+      fieldAudit: {
+        initiator: {
+          actorType: "FIELD_OPERATOR" as const,
+          fieldOperatorPhone,
+          fieldOperatorSessionId
+        },
+        reviewAcknowledgement: {
+          acknowledgement: true as const,
+          artifactVersion: review.artifactVersion,
+          reviewedAt: reviewedAt.toISOString(),
+          sourcePdfHash
+        }
+      }
+    };
+  }
+
+  private isStage2HandoverWorkflowEnabled() {
+    return this.configService
+      .get<string>(STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV)
+      ?.trim()
+      .toLowerCase() === "true";
+  }
+
   private async claimCustomerProviderAction(input: {
-    actorId: string;
+    actorId: string | null;
     claimExpiresAt: Date;
     contractId: string;
     customerSignerId: string;
@@ -1194,7 +1327,7 @@ export class Stage2HandoverESignService {
   }
 
   private async persistCustomerProviderResult(input: {
-    actorId: string;
+    actorId: string | null;
     claimExpiresAt: Date;
     customerSignerId: string;
     handoverId: string;
@@ -1206,6 +1339,7 @@ export class Stage2HandoverESignService {
     taskId: string;
     transactionId: string;
     when: Date;
+    workOrderId: string;
   }) {
     await this.prisma.$transaction(async (tx) => {
       const signerUpdated = await tx.contractESignSigner.updateMany({
@@ -1269,6 +1403,18 @@ export class Stage2HandoverESignService {
       if (handoverUpdated.count !== 1) {
         throw staleCreateResult();
       }
+      if (this.isStage2HandoverWorkflowEnabled()) {
+        if (!this.workflowService) {
+          throw new Error("STAGE2_HANDOVER_WORKFLOW_SERVICE_UNAVAILABLE");
+        }
+        await this.workflowService.enqueueCustomerESignJobs(tx, {
+          customerTransactionId: input.transactionId,
+          eSignTaskId: input.taskId,
+          handoverId: input.handoverId,
+          initiatedAt: input.when,
+          workOrderId: input.workOrderId
+        });
+      }
     });
   }
 
@@ -1314,7 +1460,7 @@ export class Stage2HandoverESignService {
     handoverId: string,
     taskId: string,
     customerSignerId: string,
-    actorId: string,
+    actorId: string | null,
     attemptedAt: Date,
     claimExpiresAt: Date,
     transactionId: string

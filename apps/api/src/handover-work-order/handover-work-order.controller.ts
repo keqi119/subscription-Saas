@@ -177,7 +177,10 @@ export class HandoverWorkOrderAdminController {
   @Post("handover-work-orders/:id/esign")
   @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
   createStage2ESign(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return this.stage2HandoverESignService.create(id, request.user.id);
+    return this.stage2HandoverESignService.create(id, {
+      actorId: request.user.id,
+      actorType: "ADMIN"
+    });
   }
 
   @Post("handover-work-orders/:id/esign/platform-seal/retry")

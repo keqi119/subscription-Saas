@@ -15,6 +15,8 @@ export interface Stage2SourceArtifactBinding {
 }
 
 export interface Stage2SourceArtifactBindingInput {
+  allowedContractStatuses?: readonly ContractStatus[];
+  allowedHandoverStatuses?: readonly DeliveryHandoverStatus[];
   expectedCustomerId?: string | null;
   expectedHandoverId: string;
   expectedManifestHash: string;
@@ -72,8 +74,11 @@ export function validateStage2SourceArtifactBinding(
     artifactVersion !== STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION ||
     handoverId !== input.expectedHandoverId ||
     orderId !== input.expectedOrderId ||
-    readString(handover, "status") !==
-      DeliveryHandoverStatus.SOURCE_GENERATED ||
+    !(
+      input.allowedHandoverStatuses ?? [
+        DeliveryHandoverStatus.SOURCE_GENERATED
+      ]
+    ).includes(readString(handover, "status") as DeliveryHandoverStatus) ||
     manifestHash !== expectedManifestHash ||
     !sourcePdfHash ||
     !contractId ||
@@ -82,7 +87,9 @@ export function validateStage2SourceArtifactBinding(
     !contract ||
     readString(contract, "id") !== contractId ||
     readUnknown(contract, "deletedAt") !== null ||
-    readString(contract, "status") !== ContractStatus.GENERATED ||
+    !(
+      input.allowedContractStatuses ?? [ContractStatus.GENERATED]
+    ).includes(readString(contract, "status") as ContractStatus) ||
     readString(contract, "fileId") !== fileId ||
     readString(contract, "orderId") !== input.expectedOrderId ||
     (

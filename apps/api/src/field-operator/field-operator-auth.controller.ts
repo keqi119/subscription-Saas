@@ -17,8 +17,13 @@ import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import type { Request, Response } from "express";
 
 import { DeclareNoVisibleDamageDto } from "../delivery-evidence/delivery-evidence.dto";
-import { UpdateHandoverFieldFactsDto, UploadFieldEvidenceDto } from "../handover-work-order/handover-work-order.dto";
+import {
+  StartFieldStage2ESignDto,
+  UpdateHandoverFieldFactsDto,
+  UploadFieldEvidenceDto
+} from "../handover-work-order/handover-work-order.dto";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { Stage2HandoverESignService } from "../handover-work-order/stage2-handover-esign.service";
 import { createFieldEvidenceUploadOptions } from "./field-evidence-upload-options";
 import { FieldEvidenceTempFileCleanupInterceptor } from "./field-evidence-temp-file-cleanup.interceptor";
 import { FieldOperatorAuthGuard } from "./field-operator-auth.guard";
@@ -33,7 +38,8 @@ const FIELD_EVIDENCE_UPLOAD_OPTIONS = createFieldEvidenceUploadOptions();
 export class FieldOperatorAuthController {
   constructor(
     private readonly fieldOperatorAuthService: FieldOperatorAuthService,
-    private readonly handoverWorkOrderService: HandoverWorkOrderService
+    private readonly handoverWorkOrderService: HandoverWorkOrderService,
+    private readonly stage2HandoverESignService: Stage2HandoverESignService
   ) {}
 
   @Post("send-code")
@@ -215,6 +221,62 @@ export class FieldOperatorAuthController {
   @UseGuards(FieldOperatorAuthGuard)
   submitEvidence(@Param("id") id: string, @CurrentFieldOperatorSession() current: CurrentFieldOperator) {
     return this.handoverWorkOrderService.submitFieldAccessibleEvidence(id, current.phone, current.sessionId);
+  }
+
+  @Get("work-orders/:id/pdf/preview")
+  @UseGuards(FieldOperatorAuthGuard)
+  async previewStage2HandoverPdf(
+    @Param("id") id: string,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const preview =
+      await this.handoverWorkOrderService.previewFieldAccessibleStage2HandoverPdf(
+        id,
+        current.phone
+      );
+    setEvidenceFileHeaders(response, preview, "inline");
+    return new StreamableFile(preview.stream);
+  }
+
+  @Get("work-orders/:id/pdf/download")
+  @UseGuards(FieldOperatorAuthGuard)
+  async downloadStage2HandoverPdf(
+    @Param("id") id: string,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const file =
+      await this.handoverWorkOrderService.downloadFieldAccessibleStage2HandoverPdf(
+        id,
+        current.phone
+      );
+    setEvidenceFileHeaders(response, file, "attachment");
+    return new StreamableFile(file.stream);
+  }
+
+  @Post("work-orders/:id/esign")
+  @UseGuards(FieldOperatorAuthGuard)
+  async createStage2ESign(
+    @Param("id") id: string,
+    @Body() dto: StartFieldStage2ESignDto,
+    @CurrentFieldOperatorSession() current: CurrentFieldOperator
+  ) {
+    const review =
+      await this.handoverWorkOrderService.assertFieldStage2ESignReview(
+        id,
+        current.phone,
+        dto
+      );
+    return this.stage2HandoverESignService.create(
+      id,
+      {
+        actorType: "FIELD_OPERATOR",
+        fieldOperatorPhone: current.phone,
+        fieldOperatorSessionId: current.sessionId
+      },
+      review
+    );
   }
 }
 

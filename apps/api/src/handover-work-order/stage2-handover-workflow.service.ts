@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   CustomerAccountStatus,
   NotificationStatus,
+  Prisma,
   SmsSendStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
@@ -17,6 +18,7 @@ import { validateStage2SourceArtifactBinding } from "./stage2-handover-source-ar
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 import {
   ClaimedStage2WorkflowJob,
+  Stage2HandoverWorkflowDb,
   Stage2HandoverWorkflowHandler,
   WorkflowHandlerResult
 } from "./stage2-handover-workflow.types";
@@ -24,7 +26,16 @@ import {
 const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV =
   "STAGE2_HANDOVER_WORKFLOW_ENABLED";
 const DEFAULT_LEASE_MS = 120_000;
+const FIRST_CUSTOMER_RECONCILIATION_DELAY_MS = 2 * 60 * 1000;
 const SHA256_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+
+export interface EnqueueCustomerESignJobsInput {
+  customerTransactionId: string;
+  eSignTaskId: string;
+  handoverId: string;
+  initiatedAt: Date;
+  workOrderId: string;
+}
 
 export type Stage2HandoverWorkflowProjectionState =
   | "PDF_PENDING"
@@ -96,6 +107,37 @@ export class Stage2HandoverWorkflowService
       .get<string>(STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV)
       ?.trim()
       .toLowerCase() === "true";
+  }
+
+  async enqueueCustomerESignJobs(
+    tx: Stage2HandoverWorkflowDb,
+    input: EnqueueCustomerESignJobsInput
+  ) {
+    const payload = {
+      customerTransactionId: input.customerTransactionId
+    } satisfies Prisma.InputJsonObject;
+    await this.repository.enqueue(tx, {
+      eSignTaskId: input.eSignTaskId,
+      handoverId: input.handoverId,
+      idempotencyKey:
+        `customer-notify:${input.eSignTaskId}:${input.customerTransactionId}`,
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY,
+      payload,
+      workOrderId: input.workOrderId
+    });
+    await this.repository.enqueue(tx, {
+      availableAt: new Date(
+        input.initiatedAt.getTime() +
+          FIRST_CUSTOMER_RECONCILIATION_DELAY_MS
+      ),
+      eSignTaskId: input.eSignTaskId,
+      handoverId: input.handoverId,
+      idempotencyKey:
+        `customer-reconcile:${input.eSignTaskId}:${input.customerTransactionId}`,
+      jobType: VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+      payload,
+      workOrderId: input.workOrderId
+    });
   }
 
   async handle(

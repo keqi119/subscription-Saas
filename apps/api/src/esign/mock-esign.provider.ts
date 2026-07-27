@@ -100,12 +100,6 @@ export class MockESignProvider implements ESignProvider {
     const expiresAt = this.signUrlExpiresAt();
     const signUrl = this.buildMockSignUrl(input.contractId, input.taskId);
     const providerTaskId = `mock_${input.taskNo}`;
-    this.signerUrls.set(providerTaskId, {
-      contractId: input.contractId,
-      expiresAt,
-      signUrl,
-      taskId: input.taskId
-    });
 
     return {
       providerTaskId,

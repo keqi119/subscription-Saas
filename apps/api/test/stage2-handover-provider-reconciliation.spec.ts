@@ -188,6 +188,45 @@ describe("Stage 2 provider signer status query", () => {
     ).resolves.toEqual({ status: "UNKNOWN" });
   });
 
+  it("refreshes an expired Stage 1 URL created by the mock provider", async () => {
+    const provider = new MockESignProvider(mockConfig());
+    const createdAt = Date.parse("2026-07-27T08:00:00.000Z");
+    const now = vi.spyOn(Date, "now").mockReturnValue(createdAt);
+
+    try {
+      const created = await provider.createSignTask({
+        contractId: "contract-stage1-created",
+        documentName: "Subscription contract",
+        documentType: "CONTRACT_BODY",
+        signers: [{
+          customerId: "customer-1",
+          signerId: "stage1-customer-signer-created",
+          signerType: "CUSTOMER"
+        }],
+        signingStage: "STAGE1_CONTRACT",
+        taskId: "stage1-task-created",
+        taskNo: "ESG_STAGE1_CREATED"
+      });
+      const originalExpiry = created.signUrlExpiresAt!;
+      now.mockReturnValue(originalExpiry.getTime() + 60_000);
+
+      const refreshed = await provider.getSignerUrl({
+        contractId: "contract-stage1-created",
+        providerTaskId: created.providerTaskId,
+        signerId: "stage1-customer-signer-created",
+        taskId: "stage1-task-created"
+      });
+
+      expect(refreshed.signUrl).toBe(created.signUrl);
+      expect(refreshed.expiresAt!.getTime()).toBeGreaterThan(
+        originalExpiry.getTime()
+      );
+      expect(refreshed.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("preserves legacy Stage 1 mock URL synthesis without creating Stage 2 acceptance", async () => {
     const provider = new MockESignProvider(mockConfig());
 

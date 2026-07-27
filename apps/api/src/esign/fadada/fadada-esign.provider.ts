@@ -13,11 +13,13 @@ import {
   CreateSignTaskInput,
   CreateSignTaskResult,
   ESignProvider,
+  ESignProviderSignerStatusResult,
   ESignSlotId,
   ESignSigningSlot,
   ESignSigningSlotCoordinate,
   GetSignerUrlInput,
   GetSignerUrlResult,
+  QuerySignerStatusInput,
   VerifyCallbackResult
 } from "../esign.provider";
 import {
@@ -530,6 +532,116 @@ export class FadadaESignProvider implements ESignProvider {
         source: "LOCAL_SIGNER_URL"
       },
       signUrl: signer.signUrl
+    };
+  }
+
+  async querySignerStatus(
+    input: QuerySignerStatusInput
+  ): Promise<ESignProviderSignerStatusResult> {
+    if (!this.apiClient || !this.prisma) {
+      return { status: "UNKNOWN" };
+    }
+
+    const [task, signer] = await Promise.all([
+      this.prisma.contractESignTask.findFirst({
+        select: {
+          documentType: true,
+          id: true,
+          provider: true,
+          providerEnvelopeId: true,
+          providerTaskId: true,
+          signingStage: true,
+          taskNo: true
+        },
+        where: {
+          deletedAt: null,
+          id: input.taskId
+        }
+      }),
+      this.prisma.contractESignSigner.findFirst({
+        select: {
+          customerId: true,
+          id: true,
+          providerTransactionId: true,
+          slotId: true,
+          taskId: true
+        },
+        where: {
+          deletedAt: null,
+          id: input.signerId
+        }
+      })
+    ]);
+    if (
+      !task ||
+      !signer?.customerId ||
+      task.id !== input.taskId ||
+      task.provider !== ESignProviderType.FADADA ||
+      task.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+      task.documentType !== "DELIVERY_HANDOVER" ||
+      task.taskNo !== input.contractId ||
+      task.providerEnvelopeId !== input.contractId ||
+      task.providerTaskId !== input.providerTaskId ||
+      input.providerTaskId !== input.providerTransactionId ||
+      signer.id !== input.signerId ||
+      signer.taskId !== input.taskId ||
+      signer.slotId !== input.slotId ||
+      signer.providerTransactionId !== input.providerTransactionId
+    ) {
+      return { status: "UNKNOWN" };
+    }
+    const providerCustomerId =
+      await this.findVerifiedProviderCustomerId(signer.customerId);
+    if (
+      !providerCustomerId ||
+      providerCustomerId !== input.providerCustomerId
+    ) {
+      return { status: "UNKNOWN" };
+    }
+
+    const result = await this.apiClient.querySignResult({
+      contractId: input.contractId,
+      customerId: input.providerCustomerId,
+      transactionId: input.providerTransactionId
+    });
+    const response = {
+      resultCode: result.resultCode,
+      resultDescription: result.resultDesc
+    };
+    if (
+      result.providerContractId !== input.contractId ||
+      result.providerCustomerId !== input.providerCustomerId ||
+      result.providerTransactionId !== input.providerTransactionId
+    ) {
+      return {
+        ...response,
+        status: "UNKNOWN"
+      };
+    }
+    if (
+      result.resultCode === "3000" &&
+      result.status === "SIGNED"
+    ) {
+      return {
+        ...response,
+        status: "SIGNED"
+      };
+    }
+    if (result.status === "SIGNING") {
+      return {
+        ...response,
+        status: "SIGNING"
+      };
+    }
+    if (result.status === "FAILED") {
+      return {
+        ...response,
+        status: "FAILED"
+      };
+    }
+    return {
+      ...response,
+      status: "UNKNOWN"
     };
   }
 

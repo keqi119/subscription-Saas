@@ -36,6 +36,9 @@ vi.mock("../src/common/business-number", async (importOriginal) => {
 import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { AuthGuard } from "../src/auth/auth.guard";
 import { PermissionsGuard } from "../src/auth/permissions.guard";
+import type {
+  ESignProviderSignerStatusResult
+} from "../src/esign/esign.provider";
 import {
   HandoverWorkOrderAdminController,
   HandoverWorkOrderFieldController
@@ -589,6 +592,12 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.customerJobs.size).toBe(0);
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
 
+    customerSigner.claimExpiresAt = new Date(Date.now() - 60_000);
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultCode: "1000",
+      resultDescription: "active",
+      status: "SIGNING"
+    });
     harness.provider.getSignerUrl.mockResolvedValueOnce({
       expiresAt: new Date(Date.now() + 30 * 60_000),
       signUrl: "https://unsafe.example/recovered-sign?token=secret"
@@ -600,6 +609,15 @@ describe("Stage2HandoverESignService", () => {
     );
 
     expect(recovered.taskId).toBe(task.id);
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledWith({
+      contractId: task.taskNo,
+      providerCustomerId: "fadada-customer-1",
+      providerTaskId: "ESG20260726080000ABCDH1",
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      signerId: customerSigner.id,
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      taskId: task.id
+    });
     expect(harness.provider.getSignerUrl).toHaveBeenCalledWith({
       contractId: task.taskNo,
       providerTaskId: "ESG20260726080000ABCDH1",
@@ -625,6 +643,7 @@ describe("Stage2HandoverESignService", () => {
 
     expect(repeated.taskId).toBe(task.id);
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledTimes(1);
     expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(1);
     expectCustomerWorkflowJobs(harness);
   });
@@ -646,9 +665,9 @@ describe("Stage2HandoverESignService", () => {
     customerSigner.signUrl = null;
     customerSigner.signUrlExpiresAt = null;
     attachPortalTask(harness, task);
-    harness.provider.getSignerUrl.mockRejectedValueOnce(
-      new Error("provider has no accepted action for this transaction")
-    );
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      status: "UNKNOWN"
+    });
 
     await expect(
       harness.service.create(
@@ -663,12 +682,72 @@ describe("Stage2HandoverESignService", () => {
       })
     });
 
-    expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(1);
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledTimes(1);
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
     expect(harness.workflow.enqueueCustomerESignJobs).not.toHaveBeenCalled();
     expect(harness.customerJobs.size).toBe(0);
     expect(customerSigner.claimExpiresAt).not.toBeNull();
     expect(task.errorSnapshot).toBeNull();
+  });
+
+  it("does not finalize a fresh in-flight claim from a synthesized signer URL", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    const providerCreate =
+      harness.provider.createSignTask.getMockImplementation()!;
+    let releaseProvider!: () => void;
+    const providerRelease = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let providerStarted!: () => void;
+    const providerStart = new Promise<void>((resolve) => {
+      providerStarted = resolve;
+    });
+    harness.provider.createSignTask.mockImplementationOnce(
+      async (input: unknown) => {
+        providerStarted();
+        await providerRelease;
+        return providerCreate(input);
+      }
+    );
+    harness.provider.getSignerUrl.mockResolvedValue({
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+      signUrl: "https://unsafe.example/synthesized-sign?token=secret"
+    });
+    harness.provider.querySignerStatus.mockResolvedValue({
+      status: "UNKNOWN"
+    });
+
+    const winnerPromise = harness.service.create(
+      "work-order-1",
+      fieldInitiator(),
+      fieldReview()
+    );
+    await providerStart;
+    const task = harness.state.workOrder.handover.handoverESignTask!;
+    const customerSigner = task.signers[0]!;
+
+    const overlapping = await harness.service.create(
+      "work-order-1",
+      fieldInitiator(),
+      fieldReview()
+    );
+
+    expect(overlapping.taskId).toBe(task.id);
+    expect(customerSigner.claimExpiresAt).toEqual(expect.any(Date));
+    expect(customerSigner.signerStatus).toBe(ESignSignerStatus.PENDING);
+    expect(harness.provider.querySignerStatus).not.toHaveBeenCalled();
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
+    expect(harness.workflow.enqueueCustomerESignJobs).not.toHaveBeenCalled();
+    expect(harness.customerJobs.size).toBe(0);
+
+    releaseProvider();
+    const winner = await winnerPromise;
+    expect(winner.taskId).toBe(task.id);
+    expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+    expectCustomerWorkflowJobs(harness);
   });
 
   it("keeps an ambiguous customer provider result recoverable under its fresh claim", async () => {
@@ -2021,7 +2100,7 @@ describe("Stage2HandoverESignService", () => {
       signUrl: "https://sentinel.example/stage2-sign"
     });
     expect(harness.provider.getSignerUrl).toHaveBeenCalledWith({
-      contractId: "contract-stage2-1",
+      contractId: "provider-envelope-1",
       providerTaskId: "ESG20260726080000ABCDH1",
       redirectUrl:
         "http://localhost:3000/portal/handover-reviews/work-order-1",
@@ -2387,6 +2466,11 @@ function createHarness(env: Record<string, string> = {}) {
       }
     })),
     getSignerUrl: vi.fn(),
+    querySignerStatus: vi.fn(
+      async (): Promise<ESignProviderSignerStatusResult> => ({
+        status: "UNKNOWN"
+      })
+    ),
     verifyCallback: vi.fn()
   };
 
@@ -2476,6 +2560,11 @@ function createHarness(env: Record<string, string> = {}) {
         }
         return task;
       })
+    },
+    customerESignProviderAccount: {
+      findFirst: vi.fn(async () => ({
+        providerCustomerId: "fadada-customer-1"
+      }))
     },
     leaseContract: {
       create: vi.fn()

@@ -35,6 +35,12 @@ import { loadFadadaConfig } from "../src/esign/fadada/fadada.config";
 import { MockESignProvider } from "../src/esign/mock-esign.provider";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
 
+function unknownSignerStatusQuery() {
+  return vi.fn(async () => ({
+    status: "UNKNOWN" as const
+  }));
+}
+
 describe("ESignService", () => {
   it("creates a mock e-sign task for a generated contract", async () => {
     const { service, state } = createESignFixture();
@@ -74,6 +80,7 @@ describe("ESignService", () => {
         }]
       })),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
@@ -106,6 +113,7 @@ describe("ESignService", () => {
         signUrl: "https://sign.example.test/customer"
       })),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
@@ -233,6 +241,7 @@ describe("ESignService", () => {
     const { prisma, service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, {
       createSignTask: vi.fn(),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: verifier.verifyCallback.bind(verifier)
     });
     const handoverContract = createContract("handover-contract-1", "customer-1", "order-1", "ORD-1");
@@ -960,6 +969,7 @@ describe("ESignService", () => {
         signUrl: "https://sign.example.test/customer"
       })),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const preflightContractPdfArtifact = vi.fn(async () => {
@@ -991,6 +1001,7 @@ describe("ESignService", () => {
         throw new Error("provider should not be called");
       }),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const { service, state } = createESignFixture(
@@ -1014,6 +1025,7 @@ describe("ESignService", () => {
         throw new Error("provider should not be called");
       }),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const localOnlyAccount = createProviderAccount("customer-1", {
@@ -1256,6 +1268,7 @@ describe("ESignService", () => {
         }]
       })),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
@@ -1506,6 +1519,7 @@ describe("ESignService", () => {
         }]
       })),
       getSignerUrl: vi.fn(),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const { prisma, service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
@@ -1638,6 +1652,7 @@ describe("ESignService", () => {
       getSignerUrl: vi.fn(async () => {
         throw new Error("stored signUrl should be reused");
       }),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const { service } = createESignFixture(
@@ -1666,6 +1681,7 @@ describe("ESignService", () => {
       getSignerUrl: vi.fn(async () => ({
         signUrl: "https://sign.example.test/refreshed"
       })),
+      querySignerStatus: unknownSignerStatusQuery(),
       verifyCallback: vi.fn()
     };
     const { service, state } = createESignFixture(
@@ -2069,6 +2085,7 @@ function createTypedStage2CallbackFixture(options: {
   const harness = createESignFixture({ ESIGN_PROVIDER: "fadada" }, {
     createSignTask: vi.fn(),
     getSignerUrl: vi.fn(),
+    querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: verifier.verifyCallback.bind(verifier)
   });
   const stage1Contract = harness.state.contracts[0]!;
@@ -2777,6 +2794,7 @@ function stage1SlotProvider() {
       };
     }),
     getSignerUrl: vi.fn(),
+    querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
   } satisfies ESignProvider & {
     createSignTask: ReturnType<typeof vi.fn>;
@@ -2807,6 +2825,7 @@ function stage1CustomerOnlyProvider() {
       };
     }),
     getSignerUrl: vi.fn(),
+    querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
   } satisfies ESignProvider & {
     createSignTask: ReturnType<typeof vi.fn>;
@@ -2847,6 +2866,7 @@ function stage1CustomerThenPlatformAutoSealProvider() {
       };
     }),
     getSignerUrl: vi.fn(),
+    querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
   } satisfies ESignProvider & {
     autoSealTask: ReturnType<typeof vi.fn>;
@@ -2875,6 +2895,7 @@ function createFadadaESignFixture() {
       };
     }),
     getSignerUrl: vi.fn(),
+    querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
   };
 
@@ -2913,6 +2934,7 @@ function enterpriseAutoSealProvider(result: {
       };
     }),
     getSignerUrl: vi.fn(),
+    querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
   } satisfies ESignProvider & {
     autoSealTask: ReturnType<typeof vi.fn>;

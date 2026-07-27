@@ -14,8 +14,13 @@ import {
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   ESignDocumentType,
+  ESignProviderAccountStatus,
+  ESignProviderAccountType,
   ESignProviderActionType,
+  ESignProviderCertBindingStatus,
+  ESignProviderRealNameStatusSource,
   ESignProviderType,
+  ESignRealNameStatus,
   ESignSignerStatus,
   ESignSignerType,
   ESignSigningStage,
@@ -388,7 +393,7 @@ export class Stage2HandoverESignService {
 
     try {
       const refreshed = await this.provider.getSignerUrl({
-        contractId: task.contractId,
+        contractId: task.providerEnvelopeId ?? task.taskNo,
         providerTaskId: task.providerTaskId ?? task.taskNo,
         redirectUrl: this.buildPortalHandoverUrl(workOrderId),
         signerId: customerSigner.id,
@@ -612,6 +617,7 @@ export class Stage2HandoverESignService {
           customerId: context.order.customer.id,
           name: context.order.customer.name,
           phone: context.order.customer.mobile,
+          signerId: customerSigner.id,
           signerType: "CUSTOMER"
         }],
         signingSlotCoordinates: [customerCoordinate],
@@ -1370,55 +1376,122 @@ export class Stage2HandoverESignService {
     ) {
       throw staleCreateResult();
     }
+    if (claimExpiresAt.getTime() > Date.now()) {
+      return null;
+    }
 
-    try {
-      const refreshed = await this.provider.getSignerUrl({
-        contractId: task.providerEnvelopeId,
-        providerTaskId: transactionId,
-        redirectUrl: this.buildPortalHandoverUrl(workOrder.id),
-        signerId: customerSigner.id,
-        taskId: task.id
-      });
-      if (
-        !refreshed?.signUrl ||
-        (
-          refreshed.expiresAt &&
-          refreshed.expiresAt.getTime() <= Date.now()
-        )
-      ) {
-        throw new Error(
-          "The provider did not return a usable accepted signing action."
-        );
-      }
-      const signUrl = assertSafeProviderSigningUrl(
-        refreshed.signUrl,
+    const providerCustomerId =
+      await this.loadBoundProviderCustomerId(
         task.provider,
-        this.configService
+        customerSigner.customerId
       );
-      return {
-        actorId,
-        claimExpiresAt,
-        customerSignerId: customerSigner.id,
-        handoverId,
-        providerEnvelopeId: task.providerEnvelopeId,
-        providerSignerId: transactionId,
-        providerTaskId: transactionId,
-        signUrl,
-        signUrlExpiresAt: refreshed.expiresAt,
-        taskId: task.id,
-        transactionId,
-        when:
-          customerSigner.lastAttemptAt ??
-          task.startedAt ??
-          task.updatedAt,
-        workOrderId: workOrder.id
-      };
-    } catch {
-      if (claimExpiresAt.getTime() > Date.now()) {
-        return null;
-      }
+    if (!providerCustomerId) {
       throw providerAcceptanceUnconfirmed();
     }
+
+    let providerStatus;
+    try {
+      providerStatus = await this.provider.querySignerStatus({
+        contractId: task.providerEnvelopeId,
+        providerCustomerId,
+        providerTaskId: transactionId,
+        providerTransactionId: transactionId,
+        signerId: customerSigner.id,
+        slotId: CUSTOMER_SLOT_ID,
+        taskId: task.id
+      });
+    } catch {
+      throw providerAcceptanceUnconfirmed();
+    }
+    if (
+      providerStatus.status !== "SIGNING" &&
+      providerStatus.status !== "SIGNED"
+    ) {
+      throw providerAcceptanceUnconfirmed();
+    }
+
+    let signUrl: string | undefined;
+    let signUrlExpiresAt: Date | undefined;
+    if (providerStatus.status === "SIGNING") {
+      try {
+        const refreshed = await this.provider.getSignerUrl({
+          contractId: task.providerEnvelopeId,
+          providerTaskId: transactionId,
+          redirectUrl: this.buildPortalHandoverUrl(workOrder.id),
+          signerId: customerSigner.id,
+          taskId: task.id
+        });
+        if (
+          !refreshed.expiresAt ||
+          refreshed.expiresAt.getTime() > Date.now()
+        ) {
+          signUrl = assertSafeProviderSigningUrl(
+            refreshed.signUrl,
+            task.provider,
+            this.configService
+          );
+          signUrlExpiresAt = refreshed.expiresAt;
+        }
+      } catch {
+        // Acceptance is provider-backed; URL refresh can be retried separately.
+      }
+    }
+    return {
+      actorId,
+      claimExpiresAt,
+      customerSignerId: customerSigner.id,
+      handoverId,
+      providerEnvelopeId: task.providerEnvelopeId,
+      providerSignerId: transactionId,
+      providerTaskId: transactionId,
+      signUrl,
+      signUrlExpiresAt,
+      taskId: task.id,
+      transactionId,
+      when:
+        customerSigner.lastAttemptAt ??
+        task.startedAt ??
+        task.updatedAt,
+      workOrderId: workOrder.id
+    };
+  }
+
+  private async loadBoundProviderCustomerId(
+    provider: ESignProviderType,
+    customerId: string | null
+  ) {
+    if (!customerId) {
+      return null;
+    }
+    if (provider === ESignProviderType.MOCK) {
+      return customerId;
+    }
+    if (provider !== ESignProviderType.FADADA) {
+      return null;
+    }
+    const account =
+      await this.prisma.customerESignProviderAccount.findFirst({
+        select: {
+          providerCustomerId: true
+        },
+        where: {
+          accountType: ESignProviderAccountType.PERSONAL,
+          certBindingStatus: ESignProviderCertBindingStatus.BOUND,
+          customerId,
+          deletedAt: null,
+          provider,
+          providerCustomerId: {
+            not: null
+          },
+          realNameProviderStatusSource: {
+            not: ESignProviderRealNameStatusSource.UNKNOWN
+          },
+          realNameStatus: ESignRealNameStatus.VERIFIED,
+          registrationStatus:
+            ESignProviderAccountStatus.REGISTERED
+        }
+      });
+    return account?.providerCustomerId ?? null;
   }
 
   private async resolveCurrentTask(workOrder: Stage2LifecycleWorkOrder) {

@@ -24,7 +24,11 @@ describe("Fadada provider configuration", () => {
       contractId: "contract-stage2-mock",
       documentName: "handover.pdf",
       documentType: "DELIVERY_HANDOVER",
-      signers: [{ customerId: "customer-1", signerType: "CUSTOMER" }],
+      signers: [{
+        customerId: "customer-1",
+        signerId: "signer-stage2-mock",
+        signerType: "CUSTOMER"
+      }],
       signingSlots: [{
         documentType: "DELIVERY_HANDOVER",
         keyword: "stage2-handover-customer",

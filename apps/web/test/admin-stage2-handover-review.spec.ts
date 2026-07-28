@@ -26,7 +26,7 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("/handover-review-queue");
     expect(source).toContain("创建交付工单");
     expect(source).toContain("暂无 Stage 2 现场交接工单");
-    expect(source).toContain("/orders/${params.id}/handover-work-orders");
+    expect(source).toContain("/orders/${orderId}/handover-work-orders");
     expect(source).toContain("/objection/${action}");
     expect(source).toContain("\"acknowledge\"");
     expect(source).toContain("\"request-resubmission\"");
@@ -101,7 +101,7 @@ describe("Admin Stage 2 handover review order page", () => {
       source.indexOf("function openAssignExternalHandover")
     );
 
-    expect(confirmationBlock).toContain("modal.confirm");
+    expect(confirmationBlock).toContain("scopedConfirm.confirm");
     expect(confirmationBlock).toContain("确认执行异常恢复？");
     expect(confirmationBlock).toContain("runStage2WorkflowRecovery");
     expect(confirmationBlock).toContain("onOk");

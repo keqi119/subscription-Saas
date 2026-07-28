@@ -105,6 +105,7 @@ import {
   ReviewOrderDto,
   UpdateContractVersionDto
 } from "./dto/order.dto";
+import { projectOrderChangeView } from "./order-workspace-detail-projection";
 
 const CURRENT_BUSINESS_TYPE = BusinessType.SUBSCRIPTION;
 const RENT_TO_OWN_ORDER_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购订单。";
@@ -2470,7 +2471,7 @@ export class OrderService {
   async listOrderChanges(orderId: string, user: RequestUser) {
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrder(order, user);
-    return order.changes.map(toOrderChangeView);
+    return order.changes.map((change) => toOrderChangeResponse(change, user));
   }
 
   async listPlanChangeSubscriptionPlans(orderId: string, user: RequestUser) {
@@ -2526,8 +2527,8 @@ export class OrderService {
         updatedBy: user.id
       }
     });
-    await this.writeAudit(AuditAction.CREATE, "order_change", change.id, undefined, toOrderChangeView(change), user, context);
-    return toOrderChangeView(change);
+    await this.writeAudit(AuditAction.CREATE, "order_change", change.id, undefined, toOrderChangeAuditView(change), user, context);
+    return toOrderChangeResponse(change, user);
   }
 
   async setOrderChangeStatus(id: string, status: OrderChangeStatus, user: RequestUser, context: RequestContext) {
@@ -2551,8 +2552,8 @@ export class OrderService {
       data: { approvedAt: new Date(), approvedBy: user.id, status, updatedBy: user.id },
       where: { id }
     });
-    await this.writeAudit(status === OrderChangeStatus.APPROVED ? AuditAction.APPROVE : AuditAction.REJECT, "order_change", id, toOrderChangeView(before), toOrderChangeView(change), user, context);
-    return toOrderChangeView(change);
+    await this.writeAudit(status === OrderChangeStatus.APPROVED ? AuditAction.APPROVE : AuditAction.REJECT, "order_change", id, toOrderChangeAuditView(before), toOrderChangeAuditView(change), user, context);
+    return toOrderChangeResponse(change, user);
   }
 
   async cancelOrderChange(id: string, user: RequestUser, context: RequestContext) {
@@ -2577,8 +2578,8 @@ export class OrderService {
       },
       where: { id }
     });
-    await this.writeAudit(AuditAction.UPDATE, "order_change", id, toOrderChangeView(before), toOrderChangeView(change), user, context);
-    return toOrderChangeView(change);
+    await this.writeAudit(AuditAction.UPDATE, "order_change", id, toOrderChangeAuditView(before), toOrderChangeAuditView(change), user, context);
+    return toOrderChangeResponse(change, user);
   }
 
   async executeOrderChange(id: string, user: RequestUser, context: RequestContext) {
@@ -2701,8 +2702,8 @@ export class OrderService {
       AuditAction.UPDATE,
       "order_change",
       id,
-      toOrderChangeView(before),
-      toOrderChangeView(result.changeAfter),
+      toOrderChangeAuditView(before),
+      toOrderChangeAuditView(result.changeAfter),
       user,
       context
     );
@@ -2741,7 +2742,7 @@ export class OrderService {
         userAgent: context.userAgent
       });
     }
-    return toOrderChangeView(result.changeAfter);
+    return toOrderChangeResponse(result.changeAfter, user);
   }
 
   private async findOrderOrThrow(id: string) {
@@ -4916,8 +4917,18 @@ function toContractVersionView(version: Prisma.ContractVersionGetPayload<object>
   return toPlain(version) as Record<string, unknown>;
 }
 
-function toOrderChangeView(change: Prisma.OrderChangeGetPayload<object>): Record<string, unknown> {
+function toOrderChangeAuditView(change: Prisma.OrderChangeGetPayload<object>): Record<string, unknown> {
   return toPlain(change) as Record<string, unknown>;
+}
+
+function toOrderChangeResponse(
+  change: Prisma.OrderChangeGetPayload<object>,
+  user: RequestUser
+): Record<string, unknown> {
+  return projectOrderChangeView(
+    toOrderChangeAuditView(change),
+    new Set(user.permissions)
+  );
 }
 
 function buildContractSnapshotWithGeneratedPdfArtifact(

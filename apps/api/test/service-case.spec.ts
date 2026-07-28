@@ -1,4 +1,4 @@
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ServiceCaseStatus } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
@@ -17,8 +17,23 @@ describe("service case back office", () => {
     expect(detail).toMatchObject({
       customer: { name: "李四" },
       id: "case-b",
-      order: { orderNo: "ORD-B" }
+      order: { id: "order-b", orderNo: "ORD-B" }
     });
+  });
+
+  it("gets an admin service case only within the requested order", async () => {
+    const harness = createServiceCaseHarness();
+    harness.addCase({ id: "case-b", orderId: "order-b" });
+
+    await expect(
+      harness.service.getAdminServiceCaseForOrder("order-b", "case-b")
+    ).resolves.toMatchObject({
+      id: "case-b",
+      order: { id: "order-b" }
+    });
+    await expect(
+      harness.service.getAdminServiceCaseForOrder("order-a", "case-b")
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it("accepts service cases and assigns them to staff", async () => {

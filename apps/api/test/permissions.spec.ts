@@ -3,6 +3,8 @@ import "reflect-metadata";
 import fs from "node:fs";
 import path from "node:path";
 
+import { RequestMethod } from "@nestjs/common";
+import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { PermissionCode } from "@subscription-saas/shared";
 import { describe, expect, it } from "vitest";
 
@@ -489,6 +491,55 @@ describe("customer order review permissions", () => {
     expect(finalizePermissions).toEqual([PermissionCode.ORDER_CONFIRM_FINAL_PLAN]);
     expect(rejectPermissions).toEqual([PermissionCode.ORDER_REJECT]);
     expect(hasRequiredPermissions([PermissionCode.ORDER_VIEW], reviewPermissions)).toBe(false);
+  });
+});
+
+describe("order workspace permissions", () => {
+  it("exposes workspace detail as an order-view GET endpoint", () => {
+    const handler = (
+      OrderController.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => unknown
+      >
+    ).getOrderWorkspaceDetail;
+
+    expect(handler).toBeTypeOf("function");
+    if (!handler) {
+      throw new Error("workspace detail handler is missing");
+    }
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
+      "orders/:id/workspace/detail"
+    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
+      RequestMethod.GET
+    );
+    expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+      PermissionCode.ORDER_VIEW
+    ]);
+  });
+
+  it("requires order and service-case view for scoped workspace service details", () => {
+    const handler = (
+      OrderController.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => unknown
+      >
+    ).getOrderWorkspaceServiceCase;
+
+    expect(handler).toBeTypeOf("function");
+    if (!handler) {
+      throw new Error("workspace service-case handler is missing");
+    }
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
+      "orders/:id/workspace/service-cases/:serviceCaseId"
+    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
+      RequestMethod.GET
+    );
+    expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+      PermissionCode.ORDER_VIEW,
+      PermissionCode.SERVICE_CASE_VIEW
+    ]);
   });
 });
 

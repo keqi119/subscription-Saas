@@ -6,6 +6,8 @@ import {
   type ReactNode
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { OrderTransactionGuide } from "../src/components/order-workspace/order-transaction-guide";
@@ -37,6 +39,9 @@ const TAB_LABELS = [
   "财务/收款核销",
   "变更/历史快照"
 ] as const;
+
+const repoRoot = join(__dirname, "..", "..", "..");
+const orderPagePath = join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx");
 
 describe("admin order workspace navigation model", () => {
   it.each(TAB_KEYS)("parses the %s workspace tab", (tab) => {
@@ -152,6 +157,156 @@ describe("admin order workspace navigation model", () => {
     expect(getWorkspaceActionPresentation("finance.reconcile")).toBeNull();
     expect(getWorkspaceActionPresentation("finance.collection_follow_up")).toBeNull();
     expect(getWorkspaceActionPresentation("")).toBeNull();
+  });
+});
+
+describe("admin order detail workspace migration", () => {
+  it("loads auth and workspace summary before dispatching only the active tab domain", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const activeTabLoader = sourceBetween(
+      source,
+      "const loadActiveWorkspaceTab = useCallback",
+      "const loadWorkspaceShell = useCallback"
+    );
+
+    expect(source).toMatch(
+      /apiFetch<OrderWorkspaceSummary>\(\s*`\/orders\/\$\{params\.id\}\/workspace\/summary`/
+    );
+    expect(source).toContain('apiFetch<AuthMeResponse>("/auth/me")');
+    expect(source).toContain("void loadWorkspaceShell()");
+    expect(activeTabLoader).toContain("switch (activeTab)");
+    expect(activeTabLoader).toContain('case "handover":');
+    expect(activeTabLoader).toContain('case "entitlement":');
+    expect(activeTabLoader).toContain('case "service":');
+    expect(activeTabLoader).toContain('case "finance":');
+    expect(activeTabLoader).toContain('case "change":');
+    expect(source).not.toContain(
+      "apiFetch<OrderDetail>(`/orders/${params.id}`),\n        apiFetch<OrderChangeRow[]>"
+    );
+  });
+
+  it("uses parsed URL state and one replace-based builder consumer for tabs and guidance", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const navigation = sourceBetween(
+      source,
+      "const navigateWorkspace = useCallback",
+      "const loadOrderDetail"
+    );
+
+    expect(source).toContain("parseOrderWorkspaceLocation(searchParams)");
+    expect(navigation).toContain("buildOrderWorkspaceLocation({");
+    expect(navigation).toContain("router.replace(location, { scroll: false })");
+    expect(source).toContain("onTabChange={(tab) => navigateWorkspace({ tab })}");
+    expect(source).toContain("onNavigate={navigateWorkspace}");
+  });
+
+  it("maps Stage 1 actions only to contract and Stage 2 only to handover", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const renderer = sourceBetween(
+      source,
+      "function renderActiveWorkspaceTab()",
+      "const stage2FallbackPdfDownloadUrl"
+    );
+    const contractSlot = sourceBetween(
+      renderer,
+      'case "contract":',
+      'case "handover":'
+    );
+    const handoverSlot = sourceBetween(
+      renderer,
+      'case "handover":',
+      'case "entitlement":'
+    );
+    const pageHeader = sourceBetween(
+      source,
+      "<OrderWorkspaceHeader",
+      "<OrderTransactionGuide"
+    );
+
+    expect(contractSlot).toContain("generateContractAvailability");
+    expect(contractSlot).toContain("generateContract");
+    expect(contractSlot).toContain("<ReviewPanel");
+    expect(contractSlot).toContain("<QuoteSnapshotSection");
+    expect(contractSlot).not.toContain("<Stage2HandoverReviewPanel");
+    expect(handoverSlot).toContain("<DeliveryPanel");
+    expect(handoverSlot).toContain("<Stage2HandoverReviewPanel");
+    expect(handoverSlot).toContain("<ReturnPanel");
+    expect(handoverSlot).not.toContain("generateContract");
+    expect(pageHeader).not.toContain("生成合同");
+    expect(pageHeader).not.toContain("查看合同");
+  });
+
+  it("maps all seven active bodies without mounting inactive domain content", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const renderer = sourceBetween(
+      source,
+      "function renderActiveWorkspaceTab()",
+      "const stage2FallbackPdfDownloadUrl"
+    );
+
+    expect(renderer).toContain('case "overview":');
+    expect(renderer).toContain("<OrderInfoSections");
+    expect(renderer).toContain('case "contract":');
+    expect(renderer).toContain('case "handover":');
+    expect(renderer).toContain('case "entitlement":');
+    expect(renderer).toContain("<EntitlementPanel");
+    expect(renderer).toContain('case "service":');
+    expect(renderer).toContain("<ServiceCasesPanel");
+    expect(renderer).toContain('case "finance":');
+    expect(renderer).toContain("<FinancePanel");
+    expect(renderer).toContain('case "change":');
+    expect(renderer).toContain("changes={changes}");
+    expect(source).toContain("slots={{ [activeTab]: renderActiveWorkspaceTab() }}");
+  });
+
+  it("waits for active data then focuses a safely escaped workspace record", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+
+    expect(source).toContain("CSS.escape(focus)");
+    expect(source).toContain(
+      '`[data-workspace-record="${escapedFocus}"]`'
+    );
+    expect(source).toContain("record.scrollIntoView");
+    expect(source).toContain("data-workspace-focus-highlight");
+    expect(source).toContain('"data-workspace-record": workOrder.id');
+  });
+
+  it("cleans up focused-row styling and stale shell state across navigation", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+
+    expect(source).toContain("const clearFocusHighlight = () =>");
+    expect(source).toMatch(
+      /return \(\) => \{\s*window\.clearTimeout\(timeout\);\s*clearFocusHighlight\(\);/
+    );
+    expect(source).toContain("setSummary(null)");
+    expect(source).toContain("setMe(null)");
+  });
+
+  it("fails closed without redirect loops for a legacy change deep link", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const legacyChangeEffect = sourceBetween(
+      source,
+      "autoOpenChangeRequestedRef.current &&",
+      "function closeChangeModal()"
+    );
+
+    expect(legacyChangeEffect).toContain(
+      '!visibleTabs.includes("change")'
+    );
+    expect(legacyChangeEffect).toContain(
+      "autoOpenChangeRequestedRef.current = false"
+    );
+  });
+
+  it("keeps summary and active-domain failures local and independently retryable", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+
+    expect(source).toContain("summaryError");
+    expect(source).toContain("activeDomainError");
+    expect(source).toContain("retryWorkspaceSummary");
+    expect(source).toContain("retryActiveWorkspaceTab");
+    expect(source).toMatch(/summary\?\.tabBadges|summary\.tabBadges/);
+    expect(source).toMatch(/summary\?\.recentActivity|summary\.recentActivity/);
   });
 });
 
@@ -407,4 +562,13 @@ function findWorkspaceAction(node: ReactNode, kind: string): WorkspaceActionElem
   visit(node);
   expect(match, `expected a ${kind} workspace action`).not.toBeNull();
   return match as WorkspaceActionElement;
+}
+
+function sourceBetween(source: string, start: string, end: string) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+
+  expect(startIndex, `missing source marker: ${start}`).toBeGreaterThanOrEqual(0);
+  expect(endIndex, `missing source marker: ${end}`).toBeGreaterThan(startIndex);
+  return source.slice(startIndex, endIndex);
 }

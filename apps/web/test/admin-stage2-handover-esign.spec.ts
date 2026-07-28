@@ -663,7 +663,30 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
 
   it("renders the compact workflow timeline with only backend-authorized Admin controls", () => {
     const source = readFileSync(orderPagePath, "utf8");
+    const rendererStart = source.indexOf(
+      "function renderActiveWorkspaceTab()"
+    );
+    const rendererEnd = source.indexOf(
+      "const stage2FallbackPdfDownloadUrl",
+      rendererStart
+    );
+    const renderer = source.slice(rendererStart, rendererEnd);
+    const handoverSlotStart = renderer.indexOf('case "handover":');
+    const handoverSlotEnd = renderer.indexOf(
+      'case "entitlement":',
+      handoverSlotStart
+    );
+    const handoverSlot = renderer.slice(
+      handoverSlotStart,
+      handoverSlotEnd
+    );
 
+    expect(rendererStart).toBeGreaterThanOrEqual(0);
+    expect(rendererEnd).toBeGreaterThan(rendererStart);
+    expect(handoverSlotStart).toBeGreaterThanOrEqual(0);
+    expect(handoverSlotEnd).toBeGreaterThan(handoverSlotStart);
+    expect(handoverSlot).toContain("Stage2HandoverReviewPanel");
+    expect(source).toContain('"data-workspace-record": workOrder.id');
     expect(source).toContain("Stage2HandoverWorkflowCell");
     expect(source).toContain("getAdminStage2HandoverWorkflowDisplay");
     expect(source).toContain("display.recoveries.map");

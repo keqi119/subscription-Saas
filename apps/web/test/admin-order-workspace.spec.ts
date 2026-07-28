@@ -45,6 +45,7 @@ const TAB_LABELS = [
 
 const repoRoot = join(__dirname, "..", "..", "..");
 const orderPagePath = join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx");
+const globalStylesPath = join(repoRoot, "apps/web/src/app/globals.css");
 
 describe("admin order workspace navigation model", () => {
   it.each(TAB_KEYS)("parses the %s workspace tab", (tab) => {
@@ -733,6 +734,19 @@ describe("admin order workspace shell", () => {
     expect(markup).toContain('data-workspace-tab-scroll="true"');
     expect(markup).toContain('data-mobile-content="true"');
     expect(markup).not.toContain("min-width:1040");
+  });
+
+  it("stacks workspace description entries on narrow screens", () => {
+    const styles = readFileSync(globalStylesPath, "utf8");
+
+    expect(styles).toContain("@media (max-width: 575px)");
+    expect(styles).toContain(
+      '[data-workspace-active-content] .ant-descriptions-row'
+    );
+    expect(styles).toContain(
+      "grid-template-columns: minmax(88px, 34%) minmax(0, 1fr)"
+    );
+    expect(styles).toContain("overflow-wrap: anywhere");
   });
 
   it("renders a compact order header without Stage 1 contract actions", () => {

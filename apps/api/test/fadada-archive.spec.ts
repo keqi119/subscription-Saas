@@ -236,6 +236,28 @@ describe("FadadaSignedArtifactService", () => {
     });
     expect(state.contract.order.orderStatus).toBe(orderStatus);
     expect(financeSnapshot(state)).toEqual(finance);
+
+    const adminPreview =
+      await service.getAdminSignedContractPreview(
+        state.task.id,
+        adminUser()
+      );
+    const portalPreview =
+      await service.getPortalSignedContractPreview(
+        state.contract.id,
+        currentCustomer("customer-1")
+      );
+    expect(adminPreview).toMatchObject({
+      contentType: "application/pdf",
+      filename: "HDV-1-signed.pdf"
+    });
+    expect(portalPreview).toMatchObject({
+      contentType: "application/pdf",
+      filename: "HDV-1-signed.pdf"
+    });
+    expect(
+      storageService.getContractSignedArtifactStream
+    ).toHaveBeenCalledWith(state.handover!.signedObjectKey);
   });
 
   it("rejects a typed Stage 2 task from the generic signed-contract archive path", async () => {
@@ -422,7 +444,7 @@ describe("FadadaSignedArtifactService", () => {
       description: "signed object key"
     }
   ])(
-    "repairs an incomplete ARCHIVED row with missing $description on typed retry",
+    "rearchives an incomplete ARCHIVED row with missing $description on typed retry",
     async ({ corrupt }) => {
       const { apiClient, service, state, storageService } =
         createStage2Fixture();
@@ -430,7 +452,6 @@ describe("FadadaSignedArtifactService", () => {
         actorId: "user-admin",
         taskId: state.task.id
       });
-      const expectedObjectKey = state.fileObjects[0]!.objectKey;
       corrupt(state.handover!);
 
       const retried = await service.archiveSignedStage2Handover({
@@ -438,24 +459,68 @@ describe("FadadaSignedArtifactService", () => {
         taskId: state.task.id
       });
 
-      expect(retried).toEqual({
+      expect(retried).toMatchObject({
         archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
-        archived: false,
-        skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
+        archived: true,
+        signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/)
       });
       expect(state.handover).toMatchObject({
         archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
-        signedDocumentFileId: state.fileObjects[0]!.id,
-        signedObjectKey: expectedObjectKey,
+        signedDocumentFileId: state.fileObjects[1]!.id,
+        signedObjectKey: state.fileObjects[1]!.objectKey,
         signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         status: DeliveryHandoverStatus.ARCHIVED
       });
-      expect(apiClient.querySignResult).toHaveBeenCalledOnce();
-      expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+      expect(apiClient.querySignResult).toHaveBeenCalledTimes(2);
+      expect(
+        storageService.putContractSignedArtifact
+      ).toHaveBeenCalledTimes(2);
     }
   );
 
-  it("repairs a lost-claim ARCHIVED row only when the complete typed tuple can be restored", async () => {
+  it("rearchives instead of promoting an unverifiable file from an incomplete ARCHIVED row", async () => {
+    const { apiClient, service, state, storageService } =
+      createStage2Fixture();
+    state.fileObjects.push({
+      bucket: "application-materials",
+      id: "unverified-file",
+      mimeType: "application/pdf",
+      objectKey: "contracts/unrelated/signed.pdf",
+      originalName: "unverified.pdf",
+      sizeBytes: BigInt(minimalPdf().length),
+      uploadedBy: "user-other"
+    });
+    Object.assign(state.handover!, {
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archivedAt: new Date("2026-07-28T08:00:00.000Z"),
+      signedDocumentFileId: "unverified-file",
+      signedObjectKey: null,
+      signedPdfHash: "d".repeat(64),
+      status: DeliveryHandoverStatus.SIGNED
+    });
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(state.handover).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-2",
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(state.handover!.signedObjectKey).not.toBe(
+      "contracts/unrelated/signed.pdf"
+    );
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it("rearchives a lost-claim ARCHIVED row instead of trusting its partial file tuple", async () => {
     const { apiClient, prisma, service, state, storageService } =
       createStage2Fixture();
     const objectKey =
@@ -491,17 +556,18 @@ describe("FadadaSignedArtifactService", () => {
       taskId: state.task.id
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
-      archived: false,
-      skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
+      archived: true,
+      signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/)
     });
     expect(state.handover).toMatchObject({
-      signedObjectKey: objectKey,
+      signedDocumentFileId: "signed-file-2",
       status: DeliveryHandoverStatus.ARCHIVED
     });
-    expect(apiClient.querySignResult).not.toHaveBeenCalled();
-    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.handover!.signedObjectKey).not.toBe(objectKey);
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
   });
 
   it("does not steal a fresh Stage 2 archive claim within the default five-minute lease", async () => {
@@ -760,6 +826,45 @@ describe("FadadaSignedArtifactService", () => {
     await expect(
       service.getPortalSignedContractPreview("contract-1", currentCustomer("customer-other"))
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("rejects Stage 2 previews until the authoritative archive tuple is complete", async () => {
+    const { service, state, storageService } = createStage2Fixture();
+    const objectKey =
+      "contracts/contract-1/esign/fadada/signed/incomplete.pdf";
+    state.fileObjects.push({
+      bucket: "application-materials",
+      id: "signed-file-incomplete",
+      mimeType: "application/pdf",
+      objectKey,
+      originalName: "HDV-1-signed.pdf",
+      sizeBytes: BigInt(minimalPdf().length),
+      uploadedBy: "user-admin"
+    });
+    state.task.signedDocumentObjectKey = objectKey;
+    Object.assign(state.handover!, {
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-incomplete",
+      signedObjectKey: objectKey,
+      signedPdfHash: "d".repeat(64),
+      status: DeliveryHandoverStatus.SIGNED
+    });
+
+    await expect(
+      service.getAdminSignedContractPreview(
+        state.task.id,
+        adminUser()
+      )
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.getPortalSignedContractPreview(
+        state.contract.id,
+        currentCustomer("customer-1")
+      )
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(
+      storageService.getContractSignedArtifactStream
+    ).not.toHaveBeenCalled();
   });
 });
 

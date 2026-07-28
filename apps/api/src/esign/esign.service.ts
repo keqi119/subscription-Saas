@@ -3186,15 +3186,6 @@ function findCurrentPortalStage1SigningTask(contract: ContractForESign) {
   );
 }
 
-function findStage2PortalSigningTask(contract: ContractForESign) {
-  return contract.esignTasks.find(
-    (task) =>
-      task.signingStage ===
-        PrismaESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
-      task.documentType === PrismaESignDocumentType.DELIVERY_HANDOVER
-  );
-}
-
 function ensureTaskOwnedByCustomer(task: ESignTaskWithDetails, customerId: string) {
   if (task.customerId !== customerId || task.contract.customerId !== customerId) {
     throw new NotFoundException("电子签任务不存在。");
@@ -3799,12 +3790,10 @@ function toPortalContractDetail(contract: ContractForESign) {
 }
 
 function getPortalContractSigningIdentity(contract: ContractForESign) {
-  const stage2Task = findStage2PortalSigningTask(contract);
   const task = findCurrentPortalSigningTask(contract);
   const handover = contract.handoverDeliveryHandover;
   const stage2Typed =
-    hasAuthoritativeStage2HandoverRelation(handover) ||
-    Boolean(stage2Task);
+    hasAuthoritativeStage2HandoverRelation(handover);
   if (stage2Typed) {
     const activeWorkOrders = (handover?.workOrders ?? []).filter(
       (workOrder) =>

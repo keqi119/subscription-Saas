@@ -1936,7 +1936,31 @@ describe("ESignService", () => {
     });
   });
 
-  it("fails the generic Stage 1 signing endpoint closed for Stage 2 even when its work-order pointer is missing", async () => {
+  it("does not classify a Portal contract as Stage 2 without an authoritative handover relation", async () => {
+    const { service, state } = createESignFixture();
+    await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext()
+    );
+    Object.assign(state.tasks[0]!, {
+      documentType: "DELIVERY_HANDOVER",
+      signingStage: "STAGE2_DELIVERY_HANDOVER"
+    });
+
+    const portalContract = await service.getPortalContract(
+      "contract-1",
+      currentCustomer("customer-1")
+    );
+
+    expect(portalContract.signTask).toMatchObject({
+      documentType: null,
+      signingStage: null,
+      workOrderId: null
+    });
+  });
+
+  it("does not classify a detached Stage 2 task without its authoritative handover relation", async () => {
     const harness = createTypedStage2CallbackFixture();
     harness.state.deliveryHandovers[0]!.handoverContractId = null;
     harness.state.workOrders.splice(0);
@@ -1949,8 +1973,8 @@ describe("ESignService", () => {
 
     expect(detail).toMatchObject({
       canSign: false,
-      documentType: "DELIVERY_HANDOVER",
-      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      documentType: null,
+      signingStage: null,
       workOrderId: null
     });
     await expect(

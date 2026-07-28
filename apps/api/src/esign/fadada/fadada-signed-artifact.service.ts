@@ -23,6 +23,10 @@ import { createHash } from "node:crypto";
 import type { Readable } from "node:stream";
 
 import { RequestUser } from "../../auth/auth.types";
+import {
+  hasAuthoritativeStage2HandoverRelation,
+  hasCompleteStage2HandoverArchive
+} from "../../delivery-handover/stage2-handover-archive-state";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CurrentCustomer } from "../../portal/portal-auth.types";
 import { StorageService } from "../../storage/storage.service";
@@ -38,6 +42,10 @@ export const FADADA_ARCHIVE_SIGNED_PDF_TOO_LARGE = "FADADA_ARCHIVE_SIGNED_PDF_TO
 export const STAGE2_HANDOVER_ARCHIVE_INVALID_TASK = "STAGE2_HANDOVER_ARCHIVE_INVALID_TASK";
 export const STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH = "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH";
 export const STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED = "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED";
+export const STAGE2_HANDOVER_ARCHIVE_INCONSISTENT =
+  "STAGE2_HANDOVER_ARCHIVE_INCONSISTENT";
+export const STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED =
+  "STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED";
 
 const MAX_SIGNED_PDF_BYTES = 20 * 1024 * 1024;
 const DEFAULT_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
@@ -118,6 +126,18 @@ export class FadadaSignedArtifactService {
     skippedReason?: string;
   }> {
     const task = await this.findTaskByIdOrThrow(input.taskId);
+    if (
+      hasAuthoritativeStage2HandoverRelation(task.deliveryHandover) ||
+      task.signingStage === ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+      task.documentType === ESignDocumentType.DELIVERY_HANDOVER
+    ) {
+      throw new BadRequestException({
+        code: STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED,
+        message:
+          `${STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED}: ` +
+          "Stage 2 handover tasks must use the typed handover archive workflow."
+      });
+    }
     this.assertArchiveableTask(task, Boolean(input.force));
 
     if (task.signedDocumentObjectKey && !input.force) {
@@ -216,19 +236,33 @@ export class FadadaSignedArtifactService {
     skippedReason?: string;
   }> {
     const task = await this.findTaskByIdOrThrow(input.taskId);
-    const handover = assertStage2ArchiveableTask(task);
+    let handover = assertStage2ArchiveableTask(task);
     assertStage2ArchiveSourceBinding(task, handover);
 
     if (
       handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
-      handover.signedDocumentFileId &&
-      isSha256Digest(handover.signedPdfHash)
+      !hasCompleteStage2HandoverArchive(handover)
     ) {
+      handover = await this.recoverIncompleteStage2Archive(
+        task,
+        handover,
+        input.actorId
+      );
+    }
+    if (hasCompleteStage2HandoverArchive(handover)) {
       return {
         archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
         archived: false,
         skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
       };
+    }
+    const platformCustomerId =
+      loadFadadaConfig(this.configService).platformCustomerId;
+    if (!platformCustomerId) {
+      throw new BadRequestException({
+        code: "FADADA_PLATFORM_CUSTOMER_ID_REQUIRED",
+        message: "FADADA_PLATFORM_CUSTOMER_ID is required for Stage 2 signed-PDF archival."
+      });
     }
     const originalName = `${sanitizeFileName(task.contract.contractNo)}-signed.pdf`;
     const attemptedAt = new Date();
@@ -288,19 +322,34 @@ export class FadadaSignedArtifactService {
       }
     });
     if (claimed.count !== 1) {
-      const current = await this.prisma.vehicleDeliveryHandover.findUnique({
+      let current = await this.prisma.vehicleDeliveryHandover.findUnique({
         where: { id: handover.id }
       });
       if (
         current?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
-        current.signedDocumentFileId &&
-        isSha256Digest(current.signedPdfHash)
+        !hasCompleteStage2HandoverArchive(current)
       ) {
+        current = await this.recoverIncompleteStage2Archive(
+          task,
+          current,
+          input.actorId
+        );
+      }
+      if (hasCompleteStage2HandoverArchive(current)) {
         return {
           archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
           archived: false,
           skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
         };
+      }
+      if (
+        current?.status === DeliveryHandoverStatus.SIGNED &&
+        (
+          current.archiveStatus === DeliveryHandoverArchiveStatus.NOT_STARTED ||
+          current.archiveStatus === DeliveryHandoverArchiveStatus.FAILED
+        )
+      ) {
+        return this.archiveSignedStage2Handover(input);
       }
       if (
         current?.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
@@ -373,6 +422,7 @@ export class FadadaSignedArtifactService {
       const apiClient = this.getApiClient();
       const signResult = await apiClient.querySignResult({
         contractId: providerContractId,
+        customerId: platformCustomerId,
         transactionId: platformSigner.providerTransactionId!
       });
       const signedPdf = await apiClient.downloadSignedContract({
@@ -500,6 +550,7 @@ export class FadadaSignedArtifactService {
         signedDocumentFileId: string | null;
         signedObjectKey: string | null;
         signedPdfHash: string | null;
+        status: DeliveryHandoverStatus;
       } | null = null;
       try {
         current = await this.prisma.vehicleDeliveryHandover.findUnique({
@@ -511,8 +562,7 @@ export class FadadaSignedArtifactService {
       if (
         storedArtifact &&
         signedPdfHash &&
-        current?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
-        current.signedDocumentFileId &&
+        hasCompleteStage2HandoverArchive(current) &&
         current.signedObjectKey === storedArtifact.objectKey &&
         current.signedPdfHash === signedPdfHash
       ) {
@@ -567,6 +617,80 @@ export class FadadaSignedArtifactService {
         message: "The signed Stage 2 PDF could not be archived and can be retried."
       });
     }
+  }
+
+  private async recoverIncompleteStage2Archive(
+    task: SignedArtifactTask,
+    handover: NonNullable<SignedArtifactTask["deliveryHandover"]>,
+    actorId?: string
+  ): Promise<NonNullable<SignedArtifactTask["deliveryHandover"]>> {
+    if (
+      handover.archiveStatus !== DeliveryHandoverArchiveStatus.ARCHIVED ||
+      hasCompleteStage2HandoverArchive(handover)
+    ) {
+      return handover;
+    }
+
+    const resetAt = new Date();
+    const reset = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.vehicleDeliveryHandover.updateMany({
+        data: {
+          archiveLastAttemptAt: resetAt,
+          archiveLastError: STAGE2_HANDOVER_ARCHIVE_INCONSISTENT,
+          archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedObjectKey: null,
+          signedPdfHash: null,
+          status: DeliveryHandoverStatus.SIGNED,
+          updatedBy: actorId ?? null
+        },
+        where: {
+          archiveLastAttemptAt: handover.archiveLastAttemptAt,
+          archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+          deletedAt: null,
+          handoverESignTaskId: task.id,
+          id: handover.id,
+          signedDocumentFileId: handover.signedDocumentFileId,
+          signedObjectKey: handover.signedObjectKey,
+          signedPdfHash: handover.signedPdfHash,
+          status: handover.status
+        }
+      });
+      if (updated.count !== 1) {
+        return false;
+      }
+      await tx.contractESignTask.update({
+        data: { signedDocumentObjectKey: null },
+        where: { id: task.id }
+      });
+      return true;
+    });
+    if (reset) {
+      return {
+        ...handover,
+        archiveLastAttemptAt: resetAt,
+        archiveLastError: STAGE2_HANDOVER_ARCHIVE_INCONSISTENT,
+        archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+        archivedAt: null,
+        signedDocumentFileId: null,
+        signedObjectKey: null,
+        signedPdfHash: null,
+        status: DeliveryHandoverStatus.SIGNED,
+        updatedBy: actorId ?? null
+      };
+    }
+
+    const current = await this.prisma.vehicleDeliveryHandover.findUnique({
+      where: { id: handover.id }
+    });
+    if (!current) {
+      throw stage2ArchiveBadRequest(
+        STAGE2_HANDOVER_ARCHIVE_INCONSISTENT,
+        "The incomplete Stage 2 archive no longer exists."
+      );
+    }
+    return current;
   }
 
   async getAdminSignedContractPreview(taskId: string, user: RequestUser): Promise<FadadaSignedContractPreview> {
@@ -628,11 +752,37 @@ export class FadadaSignedArtifactService {
   }
 
   private async buildPreview(task: SignedArtifactTask): Promise<FadadaSignedContractPreview> {
-    if (!task.signedDocumentObjectKey) {
+    let signedObjectKey = task.signedDocumentObjectKey;
+    if (hasAuthoritativeStage2HandoverRelation(task.deliveryHandover)) {
+      const handover = task.deliveryHandover;
+      if (
+        handover.deletedAt ||
+        !hasCompleteStage2HandoverArchive(handover)
+      ) {
+        throw new NotFoundException(
+          `${FADADA_ARCHIVE_SIGNED_PDF_MISSING}: signed PDF artifact not found`
+        );
+      }
+      const fileObject = await this.prisma.fileObject.findUnique({
+        where: { id: handover.signedDocumentFileId }
+      });
+      if (
+        !fileObject?.bucket.trim() ||
+        fileObject.objectKey !== handover.signedObjectKey ||
+        fileObject.mimeType?.trim().toLowerCase() !== "application/pdf" ||
+        fileObject.sizeBytes <= 0n
+      ) {
+        throw new NotFoundException(
+          `${FADADA_ARCHIVE_SIGNED_PDF_MISSING}: signed PDF artifact not found`
+        );
+      }
+      signedObjectKey = handover.signedObjectKey;
+    }
+    if (!signedObjectKey) {
       throw new NotFoundException(`${FADADA_ARCHIVE_SIGNED_PDF_MISSING}: signed PDF artifact not found`);
     }
 
-    const object = await this.storageService.getContractSignedArtifactStream(task.signedDocumentObjectKey);
+    const object = await this.storageService.getContractSignedArtifactStream(signedObjectKey);
     if (object.contentType && !object.contentType.toLowerCase().includes("application/pdf")) {
       throw new BadRequestException(`${FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF}: signed artifact must be a PDF`);
     }

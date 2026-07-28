@@ -72,7 +72,7 @@ import {
 } from "../../../lib/admin-stage2-handover-esign";
 import {
   buildAdminStage2HandoverPdfDownloadUrl,
-  buildAdminStage2HandoverPdfUrl,
+  getAdminStage2HandoverDocumentDownload,
   type Stage2HandoverPdfArtifact
 } from "../../../lib/admin-stage2-handover-pdf";
 import type { AuthMeResponse } from "../../../lib/auth";
@@ -2655,7 +2655,13 @@ function Stage2HandoverWorkflowCell({
   const actionDisplay = status
     ? getAdminStage2HandoverESignDisplay(status)
     : null;
-  const downloadUrl = buildAdminStage2HandoverPdfUrl(workOrder.stage2Pdf?.downloadUrl);
+  const documentDownload = getAdminStage2HandoverDocumentDownload({
+    archiveStatus: workOrder.stage2Pdf?.archiveStatus,
+    handoverStatus: workOrder.stage2Pdf?.handoverStatus,
+    signedArtifactAvailable: workOrder.stage2Pdf?.signedArtifactAvailable,
+    sourceDownloadUrl: workOrder.stage2Pdf?.downloadUrl,
+    workOrderId: workOrder.id
+  });
   return (
     <Space
       orientation="vertical"
@@ -2695,15 +2701,15 @@ function Stage2HandoverWorkflowCell({
           >
             {workOrder.stage2Pdf.documentNo || "交接确认单"}
           </Typography.Text>
-          {downloadUrl ? (
+          {documentDownload ? (
             <Button
-              href={downloadUrl}
+              href={documentDownload.url}
               icon={<DownloadOutlined />}
               rel="noreferrer"
               size="small"
               target="_blank"
             >
-              下载
+              {documentDownload.label}
             </Button>
           ) : null}
         </Space>

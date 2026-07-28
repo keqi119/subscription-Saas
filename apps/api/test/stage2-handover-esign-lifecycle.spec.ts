@@ -2773,13 +2773,13 @@ describe("Stage2HandoverESignService", () => {
 
     expect(status).toMatchObject({
       archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
-      signedArtifactAvailable: true,
+      signedArtifactAvailable: false,
       taskId: "stage2-task-1"
     });
     expect(signedDocument).toEqual(
       expect.objectContaining({
         archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
-        available: true,
+        available: false,
         handoverId: "handover-1",
         taskId: "stage2-task-1",
         workOrderId: "work-order-1"
@@ -2797,6 +2797,108 @@ describe("Stage2HandoverESignService", () => {
     ]) {
       expect(serialized.toLowerCase()).not.toContain(forbidden.toLowerCase());
     }
+  });
+
+  it("requires every typed archive field in Admin, Portal, and signed-document status projections", async () => {
+    const completeArchive = {
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/signed.pdf",
+      signedPdfHash: "c".repeat(64),
+      status: DeliveryHandoverStatus.ARCHIVED
+    };
+    const incompleteArchives = [
+      {
+        description: "archive status",
+        override: {
+          archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED
+        }
+      },
+      {
+        description: "handover status",
+        override: { status: DeliveryHandoverStatus.SIGNED }
+      },
+      {
+        description: "signed document file",
+        override: { signedDocumentFileId: null }
+      },
+      {
+        description: "signed object key",
+        override: { signedObjectKey: null }
+      },
+      {
+        description: "signed PDF hash",
+        override: { signedPdfHash: null }
+      }
+    ];
+
+    for (const incompleteArchive of incompleteArchives) {
+      const harness = createHarness();
+      const task = makeTask({
+        customerStatus: ESignSignerStatus.SIGNED,
+        platformStatus: ESignSignerStatus.SIGNED,
+        taskStatus: ESignTaskStatus.COMPLETED
+      });
+      task.completedAt = NOW;
+      attachPortalTask(harness, task);
+      Object.assign(
+        harness.state.workOrder.handover,
+        completeArchive,
+        incompleteArchive.override
+      );
+
+      const admin = await harness.service.getStatus("work-order-1");
+      const portal = await harness.service.getPortalStatus(
+        "work-order-1",
+        "customer-1"
+      );
+      const signedDocument =
+        await harness.service.getSignedDocumentState("work-order-1");
+
+      expect(
+        admin.signedArtifactAvailable,
+        incompleteArchive.description
+      ).toBe(false);
+      expect(
+        portal.signedArtifactAvailable,
+        incompleteArchive.description
+      ).toBe(false);
+      expect(signedDocument.available, incompleteArchive.description).toBe(
+        false
+      );
+      expect(
+        signedDocument.retryAvailable,
+        incompleteArchive.description
+      ).toBe(true);
+      expect(JSON.stringify({ admin, portal, signedDocument })).not.toContain(
+        completeArchive.signedObjectKey
+      );
+    }
+
+    const harness = createHarness();
+    const task = makeTask({
+      customerStatus: ESignSignerStatus.SIGNED,
+      platformStatus: ESignSignerStatus.SIGNED,
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    task.completedAt = NOW;
+    attachPortalTask(harness, task);
+    Object.assign(harness.state.workOrder.handover, completeArchive);
+
+    await expect(harness.service.getStatus("work-order-1")).resolves.toMatchObject({
+      signedArtifactAvailable: true
+    });
+    await expect(
+      harness.service.getPortalStatus("work-order-1", "customer-1")
+    ).resolves.toMatchObject({
+      signedArtifactAvailable: true
+    });
+    await expect(
+      harness.service.getSignedDocumentState("work-order-1")
+    ).resolves.toMatchObject({
+      available: true,
+      retryAvailable: false
+    });
   });
 
   it("rejects status when the customer signer has the wrong role", async () => {
@@ -3515,6 +3617,12 @@ describe("Stage 2 handover eSign Admin API contract", () => {
         "handover-work-orders/:id/esign/signed-document",
         RequestMethod.GET,
         PermissionCode.DELIVERY_VIEW
+      ],
+      [
+        "downloadStage2SignedDocument",
+        "handover-work-orders/:id/esign/signed-document/download",
+        RequestMethod.GET,
+        PermissionCode.DELIVERY_VIEW
       ]
     ] as const;
 
@@ -4036,6 +4144,7 @@ function makeWorkOrder() {
       platformSignedAt: null as Date | null,
       signedDocumentFileId: null as null | string,
       signedObjectKey: null as null | string,
+      signedPdfHash: null as null | string,
       sourceDocumentFileId: "file-stage2-1" as null | string,
       sourceObjectKey: "private/stage2/source-1.pdf",
       sourcePdfHash: "b".repeat(64),

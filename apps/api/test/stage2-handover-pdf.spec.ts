@@ -4,12 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
+import { ForbiddenException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Reflector } from "@nestjs/core";
+import { PermissionCode } from "@subscription-saas/shared";
 import {
   BusinessType,
   ContractStatus,
   ContractTemplateType,
   ContractVersionStatus,
+  DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
@@ -26,21 +30,40 @@ import {
   STAGE2_HANDOVER_PDF_MAX_PAGES,
   STAGE2_HANDOVER_PDF_TARGET_BYTES
 } from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
+import { PermissionsGuard } from "../src/auth/permissions.guard";
+import { HandoverWorkOrderAdminController } from "../src/handover-work-order/handover-work-order.controller";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 
 const pdfKitMock = vi.hoisted(() => {
+  interface FakePageOptions {
+    info?: Record<string, unknown>;
+    margin?: number;
+    margins?: { bottom?: number; left?: number; right?: number; top?: number };
+    size?: string | [number, number];
+  }
+
   class FakePDFDocument {
     static imageCalls: Array<{ image: Buffer | string; pageNumber: number }> = [];
-    static options: Record<string, unknown> = {};
+    static options: FakePageOptions = {};
     static rectCalls: Array<{
       height: number;
+      pageHeight: number;
       pageNumber: number;
+      pageWidth: number;
       width: number;
       x: number;
       y: number;
     }> = [];
-    static textCalls: Array<{ pageNumber: number; text: string }> = [];
+    static textCalls: Array<{
+      height: number;
+      pageHeight: number;
+      pageNumber: number;
+      pageWidth: number;
+      text: string;
+      x: number;
+      y: number;
+    }> = [];
 
     static startCapture() {
       FakePDFDocument.imageCalls = [];
@@ -65,11 +88,7 @@ const pdfKitMock = vi.hoisted(() => {
     private listeners = new Map<string, Array<(...args: unknown[]) => void>>();
     private pageNumber = 1;
 
-    constructor(options: {
-      info?: Record<string, unknown>;
-      margin?: number;
-      size?: string | [number, number];
-    } = {}) {
+    constructor(options: FakePageOptions = {}) {
       FakePDFDocument.options = options;
       const margin = options.margin ?? 45;
       const [width, height] = Array.isArray(options.size) ? options.size : [595.28, 841.89];
@@ -82,8 +101,26 @@ const pdfKitMock = vi.hoisted(() => {
       this.y = margin;
     }
 
-    addPage() {
+    addPage(options?: FakePageOptions) {
       this.pageNumber += 1;
+      const pageOptions = options ?? FakePDFDocument.options;
+      const [width, height] = Array.isArray(pageOptions.size)
+        ? pageOptions.size
+        : pageOptions.size?.toUpperCase() === "A4"
+          ? [595.28, 841.89]
+          : [612, 792];
+      const defaultMargin = pageOptions.margin ?? 72;
+      this.page = {
+        height,
+        margins: {
+          bottom: pageOptions.margins?.bottom ?? defaultMargin,
+          left: pageOptions.margins?.left ?? defaultMargin,
+          right: pageOptions.margins?.right ?? defaultMargin,
+          top: pageOptions.margins?.top ?? defaultMargin
+        },
+        width
+      };
+      this.x = this.page.margins.left;
       this.y = this.page.margins.top;
       this.emit("pageAdded");
       return this;
@@ -140,7 +177,15 @@ const pdfKitMock = vi.hoisted(() => {
     }
 
     rect(x: number, y: number, width: number, height: number) {
-      FakePDFDocument.rectCalls.push({ height, pageNumber: this.pageNumber, width, x, y });
+      FakePDFDocument.rectCalls.push({
+        height,
+        pageHeight: this.page.height,
+        pageNumber: this.pageNumber,
+        pageWidth: this.page.width,
+        width,
+        x,
+        y
+      });
       return this;
     }
 
@@ -155,8 +200,17 @@ const pdfKitMock = vi.hoisted(() => {
       if (typeof y === "number") {
         this.y = y;
       }
-      FakePDFDocument.textCalls.push({ pageNumber: this.pageNumber, text });
-      this.y += this.heightOfString(text);
+      const height = this.heightOfString(text);
+      FakePDFDocument.textCalls.push({
+        height,
+        pageHeight: this.page.height,
+        pageNumber: this.pageNumber,
+        pageWidth: this.page.width,
+        text,
+        x: this.x,
+        y: this.y
+      });
+      this.y += height;
       return this;
     }
   }
@@ -270,8 +324,9 @@ describe("Stage 2 handover PDF renderer", () => {
   it("emits exactly two bounded signing slots at the final signature boxes without visible metadata", async () => {
     const renderer = new DeliveryHandoverPdfRendererService();
     const { rectCalls, textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+    const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
 
-    const result = await renderer.render(buildDeliveryHandoverPdfRenderModel(createRenderModelInput()), {
+    const result = await renderer.render(model, {
       cjkFontPath: process.execPath,
       evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
       loadAsset: async () => Buffer.from("synthetic-jpeg")
@@ -291,7 +346,7 @@ describe("Stage 2 handover PDF renderer", () => {
     const finalPageNumber = result.diagnostics.pageCount - 1;
     const finalPageSignatureBoxes = rectCalls
       .filter((call) => call.pageNumber === result.diagnostics.pageCount)
-      .slice(2, 4);
+      .filter((call) => call.height >= 144);
 
     expect(finalPageSignatureBoxes).toHaveLength(2);
     coordinates.forEach((coordinate, index) => {
@@ -313,6 +368,7 @@ describe("Stage 2 handover PDF renderer", () => {
       expect(numericValues.every(Number.isFinite)).toBe(true);
       expect(coordinate.pdfPageWidth).toBe(595.28);
       expect(coordinate.pdfPageHeight).toBe(841.89);
+      expect(signatureBox.height).toBeGreaterThanOrEqual(144);
       expect(coordinate.x).toBeCloseTo(
         ((signatureBox.x + signatureBox.width / 2) / 595.28) * 800,
         3
@@ -332,6 +388,25 @@ describe("Stage 2 handover PDF renderer", () => {
       new Set([finalPageNumber])
     );
 
+    const signatureRowBottom = Math.max(
+      ...finalPageSignatureBoxes.map((signatureBox) => signatureBox.y + signatureBox.height)
+    );
+    const signatureDetailText = textCalls.filter((call) =>
+      call.pageNumber === result.diagnostics.pageCount &&
+      (
+        call.text.includes(model.customer.idNumber) ||
+        call.text.includes(model.customer.mobile) ||
+        call.text.includes(model.platform.contactName) ||
+        call.text.includes(model.platform.contactPhone) ||
+        call.text.includes("日期")
+      )
+    );
+
+    expect(signatureDetailText).toHaveLength(6);
+    for (const detailText of signatureDetailText) {
+      expect(detailText.y).toBeGreaterThan(signatureRowBottom);
+    }
+
     for (const hiddenValue of [
       "STAGE2_HANDOVER_CUSTOMER",
       "STAGE2_HANDOVER_PLATFORM",
@@ -348,10 +423,10 @@ describe("Stage 2 handover PDF renderer", () => {
     }
   });
 
-  it("keeps signing slots on the final page when operation tips paginate on a short supported page", async () => {
+  it("creates a bounded final signing page for a short supported page", async () => {
     const renderer = new DeliveryHandoverPdfRendererService();
     const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
-    const { textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+    const { rectCalls, textCalls } = pdfKitMock.FakePDFDocument.startCapture();
 
     const result = await renderer.render(model, {
       cjkFontPath: process.execPath,
@@ -361,12 +436,53 @@ describe("Stage 2 handover PDF renderer", () => {
     });
     const visibleText = textCalls.map((call) => call.text).join("\n");
     const finalPageNumber = result.diagnostics.pageCount - 1;
+    const finalPagePdfKitNumber = result.diagnostics.pageCount;
+    const finalPageTableBorders = rectCalls.filter(
+      (call) => call.pageNumber === finalPagePdfKitNumber
+    );
+    const finalPageSignatureBoxes = finalPageTableBorders.filter(
+      (call) => call.height >= 144
+    );
+    const finalPageDateText = textCalls.filter(
+      (call) => call.pageNumber === finalPagePdfKitNumber && call.text.includes("日期")
+    );
 
     expect(result.slotCoordinates.map((coordinate) => coordinate.pageNumber)).toEqual([
       finalPageNumber,
       finalPageNumber
     ]);
     expect(finalPageNumber).toBeGreaterThan(0);
+    expect(finalPageTableBorders).toHaveLength(12);
+    expect(finalPageSignatureBoxes).toHaveLength(2);
+    expect(finalPageDateText).toHaveLength(2);
+    for (const border of finalPageTableBorders) {
+      expect(border.x).toBeGreaterThanOrEqual(45);
+      expect(border.y).toBeGreaterThanOrEqual(45);
+      expect(border.x + border.width).toBeLessThanOrEqual(border.pageWidth - 45);
+      expect(border.y + border.height).toBeLessThanOrEqual(border.pageHeight - 45);
+    }
+    for (const dateText of finalPageDateText) {
+      expect(dateText.x).toBeGreaterThanOrEqual(45);
+      expect(dateText.y).toBeGreaterThanOrEqual(45);
+      expect(dateText.x).toBeLessThanOrEqual(dateText.pageWidth - 45);
+      expect(dateText.y + dateText.height).toBeLessThanOrEqual(dateText.pageHeight - 45);
+    }
+    result.slotCoordinates.forEach((coordinate, index) => {
+      const signatureBox = finalPageSignatureBoxes[index]!;
+      expect(coordinate.pdfPageHeight).toBeGreaterThan(320);
+      expect(coordinate.pdfPageHeight).toBe(signatureBox.pageHeight);
+      expect(coordinate.pdfPageWidth).toBe(signatureBox.pageWidth);
+      expect(coordinate.x).toBeCloseTo(
+        ((signatureBox.x + signatureBox.width / 2) / signatureBox.pageWidth) * 800,
+        3
+      );
+      expect(coordinate.y).toBeCloseTo(
+        ((signatureBox.y + signatureBox.height / 2) / signatureBox.pageHeight) * 1131,
+        3
+      );
+      expect(coordinate.width).toBeCloseTo((signatureBox.width / signatureBox.pageWidth) * 800, 3);
+      expect(coordinate.height).toBeCloseTo((signatureBox.height / signatureBox.pageHeight) * 1131, 3);
+    });
     for (const tip of model.operationTips) {
       expect(visibleText).toContain(tip);
     }
@@ -989,6 +1105,117 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(downloaded).not.toHaveProperty("objectKey");
   });
 
+  it("downloads the authoritative archived signed PDF through its linked FileObject", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+
+    const downloaded = await harness.service.downloadStage2SignedHandoverPdf(
+      "work-order-1"
+    );
+
+    expect(downloaded.filename).toBe("handover-signed.pdf");
+    expect(downloaded.mimeType).toBe("application/pdf");
+    expect(harness.storageService.getObject).toHaveBeenCalledWith(
+      "application-materials",
+      "contracts/contract-stage2-1/signed/handover.pdf"
+    );
+    expect(downloaded).not.toHaveProperty("objectKey");
+  });
+
+  it("pins the signed PDF response MIME type to the verified FileObject", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+    harness.storageService.getObject.mockResolvedValueOnce({
+      contentLength: harness.generatedPdfBuffer.length,
+      contentType: "image/png",
+      stream: Readable.from([harness.generatedPdfBuffer])
+    });
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).resolves.toMatchObject({ mimeType: "application/pdf" });
+  });
+
+  it("refuses the signed PDF download until the typed Stage 2 archive is complete", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.SIGNED
+      }
+    });
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_SIGNED_DOCUMENT_NOT_ARCHIVED"
+      })
+    });
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("refuses the signed PDF when its linked FileObject has a different object key", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+    harness.records.signedFileObject.objectKey =
+      "contracts/contract-stage2-1/signed/other.pdf";
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_SIGNED_DOCUMENT_MISSING"
+      })
+    });
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("refuses the signed PDF when its linked FileObject is not a PDF", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+    harness.records.signedFileObject.mimeType = "image/png";
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_SIGNED_DOCUMENT_MISSING"
+      })
+    });
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
   it("refuses to download a generated PDF after its manifest hash becomes stale", async () => {
     const harness = createServiceHarness({
       handover: {
@@ -1005,6 +1232,93 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
       .rejects.toThrow("源 PDF 已因证据变化失效");
     expect(harness.storageService.getObject).not.toHaveBeenCalled();
   });
+});
+
+describe("HandoverWorkOrderAdminController signed Stage 2 PDF download", () => {
+  const handler =
+    HandoverWorkOrderAdminController.prototype.downloadStage2SignedDocument;
+  const controllerClass = HandoverWorkOrderAdminController;
+
+  it("streams the verified signed PDF for a DELIVERY_VIEW user", async () => {
+    const stream = Readable.from([Buffer.from("%PDF-signed")]);
+    const handoverService = {
+      downloadStage2SignedHandoverPdf: vi.fn(async () => ({
+        filename: "handover-signed.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 11,
+        stream
+      }))
+    };
+    const controller = new HandoverWorkOrderAdminController(
+      handoverService as never,
+      {} as never,
+      {} as never
+    );
+    const response = { setHeader: vi.fn() };
+    const guard = new PermissionsGuard(new Reflector());
+
+    const result = await executeStage2SignedDocumentRoute(
+      guard,
+      controller,
+      [PermissionCode.DELIVERY_VIEW],
+      response as never
+    );
+
+    expect(handoverService.downloadStage2SignedHandoverPdf).toHaveBeenCalledWith(
+      "work-order-1"
+    );
+    expect(response.setHeader).toHaveBeenCalledWith(
+      "Content-Type",
+      "application/pdf"
+    );
+    expect(response.setHeader).toHaveBeenCalledWith("Content-Length", "11");
+    expect(response.setHeader).toHaveBeenCalledWith(
+      "Content-Disposition",
+      "attachment; filename*=UTF-8''handover-signed.pdf"
+    );
+    expect((result as unknown as { getStream(): Readable }).getStream()).toBe(
+      stream
+    );
+  });
+
+  it("denies the signed PDF route before invoking the download service without DELIVERY_VIEW", () => {
+    const handoverService = {
+      downloadStage2SignedHandoverPdf: vi.fn()
+    };
+    const controller = new HandoverWorkOrderAdminController(
+      handoverService as never,
+      {} as never,
+      {} as never
+    );
+    const guard = new PermissionsGuard(new Reflector());
+
+    expect(() =>
+      executeStage2SignedDocumentRoute(guard, controller, [], {
+        setHeader: vi.fn()
+      } as never)
+    ).toThrow(ForbiddenException);
+    expect(handoverService.downloadStage2SignedHandoverPdf).not.toHaveBeenCalled();
+  });
+
+  function executeStage2SignedDocumentRoute(
+    guard: PermissionsGuard,
+    controller: HandoverWorkOrderAdminController,
+    permissions: PermissionCode[],
+    response: never
+  ) {
+    guard.canActivate(stage2SignedDocumentContext(permissions));
+    return controller.downloadStage2SignedDocument("work-order-1", response);
+  }
+
+  function stage2SignedDocumentContext(permissions: PermissionCode[]) {
+    return {
+      getClass: () => controllerClass,
+      getHandler: () => handler,
+      switchToHttp: () => ({
+        getRequest: () => ({ user: { permissions } })
+      })
+    } as never;
+  }
 });
 
 function deferred<T>() {
@@ -1185,6 +1499,14 @@ function createServiceHarness(options: {
       originalName: "handover.pdf",
       sizeBytes: BigInt(generatedPdfBuffer.length)
     },
+    signedFileObject: {
+      bucket: "application-materials",
+      id: "file-signed-pdf-1",
+      mimeType: "application/pdf",
+      objectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+      originalName: "handover-signed.pdf",
+      sizeBytes: BigInt(generatedPdfBuffer.length)
+    },
     derivativeFileObjects: derivativeIds.map((id) => ({
       bucket: "application-materials",
       id,
@@ -1334,7 +1656,11 @@ function createServiceHarness(options: {
         records.derivativeFileObjects.filter((fileObject) => where.id.in.includes(fileObject.id))
       ),
       findUnique: vi.fn(async ({ where }) =>
-        where.id === "file-pdf-1" ? records.fileObject : null
+        where.id === "file-pdf-1"
+          ? records.fileObject
+          : where.id === "file-signed-pdf-1"
+            ? records.signedFileObject
+            : null
       ),
       upsert: vi.fn(async ({ create }) => prisma.fileObject.create({ data: create }))
     },

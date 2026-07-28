@@ -233,6 +233,18 @@ export class HandoverWorkOrderAdminController {
     return this.stage2HandoverESignService.getSignedDocumentState(id);
   }
 
+  @Get("handover-work-orders/:id/esign/signed-document/download")
+  @RequirePermissions(PermissionCode.DELIVERY_VIEW)
+  async downloadStage2SignedDocument(
+    @Param("id") id: string,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const file =
+      await this.handoverWorkOrderService.downloadStage2SignedHandoverPdf(id);
+    setEvidenceFileHeaders(response, file, "attachment");
+    return new StreamableFile(file.stream);
+  }
+
   @Post("handover-work-orders/:id/workflow-jobs/:jobId/retry")
   @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
   retryStage2WorkflowJob(

@@ -25,7 +25,8 @@ import {
   type AdminStage2HandoverWorkflowJobType
 } from "../src/lib/admin-stage2-handover-esign";
 import {
-  buildAdminStage2HandoverPdfDownloadUrl
+  buildAdminStage2HandoverPdfDownloadUrl,
+  getAdminStage2HandoverDocumentDownload
 } from "../src/lib/admin-stage2-handover-pdf";
 
 afterEach(() => {
@@ -104,6 +105,54 @@ describe("Admin Stage 2 handover eSign API", () => {
     expect(buildAdminStage2HandoverPdfDownloadUrl("work order")).toBe(
       "http://localhost:3001/api/handover-work-orders/work%20order/pdf/download"
     );
+  });
+
+  it("uses the authoritative signed PDF as the primary download after Stage 2 archive", () => {
+    expect(
+      getAdminStage2HandoverDocumentDownload({
+        archiveStatus: "ARCHIVED",
+        handoverStatus: "ARCHIVED",
+        signedArtifactAvailable: true,
+        sourceDownloadUrl: "/api/handover-work-orders/work%20order/pdf/download",
+        workOrderId: "work order"
+      })
+    ).toEqual({
+      kind: "SIGNED",
+      label: "下载已签署 PDF",
+      url: "http://localhost:3001/api/handover-work-orders/work%20order/esign/signed-document/download"
+    });
+  });
+
+  it("does not let a generic e-sign artifact promote the Stage 2 signed PDF", () => {
+    expect(
+      getAdminStage2HandoverDocumentDownload({
+        archiveStatus: "ARCHIVED",
+        handoverStatus: "SIGNED",
+        signedArtifactAvailable: true,
+        sourceDownloadUrl: "/api/handover-work-orders/work%20order/pdf/download",
+        workOrderId: "work order"
+      })
+    ).toEqual({
+      kind: "SOURCE",
+      label: "查看待签原件",
+      url: "http://localhost:3001/api/handover-work-orders/work%20order/pdf/download"
+    });
+  });
+
+  it("labels the source PDF explicitly while the signed PDF archive is unavailable", () => {
+    expect(
+      getAdminStage2HandoverDocumentDownload({
+        archiveStatus: "FAILED",
+        handoverStatus: "SIGNED",
+        signedArtifactAvailable: false,
+        sourceDownloadUrl: "/api/handover-work-orders/work%20order/pdf/download",
+        workOrderId: "work order"
+      })
+    ).toEqual({
+      kind: "SOURCE",
+      label: "查看待签原件",
+      url: "http://localhost:3001/api/handover-work-orders/work%20order/pdf/download"
+    });
   });
 
   it("posts an explicit bounded reason when an Admin voids a recoverable task", async () => {
@@ -350,6 +399,31 @@ describe("Admin Stage 2 handover eSign display", () => {
     expect(display.archiveRetryAvailable).toBe(false);
     expect(JSON.stringify(display)).not.toMatch(/确认交付|delivery|lease|billing|payment/i);
   });
+
+  it.each([
+    "archiveStatus",
+    "handover status",
+    "signedDocumentFileId",
+    "signedObjectKey",
+    "signedPdfHash"
+  ])(
+    "does not label the archive complete when the API projection is missing %s",
+    () => {
+      const display = getAdminStage2HandoverESignDisplay(
+        esignStatus({
+          archiveStatus: "ARCHIVED",
+          customerSigner: signer({ status: "SIGNED" }),
+          platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
+          signedArtifactAvailable: false,
+          status: "COMPLETED",
+          taskId: "task-private-id"
+        })
+      );
+
+      expect(display.archive.label).toBe("签署完成，待归档");
+      expect(display.archive.color).toBe("orange");
+    }
+  );
 
   it("keeps void and reissue unavailable after provider signing completes", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({

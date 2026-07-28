@@ -13,7 +13,7 @@ import {
   VehicleDamageType,
   VehicleReturnType
 } from "@prisma/client";
-import { IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, Min, ValidateNested } from "class-validator";
+import { IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 
 export class CreateOrderFromQuoteDto {
@@ -377,6 +377,18 @@ export class ArchiveContractDto {
   @IsOptional()
   @IsUUID()
   fileId?: string;
+}
+
+export class ListContractsQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  contractNo?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  orderNo?: string;
 }
 
 export class CreateOrderChangeDto {

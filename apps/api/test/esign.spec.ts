@@ -1038,6 +1038,56 @@ describe("ESignService", () => {
     }
   );
 
+  it("uses the linked handover as Stage 2 callback identity despite mismatched legacy discriminators", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.task.documentType = "SUBSCRIPTION_CONTRACT";
+    harness.task.requestSnapshot = {
+      signingStage: "STAGE1_SUBSCRIPTION_CONTRACT"
+    };
+    harness.task.signingStage = "STAGE1_SUBSCRIPTION_CONTRACT";
+    harness.customerSigner.providerSignerId =
+      harness.customerTransactionId;
+    harness.platformSigner.providerSignerId =
+      harness.platformTransactionId;
+
+    await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.customerTransactionId
+      })
+    );
+    await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.platformTransactionId
+      })
+    );
+
+    expect(harness.task).toMatchObject({
+      completedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(harness.handover).toMatchObject({
+      completedAt: expect.any(Date),
+      customerSignedAt: expect.any(Date),
+      platformSignedAt: expect.any(Date),
+      status: "SIGNED"
+    });
+    expect(harness.stage1Contract.order.orderStatus).toBe(
+      OrderStatus.PENDING_DELIVERY
+    );
+    expect(
+      harness.prisma.subscriptionOrder.updateMany
+    ).not.toHaveBeenCalled();
+    expect(
+      harness.notificationService.notifyCustomer
+    ).not.toHaveBeenCalled();
+  });
+
   it("keeps an archived Stage 2 handover terminal after a repeated platform callback", async () => {
     const harness = createTypedStage2CallbackFixture();
     const completedAt =
@@ -1886,7 +1936,31 @@ describe("ESignService", () => {
     });
   });
 
-  it("fails the generic Stage 1 signing endpoint closed for Stage 2 even when its work-order pointer is missing", async () => {
+  it("does not classify a Portal contract as Stage 2 without an authoritative handover relation", async () => {
+    const { service, state } = createESignFixture();
+    await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext()
+    );
+    Object.assign(state.tasks[0]!, {
+      documentType: "DELIVERY_HANDOVER",
+      signingStage: "STAGE2_DELIVERY_HANDOVER"
+    });
+
+    const portalContract = await service.getPortalContract(
+      "contract-1",
+      currentCustomer("customer-1")
+    );
+
+    expect(portalContract.signTask).toMatchObject({
+      documentType: null,
+      signingStage: null,
+      workOrderId: null
+    });
+  });
+
+  it("does not classify a detached Stage 2 task without its authoritative handover relation", async () => {
     const harness = createTypedStage2CallbackFixture();
     harness.state.deliveryHandovers[0]!.handoverContractId = null;
     harness.state.workOrders.splice(0);
@@ -1899,8 +1973,8 @@ describe("ESignService", () => {
 
     expect(detail).toMatchObject({
       canSign: false,
-      documentType: "DELIVERY_HANDOVER",
-      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      documentType: null,
+      signingStage: null,
       workOrderId: null
     });
     await expect(
@@ -1931,6 +2005,137 @@ describe("ESignService", () => {
       hasSignedDocument: true
     });
     expect(portalView.signTask).not.toHaveProperty("signedDocumentObjectKey");
+  });
+
+  it("requires the complete typed Stage 2 archive tuple before projecting a signed document", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const completeArchive = {
+      archiveStatus: "ARCHIVED",
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/archived.pdf",
+      signedPdfHash: "d".repeat(64),
+      status: "ARCHIVED"
+    };
+    Object.assign(harness.handover, completeArchive);
+
+    const archivedAdminView = await harness.service.getTask(
+      harness.task.id,
+      adminUser()
+    );
+    const archivedPortalView = await harness.service.getPortalContract(
+      harness.stage2Contract.id,
+      currentCustomer("customer-1")
+    );
+
+    expect(archivedAdminView).toMatchObject({
+      hasSignedDocument: true,
+      signedArtifactAvailable: true
+    });
+    expect(archivedPortalView).toMatchObject({
+      hasSignedDocument: true,
+      signTask: { hasSignedDocument: true }
+    });
+    expect(JSON.stringify({ archivedAdminView, archivedPortalView })).not.toContain(
+      completeArchive.signedObjectKey
+    );
+
+    const incompleteArchives = [
+      { archiveStatus: "PENDING", description: "archive status" },
+      { status: "SIGNED", description: "handover status" },
+      { signedDocumentFileId: null, description: "signed file" },
+      { signedObjectKey: null, description: "signed object key" },
+      { signedPdfHash: null, description: "signed PDF hash" }
+    ];
+
+    for (const incompleteArchive of incompleteArchives) {
+      Object.assign(harness.handover, completeArchive, incompleteArchive);
+
+      const adminView = await harness.service.getTask(harness.task.id, adminUser());
+      const portalView = await harness.service.getPortalContract(
+        harness.stage2Contract.id,
+        currentCustomer("customer-1")
+      );
+
+      expect(adminView.hasSignedDocument, incompleteArchive.description).toBe(false);
+      expect(adminView.signedArtifactAvailable, incompleteArchive.description).toBe(false);
+      expect(portalView.hasSignedDocument, incompleteArchive.description).toBe(false);
+      expect(portalView.signTask?.hasSignedDocument, incompleteArchive.description).toBe(false);
+    }
+  });
+
+  it("projects authoritative Stage 2 archive state instead of a generic task object", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.task.taskStatus = ESignTaskStatus.COMPLETED;
+    harness.task.signedDocumentObjectKey =
+      "contracts/handover-contract-typed/esign/fadada/signed/legacy.pdf";
+    Object.assign(harness.handover, {
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      signedDocumentFileId: null,
+      signedPdfHash: null,
+      status: "SIGNED"
+    });
+
+    const adminView = await harness.service.getTask(
+      harness.task.id,
+      adminUser()
+    );
+    const portalView = await harness.service.getPortalContract(
+      harness.stage2Contract.id,
+      currentCustomer("customer-1")
+    );
+
+    expect(adminView).toMatchObject({
+      archiveError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      documentType: "DELIVERY_HANDOVER",
+      hasSignedDocument: false,
+      signedArtifactAvailable: false,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: "work-order-typed"
+    });
+    expect(adminView).not.toHaveProperty("signedDocumentObjectKey");
+    expect(portalView).toMatchObject({
+      hasSignedDocument: false,
+      signTask: {
+        hasSignedDocument: false,
+        signingStage: "STAGE2_DELIVERY_HANDOVER"
+      }
+    });
+  });
+
+  it("uses the linked handover as Admin Stage 2 identity despite mismatched task discriminators", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.task.documentType = "SUBSCRIPTION_CONTRACT";
+    harness.task.signingStage = "STAGE1_SUBSCRIPTION_CONTRACT";
+    harness.task.signedDocumentObjectKey =
+      "contracts/generic/signed-should-not-promote.pdf";
+    Object.assign(harness.handover, {
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      signedDocumentFileId: null,
+      signedObjectKey: null,
+      signedPdfHash: null,
+      status: "SIGNED"
+    });
+
+    const adminView = await harness.service.getTask(
+      harness.task.id,
+      adminUser()
+    );
+
+    expect(adminView).toMatchObject({
+      archiveError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      documentType: "DELIVERY_HANDOVER",
+      hasSignedDocument: false,
+      signedArtifactAvailable: false,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: "work-order-typed"
+    });
+    expect(JSON.stringify(adminView)).not.toContain(
+      harness.task.signedDocumentObjectKey
+    );
   });
 
   it("exposes safe Stage 1 signer slot metadata for Admin display grouping", async () => {
@@ -3031,6 +3236,11 @@ function hydrateTask(state: FakeState, task: FakeTask) {
   if (!contract) {
     throw new Error("contract not found");
   }
+  const deliveryHandover = state.deliveryHandovers.find(
+    (handover) =>
+      handover.handoverESignTaskId === task.id &&
+      !handover.deletedAt
+  );
 
   return {
     ...task,
@@ -3038,6 +3248,14 @@ function hydrateTask(state: FakeState, task: FakeTask) {
       .filter((log) => log.taskId === task.id)
       .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime()),
     contract,
+    deliveryHandover: deliveryHandover
+      ? {
+          ...deliveryHandover,
+          workOrders: state.workOrders.filter(
+            (workOrder) => workOrder.handoverId === deliveryHandover.id
+          )
+        }
+      : null,
     signers: state.signers.filter((signer) => signer.taskId === task.id && !signer.deletedAt)
   };
 }

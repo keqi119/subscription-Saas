@@ -47,6 +47,7 @@ import { ESignService } from "../esign/esign.service";
 import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
 import { normalizeFieldOperatorPhone } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
+import { hasCompleteStage2HandoverArchive } from "../delivery-handover/stage2-handover-archive-state";
 import {
   Stage2HandoverESignBlocker,
   Stage2HandoverESignReadiness,
@@ -469,8 +470,8 @@ export class Stage2HandoverESignService {
         PLATFORM_SLOT_ID
       ),
       ready: readiness.ready,
-      signedArtifactAvailable: Boolean(
-        workOrder.handover?.signedDocumentFileId
+      signedArtifactAvailable: hasCompleteStage2HandoverArchive(
+        workOrder.handover
       ),
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
       status: task?.taskStatus ?? null,
@@ -1721,17 +1722,18 @@ export class Stage2HandoverESignService {
       archiveRetryCount: handover?.archiveRetryCount ?? 0,
       archiveStatus: handover?.archiveStatus ?? null,
       archivedAt: handover?.archivedAt ?? null,
-      available: Boolean(handover?.signedDocumentFileId),
+      available: hasCompleteStage2HandoverArchive(handover),
       completedAt: handover?.completedAt ?? null,
       handoverId: handover?.id ?? null,
       retryAvailable: Boolean(
         handover &&
         task?.taskStatus === ESignTaskStatus.COMPLETED &&
-        handover.status === DeliveryHandoverStatus.SIGNED &&
         (
-          handover.archiveStatus === DeliveryHandoverArchiveStatus.NOT_STARTED ||
-          handover.archiveStatus === DeliveryHandoverArchiveStatus.FAILED
-        )
+          handover.status === DeliveryHandoverStatus.SIGNED ||
+          handover.status === DeliveryHandoverStatus.ARCHIVED
+        ) &&
+        !hasCompleteStage2HandoverArchive(handover) &&
+        handover.archiveStatus !== DeliveryHandoverArchiveStatus.PENDING
       ),
       taskId: task?.id ?? null,
       workOrderId
@@ -3227,7 +3229,7 @@ export class Stage2HandoverESignService {
           !taskMatchesSourceBinding(task, handover)
         )
       ),
-      signedArtifactAvailable: Boolean(handover?.signedDocumentFileId),
+      signedArtifactAvailable: hasCompleteStage2HandoverArchive(handover),
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
       sourceArtifact:
         handover?.handoverContract &&

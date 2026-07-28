@@ -77,6 +77,41 @@ describe("Portal Stage 2 handover eSign view model", () => {
     expect(buildPortalHandoverESignView(input).statusLabel).toBe(expected);
   });
 
+  it.each([
+    "archiveStatus",
+    "handover status",
+    "signedDocumentFileId",
+    "signedObjectKey",
+    "signedPdfHash"
+  ])(
+    "does not label the archive complete when the API projection is missing %s",
+    () => {
+      const view = buildPortalHandoverESignView(
+        createStatus({
+          archiveStatus: "ARCHIVED",
+          customerSigner: {
+            signedAt: "2026-07-27T08:10:00.000Z",
+            slotId: "STAGE2_HANDOVER_CUSTOMER",
+            status: "SIGNED"
+          },
+          platformSigner: {
+            signedAt: "2026-07-27T08:12:00.000Z",
+            slotId: "STAGE2_HANDOVER_PLATFORM",
+            status: "SIGNED"
+          },
+          signedArtifactAvailable: false,
+          status: "COMPLETED",
+          taskId: "task-1"
+        })
+      );
+
+      expect(view.statusLabel).toBe("平台盖章处理中");
+      expect(view.description).toBe(
+        "双方已完成签署，正在准备归档文件。"
+      );
+    }
+  );
+
   it("maps only known safe blocker codes and replaces unknown values with generic copy", () => {
     const view = buildPortalHandoverESignView(createStatus({
       blockers: [

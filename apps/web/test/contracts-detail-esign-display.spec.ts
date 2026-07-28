@@ -36,6 +36,30 @@ describe("contract detail e-sign display", () => {
     expect(source).toContain("/generated-pdf/preview");
     expect(source).toContain("查看待签署PDF");
   });
+
+  it("passes the typed Stage 2 archive projection to the archive display model", () => {
+    const eSignTaskSection = source.slice(
+      source.indexOf("getAdminESignArchiveStatus({"),
+      source.indexOf("const signerGroups")
+    );
+
+    expect(eSignTaskSection).toContain("archiveError:");
+    expect(eSignTaskSection).toContain("task.archiveError ?? archiveErrorsByTaskId[task.id]");
+    expect(eSignTaskSection).toContain("archiveStatus: task.archiveStatus");
+    expect(eSignTaskSection).toContain("signedArtifactAvailable: task.signedArtifactAvailable");
+    expect(eSignTaskSection).toContain("signingStage: task.signingStage");
+  });
+
+  it("uses the archive display model for the signed-document action", () => {
+    const eSignTaskSection = source.slice(
+      source.indexOf("getAdminESignArchiveStatus({"),
+      source.indexOf("<ContractSnapshotSection")
+    );
+
+    expect(eSignTaskSection).toContain("archiveStatus.actionLabel");
+    expect(eSignTaskSection).toContain("openSignedContract(task.id)");
+    expect(eSignTaskSection).toContain("archiveStatus.errorSummary");
+  });
 });
 
 function read(file: string) {

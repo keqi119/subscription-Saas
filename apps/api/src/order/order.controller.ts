@@ -24,6 +24,7 @@ import {
   ConfirmReturnDto,
   EntitlementMonthlyRenewalDto,
   ExpireEntitlementsDto,
+  ListContractsQueryDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
@@ -309,8 +310,8 @@ export class OrderController {
 
   @Get("contracts")
   @RequirePermissions(PermissionCode.CONTRACT_VIEW)
-  listContracts(@Req() request: AuthenticatedRequest) {
-    return this.orderService.listContracts(request.user);
+  listContracts(@Query() query: ListContractsQueryDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.listContracts(request.user, query);
   }
 
   @Get("contracts/:id")

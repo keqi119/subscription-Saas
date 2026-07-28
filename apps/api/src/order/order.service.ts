@@ -98,6 +98,7 @@ import {
   ConfirmReturnDto,
   EntitlementMonthlyRenewalDto,
   ExpireEntitlementsDto,
+  ListContractsQueryDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
@@ -2262,11 +2263,32 @@ export class OrderService {
     }
   }
 
-  async listContracts(user: RequestUser) {
+  async listContracts(user: RequestUser, query: ListContractsQueryDto = {}) {
+    const contractNo = query.contractNo?.trim() || undefined;
+    const orderNo = query.orderNo?.trim() || undefined;
+    const filters: Prisma.ContractWhereInput[] = [];
+
+    if (contractNo) {
+      filters.push({ contractNo: { contains: contractNo, mode: "insensitive" } });
+    }
+    if (orderNo) {
+      filters.push({ order: { orderNo: { contains: orderNo, mode: "insensitive" } } });
+    }
+    const orderScope: Prisma.SubscriptionOrderWhereInput = {
+      deletedAt: null,
+      ...(canViewAllOrders(user)
+        ? {}
+        : { application: { salesUserId: user.id } })
+    };
+
     const contracts = await this.prisma.contract.findMany({
       include: contractInclude,
       orderBy: { createdAt: "desc" },
-      where: canViewAllOrders(user) ? { deletedAt: null } : { deletedAt: null, order: { application: { salesUserId: user.id } } }
+      where: {
+        deletedAt: null,
+        order: orderScope,
+        ...(filters.length > 0 ? { AND: filters } : {})
+      }
     });
     return contracts.map(toContractView);
   }

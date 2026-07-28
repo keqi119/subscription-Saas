@@ -668,7 +668,10 @@ describe("subscription order and contract rules", () => {
 });
 
 function createContractListService() {
-  const findMany = vi.fn(async (_args: { where?: unknown }) => []);
+  const findMany = vi.fn(async (_args: { where?: unknown }) => {
+    void _args;
+    return [];
+  });
   const service = new OrderService(
     { write: vi.fn(async () => undefined) } as never,
     { contract: { findMany } } as never,

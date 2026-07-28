@@ -232,6 +232,7 @@ function createHarness() {
     manifestHash: "a".repeat(64),
     signedDocumentFileId: null as string | null,
     signedObjectKey: "private/signed.pdf",
+    signedPdfHash: null as string | null,
     sourceDocumentFileId: "source-file-1",
     sourcePdfHash: "b".repeat(64),
     status: DeliveryHandoverStatus.SIGNED,
@@ -262,6 +263,8 @@ function createHarness() {
         archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
         archivedAt: NOW,
         signedDocumentFileId: "signed-file-1",
+        signedObjectKey: "private/signed.pdf",
+        signedPdfHash: "c".repeat(64),
         status: DeliveryHandoverStatus.ARCHIVED
       });
       return {

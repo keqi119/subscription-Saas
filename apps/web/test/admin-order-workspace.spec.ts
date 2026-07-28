@@ -526,6 +526,16 @@ describe("admin order detail workspace migration", () => {
     expect(pageHeader).not.toContain("查看合同");
   });
 
+  it("keeps repeated handover blocker messages as distinct React list entries", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+
+    expect(source).not.toContain("<li key={reason}>");
+    expect(
+      source.match(/blockingReasons\.map\(\(reason, index\) =>/g)
+    ).toHaveLength(2);
+    expect(source.match(/key=\{`\$\{reason\}-\$\{index\}`\}/g)).toHaveLength(2);
+  });
+
   it("maps all seven active bodies without mounting inactive domain content", () => {
     const source = readFileSync(orderPagePath, "utf8");
     const renderer = sourceBetween(

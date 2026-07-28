@@ -3364,8 +3364,8 @@ function DeliveryPanel({
               "交付准备已完成，待确认交付"
             ) : blockingReasons.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 20 }}>
-                {blockingReasons.map((reason) => (
-                  <li key={reason}>
+                {blockingReasons.map((reason, index) => (
+                  <li key={`${reason}-${index}`}>
                     <Space size={8} wrap>
                       <span>{reason}</span>
                       <DeliveryBlockerGuidance reason={reason} />
@@ -3596,8 +3596,8 @@ function ReturnPanel({
               "退车准备已完成，待确认退车"
             ) : blockingReasons.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 20 }}>
-                {blockingReasons.map((reason) => (
-                  <li key={reason}>{reason}</li>
+                {blockingReasons.map((reason, index) => (
+                  <li key={`${reason}-${index}`}>{reason}</li>
                 ))}
               </ul>
             ) : undefined

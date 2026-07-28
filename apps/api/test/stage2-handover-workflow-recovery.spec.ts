@@ -130,7 +130,7 @@ describe("Stage 2 workflow recovery Admin API", () => {
         idempotencyKey: "recovery:dead-letter-1",
         jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
         jobType,
-        maxAttempts: 5,
+        maxAttempts: 6,
         workOrderId: "work-order-1"
       });
       expect(replacement.payload).toEqual(expectedPayload);
@@ -320,7 +320,7 @@ describe("Stage 2 workflow recovery Admin API", () => {
     );
 
     expect(harness.jobs[1]).toMatchObject({
-      maxAttempts: 5,
+      maxAttempts: 6,
       payload: {
         platformTransactionId: PLATFORM_TRANSACTION_ID
       }
@@ -461,7 +461,7 @@ describe("Stage 2 workflow recovery Admin API", () => {
       idempotencyKey: "recovery:dead-letter-1",
       jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
       jobType: VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
-      maxAttempts: 5,
+      maxAttempts: 6,
       payload: {
         customerTransactionId: "ATTACKERCONTROLLEDH1"
       },
@@ -618,7 +618,7 @@ function createRecoveryHarness(
   const jobType = options.jobType ?? VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF;
   const jobs: any[] = [
     {
-      attemptCount: 5,
+      attemptCount: 6,
       completedAt: new Date("2026-07-28T00:00:00.000Z"),
       createdAt: new Date("2026-07-27T00:00:00.000Z"),
       eSignTaskId: "stage2-task-1",
@@ -629,7 +629,7 @@ function createRecoveryHarness(
       jobType,
       lastErrorCode: "OLD_ERROR",
       lastErrorMessage: "old-private-value",
-      maxAttempts: 5,
+      maxAttempts: 6,
       payload: {
         artifactVersion: 1,
         customerTransactionId: CUSTOMER_TRANSACTION_ID,

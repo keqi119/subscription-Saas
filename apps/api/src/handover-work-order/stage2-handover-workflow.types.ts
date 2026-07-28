@@ -13,7 +13,7 @@ export const STAGE2_HANDOVER_WORKFLOW_HANDLER = Symbol(
 export type Stage2HandoverWorkflowDb = Prisma.TransactionClient | PrismaService;
 
 export interface EnqueueStage2WorkflowJobInput {
-  availableAt?: Date;
+  delayMs?: number;
   eSignTaskId?: string;
   handoverId?: string;
   idempotencyKey: string;
@@ -37,7 +37,7 @@ export interface Stage2WorkflowError {
 }
 
 export interface RescheduleStage2WorkflowJobInput {
-  availableAt: Date;
+  delayMs: number;
   error?: Stage2WorkflowError;
   incrementAttempt?: boolean;
   result?: Prisma.InputJsonValue;
@@ -46,7 +46,7 @@ export interface RescheduleStage2WorkflowJobInput {
 export type WorkflowHandlerResult =
   | { kind: "COMPLETED"; result?: Prisma.InputJsonValue }
   | {
-      availableAt: Date;
+      delayMs: number;
       kind: "OBSERVED_SIGNING";
       result?: Prisma.InputJsonValue;
     };

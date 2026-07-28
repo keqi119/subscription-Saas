@@ -5,7 +5,15 @@ import {
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi
+} from "vitest";
 
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -73,11 +81,40 @@ describe("Stage2HandoverWorkflowRepository", () => {
     const duplicate = await prisma.$transaction((tx) => repository.enqueue(tx, input));
 
     expect(duplicate.id).toBe(created.id);
+    expect(created.maxAttempts).toBe(6);
     await expect(
       prisma.vehicleHandoverWorkflowJob.count({
         where: { idempotencyKey: input.idempotencyKey }
       })
     ).resolves.toBe(1);
+  });
+
+  it("uses PostgreSQL time for delayed enqueue even when the process clock is wrong", async () => {
+    const processClock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2000-01-01T00:00:00.000Z"));
+    try {
+      const [databaseBefore] = await prisma.$queryRaw<Array<{ now: Date }>>`
+        SELECT now() AS "now"
+      `;
+      const created = await repository.enqueue(prisma, {
+        ...workflowJobInput("database-clock-enqueue"),
+        delayMs: 60_000
+      });
+      const [databaseAfter] = await prisma.$queryRaw<Array<{ now: Date }>>`
+        SELECT now() AS "now"
+      `;
+
+      expect(created.availableAt.getTime()).toBeGreaterThanOrEqual(
+        databaseBefore!.now.getTime() + 60_000
+      );
+      expect(created.availableAt.getTime()).toBeLessThanOrEqual(
+        databaseAfter!.now.getTime() + 60_500
+      );
+      expect(created.availableAt.getUTCFullYear()).toBeGreaterThan(2025);
+    } finally {
+      processClock.mockRestore();
+    }
   });
 
   it("claims a due pending job only once across two workers", async () => {
@@ -189,33 +226,37 @@ describe("Stage2HandoverWorkflowRepository", () => {
 
     const secondJob = await repository.enqueue(prisma, workflowJobInput("guard-reschedule"));
     const [secondClaim] = await repository.claimDue(1, 120_000);
-    const availableAt = new Date(Date.now() + 60_000);
+    const [databaseBefore] = await prisma.$queryRaw<Array<{ now: Date }>>`
+      SELECT now() AS "now"
+    `;
 
     await expect(
       repository.reschedule(secondJob.id, wrongToken, {
-        availableAt,
+        delayMs: 60_000,
         error: { code: "PROVIDER_PENDING", message: "Provider is still processing." }
       })
     ).resolves.toBe(false);
     await expect(
       repository.reschedule(secondJob.id, secondClaim!.leaseToken, {
-        availableAt,
+        delayMs: 60_000,
         error: { code: "PROVIDER_PENDING", message: "Provider is still processing." }
       })
     ).resolves.toBe(true);
 
-    await expect(
-      prisma.vehicleHandoverWorkflowJob.findUniqueOrThrow({
+    const rescheduled =
+      await prisma.vehicleHandoverWorkflowJob.findUniqueOrThrow({
         where: { id: secondJob.id }
-      })
-    ).resolves.toMatchObject({
+      });
+    expect(rescheduled).toMatchObject({
       attemptCount: 1,
-      availableAt,
       jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
       lastErrorCode: "PROVIDER_PENDING",
       leaseExpiresAt: null,
       leaseToken: null
     });
+    expect(rescheduled.availableAt.getTime()).toBeGreaterThanOrEqual(
+      databaseBefore!.now.getTime() + 60_000
+    );
   });
 
   it("renews only a live matching lease", async () => {

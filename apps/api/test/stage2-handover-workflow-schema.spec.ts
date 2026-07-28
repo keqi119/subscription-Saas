@@ -36,7 +36,7 @@ const workflowJobColumnDefinitions = [
   '"idempotency_key" VARCHAR(256) NOT NULL,',
   '"available_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,',
   '"attempt_count" INTEGER NOT NULL DEFAULT 0,',
-  '"max_attempts" INTEGER NOT NULL DEFAULT 5,',
+  '"max_attempts" INTEGER NOT NULL DEFAULT 6,',
   '"lease_token" UUID,',
   '"lease_expires_at" TIMESTAMPTZ(6),',
   '"payload" JSONB,',
@@ -252,7 +252,7 @@ describe("Stage 2 durable workflow schema", () => {
       /availableAt\s+DateTime\s+@default\(now\(\)\)\s+@map\("available_at"\)\s+@db\.Timestamptz\(6\)/
     );
     expect(job).toMatch(/attemptCount\s+Int\s+@default\(0\)\s+@map\("attempt_count"\)/);
-    expect(job).toMatch(/maxAttempts\s+Int\s+@default\(5\)\s+@map\("max_attempts"\)/);
+    expect(job).toMatch(/maxAttempts\s+Int\s+@default\(6\)\s+@map\("max_attempts"\)/);
     expect(job).toMatch(/leaseToken\s+String\?\s+@map\("lease_token"\)\s+@db\.Uuid/);
     expect(job).toMatch(
       /leaseExpiresAt\s+DateTime\?\s+@map\("lease_expires_at"\)\s+@db\.Timestamptz\(6\)/

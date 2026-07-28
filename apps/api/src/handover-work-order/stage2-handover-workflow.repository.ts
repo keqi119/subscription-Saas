@@ -20,13 +20,18 @@ import {
 export class Stage2HandoverWorkflowRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  enqueue(
+  async enqueue(
     tx: Stage2HandoverWorkflowDb,
     input: EnqueueStage2WorkflowJobInput
   ): Promise<VehicleHandoverWorkflowJob> {
+    const availableAt =
+      input.delayMs === undefined
+        ? undefined
+        : await databaseAvailableAt(tx, input.delayMs);
+
     return tx.vehicleHandoverWorkflowJob.upsert({
       create: {
-        availableAt: input.availableAt,
+        availableAt,
         eSignTaskId: input.eSignTaskId,
         handoverId: input.handoverId,
         idempotencyKey: input.idempotencyKey,
@@ -137,21 +142,25 @@ export class Stage2HandoverWorkflowRepository {
     leaseToken: string,
     input: RescheduleStage2WorkflowJobInput
   ): Promise<boolean> {
-    const updated = await this.prisma.vehicleHandoverWorkflowJob.updateMany({
-      data: {
-        attemptCount: input.incrementAttempt === false ? undefined : { increment: 1 },
-        availableAt: input.availableAt,
-        jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
-        lastErrorCode: input.error?.code ?? null,
-        lastErrorMessage: input.error?.message ?? null,
-        leaseExpiresAt: null,
-        leaseToken: null,
-        resultSnapshot: input.result
-      },
-      where: processingLease(jobId, leaseToken)
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const availableAt = await databaseAvailableAt(tx, input.delayMs);
+      const updated = await tx.vehicleHandoverWorkflowJob.updateMany({
+        data: {
+          attemptCount:
+            input.incrementAttempt === false ? undefined : { increment: 1 },
+          availableAt,
+          jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
+          lastErrorCode: input.error?.code ?? null,
+          lastErrorMessage: input.error?.message ?? null,
+          leaseExpiresAt: null,
+          leaseToken: null,
+          resultSnapshot: input.result
+        },
+        where: processingLease(jobId, leaseToken)
+      });
 
-    return updated.count === 1;
+      return updated.count === 1;
+    });
   }
 
   async deadLetter(
@@ -229,4 +238,22 @@ function processingLease(jobId: string, leaseToken: string) {
 
 function hasLease(job: VehicleHandoverWorkflowJob): job is ClaimedStage2WorkflowJob {
   return job.leaseExpiresAt instanceof Date && typeof job.leaseToken === "string";
+}
+
+async function databaseAvailableAt(
+  db: Stage2HandoverWorkflowDb,
+  delayMs: number
+): Promise<Date> {
+  if (!Number.isSafeInteger(delayMs) || delayMs < 0) {
+    throw new RangeError("Stage 2 workflow delay must be a non-negative integer.");
+  }
+
+  const [row] = await db.$queryRaw<Array<{ availableAt: Date }>>(Prisma.sql`
+    SELECT now() + (${delayMs} * interval '1 millisecond') AS "availableAt"
+  `);
+  if (!(row?.availableAt instanceof Date)) {
+    throw new Error("PostgreSQL did not return a Stage 2 workflow schedule.");
+  }
+
+  return row.availableAt;
 }

@@ -686,9 +686,7 @@ describe("Stage 2 customer provider polling", () => {
         );
 
         expect(result).toEqual({
-          availableAt: new Date(
-            Date.now() + expectedDelay
-          ),
+          delayMs: expectedDelay,
           kind: "OBSERVED_SIGNING",
           result: {
             pollCount: pollCount + 1,
@@ -964,9 +962,7 @@ describe("Stage 2 platform workflow polling", () => {
       );
 
       expect(result).toEqual({
-        availableAt: new Date(
-          Date.now() + 2 * 60 * 1000
-        ),
+        delayMs: 2 * 60 * 1000,
         kind: "OBSERVED_SIGNING",
         result: {
           providerStatus: "SIGNING",
@@ -1015,9 +1011,7 @@ describe("Stage 2 platform workflow polling", () => {
           .mock.invocationCallOrder[0]!
       );
       expect(result).toEqual({
-        availableAt: new Date(
-          Date.now() + 2 * 60 * 1000
-        ),
+        delayMs: 2 * 60 * 1000,
         kind: "OBSERVED_SIGNING",
         result: {
           providerStatus: "SIGNING",

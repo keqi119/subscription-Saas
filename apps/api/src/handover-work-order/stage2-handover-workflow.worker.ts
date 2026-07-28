@@ -84,7 +84,7 @@ export class Stage2HandoverWorkflowWorker implements OnModuleInit, OnModuleDestr
         await this.repository.deadLetter(job.id, job.leaseToken, sanitized);
       } else {
         await this.repository.reschedule(job.id, job.leaseToken, {
-          availableAt: new Date(Date.now() + retryDelayMs(job.attemptCount)),
+          delayMs: retryDelayMs(job.attemptCount),
           error: sanitized
         });
       }
@@ -100,7 +100,7 @@ export class Stage2HandoverWorkflowWorker implements OnModuleInit, OnModuleDestr
 
     if (result.kind === "OBSERVED_SIGNING") {
       await this.repository.reschedule(job.id, job.leaseToken, {
-        availableAt: result.availableAt,
+        delayMs: result.delayMs,
         incrementAttempt: false,
         result: result.result
       });

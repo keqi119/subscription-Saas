@@ -74,7 +74,7 @@ CREATE TABLE "vehicle_handover_workflow_job" (
   "idempotency_key" VARCHAR(256) NOT NULL,
   "available_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "attempt_count" INTEGER NOT NULL DEFAULT 0,
-  "max_attempts" INTEGER NOT NULL DEFAULT 5,
+  "max_attempts" INTEGER NOT NULL DEFAULT 6,
   "lease_token" UUID,
   "lease_expires_at" TIMESTAMPTZ(6),
   "payload" JSONB,

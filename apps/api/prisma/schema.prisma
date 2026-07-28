@@ -5067,7 +5067,7 @@ model VehicleHandoverWorkflowJob {
   idempotencyKey   String                           @unique @map("idempotency_key") @db.VarChar(256)
   availableAt      DateTime                         @default(now()) @map("available_at") @db.Timestamptz(6)
   attemptCount     Int                              @default(0) @map("attempt_count")
-  maxAttempts      Int                              @default(5) @map("max_attempts")
+  maxAttempts      Int                              @default(6) @map("max_attempts")
   leaseToken       String?                          @map("lease_token") @db.Uuid
   leaseExpiresAt   DateTime?                        @map("lease_expires_at") @db.Timestamptz(6)
   payload          Json?

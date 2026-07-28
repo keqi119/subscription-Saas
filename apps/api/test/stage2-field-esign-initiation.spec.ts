@@ -562,7 +562,7 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
       [
         tx,
         {
-          availableAt: new Date("2026-07-27T08:02:00.000Z"),
+          delayMs: 120_000,
           eSignTaskId: "stage2-task-1",
           handoverId: "handover-1",
           idempotencyKey:
@@ -608,7 +608,7 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
     });
 
     expect(repository.enqueue).toHaveBeenCalledWith(tx, {
-      availableAt: new Date("2026-07-27T08:02:00.000Z"),
+      delayMs: 120_000,
       eSignTaskId: "stage2-task-1",
       handoverId: "handover-1",
       idempotencyKey:

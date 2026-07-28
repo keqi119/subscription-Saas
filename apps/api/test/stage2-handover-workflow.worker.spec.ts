@@ -66,8 +66,6 @@ describe("Stage2HandoverWorkflowWorker", () => {
   });
 
   it("uses 1m, 5m, 15m, 1h, and 6h retry delays", async () => {
-    const now = new Date("2026-07-27T08:00:00.000Z");
-    vi.spyOn(Date, "now").mockReturnValue(now.getTime());
     const expectedDelays = [60_000, 300_000, 900_000, 3_600_000, 21_600_000];
 
     for (const [attemptCount, expectedDelay] of expectedDelays.entries()) {
@@ -83,7 +81,7 @@ describe("Stage2HandoverWorkflowWorker", () => {
         job.id,
         job.leaseToken,
         expect.objectContaining({
-          availableAt: new Date(now.getTime() + expectedDelay),
+          delayMs: expectedDelay,
           error: {
             code: "WORKFLOW_ERROR",
             message: "Workflow operation failed."
@@ -93,8 +91,8 @@ describe("Stage2HandoverWorkflowWorker", () => {
     }
   });
 
-  it("moves the fifth failed attempt to DEAD_LETTER", async () => {
-    const job = claimedJob({ attemptCount: 4, maxAttempts: 5 });
+  it("moves the sixth failed attempt to DEAD_LETTER after all five delays", async () => {
+    const job = claimedJob({ attemptCount: 5 });
     const harness = createWorkerHarness({
       error: Object.assign(new Error("Provider request failed."), {
         code: "provider_timeout"
@@ -117,11 +115,11 @@ describe("Stage2HandoverWorkflowWorker", () => {
 
   it("reschedules provider SIGNING without incrementing attemptCount", async () => {
     const job = claimedJob({ attemptCount: 2 });
-    const availableAt = new Date("2026-07-27T08:05:00.000Z");
+    const delayMs = 300_000;
     const harness = createWorkerHarness({
       jobs: [job],
       result: {
-        availableAt,
+        delayMs,
         kind: "OBSERVED_SIGNING",
         result: { providerStatus: "SIGNING" }
       }
@@ -133,7 +131,7 @@ describe("Stage2HandoverWorkflowWorker", () => {
       job.id,
       job.leaseToken,
       {
-        availableAt,
+        delayMs,
         incrementAttempt: false,
         result: { providerStatus: "SIGNING" }
       }
@@ -206,11 +204,11 @@ describe("Stage2HandoverWorkflowWorker", () => {
 
   it("does not consume an attempt when persisting observed SIGNING fails", async () => {
     const transitionError = new Error("Signing observation persistence failed.");
-    const availableAt = new Date("2026-07-27T08:05:00.000Z");
+    const delayMs = 300_000;
     const harness = createWorkerHarness({
       jobs: [claimedJob({ attemptCount: 2 })],
       result: {
-        availableAt,
+        delayMs,
         kind: "OBSERVED_SIGNING",
         result: { providerStatus: "SIGNING" }
       }
@@ -224,7 +222,7 @@ describe("Stage2HandoverWorkflowWorker", () => {
       expect.any(String),
       expect.any(String),
       {
-        availableAt,
+        delayMs,
         incrementAttempt: false,
         result: { providerStatus: "SIGNING" }
       }
@@ -522,7 +520,7 @@ function claimedJob(
     lastErrorMessage: null,
     leaseExpiresAt: new Date(now.getTime() + 120_000),
     leaseToken: "00000000-0000-4000-8000-000000000002",
-    maxAttempts: 10,
+    maxAttempts: 6,
     payload: null,
     resultSnapshot: null,
     startedAt: now,

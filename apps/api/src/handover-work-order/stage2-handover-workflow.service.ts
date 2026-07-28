@@ -64,7 +64,7 @@ const CUSTOMER_RECONCILIATION_DELAYS_MS = [
 const PLATFORM_RECONCILIATION_DELAY_MS = 2 * 60 * 1000;
 const SHA256_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const STAGE2_RECOVERY_AUDIT_MODULE = "stage2-handover-workflow";
-const STAGE2_RECOVERY_MAX_ATTEMPTS = 5;
+const STAGE2_RECOVERY_MAX_ATTEMPTS = 6;
 const TERMINAL_WORK_ORDER_STATUSES =
   new Set<VehicleHandoverWorkOrderStatus>([
     VehicleHandoverWorkOrderStatus.CANCELLED,
@@ -333,7 +333,6 @@ export class Stage2HandoverWorkflowService
 
         const replacement = await tx.vehicleHandoverWorkflowJob.create({
           data: {
-            availableAt: new Date(),
             eSignTaskId: binding.eSignTaskId,
             handoverId: binding.handoverId,
             idempotencyKey,
@@ -437,7 +436,6 @@ export class Stage2HandoverWorkflowService
 
         const replacement = await tx.vehicleHandoverWorkflowJob.create({
           data: {
-            availableAt: new Date(),
             eSignTaskId: active.eSignTaskId,
             handoverId: active.handoverId,
             idempotencyKey,
@@ -500,10 +498,7 @@ export class Stage2HandoverWorkflowService
       workOrderId: input.workOrderId
     });
     await this.repository.enqueue(tx, {
-      availableAt: new Date(
-        input.initiatedAt.getTime() +
-          FIRST_CUSTOMER_RECONCILIATION_DELAY_MS
-      ),
+      delayMs: FIRST_CUSTOMER_RECONCILIATION_DELAY_MS,
       eSignTaskId: input.eSignTaskId,
       handoverId: input.handoverId,
       idempotencyKey:
@@ -519,10 +514,7 @@ export class Stage2HandoverWorkflowService
     input: EnqueueCustomerESignJobsInput
   ) {
     await this.repository.enqueue(tx, {
-      availableAt: new Date(
-        input.initiatedAt.getTime() +
-          FIRST_CUSTOMER_RECONCILIATION_DELAY_MS
-      ),
+      delayMs: FIRST_CUSTOMER_RECONCILIATION_DELAY_MS,
       eSignTaskId: input.eSignTaskId,
       handoverId: input.handoverId,
       idempotencyKey:
@@ -772,10 +764,7 @@ export class Stage2HandoverWorkflowService
         CUSTOMER_RECONCILIATION_DELAYS_MS.length - 1
       );
       return {
-        availableAt: new Date(
-          Date.now() +
-            CUSTOMER_RECONCILIATION_DELAYS_MS[delayIndex]!
-        ),
+        delayMs: CUSTOMER_RECONCILIATION_DELAYS_MS[delayIndex]!,
         kind: "OBSERVED_SIGNING",
         result: {
           pollCount: pollCount + 1,
@@ -898,9 +887,7 @@ export class Stage2HandoverWorkflowService
           );
         }
         return {
-          availableAt: new Date(
-            Date.now() + PLATFORM_RECONCILIATION_DELAY_MS
-          ),
+          delayMs: PLATFORM_RECONCILIATION_DELAY_MS,
           kind: "OBSERVED_SIGNING",
           result: {
             providerStatus: "SIGNING",
@@ -915,9 +902,7 @@ export class Stage2HandoverWorkflowService
         );
       }
       return {
-        availableAt: new Date(
-          Date.now() + PLATFORM_RECONCILIATION_DELAY_MS
-        ),
+        delayMs: PLATFORM_RECONCILIATION_DELAY_MS,
         kind: "OBSERVED_SIGNING",
         result: {
           providerStatus: providerStatus.status,
@@ -987,9 +972,7 @@ export class Stage2HandoverWorkflowService
         DeliveryHandoverArchiveStatus.PENDING
       ) {
         return {
-          availableAt: new Date(
-            Date.now() + PLATFORM_RECONCILIATION_DELAY_MS
-          ),
+          delayMs: PLATFORM_RECONCILIATION_DELAY_MS,
           kind: "OBSERVED_SIGNING",
           result: {
             archiveStatus: result.archiveStatus,

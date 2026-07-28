@@ -429,6 +429,11 @@ describe("admin order detail workspace migration", () => {
 
   it("loads the permission-filtered workspace detail and keeps contract data out of overview", () => {
     const source = readFileSync(orderPagePath, "utf8");
+    const detailType = sourceBetween(
+      source,
+      "interface OrderDetail",
+      "interface FinanceSummary"
+    );
     const detailLoader = sourceBetween(
       source,
       "const loadOrderDetail = useCallback",
@@ -454,6 +459,8 @@ describe("admin order detail workspace migration", () => {
       "`/orders/${orderId}/workspace/detail`"
     );
     expect(detailLoader).not.toContain("`/orders/${orderId}`");
+    expect(detailType).toContain("customerId?: string;");
+    expect(detailType).not.toContain("customerId: string;");
     expect(overviewSections).not.toContain('title="合同信息"');
     expect(contractSlot).toContain("产品匹配审核");
     expect(contractSlot).toContain("<QuoteSnapshotSection");

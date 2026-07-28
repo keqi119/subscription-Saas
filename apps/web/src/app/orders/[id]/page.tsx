@@ -150,7 +150,7 @@ interface OrderDetail {
   createdAt: string;
   creditReviewStatus?: string;
   customer?: { name?: string | null; mobile?: string | null } | null;
-  customerId: string;
+  customerId?: string;
   customerConfirmedAt?: string | null;
   depositAmount: number;
   depositStatus?: string;

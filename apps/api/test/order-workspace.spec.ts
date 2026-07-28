@@ -7,6 +7,7 @@ import {
   OrderWorkspaceResolver,
   OrderWorkspaceService
 } from "../src/order/order-workspace.service";
+import { projectOrderWorkspaceDetail } from "../src/order/order-workspace-detail-projection";
 import type {
   OrderWorkspaceGuideCategory,
   OrderWorkspaceGuideItem,
@@ -636,9 +637,16 @@ describe("OrderWorkspaceService", () => {
           mobile: "13800000000",
           name: "Customer Sentinel",
           profile: { residenceAddress: "Address Sentinel" }
-        }
+        },
+        customerId: "customer-id-sentinel"
       },
       permissions: [PermissionCode.CUSTOMER_VIEW]
+    },
+    {
+      expected: {
+        customerId: "customer-id-sentinel"
+      },
+      permissions: [PermissionCode.PAYMENT_CREATE]
     },
     {
       expected: {
@@ -669,7 +677,10 @@ describe("OrderWorkspaceService", () => {
           quoteNo: "QUOTE-SENTINEL",
           status: "CONFIRMED"
         },
-        quoteSnapshot: { marker: "Quote Snapshot Sentinel" }
+        quoteSnapshot: {
+          monthlyFeeAmount: 320000,
+          quoteNo: "QUOTE-SNAPSHOT-SENTINEL"
+        }
       },
       permissions: [PermissionCode.QUOTE_VIEW]
     },
@@ -695,8 +706,15 @@ describe("OrderWorkspaceService", () => {
       expected: {
         changes: [
           {
-            afterSnapshot: { marker: "After Sentinel" },
-            beforeSnapshot: { marker: "Before Sentinel" },
+            afterSnapshot: {
+              action: "RETURN_TO_PLAN",
+              periodMonths: 24
+            },
+            beforeSnapshot: {
+              id: "order-before-sentinel",
+              orderNo: "ORDER-BEFORE-SENTINEL",
+              orderStatus: "PENDING_CONTRACT"
+            },
             changeType: "RETURN_TO_PLAN",
             createdAt: "2026-07-29T00:00:00.000Z",
             id: "change-1",
@@ -814,6 +832,269 @@ describe("OrderWorkspaceService", () => {
     });
   });
 
+  it("recursively projects a production quote snapshot by sibling-domain permissions", () => {
+    const rawDetail = { quoteSnapshot: workspaceProductionQuoteSnapshot() };
+    const quoteOnly = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.QUOTE_VIEW])
+    );
+
+    expect(quoteOnly.quoteSnapshot).toEqual({
+      id: "quote-snapshot-1",
+      monthlyFeeAmount: 320000,
+      packageSnapshot: {
+        mileagePackage: {
+          id: "mileage-package-1",
+          monthlyMileageKm: 1500,
+          overMileageFeeAmount: 100,
+          packageName: "1500 km",
+          packageNo: "MILEAGE-1500",
+          priceAmount: 30000
+        },
+        pricing: {
+          fixedRate: 0.03,
+          monthlyFeeAmount: 320000,
+          vehicleBaseFeeAmount: 250000
+        },
+        subscriptionPlan: {
+          id: "plan-1",
+          planName: "Standard Plan",
+          planNo: "PLAN-001"
+        },
+        vehicleBaseFeeAmount: 250000
+      },
+      periodMonths: 12,
+      quoteNo: "QUOTE-SNAPSHOT-001",
+      status: "CONFIRMED",
+      subscriptionPlanId: "plan-1",
+      vehicleBaseFeeAmount: 250000
+    });
+
+    const customerAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.QUOTE_VIEW, PermissionCode.CUSTOMER_VIEW])
+    );
+    expect(customerAccess.quoteSnapshot).toEqual(
+      expect.objectContaining({
+        customer: {
+          grade: "A",
+          id: "customer-snapshot-1",
+          mobile: "13800000000",
+          name: "Snapshot Customer"
+        },
+        customerId: "customer-snapshot-1"
+      })
+    );
+
+    const applicationAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.QUOTE_VIEW, PermissionCode.APPLICATION_VIEW])
+    );
+    expect(applicationAccess.quoteSnapshot).toEqual(
+      expect.objectContaining({
+        application: {
+          applicationNo: "APP-SNAPSHOT-001",
+          id: "application-snapshot-1",
+          status: "APPROVED"
+        },
+        applicationId: "application-snapshot-1"
+      })
+    );
+
+    const riskAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.QUOTE_VIEW, PermissionCode.RISK_VIEW])
+    );
+    expect(riskAccess.quoteSnapshot).toEqual(
+      expect.objectContaining({
+        defaultRate: 0.08,
+        depositRuleSnapshot: {
+          defaultRate: 0.08,
+          depositAmount: 500000,
+          grade: "A",
+          id: "deposit-rule-1"
+        },
+        riskResult: {
+          grade: "A",
+          id: "risk-snapshot-1",
+          result: "APPROVED",
+          score: 88
+        },
+        riskResultId: "risk-snapshot-1",
+        riskScore: 88
+      })
+    );
+
+    const vehicleAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.QUOTE_VIEW, PermissionCode.VEHICLE_VIEW])
+    );
+    expect(vehicleAccess.quoteSnapshot).toEqual(
+      expect.objectContaining({
+        assetLocation: "Shanghai",
+        batteryCapacityKwh: 75,
+        brand: "NIO",
+        currentMileageKm: 12000,
+        currentSalePriceAmount: 20000000,
+        packageSnapshot: expect.objectContaining({
+          pricing: expect.objectContaining({
+            currentSalePriceAmount: 20000000
+          })
+        }),
+        plateNo: "沪A00001",
+        series: "ET5",
+        vehicle: expect.objectContaining({
+          id: "vehicle-snapshot-1",
+          vin: "VIN-SNAPSHOT-001"
+        }),
+        vehicleId: "vehicle-snapshot-1",
+        vehicleSnapshot: expect.objectContaining({
+          id: "vehicle-snapshot-1",
+          vin: "VIN-SNAPSHOT-001"
+        }),
+        vin: "VIN-SNAPSHOT-001"
+      })
+    );
+
+    const allProjected = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([
+        PermissionCode.QUOTE_VIEW,
+        PermissionCode.CUSTOMER_VIEW,
+        PermissionCode.APPLICATION_VIEW,
+        PermissionCode.RISK_VIEW,
+        PermissionCode.VEHICLE_VIEW
+      ])
+    );
+    expect(JSON.stringify(allProjected)).not.toContain("future-secret");
+    expect(JSON.stringify(allProjected)).not.toContain("provider-secret");
+    expect(JSON.stringify(allProjected)).not.toContain("id-card-secret");
+  });
+
+  it("projects order change snapshots without leaking sibling order domains", () => {
+    const rawDetail = {
+      changes: [workspaceProductionOrderChange()],
+      id: "order-1",
+      orderNo: "SO-001",
+      orderStatus: "ACTIVE"
+    };
+    const changeOnly = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.ORDER_CHANGE_VIEW])
+    ).changes?.[0];
+
+    expect(changeOnly).toEqual({
+      afterSnapshot: {
+        action: "RETURN_TO_PLAN",
+        changeStage: "PRE_CONTRACT_RETURN_TO_PLAN",
+        changeType: "PLAN_CHANGE",
+        orderSource: "SALES_ASSISTED",
+        periodMonths: 24
+      },
+      beforeSnapshot: {
+        id: "order-before-1",
+        monthlyFeeAmount: 320000,
+        orderNo: "ORDER-BEFORE-001",
+        orderSource: "SALES_ASSISTED",
+        orderStatus: "PENDING_CONTRACT",
+        periodMonths: 12
+      },
+      changeType: "PLAN_CHANGE",
+      id: "change-snapshot-1",
+      status: "PENDING"
+    });
+    expect(JSON.stringify(changeOnly)).not.toContain("unknown-user-secret");
+    expect(JSON.stringify(changeOnly)).not.toContain("customer-snapshot-1");
+    expect(JSON.stringify(changeOnly)).not.toContain("application-snapshot-1");
+    expect(JSON.stringify(changeOnly)).not.toContain("risk-snapshot-1");
+    expect(JSON.stringify(changeOnly)).not.toContain("vehicle-snapshot-1");
+    expect(JSON.stringify(changeOnly)).not.toContain("QUOTE-SNAPSHOT-001");
+
+    const customerAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([
+        PermissionCode.ORDER_CHANGE_VIEW,
+        PermissionCode.CUSTOMER_VIEW
+      ])
+    ).changes?.[0];
+    expect(customerAccess?.beforeSnapshot).toEqual(
+      expect.objectContaining({
+        customer: expect.objectContaining({
+          id: "customer-snapshot-1"
+        }),
+        customerId: "customer-snapshot-1"
+      })
+    );
+
+    const applicationAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([
+        PermissionCode.ORDER_CHANGE_VIEW,
+        PermissionCode.APPLICATION_VIEW
+      ])
+    ).changes?.[0];
+    expect(applicationAccess?.beforeSnapshot).toEqual(
+      expect.objectContaining({
+        application: expect.objectContaining({
+          id: "application-snapshot-1"
+        })
+      })
+    );
+
+    const riskAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.ORDER_CHANGE_VIEW, PermissionCode.RISK_VIEW])
+    ).changes?.[0];
+    expect(riskAccess?.beforeSnapshot).toEqual(
+      expect.objectContaining({
+        riskResult: expect.objectContaining({ id: "risk-snapshot-1" })
+      })
+    );
+
+    const quoteAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.ORDER_CHANGE_VIEW, PermissionCode.QUOTE_VIEW])
+    ).changes?.[0];
+    expect(quoteAccess?.beforeSnapshot).toEqual(
+      expect.objectContaining({
+        quoteSnapshot: expect.objectContaining({
+          quoteNo: "QUOTE-SNAPSHOT-001"
+        })
+      })
+    );
+    expect(quoteAccess?.afterSnapshot).toEqual(
+      expect.objectContaining({
+        monthlyFeeAmount: 360000,
+        subscriptionPlanId: "plan-new",
+        vehicleBaseFeeAmount: 280000
+      })
+    );
+
+    const productAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.ORDER_CHANGE_VIEW, PermissionCode.PRODUCT_VIEW])
+    ).changes?.[0];
+    expect(productAccess?.afterSnapshot).toEqual(
+      expect.objectContaining({
+        subscriptionPlanId: "plan-new",
+        vehicleBaseFeeAmount: 280000
+      })
+    );
+
+    const vehicleAccess = projectOrderWorkspaceDetail(
+      rawDetail,
+      new Set([PermissionCode.ORDER_CHANGE_VIEW, PermissionCode.VEHICLE_VIEW])
+    ).changes?.[0];
+    expect(vehicleAccess?.beforeSnapshot).toEqual(
+      expect.objectContaining({
+        vehicle: expect.objectContaining({ id: "vehicle-snapshot-1" })
+      })
+    );
+    expect(vehicleAccess?.afterSnapshot).toEqual(
+      expect.objectContaining({ vehicleId: "vehicle-new" })
+    );
+  });
+
   it("returns every explicitly permitted workspace domain for an Admin permission set", async () => {
     const detail = await workspaceDetailService().getDetail(
       "order-1",
@@ -828,7 +1109,10 @@ describe("OrderWorkspaceService", () => {
         contracts: [expect.objectContaining({ id: "contract-1" })],
         customer: expect.objectContaining({ id: "customer-1" }),
         quote: expect.objectContaining({ id: "quote-1" }),
-        quoteSnapshot: { marker: "Quote Snapshot Sentinel" },
+        quoteSnapshot: {
+          monthlyFeeAmount: 320000,
+          quoteNo: "QUOTE-SNAPSHOT-SENTINEL"
+        },
         riskResult: expect.objectContaining({ id: "risk-1" }),
         vehicle: expect.objectContaining({
           id: "vehicle-1",
@@ -1427,8 +1711,17 @@ function workspaceRawDetail() {
     },
     changes: [
       {
-        afterSnapshot: { marker: "After Sentinel" },
-        beforeSnapshot: { marker: "Before Sentinel" },
+        afterSnapshot: {
+          action: "RETURN_TO_PLAN",
+          periodMonths: 24,
+          unknownInput: "change-after-unknown-secret"
+        },
+        beforeSnapshot: {
+          futureField: "change-before-unknown-secret",
+          id: "order-before-sentinel",
+          orderNo: "ORDER-BEFORE-SENTINEL",
+          orderStatus: "PENDING_CONTRACT"
+        },
         changeType: "RETURN_TO_PLAN",
         createdAt: "2026-07-29T00:00:00.000Z",
         deletedAt: null,
@@ -1465,6 +1758,7 @@ function workspaceRawDetail() {
       profile: { residenceAddress: "Address Sentinel" },
       providerSecret: "customer-provider-secret"
     },
+    customerId: "customer-id-sentinel",
     futureSecret: "future-order-field-secret",
     id: "order-1",
     modelDisplayName: "Root Vehicle Model Sentinel",
@@ -1477,7 +1771,11 @@ function workspaceRawDetail() {
       quoteNo: "QUOTE-SENTINEL",
       status: "CONFIRMED"
     },
-    quoteSnapshot: { marker: "Quote Snapshot Sentinel" },
+    quoteSnapshot: {
+      futureField: "quote-snapshot-unknown-secret",
+      monthlyFeeAmount: 320000,
+      quoteNo: "QUOTE-SNAPSHOT-SENTINEL"
+    },
     riskResult: {
       grade: "A",
       id: "risk-1",
@@ -1519,6 +1817,175 @@ function workspaceRawDetail() {
       vehicleNo: "VEHICLE-SENTINEL",
       vin: "VIN-SENTINEL"
     }
+  };
+}
+
+function workspaceProductionQuoteSnapshot() {
+  return {
+    application: {
+      applicationNo: "APP-SNAPSHOT-001",
+      futureSecret: "application-future-secret",
+      id: "application-snapshot-1",
+      salesUserId: "application-provider-secret",
+      status: "APPROVED"
+    },
+    applicationId: "application-snapshot-1",
+    assetLocation: "Shanghai",
+    batteryCapacityKwh: 75,
+    brand: "NIO",
+    currentMileageKm: 12000,
+    currentSalePriceAmount: 20000000,
+    customer: {
+      grade: "A",
+      id: "customer-snapshot-1",
+      identity: { idCardNo: "id-card-secret" },
+      mobile: "13800000000",
+      name: "Snapshot Customer",
+      providerPayload: "customer-provider-secret"
+    },
+    customerId: "customer-snapshot-1",
+    defaultRate: 0.08,
+    depositRuleSnapshot: {
+      defaultRate: 0.08,
+      depositAmount: 500000,
+      grade: "A",
+      id: "deposit-rule-1",
+      providerPayload: "risk-provider-secret"
+    },
+    futureField: "quote-future-secret",
+    id: "quote-snapshot-1",
+    monthlyFeeAmount: 320000,
+    packageSnapshot: {
+      futureField: "package-future-secret",
+      mileagePackage: {
+        futureField: "mileage-future-secret",
+        id: "mileage-package-1",
+        monthlyMileageKm: 1500,
+        overMileageFeeAmount: 100,
+        packageName: "1500 km",
+        packageNo: "MILEAGE-1500",
+        priceAmount: 30000
+      },
+      pricing: {
+        currentSalePriceAmount: 20000000,
+        fixedRate: 0.03,
+        futureField: "pricing-future-secret",
+        monthlyFeeAmount: 320000,
+        vehicleBaseFeeAmount: 250000
+      },
+      subscriptionPlan: {
+        futureField: "plan-future-secret",
+        id: "plan-1",
+        planName: "Standard Plan",
+        planNo: "PLAN-001"
+      },
+      vehicleBaseFeeAmount: 250000
+    },
+    periodMonths: 12,
+    plateNo: "沪A00001",
+    quoteNo: "QUOTE-SNAPSHOT-001",
+    riskResult: {
+      grade: "A",
+      id: "risk-snapshot-1",
+      providerPayload: "risk-provider-secret",
+      result: "APPROVED",
+      score: 88
+    },
+    riskResultId: "risk-snapshot-1",
+    riskScore: 88,
+    series: "ET5",
+    status: "CONFIRMED",
+    subscriptionPlanId: "plan-1",
+    vehicle: {
+      brand: "NIO",
+      id: "vehicle-snapshot-1",
+      providerPayload: "vehicle-provider-secret",
+      vehicleNo: "VEH-SNAPSHOT-001",
+      vin: "VIN-SNAPSHOT-001"
+    },
+    vehicleBaseFeeAmount: 250000,
+    vehicleId: "vehicle-snapshot-1",
+    vehicleSnapshot: {
+      assetLocation: "Shanghai",
+      batteryCapacityKwh: 75,
+      brand: "NIO",
+      currentMileageKm: 12000,
+      currentSalePriceAmount: 20000000,
+      futureField: "vehicle-future-secret",
+      id: "vehicle-snapshot-1",
+      plateNo: "沪A00001",
+      series: "ET5",
+      vehicleNo: "VEH-SNAPSHOT-001",
+      vin: "VIN-SNAPSHOT-001"
+    },
+    vin: "VIN-SNAPSHOT-001"
+  };
+}
+
+function workspaceProductionOrderChange() {
+  return {
+    afterSnapshot: {
+      action: "RETURN_TO_PLAN",
+      changeStage: "PRE_CONTRACT_RETURN_TO_PLAN",
+      changeType: "PLAN_CHANGE",
+      customer: { id: "customer-after-secret" },
+      monthlyFeeAmount: 360000,
+      orderSource: "SALES_ASSISTED",
+      periodMonths: 24,
+      riskResult: { id: "risk-after-secret" },
+      subscriptionPlanId: "plan-new",
+      unknownInput: "unknown-user-secret",
+      vehicleBaseFeeAmount: 280000,
+      vehicleId: "vehicle-new"
+    },
+    beforeSnapshot: {
+      application: {
+        applicationNo: "APP-SNAPSHOT-001",
+        id: "application-snapshot-1",
+        salesUserId: "application-provider-secret",
+        status: "APPROVED"
+      },
+      changes: [
+        {
+          afterSnapshot: { unknownInput: "recursive-change-secret" },
+          beforeSnapshot: { unknownInput: "recursive-before-secret" },
+          id: "recursive-change"
+        }
+      ],
+      customer: {
+        grade: "A",
+        id: "customer-snapshot-1",
+        identity: { idCardNo: "id-card-secret" },
+        mobile: "13800000000",
+        name: "Snapshot Customer"
+      },
+      customerId: "customer-snapshot-1",
+      futureField: "order-before-future-secret",
+      id: "order-before-1",
+      monthlyFeeAmount: 320000,
+      orderNo: "ORDER-BEFORE-001",
+      orderSource: "SALES_ASSISTED",
+      orderStatus: "PENDING_CONTRACT",
+      periodMonths: 12,
+      quoteSnapshot: workspaceProductionQuoteSnapshot(),
+      riskResult: {
+        grade: "A",
+        id: "risk-snapshot-1",
+        providerPayload: "risk-provider-secret",
+        result: "APPROVED",
+        score: 88
+      },
+      vehicle: {
+        id: "vehicle-snapshot-1",
+        providerPayload: "vehicle-provider-secret",
+        vehicleNo: "VEH-SNAPSHOT-001",
+        vin: "VIN-SNAPSHOT-001"
+      }
+    },
+    changeType: "PLAN_CHANGE",
+    futureField: "change-future-secret",
+    id: "change-snapshot-1",
+    status: "PENDING"
   };
 }
 

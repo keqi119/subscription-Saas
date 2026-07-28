@@ -6,12 +6,12 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import { STATUS_LABELS, labelOf } from "../../constants/labels";
 import { apiFetch, ApiError } from "../../lib/api";
-import { buildAdminContractsListPath } from "../../lib/admin-contracts";
+import { buildAdminContractsListPath, createAdminContractsRequestController } from "../../lib/admin-contracts";
 
 interface ContractRow {
   archivedAt?: string | null;
@@ -42,22 +42,23 @@ export default function ContractsPage() {
   const [contractNo, setContractNo] = useState("");
   const [loading, setLoading] = useState(false);
   const [orderNo, setOrderNo] = useState("");
+  const requestControllerRef = useRef<ReturnType<typeof createAdminContractsRequestController> | null>(null);
   const activeContractNo = searchParams.get("contractNo") ?? "";
   const activeOrderNo = searchParams.get("orderNo") ?? "";
+  if (!requestControllerRef.current) {
+    requestControllerRef.current = createAdminContractsRequestController();
+  }
 
   const loadContracts = useCallback(async () => {
-    setLoading(true);
-    try {
-      setContracts(
-        await apiFetch<ContractRow[]>(
+    await requestControllerRef.current!.load({
+      load: () =>
+        apiFetch<ContractRow[]>(
           buildAdminContractsListPath({ contractNo: activeContractNo, orderNo: activeOrderNo })
-        )
-      );
-    } catch (error) {
-      void message.error(getErrorMessage(error));
-    } finally {
-      setLoading(false);
-    }
+        ),
+      setError: (error) => void message.error(getErrorMessage(error)),
+      setLoading,
+      setRows: setContracts
+    });
   }, [activeContractNo, activeOrderNo, message]);
 
   useEffect(() => {

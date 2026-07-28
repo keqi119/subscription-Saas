@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAdminContractsListPath } from "../src/lib/admin-contracts";
+import {
+  buildAdminContractsListPath,
+  createAdminContractsRequestController
+} from "../src/lib/admin-contracts";
 
 describe("admin contract list paths", () => {
   it("omits empty filters", () => {
@@ -28,4 +31,42 @@ describe("admin contract list paths", () => {
   it("restores the unfiltered list after both filters are cleared", () => {
     expect(buildAdminContractsListPath({ contractNo: "", orderNo: "   " })).toBe("/contracts");
   });
+
+  it("ignores a stale list request after a newer request succeeds", async () => {
+    const first = deferred<string[]>();
+    const second = deferred<string[]>();
+    const rows: string[][] = [];
+    const errors: unknown[] = [];
+    const loading: boolean[] = [];
+    const requests = [first, second];
+    const controller = createAdminContractsRequestController();
+    const request = {
+      load: () => requests.shift()!.promise,
+      setError: (error) => errors.push(error),
+      setLoading: (value) => loading.push(value),
+      setRows: (value) => rows.push(value)
+    };
+
+    const firstRequest = controller.load(request);
+    const secondRequest = controller.load(request);
+    second.resolve(["latest"]);
+    await secondRequest;
+    first.reject(new Error("stale request"));
+    await firstRequest;
+
+    expect(rows).toEqual([["latest"]]);
+    expect(errors).toEqual([]);
+    expect(loading).toEqual([true, true, false]);
+  });
 });
+
+function deferred<T>() {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, reject, resolve };
+}

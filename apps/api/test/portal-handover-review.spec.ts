@@ -1,9 +1,18 @@
 import { BadRequestException, ExecutionContext, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
+import {
+  ContractStatus,
+  DeliveryHandoverStatus,
+  VehicleHandoverWorkflowJobStatus,
+  VehicleHandoverWorkflowJobType
+} from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { DeliveryEvidenceService } from "../src/delivery-evidence/delivery-evidence.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
+import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
 import { CustomerAuthGuard } from "../src/portal/portal-auth.guard";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
 import { PortalHandoverReviewController } from "../src/portal/portal-handover-review.controller";
@@ -276,6 +285,77 @@ describe("Portal handover review API", () => {
     expectNoStage2SideEffects(harness);
   });
 
+  it("returns PDF_PENDING and the same durable job for repeated workflow confirmation", async () => {
+    const harness = createPortalReviewHarness({ workflowEnabled: true });
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    const review = await harness.service.getReview(
+      "work-order-1",
+      currentCustomer("customer-1")
+    );
+    const input = {
+      acknowledgement: true,
+      manifestHash: review.evidencePackage.manifestHash!
+    };
+
+    const first = await harness.service.confirmNoObjection(
+      "work-order-1",
+      input,
+      currentCustomer("customer-1")
+    );
+    const repeated = await harness.service.confirmNoObjection(
+      "work-order-1",
+      input,
+      currentCustomer("customer-1")
+    );
+
+    expect(first.stage2Workflow).toMatchObject({
+      jobId: harness.state.workflowJobs[0]!.id,
+      state: "PDF_PENDING"
+    });
+    expect(repeated.stage2Workflow).toEqual(first.stage2Workflow);
+    expect(harness.state.workflowJobs).toHaveLength(1);
+    expect(harness.state.workflowJobs[0]).toMatchObject({
+      jobType: VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+      jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
+    });
+    expectNoStage2SideEffects(harness);
+  });
+
+  it.each([
+    ["PDF_PENDING", null],
+    ["PDF_READY", 1],
+    ["WORKFLOW_EXCEPTION", null]
+  ] as const)(
+    "exposes the local %s workflow projection without advancing provider state",
+    async (state, artifactVersion) => {
+      const harness = createPortalReviewHarness({
+        workflowEnabled: true,
+        workflowProjection: {
+          artifactVersion,
+          errorCode: state === "WORKFLOW_EXCEPTION" ? "WORKFLOW_ERROR" : null,
+          jobId: "workflow-job-1",
+          state
+        }
+      });
+      harness.state.workOrders.push(completeReviewWorkOrder(harness));
+
+      const detail = await harness.service.getReview(
+        "work-order-1",
+        currentCustomer("customer-1")
+      );
+
+      expect(detail.stage2Workflow).toEqual({
+        artifactVersion,
+        errorCode: state === "WORKFLOW_EXCEPTION" ? "WORKFLOW_ERROR" : null,
+        jobId: "workflow-job-1",
+        state
+      });
+      expect(harness.stage2HandoverWorkflowService.getProjection)
+        .toHaveBeenCalledWith("work-order-1");
+      expectNoStage2SideEffects(harness);
+    }
+  );
+
   it("rejects a stale evidence manifest hash and leaves the review unconfirmed", async () => {
     const harness = createPortalReviewHarness();
     harness.state.workOrders.push(completeReviewWorkOrder(harness));
@@ -423,7 +503,119 @@ describe("Portal handover review API", () => {
   });
 });
 
-function createPortalReviewHarness() {
+describe("Stage2HandoverWorkflowService local projection", () => {
+  it.each([
+    {
+      label: "handover status",
+      mutate(source: Record<string, unknown>) {
+        source.status = DeliveryHandoverStatus.DRAFT;
+      }
+    },
+    {
+      label: "Contract artifact snapshot",
+      mutate(source: Record<string, unknown>) {
+        const contract = source.handoverContract as Record<string, unknown>;
+        const snapshot = contract.contractSnapshot as Record<string, unknown>;
+        snapshot.stage2HandoverPdfArtifact = {
+          artifactVersion: 2,
+          fileId: "different-file",
+          sourcePdfHash: "f".repeat(64)
+        };
+      }
+    }
+  ])(
+    "returns WORKFLOW_EXCEPTION when the local $label is invalid",
+    async ({ mutate }) => {
+      const manifestHash = "a".repeat(64);
+      const sourcePdfHash = "b".repeat(64);
+      const source: Record<string, unknown> = {
+        artifactVersion: 1,
+        handoverContract: {
+          contractSnapshot: {
+            evidencePackage: {
+              manifestHash: `sha256:${manifestHash}`
+            },
+            fileId: "file-pdf-1",
+            handoverId: "handover-1",
+            orderId: "order-1",
+            stage2HandoverPdfArtifact: {
+              artifactVersion: 1,
+              fileId: "file-pdf-1",
+              sourcePdfHash
+            },
+            workOrderId: "work-order-1"
+          },
+          customerId: "customer-1",
+          deletedAt: null,
+          fileId: "file-pdf-1",
+          id: "contract-stage2-1",
+          orderId: "order-1",
+          status: ContractStatus.GENERATED
+        },
+        handoverContractId: "contract-stage2-1",
+        id: "handover-1",
+        manifestHash,
+        orderId: "order-1",
+        sourceDocumentFileId: "file-pdf-1",
+        sourceObjectKey: "contracts/contract-stage2-1/generated/source.pdf",
+        sourcePdfHash,
+        status: DeliveryHandoverStatus.SOURCE_GENERATED
+      };
+      mutate(source);
+      const prisma = {
+        fileObject: {
+          findUnique: vi.fn(async () => ({
+            bucket: "application-materials",
+            id: "file-pdf-1",
+            mimeType: "application/pdf",
+            objectKey: source.sourceObjectKey,
+            sizeBytes: 1024n
+          }))
+        },
+        vehicleHandoverWorkflowJob: {
+          findFirst: vi.fn(async () => ({
+            id: "workflow-job-1",
+            jobStatus: VehicleHandoverWorkflowJobStatus.COMPLETED,
+            payload: { manifestHash: `sha256:${manifestHash}` }
+          }))
+        },
+        vehicleHandoverWorkOrder: {
+          findUnique: vi.fn(async () => ({
+            handover: source,
+            handoverId: "handover-1",
+            id: "work-order-1",
+            order: { customerId: "customer-1" },
+            orderId: "order-1"
+          }))
+        }
+      };
+      const service = new Stage2HandoverWorkflowService(
+        prisma as never,
+        new ConfigService({ STAGE2_HANDOVER_WORKFLOW_ENABLED: "true" }),
+        {} as never,
+        {} as never
+      );
+
+      await expect(service.getProjection("work-order-1")).resolves.toEqual({
+        artifactVersion: null,
+        errorCode: "SOURCE_ARTIFACT_INVALID",
+        jobId: "workflow-job-1",
+        state: "WORKFLOW_EXCEPTION"
+      });
+      expect(prisma.fileObject.findUnique).toHaveBeenCalledOnce();
+    }
+  );
+});
+
+function createPortalReviewHarness(options: {
+  workflowEnabled?: boolean;
+  workflowProjection?: {
+    artifactVersion: number | null;
+    errorCode: null | string;
+    jobId: null | string;
+    state: "PDF_PENDING" | "PDF_READY" | "WORKFLOW_EXCEPTION";
+  };
+} = {}) {
   const now = new Date("2026-07-22T08:00:00.000Z");
   const orderId = "order-1";
   const state = {
@@ -520,6 +712,7 @@ function createPortalReviewHarness() {
       }
     ],
     reviewAttempts: [] as Array<Record<string, unknown>>,
+    workflowJobs: [] as Array<Record<string, unknown>>,
     workOrders: [] as Array<Record<string, unknown>>
   };
 
@@ -571,6 +764,26 @@ function createPortalReviewHarness() {
         }
         Object.assign(attempt, data, { updatedAt: now });
         return attempt;
+      })
+    },
+    vehicleHandoverWorkflowJob: {
+      upsert: vi.fn(async ({ create, where }: {
+        create: Record<string, unknown>;
+        where: { idempotencyKey: string };
+      }) => {
+        const existing = state.workflowJobs.find(
+          (job) => job.idempotencyKey === where.idempotencyKey
+        );
+        if (existing) {
+          return existing;
+        }
+        const job = {
+          ...create,
+          id: `workflow-job-${state.workflowJobs.length + 1}`,
+          jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
+        };
+        state.workflowJobs.push(job);
+        return job;
       })
     },
     vehicleHandoverWorkOrder: {
@@ -631,21 +844,45 @@ function createPortalReviewHarness() {
       stream: Buffer.from("synthetic-image")
     }))
   };
+  const workflowRepository = new Stage2HandoverWorkflowRepository(
+    prisma as never
+  );
   const handoverWorkOrderService = new HandoverWorkOrderService(
     prisma as never,
     evidenceService,
     undefined,
-    storageService as never
+    storageService as never,
+    undefined,
+    new ConfigService({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED:
+        options.workflowEnabled ? "true" : "false"
+    }),
+    undefined,
+    workflowRepository
   );
   const stage2HandoverESignService = {
     getPortalStatus: vi.fn(),
     startPortalSigning: vi.fn()
   };
+  const stage2HandoverWorkflowService = {
+    getProjection: vi.fn(async () => options.workflowProjection ?? (
+      options.workflowEnabled && state.workflowJobs[0]
+        ? {
+            artifactVersion: null,
+            errorCode: null,
+            jobId: String(state.workflowJobs[0].id),
+            state: "PDF_PENDING" as const
+          }
+        : null
+    )),
+    isEnabled: vi.fn(() => options.workflowEnabled === true)
+  };
   const service = new PortalHandoverReviewService(
     prisma as never,
     evidenceService,
     handoverWorkOrderService,
-    stage2HandoverESignService as never
+    stage2HandoverESignService as never,
+    stage2HandoverWorkflowService as never
   );
 
   return {
@@ -655,6 +892,7 @@ function createPortalReviewHarness() {
     prisma,
     service,
     stage2HandoverESignService,
+    stage2HandoverWorkflowService,
     state,
     storageService
   };

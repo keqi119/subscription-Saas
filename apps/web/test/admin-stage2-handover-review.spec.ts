@@ -42,6 +42,14 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).not.toMatch(/accessTokenHash|objectKey|bucket|signingUrl|idCard|fullPhone|raw DTO/i);
   });
 
+  it("renders canonical full Field identity and states equal OTP task permissions", () => {
+    const source = read(orderPagePath);
+
+    expect(source).toContain("row.operator?.phone || \"-\"");
+    expect(source).toContain("请填写用于 Field 登录的手机号");
+    expect(source).not.toContain("row.operator?.phoneMasked || \"-\"");
+  });
+
   it("provides an Admin objection queue entry with links back to the order workflow", () => {
     const source = read(reviewQueuePagePath);
 
@@ -52,94 +60,114 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).not.toMatch(/accessToken|objectKey|bucket|signingUrl|idCard|fullPhone/i);
   });
 
-  it("integrates safe Stage 2 eSign status and actions into the existing review panel and detail modal", () => {
+  it("integrates the Stage 2 workflow timeline and dead-letter recovery into the review surfaces", () => {
     const source = read(orderPagePath);
 
-    expect(source).toContain("Stage2HandoverESignCell");
+    expect(source).toContain("Stage2HandoverWorkflowCell");
     expect(source).toContain("loadAdminStage2HandoverESign");
-    expect(source).toContain("startAdminStage2HandoverESign");
-    expect(source).toContain("retryAdminStage2PlatformSeal");
-    expect(source).toContain("retryAdminStage2HandoverArchive");
+    expect(source).toContain("getAdminStage2HandoverWorkflowDisplay");
+    expect(source).toContain("retryAdminStage2WorkflowJob");
+    expect(source).toContain("reconcileAdminStage2CustomerSignature");
     expect(source).toContain("getAdminStage2HandoverESignErrorMessage");
-    expect(source).toContain('canManageESign={permissions.has("delivery:confirm")}');
-    expect(source).toContain("发起电子签");
-    expect(source).toContain("发起平台盖章");
-    expect(source).toContain("重试平台盖章");
-    expect(source).toContain("重试签署文件归档");
-    expect(source).toContain("电子签状态");
-    expect(source).toContain("客户签署");
-    expect(source).toContain("平台盖章");
-    expect(source).toContain("签署文件归档");
+    expect(source).toContain('canRecoverWorkflow={permissions.has("delivery:confirm")}');
+    expect(source).toContain("display.recoveries.map");
+    expect(source).toContain("<Timeline");
+    expect(source).not.toContain("function Stage2HandoverPdfCell");
+    expect(source).not.toContain("function Stage2HandoverESignCell");
     expect(source).not.toMatch(
       /signUrl|providerTransactionId|providerTaskId|providerEnvelopeId|objectKey|bucket|idCard|fullPhone/i
     );
   });
 
-  it("refreshes Stage 2 eSign status after every signing action without coupling it to delivery confirmation", () => {
+  it("refreshes order and workflow state after recovery without advancing delivery", () => {
     const source = read(orderPagePath);
     const actionBlock = source.slice(
-      source.indexOf("async function runStage2HandoverESignAction"),
+      source.indexOf("async function runStage2WorkflowRecovery"),
       source.indexOf("function openAssignExternalHandover")
     );
 
-    expect(actionBlock).toContain("await action(id)");
-    expect(actionBlock).toContain("await refreshStage2HandoverESignStatus(id)");
+    expect(actionBlock).toContain("await loadOrder()");
+    expect(actionBlock).toContain("retryAdminStage2WorkflowJob");
+    expect(actionBlock).toContain("reconcileAdminStage2CustomerSignature");
     expect(actionBlock).not.toMatch(
       /confirmDelivery|prepareDelivery|activateLease|leaseActivation|billing|payment/i
     );
   });
 
-  it("requires explicit confirmation before create and platform-seal provider mutations", () => {
+  it("requires explicit confirmation before an exception recovery mutation", () => {
     const source = read(orderPagePath);
     const confirmationBlock = source.slice(
-      source.indexOf("function confirmStage2HandoverESignMutation"),
-      source.indexOf("function openStage2HandoverVoidModal")
-    );
-
-    expect(confirmationBlock).toContain("modal.confirm");
-    expect(confirmationBlock).toContain("确认发起车辆交接电子签？");
-    expect(confirmationBlock).toContain("确认发起平台盖章？");
-    expect(confirmationBlock).toContain("startAdminStage2HandoverESign");
-    expect(confirmationBlock).toContain("retryAdminStage2PlatformSeal");
-    expect(confirmationBlock).toContain("onOk");
-    expect(confirmationBlock).toContain("onCancel");
-  });
-
-  it("uses a synchronous ref guard and disables every eSign mutation while one is pending", () => {
-    const source = read(orderPagePath);
-    const guardBlock = source.slice(
-      source.indexOf("function acquireStage2HandoverESignMutation"),
-      source.indexOf("async function runStage2HandoverESignAction")
-    );
-    const cellBlock = source.slice(
-      source.indexOf("function Stage2HandoverESignCell"),
-      source.indexOf("function Stage2HandoverESignState")
-    );
-
-    expect(source).toContain("stage2ESignMutationInFlightRef = useRef(false)");
-    expect(guardBlock).toContain("stage2ESignMutationInFlightRef.current");
-    expect(guardBlock).toContain("stage2ESignMutationInFlightRef.current = true");
-    expect(guardBlock).toContain("stage2ESignMutationInFlightRef.current = false");
-    expect(cellBlock.match(/mutationInFlight/g)?.length).toBeGreaterThanOrEqual(5);
-    expect(cellBlock).toContain("disabled={!canManageESign || mutationInFlight");
-  });
-
-  it("offers reasoned void only when allowed and never auto-rebuilds in the same action", () => {
-    const source = read(orderPagePath);
-    const voidActionBlock = source.slice(
-      source.indexOf("async function submitStage2HandoverVoid"),
+      source.indexOf("function confirmStage2WorkflowRecovery"),
       source.indexOf("function openAssignExternalHandover")
     );
 
+    expect(confirmationBlock).toContain("modal.confirm");
+    expect(confirmationBlock).toContain("确认执行异常恢复？");
+    expect(confirmationBlock).toContain("runStage2WorkflowRecovery");
+    expect(confirmationBlock).toContain("onOk");
+  });
+
+  it("uses a synchronous ref guard and disables recovery while one is pending", () => {
+    const source = read(orderPagePath);
+    const guardBlock = source.slice(
+      source.indexOf("async function runStage2WorkflowRecovery"),
+      source.indexOf("function confirmStage2WorkflowRecovery")
+    );
+    const cellBlock = source.slice(
+      source.indexOf("function Stage2HandoverWorkflowCell"),
+      source.indexOf("function Stage2HandoverReviewPanel")
+    );
+
+    expect(source).toContain("stage2WorkflowRecoveryInFlightRef = useRef(false)");
+    expect(guardBlock).toContain("stage2WorkflowRecoveryInFlightRef.current");
+    expect(guardBlock).toContain("stage2WorkflowRecoveryInFlightRef.current = true");
+    expect(guardBlock).toContain("stage2WorkflowRecoveryInFlightRef.current = false");
+    expect(cellBlock).toContain("disabled={!canRecoverWorkflow || mutationInFlight}");
+  });
+
+  it("delegates the delivery signing gate and exposes controlled void/reissue plus Admin fallback UI", () => {
+    const source = read(orderPagePath);
+    const signingGateBlock = source.slice(
+      source.indexOf("const stage2SigningComplete ="),
+      source.indexOf("const confirmDeliveryDisabledReason")
+    );
+
+    expect(signingGateBlock).toContain('handoverWorkOrdersLoadState === "LOADED"');
+    expect(signingGateBlock).toContain("activeHandoverWorkOrders.length === 0");
+    expect(signingGateBlock).toContain("activeHandoverWorkOrders.length === 1");
+    expect(signingGateBlock).toContain("deliveryConfirmationAvailable");
+    expect(signingGateBlock).not.toContain("archiveStatus");
+    expect(signingGateBlock).not.toContain("signedArtifactAvailable");
     expect(source).toContain("voidAdminStage2HandoverESign");
-    expect(source).toContain("validateAdminStage2HandoverVoidReason");
-    expect(source).toContain("作废签署任务");
-    expect(source).toContain('name="reason"');
-    expect(source).toContain("请输入 3-500 个字符的作废原因");
-    expect(source).toContain("display.voidAvailable");
-    expect(voidActionBlock).toContain("voidAdminStage2HandoverESign");
-    expect(voidActionBlock).toContain("await runStage2HandoverESignAction");
-    expect(voidActionBlock).not.toContain("startAdminStage2HandoverESign");
+    expect(source).toContain("startAdminStage2HandoverESign");
+    expect(source).toContain("作废并重新发起");
+    expect(source).toContain("后台兜底发起签署");
+    expect(source).toContain("buildAdminStage2HandoverPdfDownloadUrl");
+    expect(source).toContain("确认后台兜底发起签署");
+    expect(source).toContain("已核对当前交接确认单");
+    expect(source).toContain("PDF 版本");
+    expect(source).toContain("SHA-256");
+    expect(source).toContain("预览/下载 PDF");
+    expect(source).toContain("validateAdminStage2HandoverFallbackReason");
+  });
+
+  it("freezes the reviewed PDF version and hash when the Admin fallback dialog opens", () => {
+    const source = read(orderPagePath);
+    const fallbackBlock = source.slice(
+      source.indexOf("async function runAdminStage2Fallback"),
+      source.indexOf("function openAdminStage2Void")
+    );
+
+    expect(fallbackBlock).toContain(
+      "const sourceArtifact = stage2FallbackSourceArtifact"
+    );
+    expect(fallbackBlock).toContain(
+      "setStage2FallbackSourceArtifact({"
+    );
+    expect(fallbackBlock).toContain("...status.sourceArtifact");
+    expect(fallbackBlock).not.toContain(
+      "handoverESignStatuses[id]?.sourceArtifact"
+    );
   });
 });
 

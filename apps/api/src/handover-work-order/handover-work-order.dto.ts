@@ -1,6 +1,12 @@
-import { DeliveryEvidenceMediaType } from "@prisma/client";
+import {
+  DeliveryEvidenceMediaType,
+  VehicleHandoverWorkflowJobStatus,
+  VehicleHandoverWorkflowJobType
+} from "@prisma/client";
+import { Transform } from "class-transformer";
 import {
   ArrayMaxSize,
+  Equals,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -11,7 +17,9 @@ import {
   IsString,
   IsUUID,
   MaxLength,
-  Min
+  Matches,
+  Min,
+  MinLength
 } from "class-validator";
 
 import type { HandoverFieldFactKey } from "./handover-work-order.service";
@@ -51,9 +59,8 @@ export class AssignExternalOperatorDto {
   @IsString()
   organization?: string;
 
-  @IsOptional()
   @IsString()
-  phone?: string;
+  phone!: string;
 }
 
 export class UpdateHandoverFieldFactsDto {
@@ -121,6 +128,40 @@ export class VoidHandoverWorkOrderDto {
 
 export class VoidStage2HandoverESignDto {
   @IsString()
+  @MaxLength(500)
+  reason!: string;
+}
+
+export class Stage2WorkflowRecoveryJobDto {
+  id!: string;
+  jobStatus!: VehicleHandoverWorkflowJobStatus;
+  jobType!: VehicleHandoverWorkflowJobType;
+}
+
+export class Stage2WorkflowRecoveryResultDto {
+  created!: boolean;
+  job!: Stage2WorkflowRecoveryJobDto;
+}
+
+export class StartFieldStage2ESignDto {
+  @Equals(true)
+  acknowledgement!: true;
+
+  @IsInt()
+  @Min(1)
+  artifactVersion!: number;
+
+  @IsString()
+  @Matches(/^[a-f0-9]{64}$/)
+  sourcePdfHash!: string;
+}
+
+export class StartAdminStage2ESignDto extends StartFieldStage2ESignDto {
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === "string" ? value.trim().replace(/\s+/g, " ") : value
+  )
+  @IsString()
+  @MinLength(3)
   @MaxLength(500)
   reason!: string;
 }

@@ -5,12 +5,12 @@ import {
   ClockCircleOutlined,
   DeleteOutlined,
   DownloadOutlined,
-  FilePdfOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SendOutlined,
   UserAddOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Timeline, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import Link from "next/link";
@@ -53,19 +53,26 @@ import {
 } from "../../../lib/action-guards";
 import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
 import {
+  createAdminStage2DeliveryConfirmationController,
+  createAdminStage2DeliveryVerifier,
   getAdminStage2HandoverESignDisplay,
   getAdminStage2HandoverESignErrorMessage,
+  getAdminStage2HandoverWorkflowDisplay,
   loadAdminStage2HandoverESign,
-  retryAdminStage2HandoverArchive,
-  retryAdminStage2PlatformSeal,
+  reconcileAdminStage2CustomerSignature,
+  retryAdminStage2WorkflowJob,
+  runAdminStage2WorkflowRecovery,
   startAdminStage2HandoverESign,
+  type AdminStage2HandoverESignStatus,
+  type AdminStage2HandoverWorkflowJob,
+  type AdminStage2HandoverWorkflowRecovery,
+  validateAdminStage2HandoverFallbackReason,
   validateAdminStage2HandoverVoidReason,
-  voidAdminStage2HandoverESign,
-  type AdminStage2HandoverESignStatus
+  voidAdminStage2HandoverESign
 } from "../../../lib/admin-stage2-handover-esign";
 import {
+  buildAdminStage2HandoverPdfDownloadUrl,
   buildAdminStage2HandoverPdfUrl,
-  generateStage2HandoverPdf as generateStage2HandoverPdfArtifact,
   type Stage2HandoverPdfArtifact
 } from "../../../lib/admin-stage2-handover-pdf";
 import type { AuthMeResponse } from "../../../lib/auth";
@@ -313,7 +320,7 @@ interface HandoverWorkOrderSummary {
   handoverType?: string | null;
   id: string;
   objection?: { adminStatus?: string | null; details?: string | null; objectedAt?: string | null; reason?: string | null } | null;
-  operator?: { name?: string | null; phoneMasked?: string | null; type?: string | null } | null;
+  operator?: { name?: string | null; phone?: string | null; type?: string | null } | null;
   orderId?: string | null;
   orderNo?: string | null;
   readiness?: { blockingReasons?: string[]; readyForStage2Pdf?: boolean; readyForStage2ESign?: boolean } | null;
@@ -322,7 +329,14 @@ interface HandoverWorkOrderSummary {
   stage2Pdf?: Stage2HandoverPdfArtifact | null;
   status?: string | null;
   vehicle?: { brand?: string | null; model?: string | null; plateMasked?: string | null; vinSuffix?: string | null } | null;
+  workflowJobs?: AdminStage2HandoverWorkflowJob[];
 }
+
+type HandoverWorkOrdersLoadState =
+  | "ERROR"
+  | "LOADED"
+  | "LOADING"
+  | "UNKNOWN";
 
 interface AssignExternalHandoverFormValues {
   expiresAt?: Dayjs;
@@ -337,7 +351,12 @@ interface HandoverResubmissionFormValues {
   targetFieldKeys?: string[];
 }
 
-interface Stage2HandoverVoidFormValues {
+interface Stage2VoidFormValues {
+  reason: string;
+}
+
+interface Stage2FallbackFormValues {
+  acknowledgement?: boolean;
   reason: string;
 }
 
@@ -2594,169 +2613,147 @@ function FinancePanel({
   );
 }
 
-function Stage2HandoverPdfCell({
+function Stage2HandoverWorkflowCell({
   actionLoading,
-  canGeneratePdf,
-  onGeneratePdf,
-  workOrder
-}: {
-  actionLoading: string | null;
-  canGeneratePdf: boolean;
-  onGeneratePdf: (id: string) => void;
-  workOrder: HandoverWorkOrderSummary;
-}) {
-  const artifact = workOrder.stage2Pdf;
-  const generated = artifact?.status === "GENERATED" && artifact.downloadUrl;
-  const blockers = workOrder.readiness?.blockingReasons ?? [];
-  const ready = workOrder.readiness?.readyForStage2Pdf === true;
-  const downloadUrl = buildAdminStage2HandoverPdfUrl(artifact?.downloadUrl);
-
-  if (generated) {
-    return (
-      <Space direction="vertical" size={2}>
-        <Space size={6} wrap>
-          <Tag color="green">已生成</Tag>
-          <Typography.Text type="secondary">{artifact?.documentNo || "-"}</Typography.Text>
-        </Space>
-        <Typography.Text type="secondary">
-          {artifact?.fileName || "车辆交接确认单.pdf"} / {formatEvidenceFileSize(artifact?.fileSize)}
-        </Typography.Text>
-        <Button
-          href={downloadUrl ?? undefined}
-          icon={<DownloadOutlined />}
-          rel="noreferrer"
-          size="small"
-          target="_blank"
-        >
-          下载
-        </Button>
-      </Space>
-    );
-  }
-
-  return (
-    <Space direction="vertical" size={2}>
-      <Button
-        disabled={!canGeneratePdf || !ready}
-        icon={<FilePdfOutlined />}
-        loading={actionLoading === `pdf:${workOrder.id}`}
-        onClick={() => onGeneratePdf(workOrder.id)}
-        size="small"
-      >
-        生成交接 PDF
-      </Button>
-      {blockers.length > 0 ? (
-        <Typography.Text type="secondary">{blockers[0]}</Typography.Text>
-      ) : (
-        <Typography.Text type="secondary">客户确认后可生成</Typography.Text>
-      )}
-    </Space>
-  );
-}
-
-function Stage2HandoverESignCell({
-  actionLoading,
-  canManageESign,
+  canRecoverWorkflow,
   error,
   loading,
   mutationInFlight,
+  onRecover,
   onRefresh,
-  onRetryArchive,
-  onRetryPlatformSeal,
   onStart,
   onVoid,
   status,
-  workOrderId
+  workOrder
 }: {
   actionLoading: string | null;
-  canManageESign: boolean;
+  canRecoverWorkflow: boolean;
   error?: string | null;
   loading: boolean;
   mutationInFlight: boolean;
+  onRecover: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => void;
   onRefresh: (id: string) => void;
-  onRetryArchive: (id: string) => void;
-  onRetryPlatformSeal: (id: string) => void;
   onStart: (id: string) => void;
   onVoid: (id: string) => void;
   status?: AdminStage2HandoverESignStatus;
-  workOrderId: string;
+  workOrder: HandoverWorkOrderSummary;
 }) {
-  if (!status) {
-    return (
-      <Space orientation="vertical" size={4}>
-        {loading ? <Spin size="small" /> : <Typography.Text type="secondary">电子签状态待加载</Typography.Text>}
-        {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
-        {!loading ? (
-          <Button
-            disabled={mutationInFlight}
-            icon={<ReloadOutlined />}
-            onClick={() => onRefresh(workOrderId)}
-            size="small"
-          >
-            刷新
-          </Button>
-        ) : null}
-      </Space>
-    );
-  }
-
-  const display = getAdminStage2HandoverESignDisplay(status);
+  const workflowStatus = status
+    ? {
+        ...status,
+        workflowJobs: status.workflowJobs ?? workOrder.workflowJobs
+      }
+    : undefined;
+  const display = getAdminStage2HandoverWorkflowDisplay(workflowStatus, {
+    customerConfirmedAt: workOrder.customerConfirmedAt,
+    pdfStatus: workOrder.stage2Pdf?.status,
+    workflowJobs: workOrder.workflowJobs
+  });
+  const actionDisplay = status
+    ? getAdminStage2HandoverESignDisplay(status)
+    : null;
+  const downloadUrl = buildAdminStage2HandoverPdfUrl(workOrder.stage2Pdf?.downloadUrl);
   return (
-    <Space orientation="vertical" size={4}>
-      <Stage2HandoverESignState label="电子签状态" state={display.readiness} />
-      <Stage2HandoverESignState label="客户签署" state={display.customer} />
-      <Stage2HandoverESignState label="平台盖章" state={display.platform} />
-      <Stage2HandoverESignState label="签署文件归档" state={display.archive} />
+    <Space
+      orientation="vertical"
+      size={6}
+      style={{ minHeight: 188, minWidth: 280, width: "100%" }}
+    >
+      <Space align="center" size={6}>
+        <Typography.Text strong>交接签署流程</Typography.Text>
+        {loading ? <Spin size="small" /> : null}
+      </Space>
+      <Timeline
+        items={display.steps.map((step) => ({
+          content: (
+            <Typography.Text
+              style={{ color: step.state === "waiting" ? "#8c8c8c" : undefined }}
+            >
+              {step.label}
+            </Typography.Text>
+          ),
+          color:
+            step.state === "complete"
+              ? "green"
+              : step.state === "error"
+                ? "red"
+                : step.state === "current"
+                  ? "blue"
+                  : "gray"
+        }))}
+        style={{ marginBottom: -16 }}
+      />
+      {workOrder.stage2Pdf?.status === "GENERATED" ? (
+        <Space size={6} wrap>
+          <Typography.Text
+            ellipsis={{ tooltip: workOrder.stage2Pdf.documentNo || undefined }}
+            style={{ maxWidth: 190 }}
+            type="secondary"
+          >
+            {workOrder.stage2Pdf.documentNo || "交接确认单"}
+          </Typography.Text>
+          {downloadUrl ? (
+            <Button
+              href={downloadUrl}
+              icon={<DownloadOutlined />}
+              rel="noreferrer"
+              size="small"
+              target="_blank"
+            >
+              下载
+            </Button>
+          ) : null}
+        </Space>
+      ) : null}
       {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
       <Space size={[6, 6]} wrap>
-        {!status.taskId ? (
+        {actionDisplay?.voidAvailable ? (
           <Button
-            disabled={!canManageESign || mutationInFlight || !display.startAvailable}
-            loading={actionLoading === `esign-start:${workOrderId}`}
-            onClick={() => onStart(workOrderId)}
+            danger
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            icon={<DeleteOutlined />}
+            loading={actionLoading === `stage2-void:${workOrder.id}`}
+            onClick={() => onVoid(workOrder.id)}
+            size="small"
+          >
+            作废并重新发起
+          </Button>
+        ) : null}
+        {actionDisplay?.startAvailable ? (
+          <Button
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            icon={<SendOutlined />}
+            loading={actionLoading === `stage2-start:${workOrder.id}`}
+            onClick={() => onStart(workOrder.id)}
             size="small"
             type="primary"
           >
-            发起电子签
+            后台兜底发起签署
           </Button>
         ) : null}
-        {display.platformActionLabel ? (
+        {display.recoveries.map((recovery) => (
           <Button
-            disabled={!canManageESign || mutationInFlight}
-            loading={actionLoading === `esign-platform:${workOrderId}`}
-            onClick={() => onRetryPlatformSeal(workOrderId)}
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            key={recovery.jobId}
+            loading={
+              actionLoading ===
+              `workflow-recovery:${workOrder.id}:${recovery.jobId}`
+            }
+            onClick={() => onRecover(workOrder.id, recovery)}
             size="small"
           >
-            {display.platformActionLabel === "发起平台盖章" ? "发起平台盖章" : "重试平台盖章"}
+            {recovery.label}
           </Button>
-        ) : null}
-        {display.archiveRetryAvailable ? (
-          <Button
-            disabled={!canManageESign || mutationInFlight}
-            loading={actionLoading === `esign-archive:${workOrderId}`}
-            onClick={() => onRetryArchive(workOrderId)}
-            size="small"
-          >
-            重试签署文件归档
-          </Button>
-        ) : null}
-        {display.voidAvailable ? (
-          <Button
-            danger
-            disabled={!canManageESign || mutationInFlight}
-            loading={actionLoading === `esign-void:${workOrderId}`}
-            onClick={() => onVoid(workOrderId)}
-            size="small"
-          >
-            作废签署任务
-          </Button>
-        ) : null}
+        ))}
         <Button
-          aria-label="刷新电子签状态"
+          aria-label="刷新交接签署流程"
           disabled={mutationInFlight}
           icon={<ReloadOutlined />}
           loading={loading}
-          onClick={() => onRefresh(workOrderId)}
+          onClick={() => onRefresh(workOrder.id)}
           size="small"
         />
       </Space>
@@ -2764,42 +2761,24 @@ function Stage2HandoverESignCell({
   );
 }
 
-function Stage2HandoverESignState({
-  label,
-  state
-}: {
-  label: string;
-  state: ReturnType<typeof getAdminStage2HandoverESignDisplay>["readiness"];
-}) {
-  return (
-    <Space size={4} wrap>
-      <Typography.Text type="secondary">{label}</Typography.Text>
-      <Tag color={state.color}>{state.label}</Tag>
-      {state.detail ? <Typography.Text type="secondary">{state.detail}</Typography.Text> : null}
-    </Space>
-  );
-}
-
 function Stage2HandoverReviewPanel({
   actionLoading,
   canAssignExternal,
-  canGeneratePdf,
   canHandleObjection,
-  canManageESign,
+  canRecoverWorkflow,
   createAvailability,
   esignErrors,
   esignLoading,
   esignStatuses,
   loading,
+  loadState,
   mutationInFlight,
   onAcknowledge,
   onAssignExternal,
   onCreateWorkOrder,
-  onGeneratePdf,
+  onRecoverWorkflow,
   onRefreshESign,
   onRequestResubmission,
-  onRetryESignArchive,
-  onRetryPlatformSeal,
   onSendCustomerReview,
   onStartESign,
   onVoidESign,
@@ -2808,23 +2787,24 @@ function Stage2HandoverReviewPanel({
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
-  canGeneratePdf: boolean;
   canHandleObjection: boolean;
-  canManageESign: boolean;
+  canRecoverWorkflow: boolean;
   createAvailability: ReturnType<typeof actionAvailability>;
   esignErrors: Record<string, string | undefined>;
   esignLoading: Record<string, boolean | undefined>;
   esignStatuses: Record<string, AdminStage2HandoverESignStatus | undefined>;
   loading: boolean;
+  loadState: HandoverWorkOrdersLoadState;
   mutationInFlight: boolean;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onCreateWorkOrder: () => void;
-  onGeneratePdf: (id: string) => void;
+  onRecoverWorkflow: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => void;
   onRefreshESign: (id: string) => void;
   onRequestResubmission: (id: string) => void;
-  onRetryESignArchive: (id: string) => void;
-  onRetryPlatformSeal: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onStartESign: (id: string) => void;
   onVoidESign: (id: string) => void;
@@ -2841,7 +2821,8 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatHandoverType(row.handoverType)}</Typography.Text>
         </Space>
       ),
-      title: "工单"
+      title: "工单",
+      width: 180
     },
     {
       dataIndex: "status",
@@ -2851,22 +2832,45 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatAdminReviewStatus(row.adminReview?.status)}</Typography.Text>
         </Space>
       ),
-      title: "状态"
+      title: "状态",
+      width: 150
+    },
+    {
+      key: "stage2ESign",
+      render: (_value, row) => (
+        <Stage2HandoverWorkflowCell
+          actionLoading={actionLoading}
+          canRecoverWorkflow={canRecoverWorkflow}
+          error={esignErrors[row.id]}
+          loading={esignLoading[row.id] === true}
+          mutationInFlight={mutationInFlight}
+          onRecover={onRecoverWorkflow}
+          onRefresh={onRefreshESign}
+          onStart={onStartESign}
+          onVoid={onVoidESign}
+          status={esignStatuses[row.id]}
+          workOrder={row}
+        />
+      ),
+      title: "交接签署流程",
+      width: 360
     },
     {
       dataIndex: "customer",
       render: (_value, row) => joinText(row.customer?.displayName, row.customer?.mobileMasked),
-      title: "客户"
+      title: "客户",
+      width: 160
     },
     {
       dataIndex: "operator",
       render: (_value, row) => (
         <Space orientation="vertical" size={2}>
           <Typography.Text>{row.operator?.name || "尚未指派"}</Typography.Text>
-          <Typography.Text type="secondary">{row.operator?.phoneMasked || "-"}</Typography.Text>
+          <Typography.Text type="secondary">{row.operator?.phone || "-"}</Typography.Text>
         </Space>
       ),
-      title: "Field 人员"
+      title: "Field 人员",
+      width: 244
     },
     {
       dataIndex: "fieldSubmittedAt",
@@ -2876,7 +2880,8 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatHandoverEvidenceProgress(row.evidenceProgress)}</Typography.Text>
         </Space>
       ),
-      title: "现场资料"
+      title: "现场资料",
+      width: 180
     },
     {
       dataIndex: "objection",
@@ -2887,39 +2892,8 @@ function Stage2HandoverReviewPanel({
             <Typography.Text type="secondary">{formatTime(row.objection.objectedAt)}</Typography.Text>
           </Space>
         ) : "-",
-      title: "客户异议"
-    },
-    {
-      dataIndex: "stage2Pdf",
-      render: (_value, row) => (
-        <Stage2HandoverPdfCell
-          actionLoading={actionLoading}
-          canGeneratePdf={canGeneratePdf}
-          onGeneratePdf={onGeneratePdf}
-          workOrder={row}
-        />
-      ),
-      title: "交接 PDF"
-    },
-    {
-      key: "stage2ESign",
-      render: (_value, row) => (
-        <Stage2HandoverESignCell
-          actionLoading={actionLoading}
-          canManageESign={canManageESign}
-          error={esignErrors[row.id]}
-          loading={esignLoading[row.id] === true}
-          mutationInFlight={mutationInFlight}
-          onRefresh={onRefreshESign}
-          onRetryArchive={onRetryESignArchive}
-          onRetryPlatformSeal={onRetryPlatformSeal}
-          onStart={onStartESign}
-          onVoid={onVoidESign}
-          status={esignStatuses[row.id]}
-          workOrderId={row.id}
-        />
-      ),
-      title: "电子签"
+      title: "客户异议",
+      width: 180
     },
     {
       key: "actions",
@@ -2936,7 +2910,8 @@ function Stage2HandoverReviewPanel({
           workOrder={row}
         />
       ),
-      title: "操作"
+      title: "操作",
+      width: 280
     }
   ];
 
@@ -2960,7 +2935,16 @@ function Stage2HandoverReviewPanel({
       }
       title="Stage 2 现场交接 / 客户复核"
     >
-      {workOrders.length === 0 ? (
+      {loadState === "ERROR" ? (
+        <Alert
+          message="Stage 2 现场交接工单加载失败"
+          description="当前无法确认交接签署状态，请刷新页面后重试。"
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="error"
+        />
+      ) : null}
+      {loadState === "LOADED" && workOrders.length === 0 ? (
         <Alert
           message="暂无 Stage 2 现场交接工单"
           description="完成准备交付后，可在此创建交付工单并指派现场交付人员。"
@@ -2976,7 +2960,9 @@ function Stage2HandoverReviewPanel({
         locale={{ emptyText: "暂无 Stage 2 现场交接记录" }}
         pagination={false}
         rowKey="id"
+        scroll={{ x: 1734 }}
         size="small"
+        tableLayout="fixed"
       />
     </Card>
   );
@@ -3057,9 +3043,8 @@ function Stage2HandoverReviewActions({
 function Stage2HandoverReviewDetailModal({
   actionLoading,
   canAssignExternal,
-  canGeneratePdf,
   canHandleObjection,
-  canManageESign,
+  canRecoverWorkflow,
   detail,
   esignError,
   esignLoading,
@@ -3068,11 +3053,9 @@ function Stage2HandoverReviewDetailModal({
   onAcknowledge,
   onAssignExternal,
   onClose,
-  onGeneratePdf,
+  onRecoverWorkflow,
   onRefreshESign,
   onRequestResubmission,
-  onRetryESignArchive,
-  onRetryPlatformSeal,
   onSendCustomerReview,
   onStartESign,
   onVoidESign,
@@ -3080,9 +3063,8 @@ function Stage2HandoverReviewDetailModal({
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
-  canGeneratePdf: boolean;
   canHandleObjection: boolean;
-  canManageESign: boolean;
+  canRecoverWorkflow: boolean;
   detail: HandoverWorkOrderDetail | null;
   esignError?: string | null;
   esignLoading: boolean;
@@ -3091,11 +3073,12 @@ function Stage2HandoverReviewDetailModal({
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onClose: () => void;
-  onGeneratePdf: (id: string) => void;
+  onRecoverWorkflow: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => void;
   onRefreshESign: (id: string) => void;
   onRequestResubmission: (id: string) => void;
-  onRetryESignArchive: (id: string) => void;
-  onRetryPlatformSeal: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onStartESign: (id: string) => void;
   onVoidESign: (id: string) => void;
@@ -3118,26 +3101,18 @@ function Stage2HandoverReviewDetailModal({
             ]}
           />
 
-          <Stage2HandoverPdfCell
+          <Stage2HandoverWorkflowCell
             actionLoading={actionLoading}
-            canGeneratePdf={canGeneratePdf}
-            onGeneratePdf={onGeneratePdf}
-            workOrder={detail}
-          />
-
-          <Stage2HandoverESignCell
-            actionLoading={actionLoading}
-            canManageESign={canManageESign}
+            canRecoverWorkflow={canRecoverWorkflow}
             error={esignError}
             loading={esignLoading}
             mutationInFlight={mutationInFlight}
+            onRecover={onRecoverWorkflow}
             onRefresh={onRefreshESign}
-            onRetryArchive={onRetryESignArchive}
-            onRetryPlatformSeal={onRetryPlatformSeal}
             onStart={onStartESign}
             onVoid={onVoidESign}
             status={esignStatus}
-            workOrderId={detail.id}
+            workOrder={detail}
           />
 
           {detail.objection?.reason ? (
@@ -3865,7 +3840,8 @@ function getConfirmDeliveryDisabledReason(
   order: OrderDetail | null,
   deliveryCheck: DeliveryCheck | null,
   delivery: VehicleDelivery | null,
-  orderChangeLocked: boolean
+  orderChangeLocked: boolean,
+  stage2SigningComplete: boolean
 ) {
   if (!order) {
     return "数据加载完成后才可操作";
@@ -3878,6 +3854,9 @@ function getConfirmDeliveryDisabledReason(
   }
   if (delivery?.deliveryStatus !== "READY") {
     return "请先完成准备交付";
+  }
+  if (!stage2SigningComplete) {
+    return "客户签署与平台盖章完成后才可确认交付";
   }
   if ((deliveryCheck?.vehicleStatus ?? order.vehicle?.status) !== "RESERVED") {
     return "交付前车辆必须处于“签约锁定（RESERVED）”状态。";
@@ -3985,9 +3964,9 @@ function OrderDetailPageContent() {
   const [renewEntitlementForm] = Form.useForm<EntitlementOperationFormValues>();
   const [refundDepositForm] = Form.useForm<RefundDepositFormValues>();
   const [handoverResubmissionForm] = Form.useForm<HandoverResubmissionFormValues>();
-  const [stage2HandoverVoidForm] = Form.useForm<Stage2HandoverVoidFormValues>();
-  const stage2ESignMutationInFlightRef = useRef(false);
-  const stage2ESignRequestStartedRef = useRef(false);
+  const [stage2FallbackForm] = Form.useForm<Stage2FallbackFormValues>();
+  const [stage2VoidForm] = Form.useForm<Stage2VoidFormValues>();
+  const stage2WorkflowRecoveryInFlightRef = useRef(false);
   const [assignExternalHandoverId, setAssignExternalHandoverId] = useState<string | null>(null);
   const [assignExternalHandoverOpen, setAssignExternalHandoverOpen] = useState(false);
   const [changeModalOpen, setChangeModalOpen] = useState(false);
@@ -4000,6 +3979,8 @@ function OrderDetailPageContent() {
   const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
   const [handoverWorkOrders, setHandoverWorkOrders] = useState<HandoverWorkOrderSummary[]>([]);
   const [handoverWorkOrdersLoading, setHandoverWorkOrdersLoading] = useState(false);
+  const [handoverWorkOrdersLoadState, setHandoverWorkOrdersLoadState] =
+    useState<HandoverWorkOrdersLoadState>("UNKNOWN");
   const [handoverWorkOrderDetail, setHandoverWorkOrderDetail] = useState<HandoverWorkOrderDetail | null>(null);
   const [handoverWorkOrderDetailOpen, setHandoverWorkOrderDetailOpen] = useState(false);
   const [handoverActionLoading, setHandoverActionLoading] = useState<string | null>(null);
@@ -4008,9 +3989,22 @@ function OrderDetailPageContent() {
   const [handoverESignStatuses, setHandoverESignStatuses] = useState<
     Record<string, AdminStage2HandoverESignStatus | undefined>
   >({});
-  const [stage2ESignMutationInFlight, setStage2ESignMutationInFlight] = useState(false);
-  const [stage2HandoverVoidOpen, setStage2HandoverVoidOpen] = useState(false);
-  const [stage2HandoverVoidWorkOrderId, setStage2HandoverVoidWorkOrderId] = useState<string | null>(null);
+  const [stage2WorkflowRecoveryInFlight, setStage2WorkflowRecoveryInFlight] =
+    useState(false);
+  const [stage2FallbackOpen, setStage2FallbackOpen] = useState(false);
+  const [
+    stage2FallbackSourceArtifact,
+    setStage2FallbackSourceArtifact
+  ] = useState<
+    NonNullable<
+      AdminStage2HandoverESignStatus["sourceArtifact"]
+    > | null
+  >(null);
+  const [stage2FallbackWorkOrderId, setStage2FallbackWorkOrderId] =
+    useState<string | null>(null);
+  const [stage2VoidOpen, setStage2VoidOpen] = useState(false);
+  const [stage2VoidWorkOrderId, setStage2VoidWorkOrderId] =
+    useState<string | null>(null);
   const [handoverResubmissionDetail, setHandoverResubmissionDetail] = useState<HandoverWorkOrderDetail | null>(null);
   const [handoverResubmissionOpen, setHandoverResubmissionOpen] = useState(false);
   const [consumeEntitlementModalOpen, setConsumeEntitlementModalOpen] = useState(false);
@@ -4055,6 +4049,31 @@ function OrderDetailPageContent() {
   const writeOffEnabled = Form.useWatch("writeOffEnabled", paymentForm);
   const writeOffItems = Form.useWatch("writeOffItems", paymentForm);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
+  const stage2DeliveryVerifier = useMemo(
+    () =>
+      createAdminStage2DeliveryVerifier({
+        loadESignStatus: loadAdminStage2HandoverESign,
+        loadWorkOrders: (orderId) =>
+          apiFetch<HandoverWorkOrderSummary[]>(
+            `/orders/${encodeURIComponent(orderId)}/handover-work-orders`
+          )
+      }),
+    []
+  );
+  const stage2DeliveryConfirmationController = useMemo(
+    () =>
+      createAdminStage2DeliveryConfirmationController({
+        onBlocked: (verification) => {
+          void message.warning(
+            verification.reason === "LOAD_ERROR"
+              ? "交接签署状态加载失败，请刷新后重试"
+              : "客户签署与平台盖章完成后才可确认交付"
+          );
+        },
+        verifier: stage2DeliveryVerifier
+      }),
+    [message, stage2DeliveryVerifier]
+  );
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const hasBillingViewPermission = permissions.has("billing:view");
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
@@ -4238,7 +4257,34 @@ function OrderDetailPageContent() {
     permission: "delivery:prepare",
     permissions
   });
-  const confirmDeliveryDisabledReason = getConfirmDeliveryDisabledReason(order, deliveryCheck, delivery, orderChangeLocked);
+  const activeHandoverWorkOrders = handoverWorkOrders.filter(
+    isActiveHandoverWorkOrder
+  );
+  const activeHandoverWorkOrder = activeHandoverWorkOrders[0];
+  const stage2SigningComplete =
+    handoverWorkOrdersLoadState === "LOADED" &&
+    (
+      activeHandoverWorkOrders.length === 0 ||
+      (
+        activeHandoverWorkOrders.length === 1 &&
+        activeHandoverWorkOrder !== undefined &&
+        getAdminStage2HandoverWorkflowDisplay(
+          handoverESignStatuses[activeHandoverWorkOrder.id],
+          {
+            customerConfirmedAt: activeHandoverWorkOrder.customerConfirmedAt,
+            pdfStatus: activeHandoverWorkOrder.stage2Pdf?.status,
+            workflowJobs: activeHandoverWorkOrder.workflowJobs
+          }
+        ).deliveryConfirmationAvailable
+      )
+    );
+  const confirmDeliveryDisabledReason = getConfirmDeliveryDisabledReason(
+    order,
+    deliveryCheck,
+    delivery,
+    orderChangeLocked,
+    stage2SigningComplete
+  );
   const confirmDeliveryAvailability = actionAvailability({
     allowed: confirmDeliveryDisabledReason === null,
     disabledReason: confirmDeliveryDisabledReason ?? "当前订单状态不允许交付",
@@ -4246,7 +4292,6 @@ function OrderDetailPageContent() {
     permission: "delivery:confirm",
     permissions
   });
-  const activeHandoverWorkOrder = handoverWorkOrders.find(isActiveHandoverWorkOrder);
   const createHandoverWorkOrderDisabledReason = !order
     ? "数据加载完成后才可操作"
     : orderChangeLocked
@@ -4397,6 +4442,9 @@ function OrderDetailPageContent() {
       setEntitlementLoading(canViewEntitlement);
       setEntitlementUsageLoading(canViewEntitlement);
       setHandoverWorkOrdersLoading(canViewDelivery);
+      setHandoverWorkOrdersLoadState(
+        canViewDelivery ? "LOADING" : "UNKNOWN"
+      );
       setDepositSettlementError(null);
       const [
         nextOrder,
@@ -4408,7 +4456,7 @@ function OrderDetailPageContent() {
         nextDelivery,
         nextReturnCheck,
         nextReturn,
-        nextHandoverWorkOrders,
+        nextHandoverWorkOrdersResult,
         nextEntitlements,
         nextEntitlementUsages
       ] = await Promise.all([
@@ -4427,8 +4475,21 @@ function OrderDetailPageContent() {
         canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
         canViewReturn ? apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`) : Promise.resolve(null),
         canViewDelivery
-          ? apiFetch<HandoverWorkOrderSummary[]>(`/orders/${params.id}/handover-work-orders`).catch(() => [])
-          : Promise.resolve([]),
+          ? apiFetch<HandoverWorkOrderSummary[]>(
+              `/orders/${params.id}/handover-work-orders`
+            )
+              .then((workOrders) => ({
+                loadState: "LOADED" as const,
+                workOrders
+              }))
+              .catch(() => ({
+                loadState: "ERROR" as const,
+                workOrders: [] as HandoverWorkOrderSummary[]
+              }))
+          : Promise.resolve({
+              loadState: "UNKNOWN" as const,
+              workOrders: [] as HandoverWorkOrderSummary[]
+            }),
         canViewEntitlement
           ? apiFetch<OrderEntitlementsResponse>(`/orders/${params.id}/entitlements`)
           : Promise.resolve({ account: null, grants: [] }),
@@ -4446,16 +4507,22 @@ function OrderDetailPageContent() {
       setDelivery(nextDelivery);
       setReturnCheck(nextReturnCheck);
       setVehicleReturn(nextReturn);
-      setHandoverWorkOrders(nextHandoverWorkOrders);
-      await Promise.all(
-        nextHandoverWorkOrders.map((workOrder) => refreshStage2HandoverESignStatus(workOrder.id))
-      );
+      setHandoverWorkOrders(nextHandoverWorkOrdersResult.workOrders);
+      setHandoverWorkOrdersLoadState(nextHandoverWorkOrdersResult.loadState);
+      if (nextHandoverWorkOrdersResult.loadState === "LOADED") {
+        await Promise.all(
+          nextHandoverWorkOrdersResult.workOrders.map((workOrder) =>
+            refreshStage2HandoverESignStatus(workOrder.id)
+          )
+        );
+      }
       setEntitlements(nextEntitlements);
       setEntitlementUsages(nextEntitlementUsages.items);
       setEntitlementUsageTotal(nextEntitlementUsages.total);
       setEntitlementUsagePage(nextEntitlementUsages.page);
       setEntitlementUsagePageSize(nextEntitlementUsages.pageSize);
     } catch (error) {
+      setHandoverWorkOrdersLoadState("ERROR");
       void message.error(getErrorMessage(error));
     } finally {
       setLoading(false);
@@ -4549,152 +4616,249 @@ function OrderDetailPageContent() {
     return runHandoverObjectionAction(id, "send-customer-review", "已送回客户复核");
   }
 
-  async function generateStage2HandoverPdfForWorkOrder(id: string) {
-    setHandoverActionLoading(`pdf:${id}`);
+  async function runStage2WorkflowRecovery(
+    id: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) {
+    if (
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(
+      `workflow-recovery:${id}:${recovery.jobId}`
+    );
     try {
-      await generateStage2HandoverPdfArtifact(id);
-      void message.success("车辆交接确认单 PDF 已生成");
+      const executed = await runAdminStage2WorkflowRecovery({
+        allowed: permissions.has("delivery:confirm"),
+        execute: async (workOrderId, selectedRecovery) => {
+          if (selectedRecovery.kind === "RECONCILE_CUSTOMER") {
+            await reconcileAdminStage2CustomerSignature(workOrderId);
+          } else {
+            await retryAdminStage2WorkflowJob(
+              workOrderId,
+              selectedRecovery.jobId
+            );
+          }
+        },
+        recovery,
+        workOrderId: id
+      });
+      if (!executed) {
+        return;
+      }
+      setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
+      void message.success("异常恢复任务已提交");
       await loadOrder();
       if (handoverWorkOrderDetail?.id === id) {
-        const nextDetail = await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}`);
+        const nextDetail = await apiFetch<HandoverWorkOrderDetail>(
+          `/handover-work-orders/${encodeURIComponent(id)}`
+        );
         setHandoverWorkOrderDetail(nextDetail);
       }
     } catch (error) {
-      void message.error(getErrorMessage(error));
-    } finally {
-      setHandoverActionLoading(null);
-    }
-  }
-
-  function acquireStage2HandoverESignMutation() {
-    if (stage2ESignMutationInFlightRef.current) {
-      return false;
-    }
-    stage2ESignMutationInFlightRef.current = true;
-    setStage2ESignMutationInFlight(true);
-    return true;
-  }
-
-  function releaseStage2HandoverESignMutation() {
-    stage2ESignRequestStartedRef.current = false;
-    stage2ESignMutationInFlightRef.current = false;
-    setStage2ESignMutationInFlight(false);
-  }
-
-  async function runStage2HandoverESignAction(
-    id: string,
-    actionKey: "esign-archive" | "esign-platform" | "esign-start" | "esign-void",
-    action: (workOrderId: string) => Promise<unknown>,
-    successMessage: string
-  ) {
-    if (!stage2ESignMutationInFlightRef.current || stage2ESignRequestStartedRef.current) {
-      return;
-    }
-    stage2ESignRequestStartedRef.current = true;
-    let safeError: string | null = null;
-    setHandoverActionLoading(`${actionKey}:${id}`);
-    try {
-      await action(id);
-      void message.success(successMessage);
-    } catch (error) {
-      safeError = getAdminStage2HandoverESignErrorMessage(error);
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
       void message.error(safeError);
     } finally {
-      await refreshStage2HandoverESignStatus(id);
-      if (safeError) {
-        setHandoverESignErrors((current) => ({ ...current, [id]: safeError ?? undefined }));
-      }
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
       setHandoverActionLoading(null);
-      releaseStage2HandoverESignMutation();
     }
   }
 
-  function confirmStage2HandoverESignMutation(id: string, actionType: "platform" | "start") {
-    if (!acquireStage2HandoverESignMutation()) {
+  function confirmStage2WorkflowRecovery(
+    id: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) {
+    if (!permissions.has("delivery:confirm")) {
       return;
     }
-    const isStart = actionType === "start";
     modal.confirm({
       cancelText: "取消",
-      content: isStart
-        ? "发起后将创建真实电子签任务，并由客户在 Portal 完成签署。请确认交接 PDF 与签署信息已核验。"
-        : "该操作将向电子签服务发起真实的平台电子印章盖章请求，请确认客户签署已完成。",
-      okText: isStart ? "确认发起电子签" : "确认发起平台盖章",
-      onCancel: () => {
-        if (!stage2ESignRequestStartedRef.current) {
-          releaseStage2HandoverESignMutation();
-        }
-      },
-      onOk: () =>
-        runStage2HandoverESignAction(
-          id,
-          isStart ? "esign-start" : "esign-platform",
-          isStart ? startAdminStage2HandoverESign : retryAdminStage2PlatformSeal,
-          isStart ? "电子签已发起，待客户签署" : "平台盖章请求已提交"
-        ),
-      title: isStart ? "确认发起车辆交接电子签？" : "确认发起平台盖章？"
+      content: `仅重新提交“${recovery.label}”对应的异常任务。`,
+      okText: "确认恢复",
+      onOk: () => runStage2WorkflowRecovery(id, recovery),
+      title: "确认执行异常恢复？"
     });
   }
 
-  function confirmStage2HandoverESignStart(id: string) {
-    confirmStage2HandoverESignMutation(id, "start");
+  async function refreshAfterStage2Action(
+    id: string,
+    status: AdminStage2HandoverESignStatus
+  ) {
+    setHandoverESignStatuses((current) => ({ ...current, [id]: status }));
+    setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
+    await loadOrder();
+    if (handoverWorkOrderDetail?.id === id) {
+      const nextDetail = await apiFetch<HandoverWorkOrderDetail>(
+        `/handover-work-orders/${encodeURIComponent(id)}`
+      );
+      setHandoverWorkOrderDetail(nextDetail);
+    }
   }
 
-  function confirmStage2PlatformSeal(id: string) {
-    confirmStage2HandoverESignMutation(id, "platform");
-  }
-
-  function openStage2HandoverVoidModal(id: string) {
-    if (!acquireStage2HandoverESignMutation()) {
+  async function runAdminStage2Fallback(
+    id: string,
+    values: Stage2FallbackFormValues
+  ) {
+    if (
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
       return;
     }
-    setStage2HandoverVoidWorkOrderId(id);
-    stage2HandoverVoidForm.resetFields();
-    setStage2HandoverVoidOpen(true);
-  }
-
-  function closeStage2HandoverVoidModal() {
-    if (stage2ESignRequestStartedRef.current) {
+    const sourceArtifact = stage2FallbackSourceArtifact;
+    if (!sourceArtifact || values.acknowledgement !== true) {
+      void message.error("交接确认单状态已变化，请刷新后重试");
       return;
     }
-    setStage2HandoverVoidOpen(false);
-    setStage2HandoverVoidWorkOrderId(null);
-    stage2HandoverVoidForm.resetFields();
-    releaseStage2HandoverESignMutation();
-  }
-
-  async function submitStage2HandoverVoid() {
-    const id = stage2HandoverVoidWorkOrderId;
-    if (!id || stage2ESignRequestStartedRef.current) {
-      return;
-    }
-    let values: Stage2HandoverVoidFormValues;
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(`stage2-start:${id}`);
     try {
-      values = await stage2HandoverVoidForm.validateFields();
-    } catch {
-      return;
+      const status = await startAdminStage2HandoverESign(id, {
+        acknowledgement: true,
+        artifactVersion: sourceArtifact.artifactVersion,
+        reason: values.reason,
+        sourcePdfHash: sourceArtifact.sourcePdfHash
+      });
+      setStage2FallbackOpen(false);
+      setStage2FallbackSourceArtifact(null);
+      setStage2FallbackWorkOrderId(null);
+      stage2FallbackForm.resetFields();
+      await refreshAfterStage2Action(id, status);
+      void message.success("后台已发起交接签署");
+    } catch (error) {
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
+      void message.error(safeError);
+    } finally {
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
+      setHandoverActionLoading(null);
     }
-    await runStage2HandoverESignAction(
-      id,
-      "esign-void",
-      (workOrderId) => voidAdminStage2HandoverESign(workOrderId, values.reason),
-      "签署任务已作废，请核验状态后再单独重新发起"
-    );
-    setStage2HandoverVoidOpen(false);
-    setStage2HandoverVoidWorkOrderId(null);
-    stage2HandoverVoidForm.resetFields();
   }
 
-  function retryStage2HandoverArchive(id: string) {
-    if (!acquireStage2HandoverESignMutation()) {
+  function confirmAdminStage2Fallback(id: string) {
+    if (!permissions.has("delivery:confirm")) {
       return;
     }
-    void runStage2HandoverESignAction(
-      id,
-      "esign-archive",
-      retryAdminStage2HandoverArchive,
-      "签署文件归档请求已提交"
+    const status = handoverESignStatuses[id];
+    if (
+      !status?.canAdminInitiate ||
+      !status.sourceArtifact
+    ) {
+      void message.warning("当前不满足后台兜底发起条件，请刷新状态");
+      return;
+    }
+    stage2FallbackForm.setFieldsValue({
+      acknowledgement: false,
+      reason: ""
+    });
+    setStage2FallbackSourceArtifact({
+      ...status.sourceArtifact
+    });
+    setStage2FallbackWorkOrderId(id);
+    setStage2FallbackOpen(true);
+  }
+
+  function closeAdminStage2Fallback() {
+    if (stage2WorkflowRecoveryInFlight) {
+      return;
+    }
+    setStage2FallbackOpen(false);
+    setStage2FallbackSourceArtifact(null);
+    setStage2FallbackWorkOrderId(null);
+    stage2FallbackForm.resetFields();
+  }
+
+  async function submitAdminStage2Fallback() {
+    if (
+      !stage2FallbackWorkOrderId ||
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    const values = await stage2FallbackForm.validateFields();
+    const validationError =
+      validateAdminStage2HandoverFallbackReason(values.reason);
+    if (validationError) {
+      stage2FallbackForm.setFields([
+        { errors: [validationError], name: "reason" }
+      ]);
+      return;
+    }
+    await runAdminStage2Fallback(
+      stage2FallbackWorkOrderId,
+      values
     );
+  }
+
+  function openAdminStage2Void(id: string) {
+    if (!permissions.has("delivery:confirm")) {
+      return;
+    }
+    stage2VoidForm.resetFields();
+    setStage2VoidWorkOrderId(id);
+    setStage2VoidOpen(true);
+  }
+
+  function closeAdminStage2Void() {
+    if (stage2WorkflowRecoveryInFlight) {
+      return;
+    }
+    setStage2VoidOpen(false);
+    setStage2VoidWorkOrderId(null);
+    stage2VoidForm.resetFields();
+  }
+
+  async function submitAdminStage2Void() {
+    if (
+      !stage2VoidWorkOrderId ||
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    const values = await stage2VoidForm.validateFields();
+    const validationError = validateAdminStage2HandoverVoidReason(
+      values.reason
+    );
+    if (validationError) {
+      stage2VoidForm.setFields([
+        { errors: [validationError], name: "reason" }
+      ]);
+      return;
+    }
+
+    const id = stage2VoidWorkOrderId;
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(`stage2-void:${id}`);
+    try {
+      const status = await voidAdminStage2HandoverESign(
+        id,
+        values.reason
+      );
+      setStage2VoidOpen(false);
+      setStage2VoidWorkOrderId(null);
+      stage2VoidForm.resetFields();
+      await refreshAfterStage2Action(id, status);
+      void message.success("签署任务已作废，可重新发起");
+    } catch (error) {
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
+      void message.error(safeError);
+    } finally {
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
+      setHandoverActionLoading(null);
+    }
   }
 
   function openAssignExternalHandover(id: string) {
@@ -4800,13 +4964,23 @@ function OrderDetailPageContent() {
     prepareDeliveryForm.resetFields();
   }
 
-  function openConfirmDeliveryModal() {
-    confirmDeliveryForm.setFieldsValue({
-      deliveredAt: dayjs(),
-      handoverMileageKm: order?.vehicle?.currentMileageKm ?? undefined,
-      remark: delivery?.remark ?? undefined
+  async function openConfirmDeliveryModal() {
+    if (!order) {
+      return;
+    }
+    await stage2DeliveryConfirmationController.run({
+      boundary: "MODAL_OPEN",
+      onAllowed: () => {
+        confirmDeliveryForm.setFieldsValue({
+          deliveredAt: dayjs(),
+          handoverMileageKm:
+            order.vehicle?.currentMileageKm ?? undefined,
+          remark: delivery?.remark ?? undefined
+        });
+        setConfirmDeliveryModalOpen(true);
+      },
+      orderId: order.id
     });
-    setConfirmDeliveryModalOpen(true);
   }
 
   function closeConfirmDeliveryModal() {
@@ -5448,14 +5622,23 @@ function OrderDetailPageContent() {
     }
     const values = await confirmDeliveryForm.validateFields();
     try {
-      await apiFetch(`/orders/${order.id}/confirm-delivery`, {
-        body: JSON.stringify({
-          deliveredAt: values.deliveredAt?.toISOString(),
-          handoverMileageKm: values.handoverMileageKm,
-          remark: values.remark
-        }),
-        method: "POST"
-      });
+      const submitted =
+        await stage2DeliveryConfirmationController.run({
+          boundary: "BEFORE_POST",
+          onAllowed: () =>
+            apiFetch(`/orders/${order.id}/confirm-delivery`, {
+              body: JSON.stringify({
+                deliveredAt: values.deliveredAt?.toISOString(),
+                handoverMileageKm: values.handoverMileageKm,
+                remark: values.remark
+              }),
+              method: "POST"
+            }),
+          orderId: order.id
+        });
+      if (!submitted) {
+        return;
+      }
       void message.success("车辆已确认交付");
       closeConfirmDeliveryModal();
       await loadOrder();
@@ -5730,6 +5913,11 @@ function OrderDetailPageContent() {
       title: "操作"
     }
   ];
+  const stage2FallbackPdfDownloadUrl = stage2FallbackWorkOrderId
+    ? buildAdminStage2HandoverPdfDownloadUrl(
+        stage2FallbackWorkOrderId
+      )
+    : null;
 
   return (
     <ProtectedShell>
@@ -5896,26 +6084,24 @@ function OrderDetailPageContent() {
           <Stage2HandoverReviewPanel
             actionLoading={handoverActionLoading}
             canAssignExternal={permissions.has("delivery:prepare")}
-            canGeneratePdf={permissions.has("delivery:confirm")}
             canHandleObjection={permissions.has("delivery:confirm")}
-            canManageESign={permissions.has("delivery:confirm")}
+            canRecoverWorkflow={permissions.has("delivery:confirm")}
             createAvailability={createHandoverWorkOrderAvailability}
             esignErrors={handoverESignErrors}
             esignLoading={handoverESignLoading}
             esignStatuses={handoverESignStatuses}
             loading={handoverWorkOrdersLoading}
-            mutationInFlight={stage2ESignMutationInFlight}
+            loadState={handoverWorkOrdersLoadState}
+            mutationInFlight={stage2WorkflowRecoveryInFlight}
             onAcknowledge={acknowledgeCustomerObjection}
             onAssignExternal={openAssignExternalHandover}
             onCreateWorkOrder={createHandoverWorkOrder}
-            onGeneratePdf={generateStage2HandoverPdfForWorkOrder}
+            onRecoverWorkflow={confirmStage2WorkflowRecovery}
             onRefreshESign={refreshStage2HandoverESignStatus}
             onRequestResubmission={requestCustomerObjectionResubmission}
-            onRetryESignArchive={retryStage2HandoverArchive}
-            onRetryPlatformSeal={confirmStage2PlatformSeal}
             onSendCustomerReview={sendCustomerObjectionBackToReview}
-            onStartESign={confirmStage2HandoverESignStart}
-            onVoidESign={openStage2HandoverVoidModal}
+            onStartESign={confirmAdminStage2Fallback}
+            onVoidESign={openAdminStage2Void}
             onViewDetail={viewHandoverWorkOrderDetail}
             workOrders={handoverWorkOrders}
           />
@@ -5924,69 +6110,180 @@ function OrderDetailPageContent() {
         <Stage2HandoverReviewDetailModal
           actionLoading={handoverActionLoading}
           canAssignExternal={permissions.has("delivery:prepare")}
-          canGeneratePdf={permissions.has("delivery:confirm")}
           canHandleObjection={permissions.has("delivery:confirm")}
-          canManageESign={permissions.has("delivery:confirm")}
+          canRecoverWorkflow={permissions.has("delivery:confirm")}
           detail={handoverWorkOrderDetail}
           esignError={handoverWorkOrderDetail ? handoverESignErrors[handoverWorkOrderDetail.id] : undefined}
           esignLoading={Boolean(handoverWorkOrderDetail && handoverESignLoading[handoverWorkOrderDetail.id])}
           esignStatus={handoverWorkOrderDetail ? handoverESignStatuses[handoverWorkOrderDetail.id] : undefined}
-          mutationInFlight={stage2ESignMutationInFlight}
+          mutationInFlight={stage2WorkflowRecoveryInFlight}
           onAcknowledge={acknowledgeCustomerObjection}
           onAssignExternal={openAssignExternalHandover}
           onClose={() => setHandoverWorkOrderDetailOpen(false)}
-          onGeneratePdf={generateStage2HandoverPdfForWorkOrder}
+          onRecoverWorkflow={confirmStage2WorkflowRecovery}
           onRefreshESign={refreshStage2HandoverESignStatus}
           onRequestResubmission={requestCustomerObjectionResubmission}
-          onRetryESignArchive={retryStage2HandoverArchive}
-          onRetryPlatformSeal={confirmStage2PlatformSeal}
           onSendCustomerReview={sendCustomerObjectionBackToReview}
-          onStartESign={confirmStage2HandoverESignStart}
-          onVoidESign={openStage2HandoverVoidModal}
+          onStartESign={confirmAdminStage2Fallback}
+          onVoidESign={openAdminStage2Void}
           open={handoverWorkOrderDetailOpen}
         />
 
         <Modal
-          cancelButtonProps={{ disabled: stage2ESignRequestStartedRef.current }}
+          cancelButtonProps={{
+            disabled: stage2WorkflowRecoveryInFlight
+          }}
           confirmLoading={Boolean(
-            stage2HandoverVoidWorkOrderId &&
-              handoverActionLoading === `esign-void:${stage2HandoverVoidWorkOrderId}`
+            stage2FallbackWorkOrderId &&
+            handoverActionLoading ===
+              `stage2-start:${stage2FallbackWorkOrderId}`
           )}
           destroyOnHidden
-          maskClosable={!stage2ESignRequestStartedRef.current}
-          okButtonProps={{ danger: true }}
-          okText="确认作废"
-          onCancel={closeStage2HandoverVoidModal}
-          onOk={submitStage2HandoverVoid}
-          open={stage2HandoverVoidOpen}
-          title="作废签署任务"
+          okText="确认发起"
+          onCancel={closeAdminStage2Fallback}
+          onOk={submitAdminStage2Fallback}
+          open={stage2FallbackOpen}
+          title="确认后台兜底发起签署"
+          width={680}
         >
-          <Alert
-            message="作废只解除当前签署任务，不会自动重新发起电子签。请在核验状态后单独操作。"
-            showIcon
-            style={{ marginBottom: 16 }}
-            type="warning"
-          />
-          <Form form={stage2HandoverVoidForm} layout="vertical">
+          <Space
+            orientation="vertical"
+            size={12}
+            style={{ width: "100%" }}
+          >
+            <Alert
+              message="后台将以 ADMIN_FALLBACK 身份发起，不会代替 Field 经办人。"
+              showIcon
+              type="warning"
+            />
+            <Descriptions
+              bordered
+              column={1}
+              items={[
+                {
+                  children:
+                    stage2FallbackSourceArtifact
+                      ?.artifactVersion ?? "-",
+                  label: "PDF 版本"
+                },
+                {
+                  children: stage2FallbackSourceArtifact ? (
+                    <Typography.Text
+                      code
+                      copyable={{
+                        text:
+                          stage2FallbackSourceArtifact
+                            .sourcePdfHash
+                      }}
+                      style={{ overflowWrap: "anywhere" }}
+                    >
+                      {
+                        stage2FallbackSourceArtifact
+                          .sourcePdfHash
+                      }
+                    </Typography.Text>
+                  ) : "-",
+                  label: "SHA-256"
+                }
+              ]}
+              size="small"
+            />
+            {stage2FallbackPdfDownloadUrl ? (
+              <Button
+                href={stage2FallbackPdfDownloadUrl}
+                icon={<DownloadOutlined />}
+                rel="noreferrer"
+                target="_blank"
+              >
+                预览/下载 PDF
+              </Button>
+            ) : null}
+            <Form<Stage2FallbackFormValues>
+              form={stage2FallbackForm}
+              layout="vertical"
+            >
+              <Form.Item
+                name="acknowledgement"
+                rules={[
+                  {
+                    validator: async (_, value) => {
+                      if (value !== true) {
+                        throw new Error(
+                          "请先核对当前交接确认单"
+                        );
+                      }
+                    }
+                  }
+                ]}
+                valuePropName="checked"
+              >
+                <Checkbox>已核对当前交接确认单</Checkbox>
+              </Form.Item>
+              <Form.Item
+                label="兜底发起原因"
+                name="reason"
+                rules={[
+                  {
+                    required: true,
+                    message: "请填写兜底发起原因"
+                  },
+                  {
+                    validator: async (_, value) => {
+                      const validationError =
+                        validateAdminStage2HandoverFallbackReason(
+                          value ?? ""
+                        );
+                      if (validationError) {
+                        throw new Error(validationError);
+                      }
+                    }
+                  }
+                ]}
+              >
+                <Input.TextArea
+                  autoSize={{ maxRows: 6, minRows: 3 }}
+                />
+              </Form.Item>
+            </Form>
+          </Space>
+        </Modal>
+
+        <Modal
+          cancelButtonProps={{ disabled: stage2WorkflowRecoveryInFlight }}
+          confirmLoading={Boolean(
+            stage2VoidWorkOrderId &&
+            handoverActionLoading === `stage2-void:${stage2VoidWorkOrderId}`
+          )}
+          destroyOnHidden
+          okText="确认作废"
+          onCancel={closeAdminStage2Void}
+          onOk={submitAdminStage2Void}
+          open={stage2VoidOpen}
+          title="作废并重新发起"
+        >
+          <Form<Stage2VoidFormValues>
+            form={stage2VoidForm}
+            layout="vertical"
+          >
             <Form.Item
               label="作废原因"
               name="reason"
               rules={[
+                { required: true, message: "请填写作废原因" },
                 {
                   validator: async (_, value) => {
-                    const error = validateAdminStage2HandoverVoidReason(String(value ?? ""));
-                    if (error) {
-                      throw new Error(error);
+                    const validationError =
+                      validateAdminStage2HandoverVoidReason(value ?? "");
+                    if (validationError) {
+                      throw new Error(validationError);
                     }
                   }
                 }
               ]}
             >
               <Input.TextArea
+                autoSize={{ maxRows: 6, minRows: 3 }}
                 maxLength={500}
-                placeholder="请输入 3-500 个字符的作废原因"
-                rows={4}
-                showCount
               />
             </Form.Item>
           </Form>

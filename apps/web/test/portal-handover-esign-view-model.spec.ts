@@ -13,11 +13,11 @@ describe("Portal Stage 2 handover eSign view model", () => {
 
   it.each([
     {
-      expected: "等待工作人员发起签署",
+      expected: "等待经办人发起签署",
       input: createStatus()
     },
     {
-      expected: "待您签署",
+      expected: "待客户签署",
       input: createStatus({
         capability: { canStartSigning: true },
         status: "WAITING_CUSTOMER",
@@ -25,7 +25,7 @@ describe("Portal Stage 2 handover eSign view model", () => {
       })
     },
     {
-      expected: "您已签署，等待平台签署",
+      expected: "平台盖章处理中",
       input: createStatus({
         customerSigner: {
           signedAt: "2026-07-27T08:10:00.000Z",
@@ -37,7 +37,7 @@ describe("Portal Stage 2 handover eSign view model", () => {
       })
     },
     {
-      expected: "双方已签署，文件归档中",
+      expected: "平台盖章处理中",
       input: createStatus({
         archiveStatus: "PENDING",
         customerSigner: {

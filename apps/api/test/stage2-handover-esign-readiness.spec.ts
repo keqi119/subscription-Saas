@@ -5,6 +5,8 @@ import {
   ContractTemplateType,
   ContractVersionStatus,
   DeliveryHandoverStatus,
+  ESignDocumentType,
+  ESignSigningStage,
   ESignTaskStatus,
   OrderStatus,
   VehicleHandoverAdminReviewStatus,
@@ -428,13 +430,24 @@ describe("Stage2HandoverESignReadinessService", () => {
     expect(harness.prisma.contractESignTask.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ contractId: "contract-stage2-1" }]
+          contractId: "contract-stage2-1",
+          documentType: ESignDocumentType.DELIVERY_HANDOVER,
+          orderId: "order-1",
+          signingStage:
+            ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+          taskStatus: {
+            in: [
+              ESignTaskStatus.CREATED,
+              ESignTaskStatus.SIGNING,
+              ESignTaskStatus.WAITING_CUSTOMER
+            ]
+          }
         })
       })
     );
   });
 
-  it("queries and blocks an active Stage 2 task by task pointer alone", async () => {
+  it("fails closed for a task pointer when the authoritative contract binding is absent", async () => {
     const harness = createHarness({
       activeTask: {
         id: "esign-task-1",
@@ -448,18 +461,55 @@ describe("Stage2HandoverESignReadinessService", () => {
 
     const readiness = await harness.service.getReadiness("work-order-1");
 
-    expect(readiness.blockers).toEqual(expect.arrayContaining([
+    expect(readiness.blockers).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ACTIVE_ESIGN_TASK_CONFLICT" })
     ]));
-    expect(readiness.state.esignTaskId).toBe("esign-task-1");
-    expect(harness.prisma.contractESignTask.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: [{ id: "esign-task-1" }]
-        })
-      })
-    );
+    expect(readiness.state.esignTaskId).toBeNull();
+    expect(harness.prisma.contractESignTask.findFirst).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      "terminal status",
+      { taskStatus: ESignTaskStatus.CANCELLED }
+    ],
+    [
+      "wrong document",
+      { documentType: ESignDocumentType.SUBSCRIPTION_CONTRACT }
+    ],
+    [
+      "wrong signing stage",
+      {
+        signingStage:
+          ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT
+      }
+    ],
+    ["wrong contract", { contractId: "contract-stage2-other" }],
+    ["wrong order", { orderId: "order-other" }]
+  ] as const)(
+    "does not report an active conflict for a pointer with %s",
+    async (_name, activeTask) => {
+      const harness = createHarness({
+        activeTask: {
+          id: "esign-task-invalid-pointer",
+          ...activeTask
+        }
+      });
+      Object.assign(harness.state.workOrder!.handover, {
+        handoverESignTaskId: "esign-task-invalid-pointer"
+      });
+
+      const readiness =
+        await harness.service.getReadiness("work-order-1");
+
+      expect(readiness.blockers).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: "ACTIVE_ESIGN_TASK_CONFLICT"
+        })
+      ]));
+      expect(readiness.state.esignTaskId).toBeNull();
+    }
+  );
 
   it("blocks terminal or incorrect order states", async () => {
     for (const orderStatus of [
@@ -588,7 +638,10 @@ function createHarness(overrides: {
   workOrder?: null | ReadyState["workOrder"];
 } = {}) {
   const state: ReadyState = {
-    activeTask: overrides.activeTask ?? null,
+    activeTask:
+      overrides.activeTask == null
+        ? null
+        : readinessTask(overrides.activeTask),
     customerReadiness: overrides.customerReadiness ?? readyCustomerReadiness(),
     evidenceReadiness: overrides.evidenceReadiness ?? {
       blockingDetails: [],
@@ -632,7 +685,13 @@ function createHarness(overrides: {
     },
     contractESignTask: {
       create: sideEffects.create,
-      findFirst: vi.fn(async () => state.activeTask),
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) =>
+          state.activeTask &&
+          matchesReadinessTaskWhere(state.activeTask, where)
+            ? state.activeTask
+            : null
+      ),
       update: sideEffects.update
     },
     fileObject: {
@@ -782,6 +841,67 @@ function readyWorkOrder() {
     scheduledAt: new Date("2026-07-27T02:00:00.000Z"),
     status: VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED
   };
+}
+
+function readinessTask(
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    contractId: "contract-stage2-1",
+    documentType: ESignDocumentType.DELIVERY_HANDOVER,
+    id: "esign-task-1",
+    orderId: "order-1",
+    signingStage:
+      ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+    taskStatus: ESignTaskStatus.CREATED,
+    ...overrides
+  };
+}
+
+function matchesReadinessTaskWhere(
+  task: Record<string, unknown>,
+  where: Record<string, unknown>
+) {
+  for (const key of [
+    "contractId",
+    "documentType",
+    "id",
+    "orderId",
+    "signingStage"
+  ]) {
+    if (
+      typeof where[key] === "string" &&
+      where[key] !== task[key]
+    ) {
+      return false;
+    }
+  }
+  const status = where.taskStatus;
+  if (
+    status &&
+    typeof status === "object" &&
+    "in" in status &&
+    Array.isArray(status.in) &&
+    !status.in.includes(task.taskStatus)
+  ) {
+    return false;
+  }
+  const alternatives = where.OR;
+  if (
+    Array.isArray(alternatives) &&
+    !alternatives.some(
+      (alternative) =>
+        alternative &&
+        typeof alternative === "object" &&
+        matchesReadinessTaskWhere(
+          task,
+          alternative as Record<string, unknown>
+        )
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function readyFieldFactsSnapshot() {

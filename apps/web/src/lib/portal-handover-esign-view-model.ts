@@ -48,7 +48,7 @@ export function buildPortalHandoverESignView(
         status.archiveStatus === "FAILED"
           ? "双方已完成签署，签署文件仍在处理中。"
           : "双方已完成签署，正在准备归档文件。",
-      statusLabel: "双方已签署，文件归档中",
+      statusLabel: "平台盖章处理中",
       statusTone: "processing"
     };
   }
@@ -57,7 +57,7 @@ export function buildPortalHandoverESignView(
     return {
       blockers,
       description: "您已完成签署，正在等待平台签署。",
-      statusLabel: "您已签署，等待平台签署",
+      statusLabel: "平台盖章处理中",
       statusTone: "processing"
     };
   }
@@ -72,7 +72,7 @@ export function buildPortalHandoverESignView(
       description: status.capability.canStartSigning
         ? "请核对状态后进入电子签署页面。"
         : "签署任务正在准备，请稍后刷新。",
-      statusLabel: "待您签署",
+      statusLabel: "待客户签署",
       statusTone: status.capability.canStartSigning ? "warning" : "default"
     };
   }
@@ -91,7 +91,7 @@ export function buildPortalHandoverESignView(
   return {
     blockers,
     description: "客户确认完成后，工作人员将发起车辆交接确认单签署。",
-    statusLabel: "等待工作人员发起签署",
+    statusLabel: "等待经办人发起签署",
     statusTone: "default"
   };
 }

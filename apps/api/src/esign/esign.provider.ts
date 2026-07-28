@@ -56,6 +56,7 @@ export interface CreateSignTaskInput {
     customerId?: string;
     name?: string;
     phone?: string;
+    signerId?: string;
     signerType: "CUSTOMER" | "PLATFORM";
   }>;
   signingSlots?: ESignSigningSlot[];
@@ -101,6 +102,7 @@ export interface GetSignerUrlInput {
   providerTaskId: string;
   redirectUrl?: string;
   signerId?: string;
+  signingStage: ESignSigningStage;
   taskId?: string;
 }
 
@@ -108,6 +110,22 @@ export interface GetSignerUrlResult {
   expiresAt?: Date;
   rawResponse?: unknown;
   signUrl: string;
+}
+
+export interface QuerySignerStatusInput {
+  contractId: string;
+  providerCustomerId: string;
+  providerTaskId: string;
+  providerTransactionId: string;
+  signerId: string;
+  slotId: ESignSlotId;
+  taskId: string;
+}
+
+export interface ESignProviderSignerStatusResult {
+  resultCode?: string;
+  resultDescription?: string;
+  status: "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN";
 }
 
 export interface VerifyCallbackResult {
@@ -140,7 +158,9 @@ export interface AutoSealTaskInput {
   platformCustomerId?: string;
   platformSignatureId?: string;
   providerEnvelopeId?: string;
+  providerTaskId?: string;
   sealId?: string;
+  signerId?: string;
   signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingSlots?: ESignSigningSlot[];
   signingStage?: ESignSigningStage;
@@ -165,5 +185,8 @@ export interface ESignProvider {
   autoSealTask?(input: AutoSealTaskInput): Promise<AutoSealTaskResult>;
   createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult>;
   getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult>;
+  querySignerStatus(
+    input: QuerySignerStatusInput
+  ): Promise<ESignProviderSignerStatusResult>;
   verifyCallback(payload: unknown, headers?: Record<string, unknown>): Promise<VerifyCallbackResult>;
 }

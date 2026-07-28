@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  Optional
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
 import { DeliveryEvidenceService } from "../delivery-evidence/delivery-evidence.service";
@@ -8,6 +13,7 @@ import {
 } from "../delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { Stage2HandoverESignService } from "../handover-work-order/stage2-handover-esign.service";
+import { Stage2HandoverWorkflowService } from "../handover-work-order/stage2-handover-workflow.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
@@ -74,7 +80,9 @@ export class PortalHandoverReviewService {
     private readonly prisma: PrismaService,
     private readonly deliveryEvidenceService: DeliveryEvidenceService,
     private readonly handoverWorkOrderService: HandoverWorkOrderService,
-    private readonly stage2HandoverESignService: Stage2HandoverESignService
+    private readonly stage2HandoverESignService: Stage2HandoverESignService,
+    @Optional()
+    private readonly stage2HandoverWorkflowService?: Stage2HandoverWorkflowService
   ) {}
 
   async listReviews(currentCustomer: CurrentCustomer) {
@@ -133,7 +141,10 @@ export class PortalHandoverReviewService {
     currentCustomer: CurrentCustomer
   ) {
     const workOrder = await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
-    assertCanConfirmNoObjection(workOrder.status);
+    assertCanConfirmNoObjection(
+      workOrder.status,
+      this.stage2HandoverWorkflowService?.isEnabled() === true
+    );
     await this.handoverWorkOrderService.customerConfirmNoObjection(
       id,
       currentCustomer.customerId,
@@ -229,13 +240,15 @@ export class PortalHandoverReviewService {
   }
 
   private async toReviewDetail(workOrder: PortalHandoverReviewRecord) {
-    const [listItem, evidenceChecklist, readiness] = await Promise.all([
+    const [listItem, evidenceChecklist, readiness, stage2Workflow] = await Promise.all([
       this.toReviewListItem(workOrder),
       this.deliveryEvidenceService.getChecklist({
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }),
-      this.handoverWorkOrderService.getReadiness(workOrder.id)
+      this.handoverWorkOrderService.getReadiness(workOrder.id),
+      this.stage2HandoverWorkflowService?.getProjection(workOrder.id) ??
+        Promise.resolve(null)
     ]);
     let evidencePackage;
     try {
@@ -250,6 +263,7 @@ export class PortalHandoverReviewService {
 
     return {
       ...listItem,
+      ...(stage2Workflow ? { stage2Workflow } : {}),
       evidencePackage: {
         confirmationText: STAGE2_EVIDENCE_CONFIRMATION_TEXT,
         evidencePackageId: evidencePackage?.manifest.evidencePackageId ?? null,
@@ -292,8 +306,11 @@ export class PortalHandoverReviewService {
   }
 }
 
-function assertCanConfirmNoObjection(status: unknown) {
-  if (status === "CUSTOMER_CONFIRMED") {
+function assertCanConfirmNoObjection(
+  status: unknown,
+  allowConfirmedReplay = false
+) {
+  if (status === "CUSTOMER_CONFIRMED" && !allowConfirmedReplay) {
     throw new BadRequestException("客户已确认无异议。");
   }
   if (status === "CUSTOMER_OBJECTED") {
@@ -302,7 +319,10 @@ function assertCanConfirmNoObjection(status: unknown) {
   if (TERMINAL_WORK_ORDER_STATUSES.has(String(status))) {
     throw new BadRequestException("交付工单已终止。");
   }
-  if (!CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(String(status))) {
+  if (
+    status !== "CUSTOMER_CONFIRMED" &&
+    !CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(String(status))
+  ) {
     throw new BadRequestException("当前交接复核状态不能确认。");
   }
 }

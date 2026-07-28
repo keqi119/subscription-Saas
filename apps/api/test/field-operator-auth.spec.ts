@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 import { ExecutionContext, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -54,6 +56,19 @@ describe("FieldOperatorAuthService", () => {
       status: 400
     });
     expect(prisma.otps).toHaveLength(0);
+  });
+
+  it("send-code rejects phones without a currently authorized field work order", async () => {
+    const { handoverService, prisma, service, smsProvider } =
+      createFieldAuthFixture();
+    handoverService.countFieldAccessibleWorkOrders.mockResolvedValueOnce(0);
+
+    await expect(
+      service.requestCode({ phone: "13800000000" }, requestContext())
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(prisma.otps).toHaveLength(0);
+    expect(smsProvider.sendCode).not.toHaveBeenCalled();
   });
 
   it("send-code rate limits duplicate unconsumed requests in the resend window", async () => {
@@ -123,6 +138,35 @@ describe("FieldOperatorAuthService", () => {
     await expect(service.validateToken(login.token)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
+  it("validates persisted legacy session origins as origin-neutral without rewriting storage", async () => {
+    const { prisma, service } = createFieldAuthFixture();
+    const code = (await service.requestCode({ phone: "13800000000" }, requestContext())).debugCode!;
+    const login = await service.login({ code, phone: "13800000000" }, requestContext());
+    prisma.sessions[0]!.operatorType = VehicleHandoverOperatorType.EXTERNAL;
+
+    const current = await service.validateToken(login.token);
+
+    expect(current.operatorType).toBeNull();
+    expect(prisma.sessions[0]!.operatorType).toBe(VehicleHandoverOperatorType.EXTERNAL);
+  });
+
+  it("projects getSession as origin-neutral for a persisted legacy session", async () => {
+    const { prisma, service } = createFieldAuthFixture();
+    const code = (await service.requestCode({ phone: "13800000000" }, requestContext())).debugCode!;
+    await service.login({ code, phone: "13800000000" }, requestContext());
+    prisma.sessions[0]!.operatorType = VehicleHandoverOperatorType.EXTERNAL;
+    const persisted = prisma.sessions[0]!;
+
+    const session = await service.getSession({
+      operatorType: persisted.operatorType,
+      phone: persisted.phone,
+      sessionId: persisted.id
+    });
+
+    expect(session.operatorType).toBeNull();
+    expect(persisted.operatorType).toBe(VehicleHandoverOperatorType.EXTERNAL);
+  });
+
   it("rejects admin and portal-shaped tokens as field sessions", async () => {
     const { service } = createFieldAuthFixture();
     const adminToken = jwt.sign({ username: "admin" }, ADMIN_SECRET, { subject: "user-admin" });
@@ -151,9 +195,9 @@ describe("FieldOperatorAuthService", () => {
     await expect(service.validateToken(portalToken)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it("session DTO includes masked phone and assigned task count without exposing the session token", async () => {
+  it("session DTO is origin-neutral and includes assigned task count without exposing the session token", async () => {
     const { handoverService, service } = createFieldAuthFixture();
-    handoverService.countFieldAccessibleWorkOrders.mockResolvedValueOnce(2);
+    handoverService.countFieldAccessibleWorkOrders.mockResolvedValue(2);
     const code = (await service.requestCode({ phone: "13800000000" }, requestContext())).debugCode!;
     const login = await service.login({ code, phone: "13800000000" }, requestContext());
 
@@ -161,7 +205,7 @@ describe("FieldOperatorAuthService", () => {
 
     expect(session).toEqual({
       authenticated: true,
-      operatorType: VehicleHandoverOperatorType.EXTERNAL,
+      operatorType: null,
       phoneMasked: "138****0000",
       taskCount: 2
     });
@@ -192,7 +236,12 @@ describe("FieldOperatorAuthGuard", () => {
 describe("FieldOperatorAuthController", () => {
   it("sets and clears only the field session cookie", async () => {
     const { service } = createFieldAuthFixture();
-    const controller = new FieldOperatorAuthController(service, {} as never);
+    const controller = new FieldOperatorAuthController(
+      service,
+      {} as never,
+      {} as never,
+      {} as never
+    );
     const response = {
       clearCookie: vi.fn(),
       cookie: vi.fn()
@@ -215,16 +264,45 @@ describe("FieldOperatorAuthController", () => {
 
   it("delegates field work-order actions with the current field session phone", async () => {
     const { service } = createFieldAuthFixture();
+    const pdfFile = {
+      filename: "handover.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 9,
+      stream: Readable.from([Buffer.from("pdf-bytes")])
+    };
+    const fieldReview = {
+      acknowledgement: true as const,
+      artifactVersion: 1,
+      reviewedAt: new Date("2026-07-27T08:00:00.000Z"),
+      sourcePdfHash: "b".repeat(64)
+    };
     const handoverService = {
+      assertFieldStage2ESignReview: vi.fn(async () => fieldReview),
       declareFieldAccessibleNoVisibleDamage: vi.fn(async () => ({ id: "work-order-1" })),
+      downloadFieldAccessibleStage2HandoverPdf: vi.fn(async () => pdfFile),
       getFieldAccessibleReadiness: vi.fn(async () => ({ blockingReasons: [], ready: true })),
+      previewFieldAccessibleStage2HandoverPdf: vi.fn(async () => pdfFile),
       startFieldAccessibleWorkOrder: vi.fn(async () => ({ id: "work-order-1" })),
       submitFieldAccessibleEvidence: vi.fn(async () => ({ id: "work-order-1" })),
       updateFieldAccessibleFacts: vi.fn(async () => ({ id: "work-order-1" })),
       uploadAndAttachFieldAccessibleEvidenceFile: vi.fn(async () => ({ id: "evidence-item-1" }))
     };
-    const controller = new FieldOperatorAuthController(service, handoverService as never);
+    const stage2ESignService = {
+      create: vi.fn(async () => ({ taskId: "stage2-task-1" }))
+    };
+    const controller = new FieldOperatorAuthController(
+      service,
+      handoverService as never,
+      stage2ESignService as never,
+      {} as never
+    );
     const current = { sessionId: "field-session-1", phone: "13800000000" };
+    const response = { setHeader: vi.fn() };
+    const reviewDto = {
+      acknowledgement: true as const,
+      artifactVersion: 1,
+      sourcePdfHash: "b".repeat(64)
+    };
 
     await controller.startWorkOrder("work-order-1", current as never);
     await controller.updateWorkOrderFacts("work-order-1", { handoverMileageKm: 28600 }, current as never);
@@ -238,6 +316,21 @@ describe("FieldOperatorAuthController", () => {
     await controller.declareNoVisibleDamage("work-order-1", { remark: "现场确认" }, current as never);
     await controller.getWorkOrderReadiness("work-order-1", current as never);
     await controller.submitEvidence("work-order-1", current as never);
+    await controller.previewStage2HandoverPdf(
+      "work-order-1",
+      current as never,
+      response as never
+    );
+    await controller.downloadStage2HandoverPdf(
+      "work-order-1",
+      current as never,
+      response as never
+    );
+    await controller.createStage2ESign(
+      "work-order-1",
+      reviewDto,
+      current as never
+    );
 
     expect(handoverService.startFieldAccessibleWorkOrder).toHaveBeenCalledWith(
       "work-order-1",
@@ -270,6 +363,26 @@ describe("FieldOperatorAuthController", () => {
       "13800000000",
       "field-session-1"
     );
+    expect(
+      handoverService.previewFieldAccessibleStage2HandoverPdf
+    ).toHaveBeenCalledWith("work-order-1", "13800000000");
+    expect(
+      handoverService.downloadFieldAccessibleStage2HandoverPdf
+    ).toHaveBeenCalledWith("work-order-1", "13800000000");
+    expect(handoverService.assertFieldStage2ESignReview).toHaveBeenCalledWith(
+      "work-order-1",
+      "13800000000",
+      reviewDto
+    );
+    expect(stage2ESignService.create).toHaveBeenCalledWith(
+      "work-order-1",
+      {
+        actorType: "FIELD_OPERATOR",
+        fieldOperatorPhone: "13800000000",
+        fieldOperatorSessionId: "field-session-1"
+      },
+      fieldReview
+    );
   });
 });
 
@@ -298,7 +411,7 @@ function createFieldAuthFixture(
   const smsProvider = options.smsProvider ?? createSmsProvider();
   const smsService = new SmsService(config as unknown as ConfigService, prisma as never, smsProvider);
   const handoverService = {
-    countFieldAccessibleWorkOrders: vi.fn(async () => 0)
+    countFieldAccessibleWorkOrders: vi.fn(async () => 1)
   };
   const service = new FieldOperatorAuthService(
     config as unknown as ConfigService,
@@ -405,7 +518,8 @@ class FakePrismaService {
         ipHash: data.ipHash ?? null,
         lastSeenAt: data.lastSeenAt ?? null,
         metadata: data.metadata ?? null,
-        operatorType: data.operatorType ?? VehicleHandoverOperatorType.EXTERNAL,
+        operatorType:
+          data.operatorType === undefined ? VehicleHandoverOperatorType.EXTERNAL : data.operatorType,
         phone: data.phone!,
         revokedAt: data.revokedAt ?? null,
         sessionTokenHash: data.sessionTokenHash!,
@@ -500,7 +614,7 @@ interface FakeSession {
   ipHash: string | null;
   lastSeenAt: Date | null;
   metadata: unknown;
-  operatorType: VehicleHandoverOperatorType;
+  operatorType: VehicleHandoverOperatorType | null;
   phone: string;
   revokedAt: Date | null;
   sessionTokenHash: string;
@@ -584,6 +698,7 @@ function createSmsProvider(result?: SendSmsCodeResult) {
       };
 
       return result ?? defaultResult;
-    })
+    }),
+    sendTemplate: vi.fn()
   } satisfies SmsProvider;
 }

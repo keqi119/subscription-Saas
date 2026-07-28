@@ -29,6 +29,8 @@ import {
 } from "../../../../lib/portal-handover-esign-view-model";
 import {
   buildPortalHandoverReviewDetailView,
+  buildPortalHandoverWorkflowView,
+  createPortalWorkflowRequestController,
   validatePortalHandoverObjectionReason
 } from "../../../../lib/portal-handover-review-view-model";
 import { PortalApiError } from "../../../../lib/portal-api";
@@ -50,55 +52,86 @@ export default function PortalHandoverReviewDetailPage() {
   const [esignErrorMessage, setESignErrorMessage] = useState<string | null>(null);
   const [startingSigning, setStartingSigning] = useState(false);
   const signingStartInFlight = useRef(false);
+  const workflowControllerRef = useRef<ReturnType<
+    typeof createPortalWorkflowRequestController<
+      [PortalHandoverReviewDetail, Stage2PortalESignView]
+    >
+  > | null>(null);
 
-  const loadReview = useCallback(async () => {
+  const loadWorkflowProjection = useCallback(async () => {
     if (!params.id) {
-      return;
+      throw new Error("交接工单不存在");
     }
-    setErrorMessage(null);
-    setLoading(true);
-    try {
-      setReview(await getPortalHandoverReview(params.id));
-    } catch (error) {
-      if (error instanceof PortalApiError && error.status === 401) {
-        router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`);
-        return;
-      }
-      const nextMessage = getPortalHandoverReviewErrorMessage(error);
-      setErrorMessage(nextMessage);
-      void message.error(nextMessage);
-    } finally {
-      setLoading(false);
-    }
-  }, [message, params.id, router]);
-
-  const loadESignStatus = useCallback(async () => {
-    if (!params.id) {
-      return;
-    }
-    setESignErrorMessage(null);
-    setESignLoading(true);
-    try {
-      setESignView(await getPortalHandoverESign(params.id));
-    } catch (error) {
-      if (error instanceof PortalApiError && error.status === 401) {
-        router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`);
-        return;
-      }
-      setESignErrorMessage(getPortalHandoverESignErrorMessage(error));
-    } finally {
-      setESignLoading(false);
-    }
-  }, [params.id, router]);
+    return Promise.all([
+      getPortalHandoverReview(params.id),
+      getPortalHandoverESign(params.id)
+    ]);
+  }, [params.id]);
 
   useEffect(() => {
-    void loadReview();
-    void loadESignStatus();
-  }, [loadESignStatus, loadReview]);
+    let hasProjection = false;
+    setErrorMessage(null);
+    setESignErrorMessage(null);
+    setLoading(true);
+    setESignLoading(true);
+    const controller = createPortalWorkflowRequestController({
+      load: loadWorkflowProjection,
+      onApply: ([nextReview, nextESignView]) => {
+        hasProjection = true;
+        setReview(nextReview);
+        setESignView(nextESignView);
+        setErrorMessage(null);
+        setESignErrorMessage(null);
+        setLoading(false);
+        setESignLoading(false);
+      },
+      onError: (error) => {
+        if (error instanceof PortalApiError && error.status === 401) {
+          router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`);
+          return;
+        }
+        setESignErrorMessage(getPortalHandoverESignErrorMessage(error));
+        if (!hasProjection) {
+          setErrorMessage(getPortalHandoverReviewErrorMessage(error));
+        }
+        setLoading(false);
+        setESignLoading(false);
+      }
+    });
+    workflowControllerRef.current = controller;
+    void controller.refresh();
+    return () => {
+      controller.dispose();
+      if (workflowControllerRef.current === controller) {
+        workflowControllerRef.current = null;
+      }
+    };
+  }, [loadWorkflowProjection, params.id, router]);
+
+  const refreshWorkflowProjection = useCallback(async () => {
+    await workflowControllerRef.current?.refresh();
+  }, []);
+
+  const invalidateWorkflowProjection = useCallback(() => {
+    workflowControllerRef.current?.invalidate();
+  }, []);
+
+  const workflowDisplay = review
+    ? buildPortalHandoverWorkflowView(review, esignView)
+    : null;
+
+  useEffect(() => {
+    if (!workflowDisplay?.shouldPoll) {
+      workflowControllerRef.current?.stopPolling();
+      return;
+    }
+    workflowControllerRef.current?.startPolling(3000);
+    return () => workflowControllerRef.current?.stopPolling();
+  }, [workflowDisplay?.shouldPoll]);
 
   const refreshPage = useCallback(async () => {
-    await Promise.all([loadReview(), loadESignStatus()]);
-  }, [loadESignStatus, loadReview]);
+    await refreshWorkflowProjection();
+  }, [refreshWorkflowProjection]);
 
   async function confirmNoObjection() {
     const manifestHash = review?.evidencePackage?.manifestHash;
@@ -107,11 +140,12 @@ export default function PortalHandoverReviewDetailPage() {
     }
     try {
       setConfirming(true);
+      invalidateWorkflowProjection();
       const nextReview = await confirmPortalHandoverReview(review.id, acknowledged, manifestHash);
       setReview(nextReview);
       setAcknowledged(false);
       void message.success("已确认无异议");
-      await refreshPage();
+      await refreshWorkflowProjection();
     } catch (error) {
       void message.error(getPortalHandoverReviewErrorMessage(error));
     } finally {
@@ -130,6 +164,7 @@ export default function PortalHandoverReviewDetailPage() {
     }
     try {
       setObjecting(true);
+      invalidateWorkflowProjection();
       const nextReview = await objectPortalHandoverReview(review.id, {
         details: objectionDetails.trim() || undefined,
         reason: objectionReason.trim()
@@ -138,7 +173,7 @@ export default function PortalHandoverReviewDetailPage() {
       setObjectionDetails("");
       setObjectionReason("");
       void message.success("已提交异议，工作人员将联系您处理");
-      await refreshPage();
+      await refreshWorkflowProjection();
     } catch (error) {
       void message.error(getPortalHandoverReviewErrorMessage(error));
     } finally {
@@ -147,14 +182,27 @@ export default function PortalHandoverReviewDetailPage() {
   }
 
   async function startSigning() {
-    if (!esignView || signingStartInFlight.current || startingSigning || !esignView.capability.canStartSigning) {
+    if (
+      !esignView ||
+      !workflowDisplay?.canStartSigning ||
+      review?.handover?.status !== "PENDING_CUSTOMER_SIGNATURE" ||
+      signingStartInFlight.current ||
+      startingSigning
+    ) {
       return;
     }
 
     signingStartInFlight.current = true;
     setStartingSigning(true);
     try {
+      invalidateWorkflowProjection();
       const result = await startPortalHandoverSigning(params.id);
+      if ("alreadySigned" in result) {
+        setESignView(result.eSign);
+        void message.success("签署状态已更新");
+        await refreshWorkflowProjection();
+        return;
+      }
       window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl));
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
@@ -166,7 +214,7 @@ export default function PortalHandoverReviewDetailPage() {
           ? error.message
           : getPortalHandoverESignErrorMessage(error);
       void message.error(nextMessage);
-      await loadESignStatus();
+      await refreshWorkflowProjection();
     } finally {
       signingStartInFlight.current = false;
       setStartingSigning(false);
@@ -403,6 +451,11 @@ export default function PortalHandoverReviewDetailPage() {
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             车辆交接确认单签署
           </Typography.Title>
+          {workflowDisplay ? (
+            <Tag color={workflowDisplay.statusTone} style={{ marginBottom: 12 }}>
+              {workflowDisplay.statusLabel}
+            </Tag>
+          ) : null}
           {esignLoading ? (
             <Flex align="center" gap={12}>
               <Spin size="small" />
@@ -415,7 +468,7 @@ export default function PortalHandoverReviewDetailPage() {
               action={
                 <Button
                   icon={<ReloadOutlined />}
-                  onClick={loadESignStatus}
+                  onClick={() => void refreshPage()}
                   size="small"
                 >
                   重试
@@ -428,17 +481,16 @@ export default function PortalHandoverReviewDetailPage() {
             />
           ) : esignView && esignDisplay ? (
             <Space direction="vertical" size={12} style={{ width: "100%" }}>
-              <Tag color={esignDisplay.statusTone}>{esignDisplay.statusLabel}</Tag>
               <Typography.Text type="secondary">
                 {esignDisplay.description}
               </Typography.Text>
               {esignDisplay.blockers.map((blocker) => (
                 <Alert key={blocker} message={blocker} showIcon type="info" />
               ))}
-              {esignView.capability.canStartSigning ? (
+              {workflowDisplay?.canStartSigning ? (
                 <Button
                   block
-                  disabled={!esignView.capability.canStartSigning || startingSigning}
+                  disabled={!workflowDisplay.canStartSigning || startingSigning}
                   icon={<EditOutlined />}
                   loading={startingSigning}
                   onClick={startSigning}

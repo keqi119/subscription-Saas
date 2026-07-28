@@ -5,11 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   startFieldHandoverWorkOrder,
+  startFieldHandoverESign,
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts
 } from "../src/lib/field-handover-api";
 import type { FieldHandoverWorkOrderDetail } from "../src/lib/field-handover-api";
-import { buildFieldEvidenceCaptureView } from "../src/lib/field-handover-view-model";
+import {
+  buildFieldEvidenceCaptureView,
+  buildFieldStage2HandoverView
+} from "../src/lib/field-handover-view-model";
 import {
   confirmPortalHandoverReview,
   getPortalHandoverESign,
@@ -32,6 +36,7 @@ const SENSITIVE_OBJECT_KEY = "SYNTHETIC_OBJECT_KEY_SHOULD_NOT_RENDER";
 const SENSITIVE_SIGNING_URL = "SYNTHETIC_SIGNING_URL_SHOULD_NOT_RENDER";
 const SENSITIVE_FULL_ID = "SYNTHETIC_FULL_ID_SHOULD_NOT_RENDER";
 const INTENTIONAL_SIGNING_URL = "https://provider.example/stage2/customer-sign";
+const SOURCE_PDF_HASH = "b".repeat(64);
 
 describe("Stage 2 handover mocked UI flow", () => {
   afterEach(() => {
@@ -49,6 +54,10 @@ describe("Stage 2 handover mocked UI flow", () => {
     expect(result.portalConfirmed.decision.mode).toBe("CONFIRMED");
     expect(result.portalConfirmed.decision.message).toBe("您已确认无异议，后续将进入车辆交接确认单签署流程");
     expect(result.portalESignStatus.capability.canStartSigning).toBe(true);
+    expect(result.fieldESign).toMatchObject({
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: "stage2-task-ui-flow"
+    });
     expect(JSON.stringify(result.portalESignStatus)).not.toMatch(/signUrl|signingUrl|provider/i);
     expect(result.signingStart).toEqual({
       expiresAt: "2026-07-22T09:00:00.000Z",
@@ -56,12 +65,17 @@ describe("Stage 2 handover mocked UI flow", () => {
     });
     expect(result.calls).toEqual(expect.arrayContaining([
       expect.stringContaining("/field/handover/work-orders/work-order-ui-flow/submit"),
+      expect.stringContaining("/field/handover/work-orders/work-order-ui-flow/esign"),
       expect.stringContaining("/portal/handover-reviews"),
       expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/confirm"),
       expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign"),
       expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign/signing/start")
     ]));
     expect(result.requests).toEqual(expect.arrayContaining([
+      {
+        method: "POST",
+        url: expect.stringContaining("/field/handover/work-orders/work-order-ui-flow/esign")
+      },
       {
         method: "GET",
         url: expect.stringContaining("/portal/handover-reviews/work-order-ui-flow/esign")
@@ -83,9 +97,9 @@ describe("Stage 2 handover mocked UI flow", () => {
     expect(result.portalPageSources).not.toMatch(
       /生成.*PDF|确认交付|去支付|付款|账单|confirmDelivery|startDelivery|completeDelivery|\/delivery(?:\/|["'`])|payment|lease|billing/i
     );
-    expect(result.fieldPageSource).not.toMatch(
-      /\/esign|电子签|去签署|signUrl|startPortalHandoverSigning/i
-    );
+    expect(result.fieldPageSource).toContain("startFieldHandoverESign");
+    expect(result.fieldPageSource).toContain("发起电子签");
+    expect(result.fieldPageSource).not.toMatch(/signUrl|startPortalHandoverSigning/i);
   });
 
   it("runs Portal objection flow with mocked API calls and keeps the UI read-only", async () => {
@@ -113,9 +127,38 @@ describe("Stage 2 handover mocked UI flow", () => {
     expect(result.portalPageSources).not.toMatch(
       /生成.*PDF|确认交付|去支付|付款|账单|confirmDelivery|startDelivery|completeDelivery|\/delivery(?:\/|["'`])|payment|lease|billing/i
     );
-    expect(result.fieldPageSource).not.toMatch(
-      /\/esign|电子签|去签署|signUrl|startPortalHandoverSigning/i
-    );
+    expect(result.fieldPageSource).toContain("startFieldHandoverESign");
+    expect(result.fieldPageSource).not.toMatch(/signUrl|startPortalHandoverSigning/i);
+  });
+
+  it("keeps the Field eSign view polling while backend finalization is pending", () => {
+    const view = buildFieldStage2HandoverView(fieldDetail({
+      stage2Capabilities: {
+        canDownload: true,
+        canPreview: true,
+        canStartESign: false,
+        shouldPollESign: true
+      },
+      stage2ESign: {
+        finalizationPending: true,
+        status: "WAITING_CUSTOMER",
+        taskId: "stage2-task-ui-flow"
+      },
+      stage2Notification: {
+        status: "COMPLETED"
+      },
+      stage2Pdf: {
+        artifactVersion: 1,
+        downloadUrl: "/api/field/handover/work-orders/work-order-ui-flow/pdf/download",
+        previewUrl: "/api/field/handover/work-orders/work-order-ui-flow/pdf/preview",
+        sourcePdfHash: SOURCE_PDF_HASH,
+        status: "GENERATED"
+      },
+      status: "CUSTOMER_CONFIRMED"
+    }));
+
+    expect(view.shouldPollESign).toBe(true);
+    expect(view.canStartESign).toBe(false);
   });
 });
 
@@ -137,6 +180,10 @@ async function runMockedStage2HandoverConfirmFlow() {
       },
       status: "CUSTOMER_CONFIRMED"
     }),
+    {
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: "stage2-task-ui-flow"
+    },
     stage2PortalESignStatus({
       capability: { canStartSigning: true },
       ready: true,
@@ -168,6 +215,11 @@ async function runMockedStage2HandoverConfirmFlow() {
     `sha256:${"a".repeat(64)}`
   );
   const portalConfirmed = buildPortalHandoverReviewDetailView(confirmed);
+  const fieldESign = await startFieldHandoverESign("work-order-ui-flow", {
+    acknowledgement: true,
+    artifactVersion: 1,
+    sourcePdfHash: SOURCE_PDF_HASH
+  });
   const portalESignStatus = await getPortalHandoverESign("work-order-ui-flow");
   const signingStart = await startPortalHandoverSigning("work-order-ui-flow");
 
@@ -175,6 +227,7 @@ async function runMockedStage2HandoverConfirmFlow() {
     calls: fetchMock.mock.calls.map((call) => String(call[0])),
     fieldPageSource: readFieldHandoverPageSource(),
     fieldAfterSubmit,
+    fieldESign,
     portalConfirmed,
     portalESignStatus,
     portalPageSources: readPortalHandoverPageSources(),

@@ -133,6 +133,57 @@ export interface FieldHandoverWorkOrderDetail extends FieldHandoverWorkOrderList
   evidenceChecklist?: FieldHandoverEvidenceChecklist | null;
   fieldFacts?: FieldHandoverFieldFacts | null;
   reviewContext?: FieldHandoverReviewContext | null;
+  stage2Capabilities: FieldStage2HandoverCapabilities;
+  stage2ESign: FieldStage2ESignSummary;
+  stage2Notification: FieldStage2NotificationSummary;
+  stage2Pdf: FieldStage2HandoverPdfArtifact;
+}
+
+export interface FieldStage2HandoverCapabilities {
+  canDownload: boolean;
+  canPreview: boolean;
+  canStartESign: boolean;
+  shouldPollESign: boolean;
+}
+
+export interface FieldStage2HandoverPdfArtifact {
+  artifactId?: string | null;
+  artifactVersion?: number | null;
+  capabilities?: FieldStage2HandoverCapabilities | null;
+  documentNo?: string | null;
+  downloadUrl?: string | null;
+  fileName?: string | null;
+  fileSize?: number | null;
+  generatedAt?: string | null;
+  notificationStatus?: string | null;
+  orderNo?: string | null;
+  previewUrl?: string | null;
+  sourcePdfHash?: string | null;
+  status?: "GENERATED" | "NOT_GENERATED" | string | null;
+  workOrderId?: string | null;
+}
+
+export interface FieldStage2ESignSummary {
+  finalizationPending: boolean;
+  status: string | null;
+  taskId: string | null;
+}
+
+export interface FieldStage2NotificationSummary {
+  status: string | null;
+}
+
+export interface StartFieldHandoverESignInput {
+  acknowledgement: true;
+  artifactVersion: number;
+  sourcePdfHash: string;
+}
+
+export interface FieldStage2ESignResult {
+  finalizationPending?: boolean;
+  signingStage?: "STAGE2_DELIVERY_HANDOVER" | string;
+  status?: string | null;
+  taskId?: string | null;
 }
 
 export interface FieldHandoverReviewContext {
@@ -353,6 +404,51 @@ export function submitFieldHandoverEvidence(id: string) {
   return apiFetch<FieldHandoverWorkOrderDetail>(`/field/handover/work-orders/${encodeURIComponent(id)}/submit`, {
     method: "POST"
   });
+}
+
+export function startFieldHandoverESign(
+  id: string,
+  input: StartFieldHandoverESignInput
+) {
+  return apiFetch<FieldStage2ESignResult>(
+    `/field/handover/work-orders/${encodeURIComponent(id)}/esign`,
+    {
+      body: JSON.stringify(input),
+      method: "POST"
+    }
+  );
+}
+
+export function createFieldESignSubmissionController<TResult>({
+  submit
+}: {
+  submit: (input: StartFieldHandoverESignInput) => Promise<TResult>;
+}) {
+  let inFlight: null | Promise<TResult> = null;
+  return {
+    submit(
+      input: Omit<StartFieldHandoverESignInput, "acknowledgement"> & {
+        acknowledgement: boolean;
+      }
+    ) {
+      if (input.acknowledgement !== true) {
+        return null;
+      }
+      if (inFlight) {
+        return inFlight;
+      }
+      const request = submit({
+        ...input,
+        acknowledgement: true
+      }).finally(() => {
+        if (inFlight === request) {
+          inFlight = null;
+        }
+      });
+      inFlight = request;
+      return request;
+    }
+  };
 }
 
 export function isFieldHandoverUnauthorized(error: unknown) {

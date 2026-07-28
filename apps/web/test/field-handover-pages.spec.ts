@@ -20,6 +20,7 @@ const repoRoot = join(__dirname, "..", "..", "..");
 const loginPagePath = "apps/web/src/app/field/handover/page.tsx";
 const tasksPagePath = "apps/web/src/app/field/handover/tasks/page.tsx";
 const detailPagePath = "apps/web/src/app/field/handover/tasks/[id]/page.tsx";
+const viewModelPath = "apps/web/src/lib/field-handover-view-model.ts";
 const evidenceUploadControlsPath =
   "apps/web/src/components/field-handover-evidence-upload-controls.tsx";
 
@@ -113,8 +114,40 @@ describe("field handover H5 pages", () => {
     expect(source).not.toContain("function validateEvidenceFile");
     expect(source).not.toContain("MAX_PHOTO_SIZE_BYTES");
     expect(source).not.toContain("MAX_VIDEO_SIZE_BYTES");
-    expect(source).not.toMatch(/eSignTask|startSigning|signingUrl|objectKey/i);
-    expect(source).not.toMatch(/电子签|签署|PDF/);
+    expect(source).not.toMatch(/signingUrl|objectKey/i);
+  });
+
+  it("keeps the confirmed task read-only and adds one reviewed PDF eSign action", () => {
+    const tasksSource = read(tasksPagePath);
+    const source = read(detailPagePath);
+    const viewModelSource = read(viewModelPath);
+
+    expect(tasksSource).not.toContain('filter((task) => task.status !== "CUSTOMER_CONFIRMED")');
+    expect(viewModelSource).toContain("detail.stage2Pdf");
+    expect(source).toContain("交接确认单");
+    expect(source).toContain("文档编号");
+    expect(source).toContain("生成时间");
+    expect(source).toContain("文件大小");
+    expect(source).toContain("SHA-256");
+    expect(source).toContain("通知状态");
+    expect(source).toContain("预览");
+    expect(source).toContain("下载");
+    expect(source).toContain("发起电子签");
+    expect(source).toContain("<Modal");
+    expect(source).toContain("<Checkbox");
+    expect(source).toContain("createFieldESignSubmissionController");
+    expect(source).toContain("acknowledgement: eSignAcknowledged");
+    expect(source).toContain("artifactVersion: stage2View.artifactVersion");
+    expect(source).toContain("sourcePdfHash: stage2View.sourcePdfHash");
+    expect(source).toContain('actionLoading === "esign"');
+    expect(source).toContain("eSignInFlightRef.current");
+    expect(source).toContain("stage2View?.shouldPollESign");
+    expect(source).toContain("window.setInterval");
+    expect(source).toContain("const refreshedDetail = await loadDetail({ showLoading: false })");
+    expect(source).toContain("refreshedStage2?.shouldPollESign");
+    expect(viewModelSource).toContain('detail.status === "CUSTOMER_CONFIRMED"');
+    expect(source).toContain("overflowWrap: \"anywhere\"");
+    expect(source).not.toMatch(/notification(?:Status)?.{0,80}(?:mobile|phone|手机号)/i);
   });
 
   it("shows customer objection recheck guidance before the evidence capture overview", () => {

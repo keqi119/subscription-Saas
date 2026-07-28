@@ -112,6 +112,13 @@ describe("DeliveryHandoverService", () => {
       harness.prisma as never,
       harness.orderId
     );
+    expect(signedHandover?.handoverESignTask).toMatchObject({
+      taskNo: "ESG20260721STAGE2",
+      signers: [
+        { providerTransactionId: "ESG20260721STAGE2H1" },
+        { providerTransactionId: "ESG20260721STAGE2H2" }
+      ]
+    });
     expect(getDeliveryHandoverArchiveWarning(signedHandover)).toContain("已签 PDF 尚未完成归档");
 
     const failedArchive = await harness.service.markArchiveFailed(draft.id, "temporary provider download timeout", harness.user.id);
@@ -351,7 +358,7 @@ function completeStage2SignedState(
           deletedAt: null,
           documentType: "DELIVERY_HANDOVER",
           providerActionType: "CUSTOMER_MANUAL_SIGN",
-          providerTransactionId: "STAGE2CUSTOMERH1",
+          providerTransactionId: "ESG20260721STAGE2H1",
           required: true,
           signedAt,
           signerStatus: "SIGNED",
@@ -363,7 +370,7 @@ function completeStage2SignedState(
           deletedAt: null,
           documentType: "DELIVERY_HANDOVER",
           providerActionType: "PLATFORM_AUTO_SEAL",
-          providerTransactionId: "STAGE2PLATFORMH2",
+          providerTransactionId: "ESG20260721STAGE2H2",
           required: true,
           signedAt,
           signerStatus: "SIGNED",
@@ -372,6 +379,7 @@ function completeStage2SignedState(
         }
       ],
       signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskNo: "ESG20260721STAGE2",
       taskStatus: "COMPLETED"
     },
     handoverESignTaskId: "esign-task-stage2",

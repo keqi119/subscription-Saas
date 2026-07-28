@@ -26,9 +26,11 @@ import {
   DeliveryEvidenceMediaType,
   DeliveryHandoverStatus,
   Prisma,
+  UserStatus,
   VehicleHandoverAdminReviewStatus,
   VehicleHandoverEventActorType,
-  VehicleHandoverEventType
+  VehicleHandoverEventType,
+  VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 
 import {
@@ -51,20 +53,28 @@ import {
 import {
   DeliveryHandoverPdfRenderFileResult,
   DeliveryHandoverPdfRendererService,
+  STAGE2_HANDOVER_PDF_HARD_MAX_BYTES,
   STAGE2_HANDOVER_PDF_TARGET_BYTES
 } from "../delivery-handover/delivery-handover-pdf-renderer.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
-import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
   MAX_FIELD_PHOTO_SIZE_BYTES,
   MAX_FIELD_VIDEO_SIZE_BYTES
 } from "./handover-work-order.constants";
 import {
-  normalizeFieldOperatorPhone,
-  normalizeOptionalFieldOperatorPhone
+  normalizeFieldOperatorPhone
 } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
+import {
+  hasStage2SourceArtifactState,
+  normalizeStage2Sha256,
+  validateStage2SourceArtifactBinding
+} from "./stage2-handover-source-artifact";
+import {
+  buildAuthoritativeStage2TaskWhere
+} from "./stage2-handover-task-binding";
+import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
 const FIELD_HIDDEN_WORK_ORDER_STATUSES = [
@@ -112,7 +122,9 @@ const ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN = "RESUBMITTED_PENDING_ADMIN
 const ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW = "SENT_BACK_TO_CUSTOMER_REVIEW";
 const ADMIN_REVIEW_STATUS_RESOLVED = "RESOLVED";
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
+const STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS = 3;
 const STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV = "STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL";
+const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV = "STAGE2_HANDOVER_WORKFLOW_ENABLED";
 const MAX_STAGE2_EVIDENCE_DERIVATIVE_BYTES = 1024 * 1024;
 const SAFE_FIELD_PHOTO_MIME_TYPES = new Set([
   "image/heic",
@@ -164,6 +176,7 @@ export interface WorkOrderRecord {
   accessTokenRevokedAt?: Date | null;
   adminReviewStatus?: string | null;
   accessoryChecklist?: unknown;
+  assignedInternalUserId?: string | null;
   createdAt?: Date | null;
   customerConfirmedAt?: Date | null;
   customerObjectedAt?: Date | null;
@@ -176,6 +189,8 @@ export interface WorkOrderRecord {
   externalOperatorPhone?: string | null;
   fieldCompletedAt?: Date | null;
   fieldNotes?: string | null;
+  fieldOperatorName?: string | null;
+  fieldOperatorPhone?: string | null;
   fieldStartedAt?: Date | null;
   fieldSubmittedAt?: Date | null;
   fuelLevelText?: string | null;
@@ -202,21 +217,62 @@ export interface EvidenceFileStreamResult {
 
 export interface Stage2HandoverPdfArtifactView {
   artifactId: null | string;
+  artifactVersion: null | number;
   documentNo: null | string;
   downloadUrl: null | string;
   fileName: null | string;
   fileSize: null | number;
   generatedAt: Date | null;
   orderNo: null | string;
+  previewUrl: null | string;
+  sourcePdfHash: null | string;
   status: "GENERATED" | "NOT_GENERATED";
   workOrderId: string;
+}
+
+export interface FieldStage2ESignReviewInput {
+  acknowledgement: true;
+  artifactVersion: number;
+  sourcePdfHash: string;
+}
+
+export interface FieldStage2ESignReview extends FieldStage2ESignReviewInput {
+  reviewedAt: Date;
+}
+
+export interface Stage2HandoverPdfLease {
+  assertLease(): Promise<void>;
+  jobId: string;
+  leaseMs: number;
+  leaseToken: string;
+}
+
+interface EnsureStage2HandoverPdfOptions {
+  actorId?: string;
+  enqueueNextJob?: boolean;
+  lease?: Stage2HandoverPdfLease;
+}
+
+interface Stage2SourcePdfReservation {
+  artifactVersion: number;
+  contractId: string;
+  contractNo: string;
+  generatedAt: Date;
+  manifestHash: string;
+  templateId: string;
+}
+
+class Stage2SourcePdfClaimLostError extends Error {
+  constructor() {
+    super("STAGE2_SOURCE_PDF_CLAIM_LOST");
+  }
 }
 
 export interface AssignExternalOperatorInput {
   expiresAt?: Date | string | null;
   name: string;
   organization?: string | null;
-  phone?: string | null;
+  phone: string;
 }
 
 export interface UpdateFieldFactsInput {
@@ -265,7 +321,8 @@ export class HandoverWorkOrderService {
     @Optional() private readonly storageService?: StorageService,
     @Optional() private readonly handoverPdfRenderer?: DeliveryHandoverPdfRendererService,
     @Optional() private readonly configService?: ConfigService,
-    @Optional() private readonly evidenceArtifactService?: DeliveryHandoverEvidenceArtifactService
+    @Optional() private readonly evidenceArtifactService?: DeliveryHandoverEvidenceArtifactService,
+    @Optional() private readonly workflowRepository?: Stage2HandoverWorkflowRepository
   ) {}
 
   async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
@@ -323,9 +380,9 @@ export class HandoverWorkOrderService {
   }
 
   async assignInternalOperator(id: string, userId: string, actorId?: string) {
-    await this.assertUserExists(userId);
+    const operator = await this.getAssignableInternalUser(userId);
     const workOrder = await this.getWorkOrderOrThrow(id);
-    this.assertMutable(workOrder);
+    await this.assertAssignmentMutable(workOrder);
     return this.updateWorkOrderWithEvent(workOrder, {
       accessTokenExpiresAt: null,
       accessTokenHash: null,
@@ -334,6 +391,8 @@ export class HandoverWorkOrderService {
       externalOperatorName: null,
       externalOperatorOrganization: null,
       externalOperatorPhone: null,
+      fieldOperatorName: operator.name,
+      fieldOperatorPhone: operator.phone,
       metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
       operatorType: "INTERNAL",
       status: nextStatus(workOrder.status, "ASSIGNED")
@@ -347,11 +406,11 @@ export class HandoverWorkOrderService {
   async assignExternalOperator(id: string, input: AssignExternalOperatorInput, actorId?: string) {
     const name = normalizeRequiredText(input.name, "请填写外部交付员姓名。");
     const workOrder = await this.getWorkOrderOrThrow(id);
-    this.assertMutable(workOrder);
+    await this.assertAssignmentMutable(workOrder);
     const accessToken = randomBytes(32).toString("base64url");
     const accessTokenHash = hashAccessToken(accessToken);
     const expiresAt = input.expiresAt ? parseDate(input.expiresAt, "accessTokenExpiresAt") : defaultTokenExpiry();
-    const phone = normalizeOptionalFieldOperatorPhone(input.phone);
+    const phone = normalizeFieldOperatorPhone(input.phone ?? "");
 
     const updated = await this.updateWorkOrderWithEvent(workOrder, {
       accessTokenExpiresAt: expiresAt,
@@ -361,6 +420,8 @@ export class HandoverWorkOrderService {
       externalOperatorName: name,
       externalOperatorOrganization: normalizeOptionalText(input.organization),
       externalOperatorPhone: phone,
+      fieldOperatorName: name,
+      fieldOperatorPhone: phone,
       metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
       operatorType: "EXTERNAL",
       status: nextStatus(workOrder.status, "ASSIGNED")
@@ -402,25 +463,29 @@ export class HandoverWorkOrderService {
 
   async listFieldAccessibleWorkOrders(phone: string) {
     const normalizedPhone = normalizeFieldOperatorPhone(phone);
-    const now = new Date();
     const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
       orderBy: [
         { scheduledAt: "asc" },
         { createdAt: "desc" }
       ],
       where: {
-        OR: [
-          { accessTokenExpiresAt: null },
-          { accessTokenExpiresAt: { gt: now } }
-        ],
-        accessTokenRevokedAt: null,
-        externalOperatorPhone: normalizedPhone,
-        operatorType: "EXTERNAL",
+        fieldOperatorPhone: normalizedPhone,
         status: { notIn: [...FIELD_HIDDEN_WORK_ORDER_STATUSES] }
       }
     });
 
-    const sorted = [...workOrders].sort(compareFieldWorkOrders);
+    const authorizedWorkOrders = [];
+    for (const workOrder of workOrders) {
+      if (
+        await this.hasCurrentFieldOperatorAssignment(
+          workOrder,
+          normalizedPhone
+        )
+      ) {
+        authorizedWorkOrders.push(workOrder);
+      }
+    }
+    const sorted = authorizedWorkOrders.sort(compareFieldWorkOrders);
     return Promise.all(sorted.map((workOrder) => this.toFieldTaskListItem(workOrder)));
   }
 
@@ -890,6 +955,56 @@ export class HandoverWorkOrderService {
     return this.getEvidenceFileStream(id, evidenceFileId, { preview: false });
   }
 
+  async previewFieldAccessibleStage2HandoverPdf(
+    id: string,
+    phone: string
+  ): Promise<EvidenceFileStreamResult> {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    return this.getValidatedStage2HandoverPdfStream(workOrder);
+  }
+
+  async downloadFieldAccessibleStage2HandoverPdf(
+    id: string,
+    phone: string
+  ): Promise<EvidenceFileStreamResult> {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    return this.getValidatedStage2HandoverPdfStream(workOrder);
+  }
+
+  async assertFieldStage2ESignReview(
+    id: string,
+    phone: string,
+    input: FieldStage2ESignReviewInput
+  ): Promise<FieldStage2ESignReview> {
+    if (input.acknowledgement !== true) {
+      throw new BadRequestException(
+        "The Stage 2 source PDF review acknowledgement is required."
+      );
+    }
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
+    if (workOrder.status !== "CUSTOMER_CONFIRMED") {
+      throw new BadRequestException(
+        "The handover is not ready for Field eSign initiation."
+      );
+    }
+    const binding = await this.resolveFieldStage2SourceArtifact(workOrder);
+    const requestedHash = normalizeStage2Sha256(input.sourcePdfHash);
+    if (
+      input.artifactVersion !== binding.artifactVersion ||
+      requestedHash !== binding.sourcePdfHash
+    ) {
+      throw new ConflictException(
+        "The reviewed Stage 2 source PDF is stale."
+      );
+    }
+    return {
+      acknowledgement: true,
+      artifactVersion: binding.artifactVersion,
+      reviewedAt: new Date(),
+      sourcePdfHash: binding.sourcePdfHash
+    };
+  }
+
   async submitFieldAccessibleEvidence(id: string, phone: string, actorId?: string) {
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     assertFieldSessionEditable(workOrder);
@@ -1305,7 +1420,10 @@ export class HandoverWorkOrderService {
     await this.assertCustomerOwnsWorkOrder(workOrder, customerId);
     this.assertMutable(workOrder);
     if (workOrder.status === "CUSTOMER_CONFIRMED") {
-      throw new BadRequestException("客户已确认无异议。");
+      if (!this.isStage2HandoverWorkflowEnabled()) {
+        throw new BadRequestException("客户已确认无异议。");
+      }
+      return this.replayCustomerConfirmation(workOrder, manifestHash);
     }
     if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
       throw new BadRequestException("客户已提交异议，需后台介入。");
@@ -1362,8 +1480,80 @@ export class HandoverWorkOrderService {
         actorType: VehicleHandoverEventActorType.CUSTOMER,
         reviewAttemptId: attempt ? String(attempt.id) : null
       }, tx);
-      return updated;
+      if (!this.isStage2HandoverWorkflowEnabled()) {
+        return updated;
+      }
+      const job = await this.enqueueStage2SourcePdf(
+        tx,
+        updated,
+        requireReviewAttemptId(attempt),
+        evidencePackage.manifestHash
+      );
+      return {
+        ...updated,
+        stage2Workflow: toPendingStage2WorkflowProjection(job.id)
+      };
     });
+  }
+
+  private async replayCustomerConfirmation(
+    workOrder: WorkOrderRecord,
+    manifestHash: string
+  ) {
+    return this.runSerializableTransaction(async (tx) => {
+      const attempt = await this.findLatestReviewAttempt(workOrder.id, tx);
+      const confirmedManifestHash = readEvidencePackageManifestHash(
+        readUnknownRecordValue(attempt, "evidenceSnapshot")
+      );
+      if (
+        !attempt ||
+        readString(attempt, "status") !== "CUSTOMER_CONFIRMED" ||
+        confirmedManifestHash !== manifestHash
+      ) {
+        throw new ConflictException(
+          "客户确认未绑定当前交接证据，请刷新后重试。"
+        );
+      }
+      const job = await this.enqueueStage2SourcePdf(
+        tx,
+        workOrder,
+        requireReviewAttemptId(attempt),
+        manifestHash
+      );
+      return {
+        ...workOrder,
+        stage2Workflow: toPendingStage2WorkflowProjection(job.id)
+      };
+    });
+  }
+
+  private enqueueStage2SourcePdf(
+    tx: Prisma.TransactionClient,
+    workOrder: WorkOrderRecord,
+    reviewAttemptId: string,
+    manifestHash: string
+  ) {
+    if (!this.workflowRepository) {
+      throw new Error("STAGE2_HANDOVER_WORKFLOW_REPOSITORY_UNAVAILABLE");
+    }
+    return this.workflowRepository.enqueue(tx, {
+      handoverId: workOrder.handoverId ?? undefined,
+      idempotencyKey:
+        `pdf:${workOrder.id}:${reviewAttemptId}:${manifestHash}`,
+      jobType: VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+      payload: {
+        manifestHash,
+        reviewAttemptId
+      },
+      workOrderId: workOrder.id
+    });
+  }
+
+  private isStage2HandoverWorkflowEnabled() {
+    return this.configService
+      ?.get<string>(STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV)
+      ?.trim()
+      .toLowerCase() === "true";
   }
 
   async customerObject(id: string, customerId: string, reason: string, details?: string | null) {
@@ -1547,9 +1737,12 @@ export class HandoverWorkOrderService {
     };
   }
 
-  async getCurrentEvidencePackage(id: string) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
-    return this.buildCurrentEvidencePackage(workOrder);
+  async getCurrentEvidencePackage(
+    id: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await this.getWorkOrderOrThrow(id, db);
+    return this.buildCurrentEvidencePackage(workOrder, undefined, db);
   }
 
   async getStage2HandoverPdf(id: string): Promise<Stage2HandoverPdfArtifactView> {
@@ -1562,57 +1755,114 @@ export class HandoverWorkOrderService {
   }
 
   async generateStage2HandoverPdf(id: string, actorId?: string): Promise<Stage2HandoverPdfArtifactView> {
+    const evidencePackage = await this.getCurrentEvidencePackage(id);
+    return this.ensureStage2HandoverPdf(id, evidencePackage.manifestHash, {
+      actorId,
+      enqueueNextJob: this.isStage2HandoverWorkflowEnabled()
+    });
+  }
+
+  async ensureStage2HandoverPdf(
+    id: string,
+    expectedManifestHash: string,
+    options: EnsureStage2HandoverPdfOptions = {}
+  ): Promise<Stage2HandoverPdfArtifactView> {
     const workOrder = await this.getWorkOrderOrThrow(id);
     await this.assertWorkOrderReadyForStage2(workOrder);
 
     const handover = await this.findStage2HandoverForWorkOrderOrThrow(workOrder);
-    this.assertStage2HandoverPdfCanBeGenerated(handover);
     const handoverId = readString(handover, "id");
     if (!handoverId) {
       throw new BadRequestException("车辆交接记录缺少有效 ID。");
     }
-    const order = await this.getStage2PdfOrderOrThrow(workOrder.orderId);
-    const template = await this.findActiveStage2HandoverTemplate();
-    if (!template) {
-      throw new BadRequestException("未找到生效中的车辆交接确认单模板。");
+    const expectedManifestDigest = requireSha256Digest(expectedManifestHash);
+    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
+      handoverId: workOrder.handoverId ?? null,
+      orderId: workOrder.orderId
+    });
+    const evidencePackage = await this.buildCurrentEvidencePackage(
+      workOrder,
+      evidenceChecklist
+    );
+    await this.assertEvidencePackageMatchesLatestConfirmation(
+      workOrder,
+      evidencePackage
+    );
+    if (
+      requireSha256Digest(evidencePackage.manifestHash) !==
+      expectedManifestDigest
+    ) {
+      throw new ConflictException(
+        "Current evidence does not match the queued manifest."
+      );
     }
 
-    const createdContract = await withUniqueBusinessNoRetry(() => this.prisma.contract.create({
-      data: {
-        businessType: BusinessType.SUBSCRIPTION,
-        contractNo: createBusinessNo("HDV"),
-        contractSnapshot: toJsonValue({
-          artifactKind: "stage2-handover-pdf-source",
-          handoverId,
-          orderId: workOrder.orderId,
-          orderNo: order.orderNo,
-          templateName: template.templateName,
-          templateVersion: template.versionNo,
-          workOrderId: workOrder.id
-        }),
-        contractTitle: `${template.templateName} ${template.versionNo}`,
-        contractVersionId: template.id,
-        createdBy: actorId ?? null,
-        customerId: order.customerId,
-        orderId: workOrder.orderId,
-        status: ContractStatus.GENERATED,
-        updatedBy: actorId ?? null
+    const order = await this.getStage2PdfOrderOrThrow(workOrder.orderId);
+    const reusable = await this.resolveReusableStage2HandoverPdf(
+      workOrder,
+      handover,
+      expectedManifestDigest,
+      order.customerId
+    );
+    if (reusable) {
+      if (options.enqueueNextJob !== false) {
+        await this.enqueueReadyStage2Pdf(
+          workOrder,
+          reusable.handover,
+          expectedManifestHash,
+          options.lease
+        );
       }
-    }));
+      return this.toStage2HandoverPdfArtifactView(
+        workOrder,
+        reusable.handover,
+        reusable.fileObject
+      );
+    }
+    this.assertStage2HandoverPdfGenerationPrerequisites(handover);
+    await options.lease?.assertLease();
+
+    const activeTemplate = await this.findActiveStage2HandoverTemplate();
+    const artifactVersion = 1;
+    const identity = buildStage2PdfArtifactIdentity(
+      workOrder,
+      expectedManifestDigest,
+      artifactVersion
+    );
+    const reservation = await this.reserveStage2SourcePdf(
+      workOrder,
+      handoverId,
+      expectedManifestDigest,
+      artifactVersion,
+      identity.contractId,
+      activeTemplate?.id ?? null,
+      options.lease
+    );
+    const template = await this.findStage2HandoverTemplateById(
+      reservation.templateId
+    );
+    if (!template) {
+      throw new ConflictException("The reserved Stage 2 template is unavailable.");
+    }
+    const renderContract = {
+      contractNo: reservation.contractNo,
+      createdAt: reservation.generatedAt,
+      id: reservation.contractId
+    };
 
     let renderedFile: DeliveryHandoverPdfRenderFileResult | null = null;
-    let storedObject: null | { bucket: string; objectKey: string } = null;
+    let stored:
+      | Awaited<
+          ReturnType<
+            StorageService["putGeneratedContractPdfArtifactFromPath"]
+          >
+        >
+      | null = null;
     try {
-      const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
-        handoverId: workOrder.handoverId ?? null,
-        orderId: workOrder.orderId
-      });
-      const evidencePackage = await this.buildCurrentEvidencePackage(workOrder, evidenceChecklist);
-      await this.assertEvidencePackageMatchesLatestConfirmation(workOrder, evidencePackage);
       const loadAsset = await this.buildStage2EvidenceAssetLoader(evidencePackage);
       const renderModel = buildDeliveryHandoverPdfRenderModel(
         this.buildStage2HandoverPdfRenderModelInput({
-          createdContract,
+          createdContract: renderContract,
           evidenceChecklist,
           evidencePackage,
           handover,
@@ -1627,40 +1877,58 @@ export class HandoverWorkOrderService {
         loadAsset
       });
       const sourcePdfHash = await calculateFileSha256(renderedFile.filePath);
-      const manifestHash = requireSha256Digest(evidencePackage.manifestHash);
-      const stored = await this.getStorageService().putGeneratedContractPdfArtifactFromPath({
+      const storedIdentity = buildStage2PdfStoredIdentity(
+        reservation.contractId,
+        artifactVersion,
+        sourcePdfHash
+      );
+      await options.lease?.assertLease();
+      stored = await this.getStorageService().putGeneratedContractPdfArtifactFromPath({
         contentType: renderedFile.contentType,
-        contractId: createdContract.id,
+        contractId: reservation.contractId,
         filePath: renderedFile.filePath,
         metadata: {
           artifactKind: "stage2-handover-pdf-source",
-          documentNo: createdContract.contractNo,
+          documentNo: reservation.contractNo,
           evidenceManifestHash: evidencePackage.manifestHash,
           orderNo: order.orderNo,
           templateName: template.templateName,
           templateVersion: template.versionNo
         },
+        objectKey: storedIdentity.objectKey,
         originalName: renderedFile.fileName,
         sizeBytes: renderedFile.sizeBytes
       });
-      storedObject = { bucket: stored.bucket, objectKey: stored.objectKey };
-      const fileObject = await this.runSerializableTransaction(async (tx) => {
+      const storedArtifact = stored;
+      await options.lease?.assertLease();
+      const finalized = await this.runStage2SourcePdfFinalizationTransaction(async (tx) => {
+        await this.assertStage2PdfLease(tx, options.lease);
+        const lockedHandover = await this.lockStage2HandoverForSourcePdf(
+          tx,
+          handoverId
+        );
+        if (hasStage2SourceArtifactState(lockedHandover)) {
+          throw new Stage2SourcePdfClaimLostError();
+        }
         const createdFileObject = await tx.fileObject.create({
           data: {
-            bucket: stored.bucket,
-            mimeType: stored.contentType,
-            objectKey: stored.objectKey,
-            originalName: stored.originalName,
-            sizeBytes: BigInt(stored.sizeBytes),
-            uploadedBy: actorId ?? null
+            bucket: storedArtifact.bucket,
+            id: storedIdentity.fileObjectId,
+            mimeType: storedArtifact.contentType,
+            objectKey: storedArtifact.objectKey,
+            originalName: storedArtifact.originalName,
+            sizeBytes: BigInt(storedArtifact.sizeBytes),
+            uploadedBy: options.actorId ?? null
           }
-        });
-        await tx.contract.update({
+      });
+        const createdContract = await tx.contract.create({
           data: {
+            businessType: BusinessType.SUBSCRIPTION,
+            contractNo: reservation.contractNo,
             contractSnapshot: toJsonValue({
               artifactKind: "stage2-handover-pdf-source",
               diagnostics: renderedFile!.diagnostics,
-              documentNo: createdContract.contractNo,
+              documentNo: reservation.contractNo,
               evidencePackage: {
                 manifest: evidencePackage.manifest,
                 manifestHash: evidencePackage.manifestHash,
@@ -1673,57 +1941,109 @@ export class HandoverWorkOrderService {
               orderNo: order.orderNo,
               stage2HandoverPdfArtifact: {
                 artifactKind: "stage2-handover-pdf-source",
+                artifactVersion,
                 documentType: "DELIVERY_HANDOVER",
                 fileId: createdFileObject.id,
                 pageCount: renderedFile!.diagnostics.pageCount,
                 signingStage: "STAGE2_DELIVERY_HANDOVER",
-                slotCoordinates: renderedFile!.slotCoordinates
+                slotCoordinates: renderedFile!.slotCoordinates,
+                sourcePdfHash
               },
               templateName: template.templateName,
               templateVersion: template.versionNo,
               workOrderId: workOrder.id
             }),
+            contractTitle: `${template.templateName} ${template.versionNo}`,
+            contractVersionId: template.id,
+            createdAt: reservation.generatedAt,
+            createdBy: options.actorId ?? null,
+            customerId: order.customerId,
             fileId: createdFileObject.id,
-            updatedBy: actorId ?? null
-          },
-          where: { id: createdContract.id }
-        });
-        const handoverClaim = await tx.vehicleDeliveryHandover.updateMany({
-          data: {
-            artifactVersion: 1,
-            handoverContractId: createdContract.id,
-            manifestHash,
-            sourceDocumentFileId: createdFileObject.id,
-            sourceObjectKey: stored.objectKey,
-            sourcePdfHash,
-            status: DeliveryHandoverStatus.SOURCE_GENERATED,
-            updatedBy: actorId ?? null
-          },
-          where: {
-            handoverContractId: null,
-            id: handoverId,
-            sourceDocumentFileId: null
+            id: reservation.contractId,
+            orderId: workOrder.orderId,
+            status: ContractStatus.GENERATED,
+            updatedBy: options.actorId ?? null
           }
         });
-        if (handoverClaim.count !== 1) {
-          throw new ConflictException("车辆交接确认单已由其他请求生成，请刷新后查看。");
+        await tx.vehicleDeliveryHandover.update({
+          data: {
+            artifactVersion,
+            handoverContractId: createdContract.id,
+            manifestHash: expectedManifestDigest,
+            sourceDocumentFileId: createdFileObject.id,
+            sourceObjectKey: storedArtifact.objectKey,
+            sourcePdfHash,
+            status: DeliveryHandoverStatus.SOURCE_GENERATED,
+            updatedBy: options.actorId ?? null
+          },
+          where: { id: handoverId }
+        });
+        if (options.enqueueNextJob !== false) {
+          await this.enqueueStage2FieldReady(
+            tx,
+            workOrder,
+            handoverId,
+            artifactVersion,
+            expectedManifestHash,
+            sourcePdfHash
+          );
         }
-        return createdFileObject;
-      });
+        return { createdContract, createdFileObject };
+        });
 
-      return this.toStage2HandoverPdfArtifactView(workOrder, {
-        ...handover,
-        handoverContractId: createdContract.id,
-        handoverContract: createdContract,
-        sourceDocumentFileId: fileObject.id,
-        sourceObjectKey: stored.objectKey,
-        status: DeliveryHandoverStatus.SOURCE_GENERATED
-      }, fileObject);
+      return this.toStage2HandoverPdfArtifactView(
+        workOrder,
+        {
+          ...handover,
+          artifactVersion,
+          handoverContractId: finalized.createdContract.id,
+          handoverContract: finalized.createdContract,
+          manifestHash: expectedManifestDigest,
+          sourceDocumentFileId: finalized.createdFileObject.id,
+          sourceObjectKey: storedArtifact.objectKey,
+          sourcePdfHash,
+          status: DeliveryHandoverStatus.SOURCE_GENERATED
+        },
+        finalized.createdFileObject
+      );
     } catch (error) {
-      if (storedObject) {
-        await this.deleteStoredObjectsWithRetry([storedObject]);
+      const authoritative = stored
+        ? await this.findStage2HandoverForWorkOrderOrThrow(workOrder)
+        : null;
+      if (
+        error instanceof Stage2SourcePdfClaimLostError &&
+        authoritative &&
+        stored
+      ) {
+        const concurrentResult = await this.resolveReusableStage2HandoverPdf(
+          workOrder,
+          authoritative,
+          expectedManifestDigest,
+          order.customerId
+        );
+        if (!concurrentResult) {
+          throw new ConflictException(
+            "The source PDF was claimed without a valid artifact binding."
+          );
+        }
+        await this.cleanupLosingStage2SourceObject(stored, authoritative);
+        if (options.enqueueNextJob !== false) {
+          await this.enqueueReadyStage2Pdf(
+            workOrder,
+            concurrentResult.handover,
+            expectedManifestHash,
+            options.lease
+          );
+        }
+        return this.toStage2HandoverPdfArtifactView(
+          workOrder,
+          concurrentResult.handover,
+          concurrentResult.fileObject
+        );
       }
-      await this.cancelStage2HandoverContractAfterPdfFailure(createdContract.id, actorId);
+      if (stored && authoritative) {
+        await this.cleanupLosingStage2SourceObject(stored, authoritative);
+      }
       throw error;
     } finally {
       if (renderedFile) {
@@ -1751,6 +2071,69 @@ export class HandoverWorkOrderService {
       sizeBytes: toNumberOrNull(fileObject.sizeBytes ?? downloaded.contentLength ?? null),
       stream: downloaded.stream
     };
+  }
+
+  private async getValidatedStage2HandoverPdfStream(
+    workOrder: WorkOrderRecord
+  ): Promise<EvidenceFileStreamResult> {
+    const binding = await this.resolveFieldStage2SourceArtifact(workOrder);
+    const bucket = readRequiredString(binding.fileObject, "bucket");
+    const downloaded = await this.getStorageService().getObject(
+      bucket,
+      binding.sourceObjectKey
+    );
+    return {
+      filename:
+        readString(binding.fileObject, "originalName") ?? "handover.pdf",
+      mimeType:
+        downloaded.contentType ??
+        readString(binding.fileObject, "mimeType") ??
+        "application/pdf",
+      sizeBytes: toNumberOrNull(
+        binding.fileObject.sizeBytes ?? downloaded.contentLength ?? null
+      ),
+      stream: downloaded.stream
+    };
+  }
+
+  private async resolveFieldStage2SourceArtifact(
+    workOrder: WorkOrderRecord
+  ) {
+    const handover = await this.findStage2HandoverForWorkOrderOrThrow(
+      workOrder
+    );
+    const currentPackage = await this.buildCurrentEvidencePackage(workOrder);
+    const fileId = readString(handover, "sourceDocumentFileId");
+    const fileObject = fileId
+      ? await this.prisma.fileObject.findUnique({ where: { id: fileId } })
+      : null;
+    const order = await this.getOrderOrThrow(workOrder.orderId);
+    const binding = validateStage2SourceArtifactBinding({
+      allowedContractStatuses: [
+        ContractStatus.GENERATED,
+        ContractStatus.SIGNING
+      ],
+      allowedHandoverStatuses: [
+        DeliveryHandoverStatus.SOURCE_GENERATED,
+        DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
+        DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
+      ],
+      expectedCustomerId:
+        readString(order as unknown as Record<string, unknown>, "customerId"),
+      expectedHandoverId: workOrder.handoverId ?? "",
+      expectedManifestHash: currentPackage.manifestHash,
+      expectedOrderId: workOrder.orderId,
+      expectedWorkOrderId: workOrder.id,
+      fileObject,
+      handover,
+      maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
+    });
+    if (!binding) {
+      throw new ConflictException(
+        "The current Stage 2 source PDF binding is invalid."
+      );
+    }
+    return binding;
   }
 
   async assertReadyForStage2Pdf(orderId: string, handoverId?: string | null) {
@@ -1896,8 +2279,11 @@ export class HandoverWorkOrderService {
     }
   }
 
-  private async getWorkOrderOrThrow(id: string) {
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({ where: { id } });
+  private async getWorkOrderOrThrow(
+    id: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await db.vehicleHandoverWorkOrder.findUnique({ where: { id } });
     if (!workOrder) {
       throw new NotFoundException("交付工单不存在。");
     }
@@ -1955,11 +2341,171 @@ export class HandoverWorkOrderService {
     });
   }
 
+  private async findStage2HandoverTemplateById(id: string) {
+    return this.prisma.contractVersion.findFirst({
+      where: {
+        businessType: BusinessType.SUBSCRIPTION,
+        deletedAt: null,
+        id,
+        templateType: ContractTemplateType.DELIVERY_HANDOVER
+      }
+    });
+  }
+
+  private async reserveStage2SourcePdf(
+    workOrder: WorkOrderRecord,
+    handoverId: string,
+    manifestHash: string,
+    artifactVersion: number,
+    contractId: string,
+    activeTemplateId: string | null,
+    lease?: Stage2HandoverPdfLease
+  ): Promise<Stage2SourcePdfReservation> {
+    return this.runSerializableTransaction(async (tx) => {
+      await this.assertStage2PdfLease(tx, lease);
+      const handover = await this.lockStage2HandoverForSourcePdf(
+        tx,
+        handoverId
+      );
+      if (hasStage2SourceArtifactState(handover)) {
+        throw new Stage2SourcePdfClaimLostError();
+      }
+
+      const metadata = asRecord(handover.metadata) ?? {};
+      const existing = readStage2SourcePdfReservation(
+        metadata.stage2SourcePdfReservation
+      );
+      if (existing) {
+        if (
+          existing.artifactVersion !== artifactVersion ||
+          existing.contractId !== contractId ||
+          existing.manifestHash !== manifestHash
+        ) {
+          throw new ConflictException(
+            "The reserved Stage 2 source PDF identity is invalid."
+          );
+        }
+        return existing;
+      }
+
+      const legacyContract = await tx.contract.findUnique({
+        where: { id: contractId }
+      });
+      let contractNo: string;
+      let generatedAt: Date;
+      let templateId: string;
+      if (legacyContract) {
+        if (
+          legacyContract.deletedAt ||
+          legacyContract.fileId ||
+          legacyContract.orderId !== workOrder.orderId ||
+          legacyContract.status !== ContractStatus.CANCELLED
+        ) {
+          throw new ConflictException(
+            "The legacy Stage 2 source Contract reservation is invalid."
+          );
+        }
+        contractNo = legacyContract.contractNo;
+        generatedAt = legacyContract.createdAt;
+        templateId = legacyContract.contractVersionId;
+        await tx.contract.delete({ where: { id: legacyContract.id } });
+      } else {
+        if (!activeTemplateId) {
+          throw new BadRequestException("未找到生效中的车辆交接确认单模板。");
+        }
+        generatedAt = await readStage2DatabaseNow(tx);
+        contractNo = createReservedStage2ContractNo(contractId);
+        templateId = activeTemplateId;
+      }
+
+      const reservation: Stage2SourcePdfReservation = {
+        artifactVersion,
+        contractId,
+        contractNo,
+        generatedAt,
+        manifestHash,
+        templateId
+      };
+      await tx.vehicleDeliveryHandover.update({
+        data: {
+          metadata: toJsonValue({
+            ...metadata,
+            stage2SourcePdfReservation: {
+              ...reservation,
+              generatedAt: reservation.generatedAt.toISOString()
+            }
+          })
+        },
+        where: { id: handoverId }
+      });
+      return reservation;
+    });
+  }
+
+  private async lockStage2HandoverForSourcePdf(
+    tx: Prisma.TransactionClient,
+    handoverId: string
+  ) {
+    const [handover] = await tx.$queryRaw<Array<Record<string, unknown>>>(
+      Prisma.sql`
+        SELECT
+          "id",
+          "order_id" AS "orderId",
+          "handover_contract_id" AS "handoverContractId",
+          "source_document_file_id" AS "sourceDocumentFileId",
+          "source_object_key" AS "sourceObjectKey",
+          "source_pdf_hash" AS "sourcePdfHash",
+          "manifest_hash" AS "manifestHash",
+          "artifact_version" AS "artifactVersion",
+          "status",
+          "metadata"
+        FROM "vehicle_delivery_handover"
+        WHERE "id" = ${handoverId}::uuid
+          AND "deleted_at" IS NULL
+        FOR UPDATE
+      `
+    );
+    if (!handover) {
+      throw new BadRequestException("车辆交接记录尚未创建或已终止。");
+    }
+    return handover;
+  }
+
+  private async cleanupLosingStage2SourceObject(
+    stored: Awaited<
+      ReturnType<StorageService["putGeneratedContractPdfArtifactFromPath"]>
+    >,
+    authoritative: Record<string, unknown>
+  ) {
+    const winnerKey = readString(authoritative, "sourceObjectKey");
+    if (
+      readString(authoritative, "status") !==
+        DeliveryHandoverStatus.SOURCE_GENERATED ||
+      !winnerKey ||
+      winnerKey === stored.objectKey
+    ) {
+      return;
+    }
+    const references = await this.prisma.fileObject.count({
+      where: {
+        bucket: stored.bucket,
+        objectKey: stored.objectKey
+      }
+    });
+    if (references > 0) {
+      return;
+    }
+    await Promise.allSettled([
+      this.getStorageService().deleteObject(stored.bucket, stored.objectKey)
+    ]);
+  }
+
   private async findStage2HandoverForWorkOrder(
     workOrder: WorkOrderRecord,
-    options: { includeHandoverContract?: boolean } = {}
+    options: { includeHandoverContract?: boolean } = {},
+    db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
-    const handoverModel = (this.prisma as unknown as {
+    const handoverModel = (db as unknown as {
       vehicleDeliveryHandover?: {
         findFirst: (args: Prisma.VehicleDeliveryHandoverFindFirstArgs) => Promise<null | Record<string, unknown>>;
       };
@@ -1986,25 +2532,170 @@ export class HandoverWorkOrderService {
     return handoverModel.findFirst(args);
   }
 
-  private async findStage2HandoverForWorkOrderOrThrow(workOrder: WorkOrderRecord) {
-    const handover = await this.findStage2HandoverForWorkOrder(workOrder, { includeHandoverContract: true });
+  private async findStage2HandoverForWorkOrderOrThrow(
+    workOrder: WorkOrderRecord,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const handover = await this.findStage2HandoverForWorkOrder(
+      workOrder,
+      { includeHandoverContract: true },
+      db
+    );
     if (!handover) {
       throw new BadRequestException("车辆交接记录尚未创建或已终止。");
     }
     return handover;
   }
 
-  private assertStage2HandoverPdfCanBeGenerated(handover: unknown) {
+  private assertStage2HandoverPdfGenerationPrerequisites(handover: unknown) {
     const record = asRecord(handover);
     if (!record) {
       throw new BadRequestException("车辆交接记录尚未创建。");
     }
-    if (readString(record, "handoverContractId") || readString(record, "sourceDocumentFileId")) {
-      throw new BadRequestException("车辆交接确认单 PDF 已生成，请勿重复生成。");
-    }
     const stage1Contract = asRecord(record.stage1Contract);
     if (!stage1Contract || readString(stage1Contract, "status") !== ContractStatus.SIGNED) {
       throw new BadRequestException("Stage 1 合同尚未完成签署，不能生成车辆交接确认单 PDF。");
+    }
+  }
+
+  private async resolveReusableStage2HandoverPdf(
+    workOrder: WorkOrderRecord,
+    handover: Record<string, unknown>,
+    expectedManifestDigest: string,
+    expectedCustomerId: string
+  ) {
+    if (!hasStage2SourceArtifactState(handover)) {
+      return null;
+    }
+
+    const fileId = readString(handover, "sourceDocumentFileId");
+    const fileObject = fileId
+      ? await this.prisma.fileObject.findUnique({ where: { id: fileId } })
+      : null;
+    const binding = validateStage2SourceArtifactBinding({
+      expectedCustomerId,
+      expectedHandoverId: workOrder.handoverId ?? "",
+      expectedManifestHash: expectedManifestDigest,
+      expectedOrderId: workOrder.orderId,
+      expectedWorkOrderId: workOrder.id,
+      fileObject,
+      handover,
+      maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
+    });
+    if (!binding) {
+      throw new ConflictException(
+        "The persisted Stage 2 source PDF artifact binding is invalid."
+      );
+    }
+
+    const downloaded = await this.getStorageService().getObject(
+      readString(binding.fileObject, "bucket")!,
+      binding.sourceObjectKey
+    );
+    if (
+      downloaded.contentType &&
+      downloaded.contentType.trim().toLowerCase() !== "application/pdf"
+    ) {
+      throw new ConflictException(
+        "The persisted Stage 2 source PDF storage binding is invalid."
+      );
+    }
+    if (
+      downloaded.contentLength !== undefined &&
+      downloaded.contentLength !== toNumberOrNull(binding.fileObject.sizeBytes)
+    ) {
+      throw new ConflictException(
+        "The persisted Stage 2 source PDF storage size is invalid."
+      );
+    }
+    const storedSource = await calculateReadableSha256(
+      downloaded.stream,
+      STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
+    );
+    if (
+      storedSource.sizeBytes !== toNumberOrNull(binding.fileObject.sizeBytes) ||
+      storedSource.sha256 !== binding.sourcePdfHash
+    ) {
+      throw new ConflictException(
+        "The persisted Stage 2 source PDF SHA-256 is invalid."
+      );
+    }
+    return {
+      fileObject: binding.fileObject,
+      handover
+    };
+  }
+
+  private async enqueueReadyStage2Pdf(
+    workOrder: WorkOrderRecord,
+    expectedHandover: Record<string, unknown>,
+    manifestHash: string,
+    lease?: Stage2HandoverPdfLease
+  ) {
+    await this.runSerializableTransaction(async (tx) => {
+      await this.assertStage2PdfLease(tx, lease);
+      const authoritative = await this.findStage2HandoverForWorkOrderOrThrow(
+        workOrder,
+        tx
+      );
+      if (!sameStage2SourceBinding(authoritative, expectedHandover)) {
+        throw new ConflictException(
+          "The Stage 2 source PDF binding changed before notification enqueue."
+        );
+      }
+      await this.enqueueStage2FieldReady(
+        tx,
+        workOrder,
+        readRequiredString(authoritative, "id"),
+        readRequiredPositiveInteger(authoritative, "artifactVersion"),
+        manifestHash,
+        requireSha256Digest(readRequiredString(authoritative, "sourcePdfHash"))
+      );
+    });
+  }
+
+  private async enqueueStage2FieldReady(
+    tx: Prisma.TransactionClient,
+    workOrder: WorkOrderRecord,
+    handoverId: string,
+    artifactVersion: number,
+    manifestHash: string,
+    sourcePdfHash: string
+  ) {
+    if (!this.workflowRepository) {
+      throw new Error("STAGE2_HANDOVER_WORKFLOW_REPOSITORY_UNAVAILABLE");
+    }
+    await this.workflowRepository.enqueue(tx, {
+      handoverId,
+      idempotencyKey: `field-notify:${workOrder.id}:${artifactVersion}`,
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
+      payload: {
+        artifactVersion,
+        manifestHash,
+        sourcePdfHash
+      },
+      workOrderId: workOrder.id
+    });
+  }
+
+  private async assertStage2PdfLease(
+    tx: Prisma.TransactionClient,
+    lease?: Stage2HandoverPdfLease
+  ) {
+    if (!lease) {
+      return;
+    }
+    if (!this.workflowRepository) {
+      throw new Error("STAGE2_HANDOVER_WORKFLOW_REPOSITORY_UNAVAILABLE");
+    }
+    const renewed = await this.workflowRepository.renewLease(
+      lease.jobId,
+      lease.leaseToken,
+      lease.leaseMs,
+      tx
+    );
+    if (!renewed) {
+      throw new Error("STAGE2_HANDOVER_WORKFLOW_LEASE_LOST");
     }
   }
 
@@ -2069,12 +2760,15 @@ export class HandoverWorkOrderService {
     if (!handover || !sourceDocumentFileId) {
       return {
         artifactId: null,
+        artifactVersion: null,
         documentNo: null,
         downloadUrl: null,
         fileName: null,
         fileSize: null,
         generatedAt: null,
         orderNo: order.orderNo,
+        previewUrl: null,
+        sourcePdfHash: null,
         status: "NOT_GENERATED",
         workOrderId: workOrder.id
       };
@@ -2087,6 +2781,7 @@ export class HandoverWorkOrderService {
 
     return {
       artifactId: sourceDocumentFileId,
+      artifactVersion: readPositiveInteger(handover, "artifactVersion"),
       documentNo: handoverContract ? readString(handoverContract, "contractNo") : null,
       downloadUrl: `/api/handover-work-orders/${encodeURIComponent(workOrder.id)}/pdf/download`,
       fileName: fileRecord ? readString(fileRecord, "originalName") ?? "handover.pdf" : "handover.pdf",
@@ -2096,6 +2791,10 @@ export class HandoverWorkOrderService {
         toDateOrNull(handoverContract ? readUnknown(handoverContract, "createdAt") : null) ??
         null,
       orderNo: order.orderNo,
+      previewUrl: null,
+      sourcePdfHash: normalizeStage2Sha256(
+        readString(handover, "sourcePdfHash")
+      ),
       status: "GENERATED",
       workOrderId: workOrder.id
     };
@@ -2160,20 +2859,6 @@ export class HandoverWorkOrderService {
         `交接证据衍生文件超出大小限制：${fileId}`
       );
     };
-  }
-
-  private async cancelStage2HandoverContractAfterPdfFailure(contractId: string, actorId?: string) {
-    try {
-      await this.prisma.contract.update({
-        data: {
-          status: ContractStatus.CANCELLED,
-          updatedBy: actorId ?? null
-        },
-        where: { id: contractId }
-      });
-    } catch {
-      return;
-    }
   }
 
   private async assertCustomerOwnsWorkOrder(workOrder: WorkOrderRecord, customerId: string) {
@@ -2312,17 +2997,26 @@ export class HandoverWorkOrderService {
   }
 
   private async toAdminWorkOrderSummary(workOrder: WorkOrderRecord) {
-    const [order, evidenceChecklist, reviewAttempts, events, readiness, stage2Pdf] = await Promise.all([
-      this.getOrderOrThrow(workOrder.orderId),
-      this.deliveryEvidenceService.getChecklist({
-        handoverId: workOrder.handoverId ?? null,
-        orderId: workOrder.orderId
-      }),
-      this.listReviewAttempts(workOrder.id),
-      this.listEvents(workOrder.id),
-      this.getReadiness(workOrder.id),
-      this.getStage2HandoverPdf(workOrder.id)
-    ]);
+    const [
+      order,
+      evidenceChecklist,
+      reviewAttempts,
+      events,
+      readiness,
+      stage2Pdf,
+      workflowJobs
+    ] = await Promise.all([
+        this.getOrderOrThrow(workOrder.orderId),
+        this.deliveryEvidenceService.getChecklist({
+          handoverId: workOrder.handoverId ?? null,
+          orderId: workOrder.orderId
+        }),
+        this.listReviewAttempts(workOrder.id),
+        this.listEvents(workOrder.id),
+        this.getReadiness(workOrder.id),
+        this.getStage2HandoverPdf(workOrder.id),
+        this.listSafeStage2WorkflowJobs(workOrder.id)
+      ]);
 
     return {
       adminReview: toAdminReviewView(workOrder, reviewAttempts),
@@ -2343,8 +3037,9 @@ export class HandoverWorkOrderService {
       id: workOrder.id,
       objection: toObjectionView(workOrder),
       operator: {
-        name: workOrder.externalOperatorName ?? null,
-        phoneMasked: maskPhone(workOrder.externalOperatorPhone),
+        name: workOrder.fieldOperatorName ?? workOrder.externalOperatorName ?? null,
+        phone: workOrder.fieldOperatorPhone ?? workOrder.externalOperatorPhone ?? null,
+        phoneMasked: maskPhone(workOrder.fieldOperatorPhone ?? workOrder.externalOperatorPhone),
         type: workOrder.operatorType ?? null
       },
       orderId: workOrder.orderId,
@@ -2360,7 +3055,8 @@ export class HandoverWorkOrderService {
         model: order.vehicle?.model ?? null,
         plateMasked: maskPlate(order.vehicle?.plateNo),
         vinSuffix: suffix(order.vehicle?.vin, 6)
-      }
+      },
+      workflowJobs
     };
   }
 
@@ -2683,15 +3379,35 @@ export class HandoverWorkOrderService {
     });
   }
 
-  private async assertUserExists(userId: string) {
+  private async getAssignableInternalUser(userId: string) {
     const user = await this.prisma.user.findFirst({
+      select: {
+        mobile: true,
+        name: true
+      },
       where: {
         deletedAt: null,
-        id: userId
+        id: userId,
+        status: UserStatus.ACTIVE
       }
     });
     if (!user) {
       throw new NotFoundException("内部交付员不存在。");
+    }
+    return {
+      name: normalizeRequiredText(user.name, "内部交付员姓名无效。"),
+      phone: normalizeFieldOperatorPhone(user.mobile ?? "")
+    };
+  }
+
+  private async assertAssignmentMutable(workOrder: WorkOrderRecord) {
+    this.assertMutable(workOrder);
+    const currentAttempt = await this.findLatestReviewAttempt(workOrder.id);
+    if (
+      workOrder.customerReviewStartedAt ||
+      (currentAttempt && readUnknown(currentAttempt, "customerReviewStartedAt"))
+    ) {
+      throw new BadRequestException("Field operator assignment is frozen after customer review starts.");
     }
   }
 
@@ -2703,13 +3419,57 @@ export class HandoverWorkOrderService {
 
   private async getFieldAccessibleWorkOrderRecord(id: string, phone: string) {
     const normalizedPhone = normalizeFieldOperatorPhone(phone);
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({ where: { id } });
+    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findFirst({
+      where: {
+        fieldOperatorPhone: normalizedPhone,
+        id
+      }
+    });
 
-    if (!workOrder || !isFieldAccessibleWorkOrder(workOrder, normalizedPhone)) {
+    if (
+      !workOrder ||
+      !isFieldAccessibleWorkOrder(workOrder, normalizedPhone) ||
+      !await this.hasCurrentFieldOperatorAssignment(
+        workOrder,
+        normalizedPhone
+      )
+    ) {
       throw new UnauthorizedException("No access to this field handover work order.");
     }
 
     return workOrder;
+  }
+
+  private async hasCurrentFieldOperatorAssignment(
+    workOrder: WorkOrderRecord,
+    normalizedPhone: string
+  ) {
+    if (workOrder.operatorType === "EXTERNAL") {
+      return true;
+    }
+    if (
+      workOrder.operatorType !== "INTERNAL" ||
+      !workOrder.assignedInternalUserId
+    ) {
+      return false;
+    }
+    const user = await this.prisma.user.findFirst({
+      select: {
+        mobile: true,
+        status: true
+      },
+      where: {
+        deletedAt: null,
+        id: workOrder.assignedInternalUserId,
+        status: UserStatus.ACTIVE
+      }
+    });
+    return Boolean(
+      user &&
+      user.status === UserStatus.ACTIVE &&
+      user.mobile &&
+      normalizeFieldOperatorPhone(user.mobile) === normalizedPhone
+    );
   }
 
   private getStorageService() {
@@ -2886,14 +3646,25 @@ export class HandoverWorkOrderService {
   private async toFieldTaskDetail(workOrder: WorkOrderRecord) {
     const evidenceRouteBase =
       `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/evidence-files`;
-    const [listItem, evidenceChecklist, latestAttempt] = await Promise.all([
-      this.toFieldTaskListItem(workOrder),
-      this.deliveryEvidenceService.getChecklist({
-        handoverId: workOrder.handoverId ?? null,
-        orderId: workOrder.orderId
-      }),
-      this.findLatestReviewAttempt(workOrder.id)
-    ]);
+    const [
+      listItem,
+      evidenceChecklist,
+      latestAttempt,
+      stage2Pdf,
+      stage2Workflow
+    ] =
+      await Promise.all([
+        this.toFieldTaskListItem(workOrder),
+        this.deliveryEvidenceService.getChecklist({
+          handoverId: workOrder.handoverId ?? null,
+          orderId: workOrder.orderId
+        }),
+        this.findLatestReviewAttempt(workOrder.id),
+        this.getStage2HandoverPdf(workOrder.id),
+        this.getFieldStage2WorkflowProjection(workOrder)
+      ]);
+    const fieldPdfRouteBase =
+      `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/pdf`;
 
     return {
       ...listItem,
@@ -2912,8 +3683,190 @@ export class HandoverWorkOrderService {
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
         scheduledAt: workOrder.scheduledAt
       },
-      reviewContext: toFieldReviewContext(workOrder, latestAttempt, evidenceChecklist)
+      reviewContext: toFieldReviewContext(
+        workOrder,
+        latestAttempt,
+        evidenceChecklist
+      ),
+      stage2ESign: stage2Workflow.eSign,
+      stage2Notification: stage2Workflow.notification,
+      stage2Pdf: {
+        ...stage2Pdf,
+        downloadUrl:
+          stage2Pdf.status === "GENERATED"
+            ? `${fieldPdfRouteBase}/download`
+            : null,
+        previewUrl:
+          stage2Pdf.status === "GENERATED"
+            ? `${fieldPdfRouteBase}/preview`
+            : null
+      }
     };
+  }
+
+  private async getFieldStage2WorkflowProjection(
+    workOrder: WorkOrderRecord
+  ) {
+    const handover = await this.findStage2HandoverForWorkOrder(workOrder);
+    const handoverRecord = asRecord(handover);
+    const taskModel = (this.prisma as unknown as {
+      contractESignTask?: {
+        findFirst: (
+          args: Prisma.ContractESignTaskFindFirstArgs
+        ) => Promise<null | {
+          id: string;
+          signers: Array<{
+            claimExpiresAt: Date | null;
+            providerTransactionId: string | null;
+          }>;
+          taskStatus: string;
+        }>;
+      };
+    }).contractESignTask;
+    const notificationModel = (this.prisma as unknown as {
+      vehicleHandoverWorkflowJob?: {
+        findFirst: (
+          args: Prisma.VehicleHandoverWorkflowJobFindFirstArgs
+        ) => Promise<null | { jobStatus: string }>;
+        findMany?: (
+          args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
+        ) => Promise<Array<{ jobType: VehicleHandoverWorkflowJobType }>>;
+      };
+    }).vehicleHandoverWorkflowJob;
+    const handoverTaskId = handoverRecord
+      ? readString(handoverRecord, "handoverESignTaskId")
+      : null;
+    const handoverContractId = handoverRecord
+      ? readString(handoverRecord, "handoverContractId")
+      : null;
+    const taskWhere = buildAuthoritativeStage2TaskWhere({
+      contractId: handoverContractId,
+      orderId: workOrder.orderId,
+      taskId: handoverTaskId
+    });
+    const task =
+      typeof taskModel?.findFirst === "function" && taskWhere
+        ? await taskModel.findFirst({
+            orderBy: { createdAt: "desc" },
+            select: {
+              id: true,
+              signers: {
+                select: {
+                  claimExpiresAt: true,
+                  providerTransactionId: true
+                },
+                where: {
+                  slotId: "STAGE2_HANDOVER_CUSTOMER"
+                }
+              },
+              taskStatus: true
+            },
+            where: taskWhere
+          })
+        : null;
+    const [notification, customerJobs] = await Promise.all([
+      typeof notificationModel?.findFirst === "function"
+        ? notificationModel.findFirst({
+            orderBy: { createdAt: "desc" },
+            select: { jobStatus: true },
+            where: {
+              jobType:
+                VehicleHandoverWorkflowJobType
+                  .NOTIFY_FIELD_ESIGN_READY,
+              workOrderId: workOrder.id
+            }
+          })
+        : Promise.resolve(null),
+      task && typeof notificationModel?.findMany === "function"
+        ? notificationModel.findMany({
+            select: {
+              jobType: true
+            },
+            where: {
+              eSignTaskId: task.id,
+              jobType: {
+                in: [
+                  VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY,
+                  VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
+                ]
+              }
+            }
+          })
+        : Promise.resolve([])
+    ]);
+    const customerSigner = task?.signers?.[0] ?? null;
+    const customerJobTypes = new Set(
+      customerJobs.map((job) => job.jobType)
+    );
+    const finalizationPending = Boolean(
+      task?.taskStatus === "WAITING_CUSTOMER" &&
+      customerSigner?.providerTransactionId &&
+      (
+        customerSigner.claimExpiresAt ||
+        !customerJobTypes.has(
+          VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY
+        ) ||
+        !customerJobTypes.has(
+          VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
+        )
+      )
+    );
+    return {
+      eSign: {
+        finalizationPending,
+        status: task?.taskStatus ?? null,
+        taskId: task?.id ?? null
+      },
+      notification: {
+        status: notification?.jobStatus ?? null
+      }
+    };
+  }
+
+  private async listSafeStage2WorkflowJobs(workOrderId: string) {
+    const model = (this.prisma as unknown as {
+      vehicleHandoverWorkflowJob?: {
+        findMany: (
+          args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
+        ) => Promise<Array<{
+          attemptCount: number;
+          createdAt: Date;
+          id: string;
+          jobStatus: string;
+          jobType: string;
+          maxAttempts: number;
+          updatedAt: Date;
+        }>>;
+      };
+    }).vehicleHandoverWorkflowJob;
+    if (typeof model?.findMany !== "function") {
+      return [];
+    }
+    const jobs = await model.findMany({
+      orderBy: [
+        { updatedAt: "desc" },
+        { createdAt: "desc" }
+      ],
+      select: {
+        attemptCount: true,
+        createdAt: true,
+        id: true,
+        jobStatus: true,
+        jobType: true,
+        maxAttempts: true,
+        updatedAt: true
+      },
+      where: { workOrderId }
+    });
+    return jobs.map((job) => ({
+      attemptCount: job.attemptCount,
+      createdAt: job.createdAt,
+      id: job.id,
+      jobStatus: job.jobStatus,
+      jobType: job.jobType,
+      maxAttempts: job.maxAttempts,
+      updatedAt: job.updatedAt
+    }));
   }
 
   private updateWorkOrder(id: string, data: Record<string, unknown>) {
@@ -2955,6 +3908,32 @@ export class HandoverWorkOrderService {
       }
       throw error;
     }
+  }
+
+  private async runStage2SourcePdfFinalizationTransaction<T>(
+    callback: (transaction: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    for (
+      let attempt = 1;
+      attempt <= STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(callback, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        });
+      } catch (error) {
+        if (!isPrismaSerializationConflict(error)) {
+          throw error;
+        }
+        if (
+          attempt === STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS
+        ) {
+          throw new Stage2SourcePdfClaimLostError();
+        }
+      }
+    }
+    throw new Stage2SourcePdfClaimLostError();
   }
 
   private async updateWorkOrderVersioned(
@@ -3049,19 +4028,13 @@ function hasActiveCustomerObjection(workOrder: WorkOrderRecord) {
 }
 
 function isFieldAccessibleWorkOrder(workOrder: null | WorkOrderRecord, phone: string) {
-  if (!workOrder || workOrder.operatorType !== "EXTERNAL") {
-    return false;
-  }
-  if (workOrder.externalOperatorPhone !== phone) {
-    return false;
-  }
-  if (workOrder.accessTokenRevokedAt) {
+  if (!workOrder || workOrder.fieldOperatorPhone !== phone) {
     return false;
   }
   if (FIELD_HIDDEN_WORK_ORDER_STATUSES.includes(workOrder.status as typeof FIELD_HIDDEN_WORK_ORDER_STATUSES[number])) {
     return false;
   }
-  return !workOrder.accessTokenExpiresAt || workOrder.accessTokenExpiresAt.getTime() > Date.now();
+  return true;
 }
 
 function compareFieldWorkOrders(left: WorkOrderRecord, right: WorkOrderRecord) {
@@ -3257,6 +4230,23 @@ function evidenceItemFingerprintMap(snapshot: unknown) {
 function readEvidencePackageManifestHash(snapshot: unknown) {
   const evidencePackage = asRecord(asRecord(snapshot)?.evidencePackage);
   return evidencePackage ? readString(evidencePackage, "manifestHash") : null;
+}
+
+function requireReviewAttemptId(attempt: null | Record<string, unknown>) {
+  const id = attempt ? readString(attempt, "id") : null;
+  if (!id) {
+    throw new Error("STAGE2_HANDOVER_REVIEW_ATTEMPT_UNAVAILABLE");
+  }
+  return id;
+}
+
+function toPendingStage2WorkflowProjection(jobId: string) {
+  return {
+    artifactVersion: null,
+    errorCode: null,
+    jobId,
+    state: "PDF_PENDING" as const
+  };
 }
 
 function stableSerialize(value: unknown): string {
@@ -3522,12 +4512,170 @@ async function calculateFileSha256(filePath: string) {
   return hash.digest("hex");
 }
 
+async function calculateReadableSha256(stream: Readable, maxBytes: number) {
+  const hash = createHash("sha256");
+  let sizeBytes = 0;
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    sizeBytes += buffer.length;
+    if (sizeBytes > maxBytes) {
+      stream.destroy();
+      throw new ConflictException(
+        "The persisted Stage 2 source PDF exceeds the size limit."
+      );
+    }
+    hash.update(buffer);
+  }
+  return {
+    sha256: hash.digest("hex"),
+    sizeBytes
+  };
+}
+
 function requireSha256Digest(value: string) {
   const digest = value.trim().toLowerCase().replace(/^sha256:/, "");
   if (!/^[0-9a-f]{64}$/.test(digest)) {
     throw new Error("STAGE2_HANDOVER_MANIFEST_HASH_INVALID");
   }
   return digest;
+}
+
+function normalizeSha256Digest(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const digest = value.trim().toLowerCase().replace(/^sha256:/, "");
+  return /^[0-9a-f]{64}$/.test(digest) ? digest : null;
+}
+
+function buildStage2PdfArtifactIdentity(
+  workOrder: WorkOrderRecord,
+  manifestDigest: string,
+  artifactVersion: number
+) {
+  const identity = `${workOrder.id}:${artifactVersion}:${manifestDigest}`;
+  return {
+    contractId: deterministicUuid(`stage2-contract:${identity}`)
+  };
+}
+
+function buildStage2PdfStoredIdentity(
+  contractId: string,
+  artifactVersion: number,
+  sourcePdfHash: string
+) {
+  return {
+    fileObjectId: deterministicUuid(
+      `stage2-file:${contractId}:${sourcePdfHash}`
+    ),
+    objectKey:
+      `contracts/${contractId}/generated/handover-v${artifactVersion}-${sourcePdfHash}.pdf`
+  };
+}
+
+function deterministicUuid(value: string) {
+  const hex = createHash("sha256").update(value, "utf8").digest("hex").slice(0, 32);
+  const versioned = `${hex.slice(0, 12)}5${hex.slice(13)}`;
+  const variant = (
+    (Number.parseInt(versioned[16]!, 16) & 0x3) | 0x8
+  ).toString(16);
+  const normalized = `${versioned.slice(0, 16)}${variant}${versioned.slice(17)}`;
+  return [
+    normalized.slice(0, 8),
+    normalized.slice(8, 12),
+    normalized.slice(12, 16),
+    normalized.slice(16, 20),
+    normalized.slice(20)
+  ].join("-");
+}
+
+async function readStage2DatabaseNow(tx: Prisma.TransactionClient) {
+  const [row] = await tx.$queryRaw<Array<{ now: Date }>>(
+    Prisma.sql`SELECT now() AS "now"`
+  );
+  if (!row?.now) {
+    throw new Error("STAGE2_SOURCE_PDF_RESERVATION_TIME_UNAVAILABLE");
+  }
+  return row.now;
+}
+
+function readStage2SourcePdfReservation(
+  value: unknown
+): Stage2SourcePdfReservation | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const artifactVersion = readPositiveInteger(record, "artifactVersion");
+  const contractId = readString(record, "contractId");
+  const contractNo = readString(record, "contractNo");
+  const generatedAt = toDateOrNull(record.generatedAt);
+  const manifestHash = normalizeSha256Digest(record.manifestHash);
+  const templateId = readString(record, "templateId");
+  if (
+    !artifactVersion ||
+    !contractId ||
+    !contractNo ||
+    !generatedAt ||
+    !manifestHash ||
+    !templateId
+  ) {
+    throw new ConflictException(
+      "The persisted Stage 2 source PDF reservation is invalid."
+    );
+  }
+  return {
+    artifactVersion,
+    contractId,
+    contractNo,
+    generatedAt,
+    manifestHash,
+    templateId
+  };
+}
+
+function createReservedStage2ContractNo(contractId: string) {
+  return `HDV-${contractId.replaceAll("-", "").toLowerCase()}`;
+}
+
+function sameStage2SourceBinding(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>
+) {
+  return [
+    "artifactVersion",
+    "handoverContractId",
+    "manifestHash",
+    "sourceDocumentFileId",
+    "sourceObjectKey",
+    "sourcePdfHash"
+  ].every((key) => left[key] === right[key]);
+}
+
+function readPositiveInteger(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+function readRequiredPositiveInteger(
+  record: Record<string, unknown>,
+  key: string
+) {
+  const value = readPositiveInteger(record, key);
+  if (value === null) {
+    throw new ConflictException(`Invalid Stage 2 artifact ${key}.`);
+  }
+  return value;
+}
+
+function readRequiredString(record: Record<string, unknown>, key: string) {
+  const value = readString(record, key);
+  if (!value) {
+    throw new ConflictException(`Invalid Stage 2 artifact ${key}.`);
+  }
+  return value;
 }
 
 function nextStatus(current: WorkOrderStatus, next: WorkOrderStatus) {

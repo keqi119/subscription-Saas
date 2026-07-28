@@ -13,19 +13,23 @@ import {
   HandoverObjectionActionDto,
   HandoverObjectionResubmissionDto,
   OpsReviewDto,
+  StartAdminStage2ESignDto,
+  Stage2WorkflowRecoveryResultDto,
   UpdateHandoverFieldFactsDto,
   VoidStage2HandoverESignDto,
   VoidHandoverWorkOrderDto
 } from "./handover-work-order.dto";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
+import { Stage2HandoverWorkflowService } from "./stage2-handover-workflow.service";
 
 @Controller()
 @UseGuards(AuthGuard, PermissionsGuard)
 export class HandoverWorkOrderAdminController {
   constructor(
     private readonly handoverWorkOrderService: HandoverWorkOrderService,
-    private readonly stage2HandoverESignService: Stage2HandoverESignService
+    private readonly stage2HandoverESignService: Stage2HandoverESignService,
+    private readonly stage2HandoverWorkflowService: Stage2HandoverWorkflowService
   ) {}
 
   @Post("orders/:orderId/handover-work-orders")
@@ -176,8 +180,19 @@ export class HandoverWorkOrderAdminController {
 
   @Post("handover-work-orders/:id/esign")
   @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
-  createStage2ESign(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return this.stage2HandoverESignService.create(id, request.user.id);
+  createStage2ESign(
+    @Param("id") id: string,
+    @Body() dto: StartAdminStage2ESignDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.stage2HandoverESignService.create(
+      id,
+      {
+        actorId: request.user.id,
+        actorType: "ADMIN_FALLBACK"
+      },
+      dto
+    );
   }
 
   @Post("handover-work-orders/:id/esign/platform-seal/retry")
@@ -216,6 +231,25 @@ export class HandoverWorkOrderAdminController {
   @RequirePermissions(PermissionCode.DELIVERY_VIEW)
   getStage2SignedDocument(@Param("id") id: string) {
     return this.stage2HandoverESignService.getSignedDocumentState(id);
+  }
+
+  @Post("handover-work-orders/:id/workflow-jobs/:jobId/retry")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  retryStage2WorkflowJob(
+    @Param("id") id: string,
+    @Param("jobId") jobId: string,
+    @Req() request: AuthenticatedRequest
+  ): Promise<Stage2WorkflowRecoveryResultDto> {
+    return this.stage2HandoverWorkflowService.retryDeadLetterJob(id, jobId, request.user.id);
+  }
+
+  @Post("handover-work-orders/:id/workflow/reconcile-customer")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  reconcileStage2CustomerSignature(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ): Promise<Stage2WorkflowRecoveryResultDto> {
+    return this.stage2HandoverWorkflowService.reconcileCustomerSignature(id, request.user.id);
   }
 
   @Post("handover-work-orders/:id/ops-review/pending")

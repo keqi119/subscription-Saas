@@ -12,6 +12,7 @@ import {
   labelOf
 } from "../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
+import { getPortalContractDestination } from "../../../lib/portal-handover-review-view-model";
 import { PortalContractListItem } from "../../../lib/portal-types";
 
 export default function PortalContractsPage() {
@@ -52,17 +53,19 @@ export default function PortalContractsPage() {
           dataSource={contracts}
           loading={loading}
           locale={{ emptyText: <Empty description="暂无合同" /> }}
-          renderItem={(contract) => (
-            <List.Item
-              actions={[
+          renderItem={(contract) => {
+            const destination = getPortalContractDestination(contract);
+            return (
+              <List.Item
+                actions={destination ? [
                 <Button
                   key="detail"
-                  onClick={() => router.push(`/portal/contracts/${contract.id}`)}
+                  onClick={() => router.push(destination)}
                   type="link"
                 >
                   查看详情
                 </Button>
-              ]}
+                ] : []}
               style={{
                 background: "#ffffff",
                 border: "1px solid #e5eaf2",
@@ -86,8 +89,9 @@ export default function PortalContractsPage() {
                 }
                 title={<Typography.Text strong>{contract.contractNo}</Typography.Text>}
               />
-            </List.Item>
-          )}
+              </List.Item>
+            );
+          }}
         />
       </section>
     </main>

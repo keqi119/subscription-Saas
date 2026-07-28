@@ -13,11 +13,13 @@ import {
   CreateSignTaskInput,
   CreateSignTaskResult,
   ESignProvider,
+  ESignProviderSignerStatusResult,
   ESignSlotId,
   ESignSigningSlot,
   ESignSigningSlotCoordinate,
   GetSignerUrlInput,
   GetSignerUrlResult,
+  QuerySignerStatusInput,
   VerifyCallbackResult
 } from "../esign.provider";
 import {
@@ -512,6 +514,17 @@ export class FadadaESignProvider implements ESignProvider {
     }
 
     const signer = await this.prisma.contractESignSigner.findFirst({
+      include: {
+        task: {
+          include: {
+            contract: {
+              include: {
+                customer: true
+              }
+            }
+          }
+        }
+      },
       where: {
         deletedAt: null,
         ...(input.signerId ? { id: input.signerId } : {}),
@@ -519,17 +532,241 @@ export class FadadaESignProvider implements ESignProvider {
       }
     });
 
-    if (!signer?.signUrl || isExpired(signer.signUrlExpiresAt)) {
-      throw new Error(`${FADADA_SIGN_URL_NOT_AVAILABLE}: no non-expired local Fadada signer URL`);
+    if (input.signingStage === "STAGE1_CONTRACT") {
+      if (
+        signer?.signUrl &&
+        !isExpired(signer.signUrlExpiresAt) &&
+        !signer.task.deletedAt &&
+        signer.task.provider === ESignProviderType.FADADA &&
+        signer.task.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT"
+      ) {
+        return {
+          expiresAt: signer.signUrlExpiresAt ?? undefined,
+          rawResponse: {
+            providerSignerId: signer.providerSignerId,
+            source: "LOCAL_SIGNER_URL"
+          },
+          signUrl: signer.signUrl
+        };
+      }
+      throw new Error(
+        `${FADADA_SIGN_URL_NOT_AVAILABLE}: no usable Stage 1 signer URL`
+      );
+    }
+    if (
+      input.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+      !signer ||
+      !this.apiClient ||
+      !this.pdfArtifactService ||
+      signer.task.deletedAt ||
+      signer.task.provider !== ESignProviderType.FADADA ||
+      signer.task.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+      signer.task.documentType !== "DELIVERY_HANDOVER" ||
+      signer.task.providerEnvelopeId !== input.contractId ||
+      signer.task.providerTaskId !== input.providerTaskId ||
+      signer.task.providerTaskId !== signer.providerTransactionId ||
+      signer.task.taskNo !== input.contractId ||
+      signer.taskId !== input.taskId ||
+      signer.signerType !== "CUSTOMER" ||
+      signer.slotId !== STAGE2_CUSTOMER_SLOT_ID ||
+      signer.documentType !== "DELIVERY_HANDOVER" ||
+      signer.providerActionType !== "CUSTOMER_MANUAL_SIGN" ||
+      !signer.customerId ||
+      !signer.providerTransactionId
+    ) {
+      throw new Error(
+        `${FADADA_SIGN_URL_NOT_AVAILABLE}: no refreshable Stage 2 signer operation`
+      );
     }
 
+    const providerCustomerId =
+      await this.findVerifiedProviderCustomerId(signer.customerId);
+    const sourcePdfHash = snapshotString(
+      signer.task.requestSnapshot,
+      "sourcePdfHash"
+    );
+    if (!providerCustomerId || !sourcePdfHash) {
+      throw new Error(
+        `${FADADA_SIGN_URL_NOT_AVAILABLE}: Stage 2 signer binding is incomplete`
+      );
+    }
+    const artifact = await this.pdfArtifactService.getContractPdfArtifact(
+      signer.task.contractId,
+      {
+        expectedSha256: sourcePdfHash,
+        fadadaEnabled: true,
+        purpose: "FADADA_UPLOAD",
+        requireGeneratedContractArtifact: true,
+        requireStage2SlotCoordinates: true
+      }
+    );
+    const coordinate = resolveStage2ArtifactCoordinate(
+      artifact.slotCoordinates,
+      STAGE2_CUSTOMER_SLOT_ID
+    );
+    const refreshed = await this.apiClient.createExternalSignUrl({
+      contractId: signer.task.providerEnvelopeId,
+      customerId: providerCustomerId,
+      docTitle:
+        signer.task.documentName ??
+        signer.task.contract.contractTitle ??
+        "Delivery handover confirmation",
+      notifyUrl: this.config.signNotifyUrl ?? "",
+      returnUrl: input.redirectUrl ?? this.config.signReturnUrl ?? "",
+      signaturePositions: [{
+        pagenum: coordinate.pageNumber,
+        x: coordinate.x,
+        y: coordinate.y
+      }],
+      signerMobile: signer.task.contract.customer.mobile,
+      signerName:
+        signer.signerName ?? signer.task.contract.customer.name,
+      transactionId: signer.providerTransactionId
+    });
+
     return {
-      expiresAt: signer.signUrlExpiresAt ?? undefined,
+      expiresAt: refreshed.signUrlExpiresAt,
       rawResponse: {
-        providerSignerId: signer.providerSignerId,
-        source: "LOCAL_SIGNER_URL"
+        providerSignerId: signer.providerTransactionId,
+        refreshed: true
       },
-      signUrl: signer.signUrl
+      signUrl: refreshed.signUrl
+    };
+  }
+
+  async querySignerStatus(
+    input: QuerySignerStatusInput
+  ): Promise<ESignProviderSignerStatusResult> {
+    if (!this.apiClient || !this.prisma) {
+      return { status: "UNKNOWN" };
+    }
+
+    const [task, signer] = await Promise.all([
+      this.prisma.contractESignTask.findFirst({
+        select: {
+          documentType: true,
+          id: true,
+          provider: true,
+          providerEnvelopeId: true,
+          providerTaskId: true,
+          signingStage: true,
+          taskNo: true
+        },
+        where: {
+          deletedAt: null,
+          id: input.taskId
+        }
+      }),
+      this.prisma.contractESignSigner.findFirst({
+        select: {
+          customerId: true,
+          documentType: true,
+          id: true,
+          providerActionType: true,
+          providerTransactionId: true,
+          signerType: true,
+          slotId: true,
+          taskId: true
+        },
+        where: {
+          deletedAt: null,
+          id: input.signerId
+        }
+      })
+    ]);
+    if (
+      !task ||
+      !signer ||
+      task.id !== input.taskId ||
+      task.provider !== ESignProviderType.FADADA ||
+      task.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+      task.documentType !== "DELIVERY_HANDOVER" ||
+      task.taskNo !== input.contractId ||
+      task.providerEnvelopeId !== input.contractId ||
+      task.providerTaskId !== input.providerTaskId ||
+      signer.id !== input.signerId ||
+      signer.taskId !== input.taskId ||
+      signer.slotId !== input.slotId ||
+      signer.documentType !== "DELIVERY_HANDOVER" ||
+      signer.providerTransactionId !== input.providerTransactionId
+    ) {
+      return { status: "UNKNOWN" };
+    }
+    const customerBinding =
+      signer.customerId !== null &&
+      signer.signerType === "CUSTOMER" &&
+      signer.slotId === STAGE2_CUSTOMER_SLOT_ID &&
+      signer.providerActionType === "CUSTOMER_MANUAL_SIGN" &&
+      input.providerTaskId === input.providerTransactionId &&
+      input.providerTransactionId ===
+        buildStage2TransactionId(task.taskNo, "H1");
+    const platformBinding =
+      signer.customerId === null &&
+      signer.signerType === "PLATFORM" &&
+      signer.slotId === STAGE2_PLATFORM_SLOT_ID &&
+      signer.providerActionType === "PLATFORM_AUTO_SEAL" &&
+      task.providerTaskId ===
+        buildStage2TransactionId(task.taskNo, "H1") &&
+      input.providerTransactionId ===
+        buildStage2TransactionId(task.taskNo, "H2") &&
+      input.providerCustomerId === this.config.platformCustomerId;
+    if (!customerBinding && !platformBinding) {
+      return { status: "UNKNOWN" };
+    }
+    if (customerBinding) {
+      const providerCustomerId =
+        await this.findVerifiedProviderCustomerId(signer.customerId!);
+      if (
+        !providerCustomerId ||
+        providerCustomerId !== input.providerCustomerId
+      ) {
+        return { status: "UNKNOWN" };
+      }
+    }
+
+    const result = await this.apiClient.querySignResult({
+      contractId: input.contractId,
+      customerId: input.providerCustomerId,
+      transactionId: input.providerTransactionId
+    });
+    const response = {
+      resultCode: result.resultCode,
+      resultDescription: result.resultDesc
+    };
+    if (
+      result.providerContractId !== input.contractId ||
+      result.providerCustomerId !== input.providerCustomerId ||
+      result.providerTransactionId !== input.providerTransactionId
+    ) {
+      return {
+        ...response,
+        status: "UNKNOWN"
+      };
+    }
+    if (
+      result.resultCode === "3000" &&
+      result.status === "SIGNED"
+    ) {
+      return {
+        ...response,
+        status: "SIGNED"
+      };
+    }
+    if (result.status === "SIGNING") {
+      return {
+        ...response,
+        status: "SIGNING"
+      };
+    }
+    if (result.status === "FAILED") {
+      return {
+        ...response,
+        status: "FAILED"
+      };
+    }
+    return {
+      ...response,
+      status: "UNKNOWN"
     };
   }
 
@@ -821,6 +1058,13 @@ function sanitizeCallbackPayload(payload: FadadaSignCallbackPayload): FadadaSign
 
 function stringOrUndefined(value: unknown) {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function snapshotString(value: unknown, key: string) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return stringOrUndefined((value as Record<string, unknown>)[key]);
 }
 
 function isFiniteNumberInRange(value: unknown, min: number, max: number) {

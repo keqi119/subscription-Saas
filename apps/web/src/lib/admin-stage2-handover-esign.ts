@@ -16,9 +16,37 @@ export interface AdminStage2HandoverESignSigner {
   status: string | null;
 }
 
+export type AdminStage2HandoverWorkflowJobType =
+  | "GENERATE_SOURCE_PDF"
+  | "NOTIFY_FIELD_ESIGN_READY"
+  | "NOTIFY_CUSTOMER_ESIGN_READY"
+  | "RECONCILE_CUSTOMER_SIGNATURE"
+  | "AUTO_SEAL_PLATFORM"
+  | "RECONCILE_PLATFORM_SEAL"
+  | "ARCHIVE_SIGNED_PDF";
+
+export type AdminStage2HandoverWorkflowJobStatus =
+  | "PENDING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "DEAD_LETTER"
+  | "CANCELLED";
+
+export interface AdminStage2HandoverWorkflowJob {
+  attemptCount: number;
+  createdAt?: string | null;
+  id: string;
+  jobStatus: AdminStage2HandoverWorkflowJobStatus;
+  jobType: AdminStage2HandoverWorkflowJobType;
+  maxAttempts: number;
+  updatedAt: string | null;
+}
+
 export interface AdminStage2HandoverESignStatus {
   archiveStatus: string | null;
   blockers: AdminStage2HandoverESignBlocker[];
+  canAdminInitiate: boolean;
+  canReconcileCustomer: boolean;
   canVoid: boolean;
   createdAt: string | null;
   customerSigner: AdminStage2HandoverESignSigner;
@@ -29,10 +57,23 @@ export interface AdminStage2HandoverESignStatus {
   rebuildRequired: boolean;
   signedArtifactAvailable: boolean;
   signingStage: "STAGE2_DELIVERY_HANDOVER";
+  sourceArtifact: {
+    artifactVersion: number;
+    createdAt: string;
+    sourcePdfHash: string;
+  } | null;
   status: string | null;
   taskId: string | null;
   updatedAt: string | null;
   workOrderId: string;
+  workflowJobs?: AdminStage2HandoverWorkflowJob[];
+}
+
+export interface AdminStage2HandoverFallbackInput {
+  acknowledgement: true;
+  artifactVersion: number;
+  reason: string;
+  sourcePdfHash: string;
 }
 
 export interface AdminStage2HandoverSignedDocumentState {
@@ -64,6 +105,48 @@ export interface AdminStage2HandoverESignDisplay {
   readiness: AdminStage2HandoverESignDisplayState;
   startAvailable: boolean;
   voidAvailable: boolean;
+}
+
+export type AdminStage2HandoverWorkflowStepKey =
+  | "CUSTOMER_CONFIRMATION"
+  | "SOURCE_PDF"
+  | "FIELD_INITIATION"
+  | "CUSTOMER_SIGNATURE"
+  | "PLATFORM_SEAL"
+  | "ARCHIVE";
+
+export interface AdminStage2HandoverWorkflowStep {
+  key: AdminStage2HandoverWorkflowStepKey;
+  label: string;
+  state: "complete" | "current" | "error" | "waiting";
+}
+
+export interface AdminStage2HandoverWorkflowRecovery {
+  jobId: string;
+  jobType: AdminStage2HandoverWorkflowJobType;
+  kind: "RECONCILE_CUSTOMER" | "RETRY_JOB";
+  label: string;
+}
+
+export interface AdminStage2HandoverWorkflowContext {
+  customerConfirmedAt?: string | null;
+  pdfStatus?: string | null;
+  workflowJobs?: AdminStage2HandoverWorkflowJob[];
+}
+
+export interface AdminStage2HandoverWorkflowDisplay {
+  deliveryConfirmationAvailable: boolean;
+  recoveries: AdminStage2HandoverWorkflowRecovery[];
+  steps: AdminStage2HandoverWorkflowStep[];
+}
+
+export interface AdminStage2DeliveryVerification {
+  allowed: boolean;
+  reason:
+    | "SIGNED"
+    | "LOAD_ERROR"
+    | "NO_STAGE2_WORK_ORDER"
+    | "NOT_SIGNED";
 }
 
 const BLOCKER_MESSAGES: Record<string, string> = {
@@ -108,6 +191,12 @@ const BLOCKER_MESSAGES: Record<string, string> = {
 
 const ERROR_MESSAGES: Record<string, string> = {
   STAGE2_CUSTOMER_SIGNATURE_REQUIRED: "客户尚未完成签署",
+  STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE:
+    "Field 经办人仍可处理且尚未超过 15 分钟",
+  STAGE2_HANDOVER_ADMIN_FALLBACK_REASON_INVALID:
+    "兜底原因需为 3-500 个字符",
+  STAGE2_HANDOVER_ADMIN_REVIEW_STALE:
+    "交接确认单已更新，请重新核对后发起",
   STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED: "电子签状态已变化，请刷新后重试",
   STAGE2_HANDOVER_ESIGN_NOT_READY: "交接材料尚未满足电子签条件",
   STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED: "当前签署任务需先作废后才能重新发起",
@@ -123,8 +212,22 @@ export function loadAdminStage2HandoverESign(id: string) {
   });
 }
 
-export function startAdminStage2HandoverESign(id: string) {
-  return postStage2ESignStatus(id, "");
+export function startAdminStage2HandoverESign(
+  id: string,
+  input: AdminStage2HandoverFallbackInput
+) {
+  return apiFetch<AdminStage2HandoverESignStatus>(
+    stage2ESignPath(id),
+    {
+      body: JSON.stringify({
+        acknowledgement: input.acknowledgement,
+        artifactVersion: input.artifactVersion,
+        reason: input.reason.trim().replace(/\s+/g, " "),
+        sourcePdfHash: input.sourcePdfHash.trim().toLowerCase()
+      }),
+      method: "POST"
+    }
+  );
 }
 
 export function retryAdminStage2PlatformSeal(id: string) {
@@ -134,6 +237,20 @@ export function retryAdminStage2PlatformSeal(id: string) {
 export function retryAdminStage2HandoverArchive(id: string) {
   return apiFetch<AdminStage2HandoverSignedDocumentState>(
     `${stage2ESignPath(id)}/archive/retry`,
+    { method: "POST" }
+  );
+}
+
+export function retryAdminStage2WorkflowJob(workOrderId: string, jobId: string) {
+  return apiFetch<Record<string, unknown>>(
+    `/handover-work-orders/${encodeURIComponent(workOrderId)}/workflow-jobs/${encodeURIComponent(jobId)}/retry`,
+    { method: "POST" }
+  );
+}
+
+export function reconcileAdminStage2CustomerSignature(workOrderId: string) {
+  return apiFetch<Record<string, unknown>>(
+    `/handover-work-orders/${encodeURIComponent(workOrderId)}/workflow/reconcile-customer`,
     { method: "POST" }
   );
 }
@@ -156,29 +273,253 @@ export function validateAdminStage2HandoverVoidReason(reason: string) {
   return null;
 }
 
+export function validateAdminStage2HandoverFallbackReason(
+  reason: string
+) {
+  const normalized = reason.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return "请填写兜底发起原因";
+  }
+  if (normalized.length < 3 || normalized.length > 500) {
+    return "兜底原因需为 3-500 个字符";
+  }
+  return null;
+}
+
 export function getAdminStage2HandoverESignDisplay(
   status: AdminStage2HandoverESignStatus
 ): AdminStage2HandoverESignDisplay {
-  const taskExists = Boolean(status.taskId);
-  const platformRetryAvailable = status.platformSigner.retryAvailable === true;
+  const providerSigningCompleted =
+    status.status === "COMPLETED" ||
+    status.customerSigner.status === "SIGNED" ||
+    status.platformSigner.status === "SIGNED";
 
   return {
     archive: getArchiveDisplay(status),
-    archiveRetryAvailable:
-      status.status === "COMPLETED" &&
-      !status.signedArtifactAvailable &&
-      (status.archiveStatus === "NOT_STARTED" || status.archiveStatus === "FAILED"),
+    archiveRetryAvailable: false,
     customer: getCustomerDisplay(status),
     platform: getPlatformDisplay(status),
-    platformActionLabel: platformRetryAvailable
-      ? status.platformSigner.attemptCount > 0
-        ? "重试平台盖章"
-        : "发起平台盖章"
-      : null,
+    platformActionLabel: null,
     readiness: getReadinessDisplay(status),
-    startAvailable: status.ready && !taskExists,
-    voidAvailable: status.canVoid === true
+    startAvailable:
+      status.canAdminInitiate === true &&
+      status.ready === true &&
+      !status.taskId,
+    voidAvailable: status.canVoid === true && !providerSigningCompleted
   };
+}
+
+export function getAdminStage2HandoverWorkflowDisplay(
+  status?: AdminStage2HandoverESignStatus | null,
+  context: AdminStage2HandoverWorkflowContext = {}
+): AdminStage2HandoverWorkflowDisplay {
+  const workflowJobs = status?.workflowJobs ?? context.workflowJobs ?? [];
+  const currentJobs = getAuthoritativeCurrentWorkflowJobs(workflowJobs);
+  const archived =
+    status?.archiveStatus === "ARCHIVED" && status.signedArtifactAvailable === true;
+  const platformComplete = signerCompleted(
+    status?.platformSigner,
+    "STAGE2_HANDOVER_PLATFORM"
+  );
+  const customerComplete = signerCompleted(
+    status?.customerSigner,
+    "STAGE2_HANDOVER_CUSTOMER"
+  );
+  const signingComplete = stage2SigningCompleted(status);
+  const fieldInitiationComplete = customerComplete || Boolean(status?.taskId);
+  const pdfComplete =
+    fieldInitiationComplete || context.pdfStatus === "GENERATED";
+  const customerConfirmationComplete =
+    pdfComplete || Boolean(context.customerConfirmedAt);
+  const completed: Record<AdminStage2HandoverWorkflowStepKey, boolean> = {
+    ARCHIVE: archived,
+    CUSTOMER_CONFIRMATION: customerConfirmationComplete,
+    CUSTOMER_SIGNATURE: customerComplete,
+    FIELD_INITIATION: fieldInitiationComplete,
+    PLATFORM_SEAL: platformComplete,
+    SOURCE_PDF: pdfComplete
+  };
+  const currentDeadLetters = currentJobs.valid
+    ? currentJobs.jobs.filter(
+        (job) =>
+          job.jobStatus === "DEAD_LETTER" &&
+          (
+            job.jobType !== "RECONCILE_CUSTOMER_SIGNATURE" ||
+            status?.canReconcileCustomer === true
+          ) &&
+          !completed[WORKFLOW_JOB_STEP[job.jobType]]
+      )
+    : [];
+  const newestDeadLetter = selectSingleNewestJob(currentDeadLetters);
+  const recovery = newestDeadLetter
+    ? toWorkflowRecovery(newestDeadLetter)
+    : null;
+  const recoveries = recovery ? [recovery] : [];
+  const errorSteps = new Set(
+    currentDeadLetters.map((job) => WORKFLOW_JOB_STEP[job.jobType])
+  );
+  const firstIncomplete = WORKFLOW_STEP_KEYS.find((key) => !completed[key]) ?? null;
+
+  return {
+    deliveryConfirmationAvailable: signingComplete,
+    recoveries,
+    steps: WORKFLOW_STEP_KEYS.map((key) => {
+      const state = completed[key]
+        ? "complete"
+        : errorSteps.has(key)
+          ? "error"
+          : key === firstIncomplete
+            ? "current"
+            : "waiting";
+      return {
+        key,
+        label: workflowStepLabel(key, state, status),
+        state
+      };
+    })
+  };
+}
+
+export function createAdminStage2DeliveryVerifier({
+  loadESignStatus,
+  loadWorkOrders
+}: {
+  loadESignStatus: (
+    workOrderId: string
+  ) => Promise<Pick<
+    AdminStage2HandoverESignStatus,
+    | "customerSigner"
+    | "documentType"
+    | "platformSigner"
+    | "signingStage"
+    | "status"
+    | "taskId"
+  >>;
+  loadWorkOrders: (
+    orderId: string
+  ) => Promise<Array<{ id: string; status?: string | null }>>;
+}) {
+  return {
+    async verify(orderId: string): Promise<AdminStage2DeliveryVerification> {
+      try {
+        const workOrders = await loadWorkOrders(orderId);
+        const activeWorkOrders = workOrders.filter(
+          (workOrder) =>
+            !["CANCELLED", "FAILED", "VOIDED"].includes(
+              workOrder.status ?? ""
+            )
+        );
+        if (activeWorkOrders.length === 0) {
+          return { allowed: true, reason: "NO_STAGE2_WORK_ORDER" };
+        }
+        if (activeWorkOrders.length !== 1) {
+          return { allowed: false, reason: "NOT_SIGNED" };
+        }
+        const [activeWorkOrder] = activeWorkOrders;
+        if (!activeWorkOrder) {
+          return { allowed: false, reason: "NOT_SIGNED" };
+        }
+        const status = await loadESignStatus(activeWorkOrder.id);
+        return stage2SigningCompleted(status)
+          ? { allowed: true, reason: "SIGNED" }
+          : { allowed: false, reason: "NOT_SIGNED" };
+      } catch {
+        return { allowed: false, reason: "LOAD_ERROR" };
+      }
+    }
+  };
+}
+
+function stage2SigningCompleted(
+  status?: Pick<
+    AdminStage2HandoverESignStatus,
+    | "customerSigner"
+    | "documentType"
+    | "platformSigner"
+    | "signingStage"
+    | "status"
+    | "taskId"
+  > | null
+) {
+  return Boolean(
+    status?.documentType === "DELIVERY_HANDOVER" &&
+    status.signingStage === "STAGE2_DELIVERY_HANDOVER" &&
+    status.taskId &&
+    status.status === "COMPLETED" &&
+    signerCompleted(
+      status.customerSigner,
+      "STAGE2_HANDOVER_CUSTOMER"
+    ) &&
+    signerCompleted(
+      status.platformSigner,
+      "STAGE2_HANDOVER_PLATFORM"
+    )
+  );
+}
+
+function signerCompleted(
+  signer: AdminStage2HandoverESignSigner | null | undefined,
+  slotId: string
+) {
+  return Boolean(
+    signer?.slotId === slotId &&
+    signer.status === "SIGNED" &&
+    signer.signedAt
+  );
+}
+
+export function createAdminStage2DeliveryConfirmationController({
+  onBlocked,
+  verifier
+}: {
+  onBlocked: (
+    verification: AdminStage2DeliveryVerification,
+    boundary: "BEFORE_POST" | "MODAL_OPEN"
+  ) => void;
+  verifier: {
+    verify(orderId: string): Promise<AdminStage2DeliveryVerification>;
+  };
+}) {
+  return {
+    async run({
+      boundary,
+      onAllowed,
+      orderId
+    }: {
+      boundary: "BEFORE_POST" | "MODAL_OPEN";
+      onAllowed: () => Promise<void> | void;
+      orderId: string;
+    }) {
+      const verification = await verifier.verify(orderId);
+      if (!verification.allowed) {
+        onBlocked(verification, boundary);
+        return false;
+      }
+      await onAllowed();
+      return true;
+    }
+  };
+}
+
+export async function runAdminStage2WorkflowRecovery({
+  allowed,
+  execute,
+  recovery,
+  workOrderId
+}: {
+  allowed: boolean;
+  execute: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => Promise<unknown>;
+  recovery: AdminStage2HandoverWorkflowRecovery;
+  workOrderId: string;
+}) {
+  if (!allowed) {
+    return false;
+  }
+  await execute(workOrderId, recovery);
+  return true;
 }
 
 export function getAdminStage2HandoverESignErrorMessage(error: unknown) {
@@ -213,6 +554,206 @@ function postStage2ESignStatus(id: string, suffix: string) {
 
 function stage2ESignPath(id: string) {
   return `/handover-work-orders/${encodeURIComponent(id)}/esign`;
+}
+
+const WORKFLOW_STEP_KEYS: AdminStage2HandoverWorkflowStepKey[] = [
+  "CUSTOMER_CONFIRMATION",
+  "SOURCE_PDF",
+  "FIELD_INITIATION",
+  "CUSTOMER_SIGNATURE",
+  "PLATFORM_SEAL",
+  "ARCHIVE"
+];
+
+const WORKFLOW_JOB_STEP: Record<
+  AdminStage2HandoverWorkflowJobType,
+  AdminStage2HandoverWorkflowStepKey
+> = {
+  ARCHIVE_SIGNED_PDF: "ARCHIVE",
+  AUTO_SEAL_PLATFORM: "PLATFORM_SEAL",
+  GENERATE_SOURCE_PDF: "SOURCE_PDF",
+  NOTIFY_CUSTOMER_ESIGN_READY: "CUSTOMER_SIGNATURE",
+  NOTIFY_FIELD_ESIGN_READY: "FIELD_INITIATION",
+  RECONCILE_CUSTOMER_SIGNATURE: "CUSTOMER_SIGNATURE",
+  RECONCILE_PLATFORM_SEAL: "PLATFORM_SEAL"
+};
+
+const WORKFLOW_RECOVERY: Record<
+  AdminStage2HandoverWorkflowJobType,
+  Pick<AdminStage2HandoverWorkflowRecovery, "kind" | "label">
+> = {
+  ARCHIVE_SIGNED_PDF: {
+    kind: "RETRY_JOB",
+    label: "重试签署文件归档"
+  },
+  AUTO_SEAL_PLATFORM: {
+    kind: "RETRY_JOB",
+    label: "重试平台盖章"
+  },
+  GENERATE_SOURCE_PDF: {
+    kind: "RETRY_JOB",
+    label: "重试生成交接确认单"
+  },
+  NOTIFY_CUSTOMER_ESIGN_READY: {
+    kind: "RETRY_JOB",
+    label: "重发客户通知"
+  },
+  NOTIFY_FIELD_ESIGN_READY: {
+    kind: "RETRY_JOB",
+    label: "重发经办人通知"
+  },
+  RECONCILE_CUSTOMER_SIGNATURE: {
+    kind: "RECONCILE_CUSTOMER",
+    label: "核对客户签署状态"
+  },
+  RECONCILE_PLATFORM_SEAL: {
+    kind: "RETRY_JOB",
+    label: "重试平台盖章"
+  }
+};
+
+const WORKFLOW_JOB_STATUSES = new Set<AdminStage2HandoverWorkflowJobStatus>([
+  "CANCELLED",
+  "COMPLETED",
+  "DEAD_LETTER",
+  "PENDING",
+  "PROCESSING"
+]);
+
+function getAuthoritativeCurrentWorkflowJobs(
+  jobs: readonly AdminStage2HandoverWorkflowJob[]
+): {
+  jobs: AdminStage2HandoverWorkflowJob[];
+  valid: boolean;
+} {
+  const newestByStep = new Map<
+    AdminStage2HandoverWorkflowStepKey,
+    AdminStage2HandoverWorkflowJob
+  >();
+  for (const job of jobs) {
+    if (
+      !job.id ||
+      !Object.prototype.hasOwnProperty.call(
+        WORKFLOW_JOB_STEP,
+        job.jobType
+      ) ||
+      !WORKFLOW_JOB_STATUSES.has(job.jobStatus) ||
+      getWorkflowJobTimestamp(job) === null
+    ) {
+      return { jobs: [], valid: false };
+    }
+    const step = WORKFLOW_JOB_STEP[job.jobType];
+    const current = newestByStep.get(step);
+    if (!current) {
+      newestByStep.set(step, job);
+      continue;
+    }
+    const currentTimestamp = getWorkflowJobTimestamp(current);
+    const nextTimestamp = getWorkflowJobTimestamp(job);
+    if (currentTimestamp === nextTimestamp) {
+      return { jobs: [], valid: false };
+    }
+    if (
+      currentTimestamp !== null &&
+      nextTimestamp !== null &&
+      nextTimestamp > currentTimestamp
+    ) {
+      newestByStep.set(step, job);
+    }
+  }
+  return { jobs: Array.from(newestByStep.values()), valid: true };
+}
+
+function selectSingleNewestJob(
+  jobs: readonly AdminStage2HandoverWorkflowJob[]
+) {
+  let newest: AdminStage2HandoverWorkflowJob | null = null;
+  for (const job of jobs) {
+    if (!newest) {
+      newest = job;
+      continue;
+    }
+    const newestTimestamp = getWorkflowJobTimestamp(newest);
+    const nextTimestamp = getWorkflowJobTimestamp(job);
+    if (newestTimestamp === nextTimestamp) {
+      return null;
+    }
+    if (
+      newestTimestamp !== null &&
+      nextTimestamp !== null &&
+      nextTimestamp > newestTimestamp
+    ) {
+      newest = job;
+    }
+  }
+  return newest;
+}
+
+function getWorkflowJobTimestamp(job: AdminStage2HandoverWorkflowJob) {
+  const timestamp = Date.parse(job.updatedAt ?? job.createdAt ?? "");
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function toWorkflowRecovery(
+  job: AdminStage2HandoverWorkflowJob
+): AdminStage2HandoverWorkflowRecovery | null {
+  const recovery = WORKFLOW_RECOVERY[job.jobType];
+  if (!job.id || !recovery) {
+    return null;
+  }
+  return {
+    jobId: job.id,
+    jobType: job.jobType,
+    ...recovery
+  };
+}
+
+function workflowStepLabel(
+  key: AdminStage2HandoverWorkflowStepKey,
+  state: AdminStage2HandoverWorkflowStep["state"],
+  status?: AdminStage2HandoverESignStatus | null
+) {
+  if (state === "complete") {
+    return {
+      ARCHIVE: "签署文件已归档",
+      CUSTOMER_CONFIRMATION: "客户已确认",
+      CUSTOMER_SIGNATURE: "客户已签署",
+      FIELD_INITIATION: "经办人已发起签署",
+      PLATFORM_SEAL: "平台已盖章",
+      SOURCE_PDF: "交接确认单已生成"
+    }[key];
+  }
+  if (state === "error") {
+    return {
+      ARCHIVE: "签署文件归档异常",
+      CUSTOMER_CONFIRMATION: "客户确认异常",
+      CUSTOMER_SIGNATURE: "客户签署流程异常",
+      FIELD_INITIATION: "经办人签署发起流程异常",
+      PLATFORM_SEAL: "平台盖章流程异常",
+      SOURCE_PDF: "交接确认单生成异常"
+    }[key];
+  }
+  if (state === "current") {
+    return {
+      ARCHIVE:
+        status?.archiveStatus === "PENDING"
+          ? "签署文件归档中"
+          : "等待签署文件归档",
+      CUSTOMER_CONFIRMATION: "等待客户确认",
+      CUSTOMER_SIGNATURE: "待客户签署",
+      FIELD_INITIATION: "等待经办人发起签署",
+      PLATFORM_SEAL: "平台盖章处理中",
+      SOURCE_PDF: "交接确认单生成中"
+    }[key];
+  }
+  return {
+    ARCHIVE: "等待签署文件归档",
+    CUSTOMER_CONFIRMATION: "等待客户确认",
+    CUSTOMER_SIGNATURE: "等待客户签署",
+    FIELD_INITIATION: "等待经办人发起签署",
+    PLATFORM_SEAL: "等待平台盖章",
+    SOURCE_PDF: "等待生成交接确认单"
+  }[key];
 }
 
 function formatBlockers(blockers: readonly AdminStage2HandoverESignBlocker[]) {

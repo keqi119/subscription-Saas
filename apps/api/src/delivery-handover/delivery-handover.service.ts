@@ -365,11 +365,7 @@ export function isDeliveryHandoverReadyForDelivery(
   if (!signed) {
     return false;
   }
-  if (!hasCompleteStage2SignedState(handover)) {
-    return false;
-  }
-  return !DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION ||
-    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED;
+  return hasCompleteStage2SigningState(handover);
 }
 
 export function isDeliveryHandoverSigned(
@@ -388,6 +384,7 @@ export function isDeliveryHandoverSigned(
 export function getDeliveryHandoverArchiveWarning(handover: Pick<
   DeliveryHandoverConfirmationRecord,
   | "archiveStatus"
+  | "archivedAt"
   | "artifactVersion"
   | "completedAt"
   | "customerSignedAt"
@@ -411,10 +408,10 @@ export function getDeliveryHandoverArchiveWarning(handover: Pick<
   | "sourcePdfHash"
   | "status"
 > | null | undefined) {
-  if (!handover || !hasCompleteStage2SignedState(handover)) {
+  if (!handover || !hasCompleteStage2SigningState(handover)) {
     return null;
   }
-  if (handover?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED) {
+  if (hasCompleteStage2ArchiveState(handover)) {
     return null;
   }
   if (handover?.archiveStatus === DeliveryHandoverArchiveStatus.FAILED) {
@@ -425,7 +422,7 @@ export function getDeliveryHandoverArchiveWarning(handover: Pick<
   return DELIVERY_HANDOVER_ARCHIVE_WARNING_MESSAGE;
 }
 
-function hasCompleteStage2SignedState(
+function hasCompleteStage2SigningState(
   handover: Pick<
     DeliveryHandoverConfirmationRecord,
     | "artifactVersion"
@@ -439,10 +436,6 @@ function hasCompleteStage2SignedState(
     | "manifestHash"
     | "orderId"
     | "platformSignedAt"
-    | "signedDocumentFileId"
-    | "signedDocumentFile"
-    | "signedObjectKey"
-    | "signedPdfHash"
     | "sourceDocumentFileId"
     | "sourceDocumentFile"
     | "sourceObjectKey"
@@ -481,16 +474,7 @@ function hasCompleteStage2SignedState(
       handover.sourceDocumentFile,
       handover.sourceDocumentFileId,
       handover.sourceObjectKey
-    ) ||
-    !handover.signedDocumentFileId ||
-    !handover.signedObjectKey ||
-    !hasSha256(handover.signedPdfHash) ||
-    !hasPdfFileIdentity(
-      handover.signedDocumentFile,
-      handover.signedDocumentFileId,
-      handover.signedObjectKey
-    ) ||
-    task.signedDocumentObjectKey !== handover.signedObjectKey
+    )
   ) {
     return false;
   }
@@ -532,12 +516,44 @@ function hasCompleteStage2SignedState(
   );
   const customerSigner = customerSigners[0];
   const platformSigner = platformSigners[0];
+  const customerTransactionId = buildStage2TransactionId(task.taskNo, "H1");
+  const platformTransactionId = buildStage2TransactionId(task.taskNo, "H2");
   return Boolean(
     customerSigners.length === 1 &&
     platformSigners.length === 1 &&
     customerSigner?.customerId === task.customerId &&
-    signerCompleted(customerSigner) &&
-    signerCompleted(platformSigner)
+    signerCompleted(customerSigner, customerTransactionId) &&
+    signerCompleted(platformSigner, platformTransactionId)
+  );
+}
+
+function hasCompleteStage2ArchiveState(
+  handover: Pick<
+    DeliveryHandoverConfirmationRecord,
+    | "archiveStatus"
+    | "archivedAt"
+    | "handoverESignTask"
+    | "signedDocumentFileId"
+    | "signedDocumentFile"
+    | "signedObjectKey"
+    | "signedPdfHash"
+    | "status"
+  >
+) {
+  return Boolean(
+    handover.status === DeliveryHandoverStatus.ARCHIVED &&
+    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
+    handover.archivedAt &&
+    handover.signedDocumentFileId &&
+    handover.signedObjectKey &&
+    hasSha256(handover.signedPdfHash) &&
+    hasPdfFileIdentity(
+      handover.signedDocumentFile,
+      handover.signedDocumentFileId,
+      handover.signedObjectKey
+    ) &&
+    handover.handoverESignTask?.signedDocumentObjectKey ===
+      handover.signedObjectKey
   );
 }
 
@@ -561,13 +577,29 @@ function signerMatchesRequiredTuple(
   );
 }
 
-function signerCompleted(signer: DeliveryHandoverSigner | undefined) {
+function buildStage2TransactionId(
+  taskNo: string | null | undefined,
+  suffix: "H1" | "H2"
+) {
+  if (!taskNo) {
+    return null;
+  }
+  const normalized = taskNo.replace(/[^A-Za-z0-9]/g, "");
+  return normalized
+    ? `${normalized.slice(0, 32 - suffix.length)}${suffix}`
+    : null;
+}
+
+function signerCompleted(
+  signer: DeliveryHandoverSigner | undefined,
+  expectedTransactionId: string | null
+) {
   return Boolean(
     signer &&
+    expectedTransactionId &&
     signer.signedAt &&
     signer.signerStatus === ESignSignerStatus.SIGNED &&
-    signer.providerTransactionId &&
-    /^[A-Za-z0-9]{1,32}$/.test(signer.providerTransactionId)
+    signer.providerTransactionId === expectedTransactionId
   );
 }
 

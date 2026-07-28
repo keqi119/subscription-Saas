@@ -180,6 +180,46 @@ describe("vehicle delivery handover workflow", () => {
   it.each([
     {
       mutate: (handover: ReturnType<typeof buildHandoverRecord>) => {
+        const [customerSigner, platformSigner] =
+          handover.handoverESignTask.signers;
+        const customerTransactionId = customerSigner.providerTransactionId;
+        customerSigner.providerTransactionId =
+          platformSigner.providerTransactionId;
+        platformSigner.providerTransactionId = customerTransactionId;
+      },
+      name: "H1 and H2 provider transaction IDs are swapped"
+    },
+    {
+      mutate: (handover: ReturnType<typeof buildHandoverRecord>) => {
+        const [customerSigner, platformSigner] =
+          handover.handoverESignTask.signers;
+        customerSigner.providerTransactionId = "ARBITRARYCUSTOMERH1";
+        platformSigner.providerTransactionId = "ARBITRARYPLATFORMH2";
+      },
+      name: "provider transaction IDs are arbitrary"
+    }
+  ])("rejects confirm when $name", async ({ mutate }) => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    const handover = buildHandoverRecord(harness);
+    mutate(handover);
+    harness.state.handover = handover;
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        validConfirmDto(),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow();
+
+    expectNoDeliveryConfirmationSideEffects(harness);
+  });
+
+  it.each([
+    {
+      mutate: (handover: ReturnType<typeof buildHandoverRecord>) => {
         handover.handoverESignTask.requestSnapshot.sourcePdfHash =
           "d".repeat(64);
       },
@@ -198,13 +238,6 @@ describe("vehicle delivery handover workflow", () => {
       },
       name: "contract pointer"
     },
-    {
-      mutate: (handover: ReturnType<typeof buildHandoverRecord>) => {
-        handover.handoverESignTask.signedDocumentObjectKey =
-          "contracts/handover-1/other-signed.pdf";
-      },
-      name: "signed provider artifact"
-    }
   ])("rejects confirm when Stage 2 $name identity mismatches", async ({ mutate }) => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
@@ -224,18 +257,39 @@ describe("vehicle delivery handover workflow", () => {
     expectNoDeliveryConfirmationSideEffects(harness);
   });
 
-  it("blocks a signed shell when the required signed artifact is missing", async () => {
+  it("allows delivery after exact H1 and H2 signing when every archive field is null", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
-    harness.state.handover = buildHandoverRecord(harness, {
+    const handover = buildHandoverRecord(harness, {
       archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
       archivedAt: null,
+      failureReason: "temporary provider filing timeout",
       signedDocumentFileId: null,
       signedObjectKey: null,
       signedPdfHash: null,
       status: DeliveryHandoverStatus.SIGNED
     });
+    handover.handoverESignTask.signedDocumentObjectKey = null;
+    harness.state.handover = handover;
 
+    const check = (await harness.service.getDeliveryCheck(
+      harness.orderId,
+      harness.user
+    )) as {
+      canConfirmDelivery: boolean;
+      handoverArchiveWarning: string | null;
+      handoverArchived: boolean;
+      handoverReady: boolean;
+    };
+
+    expect(check).toMatchObject({
+      canConfirmDelivery: true,
+      handoverArchived: false,
+      handoverReady: true
+    });
+    expect(check.handoverArchiveWarning).toContain(
+      "temporary provider filing timeout"
+    );
     await expect(
       harness.service.confirmDelivery(
         harness.orderId,
@@ -243,44 +297,16 @@ describe("vehicle delivery handover workflow", () => {
         harness.user,
         harness.context
       )
-    ).rejects.toThrow();
-
-    expectNoDeliveryConfirmationSideEffects(harness);
+    ).resolves.toMatchObject({ deliveryStatus: DeliveryStatus.DELIVERED });
   });
 
-  it.each([
-    {
-      mutate: (harness: ReturnType<typeof createDeliveryHarness>) => {
-        harness.state.fileObjects = harness.state.fileObjects.filter(
-          (file) => file.id !== "source-file-1"
-        );
-      },
-      name: "source PDF FileObject is missing"
-    },
-    {
-      mutate: (harness: ReturnType<typeof createDeliveryHarness>) => {
-        harness.state.fileObjects = harness.state.fileObjects.filter(
-          (file) => file.id !== "signed-file-1"
-        );
-      },
-      name: "signed PDF FileObject is missing"
-    },
-    {
-      mutate: (harness: ReturnType<typeof createDeliveryHarness>) => {
-        const signedFile = harness.state.fileObjects.find(
-          (file) => file.id === "signed-file-1"
-        );
-        if (signedFile) {
-          signedFile.objectKey = "contracts/handover-1/wrong-signed.pdf";
-        }
-      },
-      name: "signed PDF object identity mismatches"
-    }
-  ])("rejects confirm when the $name", async ({ mutate }) => {
+  it("rejects confirm when the source PDF FileObject is missing", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
     harness.state.handover = buildHandoverRecord(harness);
-    mutate(harness);
+    harness.state.fileObjects = harness.state.fileObjects.filter(
+      (file) => file.id !== "source-file-1"
+    );
 
     await expect(
       harness.service.confirmDelivery(
@@ -294,7 +320,7 @@ describe("vehicle delivery handover workflow", () => {
     expectNoDeliveryConfirmationSideEffects(harness);
   });
 
-  it("keeps archive failure non-blocking only when the signed artifact is complete", async () => {
+  it("keeps a complete signed artifact available while archive failure remains a warning", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
     harness.state.handover = buildHandoverRecord(harness, {
@@ -1388,7 +1414,7 @@ function buildHandoverRecord(
       sourceDocumentFileId: "source-file-1",
       sourcePdfHash
     },
-    signedDocumentObjectKey: signedObjectKey,
+    signedDocumentObjectKey: signedObjectKey as string | null,
     signers: [
       buildStage2DeliverySigner("CUSTOMER"),
       buildStage2DeliverySigner("PLATFORM")
@@ -1397,7 +1423,7 @@ function buildHandoverRecord(
       ReturnType<typeof buildStage2DeliverySigner>
     ],
     signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
-    taskNo: "ESGSTAGE2",
+    taskNo: "ESG-123456789012345678901234567890XYZ",
     taskStatus: ESignTaskStatus.COMPLETED as ESignTaskStatus
   };
   return {
@@ -1456,8 +1482,8 @@ function buildStage2DeliverySigner(type: "CUSTOMER" | "PLATFORM") {
       ? ESignProviderActionType.CUSTOMER_MANUAL_SIGN
       : ESignProviderActionType.PLATFORM_AUTO_SEAL,
     providerTransactionId: customer
-      ? "STAGE2CUSTOMERH1"
-      : "STAGE2PLATFORMH2",
+      ? "ESG123456789012345678901234567H1"
+      : "ESG123456789012345678901234567H2",
     required: true,
     signedAt: new Date("2026-06-09T04:10:00.000Z") as Date | null,
     signerStatus: ESignSignerStatus.SIGNED as ESignSignerStatus,

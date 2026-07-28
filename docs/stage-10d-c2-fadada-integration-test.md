@@ -143,3 +143,67 @@ or, with separate approval:
 ```text
 Controlled production real-name verification test for one tester
 ```
+
+## Stage 2 Field eSign Integration Addendum
+
+The field-orchestrated Stage 2 delivery-handover workflow extends the verified
+Fadada account boundary without changing Stage 1 selection. It uses exactly
+one typed customer H1 transaction followed by one typed platform H2
+transaction:
+
+```text
+STAGE2_DELIVERY_HANDOVER / DELIVERY_HANDOVER
+H1 = STAGE2_HANDOVER_CUSTOMER / CUSTOMER_MANUAL_SIGN
+H2 = STAGE2_HANDOVER_PLATFORM / PLATFORM_AUTO_SEAL
+```
+
+Provider status `3000` for the exact active H1 is reconciled before H2 is
+sealed. Both signed slots are required before the signed PDF can archive.
+Provider-completed work cannot be voided or reissued.
+
+After both signed slots complete, pending or failed signed-PDF archive does not
+block authorized Admin delivery confirmation. Archive remains visible,
+retryable, and independently auditable. Field is the normal initiation path;
+Admin fallback initiation is accepted only when the backend revalidates that
+the assigned Field identity is technically unavailable, or no task exists 15
+minutes after the current bound source PDF `FileObject.createdAt`. The
+reserved `Contract.createdAt` does not start the timer, and the database-time
+deadline does not depend on SMS success. The Admin must hold
+`DELIVERY_CONFIRM`, acknowledge the exact source version/hash, provide a
+bounded reason, and the API must revalidate eligibility and append one audit
+event in the task-creation transaction.
+
+The rollout defaults and business SMS mapping are:
+
+```dotenv
+STAGE2_HANDOVER_WORKFLOW_ENABLED=false
+STAGE2_HANDOVER_WORKER_ENABLED=false
+STAGE2_HANDOVER_WORKER_CONCURRENCY=1
+STAGE2_HANDOVER_WORKER_POLL_INTERVAL_MS=5000
+STAGE2_HANDOVER_WORKER_LEASE_MS=120000
+ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510815118
+ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510795093
+```
+
+The template codes are non-secret configuration. Business template parameters
+remain generic and carry no name, phone, order, vehicle, provider transaction,
+or signing URL data.
+
+The focused local gate is:
+
+```bash
+pnpm stage2-handover-workflow:backfill:test
+pnpm --filter @subscription-saas/api test -- \
+  stage2-handover-workflow-recovery.spec.ts stage2-handover-e2e.spec.ts
+pnpm prisma:validate
+pnpm prisma:generate
+```
+
+The complete gate additionally runs recursive lint, typecheck, test, and build.
+Staging operations then follow
+`docs/stage2-field-esign-rollout-runbook.md`: deploy merged compatible images
+with both flags false, run the bundled Prisma CLI directly, prove backfill
+convergence, enable workflow, and enable worker last at concurrency `1`.
+
+Rollback always disables `STAGE2_HANDOVER_WORKER_ENABLED` first and never
+deletes queued jobs. Human deployment starts only after pull-request merge.

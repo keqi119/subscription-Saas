@@ -6,17 +6,33 @@ import {
   CreateSignTaskInput,
   CreateSignTaskResult,
   ESignProvider,
+  ESignProviderSignerStatusResult,
   GetSignerUrlInput,
   GetSignerUrlResult,
+  QuerySignerStatusInput,
   VerifyCallbackResult
 } from "./esign.provider";
 
 export class MockESignProvider implements ESignProvider {
+  private readonly signerOperations =
+    new Map<string, MockSignerOperation>();
+  private readonly signerUrls = new Map<string, MockSignerUrl>();
+
   constructor(private readonly configService: ConfigService) {}
 
   async createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
     if (input.signingStage === "STAGE2_DELIVERY_HANDOVER") {
       const transactionId = requireMockTransactionId(input.transactionId);
+      const customerSigner = input.signers.find(
+        (signer) => signer.signerType === "CUSTOMER"
+      );
+      if (
+        !customerSigner?.customerId ||
+        !customerSigner.signerId ||
+        !input.taskId
+      ) {
+        throw new Error("MOCK_STAGE2_SIGNER_BINDING_INVALID");
+      }
       requireStage2MockSlot(
         input.documentType,
         input.signingSlots,
@@ -29,6 +45,23 @@ export class MockESignProvider implements ESignProvider {
       }
       const expiresAt = this.signUrlExpiresAt();
       const signUrl = this.buildMockSignUrl(input.contractId, input.taskId);
+      this.signerOperations.set(transactionId, {
+        contractId: input.taskNo,
+        providerCustomerId: customerSigner.customerId,
+        providerTaskId: transactionId,
+        providerTransactionId: transactionId,
+        signerId: customerSigner.signerId,
+        slotId: "STAGE2_HANDOVER_CUSTOMER",
+        status: "SIGNING",
+        taskId: input.taskId
+      });
+      this.signerUrls.set(transactionId, {
+        contractId: input.taskNo,
+        expiresAt,
+        signUrl,
+        signerId: customerSigner.signerId,
+        taskId: input.taskId
+      });
       return {
         actions: [{
           coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
@@ -50,9 +83,7 @@ export class MockESignProvider implements ESignProvider {
         signUrlExpiresAt: expiresAt,
         signers: [{
           coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
-          customerId: input.signers.find(
-            (signer) => signer.signerType === "CUSTOMER"
-          )?.customerId,
+          customerId: customerSigner.customerId,
           documentType: "DELIVERY_HANDOVER",
           providerActionType: "CUSTOMER_MANUAL_SIGN",
           providerSignerId: transactionId,
@@ -68,9 +99,10 @@ export class MockESignProvider implements ESignProvider {
 
     const expiresAt = this.signUrlExpiresAt();
     const signUrl = this.buildMockSignUrl(input.contractId, input.taskId);
+    const providerTaskId = `mock_${input.taskNo}`;
 
     return {
-      providerTaskId: `mock_${input.taskNo}`,
+      providerTaskId,
       rawResponse: {
         mock: true,
         signUrl
@@ -92,6 +124,24 @@ export class MockESignProvider implements ESignProvider {
       "PLATFORM",
       "PLATFORM_AUTO_SEAL"
     );
+    if (
+      !input.platformCustomerId ||
+      !input.providerTaskId ||
+      !input.signerId ||
+      !input.taskId
+    ) {
+      throw new Error("MOCK_STAGE2_PLATFORM_BINDING_INVALID");
+    }
+    this.signerOperations.set(transactionId, {
+      contractId: input.providerEnvelopeId ?? input.taskNo,
+      providerCustomerId: input.platformCustomerId,
+      providerTaskId: input.providerTaskId,
+      providerTransactionId: transactionId,
+      signerId: input.signerId,
+      slotId: "STAGE2_HANDOVER_PLATFORM",
+      status: "SIGNED",
+      taskId: input.taskId
+    });
     return {
       coveredSlotIds: ["STAGE2_HANDOVER_PLATFORM"],
       providerActionType: "PLATFORM_AUTO_SEAL",
@@ -109,16 +159,86 @@ export class MockESignProvider implements ESignProvider {
   }
 
   async getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult> {
-    const signUrl = this.buildMockSignUrl(input.contractId, input.taskId);
+    const operation = this.signerUrls.get(input.providerTaskId);
+    if (
+      input.signingStage === "STAGE1_CONTRACT" &&
+      !operation &&
+      input.providerTaskId.startsWith("mock_")
+    ) {
+      const signUrl = this.buildMockSignUrl(
+        input.contractId,
+        input.taskId
+      );
+      return {
+        expiresAt: this.signUrlExpiresAt(),
+        rawResponse: {
+          mock: true,
+          providerTaskId: input.providerTaskId,
+          signUrl
+        },
+        signUrl
+      };
+    }
+    if (
+      !operation ||
+      input.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+      (
+        input.contractId !== undefined &&
+        operation.contractId !== input.contractId
+      ) ||
+      (
+        input.signerId !== undefined &&
+        operation.signerId !== undefined &&
+        operation.signerId !== input.signerId
+      ) ||
+      (
+        input.taskId !== undefined &&
+        operation.taskId !== input.taskId
+      )
+    ) {
+      throw new Error("MOCK_SIGNER_OPERATION_NOT_FOUND");
+    }
 
     return {
-      expiresAt: this.signUrlExpiresAt(),
+      expiresAt: operation.expiresAt,
       rawResponse: {
         mock: true,
         providerTaskId: input.providerTaskId,
-        signUrl
+        signUrl: operation.signUrl
       },
-      signUrl
+      signUrl: operation.signUrl
+    };
+  }
+
+  async querySignerStatus(
+    input: QuerySignerStatusInput
+  ): Promise<ESignProviderSignerStatusResult> {
+    const operation = this.signerOperations.get(
+      input.providerTransactionId
+    );
+    if (
+      !operation ||
+      operation.contractId !== input.contractId ||
+      operation.providerCustomerId !== input.providerCustomerId ||
+      operation.providerTaskId !== input.providerTaskId ||
+      operation.providerTransactionId !==
+        input.providerTransactionId ||
+      operation.signerId !== input.signerId ||
+      operation.slotId !== input.slotId ||
+      operation.taskId !== input.taskId
+    ) {
+      return { status: "UNKNOWN" };
+    }
+    return {
+      resultCode:
+        operation.status === "SIGNED"
+          ? "3000"
+          : "MOCK_SIGNING",
+      resultDescription:
+        operation.status === "SIGNED"
+          ? "Mock Stage 2 platform seal completed."
+          : "Mock customer signing operation is active.",
+      status: operation.status
     };
   }
 
@@ -147,6 +267,27 @@ export class MockESignProvider implements ESignProvider {
     const seconds = Number(this.configService.get<string>("ESIGN_SIGN_URL_EXPIRES_SECONDS") ?? "1800");
     return new Date(Date.now() + Math.max(seconds, 60) * 1000);
   }
+}
+
+interface MockSignerOperation {
+  contractId: string;
+  providerCustomerId: string;
+  providerTaskId: string;
+  providerTransactionId: string;
+  signerId: string;
+  slotId:
+    | "STAGE2_HANDOVER_CUSTOMER"
+    | "STAGE2_HANDOVER_PLATFORM";
+  status: "SIGNED" | "SIGNING";
+  taskId: string;
+}
+
+interface MockSignerUrl {
+  contractId: string;
+  expiresAt: Date;
+  signUrl: string;
+  signerId?: string;
+  taskId?: string;
 }
 
 function trimTrailingSlash(value: string) {

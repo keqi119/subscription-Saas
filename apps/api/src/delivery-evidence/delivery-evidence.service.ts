@@ -704,9 +704,15 @@ export class DeliveryEvidenceService {
   async validateEvidenceReadyForStage2ESign(
     orderId: string,
     handoverId?: string | null,
-    fieldState?: DeliveryEvidenceFieldState
+    fieldState?: DeliveryEvidenceFieldState,
+    db: DeliveryEvidenceDb = this.prisma
   ) {
-    return this.validateFieldEvidenceComplete(orderId, handoverId, fieldState);
+    return this.validateFieldEvidenceComplete(
+      orderId,
+      handoverId,
+      fieldState,
+      db
+    );
   }
 
   async validateEvidenceReadyForDeliveryConfirmation(

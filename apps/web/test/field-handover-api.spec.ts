@@ -16,6 +16,7 @@ import {
   logoutFieldHandover,
   removeFieldHandoverEvidenceFile,
   sendFieldHandoverCode,
+  startFieldHandoverESign,
   startFieldHandoverWorkOrder,
   submitFieldHandoverEvidence,
   updateFieldHandoverFacts,
@@ -117,6 +118,33 @@ describe("field handover API client", () => {
       "http://localhost:3001/api/field/handover/work-orders/work-order-1/readiness",
       "http://localhost:3001/api/field/handover/work-orders/work-order-1/submit"
     ]);
+  });
+
+  it("starts Stage 2 eSign with the displayed artifact version and source hash", async () => {
+    const sourcePdfHash = "b".repeat(64);
+    const fetchMock = mockJsonResponse({
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: "stage2-task-1"
+    });
+
+    await startFieldHandoverESign("work-order/1", {
+      acknowledgement: true,
+      artifactVersion: 3,
+      sourcePdfHash
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3001/api/field/handover/work-orders/work-order%2F1/esign",
+      expect.objectContaining({
+        body: JSON.stringify({
+          acknowledgement: true,
+          artifactVersion: 3,
+          sourcePdfHash
+        }),
+        credentials: "include",
+        method: "POST"
+      })
+    );
   });
 
   it("uploads evidence with cookies and reports progress", async () => {

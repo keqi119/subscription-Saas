@@ -13,7 +13,9 @@ import {
   ESignSignerType,
   ESignSigningStage,
   ESignSlotId,
-  ESignTaskStatus
+  ESignTaskStatus,
+  VehicleHandoverWorkflowJobStatus,
+  VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -23,6 +25,7 @@ import { AuthGuard } from "../src/auth/auth.guard";
 import { PermissionsGuard } from "../src/auth/permissions.guard";
 import { HandoverWorkOrderAdminController } from "../src/handover-work-order/handover-work-order.controller";
 import { Stage2HandoverESignService } from "../src/handover-work-order/stage2-handover-esign.service";
+import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
 
 const NOW = new Date("2026-07-26T12:00:00.000Z");
 
@@ -104,6 +107,74 @@ describe("Stage 2 handover archive retry wiring", () => {
     expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
       PermissionCode.DELIVERY_CONFIRM
     ]);
+  });
+});
+
+describe("Stage 2 signed-PDF archive workflow", () => {
+  it("archives idempotently under the deterministic task and artifact version identity", async () => {
+    const harness = createArchiveWorkflowHarness();
+    const job = archiveWorkflowJob();
+
+    await expect(
+      harness.service.handle(job)
+    ).resolves.toEqual({
+      kind: "COMPLETED",
+      result: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        archived: true
+      }
+    });
+    harness.archive.archiveSignedStage2Handover
+      .mockResolvedValueOnce({
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        archived: false,
+        skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
+      });
+    await expect(
+      harness.service.handle(job)
+    ).resolves.toMatchObject({
+      kind: "COMPLETED",
+      result: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        archived: false
+      }
+    });
+
+    expect(
+      harness.archive.archiveSignedStage2Handover
+    ).toHaveBeenNthCalledWith(1, {
+      taskId: "stage2-task-1"
+    });
+    expect(
+      harness.archive.archiveSignedStage2Handover
+    ).toHaveBeenNthCalledWith(2, {
+      taskId: "stage2-task-1"
+    });
+    expect(harness.downstream.vehicleDeliveryUpdate).not.toHaveBeenCalled();
+    expect(harness.downstream.leaseCreate).not.toHaveBeenCalled();
+    expect(harness.downstream.billingWrite).not.toHaveBeenCalled();
+    expect(harness.downstream.paymentWrite).not.toHaveBeenCalled();
+    expect(harness.downstream.accountingWrite).not.toHaveBeenCalled();
+    expect(harness.downstream.depreciationWrite).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale archive job before downloading a signed PDF", async () => {
+    const harness = createArchiveWorkflowHarness();
+
+    await expect(
+      harness.service.handle(
+        archiveWorkflowJob({
+          payload: {
+            artifactVersion: 2
+          }
+        })
+      )
+    ).rejects.toThrow(
+      "STAGE2_ARCHIVE_ARTIFACT_VERSION_INVALID"
+    );
+    expect(
+      harness.archive.archiveSignedStage2Handover
+    ).not.toHaveBeenCalled();
   });
 });
 
@@ -243,6 +314,106 @@ function createHarness() {
     service,
     task
   };
+}
+
+function createArchiveWorkflowHarness() {
+  const downstream = {
+    accountingWrite: vi.fn(),
+    billingWrite: vi.fn(),
+    depreciationWrite: vi.fn(),
+    leaseCreate: vi.fn(),
+    paymentWrite: vi.fn(),
+    vehicleDeliveryUpdate: vi.fn()
+  };
+  const prisma = {
+    accountingEntry: {
+      create: downstream.accountingWrite
+    },
+    depreciationEntry: {
+      create: downstream.depreciationWrite
+    },
+    leaseContract: {
+      create: downstream.leaseCreate
+    },
+    paymentRecord: {
+      create: downstream.paymentWrite
+    },
+    receivableBill: {
+      create: downstream.billingWrite
+    },
+    vehicleDelivery: {
+      update: downstream.vehicleDeliveryUpdate
+    },
+    vehicleHandoverWorkOrder: {
+      findUnique: vi.fn(async () => ({
+        handover: {
+          artifactVersion: 3,
+          handoverESignTaskId: "stage2-task-1",
+          id: "handover-1"
+        },
+        handoverId: "handover-1",
+        id: "work-order-1"
+      }))
+    }
+  };
+  const archive = {
+    archiveSignedStage2Handover: vi.fn(async (): Promise<any> => ({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    }))
+  };
+  const repository = {
+    renewLease: vi.fn(async () => true)
+  };
+  const service = new Stage2HandoverWorkflowService(
+    prisma as never,
+    new ConfigService({
+      STAGE2_HANDOVER_WORKER_LEASE_MS: "120000",
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    }),
+    repository as never,
+    {} as never
+  );
+  Object.assign(service as object, {
+    signedArtifactService: archive
+  });
+  return {
+    archive,
+    downstream,
+    service
+  };
+}
+
+function archiveWorkflowJob(
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    attemptCount: 0,
+    availableAt: NOW,
+    completedAt: null,
+    createdAt: NOW,
+    eSignTaskId: "stage2-task-1",
+    handoverId: "handover-1",
+    id: "archive-job-1",
+    idempotencyKey: "archive:stage2-task-1:3",
+    jobStatus: VehicleHandoverWorkflowJobStatus.PROCESSING,
+    jobType: VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    leaseExpiresAt: new Date(
+      NOW.getTime() + 2 * 60 * 1000
+    ),
+    leaseToken: "00000000-0000-4000-8000-000000000001",
+    maxAttempts: 5,
+    payload: {
+      artifactVersion: 3
+    },
+    resultSnapshot: null,
+    startedAt: NOW,
+    updatedAt: NOW,
+    workOrderId: "work-order-1",
+    ...overrides
+  } as never;
 }
 
 function makeSigner(type: "CUSTOMER" | "PLATFORM") {

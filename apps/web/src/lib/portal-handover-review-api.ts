@@ -152,11 +152,19 @@ export interface PortalHandoverReviewDetail extends PortalHandoverReviewListItem
   fieldFacts?: PortalHandoverReviewFieldFacts | null;
   readiness?: PortalHandoverReviewReadiness | null;
   reviewHistory?: PortalHandoverReviewHistoryItem[];
+  stage2Workflow?: PortalHandoverWorkflowProjection | null;
 }
 
 export interface PortalHandoverReviewObjectionInput {
   details?: string | null;
   reason: string;
+}
+
+export interface PortalHandoverWorkflowProjection {
+  artifactVersion: number | null;
+  errorCode: string | null;
+  jobId: string | null;
+  state: "PDF_PENDING" | "PDF_READY" | "WORKFLOW_EXCEPTION";
 }
 
 export type Stage2PortalESignArchiveStatus =
@@ -218,10 +226,15 @@ export interface Stage2PortalESignView {
   workOrderId: string;
 }
 
-export interface Stage2PortalSigningStartResult {
-  expiresAt: string | null;
-  signUrl: string;
-}
+export type Stage2PortalSigningStartResult =
+  | {
+      expiresAt: string | null;
+      signUrl: string;
+    }
+  | {
+      alreadySigned: true;
+      eSign: Stage2PortalESignView;
+    };
 
 export function listPortalHandoverReviews() {
   return portalApiFetch<PortalHandoverReviewListItem[]>("/portal/handover-reviews");

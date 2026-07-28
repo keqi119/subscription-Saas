@@ -732,8 +732,11 @@ describe("Fadada API client", () => {
   it("queries sign result and keeps provider URLs inside the raw response only", async () => {
     const transport: FadadaTransport = vi.fn(async () => ({
       bodyText: JSON.stringify({
+        contract_id: "CON-1",
+        customer_id: "fadada-customer-1",
         result: "3000",
         result_desc: "completed",
+        transaction_id: "TX1",
         download_url: "https://download.example.test/file.pdf?token=secret",
         view_url: "https://view.example.test/file.pdf?token=secret"
       }),
@@ -751,6 +754,9 @@ describe("Fadada API client", () => {
     expect(result).toMatchObject({
       contractId: "CON-1",
       downloadUrl: "https://download.example.test/file.pdf?token=secret",
+      providerContractId: "CON-1",
+      providerCustomerId: "fadada-customer-1",
+      providerTransactionId: "TX1",
       resultCode: "3000",
       resultDesc: "completed",
       status: "SIGNED",
@@ -764,6 +770,48 @@ describe("Fadada API client", () => {
     expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("contract_id=CON-1");
     expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("customer_id=fadada-customer-1");
     expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("transaction_id=TX1");
+  });
+
+  it("preserves Stage 1 sign_status=1 as signed while keeping active state as signing", async () => {
+    const responses = [
+      {
+        contract_id: "CON-1",
+        customer_id: "fadada-customer-1",
+        result: "2999",
+        sign_status: "1",
+        transaction_id: "TX1"
+      },
+      {
+        contract_id: "CON-1",
+        customer_id: "fadada-customer-1",
+        result: "1000",
+        sign_status: "0",
+        transaction_id: "TX1"
+      }
+    ];
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify(responses.shift()),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(
+      fadadaConfig(),
+      new FadadaHttpClient(fadadaConfig(), transport)
+    );
+    const input = {
+      contractId: "CON-1",
+      customerId: "fadada-customer-1",
+      transactionId: "TX1"
+    };
+
+    await expect(apiClient.querySignResult(input)).resolves.toMatchObject({
+      resultCode: "2999",
+      status: "SIGNED"
+    });
+    await expect(apiClient.querySignResult(input)).resolves.toMatchObject({
+      resultCode: "1000",
+      status: "SIGNING"
+    });
   });
 
   it("queries contract status through mocked transport", async () => {

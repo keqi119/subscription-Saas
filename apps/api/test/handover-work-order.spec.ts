@@ -1,12 +1,21 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
 import { ContractStatus, UserStatus } from "@prisma/client";
 import { Readable } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 
 describe("HandoverWorkOrderService", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-21T08:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("creates one active delivery-outbound work order, links Stage 2 handover, and initializes evidence checklist", async () => {
     const harness = createHandoverWorkOrderHarness();
 

@@ -20,7 +20,6 @@ import {
   buildDeliveryHandoverPdfRenderModel,
   STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT
 } from "../src/delivery-handover/delivery-handover-pdf-render-model";
-import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
 import {
   DeliveryHandoverPdfRendererService,
   STAGE2_HANDOVER_PDF_HARD_MAX_BYTES,
@@ -606,6 +605,32 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(harness.workflowJobs).toHaveLength(1);
   });
 
+  it("retries only source finalization after a PostgreSQL serialization conflict", async () => {
+    const harness = createServiceHarness();
+    const runTransaction =
+      harness.transaction.getMockImplementation()!;
+    harness.transaction
+      .mockImplementationOnce(runTransaction)
+      .mockRejectedValueOnce({ code: "P2034" })
+      .mockImplementation(runTransaction);
+
+    await expect(
+      ensureStage2HandoverPdf(
+        harness.service,
+        "work-order-1",
+        harness.currentManifestHash
+      )
+    ).resolves.toMatchObject({ status: "GENERATED" });
+
+    expect(harness.transaction).toHaveBeenCalledTimes(3);
+    expect(harness.renderer.renderToFile).toHaveBeenCalledTimes(1);
+    expect(
+      harness.storageService.putGeneratedContractPdfArtifactFromPath
+    ).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.contract.create).toHaveBeenCalledTimes(1);
+    expect(harness.workflowJobs).toHaveLength(1);
+  });
+
   it("renders with the persisted deterministic Contract creation time", async () => {
     const harness = createServiceHarness();
 
@@ -624,10 +649,10 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
 
   it("reserves globally distinct Contract numbers for legacy-suffix collisions and retries", async () => {
     const [firstIdentity, secondIdentity] =
-      findLegacyStage2ContractNumberCollision();
+      LEGACY_STAGE2_CONTRACT_NUMBER_COLLISION;
     const persistedContractNumbers = new Set<string>();
     const createHarness = (
-      identity: ReturnType<typeof findLegacyStage2ContractNumberCollision>[number]
+      identity: typeof LEGACY_STAGE2_CONTRACT_NUMBER_COLLISION[number]
     ) => {
       const harness = createServiceHarness();
       harness.records.workOrder.id = identity.workOrderId;
@@ -1356,10 +1381,13 @@ function createServiceHarness(options: {
       findUnique: vi.fn(async () => records.workOrder)
     }
   };
+  const transaction = vi.fn(
+    async (
+      callback: (transaction: typeof prisma) => Promise<unknown>
+    ) => callback(prisma)
+  );
   Object.assign(prisma, {
-    $transaction: vi.fn(async (callback: (transaction: typeof prisma) => Promise<unknown>) =>
-      callback(prisma)
-    )
+    $transaction: transaction
   });
 
   const deliveryEvidenceService = {
@@ -1450,6 +1478,7 @@ function createServiceHarness(options: {
       workflowRepository
     ),
     storageService,
+    transaction,
     get workflowEnqueueObservedArtifact() {
       return workflowEnqueueObservedArtifact;
     },
@@ -1457,45 +1486,20 @@ function createServiceHarness(options: {
   };
 }
 
-function findLegacyStage2ContractNumberCollision() {
-  const generatedAt = new Date("2026-07-25T10:00:00.000Z");
-  const timestamp = "20260725100000";
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const seen = new Map<string, {
-    legacyContractNo: string;
-    manifestHash: string;
-    workOrderId: string;
-  }>();
-  const evidenceChecklist = createRenderModelInput().evidenceChecklist;
-  for (let index = 1; index <= 10_000; index += 1) {
-    const workOrderId =
-      `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
-    const manifestHash = buildDeliveryHandoverEvidencePackage({
-      evidenceChecklist,
-      handoverId: "handover-1",
-      orderId: "order-1",
-      workOrderId
-    }).manifestHash;
-    const manifestDigest = manifestHash.replace(/^sha256:/, "");
-    const digest = createHash("sha256")
-      .update(`${workOrderId}:1:${manifestDigest}`, "utf8")
-      .digest();
-    const suffix = Array.from(
-      digest.subarray(0, 4),
-      (byte) => alphabet[byte % alphabet.length]
-    ).join("");
-    const legacyContractNo = `HDV${timestamp}${suffix}`;
-    const identity = { legacyContractNo, manifestHash, workOrderId };
-    const collision = seen.get(legacyContractNo);
-    if (collision) {
-      return [collision, identity] as const;
-    }
-    seen.set(legacyContractNo, identity);
+const LEGACY_STAGE2_CONTRACT_NUMBER_COLLISION = [
+  {
+    legacyContractNo: "HDV20260725100000DM3S",
+    manifestHash:
+      "sha256:c4465dd5ffcdc94647571897fe415a84e71b5b7ac416968eaf4cdedc23ab6120",
+    workOrderId: "00000000-0000-4000-8000-0000000005cc"
+  },
+  {
+    legacyContractNo: "HDV20260725100000DM3S",
+    manifestHash:
+      "sha256:6fad20112c5eaa2be0173b6294f92eaa56ab6634a5484634c3886e6ade637c9e",
+    workOrderId: "00000000-0000-4000-8000-000000000da6"
   }
-  throw new Error(
-    `No legacy Stage 2 Contract number collision found at ${generatedAt.toISOString()}.`
-  );
-}
+] as const;
 
 function ensureStage2HandoverPdf(
   service: HandoverWorkOrderService,

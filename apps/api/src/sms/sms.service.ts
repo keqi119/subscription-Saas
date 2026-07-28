@@ -211,7 +211,9 @@ export class SmsService {
         existing.phone !== input.input.phone ||
         existing.purpose !== input.purpose
       ) {
-        throw new Error("SMS_IDEMPOTENCY_KEY_CONFLICT");
+        throw new Error("SMS_IDEMPOTENCY_KEY_CONFLICT", {
+          cause: error
+        });
       }
       if (existing.sendStatus !== SmsSendStatus.FAILED) {
         return toSmsSendResult(existing);
@@ -236,7 +238,9 @@ export class SmsService {
           where: { idempotencyKey: input.input.idempotencyKey }
         });
         if (!winner) {
-          throw new Error("SMS_IDEMPOTENCY_RECORD_MISSING");
+          throw new Error("SMS_IDEMPOTENCY_RECORD_MISSING", {
+            cause: error
+          });
         }
         return toSmsSendResult(winner);
       }

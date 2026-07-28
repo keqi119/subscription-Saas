@@ -122,6 +122,7 @@ const ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN = "RESUBMITTED_PENDING_ADMIN
 const ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW = "SENT_BACK_TO_CUSTOMER_REVIEW";
 const ADMIN_REVIEW_STATUS_RESOLVED = "RESOLVED";
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
+const STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS = 3;
 const STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV = "STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL";
 const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV = "STAGE2_HANDOVER_WORKFLOW_ENABLED";
 const MAX_STAGE2_EVIDENCE_DERIVATIVE_BYTES = 1024 * 1024;
@@ -1897,7 +1898,7 @@ export class HandoverWorkOrderService {
       });
       const storedArtifact = stored;
       await options.lease?.assertLease();
-      const finalized = await this.runSerializableTransaction(async (tx) => {
+      const finalized = await this.runStage2SourcePdfFinalizationTransaction(async (tx) => {
         await this.assertStage2PdfLease(tx, options.lease);
         const lockedHandover = await this.lockStage2HandoverForSourcePdf(
           tx,
@@ -1916,7 +1917,7 @@ export class HandoverWorkOrderService {
             sizeBytes: BigInt(storedArtifact.sizeBytes),
             uploadedBy: options.actorId ?? null
           }
-        });
+      });
         const createdContract = await tx.contract.create({
           data: {
             businessType: BusinessType.SUBSCRIPTION,
@@ -1985,7 +1986,7 @@ export class HandoverWorkOrderService {
           );
         }
         return { createdContract, createdFileObject };
-      });
+        });
 
       return this.toStage2HandoverPdfArtifactView(
         workOrder,
@@ -3901,6 +3902,32 @@ export class HandoverWorkOrderService {
       }
       throw error;
     }
+  }
+
+  private async runStage2SourcePdfFinalizationTransaction<T>(
+    callback: (transaction: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    for (
+      let attempt = 1;
+      attempt <= STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(callback, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        });
+      } catch (error) {
+        if (!isPrismaSerializationConflict(error)) {
+          throw error;
+        }
+        if (
+          attempt === STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS
+        ) {
+          throw new Stage2SourcePdfClaimLostError();
+        }
+      }
+    }
+    throw new Stage2SourcePdfClaimLostError();
   }
 
   private async updateWorkOrderVersioned(

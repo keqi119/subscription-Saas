@@ -3,6 +3,7 @@ import { RequestMethod } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import {
+  AuditAction,
   ContractStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
@@ -349,7 +350,7 @@ describe("Stage2HandoverESignService", () => {
   it.each([
     ["rejected", ESignSignerStatus.REJECTED],
     ["failed", ESignSignerStatus.EXPIRED]
-  ])("exposes void but not reconcile for a terminal H1 %s state", async (
+  ])("does not expose void or reconcile for a terminal H1 %s state with provider evidence", async (
     _label,
     customerStatus
   ) => {
@@ -370,7 +371,7 @@ describe("Stage2HandoverESignService", () => {
     ).resolves.toMatchObject({
       canAdminInitiate: false,
       canReconcileCustomer: false,
-      canVoid: true,
+      canVoid: false,
       rebuildRequired: true
     });
   });
@@ -1282,6 +1283,7 @@ describe("Stage2HandoverESignService", () => {
     const persistedTask = makeTask({
       taskStatus: ESignTaskStatus.FAILED
     });
+    clearVoidBlockingEvidence(persistedTask);
     harness.state.activeTask = persistedTask;
     harness.state.workOrder.handover.handoverESignTask = persistedTask;
     harness.state.workOrder.handover.handoverESignTaskId = persistedTask.id;
@@ -1327,6 +1329,30 @@ describe("Stage2HandoverESignService", () => {
       taskId: null
     });
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.auditLogs).toEqual([
+      expect.objectContaining({
+        action: AuditAction.UPDATE,
+        afterSnapshot: {
+          handoverId: "handover-1",
+          handoverStatus: DeliveryHandoverStatus.SOURCE_GENERATED,
+          reason: "Source artifact was superseded",
+          recoveryAction: "VOID_STAGE2_ESIGN",
+          taskId: "stage2-task-1",
+          taskStatus: ESignTaskStatus.CANCELLED
+        },
+        beforeSnapshot: {
+          handoverStatus: DeliveryHandoverStatus.SOURCE_GENERATED,
+          taskStatus: ESignTaskStatus.FAILED
+        },
+        entityId: "work-order-1",
+        entityType: "VehicleHandoverWorkOrder",
+        module: "stage2-handover-esign",
+        operatorId: "admin-1"
+      })
+    ]);
+    expect(JSON.stringify(harness.auditLogs)).not.toMatch(
+      /ESG20260726080000ABCD|private\/stage2|1380|sourcePdfHash/
+    );
 
     const rebuilt = await harness.service.create(
       "work-order-1",
@@ -1340,11 +1366,97 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    {
+      label: "task provider transaction",
+      setEvidence(task: ReturnType<typeof makeTask>) {
+        clearVoidBlockingEvidence(task);
+        task.providerTaskId = "ESG20260726080000ABCDH1";
+      }
+    },
+    {
+      label: "signer provider transaction",
+      setEvidence(task: ReturnType<typeof makeTask>) {
+        clearVoidBlockingEvidence(task);
+        task.signers[0]!.providerTransactionId =
+          "ESG20260726080000ABCDH1";
+      }
+    },
+    {
+      label: "expired provider claim",
+      setEvidence(task: ReturnType<typeof makeTask>) {
+        clearVoidBlockingEvidence(task);
+        task.signers[0]!.claimExpiresAt =
+          new Date("2026-07-26T07:59:00.000Z");
+      }
+    },
+    {
+      label: "signed timestamp",
+      setEvidence(task: ReturnType<typeof makeTask>) {
+        clearVoidBlockingEvidence(task);
+        task.signers[0]!.signedAt =
+          new Date("2026-07-26T07:58:00.000Z");
+      }
+    },
+    {
+      label: "signed signer status",
+      setEvidence(task: ReturnType<typeof makeTask>) {
+        clearVoidBlockingEvidence(task);
+        task.signers[0]!.signerStatus =
+          ESignSignerStatus.SIGNED;
+      }
+    }
+  ])(
+    "rejects void and subsequent reissue for a terminal task retaining $label evidence",
+    async ({ setEvidence }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const harness = createHarness();
+      const task = makeTask({
+        customerStatus: ESignSignerStatus.REJECTED,
+        taskStatus: ESignTaskStatus.FAILED
+      });
+      setEvidence(task);
+      harness.state.activeTask = task;
+      harness.state.workOrder.handover.handoverESignTask = task;
+      harness.state.workOrder.handover.handoverESignTaskId = task.id;
+      harness.state.workOrder.handover.status =
+        DeliveryHandoverStatus.FAILED;
+
+      await expect(
+        harness.service.voidTask(
+          "work-order-1",
+          "admin-1",
+          "Terminal provider evidence must remain bound"
+        )
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
+        })
+      });
+
+      expect(task.taskStatus).toBe(ESignTaskStatus.FAILED);
+      expect(
+        harness.state.workOrder.handover.handoverESignTaskId
+      ).toBe(task.id);
+      expect(harness.auditLogs).toHaveLength(0);
+      await expect(
+        harness.service.create("work-order-1", adminInitiator())
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED
+        })
+      });
+      expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    }
+  );
+
   it("restores only the Stage 2 source contract to GENERATED during void", async () => {
     const harness = createHarness();
     const task = makeTask({
       taskStatus: ESignTaskStatus.EXPIRED
     });
+    clearVoidBlockingEvidence(task);
     harness.state.workOrder.handover.handoverContract.status =
       ContractStatus.SIGNING;
     harness.state.workOrder.handover.handoverESignTask = task;
@@ -1406,20 +1518,23 @@ describe("Stage2HandoverESignService", () => {
   it("does not downgrade a task completed after the initial void read", async () => {
     const harness = createHarness();
     const task = makeTask({
-      taskStatus: ESignTaskStatus.SIGNING,
-      customerStatus: ESignSignerStatus.SIGNED
+      taskStatus: ESignTaskStatus.SIGNING
     });
+    clearVoidBlockingEvidence(task);
     harness.state.workOrder.handover.handoverContract.status =
       ContractStatus.SIGNING;
     harness.state.workOrder.handover.handoverESignTask = task;
     harness.state.workOrder.handover.handoverESignTaskId = task.id;
     harness.state.workOrder.handover.status =
-      DeliveryHandoverStatus.PENDING_PLATFORM_SEAL;
+      DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE;
     harness.prisma.$transaction.mockImplementationOnce(
       async (operation: (tx: any) => Promise<unknown>) => {
         task.taskStatus = ESignTaskStatus.COMPLETED;
         task.completedAt = NOW;
+        task.signers[0]!.signerStatus = ESignSignerStatus.SIGNED;
+        task.signers[0]!.signedAt = NOW;
         task.signers[1]!.signerStatus = ESignSignerStatus.SIGNED;
+        task.signers[1]!.signedAt = NOW;
         harness.state.workOrder.handover.handoverContract.status =
           ContractStatus.SIGNED;
         harness.state.workOrder.handover.completedAt = NOW;
@@ -3129,6 +3244,7 @@ describe("Stage 2 handover eSign Portal API contract", () => {
 });
 
 function createHarness(env: Record<string, string> = {}) {
+  const auditLogs: any[] = [];
   const state: {
     activeTask: null | ReturnType<typeof makeTask>;
     workOrder: ReturnType<typeof makeWorkOrder>;
@@ -3223,6 +3339,15 @@ function createHarness(env: Record<string, string> = {}) {
         transactionDepth -= 1;
       }
     }),
+    auditLog: {
+      create: vi.fn(async ({ data }: any) => {
+        if (transactionDepth === 0) {
+          throw new Error("Stage 2 void audit must be transactional");
+        }
+        auditLogs.push(data);
+        return data;
+      })
+    },
     contract: {
       updateMany: vi.fn(async ({ data, where }: any) => {
         const contract = state.workOrder.handover.handoverContract;
@@ -3298,6 +3423,8 @@ function createHarness(env: Record<string, string> = {}) {
             where.documentType !== task.documentType) ||
           (where?.completedAt !== undefined &&
             where.completedAt !== task.completedAt) ||
+          (where?.providerTaskId !== undefined &&
+            where.providerTaskId !== task.providerTaskId) ||
           (where?.signers?.none &&
             task.signers.some((signer: any) =>
               matchesSignerWhere(signer, where.signers.none)
@@ -3456,6 +3583,7 @@ function createHarness(env: Record<string, string> = {}) {
   });
 
   return {
+    auditLogs,
     customerJobs,
     failCustomerJobEnqueues(count: number) {
       customerJobEnqueueFailuresRemaining = count;
@@ -3645,6 +3773,15 @@ function makeTask(
     taskStatus: options.taskStatus ?? ESignTaskStatus.WAITING_CUSTOMER,
     updatedAt: NOW
   };
+}
+
+function clearVoidBlockingEvidence(task: ReturnType<typeof makeTask>) {
+  task.providerTaskId = null;
+  for (const signer of task.signers) {
+    signer.claimExpiresAt = null;
+    signer.providerTransactionId = null;
+    signer.signedAt = null;
+  }
 }
 
 function makeTaskFromCreateData(

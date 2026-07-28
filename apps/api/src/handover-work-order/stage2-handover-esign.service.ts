@@ -11,6 +11,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  AuditAction,
   ContractStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
@@ -77,6 +78,8 @@ const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV =
   "STAGE2_HANDOVER_WORKFLOW_ENABLED";
 const STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING =
   "STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING";
+const STAGE2_HANDOVER_ESIGN_AUDIT_MODULE =
+  "stage2-handover-esign";
 const ACTIVE_TASK_STATUSES = [
   ESignTaskStatus.CREATED,
   ESignTaskStatus.WAITING_CUSTOMER,
@@ -1393,26 +1396,18 @@ export class Stage2HandoverESignService {
     }
 
     const now = new Date();
-    const hadFreshProviderClaim = task.signers.some(
-      (signer) =>
-        signer.required &&
-        signer.deletedAt === null &&
-        signer.claimExpiresAt &&
-        signer.claimExpiresAt.getTime() > now.getTime()
-    );
-    const hadAcceptedProviderAction =
-      !TERMINAL_REBUILD_STATUSES.has(task.taskStatus) &&
-      task.signers.some(
-        (signer) =>
-          signer.required &&
-          signer.deletedAt === null &&
-          Boolean(signer.providerTransactionId)
-      );
+    const hadProviderOrSignedEvidence =
+      hasVoidBlockingStage2Evidence(task);
+    if (hadProviderOrSignedEvidence) {
+      throw voidProviderEvidenceConflict();
+    }
+    const previousHandoverStatus = handover.status;
+    const previousTaskStatus = task.taskStatus;
     const signerBlockers = [
-      { claimExpiresAt: { gt: now } },
-      ...(!TERMINAL_REBUILD_STATUSES.has(task.taskStatus)
-        ? [{ providerTransactionId: { not: null } }]
-        : [])
+      { claimExpiresAt: { not: null } },
+      { providerTransactionId: { not: null } },
+      { signedAt: { not: null } },
+      { signerStatus: ESignSignerStatus.SIGNED }
     ];
     await this.prisma.$transaction(async (tx) => {
       const taskVoided = await tx.contractESignTask.updateMany({
@@ -1431,6 +1426,7 @@ export class Stage2HandoverESignService {
           completedAt: null,
           documentType: ESignDocumentType.DELIVERY_HANDOVER,
           id: task.id,
+          providerTaskId: null,
           signers: {
             none: {
               deletedAt: null,
@@ -1443,14 +1439,7 @@ export class Stage2HandoverESignService {
         }
       });
       if (taskVoided.count !== 1) {
-        if (hadFreshProviderClaim || hadAcceptedProviderAction) {
-          throw new ConflictException({
-            code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
-            message:
-              "A required Stage 2 provider action is active or still in progress."
-          });
-        }
-        throw voidNotAllowed();
+        throw voidProviderEvidenceConflict();
       }
       await tx.contractESignSigner.updateMany({
         data: {
@@ -1497,6 +1486,28 @@ export class Stage2HandoverESignService {
           message: "The Stage 2 eSign pointer changed before it could be voided."
         });
       }
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.UPDATE,
+          afterSnapshot: {
+            handoverId: handover.id,
+            handoverStatus:
+              DeliveryHandoverStatus.SOURCE_GENERATED,
+            reason: normalizedReason,
+            recoveryAction: "VOID_STAGE2_ESIGN",
+            taskId: task.id,
+            taskStatus: ESignTaskStatus.CANCELLED
+          },
+          beforeSnapshot: {
+            handoverStatus: previousHandoverStatus,
+            taskStatus: previousTaskStatus
+          },
+          entityId: workOrderId,
+          entityType: "VehicleHandoverWorkOrder",
+          module: STAGE2_HANDOVER_ESIGN_AUDIT_MODULE,
+          operatorId: actorId
+        }
+      });
     });
 
     return this.getStatus(workOrderId);
@@ -2713,22 +2724,7 @@ export class Stage2HandoverESignService {
       canVoid: Boolean(
         task &&
         task.taskStatus !== ESignTaskStatus.COMPLETED &&
-        (
-          TERMINAL_REBUILD_STATUSES.has(task.taskStatus) ||
-          !task.signers.some(
-            (signer) =>
-              signer.required &&
-              signer.deletedAt === null &&
-              Boolean(signer.providerTransactionId)
-          )
-        ) &&
-        !task.signers.some(
-          (signer) =>
-            signer.required &&
-            signer.deletedAt === null &&
-            signer.claimExpiresAt &&
-            signer.claimExpiresAt.getTime() > Date.now()
-        )
+        !hasVoidBlockingStage2Evidence(task)
       ),
       createdAt: task?.createdAt ?? handover?.handoverContract?.createdAt ?? null,
       customerSigner: toSignerView(
@@ -3326,6 +3322,14 @@ function voidNotAllowed() {
   });
 }
 
+function voidProviderEvidenceConflict() {
+  return new ConflictException({
+    code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
+    message:
+      "A required Stage 2 provider action is active or still in progress."
+  });
+}
+
 function toJson(value: Record<string, unknown>) {
   return value as Prisma.InputJsonValue;
 }
@@ -3403,6 +3407,23 @@ function canReconcileCustomerSignature(
   }
 
   return true;
+}
+
+function hasVoidBlockingStage2Evidence(task: Stage2Task) {
+  return (
+    task.providerTaskId !== null ||
+    task.signers.some(
+      (signer) =>
+        signer.required &&
+        signer.deletedAt === null &&
+        (
+          signer.claimExpiresAt !== null ||
+          signer.providerTransactionId !== null ||
+          signer.signedAt !== null ||
+          signer.signerStatus === ESignSignerStatus.SIGNED
+        )
+    )
+  );
 }
 
 function normalizeAvailableFieldPhone(phone: string | null | undefined) {

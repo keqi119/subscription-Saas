@@ -1111,9 +1111,35 @@ export class ESignService {
         };
       }
 
-      if (
+      const isFailureObservation =
         input.eventType === FADADA_FAILED_EVENT ||
-        input.eventType === FADADA_REJECTED_EVENT
+        input.eventType === FADADA_REJECTED_EVENT;
+      if (
+        isFailureObservation &&
+        (
+          signer.signerStatus === ESignSignerStatus.SIGNED ||
+          signer.signedAt !== null
+        )
+      ) {
+        await tx.contractESignCallbackLog.update({
+          data: {
+            errorMessage: "FADADA_SIGNED_STATE_CONFLICT_IGNORED",
+            handled: true,
+            handledAt: now
+          },
+          where: { id: input.callbackLogId }
+        });
+        return {
+          handled: true,
+          ignored: true,
+          reason: "SIGNED_STATE_CONFLICT",
+          signingStage: "STAGE2_DELIVERY_HANDOVER" as const,
+          taskId: task.id
+        };
+      }
+
+      if (
+        isFailureObservation
       ) {
         if (
           signer.slotId === PrismaESignSlotId.STAGE2_HANDOVER_PLATFORM &&

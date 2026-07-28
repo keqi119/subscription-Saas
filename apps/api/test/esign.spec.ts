@@ -567,6 +567,122 @@ describe("ESignService", () => {
     expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["failed", "3001"],
+    ["rejected", "3003"]
+  ])(
+    "does not downgrade an exact signed Stage 2 customer after a late %s callback",
+    async (_label, resultCode) => {
+      const harness = createTypedStage2CallbackFixture();
+      const signedAt = new Date("2026-07-26T01:05:00.000Z");
+      Object.assign(harness.customerSigner, {
+        signedAt,
+        signerStatus: ESignSignerStatus.SIGNED
+      });
+      harness.task.taskStatus = ESignTaskStatus.SIGNING;
+      Object.assign(harness.handover, {
+        customerSignedAt: signedAt,
+        status: "PENDING_PLATFORM_SEAL"
+      });
+
+      const result = await harness.service.handleCallback(
+        "fadada",
+        fadadaCallbackPayload({
+          contractId: harness.providerContractId,
+          resultCode,
+          resultDesc: `late customer ${_label}`,
+          transactionId: harness.customerTransactionId
+        })
+      );
+
+      expect(result).toMatchObject({
+        handled: true,
+        ignored: true,
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        taskId: harness.task.id
+      });
+      expect(harness.customerSigner).toMatchObject({
+        rejectReason: null,
+        rejectedAt: null,
+        signedAt,
+        signerStatus: ESignSignerStatus.SIGNED
+      });
+      expect(harness.task).toMatchObject({
+        completedAt: null,
+        failedAt: null,
+        taskStatus: ESignTaskStatus.SIGNING
+      });
+      expect(harness.handover).toMatchObject({
+        customerSignedAt: signedAt,
+        status: "PENDING_PLATFORM_SEAL"
+      });
+      expect(harness.state.callbackLogs).toHaveLength(1);
+      expect(harness.state.callbackLogs[0]).toMatchObject({
+        errorMessage: "FADADA_SIGNED_STATE_CONFLICT_IGNORED",
+        handled: true,
+        taskId: harness.task.id
+      });
+    }
+  );
+
+  it.each([
+    ["failed", "3001"],
+    ["rejected", "3003"]
+  ])(
+    "does not downgrade an exact signed Stage 2 platform slot after a late %s callback",
+    async (_label, resultCode) => {
+      const harness = createTypedStage2CallbackFixture();
+      const signedAt = new Date("2026-07-26T01:05:00.000Z");
+      Object.assign(harness.platformSigner, {
+        signedAt,
+        signerStatus: ESignSignerStatus.SIGNED
+      });
+      harness.task.taskStatus = ESignTaskStatus.SIGNING;
+      Object.assign(harness.handover, {
+        platformSignedAt: signedAt,
+        status: "PENDING_CUSTOMER_SIGNATURE"
+      });
+
+      const result = await harness.service.handleCallback(
+        "fadada",
+        fadadaCallbackPayload({
+          contractId: harness.providerContractId,
+          resultCode,
+          resultDesc: `late platform ${_label}`,
+          transactionId: harness.platformTransactionId
+        })
+      );
+
+      expect(result).toMatchObject({
+        handled: true,
+        ignored: true,
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        taskId: harness.task.id
+      });
+      expect(harness.platformSigner).toMatchObject({
+        rejectReason: null,
+        rejectedAt: null,
+        signedAt,
+        signerStatus: ESignSignerStatus.SIGNED
+      });
+      expect(harness.task).toMatchObject({
+        completedAt: null,
+        failedAt: null,
+        taskStatus: ESignTaskStatus.SIGNING
+      });
+      expect(harness.handover).toMatchObject({
+        platformSignedAt: signedAt,
+        status: "PENDING_CUSTOMER_SIGNATURE"
+      });
+      expect(harness.state.callbackLogs).toHaveLength(1);
+      expect(harness.state.callbackLogs[0]).toMatchObject({
+        errorMessage: "FADADA_SIGNED_STATE_CONFLICT_IGNORED",
+        handled: true,
+        taskId: harness.task.id
+      });
+    }
+  );
+
   it("keeps a failed Stage 2 platform callback retryable without failing the task or handover", async () => {
     const harness = createTypedStage2CallbackFixture();
     harness.customerSigner.signerStatus = ESignSignerStatus.SIGNED;

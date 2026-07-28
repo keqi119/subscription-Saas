@@ -3,6 +3,7 @@ import {
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
+import { Transform } from "class-transformer";
 import {
   ArrayMaxSize,
   Equals,
@@ -17,7 +18,8 @@ import {
   IsUUID,
   MaxLength,
   Matches,
-  Min
+  Min,
+  MinLength
 } from "class-validator";
 
 import type { HandoverFieldFactKey } from "./handover-work-order.service";
@@ -152,6 +154,16 @@ export class StartFieldStage2ESignDto {
   @IsString()
   @Matches(/^[a-f0-9]{64}$/)
   sourcePdfHash!: string;
+}
+
+export class StartAdminStage2ESignDto extends StartFieldStage2ESignDto {
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === "string" ? value.trim().replace(/\s+/g, " ") : value
+  )
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  reason!: string;
 }
 
 export class OpsReviewDto {

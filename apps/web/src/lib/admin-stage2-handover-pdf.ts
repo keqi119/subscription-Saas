@@ -32,3 +32,9 @@ export function buildAdminStage2HandoverPdfUrl(path?: null | string) {
   const normalized = path.startsWith("/api/") ? path.slice(4) : path;
   return `${API_BASE_URL}${normalized.startsWith("/") ? normalized : `/${normalized}`}`;
 }
+
+export function buildAdminStage2HandoverPdfDownloadUrl(id: string) {
+  return buildAdminStage2HandoverPdfUrl(
+    `/handover-work-orders/${encodeURIComponent(id)}/pdf/download`
+  )!;
+}

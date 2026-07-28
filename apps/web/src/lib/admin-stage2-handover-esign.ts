@@ -57,11 +57,23 @@ export interface AdminStage2HandoverESignStatus {
   rebuildRequired: boolean;
   signedArtifactAvailable: boolean;
   signingStage: "STAGE2_DELIVERY_HANDOVER";
+  sourceArtifact: {
+    artifactVersion: number;
+    createdAt: string;
+    sourcePdfHash: string;
+  } | null;
   status: string | null;
   taskId: string | null;
   updatedAt: string | null;
   workOrderId: string;
   workflowJobs?: AdminStage2HandoverWorkflowJob[];
+}
+
+export interface AdminStage2HandoverFallbackInput {
+  acknowledgement: true;
+  artifactVersion: number;
+  reason: string;
+  sourcePdfHash: string;
 }
 
 export interface AdminStage2HandoverSignedDocumentState {
@@ -179,6 +191,12 @@ const BLOCKER_MESSAGES: Record<string, string> = {
 
 const ERROR_MESSAGES: Record<string, string> = {
   STAGE2_CUSTOMER_SIGNATURE_REQUIRED: "客户尚未完成签署",
+  STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE:
+    "Field 经办人仍可处理且尚未超过 15 分钟",
+  STAGE2_HANDOVER_ADMIN_FALLBACK_REASON_INVALID:
+    "兜底原因需为 3-500 个字符",
+  STAGE2_HANDOVER_ADMIN_REVIEW_STALE:
+    "交接确认单已更新，请重新核对后发起",
   STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED: "电子签状态已变化，请刷新后重试",
   STAGE2_HANDOVER_ESIGN_NOT_READY: "交接材料尚未满足电子签条件",
   STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED: "当前签署任务需先作废后才能重新发起",
@@ -194,8 +212,22 @@ export function loadAdminStage2HandoverESign(id: string) {
   });
 }
 
-export function startAdminStage2HandoverESign(id: string) {
-  return postStage2ESignStatus(id, "");
+export function startAdminStage2HandoverESign(
+  id: string,
+  input: AdminStage2HandoverFallbackInput
+) {
+  return apiFetch<AdminStage2HandoverESignStatus>(
+    stage2ESignPath(id),
+    {
+      body: JSON.stringify({
+        acknowledgement: input.acknowledgement,
+        artifactVersion: input.artifactVersion,
+        reason: input.reason.trim().replace(/\s+/g, " "),
+        sourcePdfHash: input.sourcePdfHash.trim().toLowerCase()
+      }),
+      method: "POST"
+    }
+  );
 }
 
 export function retryAdminStage2PlatformSeal(id: string) {
@@ -237,6 +269,19 @@ export function validateAdminStage2HandoverVoidReason(reason: string) {
   }
   if (normalized.length < 3 || normalized.length > 500) {
     return "作废原因需为 3-500 个字符";
+  }
+  return null;
+}
+
+export function validateAdminStage2HandoverFallbackReason(
+  reason: string
+) {
+  const normalized = reason.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return "请填写兜底发起原因";
+  }
+  if (normalized.length < 3 || normalized.length > 500) {
+    return "兜底原因需为 3-500 个字符";
   }
   return null;
 }

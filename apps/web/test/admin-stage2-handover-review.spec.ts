@@ -128,7 +128,7 @@ describe("Admin Stage 2 handover review order page", () => {
   it("delegates the delivery signing gate and exposes controlled void/reissue plus Admin fallback UI", () => {
     const source = read(orderPagePath);
     const signingGateBlock = source.slice(
-      source.indexOf("const stage2ArchiveReady ="),
+      source.indexOf("const stage2SigningComplete ="),
       source.indexOf("const confirmDeliveryDisabledReason")
     );
 
@@ -142,6 +142,32 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("startAdminStage2HandoverESign");
     expect(source).toContain("作废并重新发起");
     expect(source).toContain("后台兜底发起签署");
+    expect(source).toContain("buildAdminStage2HandoverPdfDownloadUrl");
+    expect(source).toContain("确认后台兜底发起签署");
+    expect(source).toContain("已核对当前交接确认单");
+    expect(source).toContain("PDF 版本");
+    expect(source).toContain("SHA-256");
+    expect(source).toContain("预览/下载 PDF");
+    expect(source).toContain("validateAdminStage2HandoverFallbackReason");
+  });
+
+  it("freezes the reviewed PDF version and hash when the Admin fallback dialog opens", () => {
+    const source = read(orderPagePath);
+    const fallbackBlock = source.slice(
+      source.indexOf("async function runAdminStage2Fallback"),
+      source.indexOf("function openAdminStage2Void")
+    );
+
+    expect(fallbackBlock).toContain(
+      "const sourceArtifact = stage2FallbackSourceArtifact"
+    );
+    expect(fallbackBlock).toContain(
+      "setStage2FallbackSourceArtifact({"
+    );
+    expect(fallbackBlock).toContain("...status.sourceArtifact");
+    expect(fallbackBlock).not.toContain(
+      "handoverESignStatuses[id]?.sourceArtifact"
+    );
   });
 });
 

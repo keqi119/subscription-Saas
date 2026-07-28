@@ -13,6 +13,7 @@ import {
   HandoverObjectionActionDto,
   HandoverObjectionResubmissionDto,
   OpsReviewDto,
+  StartAdminStage2ESignDto,
   Stage2WorkflowRecoveryResultDto,
   UpdateHandoverFieldFactsDto,
   VoidStage2HandoverESignDto,
@@ -179,11 +180,19 @@ export class HandoverWorkOrderAdminController {
 
   @Post("handover-work-orders/:id/esign")
   @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
-  createStage2ESign(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return this.stage2HandoverESignService.create(id, {
-      actorId: request.user.id,
-      actorType: "ADMIN"
-    });
+  createStage2ESign(
+    @Param("id") id: string,
+    @Body() dto: StartAdminStage2ESignDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.stage2HandoverESignService.create(
+      id,
+      {
+        actorId: request.user.id,
+        actorType: "ADMIN_FALLBACK"
+      },
+      dto
+    );
   }
 
   @Post("handover-work-orders/:id/esign/platform-seal/retry")

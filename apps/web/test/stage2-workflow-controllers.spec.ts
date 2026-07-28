@@ -208,16 +208,52 @@ describe("Admin Stage 2 delivery and recovery controllers", () => {
     const loadESignStatus = vi
       .fn()
       .mockResolvedValueOnce({
-        archiveStatus: "ARCHIVED",
-        signedArtifactAvailable: true
+        customerSigner: {
+          signedAt: "2026-07-27T09:00:00.000Z",
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "SIGNED"
+        },
+        documentType: "DELIVERY_HANDOVER",
+        platformSigner: {
+          signedAt: "2026-07-27T09:00:01.000Z",
+          slotId: "STAGE2_HANDOVER_PLATFORM",
+          status: "SIGNED"
+        },
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        status: "COMPLETED",
+        taskId: "stage2-task-1"
       })
       .mockResolvedValueOnce({
-        archiveStatus: "PENDING",
-        signedArtifactAvailable: false
+        customerSigner: {
+          signedAt: "2026-07-27T09:00:00.000Z",
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "SIGNED"
+        },
+        documentType: "DELIVERY_HANDOVER",
+        platformSigner: {
+          signedAt: null,
+          slotId: "STAGE2_HANDOVER_PLATFORM",
+          status: "PENDING"
+        },
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        status: "SIGNING",
+        taskId: "stage2-task-1"
       })
       .mockResolvedValueOnce({
-        archiveStatus: "ARCHIVED",
-        signedArtifactAvailable: true
+        customerSigner: {
+          signedAt: "2026-07-27T09:00:00.000Z",
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "SIGNED"
+        },
+        documentType: "DELIVERY_HANDOVER",
+        platformSigner: {
+          signedAt: "2026-07-27T09:00:01.000Z",
+          slotId: "STAGE2_HANDOVER_PLATFORM",
+          status: "SIGNED"
+        },
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        status: "COMPLETED",
+        taskId: "stage2-task-1"
       });
     const verifierFactory = (
       adminStage2Module as Record<string, unknown>
@@ -266,7 +302,7 @@ describe("Admin Stage 2 delivery and recovery controllers", () => {
     })).resolves.toBe(false);
     expect(postDelivery).not.toHaveBeenCalled();
     expect(onBlocked).toHaveBeenLastCalledWith(
-      { allowed: false, reason: "NOT_ARCHIVED" },
+      { allowed: false, reason: "NOT_SIGNED" },
       "BEFORE_POST"
     );
 

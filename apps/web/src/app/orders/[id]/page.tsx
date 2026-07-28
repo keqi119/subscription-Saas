@@ -66,10 +66,12 @@ import {
   type AdminStage2HandoverESignStatus,
   type AdminStage2HandoverWorkflowJob,
   type AdminStage2HandoverWorkflowRecovery,
+  validateAdminStage2HandoverFallbackReason,
   validateAdminStage2HandoverVoidReason,
   voidAdminStage2HandoverESign
 } from "../../../lib/admin-stage2-handover-esign";
 import {
+  buildAdminStage2HandoverPdfDownloadUrl,
   buildAdminStage2HandoverPdfUrl,
   type Stage2HandoverPdfArtifact
 } from "../../../lib/admin-stage2-handover-pdf";
@@ -350,6 +352,11 @@ interface HandoverResubmissionFormValues {
 }
 
 interface Stage2VoidFormValues {
+  reason: string;
+}
+
+interface Stage2FallbackFormValues {
+  acknowledgement?: boolean;
   reason: string;
 }
 
@@ -2931,7 +2938,7 @@ function Stage2HandoverReviewPanel({
       {loadState === "ERROR" ? (
         <Alert
           message="Stage 2 现场交接工单加载失败"
-          description="当前无法确认签署归档状态，请刷新页面后重试。"
+          description="当前无法确认交接签署状态，请刷新页面后重试。"
           showIcon
           style={{ marginBottom: 12 }}
           type="error"
@@ -3834,7 +3841,7 @@ function getConfirmDeliveryDisabledReason(
   deliveryCheck: DeliveryCheck | null,
   delivery: VehicleDelivery | null,
   orderChangeLocked: boolean,
-  stage2ArchiveReady: boolean
+  stage2SigningComplete: boolean
 ) {
   if (!order) {
     return "数据加载完成后才可操作";
@@ -3848,8 +3855,8 @@ function getConfirmDeliveryDisabledReason(
   if (delivery?.deliveryStatus !== "READY") {
     return "请先完成准备交付";
   }
-  if (!stage2ArchiveReady) {
-    return "交接签署文件归档完成后才可确认交付";
+  if (!stage2SigningComplete) {
+    return "客户签署与平台盖章完成后才可确认交付";
   }
   if ((deliveryCheck?.vehicleStatus ?? order.vehicle?.status) !== "RESERVED") {
     return "交付前车辆必须处于“签约锁定（RESERVED）”状态。";
@@ -3957,6 +3964,7 @@ function OrderDetailPageContent() {
   const [renewEntitlementForm] = Form.useForm<EntitlementOperationFormValues>();
   const [refundDepositForm] = Form.useForm<RefundDepositFormValues>();
   const [handoverResubmissionForm] = Form.useForm<HandoverResubmissionFormValues>();
+  const [stage2FallbackForm] = Form.useForm<Stage2FallbackFormValues>();
   const [stage2VoidForm] = Form.useForm<Stage2VoidFormValues>();
   const stage2WorkflowRecoveryInFlightRef = useRef(false);
   const [assignExternalHandoverId, setAssignExternalHandoverId] = useState<string | null>(null);
@@ -3983,6 +3991,17 @@ function OrderDetailPageContent() {
   >({});
   const [stage2WorkflowRecoveryInFlight, setStage2WorkflowRecoveryInFlight] =
     useState(false);
+  const [stage2FallbackOpen, setStage2FallbackOpen] = useState(false);
+  const [
+    stage2FallbackSourceArtifact,
+    setStage2FallbackSourceArtifact
+  ] = useState<
+    NonNullable<
+      AdminStage2HandoverESignStatus["sourceArtifact"]
+    > | null
+  >(null);
+  const [stage2FallbackWorkOrderId, setStage2FallbackWorkOrderId] =
+    useState<string | null>(null);
   const [stage2VoidOpen, setStage2VoidOpen] = useState(false);
   const [stage2VoidWorkOrderId, setStage2VoidWorkOrderId] =
     useState<string | null>(null);
@@ -4047,8 +4066,8 @@ function OrderDetailPageContent() {
         onBlocked: (verification) => {
           void message.warning(
             verification.reason === "LOAD_ERROR"
-              ? "交接签署归档状态加载失败，请刷新后重试"
-              : "交接签署文件归档完成后才可确认交付"
+              ? "交接签署状态加载失败，请刷新后重试"
+              : "客户签署与平台盖章完成后才可确认交付"
           );
         },
         verifier: stage2DeliveryVerifier
@@ -4242,7 +4261,7 @@ function OrderDetailPageContent() {
     isActiveHandoverWorkOrder
   );
   const activeHandoverWorkOrder = activeHandoverWorkOrders[0];
-  const stage2ArchiveReady =
+  const stage2SigningComplete =
     handoverWorkOrdersLoadState === "LOADED" &&
     (
       activeHandoverWorkOrders.length === 0 ||
@@ -4264,7 +4283,7 @@ function OrderDetailPageContent() {
     deliveryCheck,
     delivery,
     orderChangeLocked,
-    stage2ArchiveReady
+    stage2SigningComplete
   );
   const confirmDeliveryAvailability = actionAvailability({
     allowed: confirmDeliveryDisabledReason === null,
@@ -4682,18 +4701,35 @@ function OrderDetailPageContent() {
     }
   }
 
-  async function runAdminStage2Fallback(id: string) {
+  async function runAdminStage2Fallback(
+    id: string,
+    values: Stage2FallbackFormValues
+  ) {
     if (
       !permissions.has("delivery:confirm") ||
       stage2WorkflowRecoveryInFlightRef.current
     ) {
       return;
     }
+    const sourceArtifact = stage2FallbackSourceArtifact;
+    if (!sourceArtifact || values.acknowledgement !== true) {
+      void message.error("交接确认单状态已变化，请刷新后重试");
+      return;
+    }
     stage2WorkflowRecoveryInFlightRef.current = true;
     setStage2WorkflowRecoveryInFlight(true);
     setHandoverActionLoading(`stage2-start:${id}`);
     try {
-      const status = await startAdminStage2HandoverESign(id);
+      const status = await startAdminStage2HandoverESign(id, {
+        acknowledgement: true,
+        artifactVersion: sourceArtifact.artifactVersion,
+        reason: values.reason,
+        sourcePdfHash: sourceArtifact.sourcePdfHash
+      });
+      setStage2FallbackOpen(false);
+      setStage2FallbackSourceArtifact(null);
+      setStage2FallbackWorkOrderId(null);
+      stage2FallbackForm.resetFields();
       await refreshAfterStage2Action(id, status);
       void message.success("后台已发起交接签署");
     } catch (error) {
@@ -4711,13 +4747,56 @@ function OrderDetailPageContent() {
     if (!permissions.has("delivery:confirm")) {
       return;
     }
-    modal.confirm({
-      cancelText: "取消",
-      content: "后端将再次确认当前 Field 经办人不可用。",
-      okText: "确认发起",
-      onOk: () => runAdminStage2Fallback(id),
-      title: "确认由后台兜底发起签署？"
+    const status = handoverESignStatuses[id];
+    if (
+      !status?.canAdminInitiate ||
+      !status.sourceArtifact
+    ) {
+      void message.warning("当前不满足后台兜底发起条件，请刷新状态");
+      return;
+    }
+    stage2FallbackForm.setFieldsValue({
+      acknowledgement: false,
+      reason: ""
     });
+    setStage2FallbackSourceArtifact({
+      ...status.sourceArtifact
+    });
+    setStage2FallbackWorkOrderId(id);
+    setStage2FallbackOpen(true);
+  }
+
+  function closeAdminStage2Fallback() {
+    if (stage2WorkflowRecoveryInFlight) {
+      return;
+    }
+    setStage2FallbackOpen(false);
+    setStage2FallbackSourceArtifact(null);
+    setStage2FallbackWorkOrderId(null);
+    stage2FallbackForm.resetFields();
+  }
+
+  async function submitAdminStage2Fallback() {
+    if (
+      !stage2FallbackWorkOrderId ||
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    const values = await stage2FallbackForm.validateFields();
+    const validationError =
+      validateAdminStage2HandoverFallbackReason(values.reason);
+    if (validationError) {
+      stage2FallbackForm.setFields([
+        { errors: [validationError], name: "reason" }
+      ]);
+      return;
+    }
+    await runAdminStage2Fallback(
+      stage2FallbackWorkOrderId,
+      values
+    );
   }
 
   function openAdminStage2Void(id: string) {
@@ -5834,6 +5913,11 @@ function OrderDetailPageContent() {
       title: "操作"
     }
   ];
+  const stage2FallbackPdfDownloadUrl = stage2FallbackWorkOrderId
+    ? buildAdminStage2HandoverPdfDownloadUrl(
+        stage2FallbackWorkOrderId
+      )
+    : null;
 
   return (
     <ProtectedShell>
@@ -6044,6 +6128,125 @@ function OrderDetailPageContent() {
           onVoidESign={openAdminStage2Void}
           open={handoverWorkOrderDetailOpen}
         />
+
+        <Modal
+          cancelButtonProps={{
+            disabled: stage2WorkflowRecoveryInFlight
+          }}
+          confirmLoading={Boolean(
+            stage2FallbackWorkOrderId &&
+            handoverActionLoading ===
+              `stage2-start:${stage2FallbackWorkOrderId}`
+          )}
+          destroyOnHidden
+          okText="确认发起"
+          onCancel={closeAdminStage2Fallback}
+          onOk={submitAdminStage2Fallback}
+          open={stage2FallbackOpen}
+          title="确认后台兜底发起签署"
+          width={680}
+        >
+          <Space
+            orientation="vertical"
+            size={12}
+            style={{ width: "100%" }}
+          >
+            <Alert
+              message="后台将以 ADMIN_FALLBACK 身份发起，不会代替 Field 经办人。"
+              showIcon
+              type="warning"
+            />
+            <Descriptions
+              bordered
+              column={1}
+              items={[
+                {
+                  children:
+                    stage2FallbackSourceArtifact
+                      ?.artifactVersion ?? "-",
+                  label: "PDF 版本"
+                },
+                {
+                  children: stage2FallbackSourceArtifact ? (
+                    <Typography.Text
+                      code
+                      copyable={{
+                        text:
+                          stage2FallbackSourceArtifact
+                            .sourcePdfHash
+                      }}
+                      style={{ overflowWrap: "anywhere" }}
+                    >
+                      {
+                        stage2FallbackSourceArtifact
+                          .sourcePdfHash
+                      }
+                    </Typography.Text>
+                  ) : "-",
+                  label: "SHA-256"
+                }
+              ]}
+              size="small"
+            />
+            {stage2FallbackPdfDownloadUrl ? (
+              <Button
+                href={stage2FallbackPdfDownloadUrl}
+                icon={<DownloadOutlined />}
+                rel="noreferrer"
+                target="_blank"
+              >
+                预览/下载 PDF
+              </Button>
+            ) : null}
+            <Form<Stage2FallbackFormValues>
+              form={stage2FallbackForm}
+              layout="vertical"
+            >
+              <Form.Item
+                name="acknowledgement"
+                rules={[
+                  {
+                    validator: async (_, value) => {
+                      if (value !== true) {
+                        throw new Error(
+                          "请先核对当前交接确认单"
+                        );
+                      }
+                    }
+                  }
+                ]}
+                valuePropName="checked"
+              >
+                <Checkbox>已核对当前交接确认单</Checkbox>
+              </Form.Item>
+              <Form.Item
+                label="兜底发起原因"
+                name="reason"
+                rules={[
+                  {
+                    required: true,
+                    message: "请填写兜底发起原因"
+                  },
+                  {
+                    validator: async (_, value) => {
+                      const validationError =
+                        validateAdminStage2HandoverFallbackReason(
+                          value ?? ""
+                        );
+                      if (validationError) {
+                        throw new Error(validationError);
+                      }
+                    }
+                  }
+                ]}
+              >
+                <Input.TextArea
+                  autoSize={{ maxRows: 6, minRows: 3 }}
+                />
+              </Form.Item>
+            </Form>
+          </Space>
+        </Modal>
 
         <Modal
           cancelButtonProps={{ disabled: stage2WorkflowRecoveryInFlight }}

@@ -14,6 +14,7 @@ import {
   retryAdminStage2PlatformSeal,
   retryAdminStage2WorkflowJob,
   startAdminStage2HandoverESign,
+  validateAdminStage2HandoverFallbackReason,
   validateAdminStage2HandoverVoidReason,
   voidAdminStage2HandoverESign,
   type AdminStage2HandoverSignedDocumentState,
@@ -23,6 +24,9 @@ import {
   type AdminStage2HandoverWorkflowStepKey,
   type AdminStage2HandoverWorkflowJobType
 } from "../src/lib/admin-stage2-handover-esign";
+import {
+  buildAdminStage2HandoverPdfDownloadUrl
+} from "../src/lib/admin-stage2-handover-pdf";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -34,7 +38,6 @@ const orderPagePath = join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx");
 describe("Admin Stage 2 handover eSign API", () => {
   it.each([
     ["load", loadAdminStage2HandoverESign, "GET", "/handover-work-orders/work%20order/esign"],
-    ["start", startAdminStage2HandoverESign, "POST", "/handover-work-orders/work%20order/esign"],
     [
       "platform seal retry",
       retryAdminStage2PlatformSeal,
@@ -66,6 +69,40 @@ describe("Admin Stage 2 handover eSign API", () => {
     });
     expect(JSON.stringify(fetchMock.mock.calls[0])).not.toMatch(
       /signUrl|providerTransactionId|objectKey|bucket|idCard|fullPhone/i
+    );
+  });
+
+  it("posts the exact reviewed artifact and bounded reason for Admin fallback", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(esignStatus()), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const input = {
+      acknowledgement: true as const,
+      artifactVersion: 3,
+      reason: "Field 经办人超过十五分钟未推进",
+      sourcePdfHash: "b".repeat(64)
+    };
+
+    await startAdminStage2HandoverESign("work order", input);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://localhost:3001/api/handover-work-orders/work%20order/esign"
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      body: JSON.stringify(input),
+      credentials: "include",
+      method: "POST"
+    });
+  });
+
+  it("builds the authenticated Admin PDF preview/download link from the work-order id", () => {
+    expect(buildAdminStage2HandoverPdfDownloadUrl("work order")).toBe(
+      "http://localhost:3001/api/handover-work-orders/work%20order/pdf/download"
     );
   });
 
@@ -568,7 +605,12 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(source).toContain("作废并重新发起");
     expect(source).toContain("后台兜底发起签署");
     expect(source).toContain('canRecoverWorkflow={permissions.has("delivery:confirm")}');
-    expect(source).toContain("交接签署文件归档完成后才可确认交付");
+    expect(source).toContain("客户签署与平台盖章完成后才可确认交付");
+    expect(source).toContain("确认后台兜底发起签署");
+    expect(source).toContain("已核对当前交接确认单");
+    expect(source).toContain("PDF 版本");
+    expect(source).toContain("SHA-256");
+    expect(source).toContain("预览/下载 PDF");
     expect(source).not.toContain("function Stage2HandoverPdfCell");
     expect(source).not.toContain("function Stage2HandoverESignCell");
     expect(source).not.toContain("onGeneratePdf=");
@@ -583,6 +625,9 @@ describe("Admin Stage 2 handover eSign safe errors", () => {
   it.each([
     [new ApiError("raw readiness details", 400, "STAGE2_HANDOVER_ESIGN_NOT_READY"), "交接材料尚未满足电子签条件"],
     [new ApiError("raw rebuild details", 409, "STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED"), "当前签署任务需先作废后才能重新发起"],
+    [new ApiError("raw fallback denial", 400, "STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE"), "Field 经办人仍可处理且尚未超过 15 分钟"],
+    [new ApiError("raw stale review", 409, "STAGE2_HANDOVER_ADMIN_REVIEW_STALE"), "交接确认单已更新，请重新核对后发起"],
+    [new ApiError("raw invalid reason", 400, "STAGE2_HANDOVER_ADMIN_FALLBACK_REASON_INVALID"), "兜底原因需为 3-500 个字符"],
     [new ApiError("raw provider rejection with transaction 998877", 502), "电子签服务暂不可用，请稍后重试"],
     [new ApiError("Forbidden", 403), "无发起或重试电子签权限"],
     [new Error("storage object and provider details"), "电子签操作失败，请刷新状态后重试"]
@@ -609,6 +654,17 @@ describe("Admin Stage 2 handover eSign void reason", () => {
   });
 });
 
+describe("Admin Stage 2 handover fallback reason", () => {
+  it.each([
+    ["", "请填写兜底发起原因"],
+    ["ab", "兜底原因需为 3-500 个字符"],
+    ["a".repeat(501), "兜底原因需为 3-500 个字符"],
+    [" Field 经办人超过十五分钟未推进 ", null]
+  ])("validates the explicit reason boundary", (reason, expected) => {
+    expect(validateAdminStage2HandoverFallbackReason(reason)).toBe(expected);
+  });
+});
+
 function esignStatus(
   overrides: Partial<AdminStage2HandoverESignStatus> = {}
 ): AdminStage2HandoverESignStatus {
@@ -627,6 +683,11 @@ function esignStatus(
     rebuildRequired: false,
     signedArtifactAvailable: false,
     signingStage: "STAGE2_DELIVERY_HANDOVER",
+    sourceArtifact: {
+      artifactVersion: 3,
+      createdAt: "2026-07-27T08:00:00.000Z",
+      sourcePdfHash: "b".repeat(64)
+    },
     status: null,
     taskId: null,
     updatedAt: null,

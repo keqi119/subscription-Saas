@@ -70,6 +70,12 @@ export const STAGE2_HANDOVER_ESIGN_PROVIDER_ACCEPTANCE_UNCONFIRMED =
   "STAGE2_HANDOVER_ESIGN_PROVIDER_ACCEPTANCE_UNCONFIRMED";
 export const STAGE2_PLATFORM_SEAL_CLAIM_LOST =
   "STAGE2_PLATFORM_SEAL_CLAIM_LOST";
+export const STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE =
+  "STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE";
+export const STAGE2_HANDOVER_ADMIN_REVIEW_STALE =
+  "STAGE2_HANDOVER_ADMIN_REVIEW_STALE";
+export const STAGE2_HANDOVER_ADMIN_FALLBACK_REASON_INVALID =
+  "STAGE2_HANDOVER_ADMIN_FALLBACK_REASON_INVALID";
 
 const CUSTOMER_SLOT_ID = ESignSlotId.STAGE2_HANDOVER_CUSTOMER;
 const PLATFORM_SLOT_ID = ESignSlotId.STAGE2_HANDOVER_PLATFORM;
@@ -80,6 +86,8 @@ const STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING =
   "STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING";
 const STAGE2_HANDOVER_ESIGN_AUDIT_MODULE =
   "stage2-handover-esign";
+const ADMIN_FALLBACK_DELAY_MS = 15 * 60 * 1000;
+const STAGE2_CREATE_SERIALIZABLE_ATTEMPTS = 3;
 const ACTIVE_TASK_STATUSES = [
   ESignTaskStatus.CREATED,
   ESignTaskStatus.WAITING_CUSTOMER,
@@ -228,6 +236,11 @@ export interface Stage2HandoverESignView {
   rebuildRequired: boolean;
   signedArtifactAvailable: boolean;
   signingStage: typeof ESignSigningStage.STAGE2_DELIVERY_HANDOVER;
+  sourceArtifact: {
+    artifactVersion: number;
+    createdAt: Date;
+    sourcePdfHash: string;
+  } | null;
   status: ESignTaskStatus | null;
   taskId: string | null;
   updatedAt: Date | null;
@@ -297,7 +310,7 @@ export type Stage2PortalSigningStartResult =
 
 export interface Stage2ESignInitiator {
   actorId?: string;
-  actorType: "ADMIN" | "FIELD_OPERATOR";
+  actorType: "ADMIN" | "ADMIN_FALLBACK" | "FIELD_OPERATOR";
   fieldOperatorSessionId?: string;
   fieldOperatorPhone?: string;
 }
@@ -305,8 +318,48 @@ export interface Stage2ESignInitiator {
 export interface Stage2ESignReviewAcknowledgement {
   acknowledgement: true;
   artifactVersion: number;
+  reason?: string;
   reviewedAt?: Date;
   sourcePdfHash: string;
+}
+
+type Stage2PrismaClient = Pick<
+  Prisma.TransactionClient,
+  | "$queryRaw"
+  | "contractESignTask"
+  | "user"
+  | "vehicleHandoverWorkOrder"
+>;
+
+type AdminFallbackEligibilityReason =
+  | "FIELD_IDENTITY_UNAVAILABLE"
+  | "FIELD_STALLED_15_MINUTES";
+
+interface Stage2CreateInitiation {
+  actorUserId: string | null;
+  adminFallback: {
+    eligibilityReason: AdminFallbackEligibilityReason;
+    reason: string;
+    reviewAcknowledgement: {
+      acknowledgement: true;
+      artifactVersion: number;
+      reviewedAt: string;
+      sourcePdfHash: string;
+    };
+  } | null;
+  fieldAudit: {
+    initiator: {
+      actorType: "FIELD_OPERATOR";
+      fieldOperatorPhone: string;
+      fieldOperatorSessionId: string;
+    };
+    reviewAcknowledgement: {
+      acknowledgement: true;
+      artifactVersion: number;
+      reviewedAt: string;
+      sourcePdfHash: string;
+    };
+  } | null;
 }
 
 interface AcceptedCustomerProviderResult {
@@ -342,19 +395,33 @@ export class Stage2HandoverESignService {
   ) {}
 
   async getStatus(workOrderId: string): Promise<Stage2HandoverESignView> {
-    const [workOrder, readiness] = await Promise.all([
+    const [workOrder, readiness, databaseNow] = await Promise.all([
       this.loadWorkOrder(workOrderId),
-      this.readinessService.getReadiness(workOrderId)
+      this.readinessService.getReadiness(workOrderId),
+      this.loadDatabaseNow(this.prisma)
     ]);
     const task = await this.resolveCurrentTask(workOrder);
-    const fieldInitiatorAvailable = task
-      ? true
-      : await this.hasAvailableFieldInitiator(workOrder);
+    const canEvaluateAdminFallback = Boolean(
+      this.isStage2HandoverWorkflowEnabled() &&
+      !task &&
+      readiness.ready &&
+      !await this.hasBlockingAdminFallbackTaskEvidence(
+        workOrder,
+        this.prisma
+      )
+    );
+    const adminFallbackEligibility = canEvaluateAdminFallback
+      ? await this.getAdminFallbackEligibility(
+          workOrder,
+          this.prisma,
+          databaseNow
+        )
+      : null;
     return this.toView(
       workOrder,
       task,
       readiness,
-      fieldInitiatorAvailable
+      Boolean(adminFallbackEligibility?.eligible)
     );
   }
 
@@ -646,10 +713,12 @@ export class Stage2HandoverESignService {
     review?: Stage2ESignReviewAcknowledgement
   ): Promise<Stage2HandoverESignView> {
     const initialWorkOrder = await this.loadWorkOrder(workOrderId);
-    const initiation = await this.assertCreateInitiator(
+    const preflightInitiation = await this.assertCreateInitiator(
       initialWorkOrder,
       initiator,
-      review
+      review,
+      this.prisma,
+      await this.loadDatabaseNow(this.prisma)
     );
     let existingActiveTask: Stage2Task | null;
     try {
@@ -668,10 +737,16 @@ export class Stage2HandoverESignService {
       throw error;
     }
     if (existingActiveTask) {
+      if (
+        this.isStage2HandoverWorkflowEnabled() &&
+        isAdminInitiator(initiator)
+      ) {
+        throw adminFallbackClaimed();
+      }
       return this.returnActiveCreateTask(
         initialWorkOrder,
         existingActiveTask,
-        initiation.actorUserId
+        preflightInitiation.actorUserId
       );
     }
 
@@ -687,33 +762,89 @@ export class Stage2HandoverESignService {
     }
 
     await this.readinessService.assertReady(workOrderId);
-    const workOrder = await this.loadWorkOrder(workOrderId);
-    const context = this.requireCreationContext(workOrder);
-    this.assertReviewedSourceMatchesHandover(
-      initiation.fieldAudit?.reviewAcknowledgement ?? null,
-      context.handover
-    );
-    const coordinates = readStage2Coordinates(
-      context.handover.handoverContract.contractSnapshot,
-      context.handover.sourceDocumentFileId!
-    );
-    const customerCoordinate = coordinates.find(
-      (coordinate) => coordinate.slotId === "STAGE2_HANDOVER_CUSTOMER"
-    )!;
     const providerType = parseProvider(
       this.configService.get<string>("ESIGN_PROVIDER") ?? "mock"
     );
-    const now = new Date();
 
-    let task: Stage2Task;
+    let reservation: {
+      context: ReturnType<
+        Stage2HandoverESignService["requireCreationContext"]
+      >;
+      customerCoordinate: ESignSigningSlotCoordinate;
+      initiation: Stage2CreateInitiation;
+      now: Date;
+      task: Stage2Task;
+    };
     try {
-      task = await withUniqueBusinessNoRetry(() => {
+      reservation = await withUniqueBusinessNoRetry(() => {
         const taskNo = createBusinessNo("ESG");
-        return this.prisma.$transaction(async (tx) => {
+        return this.runSerializableCreateTransaction(async (tx) => {
+          await this.lockStage2CreationScope(tx, workOrderId);
+          const lockedWorkOrder = await this.loadWorkOrderWithClient(
+            tx,
+            workOrderId
+          );
+          const activeTask = await this.findActiveTask(
+            lockedWorkOrder,
+            tx
+          );
+          if (activeTask) {
+            throw adminFallbackClaimed();
+          }
+          const lockedPointerTask = this.pointerTask(lockedWorkOrder);
+          if (
+            lockedPointerTask &&
+            TERMINAL_REBUILD_STATUSES.has(
+              lockedPointerTask.taskStatus
+            )
+          ) {
+            throw new ConflictException({
+              code: STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED,
+              message:
+                "The terminal Stage 2 eSign task must be explicitly voided before rebuilding."
+            });
+          }
+          if (
+            await this.hasBlockingAdminFallbackTaskEvidence(
+              lockedWorkOrder,
+              tx
+            )
+          ) {
+            throw adminFallbackClaimed();
+          }
+
+          const databaseNow = await this.loadDatabaseNow(tx);
+          const transactionInitiation =
+            await this.assertCreateInitiator(
+              lockedWorkOrder,
+              initiator,
+              review,
+              tx,
+              databaseNow
+            );
+          const context = this.requireCreationContext(lockedWorkOrder, true);
+          this.assertReviewedSourceMatchesHandover(
+            transactionInitiation.fieldAudit?.reviewAcknowledgement ??
+              transactionInitiation.adminFallback
+                ?.reviewAcknowledgement ??
+              null,
+            context.handover,
+            isAdminInitiator(initiator)
+              ? STAGE2_HANDOVER_ADMIN_REVIEW_STALE
+              : "STAGE2_HANDOVER_FIELD_REVIEW_STALE"
+          );
+          const coordinates = readStage2Coordinates(
+            context.handover.handoverContract.contractSnapshot,
+            context.handover.sourceDocumentFileId!
+          );
+          const customerCoordinate = coordinates.find(
+            (coordinate) =>
+              coordinate.slotId === "STAGE2_HANDOVER_CUSTOMER"
+          )!;
           const created = await tx.contractESignTask.create({
             data: {
               contractId: context.handover.handoverContract.id,
-              createdBy: initiation.actorUserId,
+              createdBy: transactionInitiation.actorUserId,
               customerId: context.order.customer.id,
               documentName:
                 context.handover.handoverContract.contractTitle ||
@@ -727,12 +858,25 @@ export class Stage2HandoverESignService {
                 documentType: "DELIVERY_HANDOVER",
                 handoverId: context.handover.id,
                 manifestHash: context.handover.manifestHash,
-                ...(initiation.fieldAudit
+                ...(transactionInitiation.fieldAudit
                   ? {
-                      initiator: initiation.fieldAudit.initiator,
+                      initiator:
+                        transactionInitiation.fieldAudit.initiator,
                       reviewAcknowledgement:
-                        initiation.fieldAudit.reviewAcknowledgement
+                        transactionInitiation.fieldAudit
+                          .reviewAcknowledgement
                     }
+                  : transactionInitiation.adminFallback
+                    ? {
+                        adminFallbackReason:
+                          transactionInitiation.adminFallback.reason,
+                        initiator: {
+                          actorType: "ADMIN_FALLBACK"
+                        },
+                        reviewAcknowledgement:
+                          transactionInitiation.adminFallback
+                            .reviewAcknowledgement
+                      }
                   : {}),
                 signingStage: "STAGE2_DELIVERY_HANDOVER",
                 slotIds: [
@@ -771,7 +915,7 @@ export class Stage2HandoverESignService {
               signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
               taskNo,
               taskStatus: ESignTaskStatus.CREATED,
-              updatedBy: initiation.actorUserId
+              updatedBy: transactionInitiation.actorUserId
             },
             include: stage2TaskInclude
           });
@@ -780,7 +924,7 @@ export class Stage2HandoverESignService {
               failureReason: null,
               handoverESignTaskId: created.id,
               status: DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
-              updatedBy: initiation.actorUserId
+              updatedBy: transactionInitiation.actorUserId
             },
             where: {
               artifactVersion: context.handover.artifactVersion,
@@ -801,7 +945,41 @@ export class Stage2HandoverESignService {
               message: "Another Stage 2 eSign create action already claimed this handover."
             });
           }
-          return created;
+          if (transactionInitiation.adminFallback) {
+            await tx.auditLog.create({
+              data: {
+                action: AuditAction.CREATE,
+                afterSnapshot: {
+                  actorType: "ADMIN_FALLBACK",
+                  artifactVersion: context.handover.artifactVersion,
+                  eligibilityReason:
+                    transactionInitiation.adminFallback
+                      .eligibilityReason,
+                  handoverId: context.handover.id,
+                  reason: transactionInitiation.adminFallback.reason,
+                  sourceDocumentFileId:
+                    context.handover.sourceDocumentFileId,
+                  taskId: created.id
+                },
+                beforeSnapshot: {
+                  handoverStatus:
+                    DeliveryHandoverStatus.SOURCE_GENERATED,
+                  taskId: null
+                },
+                entityId: workOrderId,
+                entityType: "VehicleHandoverWorkOrder",
+                module: STAGE2_HANDOVER_ESIGN_AUDIT_MODULE,
+                operatorId: transactionInitiation.actorUserId
+              }
+            });
+          }
+          return {
+            context,
+            customerCoordinate,
+            initiation: transactionInitiation,
+            now: new Date(),
+            task: created
+          };
         });
       });
     } catch (error) {
@@ -818,6 +996,13 @@ export class Stage2HandoverESignService {
       throw error;
     }
 
+    const {
+      context,
+      customerCoordinate,
+      initiation,
+      now,
+      task
+    } = reservation;
     const { customerSigner } = requireTypedSigners(task);
     const customerTransactionId = buildTransactionId(task.taskNo, "H1");
     const customerClaimExpiresAt = new Date(now.getTime() + PLATFORM_CLAIM_MS);
@@ -1590,7 +1775,14 @@ export class Stage2HandoverESignService {
   }
 
   private async loadWorkOrder(workOrderId: string) {
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({
+    return this.loadWorkOrderWithClient(this.prisma, workOrderId);
+  }
+
+  private async loadWorkOrderWithClient(
+    client: Stage2PrismaClient,
+    workOrderId: string
+  ) {
+    const workOrder = await client.vehicleHandoverWorkOrder.findUnique({
       include: stage2LifecycleInclude,
       where: { id: workOrderId }
     });
@@ -1601,6 +1793,58 @@ export class Stage2HandoverESignService {
       });
     }
     return workOrder;
+  }
+
+  private async lockStage2CreationScope(
+    tx: Prisma.TransactionClient,
+    workOrderId: string
+  ) {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT w."id"
+      FROM "vehicle_handover_work_order" AS w
+      INNER JOIN "vehicle_delivery_handover" AS h
+        ON h."id" = w."handover_id"
+      WHERE w."id" = CAST(${workOrderId} AS uuid)
+      FOR UPDATE OF w, h
+    `);
+  }
+
+  private async runSerializableCreateTransaction<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>
+  ) {
+    for (
+      let attempt = 1;
+      attempt <= STAGE2_CREATE_SERIALIZABLE_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(operation, {
+          isolationLevel:
+            Prisma.TransactionIsolationLevel.Serializable
+        });
+      } catch (error) {
+        if (!isPrismaSerializationConflict(error)) {
+          throw error;
+        }
+        if (attempt === STAGE2_CREATE_SERIALIZABLE_ATTEMPTS) {
+          throw adminFallbackClaimed();
+        }
+      }
+    }
+    throw new Error("STAGE2_HANDOVER_CREATE_RETRY_EXHAUSTED");
+  }
+
+  private async loadDatabaseNow(client: Stage2PrismaClient) {
+    const rows = await client.$queryRaw<Array<{ now: Date | string }>>(
+      Prisma.sql`SELECT CURRENT_TIMESTAMP AS "now"`
+    );
+    const value = rows[0]?.now;
+    const databaseNow =
+      value instanceof Date ? value : new Date(value ?? Number.NaN);
+    if (!Number.isFinite(databaseNow.getTime())) {
+      throw new Error("STAGE2_HANDOVER_DATABASE_TIME_INVALID");
+    }
+    return databaseNow;
   }
 
   private async loadOwnedWorkOrder(workOrderId: string, customerId: string) {
@@ -1633,13 +1877,16 @@ export class Stage2HandoverESignService {
     return handover.handoverESignTask;
   }
 
-  private async findActiveTask(workOrder: Stage2LifecycleWorkOrder) {
+  private async findActiveTask(
+    workOrder: Stage2LifecycleWorkOrder,
+    client: Stage2PrismaClient = this.prisma
+  ) {
     const pointer = this.pointerTask(workOrder);
     const contractId = workOrder.handover?.handoverContractId;
     if (!contractId) {
       return null;
     }
-    const contractTask = await this.prisma.contractESignTask.findFirst({
+    const contractTask = await client.contractESignTask.findFirst({
       include: stage2TaskInclude,
       orderBy: { createdAt: "desc" },
       where: {
@@ -1659,6 +1906,74 @@ export class Stage2HandoverESignService {
       return pointer;
     }
     return null;
+  }
+
+  private async hasBlockingAdminFallbackTaskEvidence(
+    workOrder: Stage2LifecycleWorkOrder,
+    client: Stage2PrismaClient
+  ) {
+    const contractId = workOrder.handover?.handoverContractId;
+    if (!contractId) {
+      return false;
+    }
+    const latestTask = await client.contractESignTask.findFirst({
+      include: stage2TaskInclude,
+      orderBy: { createdAt: "desc" },
+      where: {
+        contractId,
+        deletedAt: null,
+        OR: [
+          {
+            taskStatus: {
+              in: [...ACTIVE_TASK_STATUSES]
+            }
+          },
+          {
+            providerTaskId: {
+              not: null
+            }
+          },
+          {
+            signers: {
+              some: {
+                deletedAt: null,
+                OR: [
+                  {
+                    claimExpiresAt: {
+                      not: null
+                    }
+                  },
+                  {
+                    providerTransactionId: {
+                      not: null
+                    }
+                  },
+                  {
+                    signedAt: {
+                      not: null
+                    }
+                  },
+                  {
+                    signerStatus: ESignSignerStatus.SIGNED
+                  }
+                ],
+                required: true
+              }
+            }
+          }
+        ],
+        signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER
+      }
+    });
+    return Boolean(
+      latestTask &&
+      (
+        ACTIVE_TASK_STATUSES.includes(
+          latestTask.taskStatus as typeof ACTIVE_TASK_STATUSES[number]
+        ) ||
+        hasVoidBlockingStage2Evidence(latestTask)
+      )
+    );
   }
 
   private async returnActiveCreateTask(
@@ -1716,6 +2031,12 @@ export class Stage2HandoverESignService {
     const winner = await this.findActiveTask(current);
     if (!winner) {
       return null;
+    }
+    if (
+      this.isStage2HandoverWorkflowEnabled() &&
+      isAdminInitiator(initiator)
+    ) {
+      throw adminFallbackClaimed();
     }
     return this.returnActiveCreateTask(
       current,
@@ -1956,13 +2277,18 @@ export class Stage2HandoverESignService {
     return pointer ?? contractTask;
   }
 
-  private requireCreationContext(workOrder: Stage2LifecycleWorkOrder) {
+  private requireCreationContext(
+    workOrder: Stage2LifecycleWorkOrder,
+    requireGeneratedContract = false
+  ) {
     const handover = workOrder.handover;
     if (
       !handover ||
       !handover.handoverContract ||
       !handover.handoverContractId ||
       handover.handoverContract.id !== handover.handoverContractId ||
+      (requireGeneratedContract &&
+        handover.handoverContract.status !== ContractStatus.GENERATED) ||
       !handover.sourceDocumentFileId ||
       handover.handoverContract.fileId !== handover.sourceDocumentFileId ||
       !isSha256Digest(handover.sourcePdfHash)
@@ -1984,32 +2310,61 @@ export class Stage2HandoverESignService {
   private async assertCreateInitiator(
     workOrder: Stage2LifecycleWorkOrder,
     initiator: Stage2ESignInitiator,
-    review?: Stage2ESignReviewAcknowledgement
-  ) {
+    review: Stage2ESignReviewAcknowledgement | undefined,
+    client: Stage2PrismaClient = this.prisma,
+    databaseNow?: Date
+  ): Promise<Stage2CreateInitiation> {
     const workflowEnabled = this.isStage2HandoverWorkflowEnabled();
-    if (
-      workflowEnabled &&
-      initiator.actorType === "ADMIN" &&
-      await this.hasAvailableFieldInitiator(workOrder)
-    ) {
-      throw new BadRequestException({
-        code: "STAGE2_HANDOVER_FIELD_INITIATOR_REQUIRED",
-        message: "The Stage 2 workflow must be initiated by the assigned Field operator."
-      });
-    }
-    if (!workflowEnabled && initiator.actorType !== "ADMIN") {
+    const effectiveNow =
+      databaseNow ?? await this.loadDatabaseNow(client);
+    if (!workflowEnabled && !isAdminInitiator(initiator)) {
       throw new BadRequestException({
         code: "STAGE2_HANDOVER_FIELD_WORKFLOW_DISABLED",
         message: "Field Stage 2 eSign initiation is disabled."
       });
     }
-    if (initiator.actorType === "ADMIN") {
+    if (isAdminInitiator(initiator)) {
       const actorId = initiator.actorId?.trim();
       if (!actorId) {
         throw new BadRequestException("An Admin initiator is required.");
       }
+      if (!workflowEnabled) {
+        return {
+          actorUserId: actorId,
+          adminFallback: null,
+          fieldAudit: null
+        };
+      }
+
+      const normalizedReason = normalizeAdminFallbackReason(
+        review?.reason
+      );
+      const reviewAcknowledgement =
+        this.requireReviewAcknowledgement(
+          review,
+          workOrder.handover,
+          effectiveNow,
+          STAGE2_HANDOVER_ADMIN_REVIEW_STALE
+        );
+      const eligibility = await this.getAdminFallbackEligibility(
+        workOrder,
+        client,
+        effectiveNow
+      );
+      if (!eligibility.eligible || !eligibility.reason) {
+        throw new BadRequestException({
+          code: STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE,
+          message:
+            "The assigned Field operator is still available and the 15-minute fallback window has not elapsed."
+        });
+      }
       return {
         actorUserId: actorId,
+        adminFallback: {
+          eligibilityReason: eligibility.reason,
+          reason: normalizedReason,
+          reviewAcknowledgement
+        },
         fieldAudit: null
       };
     }
@@ -2027,7 +2382,33 @@ export class Stage2HandoverESignService {
         "No access to this field handover work order."
       );
     }
-    const handover = workOrder.handover;
+    const reviewAcknowledgement =
+      this.requireReviewAcknowledgement(
+        review,
+        workOrder.handover,
+        effectiveNow,
+        "STAGE2_HANDOVER_FIELD_REVIEW_STALE"
+      );
+    return {
+      actorUserId: null,
+      adminFallback: null,
+      fieldAudit: {
+        initiator: {
+          actorType: "FIELD_OPERATOR" as const,
+          fieldOperatorPhone,
+          fieldOperatorSessionId
+        },
+        reviewAcknowledgement
+      }
+    };
+  }
+
+  private requireReviewAcknowledgement(
+    review: Stage2ESignReviewAcknowledgement | undefined,
+    handover: Stage2LifecycleWorkOrder["handover"],
+    defaultReviewedAt: Date,
+    staleCode: string
+  ) {
     const sourcePdfHash =
       typeof review?.sourcePdfHash === "string"
         ? review.sourcePdfHash.trim().toLowerCase()
@@ -2042,12 +2423,14 @@ export class Stage2HandoverESignService {
       sourcePdfHash !== handover.sourcePdfHash
     ) {
       throw new ConflictException({
-        code: "STAGE2_HANDOVER_FIELD_REVIEW_STALE",
+        code: staleCode,
         message: "The reviewed Stage 2 source PDF is stale."
       });
     }
     const reviewedAt =
-      review.reviewedAt === undefined ? new Date() : review.reviewedAt;
+      review.reviewedAt === undefined
+        ? defaultReviewedAt
+        : review.reviewedAt;
     if (
       !(reviewedAt instanceof Date) ||
       !Number.isFinite(reviewedAt.getTime())
@@ -2057,25 +2440,49 @@ export class Stage2HandoverESignService {
       );
     }
     return {
-      actorUserId: null,
-      fieldAudit: {
-        initiator: {
-          actorType: "FIELD_OPERATOR" as const,
-          fieldOperatorPhone,
-          fieldOperatorSessionId
-        },
-        reviewAcknowledgement: {
-          acknowledgement: true as const,
-          artifactVersion: review.artifactVersion,
-          reviewedAt: reviewedAt.toISOString(),
-          sourcePdfHash
-        }
-      }
+      acknowledgement: true as const,
+      artifactVersion: review.artifactVersion,
+      reviewedAt: reviewedAt.toISOString(),
+      sourcePdfHash: sourcePdfHash!
+    };
+  }
+
+  private async getAdminFallbackEligibility(
+    workOrder: Stage2LifecycleWorkOrder,
+    client: Stage2PrismaClient,
+    databaseNow: Date
+  ): Promise<{
+    eligible: boolean;
+    reason: AdminFallbackEligibilityReason | null;
+  }> {
+    if (!await this.hasAvailableFieldInitiator(workOrder, client)) {
+      return {
+        eligible: true,
+        reason: "FIELD_IDENTITY_UNAVAILABLE"
+      };
+    }
+    const sourceReadyAt =
+      workOrder.handover?.handoverContract?.createdAt;
+    if (
+      sourceReadyAt instanceof Date &&
+      Number.isFinite(sourceReadyAt.getTime()) &&
+      databaseNow.getTime() - sourceReadyAt.getTime() >=
+        ADMIN_FALLBACK_DELAY_MS
+    ) {
+      return {
+        eligible: true,
+        reason: "FIELD_STALLED_15_MINUTES"
+      };
+    }
+    return {
+      eligible: false,
+      reason: null
     };
   }
 
   private async hasAvailableFieldInitiator(
-    workOrder: Stage2LifecycleWorkOrder
+    workOrder: Stage2LifecycleWorkOrder,
+    client: Stage2PrismaClient = this.prisma
   ) {
     const snapshotPhone = normalizeAvailableFieldPhone(
       workOrder.fieldOperatorPhone
@@ -2097,7 +2504,7 @@ export class Stage2HandoverESignService {
       return false;
     }
 
-    const user = await this.prisma.user.findFirst({
+    const user = await client.user.findFirst({
       select: {
         mobile: true,
         status: true
@@ -2130,7 +2537,8 @@ export class Stage2HandoverESignService {
     handover: {
       artifactVersion: number;
       sourcePdfHash: string | null;
-    }
+    },
+    staleCode = "STAGE2_HANDOVER_FIELD_REVIEW_STALE"
   ) {
     if (
       review &&
@@ -2140,7 +2548,7 @@ export class Stage2HandoverESignService {
       )
     ) {
       throw new ConflictException({
-        code: "STAGE2_HANDOVER_FIELD_REVIEW_STALE",
+        code: staleCode,
         message: "The reviewed Stage 2 source PDF is stale."
       });
     }
@@ -2699,7 +3107,7 @@ export class Stage2HandoverESignService {
     workOrder: Stage2LifecycleWorkOrder,
     task: Stage2Task | null,
     readiness: Stage2HandoverESignReadiness,
-    fieldInitiatorAvailable = true
+    adminFallbackEligible = false
   ): Stage2HandoverESignView {
     const handover = workOrder.handover;
     const signers = task ? requireTypedSigners(task) : null;
@@ -2714,7 +3122,7 @@ export class Stage2HandoverESignService {
         this.isStage2HandoverWorkflowEnabled() &&
         !task &&
         readiness.ready &&
-        !fieldInitiatorAvailable
+        adminFallbackEligible
       ),
       canReconcileCustomer: canReconcileCustomerSignature(
         workOrder,
@@ -2766,6 +3174,15 @@ export class Stage2HandoverESignService {
       ),
       signedArtifactAvailable: Boolean(handover?.signedDocumentFileId),
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+      sourceArtifact:
+        handover?.handoverContract &&
+        isSha256Digest(handover.sourcePdfHash)
+          ? {
+              artifactVersion: handover.artifactVersion,
+              createdAt: handover.handoverContract.createdAt,
+              sourcePdfHash: handover.sourcePdfHash!
+            }
+          : null,
       status: task?.taskStatus ?? null,
       taskId: task?.id ?? null,
       updatedAt: task?.updatedAt ?? handover?.updatedAt ?? null,
@@ -3276,6 +3693,25 @@ function normalizeVoidReason(value: string) {
   return normalized;
 }
 
+function normalizeAdminFallbackReason(value: string | undefined) {
+  const normalized = value?.trim().replace(/\s+/g, " ");
+  if (!normalized || normalized.length < 3 || normalized.length > 500) {
+    throw new BadRequestException({
+      code: STAGE2_HANDOVER_ADMIN_FALLBACK_REASON_INVALID,
+      message:
+        "An Admin fallback reason between 3 and 500 characters is required."
+    });
+  }
+  return normalized;
+}
+
+function isAdminInitiator(initiator: Stage2ESignInitiator) {
+  return (
+    initiator.actorType === "ADMIN" ||
+    initiator.actorType === "ADMIN_FALLBACK"
+  );
+}
+
 function exceptionCode(error: { getResponse(): object | string }) {
   const response = error.getResponse();
   return typeof response === "object" && response && "code" in response
@@ -3291,6 +3727,14 @@ function isCreateWinnerRace(error: unknown) {
   return (
     code === STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED ||
     code === STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT
+  );
+}
+
+function isPrismaSerializationConflict(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === "P2034"
   );
 }
 
@@ -3312,6 +3756,14 @@ function orphanConflict() {
   return new ConflictException({
     code: STAGE2_HANDOVER_ESIGN_ORPHAN_CONFLICT,
     message: "The active Stage 2 eSign task is not linked by the handover pointer."
+  });
+}
+
+function adminFallbackClaimed() {
+  return new ConflictException({
+    code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
+    message:
+      "Another Stage 2 eSign action already claimed this handover."
   });
 }
 

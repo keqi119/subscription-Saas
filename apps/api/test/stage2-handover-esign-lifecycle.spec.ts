@@ -21,6 +21,8 @@ import {
   VehicleHandoverWorkOrderStatus
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
+import { plainToInstance } from "class-transformer";
+import { validate } from "class-validator";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const businessNumberMocks = vi.hoisted(() => ({
@@ -46,6 +48,7 @@ import {
   HandoverWorkOrderAdminController,
   HandoverWorkOrderFieldController
 } from "../src/handover-work-order/handover-work-order.controller";
+import { StartAdminStage2ESignDto } from "../src/handover-work-order/handover-work-order.dto";
 import {
   STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED,
   STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED,
@@ -285,6 +288,46 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
   });
 
+  it("rejects a source contract that stops being generated before the transactional reservation", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.readiness.assertReady.mockImplementationOnce(async () => {
+      harness.state.workOrder.handover.handoverContract.status =
+        ContractStatus.SIGNING;
+      return {
+        blockers: [],
+        ready: true,
+        state: {
+          esignTaskId: null,
+          esignTaskStatus: null,
+          handoverContractId: "contract-stage2-1",
+          handoverId: "handover-1",
+          handoverStatus:
+            DeliveryHandoverStatus.SOURCE_GENERATED,
+          orderId: "order-1",
+          orderStatus: "PENDING_DELIVERY",
+          workOrderId: "work-order-1",
+          workOrderStatus: "CUSTOMER_CONFIRMED"
+        }
+      };
+    });
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        fieldInitiator(),
+        fieldReview()
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_SOURCE_INVALID"
+      })
+    });
+    expect(harness.prisma.contractESignTask.create).not.toHaveBeenCalled();
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+  });
+
   it("does not enqueue customer work when provider-backed initiation fails", async () => {
     const harness = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
@@ -307,44 +350,286 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.workflow.enqueueCustomerESignJobs).not.toHaveBeenCalled();
   });
 
-  it("allows Admin initiation only as a fallback when the Field operator is unavailable", async () => {
+  it("keeps legacy Admin initiation compatible when the workflow is disabled", async () => {
     const compatibility = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "false"
     });
     await expect(
       compatibility.service.create("work-order-1", adminInitiator())
     ).resolves.toMatchObject({ taskId: "stage2-task-1" });
+  });
 
-    const workflow = createHarness({
+  it("denies Admin fallback before 15 minutes when the assigned Field identity is available", async () => {
+    const harness = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
     });
+    harness.setDatabaseTime(
+      new Date(NOW.getTime() + 15 * 60 * 1000 - 1)
+    );
+
     await expect(
-      workflow.service.create("work-order-1", adminInitiator())
+      harness.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: false,
+      sourceArtifact: {
+        artifactVersion: 3,
+        sourcePdfHash: "b".repeat(64)
+      }
+    });
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview()
+      )
     ).rejects.toMatchObject({
       response: expect.objectContaining({
-        code: "STAGE2_HANDOVER_FIELD_INITIATOR_REQUIRED"
+        code: "STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE"
       })
     });
-    expect(workflow.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.auditLogs).toEqual([]);
+  });
 
-    const fallback = createHarness({
+  it("allows Admin fallback at exactly 15 minutes using database time, independent of the process clock", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+    const harness = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
     });
-    fallback.prisma.user.findFirst.mockResolvedValue(null);
+    harness.setDatabaseTime(
+      new Date(NOW.getTime() + 15 * 60 * 1000)
+    );
 
     await expect(
-      fallback.service.getStatus("work-order-1")
+      harness.service.getStatus("work-order-1")
     ).resolves.toMatchObject({
       canAdminInitiate: true,
-      canReconcileCustomer: false
+      canReconcileCustomer: false,
+      sourceArtifact: {
+        artifactVersion: 3,
+        sourcePdfHash: "b".repeat(64)
+      }
     });
-    await expect(
-      fallback.service.create("work-order-1", adminInitiator())
-    ).resolves.toMatchObject({
+    const result = await harness.service.create(
+      "work-order-1",
+      adminFallbackInitiator(),
+      adminFallbackReview()
+    );
+
+    expect(result).toMatchObject({
       canAdminInitiate: false,
       taskId: "stage2-task-1"
     });
-    expect(fallback.provider.createSignTask).toHaveBeenCalledTimes(1);
+    expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+    expect(
+      harness.prisma.$transaction.mock.calls.some(
+        ([, options]: [unknown, { isolationLevel?: string }?]) =>
+          options?.isolationLevel === "Serializable"
+      )
+    ).toBe(true);
+    expect(harness.prisma.$queryRaw).toHaveBeenCalled();
+    expect(harness.auditLogs).toEqual([
+      expect.objectContaining({
+        action: AuditAction.CREATE,
+        afterSnapshot: expect.objectContaining({
+          actorType: "ADMIN_FALLBACK",
+          artifactVersion: 3,
+          eligibilityReason: "FIELD_STALLED_15_MINUTES",
+          reason: "Field 经办人超过十五分钟未推进",
+          sourceDocumentFileId: "file-stage2-1",
+          taskId: "stage2-task-1"
+        }),
+        entityId: "work-order-1",
+        entityType: "VehicleHandoverWorkOrder",
+        module: "stage2-handover-esign",
+        operatorId: "admin-1"
+      })
+    ]);
+  });
+
+  it("allows immediate Admin fallback when the assigned Field identity is technically unavailable", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.prisma.user.findFirst.mockResolvedValue(null);
+    harness.setDatabaseTime(NOW);
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: true
+    });
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview({
+          reason: "Field 经办人账号已停用，后台接续处理"
+        })
+      )
+    ).resolves.toMatchObject({
+      taskId: "stage2-task-1"
+    });
+    expect(harness.auditLogs[0]).toMatchObject({
+      afterSnapshot: expect.objectContaining({
+        eligibilityReason: "FIELD_IDENTITY_UNAVAILABLE"
+      })
+    });
+  });
+
+  it("retries a real PostgreSQL serializable conflict without duplicating the Admin fallback audit", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.prisma.user.findFirst.mockResolvedValue(null);
+    const runTransaction =
+      harness.prisma.$transaction.getMockImplementation()!;
+    harness.prisma.$transaction
+      .mockRejectedValueOnce({ code: "P2034" })
+      .mockImplementation(runTransaction);
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview()
+      )
+    ).resolves.toMatchObject({
+      taskId: "stage2-task-1"
+    });
+
+    expect(harness.auditLogs).toHaveLength(1);
+    expect(harness.prisma.contractESignTask.create).toHaveBeenCalledTimes(
+      1
+    );
+  });
+
+  it("maps exhausted serializable conflicts to a stable claimed response", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.prisma.user.findFirst.mockResolvedValue(null);
+    harness.prisma.$transaction.mockRejectedValue({
+      code: "P2034"
+    });
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview()
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
+      })
+    });
+    expect(harness.auditLogs).toEqual([]);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["too short", "ab"],
+    ["too long", "a".repeat(501)],
+    ["whitespace only", "   "]
+  ])("rejects an Admin fallback reason that is %s", async (
+    _label,
+    reason
+  ) => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.prisma.user.findFirst.mockResolvedValue(null);
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview({ reason })
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ADMIN_FALLBACK_REASON_INVALID"
+      })
+    });
+    expect(harness.prisma.contractESignTask.create).not.toHaveBeenCalled();
+  });
+
+  it("validates the Admin fallback reason after whitespace normalization", async () => {
+    const valid = plainToInstance(StartAdminStage2ESignDto, {
+      acknowledgement: true,
+      artifactVersion: 3,
+      reason: `  ${"a".repeat(500)}  `,
+      sourcePdfHash: "b".repeat(64)
+    });
+    const invalid = plainToInstance(StartAdminStage2ESignDto, {
+      acknowledgement: true,
+      artifactVersion: 3,
+      reason: "  a  ",
+      sourcePdfHash: "b".repeat(64)
+    });
+
+    expect(valid.reason).toHaveLength(500);
+    await expect(validate(valid)).resolves.toEqual([]);
+    expect((await validate(invalid)).map((error) => error.property)).toContain(
+      "reason"
+    );
+  });
+
+  it.each([
+    ["artifact version", { artifactVersion: 4 }],
+    ["source PDF hash", { sourcePdfHash: "c".repeat(64) }],
+    ["acknowledgement", { acknowledgement: false }]
+  ])("rejects stale Admin fallback %s acknowledgement", async (
+    _label,
+    override
+  ) => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.prisma.user.findFirst.mockResolvedValue(null);
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview(override as never)
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ADMIN_REVIEW_STALE"
+      })
+    });
+    expect(harness.prisma.contractESignTask.create).not.toHaveBeenCalled();
+  });
+
+  it("denies Admin fallback when an orphan terminal task retains provider evidence", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.prisma.user.findFirst.mockResolvedValue(null);
+    harness.state.activeTask = makeTask({
+      taskStatus: ESignTaskStatus.FAILED
+    });
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: false
+    });
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview()
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ESIGN_ALREADY_CLAIMED
+      })
+    });
+    expect(harness.prisma.contractESignTask.create).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1084,54 +1369,26 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
   });
 
-  it("returns the winner when two initiations overlap at the handover claim", async () => {
+  it("creates one task when Field and Admin fallback overlap at the handover claim", async () => {
     const harness = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
     });
-    const createdTasks = new Map<string, ReturnType<typeof makeTask>>();
-    let createAttempt = 0;
-    let releaseCreates!: () => void;
-    const bothCreatesReached = new Promise<void>((resolve) => {
-      releaseCreates = resolve;
-    });
-    harness.prisma.contractESignTask.create.mockImplementation(
-      async ({ data }: any) => {
-        createAttempt += 1;
-        const attempt = createAttempt;
-        if (attempt === 2) {
-          releaseCreates();
-        }
-        await bothCreatesReached;
-        const task = makeTaskFromCreateData(
-          data,
-          `stage2-task-overlap-${attempt}`
-        );
-        createdTasks.set(task.id, task);
-        return task;
-      }
+    harness.setDatabaseTime(
+      new Date(NOW.getTime() + 15 * 60 * 1000)
     );
-    const updateHandover =
-      harness.prisma.vehicleDeliveryHandover.updateMany.getMockImplementation();
-    harness.prisma.vehicleDeliveryHandover.updateMany.mockImplementation(
-      async (input: any) => {
-        if (
-          input.where?.handoverESignTaskId === null &&
-          input.data?.handoverESignTaskId
-        ) {
-          const handover = harness.state.workOrder.handover;
-          if (
-            handover.handoverESignTaskId !== null ||
-            handover.status !== DeliveryHandoverStatus.SOURCE_GENERATED
-          ) {
-            return { count: 0 };
-          }
-          const task = createdTasks.get(input.data.handoverESignTaskId)!;
-          Object.assign(handover, input.data);
-          handover.handoverESignTask = task;
-          harness.state.activeTask = task;
-          return { count: 1 };
-        }
-        return updateHandover!(input);
+    const runTransaction =
+      harness.prisma.$transaction.getMockImplementation()!;
+    let transactionTail = Promise.resolve();
+    harness.prisma.$transaction.mockImplementation(
+      (operation: any, options?: { isolationLevel?: string }) => {
+        let release!: () => void;
+        const precedingTransaction = transactionTail;
+        transactionTail = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return precedingTransaction
+          .then(() => runTransaction(operation, options))
+          .finally(release);
       }
     );
 
@@ -1143,21 +1400,30 @@ describe("Stage2HandoverESignService", () => {
       ),
       harness.service.create(
         "work-order-1",
-        fieldInitiator(),
-        fieldReview()
+        adminFallbackInitiator(),
+        adminFallbackReview()
       )
     ]);
 
-    expect(settled.every((result) => result.status === "fulfilled")).toBe(
-      true
+    const fulfilled = settled.filter(
+      (result): result is PromiseFulfilledResult<
+        Awaited<ReturnType<typeof harness.service.create>>
+      > => result.status === "fulfilled"
     );
-    const taskIds = settled.map((result) =>
-      result.status === "fulfilled" ? result.value.taskId : null
-    );
+    expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+    const taskIds = fulfilled.map((result) => result.value.taskId);
     expect(new Set(taskIds)).toEqual(
       new Set([harness.state.workOrder.handover.handoverESignTaskId])
     );
+    expect(harness.prisma.contractESignTask.create).toHaveBeenCalledTimes(1);
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+    const winningInitiator = (
+      harness.state.workOrder.handover.handoverESignTask
+        ?.requestSnapshot as Record<string, any>
+    )?.initiator?.actorType;
+    expect(harness.auditLogs).toHaveLength(
+      winningInitiator === "ADMIN_FALLBACK" ? 1 : 0
+    );
   });
 
   it("reloads the winner when an overlapping initiation reads a stale pointer", async () => {
@@ -3216,6 +3482,47 @@ describe("Stage 2 handover eSign Admin API contract", () => {
       expect(portalPrototype[methodName]).toBeUndefined();
     }
   });
+
+  it("passes the exact Admin fallback acknowledgement to the workflow service", async () => {
+    const create = vi.fn().mockResolvedValue({ taskId: "stage2-task-1" });
+    const dto = adminFallbackReview();
+    const request = {
+      user: {
+        id: "admin-1"
+      }
+    };
+
+    await (
+      HandoverWorkOrderAdminController.prototype.createStage2ESign as unknown as (
+        this: object,
+        id: string,
+        body: typeof dto,
+        request: {
+          user: {
+            id: string;
+          };
+        }
+      ) => Promise<unknown>
+    ).call(
+      {
+        stage2HandoverESignService: {
+          create
+        }
+      },
+      "work-order-1",
+      dto,
+      request
+    );
+
+    expect(create).toHaveBeenCalledWith(
+      "work-order-1",
+      {
+        actorId: "admin-1",
+        actorType: "ADMIN_FALLBACK"
+      },
+      dto
+    );
+  });
 });
 
 describe("Stage 2 handover eSign Portal API contract", () => {
@@ -3245,6 +3552,7 @@ describe("Stage 2 handover eSign Portal API contract", () => {
 
 function createHarness(env: Record<string, string> = {}) {
   const auditLogs: any[] = [];
+  let databaseNow = NOW;
   const state: {
     activeTask: null | ReturnType<typeof makeTask>;
     workOrder: ReturnType<typeof makeWorkOrder>;
@@ -3331,7 +3639,12 @@ function createHarness(env: Record<string, string> = {}) {
 
   let transactionDepth = 0;
   const prisma: any = {
-    $transaction: vi.fn(async (operation: (tx: any) => Promise<unknown>) => {
+    $queryRaw: vi.fn(async () => [{ now: databaseNow }]),
+    $transaction: vi.fn(async (
+      operation: (tx: any) => Promise<unknown>,
+      options?: { isolationLevel?: string }
+    ) => {
+      void options;
       transactionDepth += 1;
       try {
         return await operation(prisma);
@@ -3593,6 +3906,9 @@ function createHarness(env: Record<string, string> = {}) {
     prisma,
     provider,
     readiness,
+    setDatabaseTime(value: Date) {
+      databaseNow = value;
+    },
     service,
     state,
     transitions,
@@ -3669,6 +3985,30 @@ function adminInitiator() {
   return {
     actorId: "admin-1",
     actorType: "ADMIN" as const
+  };
+}
+
+function adminFallbackInitiator() {
+  return {
+    actorId: "admin-1",
+    actorType: "ADMIN_FALLBACK" as const
+  };
+}
+
+function adminFallbackReview(
+  overrides: {
+    acknowledgement?: boolean;
+    artifactVersion?: number;
+    reason?: string;
+    sourcePdfHash?: string;
+  } = {}
+): any {
+  return {
+    acknowledgement: true as const,
+    artifactVersion: 3,
+    reason: "Field 经办人超过十五分钟未推进",
+    sourcePdfHash: "b".repeat(64),
+    ...overrides
   };
 }
 

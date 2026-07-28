@@ -4,7 +4,7 @@ Date: 2026-07-28
 
 ## Status
 
-Product direction and detailed design confirmed in review. This document is the implementation baseline pending final written-spec review.
+Approved for implementation. This document is the implementation baseline for the staged delivery plans dated 2026-07-28.
 
 ## Background
 

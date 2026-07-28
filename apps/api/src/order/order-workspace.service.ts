@@ -55,22 +55,26 @@ export type ContractWorkspaceFacts = {
   }>;
 };
 
-export type HandoverWorkspaceFacts = {
-  asOf: string;
-  workOrder: {
-    assigned: boolean;
-    handover: {
-      archiveStatus: string;
-      id: string;
-      signers: Array<{ required: boolean; signerStatus: string }>;
-      status: string;
-      taskStatus: string | null;
-      updatedAt: string;
-    } | null;
+type HandoverWorkOrderFacts = {
+  assigned: boolean;
+  customerConfirmedAt?: string | null;
+  handover: {
+    archiveStatus: string;
     id: string;
+    signers: Array<{ required: boolean; signerStatus: string }>;
     status: string;
+    taskStatus: string | null;
     updatedAt: string;
   } | null;
+  id: string;
+  status: string;
+  updatedAt: string;
+};
+
+export type HandoverWorkspaceFacts = {
+  asOf: string;
+  workOrder?: HandoverWorkOrderFacts | null;
+  workOrders?: HandoverWorkOrderFacts[];
 };
 
 export type EntitlementWorkspaceFacts = {
@@ -94,6 +98,11 @@ export type ServiceWorkspaceFacts = {
 
 export type FinanceWorkspaceFacts = {
   asOf: string;
+  collectionCases?: Array<{
+    id: string;
+    requiredAt: string;
+    status: string;
+  }>;
   depositEntries: Array<{
     id: string;
     status: string;
@@ -158,7 +167,11 @@ export class OrderWorkspaceResolver {
       return guideItem("contract", "BLOCKED", "CONTRACT_REQUIRED", "contract.generate", null, null, true);
     }
 
-    const failedTask = contract.tasks.find((task) => task.taskStatus === "FAILED");
+    if (["SIGNED", "ARCHIVED"].includes(contract.status)) {
+      return guideItem("contract", "COMPLETED", "CONTRACT_SIGNED", null, contract.id, contract.updatedAt);
+    }
+
+    const failedTask = contract.tasks[0]?.taskStatus === "FAILED" ? contract.tasks[0] : null;
     if (failedTask) {
       return guideItem(
         "contract",
@@ -169,10 +182,6 @@ export class OrderWorkspaceResolver {
         failedTask.updatedAt,
         true
       );
-    }
-
-    if (["SIGNED", "ARCHIVED"].includes(contract.status)) {
-      return guideItem("contract", "COMPLETED", "CONTRACT_SIGNED", null, contract.id, contract.updatedAt);
     }
 
     const actionCode = ["DRAFT", "CANCELLED"].includes(contract.status) ? "contract.generate" : "contract.sign";
@@ -188,11 +197,16 @@ export class OrderWorkspaceResolver {
   }
 
   resolveHandover(facts: HandoverWorkspaceFacts): OrderWorkspaceGuideItem {
-    const workOrder = facts.workOrder;
-    if (!workOrder) {
+    const workOrders = facts.workOrders ?? (facts.workOrder ? [facts.workOrder] : []);
+    if (workOrders.length === 0) {
       return guideItem("handover", "NOT_STARTED", "HANDOVER_NOT_STARTED", null, null, null);
     }
+    return selectRepresentative(
+      workOrders.map((workOrder) => this.resolveHandoverWorkOrder(workOrder, facts.asOf))
+    );
+  }
 
+  private resolveHandoverWorkOrder(workOrder: HandoverWorkOrderFacts, asOf: string) {
     if (!workOrder.assigned || workOrder.status === "DRAFT") {
       return guideItem(
         "handover",
@@ -205,6 +219,20 @@ export class OrderWorkspaceResolver {
     }
 
     const handover = workOrder.handover;
+    if (handover) {
+      const requiredSigners = handover.signers.filter((signer) => signer.required);
+      if (requiredSigners.length >= 2 && requiredSigners.every((signer) => signer.signerStatus === "SIGNED")) {
+        return guideItem(
+          "handover",
+          "COMPLETED",
+          "HANDOVER_STAGE2_SIGNED",
+          null,
+          handover.id,
+          handover.updatedAt
+        );
+      }
+    }
+
     if (workOrder.status === "FAILED" || handover?.status === "FAILED" || handover?.taskStatus === "FAILED") {
       return guideItem(
         "handover",
@@ -218,18 +246,6 @@ export class OrderWorkspaceResolver {
     }
 
     if (handover) {
-      const requiredSigners = handover.signers.filter((signer) => signer.required);
-      if (requiredSigners.length >= 2 && requiredSigners.every((signer) => signer.signerStatus === "SIGNED")) {
-        return guideItem(
-          "handover",
-          "COMPLETED",
-          "HANDOVER_STAGE2_SIGNED",
-          null,
-          handover.id,
-          handover.updatedAt
-        );
-      }
-
       if (handover.taskStatus) {
         return guideItem(
           "handover",
@@ -243,15 +259,16 @@ export class OrderWorkspaceResolver {
     }
 
     if (workOrder.status === "CUSTOMER_CONFIRMED") {
-      const elapsed = Date.parse(facts.asOf) - Date.parse(workOrder.updatedAt);
-      const overdue = elapsed >= HANDOVER_SIGNING_START_GRACE_MS;
+      const confirmedAt = workOrder.customerConfirmedAt ?? null;
+      const elapsed = confirmedAt === null ? 0 : Date.parse(asOf) - Date.parse(confirmedAt);
+      const overdue = confirmedAt !== null && elapsed >= HANDOVER_SIGNING_START_GRACE_MS;
       return guideItem(
         "handover",
         overdue ? "ACTION_REQUIRED" : "PROCESSING",
         overdue ? "HANDOVER_SIGNING_START_OVERDUE" : "HANDOVER_SIGNING_START_PENDING",
         overdue ? "handover.start_signing" : null,
         workOrder.id,
-        workOrder.updatedAt
+        confirmedAt
       );
     }
 
@@ -324,119 +341,131 @@ export class OrderWorkspaceResolver {
   }
 
   resolveService(facts: ServiceWorkspaceFacts): OrderWorkspaceGuideItem {
-    const serviceCase = facts.cases[0];
-    if (!serviceCase) {
+    if (facts.cases.length === 0) {
       return guideItem("service", "COMPLETED", "SERVICE_NO_OPEN_CASE", null, null, null);
     }
-
-    if (serviceCase.status === "WAITING_CUSTOMER") {
-      return guideItem(
-        "service",
-        "WAITING_EXTERNAL",
-        "SERVICE_WAITING_CUSTOMER",
-        null,
-        serviceCase.id,
-        serviceCase.updatedAt,
-        false,
-        facts.cases.length - 1
-      );
-    }
-
-    return guideItem(
-      "service",
-      "ACTION_REQUIRED",
-      serviceCase.assigned ? "SERVICE_CASE_ACTION_REQUIRED" : "SERVICE_CASE_ASSIGNMENT_REQUIRED",
-      "service.resolve",
-      serviceCase.id,
-      serviceCase.updatedAt,
-      false,
-      facts.cases.length - 1
+    return selectRepresentative(
+      facts.cases.map((serviceCase) =>
+        serviceCase.status === "WAITING_CUSTOMER"
+          ? guideItem(
+              "service",
+              "WAITING_EXTERNAL",
+              "SERVICE_WAITING_CUSTOMER",
+              null,
+              serviceCase.id,
+              serviceCase.updatedAt
+            )
+          : guideItem(
+              "service",
+              "ACTION_REQUIRED",
+              serviceCase.assigned ? "SERVICE_CASE_ACTION_REQUIRED" : "SERVICE_CASE_ASSIGNMENT_REQUIRED",
+              "service.resolve",
+              serviceCase.id,
+              serviceCase.updatedAt
+            )
+      )
     );
   }
 
   resolveFinance(facts: FinanceWorkspaceFacts): OrderWorkspaceGuideItem {
-    const failedPayment = facts.paymentOrders.find((payment) => payment.status === "FAILED");
-    if (failedPayment) {
-      return guideItem(
-        "finance",
-        "FAILED",
-        "FINANCE_RECONCILIATION_REQUIRED",
-        "finance.reconcile",
-        failedPayment.id,
-        failedPayment.updatedAt
-      );
+    const candidates = [
+      ...facts.paymentOrders.map((payment) =>
+        guideItem(
+          "finance",
+          payment.status === "FAILED" ? "FAILED" : "COMPLETED",
+          payment.status === "FAILED" ? "FINANCE_RECONCILIATION_REQUIRED" : "FINANCE_PAYMENT_COMPLETE",
+          payment.status === "FAILED" ? "finance.reconcile" : null,
+          payment.id,
+          payment.updatedAt
+        )
+      ),
+      ...facts.depositEntries.map((entry) => {
+        const action =
+          entry.transactionType === "REFUND"
+            ? "finance.refund_deposit"
+            : entry.transactionType === "DEDUCT"
+              ? "finance.deduct_deposit"
+              : "finance.collect";
+        return guideItem(
+          "finance",
+          entry.status === "PENDING" ? "ACTION_REQUIRED" : "COMPLETED",
+          entry.status === "PENDING" ? "FINANCE_DEPOSIT_SETTLEMENT_REQUIRED" : "FINANCE_DEPOSIT_SETTLED",
+          entry.status === "PENDING" ? action : null,
+          entry.id,
+          entry.updatedAt
+        );
+      }),
+      ...facts.receivableBills.map((bill) => {
+        const due = bill.billStatus === "OVERDUE" || Date.parse(bill.dueDate) <= Date.parse(facts.asOf);
+        return guideItem(
+          "finance",
+          due ? "ACTION_REQUIRED" : "COMPLETED",
+          due
+            ? bill.billStatus === "OVERDUE"
+              ? "FINANCE_PAYMENT_OVERDUE"
+              : "FINANCE_PAYMENT_DUE"
+            : "FINANCE_PAYMENT_NOT_DUE",
+          due ? "finance.collect" : null,
+          bill.id,
+          due ? bill.dueDate : bill.updatedAt
+        );
+      }),
+      ...(facts.collectionCases ?? []).map((collectionCase) =>
+        guideItem(
+          "finance",
+          collectionCase.status === "ACTIVE" ? "ACTION_REQUIRED" : "WAITING_EXTERNAL",
+          collectionCase.status === "ACTIVE" ? "FINANCE_COLLECTION_ACTION_REQUIRED" : "FINANCE_COLLECTION_PAUSED",
+          collectionCase.status === "ACTIVE" ? "finance.collection_follow_up" : null,
+          collectionCase.id,
+          collectionCase.requiredAt
+        )
+      )
+    ];
+    if (candidates.length === 0) {
+      return guideItem("finance", "COMPLETED", "FINANCE_NO_ACTION_DUE", null, null, null);
     }
-
-    const pendingDeposit = facts.depositEntries.find((entry) => entry.status === "PENDING");
-    if (pendingDeposit) {
-      return guideItem(
-        "finance",
-        "ACTION_REQUIRED",
-        "FINANCE_DEPOSIT_SETTLEMENT_REQUIRED",
-        "finance.settle_deposit",
-        pendingDeposit.id,
-        pendingDeposit.updatedAt
-      );
-    }
-
-    const dueBills = facts.receivableBills
-      .filter((bill) => bill.billStatus === "OVERDUE" || Date.parse(bill.dueDate) <= Date.parse(facts.asOf))
-      .sort((left, right) => Date.parse(left.dueDate) - Date.parse(right.dueDate));
-    const dueBill = dueBills[0];
-    if (dueBill) {
-      return guideItem(
-        "finance",
-        "ACTION_REQUIRED",
-        dueBill.billStatus === "OVERDUE" ? "FINANCE_PAYMENT_OVERDUE" : "FINANCE_PAYMENT_DUE",
-        "finance.collect",
-        dueBill.id,
-        dueBill.updatedAt,
-        false,
-        dueBills.length - 1
-      );
-    }
-
-    return guideItem("finance", "COMPLETED", "FINANCE_NO_ACTION_DUE", null, null, null);
+    return selectRepresentative(candidates);
   }
 
   resolveChange(facts: ChangeWorkspaceFacts): OrderWorkspaceGuideItem {
-    const failed = facts.changes.find((change) => change.status === "FAILED");
-    if (failed) {
-      return guideItem(
-        "change",
-        "FAILED",
-        "CHANGE_WORKFLOW_FAILED",
-        "change.retry",
-        failed.id,
-        failed.updatedAt
-      );
+    if (facts.changes.length === 0) {
+      return guideItem("change", "COMPLETED", "CHANGE_NONE_PENDING", null, null, null);
     }
-
-    const pending = facts.changes.find((change) => change.status === "PENDING");
-    if (pending) {
-      return guideItem(
-        "change",
-        "ACTION_REQUIRED",
-        "CHANGE_APPROVAL_PENDING",
-        "change.approve",
-        pending.id,
-        pending.updatedAt
-      );
-    }
-
-    const approved = facts.changes.find((change) => change.status === "APPROVED");
-    if (approved) {
-      return guideItem(
-        "change",
-        "ACTION_REQUIRED",
-        "CHANGE_EXECUTION_REQUIRED",
-        "change.execute",
-        approved.id,
-        approved.updatedAt
-      );
-    }
-
-    return guideItem("change", "COMPLETED", "CHANGE_NONE_PENDING", null, null, null);
+    return selectRepresentative(
+      facts.changes.map((change) => {
+        if (change.status === "FAILED") {
+          return guideItem(
+            "change",
+            "FAILED",
+            "CHANGE_WORKFLOW_FAILED",
+            "change.retry",
+            change.id,
+            change.updatedAt
+          );
+        }
+        if (change.status === "PENDING") {
+          return guideItem(
+            "change",
+            "ACTION_REQUIRED",
+            "CHANGE_APPROVAL_PENDING",
+            "change.approve",
+            change.id,
+            change.updatedAt
+          );
+        }
+        if (change.status === "APPROVED") {
+          return guideItem(
+            "change",
+            "ACTION_REQUIRED",
+            "CHANGE_EXECUTION_REQUIRED",
+            "change.execute",
+            change.id,
+            change.updatedAt
+          );
+        }
+        return guideItem("change", "COMPLETED", "CHANGE_COMPLETE", null, change.id, change.updatedAt);
+      })
+    );
   }
 
   unavailable(category: OrderWorkspaceGuideCategory): OrderWorkspaceGuideItem {
@@ -478,16 +507,17 @@ export class OrderWorkspaceService {
 
     const asOf = new Date().toISOString();
     const access = resolveAccess(user);
-    const guidance = await Promise.all([
+    const contributorGuidance = await Promise.all([
       this.loadContributor("contract", access, () => this.loadContract(id)),
       this.loadContributor("handover", access, () => this.loadHandover(id, asOf)),
       this.loadContributor("entitlement", access, () =>
         this.loadEntitlement(id, headerRecord.orderStatus)
       ),
       this.loadContributor("service", access, () => this.loadService(id)),
-      this.loadContributor("finance", access, () => this.loadFinance(id, asOf)),
+      this.loadContributor("finance", access, () => this.loadFinance(id, asOf, user)),
       this.loadContributor("change", access, () => this.loadChange(id))
     ]);
+    const guidance = contributorGuidance.map((item) => filterWorkspaceActionByPermission(item, user));
 
     return this.resolver.resolve({
       access,
@@ -525,40 +555,49 @@ export class OrderWorkspaceService {
   }
 
   private async loadContract(orderId: string) {
-    const contracts = await this.prisma.contract.findMany({
-      orderBy: { updatedAt: "desc" },
+    const order = await this.prisma.subscriptionOrder.findUnique({
       select: {
-        esignTasks: {
-          orderBy: { updatedAt: "desc" },
-          select: { taskStatus: true, updatedAt: true },
-          take: 10,
-          where: { deletedAt: null, signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" }
+        contract: {
+          select: {
+            esignTasks: {
+              orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
+              select: { taskStatus: true, updatedAt: true },
+              take: 1,
+              where: { deletedAt: null, signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" }
+            },
+            id: true,
+            status: true,
+            updatedAt: true
+          }
         },
-        id: true,
-        status: true,
-        updatedAt: true
+        contractId: true
       },
-      take: 10,
-      where: { deletedAt: null, orderId }
+      where: { id: orderId }
     });
     return this.resolver.resolveContract({
-      contracts: contracts.map((contract) => ({
-        id: contract.id,
-        status: contract.status,
-        tasks: contract.esignTasks.map((task) => ({
-          taskStatus: task.taskStatus,
-          updatedAt: task.updatedAt.toISOString()
-        })),
-        updatedAt: contract.updatedAt.toISOString()
-      }))
+      contracts:
+        order?.contractId && order.contract
+          ? [
+              {
+                id: order.contract.id,
+                status: order.contract.status,
+                tasks: order.contract.esignTasks.map((task) => ({
+                  taskStatus: task.taskStatus,
+                  updatedAt: task.updatedAt.toISOString()
+                })),
+                updatedAt: order.contract.updatedAt.toISOString()
+              }
+            ]
+          : []
     });
   }
 
   private async loadHandover(orderId: string, asOf: string) {
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findFirst({
-      orderBy: { updatedAt: "desc" },
+    const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
       select: {
         assignedInternalUserId: true,
+        customerConfirmedAt: true,
         handover: {
           select: {
             archiveStatus: true,
@@ -566,6 +605,7 @@ export class OrderWorkspaceService {
               select: {
                 signers: {
                   select: { required: true, signerStatus: true },
+                  take: 10,
                   where: { deletedAt: null }
                 },
                 taskStatus: true
@@ -581,31 +621,31 @@ export class OrderWorkspaceService {
         status: true,
         updatedAt: true
       },
-      where: { handoverType: "DELIVERY_OUTBOUND", orderId }
+      take: 50,
+      where: { handoverType: { in: ["DELIVERY_OUTBOUND", "RETURN_INBOUND"] }, orderId }
     });
     return this.resolver.resolveHandover({
       asOf,
-      workOrder: workOrder
-        ? {
-            assigned:
-              workOrder.status !== "DRAFT" ||
-              workOrder.assignedInternalUserId !== null ||
-              workOrder.operatorType === "EXTERNAL",
-            handover: workOrder.handover
-              ? {
-                  archiveStatus: workOrder.handover.archiveStatus,
-                  id: workOrder.handover.id,
-                  signers: workOrder.handover.handoverESignTask?.signers ?? [],
-                  status: workOrder.handover.status,
-                  taskStatus: workOrder.handover.handoverESignTask?.taskStatus ?? null,
-                  updatedAt: workOrder.handover.updatedAt.toISOString()
-                }
-              : null,
-            id: workOrder.id,
-            status: workOrder.status,
-            updatedAt: workOrder.updatedAt.toISOString()
-          }
-        : null
+      workOrders: workOrders.map((workOrder) => ({
+        assigned:
+          workOrder.status !== "DRAFT" ||
+          workOrder.assignedInternalUserId !== null ||
+          workOrder.operatorType === "EXTERNAL",
+        customerConfirmedAt: workOrder.customerConfirmedAt?.toISOString() ?? null,
+        handover: workOrder.handover
+          ? {
+              archiveStatus: workOrder.handover.archiveStatus,
+              id: workOrder.handover.id,
+              signers: workOrder.handover.handoverESignTask?.signers ?? [],
+              status: workOrder.handover.status,
+              taskStatus: workOrder.handover.handoverESignTask?.taskStatus ?? null,
+              updatedAt: workOrder.handover.updatedAt.toISOString()
+            }
+          : null,
+        id: workOrder.id,
+        status: workOrder.status,
+        updatedAt: workOrder.updatedAt.toISOString()
+      }))
     });
   }
 
@@ -640,7 +680,7 @@ export class OrderWorkspaceService {
 
   private async loadService(orderId: string) {
     const cases = await this.prisma.serviceCase.findMany({
-      orderBy: { updatedAt: "asc" },
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
       select: { assignedTo: true, caseStatus: true, id: true, updatedAt: true },
       take: 25,
       where: {
@@ -659,50 +699,65 @@ export class OrderWorkspaceService {
     });
   }
 
-  private async loadFinance(orderId: string, asOf: string) {
-    const order = await this.prisma.subscriptionOrder.findUnique({
-      select: {
-        depositLedgers: {
-          orderBy: { occurredAt: "asc" },
-          select: { id: true, occurredAt: true, transactionStatus: true, transactionType: true },
-          take: 25,
-          where: { deletedAt: null, transactionStatus: "PENDING" }
-        },
-        paymentOrders: {
-          orderBy: { updatedAt: "asc" },
-          select: { id: true, paymentStatus: true, updatedAt: true },
-          take: 25,
-          where: { deletedAt: null, paymentStatus: "FAILED" }
-        },
-        receivableBills: {
-          orderBy: { dueDate: "asc" },
-          select: { billStatus: true, dueDate: true, id: true, updatedAt: true },
-          take: 50,
-          where: {
-            billStatus: { in: ["PENDING", "PARTIALLY_PAID", "OVERDUE"] },
-            deletedAt: null
-          }
-        }
-      },
-      where: { id: orderId }
-    });
-    if (!order) {
-      throw new NotFoundException("Order not found.");
-    }
+  private async loadFinance(orderId: string, asOf: string, user: RequestUser) {
+    const permissions = new Set(user.permissions);
+    const [receivableBills, paymentOrders, depositEntries, collectionCases] = await Promise.all([
+      permissions.has(PermissionCode.BILLING_VIEW)
+        ? this.prisma.receivableBill.findMany({
+            orderBy: [{ dueDate: "asc" }, { id: "asc" }],
+            select: { billStatus: true, dueDate: true, id: true, updatedAt: true },
+            take: 50,
+            where: {
+              billStatus: { in: ["PENDING", "PARTIALLY_PAID", "OVERDUE"] },
+              deletedAt: null,
+              orderId
+            }
+          })
+        : [],
+      permissions.has(PermissionCode.PAYMENT_VIEW)
+        ? this.prisma.paymentOrder.findMany({
+            orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+            select: { id: true, paymentStatus: true, updatedAt: true },
+            take: 25,
+            where: { deletedAt: null, orderId, paymentStatus: "FAILED" }
+          })
+        : [],
+      permissions.has(PermissionCode.DEPOSIT_LEDGER_VIEW)
+        ? this.prisma.depositLedger.findMany({
+            orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+            select: { id: true, occurredAt: true, transactionStatus: true, transactionType: true },
+            take: 25,
+            where: { deletedAt: null, orderId, transactionStatus: "PENDING" }
+          })
+        : [],
+      permissions.has(PermissionCode.COLLECTION_VIEW)
+        ? this.prisma.collectionCase.findMany({
+            orderBy: [{ nextFollowUpAt: "asc" }, { id: "asc" }],
+            select: { id: true, nextFollowUpAt: true, caseStatus: true, updatedAt: true },
+            take: 25,
+            where: { caseStatus: { in: ["ACTIVE", "PAUSED"] }, deletedAt: null, orderId }
+          })
+        : []
+    ]);
     return this.resolver.resolveFinance({
       asOf,
-      depositEntries: order.depositLedgers.map((entry) => ({
+      collectionCases: collectionCases.map((collectionCase) => ({
+        id: collectionCase.id,
+        requiredAt: (collectionCase.nextFollowUpAt ?? collectionCase.updatedAt).toISOString(),
+        status: collectionCase.caseStatus
+      })),
+      depositEntries: depositEntries.map((entry) => ({
         id: entry.id,
         status: entry.transactionStatus,
         transactionType: entry.transactionType,
         updatedAt: entry.occurredAt.toISOString()
       })),
-      paymentOrders: order.paymentOrders.map((payment) => ({
+      paymentOrders: paymentOrders.map((payment) => ({
         id: payment.id,
         status: payment.paymentStatus,
         updatedAt: payment.updatedAt.toISOString()
       })),
-      receivableBills: order.receivableBills.map((bill) => ({
+      receivableBills: receivableBills.map((bill) => ({
         billStatus: bill.billStatus,
         dueDate: bill.dueDate.toISOString(),
         id: bill.id,
@@ -713,7 +768,7 @@ export class OrderWorkspaceService {
 
   private async loadChange(orderId: string) {
     const changes = await this.prisma.orderChange.findMany({
-      orderBy: { updatedAt: "asc" },
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
       select: { id: true, status: true, updatedAt: true },
       take: 25,
       where: { deletedAt: null, orderId, status: { in: ["PENDING", "APPROVED"] } }
@@ -764,6 +819,14 @@ function comparePrimaryAction(left: OrderWorkspaceGuideItem, right: OrderWorkspa
   return (left.targetRecordId ?? "").localeCompare(right.targetRecordId ?? "");
 }
 
+function selectRepresentative(candidates: OrderWorkspaceGuideItem[]) {
+  const representative = [...candidates].sort(comparePrimaryAction)[0]!;
+  return {
+    ...representative,
+    additionalCount: candidates.length - 1
+  };
+}
+
 function sortableTimestamp(value: string | null) {
   const parsed = value === null ? Number.POSITIVE_INFINITY : Date.parse(value);
   return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
@@ -772,66 +835,53 @@ function sortableTimestamp(value: string | null) {
 function resolveAccess(user: RequestUser): WorkspaceAccess {
   const permissions = new Set(user.permissions);
   return {
-    change: access(
-      permissions,
-      [PermissionCode.ORDER_CHANGE_VIEW],
-      [
-        PermissionCode.ORDER_CHANGE_CREATE,
-        PermissionCode.ORDER_CHANGE_APPROVE,
-        PermissionCode.ORDER_CHANGE_REJECT,
-        PermissionCode.ORDER_CHANGE_EXECUTE
-      ]
-    ),
-    contract: access(
-      permissions,
-      [PermissionCode.CONTRACT_VIEW],
-      [
-        PermissionCode.CONTRACT_GENERATE,
-        PermissionCode.CONTRACT_SIGN,
-        PermissionCode.CONTRACT_ARCHIVE,
-        PermissionCode.CONTRACT_CANCEL
-      ]
-    ),
-    entitlement: access(
-      permissions,
-      [PermissionCode.ENTITLEMENT_VIEW],
-      [PermissionCode.ENTITLEMENT_GENERATE, PermissionCode.ENTITLEMENT_ADJUST, PermissionCode.ENTITLEMENT_CONSUME]
-    ),
-    finance: access(
-      permissions,
+    change: viewAccess(permissions.has(PermissionCode.ORDER_CHANGE_VIEW)),
+    contract: viewAccess(permissions.has(PermissionCode.CONTRACT_VIEW)),
+    entitlement: viewAccess(permissions.has(PermissionCode.ENTITLEMENT_VIEW)),
+    finance: viewAccess(
       [
         PermissionCode.BILLING_VIEW,
         PermissionCode.PAYMENT_VIEW,
         PermissionCode.DEPOSIT_LEDGER_VIEW,
-        PermissionCode.COLLECTION_VIEW,
-        PermissionCode.REPORT_FINANCE
-      ],
-      [
-        PermissionCode.BILLING_GENERATE,
-        PermissionCode.PAYMENT_CREATE,
-        PermissionCode.PAYMENT_WRITE_OFF,
-        PermissionCode.DEPOSIT_LEDGER_DEDUCT,
-        PermissionCode.DEPOSIT_LEDGER_REFUND,
-        PermissionCode.COLLECTION_ACTION_CREATE,
-        PermissionCode.COLLECTION_CLOSE
-      ]
+        PermissionCode.COLLECTION_VIEW
+      ].some((permission) => permissions.has(permission))
     ),
-    handover: access(
-      permissions,
-      [PermissionCode.DELIVERY_VIEW],
-      [PermissionCode.DELIVERY_PREPARE, PermissionCode.DELIVERY_CONFIRM]
-    ),
-    service: access(
-      permissions,
-      [PermissionCode.SERVICE_CASE_VIEW],
-      [PermissionCode.SERVICE_CASE_MANAGE]
-    )
+    handover: viewAccess(permissions.has(PermissionCode.DELIVERY_VIEW)),
+    service: viewAccess(permissions.has(PermissionCode.SERVICE_CASE_VIEW))
   };
 }
 
-function access(permissions: Set<string>, view: PermissionCode[], actionPermissions: PermissionCode[]) {
-  return {
-    action: actionPermissions.some((permission) => permissions.has(permission)),
-    view: view.some((permission) => permissions.has(permission))
-  };
+function viewAccess(view: boolean) {
+  return { action: true, view };
+}
+
+const ACTION_PERMISSION: Record<string, PermissionCode> = {
+  "change.approve": PermissionCode.ORDER_CHANGE_APPROVE,
+  "change.execute": PermissionCode.ORDER_CHANGE_EXECUTE,
+  "change.retry": PermissionCode.ORDER_CHANGE_EXECUTE,
+  "contract.generate": PermissionCode.CONTRACT_GENERATE,
+  "contract.retry_signing": PermissionCode.CONTRACT_SIGN,
+  "contract.sign": PermissionCode.CONTRACT_SIGN,
+  "entitlement.activate": PermissionCode.ENTITLEMENT_GENERATE,
+  "entitlement.reconcile": PermissionCode.ENTITLEMENT_ADJUST,
+  "finance.collect": PermissionCode.PAYMENT_CREATE,
+  "finance.collection_follow_up": PermissionCode.COLLECTION_ACTION_CREATE,
+  "finance.deduct_deposit": PermissionCode.DEPOSIT_LEDGER_DEDUCT,
+  "finance.refund_deposit": PermissionCode.DEPOSIT_LEDGER_REFUND,
+  "handover.assign": PermissionCode.DELIVERY_PREPARE,
+  "handover.follow_up_signing": PermissionCode.DELIVERY_CONFIRM,
+  "handover.retry_signing": PermissionCode.DELIVERY_CONFIRM,
+  "handover.start_signing": PermissionCode.DELIVERY_CONFIRM,
+  "service.resolve": PermissionCode.SERVICE_CASE_MANAGE
+};
+
+export function filterWorkspaceActionByPermission(
+  item: OrderWorkspaceGuideItem,
+  user: RequestUser
+): OrderWorkspaceGuideItem {
+  if (item.actionCode === null) {
+    return item;
+  }
+  const permission = ACTION_PERMISSION[item.actionCode];
+  return permission && user.permissions.includes(permission) ? item : { ...item, actionCode: null };
 }

@@ -264,7 +264,7 @@ function createRuntimeHarness(input: { env?: Record<string, string> } = {}) {
     prismaService as never
   );
   const adminController = new CustomerESignOnboardingController(service);
-  const orderController = new OrderController({} as never, service);
+  const orderController = new OrderController({} as never, service, {} as never);
   const portalController = new PortalESignOnboardingController(service);
 
   return {

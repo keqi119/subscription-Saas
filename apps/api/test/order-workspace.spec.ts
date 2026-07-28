@@ -2,7 +2,11 @@ import { ForbiddenException } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 import { describe, expect, it, vi } from "vitest";
 
-import { OrderWorkspaceResolver, OrderWorkspaceService } from "../src/order/order-workspace.service";
+import {
+  filterWorkspaceActionByPermission,
+  OrderWorkspaceResolver,
+  OrderWorkspaceService
+} from "../src/order/order-workspace.service";
 import type {
   OrderWorkspaceGuideCategory,
   OrderWorkspaceGuideItem,
@@ -240,10 +244,11 @@ describe("OrderWorkspaceResolver", () => {
     const resolver = new OrderWorkspaceResolver();
     const workOrder = {
       assigned: true,
+      customerConfirmedAt: "2026-07-28T09:45:00.000Z",
       handover: null,
       id: "handover-work-order-1",
       status: "CUSTOMER_CONFIRMED",
-      updatedAt: "2026-07-28T09:45:00.000Z"
+      updatedAt: "2026-07-28T09:58:00.000Z"
     } as const;
 
     expect(
@@ -268,6 +273,53 @@ describe("OrderWorkspaceResolver", () => {
         actionCode: "handover.start_signing",
         reasonCode: "HANDOVER_SIGNING_START_OVERDUE",
         state: "ACTION_REQUIRED"
+      })
+    );
+  });
+
+  it("does not reset the signing-start timer when unrelated work-order updates occur", () => {
+    const item = new OrderWorkspaceResolver().resolveHandover({
+      asOf: "2026-07-28T10:00:00.000Z",
+      workOrder: {
+        assigned: true,
+        customerConfirmedAt: "2026-07-28T09:45:00.000Z",
+        handover: null,
+        id: "handover-work-order-1",
+        status: "CUSTOMER_CONFIRMED",
+        updatedAt: "2026-07-28T09:59:30.000Z"
+      }
+    } as never);
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: "handover.start_signing",
+        reasonCode: "HANDOVER_SIGNING_START_OVERDUE",
+        updatedAt: "2026-07-28T09:45:00.000Z"
+      })
+    );
+  });
+
+  it("treats an authoritative signed contract as complete despite an older failed retry", () => {
+    const item = new OrderWorkspaceResolver().resolveContract({
+      contracts: [
+        {
+          id: "stage1-contract",
+          status: "SIGNED",
+          tasks: [
+            { taskStatus: "COMPLETED", updatedAt: "2026-07-28T09:00:00.000Z" },
+            { taskStatus: "FAILED", updatedAt: "2026-07-28T08:00:00.000Z" }
+          ],
+          updatedAt: "2026-07-28T09:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: null,
+        reasonCode: "CONTRACT_SIGNED",
+        state: "COMPLETED",
+        targetRecordId: "stage1-contract"
       })
     );
   });
@@ -331,6 +383,135 @@ describe("OrderWorkspaceResolver", () => {
       })
     );
     expect(JSON.stringify(item)).not.toMatch(/provider|payload|objectKey|phone|idCard/i);
+  });
+
+  it("selects a handover representative across delivery and return work orders", () => {
+    const item = new OrderWorkspaceResolver().resolveHandover({
+      asOf: AS_OF,
+      workOrders: [
+        {
+          assigned: true,
+          customerConfirmedAt: null,
+          handover: {
+            archiveStatus: "ARCHIVED",
+            id: "handover-complete",
+            signers: [
+              { required: true, signerStatus: "SIGNED" },
+              { required: true, signerStatus: "SIGNED" }
+            ],
+            status: "ARCHIVED",
+            taskStatus: "COMPLETED",
+            updatedAt: "2026-07-28T07:00:00.000Z"
+          },
+          id: "return-work-order",
+          status: "PLATFORM_SEALED",
+          updatedAt: "2026-07-28T07:00:00.000Z"
+        },
+        {
+          assigned: false,
+          customerConfirmedAt: null,
+          handover: null,
+          id: "delivery-work-order",
+          status: "DRAFT",
+          updatedAt: "2026-07-28T08:00:00.000Z"
+        }
+      ]
+    } as never);
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: "handover.assign",
+        additionalCount: 1,
+        state: "ACTION_REQUIRED",
+        targetRecordId: "delivery-work-order"
+      })
+    );
+  });
+
+  it("selects the highest-priority service case before counting the remaining cases", () => {
+    const item = new OrderWorkspaceResolver().resolveService({
+      cases: [
+        {
+          assigned: true,
+          id: "waiting-case",
+          status: "WAITING_CUSTOMER",
+          updatedAt: "2026-07-28T07:00:00.000Z"
+        },
+        {
+          assigned: false,
+          id: "action-case",
+          status: "SUBMITTED",
+          updatedAt: "2026-07-28T09:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: "service.resolve",
+        additionalCount: 1,
+        state: "ACTION_REQUIRED",
+        targetRecordId: "action-case"
+      })
+    );
+  });
+
+  it("selects finance candidates by shared state priority instead of source order", () => {
+    const item = new OrderWorkspaceResolver().resolveFinance({
+      asOf: AS_OF,
+      collectionCases: [],
+      depositEntries: [],
+      paymentOrders: [
+        {
+          id: "failed-payment",
+          status: "FAILED",
+          updatedAt: "2026-07-28T07:00:00.000Z"
+        }
+      ],
+      receivableBills: [
+        {
+          billStatus: "OVERDUE",
+          dueDate: "2026-07-27T00:00:00.000Z",
+          id: "due-bill",
+          updatedAt: "2026-07-28T09:00:00.000Z"
+        }
+      ]
+    } as never);
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: "finance.collect",
+        additionalCount: 1,
+        state: "ACTION_REQUIRED",
+        targetRecordId: "due-bill",
+        updatedAt: "2026-07-27T00:00:00.000Z"
+      })
+    );
+  });
+
+  it("uses oldest required timestamp and record ID for mixed pending and approved changes", () => {
+    const resolver = new OrderWorkspaceResolver();
+    const oldest = resolver.resolveChange({
+      changes: [
+        { id: "pending-new", status: "PENDING", updatedAt: "2026-07-28T09:00:00.000Z" },
+        { id: "approved-old", status: "APPROVED", updatedAt: "2026-07-28T08:00:00.000Z" }
+      ]
+    });
+    const tie = resolver.resolveChange({
+      changes: [
+        { id: "change-z", status: "PENDING", updatedAt: "2026-07-28T08:00:00.000Z" },
+        { id: "change-a", status: "APPROVED", updatedAt: "2026-07-28T08:00:00.000Z" }
+      ]
+    });
+
+    expect(oldest).toEqual(
+      expect.objectContaining({
+        actionCode: "change.execute",
+        additionalCount: 1,
+        targetRecordId: "approved-old"
+      })
+    );
+    expect(tie.targetRecordId).toBe("change-a");
   });
 
   it("ranks a contract blocker ahead of a due finance action", () => {
@@ -426,6 +607,43 @@ describe("OrderWorkspaceResolver", () => {
 });
 
 describe("OrderWorkspaceService", () => {
+  it.each([
+    ["contract.generate", PermissionCode.CONTRACT_GENERATE, PermissionCode.CONTRACT_SIGN],
+    ["contract.sign", PermissionCode.CONTRACT_SIGN, PermissionCode.CONTRACT_GENERATE],
+    ["contract.retry_signing", PermissionCode.CONTRACT_SIGN, PermissionCode.CONTRACT_ARCHIVE],
+    ["handover.assign", PermissionCode.DELIVERY_PREPARE, PermissionCode.DELIVERY_CONFIRM],
+    ["handover.start_signing", PermissionCode.DELIVERY_CONFIRM, PermissionCode.DELIVERY_PREPARE],
+    ["handover.retry_signing", PermissionCode.DELIVERY_CONFIRM, PermissionCode.DELIVERY_PREPARE],
+    ["handover.follow_up_signing", PermissionCode.DELIVERY_CONFIRM, PermissionCode.DELIVERY_PREPARE],
+    ["entitlement.activate", PermissionCode.ENTITLEMENT_GENERATE, PermissionCode.ENTITLEMENT_ADJUST],
+    ["entitlement.reconcile", PermissionCode.ENTITLEMENT_ADJUST, PermissionCode.ENTITLEMENT_GENERATE],
+    ["service.resolve", PermissionCode.SERVICE_CASE_MANAGE, PermissionCode.SERVICE_CASE_VIEW],
+    ["finance.collect", PermissionCode.PAYMENT_CREATE, PermissionCode.BILLING_GENERATE],
+    ["finance.refund_deposit", PermissionCode.DEPOSIT_LEDGER_REFUND, PermissionCode.DEPOSIT_LEDGER_DEDUCT],
+    ["finance.deduct_deposit", PermissionCode.DEPOSIT_LEDGER_DEDUCT, PermissionCode.DEPOSIT_LEDGER_REFUND],
+    ["finance.collection_follow_up", PermissionCode.COLLECTION_ACTION_CREATE, PermissionCode.COLLECTION_CLOSE],
+    ["change.approve", PermissionCode.ORDER_CHANGE_APPROVE, PermissionCode.ORDER_CHANGE_CREATE],
+    ["change.execute", PermissionCode.ORDER_CHANGE_EXECUTE, PermissionCode.ORDER_CHANGE_APPROVE],
+    ["change.retry", PermissionCode.ORDER_CHANGE_EXECUTE, PermissionCode.ORDER_CHANGE_APPROVE]
+  ])("filters %s with its exact endpoint permission", (actionCode, allowed, sibling) => {
+    const item = guide({ actionCode });
+
+    expect(filterWorkspaceActionByPermission(item, workspaceUser([allowed])).actionCode).toBe(actionCode);
+    expect(filterWorkspaceActionByPermission(item, workspaceUser([sibling])).actionCode).toBeNull();
+  });
+
+  it("fails closed for an unmapped action code", () => {
+    const item = guide({ actionCode: "finance.unknown" });
+
+    expect(filterWorkspaceActionByPermission(item, workspaceUser(Object.values(PermissionCode))).actionCode).toBeNull();
+  });
+
+  it("fails closed for finance reconciliation because no Admin retry endpoint exists", () => {
+    const item = guide({ actionCode: "finance.reconcile" });
+
+    expect(filterWorkspaceActionByPermission(item, workspaceUser(Object.values(PermissionCode))).actionCode).toBeNull();
+  });
+
   it("stops before contributor queries when the existing order access check rejects sales scope", async () => {
     const getOrder = vi.fn().mockRejectedValue(new ForbiddenException("Order is outside your scope."));
     const prisma = workspacePrisma();
@@ -438,12 +656,17 @@ describe("OrderWorkspaceService", () => {
     await expect(service.getSummary("order-1", workspaceUser())).rejects.toBeInstanceOf(ForbiddenException);
     expect(getOrder).toHaveBeenCalledWith("order-1", workspaceUser());
     expect(prisma.subscriptionOrder.findUnique).not.toHaveBeenCalled();
-    expect(prisma.contract.findMany).not.toHaveBeenCalled();
+    expect(prisma.vehicleHandoverWorkOrder.findMany).not.toHaveBeenCalled();
   });
 
   it("degrades one failed contributor while keeping all other visible categories available", async () => {
     const prisma = workspacePrisma();
-    prisma.contract.findMany.mockRejectedValue(new Error("contract database unavailable"));
+    prisma.subscriptionOrder.findUnique.mockImplementation(async (args: { select?: { contractId?: boolean } }) => {
+      if (args.select?.contractId) {
+        throw new Error("contract database unavailable");
+      }
+      return workspaceOrderRecord();
+    });
     const service = new OrderWorkspaceService(
       prisma as never,
       { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
@@ -463,6 +686,180 @@ describe("OrderWorkspaceService", () => {
     expect(summary.guidance.filter(({ category }) => category !== "contract")).not.toContainEqual(
       expect.objectContaining({ state: "UNAVAILABLE" })
     );
+  });
+
+  it("loads only the authoritative Stage 1 contract relation with a bounded current task", async () => {
+    const prisma = workspacePrisma();
+    const service = workspaceService(prisma);
+
+    const summary = await service.getSummary("order-1", workspaceUser());
+
+    expect(prisma.contract.findMany).not.toHaveBeenCalled();
+    expect(prisma.subscriptionOrder.findUnique).toHaveBeenCalledWith({
+      select: {
+        contract: {
+          select: {
+            esignTasks: {
+              orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
+              select: { taskStatus: true, updatedAt: true },
+              take: 1,
+              where: { deletedAt: null, signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" }
+            },
+            id: true,
+            status: true,
+            updatedAt: true
+          }
+        },
+        contractId: true
+      },
+      where: { id: "order-1" }
+    });
+    expect(summary.guidance.find(({ category }) => category === "contract")).toEqual(
+      expect.objectContaining({
+        reasonCode: "CONTRACT_SIGNED",
+        state: "COMPLETED",
+        targetRecordId: "stage1-contract"
+      })
+    );
+  });
+
+  it.each([
+    {
+      actionCode: null,
+      permissions: [PermissionCode.ORDER_VIEW, PermissionCode.CONTRACT_VIEW, PermissionCode.CONTRACT_GENERATE]
+    },
+    {
+      actionCode: "contract.sign",
+      permissions: [PermissionCode.ORDER_VIEW, PermissionCode.CONTRACT_VIEW, PermissionCode.CONTRACT_SIGN]
+    }
+  ])("filters contract.sign by its exact endpoint permission", async ({ actionCode, permissions }) => {
+    const prisma = workspacePrisma();
+    prisma.subscriptionOrder.findUnique.mockImplementation(
+      async (args: { select?: { application?: unknown; contractId?: boolean } }) => {
+        if (args.select?.contractId) {
+          return authoritativeContractRecord({ status: "GENERATED", tasks: [] });
+        }
+        return workspaceOrderRecord();
+      }
+    );
+
+    const summary = await workspaceService(prisma).getSummary("order-1", workspaceUser(permissions));
+
+    expect(summary.guidance.find(({ category }) => category === "contract")?.actionCode).toBe(actionCode);
+  });
+
+  it("queries only finance subdomains granted by their own view permission", async () => {
+    const prisma = workspacePrisma();
+    prisma.receivableBill.findMany.mockResolvedValue([
+      {
+        billStatus: "OVERDUE",
+        dueDate: new Date("2026-07-27T00:00:00.000Z"),
+        id: "bill-1",
+        updatedAt: new Date("2026-07-28T08:00:00.000Z")
+      }
+    ]);
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([PermissionCode.ORDER_VIEW, PermissionCode.BILLING_VIEW])
+    );
+
+    expect(prisma.receivableBill.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: { billStatus: true, dueDate: true, id: true, updatedAt: true },
+        take: 50
+      })
+    );
+    expect(prisma.paymentOrder.findMany).not.toHaveBeenCalled();
+    expect(prisma.depositLedger.findMany).not.toHaveBeenCalled();
+    expect(prisma.collectionCase.findMany).not.toHaveBeenCalled();
+    expect(summary.guidance.find(({ category }) => category === "finance")?.actionCode).toBeNull();
+  });
+
+  it.each([
+    [PermissionCode.BILLING_VIEW, "receivableBill"],
+    [PermissionCode.PAYMENT_VIEW, "paymentOrder"],
+    [PermissionCode.DEPOSIT_LEDGER_VIEW, "depositLedger"],
+    [PermissionCode.COLLECTION_VIEW, "collectionCase"],
+    [PermissionCode.REPORT_FINANCE, null]
+  ] as const)("scopes finance reads for %s to %s", async (permission, expectedDelegate) => {
+    const prisma = workspacePrisma();
+
+    await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([PermissionCode.ORDER_VIEW, permission])
+    );
+
+    for (const delegate of ["receivableBill", "paymentOrder", "depositLedger", "collectionCase"] as const) {
+      expect(prisma[delegate].findMany).toHaveBeenCalledTimes(delegate === expectedDelegate ? 1 : 0);
+    }
+  });
+
+  it("shows a finance action only with the matching action endpoint permission", async () => {
+    const prisma = workspacePrisma();
+    prisma.receivableBill.findMany.mockResolvedValue([
+      {
+        billStatus: "OVERDUE",
+        dueDate: new Date("2026-07-27T00:00:00.000Z"),
+        id: "bill-1",
+        updatedAt: new Date("2026-07-28T08:00:00.000Z")
+      }
+    ]);
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([PermissionCode.ORDER_VIEW, PermissionCode.BILLING_VIEW, PermissionCode.PAYMENT_CREATE])
+    );
+
+    expect(summary.guidance.find(({ category }) => category === "finance")?.actionCode).toBe("finance.collect");
+  });
+
+  it("boundedly loads all delivery and return work orders and signer rows", async () => {
+    const prisma = workspacePrisma();
+
+    await workspaceService(prisma).getSummary("order-1", workspaceUser());
+
+    expect(prisma.vehicleHandoverWorkOrder.findFirst).not.toHaveBeenCalled();
+    expect(prisma.vehicleHandoverWorkOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+        take: 50,
+        where: {
+          handoverType: { in: ["DELIVERY_OUTBOUND", "RETURN_INBOUND"] },
+          orderId: "order-1"
+        }
+      })
+    );
+    const query = prisma.vehicleHandoverWorkOrder.findMany.mock.calls[0]?.[0];
+    expect(query.select.handover.select.handoverESignTask.select.signers.take).toBe(10);
+    expect(query.select.customerConfirmedAt).toBe(true);
+  });
+
+  it("bounds service and change candidates while limiting change status to persisted actionable values", async () => {
+    const prisma = workspacePrisma();
+
+    await workspaceService(prisma).getSummary("order-1", workspaceUser());
+
+    expect(prisma.serviceCase.findMany).toHaveBeenCalledWith({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      select: { assignedTo: true, caseStatus: true, id: true, updatedAt: true },
+      take: 25,
+      where: {
+        caseStatus: { in: ["SUBMITTED", "ACCEPTED", "IN_PROGRESS", "WAITING_CUSTOMER"] },
+        deletedAt: null,
+        orderId: "order-1"
+      }
+    });
+    expect(prisma.orderChange.findMany).toHaveBeenCalledWith({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      select: { id: true, status: true, updatedAt: true },
+      take: 25,
+      where: {
+        deletedAt: null,
+        orderId: "order-1",
+        status: { in: ["PENDING", "APPROVED"] }
+      }
+    });
   });
 });
 
@@ -558,20 +955,40 @@ function guide(overrides: Partial<GuideSeed>): GuideSeed {
   };
 }
 
-function workspaceUser() {
+function workspaceUser(permissions: PermissionCode[] = Object.values(PermissionCode)) {
   return {
     id: "admin-1",
     menus: [],
     name: "Admin",
-    permissions: Object.values(PermissionCode),
+    permissions,
     roles: ["ADMIN"],
     username: "admin"
   };
 }
 
+function workspaceService(prisma: ReturnType<typeof workspacePrisma>) {
+  return new OrderWorkspaceService(
+    prisma as never,
+    { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
+    new OrderWorkspaceResolver()
+  );
+}
+
 function workspacePrisma() {
   return {
+    collectionCase: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
     contract: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    depositLedger: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    paymentOrder: {
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    receivableBill: {
       findMany: vi.fn().mockResolvedValue([])
     },
     orderChange: {
@@ -589,23 +1006,34 @@ function workspacePrisma() {
       findMany: vi.fn().mockResolvedValue([])
     },
     subscriptionOrder: {
-      findUnique: vi
-        .fn()
-        .mockResolvedValueOnce({
-          application: { salesUser: { name: "Owner 001" } },
-          customer: { name: "Customer 001" },
-          id: "order-1",
-          orderNo: "ORD-20260728-001",
-          orderStatus: "ACTIVE",
-          vehicle: { modelDefinition: { displayName: "Vehicle 001" }, plateNo: null, vehicleNo: "V001" }
-        })
-        .mockResolvedValue({
-          depositLedgers: [],
-          paymentOrders: [],
-          receivableBills: []
-        })
+      findUnique: vi.fn().mockImplementation(async (args: { select?: { contractId?: boolean } }) => {
+        return args.select?.contractId ? authoritativeContractRecord() : workspaceOrderRecord();
+      })
     },
     vehicleHandoverWorkOrder: {
+      findMany: vi.fn().mockResolvedValue([
+        {
+          assignedInternalUserId: "field-1",
+          customerConfirmedAt: new Date("2026-07-28T08:45:00.000Z"),
+          handover: {
+            archiveStatus: "PENDING",
+            handoverESignTask: {
+              signers: [
+                { required: true, signerStatus: "SIGNED" },
+                { required: true, signerStatus: "SIGNED" }
+              ],
+              taskStatus: "COMPLETED"
+            },
+            id: "handover-1",
+            status: "SIGNED",
+            updatedAt: new Date("2026-07-28T09:00:00.000Z")
+          },
+          id: "handover-work-order-1",
+          operatorType: "INTERNAL",
+          status: "PLATFORM_SEALED",
+          updatedAt: new Date("2026-07-28T09:00:00.000Z")
+        }
+      ]),
       findFirst: vi.fn().mockResolvedValue({
         assignedInternalUserId: "field-1",
         createdAt: new Date("2026-07-28T08:00:00.000Z"),
@@ -628,5 +1056,31 @@ function workspacePrisma() {
         updatedAt: new Date("2026-07-28T09:00:00.000Z")
       })
     }
+  };
+}
+
+function workspaceOrderRecord() {
+  return {
+    application: { salesUser: { name: "Owner 001" } },
+    customer: { name: "Customer 001" },
+    id: "order-1",
+    orderNo: "ORD-20260728-001",
+    orderStatus: "ACTIVE",
+    vehicle: { modelDefinition: { displayName: "Vehicle 001" }, plateNo: null, vehicleNo: "V001" }
+  };
+}
+
+function authoritativeContractRecord(input?: {
+  status?: string;
+  tasks?: Array<{ taskStatus: string; updatedAt: Date }>;
+}) {
+  return {
+    contract: {
+      esignTasks: input?.tasks ?? [],
+      id: "stage1-contract",
+      status: input?.status ?? "SIGNED",
+      updatedAt: new Date("2026-07-28T09:00:00.000Z")
+    },
+    contractId: "stage1-contract"
   };
 }

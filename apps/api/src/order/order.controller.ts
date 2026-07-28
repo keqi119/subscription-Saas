@@ -52,7 +52,7 @@ export class OrderController {
   constructor(
     private readonly orderService: OrderService,
     private readonly onboardingService: CustomerESignOnboardingService,
-    private readonly orderWorkspaceService?: OrderWorkspaceService
+    private readonly orderWorkspaceService: OrderWorkspaceService
   ) {}
 
   @Get("orders")
@@ -228,7 +228,7 @@ export class OrderController {
   @Get("orders/:id/workspace/summary")
   @RequirePermissions(PermissionCode.ORDER_VIEW)
   getOrderWorkspaceSummary(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return this.orderWorkspaceService!.getSummary(id, request.user);
+    return this.orderWorkspaceService.getSummary(id, request.user);
   }
 
   @Post("customer-orders")

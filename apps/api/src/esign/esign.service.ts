@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import {
   AuditAction,
   ContractStatus,
+  DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   ESignDocumentType as PrismaESignDocumentType,
   ESignProviderActionType as PrismaESignProviderActionType,
@@ -70,7 +71,10 @@ const contractForESignInclude = {
   },
   handoverDeliveryHandover: {
     select: {
+      archiveStatus: true,
       id: true,
+      signedDocumentFileId: true,
+      signedPdfHash: true,
       workOrders: {
         orderBy: { createdAt: "desc" as const },
         select: {
@@ -105,6 +109,19 @@ const esignTaskInclude = {
           quote: { select: { id: true, quoteNo: true } },
           vehicle: true
         }
+      }
+    }
+  },
+  deliveryHandover: {
+    select: {
+      archiveLastError: true,
+      archiveStatus: true,
+      signedDocumentFileId: true,
+      signedPdfHash: true,
+      workOrders: {
+        orderBy: { createdAt: "desc" as const },
+        select: { id: true },
+        take: 1
       }
     }
   },
@@ -3645,7 +3662,25 @@ function mergeSnapshot(existing: unknown, patch: Record<string, unknown>) {
 }
 
 function toESignTaskView(task: ESignTaskWithDetails) {
+  const isStage2Handover =
+    task.signingStage ===
+      PrismaESignSigningStage.STAGE2_DELIVERY_HANDOVER &&
+    task.documentType === PrismaESignDocumentType.DELIVERY_HANDOVER;
+  const stage2Handover = isStage2Handover
+    ? task.deliveryHandover
+    : null;
+  const signedArtifactAvailable = isStage2Handover
+    ? Boolean(
+        stage2Handover?.archiveStatus ===
+          DeliveryHandoverArchiveStatus.ARCHIVED &&
+        stage2Handover.signedDocumentFileId &&
+        stage2Handover.signedPdfHash
+      )
+    : Boolean(task.signedDocumentObjectKey);
+
   return {
+    archiveError: stage2Handover?.archiveLastError ?? null,
+    archiveStatus: stage2Handover?.archiveStatus ?? null,
     callbacks: task.callbacks.map((callback) => ({
       eventType: callback.eventType,
       handled: callback.handled,
@@ -3659,13 +3694,15 @@ function toESignTaskView(task: ESignTaskWithDetails) {
     contractNo: task.contract.contractNo,
     createdAt: task.createdAt,
     customerId: task.customerId,
+    documentType: task.documentType,
     documentName: task.documentName,
     hasEvidenceDocument: Boolean(task.evidenceObjectKey),
-    hasSignedDocument: Boolean(task.signedDocumentObjectKey),
+    hasSignedDocument: signedArtifactAvailable,
     id: task.id,
     orderId: task.orderId,
     provider: task.provider,
     providerTaskId: task.providerTaskId,
+    signedArtifactAvailable,
     signUrl: task.signUrl,
     signUrlExpiresAt: task.signUrlExpiresAt,
     signers: task.signers.map((signer) => ({
@@ -3681,21 +3718,33 @@ function toESignTaskView(task: ESignTaskWithDetails) {
       slotId: readSnapshotString(signer.snapshot, "slotId") ?? null
     })),
     startedAt: task.startedAt,
+    signingStage: task.signingStage,
     taskNo: task.taskNo,
-    taskStatus: task.taskStatus
+    taskStatus: task.taskStatus,
+    workOrderId: stage2Handover?.workOrders[0]?.id ?? null
   };
 }
 
 function toPortalContractListItem(contract: ContractForESign) {
   const task = findCurrentPortalSigningTask(contract);
   const identity = getPortalContractSigningIdentity(contract);
+  const hasSignedDocument =
+    identity.signingStage === "STAGE2_DELIVERY_HANDOVER"
+      ? Boolean(
+          contract.handoverDeliveryHandover?.archiveStatus ===
+            DeliveryHandoverArchiveStatus.ARCHIVED &&
+          contract.handoverDeliveryHandover.signedDocumentFileId &&
+          contract.handoverDeliveryHandover.signedPdfHash
+        )
+      : Boolean(task?.signedDocumentObjectKey);
+
   return {
     contractNo: contract.contractNo,
     contractStatus: contract.status,
     createdAt: contract.createdAt,
     documentType: identity.documentType,
     id: contract.id,
-    hasSignedDocument: Boolean(task?.signedDocumentObjectKey),
+    hasSignedDocument,
     orderNo: contract.order.orderNo,
     signedAt: contract.signedAt,
     signingStage: identity.signingStage,
@@ -3707,6 +3756,16 @@ function toPortalContractListItem(contract: ContractForESign) {
 function toPortalContractDetail(contract: ContractForESign) {
   const task = findCurrentPortalSigningTask(contract);
   const identity = getPortalContractSigningIdentity(contract);
+  const hasSignedDocument =
+    identity.signingStage === "STAGE2_DELIVERY_HANDOVER"
+      ? Boolean(
+          contract.handoverDeliveryHandover?.archiveStatus ===
+            DeliveryHandoverArchiveStatus.ARCHIVED &&
+          contract.handoverDeliveryHandover.signedDocumentFileId &&
+          contract.handoverDeliveryHandover.signedPdfHash
+        )
+      : Boolean(task?.signedDocumentObjectKey);
+
   return {
     ...toPortalContractListItem(contract),
     canSign: Boolean(
@@ -3728,7 +3787,7 @@ function toPortalContractDetail(contract: ContractForESign) {
       ? {
           completedAt: task.completedAt,
           hasEvidenceDocument: Boolean(task.evidenceObjectKey),
-          hasSignedDocument: Boolean(task.signedDocumentObjectKey),
+          hasSignedDocument,
           id: task.id,
           provider: task.provider,
           documentType: identity.documentType,

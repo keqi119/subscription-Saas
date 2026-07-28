@@ -1933,6 +1933,47 @@ describe("ESignService", () => {
     expect(portalView.signTask).not.toHaveProperty("signedDocumentObjectKey");
   });
 
+  it("projects authoritative Stage 2 archive state instead of a generic task object", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.task.taskStatus = ESignTaskStatus.COMPLETED;
+    harness.task.signedDocumentObjectKey =
+      "contracts/handover-contract-typed/esign/fadada/signed/legacy.pdf";
+    Object.assign(harness.handover, {
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      signedDocumentFileId: null,
+      signedPdfHash: null,
+      status: "SIGNED"
+    });
+
+    const adminView = await harness.service.getTask(
+      harness.task.id,
+      adminUser()
+    );
+    const portalView = await harness.service.getPortalContract(
+      harness.stage2Contract.id,
+      currentCustomer("customer-1")
+    );
+
+    expect(adminView).toMatchObject({
+      archiveError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      documentType: "DELIVERY_HANDOVER",
+      hasSignedDocument: false,
+      signedArtifactAvailable: false,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: "work-order-typed"
+    });
+    expect(adminView).not.toHaveProperty("signedDocumentObjectKey");
+    expect(portalView).toMatchObject({
+      hasSignedDocument: false,
+      signTask: {
+        hasSignedDocument: false,
+        signingStage: "STAGE2_DELIVERY_HANDOVER"
+      }
+    });
+  });
+
   it("exposes safe Stage 1 signer slot metadata for Admin display grouping", async () => {
     const provider = stage1SlotProvider();
     const { service } = createESignFixture({
@@ -3031,6 +3072,11 @@ function hydrateTask(state: FakeState, task: FakeTask) {
   if (!contract) {
     throw new Error("contract not found");
   }
+  const deliveryHandover = state.deliveryHandovers.find(
+    (handover) =>
+      handover.handoverESignTaskId === task.id &&
+      !handover.deletedAt
+  );
 
   return {
     ...task,
@@ -3038,6 +3084,14 @@ function hydrateTask(state: FakeState, task: FakeTask) {
       .filter((log) => log.taskId === task.id)
       .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime()),
     contract,
+    deliveryHandover: deliveryHandover
+      ? {
+          ...deliveryHandover,
+          workOrders: state.workOrders.filter(
+            (workOrder) => workOrder.handoverId === deliveryHandover.id
+          )
+        }
+      : null,
     signers: state.signers.filter((signer) => signer.taskId === task.id && !signer.deletedAt)
   };
 }

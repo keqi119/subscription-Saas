@@ -121,6 +121,28 @@ describe("admin e-sign archive status display", () => {
       tagLabel: "归档失败，签署已完成"
     });
   });
+
+  it("uses the authoritative Stage 2 handover archive state instead of a generic task object", () => {
+    const stage2Task = {
+      archiveError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      hasSignedDocument: true,
+      provider: "FADADA",
+      signedArtifactAvailable: false,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskStatus: "COMPLETED"
+    };
+
+    expect(getAdminESignArchiveStatus(stage2Task)).toMatchObject({
+      actionLabel: null,
+      canArchive: false,
+      canOpenSignedPdf: false,
+      errorSummary: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      state: "ARCHIVE_FAILED",
+      tagColor: "red",
+      tagLabel: "归档失败，签署已完成"
+    });
+  });
 });
 
 describe("admin e-sign archive action wiring", () => {

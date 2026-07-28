@@ -53,8 +53,11 @@ interface ContractDetail {
 }
 
 interface ContractESignTask {
+  archiveError?: string | null;
+  archiveStatus?: string | null;
   completedAt?: string | null;
   createdAt: string;
+  documentType?: string | null;
   documentName?: string | null;
   hasEvidenceDocument?: boolean;
   hasSignedDocument?: boolean;
@@ -71,9 +74,12 @@ interface ContractESignTask {
     signerType: string;
     slotId?: string | null;
   }>;
+  signedArtifactAvailable?: boolean;
+  signingStage?: string | null;
   startedAt?: string | null;
   taskNo: string;
   taskStatus: string;
+  workOrderId?: string | null;
 }
 
 type SnapshotRecord = Record<string, unknown>;
@@ -607,9 +613,13 @@ export default function ContractDetailPage() {
               locale={{ emptyText: <Empty description="暂无电子签任务" /> }}
               renderItem={(task) => {
                 const archiveStatus = getAdminESignArchiveStatus({
-                  archiveError: archiveErrorsByTaskId[task.id],
+                  archiveError:
+                    task.archiveError ?? archiveErrorsByTaskId[task.id],
+                  archiveStatus: task.archiveStatus,
                   hasSignedDocument: task.hasSignedDocument,
                   provider: task.provider,
+                  signedArtifactAvailable: task.signedArtifactAvailable,
+                  signingStage: task.signingStage,
                   taskStatus: task.taskStatus
                 });
                 const signerGroups = buildAdminESignSignerGroups(task.signers);

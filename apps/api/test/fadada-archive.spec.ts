@@ -204,6 +204,7 @@ describe("FadadaSignedArtifactService", () => {
     expect(result).not.toHaveProperty("bucket");
     expect(apiClient.querySignResult).toHaveBeenCalledWith({
       contractId: "FADADA-HANDOVER-1",
+      customerId: "platform-customer-1",
       transactionId: "STAGE2PLATFORMH2"
     });
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
@@ -235,6 +236,17 @@ describe("FadadaSignedArtifactService", () => {
     });
     expect(state.contract.order.orderStatus).toBe(orderStatus);
     expect(financeSnapshot(state)).toEqual(finance);
+  });
+
+  it("rejects a typed Stage 2 task from the generic signed-contract archive path", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+
+    await expect(service.archiveSignedContract({
+      taskId: state.task.id
+    })).rejects.toThrow(/STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED/);
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
   });
 
   it("uses a deterministic object identity and removes a known-uncommitted signed PDF after DB finalization fails", async () => {
@@ -880,7 +892,10 @@ function hydrateTask(state: ReturnType<typeof createFixture>["state"]) {
 }
 
 function createStage2Fixture(env: Record<string, string> = {}) {
-  const harness = createFixture(env);
+  const harness = createFixture({
+    FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
+    ...env
+  });
   harness.state.contract.contractNo = "HDV-1";
   harness.state.contract.order.orderStatus = OrderStatus.PENDING_DELIVERY;
   Object.assign(harness.state.task, {

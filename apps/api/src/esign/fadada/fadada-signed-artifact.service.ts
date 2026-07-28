@@ -38,6 +38,8 @@ export const FADADA_ARCHIVE_SIGNED_PDF_TOO_LARGE = "FADADA_ARCHIVE_SIGNED_PDF_TO
 export const STAGE2_HANDOVER_ARCHIVE_INVALID_TASK = "STAGE2_HANDOVER_ARCHIVE_INVALID_TASK";
 export const STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH = "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH";
 export const STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED = "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED";
+export const STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED =
+  "STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED";
 
 const MAX_SIGNED_PDF_BYTES = 20 * 1024 * 1024;
 const DEFAULT_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
@@ -118,6 +120,17 @@ export class FadadaSignedArtifactService {
     skippedReason?: string;
   }> {
     const task = await this.findTaskByIdOrThrow(input.taskId);
+    if (
+      task.signingStage === ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+      task.documentType === ESignDocumentType.DELIVERY_HANDOVER
+    ) {
+      throw new BadRequestException({
+        code: STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED,
+        message:
+          `${STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED}: ` +
+          "Stage 2 handover tasks must use the typed handover archive workflow."
+      });
+    }
     this.assertArchiveableTask(task, Boolean(input.force));
 
     if (task.signedDocumentObjectKey && !input.force) {
@@ -370,9 +383,15 @@ export class FadadaSignedArtifactService {
       const platformSigner = task.signers.find(
         (signer) => signer.slotId === ESignSlotId.STAGE2_HANDOVER_PLATFORM
       )!;
+      const platformCustomerId =
+        loadFadadaConfig(this.configService).platformCustomerId;
+      if (!platformCustomerId) {
+        throw new Error("FADADA_PLATFORM_CUSTOMER_ID is required");
+      }
       const apiClient = this.getApiClient();
       const signResult = await apiClient.querySignResult({
         contractId: providerContractId,
+        customerId: platformCustomerId,
         transactionId: platformSigner.providerTransactionId!
       });
       const signedPdf = await apiClient.downloadSignedContract({

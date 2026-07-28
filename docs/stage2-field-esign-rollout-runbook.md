@@ -160,12 +160,17 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
     authorized Admin delivery confirmation remains available, the archive
     warning/retry remains visible, and archive recovery continues.
 
-11. Confirm Admin fallback initiation is absent while the Field initiator is
-    available. In a controlled exception, make the assigned Field initiator
-    unavailable and confirm the backend exposes one audited fallback action to
-    an Admin with `DELIVERY_CONFIRM`.
+11. Confirm Admin fallback initiation is absent for an available Field
+    initiator before 15 minutes from the current source PDF
+    `Contract.createdAt`. Confirm it appears at 15 minutes when no task exists.
+    In a controlled exception, make the assigned Field identity technically
+    unavailable and confirm the action appears immediately.
 
-12. Keep the worker enabled only after all acceptance checks pass. If any
+12. Confirm Admin must preview and acknowledge the exact source PDF version and
+    hash, provide a bounded reason, and that concurrent Field/Admin initiation
+    creates one task and one fallback audit event.
+
+13. Keep the worker enabled only after all acceptance checks pass. If any
     acceptance check fails, begin rollback by disabling the worker flag first.
     Never delete queued jobs.
 
@@ -186,8 +191,11 @@ transaction. Both operations are audited and safe to repeat.
 
 The Admin fallback signing action is separate from dead-letter retry. It must
 be used only when `canAdminInitiate=true`; the API rechecks Field
-unavailability before creating the Stage 2 task. It is not a normal alternative
-to Field initiation.
+unavailability or the database-time 15-minute no-progress deadline in the same
+transaction that creates the Stage 2 task. The timer starts at the current
+canonical source PDF `Contract.createdAt` and does not wait for SMS delivery.
+The action requires exact source version/hash acknowledgement and a bounded
+reason. It is not a normal alternative to Field initiation.
 
 Do not paste access tokens, response bodies, old error text, signing URLs, or
 raw payloads into tickets or rollout records.

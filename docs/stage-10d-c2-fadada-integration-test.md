@@ -165,8 +165,12 @@ After both signed slots complete, pending or failed signed-PDF archive does not
 block authorized Admin delivery confirmation. Archive remains visible,
 retryable, and independently auditable. Field is the normal initiation path;
 Admin fallback initiation is accepted only when the backend revalidates that
-the assigned Field initiator is unavailable and the Admin holds
-`DELIVERY_CONFIRM`.
+the assigned Field identity is technically unavailable, or no task exists 15
+minutes after the current canonical source PDF `Contract.createdAt`. The
+database-time deadline does not depend on SMS success. The Admin must hold
+`DELIVERY_CONFIRM`, acknowledge the exact source version/hash, provide a
+bounded reason, and the API must revalidate eligibility and append one audit
+event in the task-creation transaction.
 
 The rollout defaults and business SMS mapping are:
 

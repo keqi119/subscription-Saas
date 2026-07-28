@@ -32,9 +32,11 @@
   gates; pending or failed signed-PDF archive is a warning/retry state, not a
   hard blocker.
 - Field remains the normal eSign initiation path. Admin fallback initiation is
-  allowed only when the backend revalidates that the assigned Field initiator
-  is unavailable, and it requires the existing delivery-confirm permission and
-  an audit event.
+  allowed immediately when the assigned Field identity is technically
+  unavailable, or after 15 minutes without a task from the current canonical
+  source PDF `Contract.createdAt`. It requires the existing delivery-confirm
+  permission, exact artifact version/hash acknowledgement, a bounded reason,
+  a same-transaction eligibility recheck, and one audit event.
 - Feature flags are exactly `STAGE2_HANDOVER_WORKFLOW_ENABLED` and `STAGE2_HANDOVER_WORKER_ENABLED`.
 - Business SMS template variables are exactly `ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE` and `ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE`.
 - Rollout order is compatible images with flags off, migration, dry-run backfill, apply backfill, workflow flag on, worker flag on at low concurrency, existing-order recovery, then a new complete Staging order.
@@ -808,15 +810,22 @@ Assert normal rows omit manual PDF/eSign/seal/archive buttons. Assert a
 confirmation is enabled after both required signers complete even when archive
 is pending or failed, while the archive warning/retry remains visible. Assert
 Admin fallback initiation is hidden while Field initiation is available and is
-shown only when the authoritative API returns `canAdminInitiate=true`.
+shown only when the authoritative API returns `canAdminInitiate=true`. Assert
+that it remains hidden before 15 minutes for an available Field identity,
+appears at 15 minutes without a task, and appears immediately for a technically
+unavailable Field identity. Assert the dialog requires exact source PDF
+version/hash acknowledgement and a bounded reason.
 
 - [ ] **Step 7: Implement Admin workflow presentation**
 
 Render one compact timeline from customer confirmation through archive. Keep
 existing permission checks for all exception POST actions. Keep void/reissue
 unavailable after provider signing has completed. Treat Admin fallback
-initiation as an audited exception action and revalidate Field unavailability
-on the backend before creating the task.
+initiation as an audited exception action. In the same serializable transaction
+that creates the task, lock and reload the handover, revalidate technical Field
+unavailability or the database-time 15-minute deadline, verify no current task
+or provider action exists, verify the acknowledged source binding, and append
+one audit event.
 
 - [ ] **Step 8: Run all focused Web tests, lint, and typecheck**
 
@@ -940,8 +949,12 @@ The runbook must list:
 10. Confirm signed-but-unarchived work can pass authorized Admin delivery
     confirmation while archive retry remains active.
 11. Confirm Admin fallback initiation is blocked for an available Field
-    operator and allowed only after backend-confirmed Field unavailability.
-12. Disable the worker flag first for rollback; do not delete queued jobs.
+    operator before 15 minutes, allowed at 15 minutes without a task, and
+    allowed immediately after backend-confirmed Field unavailability.
+12. Confirm exact source acknowledgement and reason are required, and
+    concurrent Field/Admin initiation creates exactly one task and one fallback
+    audit event.
+13. Disable the worker flag first for rollback; do not delete queued jobs.
 ```
 
 - [ ] **Step 7: Run focused recovery and backfill tests**

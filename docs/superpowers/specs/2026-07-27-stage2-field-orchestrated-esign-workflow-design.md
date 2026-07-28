@@ -44,9 +44,13 @@ committed as `3272646`.
 - Once both required signers are complete, a pending or failed signed-PDF
   archive is shown as a warning/retry state and does not block authorized Admin
   delivery confirmation.
-- Admin fallback initiation is available only when the backend revalidates that
-  the assigned Field initiator is unavailable. It is never shown on the normal
-  Field-driven path.
+- Admin fallback initiation is available immediately when the assigned Field
+  initiator is technically unavailable, or after 15 minutes without a Stage 2
+  task from the current canonical source PDF `Contract.createdAt`. The timeout
+  is based on database time and is not delayed by SMS delivery or retry state.
+- Admin fallback requires `DELIVERY_CONFIRM`, an exact source PDF
+  version/hash acknowledgement, and a bounded reason. It is recorded as
+  `ADMIN_FALLBACK`; it never impersonates the Field operator.
 - Provider and callback failures receive bounded automatic recovery before
   entering an Admin exception queue.
 
@@ -413,9 +417,17 @@ path.
 
 Admin fallback initiation is an exception action, not a second normal signing
 path. It is visible only when the authoritative API returns
-`canAdminInitiate=true` after rechecking that the assigned Field initiator is
-unavailable. It requires the existing delivery-confirm permission and writes an
-audit event.
+`canAdminInitiate=true`. The capability is true when the assigned Field
+initiator is technically unavailable, or when no Stage 2 task exists 15
+minutes after the current canonical source PDF `Contract.createdAt`. SMS
+success is not part of this timer.
+
+The Admin must preview and acknowledge the exact source PDF artifact version
+and hash, then enter a bounded reason. The create transaction locks and reloads
+the handover, revalidates Field availability or the 15-minute deadline, verifies
+that no task/provider action exists, verifies the source binding, creates at
+most one task, and appends one bounded audit event. It requires the existing
+delivery-confirm permission and records actor type `ADMIN_FALLBACK`.
 
 After a job enters `DEAD_LETTER`, Admin displays only the relevant action:
 
@@ -545,7 +557,14 @@ URLs, digests, full mobiles, secrets, or evidence URLs.
 - delivery confirmation allowed for `SIGNED` while archive is pending or
   failed, with archive warning and retry still visible;
 - Admin fallback initiation denied while the Field initiator is available and
-  allowed only when the backend reports `canAdminInitiate=true`;
+  the current source PDF is younger than 15 minutes; allowed immediately for a
+  technically unavailable Field initiator or after the 15-minute no-progress
+  deadline, only when the backend reports `canAdminInitiate=true`;
+- concurrent Field and Admin initiation produces exactly one task;
+- late provider failure/rejection observations never downgrade an already
+  signed signer, task, or handover;
+- void/reissue is denied whenever any exact provider transaction, claim, or
+  signed evidence exists, regardless of the local task terminal status;
 - delivery, lease, billing, payment, and accounting isolation.
 
 ### Web
@@ -568,8 +587,14 @@ URLs, digests, full mobiles, secrets, or evidence URLs.
 6. Verify a signed-but-unarchived handover can be confirmed by an authorized
    Admin while the archive warning/retry remains visible.
 7. Verify Admin fallback initiation is absent with an available Field operator
-   and becomes available only after the backend confirms Field unavailability.
-8. Confirm delivery remains manual and downstream states do not advance early.
+   before 15 minutes, appears after 15 minutes without a task, and appears
+   immediately when the assigned Field identity is technically unavailable.
+8. Verify Admin fallback requires the exact source version/hash acknowledgement
+   and reason, is audited once, and races with Field initiation to one task.
+9. Verify late failed/rejected provider observations cannot downgrade signed
+   state and any provider transaction/claim/signed evidence blocks
+   void/reissue.
+10. Confirm delivery remains manual and downstream states do not advance early.
 
 ## Stage 1 Review Notes
 

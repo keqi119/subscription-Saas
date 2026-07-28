@@ -59,6 +59,10 @@ import {
 } from "../delivery-handover/delivery-handover-pdf-renderer.service";
 import { DeliveryHandoverService } from "../delivery-handover/delivery-handover.service";
 import {
+  hasCompleteStage2HandoverArchive,
+  Stage2HandoverArchiveState
+} from "../delivery-handover/stage2-handover-archive-state";
+import {
   MAX_FIELD_PHOTO_SIZE_BYTES,
   MAX_FIELD_VIDEO_SIZE_BYTES
 } from "./handover-work-order.constants";
@@ -2091,14 +2095,20 @@ export class HandoverWorkOrderService {
     const signedPdfHash = normalizeStage2Sha256(
       readString(handoverRecord, "signedPdfHash")
     );
-    if (
-      readString(handoverRecord, "archiveStatus") !==
-        DeliveryHandoverArchiveStatus.ARCHIVED ||
-      readString(handoverRecord, "status") !== DeliveryHandoverStatus.ARCHIVED ||
-      !signedDocumentFileId ||
-      !signedObjectKey ||
-      !signedPdfHash
-    ) {
+    const archiveState: Stage2HandoverArchiveState = {
+      archiveStatus: readString(
+        handoverRecord,
+        "archiveStatus"
+      ) as DeliveryHandoverArchiveStatus | null,
+      signedDocumentFileId,
+      signedObjectKey,
+      signedPdfHash,
+      status: readString(
+        handoverRecord,
+        "status"
+      ) as DeliveryHandoverStatus | null
+    };
+    if (!hasCompleteStage2HandoverArchive(archiveState)) {
       throw new ConflictException({
         code: "STAGE2_HANDOVER_SIGNED_DOCUMENT_NOT_ARCHIVED",
         message: "The signed Stage 2 handover PDF has not completed authoritative archive."
@@ -2106,11 +2116,11 @@ export class HandoverWorkOrderService {
     }
 
     const fileObject = await this.prisma.fileObject.findUnique({
-      where: { id: signedDocumentFileId }
+      where: { id: archiveState.signedDocumentFileId }
     });
     if (
       !fileObject?.bucket ||
-      fileObject.objectKey !== signedObjectKey ||
+      fileObject.objectKey !== archiveState.signedObjectKey ||
       fileObject.mimeType !== "application/pdf"
     ) {
       throw new NotFoundException({
@@ -2857,15 +2867,24 @@ export class HandoverWorkOrderService {
       handoverStatus: readString(handover, "status"),
       orderNo: order.orderNo,
       previewUrl: null,
-      signedArtifactAvailable:
-        readString(handover, "archiveStatus") ===
-          DeliveryHandoverArchiveStatus.ARCHIVED &&
-        readString(handover, "status") === DeliveryHandoverStatus.ARCHIVED &&
-        Boolean(
-          readString(handover, "signedDocumentFileId") &&
-            readString(handover, "signedObjectKey") &&
-            normalizeStage2Sha256(readString(handover, "signedPdfHash"))
+      signedArtifactAvailable: hasCompleteStage2HandoverArchive({
+        archiveStatus: readString(
+          handover,
+          "archiveStatus"
+        ) as DeliveryHandoverArchiveStatus | null,
+        signedDocumentFileId: readString(
+          handover,
+          "signedDocumentFileId"
         ),
+        signedObjectKey: readString(handover, "signedObjectKey"),
+        signedPdfHash: normalizeStage2Sha256(
+          readString(handover, "signedPdfHash")
+        ),
+        status: readString(
+          handover,
+          "status"
+        ) as DeliveryHandoverStatus | null
+      }),
       sourcePdfHash: normalizeStage2Sha256(
         readString(handover, "sourcePdfHash")
       ),

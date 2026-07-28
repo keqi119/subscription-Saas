@@ -592,6 +592,7 @@ function ensureSignatureSectionSpace(doc: PDFKit.PDFDocument, confirmationText: 
 
   if (printableHeight < requiredPrintableHeight) {
     doc.addPage({
+      margins: { ...doc.page.margins },
       size: [
         doc.page.width,
         requiredPrintableHeight + doc.page.margins.top + doc.page.margins.bottom
@@ -757,7 +758,10 @@ function roundCoordinate(value: number) {
 function ensureSpace(doc: PDFKit.PDFDocument, neededHeight: number) {
   const bottom = doc.page.height - doc.page.margins.bottom;
   if (doc.y + neededHeight > bottom) {
-    doc.addPage();
+    doc.addPage({
+      margins: { ...doc.page.margins },
+      size: [doc.page.width, doc.page.height]
+    });
     resetCursorX(doc);
   }
 }

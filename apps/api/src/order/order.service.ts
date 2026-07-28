@@ -2274,13 +2274,19 @@ export class OrderService {
     if (orderNo) {
       filters.push({ order: { orderNo: { contains: orderNo, mode: "insensitive" } } });
     }
+    const orderScope: Prisma.SubscriptionOrderWhereInput = {
+      deletedAt: null,
+      ...(canViewAllOrders(user)
+        ? {}
+        : { application: { salesUserId: user.id } })
+    };
 
     const contracts = await this.prisma.contract.findMany({
       include: contractInclude,
       orderBy: { createdAt: "desc" },
       where: {
         deletedAt: null,
-        ...(canViewAllOrders(user) ? {} : { order: { application: { salesUserId: user.id } } }),
+        order: orderScope,
         ...(filters.length > 0 ? { AND: filters } : {})
       }
     });

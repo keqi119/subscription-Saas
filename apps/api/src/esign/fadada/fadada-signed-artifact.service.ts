@@ -23,6 +23,10 @@ import { createHash } from "node:crypto";
 import type { Readable } from "node:stream";
 
 import { RequestUser } from "../../auth/auth.types";
+import {
+  hasAuthoritativeStage2HandoverRelation,
+  hasCompleteStage2HandoverArchive
+} from "../../delivery-handover/stage2-handover-archive-state";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CurrentCustomer } from "../../portal/portal-auth.types";
 import { StorageService } from "../../storage/storage.service";
@@ -38,6 +42,8 @@ export const FADADA_ARCHIVE_SIGNED_PDF_TOO_LARGE = "FADADA_ARCHIVE_SIGNED_PDF_TO
 export const STAGE2_HANDOVER_ARCHIVE_INVALID_TASK = "STAGE2_HANDOVER_ARCHIVE_INVALID_TASK";
 export const STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH = "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH";
 export const STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED = "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED";
+export const STAGE2_HANDOVER_ARCHIVE_INCONSISTENT =
+  "STAGE2_HANDOVER_ARCHIVE_INCONSISTENT";
 export const STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED =
   "STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED";
 
@@ -121,6 +127,7 @@ export class FadadaSignedArtifactService {
   }> {
     const task = await this.findTaskByIdOrThrow(input.taskId);
     if (
+      hasAuthoritativeStage2HandoverRelation(task.deliveryHandover) ||
       task.signingStage === ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
       task.documentType === ESignDocumentType.DELIVERY_HANDOVER
     ) {
@@ -229,14 +236,20 @@ export class FadadaSignedArtifactService {
     skippedReason?: string;
   }> {
     const task = await this.findTaskByIdOrThrow(input.taskId);
-    const handover = assertStage2ArchiveableTask(task);
+    let handover = assertStage2ArchiveableTask(task);
     assertStage2ArchiveSourceBinding(task, handover);
 
     if (
       handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
-      handover.signedDocumentFileId &&
-      isSha256Digest(handover.signedPdfHash)
+      !hasCompleteStage2HandoverArchive(handover)
     ) {
+      handover = await this.recoverIncompleteStage2Archive(
+        task,
+        handover,
+        input.actorId
+      );
+    }
+    if (hasCompleteStage2HandoverArchive(handover)) {
       return {
         archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
         archived: false,
@@ -309,19 +322,34 @@ export class FadadaSignedArtifactService {
       }
     });
     if (claimed.count !== 1) {
-      const current = await this.prisma.vehicleDeliveryHandover.findUnique({
+      let current = await this.prisma.vehicleDeliveryHandover.findUnique({
         where: { id: handover.id }
       });
       if (
         current?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
-        current.signedDocumentFileId &&
-        isSha256Digest(current.signedPdfHash)
+        !hasCompleteStage2HandoverArchive(current)
       ) {
+        current = await this.recoverIncompleteStage2Archive(
+          task,
+          current,
+          input.actorId
+        );
+      }
+      if (hasCompleteStage2HandoverArchive(current)) {
         return {
           archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
           archived: false,
           skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
         };
+      }
+      if (
+        current?.status === DeliveryHandoverStatus.SIGNED &&
+        (
+          current.archiveStatus === DeliveryHandoverArchiveStatus.NOT_STARTED ||
+          current.archiveStatus === DeliveryHandoverArchiveStatus.FAILED
+        )
+      ) {
+        return this.archiveSignedStage2Handover(input);
       }
       if (
         current?.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
@@ -522,6 +550,7 @@ export class FadadaSignedArtifactService {
         signedDocumentFileId: string | null;
         signedObjectKey: string | null;
         signedPdfHash: string | null;
+        status: DeliveryHandoverStatus;
       } | null = null;
       try {
         current = await this.prisma.vehicleDeliveryHandover.findUnique({
@@ -533,8 +562,7 @@ export class FadadaSignedArtifactService {
       if (
         storedArtifact &&
         signedPdfHash &&
-        current?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
-        current.signedDocumentFileId &&
+        hasCompleteStage2HandoverArchive(current) &&
         current.signedObjectKey === storedArtifact.objectKey &&
         current.signedPdfHash === signedPdfHash
       ) {
@@ -589,6 +617,141 @@ export class FadadaSignedArtifactService {
         message: "The signed Stage 2 PDF could not be archived and can be retried."
       });
     }
+  }
+
+  private async recoverIncompleteStage2Archive(
+    task: SignedArtifactTask,
+    handover: NonNullable<SignedArtifactTask["deliveryHandover"]>,
+    actorId?: string
+  ): Promise<NonNullable<SignedArtifactTask["deliveryHandover"]>> {
+    if (
+      handover.archiveStatus !== DeliveryHandoverArchiveStatus.ARCHIVED ||
+      hasCompleteStage2HandoverArchive(handover)
+    ) {
+      return handover;
+    }
+
+    const fileObject = handover.signedDocumentFileId
+      ? await this.prisma.fileObject.findUnique({
+          where: { id: handover.signedDocumentFileId }
+        })
+      : null;
+    const repairedAt = new Date();
+    const canRepairFromFile = Boolean(
+      fileObject?.bucket.trim() &&
+      fileObject.objectKey.trim() &&
+      fileObject.mimeType?.trim().toLowerCase() === "application/pdf" &&
+      fileObject.sizeBytes > 0n &&
+      isSha256Digest(handover.signedPdfHash) &&
+      (
+        !handover.signedObjectKey ||
+        handover.signedObjectKey === fileObject.objectKey
+      )
+    );
+
+    if (fileObject && canRepairFromFile) {
+      const repaired = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.vehicleDeliveryHandover.updateMany({
+          data: {
+            archiveLastAttemptAt: repairedAt,
+            archiveLastError: null,
+            archivedAt: handover.archivedAt ?? repairedAt,
+            signedObjectKey: fileObject.objectKey,
+            status: DeliveryHandoverStatus.ARCHIVED,
+            updatedBy: actorId ?? null
+          },
+          where: {
+            archiveLastAttemptAt: handover.archiveLastAttemptAt,
+            archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+            deletedAt: null,
+            handoverESignTaskId: task.id,
+            id: handover.id,
+            signedDocumentFileId: handover.signedDocumentFileId,
+            signedObjectKey: handover.signedObjectKey,
+            signedPdfHash: handover.signedPdfHash,
+            status: handover.status
+          }
+        });
+        if (updated.count !== 1) {
+          return false;
+        }
+        await tx.contractESignTask.update({
+          data: { signedDocumentObjectKey: fileObject.objectKey },
+          where: { id: task.id }
+        });
+        return true;
+      });
+      if (repaired) {
+        return {
+          ...handover,
+          archiveLastAttemptAt: repairedAt,
+          archiveLastError: null,
+          archivedAt: handover.archivedAt ?? repairedAt,
+          signedObjectKey: fileObject.objectKey,
+          status: DeliveryHandoverStatus.ARCHIVED,
+          updatedBy: actorId ?? null
+        };
+      }
+    } else {
+      const resetAt = new Date();
+      const reset = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.vehicleDeliveryHandover.updateMany({
+          data: {
+            archiveLastAttemptAt: resetAt,
+            archiveLastError: STAGE2_HANDOVER_ARCHIVE_INCONSISTENT,
+            archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+            archivedAt: null,
+            signedDocumentFileId: null,
+            signedPdfHash: null,
+            status: DeliveryHandoverStatus.SIGNED,
+            updatedBy: actorId ?? null
+          },
+          where: {
+            archiveLastAttemptAt: handover.archiveLastAttemptAt,
+            archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+            deletedAt: null,
+            handoverESignTaskId: task.id,
+            id: handover.id,
+            signedDocumentFileId: handover.signedDocumentFileId,
+            signedObjectKey: handover.signedObjectKey,
+            signedPdfHash: handover.signedPdfHash,
+            status: handover.status
+          }
+        });
+        if (updated.count !== 1) {
+          return false;
+        }
+        await tx.contractESignTask.update({
+          data: { signedDocumentObjectKey: null },
+          where: { id: task.id }
+        });
+        return true;
+      });
+      if (reset) {
+        return {
+          ...handover,
+          archiveLastAttemptAt: resetAt,
+          archiveLastError: STAGE2_HANDOVER_ARCHIVE_INCONSISTENT,
+          archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedPdfHash: null,
+          status: DeliveryHandoverStatus.SIGNED,
+          updatedBy: actorId ?? null
+        };
+      }
+    }
+
+    const current = await this.prisma.vehicleDeliveryHandover.findUnique({
+      where: { id: handover.id }
+    });
+    if (!current) {
+      throw stage2ArchiveBadRequest(
+        STAGE2_HANDOVER_ARCHIVE_INCONSISTENT,
+        "The incomplete Stage 2 archive no longer exists."
+      );
+    }
+    return current;
   }
 
   async getAdminSignedContractPreview(taskId: string, user: RequestUser): Promise<FadadaSignedContractPreview> {

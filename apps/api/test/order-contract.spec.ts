@@ -587,7 +587,28 @@ describe("subscription order and contract rules", () => {
 
     await service.listContracts(contractListUser());
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ deletedAt: null });
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      deletedAt: null,
+      order: { deletedAt: null }
+    });
+  });
+
+  it("excludes contracts whose parent order is soft deleted", async () => {
+    const { service } = createContractListService({
+      contracts: [
+        contractListRecord("contract-active", null),
+        contractListRecord(
+          "contract-deleted-order",
+          new Date("2026-07-28T08:00:00.000Z")
+        )
+      ]
+    });
+
+    const contracts = await service.listContracts(contractListUser());
+
+    expect(contracts.map((contract) => contract.id)).toEqual([
+      "contract-active"
+    ]);
   });
 
   it("filters contracts by a trimmed case-insensitive contract number", async () => {
@@ -597,7 +618,8 @@ describe("subscription order and contract rules", () => {
 
     expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
       AND: [{ contractNo: { contains: "con-2026", mode: "insensitive" } }],
-      deletedAt: null
+      deletedAt: null,
+      order: { deletedAt: null }
     });
   });
 
@@ -608,7 +630,8 @@ describe("subscription order and contract rules", () => {
 
     expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
       AND: [{ order: { orderNo: { contains: "ord-2026", mode: "insensitive" } } }],
-      deletedAt: null
+      deletedAt: null,
+      order: { deletedAt: null }
     });
   });
 
@@ -622,7 +645,8 @@ describe("subscription order and contract rules", () => {
         { contractNo: { contains: "CON-2026", mode: "insensitive" } },
         { order: { orderNo: { contains: "ORD-2026", mode: "insensitive" } } }
       ],
-      deletedAt: null
+      deletedAt: null,
+      order: { deletedAt: null }
     });
   });
 
@@ -636,7 +660,10 @@ describe("subscription order and contract rules", () => {
     expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
       AND: [{ contractNo: { contains: "CON-2026", mode: "insensitive" } }],
       deletedAt: null,
-      order: { application: { salesUserId: "sales-1" } }
+      order: {
+        application: { salesUserId: "sales-1" },
+        deletedAt: null
+      }
     });
   });
 
@@ -667,10 +694,30 @@ describe("subscription order and contract rules", () => {
   });
 });
 
-function createContractListService() {
-  const findMany = vi.fn(async (_args: { where?: unknown }) => {
-    void _args;
-    return [];
+function createContractListService(options: {
+  contracts?: Array<Record<string, unknown>>;
+} = {}) {
+  const findMany = vi.fn(async (args: {
+    where?: {
+      deletedAt?: Date | null;
+      order?: {
+        deletedAt?: Date | null;
+      };
+    };
+  }) => {
+    return (options.contracts ?? []).filter((contract) => {
+      if (args.where?.deletedAt === null && contract.deletedAt !== null) {
+        return false;
+      }
+      const order = contract.order as { deletedAt: Date | null };
+      if (
+        args.where?.order?.deletedAt === null &&
+        order.deletedAt !== null
+      ) {
+        return false;
+      }
+      return true;
+    });
   });
   const service = new OrderService(
     { write: vi.fn(async () => undefined) } as never,
@@ -681,6 +728,19 @@ function createContractListService() {
   );
 
   return { findMany, service };
+}
+
+function contractListRecord(id: string, orderDeletedAt: Date | null) {
+  return {
+    contractSnapshot: null,
+    deletedAt: null,
+    fileId: null,
+    id,
+    order: {
+      deletedAt: orderDeletedAt,
+      id: `order-${id}`
+    }
+  };
 }
 
 function contractListUser(overrides: Partial<Record<string, unknown>> = {}) {

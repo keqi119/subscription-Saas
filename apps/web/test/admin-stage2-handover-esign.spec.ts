@@ -400,6 +400,31 @@ describe("Admin Stage 2 handover eSign display", () => {
     expect(JSON.stringify(display)).not.toMatch(/确认交付|delivery|lease|billing|payment/i);
   });
 
+  it.each([
+    "archiveStatus",
+    "handover status",
+    "signedDocumentFileId",
+    "signedObjectKey",
+    "signedPdfHash"
+  ])(
+    "does not label the archive complete when the API projection is missing %s",
+    () => {
+      const display = getAdminStage2HandoverESignDisplay(
+        esignStatus({
+          archiveStatus: "ARCHIVED",
+          customerSigner: signer({ status: "SIGNED" }),
+          platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
+          signedArtifactAvailable: false,
+          status: "COMPLETED",
+          taskId: "task-private-id"
+        })
+      );
+
+      expect(display.archive.label).toBe("签署完成，待归档");
+      expect(display.archive.color).toBe("orange");
+    }
+  );
+
   it("keeps void and reissue unavailable after provider signing completes", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       canVoid: true,

@@ -1038,6 +1038,56 @@ describe("ESignService", () => {
     }
   );
 
+  it("uses the linked handover as Stage 2 callback identity despite mismatched legacy discriminators", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.task.documentType = "SUBSCRIPTION_CONTRACT";
+    harness.task.requestSnapshot = {
+      signingStage: "STAGE1_SUBSCRIPTION_CONTRACT"
+    };
+    harness.task.signingStage = "STAGE1_SUBSCRIPTION_CONTRACT";
+    harness.customerSigner.providerSignerId =
+      harness.customerTransactionId;
+    harness.platformSigner.providerSignerId =
+      harness.platformTransactionId;
+
+    await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.customerTransactionId
+      })
+    );
+    await harness.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: harness.providerContractId,
+        resultCode: "3000",
+        transactionId: harness.platformTransactionId
+      })
+    );
+
+    expect(harness.task).toMatchObject({
+      completedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(harness.handover).toMatchObject({
+      completedAt: expect.any(Date),
+      customerSignedAt: expect.any(Date),
+      platformSignedAt: expect.any(Date),
+      status: "SIGNED"
+    });
+    expect(harness.stage1Contract.order.orderStatus).toBe(
+      OrderStatus.PENDING_DELIVERY
+    );
+    expect(
+      harness.prisma.subscriptionOrder.updateMany
+    ).not.toHaveBeenCalled();
+    expect(
+      harness.notificationService.notifyCustomer
+    ).not.toHaveBeenCalled();
+  });
+
   it("keeps an archived Stage 2 handover terminal after a repeated platform callback", async () => {
     const harness = createTypedStage2CallbackFixture();
     const completedAt =
@@ -2028,6 +2078,40 @@ describe("ESignService", () => {
         signingStage: "STAGE2_DELIVERY_HANDOVER"
       }
     });
+  });
+
+  it("uses the linked handover as Admin Stage 2 identity despite mismatched task discriminators", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    harness.task.documentType = "SUBSCRIPTION_CONTRACT";
+    harness.task.signingStage = "STAGE1_SUBSCRIPTION_CONTRACT";
+    harness.task.signedDocumentObjectKey =
+      "contracts/generic/signed-should-not-promote.pdf";
+    Object.assign(harness.handover, {
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      signedDocumentFileId: null,
+      signedObjectKey: null,
+      signedPdfHash: null,
+      status: "SIGNED"
+    });
+
+    const adminView = await harness.service.getTask(
+      harness.task.id,
+      adminUser()
+    );
+
+    expect(adminView).toMatchObject({
+      archiveError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED",
+      documentType: "DELIVERY_HANDOVER",
+      hasSignedDocument: false,
+      signedArtifactAvailable: false,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      workOrderId: "work-order-typed"
+    });
+    expect(JSON.stringify(adminView)).not.toContain(
+      harness.task.signedDocumentObjectKey
+    );
   });
 
   it("exposes safe Stage 1 signer slot metadata for Admin display grouping", async () => {

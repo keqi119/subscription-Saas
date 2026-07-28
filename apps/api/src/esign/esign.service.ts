@@ -11,7 +11,6 @@ import { createHash } from "node:crypto";
 import {
   AuditAction,
   ContractStatus,
-  DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   ESignDocumentType as PrismaESignDocumentType,
   ESignProviderActionType as PrismaESignProviderActionType,
@@ -35,7 +34,10 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
-import { STAGE2_DELIVERY_HANDOVER_SIGNING_STAGE } from "../delivery-handover/delivery-handover.service";
+import {
+  hasAuthoritativeStage2HandoverRelation,
+  hasCompleteStage2HandoverArchive
+} from "../delivery-handover/stage2-handover-archive-state";
 import {
   CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING,
   ContractPdfArtifactService
@@ -3366,10 +3368,7 @@ function isStage1SlotAwareTask(task: ESignTaskWithDetails) {
 }
 
 function isStage2HandoverTask(task: ESignTaskWithDetails) {
-  return readSnapshotString(task.requestSnapshot, "signingStage") === STAGE2_DELIVERY_HANDOVER_SIGNING_STAGE ||
-    task.signers.some((signer) =>
-      readSnapshotString(signer.snapshot, "signingStage") === STAGE2_DELIVERY_HANDOVER_SIGNING_STAGE
-    );
+  return hasAuthoritativeStage2HandoverRelation(task.deliveryHandover);
 }
 
 function firstSignerSignedAt(task: ESignTaskWithDetails, signerType: ESignSignerType) {
@@ -3665,32 +3664,11 @@ function mergeSnapshot(existing: unknown, patch: Record<string, unknown>) {
   };
 }
 
-function hasCompleteStage2HandoverArchive(
-  handover: {
-    archiveStatus: DeliveryHandoverArchiveStatus | null;
-    signedDocumentFileId: string | null;
-    signedObjectKey: string | null;
-    signedPdfHash: string | null;
-    status: DeliveryHandoverStatus | null;
-  } | null | undefined
-) {
-  return Boolean(
-    handover?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
-    handover.status === DeliveryHandoverStatus.ARCHIVED &&
-    handover.signedDocumentFileId &&
-    handover.signedObjectKey &&
-    handover.signedPdfHash
-  );
-}
-
 function toESignTaskView(task: ESignTaskWithDetails) {
-  const isStage2Handover =
-    task.signingStage ===
-      PrismaESignSigningStage.STAGE2_DELIVERY_HANDOVER &&
-    task.documentType === PrismaESignDocumentType.DELIVERY_HANDOVER;
-  const stage2Handover = isStage2Handover
-    ? task.deliveryHandover
-    : null;
+  const isStage2Handover = hasAuthoritativeStage2HandoverRelation(
+    task.deliveryHandover
+  );
+  const stage2Handover = isStage2Handover ? task.deliveryHandover : null;
   const signedArtifactAvailable = isStage2Handover
     ? hasCompleteStage2HandoverArchive(stage2Handover)
     : Boolean(task.signedDocumentObjectKey);
@@ -3711,7 +3689,9 @@ function toESignTaskView(task: ESignTaskWithDetails) {
     contractNo: task.contract.contractNo,
     createdAt: task.createdAt,
     customerId: task.customerId,
-    documentType: task.documentType,
+    documentType: isStage2Handover
+      ? PrismaESignDocumentType.DELIVERY_HANDOVER
+      : task.documentType,
     documentName: task.documentName,
     hasEvidenceDocument: Boolean(task.evidenceObjectKey),
     hasSignedDocument: signedArtifactAvailable,
@@ -3735,7 +3715,9 @@ function toESignTaskView(task: ESignTaskWithDetails) {
       slotId: readSnapshotString(signer.snapshot, "slotId") ?? null
     })),
     startedAt: task.startedAt,
-    signingStage: task.signingStage,
+    signingStage: isStage2Handover
+      ? PrismaESignSigningStage.STAGE2_DELIVERY_HANDOVER
+      : task.signingStage,
     taskNo: task.taskNo,
     taskStatus: task.taskStatus,
     workOrderId: stage2Handover?.workOrders[0]?.id ?? null
@@ -3821,7 +3803,7 @@ function getPortalContractSigningIdentity(contract: ContractForESign) {
   const task = findCurrentPortalSigningTask(contract);
   const handover = contract.handoverDeliveryHandover;
   const stage2Typed =
-    Boolean(handover) ||
+    hasAuthoritativeStage2HandoverRelation(handover) ||
     Boolean(stage2Task);
   if (stage2Typed) {
     const activeWorkOrders = (handover?.workOrders ?? []).filter(

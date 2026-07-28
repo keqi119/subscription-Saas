@@ -36,9 +36,16 @@ import { HandoverWorkOrderService } from "../src/handover-work-order/handover-wo
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 
 const pdfKitMock = vi.hoisted(() => {
+  interface FakePageOptions {
+    info?: Record<string, unknown>;
+    margin?: number;
+    margins?: { bottom?: number; left?: number; right?: number; top?: number };
+    size?: string | [number, number];
+  }
+
   class FakePDFDocument {
     static imageCalls: Array<{ image: Buffer | string; pageNumber: number }> = [];
-    static options: Record<string, unknown> = {};
+    static options: FakePageOptions = {};
     static rectCalls: Array<{
       height: number;
       pageHeight: number;
@@ -81,11 +88,7 @@ const pdfKitMock = vi.hoisted(() => {
     private listeners = new Map<string, Array<(...args: unknown[]) => void>>();
     private pageNumber = 1;
 
-    constructor(options: {
-      info?: Record<string, unknown>;
-      margin?: number;
-      size?: string | [number, number];
-    } = {}) {
+    constructor(options: FakePageOptions = {}) {
       FakePDFDocument.options = options;
       const margin = options.margin ?? 45;
       const [width, height] = Array.isArray(options.size) ? options.size : [595.28, 841.89];
@@ -98,16 +101,26 @@ const pdfKitMock = vi.hoisted(() => {
       this.y = margin;
     }
 
-    addPage(options: { margin?: number; size?: string | [number, number] } = {}) {
+    addPage(options?: FakePageOptions) {
       this.pageNumber += 1;
-      if (Array.isArray(options.size)) {
-        const margin = options.margin ?? this.page.margins.top;
-        this.page = {
-          height: options.size[1],
-          margins: { bottom: margin, left: margin, right: margin, top: margin },
-          width: options.size[0]
-        };
-      }
+      const pageOptions = options ?? FakePDFDocument.options;
+      const [width, height] = Array.isArray(pageOptions.size)
+        ? pageOptions.size
+        : pageOptions.size?.toUpperCase() === "A4"
+          ? [595.28, 841.89]
+          : [612, 792];
+      const defaultMargin = pageOptions.margin ?? 72;
+      this.page = {
+        height,
+        margins: {
+          bottom: pageOptions.margins?.bottom ?? defaultMargin,
+          left: pageOptions.margins?.left ?? defaultMargin,
+          right: pageOptions.margins?.right ?? defaultMargin,
+          top: pageOptions.margins?.top ?? defaultMargin
+        },
+        width
+      };
+      this.x = this.page.margins.left;
       this.y = this.page.margins.top;
       this.emit("pageAdded");
       return this;

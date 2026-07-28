@@ -15,6 +15,7 @@ import {
 
 import { PrismaService } from "../prisma/prisma.service";
 import { DeliveryEvidenceService } from "../delivery-evidence/delivery-evidence.service";
+import { hasCompleteStage2HandoverArchive } from "./stage2-handover-archive-state";
 
 export const STAGE2_DELIVERY_HANDOVER_SIGNING_STAGE = "STAGE2_DELIVERY_HANDOVER" as const;
 export const STAGE2_HANDOVER_CUSTOMER_SLOT_ID = "STAGE2_HANDOVER_CUSTOMER" as const;
@@ -541,16 +542,12 @@ function hasCompleteStage2ArchiveState(
   >
 ) {
   return Boolean(
-    handover.status === DeliveryHandoverStatus.ARCHIVED &&
-    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
+    hasCompleteStage2HandoverArchive(handover) &&
     handover.archivedAt &&
-    handover.signedDocumentFileId &&
-    handover.signedObjectKey &&
-    hasSha256(handover.signedPdfHash) &&
     hasPdfFileIdentity(
       handover.signedDocumentFile,
-      handover.signedDocumentFileId,
-      handover.signedObjectKey
+      handover.signedDocumentFileId!,
+      handover.signedObjectKey!
     ) &&
     handover.handoverESignTask?.signedDocumentObjectKey ===
       handover.signedObjectKey

@@ -6,7 +6,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import { STATUS_LABELS, labelOf } from "../../constants/labels";
@@ -35,6 +35,14 @@ function getErrorMessage(error: unknown) {
 }
 
 export default function ContractsPage() {
+  return (
+    <Suspense fallback={null}>
+      <ContractsPageContent />
+    </Suspense>
+  );
+}
+
+function ContractsPageContent() {
   const { message } = App.useApp();
   const router = useRouter();
   const searchParams = useSearchParams();

@@ -193,6 +193,40 @@ export function getOrderWorkspaceFallbackRecordIds(
   );
 }
 
+export function mergeOrderWorkspaceFocusedServiceCase<
+  T extends { id: string; order?: { id: string } | null }
+>(input: {
+  focus: string;
+  focused: T;
+  items: readonly T[];
+  orderId: string;
+}): T[] {
+  if (
+    input.focused.id !== input.focus ||
+    input.focused.order?.id !== input.orderId
+  ) {
+    throw new Error("Focused service case does not belong to this order.");
+  }
+  return [
+    input.focused,
+    ...input.items.filter((item) => item.id !== input.focus)
+  ];
+}
+
+export function shouldLoadOrderWorkspaceFocusedServiceCase(input: {
+  activeTab: OrderWorkspaceTabKey;
+  domainLoaded: boolean;
+  focus?: string;
+  serviceCaseIds: readonly string[];
+}): boolean {
+  return Boolean(
+    input.activeTab === "service" &&
+      input.domainLoaded &&
+      input.focus &&
+      !input.serviceCaseIds.includes(input.focus)
+  );
+}
+
 export function getOrderWorkspaceFocusAttemptKey(input: {
   activeTab: OrderWorkspaceTabKey;
   domainLoaded: boolean;

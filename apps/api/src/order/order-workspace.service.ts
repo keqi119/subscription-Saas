@@ -689,7 +689,7 @@ export class OrderWorkspaceService {
 
   private async loadEntitlement(orderId: string, orderStatus: string) {
     const account = await this.prisma.orderEntitlementAccount.findFirst({
-      orderBy: { updatedAt: "desc" },
+      orderBy: { createdAt: "desc" },
       select: {
         accountStatus: true,
         grants: {
@@ -701,7 +701,11 @@ export class OrderWorkspaceService {
         id: true,
         updatedAt: true
       },
-      where: { deletedAt: null, orderId }
+      where: {
+        accountStatus: "ACTIVE",
+        deletedAt: null,
+        orderId
+      }
     });
     return this.resolver.resolveEntitlement({
       account: account

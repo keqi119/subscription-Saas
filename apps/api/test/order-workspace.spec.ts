@@ -1806,6 +1806,91 @@ describe("OrderWorkspaceService", () => {
     expect(query.select.customerConfirmedAt).toBe(true);
   });
 
+  it("targets the newest-created ACTIVE entitlement account returned by the tab", async () => {
+    const prisma = workspacePrisma();
+    prisma.orderEntitlementAccount.findFirst.mockImplementation(
+      async (args: {
+        where?: { accountStatus?: string };
+      }) =>
+        args.where?.accountStatus === "ACTIVE"
+          ? {
+              accountStatus: "ACTIVE",
+              grants: [{ status: "ACTIVE" }],
+              id: "active-account",
+              updatedAt: new Date("2026-07-20T00:00:00.000Z")
+            }
+          : {
+              accountStatus: "SUSPENDED",
+              grants: [],
+              id: "newer-suspended-account",
+              updatedAt: new Date("2026-07-29T00:00:00.000Z")
+            }
+    );
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.ENTITLEMENT_VIEW
+      ])
+    );
+
+    expect(prisma.orderEntitlementAccount.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: { createdAt: "desc" },
+        where: {
+          accountStatus: "ACTIVE",
+          deletedAt: null,
+          orderId: "order-1"
+        }
+      })
+    );
+    expect(
+      summary.guidance.find(({ category }) => category === "entitlement")
+    ).toEqual(
+      expect.objectContaining({
+        reasonCode: "ENTITLEMENT_CURRENT",
+        state: "COMPLETED",
+        targetRecordId: "active-account"
+      })
+    );
+  });
+
+  it("does not target a suspended account when no ACTIVE entitlement exists", async () => {
+    const prisma = workspacePrisma();
+    prisma.orderEntitlementAccount.findFirst.mockImplementation(
+      async (args: {
+        where?: { accountStatus?: string };
+      }) =>
+        args.where?.accountStatus === "ACTIVE"
+          ? null
+          : {
+              accountStatus: "SUSPENDED",
+              grants: [],
+              id: "suspended-only-account",
+              updatedAt: new Date("2026-07-29T00:00:00.000Z")
+            }
+    );
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.ENTITLEMENT_VIEW
+      ])
+    );
+
+    expect(
+      summary.guidance.find(({ category }) => category === "entitlement")
+    ).toEqual(
+      expect.objectContaining({
+        reasonCode: "ENTITLEMENT_ACTIVATION_REQUIRED",
+        state: "ACTION_REQUIRED",
+        targetRecordId: null
+      })
+    );
+  });
+
   it("bounds service and change candidates while limiting change status to persisted actionable values", async () => {
     const prisma = workspacePrisma();
 

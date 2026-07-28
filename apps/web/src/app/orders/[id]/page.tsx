@@ -110,8 +110,10 @@ import {
   getOrderWorkspaceRecordIds,
   getVisibleOrderWorkspaceTabs,
   getWorkspaceStatePresentation,
+  mergeOrderWorkspaceFocusedServiceCase,
   parseOrderWorkspaceLocation,
   refreshActiveOrderWorkspaceTab,
+  shouldLoadOrderWorkspaceFocusedServiceCase,
   type OrderWorkspaceTabKey
 } from "../../../lib/admin-order-workspace";
 import type { AuthMeResponse } from "../../../lib/auth";
@@ -5254,13 +5256,26 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           const result = await apiFetch<PortalPagedResponse<PortalServiceCase>>(
             `/service-cases?${query.toString()}`
           );
-          setServiceCases(result.items);
+          let nextItems = result.items;
+          if (
+            focus &&
+            !nextItems.some((serviceCase) => serviceCase.id === focus)
+          ) {
+            const focused = await apiFetch<PortalServiceCase>(`/service-cases/${encodeURIComponent(focus)}`);
+            nextItems = mergeOrderWorkspaceFocusedServiceCase({
+              focus,
+              focused,
+              items: nextItems,
+              orderId
+            });
+          }
+          setServiceCases(nextItems);
         });
       } finally {
         setServiceCasesLoading(false);
       }
     },
-    [loadWorkspaceResource, orderId, permissions]
+    [focus, loadWorkspaceResource, orderId, permissions]
   );
 
   const loadActiveWorkspaceTab = useCallback(
@@ -5410,6 +5425,26 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     navigateWorkspace,
     visibleTabs,
     workspaceLocation.tab
+  ]);
+
+  useEffect(() => {
+    if (
+      !shouldLoadOrderWorkspaceFocusedServiceCase({
+        activeTab,
+        domainLoaded: activeDomainState.loaded,
+        focus,
+        serviceCaseIds: serviceCases.map((serviceCase) => serviceCase.id)
+      })
+    ) {
+      return;
+    }
+    void loadActiveWorkspaceTab("service", true);
+  }, [
+    activeDomainState.loaded,
+    activeTab,
+    focus,
+    loadActiveWorkspaceTab,
+    serviceCases
   ]);
 
   useEffect(() => {

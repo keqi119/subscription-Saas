@@ -17,7 +17,7 @@ describe("service case back office", () => {
     expect(detail).toMatchObject({
       customer: { name: "李四" },
       id: "case-b",
-      order: { orderNo: "ORD-B" }
+      order: { id: "order-b", orderNo: "ORD-B" }
     });
   });
 

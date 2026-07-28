@@ -27,8 +27,10 @@ import {
   getVisibleOrderWorkspaceTabs,
   getWorkspaceActionPresentation,
   getWorkspaceStatePresentation,
+  mergeOrderWorkspaceFocusedServiceCase,
   parseOrderWorkspaceLocation,
-  refreshActiveOrderWorkspaceTab
+  refreshActiveOrderWorkspaceTab,
+  shouldLoadOrderWorkspaceFocusedServiceCase
 } from "../src/lib/admin-order-workspace";
 
 const TAB_KEYS = ORDER_WORKSPACE_TAB_KEYS;
@@ -358,6 +360,66 @@ describe("admin order workspace refresh and focus helpers", () => {
     ).toBeNull();
   });
 
+  it("merges a real focused service case only for the current order", () => {
+    const pageItems = Array.from({ length: 20 }, (_, index) => ({
+      id: `recent-${index}`,
+      order: { id: "order-1" }
+    }));
+    const focused = {
+      id: "service-action-target",
+      order: { id: "order-1" }
+    };
+
+    expect(
+      mergeOrderWorkspaceFocusedServiceCase({
+        focus: "service-action-target",
+        focused,
+        items: pageItems,
+        orderId: "order-1"
+      })
+    ).toEqual([focused, ...pageItems]);
+    expect(() =>
+      mergeOrderWorkspaceFocusedServiceCase({
+        focus: "service-action-target",
+        focused: {
+          id: "service-action-target",
+          order: { id: "another-order" }
+        },
+        items: pageItems,
+        orderId: "order-1"
+      })
+    ).toThrow("Focused service case does not belong to this order.");
+  });
+
+  it("reloads a cached service tab only until its focused record is present", () => {
+    const cachedServiceCaseIds = ["recent-1", "recent-2"];
+
+    expect(
+      shouldLoadOrderWorkspaceFocusedServiceCase({
+        activeTab: "overview",
+        domainLoaded: true,
+        focus: "service-action-target",
+        serviceCaseIds: cachedServiceCaseIds
+      })
+    ).toBe(false);
+    expect(
+      shouldLoadOrderWorkspaceFocusedServiceCase({
+        activeTab: "service",
+        domainLoaded: true,
+        focus: "service-action-target",
+        serviceCaseIds: cachedServiceCaseIds
+      })
+    ).toBe(true);
+    expect(
+      shouldLoadOrderWorkspaceFocusedServiceCase({
+        activeTab: "service",
+        domainLoaded: true,
+        focus: "service-action-target",
+        serviceCaseIds: ["service-action-target", ...cachedServiceCaseIds]
+      })
+    ).toBe(false);
+  });
+
   it("uses the summary label instead of raw customer data without customer view", () => {
     const customer = {
       mobile: "13800000000",
@@ -425,6 +487,34 @@ describe("admin order detail workspace migration", () => {
     expect(activeTabLoader).toContain('case "change":');
     expect(source).not.toContain(
       "apiFetch<OrderDetail>(`/orders/${orderId}`),\n        apiFetch<OrderChangeRow[]>"
+    );
+  });
+
+  it("loads a missing focused service record and validates it before merging", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const serviceLoader = sourceBetween(
+      source,
+      "const loadServiceDomain = useCallback",
+      "const loadActiveWorkspaceTab = useCallback"
+    );
+
+    expect(serviceLoader).toContain(
+      "apiFetch<PortalPagedResponse<PortalServiceCase>>"
+    );
+    expect(serviceLoader).toContain(
+      "`/service-cases?${query.toString()}`"
+    );
+    expect(serviceLoader).toContain(
+      "apiFetch<PortalServiceCase>(`/service-cases/${encodeURIComponent(focus)}`)"
+    );
+    expect(serviceLoader).toContain(
+      "mergeOrderWorkspaceFocusedServiceCase"
+    );
+    expect(source).toContain(
+      "shouldLoadOrderWorkspaceFocusedServiceCase({"
+    );
+    expect(source).toContain(
+      'void loadActiveWorkspaceTab("service", true)'
     );
   });
 

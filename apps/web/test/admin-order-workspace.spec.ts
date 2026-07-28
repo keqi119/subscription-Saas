@@ -1,5 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { OrderTransactionGuide } from "../src/components/order-workspace/order-transaction-guide";
+import { OrderWorkspaceHeader } from "../src/components/order-workspace/order-workspace-header";
+import { OrderWorkspace } from "../src/components/order-workspace/order-workspace";
 import {
   buildOrderWorkspaceLocation,
   getWorkspaceActionPresentation,
@@ -15,6 +20,16 @@ const TAB_KEYS = [
   "service",
   "finance",
   "change"
+] as const;
+
+const TAB_LABELS = [
+  "订单基本信息",
+  "主合同及订阅套餐",
+  "车辆交接",
+  "订阅权益",
+  "用车中事务",
+  "财务/收款核销",
+  "变更/历史快照"
 ] as const;
 
 describe("admin order workspace navigation model", () => {
@@ -133,3 +148,156 @@ describe("admin order workspace navigation model", () => {
     expect(getWorkspaceActionPresentation("")).toBeNull();
   });
 });
+
+describe("admin order workspace shell", () => {
+  it("renders the exact seven tab labels and only the active typed slot", () => {
+    const markup = renderToStaticMarkup(
+      createElement(OrderWorkspace, {
+        activeTab: "handover",
+        onTabChange: () => undefined,
+        slots: {
+          change: createElement("p", null, "变更内容不应挂载"),
+          contract: createElement("p", null, "合同内容不应挂载"),
+          entitlement: createElement("p", null, "权益内容不应挂载"),
+          finance: createElement("p", null, "财务内容不应挂载"),
+          handover: createElement("p", null, "当前车辆交接内容"),
+          overview: createElement("p", null, "基本信息不应挂载"),
+          service: createElement("p", null, "事务内容不应挂载")
+        }
+      })
+    );
+
+    for (const label of TAB_LABELS) {
+      expect(markup).toContain(label);
+    }
+    expect(markup.match(/data-workspace-active-content=/g)).toHaveLength(1);
+    expect(markup).toContain("当前车辆交接内容");
+    expect(markup).not.toContain("合同内容不应挂载");
+    expect(markup).not.toContain("变更内容不应挂载");
+  });
+
+  it("renders a compact order header without Stage 1 contract actions", () => {
+    const markup = renderToStaticMarkup(
+      createElement(OrderWorkspaceHeader, {
+        header: {
+          currentVehicleLabel: "沪A·12345 / VIN0001",
+          customerLabel: "张三",
+          orderNo: "SO-20260729-001",
+          orderStatus: "ACTIVE",
+          orderStatusLabel: "履约中",
+          ownerLabel: "李销售"
+        },
+        onBack: () => undefined,
+        onRefresh: () => undefined,
+        overflowActions: [
+          {
+            key: "cancel",
+            label: "取消订单",
+            onClick: () => undefined
+          }
+        ]
+      })
+    );
+
+    expect(markup).toContain('data-workspace-header="true"');
+    expect(markup).toContain("SO-20260729-001");
+    expect(markup).toContain("履约中");
+    expect(markup).toContain("张三");
+    expect(markup).toContain("沪A·12345 / VIN0001");
+    expect(markup).toContain("李销售");
+    expect(markup).toContain('aria-label="返回订单列表"');
+    expect(markup).toContain('aria-label="刷新订单工作台"');
+    expect(markup).toContain('aria-label="订单级更多操作"');
+    expect(markup).not.toContain("生成合同");
+    expect(markup).not.toContain("查看合同");
+  });
+
+  it("renders six compact guidance items with one primary and preserved secondary actions", () => {
+    const summary = {
+      asOf: "2026-07-29T01:10:00.000Z",
+      guidance: [
+        guidanceItem("contract", "ACTION_REQUIRED", "contract.generate", 2),
+        guidanceItem("handover", "READY", "handover.assign"),
+        guidanceItem("entitlement", "READY", "entitlement.activate"),
+        guidanceItem("service", "ACTION_REQUIRED", "service.resolve"),
+        guidanceItem("finance", "ACTION_REQUIRED", "finance.collect"),
+        guidanceItem("change", "READY", "change.approve")
+      ],
+      primaryAction: {
+        actionCode: "contract.generate",
+        targetRecordId: "contract-1",
+        targetTab: "contract" as const
+      }
+    };
+    const markup = renderToStaticMarkup(
+      createElement(OrderTransactionGuide, {
+        onNavigate: () => undefined,
+        summary
+      })
+    );
+
+    expect(markup.match(/data-workspace-guide-category=/g)).toHaveLength(6);
+    expect(markup.match(/data-workspace-action-kind="primary"/g)).toHaveLength(1);
+    expect(markup.match(/data-workspace-action-kind="secondary"/g)).toHaveLength(5);
+    expect(markup).toContain('data-workspace-additional-count="2"');
+    expect(markup).toContain("2026-07-29");
+    for (const categoryLabel of TAB_LABELS.slice(1)) {
+      expect(markup).toContain(categoryLabel);
+    }
+    for (const actionLabel of [
+      "生成合同",
+      "分配交接任务",
+      "激活权益",
+      "处理服务工单",
+      "发起收款",
+      "审批变更"
+    ]) {
+      expect(markup).toContain(actionLabel);
+    }
+  });
+
+  it("fails closed for an unknown guide action while retaining tab navigation", () => {
+    const markup = renderToStaticMarkup(
+      createElement(OrderTransactionGuide, {
+        onNavigate: () => undefined,
+        summary: {
+          asOf: "2026-07-29T01:10:00.000Z",
+          guidance: [guidanceItem("finance", "ACTION_REQUIRED", "finance.future_action")],
+          primaryAction: {
+            actionCode: "finance.future_action",
+            targetRecordId: "bill-1",
+            targetTab: "finance"
+          }
+        }
+      })
+    );
+
+    expect(markup).toContain('data-workspace-action-code="finance.future_action"');
+    expect(markup).toContain('data-workspace-action-kind="unavailable"');
+    expect(markup).toContain("动作不可用");
+    expect(markup).toContain("disabled");
+    expect(markup).toContain('data-workspace-navigation="finance"');
+  });
+});
+
+function guidanceItem(
+  category: (typeof TAB_KEYS)[number] extends infer Tab
+    ? Exclude<Tab, "overview">
+    : never,
+  state: Parameters<typeof getWorkspaceStatePresentation>[0],
+  actionCode: string,
+  additionalCount = 0
+) {
+  return {
+    actionCode,
+    additionalCount,
+    blocking: state === "BLOCKED",
+    category,
+    priority: 10,
+    reasonCode: `${category.toUpperCase()}_TEST`,
+    state,
+    targetRecordId: `${category}-1`,
+    targetTab: category,
+    updatedAt: "2026-07-29T01:00:00.000Z"
+  };
+}

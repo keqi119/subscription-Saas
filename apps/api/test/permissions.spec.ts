@@ -517,6 +517,30 @@ describe("order workspace permissions", () => {
       PermissionCode.ORDER_VIEW
     ]);
   });
+
+  it("requires order and service-case view for scoped workspace service details", () => {
+    const handler = (
+      OrderController.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => unknown
+      >
+    ).getOrderWorkspaceServiceCase;
+
+    expect(handler).toBeTypeOf("function");
+    if (!handler) {
+      throw new Error("workspace service-case handler is missing");
+    }
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
+      "orders/:id/workspace/service-cases/:serviceCaseId"
+    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
+      RequestMethod.GET
+    );
+    expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+      PermissionCode.ORDER_VIEW,
+      PermissionCode.SERVICE_CASE_VIEW
+    ]);
+  });
 });
 
 describe("order entitlement permissions", () => {

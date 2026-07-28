@@ -3,6 +3,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 
 import type { RequestUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
+import { ServiceCaseService } from "../service-case/service-case.service";
 import type {
   OrderWorkspaceGuideCategory,
   OrderWorkspaceGuideItem,
@@ -497,12 +498,25 @@ export class OrderWorkspaceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly orderService: OrderService,
-    private readonly resolver: OrderWorkspaceResolver
+    private readonly resolver: OrderWorkspaceResolver,
+    private readonly serviceCaseService: ServiceCaseService
   ) {}
 
   async getDetail(id: string, user: RequestUser): Promise<OrderWorkspaceDetail> {
     const rawDetail = await this.orderService.getOrder(id, user);
     return projectOrderWorkspaceDetail(rawDetail, new Set(user.permissions));
+  }
+
+  async getServiceCase(
+    orderId: string,
+    serviceCaseId: string,
+    user: RequestUser
+  ) {
+    await this.orderService.getOrder(orderId, user);
+    return this.serviceCaseService.getAdminServiceCaseForOrder(
+      orderId,
+      serviceCaseId
+    );
   }
 
   async getSummary(id: string, user: RequestUser): Promise<OrderWorkspaceSummary> {

@@ -505,6 +505,9 @@ describe("admin order detail workspace migration", () => {
       "`/service-cases?${query.toString()}`"
     );
     expect(serviceLoader).toContain(
+      "`/orders/${encodeURIComponent(orderId)}/workspace/service-cases/${encodeURIComponent(focus)}`"
+    );
+    expect(serviceLoader).not.toContain(
       "apiFetch<PortalServiceCase>(`/service-cases/${encodeURIComponent(focus)}`)"
     );
     expect(serviceLoader).toContain(

@@ -231,6 +231,23 @@ export class OrderController {
     return this.orderWorkspaceService.getDetail(id, request.user);
   }
 
+  @Get("orders/:id/workspace/service-cases/:serviceCaseId")
+  @RequirePermissions(
+    PermissionCode.ORDER_VIEW,
+    PermissionCode.SERVICE_CASE_VIEW
+  )
+  getOrderWorkspaceServiceCase(
+    @Param("id") id: string,
+    @Param("serviceCaseId") serviceCaseId: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderWorkspaceService.getServiceCase(
+      id,
+      serviceCaseId,
+      request.user
+    );
+  }
+
   @Get("orders/:id/workspace/summary")
   @RequirePermissions(PermissionCode.ORDER_VIEW)
   getOrderWorkspaceSummary(@Param("id") id: string, @Req() request: AuthenticatedRequest) {

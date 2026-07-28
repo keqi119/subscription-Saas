@@ -616,7 +616,8 @@ describe("OrderWorkspaceService", () => {
     const service = new OrderWorkspaceService(
       workspacePrisma() as never,
       { getOrder } as never,
-      new OrderWorkspaceResolver()
+      new OrderWorkspaceResolver(),
+      {} as never
     );
     const user = workspaceUser([PermissionCode.ORDER_VIEW]);
 
@@ -1410,13 +1411,59 @@ describe("OrderWorkspaceService", () => {
     expect(filterWorkspaceActionByPermission(item, workspaceUser(Object.values(PermissionCode))).actionCode).toBeNull();
   });
 
+  it("loads a scoped service case for an SA-owned order and stops before lookup for another sales order", async () => {
+    const saUser = {
+      ...workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.SERVICE_CASE_VIEW
+      ]),
+      id: "sales-user-1",
+      roles: ["SA"]
+    };
+    const getOrder = vi.fn(async (orderId: string) => {
+      if (orderId === "other-sales-order") {
+        throw new ForbiddenException("Order is outside your scope.");
+      }
+      return { id: orderId };
+    });
+    const getAdminServiceCaseForOrder = vi.fn().mockResolvedValue({
+      id: "service-case-1",
+      order: { id: "owned-order" }
+    });
+    const service = new OrderWorkspaceService(
+      workspacePrisma() as never,
+      { getOrder } as never,
+      new OrderWorkspaceResolver(),
+      { getAdminServiceCaseForOrder } as never
+    );
+
+    await expect(
+      service.getServiceCase("owned-order", "service-case-1", saUser)
+    ).resolves.toEqual({
+      id: "service-case-1",
+      order: { id: "owned-order" }
+    });
+    await expect(
+      service.getServiceCase("other-sales-order", "service-case-2", saUser)
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(getOrder).toHaveBeenNthCalledWith(1, "owned-order", saUser);
+    expect(getOrder).toHaveBeenNthCalledWith(2, "other-sales-order", saUser);
+    expect(getAdminServiceCaseForOrder).toHaveBeenCalledTimes(1);
+    expect(getAdminServiceCaseForOrder).toHaveBeenCalledWith(
+      "owned-order",
+      "service-case-1"
+    );
+  });
+
   it("stops before contributor queries when the existing order access check rejects sales scope", async () => {
     const getOrder = vi.fn().mockRejectedValue(new ForbiddenException("Order is outside your scope."));
     const prisma = workspacePrisma();
     const service = new OrderWorkspaceService(
       prisma as never,
       { getOrder } as never,
-      new OrderWorkspaceResolver()
+      new OrderWorkspaceResolver(),
+      {} as never
     );
 
     await expect(service.getSummary("order-1", workspaceUser())).rejects.toBeInstanceOf(ForbiddenException);
@@ -1444,7 +1491,8 @@ describe("OrderWorkspaceService", () => {
       const service = new OrderWorkspaceService(
         prisma as never,
         { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
-        resolver
+        resolver,
+        {} as never
       );
 
       const summary = await service.getSummary("order-1", workspaceUser());
@@ -1469,7 +1517,8 @@ describe("OrderWorkspaceService", () => {
     const service = new OrderWorkspaceService(
       prisma as never,
       { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
-      new OrderWorkspaceResolver()
+      new OrderWorkspaceResolver(),
+      {} as never
     );
 
     const summary = await service.getSummary("order-1", workspaceUser());
@@ -2026,7 +2075,8 @@ function workspaceDetailService() {
   return new OrderWorkspaceService(
     workspacePrisma() as never,
     { getOrder: vi.fn().mockResolvedValue(workspaceRawDetail()) } as never,
-    new OrderWorkspaceResolver()
+    new OrderWorkspaceResolver(),
+    {} as never
   );
 }
 
@@ -2401,7 +2451,8 @@ function workspaceService(prisma: ReturnType<typeof workspacePrisma>) {
   return new OrderWorkspaceService(
     prisma as never,
     { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
-    new OrderWorkspaceResolver()
+    new OrderWorkspaceResolver(),
+    {} as never
   );
 }
 

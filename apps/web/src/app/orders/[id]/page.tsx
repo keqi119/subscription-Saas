@@ -5261,7 +5261,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             focus &&
             !nextItems.some((serviceCase) => serviceCase.id === focus)
           ) {
-            const focused = await apiFetch<PortalServiceCase>(`/service-cases/${encodeURIComponent(focus)}`);
+            const focused = await apiFetch<PortalServiceCase>(
+              `/orders/${encodeURIComponent(orderId)}/workspace/service-cases/${encodeURIComponent(focus)}`
+            );
             nextItems = mergeOrderWorkspaceFocusedServiceCase({
               focus,
               focused,

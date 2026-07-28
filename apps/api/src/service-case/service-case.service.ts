@@ -518,6 +518,21 @@ export class ServiceCaseService {
     return toServiceCaseView(serviceCase, "admin");
   }
 
+  async getAdminServiceCaseForOrder(orderId: string, id: string) {
+    const serviceCase = await this.prisma.serviceCase.findFirst({
+      include: serviceCaseInclude,
+      where: {
+        deletedAt: null,
+        id,
+        orderId
+      }
+    });
+    if (!serviceCase) {
+      throw new NotFoundException("Service case not found.");
+    }
+    return toServiceCaseView(serviceCase, "admin");
+  }
+
   async acceptServiceCase(
     id: string,
     dto: AcceptServiceCaseDto,

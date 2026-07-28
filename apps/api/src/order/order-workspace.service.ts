@@ -872,7 +872,10 @@ function resolveAccess(user: RequestUser): WorkspaceAccess {
         PermissionCode.COLLECTION_VIEW
       ].some((permission) => permissions.has(permission))
     ),
-    handover: viewAccess(permissions.has(PermissionCode.DELIVERY_VIEW)),
+    handover: viewAccess(
+      permissions.has(PermissionCode.DELIVERY_VIEW) ||
+        permissions.has(PermissionCode.VEHICLE_RETURN_VIEW)
+    ),
     service: viewAccess(permissions.has(PermissionCode.SERVICE_CASE_VIEW))
   };
 }

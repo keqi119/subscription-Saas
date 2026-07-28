@@ -800,6 +800,45 @@ describe("OrderWorkspaceService", () => {
     }
   });
 
+  it("loads handover summary for vehicle-return-only access", async () => {
+    const prisma = workspacePrisma();
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.VEHICLE_RETURN_VIEW
+      ])
+    );
+
+    expect(prisma.vehicleHandoverWorkOrder.findMany).toHaveBeenCalledTimes(1);
+    expect(summary.guidance.map(({ category }) => category)).toEqual([
+      "handover"
+    ]);
+    expect(summary.tabBadges.map(({ tab }) => tab)).toEqual(["handover"]);
+  });
+
+  it.each([
+    [PermissionCode.CONTRACT_VIEW, "contract"],
+    [PermissionCode.ORDER_CHANGE_VIEW, "change"],
+    [PermissionCode.PAYMENT_VIEW, "finance"]
+  ] as const)(
+    "keeps %s workspace access aligned with the matching UI tab",
+    async (permission, expectedCategory) => {
+      const summary = await workspaceService(workspacePrisma()).getSummary(
+        "order-1",
+        workspaceUser([PermissionCode.ORDER_VIEW, permission])
+      );
+
+      expect(summary.guidance.map(({ category }) => category)).toEqual([
+        expectedCategory
+      ]);
+      expect(summary.tabBadges.map(({ tab }) => tab)).toEqual([
+        expectedCategory
+      ]);
+    }
+  );
+
   it("shows a finance action only with the matching action endpoint permission", async () => {
     const prisma = workspacePrisma();
     prisma.receivableBill.findMany.mockResolvedValue([

@@ -45,33 +45,37 @@ export function OrderWorkspace({
 
   return (
     <div data-order-workspace="true">
-      <div style={{ overflowX: "auto", scrollbarGutter: "stable" }}>
-        <div style={{ minWidth: 1040 }}>
-          <Tabs
-            activeKey={resolvedActiveTab}
-            animated={false}
-            destroyOnHidden
-            id="order-workspace-tabs"
-            items={tabs.map(({ key, label }) => ({
-              children:
-                key === resolvedActiveTab ? (
-                  <section
-                    aria-label={`${label}内容`}
-                    data-workspace-active-content={key}
-                    style={{ minHeight: 240, paddingTop: 12 }}
-                  >
-                    {slots[key] ?? null}
-                  </section>
-                ) : undefined,
-              key,
-              label: <TabLabel badge={badgesByTab.get(key)} label={label} />
-            }))}
-            onChange={(key) => onTabChange(key as OrderWorkspaceTabKey)}
-            size="small"
-            tabBarGutter={24}
-          />
-        </div>
-      </div>
+      <Tabs
+        activeKey={resolvedActiveTab}
+        animated={false}
+        destroyOnHidden
+        id="order-workspace-tabs"
+        items={tabs.map(({ key, label }) => ({
+          children:
+            key === resolvedActiveTab ? (
+              <section
+                aria-label={`${label}内容`}
+                data-workspace-active-content={key}
+                style={{ minHeight: 240, paddingTop: 12 }}
+              >
+                {slots[key] ?? null}
+              </section>
+            ) : undefined,
+          key,
+          label: <TabLabel badge={badgesByTab.get(key)} label={label} />
+        }))}
+        onChange={(key) => onTabChange(key as OrderWorkspaceTabKey)}
+        renderTabBar={(tabBarProps, DefaultTabBar) => (
+          <div
+            data-workspace-tab-scroll="true"
+            style={{ overflowX: "auto", scrollbarGutter: "stable" }}
+          >
+            <DefaultTabBar {...tabBarProps} />
+          </div>
+        )}
+        size="small"
+        tabBarGutter={24}
+      />
     </div>
   );
 }

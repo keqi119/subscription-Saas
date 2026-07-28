@@ -46,6 +46,32 @@ const ORDER_WORKSPACE_TAB_KEYS = new Set<OrderWorkspaceTabKey>([
   "change"
 ]);
 
+const ORDER_WORKSPACE_TAB_PERMISSIONS = {
+  change: ["order_change:view"],
+  contract: ["contract:view"],
+  entitlement: ["entitlement:view"],
+  finance: [
+    "billing:view",
+    "payment:view",
+    "deposit_ledger:view",
+    "collection:view"
+  ],
+  handover: ["delivery:view", "vehicle_return:view"],
+  service: ["service_case:view"]
+} as const satisfies Record<
+  Exclude<OrderWorkspaceTabKey, "overview">,
+  readonly string[]
+>;
+
+const ORDER_WORKSPACE_PERMISSION_TAB_ORDER = [
+  "contract",
+  "handover",
+  "entitlement",
+  "service",
+  "finance",
+  "change"
+] as const satisfies ReadonlyArray<Exclude<OrderWorkspaceTabKey, "overview">>;
+
 const STATE_PRESENTATIONS = {
   BLOCKED: { label: "已阻塞", color: "red" },
   ACTION_REQUIRED: { label: "待处理", color: "orange" },
@@ -88,6 +114,7 @@ export function parseOrderWorkspaceLocation(
 }
 
 export function buildOrderWorkspaceLocation(input: {
+  createChange?: boolean;
   orderId: string;
   tab: OrderWorkspaceTabKey;
   focus?: string;
@@ -96,8 +123,79 @@ export function buildOrderWorkspaceLocation(input: {
   if (input.focus) {
     searchParams.set("focus", input.focus);
   }
+  if (input.createChange) {
+    searchParams.set("createChange", "1");
+  }
 
   return `/orders/${encodeURIComponent(input.orderId)}?${searchParams.toString()}`;
+}
+
+export function getVisibleOrderWorkspaceTabs(
+  permissions: Iterable<string>
+): OrderWorkspaceTabKey[] {
+  const permissionSet =
+    permissions instanceof Set ? permissions : new Set(permissions);
+
+  return [
+    "overview",
+    ...ORDER_WORKSPACE_PERMISSION_TAB_ORDER
+      .filter((tab) =>
+        ORDER_WORKSPACE_TAB_PERMISSIONS[tab].some((permission) =>
+          permissionSet.has(permission)
+        )
+      )
+      .map((tab) => tab)
+  ];
+}
+
+export function getOrderWorkspaceChangeGuard(input: {
+  changesLoaded: boolean;
+  hasActiveChange: boolean;
+  hasOrderChangeView: boolean;
+}): { locked: boolean; waiting: boolean } {
+  if (!input.hasOrderChangeView) {
+    return { locked: false, waiting: false };
+  }
+
+  return {
+    locked: input.changesLoaded && input.hasActiveChange,
+    waiting: !input.changesLoaded
+  };
+}
+
+export async function refreshActiveOrderWorkspaceTab(input: {
+  activeTabRef: { current: OrderWorkspaceTabKey };
+  refreshSummary: () => Promise<void>;
+  refreshTab: (tab: OrderWorkspaceTabKey) => Promise<void>;
+}): Promise<void> {
+  await input.refreshSummary();
+  await input.refreshTab(input.activeTabRef.current);
+}
+
+export function getOrderWorkspaceRecordIds(
+  ...recordIds: Array<string | null | undefined>
+): string[] {
+  return Array.from(
+    new Set(recordIds.filter((recordId): recordId is string => Boolean(recordId)))
+  );
+}
+
+export function getOrderWorkspaceFallbackRecordIds(
+  targetRecordIds: readonly string[],
+  resolvedRecordIds: readonly string[]
+): string[] {
+  const resolvedRecordIdSet = new Set(resolvedRecordIds);
+  return getOrderWorkspaceRecordIds(...targetRecordIds).filter(
+    (recordId) => !resolvedRecordIdSet.has(recordId)
+  );
+}
+
+export function buildOrderWorkspaceRecordSelector(
+  focus: string,
+  escapeCssValue: (value: string) => string
+): string {
+  const escapedFocus = escapeCssValue(focus);
+  return `[data-workspace-record="${escapedFocus}"],[data-workspace-record-alias="${escapedFocus}"]`;
 }
 
 export function getWorkspaceStatePresentation(

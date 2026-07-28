@@ -100,7 +100,14 @@ import {
 } from "../../../lib/admin-stage2-handover-pdf";
 import {
   buildOrderWorkspaceLocation,
+  buildOrderWorkspaceRecordSelector,
+  getOrderWorkspaceChangeGuard,
+  getOrderWorkspaceFallbackRecordIds,
+  getOrderWorkspaceRecordIds,
+  getVisibleOrderWorkspaceTabs,
+  getWorkspaceStatePresentation,
   parseOrderWorkspaceLocation,
+  refreshActiveOrderWorkspaceTab,
   type OrderWorkspaceTabKey
 } from "../../../lib/admin-order-workspace";
 import type { AuthMeResponse } from "../../../lib/auth";
@@ -2657,6 +2664,11 @@ function FinancePanel({
           dataSource={bills}
           loading={financeLoading}
           locale={{ emptyText: "-" }}
+          onRow={(bill) =>
+            ({
+              "data-workspace-record": bill.id
+            }) as HTMLAttributes<HTMLTableRowElement>
+          }
           pagination={false}
           rowKey="id"
           scroll={{ x: 1480 }}
@@ -3019,11 +3031,17 @@ function Stage2HandoverReviewPanel({
         dataSource={workOrders}
         loading={loading}
         locale={{ emptyText: "暂无 Stage 2 现场交接记录" }}
-        onRow={(workOrder) =>
-          ({
-            "data-workspace-record": workOrder.id
-          }) as HTMLAttributes<HTMLTableRowElement>
-        }
+        onRow={(workOrder) => {
+          const recordIds = getOrderWorkspaceRecordIds(
+            workOrder.id,
+            esignStatuses[workOrder.id]?.handoverId,
+            workOrder.handoverId
+          );
+          return {
+            "data-workspace-record": workOrder.id,
+            "data-workspace-record-alias": recordIds[1]
+          } as HTMLAttributes<HTMLTableRowElement>;
+        }}
         pagination={false}
         rowKey="id"
         scroll={{ x: 1734 }}
@@ -3858,6 +3876,11 @@ function DepositSettlementPanel({
           dataSource={ledgerRows}
           loading={depositSettlementLoading}
           locale={{ emptyText: "-" }}
+          onRow={(ledger) =>
+            ({
+              "data-workspace-record": ledger.id
+            }) as HTMLAttributes<HTMLTableRowElement>
+          }
           pagination={false}
           rowKey="id"
           scroll={{ x: 1040 }}
@@ -4153,11 +4176,81 @@ function ServiceCasesPanel({
         dataSource={items}
         loading={loading}
         locale={{ emptyText: "当前订单暂无服务工单" }}
+        onRow={(serviceCase) =>
+          ({
+            "data-workspace-record": serviceCase.id
+          }) as HTMLAttributes<HTMLTableRowElement>
+        }
         pagination={false}
         rowKey="id"
         scroll={{ x: 960 }}
         size="small"
       />
+    </Card>
+  );
+}
+
+function FinanceProgressRecords({
+  resolvedRecordIds,
+  summary
+}: {
+  resolvedRecordIds: readonly string[];
+  summary: OrderWorkspaceSummary | null;
+}) {
+  const guidance = summary?.guidance.filter(
+    (item) => item.category === "finance"
+  ) ?? [];
+  const targetIds = getOrderWorkspaceFallbackRecordIds(
+    getOrderWorkspaceRecordIds(
+      summary?.primaryAction?.targetTab === "finance"
+        ? summary.primaryAction.targetRecordId
+        : null,
+      ...guidance.map((item) => item.targetRecordId)
+    ),
+    resolvedRecordIds
+  );
+
+  return (
+    <Card
+      extra={
+        <Space wrap>
+          <Link href="/billing/monthly-rent">月租账单模块</Link>
+          <Link href="/billing/collections">逾期催收模块</Link>
+        </Space>
+      }
+      size="small"
+      title="当前财务推进记录"
+    >
+      {targetIds.length > 0 ? (
+        <List
+          dataSource={targetIds}
+          renderItem={(targetId) => {
+            const state = guidance.find(
+              (item) => item.targetRecordId === targetId
+            )?.state;
+            return (
+              <List.Item data-workspace-record={targetId}>
+                <Space wrap>
+                  <Typography.Text strong>财务事项</Typography.Text>
+                  {state ? (
+                    <Tag color={getWorkspaceStatePresentation(state).color}>
+                      {getWorkspaceStatePresentation(state).label}
+                    </Tag>
+                  ) : null}
+                  <Typography.Text type="secondary">
+                    请在现有财务模块继续查看和处理
+                  </Typography.Text>
+                </Space>
+              </List.Item>
+            );
+          }}
+          size="small"
+        />
+      ) : (
+        <Typography.Text type="secondary">
+          当前没有需要定位的财务推进记录
+        </Typography.Text>
+      )}
     </Card>
   );
 }
@@ -4251,8 +4344,7 @@ function createWorkspaceDomainLoadStates(): Record<
   };
 }
 
-function OrderDetailPageContent() {
-  const params = useParams<{ id: string }>();
+function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const workspaceLocation = useMemo(
@@ -4365,9 +4457,8 @@ function OrderDetailPageContent() {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [vehicleReturn, setVehicleReturn] = useState<VehicleReturn | null>(null);
   const [autoOpenChangeModalDone, setAutoOpenChangeModalDone] = useState(false);
-  const autoOpenChangeRequestedRef = useRef(
-    searchParams.get("createChange") === "1"
-  );
+  const createChangeRequested = searchParams.get("createChange") === "1";
+  const autoOpenChangeRequestedRef = useRef(createChangeRequested);
   const loadedDomainsRef = useRef(new Set<OrderWorkspaceTabKey>());
   const loadedResourcesRef = useRef(new Set<string>());
   const resourcePromisesRef = useRef(new Map<string, Promise<void>>());
@@ -4408,38 +4499,16 @@ function OrderDetailPageContent() {
   const hasReturnViewPermission = permissions.has("vehicle_return:view");
   const hasDepositSettlementViewPermission = permissions.has("deposit_ledger:view");
   const hasEntitlementViewPermission = permissions.has("entitlement:view");
-  const visibleTabs = useMemo<OrderWorkspaceTabKey[]>(() => {
-    const tabs: OrderWorkspaceTabKey[] = ["overview"];
-    if (permissions.has("order:view")) {
-      tabs.push("contract");
-    }
-    if (
-      permissions.has("delivery:view") ||
-      permissions.has("vehicle_return:view") ||
-      permissions.has("deposit_ledger:view")
-    ) {
-      tabs.push("handover");
-    }
-    if (permissions.has("entitlement:view")) {
-      tabs.push("entitlement");
-    }
-    if (permissions.has("service_case:view")) {
-      tabs.push("service");
-    }
-    if (
-      permissions.has("billing:view") ||
-      permissions.has("deposit_ledger:view")
-    ) {
-      tabs.push("finance");
-    }
-    if (permissions.has("order:view")) {
-      tabs.push("change");
-    }
-    return tabs;
-  }, [permissions]);
+  const hasOrderChangeView = permissions.has("order_change:view");
+  const visibleTabs = useMemo(
+    () => getVisibleOrderWorkspaceTabs(permissions),
+    [permissions]
+  );
   const activeTab = visibleTabs.includes(workspaceLocation.tab)
     ? workspaceLocation.tab
     : "overview";
+  const activeTabRef = useRef<OrderWorkspaceTabKey>(activeTab);
+  activeTabRef.current = activeTab;
   const focus =
     activeTab === workspaceLocation.tab ? workspaceLocation.focus : undefined;
   const activeDomainState = domainLoadStates[activeTab];
@@ -4581,18 +4650,25 @@ function OrderDetailPageContent() {
   const returnToPlanHint = isCustomerSelfServiceOrder
     ? "客户需重新提交订单申请。"
     : "返回进件详情重新生成订阅报价和订阅订单。";
-  const activeOrderChange = changes.find(
-    (change) =>
-      !change.executedAt &&
-      (change.status === "PENDING" || change.status === "APPROVED")
-  );
-  const orderChangeLocked = Boolean(activeOrderChange);
+  const activeOrderChange = hasOrderChangeView
+    ? changes.find(
+        (change) =>
+          !change.executedAt &&
+          (change.status === "PENDING" || change.status === "APPROVED")
+      )
+    : undefined;
+  const changeGuard = getOrderWorkspaceChangeGuard({
+    changesLoaded,
+    hasActiveChange: Boolean(activeOrderChange),
+    hasOrderChangeView
+  });
+  const orderChangeLocked = changeGuard.locked;
   const canCancelActiveChange = Boolean(
     activeOrderChange &&
       activeOrderChange.status === "PENDING" &&
       (roles.has("ADMIN") || activeOrderChange.createdBy === me?.user.id)
   );
-  const generateContractAvailability = !changesLoaded
+  const generateContractAvailability = changeGuard.waiting
     ? { allowed: false, reason: "订单变更状态加载完成后才可生成合同" }
     : orderChangeLocked
     ? { allowed: false, reason: "当前订单存在进行中的变更申请，请先处理后再生成合同" }
@@ -4600,11 +4676,11 @@ function OrderDetailPageContent() {
   const applyChangeAvailability = actionAvailability({
     allowed: Boolean(
       order &&
-        changesLoaded &&
+        !changeGuard.waiting &&
         !orderChangeLocked &&
         PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)
     ),
-    disabledReason: !changesLoaded
+    disabledReason: changeGuard.waiting
       ? "订单变更状态加载完成后才可操作"
       : orderChangeLocked
         ? "该订单已有进行中的变更申请"
@@ -4616,11 +4692,11 @@ function OrderDetailPageContent() {
   const cancelOrderAvailability = actionAvailability({
     allowed: Boolean(
       order &&
-        changesLoaded &&
+        !changeGuard.waiting &&
         ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
         !orderChangeLocked
     ),
-    disabledReason: !changesLoaded
+    disabledReason: changeGuard.waiting
       ? "订单变更状态加载完成后才可操作"
       : orderChangeLocked
         ? "该订单已有进行中的变更申请"
@@ -4629,7 +4705,7 @@ function OrderDetailPageContent() {
     permission: "order:cancel",
     permissions
   });
-  const prepareDeliveryDisabledReason = !changesLoaded
+  const prepareDeliveryDisabledReason = changeGuard.waiting
     ? "订单变更状态加载完成后才可操作"
     : getPrepareDeliveryDisabledReason(order, deliveryCheck, delivery, orderChangeLocked);
   const prepareDeliveryAvailability = actionAvailability({
@@ -4660,7 +4736,7 @@ function OrderDetailPageContent() {
         ).deliveryConfirmationAvailable
       )
     );
-  const confirmDeliveryDisabledReason = !changesLoaded
+  const confirmDeliveryDisabledReason = changeGuard.waiting
     ? "订单变更状态加载完成后才可操作"
     : getConfirmDeliveryDisabledReason(
         order,
@@ -4678,7 +4754,7 @@ function OrderDetailPageContent() {
   });
   const createHandoverWorkOrderDisabledReason = !order
     ? "数据加载完成后才可操作"
-    : !changesLoaded
+    : changeGuard.waiting
       ? "订单变更状态加载完成后才可操作"
       : orderChangeLocked
       ? "当前订单存在进行中的变更申请"
@@ -4698,7 +4774,7 @@ function OrderDetailPageContent() {
     permission: "delivery:prepare",
     permissions
   });
-  const prepareReturnDisabledReason = !changesLoaded
+  const prepareReturnDisabledReason = changeGuard.waiting
     ? "订单变更状态加载完成后才可操作"
     : getPrepareReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
   const prepareReturnAvailability = actionAvailability({
@@ -4708,7 +4784,7 @@ function OrderDetailPageContent() {
     permission: "vehicle_return:prepare",
     permissions
   });
-  const confirmReturnDisabledReason = !changesLoaded
+  const confirmReturnDisabledReason = changeGuard.waiting
     ? "订单变更状态加载完成后才可操作"
     : getConfirmReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
   const confirmReturnAvailability = actionAvailability({
@@ -4819,15 +4895,20 @@ function OrderDetailPageContent() {
   }, []);
 
   const navigateWorkspace = useCallback(
-    (target: { focus?: string; tab: OrderWorkspaceTabKey }) => {
+    (target: {
+      createChange?: boolean;
+      focus?: string;
+      tab: OrderWorkspaceTabKey;
+    }) => {
       const location = buildOrderWorkspaceLocation({
+        ...(target.createChange ? { createChange: true } : {}),
         ...(target.focus ? { focus: target.focus } : {}),
-        orderId: params.id,
+        orderId,
         tab: target.tab
       });
       router.replace(location, { scroll: false });
     },
-    [params.id, router]
+    [orderId, router]
   );
 
   const loadOrderDetail = useCallback(
@@ -4835,12 +4916,12 @@ function OrderDetailPageContent() {
       if (!force && loadedResourcesRef.current.has("order") && orderRef.current) {
         return;
       }
-      const nextOrder = await apiFetch<OrderDetail>(`/orders/${params.id}`);
+      const nextOrder = await apiFetch<OrderDetail>(`/orders/${orderId}`);
       orderRef.current = nextOrder;
       setOrder(nextOrder);
       loadedResourcesRef.current.add("order");
     },
-    [params.id]
+    [orderId]
   );
 
   const loadWorkspaceResource = useCallback(
@@ -4871,15 +4952,18 @@ function OrderDetailPageContent() {
 
   const loadChangesDomain = useCallback(
     async (force: boolean) => {
+      if (!hasOrderChangeView) {
+        return;
+      }
       await loadWorkspaceResource("changes", force, async () => {
         const nextChanges = await apiFetch<OrderChangeRow[]>(
-          `/orders/${params.id}/changes`
+          `/orders/${orderId}/changes`
         );
         setChanges(nextChanges);
         setChangesLoaded(true);
       });
     },
-    [loadWorkspaceResource, params.id]
+    [hasOrderChangeView, loadWorkspaceResource, orderId]
   );
 
   const loadDepositSettlementDomain = useCallback(
@@ -4892,7 +4976,7 @@ function OrderDetailPageContent() {
       try {
         await loadWorkspaceResource("deposit-settlement", force, async () => {
           const nextSettlement = await apiFetch<DepositSettlement>(
-            `/orders/${params.id}/deposit-settlement`
+            `/orders/${orderId}/deposit-settlement`
           );
           setDepositSettlement(nextSettlement);
         });
@@ -4906,20 +4990,24 @@ function OrderDetailPageContent() {
     [
       hasDepositSettlementViewPermission,
       loadWorkspaceResource,
-      params.id
+      orderId
     ]
   );
 
   const loadHandoverDomain = useCallback(
     async (force: boolean) => {
-      const loads: Promise<void>[] = [loadChangesDomain(force)];
+      const loads: Promise<void>[] = [];
+
+      if (hasOrderChangeView) {
+        loads.push(loadChangesDomain(force));
+      }
 
       if (hasDeliveryViewPermission) {
         loads.push(
           loadWorkspaceResource("delivery", force, async () => {
             const [nextDeliveryCheck, nextDelivery] = await Promise.all([
-              apiFetch<DeliveryCheck>(`/orders/${params.id}/delivery-check`),
-              apiFetch<VehicleDelivery | null>(`/orders/${params.id}/delivery`)
+              apiFetch<DeliveryCheck>(`/orders/${orderId}/delivery-check`),
+              apiFetch<VehicleDelivery | null>(`/orders/${orderId}/delivery`)
             ]);
             setDeliveryCheck(nextDeliveryCheck);
             setDelivery(nextDelivery);
@@ -4931,7 +5019,7 @@ function OrderDetailPageContent() {
             setHandoverWorkOrdersLoadState("LOADING");
             try {
               const nextWorkOrders = await apiFetch<HandoverWorkOrderSummary[]>(
-                `/orders/${params.id}/handover-work-orders`
+                `/orders/${orderId}/handover-work-orders`
               );
               setHandoverWorkOrders(nextWorkOrders);
               setHandoverWorkOrdersLoadState("LOADED");
@@ -4954,17 +5042,13 @@ function OrderDetailPageContent() {
         loads.push(
           loadWorkspaceResource("vehicle-return", force, async () => {
             const [nextReturnCheck, nextReturn] = await Promise.all([
-              apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`),
-              apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`)
+              apiFetch<ReturnCheck>(`/orders/${orderId}/return-check`),
+              apiFetch<VehicleReturn | null>(`/orders/${orderId}/return`)
             ]);
             setReturnCheck(nextReturnCheck);
             setVehicleReturn(nextReturn);
           })
         );
-      }
-
-      if (hasDepositSettlementViewPermission) {
-        loads.push(loadDepositSettlementDomain(force));
       }
 
       const results = await Promise.allSettled(loads);
@@ -4977,12 +5061,11 @@ function OrderDetailPageContent() {
     },
     [
       hasDeliveryViewPermission,
-      hasDepositSettlementViewPermission,
+      hasOrderChangeView,
       hasReturnViewPermission,
       loadChangesDomain,
-      loadDepositSettlementDomain,
       loadWorkspaceResource,
-      params.id,
+      orderId,
       refreshStage2HandoverESignStatus
     ]
   );
@@ -4998,10 +5081,10 @@ function OrderDetailPageContent() {
         await loadWorkspaceResource("entitlement", force, async () => {
           const [nextEntitlements, nextUsages] = await Promise.all([
             apiFetch<OrderEntitlementsResponse>(
-              `/orders/${params.id}/entitlements`
+              `/orders/${orderId}/entitlements`
             ),
             apiFetch<OrderEntitlementUsageResponse>(
-              `/orders/${params.id}/entitlement-usages?page=1&pageSize=10`
+              `/orders/${orderId}/entitlement-usages?page=1&pageSize=10`
             )
           ]);
           setEntitlements(nextEntitlements);
@@ -5018,7 +5101,7 @@ function OrderDetailPageContent() {
     [
       hasEntitlementViewPermission,
       loadWorkspaceResource,
-      params.id
+      orderId
     ]
   );
 
@@ -5032,9 +5115,9 @@ function OrderDetailPageContent() {
             try {
               const [nextFinanceSummary, nextBills] = await Promise.all([
                 apiFetch<FinanceSummary>(
-                  `/orders/${params.id}/finance-summary`
+                  `/orders/${orderId}/finance-summary`
                 ),
-                apiFetch<ReceivableBillRow[]>(`/orders/${params.id}/bills`)
+                apiFetch<ReceivableBillRow[]>(`/orders/${orderId}/bills`)
               ]);
               setFinanceSummary(nextFinanceSummary);
               setReceivableBills(nextBills);
@@ -5061,7 +5144,7 @@ function OrderDetailPageContent() {
       hasDepositSettlementViewPermission,
       loadDepositSettlementDomain,
       loadWorkspaceResource,
-      params.id
+      orderId
     ]
   );
 
@@ -5074,7 +5157,7 @@ function OrderDetailPageContent() {
       try {
         await loadWorkspaceResource("service-cases", force, async () => {
           const query = new URLSearchParams({
-            orderId: params.id,
+            orderId,
             pageSize: "20"
           });
           const result = await apiFetch<PortalPagedResponse<PortalServiceCase>>(
@@ -5086,7 +5169,7 @@ function OrderDetailPageContent() {
         setServiceCasesLoading(false);
       }
     },
-    [loadWorkspaceResource, params.id, permissions]
+    [loadWorkspaceResource, orderId, permissions]
   );
 
   const loadActiveWorkspaceTab = useCallback(
@@ -5107,7 +5190,9 @@ function OrderDetailPageContent() {
         await loadOrderDetail(force);
         switch (activeTab) {
           case "contract":
-            await loadChangesDomain(force);
+            if (hasOrderChangeView) {
+              await loadChangesDomain(force);
+            }
             break;
           case "handover":
             await loadHandoverDomain(force);
@@ -5148,6 +5233,7 @@ function OrderDetailPageContent() {
       }
     },
     [
+      hasOrderChangeView,
       loadChangesDomain,
       loadEntitlementDomain,
       loadFinanceDomain,
@@ -5162,7 +5248,7 @@ function OrderDetailPageContent() {
     setSummaryError(null);
     try {
       const nextSummary = await apiFetch<OrderWorkspaceSummary>(
-        `/orders/${params.id}/workspace/summary`
+        `/orders/${orderId}/workspace/summary`
       );
       setSummary(nextSummary);
     } catch (error) {
@@ -5170,7 +5256,7 @@ function OrderDetailPageContent() {
     } finally {
       setSummaryLoading(false);
     }
-  }, [params.id]);
+  }, [orderId]);
 
   const loadWorkspaceShell = useCallback(async () => {
     setAuthLoading(true);
@@ -5196,11 +5282,12 @@ function OrderDetailPageContent() {
   }, [activeTab, loadActiveWorkspaceTab]);
 
   const loadOrder = useCallback(async () => {
-    await Promise.allSettled([
-      loadWorkspaceSummary(),
-      loadActiveWorkspaceTab(activeTab, true)
-    ]);
-  }, [activeTab, loadActiveWorkspaceTab, loadWorkspaceSummary]);
+    await refreshActiveOrderWorkspaceTab({
+      activeTabRef,
+      refreshSummary: loadWorkspaceSummary,
+      refreshTab: (tab) => loadActiveWorkspaceTab(tab, true)
+    });
+  }, [loadActiveWorkspaceTab, loadWorkspaceSummary]);
 
   useEffect(() => {
     loadedDomainsRef.current.clear();
@@ -5238,9 +5325,8 @@ function OrderDetailPageContent() {
     if (!focus || activeDomainLoading) {
       return;
     }
-    const escapedFocus = CSS.escape(focus);
     const record = document.querySelector<HTMLElement>(
-      `[data-workspace-record="${escapedFocus}"]`
+      buildOrderWorkspaceRecordSelector(focus, CSS.escape)
     );
     if (!record) {
       return;
@@ -5284,7 +5370,7 @@ function OrderDetailPageContent() {
     }
     setHandoverActionLoading("create");
     try {
-      const created = await apiFetch<{ id: string }>(`/orders/${params.id}/handover-work-orders`, {
+      const created = await apiFetch<{ id: string }>(`/orders/${orderId}/handover-work-orders`, {
         body: JSON.stringify({ handoverType: "DELIVERY_OUTBOUND" }),
         method: "POST"
       });
@@ -5653,6 +5739,11 @@ function OrderDetailPageContent() {
   }, [canCreateChange, changeForm, message, order, orderChangeLocked]);
 
   useEffect(() => {
+    autoOpenChangeRequestedRef.current = createChangeRequested;
+    setAutoOpenChangeModalDone(false);
+  }, [createChangeRequested]);
+
+  useEffect(() => {
     if (authLoading) {
       return;
     }
@@ -5668,7 +5759,7 @@ function OrderDetailPageContent() {
       activeTab !== "change" &&
       !autoOpenChangeModalDone
     ) {
-      navigateWorkspace({ tab: "change" });
+      navigateWorkspace({ createChange: true, tab: "change" });
       return;
     }
     if (
@@ -6706,12 +6797,16 @@ function OrderDetailPageContent() {
   const workspaceOverflowActions: OrderWorkspaceHeaderAction[] = [];
   if (order) {
     workspaceOverflowActions.push({
-      disabled:
-        !canCreateChange ||
-        !PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus),
+      disabled: !applyChangeAvailability.allowed,
       key: "apply-change",
       label: "申请变更方案",
-      onClick: () => navigateWorkspace({ tab: "change" })
+      onClick: () => {
+        if (hasOrderChangeView) {
+          navigateWorkspace({ tab: "change" });
+          return;
+        }
+        void openChangeModal();
+      }
     });
     workspaceOverflowActions.push({
       danger: true,
@@ -6742,6 +6837,19 @@ function OrderDetailPageContent() {
         content = order ? (
           <>
             <OverviewLifecycleSummary order={order} />
+            <ReviewPanel
+              canConfirmFinalPlan={canConfirmFinalPlan}
+              canRejectOrder={canRejectCustomerOrder}
+              canReviewCredit={canReviewCredit}
+              canReviewProduct={canReviewProduct}
+              canReviewVehicle={canReviewVehicle}
+              creditForm={creditForm}
+              onConfirmCustomer={confirmCustomerOrder}
+              onFinalizePlan={finalizePlan}
+              onRejectOrder={rejectCustomerOrder}
+              onReview={reviewOrder}
+              order={order}
+            />
             <OrderInfoSections
               currentVehicleSalePrice={currentVehicleSalePrice}
               order={order}
@@ -6756,68 +6864,61 @@ function OrderDetailPageContent() {
       case "contract":
         content = order ? (
           <>
-            <Card
-              extra={
-                <Space wrap>
-                  <ActionButton
-                    availability={generateContractAvailability}
-                    onClick={generateContract}
-                    type="primary"
-                  >
-                    生成合同
-                  </ActionButton>
-                  {order.contract ? (
-                    <Button
-                      onClick={() =>
-                        router.push(`/contracts/${order.contract?.id}`)
-                      }
-                    >
-                      查看合同
-                    </Button>
-                  ) : null}
-                </Space>
-              }
-              title="主合同及订阅套餐"
+            <div
+              {...(order.contract
+                ? { "data-workspace-record": order.contract.id }
+                : {})}
             >
-              <Descriptions
-                bordered
-                column={2}
-                items={[
-                  {
-                    children: order.contract?.contractNo ?? "-",
-                    label: "主合同"
-                  },
-                  {
-                    children: order.contract
-                      ? labelOf(STATUS_LABELS, order.contract.status)
-                      : "尚未生成",
-                    label: "合同状态"
-                  },
-                  {
-                    children: order.quote?.quoteNo ?? "-",
-                    label: "原始报价"
-                  },
-                  {
-                    children: `${order.periodMonths} 个月 / ${formatYuan(order.monthlyFeeAmount)}`,
-                    label: "签约套餐"
-                  }
-                ]}
-                size="small"
-              />
-            </Card>
-            <ReviewPanel
-              canConfirmFinalPlan={canConfirmFinalPlan}
-              canRejectOrder={canRejectCustomerOrder}
-              canReviewCredit={canReviewCredit}
-              canReviewProduct={canReviewProduct}
-              canReviewVehicle={canReviewVehicle}
-              creditForm={creditForm}
-              onConfirmCustomer={confirmCustomerOrder}
-              onFinalizePlan={finalizePlan}
-              onRejectOrder={rejectCustomerOrder}
-              onReview={reviewOrder}
-              order={order}
-            />
+              <Card
+                extra={
+                  <Space wrap>
+                    <ActionButton
+                      availability={generateContractAvailability}
+                      onClick={generateContract}
+                      type="primary"
+                    >
+                      生成合同
+                    </ActionButton>
+                    {order.contract ? (
+                      <Button
+                        onClick={() =>
+                          router.push(`/contracts/${order.contract?.id}`)
+                        }
+                      >
+                        查看合同
+                      </Button>
+                    ) : null}
+                  </Space>
+                }
+                title="主合同及订阅套餐"
+              >
+                <Descriptions
+                  bordered
+                  column={2}
+                  items={[
+                    {
+                      children: order.contract?.contractNo ?? "-",
+                      label: "主合同"
+                    },
+                    {
+                      children: order.contract
+                        ? labelOf(STATUS_LABELS, order.contract.status)
+                        : "尚未生成",
+                      label: "合同状态"
+                    },
+                    {
+                      children: order.quote?.quoteNo ?? "-",
+                      label: "原始报价"
+                    },
+                    {
+                      children: `${order.periodMonths} 个月 / ${formatYuan(order.monthlyFeeAmount)}`,
+                      label: "签约套餐"
+                    }
+                  ]}
+                  size="small"
+                />
+              </Card>
+            </div>
             <Typography.Title level={5} style={{ margin: 0 }}>
               报价快照
             </Typography.Title>
@@ -6875,46 +6976,33 @@ function OrderDetailPageContent() {
                 vehicleReturn={vehicleReturn}
               />
             ) : null}
-            {hasDepositSettlementViewPermission ? (
-              <DepositSettlementPanel
-                deductAvailability={deductDepositAvailability}
-                depositSettlementLoading={depositSettlementLoading}
-                generateAvailability={generateDamageFeeBillAvailability}
-                generatingDamageFeeBill={generatingDamageFeeBill}
-                onGenerateDamageFeeBill={generateDamageFeeBill}
-                onOpenDeduct={openDeductDepositModal}
-                onOpenRefund={openRefundDepositModal}
-                order={order}
-                refundAvailability={refundDepositAvailability}
-                settlement={depositSettlement}
-                settlementError={depositSettlementError}
-              />
-            ) : null}
           </>
         ) : null;
         break;
       case "entitlement":
         content =
           order && hasEntitlementViewPermission ? (
-            <EntitlementPanel
-              entitlements={entitlements}
-              entitlementLoading={entitlementLoading}
-              expiringEntitlements={expiringEntitlements}
-              generatingEntitlements={generatingEntitlements}
-              onGenerateEntitlements={generateOrderEntitlements}
-              onOpenExpireEntitlements={openExpireEntitlementModal}
-              onOpenConsume={openConsumeEntitlementModal}
-              onOpenMonthlyRenewal={openRenewEntitlementModal}
-              onUsagePageChange={handleEntitlementUsagePageChange}
-              order={order}
-              permissions={permissions}
-              renewingEntitlements={renewingEntitlements}
-              usageLoading={entitlementUsageLoading}
-              usagePage={entitlementUsagePage}
-              usagePageSize={entitlementUsagePageSize}
-              usageTotal={entitlementUsageTotal}
-              usages={entitlementUsages}
-            />
+            <div data-workspace-record={entitlements.account?.id}>
+              <EntitlementPanel
+                entitlements={entitlements}
+                entitlementLoading={entitlementLoading}
+                expiringEntitlements={expiringEntitlements}
+                generatingEntitlements={generatingEntitlements}
+                onGenerateEntitlements={generateOrderEntitlements}
+                onOpenExpireEntitlements={openExpireEntitlementModal}
+                onOpenConsume={openConsumeEntitlementModal}
+                onOpenMonthlyRenewal={openRenewEntitlementModal}
+                onUsagePageChange={handleEntitlementUsagePageChange}
+                order={order}
+                permissions={permissions}
+                renewingEntitlements={renewingEntitlements}
+                usageLoading={entitlementUsageLoading}
+                usagePage={entitlementUsagePage}
+                usagePageSize={entitlementUsagePageSize}
+                usageTotal={entitlementUsageTotal}
+                usages={entitlementUsages}
+              />
+            </div>
           ) : null;
         break;
       case "service":
@@ -6929,6 +7017,15 @@ function OrderDetailPageContent() {
       case "finance":
         content = order ? (
           <>
+            <FinanceProgressRecords
+              resolvedRecordIds={getOrderWorkspaceRecordIds(
+                ...receivableBills.map((bill) => bill.id),
+                ...(depositSettlement?.depositLedgers ?? []).map(
+                  (ledger) => ledger.id
+                )
+              )}
+              summary={summary}
+            />
             {hasBillingViewPermission ? (
               <FinancePanel
                 bills={receivableBills}
@@ -7066,6 +7163,11 @@ function OrderDetailPageContent() {
               <Table
                 columns={changeColumns}
                 dataSource={changes}
+                onRow={(change) =>
+                  ({
+                    "data-workspace-record": change.id
+                  }) as HTMLAttributes<HTMLTableRowElement>
+                }
                 pagination={false}
                 rowKey="id"
                 scroll={{ x: 1280 }}
@@ -8119,6 +8221,12 @@ function OrderDetailPageContent() {
   );
 }
 
+function OrderDetailPageRoute() {
+  const { id: orderId } = useParams<{ id: string }>();
+
+  return <OrderDetailPageContent key={orderId} orderId={orderId} />;
+}
+
 export default function OrderDetailPage() {
   return (
     <Suspense
@@ -8128,7 +8236,7 @@ export default function OrderDetailPage() {
         </ProtectedShell>
       }
     >
-      <OrderDetailPageContent />
+      <OrderDetailPageRoute />
     </Suspense>
   );
 }

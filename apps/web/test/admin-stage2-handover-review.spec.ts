@@ -26,7 +26,7 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("/handover-review-queue");
     expect(source).toContain("创建交付工单");
     expect(source).toContain("暂无 Stage 2 现场交接工单");
-    expect(source).toContain("/orders/${params.id}/handover-work-orders");
+    expect(source).toContain("/orders/${orderId}/handover-work-orders");
     expect(source).toContain("/objection/${action}");
     expect(source).toContain("\"acknowledge\"");
     expect(source).toContain("\"request-resubmission\"");

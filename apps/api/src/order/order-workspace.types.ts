@@ -162,7 +162,6 @@ export type OrderWorkspaceRiskDetail = {
   approvedBy?: unknown;
   approvedDepositAmount?: unknown;
   createdAt?: unknown;
-  customerId?: unknown;
   defaultRate?: unknown;
   grade?: unknown;
   id?: unknown;
@@ -237,7 +236,6 @@ export type OrderWorkspaceInsuranceClaimDetail = {
   claimNo?: unknown;
   claimStatus?: unknown;
   closedAt?: unknown;
-  customerId?: unknown;
   estimatedAmount?: unknown;
   id?: unknown;
   insurerClaimNo?: unknown;

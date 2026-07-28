@@ -1,5 +1,8 @@
 import { ForbiddenException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -743,6 +746,68 @@ describe("OrderWorkspaceService", () => {
     }
   );
 
+  it("accepts only safe scalar leaves and serializes Date and Decimal values", () => {
+    const projected = projectOrderWorkspaceDetail(
+      {
+        createdAt: new Date("2026-07-29T03:00:00.000Z"),
+        customerId: { secret: "customer-id-object-secret" },
+        depositAmount: new Prisma.Decimal("123.45"),
+        id: { secret: "order-id-object-secret" },
+        monthlyFeeAmount: [{ secret: "monthly-fee-array-secret" }],
+        orderNo: ["order-no-array-secret"],
+        orderStatus: "ACTIVE",
+        periodMonths: null,
+        quoteSnapshot: {
+          createdAt: new Date("2026-07-29T04:00:00.000Z"),
+          id: "quote-safe-id",
+          monthlyFeeAmount: {
+            secret: "quote-monthly-object-secret"
+          },
+          packageSnapshot: {
+            mileagePackage: {
+              id: "mileage-safe-id",
+              packageNo: ["package-no-array-secret"],
+              priceAmount: new Prisma.Decimal("67.89")
+            },
+            pricing: {
+              monthlyFeeAmount: {
+                secret: "pricing-monthly-object-secret"
+              }
+            }
+          },
+          quoteNo: { secret: "quote-no-object-secret" },
+          status: "CONFIRMED",
+          updatedAt: new Date(Number.NaN)
+        }
+      },
+      new Set([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.PAYMENT_CREATE,
+        PermissionCode.QUOTE_VIEW,
+        PermissionCode.MILEAGE_PACKAGE_VIEW
+      ])
+    );
+
+    expect(projected).toEqual({
+      createdAt: "2026-07-29T03:00:00.000Z",
+      depositAmount: "123.45",
+      orderStatus: "ACTIVE",
+      periodMonths: null,
+      quoteSnapshot: {
+        createdAt: "2026-07-29T04:00:00.000Z",
+        id: "quote-safe-id",
+        packageSnapshot: {
+          mileagePackage: {
+            id: "mileage-safe-id",
+            priceAmount: "67.89"
+          }
+        },
+        status: "CONFIRMED"
+      }
+    });
+    expect(JSON.stringify(projected)).not.toContain("secret");
+  });
+
   it("separates vehicle base, insurance policy, document, and claim permissions", async () => {
     const service = workspaceDetailService();
 
@@ -832,6 +897,63 @@ describe("OrderWorkspaceService", () => {
     });
   });
 
+  it("never returns customerId through risk, insurance claim, or snapshot domain allowlists", async () => {
+    const service = workspaceDetailService();
+    const riskOnly = await service.getDetail(
+      "order-1",
+      workspaceUser([PermissionCode.ORDER_VIEW, PermissionCode.RISK_VIEW])
+    );
+    expect(riskOnly).not.toHaveProperty("customerId");
+    expect(riskOnly.riskResult).not.toHaveProperty("customerId");
+
+    const claimOnly = await service.getDetail(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.VEHICLE_VIEW,
+        PermissionCode.VEHICLE_INSURANCE_VIEW,
+        PermissionCode.INSURANCE_CLAIM_VIEW
+      ])
+    );
+    expect(claimOnly).not.toHaveProperty("customerId");
+    expect(claimOnly.vehicle?.insuranceClaims?.[0]).not.toHaveProperty(
+      "customerId"
+    );
+  });
+
+  it("keeps customerId out of every narrow-domain scalar allowlist", () => {
+    const projectionSource = readFileSync(
+      join(
+        process.cwd(),
+        "src",
+        "order",
+        "order-workspace-detail-projection.ts"
+      ),
+      "utf8"
+    );
+    for (const [start, end] of [
+      ["const WORKSPACE_RISK_FIELDS", "const WORKSPACE_VEHICLE_FIELDS"],
+      [
+        "const WORKSPACE_INSURANCE_CLAIM_FIELDS",
+        "const WORKSPACE_QUOTE_SNAPSHOT_FIELDS"
+      ],
+      [
+        "const WORKSPACE_QUOTE_SNAPSHOT_FIELDS",
+        "const WORKSPACE_QUOTE_PRICING_FIELDS"
+      ],
+      [
+        "const WORKSPACE_CHANGE_AFTER_FIELDS",
+        "const WORKSPACE_CHANGE_AFTER_PRODUCT_FIELDS"
+      ]
+    ] as const) {
+      const allowlist = projectionSource.slice(
+        projectionSource.indexOf(start),
+        projectionSource.indexOf(end)
+      );
+      expect(allowlist).not.toContain('"customerId"');
+    }
+  });
+
   it("recursively projects a production quote snapshot by sibling-domain permissions", () => {
     const rawDetail = { quoteSnapshot: workspaceProductionQuoteSnapshot() };
     const quoteOnly = projectOrderWorkspaceDetail(
@@ -843,31 +965,13 @@ describe("OrderWorkspaceService", () => {
       id: "quote-snapshot-1",
       monthlyFeeAmount: 320000,
       packageSnapshot: {
-        mileagePackage: {
-          id: "mileage-package-1",
-          monthlyMileageKm: 1500,
-          overMileageFeeAmount: 100,
-          packageName: "1500 km",
-          packageNo: "MILEAGE-1500",
-          priceAmount: 30000
-        },
         pricing: {
-          fixedRate: 0.03,
-          monthlyFeeAmount: 320000,
-          vehicleBaseFeeAmount: 250000
-        },
-        subscriptionPlan: {
-          id: "plan-1",
-          planName: "Standard Plan",
-          planNo: "PLAN-001"
-        },
-        vehicleBaseFeeAmount: 250000
+          monthlyFeeAmount: 320000
+        }
       },
       periodMonths: 12,
       quoteNo: "QUOTE-SNAPSHOT-001",
-      status: "CONFIRMED",
-      subscriptionPlanId: "plan-1",
-      vehicleBaseFeeAmount: 250000
+      status: "CONFIRMED"
     });
 
     const customerAccess = projectOrderWorkspaceDetail(
@@ -958,17 +1062,143 @@ describe("OrderWorkspaceService", () => {
 
     const allProjected = projectOrderWorkspaceDetail(
       rawDetail,
-      new Set([
-        PermissionCode.QUOTE_VIEW,
-        PermissionCode.CUSTOMER_VIEW,
-        PermissionCode.APPLICATION_VIEW,
-        PermissionCode.RISK_VIEW,
-        PermissionCode.VEHICLE_VIEW
-      ])
+      new Set(Object.values(PermissionCode))
     );
     expect(JSON.stringify(allProjected)).not.toContain("future-secret");
     expect(JSON.stringify(allProjected)).not.toContain("provider-secret");
     expect(JSON.stringify(allProjected)).not.toContain("id-card-secret");
+  });
+
+  it.each([
+    {
+      allowed: [
+        "mileage-package-new",
+        "MILEAGE-PACKAGE-NEW",
+        "mileage-price-new"
+      ],
+      permission: PermissionCode.MILEAGE_PACKAGE_VIEW
+    },
+    {
+      allowed: ["energy-package-new", "ENERGY-PACKAGE-NEW", "energy-price-new"],
+      permission: PermissionCode.ENERGY_PACKAGE_VIEW
+    },
+    {
+      allowed: [
+        "benefit-package-new",
+        "BENEFIT-PACKAGE-NEW",
+        "benefit-price-new"
+      ],
+      permission: PermissionCode.BENEFIT_PACKAGE_VIEW
+    },
+    {
+      allowed: [
+        "vehicle-package-new",
+        "VEHICLE-PACKAGE-NEW",
+        "vehicle-base-fee-new"
+      ],
+      permission: PermissionCode.VEHICLE_PACKAGE_VIEW
+    },
+    {
+      allowed: ["plan-new", "PLAN-NEW"],
+      permission: PermissionCode.SUBSCRIPTION_PLAN_VIEW
+    },
+    {
+      allowed: ["product-new", "PRODUCT-NEW"],
+      permission: PermissionCode.PRODUCT_VIEW
+    },
+    {
+      allowed: ["product-version-new", "VERSION-NEW"],
+      permission: PermissionCode.PRODUCT_VERSION_VIEW
+    },
+    {
+      allowed: ["quote-after-new", "QUOTE-AFTER-NEW", "quote-monthly-new"],
+      permission: PermissionCode.QUOTE_VIEW
+    }
+  ])(
+    "projects only the $permission domain from a production change quote snapshot",
+    ({ allowed, permission }) => {
+      const rawDetail = {
+        changes: [workspaceProductionOrderChange()],
+        id: "order-1"
+      };
+      const projected = projectOrderWorkspaceDetail(
+        rawDetail,
+        new Set([PermissionCode.ORDER_CHANGE_VIEW, permission])
+      );
+      const serialized = JSON.stringify(projected.changes?.[0]?.afterSnapshot);
+      const allDomainSentinels = [
+        "mileage-package-new",
+        "MILEAGE-PACKAGE-NEW",
+        "mileage-price-new",
+        "energy-package-new",
+        "ENERGY-PACKAGE-NEW",
+        "energy-price-new",
+        "benefit-package-new",
+        "BENEFIT-PACKAGE-NEW",
+        "benefit-price-new",
+        "vehicle-package-new",
+        "VEHICLE-PACKAGE-NEW",
+        "vehicle-base-fee-new",
+        "plan-new",
+        "PLAN-NEW",
+        "product-new",
+        "PRODUCT-NEW",
+        "product-version-new",
+        "VERSION-NEW",
+        "quote-after-new",
+        "QUOTE-AFTER-NEW",
+        "quote-monthly-new"
+      ];
+
+      for (const sentinel of allowed) {
+        expect(serialized).toContain(sentinel);
+      }
+      for (const sentinel of allDomainSentinels.filter(
+        (sentinel) => !allowed.includes(sentinel)
+      )) {
+        expect(serialized).not.toContain(sentinel);
+      }
+    }
+  );
+
+  it("does not accept sibling package fields through a permitted package object", () => {
+    const projected = projectOrderWorkspaceDetail(
+      {
+        changes: [
+          {
+            afterSnapshot: {
+              packageSnapshot: {
+                mileagePackage: {
+                  benefitCount: "benefit-field-secret",
+                  id: "mileage-package-safe",
+                  monthlyEnergyKwh: "energy-field-secret",
+                  monthlyMileageKm: 1500,
+                  packageNo: "MILEAGE-SAFE",
+                  productId: "product-field-secret",
+                  vehicleModel: "vehicle-field-secret"
+                }
+              }
+            },
+            id: "change-1"
+          }
+        ]
+      },
+      new Set([
+        PermissionCode.ORDER_CHANGE_VIEW,
+        PermissionCode.MILEAGE_PACKAGE_VIEW
+      ])
+    );
+
+    expect(projected.changes?.[0]?.afterSnapshot).toEqual({
+      packageSnapshot: {
+        mileagePackage: {
+          id: "mileage-package-safe",
+          monthlyMileageKm: 1500,
+          packageNo: "MILEAGE-SAFE"
+        }
+      }
+    });
+    expect(JSON.stringify(projected)).not.toContain("field-secret");
   });
 
   it("projects order change snapshots without leaking sibling order domains", () => {
@@ -1064,10 +1294,18 @@ describe("OrderWorkspaceService", () => {
     );
     expect(quoteAccess?.afterSnapshot).toEqual(
       expect.objectContaining({
-        monthlyFeeAmount: 360000,
-        subscriptionPlanId: "plan-new",
-        vehicleBaseFeeAmount: 280000
+        monthlyFeeAmount: "quote-monthly-new",
+        quoteSnapshot: expect.objectContaining({
+          id: "quote-after-new",
+          quoteNo: "QUOTE-AFTER-NEW"
+        })
       })
+    );
+    expect(quoteAccess?.afterSnapshot).not.toHaveProperty(
+      "subscriptionPlanId"
+    );
+    expect(quoteAccess?.afterSnapshot).not.toHaveProperty(
+      "vehicleBaseFeeAmount"
     );
 
     const productAccess = projectOrderWorkspaceDetail(
@@ -1076,9 +1314,15 @@ describe("OrderWorkspaceService", () => {
     ).changes?.[0];
     expect(productAccess?.afterSnapshot).toEqual(
       expect.objectContaining({
-        subscriptionPlanId: "plan-new",
-        vehicleBaseFeeAmount: 280000
+        productId: "product-new",
+        product: expect.objectContaining({ productNo: "PRODUCT-NEW" })
       })
+    );
+    expect(productAccess?.afterSnapshot).not.toHaveProperty(
+      "subscriptionPlanId"
+    );
+    expect(productAccess?.afterSnapshot).not.toHaveProperty(
+      "vehicleBaseFeeAmount"
     );
 
     const vehicleAccess = projectOrderWorkspaceDetail(
@@ -1777,6 +2021,7 @@ function workspaceRawDetail() {
       quoteNo: "QUOTE-SNAPSHOT-SENTINEL"
     },
     riskResult: {
+      customerId: "risk-customer-id-secret",
       grade: "A",
       id: "risk-1",
       providerSecret: "risk-provider-secret",
@@ -1800,6 +2045,7 @@ function workspaceRawDetail() {
         {
           claimNo: "CLAIM-SENTINEL",
           claimStatus: "SUBMITTED",
+          customerId: "claim-customer-id-secret",
           id: "claim-1",
           snapshot: { secret: "claim-snapshot-secret" }
         }
@@ -1926,16 +2172,93 @@ function workspaceProductionOrderChange() {
   return {
     afterSnapshot: {
       action: "RETURN_TO_PLAN",
+      benefitPackageId: "benefit-package-new",
+      benefitPackagePriceAmount: "benefit-price-new",
       changeStage: "PRE_CONTRACT_RETURN_TO_PLAN",
       changeType: "PLAN_CHANGE",
       customer: { id: "customer-after-secret" },
-      monthlyFeeAmount: 360000,
+      energyPackageId: "energy-package-new",
+      energyPackagePriceAmount: "energy-price-new",
+      mileagePackageId: "mileage-package-new",
+      mileagePackagePriceAmount: "mileage-price-new",
+      monthlyFeeAmount: "quote-monthly-new",
       orderSource: "SALES_ASSISTED",
+      packageSnapshot: {
+        benefitPackage: {
+          id: "benefit-package-new",
+          packageNo: "BENEFIT-PACKAGE-NEW"
+        },
+        energyPackage: {
+          id: "energy-package-new",
+          packageNo: "ENERGY-PACKAGE-NEW"
+        },
+        mileagePackage: {
+          id: "mileage-package-new",
+          packageNo: "MILEAGE-PACKAGE-NEW"
+        },
+        pricing: {
+          benefitPackagePriceAmount: "benefit-price-new",
+          energyPackagePriceAmount: "energy-price-new",
+          mileagePackagePriceAmount: "mileage-price-new",
+          monthlyFeeAmount: "quote-monthly-new",
+          vehicleBaseFeeAmount: "vehicle-base-fee-new"
+        },
+        subscriptionPlan: {
+          id: "plan-new",
+          planNo: "PLAN-NEW"
+        },
+        vehiclePackage: {
+          id: "vehicle-package-new",
+          packageNo: "VEHICLE-PACKAGE-NEW"
+        }
+      },
       periodMonths: 24,
+      product: {
+        id: "product-new",
+        productNo: "PRODUCT-NEW"
+      },
+      productId: "product-new",
+      productVersion: {
+        id: "product-version-new",
+        productId: "product-new",
+        versionNo: "VERSION-NEW"
+      },
+      productVersionId: "product-version-new",
+      quoteSnapshot: {
+        id: "quote-after-new",
+        monthlyFeeAmount: "quote-monthly-new",
+        packageSnapshot: {
+          benefitPackage: {
+            id: "benefit-package-new",
+            packageNo: "BENEFIT-PACKAGE-NEW"
+          },
+          energyPackage: {
+            id: "energy-package-new",
+            packageNo: "ENERGY-PACKAGE-NEW"
+          },
+          mileagePackage: {
+            id: "mileage-package-new",
+            packageNo: "MILEAGE-PACKAGE-NEW"
+          },
+          subscriptionPlan: {
+            id: "plan-new",
+            planNo: "PLAN-NEW"
+          },
+          vehiclePackage: {
+            id: "vehicle-package-new",
+            packageNo: "VEHICLE-PACKAGE-NEW"
+          }
+        },
+        productId: "product-new",
+        productVersionId: "product-version-new",
+        quoteNo: "QUOTE-AFTER-NEW",
+        subscriptionPlanId: "plan-new",
+        vehiclePackageId: "vehicle-package-new"
+      },
       riskResult: { id: "risk-after-secret" },
       subscriptionPlanId: "plan-new",
       unknownInput: "unknown-user-secret",
-      vehicleBaseFeeAmount: 280000,
+      vehicleBaseFeeAmount: "vehicle-base-fee-new",
       vehicleId: "vehicle-new"
     },
     beforeSnapshot: {

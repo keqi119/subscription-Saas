@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import type { OrderWorkspaceDetail } from "./order-workspace.types";
@@ -59,7 +60,6 @@ const WORKSPACE_RISK_FIELDS = [
   "approvedBy",
   "approvedDepositAmount",
   "createdAt",
-  "customerId",
   "defaultRate",
   "grade",
   "id",
@@ -134,7 +134,6 @@ const WORKSPACE_INSURANCE_CLAIM_FIELDS = [
   "claimNo",
   "claimStatus",
   "closedAt",
-  "customerId",
   "estimatedAmount",
   "id",
   "insurerClaimNo",
@@ -148,84 +147,101 @@ const WORKSPACE_INSURANCE_CLAIM_FIELDS = [
 ] as const;
 
 const WORKSPACE_QUOTE_SNAPSHOT_FIELDS = [
-  "benefitPackageId",
-  "benefitPackagePriceAmount",
   "cancelledAt",
   "confirmedAt",
   "createdAt",
+  "expiredAt",
+  "id",
+  "monthlyFeeAmount",
+  "periodMonths",
+  "quoteNo",
+  "status",
+  "updatedAt"
+] as const;
+const WORKSPACE_QUOTE_BENEFIT_PACKAGE_FIELDS = [
+  "benefitPackageId",
+  "benefitPackagePriceAmount"
+] as const;
+const WORKSPACE_QUOTE_ENERGY_PACKAGE_FIELDS = [
   "energyLimitCount",
   "energyLimitKwh",
   "energyPackageId",
-  "energyPackagePriceAmount",
-  "expiredAt",
-  "id",
+  "energyPackagePriceAmount"
+] as const;
+const WORKSPACE_QUOTE_MILEAGE_PACKAGE_FIELDS = [
   "mileageLimitKm",
   "mileagePackageId",
   "mileagePackagePriceAmount",
-  "monthlyFeeAmount",
-  "monthlyFeeCapAmount",
-  "monthlyFeeRate",
-  "overMileageFeeAmount",
-  "periodMonths",
-  "productId",
-  "productVersionId",
-  "quoteNo",
-  "status",
-  "subscriptionPlanId",
-  "updatedAt",
+  "overMileageFeeAmount"
+] as const;
+const WORKSPACE_QUOTE_VEHICLE_PACKAGE_FIELDS = [
   "vehicleBaseFeeAmount",
   "vehicleBaseFeeCapAmount",
+  "monthlyFeeCapAmount",
+  "monthlyFeeRate",
   "vehiclePackageId"
 ] as const;
-const WORKSPACE_QUOTE_PRICING_FIELDS = [
-  "benefitPackagePriceAmount",
-  "energyPackagePriceAmount",
+const WORKSPACE_QUOTE_PRICING_FIELDS = ["monthlyFeeAmount"] as const;
+const WORKSPACE_VEHICLE_PACKAGE_PRICING_FIELDS = [
   "fixedRate",
-  "mileagePackagePriceAmount",
-  "monthlyFeeAmount",
   "vehicleBaseFeeAmount",
   "vehicleBaseFeeCapAmount",
   "vehicleBaseFeeMode",
   "vehicleBaseFeeModeLabel"
 ] as const;
-const WORKSPACE_QUOTE_PACKAGE_SNAPSHOT_FIELDS = [
+const WORKSPACE_MILEAGE_PACKAGE_PRICING_FIELDS = [
+  "mileagePackagePriceAmount"
+] as const;
+const WORKSPACE_ENERGY_PACKAGE_PRICING_FIELDS = [
+  "energyPackagePriceAmount"
+] as const;
+const WORKSPACE_BENEFIT_PACKAGE_PRICING_FIELDS = [
+  "benefitPackagePriceAmount"
+] as const;
+const WORKSPACE_VEHICLE_PACKAGE_SNAPSHOT_FIELDS = [
   "monthlyFeeCapAmount",
-  "subscriptionPlanId",
   "vehicleBaseFeeAmount",
   "vehicleBaseFeeCapAmount",
   "vehicleBaseFeeMode",
   "vehicleBaseFeeModeLabel"
 ] as const;
-const WORKSPACE_QUOTE_PACKAGE_FIELDS = [
-  "benefitCount",
-  "benefitType",
-  "configName",
-  "description",
+const WORKSPACE_QUOTE_PACKAGE_BASE_FIELDS = [
   "id",
-  "maxPurchasePriceAmount",
-  "minPurchasePriceAmount",
-  "monthlyEnergyCount",
-  "monthlyEnergyKwh",
-  "monthlyFeeRate",
-  "monthlyMileageKm",
-  "overMileageFeeAmount",
   "packageName",
   "packageNo",
   "priceAmount",
-  "productId",
-  "productVersionId",
-  "status",
+  "status"
+] as const;
+const WORKSPACE_QUOTE_VEHICLE_PACKAGE_RECORD_FIELDS = [
+  ...WORKSPACE_QUOTE_PACKAGE_BASE_FIELDS,
+  "configName",
+  "maxPurchasePriceAmount",
+  "minPurchasePriceAmount",
+  "monthlyFeeRate",
   "vehicleModel"
+] as const;
+const WORKSPACE_QUOTE_MILEAGE_PACKAGE_RECORD_FIELDS = [
+  ...WORKSPACE_QUOTE_PACKAGE_BASE_FIELDS,
+  "monthlyMileageKm",
+  "overMileageFeeAmount"
+] as const;
+const WORKSPACE_QUOTE_ENERGY_PACKAGE_RECORD_FIELDS = [
+  ...WORKSPACE_QUOTE_PACKAGE_BASE_FIELDS,
+  "monthlyEnergyCount",
+  "monthlyEnergyKwh",
+] as const;
+const WORKSPACE_QUOTE_BENEFIT_PACKAGE_RECORD_FIELDS = [
+  ...WORKSPACE_QUOTE_PACKAGE_BASE_FIELDS,
+  "benefitCount",
+  "benefitType",
+  "description"
 ] as const;
 const WORKSPACE_QUOTE_SUBSCRIPTION_PLAN_FIELDS = [
   "baseMonthlyFeeAmount",
-  "benefitPackageId",
   "effectiveFrom",
   "effectiveTo",
-  "energyPackageId",
   "id",
   "maxPeriodMonths",
-  "mileagePackageId",
   "minPeriodMonths",
   "monthlyFeeCapRate",
   "monthlyFeeMode",
@@ -233,10 +249,7 @@ const WORKSPACE_QUOTE_SUBSCRIPTION_PLAN_FIELDS = [
   "monthlyFeeRate",
   "planName",
   "planNo",
-  "productId",
-  "productVersionId",
-  "status",
-  "vehiclePackageId"
+  "status"
 ] as const;
 const WORKSPACE_QUOTE_PRODUCT_FIELDS = [
   "id",
@@ -249,7 +262,6 @@ const WORKSPACE_QUOTE_PRODUCT_VERSION_FIELDS = [
   "effectiveFrom",
   "effectiveTo",
   "id",
-  "productId",
   "status",
   "versionNo"
 ] as const;
@@ -328,35 +340,37 @@ const WORKSPACE_CHANGE_AFTER_FIELDS = [
   "periodMonths",
   "vehicleReleased"
 ] as const;
-const WORKSPACE_CHANGE_AFTER_PRODUCT_FIELDS = [
+const WORKSPACE_CHANGE_AFTER_QUOTE_FIELDS = [
+  "monthlyFeeAmount"
+] as const;
+const WORKSPACE_CHANGE_AFTER_BENEFIT_PACKAGE_FIELDS = [
   "benefitPackageId",
-  "benefitPackagePriceAmount",
+  "benefitPackagePriceAmount"
+] as const;
+const WORKSPACE_CHANGE_AFTER_ENERGY_PACKAGE_FIELDS = [
   "energyPackageId",
-  "energyPackagePriceAmount",
+  "energyPackagePriceAmount"
+] as const;
+const WORKSPACE_CHANGE_AFTER_MILEAGE_PACKAGE_FIELDS = [
   "mileagePackageId",
   "mileagePackagePriceAmount",
-  "monthlyFeeAmount",
-  "overMileageFeeAmount",
-  "productId",
-  "productVersionId",
-  "subscriptionPlanId",
+  "overMileageFeeAmount"
+] as const;
+const WORKSPACE_CHANGE_AFTER_VEHICLE_PACKAGE_FIELDS = [
   "vehicleBaseFeeAmount",
   "vehicleBaseFeeCapAmount",
   "vehiclePackageId"
 ] as const;
+const WORKSPACE_CHANGE_AFTER_SUBSCRIPTION_PLAN_FIELDS = [
+  "subscriptionPlanId"
+] as const;
+const WORKSPACE_CHANGE_AFTER_PRODUCT_FIELDS = ["productId"] as const;
+const WORKSPACE_CHANGE_AFTER_PRODUCT_VERSION_FIELDS = [
+  "productVersionId"
+] as const;
 const WORKSPACE_CHANGE_AFTER_VEHICLE_FIELDS = [
   "vehicleId",
   "vehicleStatus"
-] as const;
-const WORKSPACE_PRODUCT_SNAPSHOT_PERMISSIONS = [
-  PermissionCode.QUOTE_VIEW,
-  PermissionCode.PRODUCT_VIEW,
-  PermissionCode.PRODUCT_VERSION_VIEW,
-  PermissionCode.SUBSCRIPTION_PLAN_VIEW,
-  PermissionCode.VEHICLE_PACKAGE_VIEW,
-  PermissionCode.MILEAGE_PACKAGE_VIEW,
-  PermissionCode.ENERGY_PACKAGE_VIEW,
-  PermissionCode.BENEFIT_PACKAGE_VIEW
 ] as const;
 
 export function projectOrderWorkspaceDetail(
@@ -533,7 +547,38 @@ export function projectWorkspaceQuoteSnapshot(
     return undefined;
   }
 
-  const result = pickWorkspaceFields(value, WORKSPACE_QUOTE_SNAPSHOT_FIELDS);
+  const result: Record<string, unknown> = {};
+  if (permissions.has(PermissionCode.QUOTE_VIEW)) {
+    copyWorkspaceFields(result, value, WORKSPACE_QUOTE_SNAPSHOT_FIELDS);
+  }
+  if (permissions.has(PermissionCode.BENEFIT_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_QUOTE_BENEFIT_PACKAGE_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.ENERGY_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_QUOTE_ENERGY_PACKAGE_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.MILEAGE_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_QUOTE_MILEAGE_PACKAGE_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.VEHICLE_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_QUOTE_VEHICLE_PACKAGE_FIELDS
+    );
+  }
   assignProjectedValue(
     result,
     "packageSnapshot",
@@ -544,26 +589,32 @@ export function projectWorkspaceQuoteSnapshot(
     "pricing",
     projectQuotePricing(value.pricing, permissions)
   );
-  assignProjectedRecord(
-    result,
-    "subscriptionPlan",
-    value.subscriptionPlan,
-    WORKSPACE_QUOTE_SUBSCRIPTION_PLAN_FIELDS
-  );
-
-  const productVersion = projectWorkspaceRecord(
-    value.productVersion,
-    WORKSPACE_QUOTE_PRODUCT_VERSION_FIELDS
-  );
-  if (isWorkspaceRecord(productVersion) && isWorkspaceRecord(value.productVersion)) {
+  if (permissions.has(PermissionCode.SUBSCRIPTION_PLAN_VIEW)) {
+    copyWorkspaceField(result, value, "subscriptionPlanId");
     assignProjectedRecord(
-      productVersion,
+      result,
+      "subscriptionPlan",
+      value.subscriptionPlan,
+      WORKSPACE_QUOTE_SUBSCRIPTION_PLAN_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.PRODUCT_VIEW)) {
+    copyWorkspaceField(result, value, "productId");
+    assignProjectedRecord(
+      result,
       "product",
-      value.productVersion.product,
+      value.product,
       WORKSPACE_QUOTE_PRODUCT_FIELDS
     );
   }
-  assignProjectedValue(result, "productVersion", productVersion);
+  if (permissions.has(PermissionCode.PRODUCT_VERSION_VIEW)) {
+    copyWorkspaceField(result, value, "productVersionId");
+    assignProjectedValue(
+      result,
+      "productVersion",
+      projectQuoteProductVersion(value.productVersion, permissions)
+    );
+  }
 
   if (permissions.has(PermissionCode.CUSTOMER_VIEW)) {
     copyWorkspaceField(result, value, "customerId");
@@ -611,6 +662,30 @@ export function projectWorkspaceQuoteSnapshot(
     );
   }
 
+  return result;
+}
+
+function projectQuoteProductVersion(
+  value: unknown,
+  permissions: ReadonlySet<string>
+): Record<string, unknown> | null | undefined {
+  const result = projectWorkspaceRecord(
+    value,
+    WORKSPACE_QUOTE_PRODUCT_VERSION_FIELDS
+  );
+  if (
+    isWorkspaceRecord(result) &&
+    isWorkspaceRecord(value) &&
+    permissions.has(PermissionCode.PRODUCT_VIEW)
+  ) {
+    copyWorkspaceField(result, value, "productId");
+    assignProjectedRecord(
+      result,
+      "product",
+      value.product,
+      WORKSPACE_QUOTE_PRODUCT_FIELDS
+    );
+  }
   return result;
 }
 
@@ -662,29 +737,90 @@ function projectOrderChangeAfterSnapshot(
   }
 
   const result = pickWorkspaceFields(value, WORKSPACE_CHANGE_AFTER_FIELDS);
-  const hasProductSnapshotView = WORKSPACE_PRODUCT_SNAPSHOT_PERMISSIONS.some(
-    (permission) => permissions.has(permission)
-  );
-  if (hasProductSnapshotView) {
-    for (const field of WORKSPACE_CHANGE_AFTER_PRODUCT_FIELDS) {
-      copyWorkspaceField(result, value, field);
-    }
-    assignProjectedValue(
-      result,
-      "packageSnapshot",
-      projectQuotePackageSnapshot(value.packageSnapshot, permissions)
-    );
-    assignProjectedValue(
-      result,
-      "pricing",
-      projectQuotePricing(value.pricing, permissions)
-    );
+  if (permissions.has(PermissionCode.QUOTE_VIEW)) {
+    copyWorkspaceFields(result, value, WORKSPACE_CHANGE_AFTER_QUOTE_FIELDS);
     assignProjectedValue(
       result,
       "quoteSnapshot",
       projectWorkspaceQuoteSnapshot(value.quoteSnapshot, permissions)
     );
   }
+  if (permissions.has(PermissionCode.BENEFIT_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_CHANGE_AFTER_BENEFIT_PACKAGE_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.ENERGY_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_CHANGE_AFTER_ENERGY_PACKAGE_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.MILEAGE_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_CHANGE_AFTER_MILEAGE_PACKAGE_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.VEHICLE_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_CHANGE_AFTER_VEHICLE_PACKAGE_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.SUBSCRIPTION_PLAN_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_CHANGE_AFTER_SUBSCRIPTION_PLAN_FIELDS
+    );
+    assignProjectedRecord(
+      result,
+      "subscriptionPlan",
+      value.subscriptionPlan,
+      WORKSPACE_QUOTE_SUBSCRIPTION_PLAN_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.PRODUCT_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_CHANGE_AFTER_PRODUCT_FIELDS
+    );
+    assignProjectedRecord(
+      result,
+      "product",
+      value.product,
+      WORKSPACE_QUOTE_PRODUCT_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.PRODUCT_VERSION_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_CHANGE_AFTER_PRODUCT_VERSION_FIELDS
+    );
+    assignProjectedValue(
+      result,
+      "productVersion",
+      projectQuoteProductVersion(value.productVersion, permissions)
+    );
+  }
+  assignProjectedValue(
+    result,
+    "packageSnapshot",
+    projectQuotePackageSnapshot(value.packageSnapshot, permissions)
+  );
+  assignProjectedValue(
+    result,
+    "pricing",
+    projectQuotePricing(value.pricing, permissions)
+  );
   if (permissions.has(PermissionCode.VEHICLE_VIEW)) {
     for (const field of WORKSPACE_CHANGE_AFTER_VEHICLE_FIELDS) {
       copyWorkspaceField(result, value, field);
@@ -713,21 +849,42 @@ function projectQuotePackageSnapshot(
     return undefined;
   }
 
-  const result = pickWorkspaceFields(
-    value,
-    WORKSPACE_QUOTE_PACKAGE_SNAPSHOT_FIELDS
-  );
-  for (const field of [
-    "benefitPackage",
-    "energyPackage",
-    "mileagePackage",
-    "vehiclePackage"
-  ] as const) {
+  const result: Record<string, unknown> = {};
+  if (permissions.has(PermissionCode.BENEFIT_PACKAGE_VIEW)) {
     assignProjectedRecord(
       result,
-      field,
-      value[field],
-      WORKSPACE_QUOTE_PACKAGE_FIELDS
+      "benefitPackage",
+      value.benefitPackage,
+      WORKSPACE_QUOTE_BENEFIT_PACKAGE_RECORD_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.ENERGY_PACKAGE_VIEW)) {
+    assignProjectedRecord(
+      result,
+      "energyPackage",
+      value.energyPackage,
+      WORKSPACE_QUOTE_ENERGY_PACKAGE_RECORD_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.MILEAGE_PACKAGE_VIEW)) {
+    assignProjectedRecord(
+      result,
+      "mileagePackage",
+      value.mileagePackage,
+      WORKSPACE_QUOTE_MILEAGE_PACKAGE_RECORD_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.VEHICLE_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_VEHICLE_PACKAGE_SNAPSHOT_FIELDS
+    );
+    assignProjectedRecord(
+      result,
+      "vehiclePackage",
+      value.vehiclePackage,
+      WORKSPACE_QUOTE_VEHICLE_PACKAGE_RECORD_FIELDS
     );
   }
   assignProjectedValue(
@@ -735,12 +892,15 @@ function projectQuotePackageSnapshot(
     "pricing",
     projectQuotePricing(value.pricing, permissions)
   );
-  assignProjectedRecord(
-    result,
-    "subscriptionPlan",
-    value.subscriptionPlan,
-    WORKSPACE_QUOTE_SUBSCRIPTION_PLAN_FIELDS
-  );
+  if (permissions.has(PermissionCode.SUBSCRIPTION_PLAN_VIEW)) {
+    copyWorkspaceField(result, value, "subscriptionPlanId");
+    assignProjectedRecord(
+      result,
+      "subscriptionPlan",
+      value.subscriptionPlan,
+      WORKSPACE_QUOTE_SUBSCRIPTION_PLAN_FIELDS
+    );
+  }
   if (permissions.has(PermissionCode.RISK_VIEW)) {
     assignProjectedRecord(
       result,
@@ -762,15 +922,59 @@ function projectQuotePricing(
   value: unknown,
   permissions: ReadonlySet<string>
 ): Record<string, unknown> | null | undefined {
-  const result = projectWorkspaceRecord(value, WORKSPACE_QUOTE_PRICING_FIELDS);
-  if (
-    isWorkspaceRecord(result) &&
-    isWorkspaceRecord(value) &&
-    permissions.has(PermissionCode.VEHICLE_VIEW)
-  ) {
+  if (value === null) {
+    return null;
+  }
+  if (!isWorkspaceRecord(value)) {
+    return undefined;
+  }
+
+  const result: Record<string, unknown> = {};
+  if (permissions.has(PermissionCode.QUOTE_VIEW)) {
+    copyWorkspaceFields(result, value, WORKSPACE_QUOTE_PRICING_FIELDS);
+  }
+  if (permissions.has(PermissionCode.BENEFIT_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_BENEFIT_PACKAGE_PRICING_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.ENERGY_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_ENERGY_PACKAGE_PRICING_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.MILEAGE_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_MILEAGE_PACKAGE_PRICING_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.VEHICLE_PACKAGE_VIEW)) {
+    copyWorkspaceFields(
+      result,
+      value,
+      WORKSPACE_VEHICLE_PACKAGE_PRICING_FIELDS
+    );
+  }
+  if (permissions.has(PermissionCode.VEHICLE_VIEW)) {
     copyWorkspaceField(result, value, "currentSalePriceAmount");
   }
   return result;
+}
+
+function copyWorkspaceFields(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  fields: readonly string[]
+) {
+  for (const field of fields) {
+    copyWorkspaceField(target, source, field);
+  }
 }
 
 function pickWorkspaceFields(
@@ -789,9 +993,38 @@ function copyWorkspaceField(
   source: Record<string, unknown>,
   field: string
 ) {
-  if (Object.prototype.hasOwnProperty.call(source, field)) {
-    target[field] = source[field];
+  if (!Object.prototype.hasOwnProperty.call(source, field)) {
+    return;
   }
+  const scalar = serializeWorkspaceScalar(source[field]);
+  if (scalar !== undefined) {
+    target[field] = scalar;
+  }
+}
+
+function serializeWorkspaceScalar(
+  value: unknown
+): boolean | number | string | null | undefined {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : undefined;
+  }
+  if (value instanceof Prisma.Decimal) {
+    return value.toString();
+  }
+  return undefined;
 }
 
 function projectWorkspaceRecord(
@@ -832,9 +1065,13 @@ function assignProjectedValue(
   field: string,
   value: unknown
 ) {
-  if (value !== undefined) {
-    target[field] = value;
+  if (
+    value === undefined ||
+    (isWorkspaceRecord(value) && Object.keys(value).length === 0)
+  ) {
+    return;
   }
+  target[field] = value;
 }
 
 function isWorkspaceRecord(value: unknown): value is Record<string, unknown> {

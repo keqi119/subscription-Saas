@@ -324,6 +324,27 @@ describe("pre-contract order change return-to-plan flow", () => {
       reviewHarness.context
     );
     expectSanitizedChangeResponse(reviewed);
+    expectOrderChangeAuditRetainsRawSnapshot(
+      reviewHarness.auditService,
+      "unknown-response-secret"
+    );
+
+    const rejectHarness = createOrderChangeHarness({
+      afterSnapshot: sensitiveAfterSnapshot,
+      changeStatus: OrderChangeStatus.PENDING
+    });
+    rejectHarness.state.change.beforeSnapshot = sensitiveBeforeSnapshot;
+    const rejected = await rejectHarness.service.setOrderChangeStatus(
+      rejectHarness.changeId,
+      OrderChangeStatus.REJECTED,
+      rejectHarness.opUser,
+      rejectHarness.context
+    );
+    expectSanitizedChangeResponse(rejected);
+    expectOrderChangeAuditRetainsRawSnapshot(
+      rejectHarness.auditService,
+      "unknown-response-secret"
+    );
 
     const cancelHarness = createOrderChangeHarness({
       afterSnapshot: sensitiveAfterSnapshot,
@@ -336,16 +357,38 @@ describe("pre-contract order change return-to-plan flow", () => {
       cancelHarness.context
     );
     expectSanitizedChangeResponse(cancelled);
+    expectOrderChangeAuditRetainsRawSnapshot(
+      cancelHarness.auditService,
+      "unknown-response-secret"
+    );
 
     const executeHarness = createOrderChangeHarness({
       afterSnapshot: sensitiveAfterSnapshot
     });
-    const executed = await executeHarness.service.returnOrderChangeToPlan(
+    const executed = await executeHarness.service.executeOrderChange(
       executeHarness.changeId,
       executeHarness.opUser,
       executeHarness.context
     );
     expectSanitizedChangeResponse(executed);
+    expectOrderChangeAuditRetainsRawSnapshot(
+      executeHarness.auditService,
+      "unknown-response-secret"
+    );
+
+    const returnHarness = createOrderChangeHarness({
+      afterSnapshot: sensitiveAfterSnapshot
+    });
+    const returned = await returnHarness.service.returnOrderChangeToPlan(
+      returnHarness.changeId,
+      returnHarness.opUser,
+      returnHarness.context
+    );
+    expectSanitizedChangeResponse(returned);
+    expectOrderChangeAuditRetainsRawSnapshot(
+      returnHarness.auditService,
+      "unknown-response-secret"
+    );
   });
 
   it("allows SA to create but not approve or return order changes", async () => {
@@ -808,4 +851,22 @@ function expectSanitizedChangeResponse(value: unknown) {
   expect(serialized).not.toContain("vehicle-response-secret");
   expect(serialized).not.toContain("vin-response-secret");
   expect(serialized).not.toContain("quote-response-secret");
+}
+
+function expectOrderChangeAuditRetainsRawSnapshot(
+  auditService: { write: ReturnType<typeof vi.fn> },
+  sentinel: string
+) {
+  const orderChangeAudits = auditService.write.mock.calls
+    .map(([entry]) => entry)
+    .filter(
+      (entry): entry is Record<string, unknown> =>
+        typeof entry === "object" &&
+        entry !== null &&
+        entry.entityType === "order_change"
+    );
+
+  expect(
+    orderChangeAudits.some((entry) => JSON.stringify(entry).includes(sentinel))
+  ).toBe(true);
 }

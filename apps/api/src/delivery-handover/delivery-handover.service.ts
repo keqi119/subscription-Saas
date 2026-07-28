@@ -365,11 +365,7 @@ export function isDeliveryHandoverReadyForDelivery(
   if (!signed) {
     return false;
   }
-  if (!hasCompleteStage2SignedState(handover)) {
-    return false;
-  }
-  return !DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION ||
-    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED;
+  return hasCompleteStage2SigningState(handover);
 }
 
 export function isDeliveryHandoverSigned(
@@ -388,6 +384,7 @@ export function isDeliveryHandoverSigned(
 export function getDeliveryHandoverArchiveWarning(handover: Pick<
   DeliveryHandoverConfirmationRecord,
   | "archiveStatus"
+  | "archivedAt"
   | "artifactVersion"
   | "completedAt"
   | "customerSignedAt"
@@ -411,10 +408,10 @@ export function getDeliveryHandoverArchiveWarning(handover: Pick<
   | "sourcePdfHash"
   | "status"
 > | null | undefined) {
-  if (!handover || !hasCompleteStage2SignedState(handover)) {
+  if (!handover || !hasCompleteStage2SigningState(handover)) {
     return null;
   }
-  if (handover?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED) {
+  if (hasCompleteStage2ArchiveState(handover)) {
     return null;
   }
   if (handover?.archiveStatus === DeliveryHandoverArchiveStatus.FAILED) {
@@ -425,7 +422,7 @@ export function getDeliveryHandoverArchiveWarning(handover: Pick<
   return DELIVERY_HANDOVER_ARCHIVE_WARNING_MESSAGE;
 }
 
-function hasCompleteStage2SignedState(
+function hasCompleteStage2SigningState(
   handover: Pick<
     DeliveryHandoverConfirmationRecord,
     | "artifactVersion"
@@ -439,10 +436,6 @@ function hasCompleteStage2SignedState(
     | "manifestHash"
     | "orderId"
     | "platformSignedAt"
-    | "signedDocumentFileId"
-    | "signedDocumentFile"
-    | "signedObjectKey"
-    | "signedPdfHash"
     | "sourceDocumentFileId"
     | "sourceDocumentFile"
     | "sourceObjectKey"
@@ -481,16 +474,7 @@ function hasCompleteStage2SignedState(
       handover.sourceDocumentFile,
       handover.sourceDocumentFileId,
       handover.sourceObjectKey
-    ) ||
-    !handover.signedDocumentFileId ||
-    !handover.signedObjectKey ||
-    !hasSha256(handover.signedPdfHash) ||
-    !hasPdfFileIdentity(
-      handover.signedDocumentFile,
-      handover.signedDocumentFileId,
-      handover.signedObjectKey
-    ) ||
-    task.signedDocumentObjectKey !== handover.signedObjectKey
+    )
   ) {
     return false;
   }
@@ -538,6 +522,36 @@ function hasCompleteStage2SignedState(
     customerSigner?.customerId === task.customerId &&
     signerCompleted(customerSigner) &&
     signerCompleted(platformSigner)
+  );
+}
+
+function hasCompleteStage2ArchiveState(
+  handover: Pick<
+    DeliveryHandoverConfirmationRecord,
+    | "archiveStatus"
+    | "archivedAt"
+    | "handoverESignTask"
+    | "signedDocumentFileId"
+    | "signedDocumentFile"
+    | "signedObjectKey"
+    | "signedPdfHash"
+    | "status"
+  >
+) {
+  return Boolean(
+    handover.status === DeliveryHandoverStatus.ARCHIVED &&
+    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
+    handover.archivedAt &&
+    handover.signedDocumentFileId &&
+    handover.signedObjectKey &&
+    hasSha256(handover.signedPdfHash) &&
+    hasPdfFileIdentity(
+      handover.signedDocumentFile,
+      handover.signedDocumentFileId,
+      handover.signedObjectKey
+    ) &&
+    handover.handoverESignTask?.signedDocumentObjectKey ===
+      handover.signedObjectKey
   );
 }
 

@@ -125,18 +125,19 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(cellBlock).toContain("disabled={!canRecoverWorkflow || mutationInFlight}");
   });
 
-  it("keeps the existing delivery gate and exposes controlled void/reissue plus Admin fallback UI", () => {
+  it("delegates the delivery signing gate and exposes controlled void/reissue plus Admin fallback UI", () => {
     const source = read(orderPagePath);
-    const archiveGateBlock = source.slice(
+    const signingGateBlock = source.slice(
       source.indexOf("const stage2ArchiveReady ="),
       source.indexOf("const confirmDeliveryDisabledReason")
     );
 
-    expect(source).toContain("交接签署文件归档完成后才可确认交付");
-    expect(archiveGateBlock).toContain('handoverWorkOrdersLoadState === "LOADED"');
-    expect(archiveGateBlock).toContain("activeHandoverWorkOrders.length === 0");
-    expect(archiveGateBlock).toContain("activeHandoverWorkOrders.length === 1");
-    expect(archiveGateBlock).toContain("deliveryConfirmationAvailable");
+    expect(signingGateBlock).toContain('handoverWorkOrdersLoadState === "LOADED"');
+    expect(signingGateBlock).toContain("activeHandoverWorkOrders.length === 0");
+    expect(signingGateBlock).toContain("activeHandoverWorkOrders.length === 1");
+    expect(signingGateBlock).toContain("deliveryConfirmationAvailable");
+    expect(signingGateBlock).not.toContain("archiveStatus");
+    expect(signingGateBlock).not.toContain("signedArtifactAvailable");
     expect(source).toContain("voidAdminStage2HandoverESign");
     expect(source).toContain("startAdminStage2HandoverESign");
     expect(source).toContain("作废并重新发起");

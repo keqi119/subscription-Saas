@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { ApiError } from "../src/lib/api";
 import {
+  createAdminStage2DeliveryVerifier,
   getAdminStage2HandoverESignDisplay,
   getAdminStage2HandoverESignErrorMessage,
   getAdminStage2HandoverWorkflowDisplay,
@@ -189,7 +190,7 @@ describe("Admin Stage 2 handover eSign display", () => {
   it("does not expose a manual platform-seal action after the customer signs", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       customerSigner: signer({ signedAt: "2026-07-27T08:00:00.000Z", status: "SIGNED" }),
-      platformSigner: signer({ retryAvailable: true }),
+      platformSigner: stage2PlatformSigner({ retryAvailable: true }),
       status: "SIGNING",
       taskId: "task-private-id"
     }));
@@ -204,7 +205,7 @@ describe("Admin Stage 2 handover eSign display", () => {
   it("keeps provider errors generic without exposing a manual retry", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       customerSigner: signer({ status: "SIGNED" }),
-      platformSigner: signer({
+      platformSigner: stage2PlatformSigner({
         attemptCount: 2,
         lastErrorCode: "FADADA_PROVIDER_SECRET_RAW_FAILURE",
         retryAvailable: true
@@ -285,7 +286,7 @@ describe("Admin Stage 2 handover eSign display", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       archiveStatus: "FAILED",
       customerSigner: signer({ status: "SIGNED" }),
-      platformSigner: signer({ attemptCount: 1, status: "SIGNED" }),
+      platformSigner: stage2PlatformSigner({ attemptCount: 1, status: "SIGNED" }),
       signedArtifactAvailable: false,
       status: "COMPLETED",
       taskId: "task-private-id"
@@ -302,7 +303,7 @@ describe("Admin Stage 2 handover eSign display", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       archiveStatus: "ARCHIVED",
       customerSigner: signer({ status: "SIGNED" }),
-      platformSigner: signer({ status: "SIGNED" }),
+      platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
       signedArtifactAvailable: true,
       status: "COMPLETED",
       taskId: "task-private-id"
@@ -317,7 +318,7 @@ describe("Admin Stage 2 handover eSign display", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       canVoid: true,
       customerSigner: signer({ status: "SIGNED" }),
-      platformSigner: signer({ status: "SIGNED" }),
+      platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
       status: "COMPLETED",
       taskId: "task-private-id"
     }));
@@ -332,7 +333,7 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
       esignStatus({
         archiveStatus: "PENDING",
         customerSigner: signer({ status: "SIGNED" }),
-        platformSigner: signer({ status: "SIGNED" }),
+        platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
         status: "COMPLETED",
         taskId: "task-private-id"
       }),
@@ -350,21 +351,63 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
       { label: "平台已盖章", state: "complete" },
       { label: "签署文件归档中", state: "current" }
     ]);
-    expect(display.deliveryConfirmationAvailable).toBe(false);
+    expect(display.deliveryConfirmationAvailable).toBe(true);
   });
 
-  it("enables delivery confirmation only after the signed artifact is archived", () => {
-    const pending = getAdminStage2HandoverWorkflowDisplay(esignStatus({
-      archiveStatus: "PENDING",
-      signedArtifactAvailable: false
+  it("uses exact H1 and H2 signing as the delivery gate independently of archive", () => {
+    const signedWithFailedArchive = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      archiveStatus: "FAILED",
+      customerSigner: signer({ status: "SIGNED" }),
+      platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
+      signedArtifactAvailable: false,
+      status: "COMPLETED",
+      taskId: "task-private-id"
     }));
-    const archived = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+    const archivedWithIncompleteH2 = getAdminStage2HandoverWorkflowDisplay(esignStatus({
       archiveStatus: "ARCHIVED",
+      customerSigner: signer({ status: "SIGNED" }),
+      platformSigner: stage2PlatformSigner({ status: "PENDING" }),
       signedArtifactAvailable: true
     }));
 
-    expect(pending.deliveryConfirmationAvailable).toBe(false);
-    expect(archived.deliveryConfirmationAvailable).toBe(true);
+    expect(signedWithFailedArchive.deliveryConfirmationAvailable).toBe(true);
+    expect(archivedWithIncompleteH2.deliveryConfirmationAvailable).toBe(false);
+  });
+
+  it("rechecks exact signing completion before opening or submitting delivery", async () => {
+    const loadESignStatus = vi
+      .fn()
+      .mockResolvedValueOnce(esignStatus({
+        archiveStatus: "FAILED",
+        customerSigner: signer({ status: "SIGNED" }),
+        platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
+        signedArtifactAvailable: false,
+        status: "COMPLETED",
+        taskId: "task-private-id"
+      }))
+      .mockResolvedValueOnce(esignStatus({
+        archiveStatus: "ARCHIVED",
+        customerSigner: signer({ status: "SIGNED" }),
+        platformSigner: stage2PlatformSigner({ status: "PENDING" }),
+        signedArtifactAvailable: true,
+        status: "COMPLETED",
+        taskId: "task-private-id"
+      }));
+    const verifier = createAdminStage2DeliveryVerifier({
+      loadESignStatus,
+      loadWorkOrders: vi.fn(async () => [
+        { id: "work-order-id", status: "CUSTOMER_CONFIRMED" }
+      ])
+    });
+
+    await expect(verifier.verify("order-id")).resolves.toEqual({
+      allowed: true,
+      reason: "SIGNED"
+    });
+    await expect(verifier.verify("order-id")).resolves.toEqual({
+      allowed: false,
+      reason: "NOT_SIGNED"
+    });
   });
 
   it.each([
@@ -579,7 +622,7 @@ function esignStatus(
     customerSigner: signer(),
     documentType: "DELIVERY_HANDOVER",
     handoverId: "handover-private-id",
-    platformSigner: signer(),
+    platformSigner: stage2PlatformSigner(),
     ready: true,
     rebuildRequired: false,
     signedArtifactAvailable: false,
@@ -595,17 +638,33 @@ function esignStatus(
 function signer(
   overrides: Partial<AdminStage2HandoverESignStatus["customerSigner"]> = {}
 ): AdminStage2HandoverESignStatus["customerSigner"] {
+  const status = overrides.status ?? "PENDING";
+  const signedAt =
+    overrides.signedAt !== undefined
+      ? overrides.signedAt
+      : status === "SIGNED"
+        ? "2026-07-27T08:59:00.000Z"
+        : null;
   return {
     attemptCount: 0,
     lastAttemptAt: null,
     lastErrorCode: null,
     nextRetryAt: null,
     retryAvailable: false,
-    signedAt: null,
+    signedAt,
     slotId: "STAGE2_HANDOVER_CUSTOMER",
-    status: "PENDING",
+    status,
     ...overrides
   };
+}
+
+function stage2PlatformSigner(
+  overrides: Partial<AdminStage2HandoverESignStatus["platformSigner"]> = {}
+): AdminStage2HandoverESignStatus["platformSigner"] {
+  return signer({
+    slotId: "STAGE2_HANDOVER_PLATFORM",
+    ...overrides
+  });
 }
 
 function signedDocumentState(): AdminStage2HandoverSignedDocumentState {
@@ -670,12 +729,12 @@ function completedRecoveryFixtures(): Array<{
     },
     {
       jobType: "AUTO_SEAL_PLATFORM",
-      status: { platformSigner: signer({ status: "SIGNED" }) },
+      status: { platformSigner: stage2PlatformSigner({ status: "SIGNED" }) },
       step: "PLATFORM_SEAL"
     },
     {
       jobType: "RECONCILE_PLATFORM_SEAL",
-      status: { platformSigner: signer({ status: "SIGNED" }) },
+      status: { platformSigner: stage2PlatformSigner({ status: "SIGNED" }) },
       step: "PLATFORM_SEAL"
     },
     {

@@ -131,10 +131,10 @@ export interface AdminStage2HandoverWorkflowDisplay {
 export interface AdminStage2DeliveryVerification {
   allowed: boolean;
   reason:
-    | "ARCHIVED"
+    | "SIGNED"
     | "LOAD_ERROR"
     | "NO_STAGE2_WORK_ORDER"
-    | "NOT_ARCHIVED";
+    | "NOT_SIGNED";
 }
 
 const BLOCKER_MESSAGES: Record<string, string> = {
@@ -272,10 +272,15 @@ export function getAdminStage2HandoverWorkflowDisplay(
   const currentJobs = getAuthoritativeCurrentWorkflowJobs(workflowJobs);
   const archived =
     status?.archiveStatus === "ARCHIVED" && status.signedArtifactAvailable === true;
-  const platformComplete =
-    archived || status?.platformSigner.status === "SIGNED";
-  const customerComplete =
-    platformComplete || status?.customerSigner.status === "SIGNED";
+  const platformComplete = signerCompleted(
+    status?.platformSigner,
+    "STAGE2_HANDOVER_PLATFORM"
+  );
+  const customerComplete = signerCompleted(
+    status?.customerSigner,
+    "STAGE2_HANDOVER_CUSTOMER"
+  );
+  const signingComplete = stage2SigningCompleted(status);
   const fieldInitiationComplete = customerComplete || Boolean(status?.taskId);
   const pdfComplete =
     fieldInitiationComplete || context.pdfStatus === "GENERATED";
@@ -311,7 +316,7 @@ export function getAdminStage2HandoverWorkflowDisplay(
   const firstIncomplete = WORKFLOW_STEP_KEYS.find((key) => !completed[key]) ?? null;
 
   return {
-    deliveryConfirmationAvailable: archived,
+    deliveryConfirmationAvailable: signingComplete,
     recoveries,
     steps: WORKFLOW_STEP_KEYS.map((key) => {
       const state = completed[key]
@@ -338,7 +343,12 @@ export function createAdminStage2DeliveryVerifier({
     workOrderId: string
   ) => Promise<Pick<
     AdminStage2HandoverESignStatus,
-    "archiveStatus" | "signedArtifactAvailable"
+    | "customerSigner"
+    | "documentType"
+    | "platformSigner"
+    | "signingStage"
+    | "status"
+    | "taskId"
   >>;
   loadWorkOrders: (
     orderId: string
@@ -358,22 +368,59 @@ export function createAdminStage2DeliveryVerifier({
           return { allowed: true, reason: "NO_STAGE2_WORK_ORDER" };
         }
         if (activeWorkOrders.length !== 1) {
-          return { allowed: false, reason: "NOT_ARCHIVED" };
+          return { allowed: false, reason: "NOT_SIGNED" };
         }
         const [activeWorkOrder] = activeWorkOrders;
         if (!activeWorkOrder) {
-          return { allowed: false, reason: "NOT_ARCHIVED" };
+          return { allowed: false, reason: "NOT_SIGNED" };
         }
         const status = await loadESignStatus(activeWorkOrder.id);
-        return status.archiveStatus === "ARCHIVED" &&
-          status.signedArtifactAvailable === true
-          ? { allowed: true, reason: "ARCHIVED" }
-          : { allowed: false, reason: "NOT_ARCHIVED" };
+        return stage2SigningCompleted(status)
+          ? { allowed: true, reason: "SIGNED" }
+          : { allowed: false, reason: "NOT_SIGNED" };
       } catch {
         return { allowed: false, reason: "LOAD_ERROR" };
       }
     }
   };
+}
+
+function stage2SigningCompleted(
+  status?: Pick<
+    AdminStage2HandoverESignStatus,
+    | "customerSigner"
+    | "documentType"
+    | "platformSigner"
+    | "signingStage"
+    | "status"
+    | "taskId"
+  > | null
+) {
+  return Boolean(
+    status?.documentType === "DELIVERY_HANDOVER" &&
+    status.signingStage === "STAGE2_DELIVERY_HANDOVER" &&
+    status.taskId &&
+    status.status === "COMPLETED" &&
+    signerCompleted(
+      status.customerSigner,
+      "STAGE2_HANDOVER_CUSTOMER"
+    ) &&
+    signerCompleted(
+      status.platformSigner,
+      "STAGE2_HANDOVER_PLATFORM"
+    )
+  );
+}
+
+function signerCompleted(
+  signer: AdminStage2HandoverESignSigner | null | undefined,
+  slotId: string
+) {
+  return Boolean(
+    signer?.slotId === slotId &&
+    signer.status === "SIGNED" &&
+    signer.signedAt
+  );
 }
 
 export function createAdminStage2DeliveryConfirmationController({

@@ -574,46 +574,69 @@ function writeSignatureArea(
   slotCoordinates: DeliveryHandoverPdfSigningSlotCoordinate[],
   getPageNumber: () => number
 ) {
-  ensureSpace(doc, 170);
-  resetCursorX(doc);
-  const width = contentWidth(doc);
-  const columnWidth = width / 2;
-  const rowHeight = 30;
-  const headers = ["承租方", "出租方"];
-  const rows = [
-    ["（签字/手印）", "（盖章）"],
+  const headerHeight = 30;
+  const labelRowHeight = 24;
+  const signingRowHeight = 144;
+  const detailRowHeight = 30;
+  const detailRows = [
     [`身份证号：${model.customer.idNumber}`, `经办人：${model.platform.contactName}`],
     [`联系电话：${model.customer.mobile}`, `联系电话：${model.platform.contactPhone}`],
     ["日期：      年    月    日", "日期：      年    月    日"]
   ];
+  const tableHeight =
+    headerHeight +
+    labelRowHeight +
+    signingRowHeight +
+    detailRowHeight * detailRows.length;
+
+  ensureSpace(doc, tableHeight + 18);
+  resetCursorX(doc);
+  const width = contentWidth(doc);
+  const columnWidth = width / 2;
+  const headers = ["承租方", "出租方"];
+  const signingLabels = ["（签字/手印）", "（盖章）"];
   const startY = doc.y;
 
   headers.forEach((header, index) => {
     const x = doc.page.margins.left + index * columnWidth;
-    doc.rect(x, startY, columnWidth, rowHeight).stroke();
+    doc.rect(x, startY, columnWidth, headerHeight).stroke();
     doc.fontSize(10).text(header, x + 8, startY + 8, { align: "center", width: columnWidth - 16 });
   });
 
-  rows.forEach((row, rowIndex) => {
-    const y = startY + rowHeight * (rowIndex + 1);
+  const labelY = startY + headerHeight;
+  signingLabels.forEach((label, columnIndex) => {
+    const x = doc.page.margins.left + columnIndex * columnWidth;
+    doc.rect(x, labelY, columnWidth, labelRowHeight).stroke();
+    doc.fontSize(9.5).text(label, x + 8, labelY + 6, {
+      align: "center",
+      width: columnWidth - 16
+    });
+  });
+
+  const signingY = labelY + labelRowHeight;
+  headers.forEach((_, columnIndex) => {
+    const x = doc.page.margins.left + columnIndex * columnWidth;
+    doc.rect(x, signingY, columnWidth, signingRowHeight).stroke();
+    slotCoordinates.push(buildSigningSlotCoordinate({
+      boxHeight: signingRowHeight,
+      boxWidth: columnWidth,
+      boxX: x,
+      boxY: signingY,
+      page: doc.page,
+      pageNumber: getPageNumber(),
+      slotId: columnIndex === 0 ? "STAGE2_HANDOVER_CUSTOMER" : "STAGE2_HANDOVER_PLATFORM"
+    }));
+  });
+
+  detailRows.forEach((row, rowIndex) => {
+    const y = signingY + signingRowHeight + detailRowHeight * rowIndex;
     row.forEach((cell, columnIndex) => {
       const x = doc.page.margins.left + columnIndex * columnWidth;
-      doc.rect(x, y, columnWidth, rowHeight).stroke();
-      if (rowIndex === 0) {
-        slotCoordinates.push(buildSigningSlotCoordinate({
-          boxHeight: rowHeight,
-          boxWidth: columnWidth,
-          boxX: x,
-          boxY: y,
-          page: doc.page,
-          pageNumber: getPageNumber(),
-          slotId: columnIndex === 0 ? "STAGE2_HANDOVER_CUSTOMER" : "STAGE2_HANDOVER_PLATFORM"
-        }));
-      }
+      doc.rect(x, y, columnWidth, detailRowHeight).stroke();
       doc.fontSize(9.5).text(cell, x + 8, y + 8, { width: columnWidth - 16 });
     });
   });
-  doc.y = startY + rowHeight * (rows.length + 1);
+  doc.y = startY + tableHeight;
   resetCursorX(doc);
   doc.moveDown(0.5);
 }

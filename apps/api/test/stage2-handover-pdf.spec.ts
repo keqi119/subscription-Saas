@@ -46,7 +46,7 @@ const pdfKitMock = vi.hoisted(() => {
       x: number;
       y: number;
     }> = [];
-    static textCalls: Array<{ pageNumber: number; text: string }> = [];
+    static textCalls: Array<{ pageNumber: number; text: string; x: number; y: number }> = [];
 
     static startCapture() {
       FakePDFDocument.imageCalls = [];
@@ -161,7 +161,12 @@ const pdfKitMock = vi.hoisted(() => {
       if (typeof y === "number") {
         this.y = y;
       }
-      FakePDFDocument.textCalls.push({ pageNumber: this.pageNumber, text });
+      FakePDFDocument.textCalls.push({
+        pageNumber: this.pageNumber,
+        text,
+        x: this.x,
+        y: this.y
+      });
       this.y += this.heightOfString(text);
       return this;
     }
@@ -276,8 +281,9 @@ describe("Stage 2 handover PDF renderer", () => {
   it("emits exactly two bounded signing slots at the final signature boxes without visible metadata", async () => {
     const renderer = new DeliveryHandoverPdfRendererService();
     const { rectCalls, textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+    const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
 
-    const result = await renderer.render(buildDeliveryHandoverPdfRenderModel(createRenderModelInput()), {
+    const result = await renderer.render(model, {
       cjkFontPath: process.execPath,
       evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/work-order-1",
       loadAsset: async () => Buffer.from("synthetic-jpeg")
@@ -297,7 +303,7 @@ describe("Stage 2 handover PDF renderer", () => {
     const finalPageNumber = result.diagnostics.pageCount - 1;
     const finalPageSignatureBoxes = rectCalls
       .filter((call) => call.pageNumber === result.diagnostics.pageCount)
-      .slice(2, 4);
+      .filter((call) => call.height >= 144);
 
     expect(finalPageSignatureBoxes).toHaveLength(2);
     coordinates.forEach((coordinate, index) => {
@@ -319,6 +325,7 @@ describe("Stage 2 handover PDF renderer", () => {
       expect(numericValues.every(Number.isFinite)).toBe(true);
       expect(coordinate.pdfPageWidth).toBe(595.28);
       expect(coordinate.pdfPageHeight).toBe(841.89);
+      expect(signatureBox.height).toBeGreaterThanOrEqual(144);
       expect(coordinate.x).toBeCloseTo(
         ((signatureBox.x + signatureBox.width / 2) / 595.28) * 800,
         3
@@ -337,6 +344,25 @@ describe("Stage 2 handover PDF renderer", () => {
     expect(new Set(coordinates.map((coordinate) => coordinate.pageNumber))).toEqual(
       new Set([finalPageNumber])
     );
+
+    const signatureRowBottom = Math.max(
+      ...finalPageSignatureBoxes.map((signatureBox) => signatureBox.y + signatureBox.height)
+    );
+    const signatureDetailText = textCalls.filter((call) =>
+      call.pageNumber === result.diagnostics.pageCount &&
+      (
+        call.text.includes(model.customer.idNumber) ||
+        call.text.includes(model.customer.mobile) ||
+        call.text.includes(model.platform.contactName) ||
+        call.text.includes(model.platform.contactPhone) ||
+        call.text.includes("日期")
+      )
+    );
+
+    expect(signatureDetailText).toHaveLength(6);
+    for (const detailText of signatureDetailText) {
+      expect(detailText.y).toBeGreaterThan(signatureRowBottom);
+    }
 
     for (const hiddenValue of [
       "STAGE2_HANDOVER_CUSTOMER",

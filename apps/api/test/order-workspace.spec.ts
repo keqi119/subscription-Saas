@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { OrderWorkspaceResolver } from "../src/order/order-workspace.resolver";
+import { OrderWorkspaceResolver } from "../src/order/order-workspace.service";
 import type {
   OrderWorkspaceGuideCategory,
   OrderWorkspaceGuideItem,
@@ -34,7 +34,14 @@ describe("OrderWorkspaceResolver", () => {
       "finance",
       "change"
     ]);
-    expect(summary.guidance.every((item) => item.actionCode)).toBe(true);
+    expect(summary.guidance.map((item) => item.actionCode)).toEqual([
+      "contract.sign",
+      "handover.assign",
+      "entitlement.review",
+      "service.resolve",
+      null,
+      null
+    ]);
   });
 
   it("returns only permitted badges and guidance, without an action for view-only access", () => {
@@ -91,6 +98,36 @@ describe("OrderWorkspaceResolver", () => {
       targetTab: "handover",
       targetRecordId: "handover-1"
     });
+  });
+
+  it("assigns every fixed state its complete output priority and suppresses non-actionable actions", () => {
+    const nonActionableStates = new Set(["COMPLETED", "NOT_STARTED", "UNAVAILABLE"]);
+    const resolvedStates = WORKSPACE_STATE_PRIORITY.map((state) => {
+      const summary = resolveWith(
+        [
+          guide({
+            state,
+            actionCode: nonActionableStates.has(state) ? "invalid.action" : "state.action"
+          })
+        ],
+        adminAccess()
+      );
+
+      const item = summary.guidance[0];
+      return {
+        actionCode: item.actionCode,
+        priority: item.priority,
+        state: item.state
+      };
+    });
+
+    expect(resolvedStates).toEqual(
+      WORKSPACE_STATE_PRIORITY.map((state, index) => ({
+        actionCode: nonActionableStates.has(state) ? null : "state.action",
+        priority: WORKSPACE_STATE_PRIORITY.length - index,
+        state
+      }))
+    );
   });
 
   it("selects the oldest required-action timestamp within the same state", () => {
@@ -254,20 +291,20 @@ function allGuidance(): GuideSeed[] {
     }),
     guide({
       category: "service",
-      state: "COMPLETED",
+      state: "READY",
       actionCode: "service.resolve",
       targetRecordId: "service-1"
     }),
     guide({
       category: "finance",
       state: "NOT_STARTED",
-      actionCode: "finance.collect",
+      actionCode: null,
       targetRecordId: "finance-1"
     }),
     guide({
       category: "change",
       state: "UNAVAILABLE",
-      actionCode: "change.review",
+      actionCode: null,
       targetRecordId: "change-1"
     })
   ];

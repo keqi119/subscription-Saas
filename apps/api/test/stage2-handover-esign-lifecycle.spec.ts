@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { BadRequestException, RequestMethod } from "@nestjs/common";
+import { RequestMethod } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import {
@@ -15,6 +15,8 @@ import {
   ESignSlotId,
   ESignTaskStatus,
   OrderStatus,
+  UserStatus,
+  VehicleHandoverOperatorType,
   VehicleHandoverWorkOrderStatus
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
@@ -304,7 +306,7 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.workflow.enqueueCustomerESignJobs).not.toHaveBeenCalled();
   });
 
-  it("keeps Admin create compatibility behind the disabled workflow flag", async () => {
+  it("allows Admin initiation only as a fallback when the Field operator is unavailable", async () => {
     const compatibility = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "false"
     });
@@ -317,8 +319,106 @@ describe("Stage2HandoverESignService", () => {
     });
     await expect(
       workflow.service.create("work-order-1", adminInitiator())
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_FIELD_INITIATOR_REQUIRED"
+      })
+    });
     expect(workflow.provider.createSignTask).not.toHaveBeenCalled();
+
+    const fallback = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    fallback.prisma.user.findFirst.mockResolvedValue(null);
+
+    await expect(
+      fallback.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: true,
+      canReconcileCustomer: false
+    });
+    await expect(
+      fallback.service.create("work-order-1", adminInitiator())
+    ).resolves.toMatchObject({
+      canAdminInitiate: false,
+      taskId: "stage2-task-1"
+    });
+    expect(fallback.provider.createSignTask).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["rejected", ESignSignerStatus.REJECTED],
+    ["failed", ESignSignerStatus.EXPIRED]
+  ])("exposes void but not reconcile for a terminal H1 %s state", async (
+    _label,
+    customerStatus
+  ) => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    const task = makeTask({
+      customerStatus,
+      taskStatus: ESignTaskStatus.FAILED
+    });
+    harness.state.activeTask = task;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status = DeliveryHandoverStatus.FAILED;
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: false,
+      canReconcileCustomer: false,
+      canVoid: true,
+      rebuildRequired: true
+    });
+  });
+
+  it("exposes reconcile only for the canonical active H1 state", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    const task = makeTask({
+      customerStatus: ESignSignerStatus.SIGNING,
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+    });
+    attachPortalTask(harness, task);
+    harness.state.workOrder.status =
+      VehicleHandoverWorkOrderStatus.SIGNING;
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: false,
+      canReconcileCustomer: true
+    });
+  });
+
+  it("exposes no void, reconcile, or Admin initiation after provider completion", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    const task = makeTask({
+      customerStatus: ESignSignerStatus.SIGNED,
+      platformStatus: ESignSignerStatus.SIGNED,
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    task.completedAt = NOW;
+    harness.state.activeTask = task;
+    harness.state.workOrder.handover.handoverContract.status =
+      ContractStatus.SIGNED;
+    harness.state.workOrder.handover.handoverESignTask = task;
+    harness.state.workOrder.handover.handoverESignTaskId = task.id;
+    harness.state.workOrder.handover.status = DeliveryHandoverStatus.SIGNED;
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: false,
+      canReconcileCustomer: false,
+      canVoid: false
+    });
   });
 
   it("generates a new task number when a P2002 create collision is retried", async () => {
@@ -3230,6 +3330,14 @@ function createHarness(env: Record<string, string> = {}) {
     subscriptionOrder: {
       update: vi.fn()
     },
+    user: {
+      findFirst: vi.fn(async () => ({
+        deletedAt: null,
+        id: "field-user-1",
+        mobile: "13800000000",
+        status: UserStatus.ACTIVE
+      }))
+    },
     vehicleDelivery: {
       update: vi.fn()
     },
@@ -3407,6 +3515,7 @@ function makeWorkOrder() {
       status: DeliveryHandoverStatus.SOURCE_GENERATED as DeliveryHandoverStatus,
       updatedAt: NOW
     },
+    assignedInternalUserId: "field-user-1",
     fieldOperatorPhone: "13800000000",
     handoverId: "handover-1",
     id: "work-order-1",
@@ -3421,6 +3530,7 @@ function makeWorkOrder() {
       orderNo: "ORD-1",
       orderStatus: OrderStatus.PENDING_DELIVERY as OrderStatus
     },
+    operatorType: VehicleHandoverOperatorType.INTERNAL,
     orderId: "order-1",
     status:
       VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED as VehicleHandoverWorkOrderStatus

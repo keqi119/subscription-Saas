@@ -125,7 +125,7 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(cellBlock).toContain("disabled={!canRecoverWorkflow || mutationInFlight}");
   });
 
-  it("keeps delivery blocked until archive and exposes no manual void or reissue UI", () => {
+  it("keeps the existing delivery gate and exposes controlled void/reissue plus Admin fallback UI", () => {
     const source = read(orderPagePath);
     const archiveGateBlock = source.slice(
       source.indexOf("const stage2ArchiveReady ="),
@@ -137,9 +137,10 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(archiveGateBlock).toContain("activeHandoverWorkOrders.length === 0");
     expect(archiveGateBlock).toContain("activeHandoverWorkOrders.length === 1");
     expect(archiveGateBlock).toContain("deliveryConfirmationAvailable");
-    expect(source).not.toContain("voidAdminStage2HandoverESign");
-    expect(source).not.toContain("作废签署任务");
-    expect(source).not.toContain("重新发起电子签");
+    expect(source).toContain("voidAdminStage2HandoverESign");
+    expect(source).toContain("startAdminStage2HandoverESign");
+    expect(source).toContain("作废并重新发起");
+    expect(source).toContain("后台兜底发起签署");
   });
 });
 

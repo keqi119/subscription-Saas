@@ -152,6 +152,18 @@ describe("Admin Stage 2 handover eSign display", () => {
     expect(display.archiveRetryAvailable).toBe(false);
   });
 
+  it("shows the backend-authorized Admin fallback only when Field initiation is unavailable", () => {
+    const fallback = getAdminStage2HandoverESignDisplay(esignStatus({
+      canAdminInitiate: true
+    }));
+    const normal = getAdminStage2HandoverESignDisplay(esignStatus({
+      canAdminInitiate: false
+    }));
+
+    expect(fallback.startAvailable).toBe(true);
+    expect(normal.startAvailable).toBe(false);
+  });
+
   it("maps blocker codes to concise Chinese without exposing backend messages", () => {
     const display = getAdminStage2HandoverESignDisplay(esignStatus({
       blockers: [
@@ -367,6 +379,8 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     "maps a DEAD_LETTER %s row to only its matching action",
     (jobType, kind, label) => {
       const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+        canReconcileCustomer:
+          jobType === "RECONCILE_CUSTOMER_SIGNATURE",
         workflowJobs: [workflowJob({ jobType })]
       }));
 
@@ -380,6 +394,21 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
       ]);
     }
   );
+
+  it("hides invalid H1 reconcile after rejection or failure", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      canReconcileCustomer: false,
+      customerSigner: signer({ status: "REJECTED" }),
+      rebuildRequired: true,
+      status: "FAILED",
+      taskId: "task-private-id",
+      workflowJobs: [
+        workflowJob({ jobType: "RECONCILE_CUSTOMER_SIGNATURE" })
+      ]
+    }));
+
+    expect(display.recoveries).toEqual([]);
+  });
 
   it("renders no recovery controls for pending, processing, completed, or cancelled jobs", () => {
     const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
@@ -478,7 +507,7 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(display.recoveries).toEqual([]);
   });
 
-  it("renders the compact workflow timeline without happy-path mutation controls", () => {
+  it("renders the compact workflow timeline with only backend-authorized Admin controls", () => {
     const source = readFileSync(orderPagePath, "utf8");
 
     expect(source).toContain("Stage2HandoverWorkflowCell");
@@ -491,12 +520,17 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(source).toContain('boundary: "BEFORE_POST"');
     expect(source).toContain("retryAdminStage2WorkflowJob");
     expect(source).toContain("reconcileAdminStage2CustomerSignature");
+    expect(source).toContain("startAdminStage2HandoverESign");
+    expect(source).toContain("voidAdminStage2HandoverESign");
+    expect(source).toContain("作废并重新发起");
+    expect(source).toContain("后台兜底发起签署");
     expect(source).toContain('canRecoverWorkflow={permissions.has("delivery:confirm")}');
     expect(source).toContain("交接签署文件归档完成后才可确认交付");
     expect(source).not.toContain("function Stage2HandoverPdfCell");
     expect(source).not.toContain("function Stage2HandoverESignCell");
     expect(source).not.toContain("onGeneratePdf=");
-    expect(source).not.toContain("onStartESign=");
+    expect(source).toContain("onStartESign=");
+    expect(source).toContain("onVoidESign=");
     expect(source).not.toContain("onRetryPlatformSeal=");
     expect(source).not.toContain("onRetryESignArchive=");
   });
@@ -538,6 +572,8 @@ function esignStatus(
   return {
     archiveStatus: "NOT_STARTED",
     blockers: [],
+    canAdminInitiate: false,
+    canReconcileCustomer: false,
     canVoid: false,
     createdAt: null,
     customerSigner: signer(),

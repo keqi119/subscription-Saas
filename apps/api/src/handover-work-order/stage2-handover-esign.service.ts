@@ -27,7 +27,10 @@ import {
   ESignSigningStage,
   ESignSlotId,
   ESignTaskStatus,
-  Prisma
+  Prisma,
+  UserStatus,
+  VehicleHandoverOperatorType,
+  VehicleHandoverWorkOrderStatus
 } from "@prisma/client";
 
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
@@ -118,6 +121,11 @@ const PLATFORM_SEAL_RECONCILABLE_STATUSES =
     ESignSignerStatus.SIGNING,
     ESignSignerStatus.SIGNED
   ]);
+const CUSTOMER_RECONCILIATION_WORK_ORDER_STATUSES =
+  new Set<VehicleHandoverWorkOrderStatus>([
+    VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+    VehicleHandoverWorkOrderStatus.SIGNING
+  ]);
 
 const CUSTOMER_SIGNING_SLOT: ESignSigningSlot = {
   documentType: "DELIVERY_HANDOVER",
@@ -204,6 +212,8 @@ export interface Stage2HandoverESignSignerView {
 export interface Stage2HandoverESignView {
   archiveStatus: DeliveryHandoverArchiveStatus | null;
   blockers: Stage2HandoverESignBlocker[];
+  canAdminInitiate: boolean;
+  canReconcileCustomer: boolean;
   canVoid: boolean;
   createdAt: Date | null;
   customerSigner: Stage2HandoverESignSignerView;
@@ -334,7 +344,15 @@ export class Stage2HandoverESignService {
       this.readinessService.getReadiness(workOrderId)
     ]);
     const task = await this.resolveCurrentTask(workOrder);
-    return this.toView(workOrder, task, readiness);
+    const fieldInitiatorAvailable = task
+      ? true
+      : await this.hasAvailableFieldInitiator(workOrder);
+    return this.toView(
+      workOrder,
+      task,
+      readiness,
+      fieldInitiatorAvailable
+    );
   }
 
   async getPortalStatus(
@@ -625,7 +643,7 @@ export class Stage2HandoverESignService {
     review?: Stage2ESignReviewAcknowledgement
   ): Promise<Stage2HandoverESignView> {
     const initialWorkOrder = await this.loadWorkOrder(workOrderId);
-    const initiation = this.assertCreateInitiator(
+    const initiation = await this.assertCreateInitiator(
       initialWorkOrder,
       initiator,
       review
@@ -1679,7 +1697,7 @@ export class Stage2HandoverESignService {
     review?: Stage2ESignReviewAcknowledgement
   ) {
     const current = await this.loadWorkOrder(workOrderId);
-    const initiation = this.assertCreateInitiator(
+    const initiation = await this.assertCreateInitiator(
       current,
       initiator,
       review
@@ -1952,13 +1970,17 @@ export class Stage2HandoverESignService {
     };
   }
 
-  private assertCreateInitiator(
+  private async assertCreateInitiator(
     workOrder: Stage2LifecycleWorkOrder,
     initiator: Stage2ESignInitiator,
     review?: Stage2ESignReviewAcknowledgement
   ) {
     const workflowEnabled = this.isStage2HandoverWorkflowEnabled();
-    if (workflowEnabled && initiator.actorType !== "FIELD_OPERATOR") {
+    if (
+      workflowEnabled &&
+      initiator.actorType === "ADMIN" &&
+      await this.hasAvailableFieldInitiator(workOrder)
+    ) {
       throw new BadRequestException({
         code: "STAGE2_HANDOVER_FIELD_INITIATOR_REQUIRED",
         message: "The Stage 2 workflow must be initiated by the assigned Field operator."
@@ -2039,6 +2061,47 @@ export class Stage2HandoverESignService {
         }
       }
     };
+  }
+
+  private async hasAvailableFieldInitiator(
+    workOrder: Stage2LifecycleWorkOrder
+  ) {
+    const snapshotPhone = normalizeAvailableFieldPhone(
+      workOrder.fieldOperatorPhone
+    );
+    if (!snapshotPhone) {
+      return false;
+    }
+    if (
+      workOrder.operatorType === VehicleHandoverOperatorType.EXTERNAL
+    ) {
+      return normalizeAvailableFieldPhone(
+        workOrder.externalOperatorPhone
+      ) === snapshotPhone;
+    }
+    if (
+      workOrder.operatorType !== VehicleHandoverOperatorType.INTERNAL ||
+      !workOrder.assignedInternalUserId
+    ) {
+      return false;
+    }
+
+    const user = await this.prisma.user.findFirst({
+      select: {
+        mobile: true,
+        status: true
+      },
+      where: {
+        deletedAt: null,
+        id: workOrder.assignedInternalUserId,
+        status: UserStatus.ACTIVE
+      }
+    });
+    return Boolean(
+      user &&
+      user.status === UserStatus.ACTIVE &&
+      normalizeAvailableFieldPhone(user.mobile) === snapshotPhone
+    );
   }
 
   private isStage2HandoverWorkflowEnabled() {
@@ -2624,7 +2687,8 @@ export class Stage2HandoverESignService {
   private toView(
     workOrder: Stage2LifecycleWorkOrder,
     task: Stage2Task | null,
-    readiness: Stage2HandoverESignReadiness
+    readiness: Stage2HandoverESignReadiness,
+    fieldInitiatorAvailable = true
   ): Stage2HandoverESignView {
     const handover = workOrder.handover;
     const signers = task ? requireTypedSigners(task) : null;
@@ -2635,6 +2699,17 @@ export class Stage2HandoverESignService {
     return {
       archiveStatus: handover?.archiveStatus ?? null,
       blockers: readiness.blockers,
+      canAdminInitiate: Boolean(
+        this.isStage2HandoverWorkflowEnabled() &&
+        !task &&
+        readiness.ready &&
+        !fieldInitiatorAvailable
+      ),
+      canReconcileCustomer: canReconcileCustomerSignature(
+        workOrder,
+        task,
+        signers
+      ),
       canVoid: Boolean(
         task &&
         task.taskStatus !== ESignTaskStatus.COMPLETED &&
@@ -3293,4 +3368,50 @@ function taskMatchesSourceBinding(
     handover,
     task
   });
+}
+
+function canReconcileCustomerSignature(
+  workOrder: Stage2LifecycleWorkOrder,
+  task: Stage2Task | null,
+  signers: ReturnType<typeof requireTypedSigners> | null
+) {
+  const handover = workOrder.handover;
+  if (
+    !task ||
+    !signers ||
+    !handover ||
+    handover.handoverESignTaskId !== task.id ||
+    handover.status !==
+      DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE ||
+    handover.handoverContract?.status !== ContractStatus.SIGNING ||
+    !CUSTOMER_RECONCILIATION_WORK_ORDER_STATUSES.has(workOrder.status) ||
+    !taskMatchesSourceBinding(task, handover) ||
+    (
+      task.taskStatus !== ESignTaskStatus.WAITING_CUSTOMER &&
+      task.taskStatus !== ESignTaskStatus.SIGNING
+    ) ||
+    (
+      signers.customerSigner.signerStatus !== ESignSignerStatus.PENDING &&
+      signers.customerSigner.signerStatus !== ESignSignerStatus.SIGNING
+    ) ||
+    signers.customerSigner.providerTransactionId !==
+      buildTransactionId(task.taskNo, "H1") ||
+    signers.platformSigner.signerStatus !== ESignSignerStatus.PENDING ||
+    signers.platformSigner.providerTransactionId !== null
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeAvailableFieldPhone(phone: string | null | undefined) {
+  if (!phone) {
+    return null;
+  }
+  try {
+    return normalizeFieldOperatorPhone(phone);
+  } catch {
+    return null;
+  }
 }

@@ -45,6 +45,8 @@ export interface AdminStage2HandoverWorkflowJob {
 export interface AdminStage2HandoverESignStatus {
   archiveStatus: string | null;
   blockers: AdminStage2HandoverESignBlocker[];
+  canAdminInitiate: boolean;
+  canReconcileCustomer: boolean;
   canVoid: boolean;
   createdAt: string | null;
   customerSigner: AdminStage2HandoverESignSigner;
@@ -254,7 +256,10 @@ export function getAdminStage2HandoverESignDisplay(
     platform: getPlatformDisplay(status),
     platformActionLabel: null,
     readiness: getReadinessDisplay(status),
-    startAvailable: false,
+    startAvailable:
+      status.canAdminInitiate === true &&
+      status.ready === true &&
+      !status.taskId,
     voidAvailable: status.canVoid === true && !providerSigningCompleted
   };
 }
@@ -288,6 +293,10 @@ export function getAdminStage2HandoverWorkflowDisplay(
     ? currentJobs.jobs.filter(
         (job) =>
           job.jobStatus === "DEAD_LETTER" &&
+          (
+            job.jobType !== "RECONCILE_CUSTOMER_SIGNATURE" ||
+            status?.canReconcileCustomer === true
+          ) &&
           !completed[WORKFLOW_JOB_STEP[job.jobType]]
       )
     : [];

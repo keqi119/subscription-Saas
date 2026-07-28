@@ -7,6 +7,7 @@ import {
   DownloadOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SendOutlined,
   UserAddOutlined
 } from "@ant-design/icons";
 import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Timeline, Typography } from "antd";
@@ -54,15 +55,19 @@ import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
 import {
   createAdminStage2DeliveryConfirmationController,
   createAdminStage2DeliveryVerifier,
+  getAdminStage2HandoverESignDisplay,
   getAdminStage2HandoverESignErrorMessage,
   getAdminStage2HandoverWorkflowDisplay,
   loadAdminStage2HandoverESign,
   reconcileAdminStage2CustomerSignature,
   retryAdminStage2WorkflowJob,
   runAdminStage2WorkflowRecovery,
+  startAdminStage2HandoverESign,
   type AdminStage2HandoverESignStatus,
   type AdminStage2HandoverWorkflowJob,
-  type AdminStage2HandoverWorkflowRecovery
+  type AdminStage2HandoverWorkflowRecovery,
+  validateAdminStage2HandoverVoidReason,
+  voidAdminStage2HandoverESign
 } from "../../../lib/admin-stage2-handover-esign";
 import {
   buildAdminStage2HandoverPdfUrl,
@@ -342,6 +347,10 @@ interface HandoverResubmissionFormValues {
   note: string;
   targetEvidenceItemIds?: string[];
   targetFieldKeys?: string[];
+}
+
+interface Stage2VoidFormValues {
+  reason: string;
 }
 
 interface HandoverWorkOrderDetail extends HandoverWorkOrderSummary {
@@ -2605,6 +2614,8 @@ function Stage2HandoverWorkflowCell({
   mutationInFlight,
   onRecover,
   onRefresh,
+  onStart,
+  onVoid,
   status,
   workOrder
 }: {
@@ -2618,6 +2629,8 @@ function Stage2HandoverWorkflowCell({
     recovery: AdminStage2HandoverWorkflowRecovery
   ) => void;
   onRefresh: (id: string) => void;
+  onStart: (id: string) => void;
+  onVoid: (id: string) => void;
   status?: AdminStage2HandoverESignStatus;
   workOrder: HandoverWorkOrderSummary;
 }) {
@@ -2632,6 +2645,9 @@ function Stage2HandoverWorkflowCell({
     pdfStatus: workOrder.stage2Pdf?.status,
     workflowJobs: workOrder.workflowJobs
   });
+  const actionDisplay = status
+    ? getAdminStage2HandoverESignDisplay(status)
+    : null;
   const downloadUrl = buildAdminStage2HandoverPdfUrl(workOrder.stage2Pdf?.downloadUrl);
   return (
     <Space
@@ -2687,6 +2703,30 @@ function Stage2HandoverWorkflowCell({
       ) : null}
       {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
       <Space size={[6, 6]} wrap>
+        {actionDisplay?.voidAvailable ? (
+          <Button
+            danger
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            icon={<DeleteOutlined />}
+            loading={actionLoading === `stage2-void:${workOrder.id}`}
+            onClick={() => onVoid(workOrder.id)}
+            size="small"
+          >
+            作废并重新发起
+          </Button>
+        ) : null}
+        {actionDisplay?.startAvailable ? (
+          <Button
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            icon={<SendOutlined />}
+            loading={actionLoading === `stage2-start:${workOrder.id}`}
+            onClick={() => onStart(workOrder.id)}
+            size="small"
+            type="primary"
+          >
+            后台兜底发起签署
+          </Button>
+        ) : null}
         {display.recoveries.map((recovery) => (
           <Button
             disabled={!canRecoverWorkflow || mutationInFlight}
@@ -2733,6 +2773,8 @@ function Stage2HandoverReviewPanel({
   onRefreshESign,
   onRequestResubmission,
   onSendCustomerReview,
+  onStartESign,
+  onVoidESign,
   onViewDetail,
   workOrders
 }: {
@@ -2757,6 +2799,8 @@ function Stage2HandoverReviewPanel({
   onRefreshESign: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
+  onStartESign: (id: string) => void;
+  onVoidESign: (id: string) => void;
   onViewDetail: (id: string) => void;
   workOrders: HandoverWorkOrderSummary[];
 }) {
@@ -2795,6 +2839,8 @@ function Stage2HandoverReviewPanel({
           mutationInFlight={mutationInFlight}
           onRecover={onRecoverWorkflow}
           onRefresh={onRefreshESign}
+          onStart={onStartESign}
+          onVoid={onVoidESign}
           status={esignStatuses[row.id]}
           workOrder={row}
         />
@@ -3004,6 +3050,8 @@ function Stage2HandoverReviewDetailModal({
   onRefreshESign,
   onRequestResubmission,
   onSendCustomerReview,
+  onStartESign,
+  onVoidESign,
   open
 }: {
   actionLoading: string | null;
@@ -3025,6 +3073,8 @@ function Stage2HandoverReviewDetailModal({
   onRefreshESign: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
+  onStartESign: (id: string) => void;
+  onVoidESign: (id: string) => void;
   open: boolean;
 }) {
   return (
@@ -3052,6 +3102,8 @@ function Stage2HandoverReviewDetailModal({
             mutationInFlight={mutationInFlight}
             onRecover={onRecoverWorkflow}
             onRefresh={onRefreshESign}
+            onStart={onStartESign}
+            onVoid={onVoidESign}
             status={esignStatus}
             workOrder={detail}
           />
@@ -3905,6 +3957,7 @@ function OrderDetailPageContent() {
   const [renewEntitlementForm] = Form.useForm<EntitlementOperationFormValues>();
   const [refundDepositForm] = Form.useForm<RefundDepositFormValues>();
   const [handoverResubmissionForm] = Form.useForm<HandoverResubmissionFormValues>();
+  const [stage2VoidForm] = Form.useForm<Stage2VoidFormValues>();
   const stage2WorkflowRecoveryInFlightRef = useRef(false);
   const [assignExternalHandoverId, setAssignExternalHandoverId] = useState<string | null>(null);
   const [assignExternalHandoverOpen, setAssignExternalHandoverOpen] = useState(false);
@@ -3930,6 +3983,9 @@ function OrderDetailPageContent() {
   >({});
   const [stage2WorkflowRecoveryInFlight, setStage2WorkflowRecoveryInFlight] =
     useState(false);
+  const [stage2VoidOpen, setStage2VoidOpen] = useState(false);
+  const [stage2VoidWorkOrderId, setStage2VoidWorkOrderId] =
+    useState<string | null>(null);
   const [handoverResubmissionDetail, setHandoverResubmissionDetail] = useState<HandoverWorkOrderDetail | null>(null);
   const [handoverResubmissionOpen, setHandoverResubmissionOpen] = useState(false);
   const [consumeEntitlementModalOpen, setConsumeEntitlementModalOpen] = useState(false);
@@ -4609,6 +4665,121 @@ function OrderDetailPageContent() {
       onOk: () => runStage2WorkflowRecovery(id, recovery),
       title: "确认执行异常恢复？"
     });
+  }
+
+  async function refreshAfterStage2Action(
+    id: string,
+    status: AdminStage2HandoverESignStatus
+  ) {
+    setHandoverESignStatuses((current) => ({ ...current, [id]: status }));
+    setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
+    await loadOrder();
+    if (handoverWorkOrderDetail?.id === id) {
+      const nextDetail = await apiFetch<HandoverWorkOrderDetail>(
+        `/handover-work-orders/${encodeURIComponent(id)}`
+      );
+      setHandoverWorkOrderDetail(nextDetail);
+    }
+  }
+
+  async function runAdminStage2Fallback(id: string) {
+    if (
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(`stage2-start:${id}`);
+    try {
+      const status = await startAdminStage2HandoverESign(id);
+      await refreshAfterStage2Action(id, status);
+      void message.success("后台已发起交接签署");
+    } catch (error) {
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
+      void message.error(safeError);
+    } finally {
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
+      setHandoverActionLoading(null);
+    }
+  }
+
+  function confirmAdminStage2Fallback(id: string) {
+    if (!permissions.has("delivery:confirm")) {
+      return;
+    }
+    modal.confirm({
+      cancelText: "取消",
+      content: "后端将再次确认当前 Field 经办人不可用。",
+      okText: "确认发起",
+      onOk: () => runAdminStage2Fallback(id),
+      title: "确认由后台兜底发起签署？"
+    });
+  }
+
+  function openAdminStage2Void(id: string) {
+    if (!permissions.has("delivery:confirm")) {
+      return;
+    }
+    stage2VoidForm.resetFields();
+    setStage2VoidWorkOrderId(id);
+    setStage2VoidOpen(true);
+  }
+
+  function closeAdminStage2Void() {
+    if (stage2WorkflowRecoveryInFlight) {
+      return;
+    }
+    setStage2VoidOpen(false);
+    setStage2VoidWorkOrderId(null);
+    stage2VoidForm.resetFields();
+  }
+
+  async function submitAdminStage2Void() {
+    if (
+      !stage2VoidWorkOrderId ||
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    const values = await stage2VoidForm.validateFields();
+    const validationError = validateAdminStage2HandoverVoidReason(
+      values.reason
+    );
+    if (validationError) {
+      stage2VoidForm.setFields([
+        { errors: [validationError], name: "reason" }
+      ]);
+      return;
+    }
+
+    const id = stage2VoidWorkOrderId;
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(`stage2-void:${id}`);
+    try {
+      const status = await voidAdminStage2HandoverESign(
+        id,
+        values.reason
+      );
+      setStage2VoidOpen(false);
+      setStage2VoidWorkOrderId(null);
+      stage2VoidForm.resetFields();
+      await refreshAfterStage2Action(id, status);
+      void message.success("签署任务已作废，可重新发起");
+    } catch (error) {
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
+      void message.error(safeError);
+    } finally {
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
+      setHandoverActionLoading(null);
+    }
   }
 
   function openAssignExternalHandover(id: string) {
@@ -5845,6 +6016,8 @@ function OrderDetailPageContent() {
             onRefreshESign={refreshStage2HandoverESignStatus}
             onRequestResubmission={requestCustomerObjectionResubmission}
             onSendCustomerReview={sendCustomerObjectionBackToReview}
+            onStartESign={confirmAdminStage2Fallback}
+            onVoidESign={openAdminStage2Void}
             onViewDetail={viewHandoverWorkOrderDetail}
             workOrders={handoverWorkOrders}
           />
@@ -5867,8 +6040,51 @@ function OrderDetailPageContent() {
           onRefreshESign={refreshStage2HandoverESignStatus}
           onRequestResubmission={requestCustomerObjectionResubmission}
           onSendCustomerReview={sendCustomerObjectionBackToReview}
+          onStartESign={confirmAdminStage2Fallback}
+          onVoidESign={openAdminStage2Void}
           open={handoverWorkOrderDetailOpen}
         />
+
+        <Modal
+          cancelButtonProps={{ disabled: stage2WorkflowRecoveryInFlight }}
+          confirmLoading={Boolean(
+            stage2VoidWorkOrderId &&
+            handoverActionLoading === `stage2-void:${stage2VoidWorkOrderId}`
+          )}
+          destroyOnHidden
+          okText="确认作废"
+          onCancel={closeAdminStage2Void}
+          onOk={submitAdminStage2Void}
+          open={stage2VoidOpen}
+          title="作废并重新发起"
+        >
+          <Form<Stage2VoidFormValues>
+            form={stage2VoidForm}
+            layout="vertical"
+          >
+            <Form.Item
+              label="作废原因"
+              name="reason"
+              rules={[
+                { required: true, message: "请填写作废原因" },
+                {
+                  validator: async (_, value) => {
+                    const validationError =
+                      validateAdminStage2HandoverVoidReason(value ?? "");
+                    if (validationError) {
+                      throw new Error(validationError);
+                    }
+                  }
+                }
+              ]}
+            >
+              <Input.TextArea
+                autoSize={{ maxRows: 6, minRows: 3 }}
+                maxLength={500}
+              />
+            </Form.Item>
+          </Form>
+        </Modal>
 
         <Modal
           destroyOnHidden

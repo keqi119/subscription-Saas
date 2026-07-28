@@ -86,6 +86,7 @@ describe("Stage 2 canonical Field operator identity", () => {
         }),
         workOrder({
           accessTokenExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+          assignedInternalUserId: null,
           externalOperatorName: "External Operator",
           externalOperatorPhone: MATCHING_PHONE,
           fieldOperatorName: "External Operator",
@@ -115,6 +116,7 @@ describe("Stage 2 canonical Field operator identity", () => {
     const harness = createIdentityHarness({
       workOrders: [
         workOrder({
+          assignedInternalUserId: null,
           externalOperatorPhone: MATCHING_PHONE,
           fieldOperatorPhone: "13900001111",
           operatorType: "EXTERNAL"
@@ -338,6 +340,7 @@ function workOrder(overrides: Partial<TestWorkOrder> = {}): TestWorkOrder {
   return {
     accessTokenExpiresAt: null,
     accessTokenRevokedAt: null,
+    assignedInternalUserId: "user-1",
     createdAt: new Date("2026-07-27T07:00:00.000Z"),
     customerReviewStartedAt: null,
     externalOperatorName: null,
@@ -396,6 +399,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 interface TestWorkOrder extends Record<string, unknown> {
   accessTokenExpiresAt: Date | null;
   accessTokenRevokedAt: Date | null;
+  assignedInternalUserId: string | null;
   createdAt: Date;
   customerReviewStartedAt: Date | null;
   externalOperatorName: string | null;

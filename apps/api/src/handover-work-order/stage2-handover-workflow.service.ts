@@ -1279,23 +1279,25 @@ async function buildCanonicalRecoveryExpectation(
         unavailable
       );
       const task = requireCanonicalRecoveryTask(context, unavailable);
-      const platformStatus =
-        jobType === VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM
-          ? ESignSignerStatus.PENDING
-          : ESignSignerStatus.SIGNING;
+      const autoSeal =
+        jobType === VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM;
+      const platformStatusIsRecoverable = autoSeal
+        ? task.platformSigner.signerStatus === ESignSignerStatus.PENDING ||
+          task.platformSigner.signerStatus === ESignSignerStatus.SIGNING
+        : task.platformSigner.signerStatus === ESignSignerStatus.SIGNING;
       if (
         task.task.taskStatus !== ESignTaskStatus.SIGNING ||
         task.customerSigner.signerStatus !== ESignSignerStatus.SIGNED ||
         task.customerSigner.providerTransactionId !==
           task.customerTransactionId ||
-        task.platformSigner.signerStatus !== platformStatus ||
+        !platformStatusIsRecoverable ||
         (
           task.platformSigner.providerTransactionId !== null &&
           task.platformSigner.providerTransactionId !==
             task.platformTransactionId
         ) ||
         (
-          platformStatus === ESignSignerStatus.SIGNING &&
+          task.platformSigner.signerStatus === ESignSignerStatus.SIGNING &&
           task.platformSigner.providerTransactionId !==
             task.platformTransactionId
         )

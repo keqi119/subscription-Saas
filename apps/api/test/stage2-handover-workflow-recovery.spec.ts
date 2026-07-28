@@ -327,6 +327,90 @@ describe("Stage 2 workflow recovery Admin API", () => {
     });
   });
 
+  it.each([
+    ["pending before provider assignment", ESignSignerStatus.PENDING, null],
+    ["pending with canonical H2", ESignSignerStatus.PENDING, PLATFORM_TRANSACTION_ID],
+    ["signing with canonical H2", ESignSignerStatus.SIGNING, PLATFORM_TRANSACTION_ID]
+  ] as const)(
+    "recovers AUTO_SEAL_PLATFORM while the platform signer is %s",
+    async (_label, signerStatus, providerTransactionId) => {
+      const harness = createRecoveryHarness({
+        jobType: VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM
+      });
+      const platformSigner = harness.workOrder.handover.handoverESignTask.signers[1]!;
+      platformSigner.signerStatus = signerStatus;
+      platformSigner.providerTransactionId = providerTransactionId;
+
+      await harness.service.retryDeadLetterJob(
+        "work-order-1",
+        "dead-letter-1",
+        "admin-1"
+      );
+
+      expect(harness.jobs[1]).toMatchObject({
+        eSignTaskId: "stage2-task-1",
+        handoverId: "handover-1",
+        jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
+        jobType: VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM,
+        payload: {
+          platformTransactionId: PLATFORM_TRANSACTION_ID
+        },
+        workOrderId: "work-order-1"
+      });
+    }
+  );
+
+  it.each([
+    [
+      "completed platform signer",
+      (harness: ReturnType<typeof createRecoveryHarness>) => {
+        const task = harness.workOrder.handover.handoverESignTask;
+        task.taskStatus = ESignTaskStatus.COMPLETED;
+        task.signers[1]!.providerTransactionId = PLATFORM_TRANSACTION_ID;
+        task.signers[1]!.signerStatus = ESignSignerStatus.SIGNED;
+      }
+    ],
+    [
+      "failed platform task",
+      (harness: ReturnType<typeof createRecoveryHarness>) => {
+        const task = harness.workOrder.handover.handoverESignTask;
+        task.taskStatus = ESignTaskStatus.FAILED;
+        task.signers[1]!.providerTransactionId = PLATFORM_TRANSACTION_ID;
+        task.signers[1]!.signerStatus = ESignSignerStatus.EXPIRED;
+      }
+    ],
+    [
+      "foreign platform transaction",
+      (harness: ReturnType<typeof createRecoveryHarness>) => {
+        const platformSigner = harness.workOrder.handover.handoverESignTask.signers[1]!;
+        platformSigner.providerTransactionId = "ESG20260726080000FOREIGNH2";
+        platformSigner.signerStatus = ESignSignerStatus.SIGNING;
+      }
+    ],
+    [
+      "foreign task binding",
+      (harness: ReturnType<typeof createRecoveryHarness>) => {
+        harness.jobs[0]!.eSignTaskId = "foreign-stage2-task";
+      }
+    ]
+  ] as const)("rejects AUTO_SEAL_PLATFORM recovery for a %s", async (_label, mutate) => {
+    const harness = createRecoveryHarness({
+      jobType: VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM
+    });
+    mutate(harness);
+
+    await expect(
+      harness.service.retryDeadLetterJob("work-order-1", "dead-letter-1", "admin-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_WORKFLOW_JOB_NOT_RECOVERABLE"
+      })
+    });
+
+    expect(harness.jobs).toHaveLength(1);
+    expect(harness.audits).toEqual([]);
+  });
+
   it("rejects a source transaction that conflicts with canonical H2", async () => {
     const harness = createRecoveryHarness({
       jobType: VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM

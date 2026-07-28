@@ -1923,7 +1923,8 @@ export class Stage2HandoverESignService {
       where: {
         contractId,
         deletedAt: null,
-        signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER
+        signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+        taskStatus: { in: [...ACTIVE_TASK_STATUSES] }
       }
     });
     if (

@@ -60,6 +60,33 @@ test("backfills internal and external canonical operator snapshots", () => {
   assert.deepEqual(plan.exceptions, []);
 });
 
+test("trims operator names without collapsing internal whitespace", () => {
+  const plan = buildStage2HandoverWorkflowBackfillPlan([
+    baseRecord({
+      assignedInternalUser: {
+        deletedAt: null,
+        id: "user-1",
+        mobile: "13800138000",
+        name: "  Li  Ming  "
+      },
+      fieldOperatorName: null,
+      fieldOperatorPhone: null
+    })
+  ]);
+
+  assert.deepEqual(plan.operatorSnapshotUpdates, [
+    {
+      expectedFieldOperatorName: null,
+      expectedFieldOperatorPhone: null,
+      fieldOperatorName: "Li  Ming",
+      fieldOperatorPhone: "13800138000",
+      operatorType: "INTERNAL",
+      sourceId: "user-1",
+      workOrderId: "work-order-1"
+    }
+  ]);
+});
+
 test("reports internal users without a valid mobile", () => {
   const plan = buildStage2HandoverWorkflowBackfillPlan([
     baseRecord({

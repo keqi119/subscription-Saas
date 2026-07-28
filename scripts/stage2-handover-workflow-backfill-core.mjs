@@ -585,7 +585,7 @@ function normalizeName(value) {
   if (typeof value !== "string") {
     return null;
   }
-  const normalized = value.trim().replace(/\s+/g, " ");
+  const normalized = value.trim();
   return normalized && normalized.length <= 64 ? normalized : null;
 }
 

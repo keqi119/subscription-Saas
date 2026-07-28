@@ -1173,10 +1173,12 @@ describe("Stage2HandoverESignService", () => {
 
   it("voids only the Stage 2 task and clears its handover pointer for an explicit rebuild", async () => {
     const harness = createHarness();
-    harness.state.workOrder.handover.handoverESignTask = makeTask({
+    const persistedTask = makeTask({
       taskStatus: ESignTaskStatus.FAILED
     });
-    harness.state.workOrder.handover.handoverESignTaskId = "stage2-task-1";
+    harness.state.activeTask = persistedTask;
+    harness.state.workOrder.handover.handoverESignTask = persistedTask;
+    harness.state.workOrder.handover.handoverESignTaskId = persistedTask.id;
 
     const result = await harness.service.voidTask(
       "work-order-1",
@@ -1214,10 +1216,22 @@ describe("Stage2HandoverESignService", () => {
       })
     );
     expect(result).toMatchObject({
+      canVoid: false,
       rebuildRequired: false,
       taskId: null
     });
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+
+    const rebuilt = await harness.service.create(
+      "work-order-1",
+      adminInitiator()
+    );
+
+    expect(rebuilt).toMatchObject({
+      rebuildRequired: false,
+      taskId: "stage2-task-1"
+    });
+    expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
   });
 
   it("restores only the Stage 2 source contract to GENERATED during void", async () => {
@@ -3137,7 +3151,26 @@ function createHarness(env: Record<string, string> = {}) {
         state.workOrder.handover.handoverESignTask = task;
         return task;
       }),
-      findFirst: vi.fn(async () => state.activeTask),
+      findFirst: vi.fn(async ({ where }: any) => {
+        const task = state.activeTask;
+        if (
+          !task ||
+          (where?.contractId !== undefined &&
+            where.contractId !== task.contractId) ||
+          (where?.signingStage !== undefined &&
+            where.signingStage !== task.signingStage) ||
+          (where?.deletedAt !== undefined &&
+            where.deletedAt !== (task.deletedAt ?? null)) ||
+          (
+            where?.taskStatus !== undefined &&
+            where.taskStatus !== task.taskStatus &&
+            !where.taskStatus.in?.includes(task.taskStatus)
+          )
+        ) {
+          return null;
+        }
+        return task;
+      }),
       updateMany: vi.fn(async ({ data, where }: any) => {
         const task = state.workOrder.handover.handoverESignTask ?? state.activeTask;
         if (

@@ -225,6 +225,12 @@ export class OrderController {
     return this.orderService.getOrder(id, request.user);
   }
 
+  @Get("orders/:id/workspace/detail")
+  @RequirePermissions(PermissionCode.ORDER_VIEW)
+  getOrderWorkspaceDetail(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderWorkspaceService.getDetail(id, request.user);
+  }
+
   @Get("orders/:id/workspace/summary")
   @RequirePermissions(PermissionCode.ORDER_VIEW)
   getOrderWorkspaceSummary(@Param("id") id: string, @Req() request: AuthenticatedRequest) {

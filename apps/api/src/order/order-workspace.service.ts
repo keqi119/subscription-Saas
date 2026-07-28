@@ -498,6 +498,25 @@ export class OrderWorkspaceService {
     private readonly resolver: OrderWorkspaceResolver
   ) {}
 
+  async getDetail(id: string, user: RequestUser): Promise<Record<string, unknown>> {
+    const detail = { ...(await this.orderService.getOrder(id, user)) } as Record<
+      string,
+      unknown
+    >;
+    const permissions = new Set(user.permissions);
+
+    if (!permissions.has(PermissionCode.CONTRACT_VIEW)) {
+      delete detail.contract;
+      delete detail.contractId;
+      delete detail.contracts;
+    }
+    if (!permissions.has(PermissionCode.ORDER_CHANGE_VIEW)) {
+      delete detail.changes;
+    }
+
+    return detail;
+  }
+
   async getSummary(id: string, user: RequestUser): Promise<OrderWorkspaceSummary> {
     await this.orderService.getOrder(id, user);
 
@@ -526,7 +545,7 @@ export class OrderWorkspaceService {
     const access = resolveAccess(user);
     const contributors = await Promise.all([
       this.loadContributor("contract", access, () => this.loadContract(id)),
-      this.loadContributor("handover", access, () => this.loadHandover(id, asOf)),
+      this.loadContributor("handover", access, () => this.loadHandover(id, asOf, user)),
       this.loadContributor("entitlement", access, () =>
         this.loadEntitlement(id, headerRecord.orderStatus)
       ),
@@ -614,7 +633,16 @@ export class OrderWorkspaceService {
     });
   }
 
-  private async loadHandover(orderId: string, asOf: string) {
+  private async loadHandover(orderId: string, asOf: string, user: RequestUser) {
+    const permissions = new Set(user.permissions);
+    const handoverTypes: Array<"DELIVERY_OUTBOUND" | "RETURN_INBOUND"> = [];
+    if (permissions.has(PermissionCode.DELIVERY_VIEW)) {
+      handoverTypes.push("DELIVERY_OUTBOUND");
+    }
+    if (permissions.has(PermissionCode.VEHICLE_RETURN_VIEW)) {
+      handoverTypes.push("RETURN_INBOUND");
+    }
+
     const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
       orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
       select: {
@@ -644,7 +672,7 @@ export class OrderWorkspaceService {
         updatedAt: true
       },
       take: 50,
-      where: { handoverType: { in: ["DELIVERY_OUTBOUND", "RETURN_INBOUND"] }, orderId }
+      where: { handoverType: { in: handoverTypes }, orderId }
     });
     return this.resolver.resolveHandover({
       asOf,

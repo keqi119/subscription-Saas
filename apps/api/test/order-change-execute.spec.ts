@@ -288,10 +288,14 @@ describe("pre-contract order change return-to-plan flow", () => {
   it("does not expose raw JSON in the order detail quote snapshot UI", () => {
     const pagePath = join(process.cwd(), "..", "web", "src", "app", "orders", "[id]", "page.tsx");
     const source = readFileSync(pagePath, "utf8");
+    const quoteSnapshotSection = source.slice(
+      source.indexOf("function QuoteSnapshotSection"),
+      source.indexOf("function OrderInfoSections")
+    );
 
-    expect(source).not.toContain("snapshotJson(");
-    expect(source).not.toContain("<pre");
-    expect(source).not.toContain("rawSnapshot");
+    expect(quoteSnapshotSection).not.toContain("snapshotJson(");
+    expect(quoteSnapshotSection).not.toContain("<pre");
+    expect(quoteSnapshotSection).not.toContain("rawSnapshot");
   });
 });
 

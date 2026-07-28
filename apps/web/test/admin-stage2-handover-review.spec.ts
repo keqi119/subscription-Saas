@@ -101,7 +101,7 @@ describe("Admin Stage 2 handover review order page", () => {
       source.indexOf("function openAssignExternalHandover")
     );
 
-    expect(confirmationBlock).toContain("modal.confirm");
+    expect(confirmationBlock).toContain("scopedConfirm.confirm");
     expect(confirmationBlock).toContain("确认执行异常恢复？");
     expect(confirmationBlock).toContain("runStage2WorkflowRecovery");
     expect(confirmationBlock).toContain("onOk");

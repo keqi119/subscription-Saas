@@ -607,6 +607,89 @@ describe("OrderWorkspaceResolver", () => {
 });
 
 describe("OrderWorkspaceService", () => {
+  it("returns an order-view-only detail without contract or change domains", async () => {
+    const getOrder = vi.fn().mockResolvedValue({
+      changes: [{ id: "change-1" }],
+      contract: { id: "contract-1" },
+      contractId: "contract-1",
+      contracts: [{ id: "contract-1" }],
+      id: "order-1",
+      orderNo: "SO-001"
+    });
+    const service = new OrderWorkspaceService(
+      workspacePrisma() as never,
+      { getOrder } as never,
+      new OrderWorkspaceResolver()
+    );
+    const user = workspaceUser([PermissionCode.ORDER_VIEW]);
+
+    const detail = await service.getDetail("order-1", user);
+
+    expect(getOrder).toHaveBeenCalledWith("order-1", user);
+    expect(detail).toEqual({
+      id: "order-1",
+      orderNo: "SO-001"
+    });
+  });
+
+  it("returns contract data only with contract view permission", async () => {
+    const getOrder = vi.fn().mockResolvedValue({
+      changes: [{ id: "change-1" }],
+      contract: { id: "contract-1" },
+      contractId: "contract-1",
+      contracts: [{ id: "contract-1" }],
+      id: "order-1"
+    });
+    const service = new OrderWorkspaceService(
+      workspacePrisma() as never,
+      { getOrder } as never,
+      new OrderWorkspaceResolver()
+    );
+
+    const detail = await service.getDetail(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.CONTRACT_VIEW
+      ])
+    );
+
+    expect(detail).toEqual({
+      contract: { id: "contract-1" },
+      contractId: "contract-1",
+      contracts: [{ id: "contract-1" }],
+      id: "order-1"
+    });
+    expect(detail).not.toHaveProperty("changes");
+  });
+
+  it("returns changes only with order-change view permission", async () => {
+    const getOrder = vi.fn().mockResolvedValue({
+      changes: [{ id: "change-1" }],
+      contract: { id: "contract-1" },
+      contracts: [{ id: "contract-1" }],
+      id: "order-1"
+    });
+    const service = new OrderWorkspaceService(
+      workspacePrisma() as never,
+      { getOrder } as never,
+      new OrderWorkspaceResolver()
+    );
+
+    const detail = await service.getDetail(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.ORDER_CHANGE_VIEW
+      ])
+    );
+
+    expect(detail).toEqual({
+      changes: [{ id: "change-1" }],
+      id: "order-1"
+    });
+  });
+
   it.each([
     ["contract.generate", PermissionCode.CONTRACT_GENERATE, PermissionCode.CONTRACT_SIGN],
     ["contract.sign", PermissionCode.CONTRACT_SIGN, PermissionCode.CONTRACT_GENERATE],
@@ -800,22 +883,74 @@ describe("OrderWorkspaceService", () => {
     }
   });
 
-  it("loads handover summary for vehicle-return-only access", async () => {
+  it.each([
+    {
+      expectedTarget: "delivery-work-order",
+      expectedTypes: ["DELIVERY_OUTBOUND"],
+      permissions: [PermissionCode.DELIVERY_VIEW]
+    },
+    {
+      expectedTarget: "return-work-order",
+      expectedTypes: ["RETURN_INBOUND"],
+      permissions: [PermissionCode.VEHICLE_RETURN_VIEW]
+    },
+    {
+      expectedTarget: "delivery-work-order",
+      expectedTypes: ["DELIVERY_OUTBOUND", "RETURN_INBOUND"],
+      permissions: [
+        PermissionCode.DELIVERY_VIEW,
+        PermissionCode.VEHICLE_RETURN_VIEW
+      ]
+    }
+  ])(
+    "isolates handover summary query to $expectedTypes",
+    async ({ expectedTarget, expectedTypes, permissions }) => {
     const prisma = workspacePrisma();
+    const mixedWorkOrders = [
+      workspaceHandoverWorkOrder({
+        handoverType: "DELIVERY_OUTBOUND",
+        id: "delivery-work-order",
+        updatedAt: "2026-07-28T08:00:00.000Z"
+      }),
+      workspaceHandoverWorkOrder({
+        handoverType: "RETURN_INBOUND",
+        id: "return-work-order",
+        updatedAt: "2026-07-28T09:00:00.000Z"
+      })
+    ];
+    prisma.vehicleHandoverWorkOrder.findMany.mockImplementation(
+      async (args: {
+        where: { handoverType: { in: string[] } };
+      }) =>
+        mixedWorkOrders.filter((workOrder) =>
+          args.where.handoverType.in.includes(workOrder.handoverType)
+        )
+    );
 
     const summary = await workspaceService(prisma).getSummary(
       "order-1",
       workspaceUser([
         PermissionCode.ORDER_VIEW,
-        PermissionCode.VEHICLE_RETURN_VIEW
+        ...permissions
       ])
     );
 
-    expect(prisma.vehicleHandoverWorkOrder.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.vehicleHandoverWorkOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          handoverType: { in: expectedTypes },
+          orderId: "order-1"
+        }
+      })
+    );
     expect(summary.guidance.map(({ category }) => category)).toEqual([
       "handover"
     ]);
     expect(summary.tabBadges.map(({ tab }) => tab)).toEqual(["handover"]);
+    expect(
+      summary.guidance.find(({ category }) => category === "handover")
+        ?.targetRecordId
+    ).toBe(expectedTarget);
   });
 
   it.each([
@@ -1097,6 +1232,23 @@ function workspaceService(prisma: ReturnType<typeof workspacePrisma>) {
     { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
     new OrderWorkspaceResolver()
   );
+}
+
+function workspaceHandoverWorkOrder(input: {
+  handoverType: "DELIVERY_OUTBOUND" | "RETURN_INBOUND";
+  id: string;
+  updatedAt: string;
+}) {
+  return {
+    assignedInternalUserId: null,
+    customerConfirmedAt: null,
+    handover: null,
+    handoverType: input.handoverType,
+    id: input.id,
+    operatorType: "INTERNAL",
+    status: "DRAFT",
+    updatedAt: new Date(input.updatedAt)
+  };
 }
 
 function workspacePrisma() {

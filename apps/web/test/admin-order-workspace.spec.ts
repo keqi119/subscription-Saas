@@ -14,10 +14,13 @@ import { OrderTransactionGuide } from "../src/components/order-workspace/order-t
 import { OrderWorkspaceHeader } from "../src/components/order-workspace/order-workspace-header";
 import { OrderWorkspace } from "../src/components/order-workspace/order-workspace";
 import {
+  ORDER_WORKSPACE_TAB_KEYS,
   buildOrderWorkspaceRecordSelector,
   buildOrderWorkspaceLocation,
+  createOrderWorkspaceConfirmScope,
   getOrderWorkspaceChangeGuard,
   getOrderWorkspaceFallbackRecordIds,
+  getOrderWorkspaceFinanceLinks,
   getOrderWorkspaceRecordIds,
   getVisibleOrderWorkspaceTabs,
   getWorkspaceActionPresentation,
@@ -26,15 +29,7 @@ import {
   refreshActiveOrderWorkspaceTab
 } from "../src/lib/admin-order-workspace";
 
-const TAB_KEYS = [
-  "overview",
-  "contract",
-  "handover",
-  "entitlement",
-  "service",
-  "finance",
-  "change"
-] as const;
+const TAB_KEYS = ORDER_WORKSPACE_TAB_KEYS;
 
 const TAB_LABELS = [
   "订单基本信息",
@@ -215,6 +210,28 @@ describe("admin order workspace permission contract", () => {
   });
 
   it.each([
+    [["payment:view"], []],
+    [["billing:view"], []],
+    [
+      ["billing:generate"],
+      [{ href: "/billing/monthly-rent", label: "月租账单模块" }]
+    ],
+    [
+      ["collection:view"],
+      [{ href: "/billing/collections", label: "逾期催收模块" }]
+    ],
+    [
+      ["collection:view", "billing:generate"],
+      [
+        { href: "/billing/monthly-rent", label: "月租账单模块" },
+        { href: "/billing/collections", label: "逾期催收模块" }
+      ]
+    ]
+  ])("builds live finance links for %j", (permissions, expected) => {
+    expect(getOrderWorkspaceFinanceLinks(permissions)).toEqual(expected);
+  });
+
+  it.each([
     [
       { changesLoaded: false, hasActiveChange: true, hasOrderChangeView: false },
       { locked: false, waiting: false }
@@ -303,6 +320,25 @@ describe("admin order workspace refresh and focus helpers", () => {
     );
     expect(escaped).toEqual(['handover"] [data-secret="raw']);
   });
+
+  it("destroys every scoped confirm handle on disposal and rejects late handles", () => {
+    const destroyed: string[] = [];
+    const scope = createOrderWorkspaceConfirmScope(
+      ({ id }: { id: string }) => ({
+        destroy: () => {
+          destroyed.push(id);
+        }
+      })
+    );
+
+    scope.confirm({ id: "first" });
+    scope.confirm({ id: "second" });
+    scope.destroy();
+    scope.destroy();
+    scope.confirm({ id: "late" });
+
+    expect(destroyed).toEqual(["first", "second", "late"]);
+  });
 });
 
 describe("admin order detail workspace migration", () => {
@@ -328,6 +364,38 @@ describe("admin order detail workspace migration", () => {
     expect(source).not.toContain(
       "apiFetch<OrderDetail>(`/orders/${orderId}`),\n        apiFetch<OrderChangeRow[]>"
     );
+  });
+
+  it("loads the permission-filtered workspace detail and keeps contract data out of overview", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const detailLoader = sourceBetween(
+      source,
+      "const loadOrderDetail = useCallback",
+      "const loadWorkspaceResource = useCallback"
+    );
+    const overviewSections = sourceBetween(
+      source,
+      "function OrderInfoSections",
+      "function EntitlementPanel"
+    );
+    const renderer = sourceBetween(
+      source,
+      "function renderActiveWorkspaceTab()",
+      "const stage2FallbackPdfDownloadUrl"
+    );
+    const contractSlot = sourceBetween(
+      renderer,
+      'case "contract":',
+      'case "handover":'
+    );
+
+    expect(detailLoader).toContain(
+      "`/orders/${orderId}/workspace/detail`"
+    );
+    expect(detailLoader).not.toContain("`/orders/${orderId}`");
+    expect(overviewSections).not.toContain('title="合同信息"');
+    expect(contractSlot).toContain("产品匹配审核");
+    expect(contractSlot).toContain("<QuoteSnapshotSection");
   });
 
   it("uses parsed URL state and one replace-based builder consumer for tabs and guidance", () => {
@@ -382,6 +450,7 @@ describe("admin order detail workspace migration", () => {
     expect(handoverSlot).toContain("<DeliveryPanel");
     expect(handoverSlot).toContain("<Stage2HandoverReviewPanel");
     expect(handoverSlot).toContain("<ReturnPanel");
+    expect(handoverSlot).toContain("<HandoverProgressRecords");
     expect(handoverSlot).not.toContain("<DepositSettlementPanel");
     expect(handoverSlot).not.toContain("generateContract");
     expect(pageHeader).not.toContain("生成合同");
@@ -456,6 +525,9 @@ describe("admin order detail workspace migration", () => {
     expect(legacyChangeEffect).toContain(
       "autoOpenChangeRequestedRef.current = false"
     );
+    expect(legacyChangeEffect).toMatch(
+      /\[\s*activeTab,[\s\S]*createChangeRequested,[\s\S]*visibleTabs\s*\]/
+    );
   });
 
   it("keeps summary and active-domain failures local and independently retryable", () => {
@@ -513,7 +585,16 @@ describe("admin order detail workspace migration", () => {
     expect(source).toContain('"data-workspace-record": serviceCase.id');
     expect(source).toContain('"data-workspace-record": change.id');
     expect(source).toContain("当前财务推进记录");
+    expect(source).toContain("当前交接推进记录");
     expect(source).not.toContain("providerPayload");
+  });
+
+  it("routes all confirm dialogs through the order-scoped disposer", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+
+    expect(source.match(/scopedConfirm\.confirm\(/g)).toHaveLength(3);
+    expect(source).not.toContain("modal.confirm(");
+    expect(source).toContain("createOrderWorkspaceConfirmScope");
   });
 });
 

@@ -1,11 +1,14 @@
-export type OrderWorkspaceTabKey =
-  | "overview"
-  | "contract"
-  | "handover"
-  | "entitlement"
-  | "service"
-  | "finance"
-  | "change";
+export const ORDER_WORKSPACE_TAB_KEYS = [
+  "overview",
+  "contract",
+  "handover",
+  "entitlement",
+  "service",
+  "finance",
+  "change"
+] as const;
+
+export type OrderWorkspaceTabKey = (typeof ORDER_WORKSPACE_TAB_KEYS)[number];
 
 export type OrderWorkspaceState =
   | "BLOCKED"
@@ -36,15 +39,7 @@ export type OrderWorkspaceActionCode =
   | "change.execute"
   | "change.retry";
 
-const ORDER_WORKSPACE_TAB_KEYS = new Set<OrderWorkspaceTabKey>([
-  "overview",
-  "contract",
-  "handover",
-  "entitlement",
-  "service",
-  "finance",
-  "change"
-]);
+const ORDER_WORKSPACE_TAB_KEY_SET = new Set<string>(ORDER_WORKSPACE_TAB_KEYS);
 
 const ORDER_WORKSPACE_TAB_PERMISSIONS = {
   change: ["order_change:view"],
@@ -63,14 +58,22 @@ const ORDER_WORKSPACE_TAB_PERMISSIONS = {
   readonly string[]
 >;
 
-const ORDER_WORKSPACE_PERMISSION_TAB_ORDER = [
-  "contract",
-  "handover",
-  "entitlement",
-  "service",
-  "finance",
-  "change"
-] as const satisfies ReadonlyArray<Exclude<OrderWorkspaceTabKey, "overview">>;
+const ORDER_WORKSPACE_PERMISSION_TAB_ORDER = ORDER_WORKSPACE_TAB_KEYS.filter(
+  (tab): tab is Exclude<OrderWorkspaceTabKey, "overview"> => tab !== "overview"
+);
+
+const ORDER_WORKSPACE_FINANCE_LINKS = [
+  {
+    href: "/billing/monthly-rent",
+    label: "月租账单模块",
+    permission: "billing:generate"
+  },
+  {
+    href: "/billing/collections",
+    label: "逾期催收模块",
+    permission: "collection:view"
+  }
+] as const;
 
 const STATE_PRESENTATIONS = {
   BLOCKED: { label: "已阻塞", color: "red" },
@@ -190,6 +193,49 @@ export function getOrderWorkspaceFallbackRecordIds(
   );
 }
 
+export function getOrderWorkspaceFinanceLinks(
+  permissions: Iterable<string>
+): Array<{ href: string; label: string }> {
+  const permissionSet =
+    permissions instanceof Set ? permissions : new Set(permissions);
+  return ORDER_WORKSPACE_FINANCE_LINKS.filter(({ permission }) =>
+    permissionSet.has(permission)
+  ).map(({ href, label }) => ({ href, label }));
+}
+
+export function createOrderWorkspaceConfirmScope<
+  TConfig,
+  THandle extends { destroy: () => void }
+>(openConfirm: (config: TConfig) => THandle): {
+  confirm: (config: TConfig) => THandle;
+  destroy: () => void;
+} {
+  const handles = new Set<THandle>();
+  let destroyed = false;
+
+  return {
+    confirm(config) {
+      const handle = openConfirm(config);
+      if (destroyed) {
+        handle.destroy();
+      } else {
+        handles.add(handle);
+      }
+      return handle;
+    },
+    destroy() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      for (const handle of handles) {
+        handle.destroy();
+      }
+      handles.clear();
+    }
+  };
+}
+
 export function buildOrderWorkspaceRecordSelector(
   focus: string,
   escapeCssValue: (value: string) => string
@@ -211,7 +257,7 @@ export function getWorkspaceActionPresentation(
 }
 
 function isOrderWorkspaceTabKey(value: string | null): value is OrderWorkspaceTabKey {
-  return value !== null && ORDER_WORKSPACE_TAB_KEYS.has(value as OrderWorkspaceTabKey);
+  return value !== null && ORDER_WORKSPACE_TAB_KEY_SET.has(value);
 }
 
 function isOrderWorkspaceActionCode(value: string): value is OrderWorkspaceActionCode {

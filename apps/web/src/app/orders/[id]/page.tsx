@@ -101,8 +101,10 @@ import {
 import {
   buildOrderWorkspaceLocation,
   buildOrderWorkspaceRecordSelector,
+  createOrderWorkspaceConfirmScope,
   getOrderWorkspaceChangeGuard,
   getOrderWorkspaceFallbackRecordIds,
+  getOrderWorkspaceFinanceLinks,
   getOrderWorkspaceRecordIds,
   getVisibleOrderWorkspaceTabs,
   getWorkspaceStatePresentation,
@@ -1955,34 +1957,6 @@ function OrderInfoSections({
 }) {
   const snapshot = toSnapshotRecord(order.quoteSnapshot);
   const vehicleSnapshot = getSnapshotValue(snapshot, "vehicleSnapshot", "vehicle");
-  const vehicleBaseFeeMode = getSnapshotValue(
-    snapshot,
-    "vehicleBaseFeeMode",
-    "packageSnapshot.pricing.vehicleBaseFeeMode",
-    "packageSnapshot.vehicleBaseFeeMode",
-    "packageSnapshot.subscriptionPlan.monthlyFeeMode"
-  );
-  const vehicleBaseFeeModeLabel = formatVehicleBaseFeeModeLabel(
-    vehicleBaseFeeMode,
-    getSnapshotValue(
-      snapshot,
-      "vehicleBaseFeeModeLabel",
-      "packageSnapshot.pricing.vehicleBaseFeeModeLabel",
-      "packageSnapshot.vehicleBaseFeeModeLabel",
-      "packageSnapshot.subscriptionPlan.monthlyFeeModeLabel"
-    )
-  );
-  const vehicleBaseFeeCapAmount = getSnapshotValue(
-    snapshot,
-    "vehicleBaseFeeCapAmount",
-    "packageSnapshot.pricing.vehicleBaseFeeCapAmount",
-    "monthlyFeeCapAmount"
-  );
-  const vehicleBaseFeeAmount = getSnapshotValue(
-    snapshot,
-    "vehicleBaseFeeAmount",
-    "packageSnapshot.pricing.vehicleBaseFeeAmount"
-  );
 
   return (
     <Space orientation="vertical" size={16} style={{ width: "100%" }}>
@@ -2051,23 +2025,6 @@ function OrderInfoSections({
         />
       </Card>
 
-      <Card title="合同信息">
-        <Descriptions
-          bordered
-          column={2}
-          items={[
-            {
-              label: "合同编号",
-              children: order.contract ? <Link href={`/contracts/${order.contract.id}`}>{order.contract.contractNo}</Link> : "-"
-            },
-            { label: "合同状态", children: order.contract?.status ? labelOf(STATUS_LABELS, order.contract.status) : "-" },
-            { label: "产品匹配审核", children: <ReviewStatusTag value={order.productReviewStatus} /> },
-            { label: "车辆基础月费模式", children: vehicleBaseFeeModeLabel },
-            { label: "车辆基础费上限", children: formatYuan(vehicleBaseFeeCapAmount) },
-            { label: "车辆基础费", children: formatYuan(vehicleBaseFeeAmount) }
-          ]}
-        />
-      </Card>
     </Space>
   );
 }
@@ -4190,10 +4147,66 @@ function ServiceCasesPanel({
   );
 }
 
-function FinanceProgressRecords({
+function HandoverProgressRecords({
   resolvedRecordIds,
   summary
 }: {
+  resolvedRecordIds: readonly string[];
+  summary: OrderWorkspaceSummary | null;
+}) {
+  const guidance = summary?.guidance.filter(
+    (item) => item.category === "handover"
+  ) ?? [];
+  const targetIds = getOrderWorkspaceFallbackRecordIds(
+    getOrderWorkspaceRecordIds(
+      summary?.primaryAction?.targetTab === "handover"
+        ? summary.primaryAction.targetRecordId
+        : null,
+      ...guidance.map((item) => item.targetRecordId)
+    ),
+    resolvedRecordIds
+  );
+
+  if (targetIds.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card size="small" title="当前交接推进记录">
+      <List
+        dataSource={targetIds}
+        renderItem={(targetId) => {
+          const state = guidance.find(
+            (item) => item.targetRecordId === targetId
+          )?.state;
+          return (
+            <List.Item data-workspace-record={targetId}>
+              <Space wrap>
+                <Typography.Text strong>交接事项</Typography.Text>
+                {state ? (
+                  <Tag color={getWorkspaceStatePresentation(state).color}>
+                    {getWorkspaceStatePresentation(state).label}
+                  </Tag>
+                ) : null}
+                <Typography.Text type="secondary">
+                  请在当前交接工作台继续查看和处理
+                </Typography.Text>
+              </Space>
+            </List.Item>
+          );
+        }}
+        size="small"
+      />
+    </Card>
+  );
+}
+
+function FinanceProgressRecords({
+  links,
+  resolvedRecordIds,
+  summary
+}: {
+  links: ReadonlyArray<{ href: string; label: string }>;
   resolvedRecordIds: readonly string[];
   summary: OrderWorkspaceSummary | null;
 }) {
@@ -4213,10 +4226,15 @@ function FinanceProgressRecords({
   return (
     <Card
       extra={
-        <Space wrap>
-          <Link href="/billing/monthly-rent">月租账单模块</Link>
-          <Link href="/billing/collections">逾期催收模块</Link>
-        </Space>
+        links.length > 0 ? (
+          <Space wrap>
+            {links.map((link) => (
+              <Link href={link.href} key={link.href}>
+                {link.label}
+              </Link>
+            ))}
+          </Space>
+        ) : null
       }
       size="small"
       title="当前财务推进记录"
@@ -4352,6 +4370,42 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     [searchParams]
   );
   const { message, modal } = App.useApp();
+  const modalConfirmRef = useRef(modal.confirm);
+  modalConfirmRef.current = modal.confirm;
+  const scopedConfirmRef = useRef<{
+    confirm: typeof modal.confirm;
+    destroy: () => void;
+  } | null>(null);
+  const scopedConfirm = useMemo<{ confirm: typeof modal.confirm }>(
+    () => ({
+      confirm(config) {
+        const scope = scopedConfirmRef.current;
+        if (scope) {
+          return scope.confirm(config);
+        }
+        const handle = modalConfirmRef.current(config);
+        handle.destroy();
+        return handle;
+      }
+    }),
+    []
+  );
+  useEffect(
+    () => {
+      const scope = createOrderWorkspaceConfirmScope(
+        (config: Parameters<typeof modal.confirm>[0]) =>
+          modalConfirmRef.current(config)
+      );
+      scopedConfirmRef.current = scope;
+      return () => {
+        scope.destroy();
+        if (scopedConfirmRef.current === scope) {
+          scopedConfirmRef.current = null;
+        }
+      };
+    },
+    [modal.confirm]
+  );
   const [changeForm] = Form.useForm<ChangeFormValues>();
   const [assignExternalHandoverForm] = Form.useForm<AssignExternalHandoverFormValues>();
   const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
@@ -4916,7 +4970,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       if (!force && loadedResourcesRef.current.has("order") && orderRef.current) {
         return;
       }
-      const nextOrder = await apiFetch<OrderDetail>(`/orders/${orderId}`);
+      const nextOrder = await apiFetch<OrderDetail>(
+        `/orders/${orderId}/workspace/detail`
+      );
       orderRef.current = nextOrder;
       setOrder(nextOrder);
       loadedResourcesRef.current.add("order");
@@ -5490,7 +5546,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     if (!permissions.has("delivery:confirm")) {
       return;
     }
-    modal.confirm({
+    scopedConfirm.confirm({
       cancelText: "取消",
       content: `仅重新提交“${recovery.label}”对应的异常任务。`,
       okText: "确认恢复",
@@ -5782,6 +5838,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     canCreateChange,
     changeModalOpen,
     changesLoaded,
+    createChangeRequested,
     navigateWorkspace,
     openChangeModal,
     order,
@@ -6035,7 +6092,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       void executeRenewEntitlements(true);
       return;
     }
-    modal.confirm({
+    scopedConfirm.confirm({
       content: "本操作将为该订单创建 MONTHLY_RENEWAL 权益发放记录。",
       okText: "确认生成",
       onOk: () => executeRenewEntitlements(false),
@@ -6096,7 +6153,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       void executeExpireEntitlements(true);
       return;
     }
-    modal.confirm({
+    scopedConfirm.confirm({
       content: "本操作将把所有已超过有效期的可用权益标记为已过期。",
       okText: "确认处理",
       onOk: () => executeExpireEntitlements(false),
@@ -6907,6 +6964,12 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                       label: "合同状态"
                     },
                     {
+                      children: (
+                        <ReviewStatusTag value={order.productReviewStatus} />
+                      ),
+                      label: "产品匹配审核"
+                    },
+                    {
                       children: order.quote?.quoteNo ?? "-",
                       label: "原始报价"
                     },
@@ -6929,6 +6992,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       case "handover":
         content = order ? (
           <>
+            <HandoverProgressRecords
+              resolvedRecordIds={getOrderWorkspaceRecordIds(
+                ...handoverWorkOrders.map((workOrder) => workOrder.id),
+                ...handoverWorkOrders.map(
+                  (workOrder) => workOrder.handoverId
+                ),
+                ...Object.values(handoverESignStatuses).map(
+                  (status) => status?.handoverId
+                )
+              )}
+              summary={summary}
+            />
             {hasDeliveryViewPermission ? (
               <DeliveryPanel
                 confirmAvailability={confirmDeliveryAvailability}
@@ -7018,6 +7093,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         content = order ? (
           <>
             <FinanceProgressRecords
+              links={getOrderWorkspaceFinanceLinks(permissions)}
               resolvedRecordIds={getOrderWorkspaceRecordIds(
                 ...receivableBills.map((bill) => bill.id),
                 ...(depositSettlement?.depositLedgers ?? []).map(

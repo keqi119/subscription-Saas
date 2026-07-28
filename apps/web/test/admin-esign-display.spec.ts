@@ -143,6 +143,54 @@ describe("admin e-sign archive status display", () => {
       tagLabel: "归档失败，签署已完成"
     });
   });
+
+  it("renders Stage 2 archive labels from the typed archive projection", () => {
+    const baseTask = {
+      hasSignedDocument: false,
+      provider: "FADADA",
+      signedArtifactAvailable: false,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskStatus: "COMPLETED"
+    };
+
+    expect(getAdminESignArchiveStatus({
+      ...baseTask,
+      archiveStatus: "ARCHIVED",
+      signedArtifactAvailable: true
+    })).toMatchObject({
+      state: "ARCHIVED",
+      tagLabel: "\u5df2\u7b7e\u6587\u4ef6\u5df2\u5f52\u6863"
+    });
+    expect(getAdminESignArchiveStatus({
+      ...baseTask,
+      archiveStatus: "PENDING"
+    })).toMatchObject({
+      state: "PENDING_ARCHIVE",
+      tagLabel: "\u7b7e\u7f72\u6587\u4ef6\u5f52\u6863\u4e2d"
+    });
+    expect(getAdminESignArchiveStatus({
+      ...baseTask,
+      archiveError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveStatus: "FAILED"
+    })).toMatchObject({
+      state: "ARCHIVE_FAILED",
+      tagLabel: "\u5f52\u6863\u5931\u8d25\uff0c\u7b7e\u7f72\u5df2\u5b8c\u6210"
+    });
+  });
+
+  it("does not render a typed Stage 2 task as archived from a generic task artifact", () => {
+    expect(getAdminESignArchiveStatus({
+      archiveStatus: "ARCHIVED",
+      hasSignedDocument: true,
+      provider: "FADADA",
+      signedArtifactAvailable: false,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskStatus: "COMPLETED"
+    })).not.toMatchObject({
+      state: "ARCHIVED",
+      tagLabel: "\u5df2\u7b7e\u6587\u4ef6\u5df2\u5f52\u6863"
+    });
+  });
 });
 
 describe("admin e-sign archive action wiring", () => {

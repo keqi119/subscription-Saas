@@ -1933,6 +1933,62 @@ describe("ESignService", () => {
     expect(portalView.signTask).not.toHaveProperty("signedDocumentObjectKey");
   });
 
+  it("requires the complete typed Stage 2 archive tuple before projecting a signed document", async () => {
+    const harness = createTypedStage2CallbackFixture();
+    const completeArchive = {
+      archiveStatus: "ARCHIVED",
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/archived.pdf",
+      signedPdfHash: "d".repeat(64),
+      status: "ARCHIVED"
+    };
+    Object.assign(harness.handover, completeArchive);
+
+    const archivedAdminView = await harness.service.getTask(
+      harness.task.id,
+      adminUser()
+    );
+    const archivedPortalView = await harness.service.getPortalContract(
+      harness.stage2Contract.id,
+      currentCustomer("customer-1")
+    );
+
+    expect(archivedAdminView).toMatchObject({
+      hasSignedDocument: true,
+      signedArtifactAvailable: true
+    });
+    expect(archivedPortalView).toMatchObject({
+      hasSignedDocument: true,
+      signTask: { hasSignedDocument: true }
+    });
+    expect(JSON.stringify({ archivedAdminView, archivedPortalView })).not.toContain(
+      completeArchive.signedObjectKey
+    );
+
+    const incompleteArchives = [
+      { archiveStatus: "PENDING", description: "archive status" },
+      { status: "SIGNED", description: "handover status" },
+      { signedDocumentFileId: null, description: "signed file" },
+      { signedObjectKey: null, description: "signed object key" },
+      { signedPdfHash: null, description: "signed PDF hash" }
+    ];
+
+    for (const incompleteArchive of incompleteArchives) {
+      Object.assign(harness.handover, completeArchive, incompleteArchive);
+
+      const adminView = await harness.service.getTask(harness.task.id, adminUser());
+      const portalView = await harness.service.getPortalContract(
+        harness.stage2Contract.id,
+        currentCustomer("customer-1")
+      );
+
+      expect(adminView.hasSignedDocument, incompleteArchive.description).toBe(false);
+      expect(adminView.signedArtifactAvailable, incompleteArchive.description).toBe(false);
+      expect(portalView.hasSignedDocument, incompleteArchive.description).toBe(false);
+      expect(portalView.signTask?.hasSignedDocument, incompleteArchive.description).toBe(false);
+    }
+  });
+
   it("projects authoritative Stage 2 archive state instead of a generic task object", async () => {
     const harness = createTypedStage2CallbackFixture();
     harness.task.taskStatus = ESignTaskStatus.COMPLETED;

@@ -249,6 +249,27 @@ describe("FadadaSignedArtifactService", () => {
     expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
   });
 
+  it("requires the platform customer ID before completing a typed Stage 2 archive", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture({
+      FADADA_PLATFORM_CUSTOMER_ID: ""
+    });
+
+    await expect(service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    })).rejects.toThrow(/FADADA_PLATFORM_CUSTOMER_ID is required/);
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.handover).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+      signedDocumentFileId: null,
+      signedObjectKey: null,
+      signedPdfHash: null,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
   it("uses a deterministic object identity and removes a known-uncommitted signed PDF after DB finalization fails", async () => {
     const { prisma, service, state, storageService } = createStage2Fixture();
     prisma.$transaction.mockRejectedValueOnce(

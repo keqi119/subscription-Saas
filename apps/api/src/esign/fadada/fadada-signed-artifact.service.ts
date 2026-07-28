@@ -243,6 +243,14 @@ export class FadadaSignedArtifactService {
         skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
       };
     }
+    const platformCustomerId =
+      loadFadadaConfig(this.configService).platformCustomerId;
+    if (!platformCustomerId) {
+      throw new BadRequestException({
+        code: "FADADA_PLATFORM_CUSTOMER_ID_REQUIRED",
+        message: "FADADA_PLATFORM_CUSTOMER_ID is required for Stage 2 signed-PDF archival."
+      });
+    }
     const originalName = `${sanitizeFileName(task.contract.contractNo)}-signed.pdf`;
     const attemptedAt = new Date();
     const claimTimeoutMs = readStage2ArchiveClaimTimeoutMs(this.configService);
@@ -383,11 +391,6 @@ export class FadadaSignedArtifactService {
       const platformSigner = task.signers.find(
         (signer) => signer.slotId === ESignSlotId.STAGE2_HANDOVER_PLATFORM
       )!;
-      const platformCustomerId =
-        loadFadadaConfig(this.configService).platformCustomerId;
-      if (!platformCustomerId) {
-        throw new Error("FADADA_PLATFORM_CUSTOMER_ID is required");
-      }
       const apiClient = this.getApiClient();
       const signResult = await apiClient.querySignResult({
         contractId: providerContractId,

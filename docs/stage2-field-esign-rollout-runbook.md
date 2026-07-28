@@ -15,12 +15,21 @@ confirmed field review
 -> customer H1 signature
 -> provider status 3000
 -> platform H2 seal
--> signed PDF archive
+-> signing complete
+   -> signed PDF archive (automatic retry)
+   -> Admin delivery confirmation
 ```
 
 Stage 1 contract signing remains unchanged. Recovery must use the existing
 Admin Web controls and `DELIVERY_CONFIRM` permission. Never void or reissue a
 Stage 2 task after provider completion.
+
+Signed-PDF archive is operationally required and remains automatically
+retryable, but it is not a hard delivery-confirmation gate after both Stage 2
+signers complete. A pending or failed archive must remain visible as a warning.
+Field is the normal initiation path. Admin fallback initiation is allowed only
+when the authoritative API reports that the assigned Field initiator is
+unavailable.
 
 ## Required Configuration
 
@@ -147,7 +156,16 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
    each task has exactly the typed H1/H2 signer pair, notifications are
    idempotent, provider completion is reconciled, and the signed PDF archives.
 
-10. Keep the worker enabled only after all acceptance checks pass. If any
+10. In a controlled signed task, hold or fail archive completion. Confirm
+    authorized Admin delivery confirmation remains available, the archive
+    warning/retry remains visible, and archive recovery continues.
+
+11. Confirm Admin fallback initiation is absent while the Field initiator is
+    available. In a controlled exception, make the assigned Field initiator
+    unavailable and confirm the backend exposes one audited fallback action to
+    an Admin with `DELIVERY_CONFIRM`.
+
+12. Keep the worker enabled only after all acceptance checks pass. If any
     acceptance check fails, begin rollback by disabling the worker flag first.
     Never delete queued jobs.
 
@@ -165,6 +183,11 @@ order. It creates one fresh pending replacement with a deterministic recovery
 key and copies only the payload fields required by that job type. Manual
 customer reconciliation accepts only the exact active typed Stage 2 H1
 transaction. Both operations are audited and safe to repeat.
+
+The Admin fallback signing action is separate from dead-letter retry. It must
+be used only when `canAdminInitiate=true`; the API rechecks Field
+unavailability before creating the Stage 2 task. It is not a normal alternative
+to Field initiation.
 
 Do not paste access tokens, response bodies, old error text, signing URLs, or
 raw payloads into tickets or rollout records.

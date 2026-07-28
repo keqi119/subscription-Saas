@@ -161,6 +161,13 @@ Provider status `3000` for the exact active H1 is reconciled before H2 is
 sealed. Both signed slots are required before the signed PDF can archive.
 Provider-completed work cannot be voided or reissued.
 
+After both signed slots complete, pending or failed signed-PDF archive does not
+block authorized Admin delivery confirmation. Archive remains visible,
+retryable, and independently auditable. Field is the normal initiation path;
+Admin fallback initiation is accepted only when the backend revalidates that
+the assigned Field initiator is unavailable and the Admin holds
+`DELIVERY_CONFIRM`.
+
 The rollout defaults and business SMS mapping are:
 
 ```dotenv

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a durable Stage 2 handover workflow in which customer confirmation generates the source PDF asynchronously, the assigned Field operator reviews and starts eSign, the customer signs in Portal, and the platform automatically seals and archives the final PDF before Admin delivery confirmation.
+**Goal:** Build a durable Stage 2 handover workflow in which customer confirmation generates the source PDF asynchronously, the assigned Field operator reviews and starts eSign, the customer signs in Portal, and the platform automatically seals and archives the final PDF while authorized Admin delivery confirmation may proceed after signing completes.
 
 **Architecture:** PostgreSQL is the durable queue and source of truth. Domain transitions enqueue idempotent `VehicleHandoverWorkflowJob` rows in the same transaction; a leased worker claims due jobs with `FOR UPDATE SKIP LOCKED`, executes focused handlers, and persists retries or terminal exceptions. Existing PDF, typed Stage 2 eSign, Fadada, archive, Field OTP, Portal notification, and Admin order components remain the domain implementations behind the orchestrator.
 
@@ -18,14 +18,23 @@
 - The Field operator must preview or download the exact source artifact and affirm its artifact version and SHA-256 before starting eSign.
 - SMS content must not contain a Field token, Fadada URL, evidence URL, customer data, or vehicle detail.
 - Source PDF output must retain four photos per page, video list and key frames, evidence hashes, protected evidence reference, full customer information, full VIN, full Field operator phone, exactly one customer coordinate, exactly one platform coordinate, a 15 MiB target, an 18 MiB internal hard limit, and the Fadada document-size limit.
-- Side-effect retry delays are exactly 1 minute, 5 minutes, 15 minutes, 1 hour, and 6 hours, with five failed attempts before `DEAD_LETTER`.
+- Side-effect retry delays are exactly 1 minute, 5 minutes, 15 minutes, 1 hour,
+  and 6 hours. The default allows all five delays and moves the sixth exhausted
+  attempt to `DEAD_LETTER`.
 - Provider `SIGNING` observations do not consume attempts; customer polling occurs near 2, 10, and 30 minutes, then every 6 hours while active.
 - GET endpoints must not make provider writes or advance business state.
 - A callback must return HTTP 200 after its durable next job is committed; it must not wait for platform sealing.
 - Only Fadada result code `3000`, bound to the exact local contract, provider customer, transaction, stage, and slot, may advance a signer to signed.
 - Platform retries must query the deterministic `H2` transaction before another provider write.
 - No workflow handler may write `actualDeliveryAt`, lease dates, billing schedules, bills, payments, accounting records, or depreciation records.
-- Delivery confirmation remains an explicit authorized Admin action and remains blocked until signed-PDF archive is complete.
+- Delivery confirmation remains an explicit authorized Admin action. It
+  requires completed Stage 2 signing and all existing non-archive delivery
+  gates; pending or failed signed-PDF archive is a warning/retry state, not a
+  hard blocker.
+- Field remains the normal eSign initiation path. Admin fallback initiation is
+  allowed only when the backend revalidates that the assigned Field initiator
+  is unavailable, and it requires the existing delivery-confirm permission and
+  an audit event.
 - Feature flags are exactly `STAGE2_HANDOVER_WORKFLOW_ENABLED` and `STAGE2_HANDOVER_WORKER_ENABLED`.
 - Business SMS template variables are exactly `ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE` and `ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE`.
 - Rollout order is compatible images with flags off, migration, dry-run backfill, apply backfill, workflow flag on, worker flag on at low concurrency, existing-order recovery, then a new complete Staging order.
@@ -103,7 +112,7 @@ model VehicleHandoverWorkflowJob {
   idempotencyKey  String                           @unique @map("idempotency_key") @db.VarChar(256)
   availableAt     DateTime                         @default(now()) @map("available_at") @db.Timestamptz(6)
   attemptCount    Int                              @default(0) @map("attempt_count")
-  maxAttempts     Int                              @default(5) @map("max_attempts")
+  maxAttempts     Int                              @default(6) @map("max_attempts")
   leaseToken      String?                          @map("lease_token") @db.Uuid
   leaseExpiresAt  DateTime?                        @map("lease_expires_at") @db.Timestamptz(6)
   payload         Json?
@@ -205,7 +214,7 @@ Expose this enqueue input:
 
 ```ts
 export interface EnqueueStage2WorkflowJobInput {
-  availableAt?: Date;
+  delayMs?: number;
   eSignTaskId?: string;
   handoverId?: string;
   idempotencyKey: string;
@@ -221,7 +230,7 @@ export interface EnqueueStage2WorkflowJobInput {
 ```ts
 it("completes a successful claimed job");
 it("uses 1m, 5m, 15m, 1h, and 6h retry delays");
-it("moves the fifth failed attempt to DEAD_LETTER");
+it("moves the sixth failed attempt to DEAD_LETTER after all five delays");
 it("reschedules provider SIGNING without incrementing attemptCount");
 it("does not poll when STAGE2_HANDOVER_WORKER_ENABLED is false");
 it("never runs more handlers than configured concurrency");
@@ -235,7 +244,11 @@ Expected: FAIL because the worker does not exist.
 
 - [ ] **Step 6: Implement the worker loop and bounded logging**
 
-Use `OnModuleInit`/`OnModuleDestroy` with a non-overlapping `setTimeout` loop. Read concurrency, poll interval, and lease duration from `ConfigService`. The handler result contract is:
+Use `OnModuleInit`/`OnModuleDestroy` with a non-overlapping `setTimeout` loop.
+Read concurrency, poll interval, and lease duration from `ConfigService`.
+Repository enqueue and reschedule operations accept `delayMs` and calculate
+`available_at` from PostgreSQL `now()`, never the process clock. The handler
+result contract is:
 
 ```ts
 export type WorkflowHandlerResult =
@@ -790,11 +803,20 @@ Use one primary action with a confirmation checkbox/text. Disable it while the r
 
 - [ ] **Step 6: Add failing Admin timeline and exception tests**
 
-Assert normal rows omit manual PDF/eSign/seal/archive buttons. Assert a `DEAD_LETTER` row shows only the action mapped to its job type. Assert delivery confirmation remains disabled until `ARCHIVED`.
+Assert normal rows omit manual PDF/eSign/seal/archive buttons. Assert a
+`DEAD_LETTER` row shows only the action mapped to its job type. Assert delivery
+confirmation is enabled after both required signers complete even when archive
+is pending or failed, while the archive warning/retry remains visible. Assert
+Admin fallback initiation is hidden while Field initiation is available and is
+shown only when the authoritative API returns `canAdminInitiate=true`.
 
 - [ ] **Step 7: Implement Admin workflow presentation**
 
-Render one compact timeline from customer confirmation through archive. Keep existing permission checks for all exception POST actions. Keep void/reissue unavailable after provider signing has completed.
+Render one compact timeline from customer confirmation through archive. Keep
+existing permission checks for all exception POST actions. Keep void/reissue
+unavailable after provider signing has completed. Treat Admin fallback
+initiation as an audited exception action and revalidate Field unavailability
+on the backend before creating the task.
 
 - [ ] **Step 8: Run all focused Web tests, lint, and typecheck**
 
@@ -915,7 +937,11 @@ The runbook must list:
 7. Confirm ORD20260726073922TFHF gets RECONCILE_CUSTOMER_SIGNATURE.
 8. Confirm provider 3000 advances customer, H2 platform seal completes, and signed PDF archives.
 9. Execute one new internal-operator and one new external-operator handover.
-10. Disable the worker flag first for rollback; do not delete queued jobs.
+10. Confirm signed-but-unarchived work can pass authorized Admin delivery
+    confirmation while archive retry remains active.
+11. Confirm Admin fallback initiation is blocked for an available Field
+    operator and allowed only after backend-confirmed Field unavailability.
+12. Disable the worker flag first for rollback; do not delete queued jobs.
 ```
 
 - [ ] **Step 7: Run focused recovery and backfill tests**

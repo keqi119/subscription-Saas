@@ -12,13 +12,16 @@ Portal customer confirmation
   -> customer SMS and Portal notification
   -> customer Fadada signing
   -> automatic platform seal
-  -> automatic signed-PDF archive
-  -> Admin delivery confirmation
+  -> signing complete
+     -> automatic signed-PDF archive (asynchronous, non-blocking)
+     -> Admin delivery confirmation
 ```
 
 The normal path does not require Admin to generate the PDF, create the eSign
 task, start the platform seal, or archive the signed PDF. Admin handles only
-delivery confirmation and exhausted workflow exceptions.
+delivery confirmation and exhausted workflow exceptions. If the backend
+confirms that the assigned Field initiator is unavailable, an authorized Admin
+may use the audited fallback initiation action to keep the handover moving.
 
 This design supersedes the narrower provider-status reconciliation design
 committed as `3272646`.
@@ -38,6 +41,12 @@ committed as `3272646`.
 - The customer receives an SMS and a Portal notification after the field
   operator starts eSign.
 - Platform sealing and signed-PDF archive happen automatically.
+- Once both required signers are complete, a pending or failed signed-PDF
+  archive is shown as a warning/retry state and does not block authorized Admin
+  delivery confirmation.
+- Admin fallback initiation is available only when the backend revalidates that
+  the assigned Field initiator is unavailable. It is never shown on the normal
+  Field-driven path.
 - Provider and callback failures receive bounded automatic recovery before
   entering an Admin exception queue.
 
@@ -175,8 +184,8 @@ status reconciliation. Successful platform sealing inserts
 
 Archive downloads the final provider PDF, validates it, calculates SHA-256,
 stores it under the deterministic signed-artifact identity, and updates the
-handover archive pointer. Delivery confirmation remains blocked until archive
-is complete.
+handover archive pointer. Archive remains automatic and retryable, but it is
+not a delivery-confirmation gate after both required signers are complete.
 
 ## Durable Workflow
 
@@ -402,6 +411,12 @@ The normal order view presents one timeline and final delivery confirmation.
 Manual PDF, eSign, platform-seal, and archive buttons are absent from the happy
 path.
 
+Admin fallback initiation is an exception action, not a second normal signing
+path. It is visible only when the authoritative API returns
+`canAdminInitiate=true` after rechecking that the assigned Field initiator is
+unavailable. It requires the existing delivery-confirm permission and writes an
+audit event.
+
 After a job enters `DEAD_LETTER`, Admin displays only the relevant action:
 
 - retry PDF generation;
@@ -425,11 +440,14 @@ CUSTOMER_CONFIRMED
   -> PENDING_CUSTOMER_SIGNATURE
   -> PENDING_PLATFORM_SEAL
   -> SIGNED
-  -> ARCHIVED
+     -> ARCHIVED
+     -> ADMIN_DELIVERY_CONFIRMATION
 ```
 
 A workflow failure leaves the business entity at the last confirmed state.
 Customer confirmation is never rolled back because PDF rendering or SMS fails.
+Archive failure after `SIGNED` remains visible and retryable but does not roll
+back signing or disable authorized Admin delivery confirmation.
 
 No workflow handler writes:
 
@@ -440,8 +458,8 @@ No workflow handler writes:
 - accounting or depreciation records.
 
 Only the existing authorized Admin delivery-confirm action may advance those
-downstream states, and only after signed-PDF archive and all existing delivery
-gates pass.
+downstream states, and only after Stage 2 signing and all existing non-archive
+delivery gates pass.
 
 ## Migration And Rollout
 
@@ -524,6 +542,10 @@ URLs, digests, full mobiles, secrets, or evidence URLs.
 - expired entry refresh with the same transaction and coordinate;
 - automatic platform seal query-before-retry;
 - signed-PDF archive idempotency;
+- delivery confirmation allowed for `SIGNED` while archive is pending or
+  failed, with archive warning and retry still visible;
+- Admin fallback initiation denied while the Field initiator is available and
+  allowed only when the backend reports `canAdminInitiate=true`;
 - delivery, lease, billing, payment, and accounting isolation.
 
 ### Web
@@ -543,7 +565,11 @@ URLs, digests, full mobiles, secrets, or evidence URLs.
 4. Verify field and customer notifications.
 5. Verify one forced failure and automatic retry for PDF, SMS, platform seal,
    and archive.
-6. Confirm delivery remains manual and downstream states do not advance early.
+6. Verify a signed-but-unarchived handover can be confirmed by an authorized
+   Admin while the archive warning/retry remains visible.
+7. Verify Admin fallback initiation is absent with an available Field operator
+   and becomes available only after the backend confirms Field unavailability.
+8. Confirm delivery remains manual and downstream states do not advance early.
 
 ## Stage 1 Review Notes
 

@@ -856,8 +856,8 @@ describe("OrderWorkspaceService", () => {
       {
         caseStatus: "ACTIVE",
         id: "collection-1",
-        nextFollowUpAt: new Date("2026-07-28T09:00:00.000Z"),
-        updatedAt: new Date("2026-07-28T09:00:00.000Z")
+        nextFollowUpAt: new Date("2026-07-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-26T00:00:00.000Z")
       }
     ]);
     prisma.receivableBill.findMany.mockResolvedValue([
@@ -880,6 +880,19 @@ describe("OrderWorkspaceService", () => {
       ])
     );
 
+    expect(summary.guidance.find(({ category }) => category === "finance")).toEqual(
+      expect.objectContaining({
+        actionCode: null,
+        reasonCode: "FINANCE_COLLECTION_ACTION_REQUIRED",
+        state: "ACTION_REQUIRED",
+        targetRecordId: "collection-1"
+      })
+    );
+    expect(summary.tabBadges).toContainEqual({
+      attentionCount: 2,
+      count: 2,
+      tab: "finance"
+    });
     expect(summary.primaryAction).toEqual({
       actionCode: "finance.collect",
       targetRecordId: "bill-1",

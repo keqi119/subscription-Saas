@@ -43,7 +43,13 @@ type ResolverInput = {
   asOf: string;
   guidance: OrderWorkspaceGuideItem[];
   header: OrderWorkspaceSummary["header"];
+  primaryActionCandidates?: OrderWorkspaceGuideItem[];
   recentActivity: OrderWorkspaceSummary["recentActivity"];
+};
+
+type WorkspaceContributorResult = {
+  guidance: OrderWorkspaceGuideItem;
+  primaryActionCandidates: OrderWorkspaceGuideItem[];
 };
 
 export type ContractWorkspaceFacts = {
@@ -125,19 +131,22 @@ export type ChangeWorkspaceFacts = {
 @Injectable()
 export class OrderWorkspaceResolver {
   resolve(input: ResolverInput): OrderWorkspaceSummary {
+    const normalize = (item: OrderWorkspaceGuideItem) => {
+      const stateForcesNoAction = NON_ACTIONABLE_STATES.has(item.state);
+      return {
+        ...item,
+        actionCode: input.access[item.category].action && !stateForcesNoAction ? item.actionCode : null,
+        priority: STATE_PRIORITY[item.state]
+      };
+    };
     const guidance = input.guidance
       .filter((item) => input.access[item.category].view)
-      .map((item) => {
-        const stateForcesNoAction = NON_ACTIONABLE_STATES.has(item.state);
-        return {
-          ...item,
-          actionCode: input.access[item.category].action && !stateForcesNoAction ? item.actionCode : null,
-          priority: STATE_PRIORITY[item.state]
-        };
-      })
+      .map(normalize)
       .sort((left, right) => CATEGORY_ORDER.indexOf(left.category) - CATEGORY_ORDER.indexOf(right.category));
 
-    const primary = [...guidance]
+    const primary = (input.primaryActionCandidates ?? guidance)
+      .filter((item) => input.access[item.category].view)
+      .map(normalize)
       .filter((item) => item.actionCode !== null)
       .sort(comparePrimaryAction)[0];
 
@@ -368,6 +377,10 @@ export class OrderWorkspaceResolver {
   }
 
   resolveFinance(facts: FinanceWorkspaceFacts): OrderWorkspaceGuideItem {
+    return this.resolveFinanceContributor(facts).guidance;
+  }
+
+  resolveFinanceContributor(facts: FinanceWorkspaceFacts): WorkspaceContributorResult {
     const candidates = [
       ...facts.paymentOrders.map((payment) =>
         guideItem(
@@ -422,9 +435,13 @@ export class OrderWorkspaceResolver {
       )
     ];
     if (candidates.length === 0) {
-      return guideItem("finance", "COMPLETED", "FINANCE_NO_ACTION_DUE", null, null, null);
+      const guidance = guideItem("finance", "COMPLETED", "FINANCE_NO_ACTION_DUE", null, null, null);
+      return { guidance, primaryActionCandidates: [guidance] };
     }
-    return selectRepresentative(candidates);
+    return {
+      guidance: selectRepresentative(candidates),
+      primaryActionCandidates: candidates
+    };
   }
 
   resolveChange(facts: ChangeWorkspaceFacts): OrderWorkspaceGuideItem {
@@ -507,7 +524,7 @@ export class OrderWorkspaceService {
 
     const asOf = new Date().toISOString();
     const access = resolveAccess(user);
-    const contributorGuidance = await Promise.all([
+    const contributors = await Promise.all([
       this.loadContributor("contract", access, () => this.loadContract(id)),
       this.loadContributor("handover", access, () => this.loadHandover(id, asOf)),
       this.loadContributor("entitlement", access, () =>
@@ -517,7 +534,10 @@ export class OrderWorkspaceService {
       this.loadContributor("finance", access, () => this.loadFinance(id, asOf, user)),
       this.loadContributor("change", access, () => this.loadChange(id))
     ]);
-    const guidance = contributorGuidance.map((item) => filterWorkspaceActionByPermission(item, user));
+    const guidance = contributors.map(({ guidance: item }) => filterWorkspaceActionByPermission(item, user));
+    const primaryActionCandidates = contributors.flatMap((contributor) =>
+      contributor.primaryActionCandidates.map((item) => filterWorkspaceActionByPermission(item, user))
+    );
 
     return this.resolver.resolve({
       access,
@@ -535,6 +555,7 @@ export class OrderWorkspaceService {
         orderStatus: headerRecord.orderStatus,
         ownerLabel: headerRecord.application.salesUser.name
       },
+      primaryActionCandidates,
       recentActivity: []
     });
   }
@@ -542,15 +563,16 @@ export class OrderWorkspaceService {
   private async loadContributor(
     category: OrderWorkspaceGuideCategory,
     access: WorkspaceAccess,
-    contributor: () => Promise<OrderWorkspaceGuideItem>
-  ): Promise<OrderWorkspaceGuideItem> {
+    contributor: () => Promise<OrderWorkspaceGuideItem | WorkspaceContributorResult>
+  ): Promise<WorkspaceContributorResult> {
     if (!access[category].view) {
-      return this.resolver.unavailable(category);
+      return singleContributor(this.resolver.unavailable(category));
     }
     try {
-      return await contributor();
+      const result = await contributor();
+      return "guidance" in result ? result : singleContributor(result);
     } catch {
-      return this.resolver.unavailable(category);
+      return singleContributor(this.resolver.unavailable(category));
     }
   }
 
@@ -739,7 +761,7 @@ export class OrderWorkspaceService {
           })
         : []
     ]);
-    return this.resolver.resolveFinance({
+    return this.resolver.resolveFinanceContributor({
       asOf,
       collectionCases: collectionCases.map((collectionCase) => ({
         id: collectionCase.id,
@@ -805,6 +827,10 @@ function guideItem(
     targetTab: category,
     updatedAt
   };
+}
+
+function singleContributor(guidance: OrderWorkspaceGuideItem): WorkspaceContributorResult {
+  return { guidance, primaryActionCandidates: [guidance] };
 }
 
 function comparePrimaryAction(left: OrderWorkspaceGuideItem, right: OrderWorkspaceGuideItem) {

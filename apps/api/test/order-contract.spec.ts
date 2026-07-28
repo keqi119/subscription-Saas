@@ -582,6 +582,64 @@ describe("subscription order and contract rules", () => {
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
+  it("lists non-deleted contracts without search filters", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser());
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ deletedAt: null });
+  });
+
+  it("filters contracts by a trimmed case-insensitive contract number", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser(), { contractNo: "  con-2026  " });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [{ contractNo: { contains: "con-2026", mode: "insensitive" } }],
+      deletedAt: null
+    });
+  });
+
+  it("filters contracts by a case-insensitive order number", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser(), { orderNo: "ord-2026" });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [{ order: { orderNo: { contains: "ord-2026", mode: "insensitive" } } }],
+      deletedAt: null
+    });
+  });
+
+  it("combines contract and order number filters with AND", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser(), { contractNo: "CON-2026", orderNo: "ORD-2026" });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [
+        { contractNo: { contains: "CON-2026", mode: "insensitive" } },
+        { order: { orderNo: { contains: "ORD-2026", mode: "insensitive" } } }
+      ],
+      deletedAt: null
+    });
+  });
+
+  it("preserves the sales-user scope while applying contract search", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser({ id: "sales-1", roles: ["SA"] }), {
+      contractNo: "CON-2026"
+    });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [{ contractNo: { contains: "CON-2026", mode: "insensitive" } }],
+      deletedAt: null,
+      order: { application: { salesUserId: "sales-1" } }
+    });
+  });
+
   it("generates timestamp and random business numbers without count based suffixes", () => {
     const now = new Date(2026, 5, 2, 15, 30, 45);
     let sequence = 0;
@@ -608,6 +666,31 @@ describe("subscription order and contract rules", () => {
     expect(attempts).toBe(3);
   });
 });
+
+function createContractListService() {
+  const findMany = vi.fn(async (_args: { where?: unknown }) => []);
+  const service = new OrderService(
+    { write: vi.fn(async () => undefined) } as never,
+    { contract: { findMany } } as never,
+    {} as never,
+    {} as never,
+    {} as never
+  );
+
+  return { findMany, service };
+}
+
+function contractListUser(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "admin-1",
+    menus: [],
+    name: "Admin",
+    permissions: [],
+    roles: ["ADMIN"],
+    username: "admin",
+    ...overrides
+  } as never;
+}
 
 function createOrderServiceHarness(options: {
   artifactGenerationEnabled?: boolean;

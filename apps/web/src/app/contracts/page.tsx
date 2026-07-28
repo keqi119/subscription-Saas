@@ -1,19 +1,22 @@
 "use client";
 
-import { EyeOutlined } from "@ant-design/icons";
-import { App, Button, Space, Table, Tag, Typography } from "antd";
+import { ClearOutlined, EyeOutlined, SearchOutlined } from "@ant-design/icons";
+import { App, Button, Input, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import { STATUS_LABELS, labelOf } from "../../constants/labels";
 import { apiFetch, ApiError } from "../../lib/api";
+import { buildAdminContractsListPath } from "../../lib/admin-contracts";
 
 interface ContractRow {
   archivedAt?: string | null;
   contractNo: string;
+  contractTitle?: string | null;
   createdAt: string;
   customer: { name: string };
   id: string;
@@ -33,23 +36,48 @@ function getErrorMessage(error: unknown) {
 
 export default function ContractsPage() {
   const { message } = App.useApp();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [contracts, setContracts] = useState<ContractRow[]>([]);
+  const [contractNo, setContractNo] = useState("");
   const [loading, setLoading] = useState(false);
+  const [orderNo, setOrderNo] = useState("");
+  const activeContractNo = searchParams.get("contractNo") ?? "";
+  const activeOrderNo = searchParams.get("orderNo") ?? "";
 
   const loadContracts = useCallback(async () => {
     setLoading(true);
     try {
-      setContracts(await apiFetch<ContractRow[]>("/contracts"));
+      setContracts(
+        await apiFetch<ContractRow[]>(
+          buildAdminContractsListPath({ contractNo: activeContractNo, orderNo: activeOrderNo })
+        )
+      );
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
       setLoading(false);
     }
-  }, [message]);
+  }, [activeContractNo, activeOrderNo, message]);
 
   useEffect(() => {
     void loadContracts();
   }, [loadContracts]);
+
+  useEffect(() => {
+    setContractNo(activeContractNo);
+    setOrderNo(activeOrderNo);
+  }, [activeContractNo, activeOrderNo]);
+
+  const search = () => {
+    router.push(buildAdminContractsListPath({ contractNo, orderNo }));
+  };
+
+  const clearSearch = () => {
+    setContractNo("");
+    setOrderNo("");
+    router.push(buildAdminContractsListPath({}));
+  };
 
   const columns: ColumnsType<ContractRow> = [
     {
@@ -58,6 +86,7 @@ export default function ContractsPage() {
       title: "合同编号",
       width: 170
     },
+    { dataIndex: "contractTitle", render: (value?: string | null) => value ?? "-", title: "合同标题", width: 180 },
     {
       dataIndex: "order",
       render: (value: ContractRow["order"]) => <Link href={`/orders/${value.id}`}>{value.orderNo}</Link>,
@@ -89,7 +118,39 @@ export default function ContractsPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           合同管理
         </Typography.Title>
-        <Table columns={columns} dataSource={contracts} loading={loading} rowKey="id" scroll={{ x: 1300 }} />
+        <Space align="end" size={12} wrap>
+          <Space direction="vertical" size={4}>
+            <Typography.Text>合同编号</Typography.Text>
+            <Input
+              aria-label="合同编号"
+              maxLength={128}
+              onChange={(event) => setContractNo(event.target.value)}
+              onPressEnter={search}
+              placeholder="合同编号"
+              size="small"
+              value={contractNo}
+            />
+          </Space>
+          <Space direction="vertical" size={4}>
+            <Typography.Text>订单编号</Typography.Text>
+            <Input
+              aria-label="订单编号"
+              maxLength={128}
+              onChange={(event) => setOrderNo(event.target.value)}
+              onPressEnter={search}
+              placeholder="订单编号"
+              size="small"
+              value={orderNo}
+            />
+          </Space>
+          <Tooltip title="搜索">
+            <Button aria-label="搜索" icon={<SearchOutlined />} onClick={search} type="primary" />
+          </Tooltip>
+          <Tooltip title="清空筛选">
+            <Button aria-label="清空筛选" icon={<ClearOutlined />} onClick={clearSearch} />
+          </Tooltip>
+        </Space>
+        <Table columns={columns} dataSource={contracts} loading={loading} rowKey="id" scroll={{ x: 1480 }} />
       </Space>
     </ProtectedShell>
   );

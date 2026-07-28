@@ -705,7 +705,7 @@ export class OrderWorkspaceService {
         orderId: headerRecord.id,
         orderNo: headerRecord.orderNo,
         orderStatus: headerRecord.orderStatus,
-        ownerLabel: headerRecord.application.salesUser.name
+        ownerLabel: headerRecord.application?.salesUser?.name ?? null
       },
       primaryActionCandidates,
       recentActivity: []

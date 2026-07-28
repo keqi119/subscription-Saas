@@ -897,6 +897,39 @@ describe("OrderWorkspaceService", () => {
     expect(prisma.vehicleHandoverWorkOrder.findMany).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a missing legacy application", null, null],
+    ["a missing legacy sales user", { salesUser: null }, null],
+    ["an assigned sales user", { salesUser: { name: "Owner Sentinel" } }, "Owner Sentinel"]
+  ])(
+    "resolves a safe owner label for %s",
+    async (_case, application, expectedOwnerLabel) => {
+      const prisma = workspacePrisma();
+      prisma.subscriptionOrder.findUnique.mockImplementation(
+        async (args: { select?: { contractId?: boolean } }) =>
+          args.select?.contractId
+            ? authoritativeContractRecord()
+            : { ...workspaceOrderRecord(), application }
+      );
+      const resolver = new OrderWorkspaceResolver();
+      const resolve = vi.spyOn(resolver, "resolve");
+      const service = new OrderWorkspaceService(
+        prisma as never,
+        { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
+        resolver
+      );
+
+      const summary = await service.getSummary("order-1", workspaceUser());
+
+      expect(summary.header.ownerLabel).toBe(expectedOwnerLabel);
+      expect(resolve).toHaveBeenCalledWith(
+        expect.objectContaining({
+          header: expect.objectContaining({ ownerLabel: expectedOwnerLabel })
+        })
+      );
+    }
+  );
+
   it("degrades one failed contributor while keeping all other visible categories available", async () => {
     const prisma = workspacePrisma();
     prisma.subscriptionOrder.findUnique.mockImplementation(async (args: { select?: { contractId?: boolean } }) => {

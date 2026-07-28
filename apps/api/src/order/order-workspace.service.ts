@@ -865,7 +865,6 @@ const ACTION_PERMISSION: Record<string, PermissionCode> = {
   "entitlement.activate": PermissionCode.ENTITLEMENT_GENERATE,
   "entitlement.reconcile": PermissionCode.ENTITLEMENT_ADJUST,
   "finance.collect": PermissionCode.PAYMENT_CREATE,
-  "finance.collection_follow_up": PermissionCode.COLLECTION_ACTION_CREATE,
   "finance.deduct_deposit": PermissionCode.DEPOSIT_LEDGER_DEDUCT,
   "finance.refund_deposit": PermissionCode.DEPOSIT_LEDGER_REFUND,
   "handover.assign": PermissionCode.DELIVERY_PREPARE,

@@ -621,7 +621,6 @@ describe("OrderWorkspaceService", () => {
     ["finance.collect", PermissionCode.PAYMENT_CREATE, PermissionCode.BILLING_GENERATE],
     ["finance.refund_deposit", PermissionCode.DEPOSIT_LEDGER_REFUND, PermissionCode.DEPOSIT_LEDGER_DEDUCT],
     ["finance.deduct_deposit", PermissionCode.DEPOSIT_LEDGER_DEDUCT, PermissionCode.DEPOSIT_LEDGER_REFUND],
-    ["finance.collection_follow_up", PermissionCode.COLLECTION_ACTION_CREATE, PermissionCode.COLLECTION_CLOSE],
     ["change.approve", PermissionCode.ORDER_CHANGE_APPROVE, PermissionCode.ORDER_CHANGE_CREATE],
     ["change.execute", PermissionCode.ORDER_CHANGE_EXECUTE, PermissionCode.ORDER_CHANGE_APPROVE],
     ["change.retry", PermissionCode.ORDER_CHANGE_EXECUTE, PermissionCode.ORDER_CHANGE_APPROVE]
@@ -640,6 +639,12 @@ describe("OrderWorkspaceService", () => {
 
   it("fails closed for finance reconciliation because no Admin retry endpoint exists", () => {
     const item = guide({ actionCode: "finance.reconcile" });
+
+    expect(filterWorkspaceActionByPermission(item, workspaceUser(Object.values(PermissionCode))).actionCode).toBeNull();
+  });
+
+  it("fails closed for collection follow-up because no matching Admin endpoint exists", () => {
+    const item = guide({ actionCode: "finance.collection_follow_up" });
 
     expect(filterWorkspaceActionByPermission(item, workspaceUser(Object.values(PermissionCode))).actionCode).toBeNull();
   });
@@ -812,6 +817,74 @@ describe("OrderWorkspaceService", () => {
     );
 
     expect(summary.guidance.find(({ category }) => category === "finance")?.actionCode).toBe("finance.collect");
+  });
+
+  it("keeps an active collection case visible without an action or primary recommendation", async () => {
+    const prisma = workspacePrisma();
+    prisma.collectionCase.findMany.mockResolvedValue([
+      {
+        caseStatus: "ACTIVE",
+        id: "collection-1",
+        nextFollowUpAt: new Date("2026-07-28T08:00:00.000Z"),
+        updatedAt: new Date("2026-07-28T08:00:00.000Z")
+      }
+    ]);
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.COLLECTION_VIEW,
+        PermissionCode.COLLECTION_ACTION_CREATE
+      ])
+    );
+
+    expect(summary.guidance.find(({ category }) => category === "finance")).toEqual(
+      expect.objectContaining({
+        actionCode: null,
+        reasonCode: "FINANCE_COLLECTION_ACTION_REQUIRED",
+        state: "ACTION_REQUIRED",
+        targetRecordId: "collection-1"
+      })
+    );
+    expect(summary.primaryAction).toBeNull();
+  });
+
+  it("still recommends a finance candidate backed by a real protected endpoint", async () => {
+    const prisma = workspacePrisma();
+    prisma.collectionCase.findMany.mockResolvedValue([
+      {
+        caseStatus: "ACTIVE",
+        id: "collection-1",
+        nextFollowUpAt: new Date("2026-07-28T09:00:00.000Z"),
+        updatedAt: new Date("2026-07-28T09:00:00.000Z")
+      }
+    ]);
+    prisma.receivableBill.findMany.mockResolvedValue([
+      {
+        billStatus: "OVERDUE",
+        dueDate: new Date("2026-07-27T00:00:00.000Z"),
+        id: "bill-1",
+        updatedAt: new Date("2026-07-28T08:00:00.000Z")
+      }
+    ]);
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.BILLING_VIEW,
+        PermissionCode.COLLECTION_VIEW,
+        PermissionCode.COLLECTION_ACTION_CREATE,
+        PermissionCode.PAYMENT_CREATE
+      ])
+    );
+
+    expect(summary.primaryAction).toEqual({
+      actionCode: "finance.collect",
+      targetRecordId: "bill-1",
+      targetTab: "finance"
+    });
   });
 
   it("boundedly loads all delivery and return work orders and signer rows", async () => {

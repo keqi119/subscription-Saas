@@ -187,14 +187,14 @@ export class SmsService {
     try {
       reservation = await this.prisma.smsSendLog.create({
         data: {
-          errorCode: "SMS_SEND_PENDING",
-          errorMessage: "SMS_SEND_PENDING",
+          errorCode: "SMS_SEND_IN_PROGRESS",
+          errorMessage: "SMS_SEND_IN_PROGRESS",
           idempotencyKey: input.input.idempotencyKey,
           phone: input.input.phone,
           phoneMasked: maskPhone(input.input.phone),
           provider: toSmsProviderType(provider),
           purpose: input.purpose,
-          sendStatus: SmsSendStatus.FAILED
+          sendStatus: SmsSendStatus.SENDING
         }
       });
     } catch (error) {
@@ -207,74 +207,145 @@ export class SmsService {
       if (!existing) {
         throw error;
       }
-      reservation = existing;
-    }
-
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(Prisma.sql`
-        SELECT "id"
-        FROM "sms_send_log"
-        WHERE "id" = ${reservation.id}::uuid
-        FOR UPDATE
-      `);
-      const current = await tx.smsSendLog.findUnique({
-        where: { idempotencyKey: input.input.idempotencyKey }
-      });
-      if (!current) {
-        throw new Error("SMS_IDEMPOTENCY_RECORD_MISSING");
-      }
       if (
-        current.phone !== input.input.phone ||
-        current.purpose !== input.purpose
+        existing.phone !== input.input.phone ||
+        existing.purpose !== input.purpose
       ) {
         throw new Error("SMS_IDEMPOTENCY_KEY_CONFLICT");
       }
-      if (current.sendStatus === SmsSendStatus.SENT) {
-        return toSmsSendResult(current);
+      if (existing.sendStatus !== SmsSendStatus.FAILED) {
+        return toSmsSendResult(existing);
       }
-
-      const providerInput: SendSmsTemplateInput = {
-        idempotencyKey: input.input.idempotencyKey,
-        phone: input.input.phone,
-        purpose: input.purpose,
-        templateCode: input.templateCode,
-        templateParams: {
-          instruction: input.instruction
+      const claimed = await this.prisma.smsSendLog.updateMany({
+        data: {
+          errorCode: "SMS_SEND_IN_PROGRESS",
+          errorMessage: "SMS_SEND_IN_PROGRESS",
+          provider: toSmsProviderType(provider),
+          providerMessageId: null,
+          providerRequestId: null,
+          providerResponse: Prisma.DbNull,
+          sendStatus: SmsSendStatus.SENDING
+        },
+        where: {
+          id: existing.id,
+          sendStatus: SmsSendStatus.FAILED
         }
-      };
-      const result: SmsProviderSendResult = input.enabled
+      });
+      if (claimed.count !== 1) {
+        const winner = await this.prisma.smsSendLog.findUnique({
+          where: { idempotencyKey: input.input.idempotencyKey }
+        });
+        if (!winner) {
+          throw new Error("SMS_IDEMPOTENCY_RECORD_MISSING");
+        }
+        return toSmsSendResult(winner);
+      }
+      reservation = existing;
+    }
+
+    const providerInput: SendSmsTemplateInput = {
+      idempotencyKey: input.input.idempotencyKey,
+      phone: input.input.phone,
+      purpose: input.purpose,
+      templateCode: input.templateCode,
+      templateParams: {
+        instruction: input.instruction
+      }
+    };
+    let result: SmsProviderSendResult;
+    try {
+      result = input.enabled
         ? await this.provider.sendTemplate(providerInput)
         : {
             errorCode: "SMS_DISABLED",
             errorMessage: "SMS_DISABLED",
             provider,
+            providerAcceptance: "REJECTED",
             providerResponse: {
               reason: "SMS_DISABLED",
               skipped: true
             },
             success: false
           };
-      const sendStatus = result.success
-        ? SmsSendStatus.SENT
+    } catch {
+      result = {
+        errorCode: "SMS_PROVIDER_RESULT_UNKNOWN",
+        errorMessage: "SMS_PROVIDER_RESULT_UNKNOWN",
+        provider,
+        providerAcceptance: "UNKNOWN",
+        success: false
+      };
+    }
+    const sendStatus = result.success
+      ? SmsSendStatus.SENT
+      : result.providerAcceptance === "UNKNOWN"
+        ? SmsSendStatus.UNCERTAIN
         : SmsSendStatus.FAILED;
-      const updated = await tx.smsSendLog.update({
-        data: {
-          errorCode: result.errorCode ?? null,
-          errorMessage: result.errorMessage ?? null,
-          provider: toSmsProviderType(result.provider),
-          providerMessageId: result.providerMessageId ?? null,
-          providerRequestId: result.providerRequestId ?? null,
-          providerResponse:
-            result.providerResponse === undefined
-              ? Prisma.DbNull
-              : toJsonValue(result.providerResponse),
-          sendStatus
-        },
-        where: { id: current.id }
+    const resultData = {
+      errorCode: result.errorCode ?? null,
+      errorMessage: result.errorMessage ?? null,
+      provider: toSmsProviderType(result.provider),
+      providerMessageId: result.providerMessageId ?? null,
+      providerRequestId: result.providerRequestId ?? null,
+      providerResponse:
+        result.providerResponse === undefined
+          ? Prisma.DbNull
+          : toJsonValue(result.providerResponse),
+      sendStatus
+    };
+    let finalized: { count: number };
+    try {
+      finalized = await this.prisma.smsSendLog.updateMany({
+        data: resultData,
+        where: {
+          id: reservation.id,
+          sendStatus: SmsSendStatus.SENDING
+        }
       });
-
-      return toSmsSendResult(updated);
+    } catch {
+      const errorCode = result.success
+        ? "SMS_PROVIDER_ACCEPTED_FINALIZATION_UNCERTAIN"
+        : "SMS_PROVIDER_RESULT_FINALIZATION_UNCERTAIN";
+      try {
+        await this.prisma.smsSendLog.updateMany({
+          data: {
+            ...resultData,
+            errorCode,
+            errorMessage: errorCode,
+            sendStatus: SmsSendStatus.UNCERTAIN
+          },
+          where: {
+            id: reservation.id,
+            sendStatus: SmsSendStatus.SENDING
+          }
+        });
+      } catch {
+        // A persisted SENDING row is intentionally not auto-retryable.
+      }
+      const uncertain = await this.prisma.smsSendLog.findUnique({
+        where: { idempotencyKey: input.input.idempotencyKey }
+      });
+      if (!uncertain) {
+        throw new Error("SMS_IDEMPOTENCY_RECORD_MISSING");
+      }
+      return toSmsSendResult(uncertain);
+    }
+    if (finalized.count !== 1) {
+      const winner = await this.prisma.smsSendLog.findUnique({
+        where: { idempotencyKey: input.input.idempotencyKey }
+      });
+      if (!winner) {
+        throw new Error("SMS_IDEMPOTENCY_RECORD_MISSING");
+      }
+      return toSmsSendResult(winner);
+    }
+    const updated = await this.prisma.smsSendLog.findUnique({
+      where: { idempotencyKey: input.input.idempotencyKey }
     });
+    if (!updated) {
+      throw new Error("SMS_IDEMPOTENCY_RECORD_MISSING");
+    }
+    return toSmsSendResult(updated);
   }
 
   private getProviderName(): SmsProviderName {

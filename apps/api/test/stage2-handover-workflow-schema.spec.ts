@@ -24,6 +24,7 @@ const workflowJobTypes = [
 ];
 
 const workflowJobStatuses = ["PENDING", "PROCESSING", "COMPLETED", "DEAD_LETTER", "CANCELLED"];
+const smsSendStatuses = ["SENT", "FAILED", "SKIPPED", "SENDING", "UNCERTAIN"];
 const handoverNotificationValues = ["HANDOVER_ESIGN_PENDING", "HANDOVER_ESIGN_READY"];
 const workflowJobColumnDefinitions = [
   '"id" UUID NOT NULL,',
@@ -324,6 +325,12 @@ describe("Stage 2 durable workflow schema", () => {
   it("adds SMS idempotency with a partial unique index", () => {
     const smsSendLog = extractPrismaBlock(schema, "model", "SmsSendLog");
 
+    expect(prismaEnumValues(schema, "SmsSendStatus")).toEqual(smsSendStatuses);
+    for (const status of ["SENDING", "UNCERTAIN"]) {
+      expect(executableMigration).toContain(
+        `ALTER TYPE "sms_send_status"\n  ADD VALUE IF NOT EXISTS '${status}';`
+      );
+    }
     expect(smsSendLog).toMatch(
       /idempotencyKey\s+String\?\s+@unique\s+@map\("idempotency_key"\)\s+@db\.VarChar\(256\)/
     );

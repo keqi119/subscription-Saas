@@ -13,6 +13,7 @@ export class MockSmsProvider implements SmsProvider {
   async sendCode(input: SendSmsCodeInput): Promise<SendSmsCodeResult> {
     return {
       provider: "mock",
+      providerAcceptance: "ACCEPTED",
       providerMessageId: `mock_${Date.now()}`,
       providerResponse: {
         expiresInSeconds: input.expiresInSeconds,
@@ -27,6 +28,7 @@ export class MockSmsProvider implements SmsProvider {
   async sendTemplate(input: SendSmsTemplateInput): Promise<SmsSendResult> {
     return {
       provider: "mock",
+      providerAcceptance: "ACCEPTED",
       providerMessageId: `mock_${Date.now()}`,
       providerResponse: {
         mock: true,

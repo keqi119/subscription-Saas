@@ -92,8 +92,35 @@ describe("AliyunSmsProvider", () => {
     expect(result).toMatchObject({
       errorCode: "isv.BUSINESS_LIMIT_CONTROL",
       errorMessage: "业务限流",
+      providerAcceptance: "REJECTED",
       provider: "aliyun",
       providerRequestId: "request-failed",
+      success: false
+    });
+  });
+
+  it("marks transport failures as unknown acceptance instead of claiming a safe retry", async () => {
+    const client: AliyunSmsClient = {
+      sendSms: vi.fn(async () => {
+        throw new Error("connection closed after request write");
+      })
+    };
+    const provider = new AliyunSmsProvider(
+      createConfig() as unknown as ConfigService,
+      client
+    );
+
+    await expect(provider.sendTemplate({
+      idempotencyKey: "customer-sms:esign-task-1:transaction-1",
+      phone: "13900000000",
+      purpose: "CUSTOMER_HANDOVER_ESIGN_READY",
+      templateCode: "SMS_CUSTOMER_READY",
+      templateParams: {
+        instruction: "Log in to Portal."
+      }
+    })).resolves.toMatchObject({
+      errorCode: "ALIYUN_SMS_SEND_ERROR",
+      providerAcceptance: "UNKNOWN",
       success: false
     });
   });
@@ -138,6 +165,7 @@ describe("AliyunSmsProvider", () => {
         templateParam: JSON.stringify({ instruction: "Log in to Field." })
       })
     ]);
+    expect(sentRequests[0]).not.toHaveProperty("outId");
     expect(result).toMatchObject({
       provider: "aliyun",
       providerMessageId: "biz-field",
@@ -186,6 +214,25 @@ describe("AliyunSmsProvider", () => {
 });
 
 describe("SmsService business templates", () => {
+  it("commits a SENDING reservation before invoking the provider", async () => {
+    const harness = createBusinessSmsHarness({
+      onSend: (logs) => {
+        expect(logs).toHaveLength(1);
+        expect(logs[0]).toMatchObject({
+          errorCode: "SMS_SEND_IN_PROGRESS",
+          sendStatus: SmsSendStatus.SENDING
+        });
+      }
+    });
+
+    await expect(harness.service.sendStage2FieldReady({
+      idempotencyKey: "field-notify:work-order-1:1",
+      phone: "13800000000"
+    })).resolves.toMatchObject({
+      sendStatus: SmsSendStatus.SENT
+    });
+  });
+
   it("returns the existing SENT log for a duplicate SMS idempotency key", async () => {
     const harness = createBusinessSmsHarness();
     const input = {
@@ -232,6 +279,62 @@ describe("SmsService business templates", () => {
     expect(retried.sendLogId).toBe(failed.sendLogId);
     expect(harness.provider.sendTemplate).toHaveBeenCalledTimes(2);
     expect(harness.logs).toHaveLength(1);
+  });
+
+  it("fails closed after provider acceptance when local finalization fails", async () => {
+    const harness = createBusinessSmsHarness({
+      failFirstFinalization: true
+    });
+    const input = {
+      idempotencyKey: "customer-sms:esign-task-accepted:transaction-1",
+      phone: "13900000000"
+    };
+
+    const interrupted =
+      await harness.service.sendStage2CustomerReady(input);
+    const automaticRetry =
+      await harness.service.sendStage2CustomerReady(input);
+
+    expect(interrupted).toMatchObject({
+      errorCode: "SMS_PROVIDER_ACCEPTED_FINALIZATION_UNCERTAIN",
+      sendStatus: SmsSendStatus.UNCERTAIN,
+      success: false
+    });
+    expect(automaticRetry).toEqual(interrupted);
+    expect(harness.provider.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(harness.logs).toHaveLength(1);
+  });
+
+  it.each([
+    SmsSendStatus.SENDING,
+    SmsSendStatus.UNCERTAIN
+  ])("does not resend an existing %s reservation", async (sendStatus) => {
+    const harness = createBusinessSmsHarness({
+      existingLog: {
+        errorCode: "SMS_SEND_IN_PROGRESS",
+        errorMessage: "SMS_SEND_IN_PROGRESS",
+        id: "sms-log-in-flight",
+        idempotencyKey: "customer-sms:esign-task-in-flight:transaction-1",
+        phone: "13900000000",
+        phoneMasked: "139****0000",
+        provider: "ALIYUN",
+        providerMessageId: null,
+        providerRequestId: null,
+        providerResponse: null,
+        purpose: "CUSTOMER_HANDOVER_ESIGN_READY",
+        sendStatus
+      },
+      rejectFirstCreateWithUniqueConflict: true
+    });
+
+    const result = await harness.service.sendStage2CustomerReady({
+      idempotencyKey: "customer-sms:esign-task-in-flight:transaction-1",
+      phone: "13900000000"
+    });
+
+    expect(result.sendStatus).toBe(sendStatus);
+    expect(result.success).toBe(false);
+    expect(harness.provider.sendTemplate).not.toHaveBeenCalled();
   });
 
   it("reuses the concurrent winner after the SMS idempotency insert conflicts", async () => {
@@ -310,6 +413,8 @@ function createConfig(overrides: Record<string, string> = {}) {
 
 function createBusinessSmsHarness(options: {
   existingLog?: Record<string, unknown>;
+  failFirstFinalization?: boolean;
+  onSend?: (logs: Array<Record<string, unknown>>) => void;
   rejectFirstCreateWithUniqueConflict?: boolean;
   sendResults?: Array<{
     errorCode?: string;
@@ -337,13 +442,17 @@ function createBusinessSmsHarness(options: {
   }])];
   const provider: SmsProvider = {
     sendCode: vi.fn(),
-    sendTemplate: vi.fn(async () => sendResults.shift() ?? {
-      provider: "mock" as const,
-      providerMessageId: "mock-business-message",
-      providerResponse: { mock: true },
-      success: true
+    sendTemplate: vi.fn(async () => {
+      options.onSend?.(logs);
+      return sendResults.shift() ?? {
+        provider: "mock" as const,
+        providerMessageId: "mock-business-message",
+        providerResponse: { mock: true },
+        success: true
+      };
     })
   };
+  let failFirstFinalization = options.failFirstFinalization ?? false;
   const prisma = {
     $queryRaw: vi.fn(async () => []),
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) =>
@@ -366,9 +475,44 @@ function createBusinessSmsHarness(options: {
         logs.push(log);
         return log;
       }),
-      findUnique: vi.fn(async ({ where }: { where: { idempotencyKey: string } }) =>
-        logs.find((log) => log.idempotencyKey === where.idempotencyKey) ?? null
+      findUnique: vi.fn(async ({
+        where
+      }: {
+        where: { id?: string; idempotencyKey?: string };
+      }) =>
+        logs.find((log) =>
+          where.id !== undefined
+            ? log.id === where.id
+            : log.idempotencyKey === where.idempotencyKey
+        ) ?? null
       ),
+      updateMany: vi.fn(async ({
+        data,
+        where
+      }: {
+        data: Record<string, unknown>;
+        where: { id: string; sendStatus?: SmsSendStatus };
+      }) => {
+        if (
+          failFirstFinalization &&
+          data.sendStatus === SmsSendStatus.SENT
+        ) {
+          failFirstFinalization = false;
+          throw new Error("simulated local commit interruption");
+        }
+        const log = logs.find((item) =>
+          item.id === where.id &&
+          (
+            where.sendStatus === undefined ||
+            item.sendStatus === where.sendStatus
+          )
+        );
+        if (!log) {
+          return { count: 0 };
+        }
+        Object.assign(log, data);
+        return { count: 1 };
+      }),
       update: vi.fn(async ({
         data,
         where

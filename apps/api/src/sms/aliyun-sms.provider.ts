@@ -87,6 +87,7 @@ export class AliyunSmsProvider implements SmsProvider {
             ? body.message
             : "ALIYUN_SMS_SEND_FAILED",
         provider: "aliyun",
+        providerAcceptance: success ? "ACCEPTED" : "REJECTED",
         providerMessageId: body.bizId,
         providerRequestId: body.requestId,
         providerResponse: {
@@ -104,6 +105,7 @@ export class AliyunSmsProvider implements SmsProvider {
           ? normalizeErrorMessage(error)
           : "ALIYUN_SMS_SEND_ERROR",
         provider: "aliyun",
+        providerAcceptance: "UNKNOWN",
         success: false
       };
     }

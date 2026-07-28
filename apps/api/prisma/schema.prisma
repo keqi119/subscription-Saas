@@ -102,6 +102,8 @@ enum SmsSendStatus {
   SENT
   FAILED
   SKIPPED
+  SENDING
+  UNCERTAIN
 
   @@map("sms_send_status")
 }

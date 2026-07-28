@@ -8,6 +8,7 @@ export type SmsTemplatePurpose =
   | "FIELD_HANDOVER_ESIGN_READY"
   | "CUSTOMER_HANDOVER_ESIGN_READY";
 export type SmsProviderName = "aliyun" | "mock";
+export type SmsProviderAcceptance = "ACCEPTED" | "REJECTED" | "UNKNOWN";
 
 export interface SendSmsCodeInput {
   code: string;
@@ -20,6 +21,7 @@ export interface SmsSendResult {
   errorCode?: string;
   errorMessage?: string;
   provider: SmsProviderName;
+  providerAcceptance?: SmsProviderAcceptance;
   providerMessageId?: string;
   providerRequestId?: string;
   providerResponse?: unknown;

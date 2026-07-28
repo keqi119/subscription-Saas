@@ -24,6 +24,12 @@ ALTER TYPE "customer_verification_code_purpose"
 ALTER TYPE "customer_verification_code_purpose"
   ADD VALUE IF NOT EXISTS 'CUSTOMER_HANDOVER_ESIGN_READY';
 
+-- Fail closed around Aliyun SendSms, which has no provider idempotency contract.
+ALTER TYPE "sms_send_status"
+  ADD VALUE IF NOT EXISTS 'SENDING';
+ALTER TYPE "sms_send_status"
+  ADD VALUE IF NOT EXISTS 'UNCERTAIN';
+
 -- Extend notification contracts without replacing legacy enum values.
 ALTER TYPE "notification_template_type"
   ADD VALUE IF NOT EXISTS 'HANDOVER_ESIGN_PENDING';

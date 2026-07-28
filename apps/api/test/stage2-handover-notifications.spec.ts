@@ -96,6 +96,28 @@ describe("Stage 2 handover notifications", () => {
     expect(harness.notificationEvents).toHaveLength(1);
   });
 
+  it("retries only IN_APP after SMS succeeds and IN_APP fails first", async () => {
+    const harness = createHarness({
+      failFirstInApp: true
+    });
+    const job = customerJob();
+
+    await expect(harness.workflow.handle(job)).rejects.toThrow(
+      "CUSTOMER_NOTIFICATION_INCOMPLETE"
+    );
+    await expect(harness.workflow.handle(job)).resolves.toMatchObject({
+      kind: "COMPLETED"
+    });
+
+    expect(harness.smsProvider.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(harness.smsLogs).toHaveLength(1);
+    expect(harness.smsLogs[0]).toMatchObject({
+      sendStatus: SmsSendStatus.SENT
+    });
+    expect(harness.notificationRecords).toHaveLength(1);
+    expect(harness.notificationEvents).toHaveLength(1);
+  });
+
   it("marks NOTIFY_CUSTOMER_ESIGN_READY complete only after both channels succeed", async () => {
     const harness = createHarness({
       smsResults: [{
@@ -223,6 +245,7 @@ describe("Stage 2 handover notifications", () => {
 });
 
 function createHarness(options: {
+  failFirstInApp?: boolean;
   notificationStage?: "CUSTOMER_READY" | "FIELD_READY";
   smsResults?: Array<{
     errorCode?: string;
@@ -238,6 +261,7 @@ function createHarness(options: {
   const smsLogs: TestRow[] = [];
   const notificationRecords: TestRow[] = [];
   const notificationEvents: TestRow[] = [];
+  let failFirstInApp = options.failFirstInApp ?? false;
   const workOrder = notificationWorkOrder(
     options.notificationStage ?? "CUSTOMER_READY"
   );
@@ -321,6 +345,10 @@ function createHarness(options: {
     },
     notificationRecord: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        if (failFirstInApp) {
+          failFirstInApp = false;
+          throw new Error("simulated IN_APP persistence failure");
+        }
         if (notificationRecords.some((record) => record.notificationNo === data.notificationNo)) {
           throw Object.assign(new Error("unique conflict"), { code: "P2002" });
         }
@@ -363,9 +391,37 @@ function createHarness(options: {
         smsLogs.push(log);
         return log;
       }),
-      findUnique: vi.fn(async ({ where }: { where: { idempotencyKey: string } }) =>
-        smsLogs.find((log) => log.idempotencyKey === where.idempotencyKey) ?? null
+      findUnique: vi.fn(async ({
+        where
+      }: {
+        where: { id?: string; idempotencyKey?: string };
+      }) =>
+        smsLogs.find((log) =>
+          where.id !== undefined
+            ? log.id === where.id
+            : log.idempotencyKey === where.idempotencyKey
+        ) ?? null
       ),
+      updateMany: vi.fn(async ({
+        data,
+        where
+      }: {
+        data: Record<string, unknown>;
+        where: { id: string; sendStatus?: SmsSendStatus };
+      }) => {
+        const log = smsLogs.find((item) =>
+          item.id === where.id &&
+          (
+            where.sendStatus === undefined ||
+            item.sendStatus === where.sendStatus
+          )
+        );
+        if (!log) {
+          return { count: 0 };
+        }
+        Object.assign(log, data);
+        return { count: 1 };
+      }),
       update: vi.fn(async ({
         data,
         where

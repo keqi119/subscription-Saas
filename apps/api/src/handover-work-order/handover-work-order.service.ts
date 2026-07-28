@@ -175,6 +175,7 @@ export interface WorkOrderRecord {
   accessTokenRevokedAt?: Date | null;
   adminReviewStatus?: string | null;
   accessoryChecklist?: unknown;
+  assignedInternalUserId?: string | null;
   createdAt?: Date | null;
   customerConfirmedAt?: Date | null;
   customerObjectedAt?: Date | null;
@@ -472,7 +473,18 @@ export class HandoverWorkOrderService {
       }
     });
 
-    const sorted = [...workOrders].sort(compareFieldWorkOrders);
+    const authorizedWorkOrders = [];
+    for (const workOrder of workOrders) {
+      if (
+        await this.hasCurrentFieldOperatorAssignment(
+          workOrder,
+          normalizedPhone
+        )
+      ) {
+        authorizedWorkOrders.push(workOrder);
+      }
+    }
+    const sorted = authorizedWorkOrders.sort(compareFieldWorkOrders);
     return Promise.all(sorted.map((workOrder) => this.toFieldTaskListItem(workOrder)));
   }
 
@@ -3407,11 +3419,50 @@ export class HandoverWorkOrderService {
       }
     });
 
-    if (!workOrder || !isFieldAccessibleWorkOrder(workOrder, normalizedPhone)) {
+    if (
+      !workOrder ||
+      !isFieldAccessibleWorkOrder(workOrder, normalizedPhone) ||
+      !await this.hasCurrentFieldOperatorAssignment(
+        workOrder,
+        normalizedPhone
+      )
+    ) {
       throw new UnauthorizedException("No access to this field handover work order.");
     }
 
     return workOrder;
+  }
+
+  private async hasCurrentFieldOperatorAssignment(
+    workOrder: WorkOrderRecord,
+    normalizedPhone: string
+  ) {
+    if (workOrder.operatorType === "EXTERNAL") {
+      return true;
+    }
+    if (
+      workOrder.operatorType !== "INTERNAL" ||
+      !workOrder.assignedInternalUserId
+    ) {
+      return false;
+    }
+    const user = await this.prisma.user.findFirst({
+      select: {
+        mobile: true,
+        status: true
+      },
+      where: {
+        deletedAt: null,
+        id: workOrder.assignedInternalUserId,
+        status: UserStatus.ACTIVE
+      }
+    });
+    return Boolean(
+      user &&
+      user.status === UserStatus.ACTIVE &&
+      user.mobile &&
+      normalizeFieldOperatorPhone(user.mobile) === normalizedPhone
+    );
   }
 
   private getStorageService() {

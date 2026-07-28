@@ -49,6 +49,15 @@ export class FieldOperatorAuthService {
 
   async requestCode(dto: RequestFieldOperatorCodeDto, context: FieldOperatorRequestContext) {
     const phone = normalizeFieldOperatorPhone(dto.phone);
+    if (
+      await this.handoverWorkOrderService.countFieldAccessibleWorkOrders(
+        phone
+      ) === 0
+    ) {
+      throw new UnauthorizedException(
+        "No active field handover work order is assigned to this phone."
+      );
+    }
     const now = new Date();
     const resendSeconds = this.getOtpResendSeconds();
     const recentCode = await this.prisma.fieldOperatorOtp.findFirst({

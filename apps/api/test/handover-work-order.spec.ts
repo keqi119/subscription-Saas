@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
-import { ContractStatus } from "@prisma/client";
+import { ContractStatus, UserStatus } from "@prisma/client";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -185,6 +185,8 @@ describe("HandoverWorkOrderService", () => {
         deliveryLocation: "上海市测试交付点",
         externalOperatorName: "现场交付员",
         externalOperatorPhone: "13800000000",
+        fieldOperatorName: "现场交付员",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-visible-late",
         operatorType: "EXTERNAL",
         scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
@@ -196,6 +198,8 @@ describe("HandoverWorkOrderService", () => {
         deliveryLocation: "上海市测试交付点",
         externalOperatorName: "现场交付员",
         externalOperatorPhone: "13800000000",
+        fieldOperatorName: "现场交付员",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-visible-early",
         operatorType: "EXTERNAL",
         scheduledAt: new Date("2026-07-22T02:00:00.000Z"),
@@ -205,6 +209,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13900000000",
+        fieldOperatorPhone: "13900000000",
         id: "work-order-other-phone",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -213,6 +218,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-20T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-expired",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -222,6 +228,7 @@ describe("HandoverWorkOrderService", () => {
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         accessTokenRevokedAt: harness.now,
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-revoked",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -230,6 +237,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-completed",
         operatorType: "EXTERNAL",
         status: "FIELD_COMPLETED"
@@ -273,6 +281,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13900000000",
+        fieldOperatorPhone: "13900000000",
         id: "work-order-other-phone",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -281,6 +290,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-cancelled",
         operatorType: "EXTERNAL",
         status: "CANCELLED"
@@ -289,6 +299,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-ops-reviewed",
         operatorType: "EXTERNAL",
         status: "OPS_REVIEWED"
@@ -296,6 +307,47 @@ describe("HandoverWorkOrderService", () => {
     );
 
     await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([]);
+  });
+
+  it("denies stale internal snapshots after the assigned user is disabled or deleted", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    for (const [id, status, deletedAt] of [
+      ["user-disabled", "DISABLED", null],
+      ["user-deleted", "ACTIVE", harness.now]
+    ] as const) {
+      harness.state.users.push({
+        deletedAt,
+        id,
+        mobile: "13800000000",
+        name: id,
+        status
+      });
+      harness.state.workOrders.push({
+        ...baseWorkOrder(harness),
+        assignedInternalUserId: id,
+        fieldOperatorName: id,
+        fieldOperatorPhone: "13800000000",
+        id: `work-order-${id}`,
+        operatorType: "INTERNAL",
+        status: "ASSIGNED"
+      });
+    }
+
+    await expect(
+      harness.service.listFieldAccessibleWorkOrders("13800000000")
+    ).resolves.toEqual([]);
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder(
+        "work-order-user-disabled",
+        "13800000000"
+      )
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder(
+        "work-order-user-deleted",
+        "13800000000"
+      )
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it("projects safe read-only workflow jobs in Admin work-order responses", async () => {
@@ -382,6 +434,7 @@ describe("HandoverWorkOrderService", () => {
       deliveryLocation: "上海市测试交付点",
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       fieldNotes: "客户现场确认车辆外观",
       fuelLevelText: null,
       handoverMileageKm: 28500,
@@ -429,6 +482,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "ASSIGNED"
@@ -480,6 +534,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -550,6 +605,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -591,6 +647,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -630,6 +687,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -686,6 +744,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -749,6 +808,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -785,6 +845,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -952,6 +1013,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -993,6 +1055,7 @@ describe("HandoverWorkOrderService", () => {
       accessoryChecklist: { chargingCable: true, keys: 2 },
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       handoverMileageKm: 28600,
       id: "work-order-visible",
       operatorType: "EXTERNAL",
@@ -1041,6 +1104,7 @@ describe("HandoverWorkOrderService", () => {
       damageDeclared: true,
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       handoverMileageKm: 28600,
       id: "work-order-visible",
       noVisibleDamageDeclared: false,
@@ -1063,6 +1127,7 @@ describe("HandoverWorkOrderService", () => {
       damageDeclared: false,
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       handoverMileageKm: 28600,
       id: "work-order-visible",
       noVisibleDamageDeclared: true,
@@ -1230,6 +1295,7 @@ describe("HandoverWorkOrderService", () => {
     Object.assign(harness.state.workOrders[0]!, {
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL"
     });
 
@@ -1331,6 +1397,7 @@ describe("HandoverWorkOrderService", () => {
     Object.assign(harness.state.workOrders[0]!, {
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL"
     });
     await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议");
@@ -1385,6 +1452,7 @@ describe("HandoverWorkOrderService", () => {
       customerObjectedAt: harness.now,
       customerObjectionReason: "legacy objection",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL",
       status: "CUSTOMER_REVIEWING"
     });
@@ -1407,6 +1475,7 @@ describe("HandoverWorkOrderService", () => {
     Object.assign(harness.state.workOrders[0]!, {
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL"
     });
     harness.evidenceService.setChecklist({
@@ -1615,6 +1684,8 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
     externalOperatorName: null,
     externalOperatorOrganization: null,
     externalOperatorPhone: null,
+    fieldOperatorName: null,
+    fieldOperatorPhone: null,
     fieldCompletedAt: null,
     fieldNotes: null,
     fieldStartedAt: null,
@@ -1686,9 +1757,26 @@ function createHandoverWorkOrderHarness() {
       vehicleId: "vehicle-1"
     },
     users: [
-      { deletedAt: null, id: admin.id, name: "管理员" },
-      { deletedAt: null, id: internalUser.id, mobile: internalUser.mobile, name: "内部交付员" }
-    ],
+      {
+        deletedAt: null,
+        id: admin.id,
+        name: "管理员",
+        status: UserStatus.ACTIVE
+      },
+      {
+        deletedAt: null,
+        id: internalUser.id,
+        mobile: internalUser.mobile,
+        name: "内部交付员",
+        status: UserStatus.ACTIVE
+      }
+    ] as Array<{
+      deletedAt: Date | null;
+      id: string;
+      mobile?: string;
+      name: string;
+      status: UserStatus;
+    }>,
     vehicleDelivery: {
       deletedAt: null,
       deliveryLocation: "上海市测试交付点",
@@ -1720,8 +1808,16 @@ function createHandoverWorkOrderHarness() {
       findUnique: vi.fn(async () => state.order)
     },
     user: {
-      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
-        state.users.find((user) => user.id === where.id && user.deletedAt === null) ?? null
+      findFirst: vi.fn(async ({
+        where
+      }: {
+        where: { deletedAt?: null; id?: string; status?: UserStatus };
+      }) =>
+        state.users.find((user) =>
+          user.id === where.id &&
+          (where.deletedAt === undefined || user.deletedAt === where.deletedAt) &&
+          (where.status === undefined || user.status === where.status)
+        ) ?? null
       )
     },
     vehicleDelivery: {
@@ -1773,13 +1869,11 @@ function createHandoverWorkOrderHarness() {
         return workOrder;
       }),
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        const workOrder = state.workOrders.find((row) => matchesWorkOrderWhere(row, where));
-        return workOrder ? applyCanonicalOperatorBackfill(workOrder) : null;
+        return state.workOrders.find((row) => matchesWorkOrderWhere(row, where)) ?? null;
       }),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         state.workOrders
           .filter((workOrder) => matchesWorkOrderWhere(workOrder, where))
-          .map(applyCanonicalOperatorBackfill)
       ),
       findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
         state.workOrders.find((workOrder) => workOrder.id === where.id) ?? null
@@ -2102,7 +2196,7 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
       return workOrder.externalOperatorPhone === expected;
     }
     if (key === "fieldOperatorPhone") {
-      return (workOrder.fieldOperatorPhone ?? workOrder.externalOperatorPhone) === expected;
+      return workOrder.fieldOperatorPhone === expected;
     }
     if (key === "accessTokenRevokedAt") {
       return workOrder.accessTokenRevokedAt === expected;
@@ -2137,16 +2231,6 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
     }
     return true;
   });
-}
-
-function applyCanonicalOperatorBackfill(workOrder: Record<string, unknown>) {
-  if (!workOrder.fieldOperatorName && workOrder.externalOperatorName) {
-    workOrder.fieldOperatorName = workOrder.externalOperatorName;
-  }
-  if (!workOrder.fieldOperatorPhone && workOrder.externalOperatorPhone) {
-    workOrder.fieldOperatorPhone = workOrder.externalOperatorPhone;
-  }
-  return workOrder;
 }
 
 function matchesHandoverEventWhere(event: Record<string, unknown>, where: Record<string, unknown>): boolean {

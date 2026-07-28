@@ -58,6 +58,19 @@ describe("FieldOperatorAuthService", () => {
     expect(prisma.otps).toHaveLength(0);
   });
 
+  it("send-code rejects phones without a currently authorized field work order", async () => {
+    const { handoverService, prisma, service, smsProvider } =
+      createFieldAuthFixture();
+    handoverService.countFieldAccessibleWorkOrders.mockResolvedValueOnce(0);
+
+    await expect(
+      service.requestCode({ phone: "13800000000" }, requestContext())
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(prisma.otps).toHaveLength(0);
+    expect(smsProvider.sendCode).not.toHaveBeenCalled();
+  });
+
   it("send-code rate limits duplicate unconsumed requests in the resend window", async () => {
     const { service } = createFieldAuthFixture();
 
@@ -184,7 +197,7 @@ describe("FieldOperatorAuthService", () => {
 
   it("session DTO is origin-neutral and includes assigned task count without exposing the session token", async () => {
     const { handoverService, service } = createFieldAuthFixture();
-    handoverService.countFieldAccessibleWorkOrders.mockResolvedValueOnce(2);
+    handoverService.countFieldAccessibleWorkOrders.mockResolvedValue(2);
     const code = (await service.requestCode({ phone: "13800000000" }, requestContext())).debugCode!;
     const login = await service.login({ code, phone: "13800000000" }, requestContext());
 
@@ -398,7 +411,7 @@ function createFieldAuthFixture(
   const smsProvider = options.smsProvider ?? createSmsProvider();
   const smsService = new SmsService(config as unknown as ConfigService, prisma as never, smsProvider);
   const handoverService = {
-    countFieldAccessibleWorkOrders: vi.fn(async () => 0)
+    countFieldAccessibleWorkOrders: vi.fn(async () => 1)
   };
   const service = new FieldOperatorAuthService(
     config as unknown as ConfigService,

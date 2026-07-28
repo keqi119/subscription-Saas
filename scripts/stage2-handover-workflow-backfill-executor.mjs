@@ -117,7 +117,8 @@ async function loadRecords(db) {
             deletedAt: true,
             id: true,
             mobile: true,
-            name: true
+            name: true,
+            status: true
           },
           where: { id: { in: internalUserIds } }
         });

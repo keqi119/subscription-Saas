@@ -314,7 +314,7 @@ describe("Stage 2 durable workflow schema", () => {
       /UPDATE "vehicle_handover_work_order"[\s\S]*SET "field_operator_name" = "external_operator_name",[\s\S]*"field_operator_phone" = "external_operator_phone"[\s\S]*WHERE "operator_type" = 'EXTERNAL';/
     );
     expect(executableMigration).toMatch(
-      /UPDATE "vehicle_handover_work_order" AS "work_order"[\s\S]*SET "field_operator_name" = "user"\."name",[\s\S]*"field_operator_phone" = "user"\."mobile"[\s\S]*FROM "user"[\s\S]*"work_order"\."operator_type" = 'INTERNAL'[\s\S]*"work_order"\."assigned_internal_user_id" = "user"\."id";/
+      /UPDATE "vehicle_handover_work_order" AS "work_order"[\s\S]*SET "field_operator_name" = "user"\."name",[\s\S]*"field_operator_phone" = "user"\."mobile"[\s\S]*FROM "user"[\s\S]*"work_order"\."operator_type" = 'INTERNAL'[\s\S]*"work_order"\."assigned_internal_user_id" = "user"\."id"[\s\S]*"user"\."status" = 'ACTIVE'::"user_status"[\s\S]*"user"\."deleted_at" IS NULL;/
     );
     expect(executableMigration).toContain(
       'CREATE INDEX "vehicle_handover_work_order_field_operator_phone_idx"'

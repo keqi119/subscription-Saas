@@ -86,38 +86,40 @@ function planOperatorSnapshot(record) {
     const user = record.assignedInternalUser;
     const name = normalizeName(user?.name);
     const phone = normalizeChinaMobile(user?.mobile);
-    if (!user || user.id !== record.assignedInternalUserId || user.deletedAt) {
-      return {
-        exception: {
-          code: "INTERNAL_OPERATOR_NOT_FOUND",
-          sourceId: record.assignedInternalUserId,
-          workOrderId: record.id
-        },
-        ready: false,
-        update: null
-      };
+    if (!user || user.id !== record.assignedInternalUserId) {
+      return invalidInternalOperatorPlan(
+        record,
+        "INTERNAL_OPERATOR_NOT_FOUND",
+        record.assignedInternalUserId
+      );
+    }
+    if (user.deletedAt) {
+      return invalidInternalOperatorPlan(
+        record,
+        "INTERNAL_OPERATOR_DELETED",
+        user.id
+      );
+    }
+    if (user.status !== "ACTIVE") {
+      return invalidInternalOperatorPlan(
+        record,
+        "INTERNAL_OPERATOR_INACTIVE",
+        user.id
+      );
     }
     if (!phone) {
-      return {
-        exception: {
-          code: "INTERNAL_OPERATOR_MOBILE_INVALID",
-          sourceId: user.id,
-          workOrderId: record.id
-        },
-        ready: false,
-        update: null
-      };
+      return invalidInternalOperatorPlan(
+        record,
+        "INTERNAL_OPERATOR_MOBILE_INVALID",
+        user.id
+      );
     }
     if (!name) {
-      return {
-        exception: {
-          code: "INTERNAL_OPERATOR_NAME_INVALID",
-          sourceId: user.id,
-          workOrderId: record.id
-        },
-        ready: false,
-        update: null
-      };
+      return invalidInternalOperatorPlan(
+        record,
+        "INTERNAL_OPERATOR_NAME_INVALID",
+        user.id
+      );
     }
     return canonicalOperatorPlan(record, {
       name,
@@ -157,6 +159,30 @@ function planOperatorSnapshot(record) {
     },
     ready: false,
     update: null
+  };
+}
+
+function invalidInternalOperatorPlan(record, code, sourceId) {
+  const alreadyClear =
+    record.fieldOperatorName == null && record.fieldOperatorPhone == null;
+  return {
+    exception: {
+      code,
+      sourceId,
+      workOrderId: record.id
+    },
+    ready: false,
+    update: alreadyClear
+      ? null
+      : {
+          expectedFieldOperatorName: record.fieldOperatorName ?? null,
+          expectedFieldOperatorPhone: record.fieldOperatorPhone ?? null,
+          fieldOperatorName: null,
+          fieldOperatorPhone: null,
+          operatorType: "INTERNAL",
+          sourceId,
+          workOrderId: record.id
+        }
   };
 }
 
@@ -261,6 +287,9 @@ function planNextWorkflowJob(record, { operatorReady }) {
     source
   ) {
     return workflowException(record, "STAGE2_WORKFLOW_STATE_INVALID");
+  }
+  if (!operatorReady) {
+    return noWorkflowChange();
   }
   const idempotencyKey = buildCanonicalStage2PdfJobKey({
     manifestHash: confirmedReview.manifestHash,

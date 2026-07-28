@@ -132,10 +132,41 @@ test("fails closed and rolls back when a concurrent unique-key winner conflicts"
   assert.equal(harness.upserts, 1);
 });
 
+test("CAS-clears a stale snapshot for an inactive internal user and converges idempotently", async () => {
+  const harness = createExecutorHarness({
+    canonicalOperatorSnapshot: true,
+    userStatus: "DISABLED"
+  });
+
+  const first = await executeStage2HandoverWorkflowBackfill({
+    mode: "apply",
+    prisma: harness.prisma
+  });
+  const second = await executeStage2HandoverWorkflowBackfill({
+    mode: "apply",
+    prisma: harness.prisma
+  });
+
+  assert.equal(first.exitCode, 0);
+  assert.equal(first.report.applied.operatorSnapshotsUpdated, 1);
+  assert.deepEqual(first.report.ids.exceptions, [
+    {
+      code: "INTERNAL_OPERATOR_INACTIVE",
+      sourceId: "user-1",
+      workOrderId: "work-order-1"
+    }
+  ]);
+  assert.equal(harness.state.workOrders[0].fieldOperatorName, null);
+  assert.equal(harness.state.workOrders[0].fieldOperatorPhone, null);
+  assert.equal(second.report.applied.operatorSnapshotsUpdated, 0);
+  assert.equal(second.report.applied.converged, true);
+});
+
 function createExecutorHarness({
   canonicalOperatorSnapshot = false,
   concurrentWinner = null,
-  jobs = []
+  jobs = [],
+  userStatus = "ACTIVE"
 } = {}) {
   const state = {
     handovers: [
@@ -177,7 +208,8 @@ function createExecutorHarness({
         deletedAt: null,
         id: "user-1",
         mobile: "+86 138-0013-8000",
-        name: "  Li  Ming  "
+        name: "  Li  Ming  ",
+        status: userStatus
       }
     ],
     workOrders: [
@@ -240,6 +272,7 @@ function createExecutorHarness({
       findMany: async ({ select, where }) => {
         assert.equal(select.deletedAt, true);
         assert.equal(select.mobile, true);
+        assert.equal(select.status, true);
         assert.deepEqual(where, { id: { in: ["user-1"] } });
         return structuredClone(state.users);
       }

@@ -53,7 +53,9 @@ SET "field_operator_name" = "user"."name",
     "field_operator_phone" = "user"."mobile"
 FROM "user"
 WHERE "work_order"."operator_type" = 'INTERNAL'
-  AND "work_order"."assigned_internal_user_id" = "user"."id";
+  AND "work_order"."assigned_internal_user_id" = "user"."id"
+  AND "user"."status" = 'ACTIVE'::"user_status"
+  AND "user"."deleted_at" IS NULL;
 
 -- CreateTable
 CREATE TABLE "vehicle_handover_workflow_job" (

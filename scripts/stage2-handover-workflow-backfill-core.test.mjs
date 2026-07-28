@@ -19,7 +19,8 @@ test("backfills internal and external canonical operator snapshots", () => {
         deletedAt: null,
         id: "user-1",
         mobile: "+86 138-0013-8000",
-        name: "Internal Operator"
+        name: "Internal Operator",
+        status: "ACTIVE"
       },
       assignedInternalUserId: "user-1",
       fieldOperatorName: null,
@@ -67,7 +68,8 @@ test("trims operator names without collapsing internal whitespace", () => {
         deletedAt: null,
         id: "user-1",
         mobile: "13800138000",
-        name: "  Li  Ming  "
+        name: "  Li  Ming  ",
+        status: "ACTIVE"
       },
       fieldOperatorName: null,
       fieldOperatorPhone: null
@@ -94,7 +96,8 @@ test("reports internal users without a valid mobile", () => {
         deletedAt: null,
         id: "user-invalid",
         mobile: "021-5555-1234",
-        name: "Internal Operator"
+        name: "Internal Operator",
+        status: "ACTIVE"
       },
       assignedInternalUserId: "user-invalid",
       externalOperatorName: "Legacy External Name",
@@ -106,7 +109,17 @@ test("reports internal users without a valid mobile", () => {
     })
   ]);
 
-  assert.deepEqual(plan.operatorSnapshotUpdates, []);
+  assert.deepEqual(plan.operatorSnapshotUpdates, [
+    {
+      expectedFieldOperatorName: "Legacy Canonical Name",
+      expectedFieldOperatorPhone: "13800138000",
+      fieldOperatorName: null,
+      fieldOperatorPhone: null,
+      operatorType: "INTERNAL",
+      sourceId: "user-invalid",
+      workOrderId: "work-order-invalid-internal"
+    }
+  ]);
   assert.deepEqual(plan.exceptions, [
     {
       code: "INTERNAL_OPERATOR_MOBILE_INVALID",
@@ -114,6 +127,57 @@ test("reports internal users without a valid mobile", () => {
       workOrderId: "work-order-invalid-internal"
     }
   ]);
+});
+
+test("clears stale canonical snapshots for inactive or deleted internal users", () => {
+  for (const assignedInternalUser of [
+    {
+      deletedAt: null,
+      id: "user-disabled",
+      mobile: "13800138000",
+      name: "Disabled Operator",
+      status: "DISABLED"
+    },
+    {
+      deletedAt: "2026-07-27T01:00:00.000Z",
+      id: "user-deleted",
+      mobile: "13800138000",
+      name: "Deleted Operator",
+      status: "ACTIVE"
+    }
+  ]) {
+    const plan = buildStage2HandoverWorkflowBackfillPlan([
+      baseRecord({
+        assignedInternalUser,
+        assignedInternalUserId: assignedInternalUser.id,
+        fieldOperatorName: assignedInternalUser.name,
+        fieldOperatorPhone: assignedInternalUser.mobile,
+        id: `work-order-${assignedInternalUser.id}`
+      })
+    ]);
+
+    assert.deepEqual(plan.operatorSnapshotUpdates, [
+      {
+        expectedFieldOperatorName: assignedInternalUser.name,
+        expectedFieldOperatorPhone: assignedInternalUser.mobile,
+        fieldOperatorName: null,
+        fieldOperatorPhone: null,
+        operatorType: "INTERNAL",
+        sourceId: assignedInternalUser.id,
+        workOrderId: `work-order-${assignedInternalUser.id}`
+      }
+    ]);
+    assert.deepEqual(plan.jobCandidates, []);
+    assert.deepEqual(plan.exceptions, [
+      {
+        code: assignedInternalUser.status === "DISABLED"
+          ? "INTERNAL_OPERATOR_INACTIVE"
+          : "INTERNAL_OPERATOR_DELETED",
+        sourceId: assignedInternalUser.id,
+        workOrderId: `work-order-${assignedInternalUser.id}`
+      }
+    ]);
+  }
 });
 
 test("does not use a canonical or legacy fallback for an unassigned internal operator", () => {
@@ -599,7 +663,8 @@ function baseRecord(overrides = {}) {
       deletedAt: null,
       id: "user-1",
       mobile: "13800138000",
-      name: "Internal Operator"
+      name: "Internal Operator",
+      status: "ACTIVE"
     },
     assignedInternalUserId: "user-1",
     customerConfirmedAt: "2026-07-27T00:00:00.000Z",

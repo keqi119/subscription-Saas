@@ -19,8 +19,10 @@ import {
   buildOrderWorkspaceLocation,
   createOrderWorkspaceConfirmScope,
   getOrderWorkspaceChangeGuard,
+  getOrderWorkspaceCustomerPresentation,
   getOrderWorkspaceFallbackRecordIds,
   getOrderWorkspaceFinanceLinks,
+  getOrderWorkspaceFocusAttemptKey,
   getOrderWorkspaceRecordIds,
   getVisibleOrderWorkspaceTabs,
   getWorkspaceActionPresentation,
@@ -319,6 +321,65 @@ describe("admin order workspace refresh and focus helpers", () => {
       '[data-workspace-record="escaped-focus"],[data-workspace-record-alias="escaped-focus"]'
     );
     expect(escaped).toEqual(['handover"] [data-secret="raw']);
+  });
+
+  it("retries focus when summary becomes available after the active domain loaded", () => {
+    const failedSummaryAttempt = getOrderWorkspaceFocusAttemptKey({
+      activeTab: "handover",
+      domainLoaded: true,
+      domainLoading: false,
+      focus: "return-work-order-1",
+      summaryAsOf: null
+    });
+    const successfulSummaryAttempt = getOrderWorkspaceFocusAttemptKey({
+      activeTab: "handover",
+      domainLoaded: true,
+      domainLoading: false,
+      focus: "return-work-order-1",
+      summaryAsOf: "2026-07-29T08:00:00.000Z"
+    });
+
+    expect(failedSummaryAttempt).toBe(
+      '["handover","return-work-order-1",null]'
+    );
+    expect(successfulSummaryAttempt).toBe(
+      '["handover","return-work-order-1","2026-07-29T08:00:00.000Z"]'
+    );
+    expect(successfulSummaryAttempt).not.toBe(failedSummaryAttempt);
+    expect(
+      getOrderWorkspaceFocusAttemptKey({
+        activeTab: "handover",
+        domainLoaded: true,
+        domainLoading: true,
+        focus: "return-work-order-1",
+        summaryAsOf: "2026-07-29T08:00:00.000Z"
+      })
+    ).toBeNull();
+  });
+
+  it("uses the summary label instead of raw customer data without customer view", () => {
+    const customer = {
+      mobile: "13800000000",
+      name: "Raw Customer Sentinel"
+    };
+
+    expect(
+      getOrderWorkspaceCustomerPresentation({
+        canViewCustomer: false,
+        customer,
+        summaryLabel: "Safe Summary Customer"
+      })
+    ).toEqual({ label: "Safe Summary Customer" });
+    expect(
+      getOrderWorkspaceCustomerPresentation({
+        canViewCustomer: true,
+        customer,
+        summaryLabel: "Safe Summary Customer"
+      })
+    ).toEqual({
+      label: "Raw Customer Sentinel",
+      mobile: "13800000000"
+    });
   });
 
   it("destroys every scoped confirm handle on disposal and rejects late handles", () => {

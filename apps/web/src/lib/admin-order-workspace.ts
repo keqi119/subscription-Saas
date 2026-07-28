@@ -193,6 +193,39 @@ export function getOrderWorkspaceFallbackRecordIds(
   );
 }
 
+export function getOrderWorkspaceFocusAttemptKey(input: {
+  activeTab: OrderWorkspaceTabKey;
+  domainLoaded: boolean;
+  domainLoading: boolean;
+  focus?: string;
+  summaryAsOf: string | null;
+}): string | null {
+  if (!input.focus || input.domainLoading || !input.domainLoaded) {
+    return null;
+  }
+
+  return JSON.stringify([
+    input.activeTab,
+    input.focus,
+    input.summaryAsOf
+  ]);
+}
+
+export function getOrderWorkspaceCustomerPresentation(input: {
+  canViewCustomer: boolean;
+  customer?: { mobile?: string | null; name?: string | null } | null;
+  summaryLabel?: string | null;
+}): { label: string; mobile?: string } {
+  const summaryLabel = input.summaryLabel?.trim() || "-";
+  if (!input.canViewCustomer) {
+    return { label: summaryLabel };
+  }
+
+  const label = input.customer?.name?.trim() || summaryLabel;
+  const mobile = input.customer?.mobile?.trim();
+  return mobile ? { label, mobile } : { label };
+}
+
 export function getOrderWorkspaceFinanceLinks(
   permissions: Iterable<string>
 ): Array<{ href: string; label: string }> {

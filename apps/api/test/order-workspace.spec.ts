@@ -607,15 +607,8 @@ describe("OrderWorkspaceResolver", () => {
 });
 
 describe("OrderWorkspaceService", () => {
-  it("returns an order-view-only detail without contract or change domains", async () => {
-    const getOrder = vi.fn().mockResolvedValue({
-      changes: [{ id: "change-1" }],
-      contract: { id: "contract-1" },
-      contractId: "contract-1",
-      contracts: [{ id: "contract-1" }],
-      id: "order-1",
-      orderNo: "SO-001"
-    });
+  it("fails closed to explicit order fields for order-view-only detail access", async () => {
+    const getOrder = vi.fn().mockResolvedValue(workspaceRawDetail());
     const service = new OrderWorkspaceService(
       workspacePrisma() as never,
       { getOrder } as never,
@@ -628,66 +621,223 @@ describe("OrderWorkspaceService", () => {
     expect(getOrder).toHaveBeenCalledWith("order-1", user);
     expect(detail).toEqual({
       id: "order-1",
-      orderNo: "SO-001"
+      orderNo: "SO-001",
+      orderStatus: "ACTIVE"
     });
   });
 
-  it("returns contract data only with contract view permission", async () => {
-    const getOrder = vi.fn().mockResolvedValue({
-      changes: [{ id: "change-1" }],
-      contract: { id: "contract-1" },
-      contractId: "contract-1",
-      contracts: [{ id: "contract-1" }],
-      id: "order-1"
-    });
-    const service = new OrderWorkspaceService(
-      workspacePrisma() as never,
-      { getOrder } as never,
-      new OrderWorkspaceResolver()
-    );
+  it.each([
+    {
+      expected: {
+        customer: {
+          grade: "A",
+          id: "customer-1",
+          identity: { idCardNoPresent: true },
+          mobile: "13800000000",
+          name: "Customer Sentinel",
+          profile: { residenceAddress: "Address Sentinel" }
+        }
+      },
+      permissions: [PermissionCode.CUSTOMER_VIEW]
+    },
+    {
+      expected: {
+        riskResult: {
+          grade: "A",
+          id: "risk-1",
+          remark: "Risk Sentinel",
+          result: "APPROVED",
+          score: 88
+        }
+      },
+      permissions: [PermissionCode.RISK_VIEW]
+    },
+    {
+      expected: {
+        application: {
+          applicationNo: "APP-SENTINEL",
+          id: "application-1",
+          status: "APPROVED"
+        }
+      },
+      permissions: [PermissionCode.APPLICATION_VIEW]
+    },
+    {
+      expected: {
+        quote: {
+          id: "quote-1",
+          quoteNo: "QUOTE-SENTINEL",
+          status: "CONFIRMED"
+        },
+        quoteSnapshot: { marker: "Quote Snapshot Sentinel" }
+      },
+      permissions: [PermissionCode.QUOTE_VIEW]
+    },
+    {
+      expected: {
+        contract: {
+          contractNo: "CONTRACT-SENTINEL",
+          id: "contract-1",
+          status: "SIGNED"
+        },
+        contractId: "contract-1",
+        contracts: [
+          {
+            contractNo: "CONTRACT-SENTINEL",
+            id: "contract-1",
+            status: "SIGNED"
+          }
+        ]
+      },
+      permissions: [PermissionCode.CONTRACT_VIEW]
+    },
+    {
+      expected: {
+        changes: [
+          {
+            afterSnapshot: { marker: "After Sentinel" },
+            beforeSnapshot: { marker: "Before Sentinel" },
+            changeType: "RETURN_TO_PLAN",
+            createdAt: "2026-07-29T00:00:00.000Z",
+            id: "change-1",
+            reason: "Change Sentinel",
+            status: "PENDING"
+          }
+        ]
+      },
+      permissions: [PermissionCode.ORDER_CHANGE_VIEW]
+    }
+  ])(
+    "adds only the explicitly permitted $permissions workspace domain",
+    async ({ expected, permissions }) => {
+      const service = workspaceDetailService();
+      const detail = await service.getDetail(
+        "order-1",
+        workspaceUser([PermissionCode.ORDER_VIEW, ...permissions])
+      );
 
-    const detail = await service.getDetail(
+      expect(detail).toEqual({
+        id: "order-1",
+        orderNo: "SO-001",
+        orderStatus: "ACTIVE",
+        ...expected
+      });
+    }
+  );
+
+  it("separates vehicle base, insurance policy, document, and claim permissions", async () => {
+    const service = workspaceDetailService();
+
+    const insuranceOnly = await service.getDetail(
       "order-1",
       workspaceUser([
         PermissionCode.ORDER_VIEW,
-        PermissionCode.CONTRACT_VIEW
+        PermissionCode.VEHICLE_INSURANCE_VIEW
       ])
     );
+    expect(insuranceOnly).not.toHaveProperty("vehicle");
 
-    expect(detail).toEqual({
-      contract: { id: "contract-1" },
-      contractId: "contract-1",
-      contracts: [{ id: "contract-1" }],
-      id: "order-1"
+    const vehicleOnly = await service.getDetail(
+      "order-1",
+      workspaceUser([PermissionCode.ORDER_VIEW, PermissionCode.VEHICLE_VIEW])
+    );
+    expect(vehicleOnly).toHaveProperty(
+      "modelDisplayName",
+      "Root Vehicle Model Sentinel"
+    );
+    expect(vehicleOnly.vehicle).toEqual({
+      id: "vehicle-1",
+      status: "LEASED",
+      vehicleNo: "VEHICLE-SENTINEL",
+      vin: "VIN-SENTINEL"
     });
-    expect(detail).not.toHaveProperty("changes");
+
+    const policyAccess = await service.getDetail(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.VEHICLE_VIEW,
+        PermissionCode.VEHICLE_INSURANCE_VIEW
+      ])
+    );
+    expect(policyAccess.vehicle).toEqual({
+      id: "vehicle-1",
+      insurancePolicies: [
+        {
+          id: "policy-1",
+          policyNo: "POLICY-SENTINEL",
+          policyStatus: "ACTIVE"
+        }
+      ],
+      status: "LEASED",
+      vehicleNo: "VEHICLE-SENTINEL",
+      vin: "VIN-SENTINEL"
+    });
+
+    const documentAndClaimAccess = await service.getDetail(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.VEHICLE_VIEW,
+        PermissionCode.VEHICLE_INSURANCE_VIEW,
+        PermissionCode.VEHICLE_DOCUMENT_VIEW,
+        PermissionCode.INSURANCE_CLAIM_VIEW
+      ])
+    );
+    expect(documentAndClaimAccess.vehicle).toEqual({
+      documents: [
+        {
+          documentStatus: "ACTIVE",
+          documentType: "INSURANCE_POLICY",
+          fileName: "policy.pdf",
+          id: "document-1"
+        }
+      ],
+      id: "vehicle-1",
+      insuranceClaims: [
+        {
+          claimNo: "CLAIM-SENTINEL",
+          claimStatus: "SUBMITTED",
+          id: "claim-1"
+        }
+      ],
+      insurancePolicies: [
+        {
+          id: "policy-1",
+          policyNo: "POLICY-SENTINEL",
+          policyStatus: "ACTIVE"
+        }
+      ],
+      status: "LEASED",
+      vehicleNo: "VEHICLE-SENTINEL",
+      vin: "VIN-SENTINEL"
+    });
   });
 
-  it("returns changes only with order-change view permission", async () => {
-    const getOrder = vi.fn().mockResolvedValue({
-      changes: [{ id: "change-1" }],
-      contract: { id: "contract-1" },
-      contracts: [{ id: "contract-1" }],
-      id: "order-1"
-    });
-    const service = new OrderWorkspaceService(
-      workspacePrisma() as never,
-      { getOrder } as never,
-      new OrderWorkspaceResolver()
-    );
-
-    const detail = await service.getDetail(
+  it("returns every explicitly permitted workspace domain for an Admin permission set", async () => {
+    const detail = await workspaceDetailService().getDetail(
       "order-1",
-      workspaceUser([
-        PermissionCode.ORDER_VIEW,
-        PermissionCode.ORDER_CHANGE_VIEW
-      ])
+      workspaceUser(Object.values(PermissionCode))
     );
 
-    expect(detail).toEqual({
-      changes: [{ id: "change-1" }],
-      id: "order-1"
-    });
+    expect(detail).toEqual(
+      expect.objectContaining({
+        application: expect.objectContaining({ id: "application-1" }),
+        changes: [expect.objectContaining({ id: "change-1" })],
+        contract: expect.objectContaining({ id: "contract-1" }),
+        contracts: [expect.objectContaining({ id: "contract-1" })],
+        customer: expect.objectContaining({ id: "customer-1" }),
+        quote: expect.objectContaining({ id: "quote-1" }),
+        quoteSnapshot: { marker: "Quote Snapshot Sentinel" },
+        riskResult: expect.objectContaining({ id: "risk-1" }),
+        vehicle: expect.objectContaining({
+          id: "vehicle-1",
+          insuranceClaims: [expect.objectContaining({ id: "claim-1" })],
+          insurancePolicies: [expect.objectContaining({ id: "policy-1" })]
+        })
+      })
+    );
+    expect(detail).not.toHaveProperty("futureSecret");
   });
 
   it.each([
@@ -1223,6 +1373,119 @@ function workspaceUser(permissions: PermissionCode[] = Object.values(PermissionC
     permissions,
     roles: ["ADMIN"],
     username: "admin"
+  };
+}
+
+function workspaceDetailService() {
+  return new OrderWorkspaceService(
+    workspacePrisma() as never,
+    { getOrder: vi.fn().mockResolvedValue(workspaceRawDetail()) } as never,
+    new OrderWorkspaceResolver()
+  );
+}
+
+function workspaceRawDetail() {
+  return {
+    application: {
+      applicationNo: "APP-SENTINEL",
+      id: "application-1",
+      salesUserId: "sales-user-secret",
+      status: "APPROVED"
+    },
+    changes: [
+      {
+        afterSnapshot: { marker: "After Sentinel" },
+        beforeSnapshot: { marker: "Before Sentinel" },
+        changeType: "RETURN_TO_PLAN",
+        createdAt: "2026-07-29T00:00:00.000Z",
+        deletedAt: null,
+        id: "change-1",
+        providerSecret: "change-provider-secret",
+        reason: "Change Sentinel",
+        status: "PENDING"
+      }
+    ],
+    contract: {
+      contractNo: "CONTRACT-SENTINEL",
+      contractSnapshot: { secret: "contract-snapshot-secret" },
+      id: "contract-1",
+      status: "SIGNED"
+    },
+    contractId: "contract-1",
+    contracts: [
+      {
+        contractNo: "CONTRACT-SENTINEL",
+        contractSnapshot: { secret: "contract-snapshot-secret" },
+        id: "contract-1",
+        status: "SIGNED"
+      }
+    ],
+    customer: {
+      grade: "A",
+      id: "customer-1",
+      identity: {
+        idCardNo: "RAW-ID-CARD-SECRET",
+        idCardNoPresent: true
+      },
+      mobile: "13800000000",
+      name: "Customer Sentinel",
+      profile: { residenceAddress: "Address Sentinel" },
+      providerSecret: "customer-provider-secret"
+    },
+    futureSecret: "future-order-field-secret",
+    id: "order-1",
+    modelDisplayName: "Root Vehicle Model Sentinel",
+    orderNo: "SO-001",
+    orderStatus: "ACTIVE",
+    productVersion: { providerSecret: "product-version-secret" },
+    quote: {
+      id: "quote-1",
+      packageSnapshot: { secret: "nested-quote-snapshot-secret" },
+      quoteNo: "QUOTE-SENTINEL",
+      status: "CONFIRMED"
+    },
+    quoteSnapshot: { marker: "Quote Snapshot Sentinel" },
+    riskResult: {
+      grade: "A",
+      id: "risk-1",
+      providerSecret: "risk-provider-secret",
+      remark: "Risk Sentinel",
+      result: "APPROVED",
+      score: 88
+    },
+    vehicle: {
+      documents: [
+        {
+          bucket: "private-bucket-secret",
+          documentStatus: "ACTIVE",
+          documentType: "INSURANCE_POLICY",
+          fileName: "policy.pdf",
+          id: "document-1",
+          objectKey: "private-object-secret"
+        }
+      ],
+      id: "vehicle-1",
+      insuranceClaims: [
+        {
+          claimNo: "CLAIM-SENTINEL",
+          claimStatus: "SUBMITTED",
+          id: "claim-1",
+          snapshot: { secret: "claim-snapshot-secret" }
+        }
+      ],
+      insurancePolicies: [
+        {
+          id: "policy-1",
+          policyNo: "POLICY-SENTINEL",
+          policyStatus: "ACTIVE",
+          snapshot: { secret: "policy-snapshot-secret" }
+        }
+      ],
+      providerSecret: "vehicle-provider-secret",
+      status: "LEASED",
+      vehicleNo: "VEHICLE-SENTINEL",
+      vin: "VIN-SENTINEL"
+    }
   };
 }
 

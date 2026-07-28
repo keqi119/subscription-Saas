@@ -103,8 +103,10 @@ import {
   buildOrderWorkspaceRecordSelector,
   createOrderWorkspaceConfirmScope,
   getOrderWorkspaceChangeGuard,
+  getOrderWorkspaceCustomerPresentation,
   getOrderWorkspaceFallbackRecordIds,
   getOrderWorkspaceFinanceLinks,
+  getOrderWorkspaceFocusAttemptKey,
   getOrderWorkspaceRecordIds,
   getVisibleOrderWorkspaceTabs,
   getWorkspaceStatePresentation,
@@ -147,7 +149,7 @@ interface OrderDetail {
   contract?: { contractNo: string; id: string; status: string } | null;
   createdAt: string;
   creditReviewStatus?: string;
-  customer: { name: string; mobile: string };
+  customer?: { name?: string | null; mobile?: string | null } | null;
   customerId: string;
   customerConfirmedAt?: string | null;
   depositAmount: number;
@@ -1949,9 +1951,13 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
 }
 
 function OrderInfoSections({
+  customerLabel,
+  customerMobile,
   currentVehicleSalePrice,
   order
 }: {
+  customerLabel: string;
+  customerMobile?: string;
   currentVehicleSalePrice: number | null;
   order: OrderDetail;
 }) {
@@ -1990,8 +1996,8 @@ function OrderInfoSections({
           bordered
           column={2}
           items={[
-            { label: "客户姓名", children: safeText(order.customer.name) },
-            { label: "手机号", children: safeText(order.customer.mobile) },
+            { label: "客户姓名", children: safeText(customerLabel) },
+            { label: "手机号", children: safeText(customerMobile) },
             { label: "客户确认时间", children: formatTime(order.customerConfirmedAt) },
             { label: "押金状态", children: order.depositStatus ? labelOf(STATUS_LABELS, order.depositStatus) : "-" },
             { label: "押金金额", children: formatYuan(order.finalDepositAmount ?? order.depositAmount) },
@@ -2030,6 +2036,8 @@ function OrderInfoSections({
 }
 
 function EntitlementPanel({
+  customerLabel,
+  customerMobile,
   entitlements,
   entitlementLoading,
   expiringEntitlements,
@@ -2048,6 +2056,8 @@ function EntitlementPanel({
   usageTotal,
   usages
 }: {
+  customerLabel: string;
+  customerMobile?: string;
   entitlements: OrderEntitlementsResponse;
   entitlementLoading: boolean;
   expiringEntitlements: boolean;
@@ -2243,7 +2253,7 @@ function EntitlementPanel({
                 { label: "权益账户编号", children: safeText(account.accountNo) },
                 { label: "账户状态", children: <EntitlementAccountStatusTag value={account.accountStatus} /> },
                 { label: "订单编号", children: safeText(order.orderNo) },
-                { label: "客户", children: joinText(order.customer.name, order.customer.mobile) },
+                { label: "客户", children: joinText(customerLabel, customerMobile) },
                 { label: "订阅套餐", children: getEntitlementPlanText(account) },
                 { label: "权益周期开始", children: formatDate(account.periodStart) },
                 { label: "权益周期结束", children: formatDate(account.periodEnd) },
@@ -3666,6 +3676,8 @@ function ReturnPanel({
 }
 
 function DepositSettlementPanel({
+  customerLabel,
+  customerMobile,
   deductAvailability,
   depositSettlementLoading,
   generateAvailability,
@@ -3678,6 +3690,8 @@ function DepositSettlementPanel({
   settlement,
   settlementError
 }: {
+  customerLabel: string;
+  customerMobile?: string;
   deductAvailability: ReturnType<typeof actionAvailability>;
   depositSettlementLoading: boolean;
   generateAvailability: ReturnType<typeof actionAvailability>;
@@ -3802,7 +3816,7 @@ function DepositSettlementPanel({
             { label: "订单编号", children: safeText(settlement?.orderNo ?? order.orderNo) },
             {
               label: "客户",
-              children: joinText(settlement?.customer?.name ?? order.customer.name, settlement?.customer?.mobile ?? order.customer.mobile)
+              children: joinText(customerLabel, customerMobile)
             },
             { label: "保证金已收", children: formatYuan(settlement?.collectedAmount) },
             { label: "已扣减", children: formatYuan(settlement?.deductedAmount) },
@@ -4404,7 +4418,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         }
       };
     },
-    [modal.confirm]
+    []
   );
   const [changeForm] = Form.useForm<ChangeFormValues>();
   const [assignExternalHandoverForm] = Form.useForm<AssignExternalHandoverFormValues>();
@@ -4547,6 +4561,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     [message, stage2DeliveryVerifier]
   );
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
+  const hasCustomerViewPermission = permissions.has("customer:view");
   const hasBillingViewPermission = permissions.has("billing:view");
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
   const hasDeliveryViewPermission = permissions.has("delivery:view");
@@ -4568,6 +4583,26 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const activeDomainState = domainLoadStates[activeTab];
   const activeDomainError = activeDomainState.error;
   const activeDomainLoading = activeDomainState.loading;
+  const focusAttemptKey = getOrderWorkspaceFocusAttemptKey({
+    activeTab,
+    domainLoaded: activeDomainState.loaded,
+    domainLoading: activeDomainLoading,
+    focus,
+    summaryAsOf: summary?.asOf ?? null
+  });
+  const customerPresentation = useMemo(
+    () =>
+      getOrderWorkspaceCustomerPresentation({
+        canViewCustomer: hasCustomerViewPermission,
+        customer: order?.customer,
+        summaryLabel: summary?.header.customerLabel
+      }),
+    [
+      hasCustomerViewPermission,
+      order?.customer,
+      summary?.header.customerLabel
+    ]
+  );
   const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
   const canCreateChange = permissions.has("order_change:create");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
@@ -5378,7 +5413,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   ]);
 
   useEffect(() => {
-    if (!focus || activeDomainLoading) {
+    if (!focus || !focusAttemptKey) {
       return;
     }
     const record = document.querySelector<HTMLElement>(
@@ -5405,7 +5440,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       window.clearTimeout(timeout);
       clearFocusHighlight();
     };
-  }, [activeDomainLoading, activeDomainState.loaded, activeTab, focus]);
+  }, [focus, focusAttemptKey]);
 
   async function viewHandoverWorkOrderDetail(id: string) {
     setHandoverActionLoading(`detail:${id}`);
@@ -6908,6 +6943,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               order={order}
             />
             <OrderInfoSections
+              customerLabel={customerPresentation.label}
+              customerMobile={customerPresentation.mobile}
               currentVehicleSalePrice={currentVehicleSalePrice}
               order={order}
             />
@@ -7059,6 +7096,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           order && hasEntitlementViewPermission ? (
             <div data-workspace-record={entitlements.account?.id}>
               <EntitlementPanel
+                customerLabel={customerPresentation.label}
+                customerMobile={customerPresentation.mobile}
                 entitlements={entitlements}
                 entitlementLoading={entitlementLoading}
                 expiringEntitlements={expiringEntitlements}
@@ -7121,6 +7160,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             ) : null}
             {hasDepositSettlementViewPermission ? (
               <DepositSettlementPanel
+                customerLabel={customerPresentation.label}
+                customerMobile={customerPresentation.mobile}
                 deductAvailability={deductDepositAvailability}
                 depositSettlementLoading={depositSettlementLoading}
                 generateAvailability={generateDamageFeeBillAvailability}

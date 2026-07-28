@@ -3515,6 +3515,12 @@ describe("Stage 2 handover eSign Admin API contract", () => {
         "handover-work-orders/:id/esign/signed-document",
         RequestMethod.GET,
         PermissionCode.DELIVERY_VIEW
+      ],
+      [
+        "downloadStage2SignedDocument",
+        "handover-work-orders/:id/esign/signed-document/download",
+        RequestMethod.GET,
+        PermissionCode.DELIVERY_VIEW
       ]
     ] as const;
 

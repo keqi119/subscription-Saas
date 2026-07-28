@@ -10,6 +10,7 @@ import {
   ContractStatus,
   ContractTemplateType,
   ContractVersionStatus,
+  DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
@@ -989,6 +990,96 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(downloaded).not.toHaveProperty("objectKey");
   });
 
+  it("downloads the authoritative archived signed PDF through its linked FileObject", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+
+    const downloaded = await harness.service.downloadStage2SignedHandoverPdf(
+      "work-order-1"
+    );
+
+    expect(downloaded.filename).toBe("handover-signed.pdf");
+    expect(downloaded.mimeType).toBe("application/pdf");
+    expect(harness.storageService.getObject).toHaveBeenCalledWith(
+      "application-materials",
+      "contracts/contract-stage2-1/signed/handover.pdf"
+    );
+    expect(downloaded).not.toHaveProperty("objectKey");
+  });
+
+  it("refuses the signed PDF download until the typed Stage 2 archive is complete", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.SIGNED
+      }
+    });
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_SIGNED_DOCUMENT_NOT_ARCHIVED"
+      })
+    });
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("refuses the signed PDF when its linked FileObject has a different object key", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+    harness.records.signedFileObject.objectKey =
+      "contracts/contract-stage2-1/signed/other.pdf";
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_SIGNED_DOCUMENT_MISSING"
+      })
+    });
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("refuses the signed PDF when its linked FileObject is not a PDF", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+    harness.records.signedFileObject.mimeType = "image/png";
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_SIGNED_DOCUMENT_MISSING"
+      })
+    });
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
   it("refuses to download a generated PDF after its manifest hash becomes stale", async () => {
     const harness = createServiceHarness({
       handover: {
@@ -1185,6 +1276,14 @@ function createServiceHarness(options: {
       originalName: "handover.pdf",
       sizeBytes: BigInt(generatedPdfBuffer.length)
     },
+    signedFileObject: {
+      bucket: "application-materials",
+      id: "file-signed-pdf-1",
+      mimeType: "application/pdf",
+      objectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+      originalName: "handover-signed.pdf",
+      sizeBytes: BigInt(generatedPdfBuffer.length)
+    },
     derivativeFileObjects: derivativeIds.map((id) => ({
       bucket: "application-materials",
       id,
@@ -1334,7 +1433,11 @@ function createServiceHarness(options: {
         records.derivativeFileObjects.filter((fileObject) => where.id.in.includes(fileObject.id))
       ),
       findUnique: vi.fn(async ({ where }) =>
-        where.id === "file-pdf-1" ? records.fileObject : null
+        where.id === "file-pdf-1"
+          ? records.fileObject
+          : where.id === "file-signed-pdf-1"
+            ? records.signedFileObject
+            : null
       ),
       upsert: vi.fn(async ({ create }) => prisma.fileObject.create({ data: create }))
     },

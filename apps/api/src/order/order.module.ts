@@ -8,6 +8,7 @@ import { ESignModule } from "../esign/esign.module";
 import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { StorageModule } from "../storage/storage.module";
 import { OrderController } from "./order.controller";
+import { OrderWorkspaceResolver, OrderWorkspaceService } from "./order-workspace.service";
 import { OrderService } from "./order.service";
 
 @Module({
@@ -21,6 +22,6 @@ import { OrderService } from "./order.service";
     HandoverWorkOrderModule,
     StorageModule
   ],
-  providers: [OrderService]
+  providers: [OrderService, OrderWorkspaceResolver, OrderWorkspaceService]
 })
 export class OrderModule {}

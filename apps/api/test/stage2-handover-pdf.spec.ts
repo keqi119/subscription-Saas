@@ -41,12 +41,22 @@ const pdfKitMock = vi.hoisted(() => {
     static options: Record<string, unknown> = {};
     static rectCalls: Array<{
       height: number;
+      pageHeight: number;
       pageNumber: number;
+      pageWidth: number;
       width: number;
       x: number;
       y: number;
     }> = [];
-    static textCalls: Array<{ pageNumber: number; text: string; x: number; y: number }> = [];
+    static textCalls: Array<{
+      height: number;
+      pageHeight: number;
+      pageNumber: number;
+      pageWidth: number;
+      text: string;
+      x: number;
+      y: number;
+    }> = [];
 
     static startCapture() {
       FakePDFDocument.imageCalls = [];
@@ -88,8 +98,16 @@ const pdfKitMock = vi.hoisted(() => {
       this.y = margin;
     }
 
-    addPage() {
+    addPage(options: { margin?: number; size?: string | [number, number] } = {}) {
       this.pageNumber += 1;
+      if (Array.isArray(options.size)) {
+        const margin = options.margin ?? this.page.margins.top;
+        this.page = {
+          height: options.size[1],
+          margins: { bottom: margin, left: margin, right: margin, top: margin },
+          width: options.size[0]
+        };
+      }
       this.y = this.page.margins.top;
       this.emit("pageAdded");
       return this;
@@ -146,7 +164,15 @@ const pdfKitMock = vi.hoisted(() => {
     }
 
     rect(x: number, y: number, width: number, height: number) {
-      FakePDFDocument.rectCalls.push({ height, pageNumber: this.pageNumber, width, x, y });
+      FakePDFDocument.rectCalls.push({
+        height,
+        pageHeight: this.page.height,
+        pageNumber: this.pageNumber,
+        pageWidth: this.page.width,
+        width,
+        x,
+        y
+      });
       return this;
     }
 
@@ -161,13 +187,17 @@ const pdfKitMock = vi.hoisted(() => {
       if (typeof y === "number") {
         this.y = y;
       }
+      const height = this.heightOfString(text);
       FakePDFDocument.textCalls.push({
+        height,
+        pageHeight: this.page.height,
         pageNumber: this.pageNumber,
+        pageWidth: this.page.width,
         text,
         x: this.x,
         y: this.y
       });
-      this.y += this.heightOfString(text);
+      this.y += height;
       return this;
     }
   }
@@ -380,10 +410,10 @@ describe("Stage 2 handover PDF renderer", () => {
     }
   });
 
-  it("keeps signing slots on the final page when operation tips paginate on a short supported page", async () => {
+  it("creates a bounded final signing page for a short supported page", async () => {
     const renderer = new DeliveryHandoverPdfRendererService();
     const model = buildDeliveryHandoverPdfRenderModel(createRenderModelInput());
-    const { textCalls } = pdfKitMock.FakePDFDocument.startCapture();
+    const { rectCalls, textCalls } = pdfKitMock.FakePDFDocument.startCapture();
 
     const result = await renderer.render(model, {
       cjkFontPath: process.execPath,
@@ -393,12 +423,53 @@ describe("Stage 2 handover PDF renderer", () => {
     });
     const visibleText = textCalls.map((call) => call.text).join("\n");
     const finalPageNumber = result.diagnostics.pageCount - 1;
+    const finalPagePdfKitNumber = result.diagnostics.pageCount;
+    const finalPageTableBorders = rectCalls.filter(
+      (call) => call.pageNumber === finalPagePdfKitNumber
+    );
+    const finalPageSignatureBoxes = finalPageTableBorders.filter(
+      (call) => call.height >= 144
+    );
+    const finalPageDateText = textCalls.filter(
+      (call) => call.pageNumber === finalPagePdfKitNumber && call.text.includes("日期")
+    );
 
     expect(result.slotCoordinates.map((coordinate) => coordinate.pageNumber)).toEqual([
       finalPageNumber,
       finalPageNumber
     ]);
     expect(finalPageNumber).toBeGreaterThan(0);
+    expect(finalPageTableBorders).toHaveLength(12);
+    expect(finalPageSignatureBoxes).toHaveLength(2);
+    expect(finalPageDateText).toHaveLength(2);
+    for (const border of finalPageTableBorders) {
+      expect(border.x).toBeGreaterThanOrEqual(45);
+      expect(border.y).toBeGreaterThanOrEqual(45);
+      expect(border.x + border.width).toBeLessThanOrEqual(border.pageWidth - 45);
+      expect(border.y + border.height).toBeLessThanOrEqual(border.pageHeight - 45);
+    }
+    for (const dateText of finalPageDateText) {
+      expect(dateText.x).toBeGreaterThanOrEqual(45);
+      expect(dateText.y).toBeGreaterThanOrEqual(45);
+      expect(dateText.x).toBeLessThanOrEqual(dateText.pageWidth - 45);
+      expect(dateText.y + dateText.height).toBeLessThanOrEqual(dateText.pageHeight - 45);
+    }
+    result.slotCoordinates.forEach((coordinate, index) => {
+      const signatureBox = finalPageSignatureBoxes[index]!;
+      expect(coordinate.pdfPageHeight).toBeGreaterThan(320);
+      expect(coordinate.pdfPageHeight).toBe(signatureBox.pageHeight);
+      expect(coordinate.pdfPageWidth).toBe(signatureBox.pageWidth);
+      expect(coordinate.x).toBeCloseTo(
+        ((signatureBox.x + signatureBox.width / 2) / signatureBox.pageWidth) * 800,
+        3
+      );
+      expect(coordinate.y).toBeCloseTo(
+        ((signatureBox.y + signatureBox.height / 2) / signatureBox.pageHeight) * 1131,
+        3
+      );
+      expect(coordinate.width).toBeCloseTo((signatureBox.width / signatureBox.pageWidth) * 800, 3);
+      expect(coordinate.height).toBeCloseTo((signatureBox.height / signatureBox.pageHeight) * 1131, 3);
+    });
     for (const tip of model.operationTips) {
       expect(visibleText).toContain(tip);
     }

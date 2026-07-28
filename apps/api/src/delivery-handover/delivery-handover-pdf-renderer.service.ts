@@ -26,6 +26,16 @@ const CJK_PATTERN = /[\u3400-\u9fff\uf900-\ufaff]/;
 const FADADA_COORDINATE_HEIGHT = 1131;
 const FADADA_COORDINATE_WIDTH = 800;
 const TABLE_LABEL_WIDTH = 92;
+const SIGNATURE_AREA_HEADER_HEIGHT = 30;
+const SIGNATURE_AREA_LABEL_HEIGHT = 24;
+const SIGNATURE_AREA_SIGNING_HEIGHT = 144;
+const SIGNATURE_AREA_DETAIL_HEIGHT = 30;
+const SIGNATURE_AREA_DETAIL_ROW_COUNT = 3;
+const SIGNATURE_AREA_TABLE_HEIGHT =
+  SIGNATURE_AREA_HEADER_HEIGHT +
+  SIGNATURE_AREA_LABEL_HEIGHT +
+  SIGNATURE_AREA_SIGNING_HEIGHT +
+  SIGNATURE_AREA_DETAIL_HEIGHT * SIGNATURE_AREA_DETAIL_ROW_COUNT;
 
 export type DeliveryHandoverPdfSigningSlotId =
   | "STAGE2_HANDOVER_CUSTOMER"
@@ -297,7 +307,7 @@ async function renderPdf(
   writeSection(doc, "操作提示");
   model.operationTips.forEach((tip) => writeParagraph(doc, tip));
 
-  ensureSpace(doc, 230);
+  ensureSignatureSectionSpace(doc, model.confirmationText);
   writeSection(doc, "九、签字确认");
   writeParagraph(doc, model.confirmationText);
   writeSignatureArea(doc, model, slotCoordinates, () => pageCount - 1);
@@ -568,28 +578,44 @@ function writeEvidenceHeader(
   doc.y = y + 24;
 }
 
+function ensureSignatureSectionSpace(doc: PDFKit.PDFDocument, confirmationText: string) {
+  const confirmationHeight = doc.heightOfString(confirmationText, {
+    lineGap: 3,
+    width: contentWidth(doc)
+  });
+  const requiredPrintableHeight =
+    42 +
+    Math.max(34, confirmationHeight + 3) +
+    SIGNATURE_AREA_TABLE_HEIGHT +
+    18;
+  const printableHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+
+  if (printableHeight < requiredPrintableHeight) {
+    doc.addPage({
+      size: [
+        doc.page.width,
+        requiredPrintableHeight + doc.page.margins.top + doc.page.margins.bottom
+      ]
+    });
+    resetCursorX(doc);
+    return;
+  }
+
+  ensureSpace(doc, requiredPrintableHeight);
+}
+
 function writeSignatureArea(
   doc: PDFKit.PDFDocument,
   model: DeliveryHandoverPdfRenderModel,
   slotCoordinates: DeliveryHandoverPdfSigningSlotCoordinate[],
   getPageNumber: () => number
 ) {
-  const headerHeight = 30;
-  const labelRowHeight = 24;
-  const signingRowHeight = 144;
-  const detailRowHeight = 30;
   const detailRows = [
     [`身份证号：${model.customer.idNumber}`, `经办人：${model.platform.contactName}`],
     [`联系电话：${model.customer.mobile}`, `联系电话：${model.platform.contactPhone}`],
     ["日期：      年    月    日", "日期：      年    月    日"]
   ];
-  const tableHeight =
-    headerHeight +
-    labelRowHeight +
-    signingRowHeight +
-    detailRowHeight * detailRows.length;
-
-  ensureSpace(doc, tableHeight + 18);
+  ensureSpace(doc, SIGNATURE_AREA_TABLE_HEIGHT + 18);
   resetCursorX(doc);
   const width = contentWidth(doc);
   const columnWidth = width / 2;
@@ -599,26 +625,26 @@ function writeSignatureArea(
 
   headers.forEach((header, index) => {
     const x = doc.page.margins.left + index * columnWidth;
-    doc.rect(x, startY, columnWidth, headerHeight).stroke();
+    doc.rect(x, startY, columnWidth, SIGNATURE_AREA_HEADER_HEIGHT).stroke();
     doc.fontSize(10).text(header, x + 8, startY + 8, { align: "center", width: columnWidth - 16 });
   });
 
-  const labelY = startY + headerHeight;
+  const labelY = startY + SIGNATURE_AREA_HEADER_HEIGHT;
   signingLabels.forEach((label, columnIndex) => {
     const x = doc.page.margins.left + columnIndex * columnWidth;
-    doc.rect(x, labelY, columnWidth, labelRowHeight).stroke();
+    doc.rect(x, labelY, columnWidth, SIGNATURE_AREA_LABEL_HEIGHT).stroke();
     doc.fontSize(9.5).text(label, x + 8, labelY + 6, {
       align: "center",
       width: columnWidth - 16
     });
   });
 
-  const signingY = labelY + labelRowHeight;
+  const signingY = labelY + SIGNATURE_AREA_LABEL_HEIGHT;
   headers.forEach((_, columnIndex) => {
     const x = doc.page.margins.left + columnIndex * columnWidth;
-    doc.rect(x, signingY, columnWidth, signingRowHeight).stroke();
+    doc.rect(x, signingY, columnWidth, SIGNATURE_AREA_SIGNING_HEIGHT).stroke();
     slotCoordinates.push(buildSigningSlotCoordinate({
-      boxHeight: signingRowHeight,
+      boxHeight: SIGNATURE_AREA_SIGNING_HEIGHT,
       boxWidth: columnWidth,
       boxX: x,
       boxY: signingY,
@@ -629,14 +655,14 @@ function writeSignatureArea(
   });
 
   detailRows.forEach((row, rowIndex) => {
-    const y = signingY + signingRowHeight + detailRowHeight * rowIndex;
+    const y = signingY + SIGNATURE_AREA_SIGNING_HEIGHT + SIGNATURE_AREA_DETAIL_HEIGHT * rowIndex;
     row.forEach((cell, columnIndex) => {
       const x = doc.page.margins.left + columnIndex * columnWidth;
-      doc.rect(x, y, columnWidth, detailRowHeight).stroke();
+      doc.rect(x, y, columnWidth, SIGNATURE_AREA_DETAIL_HEIGHT).stroke();
       doc.fontSize(9.5).text(cell, x + 8, y + 8, { width: columnWidth - 16 });
     });
   });
-  doc.y = startY + tableHeight;
+  doc.y = startY + SIGNATURE_AREA_TABLE_HEIGHT;
   resetCursorX(doc);
   doc.moveDown(0.5);
 }

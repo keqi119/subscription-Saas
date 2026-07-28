@@ -125,7 +125,9 @@ export class FieldOperatorAuthController {
           /^[a-f0-9]{64}$/i.test(
             task.stage2Pdf.sourcePdfHash ?? ""
           ) &&
-          !hasCurrentTask
+          !hasCurrentTask,
+        shouldPollESign:
+          task.stage2ESign.finalizationPending === true
       }
     };
   }

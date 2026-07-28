@@ -143,6 +143,7 @@ export interface FieldStage2HandoverCapabilities {
   canDownload: boolean;
   canPreview: boolean;
   canStartESign: boolean;
+  shouldPollESign: boolean;
 }
 
 export interface FieldStage2HandoverPdfArtifact {
@@ -163,6 +164,7 @@ export interface FieldStage2HandoverPdfArtifact {
 }
 
 export interface FieldStage2ESignSummary {
+  finalizationPending: boolean;
   status: string | null;
   taskId: string | null;
 }
@@ -178,6 +180,7 @@ export interface StartFieldHandoverESignInput {
 }
 
 export interface FieldStage2ESignResult {
+  finalizationPending?: boolean;
   signingStage?: "STAGE2_DELIVERY_HANDOVER" | string;
   status?: string | null;
   taskId?: string | null;

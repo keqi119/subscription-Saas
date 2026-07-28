@@ -513,7 +513,12 @@ describe("Stage2HandoverESignService", () => {
     ).rejects.toBeDefined();
 
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
-    expect(harness.customerJobs.size).toBe(0);
+    expect(harness.customerJobs).toEqual(new Map([
+      [
+        "customer-reconcile:stage2-task-1:ESG20260726080000ABCDH1",
+        "RECONCILE_CUSTOMER_SIGNATURE"
+      ]
+    ]));
 
     const retried = await harness.service.create(
       "work-order-1",
@@ -526,7 +531,7 @@ describe("Stage2HandoverESignService", () => {
     expectCustomerWorkflowJobs(harness);
   });
 
-  it("recovers an accepted provider action from its durable claim after interruption before marker persistence", async () => {
+  it("recovers an accepted provider action from its durable claim job after a hard interruption", async () => {
     const harness = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
     });
@@ -590,26 +595,29 @@ describe("Stage2HandoverESignService", () => {
       signerStatus: ESignSignerStatus.PENDING
     });
     expect(customerSigner.providerSignerId ?? null).toBeNull();
-    expect(harness.customerJobs.size).toBe(0);
+    expect(harness.customerJobs).toEqual(new Map([
+      [
+        "customer-reconcile:stage2-task-1:ESG20260726080000ABCDH1",
+        "RECONCILE_CUSTOMER_SIGNATURE"
+      ]
+    ]));
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
+    expect(
+      harness.workflow.enqueueCustomerAcceptanceRecovery
+    ).toHaveBeenCalledTimes(1);
 
-    customerSigner.claimExpiresAt = new Date(Date.now() - 60_000);
     harness.provider.querySignerStatus.mockResolvedValueOnce({
       resultCode: "1000",
       resultDescription: "active",
       status: "SIGNING"
     });
-    harness.provider.getSignerUrl.mockResolvedValueOnce({
-      expiresAt: new Date(Date.now() + 30 * 60_000),
-      signUrl: "https://unsafe.example/recovered-sign?token=secret"
+    const recovered = await harness.service.reconcileCustomerSignature({
+      eSignTaskId: task.id,
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      workOrderId: "work-order-1"
     });
-    const recovered = await harness.service.create(
-      "work-order-1",
-      fieldInitiator(),
-      fieldReview()
-    );
 
-    expect(recovered.taskId).toBe(task.id);
+    expect(recovered.status).toBe("SIGNING");
     expect(harness.provider.querySignerStatus).toHaveBeenCalledWith({
       contractId: task.taskNo,
       providerCustomerId: "fadada-customer-1",
@@ -619,33 +627,19 @@ describe("Stage2HandoverESignService", () => {
       slotId: "STAGE2_HANDOVER_CUSTOMER",
       taskId: task.id
     });
-    expect(harness.provider.getSignerUrl).toHaveBeenCalledWith({
-      contractId: task.taskNo,
-      providerTaskId: "ESG20260726080000ABCDH1",
-      redirectUrl:
-        "http://localhost:3000/portal/handover-reviews/work-order-1",
-      signerId: customerSigner.id,
-      taskId: task.id
-    });
+    expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
     expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
     expectCustomerWorkflowJobs(harness);
+    expect(customerSigner).toMatchObject({
+      claimExpiresAt: null,
+      providerSignerId: "ESG20260726080000ABCDH1",
+      signUrl: null,
+      signerStatus: ESignSignerStatus.SIGNING
+    });
     expect(JSON.stringify(task.errorSnapshot)).not.toContain(
       "acceptedCustomerProviderResult"
     );
-    expect(JSON.stringify(task.responseSnapshot)).not.toMatch(
-      /recovered-sign|token=secret/
-    );
-
-    const repeated = await harness.service.create(
-      "work-order-1",
-      fieldInitiator(),
-      fieldReview()
-    );
-
-    expect(repeated.taskId).toBe(task.id);
-    expect(harness.provider.createSignTask).toHaveBeenCalledTimes(1);
-    expect(harness.provider.querySignerStatus).toHaveBeenCalledTimes(1);
-    expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(task.responseSnapshot)).not.toMatch(/signUrl/i);
     expectCustomerWorkflowJobs(harness);
   });
 
@@ -736,13 +730,21 @@ describe("Stage2HandoverESignService", () => {
       fieldReview()
     );
 
-    expect(overlapping.taskId).toBe(task.id);
+    expect(overlapping).toMatchObject({
+      finalizationPending: true,
+      taskId: task.id
+    });
     expect(customerSigner.claimExpiresAt).toEqual(expect.any(Date));
     expect(customerSigner.signerStatus).toBe(ESignSignerStatus.PENDING);
     expect(harness.provider.querySignerStatus).not.toHaveBeenCalled();
     expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
     expect(harness.workflow.enqueueCustomerESignJobs).not.toHaveBeenCalled();
-    expect(harness.customerJobs.size).toBe(0);
+    expect(harness.customerJobs).toEqual(new Map([
+      [
+        "customer-reconcile:stage2-task-1:ESG20260726080000ABCDH1",
+        "RECONCILE_CUSTOMER_SIGNATURE"
+      ]
+    ]));
 
     releaseProvider();
     const winner = await winnerPromise;
@@ -832,7 +834,7 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.state.workOrder.handover.handoverESignTaskId).toBe(task.id);
   });
 
-  it("rejects an unsafe customer signing URL before persisting the provider result", async () => {
+  it("ignores a Stage 2 URL in the provider create response instead of persisting it", async () => {
     const harness = createHarness();
     harness.provider.createSignTask.mockImplementationOnce(async (input: any) => ({
       actions: [{
@@ -849,15 +851,19 @@ describe("Stage2HandoverESignService", () => {
 
     await expect(
       harness.service.create("work-order-1", adminInitiator())
-    ).rejects.toMatchObject({
-      response: expect.objectContaining({
-        code: "STAGE2_HANDOVER_ESIGN_PROVIDER_FAILED"
-      })
+    ).resolves.toMatchObject({
+      finalizationPending: false,
+      taskId: "stage2-task-1"
     });
 
     expect(
       harness.state.workOrder.handover.handoverESignTask?.signers[0]?.signUrl
-    ).toBeFalsy();
+    ).toBeNull();
+    expect(
+      JSON.stringify(
+        harness.state.workOrder.handover.handoverESignTask?.responseSnapshot
+      )
+    ).not.toMatch(/javascript|signUrl/i);
   });
 
   it("persists the customer provider transaction only on the typed Stage 2 signer", async () => {
@@ -2552,7 +2558,7 @@ describe("Stage2HandoverESignService", () => {
     }
   );
 
-  it("returns only a short-lived URL and expiry from the explicit Portal start action", async () => {
+  it("queries the provider and returns a short-lived URL without persisting it", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     const harness = createHarness();
@@ -2610,13 +2616,22 @@ describe("Stage2HandoverESignService", () => {
       providerTaskId: "ESG20260726080000ABCDH1",
       redirectUrl:
         "http://localhost:3000/portal/handover-reviews/work-order-1",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
       signerId: "stage2-customer-signer-1",
       taskId: "stage2-task-1"
     });
+    expect(harness.provider.querySignerStatus).toHaveBeenCalledTimes(1);
     expect(harness.prisma.contractESignTask.update).not.toHaveBeenCalled();
     expect(harness.prisma.contractESignTask.updateMany).not.toHaveBeenCalled();
     expect(harness.prisma.contractESignSigner.update).not.toHaveBeenCalled();
-    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          signUrl: null,
+          signUrlExpiresAt: expiresAt
+        })
+      })
+    );
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
     expect(harness.prisma.vehicleDelivery.update).not.toHaveBeenCalled();
     expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
@@ -2666,12 +2681,13 @@ describe("Stage2HandoverESignService", () => {
       providerTaskId: "ESG20260726080000ABCDH1",
       redirectUrl:
         "http://localhost:3000/portal/handover-reviews/work-order-1",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
       signerId: "stage2-customer-signer-1",
       taskId: "stage2-task-1"
     });
     expect(task.signers[0]).toMatchObject({
       providerTransactionId: "ESG20260726080000ABCDH1",
-      signUrl: "https://sentinel.example/refreshed-stage2-sign",
+      signUrl: null,
       signUrlExpiresAt: expiresAt,
       signerStatus: ESignSignerStatus.SIGNING
     });
@@ -3271,6 +3287,23 @@ function createHarness(env: Record<string, string> = {}) {
   const customerJobs = new Map<string, string>();
   let customerJobEnqueueFailuresRemaining = 0;
   const workflow = {
+    enqueueCustomerAcceptanceRecovery: vi.fn(async (
+      tx: unknown,
+      input: {
+        customerTransactionId: string;
+        eSignTaskId: string;
+      }
+    ) => {
+      if (tx !== prisma || transactionDepth === 0) {
+        throw new Error(
+          "customer acceptance recovery was not enqueued transactionally"
+        );
+      }
+      customerJobs.set(
+        `customer-reconcile:${input.eSignTaskId}:${input.customerTransactionId}`,
+        "RECONCILE_CUSTOMER_SIGNATURE"
+      );
+    }),
     enqueueCustomerESignJobs: vi.fn(async (
       tx: unknown,
       input: {
@@ -3420,16 +3453,17 @@ function fieldReview() {
 function expectCustomerWorkflowJobs(
   harness: ReturnType<typeof createHarness>
 ) {
-  expect([...harness.customerJobs.entries()]).toEqual([
-    [
-      "customer-notify:stage2-task-1:ESG20260726080000ABCDH1",
-      "NOTIFY_CUSTOMER_ESIGN_READY"
-    ],
-    [
-      "customer-reconcile:stage2-task-1:ESG20260726080000ABCDH1",
-      "RECONCILE_CUSTOMER_SIGNATURE"
-    ]
-  ]);
+  expect(harness.customerJobs.size).toBe(2);
+  expect(
+    harness.customerJobs.get(
+      "customer-notify:stage2-task-1:ESG20260726080000ABCDH1"
+    )
+  ).toBe("NOTIFY_CUSTOMER_ESIGN_READY");
+  expect(
+    harness.customerJobs.get(
+      "customer-reconcile:stage2-task-1:ESG20260726080000ABCDH1"
+    )
+  ).toBe("RECONCILE_CUSTOMER_SIGNATURE");
 }
 
 function swapStage2SourceArtifact(

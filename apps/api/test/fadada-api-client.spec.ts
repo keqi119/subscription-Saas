@@ -772,7 +772,7 @@ describe("Fadada API client", () => {
     expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("transaction_id=TX1");
   });
 
-  it("maps only result code 3000 to signed and documented active state to signing", async () => {
+  it("preserves Stage 1 sign_status=1 as signed while keeping active state as signing", async () => {
     const responses = [
       {
         contract_id: "CON-1",
@@ -806,7 +806,7 @@ describe("Fadada API client", () => {
 
     await expect(apiClient.querySignResult(input)).resolves.toMatchObject({
       resultCode: "2999",
-      status: "UNKNOWN"
+      status: "SIGNED"
     });
     await expect(apiClient.querySignResult(input)).resolves.toMatchObject({
       resultCode: "1000",

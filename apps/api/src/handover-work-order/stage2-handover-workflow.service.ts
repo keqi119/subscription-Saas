@@ -514,6 +514,28 @@ export class Stage2HandoverWorkflowService
     });
   }
 
+  async enqueueCustomerAcceptanceRecovery(
+    tx: Stage2HandoverWorkflowDb,
+    input: EnqueueCustomerESignJobsInput
+  ) {
+    await this.repository.enqueue(tx, {
+      availableAt: new Date(
+        input.initiatedAt.getTime() +
+          FIRST_CUSTOMER_RECONCILIATION_DELAY_MS
+      ),
+      eSignTaskId: input.eSignTaskId,
+      handoverId: input.handoverId,
+      idempotencyKey:
+        `customer-reconcile:${input.eSignTaskId}:${input.customerTransactionId}`,
+      jobType:
+        VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+      payload: {
+        customerTransactionId: input.customerTransactionId
+      },
+      workOrderId: input.workOrderId
+    });
+  }
+
   async handle(
     job: ClaimedStage2WorkflowJob
   ): Promise<WorkflowHandlerResult> {

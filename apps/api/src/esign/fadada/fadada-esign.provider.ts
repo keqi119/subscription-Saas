@@ -532,17 +532,29 @@ export class FadadaESignProvider implements ESignProvider {
       }
     });
 
-    if (signer?.signUrl && !isExpired(signer.signUrlExpiresAt)) {
-      return {
-        expiresAt: signer.signUrlExpiresAt ?? undefined,
-        rawResponse: {
-          providerSignerId: signer.providerSignerId,
-          source: "LOCAL_SIGNER_URL"
-        },
-        signUrl: signer.signUrl
-      };
+    if (input.signingStage === "STAGE1_CONTRACT") {
+      if (
+        signer?.signUrl &&
+        !isExpired(signer.signUrlExpiresAt) &&
+        !signer.task.deletedAt &&
+        signer.task.provider === ESignProviderType.FADADA &&
+        signer.task.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT"
+      ) {
+        return {
+          expiresAt: signer.signUrlExpiresAt ?? undefined,
+          rawResponse: {
+            providerSignerId: signer.providerSignerId,
+            source: "LOCAL_SIGNER_URL"
+          },
+          signUrl: signer.signUrl
+        };
+      }
+      throw new Error(
+        `${FADADA_SIGN_URL_NOT_AVAILABLE}: no usable Stage 1 signer URL`
+      );
     }
     if (
+      input.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
       !signer ||
       !this.apiClient ||
       !this.pdfArtifactService ||

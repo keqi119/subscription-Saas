@@ -249,6 +249,17 @@ export default function FieldHandoverTaskDetailPage() {
   const captureView = detail ? buildFieldEvidenceCaptureView(detail) : null;
   const stage2View = detail ? buildFieldStage2HandoverView(detail) : null;
   const reviewContext = detail?.reviewContext;
+
+  useEffect(() => {
+    if (!stage2View?.shouldPollESign) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadDetail({ showLoading: false });
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [loadDetail, stage2View?.shouldPollESign]);
+
   const canSubmitUploadBatch = canSubmitWithFieldEvidenceUploadBatch(uploadBatchState);
   const canMutateEvidence = canMutateFieldEvidenceWithUploadBatch(uploadBatchState);
   const hasUploadRecoveries = hasFieldEvidenceUploadRecoveries(uploadBatchState);
@@ -307,9 +318,17 @@ export default function FieldHandoverTaskDetailPage() {
       await request;
       setESignDialogOpen(false);
       setESignAcknowledged(false);
-      setSuccessMessage("电子签任务已发起，等待客户签署");
-      void message.success("电子签任务已发起");
-      await loadDetail({ showLoading: false });
+      const refreshedDetail = await loadDetail({ showLoading: false });
+      const refreshedStage2 = refreshedDetail
+        ? buildFieldStage2HandoverView(refreshedDetail)
+        : null;
+      if (refreshedStage2?.shouldPollESign) {
+        setSuccessMessage(null);
+        void message.info("电子签任务正在确认");
+      } else {
+        setSuccessMessage("电子签任务已发起，等待客户签署");
+        void message.success("电子签任务已发起");
+      }
     } catch (error) {
       handleActionError(error);
     } finally {

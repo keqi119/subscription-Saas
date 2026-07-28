@@ -156,6 +156,7 @@ describe("Stage 2 provider signer status query", () => {
         contractId: TASK_NO,
         providerTaskId: TRANSACTION_ID,
         signerId: QUERY_INPUT.signerId,
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
         taskId: QUERY_INPUT.taskId
       })
     ).rejects.toThrow(/MOCK_SIGNER_OPERATION_NOT_FOUND/);
@@ -388,6 +389,7 @@ describe("Stage 2 provider signer status query", () => {
           redirectUrl:
             "http://localhost:3000/portal/handover-reviews/work-order-1",
           signerId: QUERY_INPUT.signerId,
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
           taskId: QUERY_INPUT.taskId
         })
       ).resolves.toEqual({
@@ -447,6 +449,7 @@ describe("Stage 2 provider signer status query", () => {
         contractId: "contract-stage1-created",
         providerTaskId: created.providerTaskId,
         signerId: "stage1-customer-signer-created",
+        signingStage: "STAGE1_CONTRACT",
         taskId: "stage1-task-created"
       });
 
@@ -468,6 +471,7 @@ describe("Stage 2 provider signer status query", () => {
         contractId: "contract-stage1-1",
         providerTaskId: "mock_ESG_STAGE1_1",
         signerId: "stage1-customer-signer-1",
+        signingStage: "STAGE1_CONTRACT",
         taskId: "stage1-task-1"
       })
     ).resolves.toMatchObject({

@@ -641,6 +641,7 @@ export class ESignService {
         contractId: contract.id,
         providerTaskId: task.providerTaskId ?? task.taskNo,
         redirectUrl: this.buildPortalContractUrl(contract.id),
+        signingStage: "STAGE1_CONTRACT",
         taskId: task.id
       });
       signUrl = refreshed.signUrl;

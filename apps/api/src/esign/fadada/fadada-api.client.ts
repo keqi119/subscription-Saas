@@ -866,6 +866,8 @@ function mapQuerySignResultStatus(raw: unknown, resultCode: string | undefined):
   switch (signStatus) {
     case "0":
       return "SIGNING";
+    case "1":
+      return "SIGNED";
     case "2":
     case "3":
       return "FAILED";

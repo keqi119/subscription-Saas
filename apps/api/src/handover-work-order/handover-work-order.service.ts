@@ -3706,7 +3706,14 @@ export class HandoverWorkOrderService {
       contractESignTask?: {
         findFirst: (
           args: Prisma.ContractESignTaskFindFirstArgs
-        ) => Promise<null | { id: string; taskStatus: string }>;
+        ) => Promise<null | {
+          id: string;
+          signers: Array<{
+            claimExpiresAt: Date | null;
+            providerTransactionId: string | null;
+          }>;
+          taskStatus: string;
+        }>;
       };
     }).contractESignTask;
     const notificationModel = (this.prisma as unknown as {
@@ -3714,6 +3721,9 @@ export class HandoverWorkOrderService {
         findFirst: (
           args: Prisma.VehicleHandoverWorkflowJobFindFirstArgs
         ) => Promise<null | { jobStatus: string }>;
+        findMany?: (
+          args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
+        ) => Promise<Array<{ jobType: VehicleHandoverWorkflowJobType }>>;
       };
     }).vehicleHandoverWorkflowJob;
     const handoverTaskId = handoverRecord
@@ -3727,17 +3737,27 @@ export class HandoverWorkOrderService {
       orderId: workOrder.orderId,
       taskId: handoverTaskId
     });
-    const [task, notification] = await Promise.all([
+    const task =
       typeof taskModel?.findFirst === "function" && taskWhere
-        ? taskModel.findFirst({
+        ? await taskModel.findFirst({
             orderBy: { createdAt: "desc" },
             select: {
               id: true,
+              signers: {
+                select: {
+                  claimExpiresAt: true,
+                  providerTransactionId: true
+                },
+                where: {
+                  slotId: "STAGE2_HANDOVER_CUSTOMER"
+                }
+              },
               taskStatus: true
             },
             where: taskWhere
           })
-        : Promise.resolve(null),
+        : null;
+    const [notification, customerJobs] = await Promise.all([
       typeof notificationModel?.findFirst === "function"
         ? notificationModel.findFirst({
             orderBy: { createdAt: "desc" },
@@ -3749,10 +3769,44 @@ export class HandoverWorkOrderService {
               workOrderId: workOrder.id
             }
           })
-        : Promise.resolve(null)
+        : Promise.resolve(null),
+      task && typeof notificationModel?.findMany === "function"
+        ? notificationModel.findMany({
+            select: {
+              jobType: true
+            },
+            where: {
+              eSignTaskId: task.id,
+              jobType: {
+                in: [
+                  VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY,
+                  VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
+                ]
+              }
+            }
+          })
+        : Promise.resolve([])
     ]);
+    const customerSigner = task?.signers?.[0] ?? null;
+    const customerJobTypes = new Set(
+      customerJobs.map((job) => job.jobType)
+    );
+    const finalizationPending = Boolean(
+      task?.taskStatus === "WAITING_CUSTOMER" &&
+      customerSigner?.providerTransactionId &&
+      (
+        customerSigner.claimExpiresAt ||
+        !customerJobTypes.has(
+          VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY
+        ) ||
+        !customerJobTypes.has(
+          VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
+        )
+      )
+    );
     return {
       eSign: {
+        finalizationPending,
         status: task?.taskStatus ?? null,
         taskId: task?.id ?? null
       },

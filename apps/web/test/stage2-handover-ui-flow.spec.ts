@@ -10,7 +10,10 @@ import {
   updateFieldHandoverFacts
 } from "../src/lib/field-handover-api";
 import type { FieldHandoverWorkOrderDetail } from "../src/lib/field-handover-api";
-import { buildFieldEvidenceCaptureView } from "../src/lib/field-handover-view-model";
+import {
+  buildFieldEvidenceCaptureView,
+  buildFieldStage2HandoverView
+} from "../src/lib/field-handover-view-model";
 import {
   confirmPortalHandoverReview,
   getPortalHandoverESign,
@@ -126,6 +129,36 @@ describe("Stage 2 handover mocked UI flow", () => {
     );
     expect(result.fieldPageSource).toContain("startFieldHandoverESign");
     expect(result.fieldPageSource).not.toMatch(/signUrl|startPortalHandoverSigning/i);
+  });
+
+  it("keeps the Field eSign view polling while backend finalization is pending", () => {
+    const view = buildFieldStage2HandoverView(fieldDetail({
+      stage2Capabilities: {
+        canDownload: true,
+        canPreview: true,
+        canStartESign: false,
+        shouldPollESign: true
+      },
+      stage2ESign: {
+        finalizationPending: true,
+        status: "WAITING_CUSTOMER",
+        taskId: "stage2-task-ui-flow"
+      },
+      stage2Notification: {
+        status: "COMPLETED"
+      },
+      stage2Pdf: {
+        artifactVersion: 1,
+        downloadUrl: "/api/field/handover/work-orders/work-order-ui-flow/pdf/download",
+        previewUrl: "/api/field/handover/work-orders/work-order-ui-flow/pdf/preview",
+        sourcePdfHash: SOURCE_PDF_HASH,
+        status: "GENERATED"
+      },
+      status: "CUSTOMER_CONFIRMED"
+    }));
+
+    expect(view.shouldPollESign).toBe(true);
+    expect(view.canStartESign).toBe(false);
   });
 });
 

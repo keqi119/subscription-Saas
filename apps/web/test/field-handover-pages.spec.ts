@@ -141,6 +141,10 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("sourcePdfHash: stage2View.sourcePdfHash");
     expect(source).toContain('actionLoading === "esign"');
     expect(source).toContain("eSignInFlightRef.current");
+    expect(source).toContain("stage2View?.shouldPollESign");
+    expect(source).toContain("window.setInterval");
+    expect(source).toContain("const refreshedDetail = await loadDetail({ showLoading: false })");
+    expect(source).toContain("refreshedStage2?.shouldPollESign");
     expect(viewModelSource).toContain('detail.status === "CUSTOMER_CONFIRMED"');
     expect(source).toContain("overflowWrap: \"anywhere\"");
     expect(source).not.toMatch(/notification(?:Status)?.{0,80}(?:mobile|phone|手机号)/i);

@@ -102,6 +102,7 @@ export interface GetSignerUrlInput {
   providerTaskId: string;
   redirectUrl?: string;
   signerId?: string;
+  signingStage: ESignSigningStage;
   taskId?: string;
 }
 

@@ -140,9 +140,11 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
       stage2Capabilities: {
         canDownload: true,
         canPreview: true,
-        canStartESign: true
+        canStartESign: true,
+        shouldPollESign: false
       },
       stage2ESign: {
+        finalizationPending: false,
         status: null,
         taskId: null
       },
@@ -186,9 +188,54 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
 
     expect(result.stage2Capabilities.canStartESign).toBe(false);
     expect(result.stage2ESign).toEqual({
+      finalizationPending: false,
       status: "WAITING_CUSTOMER",
       taskId: "stage2-task-existing"
     });
+  });
+
+  it("keeps Field polling until customer notification and reconciliation jobs are durable", async () => {
+    const harness = createHarness();
+    const task = stage2Task({
+      id: "stage2-task-finalization-pending",
+      signers: [{
+        claimExpiresAt: new Date("2026-07-27T08:05:00.000Z"),
+        providerTransactionId: "ESG20260727080000ABCDH1",
+        slotId: "STAGE2_HANDOVER_CUSTOMER"
+      }],
+      taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+    });
+    harness.handover.handoverESignTaskId = task.id;
+    harness.state.activeTask = task;
+    harness.state.customerJobTypes = [
+      VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
+    ];
+    const controller = fieldDetailController(harness, {
+      blockers: [{ code: "ACTIVE_ESIGN_TASK_CONFLICT" }],
+      ready: false
+    });
+
+    const pending = await controller.getWorkOrder(
+      "work-order-1",
+      { phone: FIELD_PHONE } as never,
+      { headers: {}, ip: "127.0.0.1" } as never
+    );
+
+    expect(pending.stage2ESign.finalizationPending).toBe(true);
+    expect(pending.stage2Capabilities.shouldPollESign).toBe(true);
+
+    task.signers![0]!.claimExpiresAt = null;
+    harness.state.customerJobTypes.push(
+      VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY
+    );
+    const finalized = await controller.getWorkOrder(
+      "work-order-1",
+      { phone: FIELD_PHONE } as never,
+      { headers: {}, ip: "127.0.0.1" } as never
+    );
+
+    expect(finalized.stage2ESign.finalizationPending).toBe(false);
+    expect(finalized.stage2Capabilities.shouldPollESign).toBe(false);
   });
 
   it.each([
@@ -220,6 +267,7 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
       );
 
       expect(result.stage2ESign).toEqual({
+        finalizationPending: false,
         status: null,
         taskId: null
       });
@@ -278,6 +326,7 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
       );
 
       expect(result.stage2ESign).toEqual({
+        finalizationPending: false,
         status: null,
         taskId: null
       });
@@ -323,6 +372,7 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
       );
 
       expect(result.stage2ESign).toEqual({
+        finalizationPending: false,
         status: null,
         taskId: null
       });
@@ -535,6 +585,42 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
       ])
     );
   });
+
+  it("writes the deterministic customer acceptance recovery marker before the provider call", async () => {
+    const repository = {
+      enqueue: vi.fn(async (_tx: unknown, input: Record<string, unknown>) => input)
+    };
+    const service = new Stage2HandoverWorkflowService(
+      {} as never,
+      { get: vi.fn(() => "true") } as never,
+      repository as never,
+      {} as never
+    );
+    const tx = { transaction: "stage2-provider-claim" };
+    const initiatedAt = new Date("2026-07-27T08:00:00.000Z");
+
+    await service.enqueueCustomerAcceptanceRecovery(tx as never, {
+      customerTransactionId: "ESG20260727080000ABCDH1",
+      eSignTaskId: "stage2-task-1",
+      handoverId: "handover-1",
+      initiatedAt,
+      workOrderId: "work-order-1"
+    });
+
+    expect(repository.enqueue).toHaveBeenCalledWith(tx, {
+      availableAt: new Date("2026-07-27T08:02:00.000Z"),
+      eSignTaskId: "stage2-task-1",
+      handoverId: "handover-1",
+      idempotencyKey:
+        "customer-reconcile:stage2-task-1:ESG20260727080000ABCDH1",
+      jobType:
+        VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+      payload: {
+        customerTransactionId: "ESG20260727080000ABCDH1"
+      },
+      workOrderId: "work-order-1"
+    });
+  });
 });
 
 function createHarness() {
@@ -546,12 +632,14 @@ function createHarness() {
     workOrderId: "work-order-1"
   }).manifestHash;
   const workOrder = {
+    assignedInternalUserId: "internal-user-1",
     createdAt: new Date("2026-07-27T08:00:00.000Z"),
     customerConfirmedAt: new Date("2026-07-27T07:00:00.000Z"),
     fieldOperatorPhone: FIELD_PHONE,
     handoverId: "handover-1",
     id: "work-order-1",
     orderId: "order-1",
+    operatorType: "INTERNAL",
     scheduledAt: new Date("2026-07-27T09:00:00.000Z"),
     status: VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED
   };
@@ -615,12 +703,14 @@ function createHarness() {
   };
   const state: {
     activeTask: null | TestESignTask;
+    customerJobTypes: VehicleHandoverWorkflowJobType[];
     notificationJob: {
       jobStatus: string;
     };
     otherTasks: TestESignTask[];
   } = {
     activeTask: null,
+    customerJobTypes: [],
     notificationJob: {
       jobStatus: "COMPLETED"
     },
@@ -643,6 +733,12 @@ function createHarness() {
     subscriptionOrder: {
       findFirst: vi.fn(async () => order),
       findUnique: vi.fn(async () => order)
+    },
+    user: {
+      findFirst: vi.fn(async () => ({
+        mobile: FIELD_PHONE,
+        status: "ACTIVE"
+      }))
     },
     vehicleDeliveryHandover: {
       findFirst: vi.fn(async () => handover)
@@ -667,7 +763,10 @@ function createHarness() {
       )
     },
     vehicleHandoverWorkflowJob: {
-      findFirst: vi.fn(async () => state.notificationJob)
+      findFirst: vi.fn(async () => state.notificationJob),
+      findMany: vi.fn(async () =>
+        state.customerJobTypes.map((jobType) => ({ jobType }))
+      )
     }
   };
   const evidence = {
@@ -748,6 +847,11 @@ type TestESignTask = {
   documentType: ESignDocumentType;
   id: string;
   orderId: string;
+  signers?: Array<{
+    claimExpiresAt: Date | null;
+    providerTransactionId: string | null;
+    slotId: string;
+  }>;
   signingStage: ESignSigningStage;
   taskStatus: ESignTaskStatus;
 };

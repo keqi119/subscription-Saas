@@ -160,7 +160,11 @@ export class MockESignProvider implements ESignProvider {
 
   async getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult> {
     const operation = this.signerUrls.get(input.providerTaskId);
-    if (!operation && input.providerTaskId.startsWith("mock_")) {
+    if (
+      input.signingStage === "STAGE1_CONTRACT" &&
+      !operation &&
+      input.providerTaskId.startsWith("mock_")
+    ) {
       const signUrl = this.buildMockSignUrl(
         input.contractId,
         input.taskId
@@ -177,6 +181,7 @@ export class MockESignProvider implements ESignProvider {
     }
     if (
       !operation ||
+      input.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
       (
         input.contractId !== undefined &&
         operation.contractId !== input.contractId

@@ -81,6 +81,7 @@ export interface FieldStage2HandoverView {
   generatedAtText: string;
   notificationStatusText: string;
   previewUrl: string | null;
+  shouldPollESign: boolean;
   shouldShow: boolean;
   sourcePdfHash: string | null;
 }
@@ -253,6 +254,9 @@ export function buildFieldStage2HandoverView(
       generated
     ),
     previewUrl: artifact?.previewUrl ?? null,
+    shouldPollESign:
+      detail.stage2ESign?.finalizationPending === true &&
+      capabilities?.shouldPollESign === true,
     shouldShow: detail.status === "CUSTOMER_CONFIRMED" || Boolean(artifact),
     sourcePdfHash
   };

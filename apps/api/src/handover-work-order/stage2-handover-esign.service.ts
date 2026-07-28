@@ -208,6 +208,7 @@ export interface Stage2HandoverESignView {
   createdAt: Date | null;
   customerSigner: Stage2HandoverESignSignerView;
   documentType: typeof ESignDocumentType.DELIVERY_HANDOVER;
+  finalizationPending: boolean;
   handoverId: string | null;
   platformSigner: Stage2HandoverESignSignerView;
   ready: boolean;
@@ -303,7 +304,6 @@ interface AcceptedCustomerProviderResult {
   providerEnvelopeId: string;
   providerSignerId: string;
   providerTaskId: string;
-  signUrl?: string;
   signUrlExpiresAt?: Date;
   taskId: string;
   transactionId: string;
@@ -408,55 +408,47 @@ export class Stage2HandoverESignService {
 
     const readiness = await this.readinessService.getReadiness(workOrderId);
     assertPortalStartReadiness(workOrder, task, readiness);
-    const requiresRecovery =
-      !customerSigner.signUrl ||
-      (
-        customerSigner.signUrlExpiresAt !== null &&
-        customerSigner.signUrlExpiresAt.getTime() <= Date.now()
-      );
-
     try {
-      if (requiresRecovery) {
-        const providerStatus = await this.queryCustomerProviderStatus(
-          task,
-          customerSigner
-        );
-        if (
-          providerStatus.status === "SIGNED" &&
-          providerStatus.resultCode === "3000"
-        ) {
-          if (!this.eSignService) {
-            throw new Error(
-              "STAGE2_HANDOVER_ESIGN_TRANSITION_SERVICE_UNAVAILABLE"
-            );
-          }
-          await this.eSignService.reconcileCustomerSigned({
-            completedAt: new Date(),
-            eSignTaskId: task.id,
-            providerTransactionId:
-              customerSigner.providerTransactionId!,
-            queryResult: {
-              resultCode: "3000",
-              status: "SIGNED"
-            },
-            source: "QUERY"
-          });
-          return {
-            alreadySigned: true,
-            eSign: await this.getPortalStatus(workOrderId, customerId)
-          };
-        }
-        if (providerStatus.status !== "SIGNING") {
+      const providerStatus = await this.queryCustomerProviderStatus(
+        task,
+        customerSigner
+      );
+      if (
+        providerStatus.status === "SIGNED" &&
+        providerStatus.resultCode === "3000"
+      ) {
+        if (!this.eSignService) {
           throw new Error(
-            "STAGE2_HANDOVER_CUSTOMER_STATUS_NOT_RECOVERABLE"
+            "STAGE2_HANDOVER_ESIGN_TRANSITION_SERVICE_UNAVAILABLE"
           );
         }
+        await this.eSignService.reconcileCustomerSigned({
+          completedAt: new Date(),
+          eSignTaskId: task.id,
+          providerTransactionId:
+            customerSigner.providerTransactionId!,
+          queryResult: {
+            resultCode: "3000",
+            status: "SIGNED"
+          },
+          source: "QUERY"
+        });
+        return {
+          alreadySigned: true,
+          eSign: await this.getPortalStatus(workOrderId, customerId)
+        };
+      }
+      if (providerStatus.status !== "SIGNING") {
+        throw new Error(
+          "STAGE2_HANDOVER_CUSTOMER_STATUS_NOT_RECOVERABLE"
+        );
       }
 
       const refreshed = await this.provider.getSignerUrl({
         contractId: task.providerEnvelopeId ?? task.taskNo,
         providerTaskId: task.providerTaskId ?? task.taskNo,
         redirectUrl: this.buildPortalHandoverUrl(workOrderId),
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
         signerId: customerSigner.id,
         taskId: task.id
       });
@@ -465,33 +457,31 @@ export class Stage2HandoverESignService {
         task.provider,
         this.configService
       );
-      if (requiresRecovery) {
-        const persisted =
-          await this.prisma.contractESignSigner.updateMany({
-            data: {
-              signUrl,
-              signUrlExpiresAt: refreshed.expiresAt ?? null,
-              signerStatus: ESignSignerStatus.SIGNING
+      const persisted =
+        await this.prisma.contractESignSigner.updateMany({
+          data: {
+            signUrl: null,
+            signUrlExpiresAt: refreshed.expiresAt ?? null,
+            signerStatus: ESignSignerStatus.SIGNING
+          },
+          where: {
+            id: customerSigner.id,
+            providerTransactionId:
+              customerSigner.providerTransactionId,
+            signerStatus: {
+              in: [
+                ESignSignerStatus.PENDING,
+                ESignSignerStatus.SIGNING
+              ]
             },
-            where: {
-              id: customerSigner.id,
-              providerTransactionId:
-                customerSigner.providerTransactionId,
-              signerStatus: {
-                in: [
-                  ESignSignerStatus.PENDING,
-                  ESignSignerStatus.SIGNING
-                ]
-              },
-              slotId: CUSTOMER_SLOT_ID,
-              taskId: task.id
-            }
-          });
-        if (persisted.count !== 1) {
-          throw new Error(
-            "STAGE2_HANDOVER_CUSTOMER_URL_REFRESH_STALE"
-          );
-        }
+            slotId: CUSTOMER_SLOT_ID,
+            taskId: task.id
+          }
+        });
+      if (persisted.count !== 1) {
+        throw new Error(
+          "STAGE2_HANDOVER_CUSTOMER_URL_REFRESH_STALE"
+        );
       }
       return {
         expiresAt: refreshed.expiresAt ?? null,
@@ -575,6 +565,37 @@ export class Stage2HandoverESignService {
         task,
         customerSigner
       );
+    if (
+      customerSigner.claimExpiresAt &&
+      (
+        providerStatus.status === "SIGNING" ||
+        (
+          providerStatus.status === "SIGNED" &&
+          providerStatus.resultCode === "3000"
+        )
+      )
+    ) {
+      await this.finalizeAcceptedCustomerProviderResultWithRetry({
+        actorId: null,
+        claimExpiresAt: customerSigner.claimExpiresAt,
+        customerSignerId: customerSigner.id,
+        handoverId: handover.id,
+        providerEnvelopeId:
+          task.providerEnvelopeId ?? task.taskNo,
+        providerSignerId: expectedTransactionId,
+        providerTaskId:
+          task.providerTaskId ?? expectedTransactionId,
+        signUrlExpiresAt:
+          customerSigner.signUrlExpiresAt ?? undefined,
+        taskId: task.id,
+        transactionId: expectedTransactionId,
+        when:
+          customerSigner.lastAttemptAt ??
+          task.startedAt ??
+          new Date(),
+        workOrderId: workOrder.id
+      });
+    }
     if (
       providerStatus.status === "SIGNED" &&
       providerStatus.resultCode === "3000"
@@ -784,10 +805,12 @@ export class Stage2HandoverESignService {
       claimExpiresAt: customerClaimExpiresAt,
       contractId: task.contractId,
       customerSignerId: customerSigner.id,
+      handoverId: context.handover.id,
       taskId: task.id,
       taskNo: task.taskNo,
       transactionId: customerTransactionId,
-      when: now
+      when: now,
+      workOrderId
     });
     let acceptedResult: AcceptedCustomerProviderResult | null = null;
     try {
@@ -820,13 +843,6 @@ export class Stage2HandoverESignService {
       if (providerTransactionId !== customerTransactionId) {
         throw new Error("Stage 2 customer provider transaction does not match the local claim.");
       }
-      const signUrl = action.signUrl
-        ? assertSafeProviderSigningUrl(
-            action.signUrl,
-            providerType,
-            this.configService
-          )
-        : undefined;
       const startedAt = new Date();
 
       acceptedResult = {
@@ -839,7 +855,6 @@ export class Stage2HandoverESignService {
         providerSignerId:
           action.providerSignerId ?? providerTransactionId,
         providerTaskId: providerResult.providerTaskId,
-        signUrl,
         signUrlExpiresAt: action.signUrlExpiresAt,
         taskId: task.id,
         transactionId: providerTransactionId,
@@ -1755,7 +1770,6 @@ export class Stage2HandoverESignService {
       providerSignerId:
         customerSigner.providerSignerId ?? transactionId,
       providerTaskId: task.providerTaskId ?? transactionId,
-      signUrl: customerSigner.signUrl ?? undefined,
       signUrlExpiresAt:
         customerSigner.signUrlExpiresAt ?? undefined,
       taskId: task.id,
@@ -1827,32 +1841,6 @@ export class Stage2HandoverESignService {
       throw providerAcceptanceUnconfirmed();
     }
 
-    let signUrl: string | undefined;
-    let signUrlExpiresAt: Date | undefined;
-    if (providerStatus.status === "SIGNING") {
-      try {
-        const refreshed = await this.provider.getSignerUrl({
-          contractId: task.providerEnvelopeId,
-          providerTaskId: transactionId,
-          redirectUrl: this.buildPortalHandoverUrl(workOrder.id),
-          signerId: customerSigner.id,
-          taskId: task.id
-        });
-        if (
-          !refreshed.expiresAt ||
-          refreshed.expiresAt.getTime() > Date.now()
-        ) {
-          signUrl = assertSafeProviderSigningUrl(
-            refreshed.signUrl,
-            task.provider,
-            this.configService
-          );
-          signUrlExpiresAt = refreshed.expiresAt;
-        }
-      } catch {
-        // Acceptance is provider-backed; URL refresh can be retried separately.
-      }
-    }
     return {
       actorId,
       claimExpiresAt,
@@ -1861,8 +1849,8 @@ export class Stage2HandoverESignService {
       providerEnvelopeId: task.providerEnvelopeId,
       providerSignerId: transactionId,
       providerTaskId: transactionId,
-      signUrl,
-      signUrlExpiresAt,
+      signUrlExpiresAt:
+        customerSigner.signUrlExpiresAt ?? undefined,
       taskId: task.id,
       transactionId,
       when:
@@ -2089,10 +2077,12 @@ export class Stage2HandoverESignService {
     claimExpiresAt: Date;
     contractId: string;
     customerSignerId: string;
+    handoverId: string;
     taskId: string;
     taskNo: string;
     transactionId: string;
     when: Date;
+    workOrderId: string;
   }) {
     await this.prisma.$transaction(async (tx) => {
       const signerClaimed = await tx.contractESignSigner.updateMany({
@@ -2147,6 +2137,23 @@ export class Stage2HandoverESignService {
       if (contractClaimed.count !== 1) {
         throw staleCreateResult();
       }
+      if (this.isStage2HandoverWorkflowEnabled()) {
+        if (!this.workflowService) {
+          throw new Error(
+            "STAGE2_HANDOVER_WORKFLOW_SERVICE_UNAVAILABLE"
+          );
+        }
+        await this.workflowService.enqueueCustomerAcceptanceRecovery(
+          tx,
+          {
+            customerTransactionId: input.transactionId,
+            eSignTaskId: input.taskId,
+            handoverId: input.handoverId,
+            initiatedAt: input.when,
+            workOrderId: input.workOrderId
+          }
+        );
+      }
     });
   }
 
@@ -2178,11 +2185,9 @@ export class Stage2HandoverESignService {
               lastErrorMessage: null,
               nextRetryAt: null,
               providerSignerId: input.providerSignerId,
-              signUrl: input.signUrl,
+              signUrl: null,
               signUrlExpiresAt: input.signUrlExpiresAt,
-              signerStatus: input.signUrl
-                ? ESignSignerStatus.SIGNING
-                : ESignSignerStatus.PENDING
+              signerStatus: ESignSignerStatus.SIGNING
             },
             where: {
               claimExpiresAt: input.claimExpiresAt,
@@ -2224,7 +2229,8 @@ export class Stage2HandoverESignService {
             accepted: true,
             action: "CUSTOMER_MANUAL_SIGN",
             coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
-            signUrlExpiresAt: input.signUrlExpiresAt?.toISOString() ?? null,
+            signingOperationExpiresAt:
+              input.signUrlExpiresAt?.toISOString() ?? null,
             signingStage: "STAGE2_DELIVERY_HANDOVER"
           }),
           startedAt: input.when,
@@ -2313,7 +2319,6 @@ export class Stage2HandoverESignService {
       providerSignerId:
         signer.providerSignerId ?? input.transactionId,
       providerTaskId: task.providerTaskId ?? input.transactionId,
-      signUrl: signer.signUrl ?? undefined,
       signUrlExpiresAt: signer.signUrlExpiresAt ?? undefined,
       taskId: task.id,
       transactionId: input.transactionId,
@@ -2657,6 +2662,13 @@ export class Stage2HandoverESignService {
         false
       ),
       documentType: ESignDocumentType.DELIVERY_HANDOVER,
+      finalizationPending: Boolean(
+        customerSigner?.claimExpiresAt ||
+        (
+          asRecord(task?.errorSnapshot)?.code ===
+          STAGE2_CUSTOMER_ACCEPTED_RESULT_PENDING
+        )
+      ),
       handoverId: handover?.id ?? null,
       platformSigner: toSignerView(
         platformSigner,

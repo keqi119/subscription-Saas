@@ -327,6 +327,7 @@ type Stage2PrismaClient = Pick<
   Prisma.TransactionClient,
   | "$queryRaw"
   | "contractESignTask"
+  | "fileObject"
   | "user"
   | "vehicleHandoverWorkOrder"
 >;
@@ -401,6 +402,10 @@ export class Stage2HandoverESignService {
       this.loadDatabaseNow(this.prisma)
     ]);
     const task = await this.resolveCurrentTask(workOrder);
+    const sourceReadyAt = await this.loadSourceReadyAt(
+      workOrder,
+      this.prisma
+    );
     const canEvaluateAdminFallback = Boolean(
       this.isStage2HandoverWorkflowEnabled() &&
       !task &&
@@ -414,14 +419,16 @@ export class Stage2HandoverESignService {
       ? await this.getAdminFallbackEligibility(
           workOrder,
           this.prisma,
-          databaseNow
+          databaseNow,
+          sourceReadyAt
         )
       : null;
     return this.toView(
       workOrder,
       task,
       readiness,
-      Boolean(adminFallbackEligibility?.eligible)
+      Boolean(adminFallbackEligibility?.eligible),
+      sourceReadyAt
     );
   }
 
@@ -813,6 +820,7 @@ export class Stage2HandoverESignService {
             throw adminFallbackClaimed();
           }
 
+          await this.readinessService.assertReady(workOrderId, tx);
           const databaseNow = await this.loadDatabaseNow(tx);
           const transactionInitiation =
             await this.assertCreateInitiator(
@@ -2008,13 +2016,29 @@ export class Stage2HandoverESignService {
       }
       requireTypedSigners(currentTask);
       assertTaskSourceBinding(currentTask, current.handover);
+      const sourceReadyAt = await this.loadSourceReadyAt(
+        current,
+        this.prisma
+      );
       return this.toView(
         current,
         currentTask,
-        emptyReadiness(workOrder.id)
+        emptyReadiness(workOrder.id),
+        false,
+        sourceReadyAt
       );
     }
-    return this.toView(workOrder, task, emptyReadiness(workOrder.id));
+    const sourceReadyAt = await this.loadSourceReadyAt(
+      workOrder,
+      this.prisma
+    );
+    return this.toView(
+      workOrder,
+      task,
+      emptyReadiness(workOrder.id),
+      false,
+      sourceReadyAt
+    );
   }
 
   private async resolveCreateWinner(
@@ -2349,7 +2373,8 @@ export class Stage2HandoverESignService {
       const eligibility = await this.getAdminFallbackEligibility(
         workOrder,
         client,
-        effectiveNow
+        effectiveNow,
+        await this.loadSourceReadyAt(workOrder, client)
       );
       if (!eligibility.eligible || !eligibility.reason) {
         throw new BadRequestException({
@@ -2450,22 +2475,25 @@ export class Stage2HandoverESignService {
   private async getAdminFallbackEligibility(
     workOrder: Stage2LifecycleWorkOrder,
     client: Stage2PrismaClient,
-    databaseNow: Date
+    databaseNow: Date,
+    sourceReadyAt: Date | null
   ): Promise<{
     eligible: boolean;
     reason: AdminFallbackEligibilityReason | null;
   }> {
+    if (!sourceReadyAt) {
+      return {
+        eligible: false,
+        reason: null
+      };
+    }
     if (!await this.hasAvailableFieldInitiator(workOrder, client)) {
       return {
         eligible: true,
         reason: "FIELD_IDENTITY_UNAVAILABLE"
       };
     }
-    const sourceReadyAt =
-      workOrder.handover?.handoverContract?.createdAt;
     if (
-      sourceReadyAt instanceof Date &&
-      Number.isFinite(sourceReadyAt.getTime()) &&
       databaseNow.getTime() - sourceReadyAt.getTime() >=
         ADMIN_FALLBACK_DELAY_MS
     ) {
@@ -2478,6 +2506,32 @@ export class Stage2HandoverESignService {
       eligible: false,
       reason: null
     };
+  }
+
+  private async loadSourceReadyAt(
+    workOrder: Stage2LifecycleWorkOrder,
+    client: Stage2PrismaClient
+  ) {
+    const sourceDocumentFileId =
+      workOrder.handover?.sourceDocumentFileId;
+    if (!sourceDocumentFileId) {
+      return null;
+    }
+    const sourceFile = await client.fileObject.findUnique({
+      select: {
+        createdAt: true
+      },
+      where: {
+        id: sourceDocumentFileId
+      }
+    });
+    const sourceReadyAt = sourceFile?.createdAt;
+    return (
+      sourceReadyAt instanceof Date &&
+      Number.isFinite(sourceReadyAt.getTime())
+    )
+      ? sourceReadyAt
+      : null;
   }
 
   private async hasAvailableFieldInitiator(
@@ -3107,7 +3161,8 @@ export class Stage2HandoverESignService {
     workOrder: Stage2LifecycleWorkOrder,
     task: Stage2Task | null,
     readiness: Stage2HandoverESignReadiness,
-    adminFallbackEligible = false
+    adminFallbackEligible: boolean,
+    sourceReadyAt: Date | null
   ): Stage2HandoverESignView {
     const handover = workOrder.handover;
     const signers = task ? requireTypedSigners(task) : null;
@@ -3134,7 +3189,7 @@ export class Stage2HandoverESignService {
         task.taskStatus !== ESignTaskStatus.COMPLETED &&
         !hasVoidBlockingStage2Evidence(task)
       ),
-      createdAt: task?.createdAt ?? handover?.handoverContract?.createdAt ?? null,
+      createdAt: task?.createdAt ?? sourceReadyAt,
       customerSigner: toSignerView(
         customerSigner,
         CUSTOMER_SLOT_ID,
@@ -3176,10 +3231,11 @@ export class Stage2HandoverESignService {
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
       sourceArtifact:
         handover?.handoverContract &&
+        sourceReadyAt &&
         isSha256Digest(handover.sourcePdfHash)
           ? {
               artifactVersion: handover.artifactVersion,
-              createdAt: handover.handoverContract.createdAt,
+              createdAt: sourceReadyAt,
               sourcePdfHash: handover.sourcePdfHash!
             }
           : null,

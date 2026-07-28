@@ -1737,9 +1737,12 @@ export class HandoverWorkOrderService {
     };
   }
 
-  async getCurrentEvidencePackage(id: string) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
-    return this.buildCurrentEvidencePackage(workOrder);
+  async getCurrentEvidencePackage(
+    id: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await this.getWorkOrderOrThrow(id, db);
+    return this.buildCurrentEvidencePackage(workOrder, undefined, db);
   }
 
   async getStage2HandoverPdf(id: string): Promise<Stage2HandoverPdfArtifactView> {
@@ -2276,8 +2279,11 @@ export class HandoverWorkOrderService {
     }
   }
 
-  private async getWorkOrderOrThrow(id: string) {
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({ where: { id } });
+  private async getWorkOrderOrThrow(
+    id: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const workOrder = await db.vehicleHandoverWorkOrder.findUnique({ where: { id } });
     if (!workOrder) {
       throw new NotFoundException("交付工单不存在。");
     }

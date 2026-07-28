@@ -34,9 +34,10 @@
 - Field remains the normal eSign initiation path. Admin fallback initiation is
   allowed immediately when the assigned Field identity is technically
   unavailable, or after 15 minutes without a task from the current canonical
-  source PDF `Contract.createdAt`. It requires the existing delivery-confirm
-  permission, exact artifact version/hash acknowledgement, a bounded reason,
-  a same-transaction eligibility recheck, and one audit event.
+  source PDF's bound `FileObject.createdAt`. The reserved
+  `Contract.createdAt` is not a timer anchor. It requires the existing
+  delivery-confirm permission, exact artifact version/hash acknowledgement, a
+  bounded reason, a same-transaction eligibility recheck, and one audit event.
 - Feature flags are exactly `STAGE2_HANDOVER_WORKFLOW_ENABLED` and `STAGE2_HANDOVER_WORKER_ENABLED`.
 - Business SMS template variables are exactly `ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE` and `ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE`.
 - Rollout order is compatible images with flags off, migration, dry-run backfill, apply backfill, workflow flag on, worker flag on at low concurrency, existing-order recovery, then a new complete Staging order.

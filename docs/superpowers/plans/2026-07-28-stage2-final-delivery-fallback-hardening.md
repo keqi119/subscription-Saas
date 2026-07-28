@@ -10,10 +10,11 @@ fallback is a transactional exception after technical Field unavailability or
 
 **Architecture:** Keep PostgreSQL as the source of truth. Derive delivery from
 the exact current Stage 2 task and H1/H2 signer bindings. Derive fallback
-eligibility from the current source `Contract.createdAt`, assigned Field
-identity, and task/provider evidence using database time. Revalidate all
-fallback predicates while holding the handover lock in the same serializable
-transaction that creates the task and audit event.
+eligibility from the current bound source PDF `FileObject.createdAt`, assigned
+Field identity, and task/provider evidence using database time. The reserved
+`Contract.createdAt` is not a timer anchor. Revalidate all fallback predicates
+while holding the handover lock in the same serializable transaction that
+creates the task and audit event.
 
 **Tech Stack:** NestJS, Prisma/PostgreSQL, Next.js/React, Vitest/Jest, pnpm.
 
@@ -74,10 +75,12 @@ transaction that creates the task and audit event.
 3. Extend the Admin request with exact artifact version/hash acknowledgement
    and a bounded reason.
 4. Compute the capability from database time. Start the normal timeout at the
-   current canonical source PDF `Contract.createdAt`; SMS state is irrelevant.
+   current bound source PDF `FileObject.createdAt`; the reserved
+   `Contract.createdAt` and SMS state are irrelevant.
 5. In one serializable transaction, lock and reload the handover, revalidate
-   eligibility and source binding, create at most one task, and append exactly
-   one bounded `ADMIN_FALLBACK` audit event.
+   complete readiness, eligibility, and source binding using the same
+   transaction client, create at most one task, and append exactly one bounded
+   `ADMIN_FALLBACK` audit event.
 6. Render a compact Admin confirmation dialog with source PDF preview/download,
    required acknowledgement, and required reason. Trust only the authoritative
    API capability.

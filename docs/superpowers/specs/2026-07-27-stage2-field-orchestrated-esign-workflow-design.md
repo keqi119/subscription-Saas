@@ -46,11 +46,17 @@ committed as `3272646`.
   delivery confirmation.
 - Admin fallback initiation is available immediately when the assigned Field
   initiator is technically unavailable, or after 15 minutes without a Stage 2
-  task from the current canonical source PDF `Contract.createdAt`. The timeout
-  is based on database time and is not delayed by SMS delivery or retry state.
+  task from the current bound source PDF `FileObject.createdAt`. This file
+  timestamp is the authoritative PDF-finalization time; the earlier reserved
+  `Contract.createdAt` is not a timer anchor. The timeout is based on database
+  time and is not delayed by SMS delivery or retry state.
 - Admin fallback requires `DELIVERY_CONFIRM`, an exact source PDF
   version/hash acknowledgement, and a bounded reason. It is recorded as
   `ADMIN_FALLBACK`; it never impersonates the Field operator.
+- Field and Admin initiation both rerun the complete Stage 2 readiness check
+  with the same database transaction after the work-order/handover lock is
+  acquired. A preflight result cannot authorize task creation after customer
+  objection, work-order, evidence, identity-readiness, or source state changes.
 - Provider and callback failures receive bounded automatic recovery before
   entering an Admin exception queue.
 
@@ -419,8 +425,9 @@ Admin fallback initiation is an exception action, not a second normal signing
 path. It is visible only when the authoritative API returns
 `canAdminInitiate=true`. The capability is true when the assigned Field
 initiator is technically unavailable, or when no Stage 2 task exists 15
-minutes after the current canonical source PDF `Contract.createdAt`. SMS
-success is not part of this timer.
+minutes after the current bound source PDF `FileObject.createdAt`. The
+reserved `Contract.createdAt` must not start this timer. SMS success is not
+part of this timer.
 
 The Admin must preview and acknowledge the exact source PDF artifact version
 and hash, then enter a bounded reason. The create transaction locks and reloads

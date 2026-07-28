@@ -197,14 +197,17 @@ export class Stage2HandoverESignReadinessService {
     private readonly configService: ConfigService
   ) {}
 
-  async getReadiness(workOrderId: string): Promise<Stage2HandoverESignReadiness> {
+  async getReadiness(
+    workOrderId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ): Promise<Stage2HandoverESignReadiness> {
     const blockers: Stage2HandoverESignBlocker[] = [];
     const addBlocker = (code: Stage2HandoverESignBlockerCode) => {
       if (!blockers.some((blocker) => blocker.code === code)) {
         blockers.push({ code, message: BLOCKER_MESSAGES[code] });
       }
     };
-    const workOrder = await this.prisma.vehicleHandoverWorkOrder.findUnique({
+    const workOrder = await db.vehicleHandoverWorkOrder.findUnique({
       include: readinessWorkOrderInclude,
       where: { id: workOrderId }
     });
@@ -241,7 +244,7 @@ export class Stage2HandoverESignReadinessService {
       this.checkSourceContract(handover, addBlocker);
     }
 
-    const latestReviewAttempt = await this.prisma.vehicleHandoverReviewAttempt.findFirst({
+    const latestReviewAttempt = await db.vehicleHandoverReviewAttempt.findFirst({
       orderBy: { attemptNo: "desc" },
       where: { workOrderId }
     });
@@ -249,7 +252,11 @@ export class Stage2HandoverESignReadinessService {
 
     let currentManifestHash: string | null = null;
     try {
-      const currentPackage = await this.handoverWorkOrderService.getCurrentEvidencePackage(workOrderId);
+      const currentPackage =
+        await this.handoverWorkOrderService.getCurrentEvidencePackage(
+          workOrderId,
+          db
+        );
       currentManifestHash = normalizeManifestHash(currentPackage.manifestHash);
       if (!currentManifestHash) {
         addBlocker("CURRENT_MANIFEST_UNAVAILABLE");
@@ -275,7 +282,8 @@ export class Stage2HandoverESignReadinessService {
           {
             damageDeclared: workOrder.damageDeclared,
             noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared
-          }
+          },
+          db
         );
       if (!evidenceReadiness.ready) {
         addBlocker("EVIDENCE_NOT_READY");
@@ -284,11 +292,15 @@ export class Stage2HandoverESignReadinessService {
       addBlocker("EVIDENCE_NOT_READY");
     }
 
-    await this.checkCustomerReadiness(workOrder.order.customerId, addBlocker);
+    await this.checkCustomerReadiness(
+      workOrder.order.customerId,
+      addBlocker,
+      db
+    );
     this.checkPlatformConfiguration(addBlocker);
 
     const sourceFile = handover?.sourceDocumentFileId
-      ? await this.prisma.fileObject.findUnique({
+      ? await db.fileObject.findUnique({
           where: { id: handover.sourceDocumentFileId }
         })
       : null;
@@ -300,7 +312,7 @@ export class Stage2HandoverESignReadinessService {
       taskId: handover?.handoverESignTaskId
     });
     const activeTask = activeTaskWhere
-      ? await this.prisma.contractESignTask.findFirst({
+      ? await db.contractESignTask.findFirst({
           orderBy: { createdAt: "desc" },
           select: {
             id: true,
@@ -326,8 +338,11 @@ export class Stage2HandoverESignReadinessService {
     });
   }
 
-  async assertReady(workOrderId: string): Promise<Stage2HandoverESignReadiness> {
-    const readiness = await this.getReadiness(workOrderId);
+  async assertReady(
+    workOrderId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ): Promise<Stage2HandoverESignReadiness> {
+    const readiness = await this.getReadiness(workOrderId, db);
     if (!readiness.ready) {
       throw new BadRequestException({
         blockers: readiness.blockers,
@@ -531,10 +546,14 @@ export class Stage2HandoverESignReadinessService {
 
   private async checkCustomerReadiness(
     customerId: string,
-    addBlocker: (code: Stage2HandoverESignBlockerCode) => void
+    addBlocker: (code: Stage2HandoverESignBlockerCode) => void,
+    db: Prisma.TransactionClient | PrismaService
   ) {
     const readiness =
-      await this.fadadaCustomerReadinessService.getReadiness(customerId);
+      await this.fadadaCustomerReadinessService.getReadiness(
+        customerId,
+        db
+      );
     if (
       !readiness.certBound ||
       !readiness.certSerialNoPresent

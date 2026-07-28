@@ -166,8 +166,9 @@ block authorized Admin delivery confirmation. Archive remains visible,
 retryable, and independently auditable. Field is the normal initiation path;
 Admin fallback initiation is accepted only when the backend revalidates that
 the assigned Field identity is technically unavailable, or no task exists 15
-minutes after the current canonical source PDF `Contract.createdAt`. The
-database-time deadline does not depend on SMS success. The Admin must hold
+minutes after the current bound source PDF `FileObject.createdAt`. The
+reserved `Contract.createdAt` does not start the timer, and the database-time
+deadline does not depend on SMS success. The Admin must hold
 `DELIVERY_CONFIRM`, acknowledge the exact source version/hash, provide a
 bounded reason, and the API must revalidate eligibility and append one audit
 event in the task-creation transaction.

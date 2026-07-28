@@ -246,6 +246,27 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.provider.createSignTask).not.toHaveBeenCalled();
   });
 
+  it("revalidates complete readiness after locking and before reserving a task", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.failTransactionalReadiness(
+      new Error("CUSTOMER_OBJECTION_ACTIVE")
+    );
+
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        fieldInitiator(),
+        fieldReview()
+      )
+    ).rejects.toThrow("CUSTOMER_OBJECTION_ACTIVE");
+
+    expect(harness.readiness.assertReady).toHaveBeenCalledTimes(2);
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
+    expect(harness.state.activeTask).toBeNull();
+  });
+
   it("rejects a source-binding swap at the transactional handover claim", async () => {
     const harness = createHarness({
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
@@ -446,6 +467,40 @@ describe("Stage2HandoverESignService", () => {
         operatorId: "admin-1"
       })
     ]);
+  });
+
+  it("starts the 15-minute Admin fallback window when the bound source PDF file is finalized", async () => {
+    const harness = createHarness({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
+    });
+    harness.state.workOrder.handover.handoverContract.createdAt = new Date(
+      NOW.getTime() - 60 * 60 * 1000
+    );
+    harness.setSourceFileCreatedAt(NOW);
+    harness.setDatabaseTime(
+      new Date(NOW.getTime() + 15 * 60 * 1000 - 1)
+    );
+
+    await expect(
+      harness.service.getStatus("work-order-1")
+    ).resolves.toMatchObject({
+      canAdminInitiate: false,
+      sourceArtifact: {
+        createdAt: NOW
+      }
+    });
+    await expect(
+      harness.service.create(
+        "work-order-1",
+        adminFallbackInitiator(),
+        adminFallbackReview()
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ADMIN_FALLBACK_NOT_ELIGIBLE"
+      })
+    });
+    expect(harness.provider.createSignTask).not.toHaveBeenCalled();
   });
 
   it("allows immediate Admin fallback when the assigned Field identity is technically unavailable", async () => {
@@ -3553,6 +3608,9 @@ describe("Stage 2 handover eSign Portal API contract", () => {
 function createHarness(env: Record<string, string> = {}) {
   const auditLogs: any[] = [];
   let databaseNow = NOW;
+  let sourceFileCreatedAt = NOW;
+  let transactionDepth = 0;
+  let transactionalReadinessError: Error | null = null;
   const state: {
     activeTask: null | ReturnType<typeof makeTask>;
     workOrder: ReturnType<typeof makeWorkOrder>;
@@ -3562,21 +3620,30 @@ function createHarness(env: Record<string, string> = {}) {
   };
 
   const readiness = {
-    assertReady: vi.fn(async () => ({
-      blockers: [],
-      ready: true,
-      state: {
-        esignTaskId: null,
-        esignTaskStatus: null,
-        handoverContractId: "contract-stage2-1",
-        handoverId: "handover-1",
-        handoverStatus: DeliveryHandoverStatus.SOURCE_GENERATED,
-        orderId: "order-1",
-        orderStatus: "PENDING_DELIVERY",
-        workOrderId: "work-order-1",
-        workOrderStatus: "CUSTOMER_CONFIRMED"
+    assertReady: vi.fn(async (_workOrderId: string, client?: unknown) => {
+      if (
+        client &&
+        transactionDepth > 0 &&
+        transactionalReadinessError
+      ) {
+        throw transactionalReadinessError;
       }
-    })),
+      return {
+        blockers: [],
+        ready: true,
+        state: {
+          esignTaskId: null,
+          esignTaskStatus: null,
+          handoverContractId: "contract-stage2-1",
+          handoverId: "handover-1",
+          handoverStatus: DeliveryHandoverStatus.SOURCE_GENERATED,
+          orderId: "order-1",
+          orderStatus: "PENDING_DELIVERY",
+          workOrderId: "work-order-1",
+          workOrderStatus: "CUSTOMER_CONFIRMED"
+        }
+      };
+    }),
     getReadiness: vi.fn(async (): Promise<Stage2HandoverESignReadiness> => ({
       blockers: [],
       ready: true,
@@ -3637,7 +3704,6 @@ function createHarness(env: Record<string, string> = {}) {
     verifyCallback: vi.fn()
   };
 
-  let transactionDepth = 0;
   const prisma: any = {
     $queryRaw: vi.fn(async () => [{ now: databaseNow }]),
     $transaction: vi.fn(async (
@@ -3673,6 +3739,17 @@ function createHarness(env: Record<string, string> = {}) {
       update: vi.fn(async ({ data }: any) => {
         Object.assign(state.workOrder.handover.handoverContract, data);
         return state.workOrder.handover.handoverContract;
+      })
+    },
+    fileObject: {
+      findUnique: vi.fn(async ({ where }: any) => {
+        if (where.id !== state.workOrder.handover.sourceDocumentFileId) {
+          return null;
+        }
+        return {
+          createdAt: sourceFileCreatedAt,
+          id: where.id
+        };
       })
     },
     contractESignSigner: {
@@ -3901,6 +3978,9 @@ function createHarness(env: Record<string, string> = {}) {
     failCustomerJobEnqueues(count: number) {
       customerJobEnqueueFailuresRemaining = count;
     },
+    failTransactionalReadiness(error: Error) {
+      transactionalReadinessError = error;
+    },
     generatePdf,
     notification,
     prisma,
@@ -3908,6 +3988,9 @@ function createHarness(env: Record<string, string> = {}) {
     readiness,
     setDatabaseTime(value: Date) {
       databaseNow = value;
+    },
+    setSourceFileCreatedAt(value: Date) {
+      sourceFileCreatedAt = value;
     },
     service,
     state,

@@ -162,8 +162,9 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
 
 11. Confirm Admin fallback initiation is absent for an available Field
     initiator before 15 minutes from the current source PDF
-    `Contract.createdAt`. Confirm it appears at 15 minutes when no task exists.
-    In a controlled exception, make the assigned Field identity technically
+    `FileObject.createdAt`. Confirm it appears at 15 minutes when no task
+    exists, even when the reserved `Contract.createdAt` is older. In a
+    controlled exception, make the assigned Field identity technically
     unavailable and confirm the action appears immediately.
 
 12. Confirm Admin must preview and acknowledge the exact source PDF version and
@@ -193,9 +194,12 @@ The Admin fallback signing action is separate from dead-letter retry. It must
 be used only when `canAdminInitiate=true`; the API rechecks Field
 unavailability or the database-time 15-minute no-progress deadline in the same
 transaction that creates the Stage 2 task. The timer starts at the current
-canonical source PDF `Contract.createdAt` and does not wait for SMS delivery.
-The action requires exact source version/hash acknowledgement and a bounded
-reason. It is not a normal alternative to Field initiation.
+bound source PDF `FileObject.createdAt`, not the reserved
+`Contract.createdAt`, and does not wait for SMS delivery. The action requires
+exact source version/hash acknowledgement and a bounded reason. It is not a
+normal alternative to Field initiation. Field and Admin starts also rerun the
+complete readiness check with that transaction after locking; a stale
+preflight result must not create a task.
 
 Do not paste access tokens, response bodies, old error text, signing URLs, or
 raw payloads into tickets or rollout records.

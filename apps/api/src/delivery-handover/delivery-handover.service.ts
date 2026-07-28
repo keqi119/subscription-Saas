@@ -516,12 +516,14 @@ function hasCompleteStage2SigningState(
   );
   const customerSigner = customerSigners[0];
   const platformSigner = platformSigners[0];
+  const customerTransactionId = buildStage2TransactionId(task.taskNo, "H1");
+  const platformTransactionId = buildStage2TransactionId(task.taskNo, "H2");
   return Boolean(
     customerSigners.length === 1 &&
     platformSigners.length === 1 &&
     customerSigner?.customerId === task.customerId &&
-    signerCompleted(customerSigner) &&
-    signerCompleted(platformSigner)
+    signerCompleted(customerSigner, customerTransactionId) &&
+    signerCompleted(platformSigner, platformTransactionId)
   );
 }
 
@@ -575,13 +577,29 @@ function signerMatchesRequiredTuple(
   );
 }
 
-function signerCompleted(signer: DeliveryHandoverSigner | undefined) {
+function buildStage2TransactionId(
+  taskNo: string | null | undefined,
+  suffix: "H1" | "H2"
+) {
+  if (!taskNo) {
+    return null;
+  }
+  const normalized = taskNo.replace(/[^A-Za-z0-9]/g, "");
+  return normalized
+    ? `${normalized.slice(0, 32 - suffix.length)}${suffix}`
+    : null;
+}
+
+function signerCompleted(
+  signer: DeliveryHandoverSigner | undefined,
+  expectedTransactionId: string | null
+) {
   return Boolean(
     signer &&
+    expectedTransactionId &&
     signer.signedAt &&
     signer.signerStatus === ESignSignerStatus.SIGNED &&
-    signer.providerTransactionId &&
-    /^[A-Za-z0-9]{1,32}$/.test(signer.providerTransactionId)
+    signer.providerTransactionId === expectedTransactionId
   );
 }
 

@@ -106,12 +106,25 @@ export function OrderTransactionGuide({
     const item = itemsByCategory.get(category);
     return item ? [item] : [];
   });
+  const primaryGuideItem = summary.primaryAction
+    ? orderedItems.find((item) => isPrimaryGuideItem(item, summary.primaryAction))
+    : undefined;
+  const deferredPrimaryAction =
+    summary.primaryAction && !primaryGuideItem ? summary.primaryAction : null;
 
   return (
     <section aria-label="订单推进指引" data-workspace-guide="true">
       <Flex align="center" gap={8} justify="space-between" style={{ padding: "6px 0" }} wrap>
         <Flex align="center" gap={8}>
           <Typography.Text strong>当前推进</Typography.Text>
+          {deferredPrimaryAction
+            ? renderGuideAction({
+                actionCode: deferredPrimaryAction.actionCode,
+                kind: "primary",
+                onClick: () =>
+                  onNavigate(toGuideNavigation(deferredPrimaryAction))
+              })
+            : null}
           {summary.primaryAction === null ? (
             <Typography.Text type="secondary">
               当前无待处理动作，订单履约运行正常
@@ -143,6 +156,11 @@ export function OrderTransactionGuide({
               item={item}
               key={item.category}
               onNavigate={onNavigate}
+              primaryAction={
+                isPrimaryGuideItem(item, summary.primaryAction)
+                  ? summary.primaryAction
+                  : null
+              }
               showDivider={index > 0}
             />
           ))}
@@ -156,22 +174,21 @@ function GuideItem({
   isPrimary,
   item,
   onNavigate,
+  primaryAction,
   showDivider
 }: Readonly<{
   isPrimary: boolean;
   item: OrderTransactionGuideItem;
   onNavigate: (target: OrderTransactionGuideNavigation) => void;
+  primaryAction: OrderTransactionGuideTarget | null;
   showDivider: boolean;
 }>) {
   const categoryLabel = CATEGORY_LABELS[item.category];
   const state = getWorkspaceStatePresentation(item.state);
-  const action = item.actionCode
-    ? getWorkspaceActionPresentation(item.actionCode)
-    : null;
-  const navigationTarget = {
-    ...(item.targetRecordId ? { focus: item.targetRecordId } : {}),
-    tab: item.targetTab
-  };
+  const actionCode = primaryAction?.actionCode ?? item.actionCode;
+  const navigationTarget = primaryAction
+    ? toGuideNavigation(primaryAction)
+    : toGuideNavigation(item);
 
   return (
     <article
@@ -201,31 +218,13 @@ function GuideItem({
         </Typography.Text>
 
         <Flex align="center" gap={4} style={{ marginTop: "auto" }}>
-          {item.actionCode && action ? (
-            <Button
-              data-workspace-action-code={item.actionCode}
-              data-workspace-action-kind={isPrimary ? "primary" : "secondary"}
-              icon={ACTION_ICONS[action.icon]}
-              onClick={() => onNavigate(navigationTarget)}
-              size="small"
-              type={isPrimary ? "primary" : "default"}
-            >
-              {action.label}
-            </Button>
-          ) : null}
-          {item.actionCode && !action ? (
-            <Tooltip title="未知动作不可执行">
-              <Button
-                data-workspace-action-code={item.actionCode}
-                data-workspace-action-kind="unavailable"
-                disabled
-                icon={<StopOutlined />}
-                size="small"
-              >
-                动作不可用
-              </Button>
-            </Tooltip>
-          ) : null}
+          {actionCode
+            ? renderGuideAction({
+                actionCode,
+                kind: isPrimary ? "primary" : "secondary",
+                onClick: () => onNavigate(navigationTarget)
+              })
+            : null}
           <Tooltip title={`进入${categoryLabel}`}>
             <Button
               aria-label={`进入${categoryLabel}`}
@@ -239,6 +238,48 @@ function GuideItem({
         </Flex>
       </Flex>
     </article>
+  );
+}
+
+function renderGuideAction({
+  actionCode,
+  kind,
+  onClick
+}: Readonly<{
+  actionCode: string;
+  kind: "primary" | "secondary";
+  onClick: () => void;
+}>) {
+  const action = getWorkspaceActionPresentation(actionCode);
+
+  if (!action) {
+    return (
+      <Tooltip key={actionCode} title="未知动作不可执行">
+        <Button
+          data-workspace-action-code={actionCode}
+          data-workspace-action-kind="unavailable"
+          disabled
+          icon={<StopOutlined />}
+          size="small"
+        >
+          动作不可用
+        </Button>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <Button
+      data-workspace-action-code={actionCode}
+      data-workspace-action-kind={kind}
+      icon={ACTION_ICONS[action.icon] ?? <RightOutlined />}
+      key={actionCode}
+      onClick={onClick}
+      size="small"
+      type={kind === "primary" ? "primary" : "default"}
+    >
+      {action.label}
+    </Button>
   );
 }
 
@@ -261,4 +302,13 @@ function isPrimaryGuideItem(
       primaryAction.targetTab === item.targetTab &&
       primaryAction.targetRecordId === item.targetRecordId
   );
+}
+
+function toGuideNavigation(
+  target: Pick<OrderTransactionGuideTarget, "targetRecordId" | "targetTab">
+): OrderTransactionGuideNavigation {
+  return {
+    ...(target.targetRecordId ? { focus: target.targetRecordId } : {}),
+    tab: target.targetTab
+  };
 }

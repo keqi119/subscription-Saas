@@ -39,15 +39,30 @@ export function OrderWorkspace({
   const visibleTabSet = visibleTabs ? new Set(visibleTabs) : null;
   const badgesByTab = new Map(tabBadges.map((badge) => [badge.tab, badge]));
   const tabs = TAB_DEFINITIONS.filter(({ key }) => visibleTabSet?.has(key) ?? true);
+  const resolvedActiveTab = tabs.some(({ key }) => key === activeTab)
+    ? activeTab
+    : (tabs.find(({ key }) => key === "overview")?.key ?? tabs[0]?.key);
 
   return (
     <div data-order-workspace="true">
-      <nav aria-label="订单工作台分类" style={{ overflowX: "auto", scrollbarGutter: "stable" }}>
+      <div style={{ overflowX: "auto", scrollbarGutter: "stable" }}>
         <div style={{ minWidth: 1040 }}>
           <Tabs
-            activeKey={activeTab}
+            activeKey={resolvedActiveTab}
             animated={false}
+            destroyOnHidden
+            id="order-workspace-tabs"
             items={tabs.map(({ key, label }) => ({
+              children:
+                key === resolvedActiveTab ? (
+                  <section
+                    aria-label={`${label}内容`}
+                    data-workspace-active-content={key}
+                    style={{ minHeight: 240, paddingTop: 12 }}
+                  >
+                    {slots[key] ?? null}
+                  </section>
+                ) : undefined,
               key,
               label: <TabLabel badge={badgesByTab.get(key)} label={label} />
             }))}
@@ -56,15 +71,7 @@ export function OrderWorkspace({
             tabBarGutter={24}
           />
         </div>
-      </nav>
-
-      <section
-        aria-label={`${TAB_DEFINITIONS.find(({ key }) => key === activeTab)?.label ?? activeTab}内容`}
-        data-workspace-active-content={activeTab}
-        style={{ minHeight: 240, paddingTop: 12 }}
-      >
-        {slots[activeTab] ?? null}
-      </section>
+      </div>
     </div>
   );
 }

@@ -1,4 +1,10 @@
-import { createElement } from "react";
+import {
+  Children,
+  createElement,
+  isValidElement,
+  type ReactElement,
+  type ReactNode
+} from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
@@ -171,9 +177,31 @@ describe("admin order workspace shell", () => {
       expect(markup).toContain(label);
     }
     expect(markup.match(/data-workspace-active-content=/g)).toHaveLength(1);
+    expect(markup).toContain('role="tabpanel"');
+    expect(markup).toContain("aria-labelledby=");
     expect(markup).toContain("当前车辆交接内容");
     expect(markup).not.toContain("合同内容不应挂载");
     expect(markup).not.toContain("变更内容不应挂载");
+  });
+
+  it("falls back to overview without mounting a hidden active tab slot", () => {
+    const markup = renderToStaticMarkup(
+      createElement(OrderWorkspace, {
+        activeTab: "finance",
+        onTabChange: () => undefined,
+        slots: {
+          contract: createElement("p", null, "可见合同内容"),
+          finance: createElement("p", null, "隐藏财务敏感内容"),
+          overview: createElement("p", null, "安全基本信息内容")
+        },
+        visibleTabs: ["contract", "overview"]
+      })
+    );
+
+    expect(markup).toContain('data-workspace-active-content="overview"');
+    expect(markup).toContain("安全基本信息内容");
+    expect(markup).not.toContain("隐藏财务敏感内容");
+    expect(markup).toContain('role="tabpanel"');
   });
 
   it("renders a compact order header without Stage 1 contract actions", () => {
@@ -239,6 +267,7 @@ describe("admin order workspace shell", () => {
     expect(markup.match(/data-workspace-guide-category=/g)).toHaveLength(6);
     expect(markup.match(/data-workspace-action-kind="primary"/g)).toHaveLength(1);
     expect(markup.match(/data-workspace-action-kind="secondary"/g)).toHaveLength(5);
+    expect(markup.match(/data-workspace-action-code="contract.generate"/g)).toHaveLength(1);
     expect(markup).toContain('data-workspace-additional-count="2"');
     expect(markup).toContain("2026-07-29");
     for (const categoryLabel of TAB_LABELS.slice(1)) {
@@ -256,24 +285,66 @@ describe("admin order workspace shell", () => {
     }
   });
 
-  it("fails closed for an unknown guide action while retaining tab navigation", () => {
-    const markup = renderToStaticMarkup(
-      createElement(OrderTransactionGuide, {
-        onNavigate: () => undefined,
-        summary: {
-          asOf: "2026-07-29T01:10:00.000Z",
-          guidance: [guidanceItem("finance", "ACTION_REQUIRED", "finance.future_action")],
-          primaryAction: {
-            actionCode: "finance.future_action",
-            targetRecordId: "bill-1",
-            targetTab: "finance"
-          }
+  it("renders and clicks an independent primary action using its own target", () => {
+    const navigations: Array<{ focus?: string; tab: string }> = [];
+    const props = {
+      onNavigate: (target: { focus?: string; tab: string }) => {
+        navigations.push(target);
+      },
+      summary: {
+        asOf: "2026-07-29T01:10:00.000Z",
+        guidance: [
+          guidanceItem("contract", "READY", "contract.generate"),
+          guidanceItem("handover", "READY", "handover.assign"),
+          guidanceItem("entitlement", "READY", "entitlement.activate"),
+          guidanceItem("service", "READY", "service.resolve"),
+          {
+            ...guidanceItem("finance", "ACTION_REQUIRED", null),
+            reasonCode: "FINANCE_COLLECTION_ACTION_DUE",
+            targetRecordId: "collection-1"
+          },
+          guidanceItem("change", "READY", "change.approve")
+        ],
+        primaryAction: {
+          actionCode: "finance.collect",
+          targetRecordId: "bill-1",
+          targetTab: "finance" as const
         }
-      })
-    );
+      }
+    };
+    const rendered = OrderTransactionGuide(props);
+    const markup = renderToStaticMarkup(rendered);
+
+    expect(markup.match(/data-workspace-action-kind="primary"/g)).toHaveLength(1);
+    expect(markup.match(/data-workspace-action-kind="secondary"/g)).toHaveLength(5);
+    expect(markup).toContain('data-workspace-action-code="finance.collect"');
+    expect(markup).toContain("发起收款");
+    expect(markup).toContain("anticon-pay-circle");
+
+    const primaryAction = findWorkspaceAction(rendered, "primary");
+    primaryAction.props.onClick?.();
+
+    expect(navigations).toEqual([{ focus: "bill-1", tab: "finance" }]);
+  });
+
+  it("fails closed for an unknown guide action while retaining tab navigation", () => {
+    const rendered = OrderTransactionGuide({
+      onNavigate: () => undefined,
+      summary: {
+        asOf: "2026-07-29T01:10:00.000Z",
+        guidance: [guidanceItem("finance", "ACTION_REQUIRED", null)],
+        primaryAction: {
+          actionCode: "finance.future_action",
+          targetRecordId: "bill-1",
+          targetTab: "finance"
+        }
+      }
+    });
+    const markup = renderToStaticMarkup(rendered);
 
     expect(markup).toContain('data-workspace-action-code="finance.future_action"');
     expect(markup).toContain('data-workspace-action-kind="unavailable"');
+    expect(markup).not.toContain('data-workspace-action-kind="primary"');
     expect(markup).toContain("动作不可用");
     expect(markup).toContain("disabled");
     expect(markup).toContain('data-workspace-navigation="finance"');
@@ -285,7 +356,7 @@ function guidanceItem(
     ? Exclude<Tab, "overview">
     : never,
   state: Parameters<typeof getWorkspaceStatePresentation>[0],
-  actionCode: string,
+  actionCode: string | null,
   additionalCount = 0
 ) {
   return {
@@ -300,4 +371,40 @@ function guidanceItem(
     targetTab: category,
     updatedAt: "2026-07-29T01:00:00.000Z"
   };
+}
+
+type WorkspaceActionElement = ReactElement<{
+  "data-workspace-action-kind"?: string;
+  children?: ReactNode;
+  onClick?: () => void;
+}>;
+
+function findWorkspaceAction(node: ReactNode, kind: string): WorkspaceActionElement {
+  let match: WorkspaceActionElement | null = null;
+
+  function visit(current: ReactNode) {
+    Children.forEach(current, (child) => {
+      if (match || !isValidElement<WorkspaceActionElement["props"]>(child)) {
+        return;
+      }
+
+      if (child.props["data-workspace-action-kind"] === kind) {
+        match = child;
+        return;
+      }
+
+      visit(child.props.children);
+      if (
+        !match &&
+        typeof child.type === "function" &&
+        child.type.name === "GuideItem"
+      ) {
+        visit(child.type(child.props));
+      }
+    });
+  }
+
+  visit(node);
+  expect(match, `expected a ${kind} workspace action`).not.toBeNull();
+  return match as WorkspaceActionElement;
 }

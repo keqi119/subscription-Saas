@@ -2125,7 +2125,7 @@ export class HandoverWorkOrderService {
     );
     return {
       filename: fileObject.originalName ?? "handover-signed.pdf",
-      mimeType: downloaded.contentType ?? fileObject.mimeType,
+      mimeType: fileObject.mimeType,
       sizeBytes: toNumberOrNull(
         fileObject.sizeBytes ?? downloaded.contentLength ?? null
       ),

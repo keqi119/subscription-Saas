@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
+import { ForbiddenException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Reflector } from "@nestjs/core";
+import { PermissionCode } from "@subscription-saas/shared";
 import {
   BusinessType,
   ContractStatus,
@@ -27,6 +30,8 @@ import {
   STAGE2_HANDOVER_PDF_MAX_PAGES,
   STAGE2_HANDOVER_PDF_TARGET_BYTES
 } from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
+import { PermissionsGuard } from "../src/auth/permissions.guard";
+import { HandoverWorkOrderAdminController } from "../src/handover-work-order/handover-work-order.controller";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 
@@ -1014,6 +1019,27 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(downloaded).not.toHaveProperty("objectKey");
   });
 
+  it("pins the signed PDF response MIME type to the verified FileObject", async () => {
+    const harness = createServiceHarness({
+      handover: {
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: "file-signed-pdf-1",
+        signedObjectKey: "contracts/contract-stage2-1/signed/handover.pdf",
+        signedPdfHash: "a".repeat(64),
+        status: DeliveryHandoverStatus.ARCHIVED
+      }
+    });
+    harness.storageService.getObject.mockResolvedValueOnce({
+      contentLength: harness.generatedPdfBuffer.length,
+      contentType: "image/png",
+      stream: Readable.from([harness.generatedPdfBuffer])
+    });
+
+    await expect(
+      harness.service.downloadStage2SignedHandoverPdf("work-order-1")
+    ).resolves.toMatchObject({ mimeType: "application/pdf" });
+  });
+
   it("refuses the signed PDF download until the typed Stage 2 archive is complete", async () => {
     const harness = createServiceHarness({
       handover: {
@@ -1096,6 +1122,93 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
       .rejects.toThrow("源 PDF 已因证据变化失效");
     expect(harness.storageService.getObject).not.toHaveBeenCalled();
   });
+});
+
+describe("HandoverWorkOrderAdminController signed Stage 2 PDF download", () => {
+  const handler =
+    HandoverWorkOrderAdminController.prototype.downloadStage2SignedDocument;
+  const controllerClass = HandoverWorkOrderAdminController;
+
+  it("streams the verified signed PDF for a DELIVERY_VIEW user", async () => {
+    const stream = Readable.from([Buffer.from("%PDF-signed")]);
+    const handoverService = {
+      downloadStage2SignedHandoverPdf: vi.fn(async () => ({
+        filename: "handover-signed.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 11,
+        stream
+      }))
+    };
+    const controller = new HandoverWorkOrderAdminController(
+      handoverService as never,
+      {} as never,
+      {} as never
+    );
+    const response = { setHeader: vi.fn() };
+    const guard = new PermissionsGuard(new Reflector());
+
+    const result = await executeStage2SignedDocumentRoute(
+      guard,
+      controller,
+      [PermissionCode.DELIVERY_VIEW],
+      response as never
+    );
+
+    expect(handoverService.downloadStage2SignedHandoverPdf).toHaveBeenCalledWith(
+      "work-order-1"
+    );
+    expect(response.setHeader).toHaveBeenCalledWith(
+      "Content-Type",
+      "application/pdf"
+    );
+    expect(response.setHeader).toHaveBeenCalledWith("Content-Length", "11");
+    expect(response.setHeader).toHaveBeenCalledWith(
+      "Content-Disposition",
+      "attachment; filename*=UTF-8''handover-signed.pdf"
+    );
+    expect((result as unknown as { getStream(): Readable }).getStream()).toBe(
+      stream
+    );
+  });
+
+  it("denies the signed PDF route before invoking the download service without DELIVERY_VIEW", () => {
+    const handoverService = {
+      downloadStage2SignedHandoverPdf: vi.fn()
+    };
+    const controller = new HandoverWorkOrderAdminController(
+      handoverService as never,
+      {} as never,
+      {} as never
+    );
+    const guard = new PermissionsGuard(new Reflector());
+
+    expect(() =>
+      executeStage2SignedDocumentRoute(guard, controller, [], {
+        setHeader: vi.fn()
+      } as never)
+    ).toThrow(ForbiddenException);
+    expect(handoverService.downloadStage2SignedHandoverPdf).not.toHaveBeenCalled();
+  });
+
+  function executeStage2SignedDocumentRoute(
+    guard: PermissionsGuard,
+    controller: HandoverWorkOrderAdminController,
+    permissions: PermissionCode[],
+    response: never
+  ) {
+    guard.canActivate(stage2SignedDocumentContext(permissions));
+    return controller.downloadStage2SignedDocument("work-order-1", response);
+  }
+
+  function stage2SignedDocumentContext(permissions: PermissionCode[]) {
+    return {
+      getClass: () => controllerClass,
+      getHandler: () => handler,
+      switchToHttp: () => ({
+        getRequest: () => ({ user: { permissions } })
+      })
+    } as never;
+  }
 });
 
 function deferred<T>() {

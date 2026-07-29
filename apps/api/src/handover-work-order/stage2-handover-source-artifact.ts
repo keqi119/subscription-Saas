@@ -3,13 +3,15 @@ import {
   DeliveryHandoverStatus
 } from "@prisma/client";
 
-export const STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION = 1;
+export const STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION = 2;
+export const STAGE2_HANDOVER_PDF_RENDERER_VERSION = 2;
 
 export interface Stage2SourceArtifactBinding {
   artifactVersion: number;
   contract: Record<string, unknown>;
   fileObject: Record<string, unknown>;
   manifestHash: string;
+  rendererVersion: number | null;
   sourceObjectKey: string;
   sourcePdfHash: string;
 }
@@ -17,10 +19,12 @@ export interface Stage2SourceArtifactBinding {
 export interface Stage2SourceArtifactBindingInput {
   allowedContractStatuses?: readonly ContractStatus[];
   allowedHandoverStatuses?: readonly DeliveryHandoverStatus[];
+  expectedArtifactVersion?: number;
   expectedCustomerId?: string | null;
   expectedHandoverId: string;
   expectedManifestHash: string;
   expectedOrderId: string;
+  expectedRendererVersion?: number;
   expectedWorkOrderId: string;
   fileObject: unknown;
   handover: unknown;
@@ -68,10 +72,19 @@ export function validateStage2SourceArtifactBinding(
   const artifact = asRecord(
     contractSnapshot?.stage2HandoverPdfArtifact
   );
+  const rendererVersion = readPositiveInteger(artifact, "rendererVersion");
   const fileSize = toSafeInteger(fileObject.sizeBytes);
 
   if (
-    artifactVersion !== STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION ||
+    (
+      input.expectedArtifactVersion !== undefined &&
+      artifactVersion !== input.expectedArtifactVersion
+    ) ||
+    (
+      input.expectedRendererVersion !== undefined &&
+      rendererVersion !== input.expectedRendererVersion
+    ) ||
+    artifactVersion === null ||
     handoverId !== input.expectedHandoverId ||
     orderId !== input.expectedOrderId ||
     !(
@@ -125,6 +138,7 @@ export function validateStage2SourceArtifactBinding(
     contract,
     fileObject,
     manifestHash,
+    rendererVersion,
     sourceObjectKey,
     sourcePdfHash
   };

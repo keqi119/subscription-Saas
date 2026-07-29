@@ -6,6 +6,7 @@ import {
   DownloadOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RollbackOutlined,
   SendOutlined,
   UserAddOutlined
 } from "@ant-design/icons";
@@ -108,6 +109,7 @@ import {
   getOrderWorkspaceFinanceLinks,
   getOrderWorkspaceFocusAttemptKey,
   getOrderWorkspaceRecordIds,
+  getVehicleReturnWorkspaceState,
   getVisibleOrderWorkspaceTabs,
   getWorkspaceStatePresentation,
   mergeOrderWorkspaceFocusedServiceCase,
@@ -3565,14 +3567,16 @@ function ReturnPanel({
   return (
     <Card
       extra={
-        <Space wrap>
-          <ActionButton availability={prepareAvailability} onClick={onOpenPrepare} type="primary">
-            准备退车
-          </ActionButton>
-          <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
-            确认退车
-          </ActionButton>
-        </Space>
+        alreadyReturned ? null : (
+          <Space wrap>
+            <ActionButton availability={prepareAvailability} onClick={onOpenPrepare} type="primary">
+              准备退车
+            </ActionButton>
+            <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
+              确认退车
+            </ActionButton>
+          </Space>
+        )
       }
       title="车辆退回 / 退车验收"
     >
@@ -3674,6 +3678,27 @@ function ReturnPanel({
         />
       </Space>
     </Card>
+  );
+}
+
+function VehicleReturnEntry({
+  onOpenPrepare,
+  prepareAvailability
+}: {
+  onOpenPrepare: () => void;
+  prepareAvailability: ReturnType<typeof actionAvailability>;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <ActionButton
+        availability={prepareAvailability}
+        icon={<RollbackOutlined />}
+        onClick={onOpenPrepare}
+        type="primary"
+      >
+        车辆退回 / 退车验收
+      </ActionButton>
+    </div>
   );
 }
 
@@ -4642,6 +4667,17 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     damageFeeBills.find((bill) => (toNumber(bill.remainingAmount) ?? 0) > 0) ?? null;
   const hasActiveDamageFeeBill = damageFeeBills.length > 0;
   const orderReturned = Boolean(order && isOrderReturned(order));
+  const vehicleReturnWorkspaceState = getVehicleReturnWorkspaceState({
+    actualDeliveryAt: order?.actualDeliveryAt,
+    actualReturnAt: order?.actualReturnAt,
+    deliveryAlreadyDelivered: deliveryCheck?.alreadyDelivered,
+    deliveryStatus:
+      deliveryCheck?.deliveryStatus ?? delivery?.deliveryStatus ?? null,
+    hasReturnRecord: Boolean(vehicleReturn),
+    returnAlreadyCompleted: returnCheck?.alreadyReturned,
+    returnStatus:
+      returnCheck?.returnStatus ?? vehicleReturn?.returnStatus ?? null
+  });
   const availableDepositBalance = getDepositAvailableBalance(depositSettlement);
   const damageFeeRemainingAmount = getDamageFeeRemainingAmount(depositSettlement);
   const suggestedDeductibleAmount = getSuggestedDeductibleAmount(depositSettlement);
@@ -5131,7 +5167,10 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         );
       }
 
-      if (hasReturnViewPermission) {
+      if (
+        hasReturnViewPermission &&
+        vehicleReturnWorkspaceState !== "HIDDEN"
+      ) {
         loads.push(
           loadWorkspaceResource("vehicle-return", force, async () => {
             const [nextReturnCheck, nextReturn] = await Promise.all([
@@ -5159,7 +5198,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       loadChangesDomain,
       loadWorkspaceResource,
       orderId,
-      refreshStage2HandoverESignStatus
+      refreshStage2HandoverESignStatus,
+      vehicleReturnWorkspaceState
     ]
   );
 
@@ -7114,7 +7154,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 workOrders={handoverWorkOrders}
               />
             ) : null}
-            {hasReturnViewPermission ? (
+            {hasReturnViewPermission &&
+            vehicleReturnWorkspaceState === "ENTRY" ? (
+              <VehicleReturnEntry
+                onOpenPrepare={openPrepareReturnModal}
+                prepareAvailability={prepareReturnAvailability}
+              />
+            ) : null}
+            {hasReturnViewPermission &&
+            (
+              vehicleReturnWorkspaceState === "WORKFLOW" ||
+              vehicleReturnWorkspaceState === "COMPLETED"
+            ) ? (
               <ReturnPanel
                 confirmAvailability={confirmReturnAvailability}
                 onOpenConfirm={openConfirmReturnModal}

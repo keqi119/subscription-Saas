@@ -585,7 +585,7 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         bucket: "application-materials",
         mimeType: "application/pdf",
         objectKey: expect.stringMatching(
-          /^contracts\/[0-9a-f-]{36}\/generated\/handover-v1-[0-9a-f]{64}\.pdf$/
+          /^contracts\/[0-9a-f-]{36}\/generated\/handover-v2-[0-9a-f]{64}\.pdf$/
         ),
         originalName: "handover.pdf",
         uploadedBy: "admin-1"
@@ -596,10 +596,11 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
         contractSnapshot: expect.objectContaining({
           stage2HandoverPdfArtifact: {
             artifactKind: "stage2-handover-pdf-source",
-            artifactVersion: 1,
+            artifactVersion: 2,
             documentType: "DELIVERY_HANDOVER",
             fileId: "file-pdf-1",
             pageCount: 10,
+            rendererVersion: 2,
             signingStage: "STAGE2_DELIVERY_HANDOVER",
             slotCoordinates: stage2ArtifactCoordinates(),
             sourcePdfHash: createHash("sha256")
@@ -613,12 +614,12 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(harness.prisma.vehicleDeliveryHandover.update)
       .toHaveBeenLastCalledWith({
       data: expect.objectContaining({
-        artifactVersion: 1,
+        artifactVersion: 2,
         handoverContractId: "contract-stage2-1",
         manifestHash: currentManifestDigest(),
         sourceDocumentFileId: "file-pdf-1",
         sourceObjectKey: expect.stringMatching(
-          /^contracts\/[0-9a-f-]{36}\/generated\/handover-v1-[0-9a-f]{64}\.pdf$/
+          /^contracts\/[0-9a-f-]{36}\/generated\/handover-v2-[0-9a-f]{64}\.pdf$/
         ),
         sourcePdfHash: createHash("sha256")
           .update(Buffer.from("%PDF-stage2-output"))
@@ -654,9 +655,37 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
       .not.toHaveBeenCalled();
     expect(harness.workflowJobs).toHaveLength(1);
     expect(harness.workflowJobs[0]).toMatchObject({
-      idempotencyKey: "field-notify:work-order-1:1",
+      idempotencyKey: "field-notify:work-order-1:2",
       jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY
     });
+  });
+
+  it("supersedes a valid unsigned legacy renderer artifact before generating the current version", async () => {
+    const harness = createServiceHarness();
+    linkCompleteSourceArtifact(harness, {
+      artifactVersion: 1,
+      rendererVersion: null
+    });
+
+    const result = await ensureStage2HandoverPdf(
+      harness.service,
+      "work-order-1",
+      harness.currentManifestHash
+    );
+
+    expect(result).toMatchObject({
+      artifactVersion: 2,
+      status: "GENERATED"
+    });
+    expect(harness.prisma.contract.update).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: ContractStatus.CANCELLED
+      }),
+      where: { id: "contract-stage2-1" }
+    });
+    expect(harness.renderer.renderToFile).toHaveBeenCalledOnce();
+    expect(harness.storageService.putGeneratedContractPdfArtifactFromPath)
+      .toHaveBeenCalledOnce();
   });
 
   it("rejects reuse when the handover is not SOURCE_GENERATED", async () => {
@@ -914,11 +943,11 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(harness.workflowJobs).toHaveLength(1);
     expect(harness.workflowJobs[0]).toMatchObject({
       handoverId: "handover-1",
-      idempotencyKey: "field-notify:work-order-1:1",
+      idempotencyKey: "field-notify:work-order-1:2",
       jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
       jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
       payload: {
-        artifactVersion: 1,
+        artifactVersion: 2,
         manifestHash: harness.currentManifestHash,
         sourcePdfHash: createHash("sha256")
           .update(harness.generatedPdfBuffer)
@@ -927,7 +956,7 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
       workOrderId: "work-order-1"
     });
     expect(harness.workflowEnqueueObservedArtifact).toEqual({
-      artifactVersion: 1,
+      artifactVersion: 2,
       handoverContractId: "contract-stage2-1",
       sourceDocumentFileId: "file-pdf-1"
     });
@@ -1518,6 +1547,7 @@ function createServiceHarness(options: {
     handover: {
       deletedAt: null,
       handoverContractId: null,
+      handoverESignTaskId: null,
       handoverContract: {
         contractSnapshot: {
           evidencePackage: { manifestHash: currentManifestHash }
@@ -1613,7 +1643,14 @@ function createServiceHarness(options: {
         persistedStage2Contract = null;
         return deleted;
       }),
-      findUnique: vi.fn(async () => persistedStage2Contract),
+      findUnique: vi.fn(async ({ where }) => {
+        if (persistedStage2Contract?.id === where.id) {
+          return persistedStage2Contract;
+        }
+        return records.handover.handoverContractId === where.id
+          ? records.handover.handoverContract
+          : null;
+      }),
       upsert: vi.fn(async ({ create, update }) => {
         if (!persistedStage2Contract) {
           persistedStage2Contract = await prisma.contract.create({
@@ -1854,13 +1891,21 @@ function ensureStage2HandoverPdf(
 }
 
 function linkCompleteSourceArtifact(
-  harness: ReturnType<typeof createServiceHarness>
+  harness: ReturnType<typeof createServiceHarness>,
+  options: {
+    artifactVersion?: number;
+    rendererVersion?: number | null;
+  } = {}
 ) {
+  const artifactVersion = options.artifactVersion ?? 2;
+  const rendererVersion = options.rendererVersion === undefined
+    ? 2
+    : options.rendererVersion;
   const sourcePdfHash = createHash("sha256")
     .update(harness.generatedPdfBuffer)
     .digest("hex");
   Object.assign(harness.records.handover, {
-    artifactVersion: 1,
+    artifactVersion,
     handoverContractId: "contract-stage2-1",
     handoverContract: {
       contractNo: "HDV20260725100000ABCD",
@@ -1871,10 +1916,11 @@ function linkCompleteSourceArtifact(
         orderId: "order-1",
         stage2HandoverPdfArtifact: {
           artifactKind: "stage2-handover-pdf-source",
-          artifactVersion: 1,
+          artifactVersion,
           documentType: "DELIVERY_HANDOVER",
           fileId: "file-pdf-1",
           pageCount: 10,
+          ...(rendererVersion === null ? {} : { rendererVersion }),
           signingStage: "STAGE2_DELIVERY_HANDOVER",
           slotCoordinates: stage2ArtifactCoordinates(),
           sourcePdfHash

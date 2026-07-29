@@ -222,7 +222,9 @@ describe("Storage providers", () => {
     expect(localStored.bucket).toBe("application-materials");
     expect(localStored.objectKey).toMatch(/^materials\/app-1\/\d{4}\/\d{2}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
-    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/materials\/app-1\/\d{4}\/\d{2}\//);
+    expect(ossStored.objectKey).toMatch(
+      /^oss:subscription-saas\/staging\/materials\/app-1\/\d{4}\/\d{2}\//
+    );
   });
 
   it("deletes a contract signed artifact through its encoded storage driver", async () => {
@@ -303,7 +305,9 @@ describe("Storage providers", () => {
     expect(localStored.bucket).toBe("application-materials");
     expect(localStored.objectKey).toMatch(/^vehicle-listings\/vehicle-1\/\d{4}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
-    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/vehicle-listings\/vehicle-1\/\d{4}\//);
+    expect(ossStored.objectKey).toMatch(
+      /^oss:subscription-saas\/staging\/vehicle-listings\/vehicle-1\/\d{4}\//
+    );
   });
 
   it("maps field delivery evidence uploads to private local or OSS database fields", async () => {
@@ -353,7 +357,9 @@ describe("Storage providers", () => {
     expect(localStored.bucket).toBe("application-materials");
     expect(localStored.objectKey).toMatch(/^delivery-evidence\/work-order-1\/\d{4}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
-    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/delivery-evidence\/work-order-1\/\d{4}\//);
+    expect(ossStored.objectKey).toMatch(
+      /^oss:subscription-saas\/staging\/delivery-evidence\/work-order-1\/\d{4}\//
+    );
   });
 
   it("plans the same deterministic signed-artifact locator returned by each storage driver", async () => {
@@ -418,6 +424,50 @@ describe("Storage providers", () => {
     expect(ossPlanned).toBe(ossStored.objectKey);
   });
 
+  it("resolves only signed-artifact locators owned by the requested contract", () => {
+    const providers = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn()
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      providers as never,
+      providers as never
+    );
+    const ossService = new StorageService(
+      config({
+        OSS_BUCKET: "private-bucket",
+        OSS_PREFIX: "subscription-saas/staging",
+        UPLOAD_STORAGE_DRIVER: "oss"
+      }) as never,
+      providers as never,
+      providers as never
+    );
+    const localObjectKey = "contracts/contract-1/esign/fadada/signed/2026/signed.pdf";
+    const ossObjectKey =
+      "oss:subscription-saas/staging/contracts/contract-1/esign/fadada/signed/2026/signed.pdf";
+
+    expect(
+      localService.resolveContractSignedArtifactIdentity("contract-1", "fadada", localObjectKey)
+    ).toEqual({
+      bucket: "application-materials",
+      objectKey: localObjectKey
+    });
+    expect(
+      ossService.resolveContractSignedArtifactIdentity("contract-1", "fadada", ossObjectKey)
+    ).toEqual({
+      bucket: "oss:private-bucket",
+      objectKey: ossObjectKey
+    });
+    expect(
+      localService.resolveContractSignedArtifactIdentity("contract-other", "fadada", localObjectKey)
+    ).toBeNull();
+    expect(
+      ossService.resolveContractSignedArtifactIdentity("contract-1", "other-provider", ossObjectKey)
+    ).toBeNull();
+  });
+
   it("maps disk-backed field evidence to local or OSS providers", async () => {
     const local = {
       deleteObject: vi.fn(),
@@ -461,14 +511,18 @@ describe("Storage providers", () => {
     const localStored = await localService.putDeliveryEvidenceFileFromPath(input);
     const ossStored = await ossService.putDeliveryEvidenceFileFromPath(input);
 
-    expect(local.putFile).toHaveBeenCalledWith(expect.objectContaining({
-      filePath: input.filePath,
-      sizeBytes: input.sizeBytes
-    }));
-    expect(oss.putFile).toHaveBeenCalledWith(expect.objectContaining({
-      filePath: input.filePath,
-      sizeBytes: input.sizeBytes
-    }));
+    expect(local.putFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: input.filePath,
+        sizeBytes: input.sizeBytes
+      })
+    );
+    expect(oss.putFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: input.filePath,
+        sizeBytes: input.sizeBytes
+      })
+    );
     expect(localStored.bucket).toBe("application-materials");
     expect(ossStored.bucket).toBe("oss:private-bucket");
   });

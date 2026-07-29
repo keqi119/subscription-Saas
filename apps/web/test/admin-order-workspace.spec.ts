@@ -24,6 +24,7 @@ import {
   getOrderWorkspaceFinanceLinks,
   getOrderWorkspaceFocusAttemptKey,
   getOrderWorkspaceRecordIds,
+  getVehicleReturnWorkspaceState,
   getVisibleOrderWorkspaceTabs,
   getWorkspaceActionPresentation,
   getWorkspaceStatePresentation,
@@ -255,6 +256,57 @@ describe("admin order workspace permission contract", () => {
     ]
   ])("resolves change guard %j", (input, expected) => {
     expect(getOrderWorkspaceChangeGuard(input)).toEqual(expected);
+  });
+});
+
+describe("admin order vehicle return workspace state", () => {
+  it.each([
+    [
+      {
+        actualDeliveryAt: null,
+        actualReturnAt: null,
+        deliveryAlreadyDelivered: false,
+        deliveryStatus: "READY",
+        hasReturnRecord: false,
+        returnStatus: null
+      },
+      "HIDDEN"
+    ],
+    [
+      {
+        actualDeliveryAt: "2026-07-29T08:00:00.000Z",
+        actualReturnAt: null,
+        deliveryAlreadyDelivered: true,
+        deliveryStatus: "DELIVERED",
+        hasReturnRecord: false,
+        returnStatus: null
+      },
+      "ENTRY"
+    ],
+    [
+      {
+        actualDeliveryAt: "2026-07-29T08:00:00.000Z",
+        actualReturnAt: null,
+        deliveryAlreadyDelivered: true,
+        deliveryStatus: "DELIVERED",
+        hasReturnRecord: true,
+        returnStatus: "READY"
+      },
+      "WORKFLOW"
+    ],
+    [
+      {
+        actualDeliveryAt: "2026-07-29T08:00:00.000Z",
+        actualReturnAt: "2026-08-29T08:00:00.000Z",
+        deliveryAlreadyDelivered: true,
+        deliveryStatus: "DELIVERED",
+        hasReturnRecord: true,
+        returnStatus: "CONFIRMED"
+      },
+      "COMPLETED"
+    ]
+  ] as const)("resolves %j to %s", (input, expected) => {
+    expect(getVehicleReturnWorkspaceState(input)).toBe(expected);
   });
 });
 
@@ -736,6 +788,11 @@ describe("admin order detail workspace migration", () => {
       "getOrderWorkspaceChangeGuard({"
     );
     expect(handoverLoader).toContain("hasOrderChangeView");
+    expect(handoverLoader).toContain(
+      'vehicleReturnWorkspaceState !== "HIDDEN"'
+    );
+    expect(handoverLoader.indexOf('vehicleReturnWorkspaceState !== "HIDDEN"'))
+      .toBeLessThan(handoverLoader.indexOf("/return-check"));
     expect(handoverLoader).not.toContain("loadDepositSettlementDomain");
     expect(activeLoader).toContain(
       'case "contract":'
@@ -743,6 +800,28 @@ describe("admin order detail workspace migration", () => {
     expect(activeLoader).toContain("hasOrderChangeView");
     expect(mutationRefresh).toContain("refreshActiveOrderWorkspaceTab({");
     expect(mutationRefresh).toContain("activeTabRef");
+  });
+
+  it("renders the return entry only after delivery and expands only for a return record", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const renderedWorkspace = source.slice(source.indexOf("let content: ReactNode;"));
+    const handoverTab = sourceBetween(
+      renderedWorkspace,
+      'case "handover":',
+      'case "entitlement":'
+    );
+
+    expect(source).toContain(
+      "const vehicleReturnWorkspaceState = getVehicleReturnWorkspaceState({"
+    );
+    expect(handoverTab).toContain(
+      'vehicleReturnWorkspaceState === "ENTRY"'
+    );
+    expect(handoverTab).toContain("<VehicleReturnEntry");
+    expect(handoverTab).toMatch(
+      /vehicleReturnWorkspaceState === "WORKFLOW"[\s\S]*vehicleReturnWorkspaceState === "COMPLETED"[\s\S]*<ReturnPanel/
+    );
+    expect(source).toContain("alreadyReturned ? null :");
   });
 
   it("wires focus markers to every real backend target kind", () => {

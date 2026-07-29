@@ -74,6 +74,8 @@ import { StorageService } from "../storage/storage.service";
 import {
   hasStage2SourceArtifactState,
   normalizeStage2Sha256,
+  STAGE2_HANDOVER_PDF_RENDERER_VERSION,
+  STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
   validateStage2SourceArtifactBinding
 } from "./stage2-handover-source-artifact";
 import {
@@ -1831,11 +1833,13 @@ export class HandoverWorkOrderService {
     await options.lease?.assertLease();
 
     const activeTemplate = await this.findActiveStage2HandoverTemplate();
-    const artifactVersion = 1;
+    const artifactVersion = STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION;
+    const rendererVersion = STAGE2_HANDOVER_PDF_RENDERER_VERSION;
     const identity = buildStage2PdfArtifactIdentity(
       workOrder,
       expectedManifestDigest,
-      artifactVersion
+      artifactVersion,
+      rendererVersion
     );
     const reservation = await this.reserveStage2SourcePdf(
       workOrder,
@@ -1900,6 +1904,7 @@ export class HandoverWorkOrderService {
           documentNo: reservation.contractNo,
           evidenceManifestHash: evidencePackage.manifestHash,
           orderNo: order.orderNo,
+          rendererVersion: String(rendererVersion),
           templateName: template.templateName,
           templateVersion: template.versionNo
         },
@@ -1953,6 +1958,7 @@ export class HandoverWorkOrderService {
                 documentType: "DELIVERY_HANDOVER",
                 fileId: createdFileObject.id,
                 pageCount: renderedFile!.diagnostics.pageCount,
+                rendererVersion,
                 signingStage: "STAGE2_DELIVERY_HANDOVER",
                 slotCoordinates: renderedFile!.slotCoordinates,
                 sourcePdfHash
@@ -2522,6 +2528,7 @@ export class HandoverWorkOrderService {
           "id",
           "order_id" AS "orderId",
           "handover_contract_id" AS "handoverContractId",
+          "handover_esign_task_id" AS "handoverESignTaskId",
           "source_document_file_id" AS "sourceDocumentFileId",
           "source_object_key" AS "sourceObjectKey",
           "source_pdf_hash" AS "sourcePdfHash",
@@ -2642,7 +2649,7 @@ export class HandoverWorkOrderService {
     const fileObject = fileId
       ? await this.prisma.fileObject.findUnique({ where: { id: fileId } })
       : null;
-    const binding = validateStage2SourceArtifactBinding({
+    const historicalBinding = validateStage2SourceArtifactBinding({
       expectedCustomerId,
       expectedHandoverId: workOrder.handoverId ?? "",
       expectedManifestHash: expectedManifestDigest,
@@ -2652,10 +2659,43 @@ export class HandoverWorkOrderService {
       handover,
       maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
     });
-    if (!binding) {
+    if (!historicalBinding) {
       throw new ConflictException(
         "The persisted Stage 2 source PDF artifact binding is invalid."
       );
+    }
+    const binding = validateStage2SourceArtifactBinding({
+      expectedArtifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
+      expectedCustomerId,
+      expectedHandoverId: workOrder.handoverId ?? "",
+      expectedManifestHash: expectedManifestDigest,
+      expectedOrderId: workOrder.orderId,
+      expectedRendererVersion: STAGE2_HANDOVER_PDF_RENDERER_VERSION,
+      expectedWorkOrderId: workOrder.id,
+      fileObject,
+      handover,
+      maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
+    });
+    if (!binding) {
+      if (
+        historicalBinding.artifactVersion >
+          STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION ||
+        (
+          historicalBinding.rendererVersion !== null &&
+          historicalBinding.rendererVersion >
+            STAGE2_HANDOVER_PDF_RENDERER_VERSION
+        )
+      ) {
+        throw new ConflictException(
+          "The persisted Stage 2 source PDF uses a newer renderer."
+        );
+      }
+      await this.supersedeLegacyUnsignedStage2Source(
+        workOrder,
+        handover,
+        historicalBinding
+      );
+      return null;
     }
 
     const downloaded = await this.getStorageService().getObject(
@@ -2694,6 +2734,74 @@ export class HandoverWorkOrderService {
       fileObject: binding.fileObject,
       handover
     };
+  }
+
+  private async supersedeLegacyUnsignedStage2Source(
+    workOrder: WorkOrderRecord,
+    handover: Record<string, unknown>,
+    binding: NonNullable<
+      ReturnType<typeof validateStage2SourceArtifactBinding>
+    >
+  ) {
+    await this.runSerializableTransaction(async (tx) => {
+      const locked = await this.lockStage2HandoverForSourcePdf(
+        tx,
+        readRequiredString(handover, "id")
+      );
+      if (
+        !sameStage2SourceBinding(locked, handover) ||
+        readString(locked, "handoverESignTaskId") ||
+        readString(locked, "status") !==
+          DeliveryHandoverStatus.SOURCE_GENERATED
+      ) {
+        throw new ConflictException(
+          "The legacy Stage 2 source PDF has already entered signing."
+        );
+      }
+      const contract = await tx.contract.findUnique({
+        where: { id: readRequiredString(locked, "handoverContractId") }
+      });
+      if (
+        !contract ||
+        contract.deletedAt ||
+        contract.orderId !== workOrder.orderId ||
+        contract.fileId !== binding.fileObject.id ||
+        contract.status !== ContractStatus.GENERATED
+      ) {
+        throw new ConflictException(
+          "The legacy Stage 2 source Contract cannot be superseded."
+        );
+      }
+      await tx.contract.update({
+        data: {
+          status: ContractStatus.CANCELLED
+        },
+        where: { id: contract.id }
+      });
+      const metadata = asRecord(locked.metadata) ?? {};
+      await tx.vehicleDeliveryHandover.update({
+        data: {
+          artifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
+          handoverContractId: null,
+          manifestHash: null,
+          metadata: toJsonValue({
+            ...metadata,
+            stage2SourcePdfReservation: null,
+            stage2SupersededSource: {
+              artifactVersion: binding.artifactVersion,
+              contractId: contract.id,
+              fileId: binding.fileObject.id,
+              rendererVersion: binding.rendererVersion
+            }
+          }),
+          sourceDocumentFileId: null,
+          sourceObjectKey: null,
+          sourcePdfHash: null,
+          status: DeliveryHandoverStatus.DRAFT
+        },
+        where: { id: readRequiredString(locked, "id") }
+      });
+    });
   }
 
   private async enqueueReadyStage2Pdf(
@@ -4644,9 +4752,12 @@ function normalizeSha256Digest(value: unknown) {
 function buildStage2PdfArtifactIdentity(
   workOrder: WorkOrderRecord,
   manifestDigest: string,
-  artifactVersion: number
+  artifactVersion: number,
+  rendererVersion: number
 ) {
-  const identity = `${workOrder.id}:${artifactVersion}:${manifestDigest}`;
+  const identity =
+    `${workOrder.id}:${artifactVersion}:renderer-${rendererVersion}:` +
+    manifestDigest;
   return {
     contractId: deterministicUuid(`stage2-contract:${identity}`)
   };

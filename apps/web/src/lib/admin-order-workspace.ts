@@ -21,6 +21,12 @@ export type OrderWorkspaceState =
   | "NOT_STARTED"
   | "UNAVAILABLE";
 
+export type VehicleReturnWorkspaceState =
+  | "HIDDEN"
+  | "ENTRY"
+  | "WORKFLOW"
+  | "COMPLETED";
+
 export type OrderWorkspaceActionCode =
   | "contract.generate"
   | "contract.sign"
@@ -164,6 +170,35 @@ export function getOrderWorkspaceChangeGuard(input: {
     locked: input.changesLoaded && input.hasActiveChange,
     waiting: !input.changesLoaded
   };
+}
+
+export function getVehicleReturnWorkspaceState(input: {
+  actualDeliveryAt?: string | null;
+  actualReturnAt?: string | null;
+  deliveryAlreadyDelivered?: boolean;
+  deliveryStatus?: string | null;
+  hasReturnRecord: boolean;
+  returnStatus?: string | null;
+  returnAlreadyCompleted?: boolean;
+}): VehicleReturnWorkspaceState {
+  const returned = Boolean(
+    input.actualReturnAt ||
+      input.returnAlreadyCompleted ||
+      input.returnStatus === "CONFIRMED"
+  );
+  const delivered = Boolean(
+    returned ||
+      input.actualDeliveryAt ||
+      input.deliveryAlreadyDelivered ||
+      input.deliveryStatus === "DELIVERED"
+  );
+  if (!delivered) {
+    return "HIDDEN";
+  }
+  if (returned) {
+    return "COMPLETED";
+  }
+  return input.hasReturnRecord ? "WORKFLOW" : "ENTRY";
 }
 
 export async function refreshActiveOrderWorkspaceTab(input: {

@@ -14,6 +14,7 @@ import {
   ESignTaskStatus,
   OrderStatus
 } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -29,12 +30,16 @@ describe("FadadaSignedArtifactService", () => {
     const { service, state } = createFixture();
     state.task.taskStatus = ESignTaskStatus.WAITING_CUSTOMER;
 
-    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(
+      BadRequestException
+    );
 
     state.task.taskStatus = ESignTaskStatus.COMPLETED;
     state.task.provider = ESignProviderType.MOCK;
 
-    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(
+      BadRequestException
+    );
   });
 
   it("requires all task signers to be signed before archiving signed artifacts", async () => {
@@ -118,19 +123,23 @@ describe("FadadaSignedArtifactService", () => {
       downloadUrl: "https://download.example.test/file.pdf?token=secret"
     });
     expect(apiClient.createContractFiling).toHaveBeenCalledWith({ contractId: "FADADA-CON-1" });
-    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      buffer: expect.any(Buffer),
-      contentType: "application/pdf",
-      contractId: "contract-1",
-      originalName: "CON-1-signed.pdf",
-      provider: "fadada"
-    }));
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        buffer: expect.any(Buffer),
+        contentType: "application/pdf",
+        contractId: "contract-1",
+        originalName: "CON-1-signed.pdf",
+        provider: "fadada"
+      })
+    );
     expect(result).toMatchObject({
       archived: true,
       evidenceObjectKey: null,
       signedPdfObjectKey: "contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf"
     });
-    expect(state.task.signedDocumentObjectKey).toBe("contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf");
+    expect(state.task.signedDocumentObjectKey).toBe(
+      "contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf"
+    );
     expect(state.task.evidenceObjectKey).toBeNull();
     expect(state.contract.signedAt).toBe(signedAt);
     expect(state.contract.order.orderStatus).toBe(orderStatus);
@@ -141,7 +150,8 @@ describe("FadadaSignedArtifactService", () => {
 
   it("skips archive idempotently when a signed PDF already exists", async () => {
     const { apiClient, service, state, storageService } = createFixture();
-    state.task.signedDocumentObjectKey = "contracts/contract-1/esign/fadada/signed/2026/existing.pdf";
+    state.task.signedDocumentObjectKey =
+      "contracts/contract-1/esign/fadada/signed/2026/existing.pdf";
 
     const result = await service.archiveSignedContract({ taskId: "task-1" });
 
@@ -237,16 +247,11 @@ describe("FadadaSignedArtifactService", () => {
     expect(state.contract.order.orderStatus).toBe(orderStatus);
     expect(financeSnapshot(state)).toEqual(finance);
 
-    const adminPreview =
-      await service.getAdminSignedContractPreview(
-        state.task.id,
-        adminUser()
-      );
-    const portalPreview =
-      await service.getPortalSignedContractPreview(
-        state.contract.id,
-        currentCustomer("customer-1")
-      );
+    const adminPreview = await service.getAdminSignedContractPreview(state.task.id, adminUser());
+    const portalPreview = await service.getPortalSignedContractPreview(
+      state.contract.id,
+      currentCustomer("customer-1")
+    );
     expect(adminPreview).toMatchObject({
       contentType: "application/pdf",
       filename: "HDV-1-signed.pdf"
@@ -255,17 +260,196 @@ describe("FadadaSignedArtifactService", () => {
       contentType: "application/pdf",
       filename: "HDV-1-signed.pdf"
     });
-    expect(
-      storageService.getContractSignedArtifactStream
-    ).toHaveBeenCalledWith(state.handover!.signedObjectKey);
+    expect(storageService.getContractSignedArtifactStream).toHaveBeenCalledWith(
+      state.handover!.signedObjectKey
+    );
+  });
+
+  it("adopts a validated task-bound Stage 2 signed PDF without downloading it again", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const signedObjectKey = "contracts/contract-1/esign/fadada/signed/2026/existing-signed.pdf";
+    state.task.signedDocumentObjectKey = signedObjectKey;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toEqual({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true,
+      signedPdfHash: createHash("sha256").update(minimalPdf()).digest("hex")
+    });
+    expect(state.handover).toMatchObject({
+      archiveLastError: null,
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey,
+      signedPdfHash: result.signedPdfHash,
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(state.fileObjects[0]).toMatchObject({
+      bucket: "application-materials",
+      mimeType: "application/pdf",
+      objectKey: signedObjectKey,
+      sizeBytes: BigInt(minimalPdf().length)
+    });
+    expect(storageService.getContractSignedArtifactStream).toHaveBeenCalledWith(signedObjectKey);
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(apiClient.downloadSignedContract).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("does not adopt a signed artifact object owned by another contract", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.signedDocumentObjectKey =
+      "contracts/contract-other/esign/fadada/signed/2026/foreign.pdf";
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(storageService.getContractSignedArtifactStream).not.toHaveBeenCalled();
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      contentLength: minimalPdf().length,
+      contentType: "text/plain",
+      description: "non-PDF content type",
+      payload: minimalPdf()
+    },
+    {
+      contentLength: 20 * 1024 * 1024 + 1,
+      contentType: "application/pdf",
+      description: "oversized declared length",
+      payload: minimalPdf()
+    },
+    {
+      contentLength: 16,
+      contentType: "application/pdf",
+      description: "invalid PDF signature",
+      payload: Buffer.from("not-a-signed-pdf")
+    }
+  ])(
+    "falls back to the provider for a task-bound artifact with $description",
+    async ({ contentLength, contentType, payload }) => {
+      const { apiClient, service, state, storageService } = createStage2Fixture();
+      state.task.signedDocumentObjectKey =
+        "contracts/contract-1/esign/fadada/signed/2026/invalid.pdf";
+      vi.mocked(storageService.getContractSignedArtifactStream).mockResolvedValueOnce({
+        contentLength,
+        contentType,
+        originalName: "invalid.pdf",
+        stream: Readable.from([payload])
+      });
+
+      const result = await service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      });
+
+      expect(result).toMatchObject({
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        archived: true
+      });
+      expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+      expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("classifies a task-bound artifact read failure as a storage failure", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.signedDocumentObjectKey =
+      "contracts/contract-1/esign/fadada/signed/2026/unreadable.pdf";
+    vi.mocked(storageService.getContractSignedArtifactStream).mockRejectedValueOnce(
+      new Error("OSS timeout with sensitive details")
+    );
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED",
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(JSON.stringify(state.handover)).not.toContain("sensitive");
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+  });
+
+  it("classifies a provider artifact storage write failure separately", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    vi.mocked(storageService.putContractSignedArtifact).mockRejectedValueOnce(
+      new Error("OSS write failed with sensitive details")
+    );
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED",
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED
+    });
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+  });
+
+  it("classifies typed archive database finalization separately", async () => {
+    const { apiClient, prisma, service, state, storageService } = createStage2Fixture();
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(
+      new Error("database finalization failed with sensitive details")
+    );
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED",
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED
+    });
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
   });
 
   it("rejects a typed Stage 2 task from the generic signed-contract archive path", async () => {
     const { apiClient, service, state, storageService } = createStage2Fixture();
 
-    await expect(service.archiveSignedContract({
-      taskId: state.task.id
-    })).rejects.toThrow(/STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED/);
+    await expect(
+      service.archiveSignedContract({
+        taskId: state.task.id
+      })
+    ).rejects.toThrow(/STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED/);
 
     expect(apiClient.querySignResult).not.toHaveBeenCalled();
     expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
@@ -274,12 +458,11 @@ describe("FadadaSignedArtifactService", () => {
   it("rejects a linked Stage 2 task from the generic archive path despite legacy discriminators", async () => {
     const { apiClient, service, state, storageService } = createStage2Fixture();
     state.task.documentType = ESignDocumentType.SUBSCRIPTION_CONTRACT;
-    state.task.signingStage =
-      ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT;
+    state.task.signingStage = ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT;
 
-    await expect(
-      service.archiveSignedContract({ taskId: state.task.id })
-    ).rejects.toThrow(/STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED/);
+    await expect(service.archiveSignedContract({ taskId: state.task.id })).rejects.toThrow(
+      /STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED/
+    );
 
     expect(apiClient.querySignResult).not.toHaveBeenCalled();
     expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
@@ -290,10 +473,12 @@ describe("FadadaSignedArtifactService", () => {
       FADADA_PLATFORM_CUSTOMER_ID: ""
     });
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toThrow(/FADADA_PLATFORM_CUSTOMER_ID is required/);
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toThrow(/FADADA_PLATFORM_CUSTOMER_ID is required/);
 
     expect(apiClient.querySignResult).not.toHaveBeenCalled();
     expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
@@ -308,24 +493,22 @@ describe("FadadaSignedArtifactService", () => {
 
   it("uses a deterministic object identity and removes a known-uncommitted signed PDF after DB finalization fails", async () => {
     const { prisma, service, state, storageService } = createStage2Fixture();
-    prisma.$transaction.mockRejectedValueOnce(
-      new Error("simulated archive finalization failure")
-    );
+    prisma.$transaction.mockRejectedValueOnce(new Error("simulated archive finalization failure"));
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toMatchObject({
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({
-        code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
+        code: "STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED"
       })
     });
 
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
       expect.objectContaining({
-        objectIdentity: expect.stringMatching(
-          /^task-1-v1-[a-f0-9]{64}$/
-        )
+        objectIdentity: expect.stringMatching(/^task-1-v1-[a-f0-9]{64}$/)
       })
     );
     expect(storageService.deleteObject).toHaveBeenCalledWith(
@@ -360,10 +543,12 @@ describe("FadadaSignedArtifactService", () => {
       fileName: "provider-response.pdf"
     });
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toMatchObject({
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF"
       })
@@ -386,13 +571,16 @@ describe("FadadaSignedArtifactService", () => {
 
   it("keeps Stage 2 signed on archive failure, then retries once and skips later duplicates", async () => {
     const { apiClient, service, state, storageService } = createStage2Fixture();
-    vi.mocked(apiClient.querySignResult)
-      .mockRejectedValueOnce(new Error("provider response contained a secret token"));
+    vi.mocked(apiClient.querySignResult).mockRejectedValueOnce(
+      new Error("provider response contained a secret token")
+    );
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toMatchObject({
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
       })
@@ -446,8 +634,7 @@ describe("FadadaSignedArtifactService", () => {
   ])(
     "rearchives an incomplete ARCHIVED row with missing $description on typed retry",
     async ({ corrupt }) => {
-      const { apiClient, service, state, storageService } =
-        createStage2Fixture();
+      const { apiClient, service, state, storageService } = createStage2Fixture();
       await service.archiveSignedStage2Handover({
         actorId: "user-admin",
         taskId: state.task.id
@@ -471,16 +658,13 @@ describe("FadadaSignedArtifactService", () => {
         signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         status: DeliveryHandoverStatus.ARCHIVED
       });
-      expect(apiClient.querySignResult).toHaveBeenCalledTimes(2);
-      expect(
-        storageService.putContractSignedArtifact
-      ).toHaveBeenCalledTimes(2);
+      expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+      expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
     }
   );
 
   it("rearchives instead of promoting an unverifiable file from an incomplete ARCHIVED row", async () => {
-    const { apiClient, service, state, storageService } =
-      createStage2Fixture();
+    const { apiClient, service, state, storageService } = createStage2Fixture();
     state.fileObjects.push({
       bucket: "application-materials",
       id: "unverified-file",
@@ -513,18 +697,14 @@ describe("FadadaSignedArtifactService", () => {
       signedDocumentFileId: "signed-file-2",
       status: DeliveryHandoverStatus.ARCHIVED
     });
-    expect(state.handover!.signedObjectKey).not.toBe(
-      "contracts/unrelated/signed.pdf"
-    );
+    expect(state.handover!.signedObjectKey).not.toBe("contracts/unrelated/signed.pdf");
     expect(apiClient.querySignResult).toHaveBeenCalledOnce();
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
   });
 
   it("rearchives a lost-claim ARCHIVED row instead of trusting its partial file tuple", async () => {
-    const { apiClient, prisma, service, state, storageService } =
-      createStage2Fixture();
-    const objectKey =
-      "contracts/contract-1/esign/fadada/signed/race-signed.pdf";
+    const { apiClient, prisma, service, state, storageService } = createStage2Fixture();
+    const objectKey = "contracts/contract-1/esign/fadada/signed/race-signed.pdf";
     state.fileObjects.push({
       bucket: "application-materials",
       id: "signed-file-race",
@@ -534,9 +714,7 @@ describe("FadadaSignedArtifactService", () => {
       sizeBytes: BigInt(minimalPdf().length),
       uploadedBy: "user-admin"
     });
-    const updateMany = vi.mocked(
-      prisma.vehicleDeliveryHandover.updateMany
-    );
+    const updateMany = vi.mocked(prisma.vehicleDeliveryHandover.updateMany);
     const updateImplementation = updateMany.getMockImplementation()!;
     updateMany
       .mockImplementationOnce(async () => {
@@ -619,21 +797,18 @@ describe("FadadaSignedArtifactService", () => {
     expect(state.handover!.archiveLastAttemptAt).not.toEqual(staleAttemptAt);
     expect(apiClient.querySignResult).toHaveBeenCalledOnce();
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
-    const clearPointerCall = vi.mocked(
-      prisma.vehicleDeliveryHandover.updateMany
-    ).mock.calls.find((call) =>
-      (call[0] as { data: Record<string, unknown> }).data.signedObjectKey === null
-    );
+    const clearPointerCall = vi
+      .mocked(prisma.vehicleDeliveryHandover.updateMany)
+      .mock.calls.find(
+        (call) => (call[0] as { data: Record<string, unknown> }).data.signedObjectKey === null
+      );
     expect(clearPointerCall).toBeDefined();
     expect(
       vi.mocked(prisma.vehicleDeliveryHandover.updateMany).mock.invocationCallOrder[
-        vi.mocked(prisma.vehicleDeliveryHandover.updateMany).mock.calls.indexOf(
-          clearPointerCall!
-        )
+        vi.mocked(prisma.vehicleDeliveryHandover.updateMany).mock.calls.indexOf(clearPointerCall!)
       ]
     ).toBeLessThan(
-      vi.mocked(storageService.deleteContractSignedArtifactObject)
-        .mock.invocationCallOrder[0]!
+      vi.mocked(storageService.deleteContractSignedArtifactObject).mock.invocationCallOrder[0]!
     );
   });
 
@@ -665,10 +840,12 @@ describe("FadadaSignedArtifactService", () => {
       };
     });
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toMatchObject({
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
       })
@@ -732,10 +909,12 @@ describe("FadadaSignedArtifactService", () => {
       throw new Error("expired worker resumed after lease takeover");
     });
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toMatchObject({
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
       })
@@ -758,10 +937,12 @@ describe("FadadaSignedArtifactService", () => {
       manifestHash: "c".repeat(64)
     };
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toMatchObject({
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
       })
@@ -783,10 +964,12 @@ describe("FadadaSignedArtifactService", () => {
       sourceDocumentFileId: "superseded-source-file"
     };
 
-    await expect(service.archiveSignedStage2Handover({
-      actorId: "user-admin",
-      taskId: state.task.id
-    })).rejects.toMatchObject({
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
       response: expect.objectContaining({
         code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
       })
@@ -806,7 +989,10 @@ describe("FadadaSignedArtifactService", () => {
     state.task.signedDocumentObjectKey = "contracts/contract-1/esign/fadada/signed/2026/signed.pdf";
 
     const adminPreview = await service.getAdminSignedContractPreview("task-1", adminUser());
-    const portalPreview = await service.getPortalSignedContractPreview("contract-1", currentCustomer("customer-1"));
+    const portalPreview = await service.getPortalSignedContractPreview(
+      "contract-1",
+      currentCustomer("customer-1")
+    );
 
     expect(adminPreview).toMatchObject({
       contentType: "application/pdf",
@@ -830,8 +1016,7 @@ describe("FadadaSignedArtifactService", () => {
 
   it("rejects Stage 2 previews until the authoritative archive tuple is complete", async () => {
     const { service, state, storageService } = createStage2Fixture();
-    const objectKey =
-      "contracts/contract-1/esign/fadada/signed/incomplete.pdf";
+    const objectKey = "contracts/contract-1/esign/fadada/signed/incomplete.pdf";
     state.fileObjects.push({
       bucket: "application-materials",
       id: "signed-file-incomplete",
@@ -851,20 +1036,12 @@ describe("FadadaSignedArtifactService", () => {
     });
 
     await expect(
-      service.getAdminSignedContractPreview(
-        state.task.id,
-        adminUser()
-      )
+      service.getAdminSignedContractPreview(state.task.id, adminUser())
     ).rejects.toBeInstanceOf(NotFoundException);
     await expect(
-      service.getPortalSignedContractPreview(
-        state.contract.id,
-        currentCustomer("customer-1")
-      )
+      service.getPortalSignedContractPreview(state.contract.id, currentCustomer("customer-1"))
     ).rejects.toBeInstanceOf(NotFoundException);
-    expect(
-      storageService.getContractSignedArtifactStream
-    ).not.toHaveBeenCalled();
+    expect(storageService.getContractSignedArtifactStream).not.toHaveBeenCalled();
   });
 });
 
@@ -1011,13 +1188,15 @@ function createFixture(env: Record<string, string> = {}) {
         if (signedWhere?.not === null && !state.task.signedDocumentObjectKey) return null;
         return hydrateTask(state);
       }),
-      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
-        if (where.id !== state.task.id) {
-          throw new Error("task not found");
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          if (where.id !== state.task.id) {
+            throw new Error("task not found");
+          }
+          Object.assign(state.task, data);
+          return hydrateTask(state);
         }
-        Object.assign(state.task, data);
-        return hydrateTask(state);
-      })
+      )
     },
     fileObject: {
       create: vi.fn(async ({ data }: { data: Omit<FakeFileObject, "id"> }) => {
@@ -1028,51 +1207,44 @@ function createFixture(env: Record<string, string> = {}) {
         state.fileObjects.push(fileObject);
         return fileObject;
       }),
-      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
-        state.fileObjects.find((fileObject) => fileObject.id === where.id) ??
-        null
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string } }) =>
+          state.fileObjects.find((fileObject) => fileObject.id === where.id) ?? null
       )
     },
     vehicleDeliveryHandover: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         state.handover?.id === where.id ? state.handover : null
       ),
-      updateMany: vi.fn(async ({
-        data,
-        where
-      }: {
-        data: Record<string, unknown>;
-        where: Record<string, unknown>;
-      }) => {
-        if (!state.handover || !matchesHandoverWhere(state.handover, where)) {
-          return { count: 0 };
-        }
-        for (const [key, value] of Object.entries(data)) {
-          if (
-            value &&
-            typeof value === "object" &&
-            "increment" in value
-          ) {
-            state.handover[key] =
-              Number(state.handover[key] ?? 0) +
-              Number((value as { increment: number }).increment);
-          } else {
-            state.handover[key] = value;
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          if (!state.handover || !matchesHandoverWhere(state.handover, where)) {
+            return { count: 0 };
           }
+          for (const [key, value] of Object.entries(data)) {
+            if (value && typeof value === "object" && "increment" in value) {
+              state.handover[key] =
+                Number(state.handover[key] ?? 0) +
+                Number((value as { increment: number }).increment);
+            } else {
+              state.handover[key] = value;
+            }
+          }
+          return { count: 1 };
         }
-        return { count: 1 };
-      })
+      )
     }
   };
   let signedArtifactWriteCount = 0;
   const storageService = {
     buildContractSignedArtifactObjectKey: vi.fn(
-      (
-        contractId: string,
-        provider: string,
-        originalName: string,
-        objectIdentity: string
-      ) =>
+      (contractId: string, provider: string, originalName: string, objectIdentity: string) =>
         `contracts/${contractId}/esign/${provider}/signed/${objectIdentity}-${originalName}`
     ),
     deleteContractSignedArtifactObject: vi.fn(async () => undefined),
@@ -1083,25 +1255,35 @@ function createFixture(env: Record<string, string> = {}) {
       originalName: "signed.pdf",
       stream: Readable.from([pdf])
     })),
-    putContractSignedArtifact: vi.fn(async (input: {
-      objectIdentity?: string;
-      originalName?: string;
-    }) => {
-      signedArtifactWriteCount += 1;
-      const objectKey = input.objectIdentity
-        ? `contracts/contract-1/esign/fadada/signed/${input.objectIdentity}-${input.originalName}`
-        : `contracts/contract-1/esign/fadada/signed/2026/signed-${signedArtifactWriteCount}.pdf`;
-      return {
-        bucket: "application-materials",
-        objectKey,
-        stored: {
-          contentType: "application/pdf",
-          driver: "local",
-          key: `application-materials/${objectKey}`,
-          size: pdf.length
-        }
-      };
-    })
+    resolveContractSignedArtifactIdentity: vi.fn(
+      (contractId: string, provider: string, objectKey: string) => {
+        const expectedPrefix = `contracts/${contractId}/esign/${provider}/signed/`;
+        return objectKey.startsWith(expectedPrefix)
+          ? {
+              bucket: "application-materials",
+              objectKey
+            }
+          : null;
+      }
+    ),
+    putContractSignedArtifact: vi.fn(
+      async (input: { objectIdentity?: string; originalName?: string }) => {
+        signedArtifactWriteCount += 1;
+        const objectKey = input.objectIdentity
+          ? `contracts/contract-1/esign/fadada/signed/${input.objectIdentity}-${input.originalName}`
+          : `contracts/contract-1/esign/fadada/signed/2026/signed-${signedArtifactWriteCount}.pdf`;
+        return {
+          bucket: "application-materials",
+          objectKey,
+          stored: {
+            contentType: "application/pdf",
+            driver: "local",
+            key: `application-materials/${objectKey}`,
+            size: pdf.length
+          }
+        };
+      }
+    )
   };
   const service = new TestFadadaSignedArtifactService(
     prisma as never,
@@ -1205,10 +1387,7 @@ function createStage2Fixture(env: Record<string, string> = {}) {
   return harness;
 }
 
-function matchesHandoverWhere(
-  handover: FakeStage2Handover,
-  where: Record<string, unknown>
-) {
+function matchesHandoverWhere(handover: FakeStage2Handover, where: Record<string, unknown>) {
   return Object.entries(where).every(([key, expected]) => {
     if (expected === undefined) {
       return true;

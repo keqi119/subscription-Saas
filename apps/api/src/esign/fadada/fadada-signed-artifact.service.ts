@@ -42,8 +42,10 @@ export const FADADA_ARCHIVE_SIGNED_PDF_TOO_LARGE = "FADADA_ARCHIVE_SIGNED_PDF_TO
 export const STAGE2_HANDOVER_ARCHIVE_INVALID_TASK = "STAGE2_HANDOVER_ARCHIVE_INVALID_TASK";
 export const STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH = "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH";
 export const STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED = "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED";
-export const STAGE2_HANDOVER_ARCHIVE_INCONSISTENT =
-  "STAGE2_HANDOVER_ARCHIVE_INCONSISTENT";
+export const STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED = "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED";
+export const STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED =
+  "STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED";
+export const STAGE2_HANDOVER_ARCHIVE_INCONSISTENT = "STAGE2_HANDOVER_ARCHIVE_INCONSISTENT";
 export const STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED =
   "STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED";
 
@@ -51,8 +53,7 @@ const MAX_SIGNED_PDF_BYTES = 20 * 1024 * 1024;
 const DEFAULT_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
 const MIN_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 1000;
 const MAX_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS = 60 * 60 * 1000;
-const STAGE2_ARCHIVE_CLAIM_TIMEOUT_ENV =
-  "STAGE2_HANDOVER_ARCHIVE_CLAIM_TIMEOUT_MS";
+const STAGE2_ARCHIVE_CLAIM_TIMEOUT_ENV = "STAGE2_HANDOVER_ARCHIVE_CLAIM_TIMEOUT_MS";
 
 const signedArtifactTaskInclude = {
   contract: {
@@ -70,7 +71,11 @@ const signedArtifactTaskInclude = {
   }
 } satisfies Prisma.ContractESignTaskInclude;
 
-type SignedArtifactTask = Prisma.ContractESignTaskGetPayload<{ include: typeof signedArtifactTaskInclude }>;
+type SignedArtifactTask = Prisma.ContractESignTaskGetPayload<{
+  include: typeof signedArtifactTaskInclude;
+}>;
+type Stage2Handover = NonNullable<SignedArtifactTask["deliveryHandover"]>;
+type Stage2ArchiveFailurePhase = "FINALIZATION" | "PROVIDER" | "STORAGE";
 
 export interface FadadaSignedArtifactApi {
   createContractFiling(input: { contractId: string }): Promise<{
@@ -89,7 +94,11 @@ export interface FadadaSignedArtifactApi {
     raw: unknown;
     status?: string;
   }>;
-  querySignResult(input: { contractId: string; customerId?: string; transactionId?: string }): Promise<{
+  querySignResult(input: {
+    contractId: string;
+    customerId?: string;
+    transactionId?: string;
+  }): Promise<{
     contractId: string;
     downloadUrl?: string;
     raw: unknown;
@@ -116,10 +125,7 @@ export class FadadaSignedArtifactService {
     private readonly configService: ConfigService
   ) {}
 
-  async archiveSignedContract(input: {
-    force?: boolean;
-    taskId: string;
-  }): Promise<{
+  async archiveSignedContract(input: { force?: boolean; taskId: string }): Promise<{
     archived: boolean;
     evidenceObjectKey?: string | null;
     signedPdfObjectKey?: string;
@@ -151,7 +157,9 @@ export class FadadaSignedArtifactService {
 
     const providerContractId = task.providerEnvelopeId;
     if (!providerContractId) {
-      throw new BadRequestException(`${FADADA_ARCHIVE_PROVIDER_CONTRACT_MISSING}: missing Fadada contract_id`);
+      throw new BadRequestException(
+        `${FADADA_ARCHIVE_PROVIDER_CONTRACT_MISSING}: missing Fadada contract_id`
+      );
     }
 
     const apiClient = this.getApiClient();
@@ -226,10 +234,7 @@ export class FadadaSignedArtifactService {
     };
   }
 
-  async archiveSignedStage2Handover(input: {
-    actorId?: string;
-    taskId: string;
-  }): Promise<{
+  async archiveSignedStage2Handover(input: { actorId?: string; taskId: string }): Promise<{
     archiveStatus: DeliveryHandoverArchiveStatus;
     archived: boolean;
     signedPdfHash?: string;
@@ -243,11 +248,7 @@ export class FadadaSignedArtifactService {
       handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
       !hasCompleteStage2HandoverArchive(handover)
     ) {
-      handover = await this.recoverIncompleteStage2Archive(
-        task,
-        handover,
-        input.actorId
-      );
+      handover = await this.recoverIncompleteStage2Archive(task, handover, input.actorId);
     }
     if (hasCompleteStage2HandoverArchive(handover)) {
       return {
@@ -256,8 +257,7 @@ export class FadadaSignedArtifactService {
         skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
       };
     }
-    const platformCustomerId =
-      loadFadadaConfig(this.configService).platformCustomerId;
+    const platformCustomerId = loadFadadaConfig(this.configService).platformCustomerId;
     if (!platformCustomerId) {
       throw new BadRequestException({
         code: "FADADA_PLATFORM_CUSTOMER_ID_REQUIRED",
@@ -269,15 +269,8 @@ export class FadadaSignedArtifactService {
     const claimTimeoutMs = readStage2ArchiveClaimTimeoutMs(this.configService);
     const stalePendingClaim =
       handover.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
-      !isFreshStage2ArchiveClaim(
-        handover.archiveLastAttemptAt,
-        attemptedAt,
-        claimTimeoutMs
-      );
-    if (
-      handover.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
-      !stalePendingClaim
-    ) {
+      !isFreshStage2ArchiveClaim(handover.archiveLastAttemptAt, attemptedAt, claimTimeoutMs);
+    if (handover.archiveStatus === DeliveryHandoverArchiveStatus.PENDING && !stalePendingClaim) {
       return {
         archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
         archived: false,
@@ -292,10 +285,7 @@ export class FadadaSignedArtifactService {
         }
       : {
           archiveStatus: {
-            in: [
-              DeliveryHandoverArchiveStatus.NOT_STARTED,
-              DeliveryHandoverArchiveStatus.FAILED
-            ]
+            in: [DeliveryHandoverArchiveStatus.NOT_STARTED, DeliveryHandoverArchiveStatus.FAILED]
           }
         };
     const previousUnlinkedObjectKey = handover.signedDocumentFileId
@@ -329,11 +319,7 @@ export class FadadaSignedArtifactService {
         current?.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED &&
         !hasCompleteStage2HandoverArchive(current)
       ) {
-        current = await this.recoverIncompleteStage2Archive(
-          task,
-          current,
-          input.actorId
-        );
+        current = await this.recoverIncompleteStage2Archive(task, current, input.actorId);
       }
       if (hasCompleteStage2HandoverArchive(current)) {
         return {
@@ -344,20 +330,14 @@ export class FadadaSignedArtifactService {
       }
       if (
         current?.status === DeliveryHandoverStatus.SIGNED &&
-        (
-          current.archiveStatus === DeliveryHandoverArchiveStatus.NOT_STARTED ||
-          current.archiveStatus === DeliveryHandoverArchiveStatus.FAILED
-        )
+        (current.archiveStatus === DeliveryHandoverArchiveStatus.NOT_STARTED ||
+          current.archiveStatus === DeliveryHandoverArchiveStatus.FAILED)
       ) {
         return this.archiveSignedStage2Handover(input);
       }
       if (
         current?.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
-        isFreshStage2ArchiveClaim(
-          current.archiveLastAttemptAt,
-          new Date(),
-          claimTimeoutMs
-        )
+        isFreshStage2ArchiveClaim(current.archiveLastAttemptAt, new Date(), claimTimeoutMs)
       ) {
         return {
           archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
@@ -373,8 +353,47 @@ export class FadadaSignedArtifactService {
 
     let signedPdfHash: string | null = null;
     let storedArtifact: { bucket: string; objectKey: string } | null = null;
+    let storedArtifactOwnedByAttempt = false;
+    let failurePhase: Stage2ArchiveFailurePhase = "PROVIDER";
     try {
+      const existingArtifactIdentity = task.signedDocumentObjectKey
+        ? this.storageService.resolveContractSignedArtifactIdentity(
+            task.contractId,
+            "fadada",
+            task.signedDocumentObjectKey
+          )
+        : null;
+      if (existingArtifactIdentity) {
+        failurePhase = "STORAGE";
+        const existingArtifact = await this.readValidatedExistingStage2Artifact(
+          existingArtifactIdentity.objectKey
+        );
+        if (existingArtifact) {
+          signedPdfHash = createHash("sha256").update(existingArtifact.buffer).digest("hex");
+          storedArtifact = existingArtifactIdentity;
+          failurePhase = "FINALIZATION";
+          await this.finalizeStage2Archive({
+            actorId: input.actorId,
+            attemptedAt,
+            handover,
+            originalName,
+            signedArtifact: {
+              ...existingArtifactIdentity,
+              sizeBytes: existingArtifact.buffer.length
+            },
+            signedPdfHash,
+            task
+          });
+          return {
+            archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+            archived: true,
+            signedPdfHash
+          };
+        }
+      }
+
       if (previousUnlinkedObjectKey) {
+        failurePhase = "FINALIZATION";
         const cleared = await this.prisma.vehicleDeliveryHandover.updateMany({
           data: {
             signedObjectKey: null
@@ -392,9 +411,8 @@ export class FadadaSignedArtifactService {
           throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
         }
         try {
-          await this.storageService.deleteContractSignedArtifactObject(
-            previousUnlinkedObjectKey
-          );
+          failurePhase = "STORAGE";
+          await this.storageService.deleteContractSignedArtifactObject(previousUnlinkedObjectKey);
         } catch (error) {
           await this.prisma.vehicleDeliveryHandover.updateMany({
             data: {
@@ -412,6 +430,7 @@ export class FadadaSignedArtifactService {
           throw error;
         }
       }
+      failurePhase = "PROVIDER";
       const providerContractId = task.providerEnvelopeId;
       if (!providerContractId) {
         throw new Error(FADADA_ARCHIVE_PROVIDER_CONTRACT_MISSING);
@@ -430,40 +449,37 @@ export class FadadaSignedArtifactService {
         downloadUrl: signResult.downloadUrl
       });
       assertStage2SignedPdf(signedPdf.buffer, signedPdf.contentType);
-      signedPdfHash = createHash("sha256")
-        .update(signedPdf.buffer)
-        .digest("hex");
-      const objectIdentity =
-        `${task.id}-v${handover.artifactVersion}-${signedPdfHash}`;
-      const plannedObjectKey =
-        this.storageService.buildContractSignedArtifactObjectKey(
-          task.contractId,
-          "fadada",
-          originalName,
-          objectIdentity
-        );
-      const objectClaimed =
-        await this.prisma.vehicleDeliveryHandover.updateMany({
-          data: {
-            signedObjectKey: plannedObjectKey
-          },
-          where: {
-            archiveLastAttemptAt: attemptedAt,
-            archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
-            artifactVersion: handover.artifactVersion,
-            handoverContractId: task.contractId,
-            handoverESignTaskId: task.id,
-            id: handover.id,
-            manifestHash: handover.manifestHash,
-            signedDocumentFileId: null,
-            signedObjectKey: null,
-            sourceDocumentFileId: handover.sourceDocumentFileId,
-            sourcePdfHash: handover.sourcePdfHash
-          }
-        });
+      signedPdfHash = createHash("sha256").update(signedPdf.buffer).digest("hex");
+      const objectIdentity = `${task.id}-v${handover.artifactVersion}-${signedPdfHash}`;
+      const plannedObjectKey = this.storageService.buildContractSignedArtifactObjectKey(
+        task.contractId,
+        "fadada",
+        originalName,
+        objectIdentity
+      );
+      failurePhase = "FINALIZATION";
+      const objectClaimed = await this.prisma.vehicleDeliveryHandover.updateMany({
+        data: {
+          signedObjectKey: plannedObjectKey
+        },
+        where: {
+          archiveLastAttemptAt: attemptedAt,
+          archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+          artifactVersion: handover.artifactVersion,
+          handoverContractId: task.contractId,
+          handoverESignTaskId: task.id,
+          id: handover.id,
+          manifestHash: handover.manifestHash,
+          signedDocumentFileId: null,
+          signedObjectKey: null,
+          sourceDocumentFileId: handover.sourceDocumentFileId,
+          sourcePdfHash: handover.sourcePdfHash
+        }
+      });
       if (objectClaimed.count !== 1) {
         throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
       }
+      failurePhase = "STORAGE";
       const stored = await this.storageService.putContractSignedArtifact({
         buffer: signedPdf.buffer,
         contentType: "application/pdf",
@@ -480,6 +496,7 @@ export class FadadaSignedArtifactService {
         provider: "fadada"
       });
       storedArtifact = stored;
+      storedArtifactOwnedByAttempt = true;
       if (stored.objectKey !== plannedObjectKey) {
         throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
       }
@@ -490,51 +507,19 @@ export class FadadaSignedArtifactService {
         // Provider filing is advisory here; the signed PDF archive remains authoritative.
       }
 
-      const archivedAt = new Date();
-      await this.prisma.$transaction(async (tx) => {
-        const fileObject = await tx.fileObject.create({
-          data: {
-            bucket: stored.bucket,
-            mimeType: "application/pdf",
-            objectKey: stored.objectKey,
-            originalName,
-            sizeBytes: BigInt(signedPdf.buffer.length),
-            uploadedBy: input.actorId ?? null
-          }
-        });
-        await tx.contractESignTask.update({
-          data: {
-            signedDocumentObjectKey: stored.objectKey
-          },
-          where: { id: task.id }
-        });
-        const finalized = await tx.vehicleDeliveryHandover.updateMany({
-          data: {
-            archiveLastAttemptAt: archivedAt,
-            archiveLastError: null,
-            archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
-            archivedAt,
-            signedDocumentFileId: fileObject.id,
-            signedObjectKey: stored.objectKey,
-            signedPdfHash,
-            status: DeliveryHandoverStatus.ARCHIVED,
-            updatedBy: input.actorId ?? null
-          },
-          where: {
-            archiveLastAttemptAt: attemptedAt,
-            archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
-            artifactVersion: handover.artifactVersion,
-            handoverContractId: task.contractId,
-            handoverESignTaskId: task.id,
-            id: handover.id,
-            manifestHash: handover.manifestHash,
-            sourceDocumentFileId: handover.sourceDocumentFileId,
-            sourcePdfHash: handover.sourcePdfHash
-          }
-        });
-        if (finalized.count !== 1) {
-          throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
-        }
+      failurePhase = "FINALIZATION";
+      await this.finalizeStage2Archive({
+        actorId: input.actorId,
+        attemptedAt,
+        handover,
+        originalName,
+        signedArtifact: {
+          bucket: stored.bucket,
+          objectKey: stored.objectKey,
+          sizeBytes: signedPdf.buffer.length
+        },
+        signedPdfHash,
+        task
       });
 
       return {
@@ -543,7 +528,7 @@ export class FadadaSignedArtifactService {
         signedPdfHash
       };
     } catch (error) {
-      const code = stage2ArchiveFailureCode(error);
+      const code = stage2ArchiveFailureCode(error, failurePhase);
       let current: {
         archiveLastAttemptAt: Date | null;
         archiveStatus: DeliveryHandoverArchiveStatus;
@@ -576,22 +561,16 @@ export class FadadaSignedArtifactService {
       let compensated = false;
       if (
         storedArtifact &&
+        storedArtifactOwnedByAttempt &&
         current &&
-        (
-          (
-            current.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
-            current.archiveLastAttemptAt?.getTime() === attemptedAt.getTime() &&
-            current.signedObjectKey === storedArtifact.objectKey &&
-            !current.signedDocumentFileId
-          ) ||
-          current.signedObjectKey !== storedArtifact.objectKey
-        )
+        ((current.archiveStatus === DeliveryHandoverArchiveStatus.PENDING &&
+          current.archiveLastAttemptAt?.getTime() === attemptedAt.getTime() &&
+          current.signedObjectKey === storedArtifact.objectKey &&
+          !current.signedDocumentFileId) ||
+          current.signedObjectKey !== storedArtifact.objectKey)
       ) {
         try {
-          await this.storageService.deleteObject(
-            storedArtifact.bucket,
-            storedArtifact.objectKey
-          );
+          await this.storageService.deleteObject(storedArtifact.bucket, storedArtifact.objectKey);
           compensated = true;
         } catch {
           // Keep the deterministic key on the claim for a later safe retry.
@@ -617,6 +596,94 @@ export class FadadaSignedArtifactService {
         message: "The signed Stage 2 PDF could not be archived and can be retried."
       });
     }
+  }
+
+  private async readValidatedExistingStage2Artifact(
+    objectKey: string
+  ): Promise<{ buffer: Buffer } | null> {
+    const object = await this.storageService.getContractSignedArtifactStream(objectKey);
+    const contentType = object.contentType?.split(";", 1)[0]?.trim().toLowerCase();
+    if (
+      contentType !== "application/pdf" ||
+      (object.contentLength !== undefined &&
+        (!Number.isSafeInteger(object.contentLength) ||
+          object.contentLength <= 0 ||
+          object.contentLength > MAX_SIGNED_PDF_BYTES))
+    ) {
+      object.stream.destroy();
+      return null;
+    }
+    const buffer = await readStreamToBoundedBuffer(object.stream, MAX_SIGNED_PDF_BYTES);
+    if (!buffer) {
+      return null;
+    }
+    try {
+      assertStage2SignedPdf(buffer, contentType);
+      return { buffer };
+    } catch {
+      return null;
+    }
+  }
+
+  private async finalizeStage2Archive(input: {
+    actorId?: string;
+    attemptedAt: Date;
+    handover: Stage2Handover;
+    originalName: string;
+    signedArtifact: {
+      bucket: string;
+      objectKey: string;
+      sizeBytes: number;
+    };
+    signedPdfHash: string;
+    task: SignedArtifactTask;
+  }): Promise<void> {
+    const archivedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const fileObject = await tx.fileObject.create({
+        data: {
+          bucket: input.signedArtifact.bucket,
+          mimeType: "application/pdf",
+          objectKey: input.signedArtifact.objectKey,
+          originalName: input.originalName,
+          sizeBytes: BigInt(input.signedArtifact.sizeBytes),
+          uploadedBy: input.actorId ?? null
+        }
+      });
+      await tx.contractESignTask.update({
+        data: {
+          signedDocumentObjectKey: input.signedArtifact.objectKey
+        },
+        where: { id: input.task.id }
+      });
+      const finalized = await tx.vehicleDeliveryHandover.updateMany({
+        data: {
+          archiveLastAttemptAt: archivedAt,
+          archiveLastError: null,
+          archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+          archivedAt,
+          signedDocumentFileId: fileObject.id,
+          signedObjectKey: input.signedArtifact.objectKey,
+          signedPdfHash: input.signedPdfHash,
+          status: DeliveryHandoverStatus.ARCHIVED,
+          updatedBy: input.actorId ?? null
+        },
+        where: {
+          archiveLastAttemptAt: input.attemptedAt,
+          archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+          artifactVersion: input.handover.artifactVersion,
+          handoverContractId: input.task.contractId,
+          handoverESignTaskId: input.task.id,
+          id: input.handover.id,
+          manifestHash: input.handover.manifestHash,
+          sourceDocumentFileId: input.handover.sourceDocumentFileId,
+          sourcePdfHash: input.handover.sourcePdfHash
+        }
+      });
+      if (finalized.count !== 1) {
+        throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
+      }
+    });
   }
 
   private async recoverIncompleteStage2Archive(
@@ -693,7 +760,10 @@ export class FadadaSignedArtifactService {
     return current;
   }
 
-  async getAdminSignedContractPreview(taskId: string, user: RequestUser): Promise<FadadaSignedContractPreview> {
+  async getAdminSignedContractPreview(
+    taskId: string,
+    user: RequestUser
+  ): Promise<FadadaSignedContractPreview> {
     const task = await this.findTaskByIdOrThrow(taskId);
     ensureCanAccessTask(task, user);
     return this.buildPreview(task);
@@ -714,7 +784,11 @@ export class FadadaSignedArtifactService {
       }
     });
 
-    if (!task || task.contract.customerId !== currentCustomer.customerId || task.contract.status !== ContractStatus.SIGNED) {
+    if (
+      !task ||
+      task.contract.customerId !== currentCustomer.customerId ||
+      task.contract.status !== ContractStatus.SIGNED
+    ) {
       throw new NotFoundException("Signed contract not found.");
     }
 
@@ -739,15 +813,24 @@ export class FadadaSignedArtifactService {
 
   private assertArchiveableTask(task: SignedArtifactTask, force: boolean) {
     if (task.provider !== ESignProviderType.FADADA) {
-      throw new BadRequestException(`${FADADA_ARCHIVE_INVALID_TASK}: only Fadada tasks can be archived here`);
+      throw new BadRequestException(
+        `${FADADA_ARCHIVE_INVALID_TASK}: only Fadada tasks can be archived here`
+      );
     }
     if (!force && task.taskStatus !== ESignTaskStatus.COMPLETED) {
-      throw new BadRequestException(`${FADADA_ARCHIVE_INVALID_TASK}: task must be completed before archive`);
+      throw new BadRequestException(
+        `${FADADA_ARCHIVE_INVALID_TASK}: task must be completed before archive`
+      );
     }
-    if (!force && task.signers.some((signer) =>
-      isRequiredSignerRow(signer) && signer.signerStatus !== ESignSignerStatus.SIGNED
-    )) {
-      throw new BadRequestException(`${FADADA_ARCHIVE_INVALID_TASK}: all required signers must be signed before archive`);
+    if (
+      !force &&
+      task.signers.some(
+        (signer) => isRequiredSignerRow(signer) && signer.signerStatus !== ESignSignerStatus.SIGNED
+      )
+    ) {
+      throw new BadRequestException(
+        `${FADADA_ARCHIVE_INVALID_TASK}: all required signers must be signed before archive`
+      );
     }
   }
 
@@ -755,10 +838,7 @@ export class FadadaSignedArtifactService {
     let signedObjectKey = task.signedDocumentObjectKey;
     if (hasAuthoritativeStage2HandoverRelation(task.deliveryHandover)) {
       const handover = task.deliveryHandover;
-      if (
-        handover.deletedAt ||
-        !hasCompleteStage2HandoverArchive(handover)
-      ) {
+      if (handover.deletedAt || !hasCompleteStage2HandoverArchive(handover)) {
         throw new NotFoundException(
           `${FADADA_ARCHIVE_SIGNED_PDF_MISSING}: signed PDF artifact not found`
         );
@@ -779,12 +859,16 @@ export class FadadaSignedArtifactService {
       signedObjectKey = handover.signedObjectKey;
     }
     if (!signedObjectKey) {
-      throw new NotFoundException(`${FADADA_ARCHIVE_SIGNED_PDF_MISSING}: signed PDF artifact not found`);
+      throw new NotFoundException(
+        `${FADADA_ARCHIVE_SIGNED_PDF_MISSING}: signed PDF artifact not found`
+      );
     }
 
     const object = await this.storageService.getContractSignedArtifactStream(signedObjectKey);
     if (object.contentType && !object.contentType.toLowerCase().includes("application/pdf")) {
-      throw new BadRequestException(`${FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF}: signed artifact must be a PDF`);
+      throw new BadRequestException(
+        `${FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF}: signed artifact must be a PDF`
+      );
     }
 
     return {
@@ -848,9 +932,7 @@ function assertStage2ArchiveableTask(task: SignedArtifactTask) {
       Boolean(signer.providerTransactionId)
   );
   const requiredStage2Signers = task.signers.filter(
-    (signer) =>
-      signer.required &&
-      signer.documentType === ESignDocumentType.DELIVERY_HANDOVER
+    (signer) => signer.required && signer.documentType === ESignDocumentType.DELIVERY_HANDOVER
   );
   if (
     requiredStage2Signers.length !== 2 ||
@@ -868,10 +950,8 @@ function assertStage2ArchiveableTask(task: SignedArtifactTask) {
     handover.deletedAt ||
     handover.handoverContractId !== task.contractId ||
     handover.handoverESignTaskId !== task.id ||
-    (
-      handover.status !== DeliveryHandoverStatus.SIGNED &&
-      handover.status !== DeliveryHandoverStatus.ARCHIVED
-    )
+    (handover.status !== DeliveryHandoverStatus.SIGNED &&
+      handover.status !== DeliveryHandoverStatus.ARCHIVED)
   ) {
     throw stage2ArchiveBadRequest(
       STAGE2_HANDOVER_ARCHIVE_INVALID_TASK,
@@ -908,17 +988,14 @@ function assertStage2ArchiveSourceBinding(
 }
 
 function assertStage2SignedPdf(buffer: Buffer, contentType: string) {
-  const normalizedContentType = contentType
-    .split(";", 1)[0]
-    ?.trim()
-    .toLowerCase();
+  const normalizedContentType = contentType.split(";", 1)[0]?.trim().toLowerCase();
   if (normalizedContentType !== "application/pdf") {
     throw new Error(FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF);
   }
   assertSignedPdf(buffer);
 }
 
-function stage2ArchiveFailureCode(error: unknown) {
+function stage2ArchiveFailureCode(error: unknown, phase: Stage2ArchiveFailurePhase) {
   const message = error instanceof Error ? error.message : "";
   if (message.includes(FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF)) {
     return FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF;
@@ -928,6 +1005,12 @@ function stage2ArchiveFailureCode(error: unknown) {
   }
   if (message.includes(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH)) {
     return STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH;
+  }
+  if (phase === "STORAGE") {
+    return STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED;
+  }
+  if (phase === "FINALIZATION") {
+    return STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED;
   }
   return STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED;
 }
@@ -940,10 +1023,26 @@ function isSha256Digest(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 }
 
+async function readStreamToBoundedBuffer(
+  stream: Readable,
+  maxBytes: number
+): Promise<Buffer | null> {
+  const chunks: Buffer[] = [];
+  let sizeBytes = 0;
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    sizeBytes += buffer.length;
+    if (sizeBytes > maxBytes) {
+      stream.destroy();
+      return null;
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, sizeBytes);
+}
+
 function readStage2ArchiveClaimTimeoutMs(configService: ConfigService) {
-  const configured = Number(
-    configService.get<string>(STAGE2_ARCHIVE_CLAIM_TIMEOUT_ENV)
-  );
+  const configured = Number(configService.get<string>(STAGE2_ARCHIVE_CLAIM_TIMEOUT_ENV));
   return Number.isSafeInteger(configured) &&
     configured >= MIN_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS &&
     configured <= MAX_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS
@@ -951,11 +1050,7 @@ function readStage2ArchiveClaimTimeoutMs(configService: ConfigService) {
     : DEFAULT_STAGE2_ARCHIVE_CLAIM_TIMEOUT_MS;
 }
 
-function isFreshStage2ArchiveClaim(
-  lastAttemptAt: Date | null,
-  now: Date,
-  timeoutMs: number
-) {
+function isFreshStage2ArchiveClaim(lastAttemptAt: Date | null, now: Date, timeoutMs: number) {
   return Boolean(
     lastAttemptAt &&
     Number.isFinite(lastAttemptAt.getTime()) &&
@@ -965,14 +1060,15 @@ function isFreshStage2ArchiveClaim(
 
 function asPlainRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 
 function mergeResponseSnapshot(existing: unknown, patch: Record<string, unknown>) {
-  const base = existing && typeof existing === "object" && !Array.isArray(existing)
-    ? existing as Record<string, unknown>
-    : {};
+  const base =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
   return {
     ...base,
     ...patch
@@ -980,13 +1076,17 @@ function mergeResponseSnapshot(existing: unknown, patch: Record<string, unknown>
 }
 
 function findProviderCustomerId(task: SignedArtifactTask) {
-  const customerSigner = task.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER);
+  const customerSigner = task.signers.find(
+    (signer) => signer.signerType === ESignSignerType.CUSTOMER
+  );
   const snapshot = customerSigner?.snapshot;
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
     return undefined;
   }
   const providerCustomerId = (snapshot as Record<string, unknown>).providerCustomerId;
-  return typeof providerCustomerId === "string" && providerCustomerId.trim() ? providerCustomerId : undefined;
+  return typeof providerCustomerId === "string" && providerCustomerId.trim()
+    ? providerCustomerId
+    : undefined;
 }
 
 function isRequiredSignerRow(signer: { snapshot?: unknown }) {

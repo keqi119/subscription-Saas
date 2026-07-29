@@ -27,6 +27,7 @@ stable facts for the next stage.
 
 | Stage | Position | Primary users | Core result |
 | --- | --- | --- | --- |
+| Stage 0 | Fresh database and vehicle-model initialization | Engineering, platform administration | Fresh database with the model enum and old compatibility fields retired |
 | Stage 1 | Subscription operation and operating-fact foundation | Business, operations, asset operations | Normal contract fulfillment is automated and contract cash, vehicle state, and direct cost are complete |
 | Stage 2 | Asset capital, debt, revenue rights, and outbound funds | Operations, asset operations, finance | Offline financing, settlement, and daily-payment sheets become system workflows |
 | Stage 3 | Operating-finance analysis and finance-integration readiness | Management, operating finance, finance | Portfolio metrics, funding forecast, asset analysis, and reconcilable accounting-source data |
@@ -34,6 +35,30 @@ stable facts for the next stage.
 Progression is gated by acceptance rather than an automatic calendar date. A
 later metric or automation cannot activate while its prerequisite facts are
 unreliable.
+
+## Stage 0: Fresh Database And Vehicle-Model Initialization
+
+Stage 0 is a mandatory gate before Stage 1A. Detailed rules are in
+[Vehicle-Model Clean Initialization Design](./2026-07-30-vehicle-model-clean-initialization-design.md).
+
+Stage 0:
+
+- backs up and isolates the current test database as read-only;
+- creates a separately named development database;
+- revalidates and integrates GitHub PR #223 against the latest main branch;
+- removes the Prisma and PostgreSQL `VehicleModel` enum;
+- uses a separate additive migration to remove `vehicleModel`,
+  `legacyVehicleModel`, and old compatibility snapshot fields;
+- makes vehicles, products, and pricing rules use `modelDefinitionId`;
+- makes quote and order snapshots use `modelDefinitionIdSnapshot`,
+  `modelCodeSnapshot`, and `modelDisplayNameSnapshot`;
+- updates seeds, APIs, Portal, CSV, reports, and quality guards;
+- verifies the complete migration chain, final seeds, and model-related main
+  flows from a fresh database.
+
+Stage 0 does not edit historical migrations, migrate current test business
+data, or implement the multi-model vehicle-package collection during enum
+cleanup.
 
 ## Stage 1: Subscription Operation And Operating-Fact Foundation
 
@@ -294,7 +319,8 @@ Rules:
 2. Make the old database read-only reference. Runtime does not connect to it,
    and there is no dual-database synchronization.
 3. Give the new development database a separate name and credentials and
-   initialize it through the complete committed migration chain.
+   initialize the final Stage 0 schema through the complete committed migration
+   chain.
 4. Load only role, permission, system configuration, product master data, and
    controlled test seeds.
 5. Do not migrate current test orders, contracts, financing, payments, or
@@ -325,11 +351,11 @@ approval.
 
 ## Final Outcome
 
-The completed roadmap creates this chain:
+Completed Stage 0 and the three business stages create this chain:
 
-`automated subscription fulfillment -> vehicle asset operations -> capital,
-debt, and revenue rights -> outbound-payment settlement -> operating-finance
-statistics and forecast`
+`vehicle-model and fresh-database initialization -> automated subscription
+fulfillment -> vehicle asset operations -> capital, debt, and revenue rights
+-> outbound-payment settlement -> operating-finance statistics and forecast`
 
 Business receives complete contract fulfillment and receivable facts.
 Operations receives vehicle, work-order, cost, capital, and settlement

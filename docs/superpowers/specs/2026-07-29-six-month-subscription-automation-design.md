@@ -37,6 +37,9 @@ inside this delivery window.
    entitlements.
 6. Preserve the single-operator architecture while introducing an explicit
    asset-owner boundary for a possible future asset-company SaaS entry.
+7. Record vehicle operations from procurement through disposal through asset
+   work orders, attribute actual costs, and include those facts in vehicle,
+   pool, and asset-owner operating-finance metrics.
 
 ## Non-Goals
 
@@ -46,6 +49,8 @@ inside this delivery window.
 - Full multi-tenancy or an asset-company user portal in the six-month scope.
 - Asset-company control over platform products, customer orders, vehicle
   allocation, or fulfillment.
+- A general OA, dynamic SOA approval engine, multi-level countersigning,
+  approval delegation, or amount-based approval routing.
 - Automated mileage OCR, vehicle telematics ingestion, or charging-partner API
   integration.
 - Payment channels other than WeChat Pay. The internal boundary remains
@@ -351,6 +356,259 @@ Missing readings are not estimated. The system sends reminders and opens an
 exception. A later cumulative reading or partner report produces a confirmed
 adjustment. If the related bill is already closed, the adjustment enters the
 next billing period rather than rewriting the closed period.
+
+## Asset Operations Work Orders And Cost Attribution
+
+The current purchase price, capital event, depreciation, BaaS cost, insurance
+claim, return damage, condition report, and customer service-case facts remain
+owned by their existing domains. They are currently fragmented and do not form
+a unified execution and cost trail from procurement through disposal.
+
+The new asset-operations bounded context adds:
+
+- `AssetWorkOrder`, which owns execution, evidence, assignment, acceptance, and
+  operational exceptions;
+- an append-only `VehicleCostLedger`, which owns attributed operating-finance
+  cost facts;
+- vehicle operational restrictions, which explain why a vehicle cannot be
+  allocated or delivered;
+- a state-impact Helper, which explains deep status dependencies without
+  changing them.
+
+Customer-facing accidents, rescue requests, and support cases remain
+`ServiceCase` records. A case can create or link to an asset work order when
+vehicle operations must act. Fleet Ops remains the read and analysis surface;
+asset work orders own all new write actions.
+
+### Work-Order Record And Lifecycle
+
+An asset work order records:
+
+- work-order number, vehicle, and asset-owner snapshot;
+- lifecycle stage and work-order type;
+- source type and source identifier;
+- optional order and customer references;
+- priority, safety risk, and whether the vehicle must be restricted;
+- owner, planned time, actual start, completion, acceptance, and close times;
+- problem statement, execution plan, vendor, source documents, and completion
+  evidence;
+- status, close reason, and an append-only action history.
+
+The fixed lifecycle is:
+
+`PENDING -> IN_PROGRESS -> PENDING_ACCEPTANCE ->
+PENDING_COST_CONFIRMATION -> CLOSED`
+
+Cancellation is explicit. A cost-free work order can close after acceptance.
+Execution history is immutable after close. Later payments, recoveries, and
+cost corrections use linked ledger records and do not reopen the execution
+history.
+
+Work orders can originate from:
+
+- an asset-operations user;
+- a customer `ServiceCase`;
+- return damage, a condition report, or an insurance claim;
+- an abnormal periodic cost;
+- a Fleet Ops operational, document, availability, or cost anomaly;
+- procurement onboarding or asset disposal.
+
+The same source event can create at most one originating work order. Repeated
+triggers return that work order even after it closes. A later, genuinely new
+piece of work uses a new source event and links to the earlier work order as a
+follow-up.
+
+### Lifecycle Coverage
+
+| Stage | Work orders | Completion gate | Operating-finance result |
+| --- | --- | --- | --- |
+| Procurement onboarding | Purchase handoff, transport, inbound inspection, registration, initial insurance, initial preparation | Vehicle documents, inspection, asset ownership, and investment costs are confirmed | Purchase and approved capitalizable costs enter the invested-capital base |
+| Available preparation | Cleaning, detailing, repair, relocation, storage, document completion, insurance renewal | Safety and delivery restrictions are cleared | Actual expense enters period operating cost |
+| In subscription use | Maintenance, repair, fault, accident, rescue, claim, violation, towing, relocation, downtime, protection swap | Result is accepted, vehicle state is explicit, and cost/responsibility is confirmed | Cost, recovery responsibility, and downtime enter operating analysis |
+| Return reconditioning | Return damage, cleaning, tires, battery check, repair, reinspection, relisting | Damage, responsibility, repair, condition report, and availability are confirmed | Repair cost and customer/insurer responsibility are attributed separately |
+| Asset disposal | Disposal inspection, valuation, proposal, delisting, sale/auction, commission, transfer, logistics | GM confirmation, ownership transfer, fleet exit, and complete cost/proceeds evidence | Disposal proceeds, disposal costs, and net disposal return are produced |
+
+For an in-use vehicle:
+
+- a customer accident, rescue, or fault case can derive an asset work order and
+  retains a bidirectional reference;
+- a safety or delivery risk creates an operational restriction and blocks new
+  allocation or delivery;
+- the subscription order can remain active while the vehicle is under repair;
+  vehicle downtime and a protection swap are recorded independently;
+- the original vehicle work order remains open after a protection swap until
+  its repair, cost, and return-to-service work is complete;
+- an insurance claim, customer damage receivable, supplier warranty, or other
+  recovery links to the originating asset work order;
+- technical acceptance and cost/cash completion are separate facts.
+
+Entering disposal immediately excludes the vehicle from allocation. Asset
+operations submits the valuation and sale proposal, and GM performs one
+explicit disposal confirmation. Disposal proceeds are asset-exit cash flow,
+not subscription operating revenue. The vehicle enters its final exited state
+only after ownership transfers.
+
+### Which Costs Require A Work Order
+
+Execution and exception costs require work orders. These include procurement
+handling, transport, preparation, maintenance, repair, rescue, relocation,
+return reconditioning, abnormal events, and disposal.
+
+Normal contractual or periodic costs such as insurance premium, BaaS rent,
+financing interest, and confirmed depreciation enter their existing domain and
+the cost ledger directly. An overdue, amount mismatch, missing contract, or
+other exception can derive an asset work order.
+
+This preserves complete cost attribution without creating administrative work
+orders that have no execution or acceptance value.
+
+### Cost Classification
+
+Every cost fact has one operating classification:
+
+- **asset investment**: purchase price and procurement-related costs approved
+  for the invested-capital base; these do not reduce current operating income;
+- **period operating cost**: maintenance, repair, rescue, relocation, cleaning,
+  storage, and similar expense in the incurred period;
+- **disposal cost**: inspection, commission, transfer, and logistics used in
+  net disposal return;
+- **recovery or compensation**: customer, insurer, supplier, asset-company, or
+  third-party responsibility attributed against the originating cost.
+
+Accounting capitalization remains a manual finance decision. The system stores
+the operating classification and the later finance-confirmed classification;
+it does not create accounting vouchers.
+
+### Cost Ledger And Operating Metrics
+
+An estimate supports execution planning but does not enter core metrics. After
+single-step cost confirmation, an immutable `VehicleCostLedger` record stores:
+
+- vehicle, asset-owner snapshot, lifecycle stage, and cost category;
+- source type, source identifier, and work-order number;
+- incurred date and attributed period;
+- confirmed actual cost;
+- responsibility assigned to the customer, insurer, supplier, asset company,
+  platform, or another third party;
+- confirmed recoverable amount and actual recovered amount;
+- optional order, vendor, invoice, payment, and evidence references;
+- confirmer, confirmation time, and reversal relation.
+
+The primary calculations are:
+
+- `net operating cost = confirmed actual cost - confirmed recovery obligation`;
+- `net cash outflow = actual cash paid - actual cash recovered`.
+
+Vehicle, pool, and asset-owner ROE/ROI use net operating cost. Cash-flow views
+use net cash outflow. Confirmed but unrecovered responsibility is shown as
+recovery exposure.
+
+Maintenance reserves and other estimated operating costs are excluded from the
+primary ROE/ROI view. They may remain visible only as non-primary planning
+inputs. Existing confirmed depreciation and financing costs remain in their
+current operating-finance calculations; depreciation is not cash flow.
+
+Customer damage bills, insurance proceeds, supplier refunds, and periodic costs
+use stable source keys so one economic fact cannot be attributed twice. A
+confirmed ledger record is corrected only with reversal and replacement
+records.
+
+When an existing-domain fact is projected into the unified ledger, metric
+calculation uses the normalized ledger entry as a replacement for that source,
+not as an additional amount. Purchase cost, depreciation, financing, BaaS,
+insurance, customer damage, and recovery source keys are included in
+reconciliation checks.
+
+Reports aggregate by vehicle, pool, asset owner, work-order type, lifecycle
+stage, responsible party, vendor, and period. Every ROE/ROI cost detail can be
+traced back to the work order or periodic source, invoice, payment, and
+recovery evidence.
+
+### Operational Restrictions And State Helper
+
+Vehicle lifecycle status and current operational availability are separate:
+
+- `Vehicle.status` remains the lifecycle status;
+- a vehicle can have multiple `VehicleOperationalRestriction` records;
+- each restriction stores its source work order, reason, severity, blocking
+  scope, release condition, and release evidence;
+- allocation and delivery are blocked while any applicable blocking
+  restriction remains active;
+- accepting one work order releases only its own eligible restriction and
+  cannot remove another active restriction.
+
+The state-impact Helper presents:
+
+- lifecycle status, actual availability, and the restriction-reason tree;
+- the work order or domain fact that caused each restriction;
+- impact on orders, holds, delivery, vehicle packages, pools, and ROE;
+- the expected result of the proposed action and restrictions that will remain;
+- missing evidence, required permission, recommended next step, and direct
+  links to the owning record.
+
+The Helper is explanatory and has no side effects. Backend commands enforce the
+same blockers; the UI is not the security or consistency boundary.
+
+### Lightweight Cost Control
+
+The six-month scope does not build a general approval workflow or SOA engine.
+
+- Asset operations creates, assigns, executes, and submits the work order.
+- A user with `asset_work_order:cost_confirm` performs one final actual-cost
+  confirmation.
+- Finance verifies evidence and records actual payment and recovery.
+- GM performs the additional confirmation required for asset disposal.
+- There is no dynamic amount routing, multi-level countersigning, approval
+  delegation, or configurable workflow designer.
+- A completed external OA approval can be referenced by source, approval
+  number, and attachment, but OA integration is not implemented.
+
+Creator, executor, accepter, cost confirmer, and payment recorder remain
+separate auditable actor fields. Existing permissions can assign those duties
+without creating a generic organizational approval platform.
+
+### Asset-Operations Invariants And Acceptance
+
+The system enforces:
+
+- an actual cost cannot enter operating ROE before confirmation;
+- a monetary fact cannot enter cash flow before real payment or recovery;
+- actual maintenance cost and a maintenance reserve cannot both reduce the
+  primary operating result;
+- a vehicle with an active blocking restriction cannot become allocatable or
+  deliverable;
+- a restriction cannot be released before the owning work order is accepted;
+- a cost-bearing work order cannot close before cost confirmation;
+- a disposal work order cannot reach final exit before GM confirmation and
+  ownership transfer;
+- duplicate sources, unbalanced responsibility, or conflicting amounts block
+  confirmation and show repair guidance.
+
+Required asset-operations scenarios are:
+
+1. Procurement, transport, inbound inspection, initial preparation, and release
+   to available inventory.
+2. An in-use fault, downtime, protection swap, repair acceptance, and return to
+   service.
+3. A customer accident case deriving an asset work order linked to an insurance
+   claim and customer responsibility.
+4. Return damage, repair, customer receivable, real collection, and relisting.
+5. A normal periodic cost entering the ledger directly and an abnormal periodic
+   cost deriving a work order.
+6. Confirmed actual cost entering operating ROE while real payment enters cash
+   flow without duplication.
+7. Insurer and supplier recoveries affecting operating return and cash flow at
+   their respective fact times.
+8. Multiple simultaneous restrictions and independent release.
+9. Disposal confirmation, delisting, sale, transfer, proceeds, costs, and final
+   fleet exit.
+10. Duplicate events, service restart, reversal, and late payment/recovery
+    consistency.
+
+The acceptance outcome is a continuous procurement-to-disposal vehicle
+timeline, bidirectional traceability between work, evidence, cost, cash, and
+recovery, ledger-reconcilable ROE/ROI, and an availability decision explainable
+to the exact restriction and source work order.
 
 ## Asset-Owner Boundary
 

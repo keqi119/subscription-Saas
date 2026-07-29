@@ -2,6 +2,8 @@
 
 Date: 2026-07-29
 
+Updated: 2026-07-30
+
 Status: Approved design baseline
 
 ## Context
@@ -16,10 +18,13 @@ single-operator subscription business that can move its normal order flow
 automatically from A/B-line application through signing, payment, delivery,
 notifications, recurring billing, and contract completion.
 
-Accounting posting and real refund execution remain manual. Collection and
-write-off of customer funds must be automated. Future asset-company access must
-be possible without turning the current back office into a multi-tenant system
-inside this delivery window.
+Accounting posting, outbound payment execution, and real refund execution
+remain manual. Collection and write-off of customer funds must be automated.
+The system generates outbound obligations, compiles daily payment batches,
+records real payment results, and performs business settlement, but phase one
+does not ingest a complete bank statement or connect directly to a bank.
+Future asset-company access must be possible without turning the current back
+office into a multi-tenant system inside this delivery window.
 
 ## Goals
 
@@ -40,6 +45,12 @@ inside this delivery window.
 7. Record vehicle operations from procurement through disposal through asset
    work orders, attribute actual costs, and include those facts in vehicle,
    pool, and asset-owner operating-finance metrics.
+8. Add one outbound-payment foundation for financing repayment, collected-rent
+   distribution, asset-work-order expense, and manually confirmed customer
+   refunds.
+9. Make the existing ROE explicitly a vehicle direct-operating trial ROE using
+   accrual operating return and time-weighted equity, with cash-basis cash flow
+   shown separately.
 
 ## Non-Goals
 
@@ -51,6 +62,15 @@ inside this delivery window.
   allocation, or fulfillment.
 - A general OA, dynamic SOA approval engine, multi-level countersigning,
   approval delegation, or amount-based approval routing.
+- A fully allocated management ROE or allocation of acquisition marketing,
+  personnel, and corporate overhead to vehicles. It is designed separately
+  only after stable marketing-cost, lead-attribution, and conversion data
+  enters the system.
+- Complete bank-statement ingestion, bank-account reconciliation, direct bank
+  connectivity, or system-executed payment. A later fixed-account bank API
+  writes into the same payment-fact model after the operating flow is stable.
+- Net-profit sharing based on actual vehicle cost. This scope supports only
+  distribution based on collected and written-off rent.
 - Automated mileage OCR, vehicle telematics ingestion, or charging-partner API
   integration.
 - Payment channels other than WeChat Pay. The internal boundary remains
@@ -167,10 +187,12 @@ A failed debit does not automatically suspend the order, vehicle, or lease.
 After the grace period, operations decide whether to restrict new optional
 benefits or start a termination process.
 
-Automated payment covers collection and business write-off only. Accounting
-posting remains manual. Refund calculation, approval, and provider execution
-remain manual; the system records the proposed amount, freezes any amount
-awaiting refund, and records the final external result.
+Automated collection covers customer receipts and receivable settlement only.
+Accounting posting remains manual. Refund calculation, approval, and real
+execution remain manual. After the amount is confirmed, the system creates a
+refund payable, includes it in the unified outbound-payment batch, records the
+external payment result, and updates the related receivable, deposit, or
+contract settlement.
 
 ## Notification Strategy
 
@@ -499,14 +521,19 @@ The primary calculations are:
 - `net operating cost = confirmed actual cost - confirmed recovery obligation`;
 - `net cash outflow = actual cash paid - actual cash recovered`.
 
-Vehicle, pool, and asset-owner ROE/ROI use net operating cost. Cash-flow views
-use net cash outflow. Confirmed but unrecovered responsibility is shown as
-recovery exposure.
+Vehicles funded with platform equity use net operating cost in the vehicle
+direct-operating trial ROE. Pools and asset owners can aggregate revenue, cost,
+cash flow, and operating contribution. An externally managed vehicle with no
+platform vehicle equity does not force an ROE calculation; it shows retained
+platform revenue, vehicle contribution, and rent-distribution ratio instead.
+Cash-flow views use net cash outflow. Confirmed but unrecovered responsibility
+is shown as recovery exposure.
 
 Maintenance reserves and other estimated operating costs are excluded from the
-primary ROE/ROI view. They may remain visible only as non-primary planning
-inputs. Existing confirmed depreciation and financing costs remain in their
-current operating-finance calculations; depreciation is not cash flow.
+primary ROE view. They may remain visible only as non-primary planning inputs.
+Confirmed depreciation and financing interest accrued to the period enter
+operating return. Depreciation is not cash flow, and financing-principal
+repayment affects only cash flow and capital balance.
 
 Customer damage bills, insurance proceeds, supplier refunds, and periodic costs
 use stable source keys so one economic fact cannot be attributed twice. A
@@ -520,9 +547,9 @@ insurance, customer damage, and recovery source keys are included in
 reconciliation checks.
 
 Reports aggregate by vehicle, pool, asset owner, work-order type, lifecycle
-stage, responsible party, vendor, and period. Every ROE/ROI cost detail can be
-traced back to the work order or periodic source, invoice, payment, and
-recovery evidence.
+stage, responsible party, vendor, and period. Every cost in vehicle
+direct-operating trial ROE can be traced back to its work order or periodic
+source, invoice, payment, and recovery evidence.
 
 ### Operational Restrictions And State Helper
 
@@ -607,8 +634,191 @@ Required asset-operations scenarios are:
 
 The acceptance outcome is a continuous procurement-to-disposal vehicle
 timeline, bidirectional traceability between work, evidence, cost, cash, and
-recovery, ledger-reconcilable ROE/ROI, and an availability decision explainable
-to the exact restriction and source work order.
+recovery, ledger-reconcilable vehicle direct-operating trial ROE and cash flow,
+and an availability decision explainable to the exact restriction and source
+work order.
+
+## Vehicle Direct-Operating Trial ROE
+
+The six-month scope retains one ROE only: **vehicle direct-operating trial
+ROE**. It does not add fully allocated management ROE or allocate marketing,
+personnel, or corporate overhead to vehicles. Existing backend field names may
+remain temporarily to avoid low-value data migration, but UI labels, exports,
+and explanations use the full name so it is not mistaken for accounting ROE or
+fully allocated return.
+
+Current code still uses collected amounts as operating income and a single
+equity-capital event or static purchase-price-minus-allocated-debt estimate as
+the denominator. This section therefore changes the formula, not only the
+label. Until the new calculation ships, the UI must continue to disclose the
+existing collection and static-equity assumptions.
+
+Operating return follows accrual principles:
+
+- earned rent and other operating income enter the fulfillment period rather
+  than the customer payment date;
+- confirmed direct vehicle cost ultimately borne by the platform enters its
+  attributed period rather than the payment date;
+- overdue receivables adjust ROE through an aging-rate provision plus specific
+  impairment; aging rates are effective-dated versioned configuration,
+  write-off consumes the provision, and later recovery reverses it;
+- the receivable impairment provision is distinct from a maintenance reserve,
+  which does not enter the primary ROE;
+- income enters ROE net of VAT; deductible input VAT does not enter cost and
+  non-deductible input VAT does;
+- purchase tax enters initial investment and depreciation basis, direct
+  vehicle taxes enter operating cost, and corporate income tax is not
+  allocated to the vehicle.
+
+Funding plans, collected-rent distribution, and cash-flow analysis use cash
+facts. A real receipt or payment changes cash flow and settlement state without
+recognizing operating income or cost a second time.
+
+The ROE denominator is time-weighted average vehicle equity. Each capital event
+participates for its actual effective days:
+
+`vehicle equity = capitalized vehicle investment + vehicle-specific restricted
+funds - outstanding vehicle financing principal`
+
+One-time acquisition expenditure required to make the vehicle operable,
+including purchase tax, registration, transport preparation, and necessary
+installation, enters investment and depreciation basis. A financing deposit,
+performance deposit, or other restricted fund attributable to the vehicle
+increases capital employed without becoming cost or depreciation. Its return
+reduces capital employed; confirmed forfeiture becomes actual cost. A customer
+deposit is a refundable liability and is not platform equity.
+
+ROE starts when platform vehicle capital is actually committed. It includes
+available-but-unleased, repair, accident downtime, reconditioning, and
+relocation periods. Reports also show leased days, operable days, and
+non-operating reasons. An externally managed vehicle with no platform equity
+does not calculate ROE.
+
+All disposal proceeds enter cash flow, but operating return recognizes only:
+
+`disposal gain or loss = net realized disposal proceeds - carrying value at
+disposal`
+
+Net proceeds deduct valuation, preparation, channel commission, transfer, tax,
+and other direct disposal cost. Daily ROE stops after ownership transfer and
+capital release. The system then produces a vehicle lifecycle settlement
+covering acquisition investment, operating receipts and costs, financing cost,
+and disposal gain or loss.
+
+Daily reports calculate from current facts. At month end, operations creates a
+timestamped operating snapshot preserving income, cost, impairment, equity,
+and ROE at that time. Late cost, backfill, or reversal creates a new version
+and difference list without overwriting the earlier snapshot or introducing an
+accounting-period lock.
+
+## Financing Repayment Schedule
+
+Creating a financing event captures principal, rate, term, repayment method,
+repayment day, and required fees. The system generates one contract-level
+schedule and internally decomposes each installment into principal, interest,
+and fees. Daily operations verifies installment totals and does not manually
+split principal and interest.
+
+When one financing contract covers multiple vehicles, the financing event
+stores and validates the amount or ratio allocated to each vehicle. The
+contract still produces one total installment bill; the system internally
+attributes principal, interest, and capital movement to vehicles. Payment can
+continue if vehicle allocation is incomplete, but affected vehicle ROE is
+unavailable with an explicit missing-data reason.
+
+Prepayment, extension, rate change, vehicle-allocation change, or restructuring
+uses an effective-dated schedule version:
+
+- settled bills and historical payment allocation are immutable;
+- the original schedule remains and only future unpaid lines are regenerated;
+- prepaid principal, penalty, and fee are separate components;
+- operations performs one verification before activation, without a complex
+  approval chain.
+
+Interest enters direct vehicle operating cost in its accrued period.
+Principal repayment is not operating cost; it affects real cash flow and debt
+balance only. Outstanding principal decreases on the real bank debit date.
+When operations records the result on T+1, the system backdates outstanding
+principal and time-weighted equity to that debit date.
+
+## Unified Outbound-Payment Foundation
+
+Financing repayment, collected-rent distribution, asset-work-order expense,
+and a manually confirmed customer refund each creates a source-domain payable.
+They share this path:
+
+`source payable -> daily payment batch -> finance pays offline -> operations
+records payment result -> business settlement`
+
+The system aggregates all items meeting lightweight conditions for operations
+to verify and submit each day: due today, older unpaid or partially paid items,
+released holds, and explicitly selected early payments. Phase one does not
+make invoice, complete contract attachment, budget, or multi-level approval a
+hard gate. Missing documents are warnings. Minimum checks are an active bill,
+positive remainder, valid amount, payee, and payment purpose.
+
+Responsibilities are:
+
+- the source domain or operations creates the payable;
+- operations verifies payables and compiles the daily batch;
+- finance can accept or return the batch with a reason but cannot edit source
+  amount or payee;
+- finance executes the real payment outside the system;
+- operations uses bank evidence on T+1 to record the result and associate
+  bills;
+- no additional approver is added, and actor, time, and status history are
+  audited.
+
+One payment can settle several bills, but only a fully covered bill completes
+settlement. An underpaid bill and its paid amount are held. Later payments can
+complete the bill. On whole-bill confirmation, the system uses the financing
+schedule's components and contractual clearing order to back-allocate held
+payments to their real bank debit dates. Operations does not split principal
+and interest.
+
+If payment exceeds the selected complete bills, the remainder becomes an
+unallocated balance for that payee and does not automatically prepay a future
+bill. Operations explicitly applies it later. Misdirected, returned, or
+long-unallocated amounts use refund or reversal records. A settled payment is
+never edited directly; it is reversed and reallocated.
+
+Phase one does not ingest the complete bank statement. Operations records
+payer account, payee, debit date, amount, bank reference, and selected bills
+inside the original payment batch. One bank statement or payment receipt is
+attached at batch level rather than to every bill. Cash-flow reports state
+that they cover only system-recorded payments, not the complete bank account,
+and cannot discover off-plan spending.
+
+After the flow is stable and a payment account is fixed, a bank API writes into
+the same payment-fact model and adds deduplication, result retrieval, and
+candidate matching. It replaces manual result entry without rebuilding
+payables, holds, settlement, financing balance, or ROE logic.
+
+The unified task center highlights due-but-unsubmitted items, older unpaid
+items, finance returns, payment results missing after T+1, held bills,
+unallocated balances, and financing delinquency risk. Phase one uses in-system
+tasks, badges, and a daily digest only, without another external notification
+integration.
+
+## Collected-Rent Distribution
+
+Phase one supports distribution based on rent actually collected and settled.
+It does not support net-profit sharing after actual vehicle cost. These use
+different rule types, statements, and report names; collected-rent
+distribution is never described as profit sharing.
+
+The base is rent that has actually been received and written off against the
+receivable. Deposits, uncollected receivables, and non-rent items are excluded.
+The system calculates vehicle-level distribution lines, then aggregates the
+same asset owner's vehicles for the settlement period into one statement.
+Operations verifies the vehicle detail but submits one owner total for
+payment. The statement uses the unified outbound-payment foundation, and final
+settlement retains reconciliation between the total and vehicle detail.
+
+A refund, reversal, or collection-settlement correction becomes a later-period
+adjustment and does not rewrite a completed historical payment. Net-profit
+sharing is designed separately only after the vehicle cost ledger is
+sufficiently timely and accurate.
 
 ## Asset-Owner Boundary
 
@@ -628,9 +838,11 @@ It introduces:
 The ownership snapshot prevents a later vehicle ownership change from
 reattributing historical contract economics.
 
-Customer collection still enters the platform payment system. The system can
-produce an asset-company settlement preview and statement, but accounting,
-invoicing, and real settlement payment remain manual.
+Customer collection still enters the platform payment system. The system
+produces an asset-company collected-rent distribution preview and statement
+and sends it through the unified outbound-payment foundation. Accounting,
+invoicing, and real payment remain manual; the system records the payment
+result and completes business settlement.
 
 A future asset-company SaaS entry is limited initially to:
 
@@ -688,6 +900,12 @@ The operational target is:
   payment application, points, or entitlements;
 - every subscription is traceable from application through order, contract,
   payment, delivery, notification, recurring operation, and return;
+- every system-managed outbound payment is traceable from its source payable
+  through payment batch, manually recorded real payment, held or unallocated
+  amount, and final settlement;
+- vehicle direct-operating trial ROE is traceable to accrued income,
+  receivable impairment, confirmed actual cost, financing repayment events,
+  and time-weighted equity;
 - service restart, callback duplication, callback reordering, and provider
   timeout result in recovery or an explicit operator-owned exception.
 
@@ -707,6 +925,15 @@ Required system-level scenarios are:
 9. Stage 2 evidence, signing, archive recovery, activation, return, deposit
    settlement, and vehicle re-entry.
 10. Workflow recovery after worker or API restart.
+11. Financing schedule generation, multi-vehicle allocation, schedule version
+    change, daily submission, whole-bill settlement, and partial-payment hold.
+12. One real payment settling several bills, unallocated payment balance,
+    refund or reversal, and T+1 manual payment-result entry.
+13. Vehicle-level collected-rent distribution, owner-level statement payment,
+    and later-period adjustment.
+14. Separation of accrued operating return and cash flow, impairment
+    provision, effective-day capital weighting, and versioned month-end
+    operating snapshots.
 
 Every database release must be tested against a new database and an upgraded
 existing database. A migration that has been committed or applied must never be
